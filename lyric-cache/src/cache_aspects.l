@@ -1,13 +1,19 @@
 //! Cache.Aspects — config types and helpers for transparent result caching.
 //!
-//! Two aspect templates are defined here as records + helper functions.
-//! The full aspect-weaver wiring (B-mode / C-mode, around(call), config
-//! injection) requires the aspect system described in docs/26-aspects.md and
-//! is deferred until that system ships.  Until then, callers should use
-//! Cache.get / Cache.set / Cache.setWithTtl directly, or consult
-//! the typed config records below to construct equivalent call-site logic.
+//! The aspect weaver (docs/26-aspects.md) has shipped — B-mode (D047),
+//! B'-mode row-typed args (D114/D115/D118) — and sibling libraries
+//! (Db.Aspects, Storage.Aspects, Mq.Aspects) already ship real `pub aspect`
+//! templates on top of it. This file has not yet been converted: it still
+//! only defines config records (FunctionCacheConfig, ItemCacheConfig) and
+//! their factory functions. Until the FunctionCache (B-mode, keyed on
+//! call.qualifiedName) and ItemCache (B'-mode, row-constrained on a
+//! cacheKey field) templates described by these configs are actually
+//! written, callers should use Cache.get / Cache.set / Cache.setWithTtl
+//! directly, or consult the typed config records below to construct
+//! equivalent call-site logic.
 //!
-//! See docs/03-decision-log.md D055 and lyric-cache/README.md.
+//! See docs/03-decision-log.md D055, docs/57-stdlib-ecosystem-library-review.md
+//! §4, and lyric-cache/README.md.
 @runtime_checked
 package Cache.Aspects
 

@@ -996,6 +996,22 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/ffi_iface_impl_self_test.l
 
+      - name: Import extern self-test (D116, native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping import extern self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping import extern self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/import_extern_self_test.l
+
       # Auto-FFI F0015 negative-compile test (#2945).  The auto-FFI self-test
       # above covers only the happy path (valid signatures resolve), so a
       # regression that silently disabled the signature-verification block in

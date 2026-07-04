@@ -28891,3 +28891,97 @@ kernels, sanity-swept for regressions). `.NET` twin untouched, 15/15 on
 **Related:** #736 (the prior, incomplete fix), D-progress-543 (the phantom-class
 elimination pattern this applies), D-progress-588 (the CI step that
 surfaced this).
+### D-progress-590 — `import extern` type-checker integration + `.new()` constructor shorthand (docs/47 Phase 2, docs/48)
+
+**Shipped** in commit `a64e649` ("Address 119 compiler-backend/compiler-
+frontend review-finding issues", #4714). This closes the Phase 2 gap that
+D116/D117 (see the D-progress entry above documenting D116/D117 parser
+support) explicitly deferred: `import extern`-bound names now resolve
+through auto-FFI, and `.new(args)` constructor-shorthand calls lower to
+`newobj` for reference-type extern types.
+
+- **Type checker (`lyric-compiler/lyric/type_checker/typechecker_checker.l`):**
+  `isExtern`-flagged `ImportDecl`s register their bound aliases as external
+  type references (symbol registration), and method/constructor calls on
+  those aliases resolve through the existing metadata-based auto-FFI path
+  (epic #1622) rather than requiring an `extern type` declaration in the
+  same file.
+- **Codegen (`msil/codegen.l`):** `.new()` is recognized as constructor
+  shorthand (`isConstructor = originalMethodName == "new"`); the resolver
+  name-maps `"new"` to `".ctor"` before metadata lookup and emits `newobj`
+  for the resolved constructor. Per Q48-004 (docs/48), value-type targets
+  (detected via `Mdr.isValueTypeFqn`) are explicitly rejected from this
+  fast path with a clear diagnostic rather than silently miscompiling —
+  that gap remains open, tracked as before.
+- **Verification:** `lyric-compiler/lyric/import_extern_self_test.l`
+  (`import extern System.{ Math as SystemMath }`, asserting `Max`/`Min`/
+  `Abs` resolve and execute correctly). The shipping commit itself did not
+  wire this self-test into CI; a docs/57 follow-up (review-finding #5035)
+  added it as a `background: true` step in `.github/workflows/ci.yml`
+  alongside `ffi_iface_impl_self_test.l`.
+- **Docs updated:** `docs/47-import-extern-syntax.md` and
+  `docs/48-constructor-shorthand.md` status headers, which had continued
+  to say "deferred to Phase 2" after this shipped, are corrected to
+  "Shipped" (docs/57 follow-up, review-finding #5035).
+
+**Not yet adopted:** as of `docs/57-stdlib-ecosystem-library-review.md`,
+zero files across `lyric-stdlib/` or the 26 ecosystem libraries use either
+`import extern` or `.new()` — the feature landed one day before that
+review and the stale docs above had discouraged adoption in the interim.
+docs/57 §2 and §7 catalogue the migration backlog.
+
+**Related:** D116, D117, docs/47, docs/48, docs/42 (metadata-based auto-FFI
+this integration routes through), docs/57 (ecosystem adoption audit),
+#4714.
+
+### D-progress-591 — Fix `ImportDecl` span truncation for selector-group imports (docs/57 §8)
+
+**Shipped, verified by CI** (this sandbox cannot build stage 0 —
+`scripts/mint-stage0-fsharp.sh` fails with no GitHub API access, the same
+class of constraint as D-progress-543 — so neither fix attempt below
+could be locally compiled and run before pushing; CI's
+`compiler-self-tests-dotnet-a` job, which builds stage 0/1 from scratch,
+is the actual verification, and it passed clean on the second attempt.
+See docs/57 §8 for the full trace, including the first attempt's
+runtime-crash dead end).
+
+Wiring `import_extern_self_test.l` into CI (D-progress-590 follow-up)
+immediately failed with a `P0040` parse-error cascade. Root cause,
+precisely traced: `lyric-compiler/lyric/parser/parser_core.l::parseImportDecl`
+computed an import declaration's end span from `path.span` (the module
+path only) and never extended it to cover a following `.{...}` selector
+group unless a top-level `as Alias` came after the whole declaration.
+This has always been latent — it predates and is unrelated to the D116/
+D117 `import extern` work — but had never been exercised: no
+`@test_module` file anywhere in the repository used the `.{...}`
+selector-group import form before `import_extern_self_test.l`, and
+normal `lyric build` never reads `ImportDecl.span` (the type checker
+consumes `selector`/`asAlias` directly). The one consumer that does read
+it, `Lyric.TestSynth` (`test_synth.l:291,296`), reconstructs a test
+file's prelude by slicing source text at each import's span and resuming
+"the rest of the file" from the last import's span end — so a truncated
+span either silently drops a non-last import's selector group, or (as
+here, since the `import extern` line was the file's last import) leaks
+the dangling `.{...}` text into the reconstructed body as a bogus
+top-level item.
+
+**Fix (two attempts; see docs/57 §8 for the full account):** attempt 1
+captured the closing `}` span in an `Option[Span]` `var` mutated from a
+`match` arm nested inside the selector-parsing `if`-expression. That
+compiled but crashed at runtime —
+`System.NullReferenceException` in `Lyric.Parser.Program.joinSpans`,
+called from `parseImportDecl` — the first sign that this specific
+capture-from-nested-match-inside-if shape isn't reliably supported by
+the self-hosted compiler's current codegen (a possible self-hosted-compiler
+maturity gap, not a logic error in the fix). Attempt 2 sidesteps it:
+selector-group parsing was extracted into `tryParseImportSelectorGroup`,
+returning one `Option[SelectorGroupParse]` helper-record value (pairing
+the parsed group with its end span) with no outer-var mutation at all;
+`parseImportDecl` derives `selector` and `endSp` from that single value
+via two independent top-level `match`es, mirroring the file's existing
+`NameAndSpan` "avoid tuple returns" convention. Selector *parsing* itself
+was correct throughout both attempts; only the span bookkeeping was ever
+wrong.
+
+**Related:** D-progress-590, D-progress-543 (this sandbox's stage-0 build
+constraint), docs/57 §8, `lyric-compiler/lyric/test_synth/test_synth.l`.

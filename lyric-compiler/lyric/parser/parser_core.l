@@ -697,6 +697,48 @@ func parseImportItem(st: inout ParseState): ImportItem {
   }
 }
 
+// Helper record: parsed `.{...}` selector group paired with its end span
+// (the closing `}`) — avoids a tuple return (see `NameAndSpan` above for
+// the same convention).
+record SelectorGroupParse {
+  group: ImportSelector
+  endSp: Span
+}
+
+func tryParseImportSelectorGroup(st: inout ParseState): Option[SelectorGroupParse] {
+  if isPunct(peekToken(st), Dot) and isPunct(peekAt(st, 1).token, LBrace) {
+    val _ = advance(st)
+    // '.'
+    val _ = advance(st)
+    // '{'
+    val items: List[ImportItem] = newList()
+    if not isPunct(peekToken(st), RBrace) {
+      items.add(parseImportItem(st))
+      var keepGoing = true
+      while keepGoing {
+        if isPunct(peekToken(st), Comma) {
+          val _ = advance(st)
+          if not isPunct(peekToken(st), RBrace) {
+            items.add(parseImportItem(st))
+          }
+        } else {
+          keepGoing = false
+        }
+      }
+    }
+    val closeSp = match tryEatPunct(st, RBrace) {
+      case Some(closeBrace) -> closeBrace.span
+      case None -> {
+        emitErr(st, "P0032", "expected '}' to close import group", peekSpan(st))
+        peekSpan(st)
+      }
+    }
+    Some(value = SelectorGroupParse(group = ISGroup(items = items), endSp = closeSp))
+  } else {
+    None
+  }
+}
+
 func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
   val isPubUse = isKw(peekToken(st), KwPub) and isKw(peekAt(st, 1).token, KwUse)
   val isImport = isKw(peekToken(st), KwImport)
@@ -721,40 +763,20 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
     }
     val path = parseModulePath(st)
 
-    // Optional `.{...}` group selector.
-    val selector: Option[ImportSelector] = if isPunct(peekToken(st), Dot) and isPunct(peekAt(st, 1).token, LBrace) {
-      val _ = advance(st)
-      // '.'
-      val _ = advance(st)
-      // '{'
-      val items: List[ImportItem] = newList()
-      if not isPunct(peekToken(st), RBrace) {
-        items.add(parseImportItem(st))
-        var keepGoing = true
-        while keepGoing {
-          if isPunct(peekToken(st), Comma) {
-            val _ = advance(st)
-            if not isPunct(peekToken(st), RBrace) {
-              items.add(parseImportItem(st))
-            }
-          } else {
-            keepGoing = false
-          }
-        }
-      }
-      match tryEatPunct(st, RBrace) {
-        case Some(_) -> {
-        }
-        case None -> {
-          emitErr(st, "P0032", "expected '}' to close import group", peekSpan(st))
-        }
-      }
-      Some(value = ISGroup(items = items))
-    } else {
-      None
+    // Optional `.{...}` group selector. Parsed by a dedicated helper that
+    // returns the group and its end span (the `}` span) together in one
+    // record, rather than threading the end span out through a captured
+    // outer `var` mutated from a nested `match` arm.
+    val selectorParse = tryParseImportSelectorGroup(st)
+    val selector: Option[ImportSelector] = match selectorParse {
+      case Some(sp2) -> Some(value = sp2.group)
+      case None -> None
     }
 
-    var endSp = path.span
+    var endSp = match selectorParse {
+      case Some(sp2) -> sp2.endSp
+      case None -> path.span
+    }
     val result = match tryEatKw(st, KwAs) {
       case Some(_) -> {
         match tryEatIdent(st) {
