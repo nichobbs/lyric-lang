@@ -193,7 +193,7 @@ tracking issue today (band J0 files them).
 | m-2 | ~~Module-level `val` not emitted as `static final` on JVM~~ **DONE (J3, D-progress-472).** A module-level `val NAME = expr` emits a `public static final` field on the package host class, initialised in a synthesised `<clinit>`; bare references resolve to `getstatic <hostClass>.<name>` from any function in the package (collected by `collectFileVals`, threaded via `FuncCtx.moduleVals`). Mirrors the MSIL `.cctor` static-field path. | `codegen/06_items.l`, `lowering.l` | #2210 |
 | m-3 | ~~`out`/`inout` parameter parity (holder-array lowering)~~ **DONE for free functions (#1763).** A free function's `out`/`inout` parameter of element type T is lowered to a single-element JVM *holder array* (`[I`, `[J`, `[Ljava/lang/String;`, …): the descriptor declares the array type; on entry the callee unwraps `holder[0]` into a value slot and every assignment writes through to `holder[0]` (centralised in `emitStoreLocalWriteThrough`, so no return-time epilogue is needed); the call site (`lowerStaticCallWithHolders`) allocates a holder pre-filled with the caller's local, passes it, and copies element 0 back after the call. `JvmFuncSig.paramModes` carries the declared modes so call sites know which arguments to wrap; `FuncCtx.holderArraySlot`/`holderElemType` (two parallel maps — value slot → holder array slot and value slot → element type; a record-valued map is avoided per the stage-0 bootstrap hazard) map a value slot to its holder array. Forwarding an `inout` parameter to a nested call refreshes the outer holder via the write-through readback. Guarded by `out_inout_jvm_self_test.l` (out String/Int/Long, multiple out, inout RMW, nested forwarding, mixed-mode). **Instance / interface methods are a tracked follow-up** — the dispatch-site wrap/unwrap is not yet implemented, so `rejectInstanceHolderParams` emits a hard compile error (not a silent by-value miscompile) for an `out`/`inout` parameter on a record/protected/impl/interface method or an async generator; the MSIL companion `lyric-compiler/lyric/outparam_self_test.l` covers those on `--target dotnet`. | `codegen/01_types.l`, `codegen/04_calls.l`, `codegen/05_stmts.l`, `codegen/06_items.l` | #1763 |
 | m-4 | intra-impl `self.m`/bare `m` calls | #1722 | #1722 |
-| m-5 | nested-generic union case construction (`Result[Option[T],E]`) | #1707 | #1707 |
+| m-5 | ~~nested-generic union case construction (`Result[Option[T],E]`)~~ **Fixed (D-progress-575):** #1707's closure was premature — `Map[K, V]` subscript syntax (`m[k]`, `m[k] = v`) still crashed (`VerifyError`, misrouted to `ArrayList` codegen) and compound-assignment through any reference-typed subscript silently dropped the operator. Both fixed in `EIndex` lowering (`02_exprs.l`/`05_stmts.l`); `nested_generic_self_test.l` and the new `subscript_assign_jvm_self_test.l` (10 cases) are green on `--target jvm`. Three separate, deeper, pre-existing gaps this crash had been masking are tracked in #4982. | `codegen/02_exprs.l`, `codegen/05_stmts.l` | #1707 ✅ (follow-ups: #4982) |
 | m-6 | JVM regex daemon-thread timeout shim | #1103 | #1103 |
 | m-7 | `splitPathList` splits on `:` and `;`, breaking Windows `LYRIC_FFI_JARS` (`C:\path` drive letter treated as separator) | #2214 | #2214 |
 | m-8 | ~~negative `loadClass` results not cached (repeated JMOD scans)~~ **DONE.** `loadClass` maintains `ctx.missKeys` (linear scan); repeated lookups of unknown classes skip the JMOD scan entirely. | `auto_ffi.l:284-306` | #2181 DONE |
@@ -419,9 +419,11 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   binding's concrete type. The `?`-propagation JVM runtime runs. Covers
   `Result`/`Option`, user generic records/unions, and same-unit + stdlib
   generics (`monoFileWithImports`). Verified by `generic_jvm_self_test.l`.
-- M-5/m-5: nested-generic-union-case construction (`Result[Option[T], E]`) and
-  broader cross-package generic monomorphization beyond `monoFileWithImports`
-  remain open follow-ups.
+- **M-5/m-5 DONE (D-progress-575).** Nested-generic-union-case construction
+  (`Result[Option[T], E]`) is verified working; the deeper Map/List subscript
+  codegen bugs #1707's original closure had missed are fixed (see m-5 above).
+  Broader cross-package generic monomorphization beyond `monoFileWithImports`
+  remains an open follow-up.
 - B-2/M-12: real async lowering (futures / virtual threads per `docs/18` §14)
   and lazy generator synthesis — parity with MSIL #2070 Phase 5.
 - M-17: JDK 24+ `scope` support.

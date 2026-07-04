@@ -1154,17 +1154,19 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       lowerExpr(ctx, insns, fn)
     }
     case EIndex(recv, indices) -> {
-      // Array/list indexing.
+      // Array/list/map indexing.
       val recvTy0 = lowerExpr(ctx, insns, recv)
-      // A list receiver whose static type is imprecise (an erased-`Object`
+      // A list/map receiver whose static type is imprecise (an erased-`Object`
       // match binding, or an imported type's in-package guess) must be cast
       // to `ArrayList` HERE — before the index is pushed, since checkcast
       // only reaches the stack top.  Without it the `ArrayList.get` below
       // fails verification ("Object is not assignable to ArrayList"; hit by
-      // `pairs[idx]` on a match-bound `List[YamlPair]` payload).
+      // `pairs[idx]` on a match-bound `List[YamlPair]` payload).  A precisely-
+      // known `HashMap` receiver is left alone — casting it to `ArrayList`
+      // would itself throw `ClassCastException` (#1707/m-5).
       val recvTy = match recvTy0 {
         case JRef(c0) -> {
-          if c0 == "java/lang/String" or c0 == "java/util/ArrayList" {
+          if c0 == "java/lang/String" or c0 == "java/util/ArrayList" or c0 == "java/util/HashMap" {
             recvTy0
           } else {
             insns.add(LCheckcast(className = "java/util/ArrayList"))
@@ -1174,9 +1176,9 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case _ -> recvTy0
       }
       if indices.count > 0 {
-        lowerExpr(ctx, insns, indices[0])
         match recvTy {
           case JArray(elem) -> {
+            lowerExpr(ctx, insns, indices[0])
             // Primitive byte arrays (e.g. a JDK `byte[]` returned by an
             // auto-FFI call such as MessageDigest.digest) load via `baload`
             // and yield a `JByte`; reference arrays use `aaload`.
@@ -1205,12 +1207,31 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // the ArrayList.get path below emits an invokevirtual against
               // the wrong class and fails verification (surfaced by
               // Std.String.charAt on --target jvm).
+              lowerExpr(ctx, insns, indices[0])
               val caPs: List[JvmType] = newList()
               caPs.add(JInt)
               insns.add(LInvokevirtual(owner = "java/lang/String", name = "charAt", params = caPs, ret = JChar))
               JChar
+            } else if idxCls == "java/util/HashMap" {
+              // `m[k]` on a Map[K, V] → `HashMap.get(Object)` (#1707/m-5). The
+              // key is boxed like any Object-erased argument; a primitive key
+              // (e.g. `Map[Int, V]`) must be boxed before the call.
+              val kTy = lowerExpr(ctx, insns, indices[0])
+              boxIfNeeded(insns, kTy)
+              val getPs: List[JvmType] = newList()
+              getPs.add(JRef(className = "java/lang/Object"))
+              insns.add(
+                LInvokevirtual(
+                  owner = "java/util/HashMap",
+                  name = "get",
+                  params = getPs,
+                  ret = JRef(className = "java/lang/Object")
+                )
+              )
+              JRef(className = "java/lang/Object")
             } else {
               // List-style indexing via ArrayList.get(int).
+              lowerExpr(ctx, insns, indices[0])
               val getPs: List[JvmType] = newList()
               getPs.add(JInt)
               insns.add(
@@ -1226,6 +1247,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           }
           case _ -> {
             // List-style indexing via ArrayList.get(int).
+            lowerExpr(ctx, insns, indices[0])
             val getPs: List[JvmType] = newList()
             getPs.add(JInt)
             insns.add(

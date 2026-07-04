@@ -27932,3 +27932,60 @@ inside a lambda) in the dual-target `erased_generic_arith_jvm_self_test.l` (now
 not-needed: `Short` is not a surface Lyric type, so no generic type can be
 instantiated with it and `emitUnboxObjectTo`'s `concreteTy` is never `JShort` —
 the arm would be unreachable dead code.  Resolves docs/44 m-80.
+
+### D-progress-575 — JVM: `Map`/`List` subscript codegen — crash on Map read/write, silent miscompile on compound-assignment (band J4, #1707/m-5)
+
+**Shipped.** While re-verifying docs/44 m-5 (#1707, closed) against a fresh JVM
+run of `nested_generic_self_test.l`, found the closure was premature: `Map[K, V]`
+subscript syntax (`m[k]`, `m[k] = v`) still crashed the JVM backend, and a
+second, independent bug — compound-assignment (`+=` etc.) through *any*
+reference-typed subscript target (`List` too, not just `Map`) — silently
+dropped the operator.
+
+- **Crash (`EIndex` lowering in `02_exprs.l` / `05_stmts.l`):** neither the
+  read side nor the write side had a case for a
+  `HashMap` receiver — every non-array, non-`String` receiver fell through to
+  `ArrayList.get(int)` / `.set(int, Object)`. A `Map` subscript pushed its
+  (typically `String`) key where an `int` index was expected:
+  `VerifyError: Bad type on operand stack` at class-load time on every Map
+  subscript use. Fixed by adding a `HashMap` branch to both sides
+  (`java.util.HashMap.get`/`.put`, boxing the key like any Object-erased
+  argument); the read-side's pre-existing "cast unknown receiver to
+  `ArrayList`" fallback now also recognizes a precisely-known `HashMap`
+  receiver so it isn't wrongly checkcast.
+
+- **Silent miscompile (`05_stmts.l`, `lowerAssignExpr`'s `EIndex` case):** the
+  pre-fix write-side unconditionally lowered `value` as the new element and
+  called `ArrayList.set`, regardless of the assignment operator — `lst[i] += 5`
+  therefore *set* `lst[i]` to `5` instead of incrementing it, with no error at
+  build or run time. This affected both `List` and `Map` targets identically
+  (same fallback arm). Fixed by mirroring the pre-existing `JArray`
+  compound-assign pattern: load `[list/map, index/key]` **twice** up front (so
+  the pair survives under the fetched/combined value with no reordering),
+  `get` the current value, unbox it to the RHS's concrete type via
+  `emitUnboxObjectTo` (reused from the #4877 erased-payload work), combine via
+  the existing `emitCompoundArith`, box, `set`/`put` back. New
+  `emitListGet`/`emitMapGet`/`emitMapPut` helpers alongside the pre-existing
+  `emitListSet`.
+
+**Verification:** new dual-target `subscript_assign_jvm_self_test.l` (10 cases:
+Map/List read+write, overwrite, Long two-slot values, compound-assign with
+`+=`/`-=`/`*=`/`/=`, and the original #1707 nested-generic-lookup repro shape)
+— 10/10 on both `--target jvm` and `--target dotnet`. Verified against the
+pinned F# stage-0 mint. Regression-swept against every existing Map/List JVM
+self-test; zero regressions (confirmed via a clean pre-fix baseline rebuild).
+
+**Follow-up filed (#4982):** re-running previously dotnet-only-in-CI Map self-
+tests (`map_key_self_test.l`, `map_option_self_test.l`,
+`map_enhancements_self_test.l`) on `--target jvm` for the first time surfaced
+three separate, pre-existing, deeper JVM-only gaps that this fix's crash had
+been masking — record-typed Map keys lack structural `hashCode`/`equals` on
+JVM, a `mapEntries` iteration assertion gap, and an `impl`-dispatch +
+branch-stackmap-frame inconsistency. None are regressions from this fix (all
+three crashed identically pre-fix); tracked separately as they touch distinct
+subsystems.
+
+**Related:** #1707 (closed — the original m-5 issue; this entry corrects its
+premature closure), #4982 (newly-surfaced follow-ups), D-progress-558 (the
+`==` structural-equality precedent Finding 1 of #4982 should mirror for
+`hashCode`/`equals`), docs/44 m-5.
