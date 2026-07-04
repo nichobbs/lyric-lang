@@ -8432,8 +8432,12 @@ func synthProtectedDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
   val objTy = recPtrType(ri)
   val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
   body.add(NBitcast(dest = "obj", fromTy = NPtr(pointee = NI8), value = NLocal(name = "raw"), toTy = objTy))
+  // User fields only — the trailing __mutex field (index count - 1) is
+  // torn down explicitly below via lyric_mutex_destroy + lyric_free, never
+  // lyric_release, regardless of what isRefNType(NPtr(NI8)) happens to say.
+  val mutexIdx = ri.fieldTys.count - 1
   var i = 0
-  while i < ri.fieldTys.count {
+  while i < mutexIdx {
     if isRefNType(ri.fieldTys[i]) {
       val fieldPtr = freshTmp(ctx)
       val idxArgs: List[NArg] = newList()
@@ -8448,7 +8452,6 @@ func synthProtectedDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
     }
     i = i + 1
   }
-  val mutexIdx = ri.fieldTys.count - 1
   val mutexFieldPtr = freshTmp(ctx)
   val mIdxArgs: List[NArg] = newList()
   mIdxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
