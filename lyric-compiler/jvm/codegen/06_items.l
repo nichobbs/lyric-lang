@@ -79,7 +79,50 @@ func makeFuncCtx(
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
     captureCellNames = newList(),
-    varGenericArgs = newMap()
+    varGenericArgs = newMap(),
+    wireClassName = "",
+    wireBindingTypes = newMap()
+  )
+}
+
+// Derive a wire-binding-init `FuncCtx` from a freshly-made one (#5013): every
+// field is carried through unchanged except `wireClassName`/`wireBindingTypes`,
+// so a bare-name reference anywhere inside the binding's init expression tree
+// (not just as the whole top-level init) can resolve to `getstatic` on the
+// wire class instead of falling through to the module-val / null fallback.
+func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes: in Map[String, JvmType]): FuncCtx {
+  FuncCtx(
+    pkgName = ctx.pkgName,
+    className = ctx.className,
+    slots = ctx.slots,
+    types = ctx.types,
+    slotTicker = ctx.slotTicker,
+    labelTicker = ctx.labelTicker,
+    loopBreak = ctx.loopBreak,
+    loopCont = ctx.loopCont,
+    genClass = ctx.genClass,
+    funcSigs = ctx.funcSigs,
+    caseFields = ctx.caseFields,
+    ctors = ctx.ctors,
+    externTypes = ctx.externTypes,
+    autoFfi = ctx.autoFfi,
+    retTy = ctx.retTy,
+    deferStack = ctx.deferStack,
+    loopDeferDepth = ctx.loopDeferDepth,
+    deferRanSlots = ctx.deferRanSlots,
+    selfClass = ctx.selfClass,
+    moduleVals = ctx.moduleVals,
+    opaqueTypes = ctx.opaqueTypes,
+    closureAcc = ctx.closureAcc,
+    holderArraySlot = ctx.holderArraySlot,
+    holderElemType = ctx.holderElemType,
+    hoistedVarNames = ctx.hoistedVarNames,
+    hoistedCellSlot = ctx.hoistedCellSlot,
+    hoistedCellType = ctx.hoistedCellType,
+    captureCellNames = ctx.captureCellNames,
+    varGenericArgs = ctx.varGenericArgs,
+    wireClassName = wireClassName,
+    wireBindingTypes = wireBindingTypes
   )
 }
 
@@ -136,7 +179,9 @@ func makeFuncCtxForGenerator(
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
     captureCellNames = newList(),
-    varGenericArgs = newMap()
+    varGenericArgs = newMap(),
+    wireClassName = "",
+    wireBindingTypes = newMap()
   )
 }
 
@@ -195,7 +240,9 @@ func makeFuncCtxInstance(
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
     captureCellNames = newList(),
-    varGenericArgs = newMap()
+    varGenericArgs = newMap(),
+    wireClassName = "",
+    wireBindingTypes = newMap()
   )
 }
 
@@ -1823,7 +1870,7 @@ func lowerWireBindingInit(
     // A lambda in a wire-binding initialiser registers its synthesised closure
     // inner class into the package-shared accumulator (#2864), so it emits
     // `<pkg>$Lambda$<n>` into the package output and works end-to-end.
-    val ctx = makeFuncCtx(
+    val ctx0 = makeFuncCtx(
       pkgName,
       className,
       funcSigs,
@@ -1836,6 +1883,12 @@ func lowerWireBindingInit(
       opaqueTypes,
       closureAcc
     )
+    // #5013: an earlier binding referenced from a *nested* expression position
+    // (e.g. `contents = widget` as a named constructor argument, not the bare
+    // top-level init handled above) must also resolve to `getstatic` on the
+    // wire class — otherwise it falls through to the module-val / null
+    // fallback in `lowerExpr`'s `EPath` handling.
+    val ctx = withWireBinding(ctx0, className, bindingTypes)
     val ty = lowerExpr(ctx, insns, init)
     coerceArgTo(insns, ty, expectedTy)
     ctx.slotTicker.count
@@ -2490,9 +2543,23 @@ pub func collectFileSigsSeeded(
         // real descriptor.  `bootstrap()V` runs the bindings; each exposed
         // binding gets a `()T` accessor returning its declared type.
         val wireClass = owner + "/" + decl.name
-        val noPs: List[Param] = newList()
-        // bootstrap()V
-        registerStaticWireSig(into, decl.name, wireClass, "bootstrap", newList(), JVoid)
+        // bootstrap(...)V: the descriptor must include every `@provided`
+        // parameter's type, in declaration order — `lowerWire` emits
+        // `bootstrap` with exactly these params (#5013 follow-up).  A
+        // registered zero-arg signature here made `<Wire>.bootstrap(args)`
+        // resolve to the wrong (nonexistent) overload at call sites, so any
+        // wire with a `@provided` member threw `NoSuchMethodError` at
+        // runtime despite compiling cleanly.
+        val bootstrapPs: List[JvmType] = newList()
+        var ppi = 0
+        while ppi < decl.members.count {
+          match decl.members[ppi] {
+            case WMProvided(_, pty, _) -> bootstrapPs.add(typeExprToJvm(pty, owner))
+            case _ -> ()
+          }
+          ppi = ppi + 1
+        }
+        registerStaticWireSig(into, decl.name, wireClass, "bootstrap", bootstrapPs, JVoid)
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {

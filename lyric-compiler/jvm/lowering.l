@@ -1913,7 +1913,6 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
   }
   lowerInsn(LReturn, bsAsm)
 
-  val bsMaxStack = 3
   // bsSlot is the total local-slot count consumed by @provided params
   // (category-2 types like Long/Double occupy 2 slots each per JVM spec
   // §4.7.3).  Each binding's init expression lowers through its own fresh
@@ -1923,7 +1922,12 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
   // #5003/#5011) emits `istore`s past the declared local variable table
   // size and trips `Local variable table overflow` at verify time.
   val bsMaxLocals = if bsSlot > bsBindingMaxSlots { bsSlot } else { bsBindingMaxSlots }
-  val bsCode = assembleCode(bsAsm, bsMaxStack, bsMaxLocals)
+  // max_stack is inferred from `bsAsm.peakStack` (#5015) rather than a
+  // hardcoded constant: a multi-field constructor's `new; dup;
+  // load-each-temp; invokespecial` sequence (D-progress-580/#5011) reaches
+  // stack depth `2 + n_fields`, which a fixed `3` only covers for single-field
+  // records.
+  val bsCode = assembleCodeInferred(bsAsm, bsMaxLocals)
   val bsAttrs: List[Attribute] = newList()
   bsAttrs.add(bsCode)
   val bsParamTypes: List[JvmType] = newList()

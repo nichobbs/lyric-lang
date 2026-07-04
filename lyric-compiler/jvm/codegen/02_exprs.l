@@ -316,28 +316,45 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               fty
             }
             case None -> {
-              // A bare reference to a nullary union case (`Empty`, `None`) is a
-              // construction, not a variable: `new Pkg/Union$Case; dup;
-              // invokespecial <init>()V`.  Without this the case lowered to null and
-              // any downstream `match` saw `instanceof Case == false` → "match not
-              // exhaustive" (#1675).
-              match ctorClassFor(ctx, name) {
-                case Some(cls) -> {
-                  val emptyArgs: List[CallArg] = newList()
-                  lowerConstruction(ctx, insns, cls, emptyArgs)
+              // A bare reference to an already-declared `wire { }` binding,
+              // nested anywhere inside another binding's init expression (not
+              // just as the whole top-level init — that shorter-circuits
+              // earlier, in `lowerWireBindingInit`), resolves to `getstatic`
+              // on the wire class (#5013). Checked ahead of the nullary-case /
+              // module-val fallbacks below since it is the more specific
+              // context; `ctx.wireClassName` is `""` outside a wire-binding
+              // init, so this is a no-op everywhere else.
+              val wireBindingTy: Option[JvmType] = if ctx.wireClassName != "" { mapGet(ctx.wireBindingTypes, name) } else { None }
+              match wireBindingTy {
+                case Some(bty) -> {
+                  insns.add(LGetstatic(owner = ctx.wireClassName, name = name, t = bty))
+                  bty
                 }
                 case None -> {
-                  // A bare reference to a module-level `val` resolves to a
-                  // `getstatic` on the package host class (m-2).
-                  match mapGet(ctx.moduleVals, name) {
-                    case Some(vty) -> {
-                      insns.add(LGetstatic(owner = ctx.pkgName, name = name, t = vty))
-                      vty
+                  // A bare reference to a nullary union case (`Empty`, `None`) is a
+                  // construction, not a variable: `new Pkg/Union$Case; dup;
+                  // invokespecial <init>()V`.  Without this the case lowered to null and
+                  // any downstream `match` saw `instanceof Case == false` → "match not
+                  // exhaustive" (#1675).
+                  match ctorClassFor(ctx, name) {
+                    case Some(cls) -> {
+                      val emptyArgs: List[CallArg] = newList()
+                      lowerConstruction(ctx, insns, cls, emptyArgs)
                     }
                     case None -> {
-                      // Package-qualified or genuinely unknown reference: null fallback.
-                      insns.add(LAconstNull)
-                      JRef(className = "java/lang/Object")
+                      // A bare reference to a module-level `val` resolves to a
+                      // `getstatic` on the package host class (m-2).
+                      match mapGet(ctx.moduleVals, name) {
+                        case Some(vty) -> {
+                          insns.add(LGetstatic(owner = ctx.pkgName, name = name, t = vty))
+                          vty
+                        }
+                        case None -> {
+                          // Package-qualified or genuinely unknown reference: null fallback.
+                          insns.add(LAconstNull)
+                          JRef(className = "java/lang/Object")
+                        }
+                      }
                     }
                   }
                 }

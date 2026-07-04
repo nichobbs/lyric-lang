@@ -28351,3 +28351,108 @@ Filed as #5013, out of scope for this fix.
 **Related:** D-progress-580/#5011 (the fix this regressed), #5003 (root
 issue), #5013 (newly-filed nested-binding-reference gap), docs/44 m-83
 (updated).
+
+### D-progress-582 — JVM: wire-block nested binding references, hardcoded bootstrap() max_stack, and @provided call-site descriptors (#5013, #5015, #5020)
+
+**Shipped.** Closes #5013 and #5015 (both filed from D-progress-581/#5011),
+plus #5020 (a third, closely related bug discovered while verifying the
+first two). All three are in the `wire { }` block lowering path
+(`lyric-compiler/jvm/lowering.l`, `codegen/06_items.l`, `codegen/02_exprs.l`).
+
+**#5013 — nested binding reference doesn't resolve to `getstatic`.**
+`lowerWireBindingInit` only special-cased a bare *top-level* `EPath` init
+(`singleton box: Box = widget`) as a reference to an earlier binding. A
+reference nested inside a larger expression — e.g. `contents = widget` as a
+named constructor argument of `Box(label = "hi", contents = widget)` — fell
+through to `lowerExpr`'s ordinary `EPath` fallback chain, which has no
+knowledge of wire bindings at all: it resolves local slots, `self` fields,
+nullary union cases, module-level `val`s, and finally an `LAconstNull` /
+`java/lang/Object` null fallback. A nested wire-binding reference silently
+became a **null** — a correctness bug, not just a crash risk (it happened to
+manifest as `VerifyError: Operand stack overflow` in the repro that combined
+it with #5015, but the two are independent). **Fix:** `FuncCtx` gained two
+fields, `wireClassName: String` (empty outside a wire-binding init) and
+`wireBindingTypes: Map[String, JvmType]`; a new `withWireBinding` helper
+derives a wire-binding-init `FuncCtx` from a freshly-made one, carrying every
+other field through unchanged. `lowerWireBindingInit` now calls it before
+`lowerExpr`. The `EPath` fallback chain in `codegen/02_exprs.l` checks
+`ctx.wireBindingTypes` first (ahead of the nullary-union-case and module-val
+fallbacks) whenever `ctx.wireClassName != ""`, resolving to
+`getstatic <wireClassName>.<name>` — a no-op everywhere else, since ordinary
+functions never set `wireClassName`.
+
+**#5015 — `bsMaxStack` hardcoded to `3` in `lowerWire`.** After D-progress-
+580's fix, a binding's `new; dup; load-each-temp-in-field-order;
+invokespecial` sequence reaches operand-stack depth `2 + n_fields`, which a
+fixed `3` only covers for single-field constructors. **Fix:** replaced the
+hardcoded value with `assembleCodeInferred(bsAsm, bsMaxLocals)` (already used
+elsewhere in this file, e.g. `lowerFuncImpl`), which derives `max_stack` from
+`bsAsm.peakStack` — the assembler's own running peak, tracked automatically
+as every instruction lowers — rather than any hand-computed formula. This is
+also more general than an `n_fields`-based fix: it correctly covers *any*
+binding init shape (lambdas, nested calls, arithmetic), not just direct
+constructor calls.
+
+**#5020 — `bootstrap()` registered as zero-arg regardless of `@provided`
+members.** Found while building a `@provided`-param regression repro for the
+above two: `registerStaticWireSig`'s `bootstrap` registration
+(`codegen/06_items.l`, the `IWire` item-registration pre-pass) always passed
+`newList()` for the parameter list, never reading `decl.members`'s
+`WMProvided` entries — even though `lowerWire` correctly emits `bootstrap`'s
+*real* descriptor including every `@provided` param. Every call site —
+`SomeWire.bootstrap(args...)` — resolved against the wrong, zero-arg
+signature (`lowerMethodCall`'s `EPath`-receiver fast path,
+`codegen/04_calls.l`): the arg-lowering loop still pushed the caller's
+arguments (unconditionally, per-arg, regardless of `sig.params.count`), then
+emitted `invokestatic <Wire>/bootstrap()V` — the wrong descriptor for the
+real, non-empty-param method. Two failure modes depending on shape:
+`NoSuchMethodError` (JVM can't resolve the mismatched descriptor at all), or
+a corrupted operand stack for the rest of the calling method (the
+pushed-but-never-consumed argument desyncs local/stack bookkeeping for
+everything downstream), which surfaced as an unrelated-*looking*
+`VerifyError: Inconsistent stackmap frames` at a later, unrelated branch join
+in the same calling method — this is what the #5013 regression repro
+actually hit first, before tracing it back to the leftover stack value from
+this bug. Any wire with at least one `@provided` member was affected, which
+made `@provided` unusable end-to-end on `--target jvm` (the existing
+`wire_di_self_test.l` self-test file's own header documents this as
+untestable, citing a stale "#3057" — that issue is actually closed and
+unrelated). **Fix:** the `bootstrap` registration now walks `decl.members`
+for `WMProvided` entries and builds the real `List[JvmType]` (via
+`typeExprToJvm`), matching what `lowerWire` emits.
+
+**Verification.** New dual test in `j3_lowering_self_test.l`'s wire section
+(`BoxWire`: a `@provided` param, a 2-field `Box` record, and a
+`contents = widget` nested reference to the sibling `widget` singleton — all
+three bugs in one repro) asserts every field of both exposed bindings.
+Minimal standalone repros (outside the self-test file, built with `lyric
+build --target jvm` + `java -jar`) independently confirmed each of the three
+fixes against the exact failure mode described above, and confirmed (via a
+`git stash` baseline and isolated single-bug repros) that each is a distinct,
+independently-reproducible defect rather than one bug wearing three hats.
+Full JVM self-test regression sweep (`map_option_self_test.l`,
+`map_key_self_test.l`, `bitwise_self_test.l`, `aspect_weave_self_test.l`,
+`auto_ffi_jvm_self_test.l`, `subscript_assign_jvm_self_test.l`,
+`wire_di_self_test.l`) — zero regressions. Verified against the pinned F#
+stage-0 mint.
+
+**Scope note.** While verifying #5020's fix, attempted to upgrade
+`wire_di_self_test.l`'s placeholder `assertTrue(true, ...)` bodies (which
+predate all of #5013/#5015/#5020 and cite the same stale "#3057") to real,
+bootstrap()-invoking assertions now that the underlying blocker is fixed.
+This surfaced **two more**, entirely independent pre-existing gaps and was
+reverted rather than folded into this change: (1) JVM — a record implementing
+an interface with an empty-bodied method fails class load with
+`ClassFormatError: Arguments can't fit into locals` (filed as #5022); (2)
+MSIL — `<Wire>.bootstrap()` / exposed-accessor calls have **never** resolved
+on `--target dotnet` at all, for *any* wire (not just `@provided` ones) —
+there is no MSIL-side equivalent of `registerStaticWireSig` or its
+`lowerMethodCall` lookup fast path at all, so every such call falls through
+to the generic "unsupported method" runtime-throw stub (filed as #5021, a
+significant follow-up: wire blocks have apparently never been callable from
+user code on the primary `.NET` target).
+
+**Related:** #5013, #5015, #5020 (all closed by this entry), #5021 (MSIL
+wire-call resolution, new, significant), #5022 (JVM empty-impl-body
+ClassFormatError, new), D-progress-580/581/#5011 (the PR this is a direct
+follow-up to), docs/44 m-84.
