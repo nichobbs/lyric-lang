@@ -13,13 +13,20 @@ and with `spawn`/`scope` out of scope, no Lyric program in that slice's
 surface can hold an async call's result unawaited — so a real suspend
 point is never observable and `async func`/`await` instead compile
 through the plain-`func` codegen path with `await` as a pure passthrough
-(zero `lyric-rt` runtime changes). The mechanism verified here becomes
-necessary once `spawn`/`scope` land (the only construct that lets two
-tasks progress independently); read D-N-019 in full before touching this
-area, including the final-suspend subtlety the verification round
-surfaced (freeing a coroutine's frame from inside its own `resume()`
-without a prior `i1 true` final suspend leaves the caller's handle
-dangling).
+(zero `lyric-rt` runtime changes).
+
+**Status update (D-N-021):** `spawn`/`scope` have since shipped as the
+same passthrough model — matching MSIL's own `ESpawn`/`SScope` lowering
+— and refined the sentence above: the true trigger for this document's
+coroutine mechanism is not `spawn`/`scope` syntax but the first **async
+leaf primitive** (an async sleep/timer kernel, then async I/O). A task
+only ever remains incomplete if it transitively awaits such a leaf, and
+until one exists on this target, every spawned call completes at the
+spawn site on .NET semantics too. Read D-N-019 and D-N-021 in full
+before touching this area, including the final-suspend subtlety the
+verification round surfaced (freeing a coroutine's frame from inside its
+own `resume()` without a prior `i1 true` final suspend leaves the
+caller's handle dangling).
 
 ---
 

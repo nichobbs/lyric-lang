@@ -5505,6 +5505,85 @@ existing scope-exit mechanism rather than invent a new one" reasoning),
 semantics), `lyric-compiler/lyric/defer_self_test.l` (the dotnet/jvm
 reference test this ports the non-panic cases of).
 
+## D-N-021 — Native `spawn`/`scope`: passthrough parity with MSIL's own lowering; real coroutine suspension gated on an async *leaf primitive*, refining D-N-019's "spawn/scope is the trigger" claim
+
+**Date:** 2026-07-04
+**Status:** ACCEPTED (the `spawn`/`scope` slice D-N-019 deferred)
+
+**Context — what the reference backend actually does.** D-N-019 deferred
+`spawn`/`scope` as "the point at which real LLVM-coroutine suspension
+becomes necessary", on the model that `spawn` is the one construct that
+lets two tasks progress independently. Starting this slice, the first
+step was reading MSIL's implementation (code as source of truth, the
+docs/44 discipline), and it reframes the problem:
+
+- MSIL's `ESpawn(inner)` lowering **is a pure passthrough** —
+  `lowerExprMsil(cctx, fctx, insns, inner)`, nothing else
+  (`msil/codegen.l`). Inside an async state machine, `val x = spawn
+  f()` binds the un-awaited `Task<T>` (the `spawnNms`/`spawnTys`
+  tracking) so a later `await x` does the GetAwaiter/GetResult dance —
+  but the *concurrency* comes entirely from the .NET runtime's hot-task
+  model underneath, not from anything the Lyric emitter does.
+- MSIL's `SScope(_, body)` lowers as a **plain block** — none of §7.4's
+  cancellation, failure-aggregation, or join machinery exists in the
+  emitter today.
+- A .NET `Task<T>` only ever *remains incomplete* (the precondition for
+  observable concurrent progress) if its body awaits a genuinely
+  asynchronous leaf operation — `Task.Delay`, socket/file I/O
+  completions, a cross-thread signal. An async method that never
+  suspends on an incomplete awaitable runs synchronously to completion
+  at the call site and hands back an already-completed task.
+
+**The refined insight.** Native's stdlib surface has **no async leaf
+primitive at all**: every `_kernel_native/` operation (file I/O, time,
+sleep, process) is synchronous, and there is no timer/io-completion
+kernel. Therefore .NET's own semantics, *restricted to the programs
+expressible on the native surface*, also degenerate to strictly
+sequential execution — every spawned call completes at the spawn site
+because nothing it transitively awaits can ever be incomplete. A
+passthrough `spawn` on native is consequently **observationally
+equivalent to the reference behavior for every compilable program**,
+not a weaker approximation of it. The real gate for LLVM-coroutine
+suspension is not `spawn`/`scope` syntax (this entry ships that) but
+the first **async leaf primitive** (an async sleep/timer kernel is the
+canonical minimal one, then async I/O) — that is the follow-up at which
+D-N-019's preserved coroutine mechanism, the A-1 scheduler API, and
+ARC-across-suspend all become load-bearing. This refines (does not
+reverse) D-N-019's deferral note.
+
+**Decision.** Ship `spawn`/`scope` as the same passthrough model:
+
+- `ESpawn(inner)` lowers as `lowerExpr(ctx, insns, inner)` — identical
+  in shape to MSIL's lowering and to native's own `EAwait` (D-N-019).
+  The spawned call runs to completion at the spawn site; the binding
+  holds its result; a later `await x` (a passthrough on a plain local)
+  reads it.
+- `SScope(_, body)` lowers via `lowerBlockStmts` — a real lexical scope
+  on native (scope-local ARC releases and `defer` blocks run at scope
+  exit per D-N-020), which is MSIL's plain-block treatment plus
+  native's existing scope discipline, not less.
+- §7.4's guarantees hold degenerately and honestly: every spawned task
+  completes before scope exit (it completed at the spawn site); a
+  failing task "cancels" siblings by aborting the process (D-N-003 —
+  the same panics-abort model as everything else on native); no task
+  can leak past the scope. No cancellation/aggregation machinery is
+  pretended at.
+
+**Verification.** Four new cases in `llvm_self_test_async.l`: a spawn
+binding held across other work and awaited later; the language
+reference's own §7.4 dashboard shape (three spawns in a `scope`,
+awaited, aggregate returned from inside the scope block); `scope`
+interacting with `defer` as an ordinary lexical scope; and an
+ASan-clean String-typed spawn-binding loop. Plus the standard sweep:
+full native self-test suite, `make ilverify`, and an end-to-end `lyric
+build --target native` check.
+
+**Related:** D-N-019 (refined by this entry), D-N-020 (`scope` reuses
+its scope-exit discipline), D-N-003, `native/plan/06-async-design.md`
+(the preserved coroutine mechanism this entry's follow-up will need),
+`docs/01-language-reference.md` §7.4, `msil/codegen.l` `ESpawn`/`SScope`
+(the reference lowering matched here).
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The

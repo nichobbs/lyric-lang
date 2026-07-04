@@ -1060,16 +1060,21 @@ and inside a branch, ASan-clean String captures/returns) and the real CLI
 - Async generators (`yield` inside `async func`) — rejected with a
   dedicated diagnostic distinct from plain unsupported-async.
 - The implicit `cancellation` parameter / cooperative cancellation.
-- `spawn` / `scope { }` structured concurrency — **this is the point at
-  which real LLVM-coroutine suspension (A-1 through A-5's original design)
-  becomes necessary**, since it is the only construct that lets two tasks
-  progress independently. The coroutine lowering pipeline itself was
-  hand-verified against `clang` 18 before this slice's implementation began
-  (a `presplitcoroutine`-attributed `.ll` round-trip compiles and runs
-  correctly via plain `clang file.ll -o binary` at every `-O` level, no
-  separate `opt` invocation needed) — see D-N-019 for the verified sequence
-  and the final-suspend subtlety it surfaced, preserved there for this
-  future work.
+- `spawn` / `scope { }` structured concurrency — originally framed here
+  as "the point at which real LLVM-coroutine suspension (A-1 through
+  A-5's original design) becomes necessary". **SHIPPED (D-N-021)** as
+  the same passthrough model the MSIL emitter itself uses, which
+  refined that framing: the true coroutine trigger is the first **async
+  leaf primitive** (async sleep/timer, then async I/O) — a .NET task
+  only stays incomplete if it awaits such a leaf, native's stdlib has
+  none, and .NET semantics restricted to the native surface therefore
+  also degenerate to sequential execution. The coroutine lowering
+  pipeline itself was hand-verified against `clang` 18 before the
+  D-N-019 slice began (a `presplitcoroutine`-attributed `.ll`
+  round-trip compiles and runs correctly via plain `clang file.ll -o
+  binary` at every `-O` level, no separate `opt` invocation needed) —
+  see D-N-019 for the verified sequence and the final-suspend subtlety
+  it surfaced, preserved there for the async-leaf follow-up.
 
 ## Phase N8 (cont'd): `defer` (Phase 2, D-N-020)
 
@@ -1089,6 +1094,23 @@ does not run (D-N-003: no unwinding, so no scope-exit event ever fires).
 Verified by `llvm_self_test_defer.l` (8 cases, including a direct
 negative check for the panic-bypass gap) and end-to-end via `lyric build
 --target native`.
+
+## Phase N8 (cont'd): `spawn`/`scope` (Phase 2, D-N-021)
+
+**SHIPPED (D-N-021):** `ESpawn(inner)` lowers as a passthrough
+(`lowerExpr(inner)`, mirroring both MSIL's own `ESpawn` lowering and
+native's `EAwait`); `SScope(_, body)` lowers via `lowerBlockStmts`, so
+`scope { }` is a real lexical scope whose ARC releases and pending
+`defer` blocks (D-N-020) run at scope exit — which is MSIL's plain-block
+treatment plus native's existing scope discipline. §7.4's guarantees
+hold degenerately (every spawned call completes at the spawn site; a
+failing task aborts the process per D-N-003; nothing can leak past the
+scope). Genuine concurrent progress is gated on the first async leaf
+primitive — see D-N-021 and the refined deferral note in the D-N-019
+section above. Verified by four new `llvm_self_test_async.l` cases
+(spawn-bind-then-await, the §7.4 dashboard shape, scope + defer
+interplay, ASan-clean String spawn bindings) and end-to-end via `lyric
+build --target native`.
 
 ---
 

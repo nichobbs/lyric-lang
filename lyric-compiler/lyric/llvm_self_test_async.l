@@ -4,14 +4,17 @@
 //! clang-compiles against `lyric-rt/build/lyric_rt.a`, runs the binary, and
 //! asserts its exit code / stdout.
 //!
-//! Per D-N-019, native's first async slice compiles a non-generator
-//! `async func` through the exact same codegen path as a plain `func` and
-//! lowers `await expr` as a pure passthrough: with `spawn`/`scope` out of
-//! scope, no program in this slice's surface can hold an async call's
-//! result unawaited, so there is nothing for `await` to unwrap. These tests
-//! exercise that: basic async functions, chained/nested awaits, async
-//! inside a loop, and async with ARC-managed captures (String chains under
-//! ASan) all behave exactly as their synchronous equivalents would.
+//! Per D-N-019, native compiles a non-generator `async func` through the
+//! exact same codegen path as a plain `func` and lowers `await expr` as a
+//! pure passthrough; per D-N-021, `spawn expr` is the same passthrough
+//! (matching MSIL's own ESpawn lowering) and `scope { }` is a real lexical
+//! scope. With no async leaf primitive on this target, a spawned call
+//! always completes at the spawn site, so these semantics are
+//! observationally equivalent to the reference backend's for every
+//! compilable program. These tests exercise both slices: basic
+//! async functions, chained/nested awaits, async inside a loop, ARC-managed
+//! captures under ASan, spawn-bind-then-await, the language reference's
+//! section 7.4 dashboard shape, and scope/defer interplay.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -225,4 +228,69 @@ test "async generators (yield inside async func) are rejected with a distinct di
     "async generators",
     "a yield-bearing async func must panic naming generators specifically, not the generic async-unsupported message"
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// spawn / scope (D-N-021): passthrough parity with MSIL's own lowering.
+// ─────────────────────────────────────────────────────────────────────────────
+test "spawn binds a value that a later await reads back" {
+  val src = "package T\n" + "async func compute(n: in Int): Int {\n  return n * 3\n}\n" +
+    "async func run(): Int {\n  val t = spawn compute(4)\n  val more = 8\n  val v = await t\n  return v + more\n}\n" +
+    "func main(): Int {\n  await run()\n}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 20, "spawn compute(4) == 12, held across other work, awaited later: 12 + 8")
+}
+
+// The language reference's own §7.4 shape: several spawns inside a scope,
+// each awaited, the aggregate returned from inside the scope block.
+test "scope with multiple spawns and awaits: the section 7.4 dashboard shape" {
+  val src = "package T\n" + "async func loadA(n: in Int): Int {\n  return n + 1\n}\n" +
+    "async func loadB(n: in Int): Int {\n  return n + 2\n}\n" +
+    "async func loadC(n: in Int): Int {\n  return n + 3\n}\n" +
+    "async func dashboard(n: in Int): Int {\n" +
+    "  scope {\n" +
+    "    val a = spawn loadA(n)\n    val b = spawn loadB(n)\n    val c = spawn loadC(n)\n" +
+    "    return await a + await b + await c\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n  await dashboard(10)\n}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 36, "11 + 12 + 13 == 36, returned from inside the scope block")
+}
+
+// A scope block is a real lexical scope on native: a defer registered
+// inside it runs at scope exit (before statements after the scope), and
+// scope-local bindings do not leak.
+test "scope interacts with defer as an ordinary lexical scope" {
+  val src = "package T\n" + "import Std.Collections\n" + "func run(log: in List[Int]): Unit {\n" +
+    "  scope {\n    defer {\n      log.add(2)\n    }\n    log.add(1)\n  }\n" +
+    "  log.add(3)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val log: List[Int] = newList()\n" +
+    "  run(log)\n" +
+    "  log[0] * 100 + log[1] * 10 + log[2]\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 123, "body, then scope-exit defer, then the statement after the scope: 1,2,3")
+}
+
+// ARC: String results held in spawn bindings inside a scope release
+// cleanly across iterations.
+test "spawn/scope with String-typed task bindings is leak-free under ASan" {
+  val src = "package T\n" + "async func part(s: in String): String {\n  return s + \"!\"\n}\n" +
+    "async func joinParts(): Int {\n" +
+    "  scope {\n" +
+    "    val a = spawn part(\"left\")\n    val b = spawn part(\"right\")\n" +
+    "    val joined = await a + \"|\" + await b\n" +
+    "    return joined.length\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  var i = 0\n  var last = 0\n" +
+    "  while i < 25 {\n    last = await joinParts()\n    i = i + 1\n  }\n" +
+    "  last\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 12, "\"left!|right!\" has length 12, leak-free across 25 iterations")
 }

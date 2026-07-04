@@ -114,6 +114,21 @@ decisions.md`'s D-N-003 entry originally sketched for a panic-triggered
 cases, including a direct negative check that a deferred block does not
 run before a panic) and end-to-end via `lyric build --target native`.
 
+`spawn`/`scope` (D-N-021) SHIPPED as the same passthrough model the MSIL
+emitter itself uses (its `ESpawn` is a pure passthrough and its `SScope`
+a plain block — read before implementing, per the code-as-source-of-truth
+discipline): `spawn expr` evaluates `expr` at the spawn site, `scope { }`
+is a real lexical scope whose ARC releases and `defer` blocks run at
+scope exit. D-N-021 refines the paragraph above: the true trigger for
+real LLVM-coroutine suspension is not `spawn`/`scope` syntax but the
+first **async leaf primitive** (async sleep/timer, then async I/O) —
+a .NET task only stays incomplete if it awaits such a leaf, and native's
+stdlib has none, so .NET semantics restricted to the native surface also
+degenerate to sequential execution and the passthrough is observationally
+equivalent for every compilable program. Verified by four new
+`llvm_self_test_async.l` cases including the language reference's §7.4
+dashboard shape.
+
 ## Reading order
 
 1. `01-design-decisions.md` — all architectural decisions with rationale. Read
