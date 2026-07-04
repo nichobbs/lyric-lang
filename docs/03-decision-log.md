@@ -5216,7 +5216,13 @@ after each operation (contract machinery), generic protected types,
 read/write concurrency distinction (language reference explicitly leaves
 this an open question), and the same same-package same-name-same-arity
 UFCS collision risk that already exists for record/impl methods (a
-protected type's wrapper is registered the same way).
+protected type's wrapper is registered the same way). **Panic-while-locked:**
+a panicking inner function leaves the mutex in a locked state (the
+wrapper's `lyric_mutex_unlock` never runs) — harmless today because a
+native panic aborts the whole process (D-N-003), but must be resolved
+before `when:` barrier / `pthread_cond_wait` support is added (a panicking
+entry would otherwise leave condition waiters blocked forever ahead of the
+abort).
 
 **Related:** `native/plan/08-work-items.md` N3.4,
 `docs/01-language-reference.md` §7.5, D-N-016 (the same "no by-value
