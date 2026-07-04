@@ -402,8 +402,7 @@ func findStdlibSourcesForTarget(forJvm: in Bool): List[String] {
   sources
 }
 
-// Reconstructs declaration-only stdlib source per package from `Lyric.Stdlib.dll`'s embedded contract metadata, via the same synthesis `Lyric.RestoredPackages` uses for restored deps (#4980; see D-progress-576 for the full rationale).
-// No sibling-type preamble: every package here type-checks together as one `importedPkgs` set, so a preamble would register a duplicate case-less stub of a sibling type (e.g. `Option`) that fails to unify with the real one.
+// Reconstructs declaration-only stdlib source per package (no sibling-type preamble — every package type-checks together, so a preamble would duplicate-register a sibling type) from `Lyric.Stdlib.dll`'s embedded contract metadata, via `Lyric.RestoredPackages`'s existing synthesis path (#4980; see D-progress-576).
 pub func stdlibSourcesFromCompiledBundle(): List[String] {
   val sources: List[String] = newList()
   val dir = findCompiledStdlibDir()
