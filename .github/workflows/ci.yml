@@ -2186,10 +2186,12 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/equality_self_test.l
 
-      # Map-key self-test — #1480.  Records with `@derive(Equals)` +
-      # `@derive(Hash)` now carry synthesised `Object.Equals`/`GetHashCode`
-      # overrides, so field-equal instances are the same BCL `Map` key.  Run
-      # via native `lyric test` (in-process through Msil.Bridge).
+      # Map-key self-test — #1480 (MSIL) / #4982 Finding 1 (JVM).  Records with
+      # `@derive(Equals)` + `@derive(Hash)` now carry synthesised
+      # `Object.Equals`/`GetHashCode` overrides on MSIL and `equals(Object)`/
+      # `hashCode()` overrides on JVM, so field-equal instances are the same
+      # BCL `Map`/`java.util.HashMap` key on both targets.  Run via native
+      # `lyric test` (in-process through Msil.Bridge / Jvm.Bridge).
       - name: Map-key self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -2987,6 +2989,29 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # Map-key self-test on JVM (#1480 MSIL / #4982 Finding 1 JVM) — the JVM
+      # half of the dotnet-job step of the same name.  Records with
+      # `@derive(Equals)`/`@derive(Hash)` now carry synthesised
+      # `equals(Object)`/`hashCode()` overrides on the JVM classfile too, so
+      # field-equal instances are the same `java.util.HashMap` key. Needs JDK
+      # 21 (this job), unlike the dotnet job.
+      - name: Map-key self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping map-key JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping map-key JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/map_key_self_test.l
+          echo "map-key self-test ran: map_key_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
       # Aspect-weave self-test on JVM (#3402) — the JVM half of the dotnet-job
       # step above.  Pins the JVM woven-call resolution fix (`collectAspectWovenSigs`

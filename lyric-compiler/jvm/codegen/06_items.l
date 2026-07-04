@@ -880,6 +880,50 @@ func exprOrBlockTerminates(eob: in ExprOrBlock): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // §9. Record lowering.
 // ─────────────────────────────────────────────────────────────────────────────
+// True when `anns` carries `@derive(<marker>)` (e.g. `@derive(Equals)`).
+// Mirrors `Msil.Codegen.hasDeriveMarkerMsil` — kept as a separate JVM copy
+// per the established per-backend-helper convention (no cross-package
+// `Msil.Codegen` import from `Jvm.Codegen`).
+func hasDeriveMarkerJvm(anns: in List[Annotation], marker: in String): Bool {
+  var i = 0
+  while i < anns.count {
+    val a = anns[i]
+    if a.name.segments.count == 1 and a.name.segments[0] == "derive" and a.args.count > 0 {
+      val nm = match a.args[0] {
+        case ABare(n, _) -> n
+        case ALiteral(v, _) -> match v { case AVIdent(n, _) -> n; case _ -> "" }
+        case AAName(_, _, _) -> ""
+      }
+      if nm == marker {
+        return true
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Append `equals(Object): boolean` / `hashCode(): int` overrides to `methods`
+// when `anns` carries `@derive(Equals)` / `@derive(Hash)` on a record, so BCL
+// `HashMap`/`HashSet` key lookup (which dispatches these virtually) is
+// structural rather than identity-based, matching the MSIL
+// `appendDeriveOverridesMsil` behaviour for `Dictionary`/`HashSet` (#1480 on
+// MSIL; docs/44 m-key / #4982 Finding 1 on JVM).  Delegates to the shared
+// `Jvm.Lowering.buildDeriveEqualsFunc`/`buildDeriveHashCodeFunc` builders.
+func appendDeriveOverridesJvm(
+  methods: in List[LFunc],
+  className: in String,
+  fields: in List[LField],
+  anns: in List[Annotation],
+): Unit {
+  if hasDeriveMarkerJvm(anns, "Equals") {
+    methods.add(buildDeriveEqualsFunc(className, fields))
+  }
+  if hasDeriveMarkerJvm(anns, "Hash") {
+    methods.add(buildDeriveHashCodeFunc(className, fields))
+  }
+}
+
 pub func lowerRecord(
   decl: in RecordDecl,
   pkgName: in String,
@@ -3473,6 +3517,7 @@ pub func codegenPackageWithSigsSeeded(
         for fn in implFuncs.toArray() {
           mergedMethods.add(fn)
         }
+        appendDeriveOverridesJvm(mergedMethods, baseRec.className, baseRec.fields, item.annotations)
         items.add(
           LPRecord(
             rec = LRecord(
@@ -3526,6 +3571,7 @@ pub func codegenPackageWithSigsSeeded(
         for fn in implFuncs.toArray() {
           mergedMethods.add(fn)
         }
+        appendDeriveOverridesJvm(mergedMethods, baseRec.className, baseRec.fields, item.annotations)
         items.add(
           LPRecord(
             rec = LRecord(

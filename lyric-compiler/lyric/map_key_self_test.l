@@ -1,17 +1,21 @@
 //! map_key_self_test.l — #1480: records with `@derive(Equals)` + `@derive(Hash)`
-//! work correctly as BCL `Map` (Dictionary) keys.
+//! work correctly as BCL `Map` (Dictionary) / `java.util.HashMap` keys.
 //!
 //! `Lyric.Derives` synthesises free `<Type>.equals(self, other)` /
 //! `<Type>.hash(self)` helpers; the codegen now also emits real
-//! `Object.Equals(object)` / `GetHashCode()` *overrides* on the record TypeDef
-//! (delegating to those helpers).  BCL `Dictionary` dispatches `GetHashCode` +
-//! `Equals` virtually on the key, so two *field-equal* record instances now
-//! hash and compare as the same key — previously they were distinct
-//! (identity-based), so a lookup with a fresh-but-equal key missed.
+//! `Object.Equals(object)` / `GetHashCode()` *overrides* on MSIL and
+//! `equals(Object)` / `hashCode()` *overrides* on JVM (`Jvm.Lowering`'s
+//! `buildDeriveEqualsFunc`/`buildDeriveHashCodeFunc`, wired into
+//! `Jvm.Codegen.lowerRecord`'s `IRecord`/`IExposedRec` handling — #4982
+//! Finding 1) on the record's TypeDef/classfile (delegating to those
+//! helpers).  BCL `Dictionary` / `java.util.HashMap` both dispatch
+//! GetHashCode+Equals / hashCode+equals virtually on the key, so two
+//! *field-equal* record instances now hash and compare as the same key on
+//! both targets — previously they were distinct (identity-based), so a
+//! lookup with a fresh-but-equal key missed.
 //!
-//! Run in CI via native `lyric test --target dotnet` (in-process through the
-//! self-hosted `Msil.Bridge`).  Imports only `Std.*`.  MSIL target only
-//! (epic #1470 defers JVM).
+//! Run in CI via native `lyric test` on BOTH targets (in-process through
+//! `Msil.Bridge` / `Jvm.Bridge`).  Imports only `Std.*`.
 //!
 //! NOTE: value-type Map *values* (`Map[Point, Int]`) are blocked by a separate,
 //! pre-existing `Map[ObjectKey, ValueTypeValue]` codegen bug (reproduces with a
@@ -29,6 +33,19 @@ import Std.Testing
 record Point {
   x: Int
   y: Int
+}
+
+// A two-slot-field record (#4993): on JVM, `Point`'s `Int`/`Int` fields alone
+// never exercise the `Long`/`Double` arms of `buildDeriveEqualsFunc`/
+// `buildDeriveHashCodeFunc`. `LIfIcmpeq`/`LIfAcmpeq` (single-slot int / ref
+// comparisons) and a bare `Object.hashCode()` invoke both `VerifyError` on a
+// raw `long`/`double` operand — this record pins the `Lcmp`/`Dcmpl` +
+// `Long.hashCode`/`Double.hashCode` fix.
+@derive(Equals)
+@derive(Hash)
+record WideKey {
+  n: Long
+  d: Double
 }
 
 test "field-equal record instance finds a Map entry (structural key)" {
@@ -70,5 +87,23 @@ test "distinct field values are distinct keys" {
   match mapGet(m, Point(x = 1, y = 2)) {
     case Some(v) -> assertEqual(v, "q", "(1,2) -> q")
     case None -> assertTrue(false, "should find (1,2)")
+  }
+}
+
+test "record with Long/Double fields is structurally equal (#4993)" {
+  val a = WideKey(n = 1000000000i64, d = 3.14)
+  val b = WideKey(n = 1000000000i64, d = 3.14)
+  val c = WideKey(n = 999i64, d = 3.14)
+  assertTrue(a.equals(b), "field-equal wide keys are equal")
+  assertTrue(not a.equals(c), "field-different wide keys are not equal")
+}
+
+test "record with Long/Double fields works as a Map key (#4993)" {
+  val m: Map[WideKey, String] = newMap()
+  m[WideKey(n = 1000000000i64, d = 3.14)] = "hit"
+  val fresh = WideKey(n = 1000000000i64, d = 3.14)
+  match mapGet(m, fresh) {
+    case Some(v) -> assertEqual(v, "hit", "fresh field-equal wide key finds the Map entry")
+    case None -> assertTrue(false, "should find via structurally-equal Long/Double key")
   }
 }
