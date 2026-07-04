@@ -28123,3 +28123,117 @@ thread rather than a distinct discovery.
 precedent this mirrors), D-progress-558 (the `==` structural-dispatch fix
 this complements — `==` now agrees with `.equals()`/`.hashCode()` on both
 operators and container keys).
+
+### D-progress-578 — Native backend Phase 2 first slice: `async func`/`await` (N8, D-N-019)
+
+**Shipped.** A non-generator `async func` and `await` compile and run
+correctly on `--target native`, closing the first slice of Phase N8
+(`native/plan/08-work-items.md`).
+
+- **Design correction before any codegen was written:** `06-async-design.md`
+  specified real LLVM-coroutine suspension (`llvm.coro.*` intrinsics, an
+  ARC-across-suspend pass, a scheduler). That mechanism was hand-verified
+  end-to-end against `clang` 18 first (a `presplitcoroutine`-attributed
+  `.ll` round-trip compiles and runs correctly via plain `clang file.ll -o
+  binary` at every `-O` level — no separate `opt` invocation needed), but
+  designing the codegen on top of it surfaced that `spawn`/`scope` is the
+  *only* construct in Lyric's async model that creates genuine concurrent
+  progress; without it (out of scope for this slice, see below), a real
+  suspend is never observable by any program in the supported surface —
+  confirmed further by checking that `Task[T]` is not a real type
+  anywhere in the self-hosted front end (`ResolvedSignature.returnTy` for
+  an `async func` is the plain unwrapped return type; `EAwait`'s inferred
+  type is just its inner expression's type) and that the parser does not
+  restrict `await` to async-function bodies.
+- **Shipped mechanism (`llvm_codegen.l`):** a non-generator `async func`
+  body compiles through the *exact same codegen path as a plain `func`*
+  (`lowerFunctionEnv`'s async check now only fires for the yield-bearing
+  case). `EAwait(inner)` lowers as a pure passthrough
+  (`lowerExpr(ctx, insns, inner)`) — no boxing, no suspend point, no
+  `lyric-rt` runtime changes at all.
+- **Generator diagnostic:** a yield-bearing `async func` (async generator)
+  gets a dedicated message distinct from the old blanket N0099
+  ("async generators ... are not yet supported"), via a native-local
+  `funcBodyContainsYieldNative` mirroring the type checker's
+  `funcBodyContainsYield` (backend packages don't import
+  `Lyric.TypeChecker`, matching the msil/jvm precedent of each keeping
+  its own copy).
+- **Verification:** new `llvm_self_test_async.l` (8 cases: basic async
+  function, a bare un-awaited call, chained awaits, three levels of
+  nested awaits, await inside a loop, await inside an if/else branch,
+  ASan-clean String captures/returns across 20 iterations, and the
+  generator-rejection diagnostic) — 8/8 passing. Also verified against
+  the real CLI (`lyric build --target native`) for both the happy path
+  and the generator-rejection path. `make ilverify` — 0 IL-validity
+  errors across 110 DLLs (no self-hosted-compiler regression). Full
+  existing native self-test suite re-run with no regressions
+  (`llvm_ir_self_test`, `llvm_codegen_self_test`, `llvm_heap_self_test`,
+  `llvm_ffi_self_test`, `llvm_collections_self_test`,
+  `llvm_stdlib_self_test`, `llvm_self_test_n3`, `llvm_self_test_n34`).
+- **CI:** `llvm_self_test_async.l` added to the existing native
+  self-tests loop in `ci.yml`.
+
+**Deferred (tracked, each with its own diagnostic rather than a silent
+gap):** async generators (`yield` inside `async func`), the implicit
+`cancellation` parameter, and `spawn`/`scope` structured concurrency —
+the last of which is also the point at which the hand-verified
+LLVM-coroutine mechanism becomes necessary, superseding this slice's
+synchronous-passthrough model.
+
+**Related:** D-N-019, D-N-004, `native/plan/06-async-design.md`,
+`native/plan/08-work-items.md` §Phase N8, `docs/01-language-reference.md`
+§7.1, upstream #1490 (async-iterator generators, MSIL).
+
+### D-progress-579 — Native backend `defer` for normal-exit paths (P2.D1, D-N-020)
+
+**Shipped.** `defer { D }` runs on `--target native` for its normal-exit
+paths — fall-off, `return`, `break`, `continue` — closing the first
+`defer` slice (D-N-003 originally scoped all of `defer` out of Phase 1).
+
+- **Mechanism:** extends the existing ARC scope-exit codegen
+  (`Ctx.scopeRefs`, a stack of ref-typed locals per lexical scope,
+  released at every exit via `releaseAllForReturn`/`releaseForLoopExit`/
+  `popVarScope`) with a parallel per-scope stack, `Ctx.deferStack`,
+  holding pending deferred `Block`s in declaration order. `SDefer(body)`
+  registers `body` into the innermost scope instead of lowering it
+  inline; a new `runDeferredScopeAt` runs a scope's pending blocks in
+  reverse order (via the ordinary `lowerBlockStmts`, so a deferred block
+  gets full recursive support) at every one of the three existing
+  scope-exit call sites, before that scope's ARC releases. Since every
+  call site already funnels through `pushVarScope`/`popVarScope` and the
+  two release helpers, covering `defer` touched only those four
+  functions plus the `SDefer` case — not each of the ~13 individual
+  scope-opening sites.
+- **D-N-003 interaction:** a `defer` registered before a `panic` does
+  not run — `panic` calls `abort()` immediately, with no scope-exit
+  event to trigger the deferred-block walk. Verified directly (not left
+  as an unverified claim): a program whose deferred block would print a
+  marker if it ran, asserting the marker never appears in stdout and the
+  process exits nonzero.
+- **No new front-end restriction:** `return`/`break`/`continue` inside a
+  `defer` body is not checked/rejected on native, matching the existing
+  unchecked status quo on msil/jvm (confirmed via `grep` — neither
+  carries an equivalent check, unlike the CLR's own hard verifier-level
+  rejection of this shape inside a `finally` handler).
+- **Verification:** new `llvm_self_test_defer.l` (8 cases: reverse
+  declaration order on fall-off, early return, fall-through, break,
+  continue, a value-producing if-branch, an ASan-clean String-capture
+  case, and the panic-bypasses-defer negative case) — 8/8 passing, via
+  the same `Lyric.LlvmBridge.compileToNativeWithFlags` full-bridge
+  harness `llvm_stdlib_self_test.l` uses (needed for `Std.Console`
+  resolution). Also verified end-to-end via `lyric build --target
+  native`. `make ilverify` — 0 IL-validity errors across 110 DLLs. Full
+  existing native self-test suite re-run with no regressions.
+- **CI:** `llvm_self_test_defer.l` added to the existing native
+  self-tests loop in `ci.yml`.
+
+**Deferred (tracked):** a `defer` registered before a `panic` still does
+not run — the landingpad-based mechanism `native/plan/01-design-
+decisions.md`'s D-N-003 entry originally sketched for that case remains
+unimplemented, since it needs real unwinding support (a materially larger,
+separate undertaking from this slice).
+
+**Related:** D-N-020, D-N-003, `native/plan/01-design-decisions.md`,
+`native/plan/08-work-items.md` §"Phase N8 (cont'd)",
+`docs/01-language-reference.md` §4.3, `lyric-compiler/lyric/defer_self_test.l`
+(the dotnet/jvm reference test this ports the non-panic cases of).

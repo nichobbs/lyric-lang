@@ -290,6 +290,18 @@ record Ctx {
   tempScopes: List[List[NOwnedTemp]]
   loopVarDepth: List[Int]
   loopTempDepth: List[Int]
+  // `defer` (P2.D1): one list per lexical scope (mirrors `scopeRefs`'s
+  // stack discipline exactly, same push/pop sites), holding the deferred
+  // `Block`s registered directly in that scope in declaration order.
+  // Native has no try/finally to lean on (unlike msil/jvm's `try { rest }
+  // finally { D }` recursive lowering), so a scope's deferred blocks are
+  // instead run explicitly at every exit from that scope: normal
+  // fall-off (`popVarScope`), `return` (`releaseAllForReturn`, every
+  // scope), and `break`/`continue` (`releaseForLoopExit`, scopes down to
+  // the loop floor) — in each case, in reverse declaration order and
+  // innermost-scope-first, before that scope's ARC releases run (so a
+  // deferred block can still read the scope's own locals).
+  deferStack: List[List[Block]]
 }
 
 func freshTmp(ctx: in Ctx): String {
@@ -841,13 +853,33 @@ func ensureOwned(ctx: in Ctx, insns: in List[NInsn], v: in NVal): Unit {
 func pushVarScope(ctx: in Ctx): Unit {
   val fresh: List[NOwnedLocal] = newList()
   ctx.scopeRefs.add(fresh)
+  val freshDefers: List[Block] = newList()
+  ctx.deferStack.add(freshDefers)
+}
+
+/// Run the `defer` blocks registered directly in the var scope at `idx`
+/// (P2.D1), in reverse declaration order, before that scope's ARC
+/// locals are released — a deferred block may read locals from its own
+/// enclosing scope.  Native has no try/finally, so this is called
+/// explicitly at every scope-exit site (`popVarScope`,
+/// `releaseAllForReturn`, `releaseForLoopExit`) instead of leaning on a
+/// runtime unwind mechanism.
+func runDeferredScopeAt(ctx: in Ctx, insns: in List[NInsn], idx: in Int): Unit {
+  val defers = ctx.deferStack[idx]
+  var i = defers.count - 1
+  while i >= 0 {
+    lowerBlockStmts(ctx, insns, defers[i])
+    i = i - 1
+  }
 }
 
 /// Release the ref-typed locals of the top var scope (reverse bind
 /// order) and pop it.
 func popVarScope(ctx: in Ctx, insns: in List[NInsn]): Unit {
+  runDeferredScopeAt(ctx, insns, ctx.deferStack.count - 1)
   releaseVarScopeAt(ctx, insns, ctx.scopeRefs.count - 1)
   ctx.scopeRefs.removeAt(ctx.scopeRefs.count - 1)
+  ctx.deferStack.removeAt(ctx.deferStack.count - 1)
 }
 
 func releaseVarScopeAt(ctx: in Ctx, insns: in List[NInsn], idx: in Int): Unit {
@@ -863,7 +895,9 @@ func releaseVarScopeAt(ctx: in Ctx, insns: in List[NInsn], idx: in Int): Unit {
 
 /// Emit the releases a `return` needs: every var scope in the stack and
 /// every remaining owned temp (the return value itself must already be
-/// unregistered/retained by the caller of this helper).
+/// unregistered/retained by the caller of this helper).  Runs each
+/// scope's pending `defer` blocks (P2.D1) before releasing that scope's
+/// ARC locals, innermost scope first.
 func releaseAllForReturn(ctx: in Ctx, insns: in List[NInsn]): Unit {
   var ti = ctx.tempScopes.count - 1
   while ti >= 0 {
@@ -877,6 +911,7 @@ func releaseAllForReturn(ctx: in Ctx, insns: in List[NInsn]): Unit {
   }
   var si = ctx.scopeRefs.count - 1
   while si >= 0 {
+    runDeferredScopeAt(ctx, insns, si)
     releaseVarScopeAt(ctx, insns, si)
     si = si - 1
   }
@@ -884,6 +919,8 @@ func releaseAllForReturn(ctx: in Ctx, insns: in List[NInsn]): Unit {
 
 /// Emit the releases `break`/`continue` need: var scopes and temp
 /// scopes opened inside the innermost loop (not the loop-outer ones).
+/// Runs each scope's pending `defer` blocks (P2.D1) before releasing
+/// that scope's ARC locals, innermost scope first.
 func releaseForLoopExit(ctx: in Ctx, insns: in List[NInsn]): Unit {
   val varFloor = ctx.loopVarDepth[ctx.loopVarDepth.count - 1]
   val tempFloor = ctx.loopTempDepth[ctx.loopTempDepth.count - 1]
@@ -899,6 +936,7 @@ func releaseForLoopExit(ctx: in Ctx, insns: in List[NInsn]): Unit {
   }
   var si = ctx.scopeRefs.count - 1
   while si >= varFloor {
+    runDeferredScopeAt(ctx, insns, si)
     releaseVarScopeAt(ctx, insns, si)
     si = si - 1
   }
@@ -1428,6 +1466,12 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
     }
     case EList(_) -> panic("Lyric.LlvmCodegen: list literals are not yet supported for --target native (collections are Phase N2/N5)")
     case EIndex(receiver, indices) -> lowerCollectionIndex(ctx, insns, receiver, indices, expr.span.startPos.line)
+    // `await expr` is a pure passthrough on --target native (D-N-019): with
+    // `spawn`/`scope` out of scope, no Lyric program in the supported
+    // surface can hold an async call's result unawaited, so an async
+    // function's declared return type is never wrapped — `await` has
+    // nothing to unwrap.
+    case EAwait(inner) -> lowerExpr(ctx, insns, inner)
     case _ -> panic("Lyric.LlvmCodegen: this expression form is not yet supported for --target native (Phase N1)")
   }
 }
@@ -7099,7 +7143,17 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
     case SLoop(_, _) -> panic("Lyric.LlvmCodegen: 'loop' is not yet supported for --target native (use 'while true')")
     case SThrow(_) -> panic("Lyric.LlvmCodegen: 'throw' is not supported for --target native (D-N-003: panics abort)")
     case STry(_, _, _) -> panic("Lyric.LlvmCodegen: try/catch is not supported for --target native (D-N-003: no unwinding)")
-    case SDefer(_) -> panic("Lyric.LlvmCodegen: 'defer' is not yet supported for --target native (Phase 2, D-N-003)")
+    case SDefer(body) -> {
+      // P2.D1: register `body` in the innermost lexical scope's defer
+      // list; it runs at that scope's exit (fall-off, return, break, or
+      // continue) via `runDeferredScopeAt`, not inline here. Note:
+      // D-N-003 still applies — a `panic` aborts the process immediately
+      // with no unwinding, so a `defer` registered before a `panic`
+      // further down the SAME function does not run (there is no scope
+      // exit to trigger it; only dotnet/jvm's real exception unwinding
+      // runs a `defer` during a panic).
+      ctx.deferStack[ctx.deferStack.count - 1].add(body)
+    }
     case SInvariant(_) -> {
       // Loop invariants are proof obligations (lyric prove); they carry
       // no runtime lowering here.
@@ -7372,7 +7426,8 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
-    loopTempDepth = newList()
+    loopTempDepth = newList(),
+    deferStack = newList()
   )
 }
 
@@ -7380,6 +7435,190 @@ func lowerFunction(modCtx: in Ctx, pkg: in String, fn: in FunctionDecl, irName: 
   val noNames: List[String] = newList()
   val noTys: List[NType] = newList()
   lowerFunctionEnv(modCtx, pkg, fn, irName, noNames, noTys)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Async generator detection (D-N-019).  A native-local mirror of the type
+// checker's `funcBodyContainsYield`/`exprContainsYield`/`blockContainsYield`
+// (`typechecker_checker.l`) — the backend packages don't import
+// `Lyric.TypeChecker` (msil/jvm each keep their own copy too), so this walks
+// the same shared parser AST independently to flag the one async shape this
+// slice does not lower: a `yield` anywhere inside an `async func` body.
+// ─────────────────────────────────────────────────────────────────────────────
+func funcBodyContainsYieldNative(fn: in FunctionDecl): Bool {
+  match fn.body {
+    case None -> false
+    case Some(body) -> match body { case FBExpr(e) -> exprContainsYieldNative(e); case FBBlock(b) -> blockContainsYieldNative(b) }
+  }
+}
+
+func exprContainsYieldNative(e: in Expr): Bool {
+  match e.kind {
+    case EYield(_) -> true
+    case ELambda(_, _) -> false
+    // yield inside a lambda is not a generator yield
+    case ELiteral(_) -> false
+    case EPath(_) -> false
+    case ESelf -> false
+    case EResult -> false
+    case EError -> false
+    case EParen(inner) -> exprContainsYieldNative(inner)
+    case EAwait(inner) -> exprContainsYieldNative(inner)
+    case ESpawn(inner) -> exprContainsYieldNative(inner)
+    case EOld(inner) -> exprContainsYieldNative(inner)
+    case EPropagate(inner) -> exprContainsYieldNative(inner)
+    case ETry(inner) -> exprContainsYieldNative(inner)
+    case EPrefix(_, inner) -> exprContainsYieldNative(inner)
+    case ETuple(elems) -> listAnyExprContainsYieldNative(elems)
+    case EList(elems) -> listAnyExprContainsYieldNative(elems)
+    case EInterpolated(segs) -> {
+      var found = false
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(se) -> {
+            if exprContainsYieldNative(se) {
+              found = true
+            }
+          }
+          case ISText(_) -> {
+          }
+        }
+        i = i + 1
+      }
+      found
+    }
+    case EBinop(_, l, r) -> exprContainsYieldNative(l) or exprContainsYieldNative(r)
+    case EAssign(t, _, v) -> exprContainsYieldNative(t) or exprContainsYieldNative(v)
+    case EMember(recv, _) -> exprContainsYieldNative(recv)
+    case ETypeApp(f, _) -> exprContainsYieldNative(f)
+    case EIndex(recv, idxs) -> exprContainsYieldNative(recv) or listAnyExprContainsYieldNative(idxs)
+    case ECall(f, args) -> {
+      if exprContainsYieldNative(f) {
+        return true
+      }
+      var i = 0
+      while i < args.count {
+        val found = match args[i] {
+          case CAPositional(v) -> exprContainsYieldNative(v)
+          case CANamed(_, v, _) -> exprContainsYieldNative(v)
+        }
+        if found {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case ERange(rb) -> match rb { case RBClosed(a, b) -> exprContainsYieldNative(a) or exprContainsYieldNative(b); case RBHalfOpen(a, b) -> exprContainsYieldNative(a) or exprContainsYieldNative(b); case RBLowerOpen(a) -> exprContainsYieldNative(a); case RBUpperOpen(a) -> exprContainsYieldNative(a) }
+    case EIf(c, t, eOpt, _) -> {
+      if exprContainsYieldNative(c) {
+        return true
+      }
+      val inT = match t {
+        case EOBExpr(te) -> exprContainsYieldNative(te)
+        case EOBBlock(tb) -> blockContainsYieldNative(tb)
+      }
+      if inT {
+        return true
+      }
+      match eOpt {
+        case None -> false
+        case Some(b) -> match b { case EOBExpr(ee) -> exprContainsYieldNative(ee); case EOBBlock(eb) -> blockContainsYieldNative(eb) }
+      }
+    }
+    case EMatch(subj, arms) -> {
+      if exprContainsYieldNative(subj) {
+        return true
+      }
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        val inGuard = match arm.guard { case None -> false; case Some(g) -> exprContainsYieldNative(g) }
+        if inGuard {
+          return true
+        }
+        val inBody = match arm.body {
+          case EOBExpr(ae) -> exprContainsYieldNative(ae)
+          case EOBBlock(ab) -> blockContainsYieldNative(ab)
+        }
+        if inBody {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EBlock(blk) -> blockContainsYieldNative(blk)
+    case EUnsafe(blk) -> blockContainsYieldNative(blk)
+    case EForall(_, w, body) -> {
+      val inW = match w { case None -> false; case Some(we) -> exprContainsYieldNative(we) }
+      inW or exprContainsYieldNative(body)
+    }
+    case EExists(_, w, body) -> {
+      val inW = match w { case None -> false; case Some(we) -> exprContainsYieldNative(we) }
+      inW or exprContainsYieldNative(body)
+    }
+  }
+}
+
+func listAnyExprContainsYieldNative(es: in List[Expr]): Bool {
+  var i = 0
+  while i < es.count {
+    if exprContainsYieldNative(es[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func blockContainsYieldNative(blk: in Block): Bool {
+  var i = 0
+  while i < blk.statements.count {
+    if stmtContainsYieldNative(blk.statements[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func stmtContainsYieldNative(stmt: in Statement): Bool {
+  match stmt.kind {
+    case SExpr(e) -> exprContainsYieldNative(e)
+    case SThrow(e) -> exprContainsYieldNative(e)
+    case SReturn(Some(e)) -> exprContainsYieldNative(e)
+    case SReturn(None) -> false
+    case SBreak(_) -> false
+    case SContinue(_) -> false
+    case SInvariant(_) -> false
+    case SItem(_) -> false
+    case SAssign(t, _, v) -> exprContainsYieldNative(t) or exprContainsYieldNative(v)
+    case SLocal(binding) -> match binding { case LBVal(_, _, e) -> exprContainsYieldNative(e); case LBLet(_, _, e) -> exprContainsYieldNative(e); case LBVar(_, _, Some(e)) -> exprContainsYieldNative(e); case LBVar(_, _, None) -> false }
+    case STry(body, catches, finally_) -> {
+      if blockContainsYieldNative(body) {
+        return true
+      }
+      var i = 0
+      while i < catches.count {
+        if blockContainsYieldNative(catches[i].body) {
+          return true
+        }
+        i = i + 1
+      }
+      match finally_ {
+        case None -> false
+        case Some(fb) -> blockContainsYieldNative(fb)
+      }
+    }
+    case SDefer(b) -> blockContainsYieldNative(b)
+    case SScope(_, b) -> blockContainsYieldNative(b)
+    case SLoop(_, b) -> blockContainsYieldNative(b)
+    case SFor(_, _, iter, body) -> exprContainsYieldNative(iter) or blockContainsYieldNative(body)
+    case SWhile(_, cond, body) -> exprContainsYieldNative(cond) or blockContainsYieldNative(body)
+    case SRule(l, r) -> exprContainsYieldNative(l) or exprContainsYieldNative(r)
+  }
 }
 
 /// Lower one function body; a non-empty type env lowers a generic
@@ -7392,9 +7631,9 @@ func lowerFunctionEnv(
   envNames: in List[String],
   envTys: in List[NType],
 ): NFunc {
-  if fn.isAsync {
+  if fn.isAsync and funcBodyContainsYieldNative(fn) {
     panic(
-      "N0099: async functions are not yet supported for --target native. Use --target dotnet or --target jvm for async programs."
+      "N0099: async generators ('yield' inside an 'async func') are not yet supported for --target native. Use --target dotnet or --target jvm for async generators."
     )
   }
   if isGenericFn(fn) and envNames.count == 0 {
@@ -7722,7 +7961,8 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
-    loopTempDepth = newList()
+    loopTempDepth = newList(),
+    deferStack = newList()
   )
   // Type definitions and synthesised functions accumulate on the ctx so
   // lazy generic instantiation (typeToN during lowering) can append.

@@ -118,6 +118,16 @@ a cleanup-only personality function (`__lyric_cleanup_personality`) can be added
 architecture is compatible — cleanup landingpads do not expose `catch` to user
 code.
 
+**Status (D-N-020):** `defer` shipped for its normal-exit paths (fall-off,
+`return`, `break`, `continue`) without needing any landingpad machinery at
+all — those paths are ordinary structured control flow on native (not
+unwinding), so a per-scope stack of pending deferred blocks, run explicitly
+at each of those exit points (mirroring the ARC scope-exit release
+mechanism), is sufficient. The landingpad-based mechanism sketched above
+remains exactly what a *panic-triggered* `defer` would need, and is still
+unimplemented: a `defer` registered before a `panic` does not run today,
+consistent with "no `defer` [during unwind] in Phase 1" above.
+
 ---
 
 ## D-N-004: Async / await strategy

@@ -87,6 +87,33 @@ native-codegen gaps (bare `toString`, `println`) it surfaced and fixed
 along the way. N7.1's dedicated 3-OS CI matrix remains a follow-up; the
 existing single-OS (Linux) native CI job is the production gate today.
 
+Phase 1 is complete. Phase 2's first slice — `async func`/`await`
+(Phase N8) — SHIPPED (D-N-019): a non-generator `async func` compiles
+through the same codegen path as a plain `func`, and `await expr` is a
+pure passthrough, since `Task[T]` is not a real type anywhere in the
+self-hosted front end and `spawn`/`scope` (out of scope for this slice)
+is the only construct that could make an async call's result observable
+as anything other than an immediately-available value. Verified by
+`llvm_self_test_async.l` and end-to-end via `lyric build --target
+native`. Async generators (`yield` inside `async func`), the implicit
+`cancellation` parameter, and `spawn`/`scope` structured concurrency are
+each deferred with their own tracked follow-up; `spawn`/`scope` is also
+the point at which real LLVM-coroutine suspension (`06-async-design.md`'s
+original mechanism, hand-verified against `clang` 18 before this slice
+began) becomes necessary.
+
+`defer` (D-N-020) SHIPPED for its normal-exit paths — fall-off, `return`,
+`break`, `continue` — by extending the existing ARC scope-exit mechanism
+with a parallel per-scope stack of pending deferred blocks, run in
+reverse declaration order before that scope's ARC releases; no new IR
+shape or runtime support was needed. A `defer` registered before a
+`panic` does not run (native has no unwinding, D-N-003, so nothing
+triggers scope exit); the landingpad-based mechanism `01-design-
+decisions.md`'s D-N-003 entry originally sketched for a panic-triggered
+`defer` remains unimplemented. Verified by `llvm_self_test_defer.l` (8
+cases, including a direct negative check that a deferred block does not
+run before a panic) and end-to-end via `lyric build --target native`.
+
 ## Reading order
 
 1. `01-design-decisions.md` — all architectural decisions with rationale. Read
@@ -137,9 +164,9 @@ lyric-stdlib/std/_kernel_native/   — native stdlib kernel (extern func declara
 ## What is NOT in scope for Phase 1
 
 - Windows target (Phase 2)
-- Async/await (Phase 2 — mechanism fully specified in `06-async-design.md`)
+- Async/await (Phase 2 — mechanism fully specified in `06-async-design.md`; first slice SHIPPED, D-N-019 — see above)
 - Garbage collection / tracing GC (never; ARC is the permanent model)
-- `defer` blocks (Phase 2, requires cleanup landingpads)
+- `defer` blocks (Phase 2, requires cleanup landingpads for the panic-unwind case; first slice — normal-exit paths, no landingpads needed — SHIPPED, D-N-020, see above)
 - Protected types with async (Phase 2)
 - Hot-reload / REPL for native (separate future item)
 - Debug info / DWARF (Phase 2)

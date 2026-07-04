@@ -5289,6 +5289,221 @@ defaults are used unconditionally, matching the no-manifest case of
 **Related:** D-N-003 (no unwinding), `native/plan/08-work-items.md` §N7.2,
 `docs/01-language-reference.md` §"lyric test", `docs/24-test-runner-plan.md`.
 
+## D-N-019 — Native `async func`/`await` Phase 2 first slice: synchronous `Task[T]` wrapper, not LLVM coroutines; generators, cancellation, and `spawn`/`scope` separately tracked (revises `06-async-design.md`'s coroutine mechanism for the no-`spawn` subset)
+
+**Date:** 2026-07-04
+**Status:** ACCEPTED (scope AND mechanism decision for the first native async slice)
+
+**Context — scope.** `native/plan/06-async-design.md` (D-N-004) specifies
+`Task[T]`, `await` lowering via LLVM `llvm.coro.*` intrinsics, and a
+single-threaded cooperative scheduler, stating it "fully specifies the
+mechanism so Phase 2 agents have no design work to do." Re-reading
+`docs/01-language-reference.md` §7 while starting this slice surfaced
+that the *full* async surface for dotnet/jvm is materially larger than
+that design doc covers:
+
+- §7.2 **async generators** (`yield` inside `async func`) — two lowering
+  strategies (eager-producer, async-iterator) on MSIL/JVM; the
+  async-iterator strategy (body has both `yield` and `await`) is **not
+  implemented even on the mature MSIL backend** (tracked upstream as
+  issue #1490 — the language reference documents it as a compile error
+  today). Native therefore cannot be expected to exceed dotnet/jvm parity
+  here.
+- §7.3 **implicit cancellation tokens** — every `async func` gets a
+  compiler-threaded `cancellation` parameter, cooperatively checked.
+  Confirmed via `grep` that the self-hosted type checker
+  (`type_checker/*.l`) has no `cancellation`/`CancellationToken` handling
+  at all — this is purely an MSIL-emitter-level synthesis, not a
+  front-end/semantic requirement, so its absence on native does not block
+  basic `async`/`await` correctness.
+- §7.4 **`spawn` expr / `scope { }` structured concurrency** — concurrent
+  awaits with structured cancellation/error propagation. Not mentioned in
+  `native/plan/06-async-design.md` at all.
+
+**Context — mechanism.** Before writing any codegen, the coroutine
+lowering pipeline itself was hand-verified end-to-end with `clang` 18
+(a minimal hand-written `.ll` coroutine — `llvm.coro.id`/`coro.begin`/
+`coro.suspend`/`coro.end` with a `presplitcoroutine` function attribute
+and correct final-suspend handling — compiled and ran correctly via
+plain `clang file.ll -o binary` at both `-O0` and `-O2`; the `coro-early`
+→ `cgscc(coro-split)` → `coro-cleanup` lowering runs automatically, no
+separate `opt` invocation needed in the `Llvm.Bridge` pipeline). That
+confirmed the mechanism *works*, but designing the codegen shape on top
+of it surfaced a more important fact: **`spawn`/`scope` is the only
+construct in Lyric's async model that creates genuine concurrent
+progress** (two tasks making progress independently of each other).
+Every other async/await interaction — a chain of `await`s, `await`
+inside a loop or branch, nested awaits — is, by construction, sequential
+composition: when execution reaches `await task`, nothing else in the
+program is running concurrently with `task`, so `task` can only ever be
+"not yet complete" if it has not been driven at all yet, not because
+something else is mid-flight on another logical thread of control.
+With `spawn`/`scope` excluded from this slice (per the scope decision
+above), **a genuinely-suspending coroutine is never observably different
+from a synchronous call that runs the async body to completion and
+returns an already-completed `Task[T]`** — no Lyric program expressible
+in this slice's surface can tell the difference. Building the full LLVM
+coroutine codegen path (frame spilling across arbitrary control flow,
+ARC-across-suspend retention, a ready-queue/wait-queue scheduler) for a
+property no reachable program can observe is exactly the kind of
+speculative complexity CLAUDE.md's production-readiness standard warns
+against ("don't design for hypothetical future requirements").
+
+**Decision — further simplified after checking whether `Task[T]` is a
+real type anywhere in the self-hosted front end.** It is not: `grep`
+across `type_checker/*.l` and `lyric-stdlib/std/*.l` finds no
+resolvable `Task` type at all. `ResolvedSignature.returnTy` for an
+`async func` is the plain declared type `T` (never wrapped), and
+`EAwait(inner)`'s inferred type is simply `inner`'s type — the front end
+never materialises a boxed/wrapped value for "an async call not yet
+awaited." The parser also does not restrict `await` to async-function
+bodies (`parser_exprs.l`'s `KwAwait` arm parses `await <postfix-expr>` in
+any expression position). This matches how MSIL codegen already treats
+*every* call site of an async-signatured function as needing an
+immediate unwrap — `await` or not — via a "blocking shim
+(GetAwaiter+GetResult)" when the call is not itself inside another
+async state machine (confirmed via `msil/codegen.l`'s comments at the
+`EAwait` handler). Given `spawn`/`scope` (the only construct able to
+produce an *unawaited*, held-for-later async value) is out of scope,
+there is categorically no Lyric program in this slice's surface that can
+observe an async call's result as anything other than a plain `T` value
+available immediately at the call site.
+
+**Therefore:** this slice compiles a non-generator `async func` through
+the **exact same codegen path as a plain `func`** — no `Task[T]` wrapper
+type, no boxing/unboxing, no runtime changes at all. `EAwait(inner)`
+lowers as a pure pass-through: `lowerExpr(ctx, insns, inner)`. This
+supersedes the "synchronous `Task[T]` heap-box wrapper" design
+originally drafted in this entry — that box would have been constructed
+and immediately destructed within the same call expression, observable
+by nothing, i.e. dead complexity fully eliminated rather than shipped.
+
+`lyric-rt` needs zero new code for this slice (no scheduler, no task
+struct — none of `06-async-design.md`'s A-1 API). The only compiler
+change is: stop rejecting `fn.isAsync and not isGenerator` in
+`Llvm.Codegen.codegenFunc` (route it to the same path as a plain
+function) and give `EAwait` a lowering case.
+
+**Explicitly deferred, each with its own tracked follow-up and a clear
+compile-time diagnostic (not a silent gap) rather than bundled into this
+slice:**
+- Async generators (`yield` inside `async func`) — a dedicated
+  diagnostic distinct from plain unsupported-async, so a user sees
+  "generators aren't supported yet" rather than "async isn't supported
+  at all" once plain async ships.
+- The implicit `cancellation` parameter / `checkOrThrow()` cooperative
+  cancellation.
+- `spawn` / `scope { }` structured concurrency — **and, when that lands,
+  a real `Task[T]` representation plus real LLVM-coroutine suspension
+  become necessary** (this is the point at which an async call's result
+  can be held unawaited and two tasks can genuinely progress
+  independently). The de-risking work already done in an earlier draft
+  of this entry (a hand-verified `llvm.coro.id`/`coro.begin`/
+  `coro.suspend`/`coro.end` `.ll` round-trip via plain `clang file.ll -o
+  binary` at every `-O` level, no separate `opt` invocation needed once a
+  function carries the `presplitcoroutine` attribute) is not wasted — it
+  is exactly the mechanism that follow-up will need, and is preserved
+  here for that future work: `coro-early` → `cgscc(coro-split)` →
+  `coro-cleanup`, with a `final`-marked `llvm.coro.suspend(none, true)`
+  at the natural-completion point so the frame's resume-fn-ptr slot is
+  correctly nulled before the caller's `llvm.coro.done` check, and the
+  frame only freed via an explicit `llvm.coro.destroy` (freeing eagerly
+  inside `resume()` itself — without a final suspend first — leaves the
+  caller holding a dangling handle, the bug the verification round hit
+  and fixed before concluding the mechanism itself was sound).
+
+**Related:** D-N-004, `native/plan/06-async-design.md`,
+`docs/01-language-reference.md` §7, upstream #1490 (async-iterator
+generators, MSIL).
+
+## D-N-020 — Native `defer`: per-scope deferred-block stack, mirroring the existing ARC scope-exit mechanism (no try/finally to lean on)
+
+**Date:** 2026-07-04
+**Status:** ACCEPTED (P2.D1)
+
+**Context.** `defer { D }` runs `D` at scope exit on every path — normal
+fall-off, `return`, `break`/`continue` — with multiple defers in the same
+scope running in reverse declaration order (grammar: "runs on scope
+exit, success or failure"; D-N-003 narrows "failure" to mean a caught
+exception on dotnet/jvm, since native panics abort rather than unwind —
+see below). MSIL and JVM both lower this by rewriting the statements
+following a `defer` as `try { rest } finally { D }`
+(`lowerStmtsFromMsil`/JVM equivalent): the CLR/JVM's own exception
+machinery guarantees `finally` runs on every exit from `rest`, including
+nested `return`/`break`/`continue`, via `leave`/`goto`-based unwind.
+Native has no try/finally at all (`STry` already panics: "not supported
+for --target native, D-N-003: no unwinding"), so this mechanism cannot
+be reused.
+
+**Decision.** Model `defer` on native by extending the ARC codegen's
+*existing* scope-exit mechanism rather than inventing a new one. The ARC
+pass already tracks, per lexical scope, the ref-typed locals owned by
+that scope (`Ctx.scopeRefs`, a stack — one list per nested block), and
+already re-runs the release logic at every exit from a scope:
+`releaseAllForReturn` (walks every open scope) and `releaseForLoopExit`
+(walks scopes down to the loop floor), both called from `SReturn`/
+`SBreak`/`SContinue`, plus the normal `popVarScope` call at fall-off.
+`defer` adds a parallel stack, `Ctx.deferStack` — one list of pending
+`Block`s per lexical scope, pushed/popped in lockstep with `scopeRefs`
+(same two call sites: `pushVarScope`/`popVarScope`) — and a `SDefer(body)`
+statement just appends `body` to the innermost scope's list instead of
+lowering it inline. A new `runDeferredScopeAt(ctx, insns, idx)` lowers a
+scope's pending blocks in reverse order (via the ordinary
+`lowerBlockStmts`, so a deferred block gets full recursive support —
+its own locals, its own nested defers, ARC-managed captures) and is
+called at every one of the three existing scope-exit sites, *before*
+that scope's ARC releases run (so a deferred block can still read the
+scope's own locals). No new IR shape, no new runtime support — this
+reuses the exact stack discipline already proven correct for ARC, just
+carrying a second per-scope payload.
+
+Because every existing call site funnels through the two central
+functions (`pushVarScope`/`popVarScope`) and the two release helpers,
+covering `defer` required touching only those four functions plus the
+`SDefer` case itself — not each of the ~13 individual scope-opening call
+sites.
+
+**D-N-003 interaction (a real gap, not an oversight).** A `defer`
+registered before a `panic` does **not** run on native: `panic` calls
+`abort()` immediately, with no scope-exit event of any kind to trigger
+the deferred-block walk (dotnet/jvm's `finally`-based lowering runs
+during exception unwinding, which native categorically does not have).
+This is the same "panics abort, no unwinding" model every other native
+construct already carries (D-N-018 applied the identical reasoning to
+`lyric test --target native`'s lack of per-test isolation); it is
+verified directly in the self-test (a program whose deferred block would
+print a marker if it ran, asserting the marker never appears in stdout
+and the process exits nonzero) rather than left as an unverified claim.
+
+**No front-end restriction added for `return`/`break`/`continue` inside
+a `defer` body.** The CLR hard-rejects a `ret`/branch escaping a
+`finally` handler at the verifier level, but neither the self-hosted
+type checker nor the MSIL/JVM backends carry an equivalent check
+(confirmed via `grep`) — so native intentionally matches that same
+unchecked status quo rather than introducing a stricter, native-only
+restriction the other targets don't have. Untested/unspecified on all
+three targets alike.
+
+**Verification.** New `llvm_self_test_defer.l` (8 cases: reverse
+declaration order on fall-off, early return, fall-through, break,
+continue, a value-producing if-branch, an ASan-clean String-capture
+case, and the panic-bypasses-defer negative case) — 8/8 passing, using
+the same `Lyric.LlvmBridge.compileToNativeWithFlags` full-bridge harness
+`llvm_stdlib_self_test.l` uses (needed so `Std.Console.println` resolves
+for the stdout-observation tests — process exit codes truncate to 8
+bits on POSIX, so packing multi-fact observations into an exit code is
+a trap for values over 255; several of this slice's early test
+iterations hit exactly that trap before switching to stdout assertions).
+Verified end-to-end via `lyric build --target native` directly, and via
+`make ilverify` (0 IL-validity errors across 110 DLLs, no self-hosted
+regression) and the full existing native self-test suite (no
+regressions).
+
+**Related:** D-N-003, D-N-018, D-N-019 (the parallel "extend the
+existing scope-exit mechanism rather than invent a new one" reasoning),
+`native/plan/08-work-items.md`, `docs/01-language-reference.md` (defer
+semantics), `lyric-compiler/lyric/defer_self_test.l` (the dotnet/jvm
+reference test this ports the non-panic cases of).
 
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
