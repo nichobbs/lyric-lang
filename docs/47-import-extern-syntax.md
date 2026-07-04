@@ -1,8 +1,12 @@
 # 47 — Import Extern Syntax for External Types
 
-**Status:** Specced (D116). Design questions Q47-001–Q47-004 are resolved.
-Parser support is in place (PR #3728). Type-checker integration is deferred
-to Phase 2 (tracked separately).
+**Status:** Shipped. Design questions Q47-001–Q47-004 are resolved (D116).
+Parser support landed in PR #3728; type-checker integration (Phase 2 — symbol
+registration and resolution of `import extern`-bound names through auto-FFI)
+shipped in commit `a64e649` (2026-07-03, #4714) and is proven by
+`lyric-compiler/lyric/import_extern_self_test.l`. Ecosystem-wide adoption is
+tracked as a rollout, not a design question — see
+`docs/57-stdlib-ecosystem-library-review.md`.
 
 **Builds on:** `docs/01-language-reference.md` §11 (FFI), `docs/42-extern-metadata-resolution.md` (metadata-based resolution), `docs/14-native-stdlib-plan.md` (kernel boundary).
 

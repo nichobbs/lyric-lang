@@ -17,6 +17,14 @@ feature-flags/i18n, (4) db/cache/storage/search/mq/jobs, (5)
 logging/otel/health/testing/mail, (6) lambda/aws-secrets/aws-xray/
 generator-sdk.
 
+**Follow-up status:** review-findings #5033/#5034/#5035 on the originating
+PR (#5032) are resolved as follows: §7 item 1 (docs/47, docs/48 status
+headers + CI wiring for `import_extern_self_test.l`) is done; §7 item 4
+(the `lyric-cache/src/cache_aspects.l` header) is done via the
+correct-the-comment path — the two aspect templates it describes are
+still unwritten; the `lyric-resilience` JVM-kernel gap (§3) was tracked
+as issue #5037 and has since been fixed on `main` (see §3).
+
 ---
 
 ## 1. Headline finding: `import extern` + `.new()` shipped yesterday, adoption is zero, and the docs still say otherwise
@@ -30,29 +38,35 @@ support for `.new()` constructor shorthand on reference-type extern types
 `SystemMath.Max`/`Min`/`Abs` through an `import extern System.{ Math as
 SystemMath }` binding.
 
-Two problems fall out of this timing:
+Two problems fell out of this timing, **both now fixed as a same-day
+follow-up** (review-finding #5033/#5035; tracking issue closed by this
+edit):
 
-- **Docs are stale.** `docs/47-import-extern-syntax.md` and
-  `docs/48-constructor-shorthand.md` both still say "Type-checker
-  integration is deferred to Phase 2" / "Implementation deferred pending
-  type-checker Phase 2 integration." That's no longer true. Every one of
-  the six review passes independently concluded the feature "hasn't
-  shipped yet" and recommended waiting for it — because the docs told
-  them to. **Fix:** update both status headers to "Shipped" and cite the
-  commit/PR, the same way `docs/43`/`docs/51` track phase completion.
-- **The self-test isn't wired into CI.** `import_extern_self_test.l`
-  exists and presumably passes locally, but neither `Makefile` nor
-  `.github/workflows/ci.yml` reference it (unlike
-  `ffi_iface_impl_self_test.l`, which is wired at `ci.yml:997`). A
-  regression here would go undetected. **Fix:** add it to the CI self-test
-  matrix now, before any library starts depending on the feature.
+- **Docs were stale.** `docs/47-import-extern-syntax.md` and
+  `docs/48-constructor-shorthand.md` both said "Type-checker integration
+  is deferred to Phase 2" / "Implementation deferred pending type-checker
+  Phase 2 integration." That was no longer true. Every one of the six
+  review passes independently concluded the feature "hasn't shipped yet"
+  and recommended waiting for it — because the docs told them to.
+  **Fixed:** both status headers now say "Shipped" and cite the commit
+  (`a64e649`, #4714), the same way `docs/43`/`docs/51` track phase
+  completion.
+- **The self-test wasn't wired into CI.** `import_extern_self_test.l`
+  existed and presumably passed locally, but neither `Makefile` nor
+  `.github/workflows/ci.yml` referenced it (unlike
+  `ffi_iface_impl_self_test.l`, wired at `ci.yml:997`). A regression here
+  would have gone undetected. **Fixed:** added as a `background: true`
+  step in `ci.yml` immediately after the `ffi_iface_impl_self_test.l`
+  step, following the identical pattern.
 
-Net effect: **zero files across stdlib or the 26 ecosystem libraries use
-`import extern` or `.new()` today** — not because of resistance to the
-idiom, but because it landed one day before this review and the docs said
-not to use it yet. This is good news framed as a gap: there is a large,
-well-defined, low-risk modernization backlog once the two items above are
-fixed. §7 has a suggested rollout order.
+Net effect at the time of the original review: **zero files across
+stdlib or the 26 ecosystem libraries used `import extern` or `.new()`** —
+not because of resistance to the idiom, but because it landed one day
+before this review and the docs said not to use it yet. That adoption gap
+itself is unchanged by this follow-up (fixing the docs/CI enablement
+blockers doesn't migrate any call sites) — there is still a large,
+well-defined, low-risk modernization backlog per §2. §7 has the suggested
+rollout order for that remaining work.
 
 ---
 
@@ -158,21 +172,22 @@ argument-independent aspects, and B′-mode `where TArgs has { field: Type
 `apiKey`, `Storage.ValidateKey`'s `key`, `Mq.Idempotent`'s
 `message.id`, `Lambda.DeadlineGuard`'s `ctx`).
 
-One real gap: **`lyric-cache/src/cache_aspects.l`'s header is wrong.** It
-says "The full aspect-weaver wiring (B-mode / C-mode, around(call), config
-injection) ... is deferred until that system ships" — but the aspect
-weaver shipped in D047, B′-mode in D114, row-typed args in D115/D118.
-The file currently defines only config records
+One real gap, **fixed in this same follow-up**: `lyric-cache/src/cache_aspects.l`'s
+header used to say "The full aspect-weaver wiring (B-mode / C-mode,
+around(call), config injection) ... is deferred until that system ships"
+— but the aspect weaver shipped in D047, B′-mode in D114, row-typed args
+in D115/D118. The file still only defines config records
 (`FunctionCacheConfig`/`ItemCacheConfig`) and factory functions, no actual
 `pub aspect` templates, even though every sibling library (db, storage,
 mq, jobs, validation) has shipped equivalent caching-adjacent aspects
-using the exact machinery this file says doesn't exist yet. **Fix:**
-either write the two aspect templates the comment describes (a
+using the exact machinery the old comment claimed didn't exist. The
+header comment now says so plainly instead of claiming the weaver is
+unshipped. Writing the two actual templates it describes (a
 `FunctionCache` B-mode template keyed on `call.qualifiedName`, an
-`ItemCache` B′-mode template keyed on a row-constrained `cacheKey` field)
-using `lyric-storage`'s `ValidateKey` as a reference, or — if there's a
-reason it's still config-only — correct the comment to stop claiming the
-weaver doesn't exist.
+`ItemCache` B′-mode template keyed on a row-constrained `cacheKey` field,
+using `lyric-storage`'s `ValidateKey` as a reference) remains open —
+that's a real feature addition with its own tests, not a doc fix, so it's
+left as follow-up work rather than bundled into this correction.
 
 One reviewed-and-rejected suggestion, for the record: a sub-review flagged
 `Auth.Aspects.ValidateKey` (`lyric-auth/src/auth_aspects.l:53-58`) for
@@ -287,32 +302,37 @@ in this review at once.
   before the self-hosted compiler shipped `SFor`/full codegen. Delete;
   they actively mislead a reader into thinking a feature is still
   missing.
-- `lyric-cache/src/cache_aspects.l` header — see §4, factually wrong about
-  weaver status.
+- `lyric-cache/src/cache_aspects.l` header — see §4; **fixed**.
 - `docs/47-import-extern-syntax.md`, `docs/48-constructor-shorthand.md`
-  status headers — see §1, factually wrong about Phase 2 status.
+  status headers — see §1; **fixed**.
 
 ---
 
 ## 7. Suggested rollout order
 
-1. Update `docs/47`/`docs/48` status headers to "Shipped" (§1) and wire
-   `import_extern_self_test.l` into `Makefile`/`ci.yml` self-test targets.
+1. ~~Update `docs/47`/`docs/48` status headers to "Shipped" (§1) and wire
+   `import_extern_self_test.l` into `Makefile`/`ci.yml` self-test
+   targets.~~ **Done** (same-day follow-up to #5032).
 2. Pick one stdlib kernel file (`http_host.l` or `collections_host.l`) as
    the reference `.new()`/`import extern` migration; use it as the
    pattern for the rest of §2's backlog.
 3. Close the stdlib I/O test gap: `file_tests.l`, `directory_tests.l`,
    `http_tests.l` (§5.1) — highest leverage since every ecosystem library
    built on top inherits the coverage.
-4. Fix `lyric-cache/src/cache_aspects.l` (§4) — either ship the two
-   templates or correct the comment.
+4. ~~Fix `lyric-cache/src/cache_aspects.l` (§4) — either ship the two
+   templates or correct the comment.~~ **Comment corrected** (same-day
+   follow-up); shipping the two templates themselves remains open.
 5. Add local-kernel-backed tests for lyric-lambda event handlers and
    lyric-aws-secrets (§5.2) — no live-service dependency required, so this
    is pure engineering time, not blocked on infra.
-6. Track backend-completeness asymmetry (§3) with one README sentence per
-   library naming which backend is real vs. stubbed, so CLAUDE.md's
-   library list stays accurate without needing this document as a cross-
-   reference.
+6. ~~Track backend-completeness asymmetry (§3) with one README sentence
+   per library naming which backend is real vs. stubbed...~~
+   `lyric-resilience`'s JVM kernel (§3, issue #5037) — the one exception
+   that got a dedicated issue rather than just a README sentence, since a
+   silent no-op is worse than an undocumented stub — **shipped a real fix
+   on `main` while this PR was open.** The remaining backend-completeness
+   asymmetries (storage S3/Azure, mq/jobs brokers, search backends) still
+   need the one-README-sentence-per-library treatment.
 7. Expand `lyric-testing` mocks per §5.3, prioritized by #410
    (failure-injection) since it multiplies the value of every mock added
    after it.

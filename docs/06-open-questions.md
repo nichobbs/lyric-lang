@@ -250,6 +250,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 **Resolution:** `@stable(since="1.0")` / `@experimental` annotation system (D040). Every `pub` item in `lyric-stdlib/std/` is now annotated. Bootstrap-grade items (`Std.Testing.Property`, `Std.Testing.Snapshot`, `Std.CoreProof`, plus HTTP retry/cancel/timeout variants and time DTO helpers) are `@experimental`. Core modules (errors, parse, collections, string, console, file, iter, math, stream, log, path, environment, app, directory, JSON, and the stable HTTP/time surface) are `@stable(since="1.0")`. The compiler enforces that stable pub functions do not call experimental ones (S0001). `lyric public-api-diff` treats experimental removals as non-breaking. See `docs/10-stdlib-plan.md` §"Stability cut" for the full cut list.
 
+**Follow-up audit:** `docs/57-stdlib-ecosystem-library-review.md` (2026-07) re-examines the shipped stdlib and ecosystem library surface against later idioms (`import extern`/`.new()`, D115/D118 aspect rows) and catalogues test-coverage and FFI-modernization gaps, including some `@stable` core I/O modules (`file.l`, `directory.l`, `http.l`) that turn out to have no dedicated test file despite the stability marker.
+
 ---
 
 ## Q012: Package registry
