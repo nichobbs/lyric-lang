@@ -49,7 +49,10 @@ func isSymlinkFixture(path: in String): Bool {
   JFiles.isSymbolicLink(p)
 }
 
-func makeSymlinkFixture(linkPath: in String, targetPath: in String): Unit {
+// Returns `ln -s`'s exit code so the caller can assert fixture setup
+// succeeded, distinguishing a broken test fixture from a real fix regression
+// at a glance (#5057).
+func makeSymlinkFixture(linkPath: in String, targetPath: in String): Int {
   val existing = JFile.new(linkPath)
   existing.delete()
   val args: List[String] = newList()
@@ -59,7 +62,7 @@ func makeSymlinkFixture(linkPath: in String, targetPath: in String): Unit {
   args.add(linkPath)
   val pb = JProcessBuilder.new(args)
   val proc: JProcess = pb.start()
-  val _code = proc.waitFor()
+  proc.waitFor()
 }
 
 val root: String = "/tmp/lyric_file_jvm_self_test"
@@ -165,7 +168,7 @@ test "recursive delete does not traverse a directory symlink" {
     case Err(_) -> assertTrue(false, "tree dir must be created")
   }
   val link = tree + "/link"
-  makeSymlinkFixture(link, outside)
+  assertEqualInt(makeSymlinkFixture(link, outside), 0, "ln -s must succeed")
   assertTrue(isSymlinkFixture(link), "fixture is really a symlink")
   match deleteDirRecursive(tree) {
     case Ok(_) -> assertTrue(not dirExists(tree), "the tree itself is fully removed")
