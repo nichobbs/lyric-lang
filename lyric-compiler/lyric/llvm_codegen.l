@@ -1446,11 +1446,7 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
     }
     case EList(_) -> panic("Lyric.LlvmCodegen: list literals are not yet supported for --target native (collections are Phase N2/N5)")
     case EIndex(receiver, indices) -> lowerCollectionIndex(ctx, insns, receiver, indices, expr.span.startPos.line)
-    // `await expr` is a pure passthrough on --target native (D-N-019): with
-    // `spawn`/`scope` out of scope, no Lyric program in the supported
-    // surface can hold an async call's result unawaited, so an async
-    // function's declared return type is never wrapped — `await` has
-    // nothing to unwrap.
+    // `await` is a pure passthrough on --target native (D-N-019): nothing to unwrap since async return types are never wrapped.
     case EAwait(inner) -> lowerExpr(ctx, insns, inner)
     case _ -> panic("Lyric.LlvmCodegen: this expression form is not yet supported for --target native (Phase N1)")
   }
@@ -7410,9 +7406,7 @@ func lowerFunction(modCtx: in Ctx, pkg: in String, fn: in FunctionDecl, irName: 
   lowerFunctionEnv(modCtx, pkg, fn, irName, noNames, noTys)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Async generator detection (D-N-019): a native-local mirror of the type checker's yield walk, since backends don't import `Lyric.TypeChecker`.
-// ─────────────────────────────────────────────────────────────────────────────
 func funcBodyContainsYieldNative(fn: in FunctionDecl): Bool {
   match fn.body {
     case None -> false
