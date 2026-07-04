@@ -3101,10 +3101,32 @@ jobs:
           "$lyric_bin" test --target jvm lyric-compiler/lyric/aspect_weave_self_test.l
           echo "aspect-weave self-test ran: aspect_weave_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
-      # JVM coverage for stdlib_generic_iface_self_test.l is deferred: the JVM
-      # backend erases generic type parameters to Object and does not yet emit
-      # checkcast before interface dispatch on extracted generic fields
-      # (e.g. `case Ok(s) -> s.area()` where T = Shape).  Tracked in #3613.
+      # Stdlib-generic-interface self-test on JVM (#3613) — the JVM half of
+      # the dotnet-job step of the same name.  Pins `emitUnboxObjectTo`'s new
+      # `JRef` arm: a generic field payload (`Result[Shape, String]`'s `Ok`
+      # value) erases to `Object`, and dispatching a call on the bound match
+      # variable used to panic ("no matching instance or inherited method for
+      # 'java.lang.Object.area()'") because no `checkcast <Shape>` was ever
+      # emitted.  Also pins `bindCaseField` threading a nested generic
+      # instantiation (`Result[Option[Shape], String]`) to the bound name's
+      # own `varGenericArgs`, so a match-of-a-match recovers its inner arg.
+      # Needs JDK 21 (this job), unlike the dotnet job.
+      - name: Stdlib-generic-interface self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping stdlib-generic-iface JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping stdlib-generic-iface JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/stdlib_generic_iface_self_test.l
+          echo "stdlib-generic-iface self-test ran: stdlib_generic_iface_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
       # Named-arg/default-param self-test on JVM — pins call-site reorder and
       # default fill on the JVM target (#1503).  Imports only `Std.*`.

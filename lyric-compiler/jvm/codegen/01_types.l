@@ -142,6 +142,114 @@ pub func returnTypeGenericArgs(retOpt: in Option[TypeExpr]): List[TypeExpr] {
   }
 }
 
+// Filters `returnTypeGenericArgs`'s result against a function's OWN generic
+// parameter names (#3613 follow-up). A truly generic function's declared
+// return-type args are the type PARAMETERS themselves (`func mapGet<K, V>(…):
+// Option[V]` → `[V]`), not a concrete instantiation — the caller's inferred
+// substitution is not visible from the declared signature alone, so trusting
+// a bare parameter name as if it were a resolved type produces a bogus
+// in-package class reference at a match-bind site (e.g. checkcasting to a
+// nonexistent "V" class). When any returned arg is a bare reference to one of
+// `typeParams`, the whole result is unusable — bail to empty so the payload
+// stays boxed (the safe, pre-#3613 fallback) instead of narrowing to garbage.
+pub func returnTypeGenericArgsFiltered(retOpt: in Option[TypeExpr], typeParams: in List[String]): List[TypeExpr] {
+  val raw = returnTypeGenericArgs(retOpt)
+  if typeParams.count == 0 {
+    return raw
+  }
+  var i = 0
+  while i < raw.count {
+    match raw[i].kind {
+      case TRef(path) -> {
+        if path.segments.count == 1 and listContainsStr(typeParams, path.segments[0]) {
+          return newList()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  raw
+}
+
+// True for the bare Lyric primitive-type keywords, whose JVM mapping is
+// package-independent — left as a bare identifier by `eagerlyResolveGenericArg`
+// rather than rewritten to a marker (mirrors `Jvm.Codegen`'s other
+// `isPrimitiveTypeKeyword` in `03_match.l`; duplicated here rather than shared
+// since both files land in the same package and cannot forward-reference).
+func isPrimitiveScalarKeyword(seg: in String): Bool {
+  seg == "Int" or seg == "Long" or seg == "Double" or seg == "Float" or seg == "Bool" or seg == "String" or
+    seg == "Char" or
+    seg == "Byte" or
+    seg == "Unit"
+}
+
+// Rewrite a single `retGenericArgs` `TypeExpr`'s bare, non-primitive `TRef`
+// head into a "pre-resolved" marker: a single path segment holding the full
+// slash-form JVM class name (`Shape` -> `IfaceRepro/Shape`, `Instant` ->
+// `java/time/Instant`), resolved NOW against the DECLARING file's own
+// `pkgName`/`externTypes` — this is the only point in the pipeline that has
+// that context. A retained bare segment would otherwise be re-resolved later
+// against the *caller's* context at a match site in a different file/package
+// (#3613 follow-up: `Std.Time.parseOptInstant(): Option[Instant]`'s `Instant`
+// resolved against a JVM self-test caller's own package produced a phantom
+// class, `NoClassDefFoundError` at the `checkcast` #3613 emits). Lyric
+// identifiers never contain `/`, so a single segment containing `/` is an
+// unambiguous "already resolved" marker that `resolveConcreteTypeExpr` reads
+// back directly, with no re-guessing against the caller's context.
+// Recurses into `TGenericApp` args so a nested instantiation (`Option[Shape]`
+// inside `Result[Option[Shape], String]`) carries its own pre-resolved args
+// forward for a later nested match (#3613 nested-match follow-up, #4938).
+func eagerlyResolveGenericArg(te: in TypeExpr, pkgName: in String, externTypes: in Map[String, String]): TypeExpr {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        val seg = path.segments[0]
+        if isPrimitiveScalarKeyword(seg) {
+          te
+        } else {
+          val cls = match mapGet(externTypes, seg) {
+            case Some(javaFqn) -> javaFqn.replace(".", "/")
+            case None -> pkgName + "/" + seg
+          }
+          val segs: List[String] = newList()
+          segs.add(cls)
+          TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = path.span)), span = te.span)
+        }
+      } else {
+        te
+      }
+    }
+    case TGenericApp(head, args) -> {
+      val newArgs: List[TypeArg] = newList()
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(inner) -> newArgs.add(TAType(ty = eagerlyResolveGenericArg(inner, pkgName, externTypes)))
+          case TAValue(_) -> newArgs.add(args[i])
+        }
+        i = i + 1
+      }
+      TypeExpr(kind = TGenericApp(head = head, args = newArgs), span = te.span)
+    }
+    case TParen(inner) -> TypeExpr(kind = TParen(inner = eagerlyResolveGenericArg(inner, pkgName, externTypes)), span = te.span)
+    case _ -> te
+  }
+}
+
+// As `eagerlyResolveGenericArg`, over a whole `retGenericArgs` list.
+pub func eagerlyResolveGenericArgs(
+  argsIn: in List[TypeExpr], pkgName: in String, externTypes: in Map[String, String]
+): List[TypeExpr] {
+  val result: List[TypeExpr] = newList()
+  var i = 0
+  while i < argsIn.count {
+    result.add(eagerlyResolveGenericArg(argsIn[i], pkgName, externTypes))
+    i = i + 1
+  }
+  result
+}
+
 // True when a JVM class name denotes a union case (`Pkg/Union$Case`) rather
 // than a record (`Pkg/Point`) — union cases are nested with a `$` separator.
 pub func jvmClassIsUnionCase(cls: in String): Bool {

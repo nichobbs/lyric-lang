@@ -28560,3 +28560,130 @@ regressions. Verified against the pinned F# stage-0 mint.
 **Related:** #5022 (closed by this entry), #5021 (MSIL wire-call
 resolution, still open, unrelated), D-progress-582/#5023 (discovered
 while verifying), docs/44 m-85.
+
+### D-progress-585 — JVM: generic-field interface dispatch emits `checkcast` instead of panicking (#3613)
+
+**Shipped.** Closes #3613. When a generic type parameter is instantiated to
+an interface (or record/union) type — e.g. `Result[Shape, String]`'s `Ok`
+payload — extracting the payload at a match-bind site and calling a method
+on it (`case Ok(s) -> s.area()`) panicked with `JVM auto-FFI: no matching
+instance or inherited method for 'java.lang.Object.area()'`: the JVM erases
+type-parameter payloads to `Object`, and the codegen never narrowed the
+erased read back to the concrete type before dispatching.
+
+**Fix.** `emitUnboxObjectTo` (`codegen/03_match.l`, the #4877 machinery that
+already unboxes a generic payload to a concrete *primitive* using the
+scrutinee's resolved instantiation) gains a `JRef(cls)` arm: when the
+resolved concrete type is a reference type (not one of the recognised
+primitive wrappers), emit `checkcast <cls>` and return that type instead of
+leaving the payload as `Object`. `cls == "java/lang/Object"` (instantiation
+genuinely unresolved) stays a no-op, preserving the existing safe fallback.
+Once the bound local carries the real class/interface type, the existing
+`<class>#<method>` sig registry lookup in `lowerMethodCall`
+(`codegen/04_calls.l`) resolves the call precisely — including
+`invokeinterface` for an interface receiver (#3687, already shipped).
+
+**Nested-match follow-up (same PR).** The straightforward fix left a
+match-of-a-match case unresolved: `Result[Option[Shape], String]`'s `Ok`
+payload is itself `Option[Shape]`, and binding `o` from `Ok(o)` didn't record
+`o`'s *own* instantiation (`[Shape]`) anywhere, so a subsequent `match o {
+case Some(s) -> s.area() }` had no way to recover `Shape` for its own bind.
+`bindCaseField` gained a `concreteTypeExprOpt: Option[TypeExpr]` parameter
+(the pre-erasure `TypeExpr` for the field, when the scrutinee's own generic
+args resolved it); when that `TypeExpr` is itself a `TGenericApp` (`args`
+carry `TAType`-wrapped nested `TypeExpr`s, via a new `typeArgsToTypeExprs`
+helper), its inner args are recorded against the bound name in
+`ctx.varGenericArgs` — mirroring `recordVarGenericArgs`'s `let`/`var`-binding
+mechanism (#4938) but for a match-pattern binding. A later `match <name>`
+then recovers the nested instantiation via the existing
+`scrutineeGenericArgs` `EPath` case, unchanged.
+
+**Regression caught and fixed in the same PR.** The new `JRef` checkcast arm
+initially broke `map_option_self_test.l` / `map_key_self_test.l`: `mapGet`
+(and, by the same mechanism, any other actually-generic function) is
+registered in `funcSigs` with `retGenericArgs` taken directly from its
+*declared* return type — for a generic function like `func mapGet<K, V>(…):
+Option[V]`, that is `[V]`, the type PARAMETER name itself, not a caller-
+resolved concrete type (`returnTypeGenericArgs`'s existing #4877 doc comment
+already describes this mechanism as being for a *non-generic* callee's
+concrete-generic return type; it was never guarded against an actually-
+generic callee). Previously harmless (a bogus resolved class name like
+`Lyric/MapOptionSelfTest/V` fell into `emitUnboxObjectTo`'s `case _ ->
+Object` catch-all and was silently ignored), the new `JRef` arm instead
+`checkcast`ed to that nonexistent class, corrupting the bound value. **Fix:**
+a new `returnTypeGenericArgsFiltered(retOpt, typeParams)` (`codegen/
+01_types.l`) checks the extracted args against the function's own generic
+parameter names (via the already-existing `genericParamNames`/
+`listContainsStr` helpers) and bails to an empty list — the safe, erased
+fallback — if any arg is a bare reference to one of them. Applied at the two
+registration sites most exposed to this hazard: `collectFileSigsSeeded` (the
+general pub-function registrar, where `mapGet`'s bogus entry originated) and
+`registerInstanceSigErased` (generic-receiver instance methods, which already
+had the receiver's type-param list in scope).
+
+**Verification.** `stdlib_generic_iface_self_test.l` (20 tests, previously
+JVM-skipped per its own CI comment) is 20/20 on `--target jvm`; promoted to
+CI. New minimal standalone repros (direct interface-payload dispatch, and the
+nested `Result[Option[Shape], String]` case) independently confirm both
+fixes. Full JVM self-test regression sweep (`map_option_self_test.l`,
+`map_key_self_test.l`, `bitwise_self_test.l`, `aspect_weave_self_test.l`,
+`auto_ffi_jvm_self_test.l`, `wire_di_self_test.l`,
+`erased_generic_arith_jvm_self_test.l`, `method_scrutinee_jvm_self_test.l`,
+`subscript_assign_jvm_self_test.l`) — zero regressions after the safety-guard
+fix (four failures observed and fixed before landing). Verified against the
+pinned F# stage-0 mint.
+
+**Second regression caught and fixed in the same PR (cross-package extern
+types).** CI on the already-open PR caught a second, independent regression
+after the `mapGet` fix landed: `time_jvm_self_test.l`'s epoch/ISO-8601
+round-trip test failed with a `NoClassDefFoundError` naming a phantom class
+(`Jvm/TimeSelfTest/Instant`). Root cause: `Std.Time.parseOptInstant(String):
+Option[Instant]` registers `retGenericArgs = [Instant]` from
+`Std.Time`'s own declaration — but `Instant` is an `extern type` (`extern
+type Instant = "java.time.Instant"`, declared in
+`_kernel_jvm/time_host.l`/`Std.TimeHost`), not a Lyric record/union/interface.
+The first fix's `resolveConcreteTypeExpr` (`codegen/03_match.l`) resolved a
+bare `retGenericArgs` reference against the *caller's own* `ctx.pkgName` /
+`ctx.externTypes` at the match site — correct for the `mapGet`/`Shape`
+regression case (caller and declaring package coincided in those repros),
+but wrong whenever caller and declaring package differ: a JVM self-test file
+that imports `Std.Time` but not `Std.TimeHost` has no `Instant` entry in its
+own `ctx.externTypes`, so resolution fell through to the same-package guess
+(`<callerPkg>/Instant`) — a plausible but nonexistent class, now actually
+`checkcast`-ed against instead of harmlessly absorbed by the erased `Object`
+fallback.
+
+**Fix.** Moved resolution from the match site (caller context) to
+registration time (declaring-file context), where it belongs: `Jvm.Codegen`
+(`codegen/01_types.l`) gains `eagerlyResolveGenericArgs`/
+`eagerlyResolveGenericArg`, called from both `retGenericArgs` registration
+sites (`collectFileSigsSeeded`, `registerInstanceSigErased`) with that file's
+own `pkgName`/`externTypes` — the only point in the pipeline holding the
+DECLARING file's context. A bare, non-primitive `TRef` (`Shape`, `Instant`)
+is rewritten there into a single path segment holding the already-resolved
+slash-form JVM class name (`IfaceRepro/Shape`, `java/time/Instant`); a
+`TGenericApp`'s args are rewritten recursively so a nested instantiation
+(`Option[Shape]` inside `Result[Option[Shape], String]`) carries its own
+pre-resolved args forward through `ctx.varGenericArgs` for a later nested
+match. Lyric identifiers never contain `/`, so a resolved segment
+containing `/` is an unambiguous marker: `resolveConcreteTypeExpr` reads it
+back directly (`seg.contains("/")` → use as-is) instead of re-resolving
+against the caller's context. A bare segment without the marker (nothing
+should reach here post-rewrite, but kept as a defensive fallback) still
+degrades through `ctorClassFor`/`ctx.externTypes` to the safe erased
+`Object` case, unchanged.
+
+**Verification.** `time_repro.l` (standalone repro: `Time.parseOptInstant`
+→ `match` → `Time.toIsoString`) now prints the parsed ISO string instead of
+throwing; `time_jvm_self_test.l` is back to 9/9. Re-ran the full sweep from
+the first fix (`stdlib_generic_iface_self_test.l` 20/20, the two interface
+scratch repros, `map_option_self_test.l`, `map_key_self_test.l`,
+`bitwise_self_test.l`, `aspect_weave_self_test.l`,
+`auto_ffi_jvm_self_test.l`, `wire_di_self_test.l`,
+`erased_generic_arith_jvm_self_test.l`, `method_scrutinee_jvm_self_test.l`,
+`subscript_assign_jvm_self_test.l`) — zero regressions. Verified against the
+pinned F# stage-0 mint.
+
+**Related:** #3613 (closed by this entry), #3687 (interface-dispatch
+`invokeinterface` this builds on), #4877/#4938 (the generic-payload
+unbox/var-tracking machinery this extends), docs/44 m-86.
