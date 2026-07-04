@@ -2116,7 +2116,12 @@ jobs:
       # to a real `Option[V]` (`ContainsKey ? Some(get_Item) : None`) with `V` from
       # the call's context hint, and `Map.remove(key)` calls the real
       # `Dictionary.Remove` (was a pop-only stub).  Together these closed the
-      # lyric-session store suite (24/31 -> 31/31).  MSIL target only.
+      # lyric-session store suite (24/31 -> 31/31).  Also pins #5003 (JVM):
+      # nesting a branching call (`mapGet`) directly as a constructor argument
+      # (`Ok(mapGet(...))`) used to `VerifyError` ("Inconsistent stackmap
+      # frames") — `lowerConstruction` now evaluates every argument into a
+      # local before `new; dup`.  JVM half runs in `compiler-self-tests-jvm`
+      # (needs JDK 21, unlike this dotnet-only job).
       - name: Map-option self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -3022,6 +3027,30 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/map_key_self_test.l
           echo "map-key self-test ran: map_key_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Map-option self-test on JVM (#1727 MSIL / #5003 JVM) — the JVM half of
+      # the dotnet-job step of the same name.  Pins the `lowerConstruction`
+      # fix: nesting a branching call (`mapGet`) directly as a constructor
+      # argument (`Ok(mapGet(...))`) used to `VerifyError` ("Inconsistent
+      # stackmap frames") because `new; dup` ran before the argument's own
+      # internal branches lowered.  Needs JDK 21 (this job), unlike the
+      # dotnet job.
+      - name: Map-option self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping map-option JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping map-option JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/map_option_self_test.l
+          echo "map-option self-test ran: map_option_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
       # Aspect-weave self-test on JVM (#3402) — the JVM half of the dotnet-job
       # step above.  Pins the JVM woven-call resolution fix (`collectAspectWovenSigs`

@@ -28237,3 +28237,51 @@ separate undertaking from this slice).
 `native/plan/08-work-items.md` §"Phase N8 (cont'd)",
 `docs/01-language-reference.md` §4.3, `lyric-compiler/lyric/defer_self_test.l`
 (the dotnet/jvm reference test this ports the non-panic cases of).
+
+### D-progress-580 — JVM: constructor calls evaluate arguments before `new; dup`, fixing a stackmap-frame VerifyError for branching arguments (band J4, #5003)
+
+**Shipped.** Closes #5003 (filed from #4982 Finding 3, left untracked when
+that umbrella issue closed). `Ok(mapGet(m, k))` — a branching call
+(`mapGet`'s `containsKey`-gated `Some`/`None` construction) nested directly
+as a union-case constructor argument — `VerifyError`'d on `--target jvm`
+with `Inconsistent stackmap frames`. Reproduced independently of impl-method
+dispatch (a plain top-level function with the same shape crashes
+identically), and independently of `mapGet` specifically (an `if`
+expression whose branches construct different union cases, used directly as
+a constructor argument, reproduces the identical crash).
+
+**Root cause.** `lowerConstruction` (`codegen/04_calls.l`) emitted `new; dup`
+for the outer constructor *before* lowering its arguments. When an argument
+expression has its own internal branches (any intrinsic or expression that
+emits labels/jumps — `mapGet`'s gated construction, an `if`/`match`
+expression), those branches execute while the outer constructor's two
+uninitialized-object stack slots are still present underneath. The
+argument's own StackMapTable is computed assuming an empty stack at its
+branch targets (correct in isolation), so it disagrees with the actual
+runtime stack once an enclosing constructor's `new; dup` sits beneath it —
+an architectural gap affecting *any* branching expression nested as a
+constructor argument, not a `mapGet`-specific bug.
+
+**Fix.** `lowerConstruction` now evaluates every constructor argument into a
+fresh local slot first (lowering each `ordered[i]` expression, coercing, and
+storing to a temp), *then* emits `new; dup; load-each-temp-in-field-order;
+invokespecial`. This guarantees the operand stack is always empty when any
+argument's internal branches execute, regardless of the enclosing
+constructor call. Missing arguments (arity mismatch, defaulted by the type
+checker) still push their benign default directly at the final load stage
+(no side effects, no temp needed).
+
+**Verification.** `map_option_self_test.l`'s previously-failing "impl get()"
+test (the original #4982 Finding 3 repro) is now green; a new general
+(non-`mapGet`) case pins the fix independently. File promoted to dual-target
+CI (was dotnet-only). Full regression sweep against every JVM self-test
+wired into CI (~35 files) — zero regressions; the handful of pre-existing
+failures encountered were all the same, unrelated sandbox limitation
+(`System.Convert.ToSingle` AOT-trimmed, D-progress-543) hit identically
+before this fix. Verified against the pinned F# stage-0 mint.
+
+**Related:** #4982 (the closed umbrella issue Finding 3 was originally filed
+under), #1707 (closed — the JVM parity issue `map_option_self_test.l`'s own
+header used to cite, whose closure didn't cover this interaction), D-progress-
+554/569–575/577 (the rest of this session's #4877/#1707/#4982 JVM-parity
+series), docs/44 m-82.
