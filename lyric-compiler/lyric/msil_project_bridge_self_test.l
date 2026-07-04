@@ -859,6 +859,25 @@ test "generic @externTarget with List[Byte] and List[T] signatures compile and P
   assertEqual(Str.trim(result.stdout), "0", "generic_list_byte_return: PE loads and main runs")
 }
 
+// Regression for #3841: a property-getter @externTarget used to emit the literal member name instead of the CLR-required `get_` accessor, producing MissingMethodException.
+test "externTarget property getter resolves with get_ prefix" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "PropGetter.App",
+      "package PropGetter.App\n" + "@externTarget(\"System.Environment.MachineName\")\n" +
+        "func machineName(): String = ()\n" +
+        "func main(): Unit {\n" +
+        "  val n = machineName()\n" +
+        "  println((n.length > 0).toString())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("prop_getter", packages, "PropGetter")
+  assertEqualInt(result.exitCode, 0, "prop_getter: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "True", "prop_getter: MachineName resolved and non-empty")
+}
+
 // Regression for #4980: hits the compiled-bundle fallback directly, since this process's CWD sits inside the checkout and would always find the real source tree.
 test "stdlib types reconstruct from compiled bundle contract metadata" {
   val sources = Emitter.stdlibSourcesFromCompiledBundle()

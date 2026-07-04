@@ -94,14 +94,24 @@ LYRIC_STD_PATH="$REPO_ROOT/lyric-stdlib/std" \
 LYRIC_LYRIC_PATH="$REPO_ROOT/lyric-compiler/lyric" \
 LYRIC_MSIL_PATH="$REPO_ROOT/lyric-compiler/msil" \
 LYRIC_JVM_PATH="$REPO_ROOT/lyric-compiler/jvm" \
-TMPDIR="$FSCACHE" \
+TMPDIR="$FSCACHE" TMP="$FSCACHE" TEMP="$FSCACHE" \
   run_fs --internal-build "$local_driver" -o "$BUILD_DIR/_fsmint_out.dll" --target dotnet \
   || die "F# closure compile failed"
 rm -f "$local_driver" "$BUILD_DIR/_fsmint_out.dll"
 
 # 3. Harvest the F#-emitted per-package DLLs into stage-1.
+# .NET's Path.GetTempPath() honors TMPDIR on Linux/macOS but reads TMP/TEMP on
+# Windows, so all three must be set above or the F# emitter's package cache
+# lands somewhere other than $FSCACHE and this harvest silently finds nothing
+# (#3941).
 local_cache_dir="$(ls -d "$FSCACHE"/lyric-stdlib-*/ 2>/dev/null | head -1)"
-[[ -n "$local_cache_dir" ]] || die "no F# package cache produced under $FSCACHE"
+if [[ -z "$local_cache_dir" ]]; then
+  echo "FATAL: no F# package cache produced under $FSCACHE" >&2
+  echo "contents of \$FSCACHE ($FSCACHE):" >&2
+  ls -la "$FSCACHE" >&2 2>&1 || true
+  echo "NOTE: TMP/TEMP were set to $FSCACHE for run_fs above (inline env vars — not visible in this outer shell)" >&2
+  die "no F# package cache produced under $FSCACHE"
+fi
 [[ -f "$local_cache_dir/Lyric.Lyric.Cli.dll" ]] || die "Lyric.Lyric.Cli.dll not in F# cache"
 rm -rf "$STAGE1_DIR"; mkdir -p "$STAGE1_DIR"
 cp "$local_cache_dir"/*.dll "$STAGE1_DIR/"
