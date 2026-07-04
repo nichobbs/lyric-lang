@@ -290,17 +290,7 @@ record Ctx {
   tempScopes: List[List[NOwnedTemp]]
   loopVarDepth: List[Int]
   loopTempDepth: List[Int]
-  // `defer` (P2.D1): one list per lexical scope (mirrors `scopeRefs`'s
-  // stack discipline exactly, same push/pop sites), holding the deferred
-  // `Block`s registered directly in that scope in declaration order.
-  // Native has no try/finally to lean on (unlike msil/jvm's `try { rest }
-  // finally { D }` recursive lowering), so a scope's deferred blocks are
-  // instead run explicitly at every exit from that scope: normal
-  // fall-off (`popVarScope`), `return` (`releaseAllForReturn`, every
-  // scope), and `break`/`continue` (`releaseForLoopExit`, scopes down to
-  // the loop floor) — in each case, in reverse declaration order and
-  // innermost-scope-first, before that scope's ARC releases run (so a
-  // deferred block can still read the scope's own locals).
+  // `defer` (P2.D1): pending deferred `Block`s per lexical scope, mirroring `scopeRefs` — see D-N-020.
   deferStack: List[List[Block]]
 }
 
@@ -857,13 +847,7 @@ func pushVarScope(ctx: in Ctx): Unit {
   ctx.deferStack.add(freshDefers)
 }
 
-/// Run the `defer` blocks registered directly in the var scope at `idx`
-/// (P2.D1), in reverse declaration order, before that scope's ARC
-/// locals are released — a deferred block may read locals from its own
-/// enclosing scope.  Native has no try/finally, so this is called
-/// explicitly at every scope-exit site (`popVarScope`,
-/// `releaseAllForReturn`, `releaseForLoopExit`) instead of leaning on a
-/// runtime unwind mechanism.
+/// Run scope `idx`'s pending `defer` blocks in reverse declaration order, before that scope's ARC releases (D-N-020).
 func runDeferredScopeAt(ctx: in Ctx, insns: in List[NInsn], idx: in Int): Unit {
   val defers = ctx.deferStack[idx]
   var i = defers.count - 1
@@ -895,9 +879,7 @@ func releaseVarScopeAt(ctx: in Ctx, insns: in List[NInsn], idx: in Int): Unit {
 
 /// Emit the releases a `return` needs: every var scope in the stack and
 /// every remaining owned temp (the return value itself must already be
-/// unregistered/retained by the caller of this helper).  Runs each
-/// scope's pending `defer` blocks (P2.D1) before releasing that scope's
-/// ARC locals, innermost scope first.
+/// unregistered/retained by the caller of this helper); also runs each scope's pending `defer` blocks first (D-N-020).
 func releaseAllForReturn(ctx: in Ctx, insns: in List[NInsn]): Unit {
   var ti = ctx.tempScopes.count - 1
   while ti >= 0 {
@@ -918,9 +900,7 @@ func releaseAllForReturn(ctx: in Ctx, insns: in List[NInsn]): Unit {
 }
 
 /// Emit the releases `break`/`continue` need: var scopes and temp
-/// scopes opened inside the innermost loop (not the loop-outer ones).
-/// Runs each scope's pending `defer` blocks (P2.D1) before releasing
-/// that scope's ARC locals, innermost scope first.
+/// scopes opened inside the innermost loop (not the loop-outer ones); also runs each scope's pending `defer` blocks first (D-N-020).
 func releaseForLoopExit(ctx: in Ctx, insns: in List[NInsn]): Unit {
   val varFloor = ctx.loopVarDepth[ctx.loopVarDepth.count - 1]
   val tempFloor = ctx.loopTempDepth[ctx.loopTempDepth.count - 1]
@@ -7144,14 +7124,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
     case SThrow(_) -> panic("Lyric.LlvmCodegen: 'throw' is not supported for --target native (D-N-003: panics abort)")
     case STry(_, _, _) -> panic("Lyric.LlvmCodegen: try/catch is not supported for --target native (D-N-003: no unwinding)")
     case SDefer(body) -> {
-      // P2.D1: register `body` in the innermost lexical scope's defer
-      // list; it runs at that scope's exit (fall-off, return, break, or
-      // continue) via `runDeferredScopeAt`, not inline here. Note:
-      // D-N-003 still applies — a `panic` aborts the process immediately
-      // with no unwinding, so a `defer` registered before a `panic`
-      // further down the SAME function does not run (there is no scope
-      // exit to trigger it; only dotnet/jvm's real exception unwinding
-      // runs a `defer` during a panic).
+      // Registers into the innermost scope; runs via `runDeferredScopeAt` at scope exit, not inline here (D-N-020; a panic still bypasses it per D-N-003).
       ctx.deferStack[ctx.deferStack.count - 1].add(body)
     }
     case SInvariant(_) -> {
@@ -7438,12 +7411,7 @@ func lowerFunction(modCtx: in Ctx, pkg: in String, fn: in FunctionDecl, irName: 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Async generator detection (D-N-019).  A native-local mirror of the type
-// checker's `funcBodyContainsYield`/`exprContainsYield`/`blockContainsYield`
-// (`typechecker_checker.l`) — the backend packages don't import
-// `Lyric.TypeChecker` (msil/jvm each keep their own copy too), so this walks
-// the same shared parser AST independently to flag the one async shape this
-// slice does not lower: a `yield` anywhere inside an `async func` body.
+// Async generator detection (D-N-019): a native-local mirror of the type checker's yield walk, since backends don't import `Lyric.TypeChecker`.
 // ─────────────────────────────────────────────────────────────────────────────
 func funcBodyContainsYieldNative(fn: in FunctionDecl): Bool {
   match fn.body {
@@ -7464,7 +7432,8 @@ func exprContainsYieldNative(e: in Expr): Bool {
     case EError -> false
     case EParen(inner) -> exprContainsYieldNative(inner)
     case EAwait(inner) -> exprContainsYieldNative(inner)
-    case ESpawn(inner) -> exprContainsYieldNative(inner)
+    // yield inside a spawn belongs to the spawned task, not this scope.
+    case ESpawn(_) -> false
     case EOld(inner) -> exprContainsYieldNative(inner)
     case EPropagate(inner) -> exprContainsYieldNative(inner)
     case ETry(inner) -> exprContainsYieldNative(inner)
