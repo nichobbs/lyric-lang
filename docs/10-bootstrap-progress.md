@@ -28934,7 +28934,7 @@ docs/57 §2 and §7 catalogue the migration backlog.
 this integration routes through), docs/57 (ecosystem adoption audit),
 #4714.
 
-### D-progress-585 — Fix `ImportDecl` span truncation for selector-group imports (docs/57 §8)
+### D-progress-587 — Fix `ImportDecl` span truncation for selector-group imports (docs/57 §8)
 
 **Fix pushed; verification pending CI** (this sandbox cannot build stage 0
 — `scripts/mint-stage0-fsharp.sh` fails with no GitHub API access, the
@@ -28942,7 +28942,7 @@ same class of constraint as D-progress-543 — so the fix could not be
 locally compiled and run before pushing; see docs/57 §8 for the full
 trace).
 
-Wiring `import_extern_self_test.l` into CI (D-progress-584 follow-up)
+Wiring `import_extern_self_test.l` into CI (D-progress-586 follow-up)
 immediately failed with a `P0040` parse-error cascade. Root cause,
 precisely traced: `lyric-compiler/lyric/parser/parser_core.l::parseImportDecl`
 computed an import declaration's end span from `path.span` (the module
@@ -28968,5 +28968,5 @@ as the declaration's end span whenever a selector is present, before the
 top-level `as`-alias check runs. Selector *parsing* was already correct;
 only the span bookkeeping was wrong.
 
-**Related:** D-progress-584, D-progress-543 (this sandbox's stage-0 build
+**Related:** D-progress-586, D-progress-543 (this sandbox's stage-0 build
 constraint), docs/57 §8, `lyric-compiler/lyric/test_synth/test_synth.l`.
