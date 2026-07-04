@@ -8536,7 +8536,7 @@ clarified against).
 
 ---
 
-## D-progress-583 — A stdlib union case or record field forward/mutually-referencing another `Std.*` type degraded to `System.Object` in cross-package MemberRef signatures, faulting with `MissingFieldException` under framework-dependent (JIT) execution (#5010)
+## D-progress-584 — A stdlib union case or record field forward/mutually-referencing another `Std.*` type degraded to `System.Object` in cross-package MemberRef signatures, faulting with `MissingFieldException` under framework-dependent (JIT) execution (#5010)
 
 **Status:** ACCEPTED
 
