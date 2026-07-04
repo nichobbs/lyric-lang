@@ -8075,6 +8075,33 @@ review finding that prompted this entry), `CLAUDE.md` "Formatting — run
 `lyric fmt` before every commit", `scripts/mint-stage0-fsharp.sh` (the
 retired F# mint-fallback this sandbox limitation stems from).
 
+**Addendum (2026-07-04, published NuGet `lyric` 0.4.14, `dotnet tool
+install -g lyric`):** the same class of published-tool divergence extends
+to runtime correctness, not just `fmt`'s formatting style. Reading back
+an opaque type's own private field from within its own defining
+package — the exact pattern every accessor function in the stdlib uses
+(`Std.Regex.isMatch`'s `r.handle`, `Std.Http.Url.toString`'s `url.value`,
+`Std.Http.request`'s `url.value`, and by extension presumably every
+other opaque type in the stdlib) — throws
+`System.FieldAccessException: Attempt by method '...' to access field
+'...' failed` when compiled by the published 0.4.14 tool against this
+repo's current stdlib source (via `LYRIC_STD_PATH`), reproduced against
+two independent opaque types (`Std.Http.Url`, `Std.Regex.CompiledRegex`)
+with minimal isolated repros. Since this would break virtually every
+opaque-type-using module in the stdlib and ecosystem if it reflected
+actual `main` behavior — and CI, which builds fully from source, is
+demonstrably green across exactly this code — the divergence is
+almost certainly in the published release's build/packaging pipeline
+(a Release-vs-Debug field-accessibility difference is the leading
+theory; CI builds with `BUILD_CONFIG=Debug`), not a real bug on `main`.
+Noted here rather than chased further: root-causing the release pipeline
+itself is out of scope for whatever task surfaced this. A session in
+this situation should treat the published tool as useful for syntax/
+name-resolution sanity (real compile errors it reports are real) but
+**not** as a runtime oracle for anything touching opaque types — trust
+CI's from-source build as the actual verification, the same posture
+this entry already establishes for `fmt`.
+
 ---
 
 ## D118 — Fixed aspect `requires:`/`ensures:` runtime enforcement gap; retired C-mode across every field-accessing ecosystem library aspect
