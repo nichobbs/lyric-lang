@@ -2182,7 +2182,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 // FIELD signature: VAR(n) for a type-parameter field, the concrete
                 // FIELD sig otherwise.  Register both the var-index (-1 = concrete)
                 // and the signature under the by-name and positional keys (mirrors
-                // the stdlib path in registerStdlibTypeItem).
+                // the stdlib path in registerStdlibTypeItemMembers).
                 val fSig = if gIdx >= 0 { buildGenericParamFieldSig(gIdx) } else { buildFieldSig(fty) }
                 cctx.fieldVarIndices.add(className + "/" + f.name, gIdx)
                 cctx.fieldSigBytes.add(className + "/" + f.name, fSig)
@@ -2194,7 +2194,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               // each declaration position so a named-argument constructor call
               // (`R(c = …, a = …)`) can be reordered to field-declaration order
               // before the positional `newobj`.  Keyed `<className>/field<pos>`,
-              // matching the cross-package registration in registerStdlibTypeItem.
+              // matching the cross-package registration in registerStdlibTypeItemMembers.
               val byPosKey = className + "/field" + toString(fpos)
               if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
                 cctx.fieldDeclaredNames.add(byPosKey, f.name)
@@ -14350,10 +14350,7 @@ func emitExternTargetBody(
               // would have resolved and emitted the call correctly.
               val verified = match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, r.memberName, verifySigs) {
                 case Some(_) -> true
-                case None -> match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, "get_" + r.memberName, verifySigs) {
-                  case Some(_) -> true
-                  case None -> false
-                }
+                case None -> match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, "get_" + r.memberName, verifySigs) { case Some(_) -> true; case None -> false }
               }
               match verified {
                 case true -> {
@@ -21690,7 +21687,7 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
         // Guard against a duplicate key: a user file may declare the same
         // extern (e.g. `extern type TimeSpan = "System.TimeSpan"`) that the
         // stdlib kernel already registered into `externTypeNames` (which now
-        // happens via `registerStdlibTypeItem`, #1602).  Dictionary.Add throws
+        // happens via `registerStdlibTypeItemRefs`, #1602).  Dictionary.Add throws
         // on a duplicate, so register first-wins.  Same-name externs are
         // expected to map to the same CLR type, so the surviving entry is
         // equivalent.
@@ -22542,7 +22539,9 @@ func emitAutoFfiCallMsil(
       "Msil.Codegen: '" + clrFqn + ".new(...)' targets a value type (struct); " +
         "constructor shorthand (.new()) is only supported for reference types " +
         "today (Q48-004).  Declare an @externTarget wrapper function instead — " +
-        "e.g. `@externTarget(\"" + clrFqn + "..ctor\") @externStatic func ...`, " +
+        "e.g. `@externTarget(\"" +
+        clrFqn +
+        "..ctor\") @externStatic func ...`, " +
         "or, if the type's default value is sufficient, rely on its " +
         "zero-initialised default rather than calling .new()."
     )
@@ -25388,11 +25387,39 @@ pub record StdlibPkg {
 /// the `funcTokens` lookup (handled by the hardcoded builtin arms in
 /// `lowerBuiltinOrStaticCallMsil`).
 pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibPkg]): Unit {
-  // Pass 1: register all type items across every package first.  This
-  // populates `typeFqnByName` and `ffiTypeRefs` before any function
-  // signature is resolved, so cross-package generic return types (e.g.
-  // `Option[Int]` in `Std.String.indexOf`) resolve to the correct
-  // `MGenericInst` regardless of package order in `pkgs`.
+  // Pass 1a: register every type's own TypeRef (and every union case's
+  // TypeRef) across every package, before any field/ctor signature is baked.
+  // A field can forward-reference a type declared LATER in the same (or a
+  // different) package — e.g. `Std.Yaml`'s `YamlPair.value: YamlValue` names
+  // the union `YamlValue`, which is declared after `YamlPair` and whose
+  // `YMapping` case itself embeds `List[YamlPair]` (mutual recursion).  Baking
+  // a field signature (which resolves its type's TypeRef by name via
+  // `bufMsilTypeWithCtx`) before the referenced type's own TypeRef exists
+  // degrades that field to `ELEMENT_TYPE_OBJECT`, producing a MemberRef whose
+  // signature no longer matches the producer DLL's real field — the consumer
+  // then faults with `MissingFieldException` at load (#5010).  Splitting type
+  // registration from member registration into two sub-passes (mirroring
+  // `registerRestoredArtifactTokens`'s existing two-pass structure) guarantees
+  // every TypeRef exists — regardless of declaration order or forward/mutual
+  // references — before any field or constructor signature is encoded.
+  var pia = 0
+  while pia < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pia]
+    val asmRefRow = ensureStdlibAssemblyRef(cctx, pkg.name)
+    var iia = 0
+    while iia < pkg.items.count {
+      val it: Item = pkg.items[iia]
+      match it.kind {
+        case IFunc(_) -> {
+        }
+        case _ -> registerStdlibTypeItemRefs(cctx, pkg.name, it, asmRefRow)
+      }
+      iia = iia + 1
+    }
+    pia = pia + 1
+  }
+  // Pass 1b: register every type's field/ctor MemberRefs, now that every
+  // type's TypeRef (across every package) exists.
   var pi = 0
   while pi < pkgs.count {
     val pkg: StdlibPkg = pkgs[pi]
@@ -25403,7 +25430,7 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
       match it.kind {
         case IFunc(_) -> {
         }
-        case _ -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow)
+        case _ -> registerStdlibTypeItemMembers(cctx, pkg.name, it, asmRefRow)
       }
       ii = ii + 1
     }
@@ -25669,7 +25696,7 @@ func buildGenericCaseCtorTok(
 // (`Option$Some`, `Option$None`) so that `MIsinstByName` resolves to
 // a TypeRef token rather than falling back to System.Object.
 // Mirrors the `registerRestoredTypeDecl` + `registerRestoredUnionCase` logic.
-func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in Item, asmRefRow: in Int): Unit {
+func registerStdlibTypeItemRefs(cctx: in CodegenCtx, packageName: in String, it: in Item, asmRefRow: in Int): Unit {
   // Extern types declared in the stdlib `_kernel/` boundary (e.g.
   // `extern type Uuid = "System.Guid"`) carry the Lyric-name → CLR-FQN
   // mapping a consumer needs to encode the type correctly in cross-package
@@ -25726,7 +25753,7 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
   //
   // `ctxAddTypeRef` is NOT idempotent — it unconditionally appends a row
   // (`addTypeRef` in tables.l has no dedup) — but that's safe here: this
-  // function is reached only from the Pass-1 loop in
+  // function is reached only from the Pass-1a loop in
   // `registerStdlibArtifactTokens`, which walks each stdlib package's items
   // exactly once per compilation (one fresh `CodegenCtx` per compile; see
   // its two call sites in bridge.l, each on its own cctx), so each type item
@@ -25753,6 +25780,57 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
     }
   }
   registerTypeFqnCandidate(cctx, typeName, typeFqn)
+  // Union case TypeRefs only — field/ctor MemberRefs are registered later, in
+  // `registerStdlibTypeItemMembers`, once every type's TypeRef (including
+  // forward/mutually-referenced ones — e.g. `Std.Yaml`'s `YamlValue`/`YamlPair`
+  // pair) exists across every package (#5010).
+  match it.kind {
+    case IUnion(decl) -> {
+      val caseArity = genericNamesOf(decl.generics).count
+      var ci = 0
+      while ci < decl.cases.count {
+        val caseName = decl.cases[ci].name
+        val ctorKey = packageName + "." + decl.name + "_" + caseName
+        val caseClassName = if caseArity > 0 {
+          decl.name + "_" + caseName + "`" + toString(caseArity)
+        } else {
+          decl.name + "_" + caseName
+        }
+        val caseRefKey = packageName + "/" + ctorKey
+        // Register case-class TypeRef so MIsinstByName can find it via
+        // findTypeRefRowByName instead of falling back to System.Object.
+        if not cctx.ffiTypeRefs.containsKey(caseRefKey) {
+          val caseRow = ctxAddTypeRef(cctx.lctx, packageName, caseClassName, asmRefRow)
+          cctx.ffiTypeRefs.add(caseRefKey, caseRow)
+          // For generic cases, also register with the arity-suffixed key so
+          // cross-package references with arity can find the TypeRef.
+          if caseArity > 0 {
+            val ctorKeyWithArity = ctorKey + "`" + toString(caseArity)
+            val caseRefKeyWithArity = packageName + "/" + ctorKeyWithArity
+            if not cctx.ffiTypeRefs.containsKey(caseRefKeyWithArity) {
+              cctx.ffiTypeRefs.add(caseRefKeyWithArity, caseRow)
+            }
+          }
+        }
+        ci = ci + 1
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Register field/ctor MemberRefs for a stdlib type item.  Must run only after
+// `registerStdlibTypeItemRefs` has registered every type's TypeRef across
+// every package (see that function's #5010 note on forward/mutual references).
+func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, it: in Item, asmRefRow: in Int): Unit {
+  val typeName = match it.kind {
+    case IRecord(decl) -> decl.name
+    case IExposedRec(decl) -> decl.name
+    case IUnion(decl) -> decl.name
+    case _ -> return
+  }
+  val typeFqn = packageName + "." + typeName
+  val typeRefKey = packageName + "/" + typeFqn
   match it.kind {
     case IUnion(decl) -> {
       // Stdlib types compiled by the F# bootstrap emitter use `_` as the
@@ -25782,28 +25860,17 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
       while ci < decl.cases.count {
         val caseName = decl.cases[ci].name
         val ctorKey = packageName + "." + decl.name + "_" + caseName
-        val caseClassName = if caseArity > 0 {
-          decl.name + "_" + caseName + "`" + toString(caseArity)
-        } else {
-          decl.name + "_" + caseName
-        }
         val caseRefKey = packageName + "/" + ctorKey
-        // Register case-class TypeRef so MIsinstByName can find it via
-        // findTypeRefRowByName instead of falling back to System.Object.
-        if not cctx.ffiTypeRefs.containsKey(caseRefKey) {
-          val caseRow = ctxAddTypeRef(cctx.lctx, packageName, caseClassName, asmRefRow)
-          cctx.ffiTypeRefs.add(caseRefKey, caseRow)
-          // For generic cases, also register with the arity-suffixed key so
-          // cross-package references with arity can find the TypeRef.
-          if caseArity > 0 {
-            val ctorKeyWithArity = ctorKey + "`" + toString(caseArity)
-            val caseRefKeyWithArity = packageName + "/" + ctorKeyWithArity
-            if not cctx.ffiTypeRefs.containsKey(caseRefKeyWithArity) {
-              cctx.ffiTypeRefs.add(caseRefKeyWithArity, caseRow)
-            }
-          }
+        // The TypeRef was already registered by `registerStdlibTypeItemRefs` —
+        // a missing row here means that invariant broke (a future change
+        // skipped Pass 1a for this case), which would otherwise silently
+        // drop this case's field/ctor MemberRefs — the same
+        // masked-until-runtime failure class #5010 was about. Panic loudly
+        // at compile time instead (#5031).
+        val caseRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) {
+          case Some(r) -> r
+          case None -> panic("Msil.Codegen: registerStdlibTypeItemMembers: TypeRef for stdlib union case '" + ctorKey + "' not found — registerStdlibTypeItemRefs should have registered it first")
         }
-        val caseRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> 0 }
         // Register field MemberRefs so `ldfld` can read fields of cross-assembly
         // union case instances.  Registered both by declared name ("value") and by
         // positional index ("field0") so that binding patterns like `case Some(x)`
@@ -25832,10 +25899,10 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
                       fieldVarIdx = varIdx
                       buildGenericParamFieldSig(varIdx)
                     }
-                    case None -> buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
+                    case None -> buildFieldSigWithCtx(typeExprToMsilCtx(cctx, ty, packageName), cctx.lctx)
                   }
                 } else {
-                  buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
+                  buildFieldSigWithCtx(typeExprToMsilCtx(cctx, ty, packageName), cctx.lctx)
                 }
               }
               case UFPos(ty, _) -> {
@@ -25849,10 +25916,10 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
                       fieldVarIdx = varIdx
                       buildGenericParamFieldSig(varIdx)
                     }
-                    case None -> buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
+                    case None -> buildFieldSigWithCtx(typeExprToMsilCtx(cctx, ty, packageName), cctx.lctx)
                   }
                 } else {
-                  buildFieldSig(typeExprToMsilCtx(cctx, ty, packageName))
+                  buildFieldSigWithCtx(typeExprToMsilCtx(cctx, ty, packageName), cctx.lctx)
                 }
               }
             }
@@ -25986,11 +26053,12 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
   }
 }
 
-// Shared by the IRecord and IExposedRec arms of `registerStdlibTypeItem`
+// Shared by the IRecord and IExposedRec arms of `registerStdlibTypeItemMembers`
 // (#2922): both carry a `RecordDecl` and register identical metadata — field
 // MemberRefs (by declared name and positional fallback), field MsilTypes, and
 // the ctor MemberRef.  The exposed/opaque distinction does not change what a
-// cross-assembly consumer references.
+// cross-assembly consumer references.  Assumes the type's own TypeRef was
+// already registered by `registerStdlibTypeItemRefs`.
 func registerStdlibRecordLikeType(
   cctx: in CodegenCtx,
   decl: in RecordDecl,

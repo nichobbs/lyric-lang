@@ -22860,7 +22860,17 @@ divergence that the per-package compile gate (D-progress-468) does not catch
   `MissingFieldException`.  This is *not* safely fixable in isolation: making
   the consumer concrete would break the current self-hosted-consumer ↔
   F#-built-producer pairing (F# uses object-typed fields), which is the shipped
-  config.
+  config.  **Partially superseded by D-progress-584** (#5010): the
+  `F#-built-producer` half of this constraint no longer applies to the
+  *stdlib* specifically — D111 already collapsed `Std.*` to a single
+  always-self-hosted-compiled bundle with no F#-built alternative, so
+  D-progress-584 safely switched the stdlib's own cross-package field-ref
+  path (`registerStdlibArtifactTokens`, a different function from
+  `addPackageTokens`'s in-bundle path referenced above) to the concrete,
+  context-aware encoding.  The broader concern described here —
+  `addPackageTokens`'s own context-free `buildFieldSig` call for in-bundle
+  multi-package builds (e.g. compiling the compiler's own packages
+  together) — is untouched and remains blocked as described.
 - **Generic-type name suffix.** A self-hosted-built `Lyric.Stdlib.Core.dll`
   defines `Option`/`Result` arity-suffixed (`Option`1`, docs/43) while every
   consumer references them non-suffixed (`Option`), so a self-hosted Core can't
