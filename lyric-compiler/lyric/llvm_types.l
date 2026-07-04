@@ -30,6 +30,10 @@ pub union NType {
   case NLitStruct(fields: List[NType])
   case NFnPtr(params: List[NType], ret: NType)
   case NArray(elem: NType, size: Int)
+  /// LLVM's `token` type — produced/consumed only by the `llvm.coro.*`
+  /// intrinsics the async coroutine emission uses (stage B2, D-N-021's
+  /// async-leaf follow-up).
+  case NToken
 }
 
 pub union NValue {
@@ -39,6 +43,8 @@ pub union NValue {
   case NLitFloat(v: Double)
   case NLitNull(ty: NType)
   case NUndef(ty: NType)
+  /// The literal `none` token operand (`llvm.coro.suspend(token none, ...)`).
+  case NLitTokenNone
 }
 
 /// Signed/unsigned integer comparison predicates (`icmp <pred>`).
@@ -95,6 +101,7 @@ pub func nTypeToIrString(t: in NType): String {
       acc + ")*"
     }
     case NArray(elem, size) -> "[" + size.toString() + " x " + nTypeToIrString(elem) + "]"
+    case NToken -> "token"
   }
 }
 
@@ -192,6 +199,7 @@ pub func nValueOperandString(v: in NValue): String {
     case NLitFloat(value) -> floatToIrString(value)
     case NLitNull(_) -> "null"
     case NUndef(_) -> "undef"
+    case NLitTokenNone -> "none"
   }
 }
 
@@ -205,6 +213,7 @@ pub func nValueType(v: in NValue): Option[NType] {
     case NLitFloat(_) -> Some(value = NDouble)
     case NLitNull(ty) -> Some(value = ty)
     case NUndef(ty) -> Some(value = ty)
+    case NLitTokenNone -> Some(value = NToken)
   }
 }
 

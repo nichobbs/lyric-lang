@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -797,6 +798,271 @@ static void test_ok_variants(void) {
     unsetenv("LYRIC_RT_OK_TEST");
 }
 
+/* ── Async scheduler (lyric_async.c) ─────────────────────────────────
+ *
+ * The real system resumes LLVM coroutine frames through the generated
+ * `lyric_coro_resume`/`lyric_coro_destroy` wrappers; here those symbols
+ * are defined over FakeCoro handles instead — a step-indexed C state
+ * machine that plays the exact protocol the codegen will emit: register
+ * (await/sleep) then return to simulate a suspend, `lyric_task_complete`
+ * then return to simulate the final suspend.
+ */
+typedef struct FakeCoro {
+    LyricTask* task;
+    int step;
+    int destroyed;
+    void (*body)(struct FakeCoro*);
+    struct FakeCoro* dep; /* another fake coro this one awaits, if any */
+    int64_t sleep1_ms;
+    int64_t sleep2_ms;
+    char tag1;
+    char tag2;
+} FakeCoro;
+
+void lyric_coro_resume(void* hdl) {
+    FakeCoro* c = (FakeCoro*)hdl;
+    c->body(c);
+}
+
+void lyric_coro_destroy(void* hdl) {
+    ((FakeCoro*)hdl)->destroyed = 1;
+}
+
+/* The hot ramp: create the task, run the body inline until it first
+ * "suspends" (returns), hand the caller its rc=1 task — exactly the
+ * calling convention stage B's codegen emits for an async call. */
+static LyricTask* fake_call(FakeCoro* c) {
+    c->task = lyric_task_new(c);
+    LyricTask* prev = lyric_current_task();
+    lyric_set_current_task(c->task);
+    c->body(c);
+    lyric_set_current_task(prev);
+    return c->task;
+}
+
+static char async_log[32];
+static int async_log_len = 0;
+
+static void async_log_push(char tag) {
+    if (async_log_len < (int)sizeof(async_log) - 1) {
+        async_log[async_log_len++] = tag;
+        async_log[async_log_len] = 0;
+    }
+}
+
+/* Body: complete immediately with 42 (never suspends — pure hot path). */
+static void body_immediate(FakeCoro* c) {
+    lyric_task_complete(c->task, 42, 0);
+    c->step = -1;
+}
+
+/* Body: sleep tag1 ms, log tag1, sleep tag2 ms, log tag2, complete. */
+static void body_two_sleeps(FakeCoro* c) {
+    if (c->step == 0) {
+        c->step = 1;
+        lyric_async_sleep(c->task, c->sleep1_ms);
+        return;
+    }
+    if (c->step == 1) {
+        async_log_push(c->tag1);
+        c->step = 2;
+        lyric_async_sleep(c->task, c->sleep2_ms);
+        return;
+    }
+    async_log_push(c->tag2);
+    lyric_task_complete(c->task, (int64_t)c->tag2, 0);
+    c->step = -1;
+}
+
+/* Body: await dep (registering only if incomplete), then complete with
+ * dep's result + 1, logging tag1 (when set) at completion so tests can
+ * assert wake ORDER, not just wake-at-all. */
+static void body_await_dep(FakeCoro* c) {
+    if (c->step == 0 && !lyric_task_is_complete(c->dep->task)) {
+        c->step = 1;
+        lyric_async_await(c->task, c->dep->task);
+        return;
+    }
+    if (c->tag1) {
+        async_log_push(c->tag1);
+    }
+    lyric_task_complete(c->task, lyric_task_result(c->dep->task) + 1, 0);
+    c->step = -1;
+}
+
+/* Body: sleep once, then complete with 7. */
+static void body_sleep_once(FakeCoro* c) {
+    if (c->step == 0) {
+        c->step = 1;
+        lyric_async_sleep(c->task, c->sleep1_ms);
+        return;
+    }
+    lyric_task_complete(c->task, 7, 0);
+    c->step = -1;
+}
+
+static void test_async_hot_completion(void) {
+    /* A never-suspending task completes inside the ramp: no scheduling,
+     * result readable immediately, frame destroyed when the last ref
+     * drops. */
+    FakeCoro c = {0};
+    c.body = body_immediate;
+    LyricTask* t = fake_call(&c);
+    CHECK(lyric_task_is_complete(t));
+    CHECK(lyric_task_result(t) == 42);
+    CHECK(!c.destroyed);
+    lyric_release(t);
+    CHECK(c.destroyed);
+}
+
+static void test_async_block_on_sleep(void) {
+    /* One sleeping task driven to completion by block_on. */
+    FakeCoro c = {0};
+    c.body = body_sleep_once;
+    c.sleep1_ms = 5;
+    LyricTask* t = fake_call(&c);
+    CHECK(!lyric_task_is_complete(t));
+    lyric_task_block_on(t);
+    CHECK(lyric_task_is_complete(t));
+    CHECK(lyric_task_result(t) == 7);
+    lyric_release(t);
+    CHECK(c.destroyed);
+}
+
+static void test_async_interleave(void) {
+    /* Two tasks with interleaved timer deadlines make progress in
+     * deadline order, not spawn order: a@20, b@40, A@~80, B@~130.
+     * Deadlines are computed from the ACTUAL wake time (now + ms), so
+     * near-ties would be decided by scheduling jitter — every gap here
+     * is >= 20 ms of ideal separation (20/40/50 ms), which only a
+     * differential stall of the gap size between two adjacent resumes
+     * could reorder. */
+    async_log_len = 0;
+    async_log[0] = 0;
+    FakeCoro a = {0};
+    a.body = body_two_sleeps;
+    a.sleep1_ms = 20;
+    a.sleep2_ms = 60; /* wakes at ~20, then ~80 */
+    a.tag1 = 'a';
+    a.tag2 = 'A';
+    FakeCoro b = {0};
+    b.body = body_two_sleeps;
+    b.sleep1_ms = 40;
+    b.sleep2_ms = 90; /* wakes at ~40, then ~130 */
+    b.tag1 = 'b';
+    b.tag2 = 'B';
+    LyricTask* ta = fake_call(&a);
+    LyricTask* tb = fake_call(&b);
+    CHECK(!lyric_task_is_complete(ta));
+    CHECK(!lyric_task_is_complete(tb));
+    lyric_task_block_on(ta);
+    lyric_task_block_on(tb);
+    CHECK(strcmp(async_log, "abAB") == 0);
+    lyric_release(ta);
+    lyric_release(tb);
+    CHECK(a.destroyed);
+    CHECK(b.destroyed);
+}
+
+static void test_async_await_chain(void) {
+    /* root awaits mid awaits leaf: completion propagates leaf -> mid ->
+     * root through the waiter lists. */
+    FakeCoro leaf = {0};
+    leaf.body = body_sleep_once;
+    leaf.sleep1_ms = 3;
+    FakeCoro mid = {0};
+    mid.body = body_await_dep;
+    mid.dep = &leaf;
+    FakeCoro root = {0};
+    root.body = body_await_dep;
+    root.dep = &mid;
+    LyricTask* tleaf = fake_call(&leaf);
+    LyricTask* tmid = fake_call(&mid);
+    LyricTask* troot = fake_call(&root);
+    CHECK(!lyric_task_is_complete(troot));
+    lyric_task_block_on(troot);
+    CHECK(lyric_task_result(tleaf) == 7);
+    CHECK(lyric_task_result(tmid) == 8);
+    CHECK(lyric_task_result(troot) == 9);
+    lyric_release(tleaf);
+    lyric_release(tmid);
+    lyric_release(troot);
+    CHECK(leaf.destroyed && mid.destroyed && root.destroyed);
+}
+
+static void test_async_multi_waiters(void) {
+    /* Two tasks parked on the same dependency both wake when it
+     * completes — in REGISTRATION order (FIFO fairness, #5082: a LIFO
+     * waiter list would resume w2 before w1). */
+    async_log_len = 0;
+    async_log[0] = 0;
+    FakeCoro leaf = {0};
+    leaf.body = body_sleep_once;
+    leaf.sleep1_ms = 3;
+    FakeCoro w1 = {0};
+    w1.body = body_await_dep;
+    w1.dep = &leaf;
+    w1.tag1 = '1';
+    FakeCoro w2 = {0};
+    w2.body = body_await_dep;
+    w2.dep = &leaf;
+    w2.tag1 = '2';
+    LyricTask* tleaf = fake_call(&leaf);
+    LyricTask* t1 = fake_call(&w1);
+    LyricTask* t2 = fake_call(&w2);
+    lyric_task_block_on(t1);
+    lyric_task_block_on(t2);
+    CHECK(lyric_task_result(t1) == 8);
+    CHECK(lyric_task_result(t2) == 8);
+    CHECK(strcmp(async_log, "12") == 0);
+    lyric_release(tleaf);
+    lyric_release(t1);
+    lyric_release(t2);
+    CHECK(leaf.destroyed && w1.destroyed && w2.destroyed);
+}
+
+static void test_async_sleep_saturates(void) {
+    /* An absurdly large sleep must saturate the nanosecond deadline
+     * (#5083) — without the cap, `ms * 1000000` wraps negative and the
+     * sleeper wakes immediately.  Forked so the never-expiring sleeper
+     * leaves no residue in the parent's scheduler state. */
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        FakeCoro c = {0};
+        c.body = body_sleep_once;
+        c.sleep1_ms = INT64_MAX;
+        LyricTask* t = fake_call(&c);
+        _exit(t->wake_deadline_ns == INT64_MAX && !lyric_task_is_complete(t) ? 0 : 1);
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+/* Body: await a task that can never complete (its "coroutine" was
+ * never driven past RUNNING) — the deadlock detector must abort. */
+static void test_async_deadlock_aborts(void) {
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        /* Silence the panic diagnostic so test output stays clean. */
+        if (!freopen("/dev/null", "w", stderr)) _exit(9);
+        FakeCoro stuck = {0};
+        stuck.body = body_immediate; /* never actually driven */
+        stuck.task = lyric_task_new(&stuck);
+        FakeCoro w = {0};
+        w.body = body_await_dep;
+        w.dep = &stuck;
+        LyricTask* tw = fake_call(&w);
+        lyric_task_block_on(tw); /* no ready tasks, no timers -> panic */
+        _exit(0);                /* not reached */
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
 int main(void) {
     test_alloc_retain_release();
     test_free();
@@ -821,6 +1087,13 @@ int main(void) {
     test_process();
     test_process_closed_stdio();
     test_process_closed_stdin_stdout();
+    test_async_hot_completion();
+    test_async_block_on_sleep();
+    test_async_interleave();
+    test_async_await_chain();
+    test_async_multi_waiters();
+    test_async_sleep_saturates();
+    test_async_deadlock_aborts();
     if (failures == 0) {
         printf("lyric_rt_test: all tests passed\n");
         return 0;

@@ -212,12 +212,13 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > and the `Std.Collections` accessors (map keys must be String or a
 > scalar type); `slice[T]` (shares the list representation, immutable by
 > construction), unlocking bytes-mode file I/O, directory listing, and
-> `Std.Environment.args()`. A non-generator `async func` and `await`
-> compile through the same codegen path as a plain `func` (`Task[T]`
-> isn't materialised as a distinct value on this target); `spawn` and
-> `scope { }` follow the same passthrough model the .NET emitter itself
-> uses (a spawned call completes at the spawn site — native has no
-> async leaf primitive for it to overlap with); `defer` runs
+> `Std.Environment.args()`. A non-generator `async func` compiles to a
+> real LLVM coroutine on a cooperative single-threaded scheduler: a
+> direct call awaits in place, `spawn f(...)` holds the task for a
+> later `await`, spawned tasks genuinely interleave, and
+> `Std.Time.sleepMillis` inside an async body suspends only the
+> calling task instead of blocking the thread; `scope { }` is a real
+> lexical scope; `defer` runs
 > on its normal-exit paths (fall-off, `return`, `break`, `continue`).
 > Standard-library modules with native kernels work out of
 > the box: `Std.Console`, `Std.File` (text I/O, existence probes,

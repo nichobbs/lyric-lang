@@ -841,11 +841,13 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # dispatch), NativeWeak[T], slice[T], List/Map +
                                        # for/indexing (map keys String or scalar); non-generic
                                        # protected types (entry/func both lock a mutex buffer via
-                                       # a lock/unlock wrapper); non-generator async func/await
-                                       # (Task[T] isn't a real value on this target -- await is a
-                                       # passthrough); spawn/scope (same passthrough model the
-                                       # .NET emitter uses -- a spawned call completes at the
-                                       # spawn site); defer (normal-exit paths: fall-off, return,
+                                       # a lock/unlock wrapper); non-generator async func as a
+                                       # real LLVM coroutine on a cooperative scheduler (direct
+                                       # calls await in place; spawn holds the task for a later
+                                       # await; spawned tasks genuinely interleave;
+                                       # Std.Time.sleepMillis in an async body suspends only the
+                                       # calling task); scope { } as a real lexical scope;
+                                       # defer (normal-exit paths: fall-off, return,
                                        # break, continue); raw FFI
                                        # (NativePtr[T], nativeAddrOf, nativeNullPtr,
                                        # closure-as-C-callback trampolines) only in @unsafe_ffi

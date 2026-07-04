@@ -111,6 +111,9 @@ record NFuncSig {
   paramTys: List[TypeExpr]
   retTy: Option[TypeExpr]
   isExternSym: Bool
+  // Async callee (stage B2): the define returns a LyricTask* (as i8*) and
+  // call sites unwrap (or hold the task under `spawn`) — see emitAsyncCall.
+  isAsync: Bool
 }
 
 /// The result of lowering one expression: its LLVM type and operand.
@@ -184,6 +187,9 @@ record NFnInst {
   irName: String
   paramTys: List[NType]
   retTy: NType
+  // Async instance (stage B2): the define returns a LyricTask* — call
+  // sites go through emitAsyncCall like non-generic async callees.
+  isAsync: Bool
 }
 
 /// The call signature behind a closure type (keyed by the closure
@@ -292,6 +298,14 @@ record Ctx {
   loopTempDepth: List[Int]
   // `defer` (P2.D1): pending deferred `Block`s per lexical scope, mirroring `scopeRefs` — see D-N-020.
   deferStack: List[List[Block]]
+  // Async coroutines (stage B2).  `taskElems` maps `__task<...>` struct
+  // names to their element NType (mirrors `listElems`); `curAsyncTask` is
+  // a per-function cell holding the SSA name of the current coroutine's
+  // LyricTask* (empty = not lowering an async body); `usesAsync` is a
+  // module-shared cell marking that coro wrappers/attrs must be emitted.
+  taskElems: Map[String, NType]
+  curAsyncTask: List[String]
+  usesAsync: List[Int]
 }
 
 func freshTmp(ctx: in Ctx): String {
@@ -1011,7 +1025,8 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
         paramNames = paramNamesOf(fn.params),
         paramTys = paramTysOf(fn.params),
         retTy = fn.ret,
-        isExternSym = false
+        isExternSym = false,
+        isAsync = fn.isAsync
       )
       addSig(sigs, u.pkgName + "." + fn.name + "/" + arity.toString(), sig)
       addSig(sigs, fn.name + "/" + arity.toString(), sig)
@@ -1027,7 +1042,8 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
         paramNames = paramNamesOf(ef.params),
         paramTys = paramTysOf(ef.params),
         retTy = ef.ret,
-        isExternSym = true
+        isExternSym = true,
+        isAsync = false
       )
       addSig(sigs, u.pkgName + "." + ef.name + "/" + arity.toString(), sig)
       addSig(sigs, ef.name + "/" + arity.toString(), sig)
@@ -1446,10 +1462,24 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
     }
     case EList(_) -> panic("Lyric.LlvmCodegen: list literals are not yet supported for --target native (collections are Phase N2/N5)")
     case EIndex(receiver, indices) -> lowerCollectionIndex(ctx, insns, receiver, indices, expr.span.startPos.line)
-    // `await` is a pure passthrough on --target native (D-N-019): nothing to unwrap since async return types are never wrapped.
-    case EAwait(inner) -> lowerExpr(ctx, insns, inner)
-    // `spawn` is a passthrough too (D-N-021), matching MSIL's own ESpawn lowering: with no async leaf primitive on this target, a spawned call can never remain incomplete.
-    case ESpawn(inner) -> lowerExpr(ctx, insns, inner)
+    // `await` on a task-typed value (a `spawn` binding) parks until the
+    // task completes; anything else passes through, because a direct
+    // async call already awaited at its own call site (stage B2).
+    case EAwait(inner) -> {
+      val v = lowerExpr(ctx, insns, inner)
+      match taskElemOfType(ctx, v.ty) {
+        case Some(elem) -> unwrapTask(ctx, insns, v, elem)
+        case None -> v
+      }
+    }
+    // `spawn f(...)` runs the ramp (hot task, D-N-021) and keeps the
+    // un-awaited task value; a sync callee degenerates to the plain call.
+    case ESpawn(inner) -> {
+      match inner.kind {
+        case ECall(fn, callArgs) -> lowerCallEx(ctx, insns, fn, callArgs, inner.span.startPos.line, true)
+        case _ -> lowerExpr(ctx, insns, inner)
+      }
+    }
     case _ -> panic("Lyric.LlvmCodegen: this expression form is not yet supported for --target native (Phase N1)")
   }
 }
@@ -2250,6 +2280,16 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): N
     insns.add(NSExt(dest = dest, fromTy = NI32, value = v.value, toTy = NI64))
     return NVal(ty = NI64, value = NLocal(name = dest))
   }
+  match taskElemOfType(ctx, v.ty) {
+    case Some(_) -> {
+      panic(
+        "Lyric.LlvmCodegen: a spawned task is flowing into a '" + wantStr +
+          "'-typed position without being awaited; `await` the spawn binding before using its value"
+      )
+    }
+    case None -> {
+    }
+  }
   panic(
     "Lyric.LlvmCodegen: cannot pass a '" + fromStr + "' where '" + wantStr +
       "' is expected (insert an explicit conversion)"
@@ -2261,6 +2301,20 @@ func longToDouble(v: in Long): Double {
 }
 
 func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in List[CallArg], line: in Int): NVal {
+  lowerCallEx(ctx, insns, fnExpr, args, line, false)
+}
+
+/// `wantTask` is true only for the immediate call under a `spawn`: an
+/// async callee then yields its un-awaited task value instead of
+/// awaiting in place.
+func lowerCallEx(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  fnExpr: in Expr,
+  args: in List[CallArg],
+  line: in Int,
+  wantTask: in Bool,
+): NVal {
   // Builtins first.
   match fnExpr.kind {
     case EPath(path) -> {
@@ -2366,7 +2420,7 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
         }
         match lowerCollectionMethodCall(ctx, insns, recvVal, memberName, args) {
           case Some(v) -> return v
-          case None -> return lowerUfcsCall(ctx, insns, recvVal, memberName, args, line)
+          case None -> return lowerUfcsCall(ctx, insns, recvVal, memberName, args, line, wantTask)
         }
       }
     }
@@ -2471,6 +2525,12 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
   match sigOpt {
     case Some(sig) -> {
       val callArgs = lowerCallArgs(ctx, insns, sig, args)
+      if ctx.curAsyncTask.count > 0 and sig.irName == "Std.Time.sleepMillis" and callArgs.count == 1 {
+        return emitAsyncSleep(ctx, insns, callArgs)
+      }
+      if sig.isAsync {
+        return emitAsyncCall(ctx, insns, sig.irName, callArgs, retTypeToN(ctx, sig.retTy), wantTask)
+      }
       val retTy = retTypeToN(ctx, sig.retTy)
       match retTy {
         case NVoid -> {
@@ -2490,10 +2550,10 @@ func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in Lis
       // Generic functions instantiate per call site (N3.1).
       val noPre: List[NVal] = newList()
       if ctx.genericFnDefs.containsKey(ctx.curPkg[0] + "." + key) {
-        return lowerGenericFnCall(ctx, insns, ctx.curPkg[0] + "." + key, noPre, args, line)
+        return lowerGenericFnCall(ctx, insns, ctx.curPkg[0] + "." + key, noPre, args, line, wantTask)
       }
       if ctx.genericFnDefs.containsKey(key) {
-        return lowerGenericFnCall(ctx, insns, key, noPre, args, line)
+        return lowerGenericFnCall(ctx, insns, key, noPre, args, line, wantTask)
       }
       lowerConstructCall(ctx, insns, fnExpr, args, key, line)
     }
@@ -2627,6 +2687,7 @@ func lowerUfcsCall(
   name: in String,
   args: in List[CallArg],
   line: in Int,
+  wantTask: in Bool,
 ): NVal {
   if name == "upgrade" and args.count == 0 {
     match weakTargetOfType(ctx, recv.ty) {
@@ -2694,10 +2755,10 @@ func lowerUfcsCall(
       val pre: List[NVal] = newList()
       pre.add(recv)
       if ctx.genericFnDefs.containsKey(ctx.curPkg[0] + "." + name + "/" + arity) {
-        return lowerGenericFnCall(ctx, insns, ctx.curPkg[0] + "." + name + "/" + arity, pre, args, line)
+        return lowerGenericFnCall(ctx, insns, ctx.curPkg[0] + "." + name + "/" + arity, pre, args, line, wantTask)
       }
       if ctx.genericFnDefs.containsKey(name + "/" + arity) {
-        return lowerGenericFnCall(ctx, insns, name + "/" + arity, pre, args, line)
+        return lowerGenericFnCall(ctx, insns, name + "/" + arity, pre, args, line, wantTask)
       }
     }
   }
@@ -2706,6 +2767,12 @@ func lowerUfcsCall(
     case None -> panic("Lyric.LlvmCodegen: method '." + name + "' on this receiver is not yet supported for --target native (no matching function '" + name + "/" + arity + "' in the bundled import closure)")
   }
   val callArgs = lowerCallArgsWithReceiver(ctx, insns, sig, recv, args)
+  if ctx.curAsyncTask.count > 0 and sig.irName == "Std.Time.sleepMillis" and callArgs.count == 1 {
+    return emitAsyncSleep(ctx, insns, callArgs)
+  }
+  if sig.isAsync {
+    return emitAsyncCall(ctx, insns, sig.irName, callArgs, retTypeToN(ctx, sig.retTy), wantTask)
+  }
   val retTy = retTypeToN(ctx, sig.retTy)
   match retTy {
     case NVoid -> {
@@ -3742,6 +3809,161 @@ func mapValOfType(ctx: in Ctx, t: in NType): Option[NType] {
     }
     case _ -> None
   }
+}
+
+// The C LyricTask is opaque; only the ARC header prefix is declared.
+// Each `__task<T>` instantiation names the same layout so the awaited
+// result type survives to await/unwrap lowering (mirrors `__map<...>`);
+// all access goes through the lyric_task_* / lyric_async_* runtime calls.
+func taskNType(ctx: in Ctx, elem: in NType): NType {
+  val nm = "__task<" + mangleNTypeArg(elem) + ">"
+  val fields = mapHeaderFields()
+  if not ctx.taskElems.containsKey(nm) {
+    ctx.taskElems.add(nm, elem)
+    ctx.moduleTypeDefs.add(NTypeDefn(name = nm, fields = fields))
+  }
+  NPtr(pointee = NStruct(name = nm, fields = fields))
+}
+
+func taskElemOfType(ctx: in Ctx, t: in NType): Option[NType] {
+  match t {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(name, _) -> mapGet(ctx.taskElems, name)
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// ── Async coroutines (stage B2) ──────────────────────────────────────────────
+// An `async func` lowers to an LLVM coroutine (`presplitcoroutine`): the
+// define returns its LyricTask* (as i8*) and the body runs hot inside the
+// ramp until the first genuine suspension — an await on an incomplete task
+// or an async sleep — matching .NET's hot-task model (see lyric_async.c).
+// `spawn f(...)` holds the un-awaited task; every other async call site
+// awaits in place, mirroring the front end where `spawn`/`await` are
+// type-transparent and only `spawn` defers consumption of the result.
+/// The current coroutine's LyricTask* operand, or None when lowering a
+/// synchronous context.
+func currentTaskPtr(ctx: in Ctx): Option[NValue] {
+  if ctx.curAsyncTask.count == 0 {
+    None
+  } else {
+    Some(value = NLocal(name = ctx.curAsyncTask[0]))
+  }
+}
+
+/// Emit `llvm.coro.suspend` plus its resume/cleanup/exit dispatch and
+/// leave the stream positioned in the resume block.  The task must have
+/// registered with the scheduler (await/sleep) immediately before, so the
+/// suspended frame is reachable when its wake condition fires.
+func emitSuspendPoint(ctx: in Ctx, insns: in List[NInsn]): Unit {
+  val s = freshTmp(ctx)
+  val sArgs: List[NArg] = newList()
+  sArgs.add(NArg(ty = NToken, value = NLitTokenNone))
+  sArgs.add(NArg(ty = NI1, value = NLitInt(v = 0i64, ty = NI1)))
+  insns.add(NCall(dest = s, retTy = NI8, fn = NGlobal(name = "llvm.coro.suspend"), args = sArgs))
+  val resumeL = freshLabel(ctx, "coro.resume")
+  val cases: List[NSwitchCase] = newList()
+  cases.add(NSwitchCase(matchVal = 0i64, label = resumeL))
+  cases.add(NSwitchCase(matchVal = 1i64, label = "coro.cleanup"))
+  insns.add(NSwitch(ty = NI8, scrutinee = NLocal(name = s), defaultLabel = "coro.exit", cases = cases))
+  insns.add(NLabel(name = resumeL))
+}
+
+/// Await a task value: park until it completes — suspending when inside a
+/// coroutine, driving the scheduler to completion (`lyric_task_block_on`)
+/// in a synchronous context — then read the result slot as a borrow (the
+/// task keeps the owning ref until it is released).
+func unwrapTask(ctx: in Ctx, insns: in List[NInsn], task: in NVal, elem: in NType): NVal {
+  val tp = asI8Ptr(ctx, insns, task)
+  match currentTaskPtr(ctx) {
+    case Some(me) -> {
+      val c = callRuntime(ctx, insns, "lyric_task_is_complete", NI32, arg1(NPtr(pointee = NI8), tp))
+      val cb = freshTmp(ctx)
+      insns.add(NICmp(dest = cb, pred = INe, ty = NI32, a = c.value, b = NLitInt(v = 0i64, ty = NI32)))
+      val doneL = freshLabel(ctx, "await.done")
+      val parkL = freshLabel(ctx, "await.park")
+      insns.add(NCondBr(cond = NLocal(name = cb), thenLabel = doneL, elseLabel = parkL))
+      insns.add(NLabel(name = parkL))
+      insns.add(
+        NCallVoid(fn = NGlobal(name = "lyric_async_await"), args = arg2(NPtr(pointee = NI8), me, NPtr(pointee = NI8), tp))
+      )
+      emitSuspendPoint(ctx, insns)
+      insns.add(NBr(label = doneL))
+      insns.add(NLabel(name = doneL))
+    }
+    case None -> {
+      insns.add(NCallVoid(fn = NGlobal(name = "lyric_task_block_on"), args = arg1(NPtr(pointee = NI8), tp)))
+    }
+  }
+  match elem {
+    case NVoid -> NVal(ty = NVoid, value = NUndef(ty = NVoid))
+    case _ -> {
+      val slot = callRuntime(ctx, insns, "lyric_task_result", NI64, arg1(NPtr(pointee = NI8), tp))
+      valOfSlot(ctx, insns, slot.value, elem)
+    }
+  }
+}
+
+/// Emit a call to an async (coroutine) callee.  The define returns the
+/// task as i8*; `wantTask` (a `spawn` context) yields the task value
+/// itself, otherwise the call awaits (unwraps) in place.
+func emitAsyncCall(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  irName: in String,
+  callArgs: in List[NArg],
+  elem: in NType,
+  wantTask: in Bool,
+): NVal {
+  val dest = freshTmp(ctx)
+  insns.add(NCall(dest = dest, retTy = NPtr(pointee = NI8), fn = NGlobal(name = irName), args = callArgs))
+  val tty = taskNType(ctx, elem)
+  val cast = freshTmp(ctx)
+  insns.add(NBitcast(dest = cast, fromTy = NPtr(pointee = NI8), value = NLocal(name = dest), toTy = tty))
+  val taskV = NVal(ty = tty, value = NLocal(name = cast))
+  registerTemp(ctx, taskV)
+  if wantTask {
+    return taskV
+  }
+  unwrapTask(ctx, insns, taskV, elem)
+}
+
+/// `Std.Time.sleepMillis` inside a coroutine is the async leaf: park this
+/// task on the timer list and suspend, instead of blocking the scheduler
+/// thread (synchronous contexts fall through to the blocking kernel twin,
+/// which is semantically equivalent there).
+func emitAsyncSleep(ctx: in Ctx, insns: in List[NInsn], callArgs: in List[NArg]): NVal {
+  val me = NLocal(name = ctx.curAsyncTask[0])
+  val ms = coerceTo(ctx, insns, NVal(ty = callArgs[0].ty, value = callArgs[0].value), NI64)
+  insns.add(NCallVoid(fn = NGlobal(name = "lyric_async_sleep"), args = arg2(NPtr(pointee = NI8), me, NI64, ms.value)))
+  emitSuspendPoint(ctx, insns)
+  NVal(ty = NVoid, value = NUndef(ty = NVoid))
+}
+
+/// `lyric_task_complete(task, slot, is_ref)`: store the produced value in
+/// the current coroutine's task (ownership of a ref-typed result transfers
+/// into the task's result slot) and wake its waiters.
+func emitTaskComplete(ctx: in Ctx, insns: in List[NInsn], v: in NVal): Unit {
+  val me = NLocal(name = ctx.curAsyncTask[0])
+  var slotV: NValue = NLitInt(v = 0i64, ty = NI64)
+  var isRef: NValue = NLitInt(v = 0i64, ty = NI32)
+  match v.ty {
+    case NVoid -> {
+    }
+    case _ -> {
+      slotV = slotOfVal(ctx, insns, v)
+      isRef = refFlagOf(v.ty)
+    }
+  }
+  val cArgs: List[NArg] = newList()
+  cArgs.add(NArg(ty = NPtr(pointee = NI8), value = me))
+  cArgs.add(NArg(ty = NI64, value = slotV))
+  cArgs.add(NArg(ty = NI32, value = isRef))
+  insns.add(NCallVoid(fn = NGlobal(name = "lyric_task_complete"), args = cArgs))
 }
 
 // Widen a value to the container's 64-bit slot representation.
@@ -5006,6 +5228,7 @@ func lowerGenericFnCall(
   preVals: in List[NVal],
   args: in List[CallArg],
   line: in Int,
+  wantTask: in Bool,
 ): NVal {
   val fd = mustGetGenericFn(ctx, gkey)
   val pkg = match mapGet(ctx.genericFnPkg, gkey) { case Some(pk) -> pk; case None -> ctx.curPkg[0] }
@@ -5118,7 +5341,7 @@ func lowerGenericFnCall(
       case None -> {
       }
     }
-    ctx.fnInstCache.add(instIr, NFnInst(irName = instIr, paramTys = paramTys, retTy = instRet))
+    ctx.fnInstCache.add(instIr, NFnInst(irName = instIr, paramTys = paramTys, retTy = instRet, isAsync = fd.isAsync))
     ctx.moduleFns.add(lowerFunctionEnv(ctx, pkg, fd, instIr, paramNames, envTys))
   }
   val inst = match mapGet(ctx.fnInstCache, instIr) {
@@ -5131,6 +5354,9 @@ func lowerGenericFnCall(
     val cv = coerceTo(ctx, insns, rawVals[ci], inst.paramTys[ci])
     callArgs.add(NArg(ty = inst.paramTys[ci], value = cv.value))
     ci = ci + 1
+  }
+  if inst.isAsync {
+    return emitAsyncCall(ctx, insns, inst.irName, callArgs, inst.retTy, wantTask)
   }
   match inst.retTy {
     case NVoid -> {
@@ -7024,13 +7250,22 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
     }
     case SAssign(target, op, value) -> lowerAssign(ctx, insns, target, op, value, stmt.span.startPos.line)
     case SReturn(valOpt) -> {
+      // In a coroutine body, `return` completes the task (waking its
+      // waiters) and branches to the shared final-suspend block instead
+      // of emitting `ret` — the ramp's only `ret` is in coro.exit.
+      val inCoro = ctx.curAsyncTask.count > 0
       match valOpt {
         case Some(v) -> {
           match ctx.curRet[0] {
             case NVoid -> {
               val _ = lowerExpr(ctx, insns, v)
               releaseAllForReturn(ctx, insns)
-              insns.add(NRetVoid)
+              if inCoro {
+                emitTaskComplete(ctx, insns, NVal(ty = NVoid, value = NUndef(ty = NVoid)))
+                insns.add(NBr(label = "coro.final"))
+              } else {
+                insns.add(NRetVoid)
+              }
             }
             case rt -> {
               val cv = lowerExprExpecting(ctx, insns, v, rt)
@@ -7041,13 +7276,23 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
                 ensureOwned(ctx, insns, cv)
               }
               releaseAllForReturn(ctx, insns)
-              insns.add(NRet(ty = rt, value = cv.value))
+              if inCoro {
+                emitTaskComplete(ctx, insns, cv)
+                insns.add(NBr(label = "coro.final"))
+              } else {
+                insns.add(NRet(ty = rt, value = cv.value))
+              }
             }
           }
         }
         case None -> {
           releaseAllForReturn(ctx, insns)
-          insns.add(NRetVoid)
+          if inCoro {
+            emitTaskComplete(ctx, insns, NVal(ty = NVoid, value = NUndef(ty = NVoid)))
+            insns.add(NBr(label = "coro.final"))
+          } else {
+            insns.add(NRetVoid)
+          }
         }
       }
       insns.add(NLabel(name = freshLabel(ctx, "dead")))
@@ -7400,7 +7645,10 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     tempScopes = newList(),
     loopVarDepth = newList(),
     loopTempDepth = newList(),
-    deferStack = newList()
+    deferStack = newList(),
+    taskElems = mod.taskElems,
+    curAsyncTask = newList(),
+    usesAsync = mod.usesAsync
   )
 }
 
@@ -7613,12 +7861,74 @@ func lowerFunctionEnv(
     ctx0.fnTyEnvTys.add(envTys[ei])
     ei = ei + 1
   }
+  // For an async fn, `retTy` stays the ELEMENT type: `curRet` drives
+  // return-value coercion, while the define itself returns the task as
+  // i8* (rewritten at assembly below).
   val retTy = retTypeToN(ctx0, fn.ret)
   ctx0.curRet.removeAt(0)
   ctx0.curRet.add(retTy)
   val ctx = ctx0
+  val isCoro = fn.isAsync
   val params: List[NParam] = newList()
   val body: List[NInsn] = newList()
+  val p8 = NPtr(pointee = NI8)
+  if isCoro {
+    // Coroutine prologue (stage B2): coro.id / coro.alloc / coro.begin,
+    // then the LyricTask this frame reports through.  Fixed SSA/label
+    // names are safe — one coroutine prologue per function.
+    if ctx.usesAsync.count == 0 {
+      ctx.usesAsync.add(1)
+    }
+    val idArgs: List[NArg] = newList()
+    idArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+    idArgs.add(NArg(ty = p8, value = NLitNull(ty = p8)))
+    idArgs.add(NArg(ty = p8, value = NLitNull(ty = p8)))
+    idArgs.add(NArg(ty = p8, value = NLitNull(ty = p8)))
+    body.add(NCall(dest = "coro.id", retTy = NToken, fn = NGlobal(name = "llvm.coro.id"), args = idArgs))
+    body.add(
+      NCall(
+        dest = "coro.need",
+        retTy = NI1,
+        fn = NGlobal(name = "llvm.coro.alloc"),
+        args = arg1(NToken, NLocal(name = "coro.id"))
+      )
+    )
+    body.add(NCondBr(cond = NLocal(name = "coro.need"), thenLabel = "coro.dynalloc", elseLabel = "coro.begin"))
+    body.add(NLabel(name = "coro.dynalloc"))
+    val noArgs: List[NArg] = newList()
+    body.add(NCall(dest = "coro.size", retTy = NI64, fn = NGlobal(name = "llvm.coro.size.i64"), args = noArgs))
+    body.add(
+      NCall(
+        dest = "coro.mem",
+        retTy = p8,
+        fn = NGlobal(name = "lyric_alloc"),
+        args = arg1(NI64, NLocal(name = "coro.size"))
+      )
+    )
+    body.add(NBr(label = "coro.begin"))
+    body.add(NLabel(name = "coro.begin"))
+    val phiIn: List[NPhiIncoming] = newList()
+    phiIn.add(NPhiIncoming(value = NLitNull(ty = p8), label = "entry"))
+    phiIn.add(NPhiIncoming(value = NLocal(name = "coro.mem"), label = "coro.dynalloc"))
+    body.add(NPhi(dest = "coro.frame", ty = p8, incoming = phiIn))
+    body.add(
+      NCall(
+        dest = "coro.hdl",
+        retTy = p8,
+        fn = NGlobal(name = "llvm.coro.begin"),
+        args = arg2(NToken, NLocal(name = "coro.id"), p8, NLocal(name = "coro.frame"))
+      )
+    )
+    body.add(
+      NCall(
+        dest = "coro.task",
+        retTy = p8,
+        fn = NGlobal(name = "lyric_task_new"),
+        args = arg1(p8, NLocal(name = "coro.hdl"))
+      )
+    )
+    ctx.curAsyncTask.add("coro.task")
+  }
   // Parameters land in allocas so `var`-style reads/writes and address
   // uniformity hold; mem2reg cleans this up at -O1+.  `in` params are
   // ARC borrows (Rule 5): never retained on entry or released on exit.
@@ -7648,6 +7958,31 @@ func lowerFunctionEnv(
   }
   pushVarScope(ctx)
   pushTempScope(ctx)
+  if isCoro {
+    // Ref-typed params are borrows (Rule 5) and unsafe across suspends:
+    // the caller regains control at the first suspend and may release
+    // its refs while this frame is parked.  Retain each on entry and
+    // register it in the function scope so every exit path releases it.
+    var rpi = 0
+    while rpi < fn.params.count {
+      val pname = fn.params[rpi].name
+      match mapGet(ctx.varTypes, pname) {
+        case Some(pty) -> {
+          if isRefNType(pty) {
+            emitRetain(ctx, body, NVal(ty = pty, value = NLocal(name = "arg." + pname)))
+            match mapGet(ctx.varSlots, pname) {
+              case Some(sl) -> ctx.scopeRefs[0].add(NOwnedLocal(slot = sl, ty = pty))
+              case None -> {
+              }
+            }
+          }
+        }
+        case None -> {
+        }
+      }
+      rpi = rpi + 1
+    }
+  }
   val tailWant: Option[NType] = match retTy { case NVoid -> None; case rt -> Some(value = rt) }
   val tail = match fn.body {
     case Some(fb) -> {
@@ -7665,10 +8000,17 @@ func lowerFunctionEnv(
   }
   // Fall-off return: yield the trailing value (or void).  Ref-typed
   // tails transfer out (Rule 6) before the function scopes unwind.
+  // Coroutines complete their task and branch to the shared
+  // final-suspend block instead of emitting `ret`.
   match retTy {
     case NVoid -> {
       releaseAllForReturn(ctx, body)
-      body.add(NRetVoid)
+      if isCoro {
+        emitTaskComplete(ctx, body, NVal(ty = NVoid, value = NUndef(ty = NVoid)))
+        body.add(NBr(label = "coro.final"))
+      } else {
+        body.add(NRetVoid)
+      }
     }
     case rt -> {
       match tail.ty {
@@ -7677,7 +8019,12 @@ func lowerFunctionEnv(
           // every path returned explicitly); emit an unreachable
           // fall-off return of the zero value to keep the block closed.
           releaseAllForReturn(ctx, body)
-          body.add(NRet(ty = rt, value = zeroValueOf(rt)))
+          if isCoro {
+            emitTaskComplete(ctx, body, NVal(ty = rt, value = zeroValueOf(rt)))
+            body.add(NBr(label = "coro.final"))
+          } else {
+            body.add(NRet(ty = rt, value = zeroValueOf(rt)))
+          }
         }
         case _ -> {
           val cv = coerceTo(ctx, body, tail, rt)
@@ -7685,10 +8032,55 @@ func lowerFunctionEnv(
             ensureOwned(ctx, body, cv)
           }
           releaseAllForReturn(ctx, body)
-          body.add(NRet(ty = rt, value = cv.value))
+          if isCoro {
+            emitTaskComplete(ctx, body, cv)
+            body.add(NBr(label = "coro.final"))
+          } else {
+            body.add(NRet(ty = rt, value = cv.value))
+          }
         }
       }
     }
+  }
+  if isCoro {
+    // Shared coroutine epilogue.  coro.final: the final suspend parks a
+    // COMPLETE frame until its owner's destroy (resuming a finally-
+    // suspended coroutine is UB, hence the unreachable resume edge).
+    // coro.cleanup: frees the frame on the destroy path.  coro.exit:
+    // returns the task to the ramp's caller (CoroSplit frame-spills
+    // `coro.task`, and rewrites this ret in the resume/destroy clones).
+    body.add(NLabel(name = "coro.final"))
+    val fsArgs: List[NArg] = newList()
+    fsArgs.add(NArg(ty = NToken, value = NLitTokenNone))
+    fsArgs.add(NArg(ty = NI1, value = NLitInt(v = 1i64, ty = NI1)))
+    body.add(NCall(dest = "coro.fs", retTy = NI8, fn = NGlobal(name = "llvm.coro.suspend"), args = fsArgs))
+    val fsCases: List[NSwitchCase] = newList()
+    fsCases.add(NSwitchCase(matchVal = 0i64, label = "coro.unreach"))
+    fsCases.add(NSwitchCase(matchVal = 1i64, label = "coro.cleanup"))
+    body.add(NSwitch(ty = NI8, scrutinee = NLocal(name = "coro.fs"), defaultLabel = "coro.exit", cases = fsCases))
+    body.add(NLabel(name = "coro.unreach"))
+    body.add(NUnreachable)
+    body.add(NLabel(name = "coro.cleanup"))
+    body.add(
+      NCall(
+        dest = "coro.freemem",
+        retTy = p8,
+        fn = NGlobal(name = "llvm.coro.free"),
+        args = arg2(NToken, NLocal(name = "coro.id"), p8, NLocal(name = "coro.hdl"))
+      )
+    )
+    body.add(NCallVoid(fn = NGlobal(name = "lyric_free"), args = arg1(p8, NLocal(name = "coro.freemem"))))
+    body.add(NBr(label = "coro.exit"))
+    body.add(NLabel(name = "coro.exit"))
+    body.add(
+      NCall(
+        dest = "coro.done",
+        retTy = NI1,
+        fn = NGlobal(name = "llvm.coro.end"),
+        args = arg2(p8, NLocal(name = "coro.hdl"), NI1, NLitInt(v = 0i64, ty = NI1))
+      )
+    )
+    body.add(NRet(ty = p8, value = NLocal(name = "coro.task")))
   }
   // Assemble: entry label, hoisted allocas, then the body.
   val insns: List[NInsn] = newList()
@@ -7696,11 +8088,14 @@ func lowerFunctionEnv(
   appendInsns(insns, ctx.allocas)
   appendInsns(insns, body)
   val attrs: List[String] = newList()
+  if isCoro {
+    attrs.add("presplitcoroutine")
+  }
   val isPub = match fn.visibility { case Some(_) -> true; case None -> pkg == ctx.mainPkg }
   NFunc(
     name = irName,
     params = params,
-    retTy = retTy,
+    retTy = if isCoro { p8 } else { retTy },
     isPublic = isPub,
     isExtern = false,
     body = insns,
@@ -7756,6 +8151,55 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_mutex_destroy", NVoid, p8))
   decls.add(mkDecl1("lyric_free", NVoid, p8))
   decls
+}
+
+/// The `llvm.coro.*` intrinsics and lyric-rt scheduler entry points an
+/// async-using module needs (stage B2); appended to the extern
+/// declarations only when the bundle lowered at least one coroutine.
+func asyncRuntimeDecls(): List[NFunc] {
+  val decls: List[NFunc] = newList()
+  val p8 = NPtr(pointee = NI8)
+  val idTys: List[NType] = newList()
+  idTys.add(NI32)
+  idTys.add(p8)
+  idTys.add(p8)
+  idTys.add(p8)
+  decls.add(mkDeclN("llvm.coro.id", NToken, idTys))
+  decls.add(mkDecl1("llvm.coro.alloc", NI1, NToken))
+  val noTys: List[NType] = newList()
+  decls.add(mkDeclN("llvm.coro.size.i64", NI64, noTys))
+  decls.add(mkDecl2("llvm.coro.begin", p8, NToken, p8))
+  decls.add(mkDecl2("llvm.coro.suspend", NI8, NToken, NI1))
+  decls.add(mkDecl2("llvm.coro.free", p8, NToken, p8))
+  decls.add(mkDecl2("llvm.coro.end", NI1, p8, NI1))
+  decls.add(mkDecl1("llvm.coro.resume", NVoid, p8))
+  decls.add(mkDecl1("llvm.coro.destroy", NVoid, p8))
+  decls.add(mkDecl1("lyric_task_new", p8, p8))
+  decls.add(mkDecl3("lyric_task_complete", NVoid, p8, NI64, NI32))
+  decls.add(mkDecl1("lyric_task_result", NI64, p8))
+  decls.add(mkDecl1("lyric_task_is_complete", NI32, p8))
+  decls.add(mkDecl2("lyric_async_await", NVoid, p8, p8))
+  decls.add(mkDecl2("lyric_async_sleep", NVoid, p8, NI64))
+  decls.add(mkDecl1("lyric_task_block_on", NVoid, p8))
+  decls
+}
+
+/// A thin `define` wrapping one `llvm.coro.resume`/`llvm.coro.destroy`
+/// intrinsic.  The scheduler (C) resumes frames through these symbols:
+/// CoroSplit emits the frame's resume/destroy function pointers as
+/// `internal fastcc`, so C code must not call through the frame
+/// directly — the LLVM-compiled wrapper gets the calling convention
+/// right by construction (see lyric_async.c).
+func coroWrapperDefine(name: in String, intrinsic: in String): NFunc {
+  val p8 = NPtr(pointee = NI8)
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "hdl", ty = p8))
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  body.add(NCallVoid(fn = NGlobal(name = intrinsic), args = arg1(p8, NLocal(name = "hdl"))))
+  body.add(NRetVoid)
+  val attrs: List[String] = newList()
+  NFunc(name = name, params = params, retTy = NVoid, isPublic = true, isExtern = false, body = body, attributes = attrs)
 }
 
 func mkParamList(tys: in List[NType]): List[NParam] {
@@ -7822,7 +8266,10 @@ func externDeclOf(ctx: in Ctx, ef: in ExternFuncDecl): NFunc {
 }
 
 /// Synthesise the C-ABI `main` wrapper around the user's `func main`.
-func synthCMain(mainPkg: in String, userMainRet: in NType, userMainIr: in String): NFunc {
+/// An `async func main` returns its task: drive the scheduler until it
+/// completes, read the exit code, and drop the caller's task ref.
+func synthCMain(mainPkg: in String, userMainRet: in NType, userMainIr: in String, mainIsAsync: in Bool): NFunc {
+  val p8 = NPtr(pointee = NI8)
   val params: List[NParam] = newList()
   params.add(NParam(name = "argc", ty = NI32))
   params.add(NParam(name = "argv", ty = NPtr(pointee = NPtr(pointee = NI8))))
@@ -7835,6 +8282,35 @@ func synthCMain(mainPkg: in String, userMainRet: in NType, userMainIr: in String
   argArgs.add(NArg(ty = NPtr(pointee = NPtr(pointee = NI8)), value = NLocal(name = "argv")))
   body.add(NCallVoid(fn = NGlobal(name = "lyric_args_set"), args = argArgs))
   val noArgs: List[NArg] = newList()
+  if mainIsAsync {
+    body.add(NCall(dest = "task", retTy = p8, fn = NGlobal(name = userMainIr), args = noArgs))
+    body.add(NCallVoid(fn = NGlobal(name = "lyric_task_block_on"), args = arg1(p8, NLocal(name = "task"))))
+    match userMainRet {
+      case NI32 -> {
+        body.add(
+          NCall(dest = "slot", retTy = NI64, fn = NGlobal(name = "lyric_task_result"), args = arg1(p8, NLocal(name = "task")))
+        )
+        body.add(NTrunc(dest = "code", fromTy = NI64, value = NLocal(name = "slot"), toTy = NI32))
+        body.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(p8, NLocal(name = "task"))))
+        body.add(NRet(ty = NI32, value = NLocal(name = "code")))
+      }
+      case NVoid -> {
+        body.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(p8, NLocal(name = "task"))))
+        body.add(NRet(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      }
+      case _ -> panic("Lyric.LlvmCodegen: `func main` must return Int or Unit for --target native")
+    }
+    val asyncAttrs: List[String] = newList()
+    return NFunc(
+      name = "main",
+      params = params,
+      retTy = NI32,
+      isPublic = true,
+      isExtern = false,
+      body = body,
+      attributes = asyncAttrs
+    )
+  }
   match userMainRet {
     case NI32 -> {
       body.add(NCall(dest = "code", retTy = NI32, fn = NGlobal(name = userMainIr), args = noArgs))
@@ -7929,7 +8405,10 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     tempScopes = newList(),
     loopVarDepth = newList(),
     loopTempDepth = newList(),
-    deferStack = newList()
+    deferStack = newList(),
+    taskElems = newMap(),
+    curAsyncTask = newList(),
+    usesAsync = newList()
   )
   // Type definitions and synthesised functions accumulate on the ctx so
   // lazy generic instantiation (typeToN during lowering) can append.
@@ -7961,6 +8440,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   }
   var mainRet = NVoid
   var mainIr = ""
+  var mainIsAsync = false
   var ui = 0
   while ui < units.count {
     val u = units[ui]
@@ -7988,13 +8468,30 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
       if ui == 0 and fn.name == "main" and fn.params.count == 0 {
         mainRet = retTypeToNType(fn.ret)
         mainIr = irName
+        mainIsAsync = fn.isAsync
       }
       fi = fi + 1
     }
     ui = ui + 1
   }
   if mainIr.length > 0 {
-    fns.add(synthCMain(mainPkg, mainRet, mainIr))
+    fns.add(synthCMain(mainPkg, mainRet, mainIr, mainIsAsync))
+  }
+  // Coroutine plumbing lands only in async-using modules: the coro
+  // intrinsics + scheduler declares, and the resume/destroy wrapper
+  // defines the C scheduler calls back through (see coroWrapperDefine).
+  if ctx.usesAsync.count > 0 {
+    val aDecls = asyncRuntimeDecls()
+    var adi = 0
+    while adi < aDecls.count {
+      if not declaredExterns.containsKey(aDecls[adi].name) {
+        declaredExterns.add(aDecls[adi].name, true)
+        externDecls.add(aDecls[adi])
+      }
+      adi = adi + 1
+    }
+    fns.add(coroWrapperDefine("lyric_coro_resume", "llvm.coro.resume"))
+    fns.add(coroWrapperDefine("lyric_coro_destroy", "llvm.coro.destroy"))
   }
   val libs: List[String] = newList()
   NPackage(
@@ -8876,7 +9373,8 @@ func registerProtectedMember(
     paramNames = sigParamNames,
     paramTys = sigParamTys,
     retTy = ret,
-    isExternSym = false
+    isExternSym = false,
+    isAsync = false
   )
   addSig(ctx.sigs, pkg + "." + methodName + "/" + arity.toString(), sig)
   addSig(ctx.sigs, methodName + "/" + arity.toString(), sig)

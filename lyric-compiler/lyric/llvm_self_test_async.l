@@ -1,20 +1,20 @@
 //! llvm_self_test_async.l — end-to-end self-test for native `async func` /
-//! `await` (D-N-019).  Parses small programs using `async func` and `await`,
+//! `await` / `spawn` (D-N-019, D-N-021, D-N-022).  Parses small programs,
 //! lowers them via `codegenNativePackage` + `lowerNativePackage`,
 //! clang-compiles against `lyric-rt/build/lyric_rt.a`, runs the binary, and
 //! asserts its exit code / stdout.
 //!
-//! Per D-N-019, native compiles a non-generator `async func` through the
-//! exact same codegen path as a plain `func` and lowers `await expr` as a
-//! pure passthrough; per D-N-021, `spawn expr` is the same passthrough
-//! (matching MSIL's own ESpawn lowering) and `scope { }` is a real lexical
-//! scope. With no async leaf primitive on this target, a spawned call
-//! always completes at the spawn site, so these semantics are
-//! observationally equivalent to the reference backend's for every
-//! compilable program. These tests exercise both slices: basic
-//! async functions, chained/nested awaits, async inside a loop, ARC-managed
-//! captures under ASan, spawn-bind-then-await, the language reference's
-//! section 7.4 dashboard shape, and scope/defer interplay.
+//! Per D-N-022 (stage B2), an `async func` compiles to a real LLVM
+//! coroutine: the define returns its LyricTask*, runs hot until the first
+//! genuine suspension (an await on an incomplete task, or a
+//! `Std.Time.sleepMillis` call — the async leaf, which parks the task on
+//! the scheduler's timer list instead of blocking), and interleaves with
+//! other spawned tasks under the lyric-rt cooperative scheduler.  A task
+//! that never suspends completes inside the ramp, which reproduces the
+//! earlier passthrough behavior (D-N-019/D-N-021) as the degenerate case —
+//! so the pre-coroutine cases below double as a regression net for the
+//! coroutine path, and the sleep-driven cases prove genuine concurrency
+//! (effect interleaving that a sequential execution cannot produce).
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -36,6 +36,8 @@ import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
+import Lyric.Emitter
+import Lyric.LlvmBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness (mirrors llvm_self_test_n34.l): compile source to a native binary
@@ -128,6 +130,40 @@ func compileAndRunAsan(source: in String): RunOutcome {
   compileAndRunWith(source, true)
 }
 
+// The full bridge pipeline (`compileToNativeWithFlags` with the
+// `_kernel_native/` stdlib twins loaded, exactly like `lyric build
+// --target native`) — needed by the sleep-driven cases, whose sources
+// import `Std.Time`.
+func compileAndRunBundledWith(source: in String, sanitize: in Bool): RunOutcome {
+  val stdlib = findStdlibSourcesNative()
+  if stdlib.count == 0 {
+    panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
+  }
+  val dir = Path.join(tempBase(), "lyric-llvm-async-selftest")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val flags: List[String] = newList()
+  if sanitize {
+    flags.add("-fsanitize=address")
+  }
+  if not compileToNativeWithFlags(source, stem, stdlib, "", "0", flags) {
+    panic("native compilation failed for an async self-test program")
+  }
+  val noArgs: List[String] = newList()
+  match Process.runCapture(stem, noArgs, 60000) {
+    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Err(e) -> panic("binary could not be started: " + e)
+  }
+}
+
+func compileAndRunBundled(source: in String): RunOutcome {
+  compileAndRunBundledWith(source, false)
+}
+
+func compileAndRunBundledAsan(source: in String): RunOutcome {
+  compileAndRunBundledWith(source, true)
+}
+
 // Compiling a source that should FAIL at codegen (panic inside
 // codegenNativePackage/lowerNativePackage).  `Process.runCapture` isn't
 // involved here since the panic happens in-process; instead this drives
@@ -157,10 +193,9 @@ test "basic async function: async func called via await returns its value" {
 }
 
 test "async func without an explicit await: bare call also yields the value" {
-  // D-N-019: `await` is a pure passthrough for native, so a bare call to an
-  // async function (no `await` keyword at all) is equally legal and yields
-  // the same value directly -- there is no wrapped Task[T] to unwrap either
-  // way.
+  // A bare call to an async function awaits at the call site (only `spawn`
+  // defers consumption), matching the front end where `spawn`/`await` are
+  // type-transparent; the `await` keyword adds nothing to a direct call.
   val src = "package T\n" + "async func computeAnswer(): Int {\n  return 7\n}\n" +
     "func main(): Int {\n  computeAnswer()\n}\n"
   val r = compileAndRun(src)
@@ -302,6 +337,96 @@ test "early return from a scope drains the scope's defer, value preserved" {
   )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Real concurrency (stage B2, D-N-022): sleep-driven interleaving.
+// ─────────────────────────────────────────────────────────────────────────────
+// Two spawned workers log around their sleeps; the observed order
+// 1,2,11,12 (worker 2's first wake lands BETWEEN worker 1's two wakes)
+// is only producible if both tasks genuinely interleave — a sequential
+// (passthrough) execution would log 1,11,2,12.  Sleep points: worker 1
+// wakes at ~20ms and ~80ms, worker 2 at ~40ms and ~130ms; each adjacent
+// pair of ideal deadlines is >= 20ms apart and every second deadline is
+// computed from the task's ACTUAL first wake, so scheduler jitter far
+// below 20ms cannot reorder the events.
+test "two spawned sleepers interleave: effect order proves genuine concurrency" {
+  val src = "package T\n" + "import Std.Collections\n" + "import Std.Time as Time\n" +
+    "async func worker(log: in List[Int], tag: in Int, d1: in Int, d2: in Int): Unit {\n" +
+    "  Time.sleepMillis(d1)\n  log.add(tag)\n  Time.sleepMillis(d2)\n  log.add(tag + 10)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val log: List[Int] = newList()\n" +
+    "  val a = spawn worker(log, 1, 20, 60)\n" +
+    "  val b = spawn worker(log, 2, 40, 90)\n" +
+    "  await a\n  await b\n" +
+    "  if log.count == 4 and log[0] == 1 and log[1] == 2 and log[2] == 11 and log[3] == 12 {\n    77\n  } else {\n    1\n  }\n" +
+    "}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 77, "log order 1,2,11,12: worker 2's first wake lands between worker 1's wakes")
+}
+
+// The same interleaving program under ASan: coroutine frame alloc/free,
+// task refcounts, and the List shared across suspended frames must all
+// balance.
+test "interleaving sleepers are leak-free under ASan" {
+  val src = "package T\n" + "import Std.Collections\n" + "import Std.Time as Time\n" +
+    "async func worker(log: in List[Int], tag: in Int, d1: in Int, d2: in Int): Unit {\n" +
+    "  Time.sleepMillis(d1)\n  log.add(tag)\n  Time.sleepMillis(d2)\n  log.add(tag + 10)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val log: List[Int] = newList()\n" +
+    "  val a = spawn worker(log, 1, 20, 60)\n" +
+    "  val b = spawn worker(log, 2, 40, 90)\n" +
+    "  await a\n  await b\n" +
+    "  if log.count == 4 and log[0] == 1 and log[1] == 2 and log[2] == 11 and log[3] == 12 {\n    77\n  } else {\n    1\n  }\n" +
+    "}\n"
+  val r = compileAndRunBundledAsan(src)
+  assertEqualInt(r.exitCode, 77, "the interleaving run is clean under AddressSanitizer")
+}
+
+// An await chain through a genuinely-sleeping leaf: mid's await on leaf
+// parks mid (WAITING), leaf's sleep parks leaf (SLEEPING), and the
+// synchronous main drives the scheduler through both wakes.
+test "await chain through a sleeping leaf resumes through the scheduler" {
+  val src = "package T\n" + "import Std.Time as Time\n" +
+    "async func leaf(): Int {\n  Time.sleepMillis(30)\n  return 7\n}\n" +
+    "async func mid(): Int {\n  val v = await leaf()\n  return v + 1\n}\n" +
+    "func main(): Int {\n  await mid()\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 8, "leaf sleeps then yields 7; mid resumes with 7 + 1")
+}
+
+// Ref-typed results and arguments crossing a suspend point: the task
+// owns its String result until released, and a borrowed String argument
+// (heap-allocated at the call site, released by the caller while the
+// task is parked) survives the suspension because coroutine entry
+// retains ref params (ARC Rule 5 does not hold across suspends).
+test "String args and results across suspends are leak-free under ASan" {
+  val src = "package T\n" + "import Std.String as Str\n" + "import Std.Time as Time\n" +
+    "async func tagIt(s: in String, ms: in Int): String {\n  Time.sleepMillis(ms)\n  return s + \"!\"\n}\n" +
+    "async func run(): Int {\n" +
+    "  val a = spawn tagIt(\"le\" + \"ft\", 20)\n" +
+    "  val b = spawn tagIt(\"ri\" + \"ght\", 40)\n" +
+    "  val joined = await a + \"|\" + await b\n" +
+    "  return joined.length\n" +
+    "}\n" +
+    "func main(): Int {\n  await run()\n}\n"
+  val r = compileAndRunBundledAsan(src)
+  assertEqualInt(r.exitCode, 12, "\"left!|right!\" has length 12 with all task/arg/result refs balanced")
+}
+
+// A spawned task value must be awaited before its result can flow into a
+// value position; the un-awaited task flowing into an Int parameter is a
+// named codegen diagnostic, not an IR type error.
+test "an un-awaited spawned task in a value position is a named diagnostic" {
+  val src = "package T\n" + "async func f(): Int {\n  return 1\n}\n" + "func g(n: in Int): Int {\n  n\n}\n" +
+    "func main(): Int {\n  val t = spawn f()\n  g(t)\n}\n"
+  assertNativeCodegenPanics(
+    src,
+    "without being awaited",
+    "a task flowing into an Int-typed argument must name the missing await, not dump an IR type mismatch"
+  )
+}
+
 // ARC: String results held in spawn bindings inside a scope release
 // cleanly across iterations.
 test "spawn/scope with String-typed task bindings is leak-free under ASan" {
@@ -320,4 +445,23 @@ test "spawn/scope with String-typed task bindings is leak-free under ASan" {
     "}\n"
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 12, "\"left!|right!\" has length 12, leak-free across 25 iterations")
+}
+
+// `async func main` (#5088): the C-ABI wrapper drives the returned task
+// through lyric_task_block_on, reads the Int result slot as the exit
+// code, and drops the caller's task ref.
+test "async func main returning Int: exit code read from the completed task" {
+  val src = "package T\n" + "import Std.Time as Time\n" +
+    "async func step(n: in Int): Int {\n  Time.sleepMillis(10)\n  return n + 1\n}\n" +
+    "async func main(): Int {\n  val a = spawn step(20)\n  val b = spawn step(30)\n  await a + await b\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 52, "async main's task result (21 + 31) becomes the process exit code")
+}
+
+// The Unit-returning variant takes synthCMain's other async arm (no
+// result read; exit 0 after the task completes).
+test "async func main returning Unit: process exits 0 after the task completes" {
+  val src = "package T\n" + "import Std.Time as Time\n" + "async func main(): Unit {\n  Time.sleepMillis(10)\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 0, "a Unit async main drives to completion and exits 0")
 }

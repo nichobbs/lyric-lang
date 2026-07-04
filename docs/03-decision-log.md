@@ -5587,6 +5587,103 @@ its scope-exit discipline), D-N-003, `native/plan/06-async-design.md`
 `docs/01-language-reference.md` §7.4, `msil/codegen.l` `ESpawn`/`SScope`
 (the reference lowering matched here).
 
+## D-N-022 — Native async is real: LLVM coroutines + a cooperative lyric-rt scheduler, with `Std.Time.sleepMillis` as the async leaf (supersedes the passthrough lowering of D-N-019/D-N-021)
+
+**Date:** 2026-07-04
+**Status:** Accepted
+
+**Context.** D-N-021 established that genuine concurrency on native is
+gated on an async *leaf primitive*: with no operation that can leave a
+task incomplete, `spawn`/`await` passthrough was observationally exact.
+This entry ships that leaf and the machinery around it, so spawned
+tasks now genuinely interleave.
+
+**Decision — the scheduler (`lyric-rt/src/lyric_async.c`).**
+Single-threaded, cooperative, run-to-completion. Tasks are HOT: calling
+an `async func` runs its body until the first genuine suspension — an
+`await` on an incomplete task, or an async sleep — matching .NET's
+hot-task model. After an async call returns, its task is COMPLETE,
+SLEEPING, or WAITING (never READY/RUNNING), so `spawn` needs no
+scheduler call: it is the call itself with the returned task held
+un-awaited, and a never-suspending task reproduces the D-N-021
+passthrough behavior as the degenerate case. State machine:
+RUNNING/SLEEPING (deadline-ascending timer list)/WAITING (parked on the
+dependency's waiter list)/READY (FIFO)/COMPLETE. `lyric_task_block_on`
+drives the loop from synchronous contexts (`main`, or an `await` in a
+plain function): run ready tasks, wake expired sleepers, `nanosleep` to
+the earliest deadline, and panic on a genuine deadlock (nothing ready,
+no timers). Ref discipline: the caller owns the ramp-returned ref
+(rc=1); the scheduler holds exactly one additional ref from
+registration (SLEEPING/WAITING retain) to completion; the task dtor
+destroys the coroutine frame and releases a ref-typed result.
+
+**Decision — the emission (`Lyric.LlvmCodegen`).** Every non-generator
+`async func` emits as `define i8* @f(...) presplitcoroutine` returning
+its LyricTask*. Prologue: `llvm.coro.id`/`coro.alloc`(dynamic
+`lyric_alloc`)/`coro.begin`, then `lyric_task_new(hdl)`. `return`
+lowers to defers + ARC releases, `lyric_task_complete(task, slot,
+is_ref)`, and a branch to the shared final-suspend block; the ramp's
+only `ret` is after `llvm.coro.end`. Mid-body suspends register first
+(`lyric_async_await` / `lyric_async_sleep`) then `llvm.coro.suspend`.
+The C scheduler resumes frames through `lyric_coro_resume`/
+`lyric_coro_destroy` — thin LLVM-compiled wrapper defines emitted into
+async-using modules, because CoroSplit emits the frame's resume/destroy
+pointers as `internal fastcc`, which C must not call directly.
+
+**Decision — call sites.** A direct call to an async callee awaits in
+place (is-complete check, else park-and-suspend in a coroutine /
+`lyric_task_block_on` in a sync context, then read the result slot as a
+borrow); `spawn f(...)` is the only context that keeps the un-awaited
+task (`__task<T>` struct-name types, ARC-managed via `isRefNType`).
+This mirrors the front end exactly: `spawn`/`await` are
+type-transparent and no program can hold an unawaited result except
+through `spawn`. A task flowing un-awaited into a value position is a
+named codegen diagnostic. Async generic instances thread the same
+path via `NFnInst.isAsync`; `async func main` is driven by the C-main
+wrapper through `lyric_task_block_on`.
+
+**Decision — the async leaf.** `Std.Time.sleepMillis` calls lowered
+*inside a coroutine* are intercepted and emitted as
+`lyric_async_sleep` + suspend: the sleep parks only the calling task,
+an improvement over the thread-blocking sleep .NET/JVM perform (no new
+`Std.Async` surface, no cross-target API divergence — the same source
+means the same thing everywhere, and suspending is strictly better
+scheduling of the same contract). Synchronous contexts (including
+sync helpers called from a coroutine) fall through to the blocking
+kernel twin, exactly as on the other targets.
+
+**ARC across suspends.** No restriction needed: Lyric locals and temps
+hold OWNED refs (bind retains, call results transfer), and frame-spilled
+owned refs are sound across suspends — their releases execute after
+resume in the split clones. The one exception is ref-typed *parameters*
+(borrows, Rule 5): the caller regains control at the first suspend and
+may release its refs while the frame is parked, so coroutine entry
+retains each ref param and registers it in the function scope for
+release on every exit path. Frame destruction only happens at rc=0,
+which the scheduler's parked ref prevents before completion.
+
+**Semantics note.** An un-awaited spawned task that never completes is
+abandoned at process exit (its frame and task object are not reclaimed)
+— the same abandonment .NET permits, minus a GC to sweep it; tests and
+programs that care run everything to completion via `await`.
+
+**Verification.** Six C scheduler tests in `lyric_rt_test.c` drive the
+exact protocol codegen emits through fake coroutine handles (hot
+completion, block-on-sleep, two-sleeper interleaving with >= 20ms
+event separation, await chains, multi-waiter wake, deadlock abort);
+seven new Lyric cases in `llvm_self_test_async.l` (20 total) prove
+effect-order interleaving of two spawned sleepers (impossible under
+sequential execution), the same under ASan, an await chain through a
+sleeping leaf, String args/results crossing suspends under ASan, and
+the un-awaited-task diagnostic — while the 13 pre-coroutine cases now
+run THROUGH the coroutine path as the regression net.
+
+**Related:** D-N-019, D-N-021 (both superseded on the lowering
+mechanism; their semantic analyses remain the ground for the hot-task
+model), D-N-003 (panics abort; no cancellation machinery),
+`native/plan/06-async-design.md` (the coroutine mechanism realized
+here), `lyric-rt/src/lyric_async.c`, `lyric-compiler/lyric/llvm_codegen.l`.
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The

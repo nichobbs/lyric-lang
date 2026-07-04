@@ -107,6 +107,10 @@ await Task.WhenAll(profileTask, recentTask, notificationsTask);
 The scope model removes the need for that discipline. The structure of the code — the block boundaries — *is* the lifetime contract.
 
 ::: sidebar
+**On `--target native`.** Everything above works on the LLVM native target too, with one machine substituted for another: an `async func` compiles to an LLVM coroutine driven by a cooperative single-threaded scheduler in the native runtime (not a .NET `Task`), `spawn` binds a hot task that runs until its first suspension, and spawned tasks genuinely interleave — `Std.Time.sleepMillis` inside an async body suspends only the calling task. Cancellation (§10.2) is the exception: native has no cancellation tokens, and a failing task aborts the process (panics abort on native). Async generators (§10.5) are rejected at compile time on native.
+:::
+
+::: sidebar
 **Why no "fire and forget"?** Fire-and-forget breaks both of the guarantees you want from structured concurrency. When a scope exits, you want to know all work is done — fire-and-forget means "some work might still be running somewhere." When an error occurs, you want sibling work cancelled — a detached task cannot participate in that. If you genuinely need a background task that outlives the scope — a long-running worker, a background indexer — that is an architectural decision. Model it as a dedicated service object with an explicit lifecycle, not a detached task that slipped out of a scope.
 :::
 
