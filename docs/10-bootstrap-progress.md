@@ -28985,3 +28985,28 @@ wrong.
 
 **Related:** D-progress-590, D-progress-543 (this sandbox's stage-0 build
 constraint), docs/57 §8, `lyric-compiler/lyric/test_synth/test_synth.l`.
+
+### D-progress-592 — `lyric build`/`lyric run`/`lyric test` never copied resolved NuGet dependency DLLs (or, for the manifest test path, the stdlib bundle) into the output directory (#5066)
+
+**Shipped.** Full write-up lives in `docs/03-decision-log.md`
+D-progress-592 (kept there rather than duplicated here since it reads
+as a single fix with one root-cause narrative). Summary: `buildProject`
+(`cli_build.l`) only co-located resolved dependency DLLs beside the
+output assembly inside the `kind = "exe"` branch, even though a
+`kind = "lib"` project (the manifest default) is exactly what
+`lyric run` executes via `dotnet exec` — and third-party (non-Lyric)
+NuGet assemblies were never copied at all, on any `buildKind`.
+Separately, `cmdTestManifest`'s dotnet-run step (`cli_test.l`) called
+`Environment.appBaseDirectory()` directly instead of the
+layout-agnostic `findCompiledLibDir()` helper every sibling call site
+uses, so the stdlib bundle silently failed to co-locate on any
+distribution layout where the two directories differ. Fixed by making
+the dependency/stdlib colocation unconditional on `buildKind` for
+Dotnet-target manifest builds, adding third-party NuGet DLL colocation
+(`copyNugetAssembliesBeside`) to both the build and test paths, and
+switching the manifest test path to `findCompiledLibDir()`. Verified
+against a local (non-nuget.org) repro package + `git stash`-isolated
+comparison against unmodified `main`; see the decision-log entry for
+the full verification trace.
+
+**Related:** #4925, #4955, #4980, #5004, #5010, #4126, docs/21-nuget-linking.md §6.

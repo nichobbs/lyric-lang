@@ -534,6 +534,22 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
   }
 }
 
+// Copy a single dependency DLL beside `outPath`.  Best-effort: a missing or
+// unreadable source, or a write failure, is silently skipped — the eventual
+// `dotnet exec` surfaces the original assembly-load error instead.
+func copyDllBeside(outPath: in String, dllPath: in String): Unit {
+  if dllPath.length == 0 or not File.fileExists(dllPath) {
+    return
+  }
+  val dest = Path.join(Path.dirname(outPath), Path.basename(dllPath))
+  match File.readBytes(dllPath) {
+    case Ok(bs) -> {
+      val _ = File.writeBytes(dest, bs)
+    }
+    case Err(_) -> ()
+  }
+}
+
 // Co-locate each restored-dependency output DLL beside the assembly at
 // `outPath`.  `restoredDlls` entries are "<depName>\t<dllPath>" (the same
 // encoding threaded into `EmitProjectRequest.restoredDllPaths`).  A
@@ -542,23 +558,28 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
 // load it.  Best-effort: failures are non-fatal (the run then surfaces the
 // original load error).
 func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Unit {
-  val destDir = Path.dirname(outPath)
   var i = 0
   while i < restoredDlls.count {
     val depEntry = restoredDlls[i]
     i = i + 1
     val tabPos = depEntry.indexOf("\t")
     val dllPath = if tabPos >= 0 { depEntry.substring(tabPos + 1, depEntry.length - tabPos - 1) } else { depEntry }
-    if dllPath.length == 0 or not File.fileExists(dllPath) {
-      continue
-    }
-    val dest = Path.join(destDir, Path.basename(dllPath))
-    match File.readBytes(dllPath) {
-      case Ok(bs) -> {
-        val _ = File.writeBytes(dest, bs)
-      }
-      case Err(_) -> ()
-    }
+    copyDllBeside(outPath, dllPath)
+  }
+}
+
+// Co-locate genuine third-party NuGet assemblies (resolved by
+// `partitionNugetLyricDeps`'s `thirdPartyPaths` — a bare-path list, since
+// these carry no Lyric-side dep name to tag them with) beside the output
+// DLL, mirroring `copyRestoredDepDlls` for the Lyric-package subset.  A
+// `[nuget]` dependency that is a genuine .NET library (not another Lyric
+// package) must sit next to the consumer for `dotnet exec` to load it at
+// runtime, same as any other restored dependency (#5066).
+func copyNugetAssembliesBeside(outPath: in String, nugetPaths: in List[String]): Unit {
+  var i = 0
+  while i < nugetPaths.count {
+    copyDllBeside(outPath, nugetPaths[i])
+    i += 1
   }
 }
 

@@ -136,10 +136,16 @@ D-progress-026, D-progress-061). The new work is the *registration*
 path — adding NuGet DLLs to the `Assembly.LoadFrom` set the emitter
 walks during type resolution.
 
-At runtime, `dotnet exec <out>` finds NuGet DLLs through the standard
-.deps.json mechanism. `lyric build` writes the project's `.deps.json`
-to include every transitive NuGet DLL, mirroring what `dotnet
-publish` does for csproj builds.
+At runtime, `dotnet exec <out>` resolves an assembly reference by
+probing the output directory first — a flat `additionalProbingPaths`
+entry cannot resolve a NuGet-cache-shaped dependency layout. `lyric
+build`/`lyric run`/`lyric test` therefore co-locate every resolved
+NuGet DLL (both Lyric-package `[nuget]` deps and genuine third-party
+.NET libraries) beside the output assembly, the same mechanism used
+for workspace/path dependencies and the stdlib bundle (`docs/03-decision-log.md`
+D-progress-592 / #5066). No `.deps.json` is generated — colocation
+alone is sufficient for the single-output-directory layout `lyric
+build` produces.
 
 ## 7. AOT compatibility
 
