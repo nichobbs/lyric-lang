@@ -28741,3 +28741,44 @@ interface/nested-interface/`Std.Time` repros — zero regressions. Verified
 against the pinned F# stage-0 mint.
 
 **Related:** #3613/D-progress-585 (the fix this extends), docs/44 m-86.
+
+### D-progress-587 — JVM: `deleteRecursively` no longer follows directory symlinks (#4840)
+
+**Shipped.** Closes #4840, parity with the native-target fix (#4833, PR #4805).
+`lyric-stdlib/std/_kernel_jvm/file_host.l`'s `deleteRecursively` classified
+each directory entry via `File.isDirectory()`, which **follows symbolic
+links** — a symlink pointing at a directory was recursed into, deleting the
+link target's contents (potentially outside the tree actually being removed)
+instead of just unlinking the symlink itself.
+
+**Fix.** New `isSymlinkJvm(f: JFile): Bool` resolves via
+`java.nio.file.Files.isSymbolicLink(f.toPath())` — `lstat` semantics, so it
+does not follow the final path component and correctly classifies a
+directory symlink as a link rather than a directory. `deleteRecursively`'s
+recursion is now gated on `d.isDirectory() and not isSymlinkJvm(d)`; the leaf
+`d.delete()` already removed a symlink as a link (unchanged). Two new
+`extern type` declarations (`JPath` = `java.nio.file.Path`, `JFiles` =
+`java.nio.file.Files`).
+
+**Verification.** `file_jvm_self_test.l` gains "recursive delete does not
+traverse a directory symlink" (mirrors the native `llvm_stdlib_self_test.l`
+case): creates a real directory symlink via `ln -s` (shelled out through
+`java.lang.ProcessBuilder(List[String])` directly — the `List<String>`
+constructor accepts a Lyric `List[String]` as-is, since its runtime type
+genuinely implements `java.util.List`; the `String...` varargs constructor
+and a `.toArray()`-produced `Object[]` both fail auto-FFI overload
+resolution), then asserts the outside target directory and its contents
+survive a `deleteDirRecursive` on the containing tree. Confirmed the test
+fails against the pre-fix kernel (`git stash` bisect) and passes against the
+fix; full `file_jvm_self_test.l` suite (6/6) and no compiler-source changed
+(a pure stdlib fix, no stage-0 mint/stage-1 rebuild needed).
+
+Found and filed separately while building the regression test (not fixed
+here, out of scope): #5055 — indexing a `List[T]`-typed function *parameter*
+(as opposed to a call-scrutinee-derived local) doesn't `checkcast` the
+element before a typed use, which made `Std.Process.runCapture` uncompileable
+on `--target jvm` and forced the symlink fixture to shell out via a raw
+`ProcessBuilder` extern instead.
+
+**Related:** #4833/#4805 (the native-target fix this mirrors), #5055 (new,
+unrelated gap found during verification).
