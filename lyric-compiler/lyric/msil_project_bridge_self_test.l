@@ -859,7 +859,7 @@ test "generic @externTarget with List[Byte] and List[T] signatures compile and P
   assertEqual(Str.trim(result.stdout), "0", "generic_list_byte_return: PE loads and main runs")
 }
 
-// Regression for #4980: exercises the compiled-bundle fallback directly, since this process's own CWD/app-base sit inside the checkout and would always find the real source tree first.
+// Regression for #4980: hits the compiled-bundle fallback directly, since this process's CWD sits inside the checkout and would always find the real source tree.
 test "stdlib types reconstruct from compiled bundle contract metadata" {
   val sources = Emitter.stdlibSourcesFromCompiledBundle()
   assertTrue(sources.count > 0, "stdlib_from_compiled_bundle: non-empty (compiled Lyric.Stdlib.dll not found?)")
