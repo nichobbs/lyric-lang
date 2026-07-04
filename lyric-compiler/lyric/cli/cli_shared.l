@@ -659,16 +659,13 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
 pub func partitionNugetLyricDeps(nugetPaths: in List[String]): (List[String], List[String]) {
   val restoredEntries: List[String] = newList()
   val thirdPartyPaths: List[String] = newList()
-  var i = 0
-  while i < nugetPaths.count {
-    val path = nugetPaths[i]
+  for path in nugetPaths {
     val contracts = Meta.readAllContractsFromFile(path)
     if contracts.count > 0 {
-      restoredEntries.add(Path.basename(path) + "\t" + path)
+      restoredEntries.add(stemOf(Path.basename(path), 4) + "\t" + path)
     } else {
       thirdPartyPaths.add(path)
     }
-    i += 1
   };
   (restoredEntries, thirdPartyPaths)
 }
