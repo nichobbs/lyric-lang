@@ -4,16 +4,25 @@ Background job scheduling with pluggable backends (Hangfire, Quartz.NET).
 
 ## Platform parity
 
-| Feature flag | Backend                                                              | Status                |
-|--------------|----------------------------------------------------------------------|-----------------------|
-| `dotnet`     | Hangfire / Quartz.NET + `System.Threading.Timer`                     | Available             |
-| `jvm`        | Quartz Java + `java.util.concurrent.ScheduledExecutorService`        | Planned (Phase 6)     |
+**`InProcessJobScheduler` is production-ready on both targets** (pure
+Lyric, no kernel dependency). Beyond that, the two targets diverge in an
+unusual direction — `jvm` actually has *more* real backend coverage than
+`dotnet` today:
 
-The JVM kernel (`Jobs.Kernel.Jvm`) declares Quartz bindings against
-`org.quartz-scheduler:quartz` plus `lyric.jobs.*` helpers; the JVM
-helpers are supplied by the Lyric JVM stdlib JAR (out-of-repo).
-Until that JAR ships, only the `dotnet` feature produces a runnable
-artifact.
+| Feature flag | Backend                     | Status                                                                 |
+|--------------|------------------------------|-------------------------------------------------------------------------|
+| `dotnet`     | `InProcessJobScheduler`      | Available                                                                |
+| `dotnet`     | `hangfire`, `quartz`         | `NOT_IMPLEMENTED` — `connect()` returns an error (`jobs_kernel.l:254,262`, tracked as a Phase 3 follow-up of #733) |
+| `jvm`        | `InProcessJobScheduler`      | Available                                                                |
+| `jvm`        | `hangfire`, `quartz`         | Real `extern package org.quartz.Scheduler` bindings (both features map to Quartz — Hangfire has no JVM port) — genuine implementation, not a stub |
+
+The JVM kernel's Quartz binding is real Lyric FFI source, not a
+placeholder — but the overall `jvm` target still needs the out-of-repo
+Lyric JVM stdlib JAR to produce a runnable artifact end-to-end, so
+"real binding code" and "runnable today" are two different claims. See
+`docs/57-stdlib-ecosystem-library-review.md` §3 (this table corrects
+that document's earlier, inaccurate claim that Quartz/Hangfire were
+stub-only on both targets).
 
 ## Packages
 
@@ -71,17 +80,23 @@ For production use, deploy with the `hangfire` or `quartz` backend via feature f
 
 ### Hangfire (`hangfire` feature)
 
-`Jobs.connectHangfire(connectionString)` connects to Hangfire. Set the connection
-string via environment variable:
+`Jobs.connectHangfire(connectionString)` connects to Hangfire on `dotnet`,
+and to Quartz Scheduler (as a functional substitute — Hangfire has no JVM
+port) on `jvm`. **On `dotnet`, this currently returns
+`Err("... not yet implemented")`** — the real .NET Hangfire binding is
+tracked as a Phase 3 follow-up of #733. On `jvm` it's a real binding.
 
 | Env var | Default | Meaning |
 |---|---|---|---|
 | `LYRIC_JOBS_HANGFIRE_CONNECTION` | (required) | SQL Server or Redis connection string |
 
-### Quartz.NET (`quartz` feature)
+### Quartz (`quartz` feature)
 
-`Jobs.connectQuartz(datasourceUrl)` connects to Quartz.NET. Requires a JDBC-compatible
-data source for persistence.
+`Jobs.connectQuartz(datasourceUrl)` connects to Quartz.NET on `dotnet`
+(requires a JDBC-compatible data source for persistence) or to real
+Quartz Scheduler on `jvm`. **On `dotnet`, this currently returns
+`Err("... not yet implemented")`**, same tracking as Hangfire above. On
+`jvm` it's a real binding (in-memory `RAMJobStore`, not persistent).
 
 ## API reference
 

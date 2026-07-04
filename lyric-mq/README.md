@@ -2,6 +2,25 @@
 
 Transport-agnostic message queue with pluggable broker backends.
 
+## Platform parity
+
+**Only the `inmemory` backend is production-ready, and only on `dotnet`.**
+`rabbitmq`, `azureservicebus`, `sqs`, and `kafka` all compile and
+type-check (feature-gated `connect()` overloads exist for each), but:
+
+- On `dotnet`, all four return `Err("... not yet implemented (Phase 5
+  follow-up of #733)")` from `connect()` — declarative placeholders
+  pending broker-specific Testcontainers infrastructure (#779).
+- On `jvm`, `rabbitmq` and `kafka` are declared with `@axiom`-annotated
+  function signatures but have **no real client binding at all** — no
+  `extern type`/`extern func` declarations back them, so every call is a
+  no-op returning a trivial `Ok(())`/`Err("")`. `azureservicebus` and
+  `sqs` aren't declared on `jvm` at all, and there is no `inmemory`
+  feature on `jvm` either — the JVM target currently has no working
+  backend.
+
+See `docs/57-stdlib-ecosystem-library-review.md` §3.
+
 ## Packages
 
 | Package | Purpose |
@@ -48,12 +67,17 @@ Platform features:
 - `dotnet` — Target the .NET kernel (`Mq.Kernel.Net`)
 - `jvm` — Target the JVM kernel (`Mq.Kernel.Jvm`)
 
-Broker features:
+Broker features (see "Platform parity" above — only `inmemory` is real today):
 
-- `rabbitmq` — AMQP 0.9.1 via RabbitMQ
-- `azureservicebus` — Azure Service Bus queues
-- `sqs` — Amazon SQS
-- `kafka` — Apache Kafka topics
+- `inmemory` — In-process queue (`dotnet` only); the only backend with a
+  working implementation
+- `rabbitmq` — AMQP 0.9.1 via RabbitMQ (`NOT_IMPLEMENTED` on `dotnet`;
+  declared-but-unbound on `jvm`)
+- `azureservicebus` — Azure Service Bus queues (`NOT_IMPLEMENTED` on
+  `dotnet`; not declared on `jvm`)
+- `sqs` — Amazon SQS (`NOT_IMPLEMENTED` on `dotnet`; not declared on `jvm`)
+- `kafka` — Apache Kafka topics (`NOT_IMPLEMENTED` on `dotnet`;
+  declared-but-unbound on `jvm`)
 
 ## Core types and functions
 
