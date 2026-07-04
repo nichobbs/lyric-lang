@@ -4,17 +4,29 @@ Object and file storage with pluggable backend support.
 
 ## Platform parity
 
-| Feature flag | Backend                                                              | Status                |
-|--------------|----------------------------------------------------------------------|-----------------------|
-| `dotnet`     | AWS SDK for .NET (S3), Azure Blob SDK, local filesystem              | Available             |
-| `jvm`        | AWS SDK for Java v2 (S3), Azure Blob SDK for Java, local filesystem  | Planned (Phase 6)     |
+**Only the local filesystem backend is production-ready today, on both
+targets.** `connectS3()` and `connectAzureBlob()` compile and type-check
+on both `dotnet` and `jvm`, but every operation on the returned bucket
+returns `Err(StorageError(code = "NOT_IMPLEMENTED"))` — they are not
+stubs limited to one target, they simply have no working backend yet on
+either. See `docs/57-stdlib-ecosystem-library-review.md` §3.
+
+| Feature flag | Backend                                                              | Status                                  |
+|--------------|----------------------------------------------------------------------|------------------------------------------|
+| `dotnet`     | Local filesystem                                                      | Available                               |
+| `dotnet`     | AWS SDK for .NET (S3), Azure Blob SDK                                | `NOT_IMPLEMENTED` — native bindings pending |
+| `jvm`        | Local filesystem                                                      | Available                               |
+| `jvm`        | AWS SDK for Java v2 (S3), Azure Blob SDK for Java                    | `NOT_IMPLEMENTED` — native bindings pending |
 
 The JVM kernel (`Storage.Kernel.Jvm`) declares S3 / Azure Blob
 bindings against `software.amazon.awssdk:s3` and
 `com.azure:azure-storage-blob`, plus `lyric.storage.*` helpers; the
 JVM helpers are supplied by the Lyric JVM stdlib JAR (out-of-repo).
 Until that JAR ships, only the `dotnet` feature produces a runnable
-artifact.
+artifact — and even there, only the local-filesystem path is real; S3
+and Azure Blob need direct `extern type` bindings against their
+respective SDKs before they do anything but return
+`NOT_IMPLEMENTED` (see D056 below).
 
 ## Packages
 
@@ -65,9 +77,9 @@ Feature-gate the backend you need in `lyric.toml`:
 storage = ["s3"]  # or "azureblob", "local"
 ```
 
-- `s3` — Amazon S3
-- `azureblob` — Azure Blob Storage
-- `local` — Local filesystem
+- `s3` — Amazon S3 (`NOT_IMPLEMENTED` — see "Platform parity" above)
+- `azureblob` — Azure Blob Storage (`NOT_IMPLEMENTED` — see "Platform parity" above)
+- `local` — Local filesystem (production-ready)
 
 ## Core types and functions
 

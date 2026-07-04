@@ -146,14 +146,36 @@ unless auto-FFI gains property-assignment sugar.
   README should say so up front — a user reading "S3, Azure Blob, and
   local filesystem backends" in CLAUDE.md's library list would reasonably
   expect all three to work today.
-- **lyric-mq**: .NET in-memory backend works; RabbitMQ/SQS/Azure Service
-  Bus/Kafka are stubbed (`mq_kernel.l:213-237`). JVM kernel supports only
-  RabbitMQ/Kafka — no in-memory, no SQS/Azure — so the two targets aren't
-  even stubbing the same subset.
-- **lyric-jobs**: in-process scheduler works; Hangfire/Quartz.NET backends
-  are stub-only.
-- **lyric-search**: both Elasticsearch and Meilisearch backends are
-  stubbed (`search.l:52-63`, returning `"<backend> not linked"`); the
+- **lyric-mq**: .NET `inmemory` backend works; RabbitMQ/SQS/Azure Service
+  Bus/Kafka all return `Err("... not yet implemented")` on `dotnet`
+  (`mq_kernel.l:213-237`, tracked #779). **Correction to an earlier draft
+  of this finding:** the JVM kernel does *not* actually support RabbitMQ/
+  Kafka either — `_kernel/jvm/mq_kernel.l`'s `rabbitmq`/`kafka` functions
+  are `@axiom`-annotated signatures with no `extern type`/`extern func`
+  binding behind them at all, so every call is a no-op returning a
+  trivial `Ok(())`/`Err("")` regardless of arguments. JVM has zero
+  working backends today (no `inmemory` feature exists there either) —
+  the two targets aren't even stubbing the same subset, and neither has
+  a real broker.
+- **lyric-jobs**: `InProcessJobScheduler` works on both targets (pure
+  Lyric, no kernel dependency). **Correction to an earlier draft of this
+  finding:** Hangfire/Quartz.NET are stub-only on `dotnet` only
+  (`connect()` returns `Err("... not yet implemented")`,
+  `jobs_kernel.l:254,262`) — on `jvm`, both features route to a real
+  `extern package org.quartz.Scheduler` binding (Quartz substitutes for
+  Hangfire, which has no JVM port); genuine FFI, not a stub. `jvm` has
+  *more* real backend coverage than `dotnet` here, the opposite of the
+  usual pattern in this ecosystem.
+- **lyric-search**: **correction to an earlier draft of this finding** —
+  this isn't "both backends stubbed pending bindings." Real
+  `extern package` bindings for both Elasticsearch and Meilisearch exist
+  in `Search.Kernel.Net` *and* `Search.Kernel.Jvm`. The actual gap is
+  that `search.l`'s public functions (`searchConnectElasticsearch`,
+  `searchConnectMeilisearch`, `searchIndex`, `searchQuery`, etc.,
+  `search.l:52-92`) never import or call either kernel — they're
+  permanently hardcoded to `Err(...)` regardless of feature flags. This
+  is a wiring gap, not a missing-bindings gap, and a much smaller fix
+  than the storage/mq backends above — tracked as **issue #5067**. The
   whole module is `@experimental`, which is the right marker given the
   state.
 

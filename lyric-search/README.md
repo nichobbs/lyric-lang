@@ -4,15 +4,31 @@ Search engine integration with pluggable backends (Elasticsearch, Meilisearch).
 
 ## Platform parity
 
-| Feature flag | Backend                                                       | Status                |
-|--------------|---------------------------------------------------------------|-----------------------|
-| `dotnet`     | `Elastic.Clients.Elasticsearch` + `Meilisearch` .NET clients  | Available             |
-| `jvm`        | `co.elastic.clients:elasticsearch-java` + Meilisearch Java    | Planned (Phase 6)     |
+**Neither backend is reachable through the public `Search` API today, on
+either target — but not because the bindings don't exist.**
+`Search.Kernel.Net` and `Search.Kernel.Jvm` both declare real
+`extern package` bindings against the Elasticsearch and Meilisearch
+clients. The gap is one level up: `search.l`'s public functions
+(`searchIndex`, `searchQuery`, `searchConnectElasticsearch`,
+`searchConnectMeilisearch`, and friends) never import or call into
+either kernel — they're permanently hardcoded to
+`Err("... not linked")` / `Err("no search backend configured")`
+regardless of which feature flags are active. `Search.connectElasticsearch()`
+and `Search.connectMeilisearch()` cannot succeed today, on any
+configuration.
 
-The JVM kernel (`Search.Kernel.Jvm`) declares the Elasticsearch +
-Meilisearch JVM bindings; the `lyric.search.*` JVM helpers are
-supplied by the Lyric JVM stdlib JAR (out-of-repo).  Until that JAR
-ships, only the `dotnet` feature produces a runnable artifact.
+| Feature flag | Backend                                                       | Status                                          |
+|--------------|-----------------------------------------------------------------|----------------------------------------------|
+| `dotnet`     | `Elastic.Clients.Elasticsearch` + `Meilisearch` .NET clients (kernel) | Real binding, **not wired to the public API** |
+| `jvm`        | `co.elastic.clients:elasticsearch-java` + Meilisearch Java (kernel)  | Real binding, **not wired to the public API** |
+
+Wiring this up (importing the kernel package from `search.l` and
+delegating instead of hardcoding `Err`) is a much smaller task than
+writing the bindings from scratch, since the FFI layer already exists.
+Tracked as **issue #5067**. See
+`docs/57-stdlib-ecosystem-library-review.md` §3 (this corrects that
+document's earlier, less precise claim that both backends were simply
+"stubbed").
 
 ## Packages
 
