@@ -28933,3 +28933,40 @@ docs/57 §2 and §7 catalogue the migration backlog.
 **Related:** D116, D117, docs/47, docs/48, docs/42 (metadata-based auto-FFI
 this integration routes through), docs/57 (ecosystem adoption audit),
 #4714.
+
+### D-progress-585 — Fix `ImportDecl` span truncation for selector-group imports (docs/57 §8)
+
+**Fix pushed; verification pending CI** (this sandbox cannot build stage 0
+— `scripts/mint-stage0-fsharp.sh` fails with no GitHub API access, the
+same class of constraint as D-progress-543 — so the fix could not be
+locally compiled and run before pushing; see docs/57 §8 for the full
+trace).
+
+Wiring `import_extern_self_test.l` into CI (D-progress-584 follow-up)
+immediately failed with a `P0040` parse-error cascade. Root cause,
+precisely traced: `lyric-compiler/lyric/parser/parser_core.l::parseImportDecl`
+computed an import declaration's end span from `path.span` (the module
+path only) and never extended it to cover a following `.{...}` selector
+group unless a top-level `as Alias` came after the whole declaration.
+This has always been latent — it predates and is unrelated to the D116/
+D117 `import extern` work — but had never been exercised: no
+`@test_module` file anywhere in the repository used the `.{...}`
+selector-group import form before `import_extern_self_test.l`, and
+normal `lyric build` never reads `ImportDecl.span` (the type checker
+consumes `selector`/`asAlias` directly). The one consumer that does read
+it, `Lyric.TestSynth` (`test_synth.l:291,296`), reconstructs a test
+file's prelude by slicing source text at each import's span and resuming
+"the rest of the file" from the last import's span end — so a truncated
+span either silently drops a non-last import's selector group, or (as
+here, since the `import extern` line was the file's last import) leaks
+the dangling `.{...}` text into the reconstructed body as a bogus
+top-level item.
+
+**Fix:** `parseImportDecl` now captures the selector group's closing `}`
+span (or the current position on a missing-brace recovery) and uses it
+as the declaration's end span whenever a selector is present, before the
+top-level `as`-alias check runs. Selector *parsing* was already correct;
+only the span bookkeeping was wrong.
+
+**Related:** D-progress-584, D-progress-543 (this sandbox's stage-0 build
+constraint), docs/57 §8, `lyric-compiler/lyric/test_synth/test_synth.l`.

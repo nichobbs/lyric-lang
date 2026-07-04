@@ -25,6 +25,12 @@ correct-the-comment path — the two aspect templates it describes are
 still unwritten; the `lyric-resilience` JVM-kernel gap (§3) was tracked
 as issue #5037 and has since been fixed on `main` (see §3).
 
+**A second, more consequential finding fell out of actually wiring
+`import_extern_self_test.l` into CI**: doing so immediately failed the
+build — not a flake, and not a problem with the self-test itself, but a
+real, previously-latent parser bug it was the first file in the repo to
+trigger. See §8.
+
 ---
 
 ## 1. Headline finding: `import extern` + `.new()` shipped yesterday, adoption is zero, and the docs still say otherwise
@@ -336,3 +342,64 @@ in this review at once.
 7. Expand `lyric-testing` mocks per §5.3, prioritized by #410
    (failure-injection) since it multiplies the value of every mock added
    after it.
+
+---
+
+## 8. `import extern` selector groups corrupt `Lyric.TestSynth` reconstruction (found and fixed while closing §7 item 1)
+
+Wiring `import_extern_self_test.l` into CI (§7 item 1, `ci.yml`) turned it
+red on the first run: `lyric test --target dotnet
+lyric-compiler/lyric/import_extern_self_test.l` aborted with a cascade of
+`P0040: expected an item declaration` errors and `B0001: MSIL compilation
+failed`.
+
+**Root cause** (`lyric-compiler/lyric/parser/parser_core.l::parseImportDecl`,
+around line 757 before the fix): after parsing an import's optional
+`.{...}` selector group, the function set `endSp` from `path.span` —
+the module-path span only — and left it there unless a top-level `as
+Alias` followed the whole declaration. For any import with a selector
+group and no top-level alias (`import Foo.{A, B}`, `import extern
+System.{ Math as SystemMath }`, …), the recorded `ImportDecl.span` ended
+right after the module path, silently **excluding** the entire `.{...}`
+group from the span.
+
+This has no effect on normal `lyric build` (the type checker consumes the
+already-correctly-parsed `selector`/`asAlias` fields directly, not the
+span), which is why it was invisible until now. It matters only to
+`Lyric.TestSynth` (`lyric-compiler/lyric/test_synth/test_synth.l:291,296`),
+which reconstructs a `@test_module` file's prelude by literally slicing
+the original source text at each `ImportDecl.span` and then resuming
+"the rest of the file" from the **last** import's span end offset. With
+the span truncated:
+- if the truncated import is not the last one, its `.{...}` group is
+  silently dropped from the reconstructed source (an undetected import
+  loss, not a parse error);
+- if it **is** the last import (as in `import_extern_self_test.l`, whose
+  third and final import is the `import extern` line), the "rest of
+  file" slice starts mid-declaration — right after the module path,
+  before the `.{...}` group — so the dangling `.{ Math as SystemMath }`
+  text gets re-emitted as if it were a new top-level item, which is
+  exactly the `P0040` cascade observed.
+
+Searching the whole repository for `@test_module` files using the
+`.{...}` selector-group import form (`import Foo.{A, B}` or the `pub
+use`/`import extern` variants) turned up **zero** matches other than the
+new self-test — this is why a bug affecting any selector-group import
+combined with `Lyric.TestSynth` has never surfaced before: no existing
+test file happened to combine the two.
+
+**Fix:** `parseImportDecl` now records the selector group's closing `}`
+span (or, on a missing-brace recovery, the current position) and uses it
+as `endSp` whenever a selector is present, before the top-level `as`
+check can override it. This is a narrow, targeted fix — it does not touch
+selector *parsing* (which was always correct; only the span bookkeeping
+around it was wrong).
+
+**Verification note:** this sandbox cannot build stage 0 (`scripts/mint-stage0-fsharp.sh`
+fails — no GitHub API access for the release download, the same
+constraint `docs/03-decision-log.md` D-progress-543 documents for a
+different symptom), so the fix could not be locally compiled and run
+against the failing self-test before pushing. The reasoning above is a
+direct code-level trace (file:line cited throughout) rather than an
+empirical repro, and CI — which *can* build stage 0 — is the actual
+verification for this fix once pushed.

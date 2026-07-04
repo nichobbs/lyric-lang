@@ -722,6 +722,7 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
     val path = parseModulePath(st)
 
     // Optional `.{...}` group selector.
+    var selectorEndSp: Option[Span] = None
     val selector: Option[ImportSelector] = if isPunct(peekToken(st), Dot) and isPunct(peekAt(st, 1).token, LBrace) {
       val _ = advance(st)
       // '.'
@@ -743,10 +744,12 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
         }
       }
       match tryEatPunct(st, RBrace) {
-        case Some(_) -> {
+        case Some(closeBrace) -> {
+          selectorEndSp = Some(value = closeBrace.span)
         }
         case None -> {
           emitErr(st, "P0032", "expected '}' to close import group", peekSpan(st))
+          selectorEndSp = Some(value = peekSpan(st))
         }
       }
       Some(value = ISGroup(items = items))
@@ -754,7 +757,10 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
       None
     }
 
-    var endSp = path.span
+    var endSp = match selectorEndSp {
+      case Some(sp) -> sp
+      case None -> path.span
+    }
     val result = match tryEatKw(st, KwAs) {
       case Some(_) -> {
         match tryEatIdent(st) {
