@@ -3052,6 +3052,33 @@ jobs:
           "$lyric_bin" test --target jvm lyric-compiler/lyric/map_option_self_test.l
           echo "map-option self-test ran: map_option_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
+      # Wire-DI self-test on JVM (#1502, #5020, #5022) — un-parked from
+      # placeholder assertions once both JVM-side wire blockers were fixed:
+      # registerStaticWireSig always registered `bootstrap` as zero-arg
+      # (#5020, made any `@provided` member unusable), and a record
+      # implementing an interface with an empty-bodied method failed class
+      # load with ClassFormatError (#5022, `inferMaxLocals` never accounted
+      # for the parameter frame when the body touches none of its params).
+      # `--target dotnet` is not run here: MSIL has no equivalent call-site
+      # resolution for wire `bootstrap()`/accessor calls at all (#5021,
+      # tracked separately). Needs JDK 21 (this job).
+      - name: Wire-DI self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping wire-DI JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping wire-DI JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/wire_di_self_test.l
+          echo "wire-DI self-test ran: wire_di_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
       # Aspect-weave self-test on JVM (#3402) — the JVM half of the dotnet-job
       # step above.  Pins the JVM woven-call resolution fix (`collectAspectWovenSigs`
       # registering the post-weave `__aspect_*` sigs) so a woven `proceed` no

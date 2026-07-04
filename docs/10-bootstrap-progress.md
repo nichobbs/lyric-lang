@@ -28500,3 +28500,53 @@ become load-bearing; §7.4's cancellation/failure-aggregation machinery
 **Related:** D-N-021, D-N-019, D-N-020, `docs/01-language-reference.md`
 §7.4, `native/plan/06-async-design.md`, `native/plan/08-work-items.md`
 §Phase N8.
+
+### D-progress-584 — JVM: `inferMaxLocals` never accounted for the parameter frame, so a body that never touches its own params under-declared `max_locals` (#5022)
+
+**Shipped.** Closes #5022, found while verifying D-progress-582/#5023.
+A record implementing an interface whose method has an **empty body**
+(`func log(msg: in String): Unit { }`) failed class load with
+`ClassFormatError: Arguments can't fit into locals`. Isolated to be
+independent of wire blocks entirely: a bare `record` + `interface` + `impl`
+with the same shape reproduces standalone; a non-empty body (even just
+`println(msg)`) does not.
+
+**Root cause.** `lowerFuncImpl` (`lowering.l`) computes `actualMaxLocals` as
+`if f.maxLocals > 0 then f.maxLocals else inferMaxLocals(f)` whenever a
+caller passes the `maxLocals = 0` "please infer" sentinel (as
+`lowerImplMethod` does for every impl method). `inferMaxLocals` scans
+`f.insns` for the highest local slot referenced by any load/store
+instruction and returns that — but a method whose body never reads or
+writes one of its own parameters emits **no** load/store instructions
+referencing that parameter's slot at all, so `inferMaxLocals` undercounts:
+the parameter frame itself (`this` + one slot per param, two for Long/
+Double) still occupies real slots that the JVM verifier requires
+`max_locals` to cover regardless of whether the body ever touches them.
+For a one-param instance method whose body is empty, `inferMaxLocals`
+returns `0` while the method needs at least `2` (this + the one param) —
+`ClassFormatError` at class-load time, before the method is ever invoked.
+
+**Fix.** `lowerFuncImpl` already computes `paramSlotCount` (the real
+parameter-frame slot count, accounting for `this` and two-slot Long/
+Double params) immediately before calling `inferMaxLocals`. `actualMaxLocals`
+is now `max(paramSlotCount, inferMaxLocals(f))` instead of `inferMaxLocals(f)`
+alone — a floor, not a replacement, so methods whose bodies genuinely need
+more slots than their parameter frame (the common case) are unaffected.
+
+**Verification.** The exact isolated repro (record + interface + `impl`
+with an empty-bodied method) passes clean post-fix (`lyric build --target
+jvm` + `java -jar`), reproduced the `ClassFormatError` reliably pre-fix.
+`wire_di_self_test.l` — whose own `WireConsoleLogger.log` has this exact
+shape — no longer hits the `ClassFormatError` either, and is un-parked from
+placeholder `assertTrue(true, ...)` bodies to real, `bootstrap()`-invoking
+assertions now that both this and D-progress-582/#5020 are fixed (wired
+into CI on `--target jvm` only — `--target dotnet` remains blocked on
+#5021, out of scope here). Full JVM self-test regression sweep
+(`map_option_self_test.l`, `map_key_self_test.l`, `bitwise_self_test.l`,
+`aspect_weave_self_test.l`, `auto_ffi_jvm_self_test.l`,
+`subscript_assign_jvm_self_test.l`, `wire_di_self_test.l`) — zero
+regressions. Verified against the pinned F# stage-0 mint.
+
+**Related:** #5022 (closed by this entry), #5021 (MSIL wire-call
+resolution, still open, unrelated), D-progress-582/#5023 (discovered
+while verifying), docs/44 m-85.
