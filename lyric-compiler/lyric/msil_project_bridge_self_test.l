@@ -32,6 +32,7 @@ import Std.ProcessCapture as Capture
 import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
+import Lyric.Parser
 import Msil.Bridge
 import Lyric.Emitter as Emitter
 
@@ -620,9 +621,13 @@ test "void-typed binding shadowing a non-void binding of the same name does not 
   packages.add(
     mkPkg(
       "VoidShadow.App",
-      "package VoidShadow.App\n" + "func work(): Int {\n" + "  val x = 5\n" +
-        "  val x = println(\"shadowed\")\n" + "  x\n" + "  6\n" + "}\n" +
-        "func main(): Unit {\n" + "  println(work().toString())\n" + "}\n"
+      "package VoidShadow.App\n" + "func work(): Int {\n" + "  val x = 5\n" + "  val x = println(\"shadowed\")\n" +
+        "  x\n" +
+        "  6\n" +
+        "}\n" +
+        "func main(): Unit {\n" +
+        "  println(work().toString())\n" +
+        "}\n"
     )
   )
   val result = compileAndRun("void_shadow", packages, "VoidShadow")
@@ -852,4 +857,37 @@ test "generic @externTarget with List[Byte] and List[T] signatures compile and P
   val result = compileAndRunWithStdlib("genbyteret", packages, "GenByteRet")
   assertEqualInt(result.exitCode, 0, "generic_list_byte_return: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "0", "generic_list_byte_return: PE loads and main runs")
+}
+
+// Regression for #4980: hits the compiled-bundle fallback directly, since this process's CWD sits inside the checkout and would always find the real source tree.
+test "stdlib types reconstruct from compiled bundle contract metadata" {
+  val sources = Emitter.stdlibSourcesFromCompiledBundle()
+  assertTrue(sources.count > 0, "stdlib_from_compiled_bundle: non-empty (compiled Lyric.Stdlib.dll not found?)")
+  val pkgs = collectStdlibPackages(sources)
+  var foundOption = false
+  var foundResult = false
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg = pkgs[pi]
+    if pkg.name == "Std.Core" {
+      var ii = 0
+      while ii < pkg.items.count {
+        match pkg.items[ii].kind {
+          case IUnion(decl) -> {
+            if decl.name == "Option" {
+              foundOption = true
+            }
+            if decl.name == "Result" {
+              foundResult = true
+            }
+          }
+          case _ -> ()
+        }
+        ii = ii + 1
+      }
+    }
+    pi = pi + 1
+  }
+  assertTrue(foundOption, "stdlib_from_compiled_bundle: Std.Core.Option reconstructed")
+  assertTrue(foundResult, "stdlib_from_compiled_bundle: Std.Core.Result reconstructed")
 }

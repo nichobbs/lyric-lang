@@ -373,7 +373,8 @@ func findStdlibSourcesForTarget(forJvm: in Bool): List[String] {
     stdlibDir = walkUpForStdlib(Environment.currentDirectory())
   }
   if stdlibDir.length == 0 {
-    return sources
+    // No raw source reachable: fall back to the compiled bundle (#4980; JVM: #4994).
+    return if forJvm { sources } else { stdlibSourcesFromCompiledBundle() }
   }
   // Load kernel files FIRST so their extern type declarations
   // (`extern type List[T] = "System.Collections.Generic.List`1"`,
@@ -399,6 +400,28 @@ func findStdlibSourcesForTarget(forJvm: in Bool): List[String] {
   // Public surface: every top-level `*.l` file in `lyric-stdlib/std/`.
   appendLyricFiles(sources, stdlibDir, false)
   sources
+}
+
+// Reconstructs stdlib source per package from `Lyric.Stdlib.dll`'s contract metadata (#4980, D-progress-576); no preamble, since packages type-check together and a preamble would duplicate-register a sibling type.
+pub func stdlibSourcesFromCompiledBundle(): List[String] {
+  val sources: List[String] = newList()
+  val dir = findCompiledStdlibDir()
+  if dir.length == 0 {
+    return sources
+  }
+  val dllPath = Path.join(dir, "Lyric.Stdlib.dll")
+  val noPreamble: List[Meta.ContractDecl] = newList()
+  match RP.loadRestoredPackage(dllPath) {
+    case Err(_) -> sources
+    case Ok(arts) -> {
+      var i = 0
+      while i < arts.count {
+        sources.add(RP.synthesiseSource(arts[i].contract, noPreamble))
+        i = i + 1
+      }
+      sources
+    }
+  }
 }
 
 // Native-target stdlib source loader (mirrors the JVM loader above):
