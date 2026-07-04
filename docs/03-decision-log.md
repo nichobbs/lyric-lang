@@ -5569,12 +5569,15 @@ reverse) D-N-019's deferral note.
   can leak past the scope. No cancellation/aggregation machinery is
   pretended at.
 
-**Verification.** Four new cases in `llvm_self_test_async.l`: a spawn
-binding held across other work and awaited later; the language
-reference's own §7.4 dashboard shape (three spawns in a `scope`,
-awaited, aggregate returned from inside the scope block); `scope`
-interacting with `defer` as an ordinary lexical scope; and an
-ASan-clean String-typed spawn-binding loop. Plus the standard sweep:
+**Verification.** Five new cases in `llvm_self_test_async.l` (13
+total): a spawn binding held across other work and awaited later; the
+language reference's own §7.4 dashboard shape (three spawns in a
+`scope`, awaited, aggregate returned from inside the scope block);
+`scope` interacting with `defer` as an ordinary lexical scope; an early
+`return` from inside a `scope` that also registered a `defer` (the
+scope's defer drains on the return path with the value captured first —
+the D-N-020 + scope-boundary composition, added per review #5025); and
+an ASan-clean String-typed spawn-binding loop. Plus the standard sweep:
 full native self-test suite, `make ilverify`, and an end-to-end `lyric
 build --target native` check.
 

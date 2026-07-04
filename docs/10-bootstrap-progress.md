@@ -28482,13 +28482,14 @@ construct the reference backend itself implements.
   `lowerBlockStmts`, making `scope { }` a real lexical scope — its
   ARC releases and pending `defer` blocks (D-N-020) run at scope exit.
   Two arms, no new machinery.
-- **Verification:** four new `llvm_self_test_async.l` cases (12 total):
+- **Verification:** five new `llvm_self_test_async.l` cases (13 total):
   spawn binding held and awaited later; the language reference's §7.4
   dashboard shape (three spawns in a scope, aggregate returned from
-  inside the block); scope + defer interplay; ASan-clean String-typed
-  spawn bindings across 25 iterations. Full native self-test suite,
-  `make ilverify`, and end-to-end `lyric build --target native` all
-  clean.
+  inside the block); scope + defer interplay; early return from a scope
+  with a co-registered defer (added per review #5025); ASan-clean
+  String-typed spawn bindings across 25 iterations. Full native
+  self-test suite, `make ilverify`, and end-to-end `lyric build
+  --target native` all clean.
 
 **Deferred (tracked):** genuine concurrent progress — gated on an async
 leaf primitive per D-N-021, at which point `06-async-design.md`'s

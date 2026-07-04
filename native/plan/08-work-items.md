@@ -1107,10 +1107,11 @@ hold degenerately (every spawned call completes at the spawn site; a
 failing task aborts the process per D-N-003; nothing can leak past the
 scope). Genuine concurrent progress is gated on the first async leaf
 primitive — see D-N-021 and the refined deferral note in the D-N-019
-section above. Verified by four new `llvm_self_test_async.l` cases
+section above. Verified by five new `llvm_self_test_async.l` cases
 (spawn-bind-then-await, the §7.4 dashboard shape, scope + defer
-interplay, ASan-clean String spawn bindings) and end-to-end via `lyric
-build --target native`.
+interplay on both fall-through and early-return paths, ASan-clean
+String spawn bindings) and end-to-end via `lyric build --target
+native`.
 
 ---
 

@@ -125,7 +125,7 @@ first **async leaf primitive** (async sleep/timer, then async I/O) —
 a .NET task only stays incomplete if it awaits such a leaf, and native's
 stdlib has none, so .NET semantics restricted to the native surface also
 degenerate to sequential execution and the passthrough is observationally
-equivalent for every compilable program. Verified by four new
+equivalent for every compilable program. Verified by five new
 `llvm_self_test_async.l` cases including the language reference's §7.4
 dashboard shape.
 
