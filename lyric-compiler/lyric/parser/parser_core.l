@@ -700,7 +700,7 @@ func parseImportItem(st: inout ParseState): ImportItem {
 // Helper record: parsed `.{...}` selector group paired with its end span
 // (the closing `}`) — avoids a tuple return (see `NameAndSpan` above for
 // the same convention).
-pub record SelectorGroupParse {
+record SelectorGroupParse {
   group: ImportSelector
   endSp: Span
 }

@@ -429,5 +429,7 @@ different symptom), so neither fix attempt could be locally compiled and
 run before pushing. CI — which *can* build stage 0 — is the actual
 verification for this fix, and attempt 1's runtime crash is direct proof
 that "it compiles" is not sufficient evidence of correctness in this
-environment; treat this fix as CI-verified only once the relevant job is
-observed green, not from the reasoning here alone.
+environment. **Update:** CI's `compiler-self-tests-dotnet-a` job (which
+builds stage 0/1 from source and then runs `import_extern_self_test.l`
+against it) passed clean on attempt 2 — the fix is confirmed, not just
+reasoned through.

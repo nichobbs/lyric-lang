@@ -28936,11 +28936,14 @@ this integration routes through), docs/57 (ecosystem adoption audit),
 
 ### D-progress-587 — Fix `ImportDecl` span truncation for selector-group imports (docs/57 §8)
 
-**Fix pushed; verification pending CI** (this sandbox cannot build stage 0
-— `scripts/mint-stage0-fsharp.sh` fails with no GitHub API access, the
-same class of constraint as D-progress-543 — so the fix could not be
-locally compiled and run before pushing; see docs/57 §8 for the full
-trace).
+**Shipped, verified by CI** (this sandbox cannot build stage 0 —
+`scripts/mint-stage0-fsharp.sh` fails with no GitHub API access, the same
+class of constraint as D-progress-543 — so neither fix attempt below
+could be locally compiled and run before pushing; CI's
+`compiler-self-tests-dotnet-a` job, which builds stage 0/1 from scratch,
+is the actual verification, and it passed clean on the second attempt.
+See docs/57 §8 for the full trace, including the first attempt's
+runtime-crash dead end).
 
 Wiring `import_extern_self_test.l` into CI (D-progress-586 follow-up)
 immediately failed with a `P0040` parse-error cascade. Root cause,
