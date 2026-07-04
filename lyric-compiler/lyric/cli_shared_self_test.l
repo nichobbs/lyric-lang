@@ -234,3 +234,33 @@ test "nugetUnresolvedReason: resolved paths present yields no warning" {
     case None -> ()
   }
 }
+
+// Regression for #5004: a `[nuget]` dependency on a Lyric package (e.g.
+// `Lyric.Web`) previously never had its embedded contract loaded — only
+// third-party .NET assemblies without one went through the auto-FFI path,
+// but a Lyric package's DLL was routed there too, and auto-FFI's raw
+// metadata signature guess could misread a function's arity. This DLL
+// (the running test's own compiled assembly) carries a real embedded
+// `Lyric.Contract`, since every Lyric-emitted assembly does.
+func selfDllPath(): String {
+  Path.join(Environment.appBaseDirectory(), "cli_shared_self_test.dll")
+}
+
+test "partitionNugetLyricDeps: Lyric-contract DLL routes to restored deps, third-party DLL does not" {
+  val pkgsDir = freshTempDir("partition-pkgs")
+  defer { cleanup(pkgsDir) }
+  val thirdPartyDll = touchNugetDll(pkgsDir, "Newtonsoft.Json", "13.0.3", "lib/netstandard2.0/Newtonsoft.Json.dll")
+
+  val nugetPaths: List[String] = newList()
+  nugetPaths.add(selfDllPath())
+  nugetPaths.add(thirdPartyDll)
+
+  val (restoredEntries, thirdPartyPaths) = Cli.partitionNugetLyricDeps(nugetPaths)
+  assertEqualInt(restoredEntries.count, 1, "partitionNugetLyricDeps: exactly one Lyric-contract entry")
+  assertTrue(
+    Str.endsWith(restoredEntries[0], "\t" + selfDllPath()),
+    "partitionNugetLyricDeps: the Lyric DLL's path is preserved after its depName prefix"
+  )
+  assertEqualInt(thirdPartyPaths.count, 1, "partitionNugetLyricDeps: exactly one third-party entry")
+  assertEqual(thirdPartyPaths[0], thirdPartyDll, "partitionNugetLyricDeps: the non-Lyric DLL is left for auto-FFI")
+}

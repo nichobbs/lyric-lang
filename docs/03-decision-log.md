@@ -8350,6 +8350,109 @@ the checkout, making the fallback unreachable end-to-end from within it.
 (the contract-metadata mechanism this fix reuses).
 
 ---
+
+## D-progress-578 — A `[nuget]`/`[dependencies]`-registry-form dependency on another Lyric package never had its contract loaded; zero-argument (and any other) function calls into it resolved through the raw-metadata auto-FFI guess instead (#5004)
+
+**Context.** Issue #5004 reported that after #4980 fixed `Std.Core`
+resolution, a further bug surfaced: calling a genuinely zero-argument
+function from a NuGet-restored Lyric package (`Web.create(): Router` from
+`Lyric.Web`) failed type-checking with `T0042 expected 1 argument(s), got
+0`, even though both the package's embedded contract and its compiled IL
+agreed the function takes no parameters. Multi-argument calls into the
+same package (`Web.addGet`/`addPost`/`addDelete`) type-checked fine; only
+the zero-arg case failed.
+
+**Investigation.** Reproducing this took most of the effort. Tracing the
+full contract-metadata → `Lyric.RestoredPackages` synthesis →
+typechecker signature-registration → call-site arity-lookup pipeline
+against the real published `Lyric.Web`/`Lyric.Auth`/`Lyric.Resilience`
+0.4.11 packages — via `Lyric.RestoredPackages.synthesiseArtifact`,
+`Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`, and finally
+`Lyric.Emitter.emitProject` directly, replicating the real `restoredDllPaths`
+list byte-for-byte — never reproduced the bug: every stage correctly
+computed zero params for `Web.create`. The break only appeared going
+through the *real* `lyric build` CLI path
+(`cli_build.l::buildProject`), which showed the actual root cause:
+**`resolveNugetAssets`'s output (every DLL `dotnet restore` resolved from
+`[nuget]` **and** from a `[dependencies]` registry-form entry — both
+produce the same `<PackageReference>` in the generated restore csproj,
+per `cli_restore.l`'s `buildRestoreCsproj`) was threaded *only* into
+`EmitProjectRequest.nugetAssemblyPaths`, which feeds the raw
+PE-metadata auto-FFI index (`Msil.MetadataReader`, Phase 5 of
+`ensureMetadataIndex` in `msil/codegen.l`) — never into
+`restoredDllPaths`, the field that actually becomes a
+`Lyric.RestoredPackages.RestoredArtifact` with the package's real
+declared signatures.** `restoredDllPaths` (`cli_build.l`'s `restoredDlls`
+local) was populated only from `[workspace]` and `path`-source
+`[dependencies]` entries; the manifest-walking loop had a bare
+`case _ -> ()` fallback for every other `DepSource` variant, silently
+dropping `Registry` (the documented form for a published-package
+dependency; see docs/39-package-registry.md §5) entirely. So a Lyric
+package consumed via NuGet — regardless of which manifest table named
+it — was never routed through the contract-aware restored-dependency
+path at all; it only ever reached the auto-FFI metadata guess, whose
+raw-signature heuristics misread `create()`'s arity.
+
+Confirming this required a working *end-to-end* toolchain: the sandbox's
+`make lyric` fell back to minting the historical F# bootstrap compiler
+(release download blocked by network policy) whose `Lyric.Cli.dll`
+closure gets reused wholesale rather than recompiled — reproducing an
+unrelated `MissingFieldException: Std.Yaml.YamlValue_YMapping.pairs`
+crash inside `resolveNugetAssets`'s own JSON parsing before ever reaching
+typecheck (also independently reproduced against the officially published
+`lyric` 0.4.12 NuGet global tool). That crash is a distinct ABI-staleness
+bug, filed separately as #5010 (out of scope here). `make stage2` (the
+fully self-consistent, self-hosted-rebuilding-itself toolchain) sidesteps
+it entirely, and reproduced #5004's exact `T0042` error via `lyric
+restore && lyric build` on the real repro project.
+
+**Decision.** Added `Lyric.Cli.partitionNugetLyricDeps` (`cli_shared.l`):
+for each DLL path `resolveNugetAssets` resolves, check whether it carries
+an embedded `Lyric.Contract`/`Lyric.Contract.<Pkg>` resource
+(`Lyric.ContractMeta.readAllContractsFromFile`, the same PE-metadata
+reader `Lyric.RestoredPackages.loadRestoredPackage` uses). A contract-
+bearing DLL is a Lyric package — append it to `restoredDlls` (the same
+`"name\tpath"` shape a workspace/path dependency already uses); a DLL
+with no contract is a genuine third-party .NET library and keeps going
+through `nugetAssemblyPaths`/auto-FFI unchanged. Wired into both
+`cli_build.l::buildProject` and `cli_test.l::cmdTestManifest` (hoisting
+the latter's `resolveNugetAssets`/`warnIfNugetUnresolved` calls out of
+the per-test-file loop they were previously and pointlessly re-run
+inside, to append to `restoredDlls` exactly once). This fixes both the
+issue's own `[nuget]`-table repro and the documented-but-equally-broken
+`[dependencies]` registry-form, uniformly and without needing to special-
+case `DepSource.Registry` in the manifest-walking loop at all — the
+partition operates downstream of manifest parsing, directly on resolved
+NuGet assets, so it doesn't care which table originally named the
+dependency.
+
+**Coverage.** Verified end-to-end against a freshly built, fully
+self-consistent `make stage2` toolchain: the exact issue repro
+(`[nuget] "Lyric.Web" = "0.4.11"`, `var router = Web.create()`) now
+builds and runs (`hi`), as does an equivalent manifest using
+`[dependencies] "Lyric.Web" = "0.4.11"` (the documented registry form).
+Added a regression test,
+`"partitionNugetLyricDeps: Lyric-contract DLL routes to restored deps,
+third-party DLL does not"` in `cli_shared_self_test.l`, using the running
+test's own compiled DLL (every Lyric-emitted assembly carries a real
+embedded contract) as the Lyric-package fixture. `cli_build_self_test.l`
+(15/15), `emitter_project_self_test.l` (20/20), and
+`restored_packages_self_test.l` (15/15) all pass with no regressions.
+`cli_shared_self_test.l`'s three pre-existing `resolveNugetAssets`
+happy-path failures (`Field not found: Std.Yaml.YamlValue_YMapping.pairs`)
+are unaffected by this change — confirmed by inspection (they crash
+inside `resolveNugetAssets`'s own unmodified YAML-parsing code, before
+`partitionNugetLyricDeps` is ever called) — and are the same #5010 ABI-
+staleness bug, reachable here via `lyric test`'s compiler-bundle-linking
+mechanism for self-tests that reference `Lyric.Cli` internals.
+
+**Related:** #4980 (the resolution this bug was hidden behind), #5010
+(the separately-tracked, out-of-scope `Std.Yaml`/auto-FFI ABI-mismatch
+crash found during investigation), docs/39-package-registry.md §5 and §9
+(the `[dependencies]` vs `[nuget]` manifest design this fix's scope was
+clarified against).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
