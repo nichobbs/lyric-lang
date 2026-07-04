@@ -53,6 +53,23 @@ func emitTestPlain(rewritten: in String, stem: in String, outPath: in String, ta
   )
 }
 
+// Emit a single-file `@test_module` as a self-contained native (LLVM)
+// binary (N7.2), mirroring `buildOneNative`'s use of `Emitter.emitNative`.
+// No manifest is available in this path (the manifest-based test suite is
+// rejected earlier for `--target native`), so there is no `[native]`
+// config to merge — triple/opt/extra_libs use the emitter's own defaults
+// (host triple, `-O2`, none), exactly like `lyric build <file.l> --target
+// native` with no CLI knobs and no manifest.
+func emitTestNative(rewritten: in String, stem: in String, outPath: in String): EmitResult {
+  val noLibs: List[String] = newList()
+  Emitter.emitNative(
+    EmitRequest(source = rewritten, assemblyName = stem, outputPath = outPath, target = Native, packageVersion = ""),
+    "",
+    "",
+    noLibs
+  )
+}
+
 // Emit a single-file `@test_module` that imports `Lyric.*` compiler packages,
 // linking the already-compiled compiler DLLs as restored deps (#2364 Stage 5).
 func emitTestLinked(
@@ -93,6 +110,7 @@ func cmdTest(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var listMode = false
   var targetJvm = false
+  var targetNative = false
   var failFast = false
   var noDefaultFeatures = false
   var allFeatures = false
@@ -138,15 +156,20 @@ func cmdTest(argv: in slice[String]): Int {
         val t = argv[i + 1]
         if t == "jvm" {
           targetJvm = true
+          targetNative = false
         } else if t == "dotnet" {
           targetJvm = false
+          targetNative = false
+        } else if t == "native" {
+          targetJvm = false
+          targetNative = true
         } else {
-          printErr("test: --target must be 'dotnet' or 'jvm'")
+          printErr("test: --target must be 'dotnet', 'jvm', or 'native'")
           return 1
         }
         i += 2
       } else {
-        printErr("test: --target requires an argument (dotnet|jvm)")
+        printErr("test: --target requires an argument (dotnet|jvm|native)")
         return 1
       }
     } else if arg == "--manifest" {
@@ -174,6 +197,21 @@ func cmdTest(argv: in slice[String]): Int {
   // (#465).  Each test contributes one synthesised executable; the
   // command's exit code is non-zero if any test fails.
   // Explicit --manifest takes precedence.
+  // `--target native` does not yet support manifest (multi-package) test
+  // suites, mirroring `lyric build --target native`'s single-file-only
+  // restriction (N7.2) — compile the test file directly instead.
+  if targetNative {
+    match manifestArg {
+      case Some(_) -> {
+        printErr(
+          "test: --target native does not yet support manifest (multi-package) test suites; run the test file directly: lyric test <file.l> --target native"
+        )
+        return 1
+      }
+      case None -> ()
+    }
+  }
+
   match manifestArg {
     case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, cliFeatures, noDefaultFeatures, allFeatures)
     case None -> ()
@@ -181,6 +219,10 @@ func cmdTest(argv: in slice[String]): Int {
 
   if positional.count == 0 {
     // No explicit source file and no --manifest: auto-discover project.
+    if targetNative {
+      printErr("test: --target native requires an explicit source file (auto-discovered manifests are not yet supported)")
+      return 1
+    }
     match Disc.findNearestManifest(Environment.currentDirectory()) {
       case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, cliFeatures, noDefaultFeatures, allFeatures)
       case None -> {
@@ -221,10 +263,18 @@ func cmdTest(argv: in slice[String]): Int {
   }
 
   val stem = stemOf(Path.basename(sourcePath), 2)
-  val outExt = if targetJvm { ".jar" } else { ".dll" }
+  // Native binaries have no extension (language reference §"lyric build
+  // --target native": "the default output is the source stem with no
+  // extension").
+  val outExt = if targetJvm { ".jar" } else if targetNative { "" } else { ".dll" }
   val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-test"), stem + outExt)
 
-  match TestSynth.synthesize(source, filterArg) {
+  val synthResult = if targetNative {
+    TestSynth.synthesizeNative(source, filterArg)
+  } else {
+    TestSynth.synthesize(source, filterArg)
+  }
+  match synthResult {
     case NoTestModule(span) -> {
       printErr(sourcePath + ":" + toString(span.startPos.line) + ": not a @test_module — add @test_module annotation")
       return 1
@@ -252,16 +302,19 @@ func cmdTest(argv: in slice[String]): Int {
       // `emitProject`) rather than recompiling them from source (the retired
       // `LYRIC_LOAD_COMPILER` path).  The closure → DLL mapping is computed by
       // `Emitter.compilerClosureDllPaths`; an empty result (no compiler imports,
-      // or JVM target) keeps the plain single-file `emit`.  The emit itself is
-      // delegated to small helpers so this function body stays simple (the F#
-      // stage-0 segment compiler chokes on a large record-valued if-expression).
-      val testLibDir = if targetJvm { "" } else { findCompiledLibDir() }
-      val compilerDlls: List[String] = if targetJvm {
+      // or JVM/native target) keeps the plain single-file `emit`.  The emit
+      // itself is delegated to small helpers so this function body stays
+      // simple (the F# stage-0 segment compiler chokes on a large
+      // record-valued if-expression).
+      val testLibDir = if targetJvm or targetNative { "" } else { findCompiledLibDir() }
+      val compilerDlls: List[String] = if targetJvm or targetNative {
         newList()
       } else {
         Emitter.compilerClosureDllPaths(rewritten, testLibDir)
       }
-      val result = if compilerDlls.count > 0 {
+      val result = if targetNative {
+        emitTestNative(rewritten, stem, outPath)
+      } else if compilerDlls.count > 0 {
         emitTestLinked(rewritten, stem, outPath, compilerDlls)
       } else {
         emitTestPlain(rewritten, stem, outPath, targetJvm)
@@ -311,6 +364,30 @@ func cmdTest(argv: in slice[String]): Int {
           return 1
         }
         return jvmRes.exitCode
+      }
+      // Native: `Emitter.emitNative` already produced a self-contained POSIX
+      // executable (clang-linked against lyric_rt.a, libm, libpthread) —
+      // run it directly, with no DLL staging or runtimeconfig (N7.2).
+      if targetNative {
+        val noArgs: List[String] = newList()
+        val nativeRes = ProcessCapture.runCaptureWithDiagnosticsTimeout(outPath, noArgs, "", 600000)
+        Console.print(nativeRes.stdout)
+        if nativeRes.stderr.length > 0 {
+          Console.error(nativeRes.stderr)
+        }
+        if nativeRes.exitCode == -1 {
+          printErr("test: failed to start native test binary")
+          return 1
+        }
+        if nativeRes.timedOut {
+          printErr("test: test binary timed out (600 s limit reached)")
+          return 1
+        }
+        if nativeRes.stdout.length == 0 and nativeRes.exitCode == 0 {
+          printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
+          return 1
+        }
+        return nativeRes.exitCode
       }
       // Co-locate the fully-compiled stdlib runtime assemblies beside the
       // test DLL so `dotnet exec` resolves the real stdlib `pub func`s

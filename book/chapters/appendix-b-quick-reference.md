@@ -901,6 +901,10 @@ lyric test <file.l> --list             # print test titles only; do not compile 
 lyric test <file.l> --fail-fast        # stop after the first file with failing tests;
                                        # print an early summary and exit 1
 lyric test <file.l> --target jvm       # compile with JVM backend and run with java -jar
+lyric test <file.l> --target native    # compile via the LLVM backend and run the binary
+                                       # directly (single-file only; no try/catch isolation
+                                       # per test — a failing assertion aborts the process,
+                                       # D-N-003/D-N-018)
 lyric test                             # project mode: run every [project.tests] entry;
                                        # falls back to scanning [project.packages] for
                                        # @test_module files when [project.tests] is empty

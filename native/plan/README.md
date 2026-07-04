@@ -76,9 +76,16 @@ N6.4 SHIPPED (D-progress-564): the `[native]` manifest table
 (`triple` / `opt_level` / `extra_libs`) supplies defaults for
 `--target native` builds, with the `--triple` / `--opt` CLI flags
 overriding and `extra_libs` adding `-l<name>` clang link flags.
-Remaining work items (rest of N3, N7.2)
-execute from `08-work-items.md` as written, modulo the D-N-014 naming
-mapping.
+N7.2 SHIPPED (D-progress-576, D-N-018): `lyric test --target native`
+compiles a single-file `@test_module` through `Emitter.emitNative` and
+runs the binary directly; native's lack of try/catch (D-N-003) means
+per-test isolation isn't possible the way dotnet/jvm do it, so a new
+`synthesizeNative` test-synthesis path calls each test straight through
+(a failing assertion aborts the whole process instead of reporting
+`not ok` and continuing) — see D-N-018 for the full rationale and the two
+native-codegen gaps (bare `toString`, `println`) it surfaced and fixed
+along the way. N7.1's dedicated 3-OS CI matrix remains a follow-up; the
+existing single-OS (Linux) native CI job is the production gate today.
 
 ## Reading order
 

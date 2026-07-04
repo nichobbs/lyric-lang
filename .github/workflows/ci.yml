@@ -1381,6 +1381,61 @@ jobs:
             LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
           done
 
+      # `lyric test --target native` smoke test (N7.2): an ordinary
+      # `@test_module` (no compiler-package imports, unlike the llvm_self_test_n*
+      # files above) compiles through `Emitter.emitNative` and runs as a
+      # self-contained binary — not via LYRIC_LOAD_COMPILER's in-process MSIL
+      # host.  Native has no try/catch (D-N-003), so `TestSynth.synthesizeNative`
+      # calls each test straight through: a passing suite prints normal TAP
+      # output and exits 0; a failing assertion `panic`s the whole process
+      # (nonzero/abort exit, no per-test isolation) — asserted here too, so a
+      # future change that silently swallows the failure (exit 0) is caught.
+      - name: Native lyric test --target native smoke test (N7.2)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          # The "Native backend self-tests" step above is `background: true`
+          # and does not block, so it can run concurrently with this step —
+          # and it does `make -C lyric-rt clean && make -C lyric-rt test
+          # CC=gcc` partway through its own run, which deletes and rebuilds
+          # the SHARED lyric-rt/build/ directory out from under any other
+          # step reading lyric_rt.a from that same path at the same time
+          # (observed: a clang link failure because the .a was mid-`rm -rf`
+          # when this step tried to read it). Building into a private
+          # directory and pointing the CLI at it via LYRIC_RT_PATH avoids
+          # sharing mutable state with the background step entirely.
+          rt_build_dir="$(mktemp -d)/lyric-rt-build"
+          make -C lyric-rt BUILD="$rt_build_dir"
+          export LYRIC_RT_PATH="$rt_build_dir/lyric_rt.a"
+          work="$(mktemp -d)"
+          cat > "$work/pass_test.l" <<'LYR'
+          @test_module
+          package NativeTestSmoke
+
+          import Std.Testing
+
+          test "addition" {
+            assertEqualInt(2 + 2, 4, "2+2==4")
+          }
+          LYR
+          "$lyric_bin" test "$work/pass_test.l" --target native
+          cat > "$work/fail_test.l" <<'LYR'
+          @test_module
+          package NativeTestSmokeFail
+
+          import Std.Testing
+
+          test "deliberately wrong" {
+            assertEqualInt(2 + 2, 5, "2+2==5")
+          }
+          LYR
+          if "$lyric_bin" test "$work/fail_test.l" --target native; then
+            echo "::error::expected a nonzero exit for a failing --target native test"
+            exit 1
+          fi
+          echo "Native lyric test --target native smoke test passed"
+
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
       # Before this fix, @externTarget async func left Task<T> on the stack where
@@ -3609,7 +3664,12 @@ jobs:
           out="$("$lyric_bin" bench --target dotnet --runs 3 --warmup 1 "$work/benchsmoke.l")"
           echo "lyric bench --target dotnet output:"
           echo "$out"
-          if ! printf '%s\n' "$out" | grep -q "1 benchmark(s)"; then
+          # A herestring (not a pipe) avoids a SIGPIPE/pipefail race: `grep -q`
+          # exits as soon as it matches the first line, and with a live pipe
+          # that can kill the upstream `printf` before it finishes writing —
+          # `pipefail` then reports the whole pipeline as failed even though
+          # grep found the match.
+          if ! grep -q "1 benchmark(s)" <<< "$out"; then
             echo "::error::lyric bench --target dotnet did not report its benchmark count"
             exit 1
           fi

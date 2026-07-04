@@ -5230,6 +5230,66 @@ aggregate ABI" constraint that forced interfaces to heap-box also shapes
 the mutex-as-pointer choice here).
 
 
+## D-N-018 — `lyric test --target native` runs each test straight through, with no per-test try/catch isolation
+
+**Date:** 2026-07-04
+**Status:** ACCEPTED (N7.2; single-file test execution on the native backend)
+
+**Decision.** `lyric test <source.l> --target native` compiles the
+synthesised test program through `Emitter.emitNative` (the same entry
+point `lyric build --target native` uses) and runs the produced binary
+directly. The synthesised `main()` normally isolates each test in
+`try { … } catch Bug as e { … }` (`Lyric.TestSynth.synthesizeMain`) so one
+failing assertion reports `not ok` and the suite continues; native has no
+try/catch at all (D-N-003: no unwinding, `panic` aborts the process), so
+`TestSynth.synthesizeNative` (a new, non-`@stable` entry point alongside
+the existing `synthesize`) emits a straight-through call sequence instead:
+each test calls its function directly, and a passing test's `ok N - title`
+line prints before moving to the next. If an assertion fails, the whole
+process `panic`s and aborts immediately — no `not ok` line, no summary,
+just a nonzero/abort exit code. This is not a workaround; it is the same
+"panics abort" model every other native program already has (D-N-003),
+applied honestly to test execution rather than papered over.
+
+**Two supporting fixes needed along the way, both real native-codegen
+gaps rather than test-runner-specific hacks:**
+
+1. The type checker's prelude admits a bare `println(s)` / `toString(x)`
+   spelling (`typechecker_checker.l`'s builtin-name list) that the dotnet/
+   jvm emitters special-case but native's `llvm_codegen.l` never did.
+   `Std.Testing.assertEqualInt`/`assertEqualLong` use the bare
+   `toString(x)` form internally, so it was a **stdlib-blocking gap**, not
+   just a test-synthesis one: any native program calling those assertion
+   helpers would fail to compile with "cannot resolve call target
+   'toString/1'" before this. `lowerConstructCall` (`lowerCall`'s fallback
+   once the direct-name and UFCS resolution paths miss) now special-cases
+   bare `toString(x)`/1-arg, delegating to the same `lowerScalarMethodCall`
+   the `.toString()` method form already uses.
+2. Bare `println(s)` has no native equivalent at all (unlike `toString`,
+   for which a real backing implementation already existed) — native's
+   synthesised test program instead imports and calls the already
+   native-compilable `Std.Console.println` (N4.4/N5.1's console kernel),
+   injecting `import Std.Console as Console` into the synthesised source
+   header when `nativeMode` is set.
+
+**Scope shipped.** Single-file `@test_module` compilation and execution
+via `--target native`; `--filter` and normal TAP output on an all-passing
+suite; a nonzero/abort exit on any failing assertion. Manifest
+(multi-package) test suites are rejected with a diagnostic, mirroring
+`lyric build --target native`'s existing single-file-only restriction — no
+new work was done to lift that restriction for testing specifically.
+
+**Deferred (tracked).** Per-test isolation for native (would need either
+real unwinding support — a Phase 2 concern, contradicting D-N-003's
+"panics abort" design — or a per-test-subprocess re-architecture of the
+test runner); `--triple`/`--opt` CLI flags on `lyric test` (native build
+defaults are used unconditionally, matching the no-manifest case of
+`lyric build --target native`).
+
+**Related:** D-N-003 (no unwinding), `native/plan/08-work-items.md` §N7.2,
+`docs/01-language-reference.md` §"lyric test", `docs/24-test-runner-plan.md`.
+
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The
