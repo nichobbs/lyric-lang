@@ -16,9 +16,10 @@
 //! Lyric source cannot express — so an explicit per-entry lock replaces
 //! it) guarding atomic read-modify-write of the four mutable fields.
 //!
-//! The half-open state machine mirrors Resilience.Kernel.Net exactly and
-//! is covered by the same CircuitBreakerState formal-model tests in
-//! lyric-resilience/tests/resilience_tests.l.
+//! The half-open state machine mirrors Resilience.Kernel.Net exactly
+//! (same state-machine invariants: consecutiveFailures >= 0; isOpen ==>
+//! openedAtMs > 0) and is covered by the same CircuitBreakerState
+//! formal-model tests in lyric-resilience/tests/resilience_tests.l.
 //!
 //! Only active when compiled with feature = "jvm".
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
@@ -66,7 +67,6 @@ func getOrCreateEntry(name: in String): CircuitEntry {
   entry
 }
 
-@axiom("java.lang.Thread.sleep for retry backoff")
 pub func sleepMs(ms: in Int): Unit
   requires: ms >= 0
 {
