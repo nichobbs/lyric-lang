@@ -25861,8 +25861,16 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
         val caseName = decl.cases[ci].name
         val ctorKey = packageName + "." + decl.name + "_" + caseName
         val caseRefKey = packageName + "/" + ctorKey
-        // The TypeRef was already registered by `registerStdlibTypeItemRefs`.
-        val caseRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) { case Some(r) -> r; case None -> 0 }
+        // The TypeRef was already registered by `registerStdlibTypeItemRefs` —
+        // a missing row here means that invariant broke (a future change
+        // skipped Pass 1a for this case), which would otherwise silently
+        // drop this case's field/ctor MemberRefs — the same
+        // masked-until-runtime failure class #5010 was about. Panic loudly
+        // at compile time instead (#5031).
+        val caseRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) {
+          case Some(r) -> r
+          case None -> panic("Msil.Codegen: registerStdlibTypeItemMembers: TypeRef for stdlib union case '" + ctorKey + "' not found — registerStdlibTypeItemRefs should have registered it first")
+        }
         // Register field MemberRefs so `ldfld` can read fields of cross-assembly
         // union case instances.  Registered both by declared name ("value") and by
         // positional index ("field0") so that binding patterns like `case Some(x)`
