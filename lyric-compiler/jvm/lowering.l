@@ -1284,7 +1284,17 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
   }
 
   // Compute actualMaxLocals before assembly so we know the pre-init range.
-  val actualMaxLocals = if f.maxLocals > 0 then f.maxLocals else inferMaxLocals(f)
+  // `inferMaxLocals` only scans load/store instructions, so a method whose
+  // body never reads or writes one of its own parameters (e.g. an empty- or
+  // parameter-ignoring interface-method implementation) under-counts: the
+  // parameter frame itself (slot 0 = `this` + one slot per param, two for
+  // Long/Double) still occupies `paramSlotCount` slots that the JVM verifier
+  // requires `max_locals` to cover regardless of whether the body ever
+  // touches them — `ClassFormatError: Arguments can't fit into locals`
+  // otherwise (#5022). Take the max of the two.
+  val inferredMaxLocals = inferMaxLocals(f)
+  val floorMaxLocals = if paramSlotCount > inferredMaxLocals { paramSlotCount } else { inferredMaxLocals }
+  val actualMaxLocals = if f.maxLocals > 0 then f.maxLocals else floorMaxLocals
 
   // Assemble: emit pre-initializations for all non-parameter local slots first,
   // then emit the function body.  Pre-initializing every local slot guarantees
