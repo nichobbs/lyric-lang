@@ -4787,13 +4787,22 @@ pub func buildDeriveEqualsFunc(className: in String, fields: in List[LField]): L
       }
       case JDouble -> {
         // Two-slot primitive, same hazard as `JLong`.  The "l" (NaN → -1)
-        // variant matches `==`'s IEEE-754 semantics (mirrors `lowerCmp`).
+        // variant matches `==`'s IEEE-754 semantics (mirrors `lowerCmp`): a
+        // NaN field is never equal to any value, including another NaN.
+        // This intentionally diverges from Java's `Double.equals()`
+        // convention (`doubleToLongBits`-based, NaN equals NaN) — a record
+        // with a NaN `Double` field used as a `Map` key can never be
+        // retrieved, even by an identical NaN key (#5000).  Consistency with
+        // Lyric's own `==` was chosen over matching the BCL `equals()`
+        // contract, since the override is reachable from plain `==` too via
+        // D-progress-558's `Objects.equals` dispatch.
         eqInsns.add(LDcmpl)
         eqInsns.add(LIfeq(label = skipLabel))
       }
       case JFloat -> {
         // Single-slot but NOT reference-typed; `LIfAcmpeq` expects two
         // references on the stack and would `VerifyError` on a raw `float`.
+        // Same NaN-not-equal tradeoff as `JDouble` above (#5000).
         eqInsns.add(LFcmpl)
         eqInsns.add(LIfeq(label = skipLabel))
       }
