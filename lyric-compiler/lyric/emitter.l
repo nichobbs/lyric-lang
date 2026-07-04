@@ -373,13 +373,7 @@ func findStdlibSourcesForTarget(forJvm: in Bool): List[String] {
     stdlibDir = walkUpForStdlib(Environment.currentDirectory())
   }
   if stdlibDir.length == 0 {
-    // No raw `lyric-stdlib/std/` source tree is reachable — the normal
-    // case for an installed release, which ships only the compiled
-    // `lib/Lyric.Stdlib.dll` bundle (#4980).  Fall back to reconstructing
-    // declaration-only source from the bundle's embedded contract
-    // metadata.  .NET-only: the metadata reader has no JVM/JAR
-    // counterpart yet, so a JVM build with no reachable source tree still
-    // degrades to advisory-only type checking (tracked in #4994).
+    // No raw source tree reachable (installed-release case, #4980) — fall back to the compiled bundle; JVM has no reader for it yet (#4994).
     return if forJvm { sources } else { stdlibSourcesFromCompiledBundle() }
   }
   // Load kernel files FIRST so their extern type declarations
@@ -408,32 +402,8 @@ func findStdlibSourcesForTarget(forJvm: in Bool): List[String] {
   sources
 }
 
-// Reconstruct declaration-only stdlib source, per `Std.*` package, from
-// the compiled `lib/Lyric.Stdlib.dll` bundle's embedded contract
-// metadata — the same `Lyric.Contract.<Pkg>` resources + synthesis path
-// `Lyric.RestoredPackages` already uses for restored NuGet/workspace
-// dependencies (#1229).  Every installed release ships this compiled
-// bundle (see `findCompiledStdlibDir`), so this is the fallback that
-// makes `Std.Core`'s `Option`/`Result`/`Some`/`None`/`Ok`/`Err` (and every
-// other stdlib-declared type) resolve at typecheck time when no raw
-// `lyric-stdlib/std/` source tree is reachable (#4980).  Only signatures
-// matter to the caller (stdlib items are always cross-assembly
-// references into the compiled DLL, never re-emitted — see
-// `registerStdlibArtifactTokens`), so the synthesised stub bodies are
-// sufficient; no re-typecheck round-trip (`synthesiseArtifact`) is
-// needed here, just the raw `synthesiseSource` text `collectStdlibPackages`
-// will parse.
-//
-// No sibling-type preamble: unlike a single restored NuGet dependency
-// (validated standalone against a synthesised preamble, then stored
-// without it — see `synthesiseArtifact`'s `ownSrc`), every stdlib
-// package here is fed to `collectStdlibPackages`/`checkWithImportedPackages`
-// TOGETHER as one `importedPkgs` set, so cross-package references (e.g.
-// `Std.Collections` naming `Option[T]`) already resolve against
-// `Std.Core`'s own artifact.  Injecting a preamble would additionally
-// register a case-less stub of the sibling type under the referencing
-// package's own name (`renderPreambleDecl`), producing two distinct
-// `Option` declarations that fail to unify at typecheck (#4980 follow-up).
+// Reconstructs declaration-only stdlib source per package from `Lyric.Stdlib.dll`'s embedded contract metadata, via the same synthesis `Lyric.RestoredPackages` uses for restored deps (#4980; see D-progress-576 for the full rationale).
+// No sibling-type preamble: every package here type-checks together as one `importedPkgs` set, so a preamble would register a duplicate case-less stub of a sibling type (e.g. `Option`) that fails to unify with the real one.
 pub func stdlibSourcesFromCompiledBundle(): List[String] {
   val sources: List[String] = newList()
   val dir = findCompiledStdlibDir()

@@ -859,22 +859,7 @@ test "generic @externTarget with List[Byte] and List[T] signatures compile and P
   assertEqual(Str.trim(result.stdout), "0", "generic_list_byte_return: PE loads and main runs")
 }
 
-// ─── Regression: Std.Core types resolve from the compiled bundle when no raw
-// stdlib source tree is reachable (#4980) ───────────────────────────────────
-// An installed release ships only the compiled `lib/Lyric.Stdlib.dll` bundle,
-// not the `lyric-stdlib/std/` source tree, so `Emitter.findStdlibSources`
-// used to return an empty list whenever the raw source tree wasn't reachable
-// — every `Std.Core`-declared type (`Option`, `Result`, `Some`/`None`,
-// `Ok`/`Err`) then failed to resolve at typecheck even though `import
-// Std.Core` itself never errored. `Emitter.stdlibSourcesFromCompiledBundle`
-// reconstructs declaration-only source per package from the bundle's
-// embedded contract metadata instead (the same synthesis
-// `Lyric.RestoredPackages` already performs for restored dependencies).
-// Exercised directly rather than by hiding the raw source tree: this test
-// process's own CWD and app-base directory both sit inside the checkout, so
-// `findStdlibSources`'s directory walks would find the real tree regardless
-// of any env var override, making the fallback unreachable from end to end
-// here.
+// Regression for #4980: exercises the compiled-bundle fallback directly, since this process's own CWD/app-base sit inside the checkout and would always find the real source tree first.
 test "stdlib types reconstruct from compiled bundle contract metadata" {
   val sources = Emitter.stdlibSourcesFromCompiledBundle()
   assertTrue(sources.count > 0, "stdlib_from_compiled_bundle: non-empty (compiled Lyric.Stdlib.dll not found?)")

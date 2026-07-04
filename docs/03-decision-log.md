@@ -8026,7 +8026,7 @@ bypass, the prior art this issue's own theory drew from), D-progress-543
 
 ---
 
-## D-progress-556 — `Std.Core`'s `Option`/`Result`/`Some`/`None`/`Ok`/`Err` never resolved at use-site outside the monorepo checkout; installed releases never shipped the raw stdlib source the typechecker needed (#4980)
+## D-progress-576 — `Std.Core`'s `Option`/`Result`/`Some`/`None`/`Ok`/`Err` never resolved at use-site outside the monorepo checkout; installed releases never shipped the raw stdlib source the typechecker needed (#4980)
 
 **Context.** Issue #4980 reported that after #4925/#4955 fixed the
 `InvalidCastException` crash, `lyric build` got further but immediately hit

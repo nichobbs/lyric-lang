@@ -493,12 +493,16 @@ jobs:
             --add-source bootstrap/nupkgs \
             lyric --version "${{ needs.create-release.outputs.version }}"
           /tmp/lyric-tool/lyric --version
-          printf 'package Smoke\nimport Std.Core\nimport Std.Console as Console\nfunc main(): Unit { Console.print("tool smoke ok") }\n' > /tmp/smoke.l
+          # References (not just imports) Std.Core's Option/Result so a
+          # regression like #4980 — where a bare `import Std.Core` never
+          # errored even though every declared type failed to resolve —
+          # fails this smoke test instead of shipping silently.
+          printf 'package Smoke\nimport Std.Core\nimport Std.Console as Console\nimport Std.String as Str\nfunc find(x: in Int): Option[Int] {\n  if x > 0 { return Some(value = x) }\n  return None\n}\nfunc divide(a: in Int, b: in Int): Result[Int, String] {\n  if b == 0 { return Err(error = "boom") }\n  return Ok(value = a / b)\n}\nfunc main(): Unit {\n  match find(5) {\n    case Some(v) -> Console.print("opt=" + Str.fromInt(v))\n    case None -> Console.print("opt=none")\n  }\n  match divide(10, 2) {\n    case Ok(v) -> Console.print(" res=" + Str.fromInt(v))\n    case Err(e) -> Console.print(" res=err")\n  }\n}\n' > /tmp/smoke.l
           # Assert the OUTPUT, not just the exit code: a runtime that produces
           # wrong output but still exits 0 would otherwise slip through.
           out="$(/tmp/lyric-tool/lyric run /tmp/smoke.l)"
           echo "$out"
-          echo "$out" | grep -q "tool smoke ok"
+          echo "$out" | grep -q "opt=5 res=5"
 
       # Sign the NuGet package if a code-signing certificate is configured.
       # Set NUGET_SIGNING_CERT_BASE64 and NUGET_SIGNING_CERT_PASSWORD in
