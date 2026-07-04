@@ -883,9 +883,9 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.PathHost` | `path_host.l` | lyric.stdlib.jvm.PathHost operations conform to their documented JVM contracts |
 | `jvm` | `Std.ProcessCaptureHost` | `process_capture_host.l` | java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics |
 | `jvm` | `Std.ProcessHost` | `process_host.l` | lyric.stdlib.jvm.ProcessHost operations conform to their documented JVM contracts |
-| `jvm` | `Std.RandomHost` | `random_host.l` | java.util.Random conforms to its documented JDK contracts; lyric.stdlib.jvm.RandomHost wraps a process-wide instance |
+| `jvm` | `Std.RandomHost` | `random_host.l` | java.util.Random conforms to its documented JDK contracts |
 | `jvm` | `Std.RegexHost` | `regex_host.l` | lyric.stdlib.jvm.RegexHost operations conform to their documented JVM / java.util.regex contracts |
-| `jvm` | `Std.SecureRandomHost` | `secure_random_host.l` | java.security.SecureRandom conforms to its documented JDK contracts and produces cryptographically strong output; lyric.stdlib.jvm.SecureRandomHost wraps the strongest available algorithm |
+| `jvm` | `Std.SecureRandomHost` | `secure_random_host.l` | java.security.SecureRandom conforms to its documented JDK contracts and produces cryptographically strong output |
 | `jvm` | `Std.TimeHost` | `time_host.l` | java.time.* / java.lang.Math.round / java.lang.System.nanoTime / java.lang.Thread.sleep conform to their documented JVM / ISO 8601 contracts |
 | `jvm` | `Std.UnicodeHost` | `unicode_host.l` | lyric.stdlib.jvm.UnicodeHost correctly maps java.lang.Character.getType to the .NET UnicodeCategory convention |
 | `jvm` | `Std.UuidHost` | `uuid_host.l` | java.util.UUID conforms to its documented JVM contract |

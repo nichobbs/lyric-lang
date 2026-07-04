@@ -3961,6 +3961,22 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --manifest lyric-storage/lyric.toml --target jvm --no-default-features --features jvm
+      # lyric-resilience suite on JVM (#5037) — pins the real
+      # Resilience.Kernel.Jvm circuit-breaker/retry kernel (java.util.
+      # concurrent.ConcurrentHashMap + per-entry ReentrantLock, replacing
+      # the previous always-false/no-op stub) against the same
+      # resilience_tests.l the .NET target already runs.
+      - name: lyric-resilience suite on JVM (lyric test --target jvm --features jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping resilience JVM suite"
+            exit 1
+          fi
+          "$lyric_bin" test --manifest lyric-resilience/lyric.toml --target jvm --no-default-features --features jvm
       # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
       # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
       # views, pure-Lyric tryGetValue) AND the post-mono signature
