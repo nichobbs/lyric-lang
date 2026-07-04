@@ -110,7 +110,7 @@ test "map subscript compound-assign on Long values (two-slot width)" {
   assertEqualLong(m["big"], 1500000000i64, "long compound-assign through map")
 }
 
-test "map subscript compound-assign supports -, *, /" {
+test "map subscript compound-assign supports -, *, /, %" {
   val m: Map[String, Int] = newMap()
   m["v"] = 20
   m["v"] -= 5
@@ -119,6 +119,21 @@ test "map subscript compound-assign supports -, *, /" {
   assertEqualInt(m["v"], 30, "15 *= 2 == 30")
   m["v"] /= 3
   assertEqualInt(m["v"], 10, "30 /= 3 == 10")
+  m["v"] %= 4
+  assertEqualInt(m["v"], 2, "10 %= 4 == 2")
+}
+
+test "map subscript with an Int key exercises the key-boxing path" {
+  // String keys are already reference types, so `boxIfNeeded` no-ops on
+  // them; a primitive key exercises the actual box (LBoxInt) before the
+  // HashMap.get/put call.
+  val m: Map[Int, String] = newMap()
+  m[1] = "one"
+  m[2] = "two"
+  assertEqual(m[1], "one", "int key 1 round-trips")
+  assertEqual(m[2], "two", "int key 2 round-trips")
+  m[1] = "uno"
+  assertEqual(m[1], "uno", "int key overwrite round-trips")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
