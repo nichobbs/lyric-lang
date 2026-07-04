@@ -843,7 +843,9 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # protected types (entry/func both lock a mutex buffer via
                                        # a lock/unlock wrapper); non-generator async func/await
                                        # (Task[T] isn't a real value on this target -- await is a
-                                       # passthrough); defer (normal-exit paths: fall-off, return,
+                                       # passthrough); spawn/scope (same passthrough model the
+                                       # .NET emitter uses -- a spawned call completes at the
+                                       # spawn site); defer (normal-exit paths: fall-off, return,
                                        # break, continue); raw FFI
                                        # (NativePtr[T], nativeAddrOf, nativeNullPtr,
                                        # closure-as-C-callback trampolines) only in @unsafe_ffi
@@ -852,7 +854,7 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # interface default/generic methods, generic protected
                                        # types, when: barriers, invariant re-checking,
                                        # list literals, module-level val, async generators (yield
-                                       # in async func), spawn/scope, a defer that must run during
+                                       # in async func), a defer that must run during
                                        # a panic, manifest builds
 lyric build -o <dir> <file.l>          # write output files to <dir>
 lyric build --manifest lyric.toml      # build from project manifest

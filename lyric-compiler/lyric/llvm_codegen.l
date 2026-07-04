@@ -1448,6 +1448,8 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
     case EIndex(receiver, indices) -> lowerCollectionIndex(ctx, insns, receiver, indices, expr.span.startPos.line)
     // `await` is a pure passthrough on --target native (D-N-019): nothing to unwrap since async return types are never wrapped.
     case EAwait(inner) -> lowerExpr(ctx, insns, inner)
+    // `spawn` is a passthrough too (D-N-021), matching MSIL's own ESpawn lowering: with no async leaf primitive on this target, a spawned call can never remain incomplete.
+    case ESpawn(inner) -> lowerExpr(ctx, insns, inner)
     case _ -> panic("Lyric.LlvmCodegen: this expression form is not yet supported for --target native (Phase N1)")
   }
 }
@@ -7123,6 +7125,8 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
       // Registers into the innermost scope; runs via `runDeferredScopeAt` at scope exit, not inline here (D-N-020; a panic still bypasses it per D-N-003).
       ctx.deferStack[ctx.deferStack.count - 1].add(body)
     }
+    // `scope { }` lowers as a scoped block (D-N-021), matching MSIL's plain-block lowering; its §7.4 guarantees hold degenerately since every spawned call completes at the spawn site.
+    case SScope(_, body) -> lowerBlockStmts(ctx, insns, body)
     case SInvariant(_) -> {
       // Loop invariants are proof obligations (lyric prove); they carry
       // no runtime lowering here.

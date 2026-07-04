@@ -28456,3 +28456,47 @@ user code on the primary `.NET` target).
 wire-call resolution, new, significant), #5022 (JVM empty-impl-body
 ClassFormatError, new), D-progress-580/581/#5011 (the PR this is a direct
 follow-up to), docs/44 m-84.
+
+### D-progress-583 — Native backend `spawn`/`scope` (Phase 2, D-N-021)
+
+**Shipped.** `spawn expr` and `scope { }` compile and run on
+`--target native`, closing the `spawn`/`scope` item D-N-019 deferred and
+completing the §7 concurrency surface's native coverage for every
+construct the reference backend itself implements.
+
+- **The reframing that shaped the slice (D-N-021):** MSIL's own
+  `ESpawn` lowering is a pure passthrough and its `SScope` a plain
+  block — .NET's concurrency comes from the runtime's hot-task model
+  underneath, and a task only ever *stays* incomplete if it awaits a
+  genuinely-async leaf (Task.Delay, socket/file completions). Native's
+  stdlib has no async leaf primitive at all, so .NET semantics
+  restricted to the native-expressible surface also degenerate to
+  strictly sequential execution: a passthrough `spawn` is
+  observationally equivalent to the reference behavior for every
+  compilable program, not an approximation. The true gate for the
+  LLVM-coroutine mechanism preserved in D-N-019 is the first async
+  *leaf* kernel (async sleep/timer, then async I/O) — refining
+  D-N-019's "spawn/scope is the trigger" note.
+- **Mechanism (`llvm_codegen.l`):** `ESpawn(inner)` lowers as
+  `lowerExpr(inner)` (mirroring `EAwait`); `SScope(_, body)` lowers via
+  `lowerBlockStmts`, making `scope { }` a real lexical scope — its
+  ARC releases and pending `defer` blocks (D-N-020) run at scope exit.
+  Two arms, no new machinery.
+- **Verification:** five new `llvm_self_test_async.l` cases (13 total):
+  spawn binding held and awaited later; the language reference's §7.4
+  dashboard shape (three spawns in a scope, aggregate returned from
+  inside the block); scope + defer interplay; early return from a scope
+  with a co-registered defer (added per review #5025); ASan-clean
+  String-typed spawn bindings across 25 iterations. Full native
+  self-test suite, `make ilverify`, and end-to-end `lyric build
+  --target native` all clean.
+
+**Deferred (tracked):** genuine concurrent progress — gated on an async
+leaf primitive per D-N-021, at which point `06-async-design.md`'s
+coroutine mechanism, the A-1 scheduler API, and ARC-across-suspend
+become load-bearing; §7.4's cancellation/failure-aggregation machinery
+(absent from the MSIL emitter too — not a native-only gap).
+
+**Related:** D-N-021, D-N-019, D-N-020, `docs/01-language-reference.md`
+§7.4, `native/plan/06-async-design.md`, `native/plan/08-work-items.md`
+§Phase N8.
