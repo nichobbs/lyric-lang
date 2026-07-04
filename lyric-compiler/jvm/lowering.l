@@ -4731,6 +4731,121 @@ pub record LRecordWithDerives {
   deriveHash: Bool
 }
 
+// `equals(Object): boolean` with field-by-field comparison, as a plain
+// `LFunc` — reusable both by `lowerDeriveEquality` below (the standalone
+// B122 self-test path) and by `Jvm.Codegen`'s real record-lowering pipeline
+// for `@derive(Equals)` records (docs/44 m-key, #4982 Finding 1).
+pub func buildDeriveEqualsFunc(className: in String, fields: in List[LField]): LFunc {
+  val eqInsns: List[LInsn] = newList()
+
+  // Pre-initialize slot 2 (the cast result) so StackMapTable frames at early
+  // branch targets (before slot 2 is assigned) declare it as live.
+  eqInsns.add(LAconstNull)
+  eqInsns.add(LAstoreAs(slot = 2, className = className))
+
+  // if (this == other) return true
+  eqInsns.add(LAload(slot = 0))
+  eqInsns.add(LAload(slot = 1))
+  eqInsns.add(LIfAcmpeq(label = "eq_same"))
+  eqInsns.add(LGoto(label = "eq_check_type"))
+  eqInsns.add(LLabel(name = "eq_same"))
+  eqInsns.add(LIconst(v = 1))
+  eqInsns.add(LIreturn)
+  eqInsns.add(LLabel(name = "eq_check_type"))
+
+  // if (!(other instanceof <className>)) return false
+  eqInsns.add(LAload(slot = 1))
+  eqInsns.add(LInstanceof(className = className))
+  eqInsns.add(LIfne(label = "eq_cast"))
+  eqInsns.add(LIconst(v = 0))
+  eqInsns.add(LIreturn)
+  eqInsns.add(LLabel(name = "eq_cast"))
+
+  // <className> o = (<className>) other; stored in slot 2
+  eqInsns.add(LAload(slot = 1))
+  eqInsns.add(LCheckcast(className = className))
+  eqInsns.add(LAstoreAs(slot = 2, className = className))
+
+  // Compare each field; return false on mismatch
+  for fld in fields.toArray() {
+    val skipLabel = "eq_skip_" + fld.name
+    eqInsns.add(LAload(slot = 0))
+    eqInsns.add(LGetfield(owner = className, name = fld.name, t = fld.fieldType))
+    eqInsns.add(LAload(slot = 2))
+    eqInsns.add(LGetfield(owner = className, name = fld.name, t = fld.fieldType))
+    match fld.fieldType {
+      case JInt -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+      case JBoolean -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+      case JByte -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+      case JChar -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+      case JShort -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+      case _ -> eqInsns.add(LIfAcmpeq(label = skipLabel))
+    }
+    eqInsns.add(LIconst(v = 0))
+    eqInsns.add(LIreturn)
+    eqInsns.add(LLabel(name = skipLabel))
+  }
+  eqInsns.add(LIconst(v = 1))
+  eqInsns.add(LIreturn)
+
+  val eqPs: List[JvmType] = newList()
+  eqPs.add(JRef(className = "java/lang/Object"))
+  LFunc(
+    flags = ACC_PUBLIC,
+    name = "equals",
+    params = eqPs,
+    ret = JBoolean,
+    insns = eqInsns,
+    maxStack = 4,
+    maxLocals = 3
+  )
+}
+
+// `hashCode(): int` — hash = 31 * hash + field_hash for each field, as a
+// plain `LFunc` (reference fields dispatch to `Object.hashCode()`).  Reused
+// the same way as `buildDeriveEqualsFunc` above.
+pub func buildDeriveHashCodeFunc(className: in String, fields: in List[LField]): LFunc {
+  val hashInsns: List[LInsn] = newList()
+  hashInsns.add(LIconst(v = 1))
+  // hash = 1
+  hashInsns.add(LIstore(slot = 1))
+
+  for fld in fields.toArray() {
+    hashInsns.add(LIconst(v = 31))
+    hashInsns.add(LIload(slot = 1))
+    hashInsns.add(LImul)
+    hashInsns.add(LAload(slot = 0))
+    hashInsns.add(LGetfield(owner = className, name = fld.name, t = fld.fieldType))
+    match fld.fieldType {
+      case JInt -> ()
+      case JBoolean -> ()
+      case JByte -> ()
+      case JChar -> ()
+      case JShort -> ()
+      case _ -> {
+        // For reference fields, call .hashCode()
+        val hcPs: List[JvmType] = newList()
+        hashInsns.add(LInvokevirtual(owner = "java/lang/Object", name = "hashCode", params = hcPs, ret = JInt))
+      }
+    }
+    hashInsns.add(LIadd)
+    hashInsns.add(LIstore(slot = 1))
+  }
+  hashInsns.add(LIload(slot = 1))
+  hashInsns.add(LIreturn)
+
+  val hashPs: List[JvmType] = newList()
+  LFunc(
+    flags = ACC_PUBLIC,
+    name = "hashCode",
+    params = hashPs,
+    ret = JInt,
+    insns = hashInsns,
+    maxStack = 4,
+    maxLocals = 2
+  )
+}
+
 /// Lower a record with `@generate(Equals)` and/or `@generate(Hash)`.
 /// Emits `equals(Object): boolean` with field-by-field comparison
 /// and `hashCode(): int` with a prime-multiply accumulator.
@@ -4742,110 +4857,11 @@ pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile
   val extraMethods: List[MethodInfo] = newList()
 
   if d.deriveEq {
-    // equals(Object other): boolean
-    // Build as LInsn list so lowerFuncForClass generates a correct StackMapTable.
-    val eqInsns: List[LInsn] = newList()
-
-    // Pre-initialize slot 2 (the cast result) so StackMapTable frames at early
-    // branch targets (before slot 2 is assigned) declare it as live.
-    eqInsns.add(LAconstNull)
-    eqInsns.add(LAstoreAs(slot = 2, className = d.className))
-
-    // if (this == other) return true
-    eqInsns.add(LAload(slot = 0))
-    eqInsns.add(LAload(slot = 1))
-    eqInsns.add(LIfAcmpeq(label = "eq_same"))
-    eqInsns.add(LGoto(label = "eq_check_type"))
-    eqInsns.add(LLabel(name = "eq_same"))
-    eqInsns.add(LIconst(v = 1))
-    eqInsns.add(LIreturn)
-    eqInsns.add(LLabel(name = "eq_check_type"))
-
-    // if (!(other instanceof <className>)) return false
-    eqInsns.add(LAload(slot = 1))
-    eqInsns.add(LInstanceof(className = d.className))
-    eqInsns.add(LIfne(label = "eq_cast"))
-    eqInsns.add(LIconst(v = 0))
-    eqInsns.add(LIreturn)
-    eqInsns.add(LLabel(name = "eq_cast"))
-
-    // <className> o = (<className>) other; stored in slot 2
-    eqInsns.add(LAload(slot = 1))
-    eqInsns.add(LCheckcast(className = d.className))
-    eqInsns.add(LAstoreAs(slot = 2, className = d.className))
-
-    // Compare each field; return false on mismatch
-    for fld in d.fields.toArray() {
-      val skipLabel = "eq_skip_" + fld.name
-      eqInsns.add(LAload(slot = 0))
-      eqInsns.add(LGetfield(owner = d.className, name = fld.name, t = fld.fieldType))
-      eqInsns.add(LAload(slot = 2))
-      eqInsns.add(LGetfield(owner = d.className, name = fld.name, t = fld.fieldType))
-      match fld.fieldType {
-        case JInt -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-        case JBoolean -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-        case JByte -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-        case JChar -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-        case JShort -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-        case _ -> eqInsns.add(LIfAcmpeq(label = skipLabel))
-      }
-      eqInsns.add(LIconst(v = 0))
-      eqInsns.add(LIreturn)
-      eqInsns.add(LLabel(name = skipLabel))
-    }
-    eqInsns.add(LIconst(v = 1))
-    eqInsns.add(LIreturn)
-
-    val eqPs: List[JvmType] = newList()
-    eqPs.add(JRef(className = "java/lang/Object"))
-    val eqFunc = LFunc(
-      flags = ACC_PUBLIC,
-      name = "equals",
-      params = eqPs,
-      ret = JBoolean,
-      insns = eqInsns,
-      maxStack = 4,
-      maxLocals = 3
-    )
-    extraMethods.add(lowerFuncForClass(eqFunc, d.className, pool))
+    extraMethods.add(lowerFuncForClass(buildDeriveEqualsFunc(d.className, d.fields), d.className, pool))
   }
 
   if d.deriveHash {
-    // hashCode(): int  — hash = 31 * hash + field_hash for each field
-    val hashAsm = newAssembler(pool)
-    lowerInsn(LIconst(v = 1), hashAsm)
-    // hash = 1
-    lowerInsn(LIstore(slot = 1), hashAsm)
-
-    for fld in d.fields.toArray() {
-      lowerInsn(LIconst(v = 31), hashAsm)
-      lowerInsn(LIload(slot = 1), hashAsm)
-      lowerInsn(LImul, hashAsm)
-      lowerInsn(LAload(slot = 0), hashAsm)
-      lowerInsn(LGetfield(owner = d.className, name = fld.name, t = fld.fieldType), hashAsm)
-      match fld.fieldType {
-        case JInt -> ()
-        case JBoolean -> ()
-        case JByte -> ()
-        case JChar -> ()
-        case JShort -> ()
-        case _ -> {
-          // For reference fields, call .hashCode()
-          val hcPs: List[JvmType] = newList()
-          lowerInsn(LInvokevirtual(owner = "java/lang/Object", name = "hashCode", params = hcPs, ret = JInt), hashAsm)
-        }
-      }
-      lowerInsn(LIadd, hashAsm)
-      lowerInsn(LIstore(slot = 1), hashAsm)
-    }
-    lowerInsn(LIload(slot = 1), hashAsm)
-    lowerInsn(LIreturn, hashAsm)
-
-    val hashPs: List[JvmType] = newList()
-    val hashCode = assembleCode(hashAsm, 4, 2)
-    val hashAttrs: List[Attribute] = newList()
-    hashAttrs.add(hashCode)
-    extraMethods.add(makeMethodInfo(ACC_PUBLIC, "hashCode", buildDescriptor(hashPs, JInt), hashAttrs))
+    extraMethods.add(lowerFuncForClass(buildDeriveHashCodeFunc(d.className, d.fields), d.className, pool))
   }
 
   // Rebuild ClassFile with the extra methods appended

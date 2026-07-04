@@ -28040,3 +28040,66 @@ every PR; a dedicated multi-OS workflow is left for a follow-up.
 
 **Related:** D-N-018, D-N-003, `native/plan/08-work-items.md` §N7.2,
 `docs/24-test-runner-plan.md`.
+
+### D-progress-577 — JVM: `@derive(Equals)`/`@derive(Hash)` records get real `equals(Object)`/`hashCode()` classfile overrides (band J4, #4982 Finding 1)
+
+**Shipped.** Closes #4982 Finding 1: record-typed `Map` keys did not hash or
+compare structurally on JVM (`java.util.HashMap.get`/`.put` dispatch
+`hashCode()`/`equals(Object)` virtually, and Java's default `Object`
+implementations are reference-identity-based) — a fresh-but-field-equal key
+missed a lookup, unlike MSIL's `Dictionary<K, V>` (#1480, structural via
+synthesised `Object.Equals`/`GetHashCode` overrides).
+
+**Root cause: a half-built bridge, not a missing feature.** `Jvm.Lowering`
+already had the exact bytecode-emission logic needed — `lowerDeriveEquality`
+(B122 milestone), gated on an `LRecordWithDerives.deriveEq`/`.deriveHash`
+pair — but nothing in the real compilation pipeline (`Jvm.Codegen`'s
+`lowerRecord` in `06_items.l`, called from `bridge.l`'s `IRecord`/
+`IExposedRec` item-processing loop) ever constructed an `LRecordWithDerives`
+from a real `@derive(Equals)`-annotated user record. The only caller was
+`self_test_b122.l`, a standalone, CI-unwired proof-of-concept that hand-built
+a throwaway `LRecordWithDerives` directly — the machinery worked in
+isolation but was never connected to an actual user program.
+
+**Fix.** Extracted the `equals`/`hashCode` bytecode-building logic out of
+`lowerDeriveEquality` into two reusable `LFunc`-producing helpers,
+`buildDeriveEqualsFunc`/`buildDeriveHashCodeFunc` (`lowering.l`) — the
+`hashCode` half was previously built via raw `Assembler`/`MethodInfo` calls,
+bypassing the normal `LFunc` → `lowerFuncForClass` pipeline entirely (with
+its StackMapTable generation); rewritten as a plain `LInsn` list so both
+overrides now go through the same, single code path. `06_items.l` gains
+`hasDeriveMarkerJvm` (a JVM-local copy of `Msil.Codegen.hasDeriveMarkerMsil`
+— no cross-package import between backend `Codegen` packages, matching
+established convention) and `appendDeriveOverridesJvm`, called at both
+`IRecord`/`IExposedRec` sites after the record's real methods/impl-injected
+methods are merged, mirroring MSIL's `appendDeriveOverridesMsil` call sites
+exactly.
+
+**Verification.** `map_key_self_test.l` (the file `#1480`'s own header
+scoped "MSIL target only... epic #1470 defers JVM") is now **4/4 on
+`--target jvm`** too (0/4 pre-fix — confirmed via a clean pre-fix baseline
+rebuild), and promoted to dual-target in CI
+(`compiler-self-tests-jvm`/`compiler-self-tests-dotnet-b`). `equality_self_test.l`
+goes from 1/10 → 5/10 on `--target jvm` (strictly better, zero regressions —
+confirmed via the same clean-baseline comparison); its remaining failures are
+different, unrelated gaps this fix doesn't touch: nested-record recursive
+`==` (the field-comparison logic falls back to reference equality —
+`LIfAcmpeq` — for a reference-typed field, which is correct for a *non*-derived
+field but wrong when the nested field is itself a `@derive(Equals)` record),
+distinct-type `@derive(Equals)` (my wiring only covers `IRecord`/
+`IExposedRec`, not distinct types), and `@derive(Show)`/`toString` (an
+unrelated derive kind). Full regression sweep against every existing JVM
+self-test (subscript, erased-generic, closure, map-iteration,
+nested-generic) — zero regressions. Verified against the pinned F# stage-0
+mint.
+
+**Follow-up:** the three gaps above (nested-record recursive equality,
+distinct-type derives, Show/toString) remain open; not filed as new tickets
+here since they're visible directly in `equality_self_test.l`'s own failing
+test names and are a natural continuation of this same #4982 Finding 1
+thread rather than a distinct discovery.
+
+**Related:** #4982 (Finding 1, closed by this entry), #1480 (the MSIL
+precedent this mirrors), D-progress-558 (the `==` structural-dispatch fix
+this complements — `==` now agrees with `.equals()`/`.hashCode()` on both
+operators and container keys).
