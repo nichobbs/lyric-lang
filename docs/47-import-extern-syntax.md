@@ -4,9 +4,10 @@
 Parser support landed in PR #3728; type-checker integration (Phase 2 — symbol
 registration and resolution of `import extern`-bound names through auto-FFI)
 shipped in commit `a64e649` (2026-07-03, #4714) and is proven by
-`lyric-compiler/lyric/import_extern_self_test.l`. Ecosystem-wide adoption is
-tracked as a rollout, not a design question — see
-`docs/57-stdlib-ecosystem-library-review.md`.
+`lyric-compiler/lyric/import_extern_self_test.l`. See
+`docs/10-bootstrap-progress.md` D-progress-590 for the implementation
+write-up. Ecosystem-wide adoption is tracked as a rollout, not a design
+question — see `docs/57-stdlib-ecosystem-library-review.md`.
 
 **Builds on:** `docs/01-language-reference.md` §11 (FFI), `docs/42-extern-metadata-resolution.md` (metadata-based resolution), `docs/14-native-stdlib-plan.md` (kernel boundary).
 

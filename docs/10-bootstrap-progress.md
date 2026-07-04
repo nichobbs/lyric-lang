@@ -28891,3 +28891,45 @@ kernels, sanity-swept for regressions). `.NET` twin untouched, 15/15 on
 **Related:** #736 (the prior, incomplete fix), D-progress-543 (the phantom-class
 elimination pattern this applies), D-progress-588 (the CI step that
 surfaced this).
+### D-progress-590 — `import extern` type-checker integration + `.new()` constructor shorthand (docs/47 Phase 2, docs/48)
+
+**Shipped** in commit `a64e649` ("Address 119 compiler-backend/compiler-
+frontend review-finding issues", #4714). This closes the Phase 2 gap that
+D116/D117 (see the D-progress entry above documenting D116/D117 parser
+support) explicitly deferred: `import extern`-bound names now resolve
+through auto-FFI, and `.new(args)` constructor-shorthand calls lower to
+`newobj` for reference-type extern types.
+
+- **Type checker (`lyric-compiler/lyric/type_checker/typechecker_checker.l`):**
+  `isExtern`-flagged `ImportDecl`s register their bound aliases as external
+  type references (symbol registration), and method/constructor calls on
+  those aliases resolve through the existing metadata-based auto-FFI path
+  (epic #1622) rather than requiring an `extern type` declaration in the
+  same file.
+- **Codegen (`msil/codegen.l`):** `.new()` is recognized as constructor
+  shorthand (`isConstructor = originalMethodName == "new"`); the resolver
+  name-maps `"new"` to `".ctor"` before metadata lookup and emits `newobj`
+  for the resolved constructor. Per Q48-004 (docs/48), value-type targets
+  (detected via `Mdr.isValueTypeFqn`) are explicitly rejected from this
+  fast path with a clear diagnostic rather than silently miscompiling —
+  that gap remains open, tracked as before.
+- **Verification:** `lyric-compiler/lyric/import_extern_self_test.l`
+  (`import extern System.{ Math as SystemMath }`, asserting `Max`/`Min`/
+  `Abs` resolve and execute correctly). The shipping commit itself did not
+  wire this self-test into CI; a docs/57 follow-up (review-finding #5035)
+  added it as a `background: true` step in `.github/workflows/ci.yml`
+  alongside `ffi_iface_impl_self_test.l`.
+- **Docs updated:** `docs/47-import-extern-syntax.md` and
+  `docs/48-constructor-shorthand.md` status headers, which had continued
+  to say "deferred to Phase 2" after this shipped, are corrected to
+  "Shipped" (docs/57 follow-up, review-finding #5035).
+
+**Not yet adopted:** as of `docs/57-stdlib-ecosystem-library-review.md`,
+zero files across `lyric-stdlib/` or the 26 ecosystem libraries use either
+`import extern` or `.new()` — the feature landed one day before that
+review and the stale docs above had discouraged adoption in the interim.
+docs/57 §2 and §7 catalogue the migration backlog.
+
+**Related:** D116, D117, docs/47, docs/48, docs/42 (metadata-based auto-FFI
+this integration routes through), docs/57 (ecosystem adoption audit),
+#4714.

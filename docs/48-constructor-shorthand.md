@@ -7,8 +7,9 @@ async-constructor design work); Q48-004 (value-type `.new()` result-type
 inference) also remains open. The `.new()` lowering itself shipped alongside
 `import extern` type-checker integration in commit `a64e649` (2026-07-03,
 #4714) — see `msil/codegen.l`'s constructor-shorthand path
-(`resolveMethodName == ".ctor"`). Ecosystem-wide adoption is tracked as a
-rollout — see `docs/57-stdlib-ecosystem-library-review.md`.
+(`resolveMethodName == ".ctor"`) and `docs/10-bootstrap-progress.md`
+D-progress-590. Ecosystem-wide adoption is tracked as a rollout — see
+`docs/57-stdlib-ecosystem-library-review.md`.
 
 **Builds on:** `docs/01-language-reference.md` §11.4 (auto-FFI extern types),
 `docs/42-extern-metadata-resolution.md` (metadata-based resolution).
