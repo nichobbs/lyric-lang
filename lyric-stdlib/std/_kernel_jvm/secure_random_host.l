@@ -39,7 +39,9 @@ pub func hostSecureNextIntRange(min: in Int, max: in Int): Int {
 
 /// Fill a new byte slice of the given length with cryptographically strong
 /// random bytes.  count must be >= 0.
-pub func hostSecureGetBytes(count: in Int): slice[Byte] {
+pub func hostSecureGetBytes(count: in Int): slice[Byte]
+  requires: count >= 0
+{
   val zeros: List[Byte] = newListWithCapacity(count)
   var i = 0
   while i < count {

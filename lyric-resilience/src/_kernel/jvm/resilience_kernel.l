@@ -67,6 +67,7 @@ func getOrCreateEntry(name: in String): CircuitEntry {
   entry
 }
 
+@stable(since = "0.1")
 pub func sleepMs(ms: in Int): Unit
   requires: ms >= 0
 {
