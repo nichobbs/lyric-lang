@@ -25,7 +25,11 @@
 //! future codegen change reintroduces a miscompile for outer-var mutation
 //! nested two control-flow levels deep, this test catches it.
 //!
-//! Run in CI via native `lyric test` (the `bitwise_self_test.l` pattern):
+//! Run in CI via native `lyric test` (the `bitwise_self_test.l` background-
+//! step wiring pattern — note that pattern's dual-target scope does NOT
+//! carry over here: this test is intentionally `--target dotnet` only,
+//! since the bug under test is specific to the self-hosted MSIL backend's
+//! codegen, not a language-level construct needing JVM parity):
 //!
 //!   lyric test --target dotnet lyric-compiler/msil/msil_self_test_m89.l
 //!
