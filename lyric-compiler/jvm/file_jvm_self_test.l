@@ -25,6 +25,46 @@ import Std.Collections
 import Std.Testing
 import Std.File
 
+// Test-fixture-only externs (#4840): create a real directory symlink via
+// `ln -s` (no Lyric-level symlink API exists) to exercise the
+// `deleteDirRecursive` nofollow guard end-to-end. `ProcessBuilder(List[String])`
+// (the `List<String>` constructor, not the `String...` varargs one) accepts a
+// Lyric `List[String]` directly — its runtime type genuinely implements
+// `java.util.List`, unlike the erased `Object[]` a `.toArray()` call would
+// produce, which fails auto-FFI overload resolution against either
+// `ProcessBuilder` constructor.
+extern type JFile = "java.io.File"
+
+extern type JPath = "java.nio.file.Path"
+
+extern type JFiles = "java.nio.file.Files"
+
+extern type JProcessBuilder = "java.lang.ProcessBuilder"
+
+extern type JProcess = "java.lang.Process"
+
+func isSymlinkFixture(path: in String): Bool {
+  val f = JFile.new(path)
+  val p: JPath = f.toPath()
+  JFiles.isSymbolicLink(p)
+}
+
+// Returns `ln -s`'s exit code so the caller can assert fixture setup
+// succeeded, distinguishing a broken test fixture from a real fix regression
+// at a glance (#5057).
+func makeSymlinkFixture(linkPath: in String, targetPath: in String): Int {
+  val existing = JFile.new(linkPath)
+  existing.delete()
+  val args: List[String] = newList()
+  args.add("ln")
+  args.add("-s")
+  args.add(targetPath)
+  args.add(linkPath)
+  val pb = JProcessBuilder.new(args)
+  val proc: JProcess = pb.start()
+  proc.waitFor()
+}
+
 val root: String = "/tmp/lyric_file_jvm_self_test"
 
 func setupRoot(): Bool {
@@ -104,6 +144,42 @@ test "directory create, list, and recursive delete" {
     case Ok(_) -> assertTrue(not dirExists(sub), "recursive delete removes the tree")
     case Err(_) -> assertTrue(false, "deleteDirRecursive must succeed")
   }
+}
+
+// #4840: recursive delete must not follow a directory symlink into its
+// target. A tree containing a symlink to an outside directory is deleted;
+// the symlink itself must be gone, but the outside directory (and its
+// contents) must survive untouched.
+test "recursive delete does not traverse a directory symlink" {
+  val outside = root + "_outside"
+  val tree = root + "_tree"
+  val _c1 = deleteDirRecursive(outside)
+  val _c2 = deleteDirRecursive(tree)
+  match createDir(outside) {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "outside dir must be created")
+  }
+  match writeText(outside + "/keep.txt", "KEEP") {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "write into outside dir must succeed")
+  }
+  match createDir(tree) {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "tree dir must be created")
+  }
+  val link = tree + "/link"
+  assertEqualInt(makeSymlinkFixture(link, outside), 0, "ln -s must succeed")
+  assertTrue(isSymlinkFixture(link), "fixture is really a symlink")
+  match deleteDirRecursive(tree) {
+    case Ok(_) -> assertTrue(not dirExists(tree), "the tree itself is fully removed")
+    case Err(_) -> assertTrue(false, "deleteDirRecursive on the tree must succeed")
+  }
+  assertTrue(dirExists(outside), "the symlink target directory survives")
+  match readText(outside + "/keep.txt") {
+    case Ok(s) -> assertEqual(s, "KEEP", "the symlink target's contents survive untouched")
+    case Err(_) -> assertTrue(false, "outside/keep.txt must still be readable")
+  }
+  val _c3 = deleteDirRecursive(outside)
 }
 
 test "stat orders modification times" {

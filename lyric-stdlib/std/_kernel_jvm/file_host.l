@@ -48,6 +48,10 @@ extern type JFOS = "java.io.FileOutputStream"
 
 extern type JString = "java.lang.String"
 
+extern type JPath = "java.nio.file.Path"
+
+extern type JFiles = "java.nio.file.Files"
+
 // ── Existence probes — never throw for invalid paths ─────────────────────────
 pub func hostFileExists(path: in String): Bool {
   val f = JFile.new(path)
@@ -254,15 +258,22 @@ pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit
   }
 }
 
-// KNOWN LIMITATION (#4840): `File.isDirectory()` follows symlinks, so a
-// symlink pointing at a directory is recursed into and its target's
-// contents deleted — the same hazard the native twin guards against with
-// an lstat probe (#4833).  The parity fix (gate on
-// `java.nio.file.Files.isSymbolicLink`) is tracked in #4840; the leaf
-// `d.delete()` already removes a symlink as a link.
+// `File.isDirectory()` follows symlinks, so a symlink pointing at a
+// directory would otherwise be recursed into and its target's contents
+// deleted — the same hazard the native twin guards against with an lstat
+// probe (#4833). `Files.isSymbolicLink` uses `lstat` semantics (does not
+// follow the final path component), so it correctly reports a directory
+// symlink as a link rather than a directory (#4840).
+func isSymlinkJvm(f: in JFile): Bool {
+  val p: JPath = f.toPath()
+  JFiles.isSymbolicLink(p)
+}
+
+// A symlink (directory or otherwise) is never recursed into — the leaf
+// `d.delete()` removes it as a link, leaving its target untouched (#4840).
 func deleteRecursively(path: in String): Unit {
   val d = JFile.new(path)
-  if d.isDirectory() {
+  if d.isDirectory() and not isSymlinkJvm(d) {
     // Coalesced to [] rather than tested via `case null`, a catch-all miscompile (#4775).
     val children = d.listFiles() ?? []
     var i = 0
