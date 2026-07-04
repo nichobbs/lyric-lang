@@ -9,7 +9,10 @@
 //!                    instance entries; bare-name field reads/writes resolve
 //!                    through `selfClass`, entry calls resolve precisely.
 //!   - M-3 wire     : `AppWire.bootstrap()` runs the DI bindings;
-//!                    `AppWire.svc()` returns the exposed singleton.
+//!                    `AppWire.svc()` returns the exposed singleton; a
+//!                    multi-field constructor referencing an earlier binding
+//!                    from a nested (non-top-level) expression position,
+//!                    bootstrapped via a `@provided` param (#5013/#5015/#5020).
 //!   - M-2 defer    : the deferred block runs on a normal fall-off AND on an
 //!                    early `return`, on every path, without clobbering the
 //!                    captured return value.
@@ -89,6 +92,26 @@ record Widget {
 wire WidgetWire {
   singleton widget: Widget = Widget(size = 17)
   expose widget
+}
+
+// #5013/#5015/#5020: a wire binding whose constructor (a) has 2+ fields (so
+// bootstrap()'s max_stack must exceed the old hardcoded `3`, #5015), (b)
+// references an *earlier* binding from a *nested* expression position rather
+// than as the bare top-level init (#5013 — `contents = widget`, not
+// `contents: Widget = widget`), and (c) is bootstrapped via a `@provided`
+// param whose registered call-site descriptor previously always claimed zero
+// args regardless of `@provided` members (#5020).
+record Box {
+  label: String
+  contents: Widget
+}
+
+wire BoxWire {
+  @provided prefix: String
+  singleton widget: Widget = Widget(size = 17)
+  singleton box: Box = Box(label = prefix, contents = widget)
+  expose widget
+  expose box
 }
 
 // ── M-2: defer ────────────────────────────────────────────────────────────────
@@ -239,6 +262,19 @@ test "wire block resolves the exposed singleton" {
   WidgetWire.bootstrap()
   val w = WidgetWire.widget()
   assertEqualInt(w.size, 17, "exposed widget size")
+}
+
+test "wire block: @provided bootstrap arg + nested cross-binding reference + multi-field constructor (#5013/#5015/#5020)" {
+  BoxWire.bootstrap("hi")
+  val w = BoxWire.widget()
+  val b = BoxWire.box()
+  assertEqualInt(w.size, 17, "widget singleton unaffected by the sibling binding")
+  assertEqual(b.label, "hi", "@provided param reaches a nested binding's constructor argument")
+  assertEqualInt(
+    b.contents.size,
+    17,
+    "earlier binding referenced from a nested constructor-argument position resolves via getstatic, not null"
+  )
 }
 
 test "defer runs on a normal fall-off exit" {

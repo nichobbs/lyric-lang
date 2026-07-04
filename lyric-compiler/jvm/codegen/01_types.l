@@ -297,6 +297,16 @@ pub record FuncCtx {
   // no-defaulted-field rule (see `JvmFuncSig.retGenericArgs`, D-progress-554);
   // initialised `newMap()` at every `FuncCtx` construction site.
   varGenericArgs: Map[String, List[TypeExpr]]
+  // Wire-binding resolution (#5013): when lowering a `wire { }` block binding's
+  // init expression, `wireClassName` is the wire's JVM class name (e.g.
+  // "Pkg/WidgetWire") and `wireBindingTypes` maps every already-declared
+  // binding's name to its JVM type. A bare-name reference to an earlier
+  // binding *nested* anywhere inside the init expression (not just as the
+  // whole top-level init) resolves to `getstatic <wireClassName>.<name>`
+  // instead of falling through to the module-val / null fallback. Empty
+  // string / empty map for every non-wire-binding context.
+  wireClassName: String
+  wireBindingTypes: Map[String, JvmType]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
