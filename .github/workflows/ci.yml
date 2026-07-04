@@ -3651,7 +3651,12 @@ jobs:
           out="$("$lyric_bin" bench --target dotnet --runs 3 --warmup 1 "$work/benchsmoke.l")"
           echo "lyric bench --target dotnet output:"
           echo "$out"
-          if ! printf '%s\n' "$out" | grep -q "1 benchmark(s)"; then
+          # A herestring (not a pipe) avoids a SIGPIPE/pipefail race: `grep -q`
+          # exits as soon as it matches the first line, and with a live pipe
+          # that can kill the upstream `printf` before it finishes writing —
+          # `pipefail` then reports the whole pipeline as failed even though
+          # grep found the match.
+          if ! grep -q "1 benchmark(s)" <<< "$out"; then
             echo "::error::lyric bench --target dotnet did not report its benchmark count"
             exit 1
           fi
