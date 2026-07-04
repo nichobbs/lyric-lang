@@ -27989,3 +27989,54 @@ subsystems.
 premature closure), #4982 (newly-surfaced follow-ups), D-progress-558 (the
 `==` structural-equality precedent Finding 1 of #4982 should mirror for
 `hashCode`/`equals`), docs/44 m-5.
+
+### D-progress-576 — Native backend N7.2: `lyric test --target native`
+
+**Shipped.** `lyric test <source.l> --target native` compiles the
+synthesised test program through the LLVM native backend and runs the
+resulting self-contained binary directly, closing work item N7.2 from
+`native/plan/08-work-items.md` (`--target` previously accepted only
+`dotnet`/`jvm`).
+
+- **CLI** (`cli_test.l`): `--target native` compiles via
+  `Emitter.emitNative` (the same entry point `lyric build --target
+  native` uses) instead of `dotnet exec`/`java -jar`, and runs the
+  produced binary directly — no runtimeconfig/DLL staging, since a
+  native binary is already self-contained. Manifest (multi-package) test
+  suites are rejected with a diagnostic, mirroring `lyric build --target
+  native`'s existing single-file-only restriction.
+- **Test synthesis** (`test_synth.l`): a new `synthesizeNative` entry
+  point (alongside the existing `@stable` `synthesize`) drops the
+  `try`/`catch Bug` per-test isolation native cannot lower (D-N-003: no
+  unwinding) — each test calls straight through, and prints the real
+  native-compilable `Std.Console.println` (injecting `import Std.Console
+  as Console`) instead of the bare `println`/`toString` prelude spelling
+  the dotnet/jvm emitters special-case but native never did. A passing
+  suite reports normal TAP output and exits `0`; a failing assertion
+  `panic`s the whole process (nonzero/abort exit, no per-test isolation)
+  — D-N-018.
+- **Native codegen fix** (`llvm_codegen.l`): the bare `toString(x)`
+  builtin (distinct from the `.toString()` method form, which already
+  worked) was unresolvable on native — a real stdlib-blocking gap, since
+  `Std.Testing.assertEqualInt`/`assertEqualLong` use it internally.
+  `lowerConstructCall` now special-cases 1-arg `toString`, delegating to
+  the existing `lowerScalarMethodCall`.
+- **CI**: a new smoke-test step compiles and runs a passing
+  `--target native` test module (asserts exit 0 and TAP output) and a
+  failing one (asserts a nonzero exit), alongside the existing
+  `llvm_self_test_n*.l` suite (which continues to run via
+  `LYRIC_LOAD_COMPILER=1 lyric test` on the dotnet target, since those
+  files import `Lyric.*` compiler packages that single-file native
+  compilation does not resolve).
+- **Docs**: language reference `lyric test` section; book
+  `appendix-b-quick-reference.md`; decision log D-N-018.
+
+Deferred (tracked): per-test isolation for native (would need real
+unwinding support, a Phase 2 concern), manifest (multi-package) native
+test suites, `--triple`/`--opt` flags on `lyric test`, and the originally
+envisioned 3-OS CI matrix (`native/plan/08-work-items.md` §N7.1) — the
+existing single-OS (Linux) native CI job already exercises the backend on
+every PR; a dedicated multi-OS workflow is left for a follow-up.
+
+**Related:** D-N-018, D-N-003, `native/plan/08-work-items.md` §N7.2,
+`docs/24-test-runner-plan.md`.

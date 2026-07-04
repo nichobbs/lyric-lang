@@ -948,6 +948,16 @@ Depends on: Phase N6 complete.
 
 ### N7.1 — CI workflow for native targets
 
+**PARTIALLY SHIPPED** (D-progress-576): a single-OS (`ubuntu-latest`) native
+backend CI job already runs on every PR in `.github/workflows/ci.yml`
+("Native backend self-tests" + the `lyric test --target native` smoke-test
+step below N7.2) — it builds `lyric-rt.a` under both clang and gcc, runs the
+full `llvm_self_test_n*.l` suite, and now also compiles+runs a real
+`--target native` test module (pass and fail cases). The originally
+envisioned dedicated `native-ci.yml` workflow and 3-OS matrix
+(`ubuntu-24.04-arm`, `macos-14`) are **not** shipped — deferred as a
+follow-up; the single-OS job is the production gate today.
+
 **Files to create:** `.github/workflows/native-ci.yml`
 
 Matrix:
@@ -976,24 +986,41 @@ Steps:
 
 ### N7.2 — Native self-test discovery via `lyric test`
 
-**No F# changes.** Native self-tests (`llvm_self_test_n*.l`) are run via
-`lyric test --target native`, exactly as the CI workflow in N7.1 does. The
-`lyric test` discovery mechanism in `lyric-compiler/lyric/test_synth/test_synth.l`
-handles `@test_module` files generically; it does not need extending for the
-native target.
+**SHIPPED** (D-progress-576, D-N-018): `--target native` is a real
+`lyric test` target (`cli_test.l`), compiling through `Emitter.emitNative`
+and running the produced binary directly. The gap the plan anticipated
+("`--target` does not yet accept native") was real — fixed in `cli_test.l`,
+plus a new `Lyric.TestSynth.synthesizeNative` entry point (native has no
+try/catch, D-N-003, so per-test isolation can't work the way the existing
+`synthesize` does it — see D-N-018 for the straight-through execution
+model) and a native-codegen fix for the bare `toString(x)` prelude call
+(`llvm_codegen.l`'s `lowerConstructCall`, needed because
+`Std.Testing.assertEqualInt`/`assertEqualLong` use it internally). No F#
+anywhere, as directed.
 
-If the existing `lyric test --target native` discovery path has a gap (e.g., it
-does not yet accept `--target` for native), fix the gap in
-`lyric-compiler/lyric/cli.l` and/or `test_synth.l` — do not route around it via
-an F# test runner shim.
+Single-file only: manifest (multi-package) native test suites are rejected
+with a diagnostic, matching `lyric build --target native`'s existing
+restriction. The **existing** `llvm_self_test_n*.l` files are not run
+through this path — they import `Lyric.*` compiler packages (to drive
+`codegenNativePackage` on ad-hoc program strings and shell out to `clang`
+themselves), which single-file native compilation does not resolve; they
+continue running via `LYRIC_LOAD_COMPILER=1 lyric test` on the dotnet
+target, unchanged. `--target native` is for ordinary user `@test_module`
+files with no compiler-package imports.
 
-**Files to modify (only if a gap is found):** `lyric-compiler/lyric/cli.l`,
-`lyric-compiler/lyric/test_synth/test_synth.l`.
+**Files modified:** `lyric-compiler/lyric/cli/cli_test.l`,
+`lyric-compiler/lyric/test_synth/test_synth.l`,
+`lyric-compiler/lyric/llvm_codegen.l`.
 
 **Acceptance criteria:**
 
-- `lyric test lyric-compiler/llvm/llvm_self_test_n1.l --target native` exits 0.
-- No modifications to any file under `bootstrap/tests/`.
+- `lyric test <ordinary-test-module.l> --target native` exits 0 on an
+  all-passing suite and prints normal TAP output. ✅ (verified manually and
+  via the new CI smoke-test step)
+- A failing assertion under `--target native` exits nonzero (no per-test
+  isolation — the whole process aborts). ✅
+- No modifications to any file under `bootstrap/tests/`. ✅ (no F# touched
+  at all)
 
 ---
 

@@ -137,11 +137,23 @@ record SkipSlot {
   reason: String
 }
 
-func synthesizeMain(tests: in List[TestSlot], skipped: in List[SkipSlot], filter: in Option[String]): String {
+// `nativeMode` drops the try/catch isolation `--target native` cannot lower
+// (D-N-003: native has no unwinding — try/catch panics the codegen with
+// "not supported for --target native").  Each test calls straight through;
+// a passing test prints its "ok" line and execution continues to the next,
+// but an assertion failure `panic`s the whole process immediately (no
+// "not ok" line, no summary) — the same "panics abort" model every other
+// native program already has.  N7.2.
+func synthesizeMain(
+  tests: in List[TestSlot], skipped: in List[SkipSlot], filter: in Option[String], nativeMode: in Bool
+): String {
+  // Native has no builtin-`println` prelude special case (see the import
+  // note above) — emit calls to the real `Std.Console.println` there.
+  val pfn = if nativeMode { "Console.println" } else { "println" }
   val total = tests.count + skipped.count
   var sb = ""
   sb = sb + "func main(): Int {\n"
-  sb = sb + "  println(\"1.." + toString(total) + "\")\n"
+  sb = sb + "  " + pfn + "(\"1.." + toString(total) + "\")\n"
   sb = sb + "  var __lyric_passed: Int = 0\n"
   sb = sb + "  var __lyric_failed: Int = 0\n"
   sb = sb + "  var __lyric_skipped: Int = 0\n"
@@ -152,16 +164,20 @@ func synthesizeMain(tests: in List[TestSlot], skipped: in List[SkipSlot], filter
     val titleEsc = escapeForLiteral(t.title)
     val nStr = toString(seq)
     if not filterAccepts(filter, t.title) {
-      sb = sb + "  println(\"# skip " + nStr + " - " + titleEsc + " (filter)\")\n"
+      sb = sb + "  " + pfn + "(\"# skip " + nStr + " - " + titleEsc + " (filter)\")\n"
       sb = sb + "  __lyric_skipped = __lyric_skipped + 1\n"
+    } else if nativeMode {
+      sb = sb + "  " + t.funcName + "()\n"
+      sb = sb + "  " + pfn + "(\"ok " + nStr + " - " + titleEsc + "\")\n"
+      sb = sb + "  __lyric_passed = __lyric_passed + 1\n"
     } else {
       sb = sb + "  try {\n"
       sb = sb + "    " + t.funcName + "()\n"
-      sb = sb + "    println(\"ok " + nStr + " - " + titleEsc + "\")\n"
+      sb = sb + "    " + pfn + "(\"ok " + nStr + " - " + titleEsc + "\")\n"
       sb = sb + "    __lyric_passed = __lyric_passed + 1\n"
       sb = sb + "  } catch Bug as __lyric_e {\n"
-      sb = sb + "    println(\"not ok " + nStr + " - " + titleEsc + "\")\n"
-      sb = sb + "    println(\"  \" + __lyric_e.message)\n"
+      sb = sb + "    " + pfn + "(\"not ok " + nStr + " - " + titleEsc + "\")\n"
+      sb = sb + "    " + pfn + "(\"  \" + __lyric_e.message)\n"
       sb = sb + "    __lyric_failed = __lyric_failed + 1\n"
       sb = sb + "  }\n"
     }
@@ -174,16 +190,16 @@ func synthesizeMain(tests: in List[TestSlot], skipped: in List[SkipSlot], filter
     val titleEsc = escapeForLiteral(sk.title)
     val reasonEsc = escapeForLiteral(sk.reason)
     val nStr = toString(seq)
-    sb = sb + "  println(\"# skip " + nStr + " - " + titleEsc + ": " + reasonEsc + "\")\n"
+    sb = sb + "  " + pfn + "(\"# skip " + nStr + " - " + titleEsc + ": " + reasonEsc + "\")\n"
     sb = sb + "  __lyric_skipped = __lyric_skipped + 1\n"
     seq = seq + 1
     j = j + 1
   }
-  sb = sb + "  println(\"\")\n"
-  sb = sb + "  println(\"# tests \" + toString(__lyric_passed + __lyric_failed + __lyric_skipped))\n"
-  sb = sb + "  println(\"# pass  \" + toString(__lyric_passed))\n"
-  sb = sb + "  println(\"# fail  \" + toString(__lyric_failed))\n"
-  sb = sb + "  println(\"# skip  \" + toString(__lyric_skipped))\n"
+  sb = sb + "  " + pfn + "(\"\")\n"
+  sb = sb + "  " + pfn + "(\"# tests \" + toString(__lyric_passed + __lyric_failed + __lyric_skipped))\n"
+  sb = sb + "  " + pfn + "(\"# pass  \" + toString(__lyric_passed))\n"
+  sb = sb + "  " + pfn + "(\"# fail  \" + toString(__lyric_failed))\n"
+  sb = sb + "  " + pfn + "(\"# skip  \" + toString(__lyric_skipped))\n"
   sb = sb + "  if __lyric_failed > 0 {\n"
   sb = sb + "    return 1\n"
   sb = sb + "  }\n"
@@ -231,6 +247,18 @@ func parseErrors(diags: in List[Diagnostic]): List[Diagnostic] {
 
 @stable(since = "0.1")
 pub func synthesize(source: in String, filter: in Option[String]): Outcome {
+  synthesizeFor(source, filter, false)
+}
+
+// Native variant (N7.2): synthesises straight-through test calls instead of
+// try/catch isolation (see `synthesizeMain`'s nativeMode branch).  Not
+// `@stable` — `synthesize` is the stable dotnet/jvm entry point; this is a
+// separate, additive entry point rather than a breaking signature change.
+pub func synthesizeNative(source: in String, filter: in Option[String]): Outcome {
+  synthesizeFor(source, filter, true)
+}
+
+func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in Bool): Outcome {
   val pf = parse(source)
   val errs = parseErrors(pf.diagnostics)
   if errs.count > 0 {
@@ -246,6 +274,12 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
   }
   var sb = slice(source, pf.file.packageDecl.span)
   sb = sb + "\n"
+  // Native has no builtin-`println` prelude special case (unlike the dotnet/
+  // jvm emitters) — the synthesised main below calls the real, already
+  // native-compilable `Std.Console.println` instead, so it needs the import.
+  if nativeMode {
+    sb = sb + "import Std.Console as Console\n"
+  }
   var ii = 0
   while ii < pf.file.imports.count {
     sb = sb + slice(source, pf.file.imports[ii].span) + "\n"
@@ -313,7 +347,7 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
     sb = sb + source.substring(cursor, source.length - cursor)
   }
   sb = sb + "\n\n"
-  sb = sb + synthesizeMain(tests, skipped, filter)
+  sb = sb + synthesizeMain(tests, skipped, filter, nativeMode)
   Synthesised(source = sb, testCount = tests.count, skipCount = skipped.count)
 }
 
