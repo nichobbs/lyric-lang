@@ -4723,7 +4723,7 @@ pub func lowerFuncWithContract(f: in LFunc, contract: in LContract, pool: in Poo
   lowerFunc(wFunc, pool)
 }
 
-// ── B122: lowerDeriveEquality (@generate(Equals) + @generate(Hash)) ──────────────
+// ── B122: lowerDeriveEquality (@derive(Equals) + @derive(Hash)) ──────────────
 pub record LRecordWithDerives {
   className: String
   fields: List[LField]
@@ -4882,7 +4882,7 @@ pub func buildDeriveHashCodeFunc(className: in String, fields: in List[LField]):
   )
 }
 
-/// Lower a record with `@generate(Equals)` and/or `@generate(Hash)`.
+/// Lower a record with `@derive(Equals)` and/or `@derive(Hash)`.
 /// Emits `equals(Object): boolean` with field-by-field comparison
 /// and `hashCode(): int` with a prime-multiply accumulator.
 pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile {
