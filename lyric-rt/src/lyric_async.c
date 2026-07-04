@@ -137,7 +137,9 @@ static LyricTask* ready_pop(void) {
 /* Completion: store the result (ownership of a ref-typed result
  * transfers to the task), wake every waiter, drop the scheduler's ref
  * if one was held.  Called by the coroutine body just before its final
- * suspend; also usable directly for pre-completed tasks. */
+ * suspend — including hot completion inside the ramp, where the task
+ * never registered and no scheduler ref exists.  Calling it on an
+ * already-COMPLETE task panics. */
 void lyric_task_complete(LyricTask* t, int64_t result, int32_t result_is_ref) {
     if (t->state == LYRIC_TASK_COMPLETE) {
         lyric_panic_msg("task completed twice (scheduler bug)", "lyric_async.c", __LINE__);
