@@ -1636,7 +1636,7 @@ pub record LWireBinding {
   insns: List[LInsn]
   // push the constructed value; no return insn
   tempSlots: Int
-  // local-slot count the init expression's own FuncCtx allocated (#5015):
+  // local-slot count the init expression's own FuncCtx allocated (#5011):
   // bootstrap()'s max_locals must cover the largest of these, since each
   // binding's init lowers through a fresh scratch-slot-0 FuncCtx.
 }
@@ -1917,7 +1917,7 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
   // bsSlot is the total local-slot count consumed by @provided params
   // (category-2 types like Long/Double occupy 2 slots each per JVM spec
   // §4.7.3).  Each binding's init expression lowers through its own fresh
-  // FuncCtx starting at scratch slot 0 (#5015), so bootstrap()'s max_locals
+  // FuncCtx starting at scratch slot 0 (#5011), so bootstrap()'s max_locals
   // must also cover the largest such binding's own slot usage — otherwise a
   // binding whose init allocates temps (e.g. a constructor argument local,
   // #5003/#5011) emits `istore`s past the declared local variable table
