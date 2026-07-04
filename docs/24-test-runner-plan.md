@@ -238,6 +238,25 @@ The `@LyricTest` annotation class and test-module class emitter
 `docs/32-junit-runner-sketch.md` and D-progress-206 in
 `docs/10-bootstrap-progress.md`).
 
+### 5b. Native target (`lyric test --target native`)
+
+**Status (D-progress-576, D-N-018):** Shipped. `lyric test <source.l>
+--target native` synthesises the test program and compiles it through
+`Emitter.emitNative` (the same entry point `lyric build --target native`
+uses), then runs the produced self-contained binary directly — no
+`dotnet exec`/`java -jar` staging. Manifest (multi-package) test suites
+are rejected with a diagnostic, mirroring `lyric build --target
+native`'s single-file-only restriction.
+
+Native has no unwinding (D-N-003: `panic` aborts the process), so the
+JVM/dotnet per-test isolation model (wrap each test in `try`/`catch
+Bug`) does not apply. `Lyric.TestSynth.synthesizeNative` emits a
+straight-through call sequence instead: a passing suite prints normal
+TAP output and exits `0`; a failing assertion aborts the whole process
+(nonzero exit, no per-test isolation). See D-N-018 in
+`docs/03-decision-log.md` for the full rationale, and
+`native/plan/08-work-items.md` §N7.2 for the work-item writeup.
+
 The full `LyricTestEngine` JUnit 5 `TestEngine` implementation is
 deferred to B127+ (see `docs/32-junit-runner-sketch.md` §5 and §9
 Q-J007e).
