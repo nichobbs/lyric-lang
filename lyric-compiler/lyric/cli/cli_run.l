@@ -72,7 +72,9 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
       }
     }
     case Dotnet -> {
-      copyRuntimeDepsBeside(outPath, findCompiledLibDir())
+      // `buildProject` (called above) already co-locates the stdlib bundle
+      // and every restored/NuGet dependency beside `outPath` unconditional
+      // on `buildKind` (#5066) — no separate copy needed here.
       // For `kind = "exe"` builds, prefer the native apphost launcher emitted
       // beside the DLL: run it directly with no `dotnet exec` prefix.
       val launcher = if buildKind == "exe" {
@@ -106,7 +108,9 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
             val ridHint = if hostRid.length > 0 { hostRid } else { "<rid>" }
             printErr(
               "run: warning: no native launcher found for this 'kind = \"exe\"' build; " +
-                "falling back to 'dotnet exec' (install a Microsoft.NETCore.App.Host." + ridHint + " " +
+                "falling back to 'dotnet exec' (install a Microsoft.NETCore.App.Host." +
+                ridHint +
+                " " +
                 "runtime pack, or set DOTNET_ROOT to a .NET install that has one, so the " +
                 "apphost template can be located)"
             )

@@ -1380,6 +1380,16 @@ func buildProject(
   match target {
     case Dotnet -> {
       writeRuntimeConfig(outPath)
+      // Co-locate the stdlib bundle, restored (workspace/path/Lyric-package
+      // NuGet) dependencies, and genuine third-party NuGet assemblies beside
+      // the output DLL so `dotnet exec` resolves them.  Unconditional on
+      // `buildKind` — a `kind = "lib"` project build is still what `lyric run`
+      // executes directly via `dotnet exec` (there is no requirement to opt
+      // into `kind = "exe"` first), so it needs the exact same runtime
+      // dependencies present as an apphost-launched build (#5066).
+      copyRuntimeDepsBeside(outPath, findCompiledLibDir())
+      copyRestoredDepDlls(outPath, restoredDlls)
+      copyNugetAssembliesBeside(outPath, nugetThirdPartyPaths)
       // `kind = "exe"`: emit a native apphost launcher beside the managed DLL
       // so the program runs directly (`./<name>`) without a `dotnet` prefix.
       if buildKind == "exe" {
@@ -1390,13 +1400,6 @@ func buildProject(
             return 1
           }
         }
-        // Co-locate the stdlib bundle and restored dependencies beside the
-        // launcher so the produced binary runs standalone: the apphost
-        // `./<name>` resolves its managed deps from its own directory.  Only for
-        // `kind = "exe"` — a `kind = "lib"` build (including the stdlib bundle
-        // itself) is a consumable artifact, not a runnable one.
-        copyRuntimeDepsBeside(outPath, findCompiledLibDir())
-        copyRestoredDepDlls(outPath, restoredDlls)
       }
     }
     case Jvm -> {

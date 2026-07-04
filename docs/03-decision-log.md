@@ -8671,6 +8671,95 @@ resolution, before #5004's arg-count check ever runs), D-progress-578
 this fix incidentally seems to also resolve for `Std.Core.Result\`2`).
 
 ---
+## D-progress-592 — `lyric build`/`lyric run`/`lyric test` never copied resolved NuGet dependency DLLs (or, for the manifest test path, the stdlib bundle) into the output directory, crashing at runtime with `FileNotFoundException` (#5066)
+
+**Status:** ACCEPTED
+
+**Symptom.** After #4925/#4955, #4980, and #5004/#5010 fixed the
+compile-time NuGet resolution path, a project with a `[nuget]`
+dependency built successfully but crashed at runtime:
+`System.IO.FileNotFoundException: Could not load file or assembly
+'Web, Version=0.4.0.0, ...'`. `lyric test --manifest` hit the same
+class of bug for a different assembly:
+`Could not load file or assembly 'Lyric.Stdlib, ...'`.
+
+**Root cause, two independent bugs sharing one symptom.**
+
+1. `buildProject` (`cli_build.l`) only called `copyRestoredDepDlls`
+   (co-locate each resolved dependency DLL beside the output
+   assembly) inside the `if buildKind == "exe"` branch, alongside
+   native-apphost emission. A project with no `[build]` section
+   defaults to `kind = "lib"` — but `lyric run` executes a `kind =
+   "lib"` build directly via `dotnet exec` just the same as a `kind
+   = "exe"` build's fallback path, so it needs the identical set of
+   co-located dependencies. Separately, genuine third-party NuGet
+   assemblies (`partitionNugetLyricDeps`'s `thirdPartyPaths` — any
+   NuGet package that isn't itself a Lyric package) were only ever
+   threaded into `EmitProjectRequest.nugetAssemblyPaths`, a
+   compile-time-only auto-FFI reference list; no code path copied
+   them to the output directory at all, regardless of `buildKind`.
+2. `cmdTestManifest`'s per-test dotnet run step (`cli_test.l`) called
+   `copyRuntimeDepsBeside(outPath, Environment.appBaseDirectory())`
+   directly instead of the layout-agnostic `findCompiledLibDir()`
+   helper every other call site uses (`cli_build.l`, `cli_run.l`, and
+   even this same file's single-file `cmdTest` path). `appBaseDirectory()`
+   only holds the compiled stdlib bundle when it happens to sit
+   directly beside the running binary; an installed-SDK layout
+   (`lib/` subdir) or a dev bootstrap tree (`.bootstrap/stage1`,
+   `lyric-stdlib/bin`) needs the walk-up discovery `findCompiledLibDir()`
+   performs, so the direct call silently copied nothing on any layout
+   where the two differ.
+
+**Fix.** `cli_shared.l`: factored the per-file copy body out of
+`copyRestoredDepDlls` into a new `copyDllBeside` helper, and added
+`copyNugetAssembliesBeside` (same best-effort semantics) for the
+bare-path `thirdPartyPaths` list `partitionNugetLyricDeps` already
+computed. `cli_build.l`: moved `copyRuntimeDepsBeside`/
+`copyRestoredDepDlls` out of the `if buildKind == "exe"` guard so
+they run unconditionally for any Dotnet-target manifest build
+(apphost emission itself stays exe-only — that part genuinely is
+exe-specific), and added a `copyNugetAssembliesBeside` call for
+`nugetThirdPartyPaths`. `cli_test.l`: swapped the manifest test
+path's `Environment.appBaseDirectory()` for `findCompiledLibDir()`,
+and added the same `copyNugetAssembliesBeside` call the manifest
+build path gained (the test path already called `copyRestoredDepDlls`
+unconditionally — only the stdlib-discovery call and the third-party
+NuGet copy were missing there).
+
+Single-file builds (`buildOneNative`/`buildOne`) are unaffected —
+that path never resolves manifest dependencies to DLL paths in the
+first place (pre-existing, tracked separately as #4126).
+
+**Verification.** Built a local repro outside the source tree: a
+plain third-party `Acme.ThirdParty` .NET class library packed to a
+local NuGet feed folder, and a `lyric.toml` with a `[nuget]` entry
+pointing at it (via a `NuGet.Config` `<packageSources>` override —
+no network access to nuget.org required) and no `[build]` section
+(so `kind` defaults to `lib`, matching the issue's exact repro
+shape). Before the fix, `lyric build` produced only `WebTest.dll` +
+`.runtimeconfig.json` in `bin/`; after the fix, `bin/` also contains
+`Acme.ThirdParty.dll` and `Lyric.Stdlib.dll`, and `lyric run` prints
+the program's output successfully end-to-end (previously a
+`FileNotFoundException`). Confirmed via `git stash` that an
+unrelated `System.InvalidProgramException` surfaced by the
+`lyric test --manifest` repro (once the missing-assembly error is
+fixed) reproduces identically against unmodified `main` with zero
+`[nuget]` dependencies present — a pre-existing, unrelated self-hosted
+test-synthesis/codegen bug, not a regression from this fix and out of
+scope for #5066.
+
+Also corrected `docs/21-nuget-linking.md` §6, which described a
+`.deps.json`-generation mechanism that was never implemented; the
+actual (now-fixed) mechanism is DLL colocation beside the output
+assembly, consistent with how workspace/path dependencies and the
+stdlib bundle are already handled.
+
+**Related:** #4925, #4955, #4980, #5004, #5010 (the preceding fixes
+that made `[nuget]` projects build successfully, surfacing this
+runtime-copy gap), #4126 (tracked follow-up for the single-file build
+path).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

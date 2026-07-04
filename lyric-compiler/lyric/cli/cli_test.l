@@ -1202,12 +1202,18 @@ func cmdTestManifest(
         jvmRes.exitCode
       }
     } else {
-      copyRuntimeDepsBeside(outPath, Environment.appBaseDirectory())
+      // Discovery is non-hardcoded (findCompiledLibDir): the compiled stdlib
+      // may live beside the running binary, under the SDK `lib/` dir, or
+      // under a dev `.bootstrap/stage1` tree — not always directly at
+      // `appBaseDirectory()`, which silently copies nothing when the bundle
+      // lives one level down (#5066).
+      copyRuntimeDepsBeside(outPath, findCompiledLibDir())
       // Co-locate each local-path dependency's output DLL (e.g. a sibling
       // package's `Cache.dll`) beside the test assembly — a flat probing path
       // can't resolve the dep's non-NuGet bin layout.  This subsumes the manual
       // dep-DLL copy the CI ecosystem step used to do by hand.
       copyRestoredDepDlls(outPath, restoredDlls)
+      copyNugetAssembliesBeside(outPath, nugetThirdPartyPaths)
       writeRuntimeConfigWithProbing(outPath, depBinDirs)
 
       val execArgs: List[String] = newList()
