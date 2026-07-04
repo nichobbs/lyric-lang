@@ -22860,11 +22860,11 @@ divergence that the per-package compile gate (D-progress-468) does not catch
   `MissingFieldException`.  This is *not* safely fixable in isolation: making
   the consumer concrete would break the current self-hosted-consumer ↔
   F#-built-producer pairing (F# uses object-typed fields), which is the shipped
-  config.  **Partially superseded by D-progress-582** (#5010): the
+  config.  **Partially superseded by D-progress-583** (#5010): the
   `F#-built-producer` half of this constraint no longer applies to the
   *stdlib* specifically — D111 already collapsed `Std.*` to a single
   always-self-hosted-compiled bundle with no F#-built alternative, so
-  D-progress-582 safely switched the stdlib's own cross-package field-ref
+  D-progress-583 safely switched the stdlib's own cross-package field-ref
   path (`registerStdlibArtifactTokens`, a different function from
   `addPackageTokens`'s in-bundle path referenced above) to the concrete,
   context-aware encoding.  The broader concern described here —
