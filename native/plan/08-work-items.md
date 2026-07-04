@@ -1040,7 +1040,55 @@ Per the CLAUDE.md convention, update all three of:
 ## Phase N8: Async (Phase 2)
 
 Work items A-1 through A-7 are specified in `06-async-design.md`. They depend
-on Phases N0–N7 being complete. They are not in scope for Phase 1.
+on Phases N0–N7 being complete. They were not in scope for Phase 1.
+
+**First slice SHIPPED (D-N-019):** `async func` (non-generator) and `await`
+compile and run correctly on `--target native`. Contrary to A-1 through A-5's
+original coroutine-based design, the shipped mechanism needs none of it:
+`Task[T]` is not a real type anywhere in the self-hosted front end, and with
+`spawn`/`scope` out of scope there is no Lyric program that can hold an
+async call's result unawaited, so a non-generator `async func` body compiles
+through the *exact same codegen path as a plain `func`* and `await expr`
+lowers as a pure passthrough (`lowerExpr` on the inner expression, no
+suspend point emitted). No `lyric-rt` runtime changes were needed. Verified
+end-to-end via both the in-process self-test harness
+(`llvm_self_test_async.l`: basic/chained/nested awaits, await inside a loop
+and inside a branch, ASan-clean String captures/returns) and the real CLI
+(`lyric build --target native`).
+
+**Deferred, each with its own tracked follow-up (D-N-019):**
+- Async generators (`yield` inside `async func`) — rejected with a
+  dedicated diagnostic distinct from plain unsupported-async.
+- The implicit `cancellation` parameter / cooperative cancellation.
+- `spawn` / `scope { }` structured concurrency — **this is the point at
+  which real LLVM-coroutine suspension (A-1 through A-5's original design)
+  becomes necessary**, since it is the only construct that lets two tasks
+  progress independently. The coroutine lowering pipeline itself was
+  hand-verified against `clang` 18 before this slice's implementation began
+  (a `presplitcoroutine`-attributed `.ll` round-trip compiles and runs
+  correctly via plain `clang file.ll -o binary` at every `-O` level, no
+  separate `opt` invocation needed) — see D-N-019 for the verified sequence
+  and the final-suspend subtlety it surfaced, preserved there for this
+  future work.
+
+## Phase N8 (cont'd): `defer` (Phase 2, D-N-020)
+
+`defer` was explicitly out of scope for Phase 1 (D-N-003: "no `defer` in
+Phase 1"). **First slice SHIPPED (D-N-020):** normal-exit paths only —
+fall-off, `return`, `break`, `continue`. Rather than the landingpad-based
+mechanism D-N-003 originally sketched for a *panic-triggered* `defer`
+(unimplemented; still needed for that case), this slice extends the
+existing ARC scope-exit mechanism (`Ctx.scopeRefs`) with a parallel
+per-scope stack of pending deferred `Block`s (`Ctx.deferStack`), pushed/
+popped at the same two call sites (`pushVarScope`/`popVarScope`) and run
+in reverse declaration order at every one of the three existing
+scope-exit sites (`popVarScope`, `releaseAllForReturn`,
+`releaseForLoopExit`) before that scope's ARC releases — no new IR shape,
+no new `lyric-rt` runtime support. A `defer` registered before a `panic`
+does not run (D-N-003: no unwinding, so no scope-exit event ever fires).
+Verified by `llvm_self_test_defer.l` (8 cases, including a direct
+negative check for the panic-bypass gap) and end-to-end via `lyric build
+--target native`.
 
 ---
 

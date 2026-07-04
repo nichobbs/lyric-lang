@@ -1339,7 +1339,15 @@ jobs:
       # likewise build under ASan to prove the interface box releases its
       # implementing object), and llvm_self_test_n34 (N3.4 protected types;
       # its ASan case proves the mutex buffer and a ref-typed field are both
-      # torn down cleanly).
+      # torn down cleanly), llvm_self_test_async (D-N-019 async func /
+      # await: a passthrough compiled through the same codegen path as a
+      # plain func, since spawn/scope are out of scope and no program in
+      # this slice's surface can hold an async call's result unawaited),
+      # and llvm_self_test_defer (P2.D1 `defer`: no try/finally on native,
+      # so each lexical scope's pending deferred blocks run explicitly at
+      # every scope exit -- fall-off, return, break, continue -- mirroring
+      # the existing ARC scope-exit stack; a panic still bypasses it
+      # entirely per D-N-003).
       # The tests import `Lyric.Llvm*` compiler packages by source, so
       # LYRIC_LOAD_COMPILER=1.
       - name: Native backend self-tests (lyric-rt + llvm via native lyric test)
@@ -1376,7 +1384,9 @@ jobs:
             lyric-compiler/lyric/llvm_collections_self_test.l \
             lyric-compiler/lyric/llvm_stdlib_self_test.l \
             lyric-compiler/lyric/llvm_self_test_n3.l \
-            lyric-compiler/lyric/llvm_self_test_n34.l ; do
+            lyric-compiler/lyric/llvm_self_test_n34.l \
+            lyric-compiler/lyric/llvm_self_test_async.l \
+            lyric-compiler/lyric/llvm_self_test_defer.l ; do
             echo "=== $t ==="
             LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
           done

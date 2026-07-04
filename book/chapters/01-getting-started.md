@@ -203,11 +203,20 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > **Scope today.** Linux (`x64`/`arm64`) and macOS (`arm64`) are supported.
 > The lowered surface covers scalars and strings; records (methods, field
 > defaults, mutable fields), unions, enums, distinct types (range-checked),
-> and tuples; full pattern matching; generic records, unions, and functions
+> and tuples; full pattern matching; non-generic interfaces (`impl I for
+> Record` dispatches through a per-interface vtable) and non-generic
+> protected types (`entry`/`func` members lock a mutex around a
+> desugared inner body); generic records, unions, and functions
 > (via call-site monomorphization); closures (by-value captures); and
 > `NativeWeak[T]`; and `List[T]`/`Map[K, V]` with `for` loops, indexing,
 > and the `Std.Collections` accessors (map keys must be String or a
-> scalar type). Standard-library modules with native kernels work out of
+> scalar type); `slice[T]` (shares the list representation, immutable by
+> construction), unlocking bytes-mode file I/O, directory listing, and
+> `Std.Environment.args()`. A non-generator `async func` and `await`
+> compile through the same codegen path as a plain `func` (`Task[T]`
+> isn't materialised as a distinct value on this target); `defer` runs
+> on its normal-exit paths (fall-off, `return`, `break`, `continue`).
+> Standard-library modules with native kernels work out of
 > the box: `Std.Console`, `Std.File` (text I/O, existence probes,
 > directory create/delete), `Std.Environment` (variables, working
 > directory), `Std.Process.runCapture` (argv list, never a shell), and
@@ -215,14 +224,12 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > (`extern func`, `NativePtr[T]`,
 > `nativeAddrOf`, `nativeNullPtr`, closures as C callbacks) is confined to
 > `@unsafe_ffi` functions and the standard library's kernel files — the
-> compiler rejects it elsewhere (`N0100`). `slice[T]` works and shares
-> the list representation (immutable by construction), so bytes-mode
-> file I/O, directory listing, and `Std.Environment.args()` are
-> available. Constructs not yet lowered fail
+> compiler rejects it elsewhere (`N0100`). Constructs not yet lowered fail
 > the build with a diagnostic naming the construct rather than
-> miscompiling: interfaces, protected types, list literals,
-> module-level `val`, `async func`, and manifest (multi-package) native
-> builds.
+> miscompiling: interface default/generic methods, generic protected
+> types, list literals, module-level `val`, async generators (`yield`
+> inside `async func`), `spawn`/`scope`, a `defer` that must run during
+> a `panic`, and manifest (multi-package) native builds.
 
 ## The anatomy of a Lyric file
 

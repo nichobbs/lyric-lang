@@ -3,6 +3,24 @@
 Async/await for the native backend is **Phase 2 implementation**. This document
 fully specifies the mechanism so that Phase 2 agents have no design work to do.
 
+**Status (D-N-019):** the coroutine mechanism below was hand-verified
+end-to-end against `clang` 18 (a `presplitcoroutine`-attributed `.ll`
+round-trip compiles and runs correctly via plain `clang file.ll -o binary`
+at every `-O` level — no separate `opt` invocation needed) before any
+codegen was written, but the **first shipped async slice does not use
+it**. `Task[T]` is not a real type anywhere in the self-hosted front end,
+and with `spawn`/`scope` out of scope, no Lyric program in that slice's
+surface can hold an async call's result unawaited — so a real suspend
+point is never observable and `async func`/`await` instead compile
+through the plain-`func` codegen path with `await` as a pure passthrough
+(zero `lyric-rt` runtime changes). The mechanism verified here becomes
+necessary once `spawn`/`scope` land (the only construct that lets two
+tasks progress independently); read D-N-019 in full before touching this
+area, including the final-suspend subtlety the verification round
+surfaced (freeing a coroutine's frame from inside its own `resume()`
+without a prior `i1 true` final suspend leaves the caller's handle
+dangling).
+
 ---
 
 ## Chosen mechanism: LLVM coro.* stackless coroutines

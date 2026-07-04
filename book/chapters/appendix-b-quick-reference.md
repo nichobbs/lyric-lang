@@ -841,14 +841,19 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # dispatch), NativeWeak[T], slice[T], List/Map +
                                        # for/indexing (map keys String or scalar); non-generic
                                        # protected types (entry/func both lock a mutex buffer via
-                                       # a lock/unlock wrapper); raw FFI
+                                       # a lock/unlock wrapper); non-generator async func/await
+                                       # (Task[T] isn't a real value on this target -- await is a
+                                       # passthrough); defer (normal-exit paths: fall-off, return,
+                                       # break, continue); raw FFI
                                        # (NativePtr[T], nativeAddrOf, nativeNullPtr,
                                        # closure-as-C-callback trampolines) only in @unsafe_ffi
                                        # functions / _kernel_native packages (N0100).
                                        # Not yet lowered (build fails naming the construct):
                                        # interface default/generic methods, generic protected
                                        # types, when: barriers, invariant re-checking,
-                                       # list literals, module-level val, async, manifest builds
+                                       # list literals, module-level val, async generators (yield
+                                       # in async func), spawn/scope, a defer that must run during
+                                       # a panic, manifest builds
 lyric build -o <dir> <file.l>          # write output files to <dir>
 lyric build --manifest lyric.toml      # build from project manifest
                                        # (with [project] output = "single", bundles every
