@@ -93,7 +93,7 @@ tracked as a Phase 3 follow-up of #733. On `jvm` it's a real binding.
 ### Quartz (`quartz` feature)
 
 `Jobs.connectQuartz(datasourceUrl)` connects to Quartz.NET on `dotnet`
-(requires a JDBC-compatible data source for persistence) or to real
+(requires an ADO.NET-compatible data source for persistence) or to real
 Quartz Scheduler on `jvm`. **On `dotnet`, this currently returns
 `Err("... not yet implemented")`**, same tracking as Hangfire above. On
 `jvm` it's a real binding (in-memory `RAMJobStore`, not persistent).
