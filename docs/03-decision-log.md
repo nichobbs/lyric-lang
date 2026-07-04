@@ -8535,6 +8535,142 @@ crash found during investigation), docs/39-package-registry.md §5 and §9
 clarified against).
 
 ---
+
+## D-progress-582 — A stdlib union case or record field forward/mutually-referencing another `Std.*` type degraded to `System.Object` in cross-package MemberRef signatures, faulting with `MissingFieldException` under framework-dependent (JIT) execution (#5010)
+
+**Status:** ACCEPTED
+
+**Symptom.** `dotnet tool install -g lyric` (the framework-dependent NuGet
+global tool) crashed with `System.MissingFieldException: Field not found:
+'Std.Yaml.YamlValue_YMapping.pairs'` inside
+`Lyric.Cli.Program.extractPackagesPathFromYaml`, on *any* project with a
+`[nuget]` table — i.e. before ever reaching the code path #5004 was
+about. The self-hosted-AOT release tarball (`lyric-*.tar.gz`) did **not**
+exhibit this crash for the same repro, which made it look like a
+packaging/build-pipeline inconsistency between the two distribution
+channels rather than a genuine compiler bug.
+
+**Investigation.** Direct .NET reflection over the compiled DLLs
+(`System.Reflection.Metadata`/`PortableExecutable`) confirmed an ABI
+mismatch: `Lyric.Stdlib.dll` declares `YamlValue_YMapping.pairs` as
+`FIELD GENERICINST CLASS <List\`1> 1 CLASS <YamlPair>` (properly typed),
+but `Lyric.Lyric.Cli.dll`'s MemberRef *referencing* that field encodes
+`FIELD OBJECT` — the whole field type collapsed to `System.Object`. This
+reproduced from a from-scratch local `make stage2` build (no network
+dependency on the published release), and — critically — reproduced
+identically even when the closure was re-emitted by the **stage-2
+binary itself** (a true self-hosted compile, not the frozen historical
+F# bootstrap seed reused for stage 1), proving the bug lives in the
+*current* self-hosted MSIL emitter (`lyric-compiler/msil/`), not in a
+stale bootstrap artifact.
+
+Two independent bugs in `lyric-compiler/msil/codegen.l` combined to
+produce this:
+
+1. **Wrong field-signature encoder.** Cross-package union-case field
+   registration for `Std.*` stdlib packages
+   (`registerStdlibTypeItem`'s `IUnion` arm) built each case field's
+   signature with the **context-free** `buildFieldSig` — which cannot
+   resolve a cross-assembly TypeRef by name and therefore *always*
+   degrades any reference type (`MClass`, `MConcreteList`,
+   `MConcreteMap`, `MGenericInstByName`) to `ELEMENT_TYPE_OBJECT`
+   (`lowering.l`'s own comments document this as the intended behavior
+   for that function — it exists for BCL-extern signatures where no
+   TypeRef lookup is needed or possible). Every other cross-package
+   field-registration path in the file (`registerRestoredRecordFields`,
+   `registerRestoredUnionCase`) already used the **context-aware**
+   `buildFieldSigWithCtx`, which resolves the real TypeRef/TypeDef row
+   via `bufMsilTypeWithCtx` and encodes the correct concrete signature.
+   Fixed by switching all four call sites in the `IUnion` arm to
+   `buildFieldSigWithCtx(typeExprToMsilCtx(cctx, ty, packageName),
+   cctx.lctx)`.
+
+2. **Forward/mutual-reference ordering.** Even with (1) fixed, a
+   *different* field still degraded: `Std.Yaml.YamlPair.value:
+   YamlValue`. `YamlPair` (a plain record) is declared *before*
+   `YamlValue` (the union) in `yaml.l`, and the two are mutually
+   recursive (`YamlValue`'s `YMapping` case embeds `List[YamlPair]`;
+   `YamlPair.value` names `YamlValue`). `registerStdlibArtifactTokens`'s
+   "Pass 1" was a *single* combined walk (via `registerStdlibTypeItem`)
+   that registered a type's own TypeRef **and immediately baked its
+   field/ctor signatures** in the same pass, per item, in declaration
+   order — so `YamlPair`'s field signature for `value` was baked before
+   `YamlValue`'s TypeRef existed, degrading it the same way. The
+   already-correct `registerRestoredArtifactTokens` path (for non-stdlib
+   packages) avoids exactly this by splitting into two full sub-passes
+   across every package: register **all** TypeRefs first, then **all**
+   member signatures. Applied the same two-sub-pass split to the stdlib
+   path: `registerStdlibTypeItem` was split into
+   `registerStdlibTypeItemRefs` (type + union-case TypeRefs only) and
+   `registerStdlibTypeItemMembers` (fields/ctors, assuming every
+   TypeRef — including forward/mutually-referenced ones — already
+   exists), and `registerStdlibArtifactTokens`'s Pass 1 now runs sub-pass
+   1a (refs, all packages) fully before sub-pass 1b (members, all
+   packages).
+
+**Why the tarball didn't crash.** A degraded field signature does not
+fail to *compile* — it's still valid PE metadata, just wrong. NativeAOT
+(`ilc`, used for the self-contained release tarball) statically links
+the whole closed program graph at compile time and resolves a field
+access by (owning type, name) against the real TypeDef, generating
+correct native code regardless of the caller's stale cached signature —
+masking the bug entirely. A framework-dependent, JIT-loaded assembly
+(the published `lyric` NuGet global tool, and any `lyric test`-run
+self-test) loads producer and consumer as independent assemblies at run
+time, and the CLR's field-binding validates the caller's MemberRef
+signature against the real FieldDef — a mismatch is exactly
+`MissingFieldException: Field not found`.
+
+**Verification.** Confirmed via a multi-generation bootstrap chain
+(fix applied to source → compiled by an *unfixed* tool → AOT-linked →
+that binary used to recompile the closure again), directly inspecting
+MemberRef signature bytes at each generation with .NET reflection: the
+first fix alone corrected `YamlValue_YMapping.pairs`
+(`06151239...`, no longer `061C`) but left `YamlPair.value` degraded;
+both fixes together correct both fields. `lyric-compiler/lyric/
+cli_shared_self_test.l`'s three previously-failing
+`resolveNugetAssets` happy-path tests (blocked on this exact crash,
+noted as out-of-scope in D-progress-578/#5004) now pass 10/10 with no
+regressions. Added a new regression test,
+`lyric-compiler/lyric/yaml_stdlib_field_abi_self_test.l`
+(`@test_module`, imports only `Std.*`), that parses JSON through
+`Std.Yaml.parseJson`, reads `YamlPair.key`/`.value` off the resulting
+`YMapping`'s pairs, and asserts real values — confirmed to reproduce the
+original `MissingFieldException` crash against a build carrying only
+fix (1) and to pass cleanly with both fixes applied.
+
+Scoped to the MSIL backend only: `lyric-compiler/jvm/` has no
+`registerStdlibTypeItem`/`buildFieldSig` analog (grepped for both name
+patterns, no hits), so this specific bug does not have a JVM
+counterpart to fix in parallel.
+
+**A pre-existing, related observation.** During the full-rebuild
+verification, Stage 1 (compiling `lyric-compiler` packages with the
+mint/stage-0 tool) logged 284 `W0005: ... MGenericInstByName
+'Std.Core.Result\`2' — signature degraded to System.Object (#2494)`
+warnings — the same silent-degradation mechanism, for a different
+stdlib generic type. #2494 (closed) already documents this class of
+bug: an earlier attempt to turn the fallback into a hard panic broke
+real builds because "the fallback path is genuinely exercised during
+normal stdlib compilation," so it was reverted to a warning with the
+underlying seeding bug left unfixed. Stage 2 of the same rebuild (using
+a tool built from this PR's fixed source) shows **zero** `W0005`
+warnings for the identical compile — consistent with this fix having
+already resolved the `Result\`2` case incidentally, since it goes
+through the same `registerStdlibArtifactTokens` two-pass path. Not
+investigated further here (Stage 1 uses a frozen historical tool that
+real CI never exercises — CI's stage 0 downloads a current release
+instead of minting); left for a follow-up if the warnings turn out to
+still occur in a real release build.
+
+**Related:** #5004 (the bug this one was found while investigating, and
+was hidden behind — this crash happens earlier, during NuGet asset
+resolution, before #5004's arg-count check ever runs), D-progress-578
+(the #5004 entry that first identified and scoped out this crash),
+#2494 (the related, already-closed silent-degradation-warning issue
+this fix incidentally seems to also resolve for `Std.Core.Result\`2`).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
