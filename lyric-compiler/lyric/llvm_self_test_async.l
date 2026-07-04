@@ -275,6 +275,33 @@ test "scope interacts with defer as an ordinary lexical scope" {
   assertEqualInt(r.exitCode, 123, "body, then scope-exit defer, then the statement after the scope: 1,2,3")
 }
 
+// Early return from inside a scope that also registered a defer: the
+// scope's defer drains on the return path (D-N-020's return handling
+// composed with D-N-021's scope boundary) and the return value is
+// captured before it runs.
+test "early return from a scope drains the scope's defer, value preserved" {
+  val src = "package T\n" + "import Std.Collections\n" + "func run(log: in List[Int], flag: in Bool): Int {\n" +
+    "  scope {\n" +
+    "    defer {\n      log.add(2)\n    }\n" +
+    "    log.add(1)\n" +
+    "    if flag {\n      return 5\n    }\n" +
+    "  }\n" +
+    "  log.add(9)\n" +
+    "  0\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val log: List[Int] = newList()\n" +
+    "  val v = run(log, true)\n" +
+    "  if v == 5 and log.count == 2 and log[0] == 1 and log[1] == 2 {\n    77\n  } else {\n    1\n  }\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(
+    r.exitCode,
+    77,
+    "returned 5 with exactly [1, 2] logged: body, then the scope's defer on the return path (9 never runs)"
+  )
+}
+
 // ARC: String results held in spawn bindings inside a scope release
 // cleanly across iterations.
 test "spawn/scope with String-typed task bindings is leak-free under ASan" {
