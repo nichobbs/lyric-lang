@@ -161,15 +161,21 @@ void lyric_task_complete(LyricTask* t, int64_t result, int32_t result_is_ref) {
 
 /* Register the currently-RUNNING task as awaiting `dep`; the caller
  * must suspend immediately after.  Panics if dep is already complete
- * (codegen checks is_complete first and skips the suspend). */
+ * (codegen checks is_complete first and skips the suspend).  Appended
+ * at the TAIL so completion wakes waiters in registration order (FIFO
+ * fairness, #5082); waiter lists are short, so the walk is cheap. */
 void lyric_async_await(LyricTask* waiter, LyricTask* dep) {
     if (dep->state == LYRIC_TASK_COMPLETE) {
         lyric_panic_msg("await registration on a complete task (codegen bug)", "lyric_async.c", __LINE__);
     }
     lyric_retain(waiter); /* the sched ref, held while parked */
     waiter->state = LYRIC_TASK_WAITING;
-    waiter->next = dep->waiters;
-    dep->waiters = waiter;
+    waiter->next = NULL;
+    LyricTask** slot = &dep->waiters;
+    while (*slot) {
+        slot = &(*slot)->next;
+    }
+    *slot = waiter;
 }
 
 /* Register the currently-RUNNING task as sleeping for `ms`; the caller
@@ -180,7 +186,15 @@ void lyric_async_sleep(LyricTask* t, int64_t ms) {
     }
     lyric_retain(t); /* the sched ref, held while parked */
     t->state = LYRIC_TASK_SLEEPING;
-    t->wake_deadline_ns = lyric_monotonic_nanos() + ms * 1000000;
+    /* Saturate instead of overflowing int64 nanoseconds (#5083): a
+     * deadline this far out (~292 years) is "never" in practice, and a
+     * wrapped negative deadline would wake the sleeper immediately. */
+    int64_t now = lyric_monotonic_nanos();
+    if (ms > (INT64_MAX - now) / 1000000) {
+        t->wake_deadline_ns = INT64_MAX;
+    } else {
+        t->wake_deadline_ns = now + ms * 1000000;
+    }
     /* Deadline-ascending insertion. */
     LyricTask** slot = &g_sleepers;
     while (*slot && (*slot)->wake_deadline_ns <= t->wake_deadline_ns) {

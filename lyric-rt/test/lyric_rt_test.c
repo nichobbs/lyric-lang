@@ -875,12 +875,16 @@ static void body_two_sleeps(FakeCoro* c) {
 }
 
 /* Body: await dep (registering only if incomplete), then complete with
- * dep's result + 1. */
+ * dep's result + 1, logging tag1 (when set) at completion so tests can
+ * assert wake ORDER, not just wake-at-all. */
 static void body_await_dep(FakeCoro* c) {
     if (c->step == 0 && !lyric_task_is_complete(c->dep->task)) {
         c->step = 1;
         lyric_async_await(c->task, c->dep->task);
         return;
+    }
+    if (c->tag1) {
+        async_log_push(c->tag1);
     }
     lyric_task_complete(c->task, lyric_task_result(c->dep->task) + 1, 0);
     c->step = -1;
@@ -987,16 +991,21 @@ static void test_async_await_chain(void) {
 
 static void test_async_multi_waiters(void) {
     /* Two tasks parked on the same dependency both wake when it
-     * completes. */
+     * completes — in REGISTRATION order (FIFO fairness, #5082: a LIFO
+     * waiter list would resume w2 before w1). */
+    async_log_len = 0;
+    async_log[0] = 0;
     FakeCoro leaf = {0};
     leaf.body = body_sleep_once;
     leaf.sleep1_ms = 3;
     FakeCoro w1 = {0};
     w1.body = body_await_dep;
     w1.dep = &leaf;
+    w1.tag1 = '1';
     FakeCoro w2 = {0};
     w2.body = body_await_dep;
     w2.dep = &leaf;
+    w2.tag1 = '2';
     LyricTask* tleaf = fake_call(&leaf);
     LyricTask* t1 = fake_call(&w1);
     LyricTask* t2 = fake_call(&w2);
@@ -1004,10 +1013,30 @@ static void test_async_multi_waiters(void) {
     lyric_task_block_on(t2);
     CHECK(lyric_task_result(t1) == 8);
     CHECK(lyric_task_result(t2) == 8);
+    CHECK(strcmp(async_log, "12") == 0);
     lyric_release(tleaf);
     lyric_release(t1);
     lyric_release(t2);
     CHECK(leaf.destroyed && w1.destroyed && w2.destroyed);
+}
+
+static void test_async_sleep_saturates(void) {
+    /* An absurdly large sleep must saturate the nanosecond deadline
+     * (#5083) — without the cap, `ms * 1000000` wraps negative and the
+     * sleeper wakes immediately.  Forked so the never-expiring sleeper
+     * leaves no residue in the parent's scheduler state. */
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        FakeCoro c = {0};
+        c.body = body_sleep_once;
+        c.sleep1_ms = INT64_MAX;
+        LyricTask* t = fake_call(&c);
+        _exit(t->wake_deadline_ns == INT64_MAX && !lyric_task_is_complete(t) ? 0 : 1);
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
 /* Body: await a task that can never complete (its "coroutine" was
@@ -1062,6 +1091,7 @@ int main(void) {
     test_async_interleave();
     test_async_await_chain();
     test_async_multi_waiters();
+    test_async_sleep_saturates();
     test_async_deadlock_aborts();
     if (failures == 0) {
         printf("lyric_rt_test: all tests passed\n");
