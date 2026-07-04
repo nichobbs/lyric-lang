@@ -29010,3 +29010,60 @@ comparison against unmodified `main`; see the decision-log entry for
 the full verification trace.
 
 **Related:** #4925, #4955, #4980, #5004, #5010, #4126, docs/21-nuget-linking.md §6.
+
+### D-progress-593 — Native backend real async: LLVM coroutines + cooperative scheduler + sleep leaf (Phase 2, D-N-022)
+
+**Shipped.** The async leaf primitive D-progress-583 named as the gate,
+plus everything behind it: `async func` on `--target native` now
+compiles to a real LLVM coroutine, `lyric-rt` gained a cooperative
+single-threaded task scheduler, and spawned tasks genuinely interleave.
+Supersedes the passthrough lowering of D-N-019/D-N-021 (which survives
+as the degenerate never-suspends case).
+
+- **Scheduler (`lyric-rt/src/lyric_async.c`):** hot tasks
+  (RUNNING/SLEEPING/WAITING/READY/COMPLETE), FIFO ready queue,
+  deadline-ascending timer list, `lyric_task_block_on` drive loop with
+  deadlock detection, and a strict ref discipline (caller owns the
+  ramp-returned ref; the scheduler holds exactly one ref while a task
+  is parked; the task dtor destroys the frame and releases a ref-typed
+  result). Frames are resumed only through `lyric_coro_resume`/
+  `lyric_coro_destroy` — thin wrapper defines emitted into async-using
+  modules, because CoroSplit makes the frame's own resume/destroy
+  pointers `internal fastcc` (C must not call them directly). Six C
+  unit tests drive the exact codegen protocol over fake handles,
+  including a two-sleeper interleave and a deadlock abort.
+- **Emission (`llvm_codegen.l`):** `async func` emits as `define i8*
+  ... presplitcoroutine` returning its LyricTask*; coro.id/alloc/begin
+  prologue + `lyric_task_new`; `return` lowers to defers + ARC releases
+  + `lyric_task_complete` + a branch to the shared final-suspend block;
+  ref-typed params are retained on entry (borrows do not survive
+  suspends — the caller regains control at the first suspend). Call
+  sites: a direct call to an async callee awaits in place (is-complete
+  check, park-and-suspend inside coroutines, `lyric_task_block_on` in
+  sync contexts, result read as a borrow from the task's slot); `spawn`
+  is the only context that keeps the un-awaited `__task<T>` value
+  (ARC-managed); a task flowing un-awaited into a value position is a
+  named diagnostic; async generic instances and `async func main` are
+  wired through the same path.
+- **The async leaf:** `Std.Time.sleepMillis` inside a coroutine emits
+  `lyric_async_sleep` + suspend — parking only the calling task, an
+  improvement over the thread-blocking sleep the .NET/JVM targets
+  perform for the same call. No new stdlib surface: synchronous
+  contexts keep the blocking `_kernel_native` twin.
+- **Verification:** five new `llvm_self_test_async.l` cases (18 total;
+  the 13 pre-coroutine cases now run *through* the coroutine path as
+  the regression net): two spawned sleepers whose effect order
+  (1,2,11,12) is impossible under sequential execution; the same run
+  ASan-clean; an await chain through a sleeping leaf; String args and
+  results crossing suspends under ASan; the un-awaited-task
+  diagnostic. Full native self-test suite, `make ilverify`, and
+  `lyric build --target native` all clean.
+
+**Deferred (tracked):** async I/O leaves (sockets, file completions) on
+the same scheduler; §7.3 cancellation (panics abort, D-N-003); async
+generators (`N0099`); an un-awaited spawned task that never completes
+is abandoned at process exit (documented in D-N-022's semantics note).
+
+**Related:** D-N-022 (the decision entry), D-progress-583/D-N-021 (the
+gate this opens), `native/plan/06-async-design.md` (status header
+documents shipped-vs-sketch deltas), `lyric-rt/test/lyric_rt_test.c`.

@@ -129,6 +129,19 @@ equivalent for every compilable program. Verified by five new
 `llvm_self_test_async.l` cases including the language reference's §7.4
 dashboard shape.
 
+Real async (D-N-022) SHIPPED, superseding the two passthrough slices
+above on the lowering mechanism: every non-generator `async func` now
+emits as a real LLVM coroutine (`presplitcoroutine`, returning its
+`LyricTask*`), `lyric-rt` gained the cooperative single-threaded
+scheduler (`lyric_async.c`: hot tasks, ready queue, deadline-ordered
+timer list, `lyric_task_block_on`), and `Std.Time.sleepMillis` inside a
+coroutine is the first async leaf — it parks only the calling task
+instead of blocking the thread. Spawned tasks genuinely interleave,
+verified by effect-order tests under ASan in `llvm_self_test_async.l`
+(18 cases; the 13 pre-coroutine cases double as the regression net for
+the coroutine path). See D-N-022 and the status header of
+`06-async-design.md` for the shipped-vs-sketch deltas.
+
 ## Reading order
 
 1. `01-design-decisions.md` — all architectural decisions with rationale. Read

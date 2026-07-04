@@ -3,30 +3,33 @@
 Async/await for the native backend is **Phase 2 implementation**. This document
 fully specifies the mechanism so that Phase 2 agents have no design work to do.
 
-**Status (D-N-019):** the coroutine mechanism below was hand-verified
-end-to-end against `clang` 18 (a `presplitcoroutine`-attributed `.ll`
-round-trip compiles and runs correctly via plain `clang file.ll -o binary`
-at every `-O` level — no separate `opt` invocation needed) before any
-codegen was written, but the **first shipped async slice does not use
-it**. `Task[T]` is not a real type anywhere in the self-hosted front end,
-and with `spawn`/`scope` out of scope, no Lyric program in that slice's
-surface can hold an async call's result unawaited — so a real suspend
-point is never observable and `async func`/`await` instead compile
-through the plain-`func` codegen path with `await` as a pure passthrough
-(zero `lyric-rt` runtime changes).
-
-**Status update (D-N-021):** `spawn`/`scope` have since shipped as the
-same passthrough model — matching MSIL's own `ESpawn`/`SScope` lowering
-— and refined the sentence above: the true trigger for this document's
-coroutine mechanism is not `spawn`/`scope` syntax but the first **async
-leaf primitive** (an async sleep/timer kernel, then async I/O). A task
-only ever remains incomplete if it transitively awaits such a leaf, and
-until one exists on this target, every spawned call completes at the
-spawn site on .NET semantics too. Read D-N-019 and D-N-021 in full
-before touching this area, including the final-suspend subtlety the
-verification round surfaced (freeing a coroutine's frame from inside its
-own `resume()` without a prior `i1 true` final suspend leaves the
-caller's handle dangling).
+**Status (D-N-022): SHIPPED.** The coroutine mechanism below is now the
+shipped lowering: every non-generator `async func` emits as a
+`presplitcoroutine` LLVM coroutine returning its `LyricTask*`, the
+cooperative single-threaded scheduler lives in
+`lyric-rt/src/lyric_async.c` (hot tasks, FIFO ready queue,
+deadline-ordered timer list, `lyric_task_block_on` drive loop), and the
+first async leaf primitive is `Std.Time.sleepMillis` intercepted inside
+coroutine bodies (`lyric_async_sleep` + suspend; synchronous contexts
+keep the blocking kernel twin). Spawned tasks genuinely interleave —
+verified by effect-order tests in `llvm_self_test_async.l` under ASan.
+Read D-N-019/D-N-021/D-N-022 in full before touching this area; the two
+load-bearing verification findings remain: (1) freeing a coroutine's
+frame from inside its own `resume()` without a prior `i1 true` final
+suspend leaves the caller's handle dangling — the shipped epilogue
+final-suspends and frees only on the destroy path; (2) CoroSplit emits
+the frame's resume/destroy pointers as `internal fastcc`, so the C
+scheduler resumes through `lyric_coro_resume`/`lyric_coro_destroy`
+wrapper defines emitted into async-using modules, never through the
+frame directly. Departures from the sketches below: the shipped
+`LyricTask` stores a single `int64_t` result slot + `result_is_ref`
+flag (not a `T`-sized inline payload), `spawn` involves no scheduler
+call at all (hot tasks self-register only when they suspend), await
+auto-unwraps at every non-`spawn` call site (matching the
+type-transparent front end), and there is no `Std.Async` module — the
+async leaf is the intercepted `Std.Time.sleepMillis`. Async generators
+(`yield` in `async func`) remain N0099-rejected. Cancellation remains
+out of scope (D-N-003: panics abort).
 
 ---
 

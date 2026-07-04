@@ -1113,6 +1113,38 @@ interplay on both fall-through and early-return paths, ASan-clean
 String spawn bindings) and end-to-end via `lyric build --target
 native`.
 
+## Phase N8 (cont'd): real async — coroutines + scheduler + sleep leaf (Phase 2, D-N-022)
+
+**SHIPPED (D-N-022):** the coroutine mechanism of `06-async-design.md`
+is now the live lowering, superseding the D-N-019/D-N-021 passthrough
+(which survives as the degenerate never-suspends case). Three pieces:
+
+- **Scheduler** (`lyric-rt/src/lyric_async.c`): single-threaded,
+  cooperative, hot tasks; RUNNING/SLEEPING/WAITING/READY/COMPLETE
+  states, FIFO ready queue, deadline-ascending timer list,
+  `lyric_task_block_on` drive loop with deadlock detection; resumes
+  frames only through the IR-defined `lyric_coro_resume`/
+  `lyric_coro_destroy` wrappers (fastcc hazard). Covered by six C
+  unit tests driving the exact codegen protocol over fake handles.
+- **Emission** (`Lyric.LlvmCodegen`): `async func` → `define i8*
+  ... presplitcoroutine` returning its `LyricTask*`; coro.id/alloc/
+  begin prologue + `lyric_task_new`; returns lower to defers + ARC
+  releases + `lyric_task_complete` + branch to the shared
+  final-suspend block; awaits at non-`spawn` call sites auto-unwrap
+  (is-complete check, park-and-suspend in coroutines,
+  `lyric_task_block_on` in sync contexts); `spawn` keeps the
+  un-awaited `__task<T>` value (ARC-managed); ref-typed params are
+  retained on coroutine entry (borrows do not survive suspends).
+- **Async leaf**: `Std.Time.sleepMillis` inside a coroutine emits
+  `lyric_async_sleep` + suspend (parks only the calling task);
+  synchronous contexts keep the blocking kernel twin.
+
+Verified by five new `llvm_self_test_async.l` cases (18 total; the 13
+pre-coroutine cases now run through the coroutine path): two spawned
+sleepers whose effect order proves genuine interleaving, the same under
+ASan, an await chain through a sleeping leaf, String args/results
+across suspends under ASan, and the named un-awaited-task diagnostic.
+
 ---
 
 ## Dependency graph summary
