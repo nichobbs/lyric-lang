@@ -4779,6 +4779,24 @@ pub func buildDeriveEqualsFunc(className: in String, fields: in List[LField]): L
       case JByte -> eqInsns.add(LIfIcmpeq(label = skipLabel))
       case JChar -> eqInsns.add(LIfIcmpeq(label = skipLabel))
       case JShort -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+      case JLong -> {
+        // `LIfIcmpeq`/`LIfAcmpeq` both operate on single-slot values; a `long`
+        // is a two-slot primitive and neither opcode applies (#4993).
+        eqInsns.add(LLcmp)
+        eqInsns.add(LIfeq(label = skipLabel))
+      }
+      case JDouble -> {
+        // Two-slot primitive, same hazard as `JLong`.  The "l" (NaN → -1)
+        // variant matches `==`'s IEEE-754 semantics (mirrors `lowerCmp`).
+        eqInsns.add(LDcmpl)
+        eqInsns.add(LIfeq(label = skipLabel))
+      }
+      case JFloat -> {
+        // Single-slot but NOT reference-typed; `LIfAcmpeq` expects two
+        // references on the stack and would `VerifyError` on a raw `float`.
+        eqInsns.add(LFcmpl)
+        eqInsns.add(LIfeq(label = skipLabel))
+      }
       case _ -> eqInsns.add(LIfAcmpeq(label = skipLabel))
     }
     eqInsns.add(LIconst(v = 0))
@@ -4822,6 +4840,24 @@ pub func buildDeriveHashCodeFunc(className: in String, fields: in List[LField]):
       case JByte -> ()
       case JChar -> ()
       case JShort -> ()
+      case JLong -> {
+        // `Object.hashCode()` requires a reference receiver; a raw `long` on
+        // the stack would `VerifyError` (#4993).  `Long.hashCode(long): int`
+        // (JDK 8+) computes the hash without boxing.
+        val hcPs: List[JvmType] = newList()
+        hcPs.add(JLong)
+        hashInsns.add(LInvokestatic(owner = "java/lang/Long", name = "hashCode", params = hcPs, ret = JInt))
+      }
+      case JDouble -> {
+        val hcPs: List[JvmType] = newList()
+        hcPs.add(JDouble)
+        hashInsns.add(LInvokestatic(owner = "java/lang/Double", name = "hashCode", params = hcPs, ret = JInt))
+      }
+      case JFloat -> {
+        val hcPs: List[JvmType] = newList()
+        hcPs.add(JFloat)
+        hashInsns.add(LInvokestatic(owner = "java/lang/Float", name = "hashCode", params = hcPs, ret = JInt))
+      }
       case _ -> {
         // For reference fields, call .hashCode()
         val hcPs: List[JvmType] = newList()

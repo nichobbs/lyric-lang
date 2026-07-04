@@ -35,6 +35,19 @@ record Point {
   y: Int
 }
 
+// A two-slot-field record (#4993): on JVM, `Point`'s `Int`/`Int` fields alone
+// never exercise the `Long`/`Double` arms of `buildDeriveEqualsFunc`/
+// `buildDeriveHashCodeFunc`. `LIfIcmpeq`/`LIfAcmpeq` (single-slot int / ref
+// comparisons) and a bare `Object.hashCode()` invoke both `VerifyError` on a
+// raw `long`/`double` operand — this record pins the `Lcmp`/`Dcmpl` +
+// `Long.hashCode`/`Double.hashCode` fix.
+@derive(Equals)
+@derive(Hash)
+record WideKey {
+  n: Long
+  d: Double
+}
+
 test "field-equal record instance finds a Map entry (structural key)" {
   val m: Map[Point, String] = newMap()
   m[Point(x = 1, y = 2)] = "a"
@@ -74,5 +87,23 @@ test "distinct field values are distinct keys" {
   match mapGet(m, Point(x = 1, y = 2)) {
     case Some(v) -> assertEqual(v, "q", "(1,2) -> q")
     case None -> assertTrue(false, "should find (1,2)")
+  }
+}
+
+test "record with Long/Double fields is structurally equal (#4993)" {
+  val a = WideKey(n = 1000000000i64, d = 3.14)
+  val b = WideKey(n = 1000000000i64, d = 3.14)
+  val c = WideKey(n = 999i64, d = 3.14)
+  assertTrue(a.equals(b), "field-equal wide keys are equal")
+  assertTrue(not a.equals(c), "field-different wide keys are not equal")
+}
+
+test "record with Long/Double fields works as a Map key (#4993)" {
+  val m: Map[WideKey, String] = newMap()
+  m[WideKey(n = 1000000000i64, d = 3.14)] = "hit"
+  val fresh = WideKey(n = 1000000000i64, d = 3.14)
+  match mapGet(m, fresh) {
+    case Some(v) -> assertEqual(v, "hit", "fresh field-equal wide key finds the Map entry")
+    case None -> assertTrue(false, "should find via structurally-equal Long/Double key")
   }
 }

@@ -28075,6 +28075,26 @@ established convention) and `appendDeriveOverridesJvm`, called at both
 methods are merged, mirroring MSIL's `appendDeriveOverridesMsil` call sites
 exactly.
 
+**Review finding #4993, fixed same-PR.** The ported field-comparison/hash
+logic pre-dated this fix (it lived, unreachable, in `lowerDeriveEquality`)
+and had a `case _ ->` fallthrough treating `JLong`/`JDouble`/`JFloat` fields
+as reference types: `equals` emitted `LIfAcmpeq` (expects two references) and
+`hashCode` emitted a bare `Object.hashCode()` invoke — both `VerifyError` on
+a raw two-slot/float primitive. Invisible before this PR (the code was
+unreachable); now a real production risk since this PR makes it reachable
+for any `@derive(Equals)`/`@derive(Hash)` record with a `Long`/`Double`/
+`Float` field. Fixed by adding explicit `JLong`/`JDouble`/`JFloat` arms:
+`equals` uses `Lcmp`/`Dcmpl`/`Fcmpl` + `ifeq` (mirroring `lowerCmp`'s
+existing `==` comparison pattern, "l" variant for IEEE-754 NaN semantics);
+`hashCode` uses the JDK 8+ `Long.hashCode(long)`/`Double.hashCode(double)`/
+`Float.hashCode(float)` static methods (no boxing). `maxStack=4` already
+covers the worst-case peak (two two-slot operands before `Lcmp`/`Dcmpl`).
+`map_key_self_test.l` gains a `WideKey(n: Long, d: Double)` record and two
+new cases — 6/6 on both targets. (`Float` structurally identical to
+`Double`/`Long` in both fixes but not independently runtime-verified in this
+sandbox: `System.Convert.ToSingle` is AOT-trimmed here, D-progress-543, the
+same pre-existing sandbox limit #4932's Float half hit.)
+
 **Verification.** `map_key_self_test.l` (the file `#1480`'s own header
 scoped "MSIL target only... epic #1470 defers JVM") is now **4/4 on
 `--target jvm`** too (0/4 pre-fix — confirmed via a clean pre-fix baseline
