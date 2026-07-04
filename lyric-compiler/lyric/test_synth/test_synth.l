@@ -149,7 +149,7 @@ func synthesizeMain(
 ): String {
   // Native has no builtin-`println` prelude special case (see the import
   // note above) — emit calls to the real `Std.Console.println` there.
-  val pfn = if nativeMode { "Console.println" } else { "println" }
+  val pfn = if nativeMode { "__lyric_console.println" } else { "println" }
   val total = tests.count + skipped.count
   var sb = ""
   sb = sb + "func main(): Int {\n"
@@ -276,9 +276,15 @@ func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in 
   sb = sb + "\n"
   // Native has no builtin-`println` prelude special case (unlike the dotnet/
   // jvm emitters) — the synthesised main below calls the real, already
-  // native-compilable `Std.Console.println` instead, so it needs the import.
+  // native-compilable `Std.Console.println` instead, so it needs the
+  // import.  The alias is `__lyric_console` (matching the `__lyric_*`
+  // naming already used for synthesised locals below) rather than the
+  // more natural `Console`, so injecting this import can never collide
+  // with the user's own `import Std.Console [as X]` in the original file
+  // (#4983) — two imports of the same path under different aliases are
+  // harmless, unlike two bindings fighting over the same alias name.
   if nativeMode {
-    sb = sb + "import Std.Console as Console\n"
+    sb = sb + "import Std.Console as __lyric_console\n"
   }
   var ii = 0
   while ii < pf.file.imports.count {

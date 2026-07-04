@@ -2511,6 +2511,16 @@ func lowerConstructCall(
     if name == "toString" and args.count == 1 {
       val tv = lowerPositionalArg(ctx, insns, args, 0)
       val noMethodArgs: List[CallArg] = newList()
+      // `lowerScalarMethodCall`'s `None` arm is unreachable here: the type
+      // checker only admits the prelude `toString(x)` call for a type that
+      // supports string conversion, and every such type (String passthrough,
+      // every scalar) is already handled by `lowerScalarMethodCall`'s
+      // `.toString()` path.  If a future scalar-like type widens that set
+      // without a matching `lowerScalarMethodCall` arm, the fallthrough below
+      // would resolve `tv`'s already-lowered instructions against unrelated
+      // construct forms (record/union/distinct) instead of surfacing a clear
+      // "no toString for this type" diagnostic — worth revisiting if that
+      // widening ever happens (#4984).
       match lowerScalarMethodCall(ctx, insns, tv, "toString", noMethodArgs, line) {
         case Some(result) -> return result
         case None -> {
