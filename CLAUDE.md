@@ -1079,8 +1079,11 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     verified by `llvm_heap_self_test.l`, whose ARC cases compile with
     `-fsanitize=address` so leaks / use-after-free / double-release fail
     the run.  Generic monomorphization (N3.1, D-progress-546/547) and
-    tuples (N3.3, D-progress-550) also ship; interfaces (N3.2) and
-    protected types (N3.4) remain from N3.  Phase N4 is complete
+    tuples (N3.3, D-progress-550) also ship; interfaces (N3.2,
+    D-progress-568, ASan-verified) and protected types (N3.4,
+    D-progress-573, D-N-017) now shipped — N3 is complete (`when:`/
+    invariant barriers and generic protected types deferred, tracked in
+    D-N-017).  Phase N4 is complete
     (D-progress-551/552): the N0100 mode-checker FFI boundary
     (`NativePtr[T]`/`nativeAddrOf`/`nativeNullPtr` only in `@unsafe_ffi`
     functions and `_kernel_native/` packages), callback trampolines

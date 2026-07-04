@@ -5144,6 +5144,92 @@ non-record targets, and direct impl-method calls on a concrete
 N3.2.
 
 
+## D-N-017 — Native protected types: heap-buffer mutex field + lock/unlock wrapper/inner split (revises the "inline slot" phrasing of `native/plan`)
+
+**Date:** 2026-07-03
+**Status:** ACCEPTED (N3.4; two representation divergences from the plan's literal phrasing)
+
+**Decision.** On `--target native`, a `protected type` lowers to the same
+record-shaped heap object as a plain record
+(`{ i32 rc, i8* dtor, ...user fields }`), plus one trailing
+`__mutex: i8*` field, with two divergences from a literal reading of
+`native/plan`:
+
+1. **The mutex is a heap-allocated buffer pointed to by the field, not an
+   inline slot.** `lyric_mutex_size()` is a runtime C call (the
+   `pthread_mutex_t` layout is platform-dependent); the self-hosted
+   compiler runs hosted on .NET/JVM and cannot invoke the *target*
+   runtime's `lyric_mutex_size()` at codegen time, and LLVM struct types
+   are fixed-size — there is no way to reserve "however many bytes
+   `lyric_mutex_size()` returns" as an inline struct field. Construction
+   allocates the buffer at runtime (`lyric_mutex_size` → `lyric_alloc` →
+   `lyric_mutex_init`) and stores the pointer in `__mutex`; the
+   destructor calls `lyric_mutex_destroy` then `lyric_free` (not
+   `lyric_release` — the buffer is a raw `lyric_alloc`, not an ARC
+   object with a header). This still honours the plan's underlying
+   intent ("do not hardcode a struct-layout table for `pthread_mutex_t`
+   sizes across platforms") even though it diverges from the plan's
+   literal "inline slot" phrasing.
+2. **Every `entry` and `func` member lowers to two functions**, not one.
+   The language reference (§7.5) makes both forms mutually exclusive (an
+   Ada-style monitor); MSIL gets this for `entry` almost for free
+   (`Monitor.Enter(this)` / try/finally) and JVM's production path has no
+   locking at all (tracked gap, #855/#1833) — native has no monitor
+   primitive and, more specifically, its statement lowering emits
+   scattered `NRet`/`NRetVoid` at every return site with no unified
+   epilogue (no try/finally region), so a single lock/unlock pair cannot
+   simply bracket the original body. Each member becomes:
+   - an **inner** function (`<Type>.<method>.__inner`): the member body
+     with an implicit `self: in <ProtectedType>` receiver injected and
+     bare field references rewritten to `self.field` (mirroring the MSIL
+     emitter's `desugarProtectedFuncBody`), lowered through the ordinary
+     `FunctionDecl` → `NFunc` pipeline exactly like a record/impl method.
+   - a hand-built **wrapper** `NFunc` (`<Type>.<method>`): GEP+load the
+     mutex field, `lyric_mutex_lock`, call the inner function, call
+     `lyric_mutex_unlock` and forward its return value. UFCS call sites
+     (`x.increment()`) resolve to the wrapper — its `NFuncSig` is
+     registered directly into the module's call registry (`ctx.sigs`),
+     bypassing the normal `buildSigs` scan, since the wrapper is
+     hand-built and never exists as parsed Lyric source.
+   Unlike MSIL (which only locks `entry`, a pre-existing spec gap), both
+   `entry` and `func` get the wrapper — matching the language reference.
+
+**Why the type resolves like a record with zero extra machinery.**
+`ctx.recordDefs` is the single lookup `typeToN` / field access /
+construction consult regardless of whether the entry came from a record
+or a protected type, so registering the protected type's layout there
+(with `ctx.protectedRecNames` marking which entries need mutex-aware
+construction/destruction) makes `self: in ProtectedType` resolve, GEP,
+and construct exactly like a record receiver with no new type-resolution
+surface.
+
+**Scope shipped (N3.4 first slice).** Non-generic protected types;
+`var`/`let`/immutable fields (`PMField`); `entry` and `func` members
+(non-generic, non-async funcs); field-args and no-arg (all-defaults)
+construction; ARC-correct destruction (ref-typed user fields released,
+mutex buffer destroyed and freed) verified leak-/double-free-clean under
+AddressSanitizer (`llvm_self_test_n34.l`).
+
+**Deferred (tracked).** `when:` barrier re-evaluation (needs
+`pthread_cond_t` — not implemented on MSIL either), invariant re-check
+after each operation (contract machinery), generic protected types,
+read/write concurrency distinction (language reference explicitly leaves
+this an open question), and the same same-package same-name-same-arity
+UFCS collision risk that already exists for record/impl methods (a
+protected type's wrapper is registered the same way). **Panic-while-locked:**
+a panicking inner function leaves the mutex in a locked state (the
+wrapper's `lyric_mutex_unlock` never runs) — harmless today because a
+native panic aborts the whole process (D-N-003), but must be resolved
+before `when:` barrier / `pthread_cond_wait` support is added (a panicking
+entry would otherwise leave condition waiters blocked forever ahead of the
+abort).
+
+**Related:** `native/plan/08-work-items.md` N3.4,
+`docs/01-language-reference.md` §7.5, D-N-016 (the same "no by-value
+aggregate ABI" constraint that forced interfaces to heap-box also shapes
+the mutex-as-pointer choice here).
+
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The

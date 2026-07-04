@@ -30,8 +30,12 @@ functions instantiate per call site with unification-based inference,
 cache-first recursion handling, and generic UFCS.  Tuples (N3.3)
 SHIPPED in D-progress-550 as synthesised records.  Interfaces/vtables
 (N3.2) SHIPPED in D-progress-568 (heap-boxed fat pointer per D-N-016,
-non-generic `impl I for Record`, ASan-verified);  protected types (N3.4)
-remain from N3.
+non-generic `impl I for Record`, ASan-verified).  Protected types (N3.4)
+SHIPPED in D-progress-573 (D-N-017): a record-shaped heap object with a
+trailing heap-buffer mutex field, `entry`/`func` members both locking via
+a codegen-synthesised lock/unlock wrapper around a desugared inner body,
+ASan-verified.  N3 is complete (`when:` barriers / invariant re-checking /
+generic protected types remain deferred, tracked in D-N-017).
 
 Phase N4 is COMPLETE (D-progress-540 shipped N4.1/N4.6 and the
 kernel/CLI subsets; D-progress-551 the nativeAddrOf codegen;

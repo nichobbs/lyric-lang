@@ -839,12 +839,15 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # tuples, match, generics (monomorphized), closures,
                                        # non-generic interfaces (impl I for Record, vtable
                                        # dispatch), NativeWeak[T], slice[T], List/Map +
-                                       # for/indexing (map keys String or scalar); raw FFI
+                                       # for/indexing (map keys String or scalar); non-generic
+                                       # protected types (entry/func both lock a mutex buffer via
+                                       # a lock/unlock wrapper); raw FFI
                                        # (NativePtr[T], nativeAddrOf, nativeNullPtr,
                                        # closure-as-C-callback trampolines) only in @unsafe_ffi
                                        # functions / _kernel_native packages (N0100).
                                        # Not yet lowered (build fails naming the construct):
-                                       # interface default/generic methods, protected types,
+                                       # interface default/generic methods, generic protected
+                                       # types, when: barriers, invariant re-checking,
                                        # list literals, module-level val, async, manifest builds
 lyric build -o <dir> <file.l>          # write output files to <dir>
 lyric build --manifest lyric.toml      # build from project manifest

@@ -717,6 +717,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
   val distincts: List[DistinctTypeDecl] = newList()
   val interfaces: List[InterfaceDecl] = newList()
   val impls: List[ImplDecl] = newList()
+  val protecteds: List[ProtectedTypeDecl] = newList()
   var i = 0
   while i < f.items.count {
     match f.items[i].kind {
@@ -756,6 +757,14 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
           collectImplMethods(pkg, decl, fns)
         }
       }
+      // Protected types (N3.4): gated on `lowerAll` like interfaces above —
+      // native protected types are user-package only today.
+      case IProtected(decl) -> {
+        if lowerAll {
+          protecteds.add(decl)
+          collectProtectedMethods(pkg, decl, fns)
+        }
+      }
       case _ -> {
       }
     }
@@ -770,6 +779,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
     enums = enums,
     distincts = distincts,
     interfaces = interfaces,
-    impls = impls
+    impls = impls,
+    protecteds = protecteds
   )
 }
