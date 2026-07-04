@@ -28633,6 +28633,57 @@ fixes. Full JVM self-test regression sweep (`map_option_self_test.l`,
 fix (four failures observed and fixed before landing). Verified against the
 pinned F# stage-0 mint.
 
+**Second regression caught and fixed in the same PR (cross-package extern
+types).** CI on the already-open PR caught a second, independent regression
+after the `mapGet` fix landed: `time_jvm_self_test.l`'s epoch/ISO-8601
+round-trip test failed with a `NoClassDefFoundError` naming a phantom class
+(`Jvm/TimeSelfTest/Instant`). Root cause: `Std.Time.parseOptInstant(String):
+Option[Instant]` registers `retGenericArgs = [Instant]` from
+`Std.Time`'s own declaration — but `Instant` is an `extern type` (`extern
+type Instant = "java.time.Instant"`, declared in
+`_kernel_jvm/time_host.l`/`Std.TimeHost`), not a Lyric record/union/interface.
+The first fix's `resolveConcreteTypeExpr` (`codegen/03_match.l`) resolved a
+bare `retGenericArgs` reference against the *caller's own* `ctx.pkgName` /
+`ctx.externTypes` at the match site — correct for the `mapGet`/`Shape`
+regression case (caller and declaring package coincided in those repros),
+but wrong whenever caller and declaring package differ: a JVM self-test file
+that imports `Std.Time` but not `Std.TimeHost` has no `Instant` entry in its
+own `ctx.externTypes`, so resolution fell through to the same-package guess
+(`<callerPkg>/Instant`) — a plausible but nonexistent class, now actually
+`checkcast`-ed against instead of harmlessly absorbed by the erased `Object`
+fallback.
+
+**Fix.** Moved resolution from the match site (caller context) to
+registration time (declaring-file context), where it belongs: `Jvm.Codegen`
+(`codegen/01_types.l`) gains `eagerlyResolveGenericArgs`/
+`eagerlyResolveGenericArg`, called from both `retGenericArgs` registration
+sites (`collectFileSigsSeeded`, `registerInstanceSigErased`) with that file's
+own `pkgName`/`externTypes` — the only point in the pipeline holding the
+DECLARING file's context. A bare, non-primitive `TRef` (`Shape`, `Instant`)
+is rewritten there into a single path segment holding the already-resolved
+slash-form JVM class name (`IfaceRepro/Shape`, `java/time/Instant`); a
+`TGenericApp`'s args are rewritten recursively so a nested instantiation
+(`Option[Shape]` inside `Result[Option[Shape], String]`) carries its own
+pre-resolved args forward through `ctx.varGenericArgs` for a later nested
+match. Lyric identifiers never contain `/`, so a resolved segment
+containing `/` is an unambiguous marker: `resolveConcreteTypeExpr` reads it
+back directly (`seg.contains("/")` → use as-is) instead of re-resolving
+against the caller's context. A bare segment without the marker (nothing
+should reach here post-rewrite, but kept as a defensive fallback) still
+degrades through `ctorClassFor`/`ctx.externTypes` to the safe erased
+`Object` case, unchanged.
+
+**Verification.** `time_repro.l` (standalone repro: `Time.parseOptInstant`
+→ `match` → `Time.toIsoString`) now prints the parsed ISO string instead of
+throwing; `time_jvm_self_test.l` is back to 9/9. Re-ran the full sweep from
+the first fix (`stdlib_generic_iface_self_test.l` 20/20, the two interface
+scratch repros, `map_option_self_test.l`, `map_key_self_test.l`,
+`bitwise_self_test.l`, `aspect_weave_self_test.l`,
+`auto_ffi_jvm_self_test.l`, `wire_di_self_test.l`,
+`erased_generic_arith_jvm_self_test.l`, `method_scrutinee_jvm_self_test.l`,
+`subscript_assign_jvm_self_test.l`) — zero regressions. Verified against the
+pinned F# stage-0 mint.
+
 **Related:** #3613 (closed by this entry), #3687 (interface-dispatch
 `invokeinterface` this builds on), #4877/#4938 (the generic-payload
 unbox/var-tracking machinery this extends), docs/44 m-86.

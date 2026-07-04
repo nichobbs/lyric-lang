@@ -2390,7 +2390,11 @@ pub func collectFileSigsSeeded(
           paramDefaults = paramDefaults,
           paramModes = paramModes,
           isIface = false,
-          retGenericArgs = returnTypeGenericArgsFiltered(decl.ret, sigTps)
+          retGenericArgs = eagerlyResolveGenericArgs(
+            returnTypeGenericArgsFiltered(decl.ret, sigTps),
+            owner,
+            externTypes
+          )
         )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -2643,7 +2647,7 @@ func registerInstanceSigErased(
         paramDefaults = paramDefs,
         paramModes = modes,
         isIface = false,
-        retGenericArgs = returnTypeGenericArgsFiltered(retOpt, typeParams)
+        retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, noExts)
       )
     )
   }

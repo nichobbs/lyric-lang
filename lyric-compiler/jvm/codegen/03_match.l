@@ -853,6 +853,67 @@ func emitUnboxObjectTo(insns: in List[LInsn], target: in JvmType): JvmType {
   }
 }
 
+// True for the bare Lyric primitive-type keywords, whose JVM mapping is
+// package-independent (safe to trust regardless of which file the
+// `TypeExpr` came from).
+func isPrimitiveTypeKeyword(seg: in String): Bool {
+  seg == "Int" or seg == "Long" or seg == "Double" or seg == "Float" or seg == "Bool" or seg == "String" or
+    seg == "Char" or
+    seg == "Byte" or
+    seg == "Unit"
+}
+
+// Resolve a scrutinee's generic-instantiation arg to a concrete JVM type.
+// `JvmFuncSig.retGenericArgs` is pre-resolved at registration time by
+// `Jvm.Codegen.eagerlyResolveGenericArgs` (`01_types.l`), using the
+// DECLARING file's own `pkgName`/`externTypes` — the only point in the
+// pipeline that has that context. A bare, non-primitive `TRef` there is
+// rewritten to a single path segment holding the full slash-form JVM class
+// name (`Shape` -> `IfaceRepro/Shape`, `Instant` -> `java/time/Instant`);
+// Lyric identifiers never contain `/`, so a segment containing `/` is an
+// unambiguous "already resolved" marker, used directly with no re-guessing
+// against the CALLER's own context. Re-resolving against the caller's
+// context (`ctx.pkgName`/`ctx.externTypes`, e.g. a JVM self-test file that
+// never imports the declaring package's kernel) previously produced a
+// plausible-looking but nonexistent class (`<callerPkg>/Instant`) — a
+// `checkcast` against that phantom class throws `NoClassDefFoundError` at
+// runtime (#3613 follow-up regression).
+//
+// A bare TRef that reaches here WITHOUT the marker (still a plain
+// identifier with no `/`) means the source wasn't pre-resolved (e.g. a
+// stray path this function is applied to outside the `retGenericArgs`
+// pipeline) — fall back to the same-package guess via `ctorClassFor` /
+// `ctx.externTypes`, else stay at the safe erased `Object` fallback rather
+// than guessing blind. Non-bare shapes fall through to the ordinary
+// `typeExprToJvmExtern` resolution, unchanged from before this guard.
+func resolveConcreteTypeExpr(ctx: in FuncCtx, te: in TypeExpr): JvmType {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        val seg = path.segments[0]
+        if isPrimitiveTypeKeyword(seg) {
+          typeExprToJvm(te, ctx.pkgName)
+        } else if seg.contains("/") {
+          JRef(className = seg)
+        } else {
+          match ctorClassFor(ctx, seg) {
+            case Some(cls) -> JRef(className = cls)
+            case None -> {
+              match mapGet(ctx.externTypes, seg) {
+                case Some(javaFqn) -> JRef(className = javaFqn.replace(".", "/"))
+                case None -> JRef(className = "java/lang/Object")
+              }
+            }
+          }
+        }
+      } else {
+        typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
+      }
+    }
+    case _ -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
+  }
+}
+
 // Unwrap `TAType` args of a `TGenericApp` into their inner `TypeExpr`s
 // (skipping any `TAValue` const-generic arg, which has no JVM type shape).
 // Used to recover a nested generic instantiation (e.g. `Option[Shape]`'s own
@@ -1031,7 +1092,7 @@ func lowerPatternBind(
                 concreteTy = fty
                 val pIdx = flds[fi].paramIdx
                 if pIdx >= 0 and pIdx < scrutTypeArgs.count {
-                  concreteTy = typeExprToJvmExtern(scrutTypeArgs[pIdx], ctx.pkgName, ctx.externTypes)
+                  concreteTy = resolveConcreteTypeExpr(ctx, scrutTypeArgs[pIdx])
                   concreteTypeExprOpt = Some(value = scrutTypeArgs[pIdx])
                 }
               }
