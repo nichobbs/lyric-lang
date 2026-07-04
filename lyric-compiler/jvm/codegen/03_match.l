@@ -853,16 +853,6 @@ func emitUnboxObjectTo(insns: in List[LInsn], target: in JvmType): JvmType {
   }
 }
 
-// True for the bare Lyric primitive-type keywords, whose JVM mapping is
-// package-independent (safe to trust regardless of which file the
-// `TypeExpr` came from).
-func isPrimitiveTypeKeyword(seg: in String): Bool {
-  seg == "Int" or seg == "Long" or seg == "Double" or seg == "Float" or seg == "Bool" or seg == "String" or
-    seg == "Char" or
-    seg == "Byte" or
-    seg == "Unit"
-}
-
 // Resolve a scrutinee's generic-instantiation arg to a concrete JVM type.
 // `JvmFuncSig.retGenericArgs` is pre-resolved at registration time by
 // `Jvm.Codegen.eagerlyResolveGenericArgs` (`01_types.l`), using the

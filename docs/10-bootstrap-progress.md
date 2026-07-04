@@ -28687,3 +28687,57 @@ pinned F# stage-0 mint.
 **Related:** #3613 (closed by this entry), #3687 (interface-dispatch
 `invokeinterface` this builds on), #4877/#4938 (the generic-payload
 unbox/var-tracking machinery this extends), docs/44 m-86.
+
+### D-progress-586 — JVM: extend D-progress-585's eager generic-arg resolution to the remaining registration sites (#5050, #5051, #5052)
+
+**Shipped.** Closes #5050, #5051, #5052 — three SUGGESTION findings from the
+`claude-review` pass on #5043 (D-progress-585), all in the same
+`retGenericArgs`-registration family that PR fixed for `collectFileSigsSeeded`
+and `registerInstanceSigErased`.
+
+**#5051 (real gap, not just style).** `registerInstanceSigErased` passed a
+permanently-empty `noExts` map to both `holderAwareParamTypes` and
+`eagerlyResolveGenericArgs`, so a record/protected/impl instance method whose
+param, return, or generic-return-arg type named an *extern* type (`Option[Instant]`)
+pre-resolved to the in-package guess unconditionally — a strictly worse
+regression than the caller-side-resolution bug D-progress-585 fixed for free
+functions (that one at least worked when the caller happened to import the
+extern type; this one never worked). Fixed by threading the file's own
+`externTypes` (already computed once in `collectFileSigsSeeded`) through
+`registerInstanceSig`/`registerInstanceSigErased`, replacing `noExts` at both
+call sites and upgrading the plain-erased `ret` computation to
+`typeExprToJvmErasedExtern` for consistency.
+
+**#5050.** `registerIfaceSig` (interface methods) and the `IOpaque` field-accessor
+registration (`codegen/06_items.l`) still called bare `returnTypeGenericArgs`,
+skipping both the type-param filter (D-progress-585's `mapGet` guard) and the
+eager cross-package resolution. Both now compute the declaring type's own
+generic parameter names (`ifaceTps`/`opqTps`, via the existing
+`genericParamNames` helper — mirroring `IRecord`'s pre-existing `recTps`) and
+call `eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, tps), owner,
+externTypes)`, same as the two sites D-progress-585 fixed. Non-regression:
+previously this always degraded to the safe erased `Object` fallback, so the
+change is additive precision only.
+
+**#5052.** `01_types.l`'s `isPrimitiveScalarKeyword` and `03_match.l`'s
+`isPrimitiveTypeKeyword` were identical-body duplicates under different names —
+deliberately duplicated because `Jvm.Codegen`'s multi-file loader merges these
+files in name order and a file can only call a function already defined by an
+earlier-loaded file (`01_types.l` loads before `03_match.l`). Since
+`03_match.l` already calls plenty of `01_types.l` helpers (`ctorClassFor`,
+`typeExprToJvmExtern`, …) — a *backward* reference is fine, only the
+*forward* direction was the actual constraint — the single definition now
+lives in `01_types.l` as `pub func isPrimitiveTypeKeyword`, and `03_match.l`'s
+copy is deleted in favor of calling the shared one.
+
+**Verification.** Full JVM self-test regression sweep (`stdlib_generic_iface_self_test.l`,
+`time_jvm_self_test.l`, `map_option_self_test.l`, `map_key_self_test.l`,
+`bitwise_self_test.l`, `aspect_weave_self_test.l`, `auto_ffi_jvm_self_test.l`,
+`wire_di_self_test.l`, `erased_generic_arith_jvm_self_test.l`,
+`method_scrutinee_jvm_self_test.l`, `subscript_assign_jvm_self_test.l`,
+`out_inout_instance_jvm_self_test.l`, `projectable_jvm_self_test.l`,
+`closure_jvm_self_test.l`, `control_flow_jvm_self_test.l`) plus the standalone
+interface/nested-interface/`Std.Time` repros — zero regressions. Verified
+against the pinned F# stage-0 mint.
+
+**Related:** #3613/D-progress-585 (the fix this extends), docs/44 m-86.
