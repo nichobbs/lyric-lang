@@ -934,8 +934,9 @@ static void test_async_interleave(void) {
      * deadline order, not spawn order: a@20, b@40, A@~80, B@~130.
      * Deadlines are computed from the ACTUAL wake time (now + ms), so
      * near-ties would be decided by scheduling jitter — every gap here
-     * is >= 40 ms of ideal separation, which only a differential stall
-     * of that size between two adjacent resumes could reorder. */
+     * is >= 20 ms of ideal separation (20/40/50 ms), which only a
+     * differential stall of the gap size between two adjacent resumes
+     * could reorder. */
     async_log_len = 0;
     async_log[0] = 0;
     FakeCoro a = {0};

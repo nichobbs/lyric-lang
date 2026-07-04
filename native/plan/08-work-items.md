@@ -1139,7 +1139,7 @@ is now the live lowering, superseding the D-N-019/D-N-021 passthrough
   `lyric_async_sleep` + suspend (parks only the calling task);
   synchronous contexts keep the blocking kernel twin.
 
-Verified by five new `llvm_self_test_async.l` cases (18 total; the 13
+Verified by seven new `llvm_self_test_async.l` cases (20 total; the 13
 pre-coroutine cases now run through the coroutine path): two spawned
 sleepers whose effect order proves genuine interleaving, the same under
 ASan, an await chain through a sleeping leaf, String args/results

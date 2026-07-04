@@ -5671,7 +5671,7 @@ programs that care run everything to completion via `await`.
 exact protocol codegen emits through fake coroutine handles (hot
 completion, block-on-sleep, two-sleeper interleaving with >= 20ms
 event separation, await chains, multi-waiter wake, deadlock abort);
-five new Lyric cases in `llvm_self_test_async.l` (18 total) prove
+seven new Lyric cases in `llvm_self_test_async.l` (20 total) prove
 effect-order interleaving of two spawned sleepers (impossible under
 sequential execution), the same under ASan, an await chain through a
 sleeping leaf, String args/results crossing suspends under ASan, and

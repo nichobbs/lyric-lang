@@ -446,3 +446,22 @@ test "spawn/scope with String-typed task bindings is leak-free under ASan" {
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 12, "\"left!|right!\" has length 12, leak-free across 25 iterations")
 }
+
+// `async func main` (#5088): the C-ABI wrapper drives the returned task
+// through lyric_task_block_on, reads the Int result slot as the exit
+// code, and drops the caller's task ref.
+test "async func main returning Int: exit code read from the completed task" {
+  val src = "package T\n" + "import Std.Time as Time\n" +
+    "async func step(n: in Int): Int {\n  Time.sleepMillis(10)\n  return n + 1\n}\n" +
+    "async func main(): Int {\n  val a = spawn step(20)\n  val b = spawn step(30)\n  await a + await b\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 52, "async main's task result (21 + 31) becomes the process exit code")
+}
+
+// The Unit-returning variant takes synthCMain's other async arm (no
+// result read; exit 0 after the task completes).
+test "async func main returning Unit: process exits 0 after the task completes" {
+  val src = "package T\n" + "import Std.Time as Time\n" + "async func main(): Unit {\n  Time.sleepMillis(10)\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 0, "a Unit async main drives to completion and exits 0")
+}

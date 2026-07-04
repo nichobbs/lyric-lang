@@ -29050,7 +29050,7 @@ as the degenerate never-suspends case).
   improvement over the thread-blocking sleep the .NET/JVM targets
   perform for the same call. No new stdlib surface: synchronous
   contexts keep the blocking `_kernel_native` twin.
-- **Verification:** five new `llvm_self_test_async.l` cases (18 total;
+- **Verification:** seven new `llvm_self_test_async.l` cases (20 total;
   the 13 pre-coroutine cases now run *through* the coroutine path as
   the regression net): two spawned sleepers whose effect order
   (1,2,11,12) is impossible under sequential execution; the same run

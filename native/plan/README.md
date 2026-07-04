@@ -138,7 +138,7 @@ timer list, `lyric_task_block_on`), and `Std.Time.sleepMillis` inside a
 coroutine is the first async leaf — it parks only the calling task
 instead of blocking the thread. Spawned tasks genuinely interleave,
 verified by effect-order tests under ASan in `llvm_self_test_async.l`
-(18 cases; the 13 pre-coroutine cases double as the regression net for
+(20 cases; the 13 pre-coroutine cases double as the regression net for
 the coroutine path). See D-N-022 and the status header of
 `06-async-design.md` for the shipped-vs-sketch deltas.
 
