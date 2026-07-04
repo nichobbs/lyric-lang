@@ -28838,3 +28838,56 @@ sandbox limitation doesn't apply.
 **Related:** #3432 (the `@externTarget` generic-member gap this
 deliberately avoids depending on), docs/57 §3 (updated to reference this
 entry).
+
+### D-progress-589 — `Std.Random`/`Std.SecureRandom` were completely non-functional on JVM — every function crashed with `VerifyError`
+
+**Shipped.** Discovered while verifying D-progress-588: PR #5058's new
+`lyric-resilience suite on JVM` CI step failed on `backoffDelay`'s jitter
+calculation with `VerifyError: Operand stack underflow` at
+`Std/RandomHost.hostSharedRandom()`. Root cause turned out to be much
+larger than a resilience-specific bug: **both** `_kernel_jvm/random_host.l`
+and `_kernel_jvm/secure_random_host.l` were still the phantom-class
+`@externTarget` stubs #736 was supposed to have fixed (2026-05-20,
+CRITICAL) — every function body was `= ()` behind an
+`@externTarget("lyric.stdlib.jvm.RandomHost.…")`/`@externTarget("lyric.stdlib.jvm.SecureRandomHost.…")`
+annotation naming a Java host class that never existed at runtime. #736's
+fix addressed the symptom it described (the package name collision that
+made every call fail to *resolve* at all) but never replaced the actual
+implementations, so any call that got far enough to *execute* the
+function body hit an empty stack at the JVM level instead — the exact
+same phantom-class hazard `time_host.l`/`collections_host.l`/
+`file_host.l` were already rewritten away from (D-progress-543 and
+follow-ups), just never applied here. **No existing self-test exercised
+either module on `--target jvm` at all** — this session's new
+lyric-resilience JVM CI step (D-progress-588) is the first thing that
+ever called into `Std.Random` on JVM in CI.
+
+**Fix.** Both kernels rewritten pure-Lyric over the JVM auto-FFI, mirroring
+the established `extern type` + ordinary instance/static-method-call
+pattern: `_kernel_jvm/random_host.l` wraps `java.util.Random` (a module-level
+`val sharedRandom` for the process-wide singleton; `hostNextIntRange`
+synthesises `[min, max)` as `min + rng.nextInt(max - min)`, matching what
+the file's own pre-existing comment already said the design should be —
+it was simply never implemented). `_kernel_jvm/secure_random_host.l` wraps
+`java.security.SecureRandom` the same way; `hostSecureGetBytes` builds a
+zero-filled `List[Byte]` of the requested length, takes `.toArray()` (a
+genuinely-typed `byte[]`, not the erased `Object[]` slice ABI — the same
+JVM-specific guarantee `encoding_host.l`'s own header comment documents),
+and fills it in place via `SecureRandom.nextBytes(byte[])`.
+
+**Verification.** Two standalone repros (bypassing `Std.Testing` to avoid
+this sandbox's unrelated `Convert.ToSingle` limitation, D-progress-543)
+exercise the full public surface of both modules on `--target jvm`:
+`sharedRandom`/`makeRandom`/`nextInt`/`nextIntBelow`/`nextIntRange`/
+`nextLong`/`nextDouble`/`nextBool` for `Std.Random`, and
+`secureNextInt`/`secureNextIntRange`/`secureGetBytes` (asserting the
+returned slice's actual length) for `Std.SecureRandom` — all correct,
+where every one previously crashed. `bitwise_self_test.l`,
+`map_option_self_test.l`, `stdlib_generic_iface_self_test.l`,
+`time_jvm_self_test.l`, `file_jvm_self_test.l` unaffected (unrelated
+kernels, sanity-swept for regressions). `.NET` twin untouched, 15/15 on
+`resilience_tests.l --target dotnet`.
+
+**Related:** #736 (the prior, incomplete fix), D-progress-543 (the phantom-class
+elimination pattern this applies), D-progress-588 (the CI step that
+surfaced this).

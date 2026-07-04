@@ -1,47 +1,58 @@
 //! std/_kernel_jvm/random_host.l — JVM host boundary for java.util.Random (PRNG).
 //!
-//! Mirrors _kernel/random_host.l for the JVM target.
+//! Mirrors _kernel/random_host.l for the JVM target. Pure Lyric over the
+//! JVM auto-FFI (`java.util.Random`) — no `lyric.stdlib.jvm.RandomHost`
+//! shim class (that class never existed at runtime; every function here
+//! was a phantom `@externTarget` stub that panicked with a bytecode
+//! verification error the moment it was actually called — the same
+//! elimination already applied to `time_host.l` / `collections_host.l` /
+//! `file_host.l`, D-progress-543).
+//!
 //! Internal: only Std.Random should import this.
 //!
 //! Package name MUST match the .NET kernel (`Std.RandomHost`) because
 //! the consumer in `std/random.l` does `import Std.RandomHost` regardless
-//! of target.  A previous version of this file declared
-//! `package Std.Random` directly, colliding with the consumer package and
-//! leaving every `Std.Random.*` call on `--target jvm` unresolved.
+//! of target.
 //!
-//! nextIntRange routes through a JVM shim because java.util.Random
+//! nextIntRange routes through a Lyric-level shim because java.util.Random
 //! only exposes `nextInt(bound)` (i.e. [0, bound)); [min, max) is
-//! synthesised as `min + nextInt(max - min)`.
-@axiom("java.util.Random conforms to its documented JDK contracts; lyric.stdlib.jvm.RandomHost wraps a process-wide instance")
+//! synthesised as `min + nextInt(max - min)` — a non-positive `max - min`
+//! throws `IllegalArgumentException` from the JDK call itself, matching
+//! the .NET kernel's "min >= max panics at the boundary" contract.
+@axiom("java.util.Random conforms to its documented JDK contracts")
 package Std.RandomHost
 
 extern type Random = "java.util.Random"
 
-// Returns a shared Random instance (process-wide singleton).
-@externTarget("lyric.stdlib.jvm.RandomHost.shared")
-pub func hostSharedRandom(): Random = ()
+// Process-wide shared instance, matching the .NET kernel's `Random.Shared`.
+val sharedRandom: Random = Random.new()
 
-// java.util.Random(long seed) constructor.
-@externTarget("lyric.stdlib.jvm.RandomHost.make")
-pub func hostMakeRandom(seed: in Int): Random = ()
+pub func hostSharedRandom(): Random {
+  sharedRandom
+}
 
-// java.util.Random.nextInt() — unbounded.
-@externTarget("java.util.Random.nextInt")
-pub func hostNextInt(rng: in Random): Int = ()
+pub func hostMakeRandom(seed: in Int): Random {
+  Random.new(seed.toLong())
+}
 
-// java.util.Random.nextInt(int bound) — [0, max).
-// Negative bound throws IllegalArgumentException at the JVM boundary.
-@externTarget("java.util.Random.nextInt")
-pub func hostNextIntBelow(rng: in Random, max: in Int): Int = ()
+pub func hostNextInt(rng: in Random): Int {
+  rng.nextInt()
+}
 
-// Shim: min + rng.nextInt(max - min).  min >= max panics in the shim.
-@externTarget("lyric.stdlib.jvm.RandomHost.nextIntRange")
-pub func hostNextIntRange(rng: in Random, min: in Int, max: in Int): Int = ()
+/// Random integer in `[0, max)`. Negative `max` panics at the JDK boundary.
+pub func hostNextIntBelow(rng: in Random, max: in Int): Int {
+  rng.nextInt(max)
+}
 
-// java.util.Random.nextLong() — unbounded.
-@externTarget("java.util.Random.nextLong")
-pub func hostNextLong(rng: in Random): Long = ()
+/// Random integer in `[min, max)`. `min >= max` panics at the JDK boundary.
+pub func hostNextIntRange(rng: in Random, min: in Int, max: in Int): Int {
+  min + rng.nextInt(max - min)
+}
 
-// java.util.Random.nextDouble() — [0, 1).
-@externTarget("java.util.Random.nextDouble")
-pub func hostNextDouble(rng: in Random): Double = ()
+pub func hostNextLong(rng: in Random): Long {
+  rng.nextLong()
+}
+
+pub func hostNextDouble(rng: in Random): Double {
+  rng.nextDouble()
+}
