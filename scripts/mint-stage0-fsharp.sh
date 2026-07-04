@@ -108,10 +108,10 @@ local_cache_dir="$(ls -d "$FSCACHE"/lyric-stdlib-*/ 2>/dev/null | head -1)"
 if [[ -z "$local_cache_dir" ]]; then
   echo "FATAL: no F# package cache produced under $FSCACHE" >&2
   echo "contents of \$FSCACHE ($FSCACHE):" >&2
-  ls -la "$FSCACHE" 2>&1 >&2 || true
+  ls -la "$FSCACHE" >&2 2>&1 || true
   echo "contents of \${TMP:-unset} / \${TEMP:-unset}:" >&2
-  ls -la "${TMP:-}" 2>&1 >&2 || true
-  ls -la "${TEMP:-}" 2>&1 >&2 || true
+  ls -la "${TMP:-}" >&2 2>&1 || true
+  ls -la "${TEMP:-}" >&2 2>&1 || true
   die "no F# package cache produced under $FSCACHE"
 fi
 [[ -f "$local_cache_dir/Lyric.Lyric.Cli.dll" ]] || die "Lyric.Lyric.Cli.dll not in F# cache"
