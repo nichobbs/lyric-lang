@@ -21,7 +21,7 @@ func makeConfigBytes(): List[Byte] {
   // Binding: answer = 42 (push 42; lowerWire appends putstatic)
   val answerInsns: List[LInsn] = newList()
   answerInsns.add(LIconst(v = 42))
-  val binding = LWireBinding(name = "answer", valType = JInt, insns = answerInsns)
+  val binding = LWireBinding(name = "answer", valType = JInt, insns = answerInsns, tempSlots = 0)
 
   val bindings: List[LWireBinding] = newList()
   bindings.add(binding)

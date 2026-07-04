@@ -1703,7 +1703,7 @@ func buildWire(
       case WMSingleton(name, ty, init, _) -> {
         val bty = typeExprToJvm(ty, pkgName)
         val initInsns: List[LInsn] = newList()
-        lowerWireBindingInit(
+        val tempSlots = lowerWireBindingInit(
           className,
           bindingTypes,
           pkgName,
@@ -1719,7 +1719,7 @@ func buildWire(
           init,
           bty
         )
-        bindings.add(LWireBinding(name = name, valType = bty, insns = initInsns))
+        bindings.add(LWireBinding(name = name, valType = bty, insns = initInsns, tempSlots = tempSlots))
         if not bindingTypes.containsKey(name) {
           bindingTypes.add(name, bty)
         }
@@ -1727,7 +1727,7 @@ func buildWire(
       case WMLocal(name, tyOpt, init, _) -> {
         val bty = match tyOpt { case Some(t) -> typeExprToJvm(t, pkgName); case None -> JRef(className = "java/lang/Object") }
         val initInsns: List[LInsn] = newList()
-        lowerWireBindingInit(
+        val tempSlots = lowerWireBindingInit(
           className,
           bindingTypes,
           pkgName,
@@ -1743,7 +1743,7 @@ func buildWire(
           init,
           bty
         )
-        bindings.add(LWireBinding(name = name, valType = bty, insns = initInsns))
+        bindings.add(LWireBinding(name = name, valType = bty, insns = initInsns, tempSlots = tempSlots))
         if not bindingTypes.containsKey(name) {
           bindingTypes.add(name, bty)
         }
@@ -1754,7 +1754,7 @@ func buildWire(
         val ifaceName = match iface.kind { case TRef(path) -> lastSegment(path); case _ -> "__bind" }
         val bty = typeExprToJvm(iface, pkgName)
         val initInsns: List[LInsn] = newList()
-        lowerWireBindingInit(
+        val tempSlots = lowerWireBindingInit(
           className,
           bindingTypes,
           pkgName,
@@ -1770,7 +1770,7 @@ func buildWire(
           provider,
           bty
         )
-        bindings.add(LWireBinding(name = ifaceName, valType = bty, insns = initInsns))
+        bindings.add(LWireBinding(name = ifaceName, valType = bty, insns = initInsns, tempSlots = tempSlots))
         if not bindingTypes.containsKey(ifaceName) {
           bindingTypes.add(ifaceName, bty)
         }
@@ -1804,7 +1804,7 @@ func lowerWireBindingInit(
   insns: in List[LInsn],
   init: in Expr,
   expectedTy: in JvmType,
-): Unit {
+): Int {
   // A bare reference to an already-declared binding resolves to a `getstatic`
   // on the wire class; everything else lowers through the normal expression
   // path.
@@ -1818,6 +1818,7 @@ func lowerWireBindingInit(
   if refName != "" and bindingTypes.containsKey(refName) {
     val fty = match mapGet(bindingTypes, refName) { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
     insns.add(LGetstatic(owner = className, name = refName, t = fty))
+    0
   } else {
     // A lambda in a wire-binding initialiser registers its synthesised closure
     // inner class into the package-shared accumulator (#2864), so it emits
@@ -1837,6 +1838,7 @@ func lowerWireBindingInit(
     )
     val ty = lowerExpr(ctx, insns, init)
     coerceArgTo(insns, ty, expectedTy)
+    ctx.slotTicker.count
   }
 }
 
