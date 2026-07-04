@@ -1218,16 +1218,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // (e.g. `Map[Int, V]`) must be boxed before the call.
               val kTy = lowerExpr(ctx, insns, indices[0])
               boxIfNeeded(insns, kTy)
-              val getPs: List[JvmType] = newList()
-              getPs.add(JRef(className = "java/lang/Object"))
-              insns.add(
-                LInvokevirtual(
-                  owner = "java/util/HashMap",
-                  name = "get",
-                  params = getPs,
-                  ret = JRef(className = "java/lang/Object")
-                )
-              )
+              emitMapGet(insns)
               JRef(className = "java/lang/Object")
             } else {
               // List-style indexing via ArrayList.get(int).

@@ -502,13 +502,14 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           JVoid
         }
         case _ -> {
-          // List-style element assignment via ArrayList.set(int, Object). Values
-          // are boxed to Object (the list-element representation).
-          lowerExpr(ctx, insns, indices[0])
-          val vTy = lowerExpr(ctx, insns, value)
-          boxIfNeeded(insns, vTy)
-          emitListSet(insns)
-          JVoid
+          // A well-typed `recv[i] = ...` / `recv[i] op= ...` target always
+          // lowers `recv` to `JArray` or `JRef` (array, List, Map, or String);
+          // any other JVM type here means the front-end accepted an
+          // uncodegen-able index target.  Panic rather than silently apply
+          // List-style AssEq-only codegen, which would drop the operator on
+          // a compound assignment (the same class of bug this file's other
+          // fallback below already guards against).
+          panic("Jvm.Codegen: EIndex assignment target with non-container receiver type")
         }
       }
     }
