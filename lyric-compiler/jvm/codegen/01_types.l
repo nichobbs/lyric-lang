@@ -174,10 +174,14 @@ pub func returnTypeGenericArgsFiltered(retOpt: in Option[TypeExpr], typeParams: 
 
 // True for the bare Lyric primitive-type keywords, whose JVM mapping is
 // package-independent — left as a bare identifier by `eagerlyResolveGenericArg`
-// rather than rewritten to a marker (mirrors `Jvm.Codegen`'s other
-// `isPrimitiveTypeKeyword` in `03_match.l`; duplicated here rather than shared
-// since both files land in the same package and cannot forward-reference).
-func isPrimitiveScalarKeyword(seg: in String): Bool {
+// rather than rewritten to a marker. Defined here (rather than in
+// `03_match.l`, which also uses it for `resolveConcreteTypeExpr`) because
+// `Jvm.Codegen`'s multi-file loader merges these files in name order and a
+// file may only call a function already defined by an earlier-loaded file —
+// `01_types.l` loads before `03_match.l`, so the single definition lives here
+// (#5052; previously duplicated under two names since this file couldn't
+// call forward into `03_match.l`'s copy).
+pub func isPrimitiveTypeKeyword(seg: in String): Bool {
   seg == "Int" or seg == "Long" or seg == "Double" or seg == "Float" or seg == "Bool" or seg == "String" or
     seg == "Char" or
     seg == "Byte" or
@@ -205,7 +209,7 @@ func eagerlyResolveGenericArg(te: in TypeExpr, pkgName: in String, externTypes: 
     case TRef(path) -> {
       if path.segments.count == 1 {
         val seg = path.segments[0]
-        if isPrimitiveScalarKeyword(seg) {
+        if isPrimitiveTypeKeyword(seg) {
           te
         } else {
           val cls = match mapGet(externTypes, seg) {

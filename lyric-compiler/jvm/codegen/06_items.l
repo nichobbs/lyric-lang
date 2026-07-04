@@ -2435,10 +2435,10 @@ pub func collectFileSigsSeeded(
         while mi < decl.members.count {
           match decl.members[mi] {
             case PMEntry(ed) -> {
-              registerInstanceSig(into, protClass, ed.name, ed.params, ed.ret, owner)
+              registerInstanceSig(into, protClass, ed.name, ed.params, ed.ret, owner, externTypes)
             }
             case PMFunc(fn) -> {
-              registerInstanceSig(into, protClass, fn.name, fn.params, fn.ret, owner)
+              registerInstanceSig(into, protClass, fn.name, fn.params, fn.ret, owner, externTypes)
             }
             case _ -> ()
           }
@@ -2457,7 +2457,7 @@ pub func collectFileSigsSeeded(
         while mi < decl.members.count {
           match decl.members[mi] {
             case RMFunc(fn) -> {
-              registerInstanceSigErased(into, recClass, fn.name, fn.params, fn.ret, owner, recTps)
+              registerInstanceSigErased(into, recClass, fn.name, fn.params, fn.ret, owner, recTps, externTypes)
             }
             case _ -> ()
           }
@@ -2473,7 +2473,7 @@ pub func collectFileSigsSeeded(
         while mi < decl.members.count {
           match decl.members[mi] {
             case IMplFunc(fn) -> {
-              registerInstanceSig(into, tgtClass, fn.name, fn.params, fn.ret, owner)
+              registerInstanceSig(into, tgtClass, fn.name, fn.params, fn.ret, owner, externTypes)
             }
             case IMplAssoc(_) -> ()
           }
@@ -2488,14 +2488,18 @@ pub func collectFileSigsSeeded(
         // return mirror the abstract-method emission (`IInterface` arm of
         // `codegenPackageWithSigs`) exactly so the descriptors stay in lockstep.
         val ifClass = owner + "/" + decl.name
+        // Generic type params, so retGenericArgs registration can guard against a
+        // bare reference to the interface's OWN type parameter the same way
+        // `recTps` guards `IRecord` above (#5050).
+        val ifaceTps = genericParamNames(decl.generics)
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
             case IMSig(sig) -> {
-              registerIfaceSig(into, ifClass, sig.name, sig.params, sig.ret, owner, externTypes)
+              registerIfaceSig(into, ifClass, sig.name, sig.params, sig.ret, owner, externTypes, ifaceTps)
             }
             case IMFunc(fn) -> {
-              registerIfaceSig(into, ifClass, fn.name, fn.params, fn.ret, owner, externTypes)
+              registerIfaceSig(into, ifClass, fn.name, fn.params, fn.ret, owner, externTypes, ifaceTps)
             }
             case IMAssoc(_) -> ()
           }
@@ -2512,6 +2516,7 @@ pub func collectFileSigsSeeded(
         // `fieldTokensByName` package-level reverse lookup.
         if decl.hasBody {
           val opqCls = owner + "/" + decl.name
+          val opqTps = genericParamNames(decl.generics)
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
@@ -2529,7 +2534,7 @@ pub func collectFileSigsSeeded(
                       paramDefaults = newList(),
                       paramModes = newList(),
                       isIface = false,
-                      retGenericArgs = returnTypeGenericArgs(Some(f.ty))
+                      retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(Some(f.ty), opqTps), owner, externTypes)
                     )
                   )
                 }
@@ -2600,9 +2605,10 @@ func registerInstanceSig(
   params: in List[Param],
   retOpt: in Option[TypeExpr],
   owner: in String,
+  externTypes: in Map[String, String],
 ): Unit {
   // Non-generic receiver: no type params to erase.
-  registerInstanceSigErased(into, className, methodName, params, retOpt, owner, newList())
+  registerInstanceSigErased(into, className, methodName, params, retOpt, owner, newList(), externTypes)
 }
 
 // As `registerInstanceSig`, but a param/return whose type names one of
@@ -2618,13 +2624,19 @@ func registerInstanceSigErased(
   retOpt: in Option[TypeExpr],
   owner: in String,
   typeParams: in List[String],
+  externTypes: in Map[String, String],
 ): Unit {
   val filteredParams = stripLeadingSelfParam(params)
   // Use holderAwareParamTypes so out/inout params register as JArray(elemTy) in the
   // descriptor, matching the emitted method and the call-site wrapping (#1763).
-  val noExts: Map[String, String] = newMap()
-  val ps = holderAwareParamTypes(filteredParams, owner, true, typeParams, noExts)
-  val ret = match retOpt { case Some(te) -> typeExprToJvmErased(te, owner, typeParams); case None -> JVoid }
+  // Resolves through the declaring file's own `externTypes` (#5051) — a bare
+  // `noExts` here pre-resolved an extern-typed param/return/generic-arg
+  // (`Option[Instant]`) to the in-package guess instead of the real class.
+  val ps = holderAwareParamTypes(filteredParams, owner, true, typeParams, externTypes)
+  val ret = match retOpt {
+    case Some(te) -> typeExprToJvmErasedExtern(te, owner, typeParams, externTypes)
+    case None -> JVoid
+  }
   val paramNames: List[String] = newList()
   val paramDefs: List[Option[Expr]] = newList()
   val modes: List[ParamMode] = newList()
@@ -2647,7 +2659,7 @@ func registerInstanceSigErased(
         paramDefaults = paramDefs,
         paramModes = modes,
         isIface = false,
-        retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, noExts)
+        retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes)
       )
     )
   }
@@ -2667,6 +2679,7 @@ func registerIfaceSig(
   retOpt: in Option[TypeExpr],
   owner: in String,
   externTypes: in Map[String, String],
+  typeParams: in List[String],
 ): Unit {
   val noTps: List[String] = newList()
   val ps = holderAwareParamTypes(params, owner, true, noTps, externTypes)
@@ -2693,7 +2706,11 @@ func registerIfaceSig(
         paramDefaults = pDefs,
         paramModes = pModes,
         isIface = true,
-        retGenericArgs = returnTypeGenericArgs(retOpt)
+        // Resolved eagerly against the DECLARING file's own `owner`/`externTypes`
+        // (#5050), same as `collectFileSigsSeeded`/`registerInstanceSigErased` —
+        // filtered against the interface's OWN generic params first so a bare
+        // `T` isn't mistaken for a resolved type (mirrors the `mapGet` guard).
+        retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes)
       )
     )
   }
