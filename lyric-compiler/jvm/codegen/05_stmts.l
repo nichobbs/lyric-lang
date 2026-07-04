@@ -387,7 +387,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
       }
     }
     case EIndex(recv, indices) -> {
-      // Slice / array / list element assignment: `arr[i] = e`.
+      // Slice / array / list / map element assignment: `arr[i] = e`, `m[k] = e`.
       if indices.count == 0 {
         lowerExpr(ctx, insns, value)
         insns.add(LPop)
@@ -425,14 +425,91 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           }
           JVoid
         }
-        case _ -> {
-          // List-style element assignment via ArrayList.set(int, Object).  Values
-          // are boxed to Object (the list-element representation).
-          lowerExpr(ctx, insns, indices[0])
-          val vTy = lowerExpr(ctx, insns, value)
-          boxIfNeeded(insns, vTy)
-          emitListSet(insns)
+        case JRef(c0) -> {
+          if c0 == "java/util/HashMap" {
+            // `m[k] = e` / `m[k] += e` — key and value are both boxed to
+            // Object (the Map[K, V] erased representation, #1707/m-5).
+            match op {
+              case AssEq -> {
+                val kTy = lowerExpr(ctx, insns, indices[0])
+                boxIfNeeded(insns, kTy)
+                val vTy = lowerExpr(ctx, insns, value)
+                boxIfNeeded(insns, vTy)
+                emitMapPut(insns)
+              }
+              case _ -> {
+                // Compound: stash map + boxed key + RHS to locals, then load
+                // [map, key] TWICE (mirroring the JArray compound-assign
+                // below) so the pair survives under the fetched/combined
+                // value all the way to the final `put` — no reordering needed.
+                val mapSlot = allocSlot(ctx, "__idxasn_map_" + freshLabel(ctx), recvTy)
+                emitStore(insns, mapSlot, recvTy)
+                val kTy = lowerExpr(ctx, insns, indices[0])
+                boxIfNeeded(insns, kTy)
+                val keySlot = allocSlot(ctx, "__idxasn_k_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
+                emitStore(insns, keySlot, JRef(className = "java/lang/Object"))
+                val vTy = lowerExpr(ctx, insns, value)
+                val rhsSlot = allocSlot(ctx, "__idxasn_rhs_" + freshLabel(ctx), vTy)
+                emitStore(insns, rhsSlot, vTy)
+                emitLoad(insns, mapSlot, recvTy)
+                emitLoad(insns, keySlot, JRef(className = "java/lang/Object"))
+                emitLoad(insns, mapSlot, recvTy)
+                emitLoad(insns, keySlot, JRef(className = "java/lang/Object"))
+                emitMapGet(insns)
+                emitUnboxObjectTo(insns, vTy)
+                emitLoad(insns, rhsSlot, vTy)
+                emitCompoundArith(ctx, insns, op, vTy)
+                boxIfNeeded(insns, vTy)
+                emitMapPut(insns)
+              }
+            }
+          } else {
+            match op {
+              case AssEq -> {
+                // List-style element assignment via ArrayList.set(int, Object).
+                // Values are boxed to Object (the list-element representation).
+                lowerExpr(ctx, insns, indices[0])
+                val vTy = lowerExpr(ctx, insns, value)
+                boxIfNeeded(insns, vTy)
+                emitListSet(insns)
+              }
+              case _ -> {
+                // Compound: stash list + index + RHS to locals, then load
+                // [list, idx] TWICE (mirroring the JArray compound-assign
+                // above) so the pair survives under the fetched/combined
+                // value all the way to the final `set` — no reordering needed.
+                val listSlot = allocSlot(ctx, "__idxasn_list_" + freshLabel(ctx), recvTy)
+                emitStore(insns, listSlot, recvTy)
+                lowerExpr(ctx, insns, indices[0])
+                val idxSlot = allocSlot(ctx, "__idxasn_i_" + freshLabel(ctx), JInt)
+                emitStore(insns, idxSlot, JInt)
+                val vTy = lowerExpr(ctx, insns, value)
+                val rhsSlot = allocSlot(ctx, "__idxasn_rhs_" + freshLabel(ctx), vTy)
+                emitStore(insns, rhsSlot, vTy)
+                emitLoad(insns, listSlot, recvTy)
+                emitLoad(insns, idxSlot, JInt)
+                emitLoad(insns, listSlot, recvTy)
+                emitLoad(insns, idxSlot, JInt)
+                emitListGet(insns)
+                emitUnboxObjectTo(insns, vTy)
+                emitLoad(insns, rhsSlot, vTy)
+                emitCompoundArith(ctx, insns, op, vTy)
+                boxIfNeeded(insns, vTy)
+                emitListSet(insns)
+              }
+            }
+          }
           JVoid
+        }
+        case _ -> {
+          // A well-typed `recv[i] = ...` / `recv[i] op= ...` target always
+          // lowers `recv` to `JArray` or `JRef` (array, List, Map, or String);
+          // any other JVM type here means the front-end accepted an
+          // uncodegen-able index target.  Panic rather than silently apply
+          // List-style AssEq-only codegen, which would drop the operator on
+          // a compound assignment (the same class of bug this file's other
+          // fallback below already guards against).
+          panic("Jvm.Codegen: EIndex assignment target with non-container receiver type")
         }
       }
     }
@@ -507,6 +584,52 @@ func emitListSet(insns: in List[LInsn]): Unit {
       owner = "java/util/ArrayList",
       name = "set",
       params = setPs,
+      ret = JRef(className = "java/lang/Object")
+    )
+  )
+  insns.add(LPop)
+}
+
+// Read element at index from an ArrayList: stack [list, index] → [element].
+func emitListGet(insns: in List[LInsn]): Unit {
+  val getPs: List[JvmType] = newList()
+  getPs.add(JInt)
+  insns.add(
+    LInvokevirtual(
+      owner = "java/util/ArrayList",
+      name = "get",
+      params = getPs,
+      ret = JRef(className = "java/lang/Object")
+    )
+  )
+}
+
+// Read the value for a (boxed) key from a HashMap: stack [map, key] → [value].
+// `get` yields `null` for an absent key, matching Java Map semantics.
+func emitMapGet(insns: in List[LInsn]): Unit {
+  val getPs: List[JvmType] = newList()
+  getPs.add(JRef(className = "java/lang/Object"))
+  insns.add(
+    LInvokevirtual(
+      owner = "java/util/HashMap",
+      name = "get",
+      params = getPs,
+      ret = JRef(className = "java/lang/Object")
+    )
+  )
+}
+
+// Associate a (boxed) key with a (boxed) value in a HashMap:
+// stack [map, key, value] → []. `put` returns the previous value, discarded.
+func emitMapPut(insns: in List[LInsn]): Unit {
+  val putPs: List[JvmType] = newList()
+  putPs.add(JRef(className = "java/lang/Object"))
+  putPs.add(JRef(className = "java/lang/Object"))
+  insns.add(
+    LInvokevirtual(
+      owner = "java/util/HashMap",
+      name = "put",
+      params = putPs,
       ret = JRef(className = "java/lang/Object")
     )
   )
