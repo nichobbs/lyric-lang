@@ -1635,6 +1635,10 @@ pub record LWireBinding {
   valType: JvmType
   insns: List[LInsn]
   // push the constructed value; no return insn
+  tempSlots: Int
+  // local-slot count the init expression's own FuncCtx allocated (#5011):
+  // bootstrap()'s max_locals must cover the largest of these, since each
+  // binding's init lowers through a fresh scratch-slot-0 FuncCtx.
 }
 
 // A @provided parameter to the wire's bootstrap() method.
@@ -1897,18 +1901,28 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
   }
 
   // Run remaining bindings (WMSingleton / WMLocal / WMBind etc.).
+  var bsBindingMaxSlots = 0
   for b in w.bindings.toArray() {
     for insn in b.insns.toArray() {
       lowerInsn(insn, bsAsm)
     }
     lowerInsn(LPutstatic(owner = w.className, name = b.name, t = b.valType), bsAsm)
+    if b.tempSlots > bsBindingMaxSlots {
+      bsBindingMaxSlots = b.tempSlots
+    }
   }
   lowerInsn(LReturn, bsAsm)
 
   val bsMaxStack = 3
-  // bsSlot is the total local-slot count after the loop (category-2 types
-  // like Long/Double occupy 2 slots each per JVM spec §4.7.3).
-  val bsMaxLocals = bsSlot
+  // bsSlot is the total local-slot count consumed by @provided params
+  // (category-2 types like Long/Double occupy 2 slots each per JVM spec
+  // §4.7.3).  Each binding's init expression lowers through its own fresh
+  // FuncCtx starting at scratch slot 0 (#5011), so bootstrap()'s max_locals
+  // must also cover the largest such binding's own slot usage — otherwise a
+  // binding whose init allocates temps (e.g. a constructor argument local,
+  // #5003/#5011) emits `istore`s past the declared local variable table
+  // size and trips `Local variable table overflow` at verify time.
+  val bsMaxLocals = if bsSlot > bsBindingMaxSlots { bsSlot } else { bsBindingMaxSlots }
   val bsCode = assembleCode(bsAsm, bsMaxStack, bsMaxLocals)
   val bsAttrs: List[Attribute] = newList()
   bsAttrs.add(bsCode)

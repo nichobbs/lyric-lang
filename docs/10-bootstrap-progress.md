@@ -28237,3 +28237,117 @@ separate undertaking from this slice).
 `native/plan/08-work-items.md` §"Phase N8 (cont'd)",
 `docs/01-language-reference.md` §4.3, `lyric-compiler/lyric/defer_self_test.l`
 (the dotnet/jvm reference test this ports the non-panic cases of).
+
+### D-progress-580 — JVM: constructor calls evaluate arguments before `new; dup`, fixing a stackmap-frame VerifyError for branching arguments (band J4, #5003)
+
+**Shipped.** Closes #5003 (filed from #4982 Finding 3, left untracked when
+that umbrella issue closed). `Ok(mapGet(m, k))` — a branching call
+(`mapGet`'s `containsKey`-gated `Some`/`None` construction) nested directly
+as a union-case constructor argument — `VerifyError`'d on `--target jvm`
+with `Inconsistent stackmap frames`. Reproduced independently of impl-method
+dispatch (a plain top-level function with the same shape crashes
+identically), and independently of `mapGet` specifically (an `if`
+expression whose branches construct different union cases, used directly as
+a constructor argument, reproduces the identical crash).
+
+**Root cause.** `lowerConstruction` (`codegen/04_calls.l`) emitted `new; dup`
+for the outer constructor *before* lowering its arguments. When an argument
+expression has its own internal branches (any intrinsic or expression that
+emits labels/jumps — `mapGet`'s gated construction, an `if`/`match`
+expression), those branches execute while the outer constructor's two
+uninitialized-object stack slots are still present underneath. The
+argument's own StackMapTable is computed assuming an empty stack at its
+branch targets (correct in isolation), so it disagrees with the actual
+runtime stack once an enclosing constructor's `new; dup` sits beneath it —
+an architectural gap affecting *any* branching expression nested as a
+constructor argument, not a `mapGet`-specific bug.
+
+**Fix.** `lowerConstruction` now evaluates every constructor argument into a
+fresh local slot first (lowering each `ordered[i]` expression, coercing, and
+storing to a temp), *then* emits `new; dup; load-each-temp-in-field-order;
+invokespecial`. This guarantees the operand stack is always empty when any
+argument's internal branches execute, regardless of the enclosing
+constructor call. Missing arguments (arity mismatch, defaulted by the type
+checker) still push their benign default directly at the final load stage
+(no side effects, no temp needed).
+
+**Verification.** `map_option_self_test.l`'s previously-failing "impl get()"
+test (the original #4982 Finding 3 repro) is now green; a new general
+(non-`mapGet`) case pins the fix independently. File promoted to dual-target
+CI (was dotnet-only). Full regression sweep against every JVM self-test
+wired into CI (~35 files) — zero regressions; the handful of pre-existing
+failures encountered were all the same, unrelated sandbox limitation
+(`System.Convert.ToSingle` AOT-trimmed, D-progress-543) hit identically
+before this fix. Verified against the pinned F# stage-0 mint.
+
+**Related:** #4982 (the closed umbrella issue Finding 3 was originally filed
+under), #1707 (closed — the JVM parity issue `map_option_self_test.l`'s own
+header used to cite, whose closure didn't cover this interaction), D-progress-
+554/569–575/577 (the rest of this session's #4877/#1707/#4982 JVM-parity
+series), docs/44 m-82.
+
+### D-progress-581 — JVM: `wire { }` block `bootstrap()` under-declared `max_locals` after D-progress-580's constructor-argument fix (caught by CI on PR #5011)
+
+**Shipped.** Follow-up regression fix for D-progress-580/#5011, caught by CI
+(not locally, since the local sandbox's `Convert.ToSingle` AOT-trim,
+D-progress-543, panics before `j3_lowering_self_test.l` reaches this test —
+the `compiler-self-tests-jvm` CI job does not carry that limitation).
+`j3_lowering_self_test.l`'s "wire block resolves the exposed singleton" test
+(`WidgetWire.bootstrap(); WidgetWire.widget()` over `singleton widget: Widget
+= Widget(size = 17)`) started `VerifyError`ing with `Local variable table
+overflow` (`Local index 0 is invalid` at `istore_0`) once D-progress-580
+landed.
+
+**Root cause.** `Jvm.Lowering.lowerWire` (`lowering.l`) computes its
+synthesized `bootstrap()` method's `max_locals` as `bsSlot` — the local-slot
+count consumed by `@provided` parameters only. Each binding's own init
+expression lowers through a **separate, freshly-allocated `FuncCtx`**
+(`lowerWireBindingInit`, `codegen/06_items.l`) whose scratch-slot numbering
+restarts at slot 0, independent of `bsSlot`. Before D-progress-580, no
+binding init ever allocated a local temp (construction was pure `new; dup;
+push-args; invokespecial`, no locals touched), so `bsSlot` — usually `0` for
+a no-`@provided`-param wire — happened to already cover every binding's
+(zero) local usage. D-progress-580 made every constructor argument
+(including a bare literal like `size = 17`) get evaluated into a fresh local
+slot *before* `new; dup`; the first such temp allocates slot 0 in the
+binding's fresh `FuncCtx`, but `bootstrap()`'s declared `max_locals` (still
+just `bsSlot`, e.g. `0`) never grew to cover it — an `istore_0` past a
+zero-sized local variable table trips `Local variable table overflow` at
+verify time.
+
+**Fix.** `lowerWireBindingInit` now returns the binding's own `FuncCtx`'s
+final `ctx.slotTicker.count` (the local-slot count its init expression
+consumed; `0` for the bare-reference `getstatic` fast path). `LWireBinding`
+gained a `tempSlots: Int` field carrying this value; `lowerWire`'s
+`bsMaxLocals` is now `max(bsSlot, max over bindings of binding.tempSlots)`
+instead of `bsSlot` alone — covering whichever is larger, the `@provided`-
+param prologue or the neediest binding's own construction temps. Reusing
+scratch slot 0+ across bindings (and starting fresh per binding rather than
+continuing `bsSlot`'s count) is safe: `@provided` params are `putstatic`'d to
+their fields before any binding lowers, so their argument slots are dead by
+the time binding-init temps reuse them, and bindings never share locals with
+each other (cross-binding references resolve via `getstatic`, not local
+slots).
+
+**Verification.** Minimal standalone repro (`wire WidgetWire { singleton
+widget: Widget = Widget(size = 17); expose widget }`, `WidgetWire.bootstrap();
+WidgetWire.widget()`) reproduced the exact CI `VerifyError` against the
+pre-fix binary and passed clean after the fix, both via `lyric build --target
+jvm` + `java -jar`. Full JVM self-test regression sweep (`map_option_self_test.l`,
+`map_key_self_test.l`, `bitwise_self_test.l`, `aspect_weave_self_test.l`,
+`auto_ffi_jvm_self_test.l`, `subscript_assign_jvm_self_test.l`) — zero
+regressions. Verified against the pinned F# stage-0 mint.
+
+**Scope note.** While constructing regression repros for this fix, found
+wire bindings referencing an *earlier* binding from a **nested** expression
+position (e.g. `contents = widget` as a named constructor argument, rather
+than a bare top-level init) still `VerifyError`s (`Operand stack overflow`)
+— confirmed via code inspection and a stash-baseline check to be a
+pre-existing, unrelated gap in `lowerWireBindingInit`'s `getstatic`
+resolution (which only special-cases a bare top-level `EPath` init, not
+nested references), not a regression from this fix or from D-progress-580.
+Filed as #5013, out of scope for this fix.
+
+**Related:** D-progress-580/#5011 (the fix this regressed), #5003 (root
+issue), #5013 (newly-filed nested-binding-reference gap), docs/44 m-83
+(updated).

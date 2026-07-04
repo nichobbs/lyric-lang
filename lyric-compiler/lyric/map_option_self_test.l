@@ -6,7 +6,22 @@
 //! `Ok(mapGet(data.entries, key))` and `delete()` / `destroy()` mutate via
 //! `.remove(...)`.
 //!
-//! MSIL target only; JVM-target parity is tracked in #1707.
+//! Also pins #5003 (JVM): `Ok(mapGet(...))` — a branching intrinsic call
+//! nested directly as a union-case constructor argument — used to
+//! `VerifyError` ("Inconsistent stackmap frames") on `--target jvm`.
+//! `lowerConstruction` (`codegen/04_calls.l`) previously emitted `new; dup`
+//! for the outer `Ok`/`Some` BEFORE lowering its argument, so `mapGet`'s
+//! internal `containsKey`-gated branch executed with the outer constructor's
+//! two uninitialized-object stack slots still present underneath — its own
+//! StackMapTable (correctly computed assuming an empty stack) then disagreed
+//! with the actual runtime stack shape.  Fixed by evaluating every
+//! constructor argument into a local BEFORE `new; dup`, so any argument's
+//! internal branches always start from an empty stack regardless of the
+//! enclosing constructor call.
+//!
+//! Run on BOTH targets in CI (`compiler-self-tests-dotnet-b` /
+//! `compiler-self-tests-jvm` — MSIL was never affected, this file locks in
+//! parity).
 @test_module
 package Lyric.MapOptionSelfTest
 
@@ -100,5 +115,25 @@ test "impl get() wraps mapGet in Ok(Option[String]); del() removes" {
   match kv.get(s, "a") {
     case Err(_) -> assertTrue(false, "get should be Ok")
     case Ok(opt) -> match opt { case None -> assertTrue(true, "a removed -> None"); case Some(_) -> assertTrue(false, "a should be gone after del") }
+  }
+}
+
+// A general (non-`mapGet`-specific) #5003 repro: an `if` EXPRESSION whose two
+// branches construct DIFFERENT union cases (`Some`/`None`), used directly as
+// a constructor argument to the outer `Ok(...)`.  Exercises the same
+// new-then-branch stack-shape hazard `lowerConstruction`'s fix addresses,
+// without going through the `mapGet` intrinsic at all.
+func makeOptional(present: in Bool, v: in String): Result[Option[String], String] {
+  Ok(if present { Some(value = v) } else { None })
+}
+
+test "if-expression constructing different union cases as a nested constructor argument (#5003)" {
+  match makeOptional(true, "hi") {
+    case Err(_) -> assertTrue(false, "should be Ok")
+    case Ok(opt) -> match opt { case None -> assertTrue(false, "should be Some"); case Some(v) -> assertEqual(v, "hi", "present branch") }
+  }
+  match makeOptional(false, "hi") {
+    case Err(_) -> assertTrue(false, "should be Ok")
+    case Ok(opt) -> match opt { case None -> assertTrue(true, "absent branch"); case Some(_) -> assertTrue(false, "should be None") }
   }
 }

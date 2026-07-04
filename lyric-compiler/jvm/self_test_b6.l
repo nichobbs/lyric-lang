@@ -94,7 +94,12 @@ func makeServicesWire(): LWire {
   val initPs: List[JvmType] = newList()
   counterInsns.add(LInvokespecial(owner = "B6Counter", name = "<init>", params = initPs, ret = JVoid))
 
-  val counterBinding = LWireBinding(name = "counter", valType = JRef(className = "B6Counter"), insns = counterInsns)
+  val counterBinding = LWireBinding(
+    name = "counter",
+    valType = JRef(className = "B6Counter"),
+    insns = counterInsns,
+    tempSlots = 0
+  )
 
   val bindings: List[LWireBinding] = newList()
   bindings.add(counterBinding)

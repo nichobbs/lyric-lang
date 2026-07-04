@@ -1571,21 +1571,46 @@ func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in Str
   val fieldsOpt: Option[List[JvmCaseField]] = mapGet(ctx.caseFields, className)
   match fieldsOpt {
     case Some(fields) -> {
-      insns.add(LNew(className = className))
-      insns.add(LDup)
+      // Evaluate every provided argument into a fresh local BEFORE `new; dup`
+      // (#5003).  An argument expression can itself contain internal
+      // branches/labels whose StackMapTable assumes the operand stack is
+      // empty at entry — the `mapGet` intrinsic's containsKey-gated
+      // Some/None construction is the common case (`Ok(mapGet(m, k))`).  If
+      // `new; dup` ran first, those two uninitialized-object stack slots
+      // would sit underneath the argument's own branch labels, desyncing the
+      // verifier's declared frame from the actual runtime stack shape
+      // ("Inconsistent stackmap frames").  Storing each argument to a local
+      // first guarantees the stack is empty when any such branching argument
+      // lowers, regardless of the enclosing constructor call.
       val ordered = orderCtorArgs(fields, args)
-      val paramTys: List[JvmType] = newList()
+      val argSlots: List[Int] = newList()
       var i = 0
       while i < fields.count {
         val fty = fields[i].ty
-        paramTys.add(fty)
         if i < ordered.count {
           val aTy = lowerCallArg(ctx, insns, ordered[i])
           coerceArgTo(insns, aTy, fty)
+          val slot = allocSlot(ctx, "__ctor_arg_" + freshLabel(ctx), fty)
+          emitStore(insns, slot, fty)
+          argSlots.add(slot)
+        } else {
+          argSlots.add(-1)
+        }
+        i = i + 1
+      }
+      insns.add(LNew(className = className))
+      insns.add(LDup)
+      val paramTys: List[JvmType] = newList()
+      var j = 0
+      while j < fields.count {
+        val fty = fields[j].ty
+        paramTys.add(fty)
+        if argSlots[j] >= 0 {
+          emitLoad(insns, argSlots[j], fty)
         } else {
           pushDefaultValue(insns, fty)
         }
-        i = i + 1
+        j = j + 1
       }
       insns.add(LInvokespecial(owner = className, name = "<init>", params = paramTys, ret = JVoid))
       if jvmClassIsUnionCase(className) {
