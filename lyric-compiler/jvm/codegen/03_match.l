@@ -784,9 +784,15 @@ func isErasedObject(ty: in JvmType): Bool {
 
 // A boxed `Object` is on the stack; if `target` is a primitive whose boxed
 // wrapper we recognise, emit `checkcast <Wrapper>` + the unbox call and return
-// the primitive type.  Otherwise emit nothing and return `JRef(Object)` (the
-// value stays boxed — the caller keeps the current erased behaviour).  Used to
-// recover a generic payload's concrete primitive at a match-bind site (#4877).
+// the primitive type. If `target` is a reference type (a record, union, or
+// interface a generic parameter was instantiated to), emit `checkcast
+// <target>` and return that type — this narrows the erased `Object` payload
+// so a later `s.method()` call on the bound local resolves as a real
+// `invokevirtual`/`invokeinterface` instead of panicking against
+// `java.lang.Object` (#3613). Otherwise (target is itself the unresolved
+// `Object` erasure) emit nothing and return `JRef(Object)` — the value stays
+// boxed, the caller keeps the current erased behaviour. Used to recover a
+// generic payload's concrete type at a match-bind site (#4877, #3613).
 func emitUnboxObjectTo(insns: in List[LInsn], target: in JvmType): JvmType {
   match target {
     case JInt -> {
@@ -829,8 +835,40 @@ func emitUnboxObjectTo(insns: in List[LInsn], target: in JvmType): JvmType {
       insns.add(LInvokevirtual(owner = "java/lang/Byte", name = "byteValue", params = newList(), ret = JByte))
       JByte
     }
+    case JRef(cls) -> {
+      // A generic parameter instantiated to a record/union/interface type
+      // (`Result[Shape, String]`'s `Shape`): narrow the erased `Object` field
+      // read to the real class so instance-method dispatch resolves against
+      // it instead of `java.lang.Object` (#3613). `java/lang/Object` itself
+      // means the scrutinee's instantiation wasn't resolved — skip the
+      // (meaningless) self-cast and stay at the current erased behaviour.
+      if cls == "java/lang/Object" {
+        JRef(className = "java/lang/Object")
+      } else {
+        insns.add(LCheckcast(className = cls))
+        JRef(className = cls)
+      }
+    }
     case _ -> JRef(className = "java/lang/Object")
   }
+}
+
+// Unwrap `TAType` args of a `TGenericApp` into their inner `TypeExpr`s
+// (skipping any `TAValue` const-generic arg, which has no JVM type shape).
+// Used to recover a nested generic instantiation (e.g. `Option[Shape]`'s own
+// `Shape` arg) so a bound name carries its OWN args forward for a later
+// match on it (#3613 nested-match follow-up).
+func typeArgsToTypeExprs(args: in List[TypeArg]): List[TypeExpr] {
+  val result: List[TypeExpr] = newList()
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case TAType(te) -> result.add(te)
+      case TAValue(_) -> ()
+    }
+    i = i + 1
+  }
+  result
 }
 
 func bindCaseField(
@@ -841,6 +879,7 @@ func bindCaseField(
   realName: in String,
   fty: in JvmType,
   concreteTy: in JvmType,
+  concreteTypeExprOpt: in Option[TypeExpr],
   subPat: in Pattern,
 ): Unit {
   match subPat.kind {
@@ -855,6 +894,29 @@ func bindCaseField(
       val boundTy = if isErasedObject(fty) { emitUnboxObjectTo(insns, concreteTy) } else { fty }
       val fSlot = allocSlot(ctx, fname, boundTy)
       emitStore(insns, fSlot, boundTy)
+      // If the field's own concrete type is itself a generic application
+      // (`Result[Option[Shape], String]`'s `Ok` payload is `Option[Shape]`),
+      // record ITS type args against the bound name, so a later `match fname
+      // { … }` recovers `[Shape]` via `scrutineeGenericArgs`'s
+      // `ctx.varGenericArgs` lookup and can checkcast/unbox its own payload
+      // (#3613 nested-match follow-up) instead of staying erased `Object`.
+      match concreteTypeExprOpt {
+        case Some(te) -> {
+          match te.kind {
+            case TGenericApp(_, targs) -> {
+              val inner = typeArgsToTypeExprs(targs)
+              if ctx.varGenericArgs.containsKey(fname) {
+                ctx.varGenericArgs.remove(fname)
+              }
+              if inner.count > 0 {
+                ctx.varGenericArgs.add(fname, inner)
+              }
+            }
+            case _ -> ()
+          }
+        }
+        case None -> ()
+      }
       match innerOpt {
         case Some(inner) -> lowerPatternBind(ctx, insns, inner, fSlot, boundTy, newList())
         case None -> ()
@@ -960,6 +1022,7 @@ func lowerPatternBind(
           // site can unbox it (#4877).  Otherwise leave it as the (erased) field
           // type and the payload stays boxed `Object`.
           var concreteTy: JvmType = JRef(className = "java/lang/Object")
+          var concreteTypeExprOpt: Option[TypeExpr] = None
           match caseInfo {
             case Some(flds) -> {
               if fi < flds.count {
@@ -969,12 +1032,13 @@ func lowerPatternBind(
                 val pIdx = flds[fi].paramIdx
                 if pIdx >= 0 and pIdx < scrutTypeArgs.count {
                   concreteTy = typeExprToJvmExtern(scrutTypeArgs[pIdx], ctx.pkgName, ctx.externTypes)
+                  concreteTypeExprOpt = Some(value = scrutTypeArgs[pIdx])
                 }
               }
             }
             case None -> ()
           }
-          bindCaseField(ctx, insns, castSlot, caseClass, realName, fty, concreteTy, fields[fi])
+          bindCaseField(ctx, insns, castSlot, caseClass, realName, fty, concreteTy, concreteTypeExprOpt, fields[fi])
           fi = fi + 1
         }
         insns.add(LNop)
@@ -999,7 +1063,7 @@ func lowerPatternBind(
                   case Some(t) -> t
                   case None -> JRef(className = "java/lang/Object")
                 }
-                bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, fty, subPat)
+                bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, fty, None, subPat)
               }
               case RPFShort(fieldName, _) -> {
                 // `Point{x}` binds local `x` to field `x`.

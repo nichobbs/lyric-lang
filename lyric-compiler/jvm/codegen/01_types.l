@@ -142,6 +142,36 @@ pub func returnTypeGenericArgs(retOpt: in Option[TypeExpr]): List[TypeExpr] {
   }
 }
 
+// Filters `returnTypeGenericArgs`'s result against a function's OWN generic
+// parameter names (#3613 follow-up). A truly generic function's declared
+// return-type args are the type PARAMETERS themselves (`func mapGet<K, V>(…):
+// Option[V]` → `[V]`), not a concrete instantiation — the caller's inferred
+// substitution is not visible from the declared signature alone, so trusting
+// a bare parameter name as if it were a resolved type produces a bogus
+// in-package class reference at a match-bind site (e.g. checkcasting to a
+// nonexistent "V" class). When any returned arg is a bare reference to one of
+// `typeParams`, the whole result is unusable — bail to empty so the payload
+// stays boxed (the safe, pre-#3613 fallback) instead of narrowing to garbage.
+pub func returnTypeGenericArgsFiltered(retOpt: in Option[TypeExpr], typeParams: in List[String]): List[TypeExpr] {
+  val raw = returnTypeGenericArgs(retOpt)
+  if typeParams.count == 0 {
+    return raw
+  }
+  var i = 0
+  while i < raw.count {
+    match raw[i].kind {
+      case TRef(path) -> {
+        if path.segments.count == 1 and listContainsStr(typeParams, path.segments[0]) {
+          return newList()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  raw
+}
+
 // True when a JVM class name denotes a union case (`Pkg/Union$Case`) rather
 // than a record (`Pkg/Point`) — union cases are nested with a `$` separator.
 pub func jvmClassIsUnionCase(cls: in String): Bool {
