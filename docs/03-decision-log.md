@@ -8025,6 +8025,116 @@ bypass, the prior art this issue's own theory drew from), D-progress-543
 (`[workspace]` design).
 
 ---
+
+## D-progress-556 — `Std.Core`'s `Option`/`Result`/`Some`/`None`/`Ok`/`Err` never resolved at use-site outside the monorepo checkout; installed releases never shipped the raw stdlib source the typechecker needed (#4980)
+
+**Context.** Issue #4980 reported that after #4925/#4955 fixed the
+`InvalidCastException` crash, `lyric build` got further but immediately hit
+a second bug: a plain `import Std.Core` never errored, but any actual use
+of `Option[T]`, `Result[T, E]`, or their constructors `Some`/`None`/`Ok`/`Err`
+failed with `T0010 unknown type name` / `T0020 unknown name`, in both a
+minimal standalone repro and a real downstream project
+(`nichobbs/cloud-agents`). Fully-qualified access
+(`Std.Core.Result[Int, String]`) failed identically. True compiler builtins
+(`println`, `slice[T]`, `String` methods, arithmetic) always resolved fine —
+only types actually *declared* in `lyric-stdlib/std/core.l` were affected.
+
+**Root cause.** `Lyric.Emitter.findStdlibSourcesForTarget` (the function
+behind both `emitProjectInProcess` and the single-file `emitMsilInProcess`
+compile paths) locates `lyric-stdlib/std/` by walking up from the running
+binary's directory or the CWD looking for that literal directory name, then
+reads its raw `.l` source text so the typechecker can register `Std.*`'s
+declared types. When neither walk finds a hit, it silently returns an empty
+source list — the typechecker never sees `Option`/`Result` at all, but
+`import Std.Core` itself has nothing to validate against, so it never
+errors either. Every real installed release (`bootstrap/publish/<rid>/`
+tarballs, the NuGet global tool, and the downstream project's own repo)
+ships *only* the compiled `lib/Lyric.Stdlib.dll` bundle — never the raw
+`lyric-stdlib/std/` tree the walk needs. `docs/34-distribution-strategy.md`
+§4 had always documented a "source fallback… included in all distribution
+archives" as the safety net for exactly this case, but neither the
+`tar.gz`/`zip` archive step nor the NuGet `dotnet pack` step in
+`publish.yml`/`Lyric.Cli.Aot.csproj` ever actually copied that source tree
+in — the promised fallback was undocumented-vaporware, not a regression.
+The bug was invisible in every previous release because #4925's crash fired
+first on any non-workspace project; it was also invisible in this repo's
+own CI and dev loop, because a locally-built `lyric` binary's directory (or
+the dev shell's CWD) always sits inside the monorepo checkout, so the walk
+always finds the real `lyric-stdlib/std/` regardless of the packaging gap.
+The existing publish smoke test (`printf 'import Std.Core...'` in
+`publish.yml`) never caught this either: it imports `Std.Core` but never
+actually references `Option`/`Result`, so it hit the exact same
+never-errors-on-plain-import blind spot the issue itself flagged.
+
+**Decision.** Rather than start shipping the raw stdlib source tree in
+every release archive (docs/34's originally-promised fix), reuse the
+compiled-bundle-driven contract-metadata machinery `Lyric.RestoredPackages`
+already built for restored NuGet/workspace dependencies: every compiled
+Lyric assembly — including `Lyric.Stdlib.dll` itself — embeds a
+`Lyric.Contract.<Pkg>` resource per bundled package (docs/45), and stdlib
+items are always resolved at codegen as cross-assembly references into the
+compiled DLL rather than re-emitted (`registerStdlibArtifactTokens`), so a
+declaration-only reconstruction is sufficient — no function bodies, no
+re-typecheck round-trip needed. Added
+`Lyric.Emitter.stdlibSourcesFromCompiledBundle()`: when
+`findStdlibSourcesForTarget`'s raw-source walk comes up empty (the
+`.NET`/MSIL target only — see the JVM caveat below), it locates the
+already-copied-beside-the-binary `lib/Lyric.Stdlib.dll` via the existing
+`findCompiledStdlibDir()`, loads its per-package contracts through
+`Lyric.RestoredPackages.loadRestoredPackage`, and calls
+`RP.synthesiseSource(contract, <empty preamble>)` per package to produce
+the same `List[String]` shape `collectStdlibPackages` already expects.
+
+The first implementation passed each artifact's *sibling*-type preamble
+(`siblingTypeDecls`, the helper `emitProjectInProcess` already uses for
+restored NuGet deps) into `synthesiseSource`, mirroring
+`Lyric.RestoredPackages.synthesiseArtifact`'s validation step. That was
+wrong here: `synthesiseArtifact`'s preamble is a *standalone re-typecheck
+aid* that gets stripped back out before the artifact is stored
+(`ownSrc = synthesiseSource(art.contract, emptyPreamble())`), whereas every
+stdlib package is fed to the typechecker *together* in one
+`importedPkgs` pass, so cross-package references already resolve against
+the real sibling artifact. Keeping the preamble caused a manual repro
+regression: `Std.Collections` (which references `Option[T]` in its own
+signatures) got a second, case-less stub `pub union Option[T] {}` registered
+under its own package alongside `Std.Core`'s real one, and
+`symTableTryFindOne`'s last-registered-wins scan silently picked whichever
+copy loaded later — surfacing as `T0065 returned value of type Option[Int]
+does not match declared return type Option[Int]` (same printed name, two
+distinct declarations). Fixed by passing an empty preamble.
+
+**JVM caveat.** `Lyric.ContractMeta.readAllContractsFromFile` reads
+`Lyric.Contract.<Pkg>` resources via the metadata-direct PE reader
+(`Msil.MetadataReader`), which only understands the `.NET` CLI/PE format.
+There is no JAR-side equivalent, so a `--target jvm` build with no reachable
+raw source tree still degrades to the pre-existing empty-list behaviour.
+Filed as #4994 rather than solved here, to keep this fix scoped to the
+reported `.NET`-target bug.
+
+**Coverage.** Manually reproduced the exact issue repro (`Option[Int]` /
+`Result[Int, String]` returning `find`/`divide` functions) against a
+"fake install" — the freshly built `./bin/lyric` binary plus its
+`Lyric.Stdlib*.dll` copied into an isolated temp directory outside the
+repo, run against a project also outside the repo, with `LYRIC_STD_PATH`
+unset — confirming the exact `T0010`/`T0020` failures before the fix and a
+clean build + correct runtime output (`found 5` / `not found` / `ok 5` /
+`err div by zero`) after. Verified the normal in-repo (raw-source) path is
+unaffected by re-running the same repro directly against the monorepo
+checkout. Added a regression test,
+`"stdlib types reconstruct from compiled bundle contract metadata"` in
+`msil_project_bridge_self_test.l` (run in CI via native `lyric test`),
+that calls `Emitter.stdlibSourcesFromCompiledBundle()` directly and asserts
+`Std.Core`'s `Option`/`Result` unions are present in the reconstructed
+source — exercised directly rather than by hiding the raw source tree,
+since this test's own process CWD and app-base directory both sit inside
+the checkout, making the fallback unreachable end-to-end from within it.
+
+**Related:** #4925/#4955 (the crash this bug was hidden behind), #4994
+(tracked JVM-target follow-up), docs/34-distribution-strategy.md §4
+(stdlib distribution forms), docs/45-contract-metadata-direct-resolution.md
+(the contract-metadata mechanism this fix reuses).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
