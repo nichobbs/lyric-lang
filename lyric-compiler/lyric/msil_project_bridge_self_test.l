@@ -859,11 +859,7 @@ test "generic @externTarget with List[Byte] and List[T] signatures compile and P
   assertEqual(Str.trim(result.stdout), "0", "generic_list_byte_return: PE loads and main runs")
 }
 
-// ─── Regression: @externTarget property getter emits with 'get_' prefix (#3841) ──
-// `@externTarget("System.Environment.MachineName")` on a zero-arg func with a
-// non-Unit return used to emit a MemberRef for the literal member name
-// (`System.Environment.MachineName()`) instead of the CLR-required
-// `get_MachineName()` accessor, producing MissingMethodException at runtime.
+// Regression for #3841: a property-getter @externTarget used to emit the literal member name instead of the CLR-required `get_` accessor, producing MissingMethodException.
 test "externTarget property getter resolves with get_ prefix" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(

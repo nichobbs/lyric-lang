@@ -109,9 +109,7 @@ if [[ -z "$local_cache_dir" ]]; then
   echo "FATAL: no F# package cache produced under $FSCACHE" >&2
   echo "contents of \$FSCACHE ($FSCACHE):" >&2
   ls -la "$FSCACHE" >&2 2>&1 || true
-  echo "contents of \${TMP:-unset} / \${TEMP:-unset}:" >&2
-  [[ -n "${TMP:-}" ]] && { ls -la "$TMP" >&2 2>&1 || true; }
-  [[ -n "${TEMP:-}" ]] && { ls -la "$TEMP" >&2 2>&1 || true; }
+  echo "NOTE: TMP/TEMP were set to $FSCACHE for run_fs above (inline env vars — not visible in this outer shell)" >&2
   die "no F# package cache produced under $FSCACHE"
 fi
 [[ -f "$local_cache_dir/Lyric.Lyric.Cli.dll" ]] || die "Lyric.Lyric.Cli.dll not in F# cache"
