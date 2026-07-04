@@ -35,8 +35,12 @@ pub func hostMakeRandom(seed: in Int): Random {
   Random.new(seed.toLong())
 }
 
+// java.util.Random.nextInt() returns the full signed 32-bit range, but
+// Std.Random.nextInt's documented contract is "non-negative" (matching
+// .NET's System.Random.Next(), which is always [0, Int32.MaxValue)) — mask
+// off the sign bit rather than returning the raw (possibly negative) value.
 pub func hostNextInt(rng: in Random): Int {
-  rng.nextInt()
+  rng.nextInt().and(2147483647)
 }
 
 /// Random integer in `[0, max)`. Negative `max` panics at the JDK boundary.
