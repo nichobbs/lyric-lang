@@ -25583,6 +25583,17 @@ links the self-hosted DLLs (D-progress-531: 101/101 DLLs byte-for-byte
 reproducible at the stage-3 fixpoint).  The released binary contains code
 emitted exclusively by the self-hosted Lyric compiler.
 
+**Bootstrap seed cutover (stage-0): still minting by default — attempted and
+reverted, see D-progress-594.**  #4387 (above) is about which artifact
+*ships*; it says nothing about how stage-0 (the untrusted seed used to
+bootstrap stage 1) is acquired.  `ci.yml`/`bench.yml` still hard-code
+`LYRIC_BOOTSTRAP_MINT=1` and `publish.yml`'s `mint_stage0` input still
+defaults to `true`.  Issue #3936 tracks flipping this now that the release
+binary's two known corruption bugs are fixed (#3988), but D-progress-594
+found a third, real regression (a v0.4.14-seed-specific miscompile of
+`Jvm.Kernel.dblToSingle`) that only a download-seeded stage 1 running the
+full JVM self-test suite surfaces — #3936 remains open, blocked on #5094.
+
 ### D-progress-532 — `[build] kind = "exe"`: native apphost launcher emission
 
 `lyric build` on the .NET target now produces a directly-runnable native
@@ -29067,3 +29078,73 @@ is abandoned at process exit (documented in D-N-022's semantics note).
 **Related:** D-N-022 (the decision entry), D-progress-583/D-N-021 (the
 gate this opens), `native/plan/06-async-design.md` (status header
 documents shipped-vs-sketch deltas), `lyric-rt/test/lyric_rt_test.c`.
+
+### D-progress-594 — Attempted bootstrap seed cutover (#3936): sandbox verification passed, real CI caught a genuine v0.4.14-seed-only regression; reverted, filed #5094
+
+**Status:** Attempted and reverted. #3936 remains open and blocked.
+
+**Context.** `scripts/bootstrap.sh`'s stage-0 seed can be acquired two ways:
+download the latest published self-hosted release, or mint the historical F#
+bootstrap compiler from git history. `ci.yml`/`bench.yml` hard-coded
+`LYRIC_BOOTSTRAP_MINT=1` and `publish.yml`'s `mint_stage0` input defaulted to
+`true`, because the previously published release binary mis-emitted `>64 KB`
+string-heap indices and generic-union-case TypeRef arity suffixes (fixed in
+#3988). Every release since v0.4.5 is built from post-fix source, so #3936
+tracks re-verifying and flipping the default.
+
+**What was attempted.** In an isolated sandbox (GitHub API access was
+proxy-restricted there, so `LYRIC_BOOTSTRAP_VERSION=0.4.14` pinned the
+version, skipping the API lookup but exercising the same asset-download code
+path CI uses): `LYRIC_BOOTSTRAP_MINT=0 ./scripts/bootstrap.sh --stage 1`
+against v0.4.14 built cleanly (`Lyric.Cli.Program` resolved — the exact
+previously-broken symptom — and `examples/fizzbuzz.l` / `examples/ffi_bcl.l`
+ran correctly), and `--stage 3` held the full reproducibility fixpoint
+(109/109 DLLs byte-for-byte reproducible). On that evidence,
+`LYRIC_BOOTSTRAP_MINT` was dropped from `ci.yml`/`bench.yml` and
+`publish.yml`'s `mint_stage0` default flipped to `false` in PR #5090.
+
+**What real CI caught.** Neither the stage-1 smoke test nor the stage-3
+fixpoint exercises the JVM target. CI's `compiler-self-tests-jvm` job failed:
+multiple JVM self-tests (`pattern_lowering_self_test.l`,
+`silent_miscompile_guard_jvm_self_test.l`, J3-lowering, NaN-comparison,
+`lyric-resilience`'s JVM suite) crashed with
+`MissingMethodException: Method not found: 'System.Single
+System.Convert.ToSingle(Double)'` in `Jvm.Kernel.Program.dblToSingle`
+(`@externTarget("System.Convert.ToSingle")` in
+`lyric-compiler/jvm/_kernel/kernel.l`), `Aborted (core dumped)`, exit 134.
+
+Reproduced locally and narrowed the cause: `lyric test --target jvm
+lyric-compiler/lyric/pattern_lowering_self_test.l` against **stage 1**
+(compiled directly by the v0.4.14 seed) crashes with the exact exception
+above; the same test against **stage 2** (the self-hosted compiler
+recompiling itself + the full stdlib from current source, using v0.4.14 only
+as the initial seed) passes 17/17. So current source's self-hosted MSIL
+emitter correctly compiles this `@externTarget` binding when it self-hosts —
+the defect is in what v0.4.14's *own compiled emitter logic* does when used
+directly as the compiling tool for stage 1, a third, previously-undiscovered
+seed-binary bug distinct from the two #3988 already fixed.
+`rewrite-corelib-refs.fsx`'s log showed no facade-mapping warnings for this
+run, pointing away from the CoreLib-facade-retargeting step and toward the
+MemberRef signature v0.4.14 itself emits for this overload — the exact
+defect in v0.4.14's emitter was not located.
+
+**Why the sandbox verification wasn't enough.** CI's self-test jobs run
+against **stage 1** (built directly by the stage-0 seed), not stage 2. Any
+residual self-hosted-emitter bug in a published release — even one already
+fixed in current source, if no newer release has been cut carrying the fix —
+corrupts stage 1 the moment that release is used as a download seed.
+Verifying "the download path works" therefore requires running the full
+self-test suite CI runs, both `--target dotnet` and `--target jvm`, against
+a download-seeded stage 1 — not a stage-1 smoke test plus a
+`--target dotnet`-only stage-3 reproducibility check.
+
+**What shipped:** nothing behavioral. PR #5090's `ci.yml`/`bench.yml`/
+`publish.yml`/`Makefile`/`scripts/bootstrap.sh` changes were reverted; this
+entry and #5094 are the net result. `LYRIC_BOOTSTRAP_MINT=1` /
+`mint_stage0: true` remain the CI/publish defaults.
+
+**Related:** #3936 (the cutover this blocks, left open), #3988 (the two
+previously-known bugs this is distinct from), #4004 (flags #3988's fix as
+manually-verified-only with no automated regression test — same
+full-suite-coverage gap this entry's finding closes the case for), #5094
+(the new issue with full repro + proposed resolution paths), PR #5090.
