@@ -984,21 +984,29 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   (`Lyric.Web`) built on `Std.Http` (D-progress-223 / D057).
 - `lyric-mq/` — `lyric-mq` library: transport-agnostic message queue
   (`Lyric.Mq`). RabbitMQ, Azure Service Bus, SQS, and Kafka via feature
-  flags; `MessageQueue`/`QueueConsumer`/`DeadLetterStore` interfaces;
-  `Idempotent` and `DeadLetter` aspect templates; .NET and JVM kernel
-  boundaries.
+  flags — **only the in-process `inmemory` backend is actually
+  implemented today (`dotnet` only); the four named brokers are
+  declared but return `NOT_IMPLEMENTED`/no-op on both targets, see
+  `lyric-mq/README.md`**; `MessageQueue`/`QueueConsumer`/`DeadLetterStore`
+  interfaces; `Idempotent` and `DeadLetter` aspect templates; .NET and
+  JVM kernel boundaries.
 - `lyric-jobs/` — `lyric-jobs` library: background job scheduling
-  (`Lyric.Jobs`). Hangfire and Quartz.NET backends; `JobHandler`/
-  `JobScheduler` interfaces; `InProcessJobScheduler` for tests;
-  `Retryable` and `Timed` aspects.
+  (`Lyric.Jobs`). Hangfire and Quartz.NET backends — **`InProcessJobScheduler`
+  is real on both targets; Hangfire/Quartz.NET are `NOT_IMPLEMENTED` on
+  `dotnet`, but genuinely implemented via Quartz Scheduler on `jvm`, see
+  `lyric-jobs/README.md`**; `JobHandler`/`JobScheduler` interfaces;
+  `InProcessJobScheduler` for tests; `Retryable` and `Timed` aspects.
 - `lyric-mail/` — `lyric-mail` library: email sending (`Lyric.Mail`).
   SMTP (MailKit), Amazon SES, and SendGrid providers; typed
   `EmailMessage`/`EmailAddress`/`Attachment`; `sendSimple`/`sendHtml`
   helpers.
 - `lyric-storage/` — `lyric-storage` library: object storage
-  (`Lyric.Storage`). S3, Azure Blob, and local filesystem backends;
-  `StorageBucket` interface with put/get/delete/list/presignedUrl/exists;
-  `AuditAccess` and `ValidateKey` aspects.
+  (`Lyric.Storage`). S3, Azure Blob, and local filesystem backends —
+  **only local filesystem is production-ready on either target; S3 and
+  Azure Blob return `NOT_IMPLEMENTED` pending native SDK bindings, see
+  `lyric-storage/README.md`**; `StorageBucket` interface with
+  put/get/delete/list/presignedUrl/exists; `AuditAccess` and
+  `ValidateKey` aspects.
 - `lyric-auth/` — `lyric-auth` library: transport-agnostic authentication
   (`Auth`). JWT verification (`verifyJwt`) with algorithm pinning (RFC 8725
   §3.1; prevents alg=none forgery and HS256/RS256 confusion); claim extraction
@@ -1026,7 +1034,10 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   cookie name, SameSite, Secure, HttpOnly).
 - `lyric-search/` — `lyric-search` library: search engine integration
   (`Lyric.Search`). Elasticsearch (Elastic.Clients.Elasticsearch) and
-  Meilisearch backends; `SearchClient` interface with index/search/
+  Meilisearch backends — **real kernel-level bindings exist for both on
+  both targets, but the public `Search` API never calls them yet
+  (issue #5067), so neither is reachable today, see
+  `lyric-search/README.md`**; `SearchClient` interface with index/search/
   suggest/delete/createIndex.
 - `lyric-feature-flags/` — `lyric-feature-flags` library: runtime feature
   toggles (`Lyric.Flags`). In-process and remote (HTTP polling) stores;
