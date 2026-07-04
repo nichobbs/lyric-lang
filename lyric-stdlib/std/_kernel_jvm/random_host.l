@@ -43,7 +43,10 @@ pub func hostNextInt(rng: in Random): Int {
   rng.nextInt().and(2147483647)
 }
 
-/// Random integer in `[0, max)`. Negative `max` panics at the JDK boundary.
+/// Random integer in `[0, max)`. `max <= 0` panics at the JDK boundary
+/// (`java.util.Random.nextInt(bound)` requires `bound > 0`) — a narrower
+/// precondition than the .NET kernel's `System.Random.Next(max)`, which
+/// accepts `max == 0` and returns `0` without throwing.
 pub func hostNextIntBelow(rng: in Random, max: in Int): Int {
   rng.nextInt(max)
 }
