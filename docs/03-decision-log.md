@@ -9509,9 +9509,12 @@ returned task (refined across review rounds #5141, #5143, #5145):
   **is** flagged (#5145); likewise a `spawn` ending a branch of an `if`/
   `match` used as a non-trailing statement (its value is thrown away).
 - The walk covers `IFunc`, record/exposed-record members, interface
-  (`IMFunc`) and impl (`IMplFunc`) method bodies, **and protected-type
-  `entry`/`func` bodies (`PMEntry`/`PMFunc`)** (#5143) — a superset of
-  `checkAwaitInTry`'s coverage.
+  (`IMFunc`) and impl (`IMplFunc`) method bodies, protected-type
+  `entry`/`func` bodies (`PMEntry`/`PMFunc`) (#5143), **aspect `around`
+  advice** (spliced into real functions during weaving, which runs *after*
+  mode checking and is never re-checked, so a fire-and-forget there would
+  otherwise escape — #5158), and `test`/`property`/`fixture` bodies
+  (#5159) — a superset of `checkAwaitInTry`'s coverage.
 
 `scope` and lambda boundaries are tracked — a lambda body starts a fresh
 out-of-scope, value-position context because a lambda may outlive the
@@ -9527,15 +9530,18 @@ pass and mirroring its exhaustive expr/stmt walk. Skipped for `@axiom` and
 `@proof_required` files (the latter already reject `spawn` via V0002, so
 V0014 would double-report).
 
-**Verification.** Eleven `spawn` cases in `modechecker_self_test.l` (58/58
-pass): non-trailing spawn outside scope → V0014; trailing spawn in value
-position → none (#5141); spawn bound + awaited → none; `await spawn` →
-none; non-trailing spawn inside a `scope` → none; non-trailing dropped
+**Verification.** Fifteen `spawn` cases in `modechecker_self_test.l`
+(62/62 pass): non-trailing spawn outside scope → V0014; trailing spawn in
+value position → none (#5141); spawn bound + awaited → none; `await spawn`
+→ none; non-trailing spawn inside a `scope` → none; non-trailing dropped
 spawn in a lambda → V0014; discarded spawn in an impl method → V0014
 (#5143); trailing spawn in a loop body → V0014 (#5145); spawn in a
 non-trailing `if` branch → V0014 (#5145); spawn in a value-position `if`
-branch → none; discarded spawn in a protected `entry` → V0014 (#5143).
-End-to-end via `./bin/lyric build` on both `--target dotnet` and
+branch → none; discarded spawn in a protected `entry` → V0014 (#5143);
+spawn in a value-position `try`/`catch` → none and a trailing spawn in a
+non-value `try` body → V0014 (#5148); discarded spawn in an aspect
+`around` body → V0014 (#5158); discarded spawn in a `test` body → V0014
+(#5159). End-to-end via `./bin/lyric build` on both `--target dotnet` and
 `--target jvm` (V0014 fires identically — it is a shared front-end check).
 Regression: `async_sm_self_test.l` (57/57, including the Phase-4 spawn
 tests) passes unchanged; no existing spawn usage is newly rejected.

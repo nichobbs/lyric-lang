@@ -2365,6 +2365,21 @@ func checkEntryForSpawn(entryDecl: in EntryDecl, diag: in List[Diagnostic]): Uni
   walkBodyForSpawn(ctx, entryDecl.body)
 }
 
+// An aspect `around` body is spliced into every matched function during
+// weaving — which runs *after* mode checking and is never re-checked — so a
+// discarded `spawn` in the advice must be caught here (#5158).  The advice
+// body produces the wrapped call's result, so it is a value-position block.
+func checkAspectForSpawn(decl: in AspectDecl, diag: in List[Diagnostic]): Unit {
+  match decl.around {
+    case Some(a) -> {
+      val ctx = SpawnCtx(fnName = "aspect " + decl.name, inScope = false, diag = diag)
+      walkBlockForSpawn(ctx, true, a.body)
+    }
+    case None -> {
+    }
+  }
+}
+
 func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel, diag: in List[Diagnostic]): Unit {
   // Proof-required functions already reject `spawn` outright (V0002); axiom
   // bodies are exempt from mode checks.  Skip both to avoid overlap.
@@ -2421,6 +2436,23 @@ func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel,
           }
           mi = mi + 1
         }
+      }
+      case IAspect(decl) -> checkAspectForSpawn(decl, diag)
+      case ITest(decl) -> {
+        // A `test { }` body is executed by `lyric test`; its trailing value is
+        // discarded, so a trailing spawn there is fire-and-forget (#5159).
+        val ctx = SpawnCtx(fnName = "test " + decl.title, inScope = false, diag = diag)
+        walkBlockForSpawn(ctx, false, decl.body)
+      }
+      case IProperty(decl) -> {
+        val ctx = SpawnCtx(fnName = "property " + decl.title, inScope = false, diag = diag)
+        walkBlockForSpawn(ctx, false, decl.body)
+      }
+      case IFixture(decl) -> {
+        // A fixture's init is a value-position expression (it produces the
+        // fixture value); a discarded spawn can still hide in a block within it.
+        val ctx = SpawnCtx(fnName = "fixture " + decl.name, inScope = false, diag = diag)
+        walkExprForSpawn(ctx, true, decl.init)
       }
       case _ -> {
       }

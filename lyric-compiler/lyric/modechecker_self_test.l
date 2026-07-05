@@ -232,6 +232,21 @@ test "trailing spawn in a non-value try body is V0014" {
   assertTrue(hasDiagCode(result, "V0014"), "trailing spawn in non-value try body: V0014")
 }
 
+test "discarded spawn in an aspect around body is V0014" {
+  // #5158: aspect `around` advice is spliced into real functions during weaving
+  // (after mode checking), so a fire-and-forget spawn there must be caught here.
+  val src = "package P\naspect A {\n  matches: name like \"f*\"\n  around(args) -> ret {\n    spawn g()\n    proceed(args)\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in aspect around: V0014")
+}
+
+test "discarded spawn in a test body is V0014" {
+  // #5159: `test { }` bodies are executed code and their value is discarded.
+  val src = "package P\ntest \"t\" {\n  spawn g()\n  val done = 1\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in test body: V0014")
+}
+
 test "unsafe allowed no error" {
   val src = "@proof_required(unsafe_blocks_allowed)\npackage P\nfunc f(): Unit { unsafe { } }\n"
   val result = parseCheck(src)
