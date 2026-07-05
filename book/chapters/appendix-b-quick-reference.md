@@ -846,7 +846,9 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # calls await in place; spawn holds the task for a later
                                        # await; spawned tasks genuinely interleave;
                                        # Std.Time.sleepMillis in an async body suspends only the
-                                       # calling task); scope { } as a real lexical scope;
+                                       # calling task; Std.Process.runCapture captures without
+                                       # blocking other tasks, timeoutMs honored); scope { } as a
+                                       # real lexical scope;
                                        # defer (normal-exit paths: fall-off, return,
                                        # break, continue); raw FFI
                                        # (NativePtr[T], nativeAddrOf, nativeNullPtr,

@@ -107,7 +107,10 @@ extern func rtMonoNanos(): Long = "lyric_monotonic_nanos"
 /// `timeoutMs` means no timeout.
 @unsafe_ffi
 pub async func hostRunCaptureListAsync(
-  executable: in String, args: in List[String], stdinContent: in String, timeoutMs: in Int
+  executable: in String,
+  args: in List[String],
+  stdinContent: in String,
+  timeoutMs: in Int,
 ): Result[ProcessCaptureResult, String] {
   if stdinContent.length > 0 {
     return Err(error = "the native process runner does not support writing to the child's stdin yet (issue #4752)")

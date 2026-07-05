@@ -5684,6 +5684,91 @@ model), D-N-003 (panics abort; no cancellation machinery),
 `native/plan/06-async-design.md` (the coroutine mechanism realized
 here), `lyric-rt/src/lyric_async.c`, `lyric-compiler/lyric/llvm_codegen.l`.
 
+## D-N-023 — The first async I/O leaf: `Std.Process.runCapture` inside a coroutine drives a nonblocking capture op through the sleep leaf (no new stdlib surface, timeout honored)
+
+**Date:** 2026-07-05
+**Status:** Accepted
+
+**Context.** D-N-022 shipped real native async with one leaf
+(`Std.Time.sleepMillis`) and deferred async I/O. The highest-value I/O
+operation already in the cross-target surface is
+`Std.Process.runCapture`: on native its kernel seam made one blocking C
+call (`lyric_process_run`), so a coroutine capturing a subprocess
+stalled the entire scheduler for the child's whole lifetime — and the
+sync seam ignores `timeoutMs` outright (#4752).
+
+**Decision — a pump loop over the existing sleep leaf, not scheduler
+fd-readiness.** The JVM kernel twin already drains its process pipes on
+a documented 1 ms polling cadence; the native async seam adopts the
+same idiom. `lyric-rt` gains a nonblocking capture op
+(`lyric_process_start` / `_pump` / `_kill` / accessors / `_free` over
+the same fork/execvp spawn path as the sync runner, with `O_NONBLOCK`
+pipe read ends and a `WNOHANG` reap), and the native kernel twin gains
+`Std.ProcessCaptureHost.hostRunCaptureListAsync`: an `async func` that
+starts the op and pumps it in a loop, suspending through
+`sleepMillis(1)` between pumps. Every suspension is the D-N-022
+machinery — no new scheduler capability, no `poll()`-based fd wait list
+(deferred to the socket leaf, where readiness becomes load-bearing:
+a per-task 1 ms cadence is the wrong shape for many idle connections).
+
+**Decision — call-site interception with in-IR projection.** Only code
+lowered inside an `async func` body can suspend, so the redirect
+happens at in-coroutine `Std.Process.runCapture` call sites (the same
+mechanism as the sleep leaf). The seam returns
+`Result[ProcessCaptureResult, String]` while the intercepted call is
+typed `Result[ProcessResult, String]`; the backend awaits the seam,
+then projects — the Ok payload through the stdlib's own
+`Std.Process.projectResult`, the branch/rewrap emitted with the
+existing union construct/payload-read helpers under the `lowerIf`
+value-slot ARC protocol. Alternatives rejected: a `@cfg(target =
+"native")` async wrapper in `std/process.l` (depends on every stdlib
+build pipeline applying target-cfg erasure — a silent-build-break
+blast radius the kernel-twin placement avoids by construction), and
+new public async API surface (cross-target divergence).
+
+**Reachability.** No Lyric source names the seam, so the bridge's
+function-granularity reachability walk would prune it; the walk keeps
+it (and, transitively, everything its body needs) whenever
+`Std.Process.runCapture` is reachable. The seam calls `sleepMillis`
+bare because the walk resolves bare and fully-qualified call keys
+only — an alias-qualified spelling is invisible to it (pre-existing
+walk limitation, now documented here).
+
+**Semantics.**
+- The async path honors `timeoutMs`, which the sync native seam still
+  ignores (#4752): on expiry the child is SIGKILLed (the child process
+  only, not its tree — narrower than the managed twin's `Kill(true)`),
+  already-captured output is preserved, and the result reports
+  `timedOut = true` with exit code -2, the managed-twin contract.
+- Negative `timeoutMs` means no timeout; 0 kills at the first pump.
+- An execvp failure in the child remains exit 127 with `Ok` (shell
+  convention, matching the sync seam); only pipe/fork failure is `Err`.
+- `runCaptureWithInput` is not intercepted (native has no stdin pipe,
+  #4752 — the sync seam's explicit `Err` stands). A direct `spawn
+  runCapture(...)` keeps the blocking sync path (spawn an async
+  wrapper function to overlap captures — the natural pattern, and the
+  one the front end's type-transparent `spawn` makes meaningful).
+- Sync-context `runCapture` calls are untouched on every target.
+
+**Verification.** Three C unit tests drive the op lifecycle (echo
+pump; kill-mid-sleep preserving partial output with the 128+SIGKILL
+status; exec-failure 127) under clang and gcc. Five new
+`llvm_self_test_async.l` cases (25 total): output/exit/timedOut
+round-trip through the seam; two spawned captures whose 0.1 s child
+completes before the 0.35 s child spawned first (impossible if either
+capture blocked the scheduler); the same overlap ASan-clean; the
+timeout contract (`timedOut`/-2/pre-kill output); missing-binary exit
+127. The interleave cases also double as the regression net that
+caught the reachability gap during development (the intercept silently
+fell through to the sync path until the walk kept the seam).
+
+**Related:** D-N-022 (the scheduler and sleep leaf this builds on),
+#4752 (sync-seam timeout/stdin gaps — the async path closes the
+timeout half for coroutine callers), `lyric-rt/src/lyric_process.c`,
+`lyric-stdlib/std/_kernel_native/process_capture_host.l`,
+`lyric-compiler/lyric/llvm_codegen.l` (`emitAsyncRunCapture`),
+`lyric-compiler/lyric/llvm_bridge.l` (reachability walk).
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The

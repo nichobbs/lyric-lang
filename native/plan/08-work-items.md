@@ -1149,6 +1149,27 @@ sleepers whose effect order proves genuine interleaving, the same under
 ASan, an await chain through a sleeping leaf, String args/results
 across suspends under ASan, and the named un-awaited-task diagnostic.
 
+## Phase N8 (cont'd): the async process leaf (Phase 2, D-N-023)
+
+**SHIPPED (D-N-023):** the first async I/O leaf. `lyric-rt` gains a
+nonblocking capture op (`lyric_process_start`/`_pump`/`_kill`/
+accessors/`_free` over the shared fork/execvp spawn path, `O_NONBLOCK`
+pipes, `WNOHANG` reap, SIGKILL timeout preserving captured output;
+three C unit tests). The native kernel twin gains
+`Std.ProcessCaptureHost.hostRunCaptureListAsync`, pumping the op at
+the JVM twin's documented 1 ms cadence with each iteration suspending
+through the sleep leaf — honoring `timeoutMs` (managed-twin contract:
+`timedOut`, exit -2), which the sync native seam still ignores
+(#4752). The backend redirects in-coroutine `Std.Process.runCapture`
+calls to the seam and projects the kernel Result into the call's
+`Result[ProcessResult, String]` (Ok payload via the stdlib's own
+`projectResult`); the bridge's reachability walk keeps the seam
+whenever `runCapture` is reachable. Five new `llvm_self_test_async.l`
+cases (25 total), including two spawned captures completing in
+reverse spawn order — impossible if either blocked the scheduler —
+and the same overlap under ASan. `poll()`-based scheduler fd
+readiness is deferred to the socket leaf.
+
 ---
 
 ## Dependency graph summary

@@ -15,6 +15,9 @@
 //! so the pre-coroutine cases below double as a regression net for the
 //! coroutine path, and the sleep-driven cases prove genuine concurrency
 //! (effect interleaving that a sequential execution cannot produce).
+//! The D-N-023 cases cover the async process leaf: in-coroutine
+//! `Std.Process.runCapture` redirects to the kernel's nonblocking
+//! capture op, so subprocess captures overlap and honor `timeoutMs`.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:

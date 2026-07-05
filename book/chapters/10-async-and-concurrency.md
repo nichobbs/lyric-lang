@@ -111,7 +111,7 @@ await Task.WhenAll(profileTask, recentTask, notificationsTask);
 The scope model removes the need for that discipline. The structure of the code — the block boundaries — *is* the lifetime contract.
 
 ::: sidebar
-**On `--target native`.** Everything above works on the LLVM native target too, with one machine substituted for another: an `async func` compiles to an LLVM coroutine driven by a cooperative single-threaded scheduler in the native runtime (not a .NET `Task`), `spawn` binds a hot task that runs until its first suspension, and spawned tasks genuinely interleave — `Std.Time.sleepMillis` inside an async body suspends only the calling task. Cancellation (§10.2) is the exception: native has no cancellation tokens, and a failing task aborts the process (panics abort on native). Async generators (§10.5) are rejected at compile time on native.
+**On `--target native`.** Everything above works on the LLVM native target too, with one machine substituted for another: an `async func` compiles to an LLVM coroutine driven by a cooperative single-threaded scheduler in the native runtime (not a .NET `Task`), `spawn` binds a hot task that runs until its first suspension, and spawned tasks genuinely interleave — `Std.Time.sleepMillis` inside an async body suspends only the calling task, and `Std.Process.runCapture` captures its subprocess without blocking the others (with `timeoutMs` honored on this path). Cancellation (§10.2) is the exception: native has no cancellation tokens, and a failing task aborts the process (panics abort on native). Async generators (§10.5) are rejected at compile time on native.
 :::
 
 ::: sidebar

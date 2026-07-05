@@ -217,7 +217,9 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > direct call awaits in place, `spawn f(...)` holds the task for a
 > later `await`, spawned tasks genuinely interleave, and
 > `Std.Time.sleepMillis` inside an async body suspends only the
-> calling task instead of blocking the thread; `scope { }` is a real
+> calling task instead of blocking the thread, and
+> `Std.Process.runCapture` captures subprocesses without blocking
+> other tasks (with `timeoutMs` honored); `scope { }` is a real
 > lexical scope; `defer` runs
 > on its normal-exit paths (fall-off, `return`, `break`, `continue`).
 > Standard-library modules with native kernels work out of

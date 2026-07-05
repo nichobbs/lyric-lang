@@ -3975,7 +3975,10 @@ func emitUnionPayloadFieldRead(
   caseIdx: in Int,
   fi: in Int,
 ): NVal {
-  val structTy = match scrutinee.ty { case NPtr(pointee) -> pointee; case _ -> panic("Lyric.LlvmCodegen: union payload read on a non-pointer value") }
+  val structTy = match scrutinee.ty {
+    case NPtr(pointee) -> pointee
+    case _ -> panic("Lyric.LlvmCodegen: union payload read on a non-pointer value")
+  }
   val payloadPtr = freshTmp(ctx)
   val pArgs: List[NArg] = newList()
   pArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
@@ -4015,10 +4018,7 @@ func emitAsyncRunCapture(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, c
     case Some(s) -> s
     case None -> return None
   }
-  val projSig = match mapGet(ctx.sigs, "Std.Process.projectResult/1") {
-    case Some(s) -> s
-    case None -> return None
-  }
+  val projSig = match mapGet(ctx.sigs, "Std.Process.projectResult/1") { case Some(s) -> s; case None -> return None }
   val rawTy = retTypeToN(ctx, asig.retTy)
   val targetTy = retTypeToN(ctx, sig.retTy)
   val rawUi = match unionInfoOfType(ctx, rawTy) { case Some(u) -> u; case None -> return None }
@@ -4048,7 +4048,9 @@ func emitAsyncRunCapture(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, c
   val disc = freshTmp(ctx)
   insns.add(NLoad(dest = disc, ty = NI32, ptr = NLocal(name = discPtr)))
   val isOk = freshTmp(ctx)
-  insns.add(NICmp(dest = isOk, pred = IEq, ty = NI32, a = NLocal(name = disc), b = NLitInt(v = intToLong(rawOk), ty = NI32)))
+  insns.add(
+    NICmp(dest = isOk, pred = IEq, ty = NI32, a = NLocal(name = disc), b = NLitInt(v = intToLong(rawOk), ty = NI32))
+  )
   val okL = freshLabel(ctx, "prc.ok")
   val errL = freshLabel(ctx, "prc.err")
   val doneL = freshLabel(ctx, "prc.done")
