@@ -190,6 +190,15 @@ pub record CodegenCtx {
   // value-type fields are compared with ceq vs. Object.Equals (#1442).
   fieldMsilTypes: Map[String, MsilType]
   funcTokens: Map[String, Int]  // funcName → MethodDef token
+  // Existence-only marker set: "pkgName.funcName" for EVERY function declared
+  // anywhere in the bundle, pre-seeded bundle-wide (preSeedBundleAsyncRetTypesMsil)
+  // before any package's own addPackageTokens pass runs. funcTokens itself
+  // can't serve this role — it isn't populated for a package until that
+  // package's OWN addPackageTokens pass runs, so findImportedFqn's existence
+  // check would reject a real cross-package call to a function declared in a
+  // LATER package purely because that package hasn't been visited yet (#5177).
+  // Never used for the token's numeric VALUE — only checked via containsKey.
+  bundleFuncFqns: Map[String, Bool]
   funcRetTypes: Map[String, MsilType]  // funcName → MsilType of declared return
   // funcName → declared parameter MsilTypes (same arity-qualified + bare keys
   // as funcTokens).  Used to thread a call argument's expected type into
@@ -1650,6 +1659,7 @@ pub func newCodegenCtx(
     fieldVarIndices = newMap(),
     fieldMsilTypes = newMap(),
     funcTokens = funcToks,
+    bundleFuncFqns = newMap(),
     funcRetTypes = newMap(),
     funcParamTypes = newMap(),
     funcParamModes = newMap(),
@@ -1931,6 +1941,113 @@ func realMethodParamsOf(params: in List[Param]): List[Param] {
   real
 }
 
+// Seed `cctx.funcRetTypes` with a Task/Task<T> placeholder for one async SM
+// function, so `countSmFieldsMsil` (via `isTaskTypeMsil`) can recognise an
+// `await` of this function as a real Task even before the function's own
+// package has gone through its full `addPackageTokens` pass.  The inner T is
+// irrelevant for field counting; whichever package's own pass reaches this
+// declaration later always overwrites the placeholder with the correct
+// Task/Task<T> type once `enumTypeNames` is fully populated for that package
+// (calling `typeExprToMsilCtx` before that would produce `MClass` instead of
+// `MInt` for a local-enum return type, corrupting the awaiter TypeSpec /
+// MemberRef signature if the later overwrite were ever missing).
+//
+// Extracted so the SAME seeding can run bundle-wide, once, before ANY
+// package's own `addPackageTokens` — see `preSeedBundleAsyncRetTypesMsil`.
+// Without a bundle-wide seed, an `async func` that `await`s a call to a
+// function declared in a LATER package (per `[project.packages]` order) sees
+// an unresolved (`MObject`) return type at prediction time — `isTaskTypeMsil`
+// then rejects it, so `countSmFieldsMsil` undercounts that await's awaiter
+// field by one. Since the field-count prediction runs before the awaited
+// package has been visited at all, the real codegen (which runs only after
+// every package has been through `addPackageTokens`) DOES resolve the type
+// correctly and DOES emit the awaiter field — so the real SM class ends up
+// with one more field than predicted, and every FieldDef/MethodDef token
+// predicted for any later package is silently off by one (#5177).
+func seedAsyncFuncRetTypePlaceholderMsil(cctx: in CodegenCtx, pkgName: in String, decl: in FunctionDecl): Unit {
+  if decl.isAsync {
+    val isGen0 = funcBodyContainsYieldMsil(decl)
+    val isSm0 = not isGen0 and not hasExternTargetMsil(decl.annotations)
+    if isSm0 {
+      val fqn0 = pkgName + "." + decl.name
+      val arityKey0 = fqn0 + "/" + toString(decl.params.count)
+      if not cctx.funcRetTypes.containsKey(arityKey0) {
+        val bareRetTy0 = match decl.ret {
+          case Some(te) -> {
+            val r = typeExprToMsilCtx(cctx, te, pkgName)
+            if elementTypeByte(r) == 0 {
+              MVoid
+            } else {
+              r
+            }
+          }
+          case None -> MVoid
+        }
+        val retTy0 = if bareRetTy0 == MVoid {
+          MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
+        } else {
+          val kfRetArgs0: List[MsilType] = newList()
+          kfRetArgs0.add(bareRetTy0)
+          MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = kfRetArgs0)
+        }
+        cctx.funcRetTypes.add(arityKey0, retTy0)
+        if not cctx.funcRetTypes.containsKey(fqn0) {
+          cctx.funcRetTypes.add(fqn0, retTy0)
+        }
+      }
+    }
+  }
+}
+
+// Bundle-wide counterpart to the per-package Pre-pass 0 inside
+// `addPackageTokens`: walk EVERY package's items (already parsed + mono'd,
+// so specialised async generics are included) and, for every function
+// declared anywhere in the bundle:
+//   1. register its bare "pkgName.funcName" in `cctx.bundleFuncFqns`, so
+//      `findImportedFqn`/`findImportedFqnWithHint` recognise a real
+//      cross-package call target even when the CALLEE's own package hasn't
+//      reached its own `addPackageTokens` pass yet (packages are visited in
+//      `[project.packages]` declaration order, not call-graph order);
+//   2. if it's an async function, seed a Task/Task<T> return-type
+//      placeholder, so `isTaskTypeMsil` recognises an `await` of it too.
+// Both matter for the SAME reason: `countSmFieldsMsil`'s awaiter-field count
+// for an async function that `await`s a call into a LATER package would
+// otherwise see an unresolved (MObject) return type at prediction time and
+// undercount that await's field by one — the real codegen (which runs only
+// after every package has been through addPackageTokens) resolves the type
+// correctly and DOES emit the field, so every FieldDef/MethodDef token
+// predicted for every later package silently ends up off by one (#5177).
+//
+// Call once, right after every package's source file is finalised and
+// before the per-package `addPackageTokens` loop starts. A no-op for a
+// single-file compile (nothing to seed ahead of — the per-file Pre-pass 0
+// inside `addPackageTokens` already covers same-package forward references).
+pub func preSeedBundleAsyncRetTypesMsil(
+  cctx: in CodegenCtx, files: in List[SourceFile], pkgNames: in List[String]
+): Unit {
+  var fi = 0
+  while fi < files.count {
+    val file = files[fi]
+    val pkgName = pkgNames[fi]
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IFunc(decl) -> {
+          val fqn = pkgName + "." + decl.name
+          if not cctx.bundleFuncFqns.containsKey(fqn) {
+            cctx.bundleFuncFqns.add(fqn, true)
+          }
+          seedAsyncFuncRetTypePlaceholderMsil(cctx, pkgName, decl)
+        }
+        case _ -> {
+        }
+      }
+      ii = ii + 1
+    }
+    fi = fi + 1
+  }
+}
+
 pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
   // Collect IExternType names so auto-FFI call interception can resolve them.
   scanExternTypesMsil(cctx, file)
@@ -2089,49 +2206,18 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
 
   // Pre-pass 0: seed funcRetTypes with a Task placeholder for every async SM
   // function so that countSmFieldsMsil (called inline in Pass 1) can resolve
-  // same-package awaiter types via isTaskTypeMsil.  The inner T is irrelevant
-  // for field counting; Pass 2 always overwrites these placeholders with the
-  // correct Task / Task<T> type once enumTypeNames is fully populated.
-  // (Calling typeExprToMsilCtx here would produce MClass instead of MInt for
-  // local-enum return types, corrupting awaiter TypeSpec / MemberRef signatures
-  // if the Pass 2 overwrite is missing.)
+  // same-package awaiter types via isTaskTypeMsil.  Pass 2 always overwrites
+  // these placeholders with the correct Task / Task<T> type once
+  // enumTypeNames is fully populated.  This is redundant with (but harmless
+  // alongside) `preSeedBundleAsyncRetTypesMsil` — a bundle-wide caller runs
+  // that once, before ANY package's addPackageTokens, to also cover an
+  // `await` of a function declared in a LATER package (#5177); this
+  // per-file pass is what a single-file compile (with no bundle-wide caller)
+  // still relies on.
   var pp0 = 0
   while pp0 < file.items.count {
     match file.items[pp0].kind {
-      case IFunc(decl) -> {
-        if decl.isAsync {
-          val isGen0 = funcBodyContainsYieldMsil(decl)
-          val isSm0 = not isGen0 and not hasExternTargetMsil(decl.annotations)
-          if isSm0 {
-            val fqn0 = pkgName + "." + decl.name
-            val arityKey0 = fqn0 + "/" + toString(decl.params.count)
-            if not cctx.funcRetTypes.containsKey(arityKey0) {
-              val bareRetTy0 = match decl.ret {
-                case Some(te) -> {
-                  val r = typeExprToMsilCtx(cctx, te, pkgName)
-                  if elementTypeByte(r) == 0 {
-                    MVoid
-                  } else {
-                    r
-                  }
-                }
-                case None -> MVoid
-              }
-              val retTy0 = if bareRetTy0 == MVoid {
-                MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
-              } else {
-                val kfRetArgs0: List[MsilType] = newList()
-                kfRetArgs0.add(bareRetTy0)
-                MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = kfRetArgs0)
-              }
-              cctx.funcRetTypes.add(arityKey0, retTy0)
-              if not cctx.funcRetTypes.containsKey(fqn0) {
-                cctx.funcRetTypes.add(fqn0, retTy0)
-              }
-            }
-          }
-        }
-      }
+      case IFunc(decl) -> seedAsyncFuncRetTypePlaceholderMsil(cctx, pkgName, decl)
       case _ -> {
       }
     }
@@ -4730,7 +4816,11 @@ func findImportedFqn(cctx: in CodegenCtx, imports: in List[String], funcName: in
   var i = 0
   while i < imports.count {
     val candidate = imports[i] + "." + funcName
-    if cctx.funcTokens.containsKey(candidate) {
+    // funcTokens alone would miss a real function declared in a package not
+    // yet visited by addPackageTokens (bundle order runs packages in
+    // declaration order, not call-graph order); bundleFuncFqns is pre-seeded
+    // for the WHOLE bundle before any package's own pass runs (#5177).
+    if cctx.funcTokens.containsKey(candidate) or cctx.bundleFuncFqns.containsKey(candidate) {
       return candidate
     }
     i = i + 1
@@ -4766,7 +4856,9 @@ func findImportedFqnWithHint(
   var i = 0
   while i < imports.count {
     val candidate = imports[i] + "." + funcName
-    if cctx.funcTokens.containsKey(candidate) {
+    // See findImportedFqn: bundleFuncFqns covers a function whose OWN
+    // package hasn't run addPackageTokens yet (#5177).
+    if cctx.funcTokens.containsKey(candidate) or cctx.bundleFuncFqns.containsKey(candidate) {
       if firstMatch.length == 0 {
         firstMatch = candidate
       }

@@ -734,6 +734,19 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // projectable fields (matching what lowerMOpaque checks via lctx.allProjFqns).
   prescanProjectableFqns(cctx, perPkgFiles, perPkgNames)
 
+  // Pre-seed cctx.funcRetTypes with a Task/Task<T> placeholder for every
+  // async SM function in the WHOLE bundle, before any package's own
+  // addPackageTokens pass runs.  Without this, an `async func` that
+  // `await`s a call to a function declared in a LATER package (per
+  // `[project.packages]` order) sees an unresolved return type when ITS
+  // OWN package's addPackageTokens predicts its SM class's field count —
+  // isTaskTypeMsil rejects the unresolved type, so the awaiter field the
+  // real codegen (which runs only after every package has gone through
+  // addPackageTokens) DOES emit goes uncounted, silently shifting every
+  // FieldDef/MethodDef token predicted for every later package by one
+  // (#5177).
+  preSeedBundleAsyncRetTypesMsil(cctx, perPkgFiles, perPkgNames)
+
   // Collect aspect templates from every package in the bundle before the
   // weave loop so cross-package `from`-instance aspects (e.g.
   // `aspect Guard from Lib.Aspects.Validate { matches: ... }`) can

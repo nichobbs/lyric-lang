@@ -10244,6 +10244,123 @@ cross-package field signatures and an unaccounted `RMFunc` row
 respectively), #5182, #5183 (unrelated bugs found during the investigation).
 
 ---
+
+## D-progress-600 — Self-hosted MSIL bundler: an `async func` awaiting a call into a LATER package silently corrupted every intervening package's tokens (#5177, second root cause)
+
+**Status:** ACCEPTED
+
+**Context.** D-progress-599 fixed one confirmed cause of #5177's symptom
+(cross-package closures) but the reporter re-verified against a v0.4.16
+build carrying that fix and #5177 still reproduced identically against the
+real `cloud-agents` project — which uses no closures or module-level
+`pub val`s at all. With direct access to both `lyric-lang` and
+`cloud-agents` this session, the reporter (in a prior session, per the
+issue comments) narrowed it to a clean 4-package repro and identified the
+actual differentiator: an `async func` that `await`s an (unqualified,
+imported) call to a function declared in a **later** package, per
+`[project.packages]` declaration order.
+
+**Symptom.** Same class as D-progress-599: a function with zero source-level
+relationship to the async machinery (`dbErrorMessage`, matching an unrelated
+union) throws `InvalidProgramException`/`MissingFieldException` depending on
+exactly which real row its miscounted token lands on. `PEReader` inspection
+(reused from the closure investigation) pinned it precisely: `dbErrorMessage`'s
+`ldfld` for a union case's payload field encoded token `0x04000004`, which
+really names a completely different type's field
+(`Manager.<createRunner>__SM_0.__aw0`, an async state-machine's awaiter
+field) — the correct field, `DbError_OpenFailed.message`, sits one row later
+at `0x04000005`.
+
+**Root cause.** `Msil.Codegen.addPackageTokens`'s FieldDef/MethodDef
+row-prediction pass runs once per package, strictly in
+`[project.packages]` declaration order. For an `async func`,
+`countSmFieldsMsil` needs to know how many *awaiter* fields the
+synthesized state-machine class will need — one per distinct `await`ed
+Task type — which it determines via `collectAwaitTypesPhaseBMsil` /
+`inferCallReturnTypePB`, resolving the awaited call's return type through
+`cctx.funcRetTypes` (and, for the "does this import even have this
+function" existence check, `cctx.funcTokens` via `findImportedFqn`). Both
+maps are populated by `addPackageTokens` itself, in the SAME per-package,
+declaration-order pass. So when package K's `async func` awaits a call
+into package K+n (n > 0, not yet visited), the callee's return type is
+unresolved (`MObject`), `isTaskTypeMsil` rejects it, and the awaiter field
+this await genuinely needs goes uncounted — the prediction comes up one
+field short. The REAL codegen (`codegenMPackage`, which for the whole
+bundle runs only after every package has already been through
+`addPackageTokens`) resolves the same call with a fully-populated
+`funcRetTypes` and correctly emits the awaiter field — so the real SM class
+ends up with one more field than was predicted, and every FieldDef/
+MethodDef token predicted for any package *after* the awaiting one is off
+by one from that point forward. Exactly the same "two independently
+maintained bookkeeping passes must agree, and one has a blind spot"
+architecture hazard as D-progress-599 and #3196/#5030/#4958/#4947, this
+time triggered by call-graph order diverging from package-declaration
+order rather than by a codegen-only-synthesized item.
+
+An existing, narrower version of this same mechanism was already present
+and correctly handled: `addPackageTokens`'s own "Pre-pass 0" seeds a
+Task/Task<T> return-type placeholder for every async function *in the
+same file*, specifically so a same-package forward reference (one async
+function awaiting another declared later in the same package) resolves
+correctly. It just never extended across package boundaries.
+
+**Fix.** `lyric-compiler/msil/codegen.l`: extracted Pre-pass 0's per-function
+body into `seedAsyncFuncRetTypePlaceholderMsil`, and added
+`preSeedBundleAsyncRetTypesMsil`, which walks every package's (already
+parsed + mono'd) items and, for every function bundle-wide: (1) registers
+its bare `pkgName.funcName` into a new `cctx.bundleFuncFqns` existence-only
+marker set, and (2) if async, seeds the same Task/Task<T> placeholder
+Pre-pass 0 already seeds per-file. `findImportedFqn` and
+`findImportedFqnWithHint` now also check `bundleFuncFqns` alongside
+`funcTokens` — `bundleFuncFqns` is never used for a token's numeric value
+(only existence), so pre-seeding it can't shadow or block a package's own
+later, real `funcTokens` registration the way seeding `funcTokens` itself
+with a placeholder would have. `lyric-compiler/msil/bridge.l`: call
+`preSeedBundleAsyncRetTypesMsil(cctx, perPkgFiles, perPkgNames)` once,
+right after `prescanProjectableFqns` and before the per-package weave/
+lift/`addPackageTokens` loop starts — mirroring that existing bundle-wide
+pre-seed's exact placement and calling convention. A no-op for a
+single-file compile (nothing to seed ahead of; the per-file Pre-pass 0
+already covers it).
+
+**What this does NOT do.** While narrowing this fix, a fully-qualified
+cross-package `await` (`await Pkg.Sub.createContainer(id)` instead of the
+unqualified, imported-name form `await createContainer(id)`) was found to
+hit a *different*, pre-existing crash (`emitPhaseBAwait: await index 0
+exceeds pre-allocated resume labels`) — confirmed present identically both
+with and without this fix (verified by temporarily reverting via `git
+stash` and re-testing), so it is a separate bug in the qualified-path
+branch of `inferCallReturnTypePB`'s candidate resolution, not a regression
+from or a target of this change. Filed and tracked as #5222.
+
+**Verification.** Reproduced the reporter's exact 4-package minimal repro
+(`Manager` awaits `Primitives.createContainer` unqualified, with an
+unrelated `Consumer` package declared in between) via `PEReader` inspection
+before and after: `dbErrorMessage`'s `ldfld` moves from the wrong token
+(`0x04000004`, `Manager.<createRunner>__SM_0.__aw0`) to the correct one
+(`0x04000005`, `DbError_OpenFailed.message`), and the program now runs
+correctly end-to-end. Re-ran the full existing suite plus D-progress-599's
+new test — `async_sm_self_test.l` (57/57), `closure_correctness_self_test.l`
+(8/8), `closure_zero_overhead_self_test.l` (18/18),
+`cross_package_generics_self_test.l` (6/6), `aspect_weave_self_test.l`
+(7/7), `bitwise_self_test.l` (10/10), `msil_await_expr_forms_self_test.l`
+(5/5), `inbundle_generics_self_test.l` (20/20), `async_extern_self_test.l`
+(4/4), `generic_specialization_self_test.l` (8/8),
+`async_generator_self_test.l` (8/8) — all pass. Added a new
+`msil_project_bridge_self_test.l` case ("async func awaiting a call into a
+LATER package does not corrupt an unrelated package's field access")
+reproducing the minimal 4-package shape end-to-end via `dotnet exec` and
+asserting stdout — 28/28 in that file including it.
+
+**Related:** #5177 (the reported symptom; this is the SECOND of at least
+two independent root causes found for it — see D-progress-599 for the
+first), #3196/#5030/#4958/#4947 (the same "prediction pass has a blind
+spot" bug family), D-progress-599 (this issue's first fix, and the
+`PEReader`-based investigation technique reused here), #5222 (the
+fully-qualified cross-package `await` crash found — and confirmed
+pre-existing — while narrowing this fix).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

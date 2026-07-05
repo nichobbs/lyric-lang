@@ -268,6 +268,79 @@ test "cross-package closure does not corrupt later tokens or the entry point" {
   assertEqual(Str.trim(result.stdout), "33,101", "cross_package_closure_entry_point: stdout matches expected")
 }
 
+// #5177 (second root cause, found after the closure fix above still didn't
+// resolve the reporter's real project): an `async func` that `await`s an
+// (unqualified, imported) call to a function declared in a LATER package —
+// per `[project.packages]` declaration order, not call-graph order — has its
+// awaiter-field count silently undercounted. `countSmFieldsMsil`'s
+// `collectAwaitTypesPhaseBMsil` resolves the awaited call's return type via
+// `cctx.funcRetTypes`/`funcTokens`, both populated by `addPackageTokens`
+// strictly in package order; when the awaited function's OWN package hasn't
+// been visited yet, the type resolves to `MObject`, `isTaskTypeMsil` rejects
+// it, and the predicted SM class comes up one field short of what the real
+// codegen (which runs only after every package has been through
+// addPackageTokens) actually emits. Every FieldDef/MethodDef token predicted
+// for every package between the awaiting one and the awaited one then lands
+// on the wrong row. Pins: a completely unrelated function in a THIRD package,
+// declared between the awaiting and the awaited package, still resolves its
+// own field access correctly.
+test "async func awaiting a call into a LATER package does not corrupt an unrelated package's field access" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XPkgFwdAwait.Manager",
+      "package XPkgFwdAwait.Manager\n" + "import Std.Core\n" + "import XPkgFwdAwait.Primitives\n" + "\n" +
+        "pub async func createRunner(id: in String): String {\n" +
+        "  await createContainer(id)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XPkgFwdAwait.Consumer",
+      "package XPkgFwdAwait.Consumer\n" + "import Std.Core\n" + "\n" + "pub union DbError {\n" +
+        "  case OpenFailed(message: String)\n" +
+        "}\n" +
+        "\n" +
+        "pub func makeError(): DbError { return OpenFailed(message = \"boom\") }\n" +
+        "\n" +
+        "pub func dbErrorMessage(e: in DbError): String {\n" +
+        "  return match e {\n" +
+        "    case OpenFailed(m) -> \"failed: \" + m\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XPkgFwdAwait.Primitives",
+      "package XPkgFwdAwait.Primitives\n" + "import Std.Core\n" + "\n" +
+        "pub async func createContainer(id: in String): String { id }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XPkgFwdAwait.App",
+      "package XPkgFwdAwait.App\n" + "import Std.Core\n" + "import XPkgFwdAwait.Consumer\n" + "\n" +
+        "func main(): Unit {\n" +
+        "  var e = XPkgFwdAwait.Consumer.makeError()\n" +
+        "  println(XPkgFwdAwait.Consumer.dbErrorMessage(e))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xpkgfwdawait", packages, "XPkgFwdAwait")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "async_forward_await_does_not_corrupt_later_package: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "failed: boom",
+    "async_forward_await_does_not_corrupt_later_package: stdout matches expected"
+  )
+}
+
 // ─── Phase 3: cross-package record and union round-trips ─────────────────────
 // Cross-package RECORD value round-trip.  Pkg A defines a `pub record
 // Point` plus pub funcs that produce and consume one; pkg B imports A,
