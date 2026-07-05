@@ -135,6 +135,19 @@ func civilFromDays(zIn: in Long): CivilDate {
   CivilDate(year = y, month = m, day = d)
 }
 
+// Coarse year bounds of the i64-nanos window (edge dates 1677-09-21
+// and 2262-04-11).  The filter using these must admit the edge years
+// themselves (#5219); the exact reconstruction check at each call
+// site catches edge-year dates past the window.  Functions rather
+// than module-level `val`s — stdlib module constants are unproven.
+func windowYearMin(): Int {
+  1677
+}
+
+func windowYearMax(): Int {
+  2262
+}
+
 // ── Construction ─────────────────────────────────────────────────────
 pub func hostNow(): Instant {
   Instant(epochNanos = rtEpochNanos())
@@ -248,10 +261,10 @@ func addMonthsLong(t: in Instant, n: in Long): Instant {
   // throws at ITS year-1..9999 bounds; java.time's far larger range
   // accepts deltas that exceed ours, #5232 — range enforcement is
   // per-target, never silent.)  The coarse filter admits the window's
-  // edge years (1677/2262, #5219 — a no-op addMonths on a boundary
-  // Instant must succeed); the exact reconstruction check below
-  // catches edge-year dates past the window.
-  if y64 < 1677i64 or y64 > 2262i64 {
+  // edge years (#5219 — a no-op addMonths on a boundary Instant must
+  // succeed); the exact reconstruction check below catches edge-year
+  // dates past the window.
+  if y64 < windowYearMin().toLong() or y64 > windowYearMax().toLong() {
     panic("Std.Time: addMonths/addYears result falls outside the native Instant range (1677-09-21..2262-04-11)")
   }
   val y = y64.toInt()
@@ -439,12 +452,11 @@ pub func hostParseInstantOpt(s: in String): Option[Instant] {
   if year < 0 or month < 0 or day < 0 or hour < 0 or minute < 0 or second < 0 {
     return None
   }
-  // Coarse year pre-filter: the i64-nanos window's edge dates are
-  // 1677-09-21 and 2262-04-11, so any constructible Instant formats
-  // to a year in 1677..2262 (#5219 — every toIsoString output must
-  // parse back).  Dates inside these years but past the exact edges
-  // are caught by the reconstruction check below.
-  if year < 1677 or year > 2262 {
+  // Coarse year pre-filter: any constructible Instant formats to a
+  // year inside the window (#5219 — every toIsoString output must
+  // parse back).  Dates inside the edge years but past the exact
+  // edges are caught by the reconstruction check below.
+  if year < windowYearMin() or year > windowYearMax() {
     return None
   }
   if month < 1 or month > 12 or day < 1 or day > daysInMonth(year, month) {

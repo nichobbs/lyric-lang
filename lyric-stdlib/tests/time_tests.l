@@ -1,8 +1,14 @@
-//! stdlib/tests/time_tests.l — Tests for Std.Time.monotonicNanos().
+//! stdlib/tests/time_tests.l — Tests for Std.Time.
 //!
-//! Verifies that monotonicNanos() returns non-decreasing values across successive
-//! calls and that the value advances across observable work.  Also checks that
-//! now() returns a positive epoch via totalMillis.
+//! Covers the monotonic clock (monotonicNanos() non-decreasing across
+//! successive calls and observable work), now() returning a positive
+//! epoch, and — since D-N-027 — the target-neutral calendar surface:
+//! epoch conversions, duration constructors/arithmetic/comparisons,
+//! month/year/day arithmetic with leap- and common-year clamping, and
+//! the toIsoString/parseOptInstant round-trip (including the
+//! epoch-conversion boundary values).  Calendar assertions use exact
+//! elapsed-milliseconds and instant equality, never host-specific ISO
+//! string forms — the textual format legitimately differs per target.
 package Std.Time.Tests
 
 import Std.Core
