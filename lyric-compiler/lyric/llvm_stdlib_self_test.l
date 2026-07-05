@@ -432,6 +432,17 @@ test "Std.Time addMonths with an extreme month delta panics, not Int-wraps (#521
 // Int32 wraps to exactly -4 months, i.e. a VALID-looking Instant four
 // months before the epoch — the one shape the recomposed-year window
 // check alone cannot catch.  With the Long widening it panics instead.
+test "Std.Time duration constructor past the nanos window panics, not UB (#5221)" {
+  // llround(3) of an out-of-range double is C-standard undefined
+  // behavior; the bounds check must turn it into a controlled panic.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val d = hours(100000000000000000000.0)\n" +
+    "  if totalMillis(d) > 0.0 {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "an unchecked llround would exit 42 (or worse)")
+}
+
 test "Std.Time addYears cannot Int-wrap its year-to-month conversion (#5218)" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
     "  val t = addYears(fromEpochMillis(0i64), 357913941)\n" +

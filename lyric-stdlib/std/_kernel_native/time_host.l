@@ -145,24 +145,37 @@ pub func hostZeroDuration(): Duration {
 }
 
 // ── Duration constructors (fractional units -> whole nanos) ─────────
+// llround(3) on a value outside the long long range (or NaN) is
+// C-standard undefined behavior (#5221), so bound the scaled Double
+// first.  2^63 is exactly representable in Double; anything strictly
+// below it (the largest such Double is 9223372036854774784) rounds to
+// an in-range i64, and -2^63 itself is i64's minimum.  NaN fails both
+// comparisons and panics too.
+func nanosFromScaled(x: in Double, what: in String): Long {
+  if not (x < 9223372036854775808.0 and x >= 0.0 - 9223372036854775808.0) {
+    panic("Std.Time: " + what + " duration overflows the native nanosecond range (years ~1678..2262)")
+  }
+  cLlround(x)
+}
+
 pub func hostMillis(n: in Double): Duration {
-  Duration(nanos = cLlround(n * 1000000.0))
+  Duration(nanos = nanosFromScaled(n * 1000000.0, "millis"))
 }
 
 pub func hostSeconds(n: in Double): Duration {
-  Duration(nanos = cLlround(n * 1000000000.0))
+  Duration(nanos = nanosFromScaled(n * 1000000000.0, "seconds"))
 }
 
 pub func hostMinutes(n: in Double): Duration {
-  Duration(nanos = cLlround(n * 60000000000.0))
+  Duration(nanos = nanosFromScaled(n * 60000000000.0, "minutes"))
 }
 
 pub func hostHours(n: in Double): Duration {
-  Duration(nanos = cLlround(n * 3600000000000.0))
+  Duration(nanos = nanosFromScaled(n * 3600000000000.0, "hours"))
 }
 
 pub func hostDays(n: in Double): Duration {
-  Duration(nanos = cLlround(n * 86400000000000.0))
+  Duration(nanos = nanosFromScaled(n * 86400000000000.0, "days"))
 }
 
 // ── Duration arithmetic on Instant ───────────────────────────────────
