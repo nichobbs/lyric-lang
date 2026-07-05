@@ -5884,6 +5884,72 @@ runCapture half closed here), #5107 (kill-vs-exit race contract),
 `lyric-compiler/lyric/llvm_codegen.l`,
 `lyric-compiler/lyric/llvm_bridge.l`, `lyric-stdlib/std/process.l`.
 
+## D-N-025 — Native deadline kills take the child's whole process group: setpgid at spawn + kill(-pid), closing the D-N-024 process-tree deferral
+
+**Date:** 2026-07-05
+**Status:** Accepted
+
+**Context.** Both native runners killed only the direct child on
+deadline expiry (D-N-023 noted this as "narrower than the managed
+twin's `Kill(entireProcessTree: true)`"; D-N-024 carried it as an
+explicit deferral). A timed-out `sh -c` pipeline therefore left
+grandchildren running — orphaned workers holding CPU, and (on the
+sync path) holding the capture pipes open until the #5176 drain
+budget expired.
+
+**Decision — process-group isolation, not a descendant walk.**
+`spawn_capture` puts every capture child in its own process group:
+`setpgid(0, 0)` in the child before exec (a fresh fork child cannot
+be a session leader, so failure is `_exit(126)`), mirrored by
+`setpgid(pid, pid)` in the parent (the standard double-setpgid idiom
+— a kill issued before the child runs cannot miss the group; the
+parent's EACCES-after-exec result is ignored). Both deadline kill
+sites (`lyric_process_run` and `lyric_process_kill`) send
+`kill(-pid, SIGKILL)`, with a direct-pid fallback for the
+cannot-happen case of both setpgid calls failing.
+
+The alternative — walking `/proc` (Linux) / `proc_listchildpids`
+(macOS) to enumerate descendants, as the .NET BCL's `Kill(true)`
+does — was rejected: it is platform-divergent code with an inherent
+race (a process spawned between the walk and the kills escapes),
+whereas the group kill is atomic over present *and* future group
+members.
+
+**Trade-off (documented, accepted).** A group-isolated child no
+longer shares the terminal's foreground process group, so it does
+not receive terminal-generated signals (Ctrl+C) alongside the
+parent. For a capture API — piped stdio, deadline-supervised,
+non-interactive by construction — this is acceptable: parent death
+closes the pipe ends, so an orphaned child sees EOF on stdin and
+EPIPE on writes instead. The .NET twin on Unix leaves the child in
+the parent's group and inherits the opposite trade-off (Ctrl+C
+propagation, but tree-kill via racy walks).
+
+**What the #5176 drain budget is still for.** The group kill removes
+the common grandchild-stall case, but a descendant that calls
+`setsid` leaves the group and survives; the 2 s post-kill drain
+budget remains the backstop that returns control to the caller. The
+C suite pins both sides: the grandchild-writer test now asserts an
+EOF-based drain exit *under* 1.5 s (a >= 2 s runtime would mean the
+kill regressed to child-only and the budget saved it), and a new
+setsid-escapee test asserts the budget path still engages (>= 1.5 s,
+< 10 s; self-skips where `setsid`(1) does not exist, e.g. macOS).
+
+**Contract unchanged.** #5107 semantics are untouched: `timedOut`
+reports true only when the *direct child's* reaped status shows the
+kill landed; exit codes, -2 normalization, and output preservation
+are as in D-N-024.
+
+**Verification.** Two C tests as above (clang + gcc). One new
+`llvm_self_test_async.l` case (31 total): a plain-main `runCapture`
+timeout over `sh -c "(while :; do echo g; sleep 0.05; done) & sleep
+30"` asserting `timedOut`/-2 and an elapsed bound that a surviving
+grandchild (30 s sleep) or a budget stall would blow.
+
+**Related:** D-N-024 (the deferral this closes), D-N-023, #4752,
+#5107, #5176, `lyric-rt/src/lyric_process.c`,
+`lyric-rt/test/lyric_rt_test.c`.
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The

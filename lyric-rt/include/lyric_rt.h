@@ -363,9 +363,11 @@ void       lyric_set_current_task(LyricTask* t);
  * closes so the child reads EOF; content the child never reads is
  * silently dropped (EPIPE, matching the managed twin's absorbed
  * writer throw).  `timeout_ms` < 0 means no timeout; on expiry the
- * child is SIGKILLed, captured output is preserved, and
- * *out_timed_out reports 1 unless the reap shows the child had
- * already exited normally (the #5107 contract).
+ * child's whole process group is SIGKILLed (the child runs in its own
+ * group, so its descendants die with it — the managed twin's
+ * Kill(entireProcessTree: true) semantics, D-N-025), captured output
+ * is preserved, and *out_timed_out reports 1 unless the reap shows
+ * the child had already exited normally (the #5107 contract).
  *
  * Returns 0 when the child was spawned and reaped successfully: then
  * *out_exit_code holds the child's exit status (a signal-terminated
@@ -396,12 +398,11 @@ int32_t lyric_process_run(const char* path, LyricList* args,
  * flushes it to the child nonblockingly before draining output,
  * closing the write end at EOF-of-content (or dropping the rest on
  * EPIPE).  The stdout/stderr accessors return fresh rc=1
- * LyricStrings.  kill
- * sends SIGKILL to the child only (not its process tree), drains what
- * already arrived, and reaps; it returns 1 when the kill terminated
- * the child and 0 when the child had already exited (its real exit
- * status is preserved — the caller must not report a timeout then,
- * #5107). */
+ * LyricStrings.  kill sends SIGKILL to the child's whole process
+ * group (D-N-025), drains what already arrived, and reaps; it returns
+ * 1 when the kill terminated the child and 0 when the child had
+ * already exited (its real exit status is preserved — the caller must
+ * not report a timeout then, #5107). */
 void* lyric_process_start(const char* path, LyricList* args, LyricString* stdin_content);
 int32_t lyric_process_spawn_failed(void* op);
 int32_t lyric_process_pump(void* op);

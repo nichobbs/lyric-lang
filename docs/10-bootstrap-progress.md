@@ -29438,3 +29438,35 @@ remaining non-runCapture items.
 
 **Related:** D-N-024 (the decision entry), D-N-023, D-progress-597,
 #4752, #5107.
+
+### D-progress-600 — Native deadline kills take the whole process group (D-N-025)
+
+**Shipped.** The D-N-024 process-tree-kill deferral is closed: every
+capture child runs in its own process group (`setpgid(0, 0)` in the
+child before exec, mirrored by the parent — the double-setpgid
+idiom), and both deadline kill sites (`lyric_process_run` and the
+async op's `lyric_process_kill`) send `kill(-pid, SIGKILL)`, so a
+timed-out `sh -c` pipeline no longer leaves grandchildren running —
+the managed twin's `Kill(entireProcessTree: true)` semantics, without
+the descendant-walk race (a process spawned mid-walk escapes; a group
+kill is atomic over present and future members).
+
+- The #5107 contract is unchanged: `timedOut` still reports the
+  direct child's reaped status; -2 normalization and output
+  preservation as in D-N-024.
+- The #5176 drain budget remains the backstop for `setsid` escapees
+  that leave the group.
+- Documented trade-off: a group-isolated child no longer receives
+  terminal Ctrl+C alongside the parent; parent death still closes
+  the pipes (EOF/EPIPE). See D-N-025.
+- **Verification:** the grandchild-writer C test now asserts an
+  EOF-based drain exit under 1.5 s (>= 2 s would mean the kill
+  regressed to child-only and only the budget saved it); a new
+  setsid-escapee C test pins the budget path (self-skips without
+  `setsid`(1)); both under clang and gcc. One new
+  `llvm_self_test_async.l` case (31 total): a plain-main timeout over
+  a backgrounded writer asserts `timedOut`/-2 within an elapsed bound
+  a surviving grandchild would blow.
+
+**Related:** D-N-025 (the decision entry), D-N-024, D-progress-599,
+#4752, #5107, #5176.

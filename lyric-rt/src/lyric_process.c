@@ -140,8 +140,20 @@ static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* 
     }
 
     if (pid == 0) {
-        /* Child: wire the pipes onto fds 0/1/2, then exec.  Only
-         * async-signal-safe calls from here to exec (or _exit).
+        /* Child: own process group first, then wire the pipes onto fds
+         * 0/1/2 and exec.  Only async-signal-safe calls from here to
+         * exec (or _exit).
+         *
+         * The new group is what lets a deadline kill take the child's
+         * whole descendant tree with one kill(-pid) — the managed
+         * twin's Kill(entireProcessTree: true) semantics, without the
+         * walk-the-tree races (D-N-025).  A fresh fork child cannot be
+         * a session leader, so setpgid(0, 0) cannot legitimately fail.
+         *
+         * Trade-off, documented in D-N-025: a group-isolated child no
+         * longer receives terminal-generated signals (Ctrl+C) with the
+         * parent; parent death still closes the pipes, so the child
+         * sees EOF/EPIPE instead.
          *
          * If the parent had any of fds 0/1/2 closed, pipe() may have
          * handed the pipes those very numbers, so a source fd can
@@ -152,6 +164,7 @@ static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* 
          * dup2 calls cannot clobber one another.  dup2 leaves CLOEXEC
          * clear on the target, so 0/1/2 survive the exec; the lifted
          * sources are closed explicitly. */
+        if (setpgid(0, 0) < 0) _exit(126);
         close(out_pipe[0]);
         close(err_pipe[0]);
         close(in_pipe[1]);
@@ -183,8 +196,13 @@ static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* 
         _exit(127); /* execvp failed (e.g. path not found) */
     }
 
-    /* Parent: close the child-side ends and the argv cstrings (fork
-     * already gave the child its own copy-on-write copy of both). */
+    /* Parent: mirror the child's setpgid so a kill(-pid) issued before
+     * the child has run cannot miss the group (the standard double-
+     * setpgid idiom).  EACCES just means the child already exec'd —
+     * its own setpgid ran first — so the result is ignored. */
+    (void)setpgid(pid, pid);
+    /* Close the child-side ends and the argv cstrings (fork already
+     * gave the child its own copy-on-write copy of both). */
     close(out_pipe[1]);
     close(err_pipe[1]);
     close(in_pipe[0]);
@@ -250,10 +268,10 @@ static void set_nonblock(int fd) {
  * (#4752).  stdin writes interleave with stdout/stderr reads in one
  * poll loop, so a child that fills an output pipe while the parent is
  * mid-write cannot deadlock either side.  timeout_ms < 0 means no
- * timeout; on expiry the child is SIGKILLed, already-captured output
- * is preserved, and *out_timed_out reports 1 UNLESS the reap shows the
- * child had already exited normally (the same #5107 contract as the
- * async op's kill). */
+ * timeout; on expiry the child's whole process group is SIGKILLed
+ * (D-N-025), already-captured output is preserved, and *out_timed_out
+ * reports 1 UNLESS the reap shows the child had already exited
+ * normally (the same #5107 contract as the async op's kill). */
 int32_t lyric_process_run(const char* path, LyricList* args,
                            LyricString* stdin_content, int32_t timeout_ms,
                            int32_t* out_exit_code,
@@ -337,9 +355,14 @@ int32_t lyric_process_run(const char* path, LyricList* args,
             if (killed) {
                 break; /* post-kill drain exhausted; force-close below */
             }
-            /* Deadline expired: kill, stop feeding stdin, and keep
-             * draining until the output pipes report EOF. */
-            kill(pid, SIGKILL);
+            /* Deadline expired: kill the child's whole process group
+             * (D-N-025 — spawn_capture put it in its own), stop
+             * feeding stdin, and keep draining until the output pipes
+             * report EOF.  The direct-pid fallback covers the
+             * cannot-happen case of both setpgid calls failing. */
+            if (kill(-pid, SIGKILL) != 0) {
+                kill(pid, SIGKILL);
+            }
             killed = 1;
             kill_ns = lyric_monotonic_nanos();
             if (fds[2].fd >= 0) {
@@ -539,9 +562,10 @@ int32_t lyric_process_pump(void* raw) {
     return op->done;
 }
 
-/* Timeout path: SIGKILL the child, drain what already arrived, close
- * the pipes, and reap (blocking — the child is dead, the reap is
- * immediate).  After this the op is done.  Returns 1 when the kill
+/* Timeout path: SIGKILL the child's process group (D-N-025), drain
+ * what already arrived, close the pipes, and reap (blocking — the
+ * child is dead, the reap is immediate).  After this the op is done.
+ * Returns 1 when the kill
  * actually terminated the child; 0 when the child had already exited
  * (a SIGKILL landing on a zombie does not alter its status, so the
  * reap reports the child's REAL exit) — the caller must not report a
@@ -550,7 +574,12 @@ int32_t lyric_process_pump(void* raw) {
 int32_t lyric_process_kill(void* raw) {
     LyricProcOp* op = (LyricProcOp*)raw;
     if (op->done) return 0;
-    kill(op->pid, SIGKILL);
+    /* Group kill (D-N-025): takes the child's descendants too; the
+     * direct-pid fallback covers the cannot-happen case of both
+     * setpgid calls failing. */
+    if (kill(-op->pid, SIGKILL) != 0) {
+        kill(op->pid, SIGKILL);
+    }
     if (op->in_fd >= 0) {
         close(op->in_fd);
         op->in_fd = -1;
