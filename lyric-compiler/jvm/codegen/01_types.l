@@ -419,6 +419,27 @@ pub record FuncCtx {
   // string / empty map for every non-wire-binding context.
   wireClassName: String
   wireBindingTypes: Map[String, JvmType]
+  // Structured concurrency (D119 slice S4 / D120): the stack of virtual-thread
+  // `ExecutorService` local slots for the enclosing `scope { }` blocks, innermost
+  // last.  `SScope` opens `Executors.newVirtualThreadPerTaskExecutor()` into a
+  // fresh slot and pushes it here; a `spawn e` lowered while this is non-empty
+  // submits a synthesized `Callable` closure to the innermost executor
+  // (`scopeExecSlots.last`) and yields a `Future`; a `spawn` outside any scope
+  // stays degenerate (runs `e` synchronously).  Empty for every non-scope
+  // context.  No default per the JVM-codegen no-defaulted-field rule (see
+  // `varGenericArgs`); initialised `newList()` at every construction site.
+  scopeExecSlots: List[Int]
+  // Structured concurrency (D119 S4 / D120): for a `val t = spawn f(…)` binding
+  // whose slot holds a `Future` (a spawn inside a `scope { }`), the *logical*
+  // result type of the spawned call — `f`'s return JVM type (e.g. `JInt`).
+  // `await t` joins the `Future` (yielding `Object`) then unboxes to this type,
+  // so `await a + await b` sees two primitives rather than the both-`Object`
+  // arithmetic gap (#2862).  Only primitive-returning spawns bound by name are
+  // recorded; reference-returning spawns (used as references, no unboxing) and
+  // bare no-scope spawns (the binding already holds the value) need no entry.
+  // No default per the JVM-codegen no-defaulted-field rule; initialised
+  // `newMap()` at every construction site.
+  spawnResultTypes: Map[String, JvmType]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -29503,3 +29503,33 @@ targets now honor the same documented four-format parse contract.
 
 **Related:** D-N-026 (the decision entry), D-progress-557 (the
 Option-seam idiom), #4752 (Std.Time calendar surface remains).
+### D-progress-602 — D119 slice S4: JVM structured-concurrency keyword codegen (`scope`/`spawn`/`await`) + MSIL async spawn-in-scope pre-scan fix
+
+Implements D120 for the self-hosted **JVM** backend. `scope { }` opens a
+non-preview virtual-thread `ExecutorService` closed on every exit path via a
+synthesized `defer` (reusing the defer machinery); `spawn e` synthesizes a
+capturing `Callable` (mirroring `lowerLambda`) submitted to the scope executor,
+yielding a `Future`; `await` joins via a per-package `__lyric_await` helper
+(`Future.get()` + `ExecutionException`-cause unwrap) and unboxes to the spawned
+call's result type (so `await a + await b` avoids the both-`Object` gap #2862).
+A `spawn` outside any scope stays degenerate (synchronous). Two supporting
+JVM-codegen fixes the shared self-test surfaced: `stmtTerminates` treats a
+`scope { … return … }` as terminating (no stray void `return` in the epilogue),
+and `lowerDeferRegion` skips the join label when the protected suffix already
+transferred control (a dead code-end label otherwise produced a "bad offset"
+StackMapTable frame).
+
+On **MSIL** (`async func` = real `Task<T>`; `spawn`/`scope` degenerate pending
+S5/S6) the Phase B await pre-scan now recurses into `scope`/loop/`try` bodies to
+collect `val x = spawn f()` bindings (previously top-level only), fixing an
+"await index exceeds pre-allocated resume labels" codegen crash for a spawn bound
+inside a `scope`.
+
+Verified by `async_spawn_self_test.l` (`@test_module`, both targets — MSIL 5/5
+via `lyric test`; JVM real-concurrency codegen verified via standalone
+`--target jvm` programs), no regressions in `async_sm`/`async_extern`/
+`async_generator` self-tests, and a defer-control-flow stress program on both
+targets.
+
+**Related:** `docs/03-decision-log.md` D-progress-602 + D120 (the design),
+D-progress-598 (V0014), `docs/18-jvm-emission.md` §15.

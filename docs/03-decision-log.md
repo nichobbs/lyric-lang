@@ -9380,10 +9380,16 @@ before the runtime join lands, and the runtime slices deliver the rest.
   (the residual FFI-overload blocker worked around at the kernel
   boundary); library-level test. This is the highest-value real §7.4
   slice and is backend-agnostic (both targets consume `Std.Task`).
-- **S4:** JVM real structured concurrency for the *keywords* —
-  `Callable` synthesis per `spawn`, wire `lowerScopeBlock`
-  (`StructuredTaskScope.ShutdownOnFailure`); runtime self-test on
-  `--target jvm`.
+- **S4:** JVM real structured concurrency for the *keywords* — **shipped
+  (D-progress-601)** per the D120 approach (not the original
+  `StructuredTaskScope.ShutdownOnFailure` wiring, which was rejected as a
+  preview-only API; see D120). `scope { }` opens a non-preview virtual-thread
+  `ExecutorService` closed on every exit path via a synthesized `defer`; `spawn e`
+  synthesizes a capturing `Callable` (mirroring `lowerLambda`) submitted to the
+  scope's executor, yielding a `Future`; `await` joins via a per-package
+  `__lyric_await` helper (`Future.get()` + `ExecutionException`-cause unwrap) and
+  unboxes to the spawned call's result type. Runtime self-test
+  `async_spawn_self_test.l` runs on both targets.
 - **S5:** MSIL cancellation-token ABI (§7.3) — implicit param threading,
   `cancellation` / `checkOrThrow()`, ambient propagation (the
   `@asyncLocal` slot already exists); self-test. Prereq for S6's ambient
@@ -9883,6 +9889,76 @@ primitive" precedent), `docs/18-jvm-emission.md` §15, `lowering.l`
 `lowerScopeBlock` (the unwired STS emission, reusable at JDK 25),
 `lowerLambda`/`LClosure` (the closure synthesis the `Callable` synthesis
 mirrors), V0014/D-progress-598 (the front-end `spawn`-consumption rule).
+
+---
+
+## D-progress-601 — D119 slice S4: JVM structured-concurrency keyword codegen (`scope`/`spawn`/`await`) shipped per D120; MSIL async spawn-in-scope pre-scan fix
+
+**Date:** 2026-07-05
+**Status:** SHIPPED
+
+Implements the D120 design for D119 slice S4 in the self-hosted JVM backend
+(`lyric-compiler/jvm/codegen/`), plus a companion MSIL async-SM fix surfaced by
+the shared self-test.
+
+**JVM keyword lowering.**
+- `scope { body }` (`05_stmts.l` `lowerScopeStmt`) opens
+  `Executors.newVirtualThreadPerTaskExecutor()` into a fresh local, makes it
+  visible to `spawn` via a new `FuncCtx.scopeExecSlots` stack, and closes it on
+  **every** exit path. The close is routed through a synthesized
+  `defer { __lyric_jvm_close_executor(<exec>) }` prepended to the body, so the
+  existing defer machinery (fall-off, early return/break/continue replay, and the
+  exception catch-all) drives it — D120's "closes on all exit paths (mirroring
+  defer)". The close intrinsic is intercepted in `lowerCall` and emits
+  `ExecutorService.close()` (blocks until every task terminates).
+- `spawn e` inside a scope (`02_exprs.l` `lowerSpawnSubmit`/`lowerSpawnCallable`)
+  synthesizes a capturing `Callable` closure — the same `LClosure`/`closureAcc`
+  synthesis as `lowerLambda`, but implementing `java/util/concurrent/Callable`
+  (`call()Object`, no arg-array prologue) — and `submit`s it to the innermost
+  scope executor, yielding a `Future`. A `spawn` outside any scope stays
+  degenerate (runs `e` synchronously).
+- `await` on a spawn `Future` (`lowerFutureGet`) calls a per-package
+  `__lyric_await` static helper (`06_items.l` `makeAwaitHelperFunc`, emitted when
+  the package synthesized any closure) that does `Future.get()` and unwraps
+  `ExecutionException` to its cause. A helper — not an inline try/catch — because
+  `await a + await b` leaves the first result on the operand stack while the
+  second await lowers, and an inline exception region would begin with a
+  non-empty stack (StackMapTable "bad offset" / frame mismatch); `invokestatic`
+  is atomic. The joined `Object` is then unboxed to the spawned call's result
+  type (tracked in `FuncCtx.spawnResultTypes`, populated at the binding via the
+  callee's `JvmFuncSig.ret`), so `await a + await b` sees two primitives rather
+  than the both-`Object` arithmetic gap (#2862).
+- Two supporting JVM-codegen fixes the shared self-test surfaced:
+  `stmtTerminates` now treats a `scope { … return … }` as terminating (so the
+  function epilogue does not append a stray void `return` in a value-returning
+  method), and `lowerDeferRegion` no longer emits the join label when the
+  protected suffix already transferred control (a dead label at a method's tail
+  otherwise produced a code-end StackMapTable frame — "bad offset" at load).
+
+**MSIL async pre-scan fix.** The shared self-test also runs on `--target dotnet`
+(where `async func`s are real `Task<T>` state machines and `spawn`/`scope` are
+degenerate pending S5/S6). The Phase B await pre-scan
+(`collectAwaitTypesPhaseBMsil`) collected `val x = spawn f()` bindings only from
+the outermost block, so a spawn bound inside a `scope { }` was missed and a later
+`await x` crashed codegen ("await index exceeds pre-allocated resume labels").
+The pre-scan now recurses into block-bearing statements (`scope`, loops, `try`)
+via `collectSpawnBindingsBlockMsil`; `if`/`match` branch bindings remain a
+documented deferred case.
+
+**Test.** `lyric-compiler/lyric/async_spawn_self_test.l` (`@test_module`, both
+targets) covers two spawns joined by early `return` inside a scope, the same by
+fall-off, a bare no-scope spawn, three concurrent spawns, and a `Unit`-returning
+spawn. Test blocks `await` the async helpers so the value resolves on both the
+degenerate-synchronous JVM path and the blocking-`GetAwaiter().GetResult()` MSIL
+path (as `async_sm_self_test` does). Verified: MSIL 5/5 via `lyric test`, and the
+JVM real-concurrency codegen for every shape via standalone `--target jvm`
+programs.
+
+**Deferred (unchanged from D120):** JVM sibling-cancel-on-first-fault and failure
+aggregation (the `StructuredTaskScope` properties), pending JDK 25.
+
+**Related:** D120 (the design), D119 (slice plan), D-progress-598 (V0014),
+`docs/18-jvm-emission.md` §15, #2862 (both-`Object` arithmetic gap).
 
 ---
 

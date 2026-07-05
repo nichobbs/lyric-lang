@@ -399,10 +399,14 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
   match fn.kind {
     case EPath(path) -> {
       val funcName = lastSegment(path)
-      // J2b closures (#2665): a call whose head is a single-segment local bound
-      // to a lambda value (`val f = (x) -> …; f(2)`) invokes the shared
-      // functional interface on the closure object, not a static method.
-      if path.segments.count == 1 and isLambdaLocal(ctx, funcName) {
+      // Structured concurrency (D119 S4 / D120): the compiler-synthesized close
+      // intrinsic emitted by `scope { }` lowering.  Its single argument is the
+      // executor local; emit `ExecutorService.close()` on it (blocks until every
+      // submitted task terminates).  Intercepted before name resolution because
+      // no real function of this reserved `__lyric_`-prefixed name exists.
+      if path.segments.count == 1 and funcName == jvmCloseExecutorIntrinsic() {
+        lowerCloseExecutorIntrinsic(ctx, insns, args)
+      } else if path.segments.count == 1 and isLambdaLocal(ctx, funcName) {
         lowerLambdaInvoke(ctx, insns, funcName, args)
       } else {
         lowerBuiltinOrStaticCall(ctx, insns, funcName, path, args)
@@ -425,6 +429,40 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
       JRef(className = "java/lang/Object")
     }
   }
+}
+
+// Emit `<execLocal>.close()` for the `scope { }` close intrinsic (D119 S4 /
+// D120).  The single positional argument is an `EPath` naming the executor
+// local; load it and `invokeinterface ExecutorService.close()` (default method,
+// JDK 19+), which performs an orderly shutdown and blocks until every submitted
+// task terminates.  Returns `JVoid` (the `defer` body discards it).
+func lowerCloseExecutorIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], args: in List[CallArg]): JvmType {
+  val execTy = JRef(className = "java/util/concurrent/ExecutorService")
+  if args.count == 1 {
+    val argExpr = match args[0] { case CAPositional(e) -> e; case CANamed(_, e, _) -> e }
+    match argExpr.kind {
+      case EPath(p) -> {
+        val nm = lastSegment(p)
+        match lookupSlot(ctx, nm) {
+          case Some(s) -> {
+            emitLoad(insns, s, execTy)
+            insns.add(
+              LInvokeinterface(
+                owner = "java/util/concurrent/ExecutorService",
+                name = "close",
+                params = newList(),
+                ret = JVoid,
+                argCount = 1
+              )
+            )
+          }
+          case None -> panic("Jvm.Codegen: scope close intrinsic references unknown executor local '" + nm + "' (unreachable)")
+        }
+      }
+      case _ -> panic("Jvm.Codegen: scope close intrinsic argument is not an executor local path (unreachable)")
+    }
+  }
+  JVoid
 }
 
 // True when `name` is a local/param slot holding a lambda (closure) value: a

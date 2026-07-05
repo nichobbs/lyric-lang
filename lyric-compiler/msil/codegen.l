@@ -15775,18 +15775,70 @@ func collectAwaitTypesStmtPB(
 // passed into recursion), which avoids the F# bootstrap emitter limitation where
 // two-arg .add() and one-arg .add() on `in Map[K,V]` / `in List[T]` parameters
 // may fail BCL dispatch when type args include non-BCL Lyric types.
+// Collect `val x = spawn asyncFn(…)` bindings for the Phase B await pre-scan,
+// recursing into block-bearing statements (`scope { }`, loops, `try`) so a spawn
+// bound inside a `scope { }` — the structured-concurrency shape — is captured and
+// a later `await x` resolves the right TaskAwaiter<T> type.  Spawn bindings inside
+// `if` / `match` branch *expressions* remain a deferred case.
+func collectSpawnBindingsStmtMsil(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  st: in Statement,
+  spawnNms: in List[String],
+  spawnTys: in List[MsilType],
+): Unit {
+  match st.kind {
+    case SLocal(binding) -> match binding { case LBVal(pat, _, init) -> match pat.kind { case PBinding(bindName, _) -> match init.kind { case ESpawn(spawnInner) -> { val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys); if isTaskTypeMsil(cctx, sTy) { spawnNms.add(bindName); spawnTys.add(sTy) } }; case _ -> {  } }; case _ -> {  } }; case _ -> {  } }
+    case SScope(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
+    case SLoop(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
+    case SWhile(_, _, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
+    case SFor(_, _, _, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
+    case SDefer(body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
+    case STry(body, catches, finally_) -> {
+      collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
+      var ci = 0
+      while ci < catches.count {
+        collectSpawnBindingsBlockMsil(cctx, pkgName, catches[ci].body, spawnNms, spawnTys)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectSpawnBindingsBlockMsil(cctx, pkgName, fb, spawnNms, spawnTys)
+        case None -> {
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
+}
+
+func collectSpawnBindingsBlockMsil(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  blk: in Block,
+  spawnNms: in List[String],
+  spawnTys: in List[MsilType],
+): Unit {
+  var si = 0
+  while si < blk.statements.count {
+    collectSpawnBindingsStmtMsil(cctx, pkgName, blk.statements[si], spawnNms, spawnTys)
+    si = si + 1
+  }
+}
+
 func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: in FunctionDecl): List[MsilType] {
   val result: List[MsilType] = newList()
   val spawnNms: List[String] = newList()
   val spawnTys: List[MsilType] = newList()
 
-  // Phase 1: flat top-level pre-scan to collect spawn bindings.
-  // Only the outermost block's statements are scanned; nested spawn bindings
-  // (inside if/match/loop bodies) are a deferred case.
+  // Phase 1: pre-scan to collect spawn bindings, recursing into block-bearing
+  // statements (`scope { }`, loops, `try`) so a `val x = spawn …` inside a
+  // `scope { }` is captured.  Spawn bindings inside `if` / `match` branch
+  // expressions remain a deferred case.
   match decl.body {
     case None -> {
     }
-    case Some(body) -> match body { case FBExpr(_) -> {  }; case FBBlock(blk) -> { var si = 0; while si < blk.statements.count { match blk.statements[si].kind { case SLocal(binding) -> match binding { case LBVal(pat, _, init) -> match pat.kind { case PBinding(bindName, _) -> match init.kind { case ESpawn(spawnInner) -> { val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys); if isTaskTypeMsil(cctx, sTy) { spawnNms.add(bindName); spawnTys.add(sTy) } }; case _ -> {  } }; case _ -> {  } }; case _ -> {  } }; case _ -> {  } }; si = si + 1 } } }
+    case Some(body) -> match body { case FBExpr(_) -> {  }; case FBBlock(blk) -> collectSpawnBindingsBlockMsil(cctx, pkgName, blk, spawnNms, spawnTys) }
   }
 
   // Phase 2: recursive scan over the full body using the pre-built spawn lists

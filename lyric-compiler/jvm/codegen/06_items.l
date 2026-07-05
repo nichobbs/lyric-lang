@@ -81,7 +81,9 @@ func makeFuncCtx(
     captureCellNames = newList(),
     varGenericArgs = newMap(),
     wireClassName = "",
-    wireBindingTypes = newMap()
+    wireBindingTypes = newMap(),
+    scopeExecSlots = newList(),
+    spawnResultTypes = newMap()
   )
 }
 
@@ -122,7 +124,9 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     captureCellNames = ctx.captureCellNames,
     varGenericArgs = ctx.varGenericArgs,
     wireClassName = wireClassName,
-    wireBindingTypes = wireBindingTypes
+    wireBindingTypes = wireBindingTypes,
+    scopeExecSlots = ctx.scopeExecSlots,
+    spawnResultTypes = ctx.spawnResultTypes
   )
 }
 
@@ -181,7 +185,9 @@ func makeFuncCtxForGenerator(
     captureCellNames = newList(),
     varGenericArgs = newMap(),
     wireClassName = "",
-    wireBindingTypes = newMap()
+    wireBindingTypes = newMap(),
+    scopeExecSlots = newList(),
+    spawnResultTypes = newMap()
   )
 }
 
@@ -242,7 +248,9 @@ func makeFuncCtxInstance(
     captureCellNames = newList(),
     varGenericArgs = newMap(),
     wireClassName = "",
-    wireBindingTypes = newMap()
+    wireBindingTypes = newMap(),
+    scopeExecSlots = newList(),
+    spawnResultTypes = newMap()
   )
 }
 
@@ -883,6 +891,12 @@ func stmtTerminates(stmt: in Statement): Bool {
     case SBreak(_) -> true
     case SContinue(_) -> true
     case SExpr(e) -> exprTerminates(e)
+    // A `scope { body }` transfers control away exactly when its body does — e.g.
+    // a `scope` whose only exit is a `return` inside it (the `loadParallel`
+    // shape).  Without this, a trailing `scope { … return … }` in a non-void
+    // function looks non-terminating and the epilogue appends a stray void
+    // `return`, which fails verification in a value-returning method.
+    case SScope(_, body) -> blockTerminates(body)
     case _ -> false
   }
 }
@@ -3342,6 +3356,48 @@ func findLoweredModuleVal(cache: in List[LoweredModuleVal], name: in String): Op
   None
 }
 
+// Build the per-package `__lyric_await` helper (D119 S4 / D120): a `public
+// static Object __lyric_await(Future f)` that returns `f.get()`, catching
+// `ExecutionException` and rethrowing its cause so a caller's `try { await … }
+// catch <TaskError>` observes the task's real exception rather than the
+// executor's wrapper.  Lives in its own method frame, so its exception region
+// begins with a clean operand stack — the reason `await` calls it via
+// `invokestatic` instead of inlining the try/catch (see `lowerFutureGet`).
+func makeAwaitHelperFunc(): LFunc {
+  val futureTy = JRef(className = "java/util/concurrent/Future")
+  val objTy = JRef(className = "java/lang/Object")
+  val insns: List[LInsn] = newList()
+  insns.add(LLabel(name = "aw_start"))
+  insns.add(LAload(slot = 0))
+  insns.add(
+    LInvokeinterface(owner = "java/util/concurrent/Future", name = "get", params = newList(), ret = objTy, argCount = 1)
+  )
+  insns.add(LAreturn)
+  insns.add(LLabel(name = "aw_end"))
+  // Handler: the caught `ExecutionException` is on the stack; rethrow its cause.
+  insns.add(LLabel(name = "aw_handler"))
+  insns.add(
+    LInvokevirtual(
+      owner = "java/lang/Throwable",
+      name = "getCause",
+      params = newList(),
+      ret = JRef(className = "java/lang/Throwable")
+    )
+  )
+  insns.add(LAthrow)
+  insns.add(
+    LTryCatch(
+      startLabel = "aw_start",
+      endLabel = "aw_end",
+      handlerLabel = "aw_handler",
+      catchClass = "java/util/concurrent/ExecutionException"
+    )
+  )
+  val ps: List[JvmType] = newList()
+  ps.add(futureTy)
+  LFunc(flags = 0x0009, name = awaitHelperName(), params = ps, ret = objTy, insns = insns, maxStack = 0, maxLocals = 1)
+}
+
 // Backward-compatible single-package entry: the registry carries only this
 // file's own functions (enough to resolve intra-package calls — including
 // void-returning ones the legacy guess mis-resolved).
@@ -4034,6 +4090,17 @@ pub func codegenPackageWithSigsSeeded(
       maxLocals = 2
     )
   )
+
+  // Structured concurrency (D119 S4 / D120): emit the `__lyric_await` helper on
+  // the host class whenever this package synthesized any closure.  A `Future`
+  // (what `await` joins via the helper) can only originate from a `spawn` inside
+  // a `scope { }`, which always appends a `Callable` closure to `closureAcc` —
+  // so a non-empty accumulator is a sound (never-missing) signal that the helper
+  // may be needed.  A package with only lambdas emits an unused helper (six
+  // instructions over always-present JDK types); harmless.
+  if closureAcc.count > 0 {
+    fns.add(makeAwaitHelperFunc())
+  }
 
   items.add(LPFuncs(funcsClass = funcsClass, fns = fns, staticVals = staticVals))
 

@@ -891,6 +891,20 @@ need direction and have nothing else productive to do**.  Specifically:
     weaver (D-progress-525, #3414); `aspect_weave_self_test.l` does not yet
     exercise the multi-file scenario where a consumer package imports a
     library template — a runtime test is tracked separately (#3498).
+  - `async_spawn_self_test.l` — `@test_module` runtime regression test for the
+    structured-concurrency keywords `scope { }` / `spawn e` / `await t` (D119
+    slice S4 / D120, D-progress-601).  Runs real concurrent work and asserts
+    runtime values: two spawns joined by early `return` inside a scope, the same
+    by fall-off, a bare no-scope spawn, three concurrent spawns, and a
+    `Unit`-returning spawn.  Run in CI via native `lyric test` on **both targets**
+    (like `bitwise_self_test.l`): `--target jvm` is the load-bearing run
+    (real virtual-thread `ExecutorService` codegen — `scope` open/close,
+    `spawn` → `Callable` submit → `Future`, `await` → `__lyric_await` join),
+    `--target dotnet` exercises the degenerate-synchronous MSIL path plus the
+    async-SM spawn-in-scope pre-scan fix.  Test blocks `await` the async helpers
+    so the value resolves on both the synchronous JVM path and the blocking-
+    `GetAwaiter().GetResult()` MSIL path (as `async_sm_self_test.l` does).
+    Imports only `Std.*`.
   - `auto_ffi_self_test.l` — `@test_module` covering self-hosted
     metadata-based auto-FFI resolution (epic #1622, Phase 3c): the MSIL
     emitter resolves `ExternTypeName.method(args)` calls from real .NET

@@ -755,7 +755,10 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // A simple `val r = <expr>` records `r`'s generic args so a later
           // `match r` unboxes an erased payload (#4938).
           match pat.kind {
-            case PBinding(nm, _) -> recordVarGenericArgs(ctx, nm, init)
+            case PBinding(nm, _) -> {
+              recordVarGenericArgs(ctx, nm, init)
+              recordSpawnResultType(ctx, nm, init)
+            }
             case _ -> ()
           }
         }
@@ -771,6 +774,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             val slot = allocSlot(ctx, name, ty)
             emitStore(insns, slot, ty)
             recordVarGenericArgs(ctx, name, init)
+            recordSpawnResultType(ctx, name, init)
           }
         }
         case LBVar(name, tyOpt, initOpt) -> {
@@ -817,6 +821,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // erased payload (#4938).  The type checker fixes a `var`'s type
               // across reassignments, so recording at the initialiser is stable.
               recordVarGenericArgs(ctx, name, init)
+              recordSpawnResultType(ctx, name, init)
             }
             case None -> {
               // No initialiser: an annotation is required to know the slot type;
@@ -1150,8 +1155,13 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     }
 
     // ── Scope block ────────────────────────────────────────────────────────
+    // Structured concurrency (D119 S4 / D120): open a virtual-thread
+    // `ExecutorService`, make it visible to `spawn` inside the body, and close
+    // it on every exit path (fall-off, return, break/continue, exception) via a
+    // synthesized `defer` — the `close()` blocks until every submitted task
+    // terminates, giving §7.4's no-task-leak join.
     case SScope(_, body) -> {
-      lowerBlock(ctx, insns, body)
+      lowerScopeStmt(ctx, insns, body, stmt.span)
     }
 
     // ── Defer ───────────────────────────────────────────────────────────────
@@ -1609,7 +1619,95 @@ func lowerDeferRegion(
   // only); endLabel = normalReplayL excludes the inline normal-path replay so a
   // throw during replay rethrows directly rather than re-running the block.
   insns.add(LTryCatch(startLabel = startL, endLabel = normalReplayL, handlerLabel = handlerL, catchClass = ""))
-  insns.add(LLabel(name = afterL))
+  // Emit the join label only when it is reachable.  The single `goto afterL` (the
+  // normal-path replay above) is itself guarded by `not suffixTerminated`, so when
+  // the suffix already transferred control (e.g. a `scope { … return … }` at a
+  // function's tail) `afterL` has no incoming edge.  Emitting it there leaves a
+  // dead label at the method's end, and the StackMapTable generator then records a
+  // frame at the code-end offset — "StackMapTable error: bad offset" at load time.
+  if not suffixTerminated {
+    insns.add(LLabel(name = afterL))
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §6b. Structured concurrency: `scope { }` lowering (D119 S4 / D120).
+// ─────────────────────────────────────────────────────────────────────────────
+// The internal name of the intrinsic that `makeCloseDeferStmt` synthesizes and
+// `lowerCall` (04_calls.l) intercepts to emit `ExecutorService.close()`.  A
+// leading `__lyric_` marks it as compiler-synthesized; it is never user-nameable
+// (`__` is reserved) so no real function can collide with it.
+pub func jvmCloseExecutorIntrinsic(): String {
+  "__lyric_jvm_close_executor"
+}
+
+// Open a virtual-thread `ExecutorService` for a `scope { }` block, lower the body
+// with the executor visible to `spawn` (via `ctx.scopeExecSlots`), and close the
+// executor on every exit path.  The close is routed through a synthesized
+// `defer { <close intrinsic>(<exec local>) }` prepended to the body so the
+// existing defer machinery (fall-off, early return/break/continue replay, and
+// the exception catch-all) drives it — exactly D120's "try/finally so it closes
+// on all exit paths (mirroring defer)".
+func lowerScopeStmt(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, span: in Span): Unit {
+  val execTy = JRef(className = "java/util/concurrent/ExecutorService")
+  val execName = "__lyric_exec_" + freshLabel(ctx)
+  val execSlot = allocSlot(ctx, execName, execTy)
+  val noParams: List[JvmType] = newList()
+  insns.add(
+    LInvokestatic(
+      owner = "java/util/concurrent/Executors",
+      name = "newVirtualThreadPerTaskExecutor",
+      params = noParams,
+      ret = execTy
+    )
+  )
+  emitStore(insns, execSlot, execTy)
+  ctx.scopeExecSlots.add(execSlot)
+  // Prepend the synthesized close-defer, then lower the augmented statement list
+  // through the normal defer-aware path.
+  val augmented: List[Statement] = newList()
+  augmented.add(makeCloseDeferStmt(execName, span))
+  var i = 0
+  while i < body.statements.count {
+    augmented.add(body.statements[i])
+    i = i + 1
+  }
+  lowerBlockStmtsFrom(ctx, insns, augmented, 0)
+  ctx.scopeExecSlots.removeAt(ctx.scopeExecSlots.count - 1)
+}
+
+// Record the logical result type of a `val/let/var t = spawn f(…)` binding whose
+// slot holds a `Future` (a spawn lowered inside a `scope { }`), so a later
+// `await t` unboxes the joined `Object` back to `f`'s return type.  A no-op for a
+// non-spawn init, a bare (no-scope) spawn whose binding already holds the value,
+// a `Unit`-returning spawn (nothing to unbox), or an unresolvable spawn call.
+pub func recordSpawnResultType(ctx: in FuncCtx, name: in String, init: in Expr): Unit {
+  if ctx.scopeExecSlots.count > 0 {
+    match init.kind {
+      case ESpawn(spawnInner) -> match spawnInnerResultType(ctx, spawnInner) { case Some(t) -> match t { case JVoid -> (); case _ -> ctx.spawnResultTypes.add(name, t) }; case None -> () }
+      case _ -> ()
+    }
+  }
+}
+
+// Synthesize `defer { <jvmCloseExecutorIntrinsic>(<execName>) }` as an AST
+// `Statement`, using `span` for every synthetic node so diagnostics (should any
+// escape) point at the originating `scope`.
+func makeCloseDeferStmt(execName: in String, span: in Span): Statement {
+  val calleeSegs: List[String] = newList()
+  calleeSegs.add(jvmCloseExecutorIntrinsic())
+  val callee = Expr(kind = EPath(path = ModulePath(segments = calleeSegs, span = span)), span = span)
+  val argSegs: List[String] = newList()
+  argSegs.add(execName)
+  val argExpr = Expr(kind = EPath(path = ModulePath(segments = argSegs, span = span)), span = span)
+  val callArgs: List[CallArg] = newList()
+  callArgs.add(CAPositional(expr = argExpr))
+  val callExpr = Expr(kind = ECall(fn = callee, args = callArgs), span = span)
+  val exprStmt = Statement(kind = SExpr(expr = callExpr), span = span)
+  val deferStmts: List[Statement] = newList()
+  deferStmts.add(exprStmt)
+  val deferBlock = Block(statements = deferStmts, span = span)
+  Statement(kind = SDefer(body = deferBlock), span = span)
 }
 
 // True when `block` declares a `defer` directly among its statements.

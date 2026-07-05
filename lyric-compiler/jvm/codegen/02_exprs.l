@@ -1060,9 +1060,28 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       JRef(className = "java/util/ArrayList")
     }
 
-    // ── Await / spawn (bootstrap: synchronous lowering) ───────────────────
+    // ── Await ─────────────────────────────────────────────────────────────
+    // Structured concurrency (D119 S4 / D120): awaiting a `spawn` handle (a
+    // `Future`, produced by `ESpawn` inside a `scope { }`) joins it via
+    // `Future.get()`, unwrapping `ExecutionException` to the task's real cause.
+    // Awaiting anything else (a synchronously-resolved degenerate-async value)
+    // stays a pass-through — the value is already materialized.
     case EAwait(inner) -> {
-      lowerExpr(ctx, insns, inner)
+      val t = lowerExpr(ctx, insns, inner)
+      if isFutureType(t) {
+        lowerFutureGet(ctx, insns)
+        // The join yields `Object`; coerce back to the spawned value's real type
+        // (unbox for a primitive, checkcast for a reference) so downstream use —
+        // arithmetic, member access — sees the right type.  A `Unit` spawn's null
+        // stays `Object` (it is discarded).
+        val objTy = JRef(className = "java/lang/Object")
+        match awaitLogicalType(ctx, inner) {
+          case Some(pt) -> match pt { case JVoid -> objTy; case _ -> { coerceArgTo(insns, objTy, pt); pt } }
+          case None -> objTy
+        }
+      } else {
+        t
+      }
     }
 
     // ── Yield: meta-insn for async generators ─────────────────────────────
@@ -1079,8 +1098,19 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       }
     }
 
+    // ── Spawn ─────────────────────────────────────────────────────────────
+    // Structured concurrency (D119 S4 / D120): inside a `scope { }`, `spawn e`
+    // submits a synthesized `Callable` closure capturing `e`'s free variables to
+    // the scope's virtual-thread executor, yielding a `Future`; the enclosing
+    // `await` joins it.  Outside any scope there is no executor, so `spawn` stays
+    // degenerate (runs `e` synchronously) — the value flows straight to `await`,
+    // which sees a non-`Future` and passes it through.
     case ESpawn(inner) -> {
-      lowerExpr(ctx, insns, inner)
+      if ctx.scopeExecSlots.count > 0 {
+        lowerSpawnSubmit(ctx, insns, inner)
+      } else {
+        lowerExpr(ctx, insns, inner)
+      }
     }
 
     // ── Propagate (?) — bootstrap: just lower inner ────────────────────────
@@ -2801,4 +2831,255 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   }
   insns.add(LInvokespecial(owner = closureClass, name = "<init>", params = ctorPs, ret = JVoid))
   JRef(className = ifaceName)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5f. Structured concurrency: `spawn` / `await` lowering (D119 S4 / D120).
+// ─────────────────────────────────────────────────────────────────────────────
+// True when `t` is the `java/util/concurrent/Future` reference a `spawn`
+// submission yields.  `await` uses this to decide between a join (`Future.get()`)
+// and a pass-through (an already-materialized degenerate-async value).
+func isFutureType(t: in JvmType): Bool {
+  match t {
+    case JRef(cls) -> cls == "java/util/concurrent/Future"
+    case _ -> false
+  }
+}
+
+// The name of the per-package static helper that `await` on a `spawn` `Future`
+// invokes (D119 S4 / D120).  Reserved `__lyric_`-prefixed, so it never collides
+// with a user function.
+pub func awaitHelperName(): String {
+  "__lyric_await"
+}
+
+// The JVM result type of a spawned expression `spawn e`, when `e` is a call to a
+// function with a known signature — used to unbox the `Future.get()` `Object`
+// back to the value's real type at the `await` site.  `None` when `e` is not a
+// resolvable call (a raw expression spawn), in which case `await` yields `Object`
+// and the value must be used in a reference (non-arithmetic) position.
+pub func spawnInnerResultType(ctx: in FuncCtx, inner: in Expr): Option[JvmType] {
+  match inner.kind {
+    case EParen(e) -> spawnInnerResultType(ctx, e)
+    case ECall(fn, _) -> {
+      match fn.kind {
+        case EPath(p) -> match mapGet(ctx.funcSigs, lastSegment(p)) { case Some(sig) -> Some(value = sig.ret); case None -> None }
+        case ETypeApp(inner2, _) -> match inner2.kind { case EPath(p) -> match mapGet(ctx.funcSigs, lastSegment(p)) { case Some(sig) -> Some(value = sig.ret); case None -> None }; case _ -> None }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// The logical (unboxed) type produced by `await inner` when `inner` yields a
+// `spawn` `Future`: the recorded result type for a spawn-bound local, or the
+// spawned call's return type for a direct `await spawn f(…)`.  `None` when the
+// type is not statically known (the value stays `Object`).
+pub func awaitLogicalType(ctx: in FuncCtx, inner: in Expr): Option[JvmType] {
+  match inner.kind {
+    case EParen(e) -> awaitLogicalType(ctx, e)
+    case EPath(p) -> if p.segments.count == 1 { mapGet(ctx.spawnResultTypes, lastSegment(p)) } else { None }
+    case ESpawn(e) -> spawnInnerResultType(ctx, e)
+    case _ -> None
+  }
+}
+
+// Join a `spawn` handle: with a `Future` on the stack, call the package's
+// synthesized `__lyricAwait` helper (see `makeAwaitHelperFunc`), which performs
+// `Future.get()` and unwraps `ExecutionException` to the task's real cause.
+//
+// Why a helper and not an inline try/catch: `await a + await b` leaves the first
+// await's `Object` result on the operand stack while the second await is lowered,
+// so an inline exception region would begin with a non-empty stack — its
+// StackMapTable frame (which assumes an empty stack) then fails verification.
+// `invokestatic` is atomic (pops the `Future`, pushes the `Object`), so the
+// try/catch lives in the helper's own method frame where the stack is clean.
+// Leaves the awaited value (`Object`) on the stack — the caller unboxes on demand
+// via the erased-value model.
+func lowerFutureGet(ctx: in FuncCtx, insns: in List[LInsn]): JvmType {
+  val objTy = JRef(className = "java/lang/Object")
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/util/concurrent/Future"))
+  insns.add(LInvokestatic(owner = ctx.pkgName, name = awaitHelperName(), params = ps, ret = objTy))
+  objTy
+}
+
+// Submit `spawn e` to the innermost enclosing `scope { }` executor: load the
+// executor, synthesize a capturing `Callable` closure for `e`, and
+// `submit(Callable)` it.  Leaves the resulting `Future` on the stack.
+func lowerSpawnSubmit(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr): JvmType {
+  val execTy = JRef(className = "java/util/concurrent/ExecutorService")
+  val futureTy = JRef(className = "java/util/concurrent/Future")
+  val execSlot = ctx.scopeExecSlots[ctx.scopeExecSlots.count - 1]
+  emitLoad(insns, execSlot, execTy)
+  lowerSpawnCallable(ctx, insns, inner)
+  val submitPs: List[JvmType] = newList()
+  submitPs.add(JRef(className = "java/util/concurrent/Callable"))
+  insns.add(
+    LInvokeinterface(
+      owner = "java/util/concurrent/ExecutorService",
+      name = "submit",
+      params = submitPs,
+      ret = futureTy,
+      argCount = 2
+    )
+  )
+  futureTy
+}
+
+// Synthesize a no-arg `Callable` closure whose `call()` evaluates `inner` (a
+// `spawn`'s operand) and returns the boxed result.  Mirrors `lowerLambda` — same
+// `LClosure`/`ctx.closureAcc` synthesis and same capture snapshotting — but
+// implements `java/util/concurrent/Callable`/`call()Object` (no method params, so
+// no argument-array prologue: the body reads only captures).  Leaves the
+// constructed closure on the stack.
+func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr): JvmType {
+  val objTy = JRef(className = "java/lang/Object")
+  val callableIface = "java/util/concurrent/Callable"
+  val idx = ctx.closureAcc.count
+  val closureClass = ctx.pkgName + "$Spawn$" + toString(idx)
+  // Reserve the accumulator slot before lowering the body (nested spawns/lambdas
+  // append to the same list), overwriting the placeholder at the end.
+  val placeholderCaps: List[LClosureCapture] = newList()
+  val placeholderParams: List[JvmType] = newList()
+  val placeholderInsns: List[LInsn] = newList()
+  ctx.closureAcc.add(
+    LClosure(
+      closureClass = closureClass,
+      ifaceClass = callableIface,
+      ifaceMethod = "call",
+      captures = placeholderCaps,
+      methodParams = placeholderParams,
+      methodRet = objTy,
+      bodyInsns = placeholderInsns,
+      bodyMaxLocals = 0
+    )
+  )
+
+  // Free variables of `inner` — computed by wrapping it as a single-statement
+  // block (no params, so every free reference resolving to an enclosing slot or
+  // receiver field is captured).
+  val wrapStmts: List[Statement] = newList()
+  wrapStmts.add(Statement(kind = SExpr(expr = inner), span = inner.span))
+  val wrapBlock = Block(statements = wrapStmts, span = inner.span)
+  val emptyLparams: List[LambdaParam] = newList()
+  val caps = lambdaCaptureNamesJvm(ctx, emptyLparams, wrapBlock)
+
+  val captures: List[LClosureCapture] = newList()
+  var ci = 0
+  while ci < caps.count {
+    val cn = caps[ci]
+    match mapGet(ctx.hoistedCellSlot, cn) {
+      case Some(_) -> {
+        val elemTy = match mapGet(ctx.hoistedCellType, cn) { case Some(t) -> t; case None -> objTy }
+        captures.add(LClosureCapture(captureName = cn, captureType = JArray(elem = elemTy)))
+      }
+      case None -> {
+        val cty = match lookupType(ctx, cn) {
+          case Some(t) -> t
+          case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> objTy }
+        }
+        captures.add(LClosureCapture(captureName = cn, captureType = cty))
+      }
+    }
+    ci = ci + 1
+  }
+
+  // Build the `call()` body in a fresh ctx: slot 0 = this, capture locals follow.
+  val bodyCtx = makeFuncCtx(
+    ctx.pkgName,
+    closureClass,
+    ctx.funcSigs,
+    ctx.caseFields,
+    ctx.ctors,
+    ctx.externTypes,
+    ctx.autoFfi,
+    objTy,
+    ctx.moduleVals,
+    ctx.opaqueTypes,
+    ctx.closureAcc
+  )
+  // Carry the enclosing scope's recorded generic instantiations so a captured
+  // var-bound `match`/`?` scrutinee still unboxes its erased payload (#4945).
+  for vk in mapKeys(ctx.varGenericArgs) {
+    match mapGet(ctx.varGenericArgs, vk) {
+      case Some(vargs) -> bodyCtx.varGenericArgs.add(vk, vargs)
+      case None -> ()
+    }
+  }
+  allocSlot(bodyCtx, "__closure_this", JRef(className = closureClass))
+
+  val bodyInsns: List[LInsn] = newList()
+  var cj = 0
+  while cj < captures.count {
+    val cap = captures[cj]
+    val isHoistedCell = match mapGet(ctx.hoistedCellType, cap.captureName) { case Some(_) -> true; case None -> false }
+    if isHoistedCell {
+      bodyCtx.captureCellNames.add(cap.captureName)
+    }
+    val cslot = allocSlot(bodyCtx, cap.captureName, cap.captureType)
+    bodyInsns.add(LAload(slot = 0))
+    bodyInsns.add(LGetfield(owner = closureClass, name = cap.captureName, t = cap.captureType))
+    emitStore(bodyInsns, cslot, cap.captureType)
+    if isHoistedCell {
+      val elemTy = match mapGet(ctx.hoistedCellType, cap.captureName) { case Some(t) -> t; case None -> objTy }
+      bodyCtx.hoistedCellSlot.add(cap.captureName, cslot)
+      bodyCtx.hoistedCellType.add(cap.captureName, elemTy)
+    }
+    cj = cj + 1
+  }
+  // Evaluate the spawned expression and return the boxed value (a Unit spawn
+  // returns null).
+  val tailTy = lowerExpr(bodyCtx, bodyInsns, inner)
+  match tailTy {
+    case JVoid -> bodyInsns.add(LAconstNull)
+    case _ -> boxIfNeeded(bodyInsns, tailTy)
+  }
+  bodyInsns.add(LAreturn)
+
+  val closure = LClosure(
+    closureClass = closureClass,
+    ifaceClass = callableIface,
+    ifaceMethod = "call",
+    captures = captures,
+    methodParams = placeholderParams,
+    methodRet = objTy,
+    bodyInsns = bodyInsns,
+    bodyMaxLocals = bodyCtx.slotTicker.count
+  )
+  ctx.closureAcc[idx] = closure
+
+  // Construct the closure at the spawn site: `new` + capture loads + `<init>`.
+  insns.add(LNew(className = closureClass))
+  insns.add(LDup)
+  var ck = 0
+  while ck < captures.count {
+    val cap = captures[ck]
+    val isHoistedCell = match mapGet(ctx.hoistedCellSlot, cap.captureName) { case Some(_) -> true; case None -> false }
+    if isHoistedCell {
+      match mapGet(ctx.hoistedCellSlot, cap.captureName) {
+        case Some(cellSlot) -> emitLoad(insns, cellSlot, cap.captureType)
+        case None -> insns.add(LAconstNull)
+      }
+    } else {
+      match lookupSlot(ctx, cap.captureName) {
+        case Some(s) -> emitLoad(insns, s, cap.captureType)
+        case None -> {
+          val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+          insns.add(LAload(slot = 0))
+          insns.add(LGetfield(owner = selfCls, name = cap.captureName, t = cap.captureType))
+        }
+      }
+    }
+    ck = ck + 1
+  }
+  val ctorPs: List[JvmType] = newList()
+  var cp = 0
+  while cp < captures.count {
+    ctorPs.add(captures[cp].captureType)
+    cp = cp + 1
+  }
+  insns.add(LInvokespecial(owner = closureClass, name = "<init>", params = ctorPs, ret = JVoid))
+  JRef(className = callableIface)
 }
