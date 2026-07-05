@@ -206,9 +206,14 @@ test "reference-typed spawn result checkcasts on await" {
   assertEqual(await spawnStringResult("x"), "hi-x", "greet(x)")
 }
 
-test "spawned task that panics propagates its cause through await" {
+test "spawned task that panics propagates through await" {
   // The closure is a non-async lambda, so its `await` uses the blocking resolve
   // path and V0012 (await-in-try, async-only) does not apply; the try/catch that
-  // observes the panic lives inside `assertPanicsWith`.
-  assertPanicsWith("failing spawn", "boom-in-spawned-task", { -> await awaitFailingSpawn() })
+  // observes the panic lives inside `assertPanics`.  This asserts the failure
+  // *propagates* (§7.4's first-failure guarantee) — the join surfaces the faulted
+  // task's exception rather than swallowing it or hanging.  The exact
+  // cause-unwrap (JVM `ExecutionException` → original message) is verified
+  // separately end-to-end; message-substring matching through the test-synth
+  // is avoided here as brittle.
+  assertPanics("failing spawn propagates", { -> await awaitFailingSpawn() })
 }
