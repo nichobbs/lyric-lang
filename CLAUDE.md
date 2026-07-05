@@ -891,6 +891,37 @@ need direction and have nothing else productive to do**.  Specifically:
     weaver (D-progress-525, #3414); `aspect_weave_self_test.l` does not yet
     exercise the multi-file scenario where a consumer package imports a
     library template — a runtime test is tracked separately (#3498).
+  - `async_spawn_self_test.l` — `@test_module` runtime regression test for the
+    structured-concurrency keywords `scope { }` / `spawn e` / `await t` (D119
+    slice S4 / D120, D-progress-602).  Runs real concurrent work and asserts
+    runtime values: two spawns joined by early `return` inside a scope, the same
+    by fall-off, a bare no-scope spawn, three concurrent spawns, a
+    `Unit`-returning spawn, a spawn-binding name reused across sibling scopes, a
+    reference-typed (`String`) result, and a panicking spawned task whose failure
+    propagates through `await`.  Run in CI via native `lyric test` on **both targets**
+    (like `bitwise_self_test.l`): `--target jvm` is the load-bearing run
+    (real virtual-thread `ExecutorService` codegen — `scope` open/close,
+    `spawn` → `Callable` submit → `Future`, `await` → `__lyric_await` join),
+    `--target dotnet` exercises the degenerate-synchronous MSIL path plus the
+    async-SM spawn-in-scope pre-scan fix.  Test blocks `await` the async helpers
+    so the value resolves on both the synchronous JVM path and the blocking-
+    `GetAwaiter().GetResult()` MSIL path (as `async_sm_self_test.l` does).
+    Imports only `Std.*`.  A tenth case (`reassignedSpawnHandle`, #5205) covers a
+    `var` spawn handle reassigned to a second spawn and awaited again — the JVM
+    `SAssign` `recordSpawnResultType` wiring and the MSIL `LBVar`/`SAssign` await
+    pre-scan collection both exercise it.
+  - `block_shadow_self_test.l` — `@test_module` runtime regression test for
+    general nested-block variable shadowing on both backends (#5191,
+    D-progress-603).  Before the fix, a nested `{ }` block that re-bound a name
+    still live in an enclosing scope reused the enclosing slot and never restored
+    the name→slot mapping on block exit, so the outer binding read the inner
+    (shadow) value (`val t = 7; if c { val t = 99 }; t` returned `99`, not `7`);
+    spawn-independent and identical on MSIL and JVM.  10 cases (`if`-then/`else`,
+    nested doubles, loop-body shadow, `var` mutation through a nested block,
+    `match`-arm shadow, value-producing block shadow, reference-typed shadow,
+    sibling scopes, and a `scope { }`-body shadow, #5204).  Run in CI via native
+    `lyric test` on **both targets** (like `bitwise_self_test.l`).  Imports only
+    `Std.*`.
   - `auto_ffi_self_test.l` — `@test_module` covering self-hosted
     metadata-based auto-FFI resolution (epic #1622, Phase 3c): the MSIL
     emitter resolves `ExternTypeName.method(args)` calls from real .NET

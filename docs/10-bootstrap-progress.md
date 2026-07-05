@@ -29503,3 +29503,68 @@ targets now honor the same documented four-format parse contract.
 
 **Related:** D-N-026 (the decision entry), D-progress-557 (the
 Option-seam idiom), #4752 (Std.Time calendar surface remains).
+### D-progress-602 — D119 slice S4: JVM structured-concurrency keyword codegen (`scope`/`spawn`/`await`) + MSIL async spawn-in-scope pre-scan fix
+
+Implements D120 for the self-hosted **JVM** backend. `scope { }` opens a
+non-preview virtual-thread `ExecutorService` closed on every exit path via a
+synthesized `defer` (reusing the defer machinery); `spawn e` synthesizes a
+capturing `Callable` (mirroring `lowerLambda`) submitted to the scope executor,
+yielding a `Future`; `await` joins via a per-package `__lyric_await` helper
+(`Future.get()` + `ExecutionException`-cause unwrap) and unboxes to the spawned
+call's result type (so `await a + await b` avoids the both-`Object` gap #2862).
+A `spawn` outside any scope stays degenerate (synchronous). Two supporting
+JVM-codegen fixes the shared self-test surfaced: `stmtTerminates` treats a
+`scope { … return … }` as terminating (no stray void `return` in the epilogue),
+and `lowerDeferRegion` skips the join label when the protected suffix already
+transferred control (a dead code-end label otherwise produced a "bad offset"
+StackMapTable frame).
+
+On **MSIL** (`async func` = real `Task<T>`; `spawn`/`scope` degenerate pending
+S5/S6) the Phase B await pre-scan now recurses into `scope`/loop/`try` bodies to
+collect `val x = spawn f()` bindings (previously top-level only), fixing an
+"await index exceeds pre-allocated resume labels" codegen crash for a spawn bound
+inside a `scope`.
+
+Verified by `async_spawn_self_test.l` (`@test_module`, both targets — MSIL 5/5
+via `lyric test`; JVM real-concurrency codegen verified via standalone
+`--target jvm` programs), no regressions in `async_sm`/`async_extern`/
+`async_generator` self-tests, and a defer-control-flow stress program on both
+targets.
+
+**Related:** `docs/03-decision-log.md` D-progress-602 + D120 (the design),
+D-progress-598 (V0014), `docs/18-jvm-emission.md` §15.
+
+### D-progress-603 — General nested-block variable shadowing fixed on both backends (#5191)
+
+**Shipped.** A pre-existing correctness bug in both the self-hosted JVM and MSIL
+backends: a nested `{ }` block that re-bound a name still live in an enclosing
+scope reused the enclosing binding's local slot and never restored the name→slot
+mapping on block exit, so the outer binding read the inner (shadow) value after
+the block. Spawn-independent and identical on both targets — `val t = 7; if c {
+val t = 99 }; t` returned `99`, not `7`. Surfaced by review of the D119 S4 PR
+(#5184).
+
+- **Block-scoped slot reuse.** `FuncCtx` gains a `scopeBase` (`scopeBaseMsil` on
+  MSIL): `allocSlot`/`allocSlotMsil` reuse an existing slot for a re-bound name
+  only when it was allocated at or after that base (a current-block binding), so a
+  shadow of an enclosing binding gets a fresh slot and never clobbers it.
+- **Scope undo log.** `enterBlockScope`/`exitBlockScope` (`…Msil`), wrapping
+  `lowerBlock`/`lowerBlockExpr` (`lowerBlockMsil`/`lowerBlockExprMsil`) and the JVM
+  `lowerScopeStmt` body (#5204), maintain a per-function change log: `allocSlot`
+  records each re-bound name's prior slot/type via `recordScopeUndo`, and block
+  exit replays it back to the entry mark to restore enclosing bindings and drop
+  block-local ones. A change log of single-key map ops, not a whole-map
+  `mapEntries` snapshot — the snapshot form both mis-compiled under the pinned F#
+  stage-0 mint (nested-generic entry types) and corrupted the codegen dictionaries
+  at runtime.
+
+**Verification.** `lyric-compiler/lyric/block_shadow_self_test.l` (`@test_module`,
+10 cases: `if`-then/`else`, nested doubles, loop-body shadow, `var` mutation
+through a nested block, `match`-arm shadow, value-producing block shadow,
+reference-typed shadow, sibling scopes, and a `scope { }`-body shadow) runs on
+**both** `--target dotnet` and `--target jvm` via native `lyric test`. No
+regression across the native `lyric test` suite; verified against the pinned F#
+stage-0 mint (`FS_COMMIT=35c0d2e5`).
+
+**Related:** `docs/03-decision-log.md` D-progress-603, `docs/18-jvm-emission.md`
+§15.3, #5191 / #5204 (the `scope`-body follow-up).

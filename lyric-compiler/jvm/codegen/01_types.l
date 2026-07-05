@@ -419,6 +419,114 @@ pub record FuncCtx {
   // string / empty map for every non-wire-binding context.
   wireClassName: String
   wireBindingTypes: Map[String, JvmType]
+  // Structured concurrency (D119 slice S4 / D120): the stack of virtual-thread
+  // `ExecutorService` local slots for the enclosing `scope { }` blocks, innermost
+  // last.  `SScope` opens `Executors.newVirtualThreadPerTaskExecutor()` into a
+  // fresh slot and pushes it here; a `spawn e` lowered while this is non-empty
+  // submits a synthesized `Callable` closure to the innermost executor
+  // (`scopeExecSlots.last`) and yields a `Future`; a `spawn` outside any scope
+  // stays degenerate (runs `e` synchronously).  Empty for every non-scope
+  // context.  No default per the JVM-codegen no-defaulted-field rule (see
+  // `varGenericArgs`); initialised `newList()` at every construction site.
+  scopeExecSlots: List[Int]
+  // Structured concurrency (D119 S4 / D120): for a `val t = spawn f(…)` binding
+  // whose slot holds a `Future` (a spawn inside a `scope { }`), the *logical*
+  // result type of the spawned call — `f`'s return JVM type (e.g. `JInt`).
+  // `await t` joins the `Future` (yielding `Object`) then unboxes to this type,
+  // so `await a + await b` sees two primitives rather than the both-`Object`
+  // arithmetic gap (#2862).  Only primitive-returning spawns bound by name are
+  // recorded; reference-returning spawns (used as references, no unboxing) and
+  // bare no-scope spawns (the binding already holds the value) need no entry.
+  // No default per the JVM-codegen no-defaulted-field rule; initialised
+  // `newMap()` at every construction site.
+  spawnResultTypes: Map[String, JvmType]
+  // Lexical-scope slot base (general shadowing fix, #5191): the `slotTicker`
+  // high-water mark captured when the current nested block was entered (via
+  // `enterBlockScope`).  `allocSlot` reuses an existing slot for a re-bound
+  // name ONLY when that slot was allocated at or after this base — i.e. the
+  // binding lives in the *current* block, so overwriting it is a safe
+  // sequential rebind.  A name whose existing slot predates the base is a
+  // binding from an *enclosing* scope; shadowing it must get a FRESH slot so
+  // the enclosing binding's still-live value is never clobbered, and
+  // `exitBlockScope` restores the outer name→slot mapping on block exit.  0 at
+  // function entry (no enclosing block); saved/restored through `BlockScope`.
+  // No default per the JVM-codegen no-defaulted-field rule; initialised `0` at
+  // every construction site.
+  scopeBase: Int
+  // Per-function scope undo log (general shadowing fix, #5191).  `allocSlot`
+  // pushes each re-bound name's prior slot/type here via `recordScopeUndo`;
+  // `exitBlockScope` replays entries back to the entering block's mark to restore
+  // enclosing bindings a nested block shadowed (and drop names the block
+  // introduced).  A change log rather than a whole-map snapshot — see
+  // `BlockScope`.  No default per the no-defaulted-field rule; initialised
+  // `newList()` at every construction site.
+  scopeUndo: List[ScopeUndo]
+}
+
+// A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a
+// lexical scope: `enterBlockScope` records the current slot high-water mark (into
+// `scopeBase`) and the length of the per-function scope undo log; `exitBlockScope`
+// replays the log entries pushed during the block (innermost binding first) to
+// restore every enclosing name→slot / name→type mapping the block's `val`/`var`
+// bindings overwrote, and drops names the block introduced.
+//
+// This is a CHANGE LOG (single-key map ops only via `recordScopeUndo`), NOT a
+// whole-map `mapEntries` snapshot: the snapshot form both mis-monomorphised under
+// the pinned F# stage-0 mint (nested-generic entry types) and, once compiled,
+// corrupted the codegen dictionaries at runtime during its whole-map enumeration.
+// The change log touches `slots`/`types` exactly the single-key way `allocSlot`
+// already does.  The slot ticker is NOT rolled back: inner slots stay allocated
+// (dead after the block) so a slot never carries two verifier types across the
+// method's single uniform StackMapTable frame.
+pub record ScopeUndo {
+  name: String
+  priorSlot: Option[Int]
+  priorType: Option[JvmType]
+}
+
+pub record BlockScope {
+  prevBase: Int
+  undoMark: Int
+}
+
+// Enter a nested lexical scope.
+pub func enterBlockScope(ctx: in FuncCtx): BlockScope {
+  val bs = BlockScope(prevBase = ctx.scopeBase, undoMark = ctx.scopeUndo.count)
+  ctx.scopeBase = ctx.slotTicker.count
+  bs
+}
+
+// Record `name`'s current slot/type binding on the scope undo log BEFORE
+// `allocSlot` rebinds it, so `exitBlockScope` can restore the enclosing binding
+// (or drop the name if it was newly introduced in the block).
+pub func recordScopeUndo(ctx: in FuncCtx, name: in String): Unit {
+  val priorSlot: Option[Int] = mapGet(ctx.slots, name)
+  val priorType: Option[JvmType] = mapGet(ctx.types, name)
+  ctx.scopeUndo.add(ScopeUndo(name = name, priorSlot = priorSlot, priorType = priorType))
+}
+
+// Exit a nested lexical scope: replay the undo log back to the block's entry mark
+// (innermost binding first) and restore `scopeBase`.
+pub func exitBlockScope(ctx: in FuncCtx, bs: in BlockScope): Unit {
+  while ctx.scopeUndo.count > bs.undoMark {
+    val u = ctx.scopeUndo[ctx.scopeUndo.count - 1]
+    ctx.scopeUndo.removeAt(ctx.scopeUndo.count - 1)
+    if ctx.slots.containsKey(u.name) {
+      ctx.slots.remove(u.name)
+    }
+    match u.priorSlot {
+      case Some(s) -> ctx.slots.add(u.name, s)
+      case None -> ()
+    }
+    if ctx.types.containsKey(u.name) {
+      ctx.types.remove(u.name)
+    }
+    match u.priorType {
+      case Some(t) -> ctx.types.add(u.name, t)
+      case None -> ()
+    }
+  }
+  ctx.scopeBase = bs.prevBase
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -442,12 +550,22 @@ pub func freshLabel(ctx: in FuncCtx): String {
 //
 // Re-binding a name (a shadowed local, or a repeated catch/test binding) allocates a fresh slot and overwrites the mapping, reusing the existing slot when the verifier type matches so `max_locals` stays lean (#1682).
 pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
+  // Log `name`'s prior binding so an enclosing scope's mapping is restored when
+  // the current block exits (general shadowing fix, #5191).
+  recordScopeUndo(ctx, name)
   val width = jvmTypeSlotWidth(ty)
   match mapGet(ctx.slots, name) {
     case Some(existing) -> {
       val prevTy = match mapGet(ctx.types, name) { case Some(t) -> t; case None -> ty }
-      // Reuse the slot only when old and new bindings frame as the same verifier type, not merely the same width: a slot carrying two verifier types (a Double then a Long match-arm binding) makes the join frame unmergeable.
-      if sameFrameSlotType(prevTy, ty) {
+      // Reuse the slot only when (a) it was allocated in the CURRENT block scope
+      // (`existing >= ctx.scopeBase`) — reusing a slot from an enclosing scope
+      // would clobber that still-live binding's value (the general shadowing bug,
+      // #5191) — AND (b) old and new bindings frame as the same verifier type, not
+      // merely the same width: a slot carrying two verifier types (a Double then a
+      // Long match-arm binding) makes the join frame unmergeable.  A shadow of an
+      // enclosing binding falls through to a fresh slot; `exitBlockScope` restores
+      // the enclosing name→slot mapping when the block ends.
+      if existing >= ctx.scopeBase and sameFrameSlotType(prevTy, ty) {
         ctx.types.remove(name)
         ctx.types.add(name, ty)
         return existing

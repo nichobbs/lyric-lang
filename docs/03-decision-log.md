@@ -9380,10 +9380,16 @@ before the runtime join lands, and the runtime slices deliver the rest.
   (the residual FFI-overload blocker worked around at the kernel
   boundary); library-level test. This is the highest-value real §7.4
   slice and is backend-agnostic (both targets consume `Std.Task`).
-- **S4:** JVM real structured concurrency for the *keywords* —
-  `Callable` synthesis per `spawn`, wire `lowerScopeBlock`
-  (`StructuredTaskScope.ShutdownOnFailure`); runtime self-test on
-  `--target jvm`.
+- **S4:** JVM real structured concurrency for the *keywords* — **shipped
+  (D-progress-602)** per the D120 approach (not the original
+  `StructuredTaskScope.ShutdownOnFailure` wiring, which was rejected as a
+  preview-only API; see D120). `scope { }` opens a non-preview virtual-thread
+  `ExecutorService` closed on every exit path via a synthesized `defer`; `spawn e`
+  synthesizes a capturing `Callable` (mirroring `lowerLambda`) submitted to the
+  scope's executor, yielding a `Future`; `await` joins via a per-package
+  `__lyric_await` helper (`Future.get()` + `ExecutionException`-cause unwrap) and
+  unboxes to the spawned call's result type. Runtime self-test
+  `async_spawn_self_test.l` runs on both targets.
 - **S5:** MSIL cancellation-token ABI (§7.3) — implicit param threading,
   `cancellation` / `checkOrThrow()`, ambient propagation (the
   `@asyncLocal` slot already exists); self-test. Prereq for S6's ambient
@@ -9883,6 +9889,182 @@ primitive" precedent), `docs/18-jvm-emission.md` §15, `lowering.l`
 `lowerScopeBlock` (the unwired STS emission, reusable at JDK 25),
 `lowerLambda`/`LClosure` (the closure synthesis the `Callable` synthesis
 mirrors), V0014/D-progress-598 (the front-end `spawn`-consumption rule).
+
+---
+
+## D-progress-603 — General nested-block shadowing fixed on both backends: block-scoped slot allocation + name-map restore (#5191)
+
+**Date:** 2026-07-05
+**Status:** SHIPPED
+
+Fixes a pre-existing correctness bug in **both** the JVM and MSIL self-hosted
+backends: a nested-block local binding that **shadows** an enclosing, still-live
+local of the same verifier type reused the enclosing binding's slot and never
+restored the outer name→slot mapping on block exit, so the outer binding read the
+inner (shadow) value after the block. Surfaced as the root cause of review finding
+#5191 on PR #5184 (a `spawn`-bound name shadowed inside a nested block), but proven
+spawn-independent and general to all locals:
+
+```
+func f(): Int { val t = 7; if c { val t = 99 }; return t }   // returned 99, should be 7
+```
+
+Both backends independently miscompiled this identically (the JVM via `allocSlot`'s
+same-frame-type slot reuse, the MSIL via `allocSlotMsil`'s identical-type reuse),
+because neither treated a `{ … }` block as a lexical scope for slot allocation or
+name resolution.
+
+**Fix (mirrored on both backends).**
+- **Block-scoped slot reuse.** `FuncCtx` gains a `scopeBase` (`scopeBaseMsil` on
+  MSIL): the slot high-water mark captured when the current nested block was
+  entered. `allocSlot`/`allocSlotMsil` now reuse an existing slot for a re-bound
+  name **only** when that slot was allocated at or after the base
+  (`existing >= scopeBase`) — a binding in the *current* block, safe to overwrite.
+  A name whose slot predates the base is an *enclosing*-scope binding; shadowing it
+  falls through to a **fresh** slot, so the enclosing binding's still-live value is
+  never clobbered. Same-scope sequential rebinds still reuse (leanness preserved).
+- **`scope { }` body (#5204).** The JVM `lowerScopeStmt` (D-progress-602 S4)
+  lowered its `scope` body via `lowerBlockStmtsFrom` directly, bypassing the
+  `enterBlockScope`/`exitBlockScope` bracket, so a `val`/`var` declared directly
+  in a `scope` body (not further nested in an `if`/`match`/loop, which are
+  bracketed) shadowing a still-live enclosing binding reused its slot — the exact
+  bug this entry fixes, for the one construct S4 ships real semantics for. Fixed
+  by bracketing the body lowering the same way `lowerBlock` does, with the
+  executor's own slot allocated *outside* the bracket so it stays live for the
+  synthesized close-defer. The MSIL `SScope` handler already routed through the
+  bracketed `lowerBlockMsil`, so it needed no change. Covered by a
+  `scopeBodyShadow` case in `block_shadow_self_test.l`.
+- **Name-map restore via a change log.** `enterBlockScope`/`exitBlockScope`
+  (`…Msil` on MSIL), wrapping `lowerBlock`/`lowerBlockExpr`
+  (`lowerBlockMsil`/`lowerBlockExprMsil`) — and the JVM `lowerScopeStmt` body
+  (#5204) — bracket each block. `allocSlot`
+  (`allocSlotMsil`) calls `recordScopeUndo` (`…Msil`) before every (re)binding to
+  push the name's prior `Option[slot]` / `Option[type]` onto a per-function
+  `scopeUndo` log; `exitBlockScope` replays the entries pushed during the block
+  (innermost first) back to the entry mark, restoring each enclosing name→slot /
+  name→type mapping the block overwrote and dropping names the block introduced.
+  `enterBlockScope` returns just two ints (`prevBase`, `undoMark`) — no generic
+  collections cross a function boundary.
+  - A **change log**, not a whole-map `mapEntries` snapshot: the snapshot form
+    both mis-monomorphised under the pinned F# stage-0 mint (its nested-generic
+    `List[MapEntry[String, …]]` entry types produced corrupt IL) and, once
+    compiled, corrupted the codegen dictionaries at runtime during the whole-map
+    enumeration inside `mapEntries`. The change log touches `slots`/`types`
+    exactly the single-key way (`mapGet`/`add`/`remove`/`containsKey`) that
+    `allocSlot` already does — no whole-map iteration anywhere.
+  - The binding-metadata maps (`varGenericArgs` on JVM, `funcValRetTypes`/
+    `funcValParamTypes` on MSIL, and the hoisted-cell maps) are NOT scoped: they
+    were never restored before this fix either (the JVM's `recordVarGenericArgs`
+    already overwrites shadow-safely at the binding site), so leaving them is not
+    a regression — the value-clobbering bug is fixed by the `slots`/`types` +
+    `scopeBase` machinery alone.
+- **Ticker not rolled back.** Inner slots stay allocated (dead after the block).
+  On JVM this keeps every slot a single verifier type across the method's uniform
+  StackMapTable frame (the reason `allocSlot` already gated reuse on
+  `sameFrameSlotType`); on MSIL it keeps the LocalVarSig valid and composes with the
+  discard-relower (`rollbackFuncCtxSlotsSinceMsil`) and async-SM promoted-local
+  tracking. `var` reassignment through a nested block is unaffected — assignment
+  resolves the still-in-scope slot rather than rebinding.
+
+**Verification.** A 10-case shadow suite (plain `if`-then, `if`/`else`, nested
+doubles, `while`-body shadow, `var` mutation through a nested block, `match`-arm
+shadow, value-producing block shadow, reference-typed shadow, sibling scopes)
+returns the correct value on **both** `--target jvm` and `--target dotnet`. No
+regression across the native `lyric test` CI suite (compiler self-tests, `async_sm`
+57/57, `closure_correctness`, `bitwise`, `aspect_weave`, `async_spawn`,
+`closure_zero_overhead`, `auto_ffi` on both targets). Re-verified against the pinned
+F# stage-0 mint (`FS_COMMIT=35c0d2e5`). No new MSIL/JVM codegen surface; the fix is
+purely in slot allocation and lexical-scope bookkeeping.
+
+**Files:** `lyric-compiler/jvm/codegen/{01_types,02_exprs,05_stmts,06_items}.l`,
+`lyric-compiler/msil/codegen.l`, `docs/18-jvm-emission.md` §15.3.
+
+**Related:** D-progress-602 / #5184 (the PR whose review surfaced #5191),
+D-progress-569 (`varGenericArgs` remove-then-add shadow-safety, the narrower
+precedent this generalises), `docs/18-jvm-emission.md` §15.3.
+
+---
+
+## D-progress-602 — D119 slice S4: JVM structured-concurrency keyword codegen (`scope`/`spawn`/`await`) shipped per D120; MSIL async spawn-in-scope pre-scan fix
+
+**Date:** 2026-07-05
+**Status:** SHIPPED
+
+Implements the D120 design for D119 slice S4 in the self-hosted JVM backend
+(`lyric-compiler/jvm/codegen/`), plus a companion MSIL async-SM fix surfaced by
+the shared self-test.
+
+**JVM keyword lowering.**
+- `scope { body }` (`05_stmts.l` `lowerScopeStmt`) opens
+  `Executors.newVirtualThreadPerTaskExecutor()` into a fresh local, makes it
+  visible to `spawn` via a new `FuncCtx.scopeExecSlots` stack, and closes it on
+  **every** exit path. The close is routed through a synthesized
+  `defer { __lyric_jvm_close_executor(<exec>) }` prepended to the body, so the
+  existing defer machinery (fall-off, early return/break/continue replay, and the
+  exception catch-all) drives it — D120's "closes on all exit paths (mirroring
+  defer)". The close intrinsic is intercepted in `lowerCall` and emits
+  `ExecutorService.close()` (blocks until every task terminates).
+- `spawn e` inside a scope (`02_exprs.l` `lowerSpawnSubmit`/`lowerSpawnCallable`)
+  synthesizes a capturing `Callable` closure — the same `LClosure`/`closureAcc`
+  synthesis as `lowerLambda`, but implementing `java/util/concurrent/Callable`
+  (`call()Object`, no arg-array prologue) — and `submit`s it to the innermost
+  scope executor, yielding a `Future`. A `spawn` outside any scope stays
+  degenerate (runs `e` synchronously).
+- `await` on a spawn `Future` (`lowerFutureGet`) calls a per-package
+  `__lyric_await` static helper (`06_items.l` `makeAwaitHelperFunc`, emitted when
+  the package synthesized any closure) that does `Future.get()` and unwraps
+  `ExecutionException` to its cause. A helper — not an inline try/catch — because
+  `await a + await b` leaves the first result on the operand stack while the
+  second await lowers, and an inline exception region would begin with a
+  non-empty stack (StackMapTable "bad offset" / frame mismatch); `invokestatic`
+  is atomic. The joined `Object` is then unboxed to the spawned call's result
+  type (tracked in `FuncCtx.spawnResultTypes`, populated at the binding via the
+  callee's `JvmFuncSig.ret`), so `await a + await b` sees two primitives rather
+  than the both-`Object` arithmetic gap (#2862).
+- Two supporting JVM-codegen fixes the shared self-test surfaced:
+  `stmtTerminates` now treats a `scope { … return … }` as terminating (so the
+  function epilogue does not append a stray void `return` in a value-returning
+  method), and `lowerDeferRegion` no longer emits the join label when the
+  protected suffix already transferred control (a dead label at a method's tail
+  otherwise produced a code-end StackMapTable frame — "bad offset" at load).
+
+**MSIL async pre-scan fix.** The shared self-test also runs on `--target dotnet`
+(where `async func`s are real `Task<T>` state machines and `spawn`/`scope` are
+degenerate pending S5/S6). The Phase B await pre-scan
+(`collectAwaitTypesPhaseBMsil`) collected `val x = spawn f()` bindings only from
+the outermost block, so a spawn bound inside a `scope { }` was missed and a later
+`await x` crashed codegen ("await index exceeds pre-allocated resume labels").
+The pre-scan now recurses into block-bearing statements (`scope`, loops, `try`)
+via `collectSpawnBindingsBlockMsil`; `if`/`match` branch bindings remain a
+documented deferred case.
+
+A follow-up (#5205) extended the same pre-scan to `var handle = spawn f()`
+(`LBVar`) bindings and `handle = spawn g()` (`SAssign`) reassignments —
+`collectSpawnBindingLocalMsil` previously handled only `LBVal`, so a reassignable
+spawn handle (the retry idiom) awaited later hit the identical "await index
+exceeds pre-allocated resume labels" divergence. On the JVM side the same #5205
+finding wired `recordSpawnResultType` into `lowerAssignExpr`'s `SAssign` case
+(previously only `SLocal`), so a reassigned handle's `spawnResultTypes` slot entry
+refreshes and a later `await` unboxes to the new spawn's return type. (The
+reviewer's stated `ClassCastException` does not actually reproduce — a `var`'s
+fixed type keeps both spawns' return types identical, so the stale entry was
+already value-correct — but the symmetric wiring is the correct robust behaviour
+and closes the real `SLocal`/`SAssign` asymmetry.)
+
+**Test.** `lyric-compiler/lyric/async_spawn_self_test.l` (`@test_module`, both
+targets) covers two spawns joined by early `return` inside a scope, the same by
+fall-off, a bare no-scope spawn, three concurrent spawns, and a `Unit`-returning
+spawn. Test blocks `await` the async helpers so the value resolves on both the
+degenerate-synchronous JVM path and the blocking-`GetAwaiter().GetResult()` MSIL
+path (as `async_sm_self_test` does). Verified: MSIL 5/5 via `lyric test`, and the
+JVM real-concurrency codegen for every shape via standalone `--target jvm`
+programs.
+
+**Deferred (unchanged from D120):** JVM sibling-cancel-on-first-fault and failure
+aggregation (the `StructuredTaskScope` properties), pending JDK 25.
+
+**Related:** D120 (the design), D119 (slice plan), D-progress-598 (V0014),
+`docs/18-jvm-emission.md` §15, #2862 (both-`Object` arithmetic gap).
 
 ---
 

@@ -1162,8 +1162,12 @@ try (var __exec = Executors.newVirtualThreadPerTaskExecutor()) {
 `ExecutorService` is `AutoCloseable` (JDK 19+): `close()` initiates an
 orderly shutdown and *blocks until all tasks complete*, so no spawned
 task can outlive the scope. The executor slot is opened at scope entry
-and closed on every exit path (normal fall-off, `return`, exception) via
-a `try`/`finally` region, mirroring the `defer` lowering.
+and closed on every exit path (normal fall-off, `return`, `break`/`continue`,
+exception). **Shipped codegen (D-progress-602):** rather than emit a bespoke
+`try`/`finally`, `lowerScopeStmt` prepends a *synthesized*
+`defer { <close-intrinsic>(<exec>) }` to the scope body and lowers it through
+the ordinary defer machinery, so the executor close reuses the proven
+fall-off / early-transfer-replay / exception-catch-all paths that back `defer`.
 
 ### 15.2 `spawn`
 
@@ -1172,21 +1176,29 @@ synthesized `java.util.concurrent.Callable` class whose `call()` runs
 `e` (a closure capturing `e`'s free variables — the same synthesis as
 `ELambda`, §"lambda synthesis", but implementing `Callable`/`call()`
 instead of `Lyric$Lambda`/`invoke`). The result is a `Future<T>` the
-enclosing scope's executor tracks. `spawn` is legal only where a `scope`
-executor is in context (enforced structurally by V0014, D-progress-598).
+enclosing scope's executor tracks (`lowerSpawnSubmit`/`lowerSpawnCallable`,
+D-progress-602).
 
-A `spawn` outside a `scope` block is rejected at compile time (V0014,
-D-progress-598), same as MSIL (the rule is on the shared front-end AST
-walk; no back-end work).
+A `spawn` *inside* a `scope` submits to that scope's executor. A `spawn`
+*outside* any scope has no executor, so it stays **degenerate** — `e` runs
+synchronously and the value flows straight to the consuming `await`. This is
+allowed: V0014 (D-progress-598) rejects only a *fire-and-forget* `spawn` used as
+a discarded statement, not a bare `spawn` bound and later `await`ed (the
+`val t = spawn f(); await t` idiom).
 
 **`await`.** `await handle`, where `handle` is a `spawn`-produced
-`Future<T>`, lowers to `handle.get()`, unwrapping the checked
-`ExecutionException` into the underlying cause so it surfaces on the
-Lyric side as an ordinary `Bug`. (`await` on a plain synchronous async
-call stays a pass-through — JVM async funcs are synchronous, §14.1.) The
-back-end tracks which locals hold `spawn` futures (a `Future`-typed
-binding set on the codegen context), analogous to MSIL's
-`spawnNms`/`spawnTys`.
+`Future<T>`, calls a per-package `__lyric_await` static helper that does
+`handle.get()` and unwraps the checked `ExecutionException` into its cause so it
+surfaces on the Lyric side as an ordinary `Bug`. (A helper, not an inline
+try/catch: `await a + await b` leaves the first result on the operand stack while
+the second `await` lowers, so an inline exception region would begin with a
+non-empty stack and fail verification; `invokestatic` is atomic.) The joined
+`Object` is unboxed to the spawned call's result type — tracked in
+`FuncCtx.spawnResultTypes` (populated at the binding from the callee's
+`JvmFuncSig.ret`), analogous to MSIL's `spawnNms`/`spawnTys` — so
+`await a + await b` sees two primitives, not the both-`Object` arithmetic gap
+(#2862). `await` on a plain synchronous async call stays a pass-through — JVM
+async funcs are synchronous (§14.1).
 
 ### 15.3 Aggregate failure (baseline vs. follow-up)
 
@@ -1201,6 +1213,45 @@ JEP 505) the scope type can be swapped to `LyricAggregatingScope` (a
 `lyric.runtime.structured` subclass overriding `handleComplete` to
 accumulate) with no preview plumbing; until then the baseline's
 first-failure propagation is the honest, non-preview behaviour.
+
+**Known limitation — shared-mutable-capture races (tracked, #5189).** Because
+JVM `spawn` now runs its `Callable` on a real virtual thread, two sibling
+`spawn`s in one `scope` that capture and mutate the *same* enclosing `var` race
+on it — a data hazard that was structurally impossible while `spawn` was
+synchronous everywhere. There is currently no mode-checker guard against it
+(unlike `protected type`, which the language reference mandates for shared
+mutable state). The safe idioms — each `spawn` returns its result through
+`await`, or shared state goes through a `protected type` — are unaffected; only a
+`spawn` body that writes a captured outer `var` read by a sibling is exposed.
+Adding a capture-mutation diagnostic is the tracked follow-up.
+
+**General nested-block shadowing — fixed (#5191).** `await`'s unbox/checkcast
+coercion is keyed by the binding's JVM local **slot** (`spawnResultTypes`, keyed
+via `spawnSlotKey`), so it always matches the binding occupying that slot. It
+inherited — like every local — the JVM backend's earlier slot-reuse behaviour: a
+nested `if`/`match` binding that **shadowed** an outer, still-live local of the
+same verifier type reused the outer's slot (`allocSlot`'s same-frame-type reuse)
+and never restored the outer name→slot mapping on block exit, clobbering the
+enclosing binding. This was spawn-independent — `val t = 7; if c { val t = 99 }; t`
+yielded `99`, not `7` — and identical on both backends. It is now fixed by
+scoping every block's local bindings: `FuncCtx` carries a `scopeBase` (the slot
+high-water mark at block entry), `allocSlot` reuses a slot only when it was
+allocated in the *current* block (`existing >= scopeBase`) so an enclosing
+binding's slot is never reused for a shadow, and `enterBlockScope`/`exitBlockScope`
+(wrapping `lowerBlock` and `lowerBlockExpr`) maintain a per-function scope undo
+log: `allocSlot` records each name's prior slot/type before rebinding it
+(`recordScopeUndo`), and block exit replays the log back to the block's entry mark
+to restore every enclosing name→slot / name→type mapping the block overwrote (and
+drop names it introduced). The undo log is a change log of single-key map ops —
+not a whole-map snapshot — because the `mapEntries` snapshot form both
+mis-compiled under the pinned F# stage-0 mint and corrupted the codegen
+dictionaries at runtime. The MSIL backend carries the identical fix
+(`scopeBaseMsil` + `enterBlockScopeMsil`/`exitBlockScopeMsil` around
+`lowerBlockMsil`/`lowerBlockExprMsil`). The slot ticker is deliberately not rolled
+back on block exit — inner slots stay allocated (dead after the block), which
+keeps each slot a single verifier type across the method's uniform StackMapTable
+frame. Verified by `shadow` cases across `if`-then/`else`, nested doubles, loop
+bodies, `match` arms, value-producing blocks, and sibling scopes on both targets.
 
 ### 15.4 Java-interop with `ExecutorService`
 
