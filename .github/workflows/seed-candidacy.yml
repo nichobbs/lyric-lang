@@ -66,18 +66,24 @@ jobs:
           fi
           VERSION="${RAW#v}"
           echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "TAG=v${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
         run: echo "TMPDIR=${{ runner.temp }}" >> "$GITHUB_ENV"
 
-      # Checked out at the release tag itself (not just default-branch HEAD)
-      # so the `.l` source under test is exactly what that release's tag
-      # points at, even if this workflow runs slightly after later commits
-      # land on main.
+      # Deliberately checked out at the DEFAULT BRANCH's current HEAD, not the
+      # release tag under test (#5154). The risk this workflow exists to
+      # de-risk is "can this old/candidate seed correctly bootstrap TODAY's
+      # main source" (the actual #3936/#5094 scenario: a stale seed compiling
+      # newer .l source it never saw) -- checking out the release tag itself
+      # would instead compile that release's own contemporaneous source with
+      # its own seed, a tautological self-consistency check that can never
+      # catch a seed miscompiling constructs introduced after that release.
+      # This matters most for the workflow_dispatch "test an arbitrary past
+      # version" path, where the gap between the seed's vintage and current
+      # main is largest.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
-          ref: ${{ steps.ver.outputs.TAG }}
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           filter: blob:none
 
@@ -106,6 +112,7 @@ jobs:
       # LYRIC_BOOTSTRAP_VERSION pins the exact release under test so
       # scripts/bootstrap.sh downloads it instead of resolving "latest".
       - name: Build stage 1 from the released version as a download seed
+        id: build_seed_stage1
         working-directory: ${{ github.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -116,6 +123,7 @@ jobs:
           ./scripts/bootstrap.sh --stage 1
 
       - name: Build AOT entry-point
+        id: build_aot
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -140,6 +148,7 @@ jobs:
       # the v0.4.14 dblToSingle regression this workflow exists to catch
       # earlier next time.
       - name: Self-tests against the download-seeded stage 1 (--target dotnet)
+        id: selftest_dotnet
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -165,6 +174,7 @@ jobs:
           done
 
       - name: Self-tests against the download-seeded stage 1 (--target jvm)
+        id: selftest_jvm
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -182,8 +192,19 @@ jobs:
           done
           echo "Seed-candidacy self-tests passed for v${{ steps.ver.outputs.VERSION }} as a download seed." >> "$GITHUB_STEP_SUMMARY"
 
+      # Scoped to the steps that actually exercise the candidate seed/self-test
+      # suite (#5155) -- plain `if: failure()` would also fire on an
+      # infra-level failure (checkout, dotnet/java setup, cache, version
+      # resolution), which says nothing about the seed's compiler correctness
+      # and would file a misleading seed-regression issue.
       - name: File a tracking issue on failure
-        if: failure()
+        if: >-
+          failure() && (
+            steps.build_seed_stage1.outcome == 'failure' ||
+            steps.build_aot.outcome == 'failure' ||
+            steps.selftest_dotnet.outcome == 'failure' ||
+            steps.selftest_jvm.outcome == 'failure'
+          )
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
