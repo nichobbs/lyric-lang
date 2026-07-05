@@ -40,8 +40,25 @@ pub func hostNow(): Instant = ()
 @externTarget("System.TimeSpan.Zero")
 pub func hostZeroDuration(): Duration = ()
 
+// The out-param bridge to DateTime.TryParse; only hostParseInstantOpt
+// below should call it (the native backend cannot express out params,
+// so the shared surface routes through the Option seam — D-N-027,
+// same idiom as Std.UuidHost's hostParseCanonicalGuid).
 @externTarget("System.DateTime.TryParse")
 pub func hostTryParseInstant(s: in String, value: out Instant): Bool = ()
+
+// Exception-free parse seam all three kernel twins implement
+// (D-N-027).  This twin inherits DateTime.TryParse's lenient format
+// set; the guaranteed cross-target contract is the toIsoString
+// round-trip.
+pub func hostParseInstantOpt(s: in String): Option[Instant] {
+  var v: Instant = default()
+  if hostTryParseInstant(s, v) {
+    Some(value = hostToUniversalTime(v))
+  } else {
+    None
+  }
+}
 
 // =====================================================================
 // Duration constructors (in fractional units).
@@ -135,9 +152,27 @@ pub func hostSubDurations(a: in Duration, b: in Duration): Duration = ()
 
 // =====================================================================
 // ISO-8601 formatting.
+//
+// The previous binding routed through `System.Convert.ToString`,
+// which emits the CURRENT CULTURE's default DateTime format
+// ("11/29/1973 21:33:09") — not ISO-8601, dropping sub-second
+// precision and breaking the documented parse round-trip.  Fixed as
+// part of D-N-027: format explicitly with the round-trippable "o"
+// specifier.
 // =====================================================================
-@externTarget("System.Convert.ToString")
-pub func hostInstantToString(value: in Instant): String = ()
+@externTarget("System.DateTime.ToString")
+func hostInstantToStringFmt(value: in Instant, fmt: in String): String = ()
+
+pub func hostInstantToString(value: in Instant): String {
+  hostInstantToStringFmt(value, "o")
+}
+
+// TryParse of a "Z"-suffixed string yields a LOCAL-kind DateTime with
+// the clock time shifted to the host timezone; normalize back to UTC
+// so the parse seam returns the same instant `toIsoString` printed
+// regardless of the machine's timezone (D-N-027).
+@externTarget("System.DateTime.ToUniversalTime")
+func hostToUniversalTime(t: in Instant): Instant = ()
 
 // ─── Monotonic clock ──────────────────────────────────────────────────────────
 @externTarget("System.Diagnostics.Stopwatch.GetTimestamp")

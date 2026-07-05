@@ -773,6 +773,19 @@ Add native import conditional. Implement `readAllText`, `writeAllText`, `exists`
 
 Implement `Instant.now()` returning milliseconds since epoch via `clock_gettime`.
 
+**SHIPPED (D-N-027, superseding the sketch above):** the full calendar
+surface, not just `now()`.  `Instant`/`Duration`/`DateTimeOffset` are
+nanosecond-count records (years ~1678..2262, the JVM `toNanos()`
+window) over a new `lyric_epoch_nanos`; calendar decomposition is
+Hinnant's proleptic-Gregorian civil math in pure Lyric; `addMonths`
+clamps day-of-month like both managed twins; ISO-8601 output is
+java.time-style and the parser is strict ISO with field validation;
+fractional duration constructors round via `llround(3)`.
+`parseOptInstant` routes through a `hostParseInstantOpt` Option seam
+all three twins implement (the D-N-026 idiom).  Verified by a native
+ASan self-test with string goldens and target-neutral `time_tests.l`
+calendar coverage.
+
 ---
 
 ### N5.5 — Update `Std.Uuid` for native

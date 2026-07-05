@@ -318,6 +318,49 @@ test "Std.Uuid seams: v4 generation, formatting, four parse forms (ASan)" {
   assertEqualInt(r.exitCode, 42, "uuid seams")
 }
 
+test "Std.Time calendar: civil math, clamping, ISO round-trip (ASan)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  if toIsoString(fromEpochMillis(0i64)) != \"1970-01-01T00:00:00Z\" {\n    return 1\n  }\n" +
+    "  if toIsoString(fromEpochMillis(1000000000000i64)) != \"2001-09-09T01:46:40Z\" {\n    return 2\n  }\n" +
+    "  if toIsoString(fromEpochMillis(0i64 - 86400000i64)) != \"1969-12-31T00:00:00Z\" {\n    return 3\n  }\n" +
+    "  if toIsoString(fromEpochMillis(1500i64)) != \"1970-01-01T00:00:01.500Z\" {\n    return 4\n  }\n" +
+    "  val jan31Leap = fromEpochSeconds(65664000i64)\n" +
+    "  if toIsoString(jan31Leap) != \"1972-01-31T00:00:00Z\" {\n    return 5\n  }\n" +
+    "  if toIsoString(addMonths(jan31Leap, 1)) != \"1972-02-29T00:00:00Z\" {\n    return 6\n  }\n" +
+    "  if toIsoString(addMonths(fromEpochSeconds(34128000i64), 1)) != \"1971-02-28T00:00:00Z\" {\n    return 7\n  }\n" +
+    "  if toIsoString(addMonths(fromEpochSeconds(70848000i64), 0 - 1)) != \"1972-02-29T00:00:00Z\" {\n    return 8\n  }\n" +
+    "  if toIsoString(addYears(fromEpochMillis(0i64), 2)) != \"1972-01-01T00:00:00Z\" {\n    return 9\n  }\n" +
+    "  if toIsoString(addDays(fromEpochMillis(0i64), 1.5)) != \"1970-01-02T12:00:00Z\" {\n    return 10\n  }\n" +
+    "  match parseOptInstant(\"2021-01-01T00:00:00Z\") {\n" +
+    "    case Some(p) -> {\n      if toIsoString(p) != \"2021-01-01T00:00:00Z\" {\n        return 11\n      }\n    }\n" +
+    "    case None -> {\n      return 12\n    }\n" +
+    "  }\n" +
+    "  match parseOptInstant(\"2021-06-15T12:34:56.123456789Z\") {\n" +
+    "    case Some(p2) -> {\n      if toIsoString(p2) != \"2021-06-15T12:34:56.123456789Z\" {\n        return 13\n      }\n    }\n" +
+    "    case None -> {\n      return 14\n    }\n" +
+    "  }\n" +
+    "  match parseOptInstant(\"2021-02-29T00:00:00Z\") {\n" +
+    "    case Some(_) -> {\n      return 15\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  match parseOptInstant(\"not-a-date\") {\n" +
+    "    case Some(_) -> {\n      return 16\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  match parseOptInstant(\"1500-01-01T00:00:00Z\") {\n" +
+    "    case Some(_) -> {\n      return 17\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  if totalMillis(hours(1.5)) != 5400000.0 {\n    return 18\n  }\n" +
+    "  if totalSeconds(since(plus(fromEpochMillis(0i64), seconds(90.0)), fromEpochMillis(0i64))) != 90.0 {\n    return 19\n  }\n" +
+    "  if not instantBefore(fromEpochMillis(0i64), fromEpochMillis(1i64)) {\n    return 20\n  }\n" +
+    "  if not instantAfter(now(), fromEpochMillis(1500000000000i64)) {\n    return 21\n  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "time calendar seams")
+}
+
 test "Result[Unit, E] payloads and diverging value-if branches (ASan)" {
   val src = "package T\n" + "import Std.Core\n" + "func mk(flag: Int): Result[Unit, String] {\n" + "  if flag == 0 {\n" +
     "    Ok(value = ())\n" +

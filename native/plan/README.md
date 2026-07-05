@@ -64,9 +64,9 @@ support they surfaced (Unit-typed union/record payload fields for
 `llvm_stdlib_self_test.l`, which compiles real `Std.File` /
 `Std.Environment` / `Std.Process` / `Std.Time` programs through the
 full bridge pipeline.  The process runner's stdin/timeout deferrals
-were later closed by D-N-024, and Std.Uuid by D-N-026; the remaining
-native-side deferrals (file `stat`, the Std.Time calendar surface)
-are tracked in #4752.
+were later closed by D-N-024, Std.Uuid by D-N-026, and the Std.Time
+calendar surface by D-N-027; the one remaining native-side deferral
+(file `stat`) is tracked in #4752.
 `slice[T]` SHIPPED (D-N-015, D-progress-562): slices share the RC'd
 list representation (immutable by construction; the planned borrowed
 fat pointer is superseded — see D-N-015), unlocking bytes-mode file
@@ -182,6 +182,16 @@ Option seam (the Bool+out TryParse shape is gone from the shared
 surface — native has no out params). Verified by a new
 `llvm_stdlib_self_test.l` case under ASan and extended managed
 `uuid_tests.l` coverage.
+
+`Std.Time`'s calendar surface works on native (D-N-027), closing the
+last substantial #4752 gap: `Instant`/`Duration`/`DateTimeOffset` are
+nanosecond-count records over `lyric_epoch_nanos`, calendar math is
+Hinnant's civil algorithms in pure Lyric (day-of-month clamping
+matches both managed twins), ISO-8601 formatting is java.time-style
+with a strict validating parser, and `parseOptInstant` routes through
+a `hostParseInstantOpt` Option seam all three kernel twins implement.
+Verified by a native ASan self-test with string goldens and
+target-neutral `time_tests.l` calendar coverage.
 
 ## Reading order
 

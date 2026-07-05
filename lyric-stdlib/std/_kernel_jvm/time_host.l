@@ -68,17 +68,16 @@ pub func hostZeroDuration(): Duration {
   Duration.ofMillis(0)
 }
 
-/// Parse an ISO-8601 instant.  Instant.parse throws
-/// DateTimeParseException on malformed input; the catch arm reports
-/// failure and leaves a placeholder in the out slot (callers ignore
-/// `value` when the result is false).
-pub func hostTryParseInstant(s: in String, value: out Instant): Bool {
+/// Parse an ISO-8601 instant — the exception-free Option seam all
+/// three kernel twins implement (D-N-027, replacing the former
+/// Bool+out shape the native backend cannot express).  Instant.parse
+/// throws DateTimeParseException on malformed input, absorbed into
+/// the None arm.
+pub func hostParseInstantOpt(s: in String): Option[Instant] {
   try {
-    value = Instant.parse(s)
-    true
+    Some(value = Instant.parse(s))
   } catch Bug as _ {
-    value = Instant.ofEpochMilli(0)
-    false
+    None
   }
 }
 

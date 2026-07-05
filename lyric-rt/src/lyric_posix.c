@@ -92,6 +92,16 @@ int64_t lyric_epoch_millis(void) {
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* Full-resolution wall clock for the native Std.Time Instant
+ * representation (nanoseconds since the Unix epoch, D-N-027).  The
+ * int64 range covers years ~1678..2262, the same window
+ * java.time.Duration.toNanos() lives in. */
+int64_t lyric_epoch_nanos(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
 int64_t lyric_monotonic_nanos(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

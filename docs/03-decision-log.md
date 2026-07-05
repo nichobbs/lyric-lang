@@ -6018,6 +6018,89 @@ remains), D-progress-557 (the Option-seam kernel idiom),
 `lyric-rt/src/lyric_posix.c` (`lyric_uuid_v4`),
 `lyric-stdlib/std/uuid.l`, all three `uuid_host.l` twins.
 
+## D-N-027 — `Std.Time`'s calendar surface on native: nanosecond-count records, pure-Lyric civil-calendar math, and a strict ISO-8601 kernel
+
+**Date:** 2026-07-05
+**Status:** Accepted
+
+**Context.** The calendar half of `Std.Time` (`Instant` / `Duration` /
+`DateTimeOffset`, arithmetic, `addMonths`/`addYears`, ISO formatting
+and parsing) wrapped .NET types with no native representation — the
+last substantial #4752 gap.  The parse seam was also the Bool+out
+`hostTryParseInstant` shape the native backend cannot express, and the
+shared surface carried a dead private `findTimeZone` wrapper (never
+called from anywhere) anchoring a `TimeZone` type native has no story
+for.
+
+**Decision — nanosecond counts, like the JVM twin.** On native,
+`Instant` is a record holding nanoseconds since the Unix epoch (UTC),
+`Duration` a nanosecond count, and `DateTimeOffset` an instant already
+reckoned at UTC offset zero (the only offset the shared surface ever
+constructs).  The int64-nanos range covers years ~1678..2262 — the
+same window `java.time.Duration.toNanos()` lives in, and the window
+the JVM twin's `hostTotalMillis` already implies.  `hostNow` reads a
+new `lyric_epoch_nanos` (CLOCK_REALTIME at full resolution).
+Fractional `Duration` constructors round to whole nanoseconds via
+`llround(3)`, mirroring the JVM twin's `Math.round` idiom.
+
+**Decision — civil-calendar math in pure Lyric.** Calendar
+decomposition uses Howard Hinnant's proleptic-Gregorian
+`days_from_civil` / `civil_from_days` (correct under Lyric's
+truncating integer division across the whole representable window,
+with an explicit floor-division helper for the nanos→days split so
+pre-1970 instants decompose correctly).  `hostAddMonths` shifts the
+month index and clamps day-of-month to the target month's length —
+`DateTime.AddMonths` / `java.time.plusMonths` semantics (Jan 31 + 1
+month → Feb 28/29); `hostAddYears` delegates to `hostAddMonths(12n)`,
+matching both managed twins' Feb-29 clamping.  No tzdata dependency:
+everything is UTC, like the shared surface.
+
+**Decision — ISO-8601 text.** `hostInstantToString` emits
+java.time-style ISO-8601 UTC ("YYYY-MM-DDTHH:MM:SSZ"; sub-second
+fraction only when non-zero, trimmed to 3/6/9 digits).  Textual
+parity with .NET was never the contract — .NET's "o" format always
+carries seven fractional digits while `java.time.Instant.toString()`
+trims — so native matches the JVM form and the cross-target guarantee
+stays what it always was: same-target `toIsoString` →
+`parseOptInstant` round-trip.  The native parser accepts exactly that
+shape (optional 1..9-digit fraction, trailing "Z") with full field
+validation (month/day-in-month including leap years, hour/min/sec
+ranges) and rejects years outside 1679..2261 rather than silently
+wrapping the nanosecond range.  .NET's `DateTime.TryParse` stays
+lenient on its own target (documented host leniency, unlike the
+Uuid case where the format list was the documented contract).
+
+**Decision — Option seam + dead-code removal.** `parseOptInstant`
+routes through a new `hostParseInstantOpt(s): Option[Instant]` seam
+all three twins implement (the D-N-026 idiom; the managed twin keeps
+its Bool+out extern privately as the TryParse bridge, the JVM twin's
+copy is deleted).  The dead private `findTimeZone` wrapper is removed
+from `std/time.l` — it had no callers anywhere in the tree, and
+keeping it would have forced the native twin to fake a `TimeZone`
+type for an unreachable function.  The managed/JVM kernels keep their
+`hostFindTimeZone` exports for when a real timezone surface is
+designed.
+
+**Verification.** `time_tests.l` gains target-neutral calendar
+coverage (no ISO-string goldens — the textual forms differ per host
+by design): epoch conversions, duration constructors/arithmetic/
+comparisons, month/year/day arithmetic with leap and common-year
+clamping asserted via exact elapsed-milliseconds, and the parse
+round-trip (Option[Instant] unwrapped by inline match — `Instant` is
+an extern value type on .NET, the #5196 pattern).  A new
+`llvm_stdlib_self_test.l` case (ASan) pins native string goldens:
+epoch and 1e9-seconds ISO forms (the latter matching the JVM
+self-test's golden), pre-1970 floor-division, fraction trimming,
+leap/common/negative-month clamping, strict-parse acceptance and
+rejections (non-leap Feb 29, missing "Z", out-of-range year), and
+`now()` sanity.  One new C test pins `lyric_epoch_nanos` against
+`lyric_epoch_millis`.
+
+**Related:** #4752 (calendar half closed; file `stat` remains),
+D-N-026 (the Option-seam precedent), D-progress-557,
+`lyric-stdlib/std/_kernel_native/time_host.l`,
+`lyric-stdlib/std/time.l`, `lyric-rt/src/lyric_posix.c`.
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The

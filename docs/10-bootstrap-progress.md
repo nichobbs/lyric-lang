@@ -29568,3 +29568,42 @@ stage-0 mint (`FS_COMMIT=35c0d2e5`).
 
 **Related:** `docs/03-decision-log.md` D-progress-603, `docs/18-jvm-emission.md`
 §15.3, #5191 / #5204 (the `scope`-body follow-up).
+=======
+
+### D-progress-602 — `Std.Time`'s calendar surface works on `--target native` (D-N-027)
+
+**Shipped.** The last substantial #4752 gap is closed: the full
+`Std.Time` surface — `Instant`/`Duration` construction and
+arithmetic, `addMonths`/`addYears`/`addDays` with day-of-month
+clamping, epoch conversions, comparisons, ISO-8601 formatting and
+parsing — works on native.
+
+- **Native kernel twin** (`_kernel_native/time_host.l`, D-N-027):
+  `Instant` = nanoseconds since the Unix epoch (record over Long,
+  years ~1678..2262 — the JVM twin's `toNanos()` window),
+  `Duration` = a nanosecond count, `DateTimeOffset` = a UTC-reckoned
+  instant.  Calendar decomposition is Hinnant's proleptic-Gregorian
+  civil math in pure Lyric (with explicit floor division so pre-1970
+  instants decompose correctly); `addMonths` clamps day-of-month
+  like both managed twins; ISO output is java.time-style (fraction
+  only when non-zero, trimmed to 3/6/9 digits); the parser is strict
+  ISO with full field validation.  Fractional duration constructors
+  round via `llround(3)`.
+- **lyric-rt:** new `lyric_epoch_nanos` (full-resolution
+  CLOCK_REALTIME) backs `hostNow`; C test pins it against
+  `lyric_epoch_millis`.
+- **Shared surface:** `parseOptInstant` routes through a new
+  `hostParseInstantOpt` Option seam all three twins implement
+  (D-N-026 idiom — the Bool+out TryParse shape cannot exist on
+  native); the dead private `findTimeZone` wrapper (no callers
+  anywhere) is deleted from `std/time.l`.
+- **Verification:** `time_tests.l` gains target-neutral calendar
+  coverage (exact elapsed-millis assertions, no per-host ISO string
+  goldens; inline-match Option unwrapping per #5196); a new
+  `llvm_stdlib_self_test.l` case (ASan) pins native ISO goldens,
+  leap/common/negative-month clamping, pre-1970 decomposition, and
+  strict-parse rejections.  Native suites, lyric-rt C suite
+  (clang + gcc), and `make ilverify` clean.
+
+**Related:** D-N-027 (the decision entry), D-N-026, D-progress-601,
+#4752 (file `stat` is the last remaining item).

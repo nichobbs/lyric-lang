@@ -1520,10 +1520,13 @@ current working directory, `Std.Process.runCapture` and
 `timeoutMs` deadline kill both honored at managed parity, D-N-024;
 the kill takes the child's whole process group, so descendants die
 with it, D-N-025),
-`Std.Time`'s epoch/monotonic/sleep functions, and `Std.Uuid`
-(generation, formatting, and a four-format parse contract that is
-identical on every target, D-N-026) all work on `--target native`
-today.  File `stat` and the `Std.Time` calendar surface remain
+`Std.Time` in full — the epoch/monotonic/sleep clocks plus the
+calendar surface: `Instant`/`Duration` arithmetic, `addMonths`/
+`addYears` with day-of-month clamping, and ISO-8601 formatting and
+strict parsing over nanosecond-count records and pure-Lyric civil
+math (D-N-027) — and `Std.Uuid` (generation, formatting, and a
+four-format parse contract that is identical on every target,
+D-N-026) all work on `--target native` today.  File `stat` remains
 unavailable on native (tracked in #4752).
 
 `for x in list { ... }` over a `List[T]` diverges from the managed

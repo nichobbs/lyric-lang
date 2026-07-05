@@ -17,7 +17,7 @@ For each module in `lyric-stdlib/std/_kernel/`, this document classifies:
 | `console_host.l` | Needs `_kernel_native/` | `write(STDOUT_FILENO, ...)` | `Std.Console` |
 | `file_host.l` | Needs `_kernel_native/` | `open/read/write/close/stat/mkdir` | `Std.File`, `Std.Directory` |
 | `math_host.l` | Needs `_kernel_native/` | `libm`: `sin/cos/sqrt/pow/...` | `Std.Math` |
-| `time_host.l` | Needs `_kernel_native/` | `clock_gettime(CLOCK_REALTIME)` | `Std.Time` |
+| `time_host.l` | SHIPPED (D-N-027) | `clock_gettime` + pure-Lyric civil math | `Std.Time` |
 | `uuid_host.l` | Needs `_kernel_native/` | `getrandom` (Linux) / `CCRandomGenerateBytes` (macOS) | `Std.Uuid` |
 | `environment_host.l` | Needs `_kernel_native/` | `getenv/setenv/unsetenv` | `Std.Environment` |
 | `process_host.l` | Needs `_kernel_native/` | `fork/execvp/posix_spawn/waitpid` | `Std.Process` |

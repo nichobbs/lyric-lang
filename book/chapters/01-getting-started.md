@@ -227,7 +227,9 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > directory create/delete), `Std.Environment` (variables, working
 > directory), `Std.Process.runCapture` / `runCaptureWithInput` (argv
 > list, never a shell; stdin content and deadline kills honored),
-> `Std.Time` (epoch millis, monotonic nanos, sleep), and `Std.Uuid`
+> `Std.Time` in full (clocks, `Instant`/`Duration` arithmetic,
+> `addMonths`/`addYears` with day-of-month clamping, ISO-8601
+> formatting and parsing), and `Std.Uuid`
 > (v4 generation, formatting, and the same four-format parse contract
 > as the managed targets). Raw C interop
 > (`extern func`, `NativePtr[T]`,
