@@ -87,7 +87,7 @@ Concrete examples surfaced across the sweep:
 | Library | File | Constructors |
 |---|---|---|
 | stdlib | `std/_kernel/collections_host.l:23-30` | `newList`, `newListWithCapacity`, `newMap` |
-| stdlib | ~~`std/_kernel/http_host.l:20-30`~~ **migrated** | ~~`HttpMethod`, `HttpRequestMessage`, `StringContent`, `HttpClient`, `HttpClientHandler`~~ — done, see below. (`SocketsHttpHandler`'s wrapper, `newSocketsHandler`, turned out to be dead code — no call site anywhere in the repo — so it was left as-is rather than migrated for its own sake.) |
+| stdlib | `std/_kernel/http_host.l:20-30` | `HttpMethod`, `HttpRequestMessage`, `StringContent`, `HttpClient`, `HttpClientHandler`, `SocketsHttpHandler` |
 | stdlib | `std/_kernel/random_host.l`, `std/_kernel/task.l`, `std/_kernel/process_capture_host.l` | `Random`, `CancellationTokenSource`, `ProcessStartInfo`/`MemoryStream`/`StreamReader` |
 | stdlib | `std/_kernel_jvm/collections_host.l:24-33` | JVM parity (`ArrayList`, `HashMap`) |
 | lyric-web | `src/web.l:65` | `HttpListener` |
@@ -104,20 +104,34 @@ types across 27 lines — the densest single offender found).
 **Recommendation:** pick one high-traffic module as the reference
 migration (stdlib's `http_host.l` or `collections_host.l` are good
 candidates — widely imported, moderate size) and use it to establish the
-pattern before sweeping the rest. **Done:** `http_host.l`'s five
-constructor wrappers (`newHttpMethod`, `newRequest`, `newStringContent`,
-`newClient`/`newClientFromHandler`, `newHandler`) are gone, replaced by
-direct `.new()` calls on the existing `extern type` declarations — no
-`import extern` needed, since `.new()` works directly against a bare
-`extern type X = "..."` alias (docs/48 §2.1). All wrapper call sites were
-private to the file itself (none were `pub`), so this was a
-self-contained, zero-external-call-site migration; `collections_host.l`
-remains open as the next candidate, but is materially higher-risk since
-`newList`/`newListWithCapacity`/`newMap` are `pub` and called from
-essentially every `.l` file in the repo. Property-setter wrappers (e.g.
+pattern before sweeping the rest. Property-setter wrappers (e.g.
 `mail_kernel.l`'s `smtpSetEnableSsl`/`mailSetFrom` family) are a separate,
 lower-priority cleanup — `.new()` doesn't help there; leave them as-is
 unless auto-FFI gains property-assignment sugar.
+
+**Correction (2026-07-05), important for anyone picking up this backlog:**
+this recommendation is wrong for *any* file under `lyric-stdlib/std/` or
+`lyric-compiler/lyric/` (not just the two named candidates). `.new(args)`
+with a non-empty argument list cannot be used there yet — attempting it
+on `http_host.l` broke the real CI bootstrap (`.github/workflows/ci.yml`'s
+`build`/`build-and-test` jobs), not just this sandbox's known seed-
+substitution artifact (D-progress-543). Root cause: `scripts/bootstrap.sh
+--stage 1` compiles **both** the self-hosted compiler packages **and**
+the stdlib bundle using a pinned **stage-0** seed binary (a previous
+release), and that seed predates metadata-based `.new(args)` resolution
+(`a64e649`, 2026-07-03) — it panics with "auto-FFI call
+'System.Net.Http.HttpClient.new(...)' takes arguments, which the
+self-hosted emitter cannot resolve without the method's real signature."
+This is a real bootstrapping chicken-and-egg problem, not a stale-binary
+artifact: the feature can't be used by the very code that bootstraps the
+compiler that implements the feature, until a stage-0 seed *containing*
+the feature is cut and pinned. Filed as issue #5167 (tracks re-attempting
+this backlog once a `.new(args)`-capable seed is available, or scoping
+future bootstrap-closure kernel work to zero-argument `.new()` calls
+only, which the seed *does* support). Ecosystem libraries (`lyric-cache`,
+`lyric-mail`, `lyric-web`, etc.) are compiled by the fully-bootstrapped
+final compiler in their own separate `lyric build` step and are **not**
+affected by this constraint — `.new(args)` is safe to use there today.
 
 ---
 
@@ -422,13 +436,20 @@ blocks closing this section and rollout item 7 below.
    targets.~~ **Done** (same-day follow-up to #5032).
 2. ~~Pick one stdlib kernel file (`http_host.l` or `collections_host.l`) as
    the reference `.new()`/`import extern` migration; use it as the
-   pattern for the rest of §2's backlog.~~ **Done** — `http_host.l`'s five
-   constructor wrappers now use `.new()` directly (see §2's update).
-   `collections_host.l` (and the rest of §2's backlog) remain open,
-   deliberately deferred: their wrapper functions are `pub` and called
-   from essentially every `.l` file in the repo, a much larger blast
-   radius than `http_host.l`'s fully self-contained (zero external call
-   sites) wrappers.
+   pattern for the rest of §2's backlog.~~ **Redirected, not done as
+   originally scoped** — attempting `http_host.l` broke the real CI
+   bootstrap (see §2's correction and issue #5167): `.new(args)` isn't
+   usable in `lyric-stdlib/`/`lyric-compiler/` until a `.new(args)`-
+   capable stage-0 seed is cut. **Done instead** on a genuinely safe
+   target: `lyric-web/src/web.l`'s `newHttpListener()` — a zero-argument
+   constructor wrapper, and `lyric-web` is an ecosystem library compiled
+   by the final bootstrapped compiler, not part of the bootstrap closure
+   — now uses `HttpListener.new()` directly. All 34 `lyric-web` tests
+   pass unchanged. `collections_host.l` and the rest of the stdlib/
+   compiler backlog remain blocked on #5167; the ecosystem-library half
+   of §2's backlog (`lyric-mail`, `lyric-ws`/`lyric-mq`/`lyric-jobs`/
+   `lyric-resilience`'s `_kernel/net/*_kernel.l`, etc.) is unaffected and
+   open for the same treatment.
 3. ~~Close the stdlib I/O test gap: `file_tests.l`, `directory_tests.l`,
    `http_tests.l` (§5.1) — highest leverage since every ecosystem library
    built on top inherits the coverage.~~ **Done** — see §5.1's update.
