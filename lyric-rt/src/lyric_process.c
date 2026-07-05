@@ -274,6 +274,7 @@ int32_t lyric_process_run(const char* path, LyricList* args,
 
     int64_t deadline_ns = timeout_ms >= 0 ? lyric_monotonic_nanos() + (int64_t)timeout_ms * 1000000 : -1;
     int killed = 0;
+    int64_t kill_ns = 0;
     int timed_out = 0;
 
     ProcBuf outbuf;
@@ -295,12 +296,17 @@ int32_t lyric_process_run(const char* path, LyricList* args,
 
     uint8_t chunk[4096];
     while (fds[0].fd >= 0 || fds[1].fd >= 0) {
-        /* Before the deadline: wait until it.  After a kill: bounded
-         * 100 ms waits, so a grandchild holding an inherited pipe
-         * write end past the (dead) child cannot stall the EOF wait
-         * forever — the drain gives up and force-closes below. */
+        /* Before the deadline: wait until it.  After a kill: 100 ms
+         * waits under a 2 s total drain budget, so a grandchild holding
+         * an inherited pipe write end past the (dead) child cannot
+         * stall the EOF wait — whether it sits idle (one empty window
+         * ends the drain) or keeps writing (the budget does, #5176).
+         * Either way the drain gives up and force-closes below. */
         int wait_ms = -1;
         if (killed) {
+            if (lyric_monotonic_nanos() - kill_ns > 2000000000LL) {
+                break; /* post-kill drain budget exhausted; force-close below */
+            }
             wait_ms = 100;
         } else if (deadline_ns >= 0) {
             int64_t left_ns = deadline_ns - lyric_monotonic_nanos();
@@ -327,6 +333,7 @@ int32_t lyric_process_run(const char* path, LyricList* args,
              * draining until the output pipes report EOF. */
             kill(pid, SIGKILL);
             killed = 1;
+            kill_ns = lyric_monotonic_nanos();
             if (fds[2].fd >= 0) {
                 close(fds[2].fd);
                 fds[2].fd = -1;

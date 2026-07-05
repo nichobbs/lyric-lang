@@ -1021,6 +1021,38 @@ static void test_process_sync_timeout_pending_stdin(void) {
     lyric_release(err);
 }
 
+static void test_process_sync_timeout_grandchild_writer(void) {
+    /* lyric-rt kills only the direct child (process-tree kill is a
+     * tracked deferral): a grandchild that inherits the stdout write
+     * end and keeps producing faster than a full idle poll window must
+     * not keep the post-kill drain alive — the 2 s drain budget ends
+     * it (#5176).  The background writer then dies of SIGPIPE once the
+     * read ends are force-closed. */
+    LyricList* argv = lyric_list_new(1);
+    LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
+    lyric_release(dash_c);
+    const char* cmd = "(while :; do echo g; sleep 0.05; done) & sleep 30";
+    LyricString* script = lyric_string_from_literal((const uint8_t*)cmd, (int64_t)strlen(cmd));
+    lyric_list_push(argv, (int64_t)(intptr_t)script);
+    lyric_release(script);
+    int32_t code = -1;
+    LyricString* out = NULL;
+    LyricString* err = NULL;
+    int32_t timed_out = -1;
+    int64_t t0 = lyric_monotonic_nanos();
+    CHECK(lyric_process_run("/bin/sh", argv, NULL, 300, &code, &out, &err, &timed_out) == 0);
+    int64_t elapsed_ms = (lyric_monotonic_nanos() - t0) / 1000000;
+    CHECK(timed_out == 1);
+    CHECK(code == 128 + SIGKILL);
+    /* ~300 ms deadline + ~2 s drain budget; well under the 30 s the
+     * grandchild would otherwise pin the loop for. */
+    CHECK(elapsed_ms < 10000);
+    lyric_release(argv);
+    lyric_release(out);
+    lyric_release(err);
+}
+
 static void test_process_op_stdin(void) {
     /* The async op pumps stdin nonblockingly: cat round-trips 256 KiB
      * through start/pump alone. */
@@ -1372,6 +1404,7 @@ int main(void) {
     test_process_stdin_child_ignores();
     test_process_sync_timeout();
     test_process_sync_timeout_pending_stdin();
+    test_process_sync_timeout_grandchild_writer();
     test_process_op_stdin();
     test_async_hot_completion();
     test_async_block_on_sleep();

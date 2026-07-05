@@ -5838,8 +5838,10 @@ blocked, so an intentionally-pending SIGPIPE is preserved).
 **Decision — sync deadline kill with the #5107 contract.** `timeoutMs
 >= 0` arms a monotonic deadline on the sync path; on expiry the child
 is SIGKILLed, stdin feeding stops, and the loop keeps draining output
-in bounded 100 ms waits (a grandchild holding an inherited write end
-past the dead child cannot stall the EOF wait forever). After the
+in 100 ms waits under a 2 s total drain budget (a grandchild holding
+an inherited write end past the dead child cannot stall the EOF wait:
+an idle one ends the drain at the first empty window, an actively
+writing one hits the budget, #5176). After the
 blocking reap, `timedOut` reports 1 only when the reaped status shows
 the kill landed (`WIFSIGNALED`) — a child that exited normally in the
 poll-to-kill window reports its real exit, never a false timeout
@@ -5861,13 +5863,15 @@ poll-to-kill window reports its real exit, never a false timeout
 - The runCapture half of #4752 is closed; the issue stays open for its
   remaining non-process items.
 
-**Verification.** Six new C unit tests under clang and gcc: a stdin
+**Verification.** Seven new C unit tests under clang and gcc: a stdin
 round-trip through `cat`; the 256 KiB no-deadlock interleave; a child
 that ignores 256 KiB of stdin (the `EPIPE` drop path, real exit code
 preserved); the sync deadline kill (`timedOut`, 128+SIGKILL raw
 status, pre-kill output preserved); a deadline kill with 256 KiB of
 stdin still in flight (the kill closes the feed and the drain
-terminates promptly); and the async op's 256 KiB stdin pump. Four new `llvm_self_test_async.l` cases (30 total): sync
+terminates promptly); a killed child whose grandchild keeps writing
+(the 2 s drain budget returns control, #5176); and the async op's
+256 KiB stdin pump. Four new `llvm_self_test_async.l` cases (30 total): sync
 `runCaptureWithInput` round-trip in a plain main; the sync timeout
 contract (`timedOut`/-2/pre-kill output); the 256 KiB sync round-trip
 ASan-clean; and an in-coroutine `runCaptureWithInput` through the /4

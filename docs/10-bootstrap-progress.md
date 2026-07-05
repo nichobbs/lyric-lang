@@ -29389,13 +29389,14 @@ kill contract the async op established (#5107).
   `out_timed_out`: the poll loop interleaves **nonblocking** stdin
   writes with output reads (a blocking `> PIPE_BUF` write would
   deadlock against a full child stdout pipe), SIGKILLs at the
-  monotonic deadline, drains post-kill output in bounded waits, and
-  reports `timedOut` only when the reap shows the kill landed
-  (#5107). The async op copies `stdinContent` at start and flushes it
-  from its pump. Six new C unit tests under clang and gcc (stdin
-  round-trip, 256 KiB no-deadlock, EPIPE drop with real exit
-  preserved, sync deadline kill, deadline kill with stdin still in
-  flight, async op stdin pump).
+  monotonic deadline, drains post-kill output in 100 ms waits under a
+  2 s total budget (#5176), and reports `timedOut` only when the reap
+  shows the kill landed (#5107). The async op copies `stdinContent` at
+  start and flushes it from its pump. Seven new C unit tests under
+  clang and gcc (stdin round-trip, 256 KiB no-deadlock, EPIPE drop
+  with real exit preserved, sync deadline kill, deadline kill with
+  stdin still in flight, grandchild-writer drain budget, async op
+  stdin pump).
 - **Kernel seam:** both `hostRunCaptureList` and
   `hostRunCaptureListAsync` drop their stdin `Err` guards and pass
   `stdinContent` through; the sync seam normalizes a timed-out
