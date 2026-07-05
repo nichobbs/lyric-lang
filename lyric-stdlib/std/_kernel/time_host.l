@@ -40,12 +40,12 @@ pub func hostNow(): Instant = ()
 @externTarget("System.TimeSpan.Zero")
 pub func hostZeroDuration(): Duration = ()
 
-// The out-param bridge to DateTime.TryParse; only hostParseInstantOpt
-// below should call it (the native backend cannot express out params,
-// so the shared surface routes through the Option seam — D-N-027,
-// same idiom as Std.UuidHost's hostParseCanonicalGuid).
+// The out-param bridge to DateTime.TryParse; package-private — only
+// hostParseInstantOpt below calls it (the native backend cannot
+// express out params, so the shared surface routes through the Option
+// seam — D-N-027, same idiom as Std.UuidHost's hostParseCanonicalGuid).
 @externTarget("System.DateTime.TryParse")
-pub func hostTryParseInstant(s: in String, value: out Instant): Bool = ()
+func hostTryParseInstant(s: in String, value: out Instant): Bool = ()
 
 // Exception-free parse seam all three kernel twins implement
 // (D-N-027).  This twin inherits DateTime.TryParse's lenient format
