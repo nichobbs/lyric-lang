@@ -1030,16 +1030,16 @@ async func loadDashboard(userId: in UserId): Dashboard {
 }
 ```
 
-`scope { ... }` guarantees:
+`scope { ... }` is specified to guarantee (see the **Status (D119)** note below for the per-backend shipped state — these guarantees are landing in slices, not yet fully shipped on MSIL/JVM):
 - All spawned tasks complete (or are cancelled) before the scope exits
 - If any spawned task fails, all sibling tasks are cancelled
 - The first failure is propagated; subsequent failures are aggregated (accessible via the exception's `aggregated` field)
 - The scope cannot leak spawned tasks beyond its lexical extent
 
-This is the structured concurrency pattern; raw "fire and forget" is not available. The rule (D119) is that **every spawned task must be *consumed*** — either `await`ed, or joined by an enclosing `scope { }` — so no spawned task is silently dropped. A spawned task that flows into a value position, or falls out of scope, without being awaited or scope-joined **will be a compile error (V0013)**. (This generalises the diagnostic the native backend already emits for an un-awaited spawn in a value position, D-N-022.) Note this is the *consumption* rule, not a stricter "spawn only lexically inside `scope`" rule: the idiomatic `val t = spawn f(); … ; val v = await t` — a bare `spawn` whose handle is later awaited — is well-formed and is what MSIL and native already run today.
+This is the structured concurrency pattern; raw "fire and forget" is not available. The rule (D119) is that **every spawned task must be *consumed*** — either `await`ed, or joined by an enclosing `scope { }` — so no spawned task is silently dropped. A spawned task that flows into a value position, or falls out of scope, without being awaited or scope-joined **will be a compile error (V0014)**. (This generalises the diagnostic the native backend already emits for an un-awaited spawn in a value position, D-N-022.) Note this is the *consumption* rule, not a stricter "spawn only lexically inside `scope`" rule: the idiomatic `val t = spawn f(); … ; val v = await t` — a bare `spawn` whose handle is later awaited — is well-formed and is what MSIL and native already run today.
 
 **Status (D119).** The §7.4 guarantees are being implemented for real across MSIL and JVM in slices, not documented away. Shipped/landing state:
-- **Structural (V0013)** — the "spawned task must be awaited or scope-joined" check, shared by all backends (slice S2), will close the fire-and-forget hole structurally. Not yet shipped; native already enforces the value-position case (D-N-022).
+- **Structural (V0014)** — the "spawned task must be awaited or scope-joined" check, shared by all backends (slice S2), will close the fire-and-forget hole structurally. Not yet shipped; native already enforces the value-position case (D-N-022).
 - **JVM runtime** — genuine forked concurrency: each `spawn` forks a virtual thread under a `java.util.concurrent.StructuredTaskScope` (`ShutdownOnFailure`, JDK 21–23; JDK 24+ tracked in #2263), which joins all subtasks at scope exit, cancels siblings and rethrows on the first failure (slice S4).
 - **MSIL runtime** — a BCL-only lowering (linked `CancellationTokenSource`, per-task fault→cancel continuation, `Task.WhenAll` join at scope exit, `AggregateException` propagation) that respects V0012 by keeping the join out of any protected region (slice S6, on the §7.3 token from S5).
 

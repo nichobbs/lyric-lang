@@ -8883,14 +8883,16 @@ per-backend state:
      enclosing `scope { }`. A spawned task that is dropped (flows into a
      value position, or falls out of scope, without being awaited or
      scope-joined) is rejected by the shared checker (new diagnostic
-     **V0013**), enforcing "no fire-and-forget" on every target.
+     **V0014** — `V0013` was already taken by the verifier's
+     NaN/±Infinity float-literal warning, `verifier/driver.l:239`),
+     enforcing "no fire-and-forget" on every target.
      **Design correction (2026-07-05):** an earlier draft of this entry
      said `spawn` must be *lexically inside* a `scope`, but that
      contradicts shipped reality — `llvm_self_test_async.l:271`
      (native, D-N-022) and `async_sm_self_test.l` (MSIL) both run and
      assert `val t = spawn f(); … ; await t` with **no** enclosing
      `scope`, and D-N-022's native backend already emits exactly the
-     value-position diagnostic V0013 generalises. The consumption rule
+     value-position diagnostic V0014 generalises. The consumption rule
      is the correct formulation: it closes the fire-and-forget hole
      without breaking the idiomatic bare-`spawn`-then-`await` pattern or
      the just-landed native async. No existing well-formed test needs
@@ -8962,7 +8964,7 @@ per-backend state:
    scheduler), so native `spawn`/`await` are genuinely concurrent — this
    entry does not alter that. What native still lacks is the §7.4
    *structured* layer (sibling-cancel-on-fault, aggregation), gated on
-   native cancellation machinery (D-N-003). The V0013 structural
+   native cancellation machinery (D-N-003). The V0014 structural
    enforcement (2) applies to native too; the runtime structured layer
    is a native follow-up outside this entry's MSIL/JVM scope.
 
@@ -8971,7 +8973,7 @@ fire-and-forget leak is a real, reachable safety hole on MSIL (a dropped
 hot `Task` runs unobserved, and its failure is swallowed) — exactly the
 class of bug the language's structured-concurrency guarantee exists to
 prevent. Documenting the hole as intended would institutionalise it.
-V0013 (the spawned-task-must-be-consumed check) closes the hole even
+V0014 (the spawned-task-must-be-consumed check) closes the hole even
 before the runtime join lands, and the runtime slices deliver the rest.
 
 **Implementation plan (slices, each its own PR / D-progress entry).**
@@ -8983,7 +8985,7 @@ before the runtime join lands, and the runtime slices deliver the rest.
   library-based V0012-safe lowering, docs/09 §16 cancellation status,
   and the stale "eager collect-all" self-test/codegen headers fixed. No
   runtime codegen; no `yield`+`await` rejection (it works on MSIL).
-- **S2:** V0013 — shared front-end "spawned task must be awaited or
+- **S2:** V0014 — shared front-end "spawned task must be awaited or
   scope-joined" enforcement (the consumption rule, generalising native's
   value-position diagnostic). Closes the fire-and-forget hole on all
   targets without breaking the bare-`spawn`-then-`await` idiom.

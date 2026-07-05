@@ -836,44 +836,39 @@ the awaiter's interface.
 ### 14.6 Async generators (`yield` in `async func`)
 
 An `async func f(...): T` whose body contains at least one `yield`
-expression is an *async generator*. The compiler selects one of two
-synthesis strategies based on whether the body also contains `await`.
+expression is an *async generator*. **The self-hosted MSIL backend
+synthesises a single, always-lazy `IAsyncEnumerable` state machine** for
+every generator, whether or not the body also contains `await` (D119,
+verified end-to-end). The earlier two-strategy design documented here —
+an *eager-producer* `RunBody`/`List<T>` variant for yield-only bodies and
+a separate *async-iterator* variant for `yield`+`await` — belonged to the
+retired F# emitter (`bootstrap/src/Lyric.Emitter/AsyncGenerator.fs`, now
+deleted); it is **not** what ships. The lazy state machine below subsumes
+both cases: a yield-only body simply has no await-resume states.
 
-#### 14.6.1 Eager-producer (no `await` in body)
+#### 14.6.1 (retired) eager-producer
 
-Synthesises a sibling class `<f>__Gen_N`:
+The eager `RunBody`-into-`List<T>` strategy is **dead code** on the
+self-hosted backend — do not implement it. A yield-only generator is
+lowered by the *same* lazy state machine as §14.6.2, minus the
+await-resume states, so it streams one value per `MoveNextAsync` (verified
+via an interleaved-side-effect probe: `produced 0 / consumed 0 /
+produced 1 / …`). Infinite yield-only sequences are therefore supported
+without buffering. See §7.2 of the language reference.
+
+#### 14.6.2 Lazy `IAsyncEnumerable` state machine (all generators)
+
+Synthesises a combined class `<f>__Gen_N` (element type erased to
+`object`) that is simultaneously an `IAsyncStateMachine` and the
+enumerable. `yield`+`await` in the same body works on MSIL (the state
+machine suspends on both), including a genuinely-suspending `await` (e.g.
+`await delay(ms)`) between yields; the JVM backend does not yet support
+this combination (#1490 — JVM parity gap).
 
 ```
 sealed class <f>__Gen_N :
-    IAsyncEnumerable<T>, IAsyncEnumerator<T>, IAsyncDisposable {
-  // parameter fields (public, populated by kickoff)
-  List<T> _values; int _pos; T _current;
-  void RunBody() { /* user body; yield e → _values.Add(e) */ }
-  IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken) {
-    _values = new List<T>(); _pos = -1; RunBody(); return this; }
-  ValueTask<bool> MoveNextAsync() { /* serves from _values[_pos] */ }
-  T Current { get { return _current; } }
-  ValueTask DisposeAsync() { return default; }
-}
-static IAsyncEnumerable<T> f(...) {
-  var gen = new <f>__Gen_N(); gen.p0 = arg0; …; return gen;
-}
-```
-
-`RunBody` is called synchronously by `GetAsyncEnumerator`; all `yield`
-expressions execute eagerly before the first `MoveNextAsync` returns.
-Correct for generator comprehensions and producer pipelines whose body
-has no internal `await` (D-progress-260).
-
-#### 14.6.2 Async-iterator (body has both `yield` and `await`)
-
-Gap-4a (D-progress-261): synthesises a combined class `<f>__AsyncIter_N`
-that is simultaneously an `IAsyncStateMachine` and the enumerable:
-
-```
-sealed class <f>__AsyncIter_N :
     IAsyncStateMachine,
-    IAsyncEnumerable<T>, IAsyncEnumerator<T>, IAsyncDisposable {
+    IAsyncEnumerable<object>, IAsyncEnumerator<object>, IAsyncDisposable {
   // Fields
   int <>1__state;                       // -2=done, -1=running, 0..A-1=await, A..A+Y-1=yield
   AsyncTaskMethodBuilder <>t__builder;  // used only for AwaitUnsafeOnCompleted
@@ -916,12 +911,15 @@ by an IL local.  At every `MoveNext` entry the fields are loaded into the
 IL locals; at every suspend point (await or yield) the IL locals are
 flushed back to the fields.
 
-The kickoff stub is identical to the eager-producer: create instance,
-copy params to fields, return as `IAsyncEnumerable<T>`.
+The kickoff stub creates the instance, copies params to fields, sets
+`_state = -1`, and returns it as `IAsyncEnumerable<object>`.
 
-Both strategies are implemented in
-`bootstrap/src/Lyric.Emitter/AsyncGenerator.fs`; the routing is in
-`bootstrap/src/Lyric.Emitter/Emitter.fs`.
+This lazy state machine is implemented in the self-hosted MSIL backend
+by `synthesizeGeneratorMsil` in `lyric-compiler/msil/codegen.l` (the
+`EYield` lowering installs the per-yield TCS `SetResult`/resume-label
+protocol). The JVM counterpart (`lowerAsyncGenerator` in
+`lyric-compiler/jvm/lowering.l`) is a virtual-thread + `SynchronousQueue`
+producer — also lazy, but without the `await`-in-body support.
 
 `for x in gen() { … }` lowers to a standard `await foreach` —
 `GetAsyncEnumerator`, loop on `MoveNextAsync`, `Current` access,
@@ -993,7 +991,7 @@ emitter:
 The `Task<T>` is also bound to the caller's local for a later `await`
 (which, on a settled task, reads the result). The structured-concurrency
 guarantee is enforced by the shared front-end via the **consumption rule**
-(**V0013**, D119 slice S2): a spawned task must be *consumed* — `await`ed,
+(**V0014**, D119 slice S2): a spawned task must be *consumed* — `await`ed,
 or joined by an enclosing `scope` — and a spawned task that is dropped
 (flows into a value position, or falls out of scope, without being
 awaited or scope-joined) is a compile error. This is *not* a strict
