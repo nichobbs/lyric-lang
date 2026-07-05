@@ -1010,7 +1010,7 @@ The lowering the compiler selects depends on the body's content:
 
 Every `async func` has an implicit `CancellationToken` parameter threaded by the compiler. It is accessible as `cancellation` inside the function and propagated to all child async calls automatically. Cancellation is cooperative: the function periodically checks the token at await points and on explicit `cancellation.checkOrThrow()` calls.
 
-**Status (D119).** Cancellation is the mechanism structured concurrency (§7.4) uses to cancel sibling tasks on failure, and is being implemented alongside it. It is *not yet shipped* on any backend: the implicit `cancellation` parameter, ambient propagation, and `checkOrThrow()` land as slice S4 (MSIL) / S6 (JVM) of the D119 plan. On native it is deferred with the rest of real async suspension (D-N-021).
+**Status (D119).** Cancellation is the mechanism structured concurrency (§7.4) uses to cancel sibling tasks on failure, and is being implemented alongside it. It is *not yet shipped* on any backend: the implicit `cancellation` parameter, ambient propagation, and `checkOrThrow()` land as slice S5 (MSIL) / S7 (JVM) of the D119 plan. On native it is deferred with the rest of real async suspension (D-N-021).
 
 ### 7.4 Structured scopes
 
@@ -1040,8 +1040,8 @@ This is the structured concurrency pattern; raw "fire and forget" is not availab
 
 **Status (D119).** The §7.4 guarantees are being implemented for real across MSIL and JVM in slices, not documented away. Shipped/landing state:
 - **Structural (V0013)** — `spawn`-only-in-`scope` enforcement, shared by all backends (slice S2), closes the fire-and-forget hole structurally.
-- **JVM runtime** — genuine forked concurrency: each `spawn` forks a virtual thread under a `java.util.concurrent.StructuredTaskScope` (`ShutdownOnFailure`, JDK 21–23; JDK 24+ tracked in #2263), which joins all subtasks at scope exit, cancels siblings and rethrows on the first failure (slice S3).
-- **MSIL runtime** — a BCL-only lowering (linked `CancellationTokenSource`, per-task fault→cancel continuation, `Task.WhenAll` join at scope exit, `AggregateException` propagation) that respects V0012 by keeping the join out of any protected region (slice S5, on the §7.3 token from S4).
+- **JVM runtime** — genuine forked concurrency: each `spawn` forks a virtual thread under a `java.util.concurrent.StructuredTaskScope` (`ShutdownOnFailure`, JDK 21–23; JDK 24+ tracked in #2263), which joins all subtasks at scope exit, cancels siblings and rethrows on the first failure (slice S4).
+- **MSIL runtime** — a BCL-only lowering (linked `CancellationTokenSource`, per-task fault→cancel continuation, `Task.WhenAll` join at scope exit, `AggregateException` propagation) that respects V0012 by keeping the join out of any protected region (slice S6, on the §7.3 token from S5).
 
 Until a backend's runtime slice lands, that backend keeps the interim behaviour (MSIL: `spawn` exposes the hot `Task<T>`, `scope` is a lexical block; JVM: `spawn` runs inline). See D119 for the full mechanism.
 

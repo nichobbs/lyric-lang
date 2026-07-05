@@ -940,8 +940,8 @@ with the same eager `runBody()` pattern (B129, `lyric-compiler/jvm/lowering.l`).
 > **not implementable as written** — V0012 rejects an `await` inside any
 > protected region, and `JoinAll()` awaits. The lowering below is
 > BCL-only (no bespoke runtime type) and keeps the join out of every
-> `try`. It lands as D119 slice S5, on the §7.3 cancellation token from
-> slice S4.
+> `try`. It lands as D119 slice S6, on the §7.3 cancellation token from
+> slice S5.
 
 ### 15.1 Scope-block lowering
 
@@ -1010,9 +1010,9 @@ linked source (§15.2).
 > **Status (D119).** The implicit `cancellation` parameter, its ambient
 > propagation to child async calls, and `cancellation.checkOrThrow()`
 > (→ `CancellationToken.ThrowIfCancellationRequested()`) are **not yet
-> shipped** on the self-hosted MSIL backend; they land as D119 slice S4
+> shipped** on the self-hosted MSIL backend; they land as D119 slice S5
 > and are the prerequisite for the §15 structured-concurrency lowering
-> (slice S5). Threading a token into every async signature is an
+> (slice S6). Threading a token into every async signature is an
 > async-ABI change (kickoff stub, state-machine field set, and every
 > async call site), so it lands as its own slice with full parity.
 

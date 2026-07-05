@@ -8985,14 +8985,14 @@ runtime join lands, and the runtime slices deliver the rest.
   `Callable` synthesis per `spawn`, wire `lowerScopeBlock`
   (`StructuredTaskScope.ShutdownOnFailure`); runtime self-test on
   `--target jvm`.
-- **S5:** MSIL keyword lowering — `scope { }` / `spawn e` lower onto
-  `Std.Task` (makeScope / scopeAdd / non-throwing `awaitAll` join per
-  (2)); building on the §7.3 ambient token (S6); runtime self-test on
-  `--target dotnet`.
-- **S6:** MSIL cancellation-token ABI (§7.3) — implicit param threading,
+- **S5:** MSIL cancellation-token ABI (§7.3) — implicit param threading,
   `cancellation` / `checkOrThrow()`, ambient propagation (the
-  `@asyncLocal` slot already exists); self-test. Prereq for S5's ambient
-  linkage.
+  `@asyncLocal` slot already exists); self-test. Prereq for S6's ambient
+  linkage (ordered before S6 so the dependency runs forward).
+- **S6:** MSIL keyword lowering — `scope { }` / `spawn e` lower onto
+  `Std.Task` (makeScope / scopeAdd / non-throwing `awaitAll` join per
+  (2)); building on the §7.3 ambient token from S5; runtime self-test on
+  `--target dotnet`.
 - **S7:** JVM cancellation parity (`checkOrThrow()` → interrupt check),
   and the `defer`-across-`await` (V0012) limitation write-up / tracked
   issue.
