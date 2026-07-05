@@ -1121,45 +1121,86 @@ continuation-passing transform on JVM) is identical: error if a
 
 ## 15. Structured concurrency scopes
 
-### 15.1 Scope-block lowering
+> **Implementation approach (D119 slice S4 / D120).** The design below
+> originally specced `java.util.concurrent.StructuredTaskScope`. On the
+> project's baseline JDK (**21**), `StructuredTaskScope` is a **preview**
+> API (JEP 453) requiring `--enable-preview` at both compile and run time
+> plus a preview class-file marker (minor version `0xFFFF`) — plumbing the
+> JVM pipeline does not have, and which would gate every `scope`-using
+> program on preview mode. (The pre-existing `lowerScopeBlock` in
+> `lowering.l` emits the `ShutdownOnFailure` form but is unwired and never
+> executed — `self_test_b120.l` builds it, no runtime test.)
+>
+> The shipped lowering therefore uses a **non-preview** substrate that is
+> **final in JDK 21**: a virtual-thread-per-task `ExecutorService`. This
+> delivers §7.4's core guarantees — no task leaks (try-with-resources
+> `close()` awaits every submitted task), genuine concurrency (each
+> `spawn` runs on its own virtual thread), and failure propagation
+> (`Future.get()` rethrows the task's exception) — verified end-to-end on
+> JDK 21 (two 200 ms tasks complete in ~220 ms, not 400 ms). Automatic
+> **sibling-cancel-on-first-fault** and **failure aggregation** are the
+> two `StructuredTaskScope`/`LyricAggregatingScope` features this baseline
+> does *not* provide; they are the tracked D119 follow-up, to adopt
+> `StructuredTaskScope` once it is final (JDK 25, JEP 505) so no preview
+> plumbing is needed. §15.1–15.3 below describe the shipped
+> ExecutorService lowering; the original `StructuredTaskScope` shape is
+> retained afterward as the target end-state.
 
-A `scope { ... }` block lowers to Java's `StructuredTaskScope`
-(JEP 462, finalised in Java 25; for Java 21 we use the preview API
-behind `--enable-preview` until 25 ships).  The shape:
+### 15.1 Scope-block lowering (shipped: virtual-thread ExecutorService)
+
+A `scope { ... }` block lowers to a try-with-resources over a
+virtual-thread-per-task executor:
 
 ```java
-try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
-    var f1 = scope.fork(() -> child1());
-    var f2 = scope.fork(() -> child2());
-    scope.join();
-    scope.throwIfFailed();
-    return new Pair<>(f1.get(), f2.get());
-}
+try (var __exec = Executors.newVirtualThreadPerTaskExecutor()) {
+    Future<A> f1 = __exec.submit(() -> child1());   // spawn child1()
+    Future<B> f2 = __exec.submit(() -> child2());   // spawn child2()
+    return new Pair<>(f1.get(), f2.get());           // await f1 / await f2
+}   // close() blocks until every submitted task terminates — no leaks
 ```
 
-`StructuredTaskScope` is purpose-built for the structured-concurrency
-pattern: child tasks cannot outlive the scope, cancellation
-propagates, and aggregate failures bubble up.  This is the *right*
-shape for Lyric scopes.
+`ExecutorService` is `AutoCloseable` (JDK 19+): `close()` initiates an
+orderly shutdown and *blocks until all tasks complete*, so no spawned
+task can outlive the scope. The executor slot is opened at scope entry
+and closed on every exit path (normal fall-off, `return`, exception) via
+a `try`/`finally` region, mirroring the `defer` lowering.
 
 ### 15.2 `spawn`
 
-`spawn e` lowers to `scope.fork(() -> e)` — exactly the
-`StructuredTaskScope` API.  The result is a `StructuredTaskScope.
-Subtask<T>` that the scope tracks and joins automatically.
+`spawn e` lowers to `__exec.submit(callable)` where `callable` is a
+synthesized `java.util.concurrent.Callable` class whose `call()` runs
+`e` (a closure capturing `e`'s free variables — the same synthesis as
+`ELambda`, §"lambda synthesis", but implementing `Callable`/`call()`
+instead of `Lyric$Lambda`/`invoke`). The result is a `Future<T>` the
+enclosing scope's executor tracks. `spawn` is legal only where a `scope`
+executor is in context (enforced structurally by V0014, D-progress-598).
 
-A `spawn` outside a `scope` block is rejected at compile time, same
-as MSIL (the rule is on the AST; no back-end work).
+A `spawn` outside a `scope` block is rejected at compile time (V0014,
+D-progress-598), same as MSIL (the rule is on the shared front-end AST
+walk; no back-end work).
 
-### 15.3 Aggregate failure
+**`await`.** `await handle`, where `handle` is a `spawn`-produced
+`Future<T>`, lowers to `handle.get()`, unwrapping the checked
+`ExecutionException` into the underlying cause so it surfaces on the
+Lyric side as an ordinary `Bug`. (`await` on a plain synchronous async
+call stays a pass-through — JVM async funcs are synchronous, §14.1.) The
+back-end tracks which locals hold `spawn` futures (a `Future`-typed
+binding set on the codegen context), analogous to MSIL's
+`spawnNms`/`spawnTys`.
 
-`StructuredTaskScope.ShutdownOnFailure` collects the first failure
-and cancels remaining children.  For Lyric's "aggregate the failures"
-semantics (every child's failure is reported), we use a custom
-subclass `LyricAggregatingScope` (in `lyric.runtime.structured`) that
-overrides `handleComplete` to accumulate.  The class is small and
-ships with the Lyric stdlib; the back-end emits it as the default
-scope type.
+### 15.3 Aggregate failure (baseline vs. follow-up)
+
+The shipped ExecutorService baseline propagates the **first** failure
+observed at an `await`: `Future.get()` rethrows that task's exception,
+and the scope's `close()` still joins the remaining tasks (no leak).
+Automatic **sibling-cancel-on-first-fault** and **failure aggregation**
+(every child's failure collected) are *not* in the baseline — they are
+`StructuredTaskScope`/`LyricAggregatingScope` features and are the
+tracked D119 follow-up. When `StructuredTaskScope` is final (JDK 25,
+JEP 505) the scope type can be swapped to `LyricAggregatingScope` (a
+`lyric.runtime.structured` subclass overriding `handleComplete` to
+accumulate) with no preview plumbing; until then the baseline's
+first-failure propagation is the honest, non-preview behaviour.
 
 ### 15.4 Java-interop with `ExecutorService`
 
