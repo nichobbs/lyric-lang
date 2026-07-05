@@ -20,10 +20,10 @@ generator-sdk.
 **Follow-up status:** review-findings #5033/#5034/#5035 on the originating
 PR (#5032) are resolved as follows: §7 item 1 (docs/47, docs/48 status
 headers + CI wiring for `import_extern_self_test.l`) is done; §7 item 4
-(the `lyric-cache/src/cache_aspects.l` header) is done via the
-correct-the-comment path — the two aspect templates it describes are
-still unwritten; the `lyric-resilience` JVM-kernel gap (§3) was tracked
-as issue #5037 and has since been fixed on `main` (see §3).
+(the `lyric-cache/src/cache_aspects.l` header) is done, and the two
+aspect templates it describes now ship too (see §4); the
+`lyric-resilience` JVM-kernel gap (§3) was tracked as issue #5037 and has
+since been fixed on `main` (see §3).
 
 **A second, more consequential finding fell out of actually wiring
 `import_extern_self_test.l` into CI**: doing so immediately failed the
@@ -197,22 +197,31 @@ argument-independent aspects, and B′-mode `where TArgs has { field: Type
 `apiKey`, `Storage.ValidateKey`'s `key`, `Mq.Idempotent`'s
 `message.id`, `Lambda.DeadlineGuard`'s `ctx`).
 
-One real gap, **fixed in this same follow-up**: `lyric-cache/src/cache_aspects.l`'s
+One real gap, **now shipped**: `lyric-cache/src/cache_aspects.l`'s
 header used to say "The full aspect-weaver wiring (B-mode / C-mode,
 around(call), config injection) ... is deferred until that system ships"
 — but the aspect weaver shipped in D047, B′-mode in D114, row-typed args
-in D115/D118. The file still only defines config records
+in D115/D118. The file used to only define config records
 (`FunctionCacheConfig`/`ItemCacheConfig`) and factory functions, no actual
 `pub aspect` templates, even though every sibling library (db, storage,
-mq, jobs, validation) has shipped equivalent caching-adjacent aspects
+mq, jobs, validation) had shipped equivalent caching-adjacent aspects
 using the exact machinery the old comment claimed didn't exist. The
 header comment now says so plainly instead of claiming the weaver is
-unshipped. Writing the two actual templates it describes (a
-`FunctionCache` B-mode template keyed on `call.qualifiedName`, an
-`ItemCache` B′-mode template keyed on a row-constrained `cacheKey` field,
-using `lyric-storage`'s `ValidateKey` as a reference) remains open —
-that's a real feature addition with its own tests, not a doc fix, so it's
-left as follow-up work rather than bundled into this correction.
+unshipped, and the file ships two real `pub aspect` templates: a
+`FunctionCache` B-mode template keyed on `call.qualifiedName` (all calls
+to the matched function share one cache slot), and an `ItemCache`
+B′-mode template keyed on a row-constrained `cacheKey` field
+(`where TArgs has { cacheKey: String }`, effective key
+`call.qualifiedName + ":" + keyPrefix + args.cacheKey` — the
+`qualifiedName` component was added after review caught a cross-function
+collision risk on `itemCacheStore`'s shared, process-wide store, #5146),
+both following `lyric-storage`'s `ValidateKey` as a reference for
+expressing the "handler must return `Result[String, E]`" constraint the
+templates rely on. Both are verified by a new
+`lyric-cache/tests/cache_aspect_weaving_tests.l` (6/6 passing, mirroring
+`lyric-auth/tests/auth_aspect_weaving_tests.l`'s pattern of weaving the
+template against a real handler and asserting cache hits are observable
+as "the handler body did not re-run"), not just a config-shape unit test.
 
 One reviewed-and-rejected suggestion, for the record: a sub-review flagged
 `Auth.Aspects.ValidateKey` (`lyric-auth/src/auth_aspects.l:53-58`) for
@@ -410,8 +419,12 @@ blocks closing this section and rollout item 7 below.
    Surfaced a bigger follow-on (issue #5077: ~33 of 35 stdlib test files
    have no CI wiring at all).
 4. ~~Fix `lyric-cache/src/cache_aspects.l` (§4) — either ship the two
-   templates or correct the comment.~~ **Comment corrected** (same-day
-   follow-up); shipping the two templates themselves remains open.
+   templates or correct the comment.~~ **Done** — both `FunctionCache`
+   (B-mode, keyed on `call.qualifiedName`) and `ItemCache` (B′-mode,
+   row-constrained on `cacheKey`) templates now ship, verified by a new
+   `cache_aspect_weaving_tests.l` (6/6 passing) that weaves each
+   template against a real handler and asserts cache hits/misses at
+   runtime, not just config-record shape.
 5. ~~Add local-kernel-backed tests for lyric-lambda event handlers and
    lyric-aws-secrets (§5.2) — no live-service dependency required, so this
    is pure engineering time, not blocked on infra.~~ **Partially done.**

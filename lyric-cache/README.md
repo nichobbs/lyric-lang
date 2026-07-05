@@ -72,7 +72,9 @@ All keys must be non-empty strings. TTL `0` means no expiry.
 ### FunctionCache
 
 B-mode: caches the return value of matched functions by their qualified name.
-Best for zero-arg or arg-independent pure functions.
+Best for zero-arg or arg-independent pure functions. The matched handler's
+return type must be `Result[String, E]` — the cached payload is the `Ok`
+string; `Err` results are never cached.
 
 ```lyric
 import Cache.Aspects
@@ -81,6 +83,8 @@ aspect ConfigCache from Cache.Aspects.FunctionCache {
   matches: name like "load*"
   config { ttlSeconds: Int = 3600 }
 }
+
+func loadConfig(): Result[String, ConfigError] { ... }
 ```
 
 Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
@@ -92,8 +96,11 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 
 ### ItemCache
 
-C-mode (`@inline_template`): reads a `cacheKey: String` parameter from the
-matched handler's argument list. Best for per-item caching.
+Row-constrained B'-mode (docs/56 / D115): reads a `cacheKey: String`
+parameter from the matched handler's argument list via a
+`where TArgs has { cacheKey: String }` row clause. Best for per-item caching.
+The matched handler's return type must also be `Result[String, E]`, for the
+same reason as FunctionCache above.
 
 ```lyric
 aspect UserCache from Cache.Aspects.ItemCache {
@@ -102,11 +109,18 @@ aspect UserCache from Cache.Aspects.ItemCache {
 }
 
 // Handler must declare cacheKey: String
-func getUser(id: in String, cacheKey: in String): Result[User, ApiError] { ... }
+func getUser(id: in String, cacheKey: in String): Result[String, ApiError] { ... }
 ```
 
-If the matched handler does not declare `cacheKey: String`, the compiler
-reports shape error A0042.
+If the matched handler does not declare `cacheKey: String`, the weaver
+reports row-constraint error A0047.
+
+The effective cache key is `call.qualifiedName + ":" + keyPrefix +
+args.cacheKey` — the `qualifiedName` component is load-bearing, not
+cosmetic: `ItemCache`'s backing store is one process-wide store shared by
+every `ItemCache` instantiation, so without it two differently-matched
+handlers (or a single wildcard `matches:` pattern covering several
+handlers, as above) could collide on an identical `cacheKey`.
 
 Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 

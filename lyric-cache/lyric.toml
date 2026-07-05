@@ -15,4 +15,5 @@ output_assembly = "Cache.dll"
 "Cache.Aspects" = "src/cache_aspects.l"
 
 [project.tests]
-"Cache.CacheTests" = "tests/cache_tests.l"
+"Cache.CacheTests"              = "tests/cache_tests.l"
+"Cache.CacheAspectWeavingTests" = "tests/cache_aspect_weaving_tests.l"
