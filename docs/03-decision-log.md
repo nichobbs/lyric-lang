@@ -9923,9 +9923,21 @@ name resolution.
   A name whose slot predates the base is an *enclosing*-scope binding; shadowing it
   falls through to a **fresh** slot, so the enclosing binding's still-live value is
   never clobbered. Same-scope sequential rebinds still reuse (leanness preserved).
+- **`scope { }` body (#5204).** The JVM `lowerScopeStmt` (D-progress-602 S4)
+  lowered its `scope` body via `lowerBlockStmtsFrom` directly, bypassing the
+  `enterBlockScope`/`exitBlockScope` bracket, so a `val`/`var` declared directly
+  in a `scope` body (not further nested in an `if`/`match`/loop, which are
+  bracketed) shadowing a still-live enclosing binding reused its slot — the exact
+  bug this entry fixes, for the one construct S4 ships real semantics for. Fixed
+  by bracketing the body lowering the same way `lowerBlock` does, with the
+  executor's own slot allocated *outside* the bracket so it stays live for the
+  synthesized close-defer. The MSIL `SScope` handler already routed through the
+  bracketed `lowerBlockMsil`, so it needed no change. Covered by a
+  `scopeBodyShadow` case in `block_shadow_self_test.l`.
 - **Name-map restore via a change log.** `enterBlockScope`/`exitBlockScope`
   (`…Msil` on MSIL), wrapping `lowerBlock`/`lowerBlockExpr`
-  (`lowerBlockMsil`/`lowerBlockExprMsil`), bracket each block. `allocSlot`
+  (`lowerBlockMsil`/`lowerBlockExprMsil`) — and the JVM `lowerScopeStmt` body
+  (#5204) — bracket each block. `allocSlot`
   (`allocSlotMsil`) calls `recordScopeUndo` (`…Msil`) before every (re)binding to
   push the name's prior `Option[slot]` / `Option[type]` onto a per-function
   `scopeUndo` log; `exitBlockScope` replays the entries pushed during the block

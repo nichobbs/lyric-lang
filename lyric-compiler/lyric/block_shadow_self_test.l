@@ -113,6 +113,17 @@ func refShadow(): String {
   s
 }
 
+// 10. Shadow declared directly in a `scope { }` body — the one construct D119
+//     slice S4 ships real semantics for (#5204).  A bare `scope` (no `spawn`)
+//     still opens/closes its executor on the JVM; the enclosing `t` must survive.
+func scopeBodyShadow(): Int {
+  val t = 7
+  scope {
+    val t = 99
+  }
+  t
+}
+
 // 9. Sibling `match`-arm scopes reusing the same binding name; each arm is
 //    independent and both contribute.
 func siblingScopes(): Int {
@@ -168,4 +179,8 @@ test "reference-typed shadow leaves the outer binding intact" {
 
 test "sibling match-arm scopes each bind independently" {
   assertEqualInt(siblingScopes(), 11, "siblingScopes")
+}
+
+test "shadow directly in a scope body leaves the outer binding intact" {
+  assertEqualInt(scopeBodyShadow(), 7, "scopeBodyShadow")
 }

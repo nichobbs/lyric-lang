@@ -1678,7 +1678,17 @@ func lowerScopeStmt(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, span
     augmented.add(body.statements[i])
     i = i + 1
   }
+  // A `scope { … }` body is a lexical scope, so bracket its lowering with
+  // `enterBlockScope`/`exitBlockScope` the way `lowerBlock` does (#5204) — a
+  // `val`/`var` declared directly in the scope body that shadows a still-live
+  // enclosing binding must get a fresh slot and be dropped on scope exit, not
+  // clobber the enclosing binding (the general shadowing bug this PR fixes
+  // everywhere else).  The executor slot is allocated BEFORE the bracket so it
+  // lives in the enclosing scope: the synthesized close-defer (which resolves
+  // `execName`) and `scopeExecSlots` both see it throughout the body.
+  val bodyScope = enterBlockScope(ctx)
   lowerBlockStmtsFrom(ctx, insns, augmented, 0)
+  exitBlockScope(ctx, bodyScope)
   ctx.scopeExecSlots.removeAt(ctx.scopeExecSlots.count - 1)
 }
 
