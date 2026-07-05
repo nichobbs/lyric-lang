@@ -381,7 +381,10 @@ syntactic and runtime room for each.
 
 > A v2 sketch addressing Q-config-001 (file source) and
 > Q-config-002 (layered precedence) lives at
-> `docs/29-config-v2-sketch.md`.
+> `docs/29-config-v2-sketch.md`. A sketch proposing library-exposed
+> `pub config` templates (relaxing G0008 for a template form, instantiated
+> via `from` the same way aspect templates are) as part of a broader
+> DI-extension mechanism lives at `docs/58-wire-templates-sketch.md`.
 
 - **Q-config-001:** File-based config source. The `via` mechanism
   already lets a field name a non-default env var; a file source

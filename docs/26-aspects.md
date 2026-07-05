@@ -938,7 +938,11 @@ A0042 diagnostic supersedes its purpose.
 
 > A v1.x sketch addressing Q-aspects-006 (aspect-to-aspect
 > contract inheritance) lives at
-> `docs/30-aspect-contract-inheritance-sketch.md`.
+> `docs/30-aspect-contract-inheritance-sketch.md`. A sketch generalizing
+> the template/`from` idiom (§18) beyond aspects — to plain config
+> blocks and to a new composable `wire template` construct — and
+> concluding that no C-mode/source-splice analog is needed outside
+> aspects lives at `docs/58-wire-templates-sketch.md`.
 
 - **Q-aspects-001:** Should aspects match constructors and operator
   overloads? Probably yes for symmetry, but the `args` shape becomes
