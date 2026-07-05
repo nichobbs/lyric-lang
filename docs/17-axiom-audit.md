@@ -865,7 +865,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.RandomHost` | `random_host.l` | System.Random conforms to its documented .NET contracts; the Shared property returns a thread-safe shared instance (documented since .NET 6) |
 | `dotnet` | `Std.RegexHost` | `regex_host.l` | System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts |
 | `dotnet` | `Std.SecureRandomHost` | `secure_random_host.l` | System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output |
-| `dotnet` | `Std.TimeHost` | `time_host.l` | System.DateTime / System.TimeSpan / System.DateTimeOffset / System.TimeZoneInfo / System.Threading.Thread conform to their documented .NET contracts |
+| `dotnet` | `Std.TimeHost` | `time_host.l` | System.DateTime / System.TimeSpan / System.DateTimeOffset / System.Threading.Thread conform to their documented .NET contracts |
 | `dotnet` | `Std.UnicodeHost` | `unicode_host.l` | System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32 |
 | `dotnet` | `Std.UuidHost` | `uuid_host.l` | System.Guid conforms to its documented .NET contract |
 | `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
