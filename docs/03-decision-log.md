@@ -5861,12 +5861,13 @@ poll-to-kill window reports its real exit, never a false timeout
 - The runCapture half of #4752 is closed; the issue stays open for its
   remaining non-process items.
 
-**Verification.** Five new C unit tests under clang and gcc: a stdin
+**Verification.** Six new C unit tests under clang and gcc: a stdin
 round-trip through `cat`; the 256 KiB no-deadlock interleave; a child
 that ignores 256 KiB of stdin (the `EPIPE` drop path, real exit code
 preserved); the sync deadline kill (`timedOut`, 128+SIGKILL raw
-status, pre-kill output preserved); and the async op's 256 KiB stdin
-pump. Four new `llvm_self_test_async.l` cases (30 total): sync
+status, pre-kill output preserved); a deadline kill with 256 KiB of
+stdin still in flight (the kill closes the feed and the drain
+terminates promptly); and the async op's 256 KiB stdin pump. Four new `llvm_self_test_async.l` cases (30 total): sync
 `runCaptureWithInput` round-trip in a plain main; the sync timeout
 contract (`timedOut`/-2/pre-kill output); the 256 KiB sync round-trip
 ASan-clean; and an in-coroutine `runCaptureWithInput` through the /4

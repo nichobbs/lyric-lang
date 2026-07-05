@@ -29392,9 +29392,10 @@ kill contract the async op established (#5107).
   monotonic deadline, drains post-kill output in bounded waits, and
   reports `timedOut` only when the reap shows the kill landed
   (#5107). The async op copies `stdinContent` at start and flushes it
-  from its pump. Five new C unit tests under clang and gcc (stdin
+  from its pump. Six new C unit tests under clang and gcc (stdin
   round-trip, 256 KiB no-deadlock, EPIPE drop with real exit
-  preserved, sync deadline kill, async op stdin pump).
+  preserved, sync deadline kill, deadline kill with stdin still in
+  flight, async op stdin pump).
 - **Kernel seam:** both `hostRunCaptureList` and
   `hostRunCaptureListAsync` drop their stdin `Err` guards and pass
   `stdinContent` through; the sync seam normalizes a timed-out

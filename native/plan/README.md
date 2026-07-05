@@ -157,7 +157,7 @@ writes interleaved with output reads, so large content cannot
 deadlock; SIGPIPE-safe), the synchronous runner honors `timeoutMs`
 with a SIGKILL deadline and the #5107 kill-vs-exit contract, and
 `runCaptureWithInput` works on native — including the in-coroutine
-async-seam redirect. Verified by five new lyric-rt C tests
+async-seam redirect. Verified by six new lyric-rt C tests
 (clang + gcc) and four more `llvm_self_test_async.l` cases (30
 total, 256 KiB stdin round-trip ASan-clean). This closes the
 runCapture half of #4752.

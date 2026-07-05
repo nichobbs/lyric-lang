@@ -1183,8 +1183,9 @@ follows the #5107 kill-vs-exit contract. The async op copies stdin at
 start and flushes it from its pump. Both kernel seams drop their stdin
 `Err` guards; the sync seam normalizes timeout to exit -2.
 `runCaptureWithInput` gains the same in-coroutine async-seam redirect
-(the /4 intercept). Five new C tests (clang + gcc: cat round-trip,
-256 KiB no-deadlock, EPIPE drop, sync deadline kill, async op stdin)
+(the /4 intercept). Six new C tests (clang + gcc: cat round-trip,
+256 KiB no-deadlock, EPIPE drop, sync deadline kill, deadline kill
+with stdin still in flight, async op stdin)
 and four new `llvm_self_test_async.l` cases (30 total). Process-tree
 kill remains a deferral (the runner kills the child only).
 

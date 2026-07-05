@@ -984,6 +984,43 @@ static void test_process_sync_timeout(void) {
     lyric_release(err);
 }
 
+static void test_process_sync_timeout_pending_stdin(void) {
+    /* Deadline kill with a stdin feed still in flight (#5175): the
+     * child never reads, so the pipe buffer fills and the parent is
+     * left holding most of 256 KiB when the deadline hits.  The kill
+     * path must close the write end and the post-kill drain must still
+     * terminate promptly instead of waiting on the undeliverable rest. */
+    int64_t big = 256 * 1024;
+    uint8_t* data = (uint8_t*)malloc((size_t)big);
+    CHECK(data != NULL);
+    memset(data, 'y', (size_t)big);
+    LyricString* content = lyric_string_from_literal(data, big);
+    free(data);
+    LyricList* argv = lyric_list_new(1);
+    LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
+    lyric_release(dash_c);
+    LyricString* script = lyric_string_from_literal((const uint8_t*)"sleep 30", 8);
+    lyric_list_push(argv, (int64_t)(intptr_t)script);
+    lyric_release(script);
+    int32_t code = -1;
+    LyricString* out = NULL;
+    LyricString* err = NULL;
+    int32_t timed_out = -1;
+    int64_t t0 = lyric_monotonic_nanos();
+    CHECK(lyric_process_run("/bin/sh", argv, content, 300, &code, &out, &err, &timed_out) == 0);
+    int64_t elapsed_ms = (lyric_monotonic_nanos() - t0) / 1000000;
+    CHECK(timed_out == 1);
+    CHECK(code == 128 + SIGKILL);
+    CHECK(lyric_string_len(out) == 0);
+    /* Generous bound: the point is "not 30 s", not scheduler timing. */
+    CHECK(elapsed_ms < 10000);
+    lyric_release(content);
+    lyric_release(argv);
+    lyric_release(out);
+    lyric_release(err);
+}
+
 static void test_process_op_stdin(void) {
     /* The async op pumps stdin nonblockingly: cat round-trips 256 KiB
      * through start/pump alone. */
@@ -1334,6 +1371,7 @@ int main(void) {
     test_process_stdin_large_no_deadlock();
     test_process_stdin_child_ignores();
     test_process_sync_timeout();
+    test_process_sync_timeout_pending_stdin();
     test_process_op_stdin();
     test_async_hot_completion();
     test_async_block_on_sleep();

@@ -304,7 +304,15 @@ int32_t lyric_process_run(const char* path, LyricList* args,
             wait_ms = 100;
         } else if (deadline_ns >= 0) {
             int64_t left_ns = deadline_ns - lyric_monotonic_nanos();
-            wait_ms = left_ns <= 0 ? 0 : (int32_t)(left_ns / 1000000) + 1;
+            if (left_ns <= 0) {
+                wait_ms = 0;
+            } else {
+                /* Clamp: a timeout_ms near INT32_MAX yields more
+                 * milliseconds than poll()'s int timeout holds (#5174);
+                 * at the cap poll simply wakes and re-arms. */
+                int64_t left_ms = left_ns / 1000000 + 1;
+                wait_ms = left_ms > INT32_MAX ? INT32_MAX : (int)left_ms;
+            }
         }
         int ready = poll(fds, 3, wait_ms);
         if (ready < 0) {
