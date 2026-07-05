@@ -227,6 +227,47 @@ test "cross-package chained Int calls" {
   assertEqual(Str.trim(result.stdout), "40", "cross_package_chained_int_calls: stdout matches expected")
 }
 
+// #5177: a capturing lambda's synthesized `__Closure_<i>` class is emitted
+// via `cctx.lambdaClosureRecordList`, a list shared across every package
+// lowered against the same `CodegenCtx` — not from a source-level `Item`
+// `addPackageTokens`'s pre-scan can see.  Draining it per-package (the pre-fix
+// behaviour) re-emitted every earlier package's closures into each later
+// package's own MPackage too (duplicate TypeDefs), and even once
+// de-duplicated, positioned each package's closures "in between" packages —
+// a position the FieldDef/MethodDef row prediction has no way to account
+// for.  Both defects silently shifted every later predicted token (the
+// bundle's entry point among them) to whatever real row happened to sit
+// there instead — a caller's `call`/`ldsfld` landing on an unrelated method
+// or field with a valid-looking signature.  Pins: a function declared AFTER
+// the closure-bearing one in the SAME package, and the ENTRY POINT of a
+// SECOND package that merely imports the first, both still resolve to the
+// right MethodDef row.
+test "cross-package closure does not corrupt later tokens or the entry point" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XPkgClosure.Lib",
+      "package XPkgClosure.Lib\n" + "\n" + "pub func addTwice(base: in Int): Int {\n" + "  var acc = base\n" +
+        "  val add: Int -> Int = { x: Int -> acc + x }\n" +
+        "  add(1) + add(2) + acc\n" +
+        "}\n" +
+        "\n" +
+        "pub func afterClosure(x: in Int): Int { x + 100 }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XPkgClosure.App",
+      "package XPkgClosure.App\n" + "\n" + "import XPkgClosure.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  println(toString(addTwice(10)) + \",\" + toString(afterClosure(1)))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xpkgclosure", packages, "XPkgClosure")
+  assertEqualInt(result.exitCode, 0, "cross_package_closure_entry_point: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "33,101", "cross_package_closure_entry_point: stdout matches expected")
+}
+
 // ─── Phase 3: cross-package record and union round-trips ─────────────────────
 // Cross-package RECORD value round-trip.  Pkg A defines a `pub record
 // Point` plus pub funcs that produce and consume one; pkg B imports A,
