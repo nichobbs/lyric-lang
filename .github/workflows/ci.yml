@@ -4528,8 +4528,15 @@ jobs:
       # Pins the D-N-027 calendar contract (epoch conversions, duration
       # arithmetic, addMonths clamping, the toIsoString parse round-trip)
       # on the managed target; plain-main program, so `lyric run`.
-      - name: Std.Time test coverage (lyric run)
+      # TZ is deliberately non-UTC (#5233): DateTime.TryParse of a
+      # "Z"-suffixed string yields a LOCAL-kind result shifted to the
+      # host timezone, and the ToUniversalTime normalization in the
+      # parse seam only does real work off UTC — on the runners'
+      # default TZ=UTC the round-trip would pass even without it.
+      - name: Std.Time test coverage (lyric run, non-UTC host TZ)
         working-directory: ${{ github.workspace }}
+        env:
+          TZ: America/New_York
         run: |
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"

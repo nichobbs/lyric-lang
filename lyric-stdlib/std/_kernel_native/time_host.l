@@ -207,10 +207,12 @@ pub func hostSince(later: in Instant, earlier: in Instant): Duration {
   Duration(nanos = checkedSubNanos(later.epochNanos, earlier.epochNanos, "since"))
 }
 
-// The managed twins throw when instant arithmetic leaves their
-// representable range (ArgumentOutOfRangeException / DateTimeException);
-// the native analog is a panic (#5213, #5216) — silent i64 wraparound
-// would produce a valid-looking Instant from the wrong century.
+// Each target enforces ITS OWN representable range: .NET throws at
+// its year-1..9999 bounds, java.time's far larger range simply
+// accepts deltas that exceed ours (#5232), and native panics at the
+// i64-nanos window (#5213, #5216).  What no target may do is wrap
+// silently — that would produce a valid-looking Instant from the
+// wrong century.
 pub func hostPlus(t: in Instant, d: in Duration): Instant {
   Instant(epochNanos = checkedAddNanos(t.epochNanos, d.nanos, "plus"))
 }
@@ -241,13 +243,14 @@ func addMonthsLong(t: in Instant, n: in Long): Instant {
   val c = civilFromDays(days)
   val m0 = c.year.toLong() * 12i64 + (c.month - 1).toLong() + n
   val y64 = if m0 >= 0i64 { m0 / 12i64 } else { (m0 - 11i64) / 12i64 }
-  // The managed twins throw when the result leaves their range; the
-  // native analog is a panic (#5213) — recomposing a year outside the
-  // i64-nanos window would silently wrap into the wrong century.  The
-  // coarse filter admits the window's edge years (1677/2262, #5219 —
-  // a no-op addMonths on a boundary Instant must succeed); the exact
-  // reconstruction check below catches edge-year dates past the
-  // window.
+  // Native panics at its own i64-nanos window (#5213) — recomposing a
+  // year outside it would silently wrap into the wrong century.  (.NET
+  // throws at ITS year-1..9999 bounds; java.time's far larger range
+  // accepts deltas that exceed ours, #5232 — range enforcement is
+  // per-target, never silent.)  The coarse filter admits the window's
+  // edge years (1677/2262, #5219 — a no-op addMonths on a boundary
+  // Instant must succeed); the exact reconstruction check below
+  // catches edge-year dates past the window.
   if y64 < 1677i64 or y64 > 2262i64 {
     panic("Std.Time: addMonths/addYears result falls outside the native Instant range (1677-09-21..2262-04-11)")
   }

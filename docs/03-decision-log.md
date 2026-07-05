@@ -6075,10 +6075,14 @@ boundary Instant succeeds instead of tripping a coarse year filter.  .NET's `Dat
 lenient on its own target (documented host leniency, unlike the
 Uuid case where the format list was the documented contract).
 Every arithmetic seam that could leave the window panics rather than
-wrapping (#5213, #5216, #5217) — the native analog of the managed
-twins' out-of-range exceptions (`ArgumentOutOfRangeException` /
-`DateTimeException`), since a silent i64 wrap would produce a
-valid-looking Instant from the wrong century: `plus`/`addDays` and
+wrapping (#5213, #5216, #5217), since a silent i64 wrap would produce
+a valid-looking Instant from the wrong century.  The panic is the
+native analog of enforcing the target's own representable range —
+.NET throws `ArgumentOutOfRangeException` at its year-1..9999 bounds,
+while `java.time`'s far larger `Year` range means the same extreme
+delta that panics on native simply succeeds on the JVM (#5232): each
+target fails, or doesn't, at ITS OWN range; what no target may do is
+wrap silently.  The seams: `plus`/`addDays` and
 duration add/sub via shared checked add/sub helpers, `since` via
 checked subtraction, the epoch-millis/seconds conversions via input
 bounds ahead of the scale-up multiply, and `addMonths`/`addYears` via
