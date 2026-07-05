@@ -214,14 +214,22 @@ static ssize_t stdin_write(int fd, const uint8_t* data, size_t len) {
     sigset_t old_set;
     sigemptyset(&pipe_set);
     sigaddset(&pipe_set, SIGPIPE);
-    pthread_sigmask(SIG_BLOCK, &pipe_set, &old_set);
+    /* Like the fcntl invariant checks above (#5110, #5172): a silent
+     * pthread_sigmask failure would let a dead child's EPIPE arrive as
+     * a process-killing SIGPIPE — the exact failure this helper
+     * exists to prevent — so treat it as unrecoverable (#5178). */
+    if (pthread_sigmask(SIG_BLOCK, &pipe_set, &old_set) != 0) {
+        lyric_panic_msg("cannot block SIGPIPE around a stdin write", "lyric_process.c", __LINE__);
+    }
     ssize_t n = write(fd, data, len);
     int saved = errno;
     if (n < 0 && saved == EPIPE && !sigismember(&old_set, SIGPIPE)) {
         struct timespec zero = {0, 0};
         sigtimedwait(&pipe_set, NULL, &zero);
     }
-    pthread_sigmask(SIG_SETMASK, &old_set, NULL);
+    if (pthread_sigmask(SIG_SETMASK, &old_set, NULL) != 0) {
+        lyric_panic_msg("cannot restore the signal mask after a stdin write", "lyric_process.c", __LINE__);
+    }
     errno = saved;
     return n;
 #endif
