@@ -5996,6 +5996,17 @@ parameters).
 
 ## D092 — Band 3 Phase 5: `IAsyncEnumerable<object>` generator synthesis (#2070)
 
+> **PARTIALLY SUPERSEDED by D119 (2026-07-05).** The generator *feature*
+> and the `<FuncName>__Gen_N : IAsyncEnumerable<object>` class shape below
+> still ship, but the **eager-producer** lowering this entry describes
+> (`RunBody()` collecting all yields into `_values` before the first
+> `MoveNextAsync`) is **no longer what runs**. The shipped self-hosted
+> MSIL backend synthesises a *lazy* `TaskCompletionSource`-driven state
+> machine (`synthesizeGeneratorMsil`) that produces one value per pull —
+> verified empirically in D119 (interleaved-side-effect probe; infinite
+> yield-only sequences stream without buffering). Read the mechanism
+> below as historical; see D119 and `docs/09` §14.6 for the lazy model.
+
 **Context:** D091 completed the async/await self-hosted story through spawn semantics.
 Phase 5 targets `yield`-bearing `async func` bodies: previously these used a
 bootstrap-grade "collect-all" model that allocated a `List<object>`, appended each
