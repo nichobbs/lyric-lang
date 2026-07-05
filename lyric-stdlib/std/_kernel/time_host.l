@@ -6,16 +6,16 @@
 //! `Std.Time` when the test inliner merges every stdlib file into one
 //! user package.
 //!
-//! The extern types (`Instant`, `Duration`, `DateTimeOffset`,
-//! `TimeZone`) keep their canonical names because they're the user-
-//! facing types — `Std.Time` re-exports them implicitly via the
-//! trampoline (the type aliases are visible package-wide once
-//! declared in this file and `Std.Time` imports it).
+//! The extern types (`Instant`, `Duration`, `DateTimeOffset`) keep
+//! their canonical names because they're the user-facing types —
+//! `Std.Time` re-exports them implicitly via the trampoline (the type
+//! aliases are visible package-wide once declared in this file and
+//! `Std.Time` imports it).
 //!
 //! Internal: only `Std.Time` should import this; per
 //! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
 //! extern boundary, not a general-purpose API.
-@axiom("System.DateTime / System.TimeSpan / System.DateTimeOffset / System.TimeZoneInfo / System.Threading.Thread conform to their documented .NET contracts")
+@axiom("System.DateTime / System.TimeSpan / System.DateTimeOffset / System.Threading.Thread conform to their documented .NET contracts")
 package Std.TimeHost
 
 import Std.Core
@@ -28,8 +28,6 @@ extern type Instant = "System.DateTime"
 extern type Duration = "System.TimeSpan"
 
 extern type DateTimeOffset = "System.DateTimeOffset"
-
-extern type TimeZone = "System.TimeZoneInfo"
 
 // =====================================================================
 // Construction.
@@ -119,12 +117,6 @@ pub func hostDtoFromEpochSeconds(n: in Long): DateTimeOffset = ()
 
 @externTarget("System.DateTimeOffset.UtcDateTime")
 pub func hostDtoUtcDateTime(d: in DateTimeOffset): Instant = ()
-
-// =====================================================================
-// IANA / Windows timezone lookup.
-// =====================================================================
-@externTarget("System.TimeZoneInfo.FindSystemTimeZoneById")
-pub func hostFindTimeZone(id: in String): TimeZone = ()
 
 // =====================================================================
 // Comparison.

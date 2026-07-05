@@ -29597,7 +29597,10 @@ parsing — works on native.
   `hostParseInstantOpt` Option seam all three twins implement
   (D-N-026 idiom — the Bool+out TryParse shape cannot exist on
   native); the dead private `findTimeZone` wrapper (no callers
-  anywhere) is deleted from `std/time.l`.
+  anywhere) is deleted from `std/time.l`, and the kernel-level
+  `hostFindTimeZone` / `TimeZone` extern surface is removed from the
+  managed and JVM twins with it (#5237 — internal-only kernels, so
+  the exports were dead code one layer down).
 - **Verification:** `time_tests.l` gains target-neutral calendar
   coverage (exact elapsed-millis assertions, no per-host ISO string
   goldens; inline-match Option unwrapping per #5196); a new

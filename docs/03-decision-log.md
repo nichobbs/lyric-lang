@@ -6097,9 +6097,12 @@ its Bool+out extern privately as the TryParse bridge, the JVM twin's
 copy is deleted).  The dead private `findTimeZone` wrapper is removed
 from `std/time.l` — it had no callers anywhere in the tree, and
 keeping it would have forced the native twin to fake a `TimeZone`
-type for an unreachable function.  The managed/JVM kernels keep their
-`hostFindTimeZone` exports for when a real timezone surface is
-designed.
+type for an unreachable function.  The kernel-level
+`hostFindTimeZone` / `TimeZone` extern surface is removed from the
+managed and JVM twins for the same reason (#5237): the kernels are
+internal-only ("only `Std.Time` should import this"), so with the
+wrapper gone the exports were dead code one layer down.  A real
+timezone surface would be designed fresh, kernel included.
 
 **Verification.** `time_tests.l` gains target-neutral calendar
 coverage (no ISO-string goldens — the textual forms differ per host

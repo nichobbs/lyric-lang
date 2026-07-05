@@ -6,7 +6,6 @@
 //!   Instant        = java.time.Instant        (UTC point in time)
 //!   Duration       = java.time.Duration       (elapsed time)
 //!   DateTimeOffset = java.time.OffsetDateTime  (instant + UTC offset)
-//!   TimeZone       = java.time.ZoneId          (IANA timezone name)
 //!
 //! Everything routes through the JVM auto-FFI (`extern type` resolved
 //! from JDK metadata at compile time — no F#/Java shim class, no
@@ -43,8 +42,6 @@ extern type Instant = "java.time.Instant"
 extern type Duration = "java.time.Duration"
 
 extern type DateTimeOffset = "java.time.OffsetDateTime"
-
-extern type TimeZone = "java.time.ZoneId"
 
 extern type UtcOffset = "java.time.ZoneOffset"
 
@@ -170,14 +167,6 @@ pub func hostDtoUtcNow(): DateTimeOffset {
 /// Unix epoch-milliseconds of `d`.
 pub func hostDtoToEpochMillis(d: in DateTimeOffset): Long {
   d.toInstant().toEpochMilli()
-}
-
-// =====================================================================
-// IANA timezone lookup.
-// =====================================================================
-/// java.time.ZoneId.of(id) — throws ZoneRulesException for unknown ids.
-pub func hostFindTimeZone(id: in String): TimeZone {
-  TimeZone.of(id)
 }
 
 // =====================================================================
