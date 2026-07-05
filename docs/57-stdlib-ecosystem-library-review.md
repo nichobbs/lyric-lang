@@ -245,6 +245,36 @@ currently relying on untested stdlib primitives. `random.l`/
 bounds, non-degenerate distribution, and (for `secure_random`) that
 successive calls don't repeat a fixed seed.
 
+**Update:** `file_tests.l`, `directory_tests.l`, and `http_tests.l`
+(the last covering everything network-free — URL validation, request/
+response construction, the `HttpClientBuilder` fluent API, and
+`HttpError` message rendering; live `sendAsync`/`getAsync`/`postAsync`
+calls remain out of scope per §5.2) now exist and are wired into CI.
+Writing them surfaced a much larger, previously-undiscovered gap:
+**roughly 33 of the 35 files in `lyric-stdlib/tests/` have no CI wiring
+at all** — the directory's legacy `func main(): Unit` convention was
+apparently designed for an F#-era test runner
+(`StdlibLyricTests.fs`/`bootstrap/tests/Lyric.Emitter.Tests`) that no
+longer exists in this repository, and nothing replaced it except one
+single-file exception (`parse_tests.l`, wired for `--target jvm` only).
+Filed as **issue #5077** rather than addressed here, since fixing it
+means either migrating ~33 files to `@test_module` or building a
+generic loop-and-run CI step — a materially bigger job than closing this
+section's original 3-file gap.
+
+**Update 2:** `http_tests.l` initially shipped with 5/10 tests failing in
+CI, which turned out to be three real, previously-undiscovered self-hosted
+MSIL codegen bugs (opaque-type field visibility, a qualified user function
+shadowed by a same-named compiler intrinsic, and cross-package Option-field
+construction hint erasure) plus one unrelated stdlib bug (`StringContent`'s
+`Content-Type` argument was pre-composed with `; charset=utf-8`, which the
+constructor appends itself, throwing `FormatException` at every text-body
+call site) — not a tool artifact as first assumed. All four are fixed;
+`http_tests.l` is 10/10. Full root-cause writeup in
+`docs/03-decision-log.md` D-progress-596; the corrected
+D-progress-543 addendum documents the wrong initial conclusion this
+session retracted.
+
 ### 5.2 Ecosystem libraries — untested public APIs behind "requires live service" comments
 
 A recurring pattern: a public function's only test coverage is
@@ -341,9 +371,11 @@ in this review at once.
 2. Pick one stdlib kernel file (`http_host.l` or `collections_host.l`) as
    the reference `.new()`/`import extern` migration; use it as the
    pattern for the rest of §2's backlog.
-3. Close the stdlib I/O test gap: `file_tests.l`, `directory_tests.l`,
+3. ~~Close the stdlib I/O test gap: `file_tests.l`, `directory_tests.l`,
    `http_tests.l` (§5.1) — highest leverage since every ecosystem library
-   built on top inherits the coverage.
+   built on top inherits the coverage.~~ **Done** — see §5.1's update.
+   Surfaced a bigger follow-on (issue #5077: ~33 of 35 stdlib test files
+   have no CI wiring at all).
 4. ~~Fix `lyric-cache/src/cache_aspects.l` (§4) — either ship the two
    templates or correct the comment.~~ **Comment corrected** (same-day
    follow-up); shipping the two templates themselves remains open.

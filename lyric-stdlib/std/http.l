@@ -162,7 +162,7 @@ impl HttpClient for HttpClientImpl {
     match Url.tryFrom(url) {
       case Err(e) -> return Err(error = e)
       case Ok(parsed) -> {
-        val result = await HostHttp.hostPostStringSafe(self.handle, parsed.value, body, "text/plain; charset=utf-8")
+        val result = await HostHttp.hostPostStringSafe(self.handle, parsed.value, body, "text/plain")
         match result {
           case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
           case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
@@ -178,7 +178,7 @@ impl HttpClient for HttpClientImpl {
         val req = HttpRequest(
           handle = HostHttp.hostWithStringBody(
             HostHttp.hostMakeRequest("PUT", parsed.value),
-            "text/plain; charset=utf-8",
+            "text/plain",
             body
           ),
           url = parsed.value
@@ -213,7 +213,7 @@ impl HttpClient for HttpClientImpl {
         val req = HttpRequest(
           handle = HostHttp.hostWithStringBody(
             HostHttp.hostMakeRequest("PATCH", parsed.value),
-            "text/plain; charset=utf-8",
+            "text/plain",
             body
           ),
           url = parsed.value
@@ -388,7 +388,7 @@ pub func withJsonBody(request: in HttpRequest, json: in String): HttpRequest {
 @stable(since = "1.0")
 pub func withTextBody(request: in HttpRequest, text: in String): HttpRequest {
   return HttpRequest(
-    handle = HostHttp.hostWithStringBody(request.handle, "text/plain; charset=utf-8", text),
+    handle = HostHttp.hostWithStringBody(request.handle, "text/plain", text),
     url = request.url
   )
 }
@@ -447,7 +447,7 @@ pub async func postAsync(url: in String, body: in String): Result[HttpResponse, 
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = e)
     case Ok(parsed) -> {
-      val result = await HostHttp.hostPostStringSafe(HostHttp.hostDefaultClient(), parsed.value, body, "text/plain; charset=utf-8")
+      val result = await HostHttp.hostPostStringSafe(HostHttp.hostDefaultClient(), parsed.value, body, "text/plain")
       match result {
         case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
         case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
@@ -634,7 +634,7 @@ pub async func postWithCancelAsync(
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = e)
     case Ok(parsed) -> {
-      val result = await HostHttp.hostPostStringWithCancelSafe(HostHttp.hostDefaultClient(), parsed.value, body, "text/plain; charset=utf-8", token)
+      val result = await HostHttp.hostPostStringWithCancelSafe(HostHttp.hostDefaultClient(), parsed.value, body, "text/plain", token)
       match result {
         case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
         case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))

@@ -9824,6 +9824,25 @@ func rangeBoundTypeMsil(e: in Expr): MsilType {
   }
 }
 
+// Whether `path` is an explicitly-qualified call (2+ segments, e.g.
+// `Url.toString`) that names a genuine registered user function — a
+// dotted D037 in-type function, not the compiler's own bare-name
+// intrinsic of the same simple name.  A bare unqualified call (`toString(x)`,
+// 1 segment) is always the intrinsic and never hits this.  Guards every
+// intrinsic branch below so a user type's own `toString`/`panic`/`assert`/…
+// function is never silently shadowed by the same-named global builtin
+// (#5084 follow-up: `Std.Http.Url.toString` was being resolved to
+// `Object.ToString()` because the intrinsic branch matched on the bare
+// last path segment before any user-function lookup ran).
+func hasQualifiedFuncOverrideMsil(cctx: in CodegenCtx, path: in ModulePath, argc: in Int): Bool {
+  if path.segments.count < 2 {
+    false
+  } else {
+    val qualifiedFqn = joinSegsMsil(path.segments, ".")
+    cctx.funcTokens.containsKey(qualifiedFqn) or cctx.funcTokens.containsKey(qualifiedFqn + "/" + toString(argc))
+  }
+}
+
 // Lower a builtin or intra-package static call.
 func lowerBuiltinOrStaticCallMsil(
   cctx: in CodegenCtx,
@@ -9833,7 +9852,8 @@ func lowerBuiltinOrStaticCallMsil(
   path: in ModulePath,
   args: in List[CallArg],
 ): MsilType {
-  if funcName == "println" {
+  val hasQualifiedOverride = hasQualifiedFuncOverrideMsil(cctx, path, args.count)
+  if (not hasQualifiedOverride) and funcName == "println" {
     if args.count > 0 {
       val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
       match argTy {
@@ -9855,7 +9875,7 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MCall(methodToken = cctx.tokWriteLineStr))
     }
     MVoid
-  } else if funcName == "print" {
+  } else if (not hasQualifiedOverride) and funcName == "print" {
     if args.count > 0 {
       val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
       match argTy {
@@ -9878,7 +9898,7 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MCall(methodToken = cctx.tokWriteStr))
     }
     MVoid
-  } else if funcName == "panic" {
+  } else if (not hasQualifiedOverride) and funcName == "panic" {
     if args.count > 0 {
       val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
     } else {
@@ -9887,7 +9907,7 @@ func lowerBuiltinOrStaticCallMsil(
     }
     emitMsilPanicFromStack(cctx, insns)
     MVoid
-  } else if funcName == "assert" {
+  } else if (not hasQualifiedOverride) and funcName == "assert" {
     if args.count > 0 {
       val skipL = freshLabelMsil(fctx)
       lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -9902,7 +9922,7 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLabel(id = skipL))
     }
     MVoid
-  } else if funcName == "toString" {
+  } else if (not hasQualifiedOverride) and funcName == "toString" {
     if args.count > 0 {
       val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
       match argTy {
@@ -9946,31 +9966,31 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLdStr(token = emptyTok))
     }
     MString
-  } else if funcName == "intToLong" {
+  } else if (not hasQualifiedOverride) and funcName == "intToLong" {
     if args.count > 0 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
     }
     insns.add(MConvI8)
     MLong
-  } else if funcName == "longToInt" {
+  } else if (not hasQualifiedOverride) and funcName == "longToInt" {
     if args.count > 0 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
     }
     insns.add(MConvI4)
     MInt
-  } else if funcName == "charToInt" {
+  } else if (not hasQualifiedOverride) and funcName == "charToInt" {
     if args.count > 0 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
     }
     // Char is I4 in MSIL; no conversion needed.
     MInt
-  } else if funcName == "intToDouble" {
+  } else if (not hasQualifiedOverride) and funcName == "intToDouble" {
     if args.count > 0 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
     }
     insns.add(MConvR8)
     MDouble
-  } else if funcName == "default" {
+  } else if (not hasQualifiedOverride) and funcName == "default" {
     // `default()` must yield the zero value of the *expected* type, not a bare
     // `ldnull`.  For a primitive target (`var slot: Int = default()`, the
     // `tryGetValue(map, key, out slot)` idiom) `ldnull` pushes a Nullobjref
@@ -10037,7 +10057,7 @@ func lowerBuiltinOrStaticCallMsil(
         MObject
       }
     }
-  } else if funcName == "newList" {
+  } else if (not hasQualifiedOverride) and funcName == "newList" {
     // Build a concrete `List`1<Foo>` when the context expects one (the
     // annotated-accumulator pattern `val acc: List[Foo] = newList()` flows the
     // element type here via collExpect); otherwise the legacy `List<object>`.
@@ -10051,7 +10071,7 @@ func lowerBuiltinOrStaticCallMsil(
         MObject
       }
     }
-  } else if funcName == "newListWithCapacity" {
+  } else if (not hasQualifiedOverride) and funcName == "newListWithCapacity" {
     // Same as `newList` — capacity is an optimisation hint only.  The kernel
     // declares `newListWithCapacity[T](capacity): List[T]` (a builtin stub with
     // an empty body); intercept it here so the annotated-accumulator pattern
@@ -10073,7 +10093,7 @@ func lowerBuiltinOrStaticCallMsil(
         MObject
       }
     }
-  } else if funcName == "newMap" {
+  } else if (not hasQualifiedOverride) and funcName == "newMap" {
     // Build a concrete `Dictionary`2<K,V>` when the context expects one;
     // otherwise the legacy `Dictionary<object,object>`.
     match collExpectTop(fctx) {
@@ -10086,7 +10106,7 @@ func lowerBuiltinOrStaticCallMsil(
         MMapOf(keyTy = MObject, valTy = MObject)
       }
     }
-  } else if funcName == "mapGet" {
+  } else if (not hasQualifiedOverride) and funcName == "mapGet" {
     // `mapGet(m, key): Option[V]` — emit `if m.ContainsKey(key) {
     // Some(value = m[key]) } else { None }` with the concrete `Option[V]`
     // instantiation, so a consumer `match` finds the right arm (#1727).  `V`
@@ -10175,7 +10195,7 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLdNull)
       MObject
     }
-  } else if funcName == "tryGetValue" and args.count == 3 {
+  } else if (not hasQualifiedOverride) and funcName == "tryGetValue" and args.count == 3 {
     // `tryGetValue(m, key, out slot): Bool` — lower to
     //   if m.ContainsKey(key) { slot = (V) m[key]; true } else { false }
     // The kernel extern carries no @externTarget and was never intercepted, so
@@ -10232,7 +10252,7 @@ func lowerBuiltinOrStaticCallMsil(
     insns.add(MLdcI4(v = 0))
     insns.add(MLabel(id = endLTgv))
     MBool
-  } else if funcName == "dictGetKeys" or startsWith(funcName, "dictGetKeys__") {
+  } else if (not hasQualifiedOverride) and (funcName == "dictGetKeys" or startsWith(funcName, "dictGetKeys__")) {
     // `dictGetKeys(m)` — emit `m.get_Keys()` inline and return `MExternEnumerable(keyTy)`
     // so the surrounding `for k in ...` loop uses the IEnumerator protocol (#3511).
     // This special case fires both for direct calls and for monomorphized specializations
@@ -10248,7 +10268,7 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLdNull)
       MObject
     }
-  } else if funcName == "dictGetValues" or startsWith(funcName, "dictGetValues__") {
+  } else if (not hasQualifiedOverride) and (funcName == "dictGetValues" or startsWith(funcName, "dictGetValues__")) {
     // `dictGetValues(m)` — emit `m.get_Values()` inline and return `MExternEnumerable(valTy)`.
     if args.count >= 1 {
       val mArgTyGv = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -10260,7 +10280,7 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLdNull)
       MObject
     }
-  } else if funcName == "format1" {
+  } else if (not hasQualifiedOverride) and funcName == "format1" {
     if args.count >= 2 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
       val a1Ty = lowerCallArgMsil(cctx, fctx, insns, args[1])
@@ -10273,7 +10293,7 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLdStr(token = emptyTok))
     }
     MString
-  } else if funcName == "format2" {
+  } else if (not hasQualifiedOverride) and funcName == "format2" {
     if args.count >= 3 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
       val a1Ty2 = lowerCallArgMsil(cctx, fctx, insns, args[1])
@@ -10288,7 +10308,7 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLdStr(token = emptyTok))
     }
     MString
-  } else if funcName == "format3" {
+  } else if (not hasQualifiedOverride) and funcName == "format3" {
     if args.count >= 4 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
       val a1Ty3 = lowerCallArgMsil(cctx, fctx, insns, args[1])
@@ -10426,42 +10446,50 @@ func lowerBuiltinOrStaticCallMsil(
               case None -> match mapGet(cctx.fieldMsilTypes, fldKeyH) { case Some(fty) -> fty; case None -> MObject }
             }
           }
-          val at = match innerHint {
-            case MGenericInst(_, _, innerArgs) -> {
-              val savedH: List[MsilType] = newList()
-              var shi = 0
-              while shi < fctx.contextHintTyArgs.count {
-                savedH.add(fctx.contextHintTyArgs[shi])
-                shi = shi + 1
-              }
-              while fctx.contextHintTyArgs.count > 0 {
-                fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
-              }
-              var ihi = 0
-              while ihi < innerArgs.count {
-                fctx.contextHintTyArgs.add(innerArgs[ihi])
-                ihi = ihi + 1
-              }
-              val lowered = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
-              while fctx.contextHintTyArgs.count > 0 {
-                fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
-              }
-              var rhi = 0
-              while rhi < savedH.count {
-                fctx.contextHintTyArgs.add(savedH[rhi])
-                rhi = rhi + 1
-              }
-              lowered
+          // Use genericArgsOfMsil (not a direct MGenericInst pattern match) so a
+          // field's declared type coming back as MGenericInstByName — the
+          // representation an already-compiled sibling package's field type
+          // resolves to, vs. the MGenericInst a same-invocation AST type-check
+          // produces for the identical `Option[String]` — still seeds the
+          // hint.  Falling into the MGenericInst-only arm silently dropped the
+          // hint for that representation, so a bare `None` field initializer
+          // erased to `Option_None<object>` and a downstream cross-package
+          // `match` on the field never matched either arm ("match not
+          // exhaustive", #5084 follow-up).
+          val innerHintArgs = genericArgsOfMsil(innerHint)
+          val at = if innerHintArgs.count > 0 {
+            val savedH: List[MsilType] = newList()
+            var shi = 0
+            while shi < fctx.contextHintTyArgs.count {
+              savedH.add(fctx.contextHintTyArgs[shi])
+              shi = shi + 1
             }
-            case _ -> {
-              // A record/case field typed `List[Foo]`/`Map[..]` pushes the expected
-              // concrete type so a bare `[...]` / `newList()` argument builds the
-              // concrete instance the field's signature requires.
-              pushCollExpect(fctx, innerHint)
-              val loweredC = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
-              popCollExpect(fctx)
-              loweredC
+            while fctx.contextHintTyArgs.count > 0 {
+              fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
             }
+            var ihi = 0
+            while ihi < innerHintArgs.count {
+              fctx.contextHintTyArgs.add(innerHintArgs[ihi])
+              ihi = ihi + 1
+            }
+            val lowered = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
+            while fctx.contextHintTyArgs.count > 0 {
+              fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+            }
+            var rhi = 0
+            while rhi < savedH.count {
+              fctx.contextHintTyArgs.add(savedH[rhi])
+              rhi = rhi + 1
+            }
+            lowered
+          } else {
+            // A record/case field typed `List[Foo]`/`Map[..]` pushes the expected
+            // concrete type so a bare `[...]` / `newList()` argument builds the
+            // concrete instance the field's signature requires.
+            pushCollExpect(fctx, innerHint)
+            val loweredC = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
+            popCollExpect(fctx)
+            loweredC
           }
           argTypes.add(at)
           ci = ci + 1

@@ -985,9 +985,11 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
 - `lyric-mq/` — `lyric-mq` library: transport-agnostic message queue
   (`Lyric.Mq`). RabbitMQ, Azure Service Bus, SQS, and Kafka via feature
   flags — **only the in-process `inmemory` backend is actually
-  implemented today (`dotnet` only); the four named brokers are
-  declared but return `NOT_IMPLEMENTED`/no-op on both targets, see
-  `lyric-mq/README.md`**; `MessageQueue`/`QueueConsumer`/`DeadLetterStore`
+  implemented today (`dotnet` only). All four named brokers return
+  `NOT_IMPLEMENTED` on `dotnet`; on `jvm` only RabbitMQ/Kafka are even
+  declared (as unbound `@axiom` no-ops), Azure Service Bus/SQS aren't
+  declared there at all — no working broker exists on either target,
+  see `lyric-mq/README.md`**; `MessageQueue`/`QueueConsumer`/`DeadLetterStore`
   interfaces; `Idempotent` and `DeadLetter` aspect templates; .NET and
   JVM kernel boundaries.
 - `lyric-jobs/` — `lyric-jobs` library: background job scheduling
