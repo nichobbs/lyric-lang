@@ -348,6 +348,25 @@ failure-injection hooks (tracked #410). Given how many of the gaps in
 the mocks above would unblock a large fraction of the testing gaps found
 in this review at once.
 
+**Attempted, blocked, tracked (issue #5133):** implementations of
+`MockDbConnection`/`MockDbTransaction`, `MockSearchClient`,
+`MockQueueConsumer`, and `MockWsHandler`/`MockWsRegistry` were written and
+manually verified against each interface's real signature, but adding them
+to `testing.l` triggered a previously-undiscovered self-hosted MSIL codegen
+bug: the resulting test file went from 37/37 passing to widespread
+`InvalidProgramException`/`MissingMethodException` at runtime — including
+on pre-existing, untouched mock code — despite type-checking and building
+cleanly. Bisection narrowed this to (a) a scale-sensitive corruption that
+worsens with the amount of new `impl Interface for Record` code added to
+the file, and (b) a narrower, independently-reproducible bug calling any
+interface method on an interface-typed value extracted from a
+`Result`/`Option` returned by another cross-package interface method
+(`Db.DbConnection.transaction(): Result[Db.DbTransaction, Db.DbError]`,
+then `tx.commit()` on the unwrapped value). Reverted out of `testing.l`
+rather than shipped in a state that crashes at runtime; full repro,
+bisection data, and suggested next steps are in issue #5133. `#5133`
+blocks closing this section and rollout item 7 below.
+
 ---
 
 ## 6. Stale comments to clean up (not functional bugs)
@@ -392,7 +411,8 @@ in this review at once.
    need the one-README-sentence-per-library treatment.
 7. Expand `lyric-testing` mocks per §5.3, prioritized by #410
    (failure-injection) since it multiplies the value of every mock added
-   after it.
+   after it. **Blocked on issue #5133** (self-hosted MSIL codegen bug
+   surfaced when attempting this — see §5.3's update).
 
 ---
 
