@@ -12,7 +12,13 @@
 //!                   `args.cacheKey` via a `where TArgs has { cacheKey:
 //!                   String }` row clause. The handler must declare a
 //!                   `cacheKey: String` parameter; the effective cache key
-//!                   is `keyPrefix + args.cacheKey`.
+//!                   is `call.qualifiedName + ":" + keyPrefix +
+//!                   args.cacheKey` — the function-identity component keeps
+//!                   two differently-matched handlers (or one wildcard
+//!                   `matches:` covering several handlers) from colliding
+//!                   on the same `cacheKey`, since `itemCacheStore` is one
+//!                   process-wide store shared by every `ItemCache`
+//!                   instantiation.
 //!
 //! Typical consumer usage:
 //!
@@ -100,7 +106,13 @@ val functionCacheStore: CacheStore = Cache.inProcess()
 /// compose correctly, for the same reason as FunctionCache above.
 ///
 /// Logic:
-///   1. Compute the cache key as `keyPrefix + args.cacheKey`.
+///   1. Compute the cache key as `call.qualifiedName + ":" + keyPrefix +
+///      args.cacheKey`. The `qualifiedName` component is required, not
+///      cosmetic: `itemCacheStore` is one process-wide store shared by
+///      every `ItemCache` instantiation, so without it two differently
+///      matched handlers called with the same `cacheKey` (or a single
+///      wildcard `matches:` pattern covering several handlers) would
+///      silently return each other's cached values.
 ///   2. If present in the cache, return `Ok(cachedValue)` without calling
 ///      the handler.
 ///   3. Otherwise call the handler (`call.proceed()`).
@@ -124,7 +136,7 @@ pub aspect ItemCache {
     if not enabled {
       ret = call.proceed()
     } else {
-      val key = keyPrefix + args.cacheKey
+      val key = call.qualifiedName + ":" + keyPrefix + args.cacheKey
       match Cache.get(itemCacheStore, key) {
         case Some(cached) -> {
           ret = Ok(cached)

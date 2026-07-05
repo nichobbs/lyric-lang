@@ -174,3 +174,41 @@ test "ItemCache aspect: enabled=false runs the handler on every call, even for a
   }
   assertEqualInt(itemUncachedCalls.count, 2, "a disabled cache must not suppress any call")
 }
+
+// `itemCacheStore` is one process-wide store shared by every `ItemCache`
+// instantiation (mirroring `functionCacheStore` above), so a second handler
+// matched by the *same* wildcard `ItemCacheGuard` pattern must not collide
+// with `itemCachedHandler`'s cache entries even when called with the exact
+// same `cacheKey` — the effective key must include function identity
+// (`call.qualifiedName`), not just `keyPrefix + cacheKey`.
+pub func itemCachedOtherHandler(cacheKey: in String): Result[String, String] {
+  itemCacheCalls.count = itemCacheCalls.count + 1
+  return Ok("other:" + cacheKey + "-" + itemCacheCalls.count.toString())
+}
+
+test "ItemCache aspect: two handlers matched by the same wildcard don't collide on an identical cacheKey" {
+  itemCacheCalls.count = 0
+  val fromFirstHandler = itemCachedHandler("shared-key")
+  val fromOtherHandler = itemCachedOtherHandler("shared-key")
+  match fromFirstHandler {
+    case Ok(v) -> assertEqual(v, "shared-key-1", "itemCachedHandler misses the cache and runs")
+    case Err(_) -> assertTrue(false, "handler must return Ok")
+  }
+  match fromOtherHandler {
+    case Ok(v) -> assertEqual(v, "other:shared-key-2", "itemCachedOtherHandler must run its own body, not reuse itemCachedHandler's cached value")
+    case Err(_) -> assertTrue(false, "handler must return Ok")
+  }
+  assertEqualInt(itemCacheCalls.count, 2, "both handlers must have actually run despite the shared cacheKey")
+  // Repeating each call now must hit each handler's OWN cached entry.
+  val fromFirstAgain = itemCachedHandler("shared-key")
+  val fromOtherAgain = itemCachedOtherHandler("shared-key")
+  match fromFirstAgain {
+    case Ok(v) -> assertEqual(v, "shared-key-1", "itemCachedHandler's repeat call reuses its own cached value")
+    case Err(_) -> assertTrue(false, "handler must return Ok")
+  }
+  match fromOtherAgain {
+    case Ok(v) -> assertEqual(v, "other:shared-key-2", "itemCachedOtherHandler's repeat call reuses its own cached value")
+    case Err(_) -> assertTrue(false, "handler must return Ok")
+  }
+  assertEqualInt(itemCacheCalls.count, 2, "neither handler ran again on the repeat calls")
+}
