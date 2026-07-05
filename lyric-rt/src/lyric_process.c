@@ -145,6 +145,9 @@ static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* 
     close(err_pipe[1]);
     for (int64_t i = 0; i < nargs; i++) lyric_cstring_free(argv[i + 1]);
     free(argv);
+    /* Success path ONLY: every failure path above returns -1 before
+     * reaching these writes, so callers' -1 sentinels survive a failed
+     * spawn and their close/free paths stay no-ops. */
     *out_rd = out_pipe[0];
     *err_rd = err_pipe[0];
     return pid;
@@ -245,10 +248,14 @@ typedef struct LyricProcOp {
     int32_t exit_code;
 } LyricProcOp;
 
+/* A blocking read end would let pump_fd stall the whole scheduler
+ * thread; on a fresh pipe fd fcntl cannot realistically fail, so treat
+ * failure as the invariant violation it is rather than degrading to
+ * blocking reads silently (#5110). */
 static void set_nonblock(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
-    if (flags >= 0) {
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        lyric_panic_msg("cannot make a capture pipe nonblocking", "lyric_process.c", __LINE__);
     }
 }
 
@@ -322,10 +329,15 @@ int32_t lyric_process_pump(void* raw) {
 
 /* Timeout path: SIGKILL the child, drain what already arrived, close
  * the pipes, and reap (blocking — the child is dead, the reap is
- * immediate).  After this the op is done. */
-void lyric_process_kill(void* raw) {
+ * immediate).  After this the op is done.  Returns 1 when the kill
+ * actually terminated the child; 0 when the child had already exited
+ * (a SIGKILL landing on a zombie does not alter its status, so the
+ * reap reports the child's REAL exit) — the caller must not report a
+ * timeout in that case (#5107: the child can finish inside the window
+ * between the last WNOHANG pump and the deadline firing). */
+int32_t lyric_process_kill(void* raw) {
     LyricProcOp* op = (LyricProcOp*)raw;
-    if (op->done) return;
+    if (op->done) return 0;
     kill(op->pid, SIGKILL);
     pump_fd(&op->out_fd, &op->outbuf);
     pump_fd(&op->err_fd, &op->errbuf);
@@ -344,6 +356,7 @@ void lyric_process_kill(void* raw) {
     } while (w < 0 && errno == EINTR);
     op->exit_code = w == op->pid ? status_to_exit_code(status) : -1;
     op->done = 1;
+    return w == op->pid && WIFSIGNALED(status) ? 1 : 0;
 }
 
 int32_t lyric_process_exit_code(void* raw) {

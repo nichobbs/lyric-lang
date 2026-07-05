@@ -554,7 +554,8 @@ pub func compileToNativeWithFlags(
           // redirects in-coroutine `Std.Process.runCapture` calls to the
           // kernel's async seam, a target no Lyric source names — keep
           // the seam (and everything its body pulls in) reachable
-          // whenever runCapture is.
+          // whenever runCapture is.  Arity-coupled to the intercept in
+          // llvm_codegen.l — change both together (#5108).
           if target == "Std.Process.runCapture/3" {
             match mapGet(canonical, "Std.ProcessCaptureHost.hostRunCaptureListAsync/4") {
               case Some(seam) -> {

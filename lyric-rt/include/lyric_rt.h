@@ -383,11 +383,14 @@ int32_t lyric_process_run(const char* path, LyricList* args,
  * failure in the child is exit code 127, matching lyric_process_run).
  * The stdout/stderr accessors return fresh rc=1 LyricStrings.  kill
  * sends SIGKILL to the child only (not its process tree), drains what
- * already arrived, and reaps. */
+ * already arrived, and reaps; it returns 1 when the kill terminated
+ * the child and 0 when the child had already exited (its real exit
+ * status is preserved — the caller must not report a timeout then,
+ * #5107). */
 void* lyric_process_start(const char* path, LyricList* args);
 int32_t lyric_process_spawn_failed(void* op);
 int32_t lyric_process_pump(void* op);
-void lyric_process_kill(void* op);
+int32_t lyric_process_kill(void* op);
 int32_t lyric_process_exit_code(void* op);
 LyricString* lyric_process_stdout(void* op);
 LyricString* lyric_process_stderr(void* op);

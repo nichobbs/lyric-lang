@@ -828,13 +828,36 @@ static void test_process_op_kill(void) {
         spins++;
     }
     CHECK(!lyric_process_pump(op)); /* still sleeping — not done */
-    lyric_process_kill(op);
+    CHECK(lyric_process_kill(op) == 1); /* the kill terminated it */
     CHECK(lyric_process_pump(op) == 1);
     CHECK(lyric_process_exit_code(op) == 128 + SIGKILL);
     LyricString* out = lyric_process_stdout(op);
     CHECK(lyric_string_len(out) == 4);
     CHECK(memcmp(LYRIC_STRING_DATA(out), "pre\n", 4) == 0);
     lyric_release(out);
+    lyric_process_free(op);
+}
+
+static void test_process_op_kill_after_exit(void) {
+    /* kill on an op whose child already finished must NOT report a
+     * kill (#5107: the deadline can fire inside the window between the
+     * child exiting and the WNOHANG reap seeing it — a false timeout).
+     * A done op returns 0; the real exit status stays intact. */
+    LyricList* args = lyric_list_new(1);
+    LyricString* a = lyric_string_from_literal((const uint8_t*)"beat-the-kill", 13);
+    lyric_list_push(args, (int64_t)(intptr_t)a);
+    lyric_release(a);
+    void* op = lyric_process_start("/bin/echo", args);
+    lyric_release(args);
+    int spins = 0;
+    while (!lyric_process_pump(op) && spins < 5000) {
+        struct timespec ts = {0, 1000000};
+        nanosleep(&ts, NULL);
+        spins++;
+    }
+    CHECK(lyric_process_pump(op) == 1);
+    CHECK(lyric_process_kill(op) == 0); /* already exited — not a kill */
+    CHECK(lyric_process_exit_code(op) == 0); /* real status preserved */
     lyric_process_free(op);
 }
 
@@ -1174,6 +1197,7 @@ int main(void) {
     test_process_closed_stdin_stdout();
     test_process_op_basic();
     test_process_op_kill();
+    test_process_op_kill_after_exit();
     test_process_op_exec_failure();
     test_async_hot_completion();
     test_async_block_on_sleep();

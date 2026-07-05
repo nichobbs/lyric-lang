@@ -84,7 +84,9 @@ extern func rtProcessSpawnFailed(op: NativePtr[Byte]): Int = "lyric_process_spaw
 
 extern func rtProcessPump(op: NativePtr[Byte]): Int = "lyric_process_pump"
 
-extern func rtProcessKill(op: NativePtr[Byte]): Unit = "lyric_process_kill"
+// Returns 1 when the kill terminated the child, 0 when the child had
+// already exited (real exit status preserved) — see #5107.
+extern func rtProcessKill(op: NativePtr[Byte]): Int = "lyric_process_kill"
 
 extern func rtProcessExitCode(op: NativePtr[Byte]): Int = "lyric_process_exit_code"
 
@@ -126,8 +128,9 @@ pub async func hostRunCaptureListAsync(
   var timedOut = false
   while rtProcessPump(op) == 0 {
     if timeoutMs >= 0 and rtMonoNanos() >= deadline {
-      rtProcessKill(op)
-      timedOut = true
+      // A child that exited inside the last pump-to-deadline window is
+      // NOT a timeout: the kill reaps its real status and reports 0.
+      timedOut = rtProcessKill(op) != 0
     } else {
       sleepMillis(1)
     }

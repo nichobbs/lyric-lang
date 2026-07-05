@@ -575,3 +575,25 @@ test "async runCapture of a missing binary reports exit 127 through the async se
   val r = compileAndRunBundled(src)
   assertEqualInt(r.exitCode, 77, "exec failure surfaces as exit 127 with Ok, matching the sync seam")
 }
+
+// timeoutMs == 0 kills at the first pump after the deadline check
+// (#5111); a slow child makes the outcome deterministic — with the
+// #5107 fix, a child that beat the kill would report its real exit
+// instead, so /bin/echo here would be flaky by design.
+test "async runCapture with timeoutMs 0 kills at the first pump" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "async func run(): Int {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  args.add(\"-c\")\n" +
+    "  args.add(\"sleep 5\")\n" +
+    "  match Process.runCapture(\"/bin/sh\", args, 0) {\n" +
+    "    case Ok(r) -> {\n" +
+    "      if r.timedOut and r.exitCode == 0 - 2 {\n        77\n      } else {\n        2\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> 3\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n  run()\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 77, "a zero deadline kills the sleeping child at the first pump")
+}

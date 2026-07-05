@@ -2530,7 +2530,10 @@ func lowerCallEx(
       }
       // The async process leaf (D-N-023).  Only for awaited-in-place calls:
       // a direct `spawn runCapture(...)` keeps the blocking sync path (spawn
-      // an async wrapper function to overlap captures).
+      // an async wrapper function to overlap captures).  Arity-coupled to
+      // `Std.Process.runCapture/3` and the seam's /4 — if either signature
+      // changes, update this intercept AND the llvm_bridge.l reachability
+      // walk together, or the redirect silently disables (#5108).
       if ctx.curAsyncTask.count > 0 and not wantTask and sig.irName == "Std.Process.runCapture" and callArgs.count == 3 {
         match emitAsyncRunCapture(ctx, insns, sig, callArgs) {
           case Some(v) -> return v
