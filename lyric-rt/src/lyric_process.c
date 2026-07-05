@@ -99,8 +99,13 @@ static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* 
 #if defined(__APPLE__)
     /* Writes to the stdin pipe after the child exits must not raise
      * SIGPIPE; macOS has a per-fd opt-out (Linux handles it around each
-     * write in stdin_write instead — see there). */
-    fcntl(in_pipe[1], F_SETNOSIGPIPE, 1);
+     * write in stdin_write instead — see there).  stdin_write's macOS
+     * arm relies on this flag being set, so a failure here would turn a
+     * routine child-exits-early EPIPE into process death — treat it as
+     * the invariant violation it is, like set_nonblock (#5110, #5172). */
+    if (fcntl(in_pipe[1], F_SETNOSIGPIPE, 1) < 0) {
+        lyric_panic_msg("cannot set F_SETNOSIGPIPE on the stdin pipe", "lyric_process.c", __LINE__);
+    }
 #endif
 
     int64_t nargs = args ? lyric_list_len(args) : 0;
