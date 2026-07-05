@@ -15926,6 +15926,30 @@ func collectSpawnBindingLocalMsil(
         }
       }
     }
+    // A `var handle = spawn asyncFn(…)` handle (reassignable — the retry idiom
+    // this PR's #5205 test exercises) must be collected too, or a later
+    // `await handle` fails to resolve its `Task<T>` type in the Phase A pre-scan
+    // and the await count diverges from Phase B's emit ("await index N exceeds
+    // pre-allocated resume labels").
+    case LBVar(varName, _, initOpt) -> {
+      match initOpt {
+        case Some(init) -> {
+          match spawnInnerOfInitMsil(init) {
+            case Some(spawnInner) -> {
+              val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys)
+              if isTaskTypeMsil(cctx, sTy) {
+                spawnNms.add(varName)
+                spawnTys.add(sTy)
+              }
+            }
+            case None -> {
+            }
+          }
+        }
+        case None -> {
+        }
+      }
+    }
     case _ -> {
     }
   }
@@ -15945,6 +15969,28 @@ func collectSpawnBindingsStmtMsil(
 ): Unit {
   match st.kind {
     case SLocal(binding) -> collectSpawnBindingLocalMsil(cctx, pkgName, binding, spawnNms, spawnTys)
+    // A `handle = spawn asyncFn(…)` reassignment (#5205, mirrors the JVM
+    // `recordSpawnResultType` SAssign wiring): track the reassigned handle so a
+    // later `await handle` resolves its `Task<T>` type in the pre-scan.
+    case SAssign(target, _, value) -> {
+      match target.kind {
+        case EPath(path) -> {
+          match spawnInnerOfInitMsil(value) {
+            case Some(spawnInner) -> {
+              val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys)
+              if isTaskTypeMsil(cctx, sTy) {
+                spawnNms.add(path.segments[path.segments.count - 1])
+                spawnTys.add(sTy)
+              }
+            }
+            case None -> {
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
+    }
     case SScope(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
     case SLoop(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
     case SWhile(_, _, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)

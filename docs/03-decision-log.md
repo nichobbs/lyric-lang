@@ -10038,6 +10038,19 @@ The pre-scan now recurses into block-bearing statements (`scope`, loops, `try`)
 via `collectSpawnBindingsBlockMsil`; `if`/`match` branch bindings remain a
 documented deferred case.
 
+A follow-up (#5205) extended the same pre-scan to `var handle = spawn f()`
+(`LBVar`) bindings and `handle = spawn g()` (`SAssign`) reassignments —
+`collectSpawnBindingLocalMsil` previously handled only `LBVal`, so a reassignable
+spawn handle (the retry idiom) awaited later hit the identical "await index
+exceeds pre-allocated resume labels" divergence. On the JVM side the same #5205
+finding wired `recordSpawnResultType` into `lowerAssignExpr`'s `SAssign` case
+(previously only `SLocal`), so a reassigned handle's `spawnResultTypes` slot entry
+refreshes and a later `await` unboxes to the new spawn's return type. (The
+reviewer's stated `ClassCastException` does not actually reproduce — a `var`'s
+fixed type keeps both spawns' return types identical, so the stale entry was
+already value-correct — but the symmetric wiring is the correct robust behaviour
+and closes the real `SLocal`/`SAssign` asymmetry.)
+
 **Test.** `lyric-compiler/lyric/async_spawn_self_test.l` (`@test_module`, both
 targets) covers two spawns joined by early `return` inside a scope, the same by
 fall-off, a bare no-scope spawn, three concurrent spawns, and a `Unit`-returning

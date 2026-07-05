@@ -222,6 +222,12 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   // Same coercion discipline as call arguments.
                   coerceArgTo(insns, vTy, ty)
                   emitStoreLocalWriteThrough(ctx, insns, slot, ty)
+                  // Re-binding a `var handle = spawn f()` handle to a new spawn
+                  // (`handle = spawn g()`) must refresh the slot's spawn-result
+                  // type so a later `await handle` unboxes to g's return type, not
+                  // f's stale entry (#5205).  Mirrors the `SLocal` wiring; a no-op
+                  // for a non-spawn RHS or a spawn outside any `scope { }`.
+                  recordSpawnResultType(ctx, name, value)
                 }
                 case AssPlus -> {
                   emitLoad(insns, slot, ty)

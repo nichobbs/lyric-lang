@@ -143,6 +143,21 @@ async func reusedBindingName(a: in Int, b: in Int): Int {
   return total
 }
 
+// A `var` spawn handle reassigned to a second spawn and awaited again (#5205):
+// the `SAssign` reassignment must refresh the slot's `spawnResultTypes` entry the
+// same way the original `SLocal` binding did, so the second `await` unboxes the
+// joined `Object` correctly.  Both spawns return `Int` (a `var`'s type is fixed),
+// and the first handle is awaited before the reassignment so no task leaks.
+async func reassignedSpawnHandle(a: in Int, b: in Int): Int {
+  scope {
+    var handle = spawn doubleIt(a)
+    val first = await handle
+    handle = spawn addOne(b)
+    val second = await handle
+    return first + second
+  }
+}
+
 // A reference-typed (non-`Int`) spawn result: `await` checkcasts the joined
 // `Object` back to `String` rather than unboxing a primitive, exercising the
 // other arm of `coerceAwaitResult`.
@@ -220,6 +235,12 @@ test "spawn-binding name reused across sibling scopes compiles and joins" {
 test "reference-typed spawn result checkcasts on await" {
   assertEqual(await spawnStringResult("bob"), "hi-bob", "greet(bob)")
   assertEqual(await spawnStringResult("x"), "hi-x", "greet(x)")
+}
+
+test "reassigned spawn handle awaits the second spawn's result" {
+  // double(5) then addOne(10) = 10 + 11 = 21
+  assertEqualInt(await reassignedSpawnHandle(5, 10), 21, "double(5)+addOne(10)")
+  assertEqualInt(await reassignedSpawnHandle(2, 2), 7, "double(2)+addOne(2)")
 }
 
 test "spawned task that panics propagates through await" {
