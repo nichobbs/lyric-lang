@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -772,6 +773,95 @@ static void test_process_closed_stdin_stdout(void) {
     CHECK(WEXITSTATUS(status) == 0);
 }
 
+/* ── Nonblocking process op (the async process leaf, D-N-023) ───────── */
+static void test_process_op_basic(void) {
+    /* echo through the pump loop: start, pump until done, read results. */
+    LyricList* args = lyric_list_new(1);
+    LyricString* a = lyric_string_from_literal((const uint8_t*)"pump", 4);
+    lyric_list_push(args, (int64_t)(intptr_t)a);
+    lyric_release(a);
+    void* op = lyric_process_start("/bin/echo", args);
+    lyric_release(args);
+    CHECK(!lyric_process_spawn_failed(op));
+    int spins = 0;
+    while (!lyric_process_pump(op) && spins < 5000) {
+        struct timespec ts = {0, 1000000}; /* 1 ms — the kernel's poll cadence */
+        nanosleep(&ts, NULL);
+        spins++;
+    }
+    CHECK(lyric_process_pump(op) == 1);
+    CHECK(lyric_process_exit_code(op) == 0);
+    LyricString* out = lyric_process_stdout(op);
+    LyricString* errs = lyric_process_stderr(op);
+    CHECK(lyric_string_len(out) == 5);
+    CHECK(memcmp(LYRIC_STRING_DATA(out), "pump\n", 5) == 0);
+    CHECK(lyric_string_len(errs) == 0);
+    lyric_release(out);
+    lyric_release(errs);
+    lyric_process_free(op);
+}
+
+static void test_process_op_kill(void) {
+    /* A sleeping child killed mid-run: partial output preserved, op done,
+     * signal-termination exit code reported. */
+    LyricList* args = lyric_list_new(1);
+    LyricString* a = lyric_string_from_literal((const uint8_t*)"echo pre; sleep 30", 18);
+    lyric_list_push(args, (int64_t)(intptr_t)a);
+    lyric_release(a);
+    LyricList* argv = lyric_list_new(1);
+    LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
+    lyric_release(dash_c);
+    LyricString* script = lyric_string_from_literal((const uint8_t*)"echo pre; sleep 30", 18);
+    lyric_list_push(argv, (int64_t)(intptr_t)script);
+    lyric_release(script);
+    lyric_release(args);
+    void* op = lyric_process_start("/bin/sh", argv);
+    lyric_release(argv);
+    CHECK(!lyric_process_spawn_failed(op));
+    /* Give the child time to print "pre" (pump meanwhile). */
+    int spins = 0;
+    LyricString* probe = NULL;
+    for (;;) {
+        lyric_process_pump(op);
+        probe = lyric_process_stdout(op);
+        int64_t got = lyric_string_len(probe);
+        lyric_release(probe);
+        if (got >= 4 || spins >= 5000) break;
+        struct timespec ts = {0, 1000000};
+        nanosleep(&ts, NULL);
+        spins++;
+    }
+    CHECK(!lyric_process_pump(op)); /* still sleeping — not done */
+    lyric_process_kill(op);
+    CHECK(lyric_process_pump(op) == 1);
+    CHECK(lyric_process_exit_code(op) == 128 + SIGKILL);
+    LyricString* out = lyric_process_stdout(op);
+    CHECK(lyric_string_len(out) == 4);
+    CHECK(memcmp(LYRIC_STRING_DATA(out), "pre\n", 4) == 0);
+    lyric_release(out);
+    lyric_process_free(op);
+}
+
+static void test_process_op_exec_failure(void) {
+    /* execvp failure inside the child: exit 127, empty output, no spawn
+     * failure (matching lyric_process_run and shell convention). */
+    void* op = lyric_process_start("/nonexistent-lyric-op-binary", NULL);
+    CHECK(!lyric_process_spawn_failed(op));
+    int spins = 0;
+    while (!lyric_process_pump(op) && spins < 5000) {
+        struct timespec ts = {0, 1000000};
+        nanosleep(&ts, NULL);
+        spins++;
+    }
+    CHECK(lyric_process_pump(op) == 1);
+    CHECK(lyric_process_exit_code(op) == 127);
+    LyricString* out = lyric_process_stdout(op);
+    CHECK(lyric_string_len(out) == 0);
+    lyric_release(out);
+    lyric_process_free(op);
+}
+
 static void test_ok_variants(void) {
     char tmpl[] = "/tmp/lyric_rt_ok_XXXXXX";
     int fd = mkstemp(tmpl);
@@ -1087,6 +1177,9 @@ int main(void) {
     test_process();
     test_process_closed_stdio();
     test_process_closed_stdin_stdout();
+    test_process_op_basic();
+    test_process_op_kill();
+    test_process_op_exec_failure();
     test_async_hot_completion();
     test_async_block_on_sleep();
     test_async_interleave();

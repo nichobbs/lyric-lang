@@ -20,6 +20,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -69,10 +70,10 @@ static void procbuf_append(ProcBuf* b, const uint8_t* chunk, int64_t n) {
     b->len += n;
 }
 
-int32_t lyric_process_run(const char* path, LyricList* args,
-                           int32_t* out_exit_code,
-                           LyricString** out_stdout,
-                           LyricString** out_stderr) {
+/* Shared fork/exec: spawn `path` with `args`, wiring fresh capture pipes
+ * to the child's stdout/stderr.  On success returns the child pid and
+ * stores the pipe READ ends; on failure returns -1 with nothing open. */
+static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* err_rd) {
     int out_pipe[2];
     int err_pipe[2];
     if (pipe_cloexec(out_pipe) != 0) return -1;
@@ -144,6 +145,19 @@ int32_t lyric_process_run(const char* path, LyricList* args,
     close(err_pipe[1]);
     for (int64_t i = 0; i < nargs; i++) lyric_cstring_free(argv[i + 1]);
     free(argv);
+    *out_rd = out_pipe[0];
+    *err_rd = err_pipe[0];
+    return pid;
+}
+
+int32_t lyric_process_run(const char* path, LyricList* args,
+                           int32_t* out_exit_code,
+                           LyricString** out_stdout,
+                           LyricString** out_stderr) {
+    int out_rd = -1;
+    int err_rd = -1;
+    pid_t pid = spawn_capture(path, args, &out_rd, &err_rd);
+    if (pid < 0) return -1;
 
     ProcBuf outbuf;
     outbuf.data = NULL;
@@ -155,9 +169,9 @@ int32_t lyric_process_run(const char* path, LyricList* args,
     errbuf.cap = 0;
 
     struct pollfd fds[2];
-    fds[0].fd = out_pipe[0];
+    fds[0].fd = out_rd;
     fds[0].events = POLLIN;
-    fds[1].fd = err_pipe[0];
+    fds[1].fd = err_rd;
     fds[1].events = POLLIN;
     int open_fds = 2;
 
@@ -210,4 +224,147 @@ int32_t lyric_process_run(const char* path, LyricList* args,
     free(outbuf.data);
     free(errbuf.data);
     return 0;
+}
+
+/* ── Nonblocking capture op (the async process leaf, D-N-023) ─────────
+ *
+ * The cooperative scheduler cannot block in lyric_process_run: a
+ * coroutine that captures a subprocess instead drives this op through
+ * repeated nonblocking pumps, parking itself between pumps via the
+ * async sleep leaf (the same 1 ms poll cadence the JVM kernel twin
+ * documents for its drain loop).  The op is a raw malloc'd handle —
+ * Lyric holds it as NativePtr[Byte] and frees it explicitly. */
+typedef struct LyricProcOp {
+    pid_t pid;
+    int out_fd; /* -1 once EOF */
+    int err_fd;
+    ProcBuf outbuf;
+    ProcBuf errbuf;
+    int32_t spawn_failed;
+    int32_t done; /* pipes drained AND child reaped */
+    int32_t exit_code;
+} LyricProcOp;
+
+static void set_nonblock(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+}
+
+void* lyric_process_start(const char* path, LyricList* args) {
+    LyricProcOp* op = (LyricProcOp*)calloc(1, sizeof(LyricProcOp));
+    if (!op) lyric_panic_msg("OOM starting process op", "lyric_process.c", __LINE__);
+    op->out_fd = -1;
+    op->err_fd = -1;
+    op->exit_code = -1;
+    pid_t pid = spawn_capture(path, args, &op->out_fd, &op->err_fd);
+    if (pid < 0) {
+        op->spawn_failed = 1;
+        op->done = 1;
+        return op;
+    }
+    op->pid = pid;
+    set_nonblock(op->out_fd);
+    set_nonblock(op->err_fd);
+    return op;
+}
+
+int32_t lyric_process_spawn_failed(void* raw) {
+    return ((LyricProcOp*)raw)->spawn_failed;
+}
+
+/* Drain whatever is available from one pipe without blocking; closes
+ * the fd (and marks it -1) on EOF or a hard error. */
+static void pump_fd(int* fd, ProcBuf* buf) {
+    if (*fd < 0) return;
+    uint8_t chunk[4096];
+    for (;;) {
+        ssize_t n = read(*fd, chunk, sizeof chunk);
+        if (n > 0) {
+            procbuf_append(buf, chunk, n);
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n < 0 && errno == EINTR) continue;
+        close(*fd); /* EOF or hard error */
+        *fd = -1;
+        return;
+    }
+}
+
+static int32_t status_to_exit_code(int status) {
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
+}
+
+/* One nonblocking step: drain available output; once both pipes hit
+ * EOF, try a WNOHANG reap.  Returns 1 when the op is fully done. */
+int32_t lyric_process_pump(void* raw) {
+    LyricProcOp* op = (LyricProcOp*)raw;
+    if (op->done) return 1;
+    pump_fd(&op->out_fd, &op->outbuf);
+    pump_fd(&op->err_fd, &op->errbuf);
+    if (op->out_fd < 0 && op->err_fd < 0) {
+        int status = 0;
+        pid_t w = waitpid(op->pid, &status, WNOHANG);
+        if (w == op->pid) {
+            op->exit_code = status_to_exit_code(status);
+            op->done = 1;
+        } else if (w < 0 && errno != EINTR) {
+            op->exit_code = -1; /* already reaped elsewhere — should not happen */
+            op->done = 1;
+        }
+    }
+    return op->done;
+}
+
+/* Timeout path: SIGKILL the child, drain what already arrived, close
+ * the pipes, and reap (blocking — the child is dead, the reap is
+ * immediate).  After this the op is done. */
+void lyric_process_kill(void* raw) {
+    LyricProcOp* op = (LyricProcOp*)raw;
+    if (op->done) return;
+    kill(op->pid, SIGKILL);
+    pump_fd(&op->out_fd, &op->outbuf);
+    pump_fd(&op->err_fd, &op->errbuf);
+    if (op->out_fd >= 0) {
+        close(op->out_fd);
+        op->out_fd = -1;
+    }
+    if (op->err_fd >= 0) {
+        close(op->err_fd);
+        op->err_fd = -1;
+    }
+    int status = 0;
+    pid_t w;
+    do {
+        w = waitpid(op->pid, &status, 0);
+    } while (w < 0 && errno == EINTR);
+    op->exit_code = w == op->pid ? status_to_exit_code(status) : -1;
+    op->done = 1;
+}
+
+int32_t lyric_process_exit_code(void* raw) {
+    return ((LyricProcOp*)raw)->exit_code;
+}
+
+LyricString* lyric_process_stdout(void* raw) {
+    LyricProcOp* op = (LyricProcOp*)raw;
+    return lyric_string_from_literal(op->outbuf.data, op->outbuf.len);
+}
+
+LyricString* lyric_process_stderr(void* raw) {
+    LyricProcOp* op = (LyricProcOp*)raw;
+    return lyric_string_from_literal(op->errbuf.data, op->errbuf.len);
+}
+
+void lyric_process_free(void* raw) {
+    LyricProcOp* op = (LyricProcOp*)raw;
+    if (op->out_fd >= 0) close(op->out_fd);
+    if (op->err_fd >= 0) close(op->err_fd);
+    free(op->outbuf.data);
+    free(op->errbuf.data);
+    free(op);
 }

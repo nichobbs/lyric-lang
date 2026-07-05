@@ -2528,6 +2528,16 @@ func lowerCallEx(
       if ctx.curAsyncTask.count > 0 and sig.irName == "Std.Time.sleepMillis" and callArgs.count == 1 {
         return emitAsyncSleep(ctx, insns, callArgs)
       }
+      // The async process leaf (D-N-023).  Only for awaited-in-place calls:
+      // a direct `spawn runCapture(...)` keeps the blocking sync path (spawn
+      // an async wrapper function to overlap captures).
+      if ctx.curAsyncTask.count > 0 and not wantTask and sig.irName == "Std.Process.runCapture" and callArgs.count == 3 {
+        match emitAsyncRunCapture(ctx, insns, sig, callArgs) {
+          case Some(v) -> return v
+          case None -> {
+          }
+        }
+      }
       if sig.isAsync {
         return emitAsyncCall(ctx, insns, sig.irName, callArgs, retTypeToN(ctx, sig.retTy), wantTask)
       }
@@ -3942,6 +3952,142 @@ func emitAsyncSleep(ctx: in Ctx, insns: in List[NInsn], callArgs: in List[NArg])
   insns.add(NCallVoid(fn = NGlobal(name = "lyric_async_sleep"), args = arg2(NPtr(pointee = NI8), me, NI64, ms.value)))
   emitSuspendPoint(ctx, insns)
   NVal(ty = NVoid, value = NUndef(ty = NVoid))
+}
+
+/// The index of a union case by name, or -1.
+func unionCaseIndexOf(ui: in NUnionInfo, name: in String): Int {
+  var i = 0
+  while i < ui.cases.count {
+    if ui.cases[i].name == name {
+      return i
+    }
+    i = i + 1
+  }
+  0 - 1
+}
+
+/// Read field `fi` of union `ui`'s case `caseIdx` payload as a borrow.
+func emitUnionPayloadFieldRead(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  ui: in NUnionInfo,
+  scrutinee: in NVal,
+  caseIdx: in Int,
+  fi: in Int,
+): NVal {
+  val structTy = match scrutinee.ty { case NPtr(pointee) -> pointee; case _ -> panic("Lyric.LlvmCodegen: union payload read on a non-pointer value") }
+  val payloadPtr = freshTmp(ctx)
+  val pArgs: List[NArg] = newList()
+  pArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  pArgs.add(NArg(ty = NI32, value = NLitInt(v = 4i64, ty = NI32)))
+  insns.add(NGEP(dest = payloadPtr, ty = structTy, ptr = scrutinee.value, indices = pArgs))
+  val caseTy = casePayloadStructType(ui, ui.cases[caseIdx])
+  val casePtr = freshTmp(ctx)
+  insns.add(
+    NBitcast(
+      dest = casePtr,
+      fromTy = NPtr(pointee = NArray(elem = NI64, size = ui.payloadWords)),
+      value = NLocal(name = payloadPtr),
+      toTy = NPtr(pointee = caseTy)
+    )
+  )
+  val fieldPtr = freshTmp(ctx)
+  val fArgs: List[NArg] = newList()
+  fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(fi), ty = NI32)))
+  insns.add(NGEP(dest = fieldPtr, ty = caseTy, ptr = NLocal(name = casePtr), indices = fArgs))
+  val fieldVal = freshTmp(ctx)
+  insns.add(NLoad(dest = fieldVal, ty = ui.cases[caseIdx].fieldTys[fi], ptr = NLocal(name = fieldPtr)))
+  NVal(ty = ui.cases[caseIdx].fieldTys[fi], value = NLocal(name = fieldVal))
+}
+
+/// `Std.Process.runCapture` inside a coroutine is the async process leaf
+/// (D-N-023): redirect to the kernel's nonblocking async seam
+/// (`Std.ProcessCaptureHost.hostRunCaptureListAsync`, which pumps the
+/// capture op through the sleep leaf), then project its
+/// `Result[ProcessCaptureResult, String]` into the
+/// `Result[ProcessResult, String]` the intercepted call was typed as —
+/// the Ok payload through the stdlib's own `Std.Process.projectResult`.
+/// Returns None (caller falls through to the blocking sync call) when
+/// the async seam is not in the bundle.
+func emitAsyncRunCapture(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, callArgs: in List[NArg]): Option[NVal] {
+  val asig = match mapGet(ctx.sigs, "Std.ProcessCaptureHost.hostRunCaptureListAsync/4") {
+    case Some(s) -> s
+    case None -> return None
+  }
+  val projSig = match mapGet(ctx.sigs, "Std.Process.projectResult/1") {
+    case Some(s) -> s
+    case None -> return None
+  }
+  val rawTy = retTypeToN(ctx, asig.retTy)
+  val targetTy = retTypeToN(ctx, sig.retTy)
+  val rawUi = match unionInfoOfType(ctx, rawTy) { case Some(u) -> u; case None -> return None }
+  val targetUi = match unionInfoOfType(ctx, targetTy) { case Some(u) -> u; case None -> return None }
+  val rawOk = unionCaseIndexOf(rawUi, "Ok")
+  val rawErr = unionCaseIndexOf(rawUi, "Err")
+  val tgtOk = unionCaseIndexOf(targetUi, "Ok")
+  val tgtErr = unionCaseIndexOf(targetUi, "Err")
+  if rawOk < 0 or rawErr < 0 or tgtOk < 0 or tgtErr < 0 {
+    return None
+  }
+  // (exe, args, timeout) -> (exe, args, stdinContent = "", timeout).
+  val emptyStdin = emitStringLiteral(ctx, insns, "")
+  val aArgs: List[NArg] = newList()
+  aArgs.add(callArgs[0])
+  aArgs.add(callArgs[1])
+  aArgs.add(NArg(ty = emptyStdin.ty, value = emptyStdin.value))
+  aArgs.add(callArgs[2])
+  val raw = emitAsyncCall(ctx, insns, asig.irName, aArgs, rawTy, false)
+  // Project: match on the raw Result, per the lowerIf value-slot protocol.
+  val structTy = match raw.ty { case NPtr(pointee) -> pointee; case _ -> return None }
+  val discPtr = freshTmp(ctx)
+  val dArgs: List[NArg] = newList()
+  dArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  dArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  insns.add(NGEP(dest = discPtr, ty = structTy, ptr = raw.value, indices = dArgs))
+  val disc = freshTmp(ctx)
+  insns.add(NLoad(dest = disc, ty = NI32, ptr = NLocal(name = discPtr)))
+  val isOk = freshTmp(ctx)
+  insns.add(NICmp(dest = isOk, pred = IEq, ty = NI32, a = NLocal(name = disc), b = NLitInt(v = intToLong(rawOk), ty = NI32)))
+  val okL = freshLabel(ctx, "prc.ok")
+  val errL = freshLabel(ctx, "prc.err")
+  val doneL = freshLabel(ctx, "prc.done")
+  val slotName = "prc.slot." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = slotName, ty = targetTy))
+  insns.add(NCondBr(cond = NLocal(name = isOk), thenLabel = okL, elseLabel = errL))
+  insns.add(NLabel(name = okL))
+  pushTempScope(ctx)
+  val pcr = emitUnionPayloadFieldRead(ctx, insns, rawUi, raw, rawOk, 0)
+  val prTy = retTypeToN(ctx, projSig.retTy)
+  val prDest = freshTmp(ctx)
+  val projArgs: List[NArg] = newList()
+  projArgs.add(NArg(ty = pcr.ty, value = pcr.value))
+  insns.add(NCall(dest = prDest, retTy = prTy, fn = NGlobal(name = projSig.irName), args = projArgs))
+  val pr = NVal(ty = prTy, value = NLocal(name = prDest))
+  registerTemp(ctx, pr)
+  val okVals: List[NVal] = newList()
+  okVals.add(pr)
+  val okV = lowerUnionConstructVals(ctx, insns, targetUi, tgtOk, okVals)
+  ensureOwned(ctx, insns, okV)
+  popTempScope(ctx, insns)
+  insns.add(NStore(ty = targetTy, value = okV.value, ptr = NLocal(name = slotName)))
+  insns.add(NBr(label = doneL))
+  insns.add(NLabel(name = errL))
+  pushTempScope(ctx)
+  val msg = emitUnionPayloadFieldRead(ctx, insns, rawUi, raw, rawErr, 0)
+  val errVals: List[NVal] = newList()
+  errVals.add(msg)
+  val errV = lowerUnionConstructVals(ctx, insns, targetUi, tgtErr, errVals)
+  ensureOwned(ctx, insns, errV)
+  popTempScope(ctx, insns)
+  insns.add(NStore(ty = targetTy, value = errV.value, ptr = NLocal(name = slotName)))
+  insns.add(NBr(label = doneL))
+  insns.add(NLabel(name = doneL))
+  val dest = freshTmp(ctx)
+  insns.add(NLoad(dest = dest, ty = targetTy, ptr = NLocal(name = slotName)))
+  val outV = NVal(ty = targetTy, value = NLocal(name = dest))
+  registerTemp(ctx, outV)
+  Some(value = outV)
 }
 
 /// `lyric_task_complete(task, slot, is_ref)`: store the produced value in
