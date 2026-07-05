@@ -29316,7 +29316,7 @@ sync native seam still ignores it).
   reachability walk keeps the seam whenever `runCapture` is reachable
   (no Lyric source names it; the walk's bare/fully-qualified-only key
   matching is documented in D-N-023).
-- **Verification:** five new `llvm_self_test_async.l` cases (25
+- **Verification:** six new `llvm_self_test_async.l` cases (26
   total): seam round-trip, two spawned captures completing in reverse
   spawn order (0.1 s before 0.35 s — impossible under a blocked
   scheduler), the same ASan-clean, the timeout contract, and

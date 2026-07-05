@@ -5750,15 +5750,19 @@ walk limitation, now documented here).
   one the front end's type-transparent `spawn` makes meaningful).
 - Sync-context `runCapture` calls are untouched on every target.
 
-**Verification.** Three C unit tests drive the op lifecycle (echo
+**Verification.** Four C unit tests drive the op lifecycle (echo
 pump; kill-mid-sleep preserving partial output with the 128+SIGKILL
-status; exec-failure 127) under clang and gcc. Five new
-`llvm_self_test_async.l` cases (25 total): output/exit/timedOut
+status; kill-after-exit returning 0 with the real status preserved,
+#5107; exec-failure 127) under clang and gcc. Six new
+`llvm_self_test_async.l` cases (26 total): output/exit/timedOut
 round-trip through the seam; two spawned captures whose 0.1 s child
 completes before the 0.35 s child spawned first (impossible if either
 capture blocked the scheduler); the same overlap ASan-clean; the
-timeout contract (`timedOut`/-2/pre-kill output); missing-binary exit
-127. The interleave cases also double as the regression net that
+timeout contract (`timedOut`/-2/pre-kill output); a zero deadline
+killing a sleeping child at the first pump; missing-binary exit
+127. `lyric_process_kill` reports whether the SIGKILL actually
+terminated the child, so one exiting inside the pump-to-deadline
+window is never falsely reported as timed out (#5107). The interleave cases also double as the regression net that
 caught the reachability gap during development (the intercept silently
 fell through to the sync path until the walk kept the seam).
 

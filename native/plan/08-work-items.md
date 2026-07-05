@@ -1164,8 +1164,8 @@ through the sleep leaf — honoring `timeoutMs` (managed-twin contract:
 calls to the seam and projects the kernel Result into the call's
 `Result[ProcessResult, String]` (Ok payload via the stdlib's own
 `projectResult`); the bridge's reachability walk keeps the seam
-whenever `runCapture` is reachable. Five new `llvm_self_test_async.l`
-cases (25 total), including two spawned captures completing in
+whenever `runCapture` is reachable. Six new `llvm_self_test_async.l`
+cases (26 total), including two spawned captures completing in
 reverse spawn order — impossible if either blocked the scheduler —
 and the same overlap under ASan. `poll()`-based scheduler fd
 readiness is deferred to the socket leaf.

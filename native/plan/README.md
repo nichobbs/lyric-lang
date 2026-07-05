@@ -147,8 +147,8 @@ The first async I/O leaf (D-N-023) SHIPPED on top: in-coroutine
 through the sleep leaf (1 ms pump cadence, the JVM kernel twin's
 documented idiom), so subprocess captures overlap instead of stalling
 the scheduler — and `timeoutMs` is honored on this path (the sync
-native seam still ignores it, #4752). Verified by five more
-`llvm_self_test_async.l` cases (25 total) including reverse-order
+native seam still ignores it, #4752). Verified by six more
+`llvm_self_test_async.l` cases (26 total) including reverse-order
 completion of two spawned captures under ASan. `poll()`-based fd
 readiness in the scheduler is deferred to the socket leaf.
 
