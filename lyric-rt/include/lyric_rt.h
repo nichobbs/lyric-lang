@@ -356,7 +356,16 @@ void       lyric_set_current_task(LyricTask* t);
  * `path` or any argument), with argv built from `path` (as argv[0])
  * followed by the LyricString* elements of `args` in order.  `args`
  * may be NULL, meaning no arguments beyond argv[0].  stdout and stderr
- * are captured in full into fresh rc=1 LyricStrings.
+ * are captured in full into fresh rc=1 LyricStrings.  stdin is always
+ * piped (managed-twin parity): `stdin_content` (NULL or empty = no
+ * content) is written interleaved with the output reads — no
+ * pipe-buffer deadlock in either direction — then the write end
+ * closes so the child reads EOF; content the child never reads is
+ * silently dropped (EPIPE, matching the managed twin's absorbed
+ * writer throw).  `timeout_ms` < 0 means no timeout; on expiry the
+ * child is SIGKILLed, captured output is preserved, and
+ * *out_timed_out reports 1 unless the reap shows the child had
+ * already exited normally (the #5107 contract).
  *
  * Returns 0 when the child was spawned and reaped successfully: then
  * *out_exit_code holds the child's exit status (a signal-terminated
@@ -368,9 +377,11 @@ void       lyric_set_current_task(LyricTask* t);
  * spawn failure: it is reported as exit code 127 with empty output,
  * matching shell convention. */
 int32_t lyric_process_run(const char* path, LyricList* args,
+                           LyricString* stdin_content, int32_t timeout_ms,
                            int32_t* out_exit_code,
                            LyricString** out_stdout,
-                           LyricString** out_stderr);
+                           LyricString** out_stderr,
+                           int32_t* out_timed_out);
 
 /* Nonblocking capture op (the async process leaf, D-N-023): the same
  * fork/execvp capture as lyric_process_run, driven by repeated
@@ -381,13 +392,17 @@ int32_t lyric_process_run(const char* path, LyricList* args,
  * malloc'd struct, not ARC-managed.  start never returns NULL: a
  * pipe/fork failure yields a done op with spawn_failed set (an execvp
  * failure in the child is exit code 127, matching lyric_process_run).
- * The stdout/stderr accessors return fresh rc=1 LyricStrings.  kill
+ * The op copies `stdin_content` (NULL or empty = none) and pump
+ * flushes it to the child nonblockingly before draining output,
+ * closing the write end at EOF-of-content (or dropping the rest on
+ * EPIPE).  The stdout/stderr accessors return fresh rc=1
+ * LyricStrings.  kill
  * sends SIGKILL to the child only (not its process tree), drains what
  * already arrived, and reaps; it returns 1 when the kill terminated
  * the child and 0 when the child had already exited (its real exit
  * status is preserved — the caller must not report a timeout then,
  * #5107). */
-void* lyric_process_start(const char* path, LyricList* args);
+void* lyric_process_start(const char* path, LyricList* args, LyricString* stdin_content);
 int32_t lyric_process_spawn_failed(void* op);
 int32_t lyric_process_pump(void* op);
 int32_t lyric_process_kill(void* op);

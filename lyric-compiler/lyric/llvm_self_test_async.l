@@ -16,8 +16,13 @@
 //! coroutine path, and the sleep-driven cases prove genuine concurrency
 //! (effect interleaving that a sequential execution cannot produce).
 //! The D-N-023 cases cover the async process leaf: in-coroutine
-//! `Std.Process.runCapture` redirects to the kernel's nonblocking
-//! capture op, so subprocess captures overlap and honor `timeoutMs`.
+//! `Std.Process.runCapture` / `runCaptureWithInput` redirects to the
+//! kernel's nonblocking capture op, so subprocess captures overlap and
+//! honor `timeoutMs`.  The trailing cases cover the synchronous native
+//! runner's stdin pipe and deadline kill (the runCapture half of #4752):
+//! stdin content is written interleaved with output reads (large content
+//! cannot deadlock), and a sync `timeoutMs` SIGKILLs on expiry with the
+//! managed-twin contract (timedOut = true, exit code -2).
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -536,10 +541,10 @@ test "interleaved runCaptures are leak-free under ASan" {
   assertEqualInt(r.exitCode, 77, "overlapped captures are clean under AddressSanitizer")
 }
 
-// timeoutMs is honored on the async path (the sync native seam still
-// ignores it, #4752): the child is killed at the deadline, partial
-// output is preserved, and the managed-twin contract (timedOut = true,
-// exit code -2) is reported.
+// timeoutMs is honored on the async path: the child is killed at the
+// deadline, partial output is preserved, and the managed-twin contract
+// (timedOut = true, exit code -2) is reported.  The sync seam's own
+// deadline kill is covered by the plain-main cases below.
 test "async runCapture timeout kills the child and reports the managed-twin contract" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
     "async func run(): Int {\n" +
@@ -596,4 +601,82 @@ test "async runCapture with timeoutMs 0 kills at the first pump" {
     "func main(): Int {\n  run()\n}\n"
   val r = compileAndRunBundled(src)
   assertEqualInt(r.exitCode, 77, "a zero deadline kills the sleeping child at the first pump")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The synchronous native runner's stdin pipe and deadline kill (#4752).
+// These run in a PLAIN main (no coroutine), so they exercise the sync
+// seam (`hostRunCaptureList` over `lyric_process_run`), not the async op.
+// ─────────────────────────────────────────────────────────────────────────────
+test "sync runCaptureWithInput writes stdin to the child" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "func main(): Int {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  match Process.runCaptureWithInput(\"/bin/cat\", args, \"in-out\\n\", 5000) {\n" +
+    "    case Ok(r) -> {\n" +
+    "      if r.stdout == \"in-out\\n\" and r.exitCode == 0 and not r.timedOut {\n        42\n      } else {\n        2\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> 3\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 42, "stdin content round-trips through cat on the sync native seam")
+}
+
+test "sync runCapture timeout kills the child and reports the managed-twin contract" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "func main(): Int {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  args.add(\"-c\")\n" +
+    "  args.add(\"echo early; sleep 5\")\n" +
+    "  match Process.runCapture(\"/bin/sh\", args, 300) {\n" +
+    "    case Ok(r) -> {\n" +
+    "      if r.timedOut and r.exitCode == 0 - 2 and r.stdout == \"early\\n\" {\n        77\n      } else {\n        2\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> 3\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 77, "the sync deadline kill preserves pre-timeout output and reports timedOut/-2")
+}
+
+// 256 KiB of stdin — far past PIPE_BUF — proves the sync runner's
+// interleaved poll loop: a blocking single write here would deadlock
+// against cat's full stdout pipe.  Run under ASan so the capture
+// buffers and the doubled payload String also prove leak-free.
+test "sync runCaptureWithInput with large stdin does not deadlock, leak-free under ASan" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "func main(): Int {\n" +
+    "  var payload = \"abcdefgh\"\n" +
+    "  var i = 0\n" +
+    "  while i < 15 {\n    payload = payload + payload\n    i = i + 1\n  }\n" +
+    "  val args: List[String] = newList()\n" +
+    "  match Process.runCaptureWithInput(\"/bin/cat\", args, payload, 30000) {\n" +
+    "    case Ok(r) -> {\n" +
+    "      if r.stdout.length == 262144 and r.exitCode == 0 and not r.timedOut {\n        77\n      } else {\n        2\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> 3\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunBundledAsan(src)
+  assertEqualInt(r.exitCode, 77, "256 KiB of stdin round-trips through cat without deadlock, clean under ASan")
+}
+
+// runCaptureWithInput inside a coroutine takes the same async-seam
+// redirect as runCapture (the /4 intercept): the stdin content is
+// pumped through the nonblocking op while only the calling task parks.
+test "async runCaptureWithInput redirects through the async seam" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "async func run(): Int {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  match Process.runCaptureWithInput(\"/bin/cat\", args, \"async-in\\n\", 5000) {\n" +
+    "    case Ok(r) -> {\n" +
+    "      if r.stdout == \"async-in\\n\" and r.exitCode == 0 and not r.timedOut {\n        42\n      } else {\n        2\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> 3\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n  run()\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 42, "stdin content round-trips through the coroutine's nonblocking capture op")
 }

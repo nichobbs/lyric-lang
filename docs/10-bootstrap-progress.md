@@ -29392,3 +29392,49 @@ aspect `around` advice, #5159 test/property bodies) plus a CI-only
 **Related:** `docs/03-decision-log.md` D-progress-598 (full account) and
 D119 (the slice plan), D-N-022 (native value-position diagnostic V0014
 generalises), V0012 (the sibling await-in-try pass this mirrors).
+
+### D-progress-599 — Native process capture at managed parity: stdin (sync + async) and the sync deadline kill (D-N-024)
+
+**Shipped.** The runCapture half of #4752 is closed: both native
+process seams accept `stdinContent` through an always-piped child
+stdin, and the synchronous runner honors `timeoutMs` with the same
+kill contract the async op established (#5107).
+
+- **lyric-rt:** `spawn_capture` pipes stdin on every capture (managed
+  `RedirectStandardInput` parity; child fd wiring rewritten as
+  `F_DUPFD`-lift-then-`dup2`), with `F_SETNOSIGPIPE` on macOS and a
+  Linux write helper that blocks/consumes SIGPIPE around each write.
+  `lyric_process_run` grew `stdin_content` / `timeout_ms` /
+  `out_timed_out`: the poll loop interleaves **nonblocking** stdin
+  writes with output reads (a blocking `> PIPE_BUF` write would
+  deadlock against a full child stdout pipe), SIGKILLs at the
+  monotonic deadline, drains post-kill output in 100 ms waits under a
+  2 s total budget (#5176), and reports `timedOut` only when the reap
+  shows the kill landed (#5107). The async op copies `stdinContent` at
+  start and flushes it from its pump. Seven new C unit tests under
+  clang and gcc (stdin round-trip, 256 KiB no-deadlock, EPIPE drop
+  with real exit preserved, sync deadline kill, deadline kill with
+  stdin still in flight, grandchild-writer drain budget, async op
+  stdin pump).
+- **Kernel seam:** both `hostRunCaptureList` and
+  `hostRunCaptureListAsync` drop their stdin `Err` guards and pass
+  `stdinContent` through; the sync seam normalizes a timed-out
+  capture to exit -2 (managed-twin contract).
+- **Backend:** `Std.Process.runCaptureWithInput` works on native, and
+  its in-coroutine calls take the same async-seam redirect as
+  `runCapture` (the /4 intercept passes args through; the /3 form
+  inserts the empty stdin). The bridge walk keeps the seam reachable
+  for either spelling.
+- **Verification:** four new `llvm_self_test_async.l` cases (30
+  total): sync `runCaptureWithInput` round-trip, the sync timeout
+  contract in a plain main, the 256 KiB sync round-trip ASan-clean,
+  and in-coroutine `runCaptureWithInput`. Full native suite, lyric-rt
+  C suite (clang + gcc), and `make ilverify` all clean.
+
+**Deferred (tracked):** process-tree kill (the runner kills the child
+only, not its descendants); `poll()`-based fd readiness in the
+scheduler (the socket leaf's prerequisite). #4752 stays open for its
+remaining non-runCapture items.
+
+**Related:** D-N-024 (the decision entry), D-N-023, D-progress-597,
+#4752, #5107.

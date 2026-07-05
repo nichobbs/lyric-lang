@@ -63,9 +63,9 @@ support they surfaced (Unit-typed union/record payload fields for
 `if`/`match`, type-only bundled units).  Verified ASan-clean by
 `llvm_stdlib_self_test.l`, which compiles real `Std.File` /
 `Std.Environment` / `Std.Process` / `Std.Time` programs through the
-full bridge pipeline.  Native-side deferrals (stdin/timeout in the
-process runner, bytes-mode file I/O, dir enumeration, Std.Uuid, the
-Std.Time calendar surface) are tracked in #4752.
+full bridge pipeline.  The process runner's stdin/timeout deferrals
+were later closed by D-N-024; the remaining native-side deferrals
+(Std.Uuid, the Std.Time calendar surface) are tracked in #4752.
 `slice[T]` SHIPPED (D-N-015, D-progress-562): slices share the RC'd
 list representation (immutable by construction; the planned borrowed
 fat pointer is superseded — see D-N-015), unlocking bytes-mode file
@@ -146,11 +146,21 @@ The first async I/O leaf (D-N-023) SHIPPED on top: in-coroutine
 `Std.Process.runCapture` drives a nonblocking lyric-rt capture op
 through the sleep leaf (1 ms pump cadence, the JVM kernel twin's
 documented idiom), so subprocess captures overlap instead of stalling
-the scheduler — and `timeoutMs` is honored on this path (the sync
-native seam still ignores it, #4752). Verified by six more
-`llvm_self_test_async.l` cases (26 total) including reverse-order
+the scheduler — and `timeoutMs` is honored on this path. Verified by
+six more `llvm_self_test_async.l` cases including reverse-order
 completion of two spawned captures under ASan. `poll()`-based fd
 readiness in the scheduler is deferred to the socket leaf.
+
+Native process capture reached managed parity (D-N-024): both seams
+accept stdin content through an always-piped child stdin (nonblocking
+writes interleaved with output reads, so large content cannot
+deadlock; SIGPIPE-safe), the synchronous runner honors `timeoutMs`
+with a SIGKILL deadline and the #5107 kill-vs-exit contract, and
+`runCaptureWithInput` works on native — including the in-coroutine
+async-seam redirect. Verified by seven new lyric-rt C tests
+(clang + gcc) and four more `llvm_self_test_async.l` cases (30
+total, 256 KiB stdin round-trip ASan-clean). This closes the
+runCapture half of #4752.
 
 ## Reading order
 

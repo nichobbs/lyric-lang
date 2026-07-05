@@ -651,7 +651,7 @@ static void test_process(void) {
     int32_t exit_code = -99;
     LyricString* out = NULL;
     LyricString* err = NULL;
-    CHECK(lyric_process_run("/bin/echo", args, &exit_code, &out, &err) == 0);
+    CHECK(lyric_process_run("/bin/echo", args, NULL, -1, &exit_code, &out, &err, NULL) == 0);
     CHECK(exit_code == 0);
     CHECK(out != NULL);
     CHECK(lyric_string_len(out) == 12);
@@ -672,7 +672,7 @@ static void test_process(void) {
     int32_t exit_code2 = -99;
     LyricString* out2 = NULL;
     LyricString* err2 = NULL;
-    CHECK(lyric_process_run("/bin/ls", bad_args, &exit_code2, &out2, &err2) == 0);
+    CHECK(lyric_process_run("/bin/ls", bad_args, NULL, -1, &exit_code2, &out2, &err2, NULL) == 0);
     CHECK(exit_code2 != 0);
     CHECK(lyric_string_len(err2) > 0);
     lyric_release(out2);
@@ -683,7 +683,7 @@ static void test_process(void) {
     int32_t exit_code3 = -99;
     LyricString* out3 = NULL;
     LyricString* err3 = NULL;
-    CHECK(lyric_process_run("/bin/echo", NULL, &exit_code3, &out3, &err3) == 0);
+    CHECK(lyric_process_run("/bin/echo", NULL, NULL, -1, &exit_code3, &out3, &err3, NULL) == 0);
     CHECK(exit_code3 == 0);
     CHECK(lyric_string_len(out3) == 1); /* just the trailing newline */
     lyric_release(out3);
@@ -694,7 +694,7 @@ static void test_process(void) {
     int32_t exit_code4 = -99;
     LyricString* out4 = NULL;
     LyricString* err4 = NULL;
-    CHECK(lyric_process_run("/nonexistent-lyric-rt-test-exe", NULL, &exit_code4, &out4, &err4) ==
+    CHECK(lyric_process_run("/nonexistent-lyric-rt-test-exe", NULL, NULL, -1, &exit_code4, &out4, &err4, NULL) ==
           0);
     CHECK(exit_code4 == 127);
     lyric_release(out4);
@@ -703,21 +703,23 @@ static void test_process(void) {
 
 static void test_process_closed_stdio(void) {
     /* Regression: with fd 1/2 closed in the caller, pipe() hands the child
-     * those very numbers, dup2 onto itself is a no-op, and the old
-     * unconditional close then destroyed the just-installed descriptor.
-     * Run a capture with stdout/stderr closed and verify the output still
-     * comes back intact.  Assertions in the fork are reported through the
-     * exit status — its stderr is closed by construction. */
+     * those very numbers.  The original wiring dup2'ed in place (a no-op
+     * when source == target) and then unconditionally closed the source,
+     * destroying the just-installed descriptor; spawn_capture now
+     * F_DUPFD-lifts every source above 2 before dup2'ing onto 0/1/2, so
+     * no source can alias its target.  Run a capture with stdout/stderr
+     * closed and verify the output still comes back intact.  Assertions
+     * in the fork are reported through the exit status — its stderr is
+     * closed by construction. */
     pid_t pid = fork();
     CHECK(pid >= 0);
     if (pid == 0) {
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
-        /* With 1/2 closed, pipe() returns {1,2} for out_pipe, so the old
-         * close(out_pipe[1]) destroyed the descriptor stderr had just been
-         * dup2'ed onto.  The command must write to BOTH streams: with the
-         * bug, its stderr writes hit a closed fd and the err capture comes
-         * back empty. */
+        /* With 1/2 closed, pipe() returns {1,2} for out_pipe — the
+         * aliasing shape that broke the original wiring.  The command
+         * must write to BOTH streams: with the historical bug, stderr
+         * writes hit a closed fd and the err capture came back empty. */
         LyricList* args = lyric_list_new(2);
         LyricString* a1 = lyric_string_from_literal((const uint8_t*)"-c", 2);
         LyricString* a2 = lyric_string_from_literal(
@@ -729,7 +731,7 @@ static void test_process_closed_stdio(void) {
         int32_t code = -99;
         LyricString* out = NULL;
         LyricString* err = NULL;
-        if (lyric_process_run("/bin/sh", args, &code, &out, &err) != 0) _exit(1);
+        if (lyric_process_run("/bin/sh", args, NULL, -1, &code, &out, &err, NULL) != 0) _exit(1);
         if (code != 0) _exit(2);
         if (!out || lyric_string_len(out) != 4) _exit(3);
         if (memcmp(LYRIC_STRING_DATA(out), "out\n", 4) != 0) _exit(4);
@@ -745,10 +747,11 @@ static void test_process_closed_stdio(void) {
 
 static void test_process_closed_stdin_stdout(void) {
     /* With fds 0 and 1 closed, pipe() returns {0,1} for out_pipe, so
-     * out_pipe[1] IS STDOUT_FILENO and the child takes the no-dup2 branch.
-     * The pipes are created CLOEXEC; the child must clear the flag by hand
-     * on that branch or exec closes the just-wired stdout and the capture
-     * comes back empty. */
+     * out_pipe[1] IS STDOUT_FILENO.  The pipes are created CLOEXEC, and a
+     * self-aliased dup2 would leave that flag set (exec would close the
+     * just-wired stdout); spawn_capture's F_DUPFD lift above 2 guarantees
+     * a real dup2 happens, which clears CLOEXEC on the target, so the
+     * capture must come back non-empty. */
     pid_t pid = fork();
     CHECK(pid >= 0);
     if (pid == 0) {
@@ -761,7 +764,7 @@ static void test_process_closed_stdin_stdout(void) {
         int32_t code = -99;
         LyricString* out = NULL;
         LyricString* err = NULL;
-        if (lyric_process_run("/bin/echo", args, &code, &out, &err) != 0) _exit(1);
+        if (lyric_process_run("/bin/echo", args, NULL, -1, &code, &out, &err, NULL) != 0) _exit(1);
         if (code != 0) _exit(2);
         if (!out || lyric_string_len(out) != 3) _exit(3);
         if (memcmp(LYRIC_STRING_DATA(out), "hi\n", 3) != 0) _exit(4);
@@ -780,7 +783,7 @@ static void test_process_op_basic(void) {
     LyricString* a = lyric_string_from_literal((const uint8_t*)"pump", 4);
     lyric_list_push(args, (int64_t)(intptr_t)a);
     lyric_release(a);
-    void* op = lyric_process_start("/bin/echo", args);
+    void* op = lyric_process_start("/bin/echo", args, NULL);
     lyric_release(args);
     CHECK(!lyric_process_spawn_failed(op));
     int spins = 0;
@@ -811,7 +814,7 @@ static void test_process_op_kill(void) {
     LyricString* script = lyric_string_from_literal((const uint8_t*)"echo pre; sleep 30", 18);
     lyric_list_push(argv, (int64_t)(intptr_t)script);
     lyric_release(script);
-    void* op = lyric_process_start("/bin/sh", argv);
+    void* op = lyric_process_start("/bin/sh", argv, NULL);
     lyric_release(argv);
     CHECK(!lyric_process_spawn_failed(op));
     /* Give the child time to print "pre" (pump meanwhile). */
@@ -847,7 +850,7 @@ static void test_process_op_kill_after_exit(void) {
     LyricString* a = lyric_string_from_literal((const uint8_t*)"beat-the-kill", 13);
     lyric_list_push(args, (int64_t)(intptr_t)a);
     lyric_release(a);
-    void* op = lyric_process_start("/bin/echo", args);
+    void* op = lyric_process_start("/bin/echo", args, NULL);
     lyric_release(args);
     int spins = 0;
     while (!lyric_process_pump(op) && spins < 5000) {
@@ -864,7 +867,7 @@ static void test_process_op_kill_after_exit(void) {
 static void test_process_op_exec_failure(void) {
     /* execvp failure inside the child: exit 127, empty output, no spawn
      * failure (matching lyric_process_run and shell convention). */
-    void* op = lyric_process_start("/nonexistent-lyric-op-binary", NULL);
+    void* op = lyric_process_start("/nonexistent-lyric-op-binary", NULL, NULL);
     CHECK(!lyric_process_spawn_failed(op));
     int spins = 0;
     while (!lyric_process_pump(op) && spins < 5000) {
@@ -882,6 +885,198 @@ static void test_process_op_exec_failure(void) {
     LyricString* errs = lyric_process_stderr(op);
     CHECK(lyric_string_len(errs) == 0);
     lyric_release(errs);
+    lyric_process_free(op);
+}
+
+/* -- stdin + sync timeout (#4752 closure) --------------------------- */
+static void test_process_stdin_roundtrip(void) {
+    /* cat echoes stdin back on stdout through the sync runner. */
+    LyricString* content = lyric_string_from_literal((const uint8_t*)"in-out", 6);
+    int32_t code = -1;
+    LyricString* out = NULL;
+    LyricString* err = NULL;
+    int32_t timed_out = -1;
+    CHECK(lyric_process_run("/bin/cat", NULL, content, -1, &code, &out, &err, &timed_out) == 0);
+    CHECK(code == 0);
+    CHECK(timed_out == 0);
+    CHECK(lyric_string_len(out) == 6);
+    CHECK(memcmp(LYRIC_STRING_DATA(out), "in-out", 6) == 0);
+    lyric_release(content);
+    lyric_release(out);
+    lyric_release(err);
+}
+
+static void test_process_stdin_large_no_deadlock(void) {
+    /* 256 KiB through cat: far beyond the pipe buffer in BOTH
+     * directions, so this deadlocks unless stdin writes interleave
+     * with stdout reads in the poll loop. */
+    int64_t big = 256 * 1024;
+    uint8_t* data = (uint8_t*)malloc((size_t)big);
+    CHECK(data != NULL);
+    for (int64_t i = 0; i < big; i++) data[i] = (uint8_t)('a' + (i % 26));
+    LyricString* content = lyric_string_from_literal(data, big);
+    int32_t code = -1;
+    LyricString* out = NULL;
+    LyricString* err = NULL;
+    int32_t timed_out = -1;
+    CHECK(lyric_process_run("/bin/cat", NULL, content, 30000, &code, &out, &err, &timed_out) == 0);
+    CHECK(code == 0);
+    CHECK(timed_out == 0);
+    CHECK(lyric_string_len(out) == big);
+    CHECK(memcmp(LYRIC_STRING_DATA(out), data, (size_t)big) == 0);
+    free(data);
+    lyric_release(content);
+    lyric_release(out);
+    lyric_release(err);
+}
+
+static void test_process_stdin_child_ignores(void) {
+    /* A child that exits without reading its (large) stdin: the EPIPE
+     * path must silently drop the rest — no SIGPIPE death, real exit
+     * code preserved. */
+    int64_t big = 256 * 1024;
+    uint8_t* data = (uint8_t*)malloc((size_t)big);
+    CHECK(data != NULL);
+    memset(data, 'x', (size_t)big);
+    LyricString* content = lyric_string_from_literal(data, big);
+    LyricList* argv = lyric_list_new(1);
+    LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
+    lyric_release(dash_c);
+    LyricString* script = lyric_string_from_literal((const uint8_t*)"exit 3", 6);
+    lyric_list_push(argv, (int64_t)(intptr_t)script);
+    lyric_release(script);
+    int32_t code = -1;
+    LyricString* out = NULL;
+    LyricString* err = NULL;
+    int32_t timed_out = -1;
+    CHECK(lyric_process_run("/bin/sh", argv, content, 30000, &code, &out, &err, &timed_out) == 0);
+    CHECK(code == 3);
+    CHECK(timed_out == 0);
+    free(data);
+    lyric_release(argv);
+    lyric_release(content);
+    lyric_release(out);
+    lyric_release(err);
+}
+
+static void test_process_sync_timeout(void) {
+    /* The sync runner kills a sleeping child at the deadline,
+     * preserving pre-timeout output (mirrors the async op contract). */
+    LyricList* argv = lyric_list_new(1);
+    LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
+    lyric_release(dash_c);
+    LyricString* script = lyric_string_from_literal((const uint8_t*)"echo pre; sleep 30", 18);
+    lyric_list_push(argv, (int64_t)(intptr_t)script);
+    lyric_release(script);
+    int32_t code = -1;
+    LyricString* out = NULL;
+    LyricString* err = NULL;
+    int32_t timed_out = -1;
+    CHECK(lyric_process_run("/bin/sh", argv, NULL, 300, &code, &out, &err, &timed_out) == 0);
+    CHECK(timed_out == 1);
+    CHECK(code == 128 + SIGKILL);
+    CHECK(lyric_string_len(out) == 4);
+    CHECK(memcmp(LYRIC_STRING_DATA(out), "pre\n", 4) == 0);
+    lyric_release(argv);
+    lyric_release(out);
+    lyric_release(err);
+}
+
+static void test_process_sync_timeout_pending_stdin(void) {
+    /* Deadline kill with a stdin feed still in flight (#5175): the
+     * child never reads, so the pipe buffer fills and the parent is
+     * left holding most of 256 KiB when the deadline hits.  The kill
+     * path must close the write end and the post-kill drain must still
+     * terminate promptly instead of waiting on the undeliverable rest. */
+    int64_t big = 256 * 1024;
+    uint8_t* data = (uint8_t*)malloc((size_t)big);
+    CHECK(data != NULL);
+    memset(data, 'y', (size_t)big);
+    LyricString* content = lyric_string_from_literal(data, big);
+    free(data);
+    LyricList* argv = lyric_list_new(1);
+    LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
+    lyric_release(dash_c);
+    LyricString* script = lyric_string_from_literal((const uint8_t*)"sleep 30", 8);
+    lyric_list_push(argv, (int64_t)(intptr_t)script);
+    lyric_release(script);
+    int32_t code = -1;
+    LyricString* out = NULL;
+    LyricString* err = NULL;
+    int32_t timed_out = -1;
+    int64_t t0 = lyric_monotonic_nanos();
+    CHECK(lyric_process_run("/bin/sh", argv, content, 300, &code, &out, &err, &timed_out) == 0);
+    int64_t elapsed_ms = (lyric_monotonic_nanos() - t0) / 1000000;
+    CHECK(timed_out == 1);
+    CHECK(code == 128 + SIGKILL);
+    CHECK(lyric_string_len(out) == 0);
+    /* Generous bound: the point is "not 30 s", not scheduler timing. */
+    CHECK(elapsed_ms < 10000);
+    lyric_release(content);
+    lyric_release(argv);
+    lyric_release(out);
+    lyric_release(err);
+}
+
+static void test_process_sync_timeout_grandchild_writer(void) {
+    /* lyric-rt kills only the direct child (process-tree kill is a
+     * tracked deferral): a grandchild that inherits the stdout write
+     * end and keeps producing faster than a full idle poll window must
+     * not keep the post-kill drain alive — the 2 s drain budget ends
+     * it (#5176).  The background writer then dies of SIGPIPE once the
+     * read ends are force-closed. */
+    LyricList* argv = lyric_list_new(1);
+    LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
+    lyric_release(dash_c);
+    const char* cmd = "(while :; do echo g; sleep 0.05; done) & sleep 30";
+    LyricString* script = lyric_string_from_literal((const uint8_t*)cmd, (int64_t)strlen(cmd));
+    lyric_list_push(argv, (int64_t)(intptr_t)script);
+    lyric_release(script);
+    int32_t code = -1;
+    LyricString* out = NULL;
+    LyricString* err = NULL;
+    int32_t timed_out = -1;
+    int64_t t0 = lyric_monotonic_nanos();
+    CHECK(lyric_process_run("/bin/sh", argv, NULL, 300, &code, &out, &err, &timed_out) == 0);
+    int64_t elapsed_ms = (lyric_monotonic_nanos() - t0) / 1000000;
+    CHECK(timed_out == 1);
+    CHECK(code == 128 + SIGKILL);
+    /* ~300 ms deadline + ~2 s drain budget; well under the 30 s the
+     * grandchild would otherwise pin the loop for. */
+    CHECK(elapsed_ms < 10000);
+    lyric_release(argv);
+    lyric_release(out);
+    lyric_release(err);
+}
+
+static void test_process_op_stdin(void) {
+    /* The async op pumps stdin nonblockingly: cat round-trips 256 KiB
+     * through start/pump alone. */
+    int64_t big = 256 * 1024;
+    uint8_t* data = (uint8_t*)malloc((size_t)big);
+    CHECK(data != NULL);
+    for (int64_t i = 0; i < big; i++) data[i] = (uint8_t)('A' + (i % 26));
+    LyricString* content = lyric_string_from_literal(data, big);
+    void* op = lyric_process_start("/bin/cat", NULL, content);
+    lyric_release(content); /* the op holds its own copy */
+    CHECK(!lyric_process_spawn_failed(op));
+    int spins = 0;
+    while (!lyric_process_pump(op) && spins < 10000) {
+        struct timespec ts = {0, 1000000};
+        nanosleep(&ts, NULL);
+        spins++;
+    }
+    CHECK(lyric_process_pump(op) == 1);
+    CHECK(lyric_process_exit_code(op) == 0);
+    LyricString* out = lyric_process_stdout(op);
+    CHECK(lyric_string_len(out) == big);
+    CHECK(memcmp(LYRIC_STRING_DATA(out), data, (size_t)big) == 0);
+    free(data);
+    lyric_release(out);
     lyric_process_free(op);
 }
 
@@ -1204,6 +1399,13 @@ int main(void) {
     test_process_op_kill();
     test_process_op_kill_after_exit();
     test_process_op_exec_failure();
+    test_process_stdin_roundtrip();
+    test_process_stdin_large_no_deadlock();
+    test_process_stdin_child_ignores();
+    test_process_sync_timeout();
+    test_process_sync_timeout_pending_stdin();
+    test_process_sync_timeout_grandchild_writer();
+    test_process_op_stdin();
     test_async_hot_completion();
     test_async_block_on_sleep();
     test_async_interleave();
