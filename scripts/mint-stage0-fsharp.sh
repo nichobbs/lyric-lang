@@ -48,7 +48,14 @@ FAST="${FAST:-0}"
 
 # Last commit that still contains the F# bootstrap compiler (the parent of the
 # deletion commit 44a0d1e7).  Override with FS_COMMIT=<sha> if needed.
-FS_COMMIT="${FS_COMMIT:-$(git -C "$REPO_ROOT" rev-parse 44a0d1e7~1 2>/dev/null || echo 35c0d2e5)}"
+# `--verify` is required here, not just `rev-parse`: on an unresolvable ref,
+# plain `git rev-parse <ref>` still echoes the ref text to stdout before
+# failing (a longstanding git quirk), so `$(git rev-parse 44a0d1e7~1
+# 2>/dev/null || echo 35c0d2e5)` could capture "44a0d1e7~1\n35c0d2e5" instead
+# of just the fallback, corrupting FS_COMMIT with two newline-joined tokens
+# (observed on a shallow clone, where the historical commit is unreachable).
+# `--verify -q` prints nothing on failure, so the `||` fallback is clean.
+FS_COMMIT="${FS_COMMIT:-$(git -C "$REPO_ROOT" rev-parse --verify -q 44a0d1e7~1 2>/dev/null || echo 35c0d2e5)}"
 
 WORKTREE="$BUILD_DIR/fsharp-mint-worktree"
 FSBIN_DIR="$BUILD_DIR/fsharp-mint-bin"
