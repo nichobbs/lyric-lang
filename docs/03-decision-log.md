@@ -9581,6 +9581,95 @@ tests) passes unchanged; no existing spawn usage is newly rejected.
 diagnostic V0014 generalises), V0012 (the sibling await-in-try pass this
 mirrors), V0002 (proof-required spawn rejection, deduplicated against).
 
+## D120 — JVM structured concurrency (D119 slice S4): non-preview virtual-thread `ExecutorService`, not preview `StructuredTaskScope`; sibling-cancel + aggregation deferred to a JDK-25 follow-up
+
+**Date:** 2026-07-05
+**Status:** ACCEPTED (design/approach decision for D119 slice S4; codegen
+implementation is the tracked follow-up)
+
+**Context.** D119 slice S4 is "JVM real structured concurrency." The JVM
+emission design (`docs/18-jvm-emission.md` §15) specced
+`java.util.concurrent.StructuredTaskScope` (`ShutdownOnFailure`), and an
+unwired `lowerScopeBlock` in `lowering.l` already emits that shape. Before
+building on it, three facts (verified against the code and JDK 21):
+
+1. **`StructuredTaskScope` is a *preview* API on JDK 21** (JEP 453 — the
+   project's baseline JDK, `java -version` → 21.0.10). Using it requires
+   `--enable-preview` at *both* compile and run time and a preview
+   class-file marker (minor version `0xFFFF`). The JVM pipeline has
+   neither: `classfile.l` supports minor `65535` but every constructor
+   defaults to `0`, and no `--enable-preview` is wired into the run path.
+   So adopting `StructuredTaskScope` would first require building
+   preview-mode plumbing through class emission, `java` invocation, and
+   bundling — a substantial prerequisite that gates *every* scope-using
+   program on preview mode.
+2. **`lowerScopeBlock` is unwired and never executed.** It operates on a
+   `MethodAssembler` (immediate bytecode) while codegen emits the `LInsn`
+   IR — a level mismatch — and it assumes **no-arg `Callable`s**, which is
+   incompatible with a capturing `spawn e` closure. Its only test
+   (`self_test_b120.l`) *builds* a class using it but does not run it, so
+   the `StructuredTaskScope` emission has never actually executed.
+3. **A non-preview substrate exists that is *final* in JDK 21:** a
+   virtual-thread-per-task `ExecutorService`
+   (`Executors.newVirtualThreadPerTaskExecutor()`), which is
+   `AutoCloseable` (JDK 19+).
+
+**Decision — ship the ExecutorService substrate; defer STS-only features.**
+Lower `scope`/`spawn`/`await` onto the non-preview executor:
+- `scope { }` → try-with-resources over
+  `Executors.newVirtualThreadPerTaskExecutor()`; `close()` blocks until
+  every submitted task terminates (no leaks), emitted with a `try`/
+  `finally` so it closes on all exit paths (mirroring `defer`).
+- `spawn e` → `__exec.submit(callable)` → `Future<T>`, where `callable` is
+  a synthesized `Callable` **closure** capturing `e`'s free variables —
+  the same synthesis as `ELambda`/`lowerLambda` but implementing
+  `java/util/concurrent/Callable`/`call()Object` instead of
+  `Lyric$Lambda`/`invoke`. Emitted as ordinary `LInsn`s (`LNew` /
+  `LInvokestatic` / `LInvokeinterface`), *not* via the
+  `MethodAssembler`-level `lowerScopeBlock`.
+- `await handle` (handle a `spawn` `Future`) → `handle.get()`, unwrapping
+  `ExecutionException` to the cause. The codegen tracks `Future`-typed
+  spawn bindings (analogous to MSIL's `spawnNms`/`spawnTys`).
+
+This delivers §7.4's **core** guarantees on JDK 21 today: **no task leaks**
+(try-with-resources join), **genuine concurrency** (per-spawn virtual
+threads), and **first-failure propagation** (`Future.get()` rethrow).
+**Verified end-to-end** with a standalone JDK-21 program (two 200 ms tasks
+complete in ~220 ms, not 400 ms; a throwing task surfaces its cause via
+`ExecutionException`).
+
+**Explicitly deferred (the two `StructuredTaskScope`-only properties),
+tracked, not silently dropped:** automatic **sibling-cancel-on-first-fault**
+and **failure aggregation** (every child's failure collected). These are
+the `LyricAggregatingScope` features from docs/18 §15.3. The follow-up is
+to swap the scope type to `StructuredTaskScope`/`LyricAggregatingScope`
+once it is **final** (JDK 25, JEP 505) — at which point no preview plumbing
+is needed and the existing `lowerScopeBlock` (or an `LInsn`-level port of
+it) becomes usable. This is the same "ship the honest baseline now, adopt
+the richer runtime when it is load-bearing and unblocked" staging D-N-021
+used for native `spawn`/`scope`.
+
+**Why not build the preview plumbing now (adopt STS on JDK 21).** It gates
+every scope program on `--enable-preview`, ties the shipped feature to a
+preview API that changed shape across JDK 21→24 (JEP 453→462→505; the
+`ShutdownOnFailure` class this repo's `lowerScopeBlock` targets was already
+removed by JDK 24), and delivers no guarantee the ExecutorService baseline
+lacks except sibling-cancel/aggregation — which the follow-up adds cleanly
+once the API is final. Building throwaway preview plumbing for an
+already-changing API is exactly the speculative complexity CLAUDE.md's
+production-readiness standard warns against.
+
+**docs/18 §15 updated** to describe the shipped ExecutorService lowering,
+retaining the `StructuredTaskScope` shape as the documented target
+end-state.
+
+**Related:** D119 (slice plan; this is S4), D-N-021 (the "ship the honest
+degenerate/baseline form, gate the richer runtime on the unblocking
+primitive" precedent), `docs/18-jvm-emission.md` §15, `lowering.l`
+`lowerScopeBlock` (the unwired STS emission, reusable at JDK 25),
+`lowerLambda`/`LClosure` (the closure synthesis the `Callable` synthesis
+mirrors), V0014/D-progress-598 (the front-end `spawn`-consumption rule).
+
 ---
 
 ## D-progress-595 — Two CI safety-net jobs: stage-2 self-testing (#5099) and per-release seed candidacy (#5094 resolution path 3)
