@@ -221,11 +221,17 @@ jobs:
 
           # `gh --jq` takes a single jq expression as its argument — it does not
           # understand jq's own `--arg` flag, so piping through the real `jq`
-          # binary (which does) is required to safely interpolate $VERSION
+          # binary (which does) is required to safely interpolate $TITLE
           # into the filter without string-splicing it into the expression.
+          # Match on EXACT title equality, not substring containment (#5156):
+          # TITLE is fully deterministic from VERSION, so an unanchored
+          # `contains()` risked a shorter version string (e.g. v0.4.1)
+          # false-matching an existing issue for a longer one that has it as
+          # a prefix (e.g. v0.4.14), silently conflating two distinct
+          # releases' regressions.
           EXISTING="$(gh issue list --repo "${{ github.repository }}" --state open \
             --label seed-regression --json number,title 2>/dev/null \
-            | jq -r --arg v "v${VERSION}" '.[] | select(.title | contains($v)) | .number' \
+            | jq -r --arg t "$TITLE" '.[] | select(.title == $t) | .number' \
             | head -1)" || EXISTING=""
 
           BODY_FILE="$(mktemp)"
