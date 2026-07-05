@@ -6065,8 +6065,13 @@ stays what it always was: same-target `toIsoString` →
 `parseOptInstant` round-trip.  The native parser accepts exactly that
 shape (optional 1..9-digit fraction, trailing "Z") with full field
 validation (month/day-in-month including leap years, hour/min/sec
-ranges) and rejects years outside 1679..2261 rather than silently
-wrapping the nanosecond range.  .NET's `DateTime.TryParse` stays
+ranges) and rejects dates outside the i64-nanos window (edge dates
+1677-09-21 and 2262-04-11) via an exact reconstruction check — a
+wrapped total lands on a different day index — so every constructible
+Instant, including the boundary ones, round-trips (#5219), while
+unrepresentable dates in the edge years are still rejected.
+`addMonths` applies the same exact check, so a no-op `addMonths` on a
+boundary Instant succeeds instead of tripping a coarse year filter.  .NET's `DateTime.TryParse` stays
 lenient on its own target (documented host leniency, unlike the
 Uuid case where the format list was the documented contract).
 Every arithmetic seam that could leave the window panics rather than

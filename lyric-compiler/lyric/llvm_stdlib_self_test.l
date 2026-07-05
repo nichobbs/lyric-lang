@@ -351,6 +351,25 @@ test "Std.Time calendar: civil math, clamping, ISO round-trip (ASan)" {
     "    case Some(_) -> {\n      return 17\n    }\n" +
     "    case None -> {\n    }\n" +
     "  }\n" +
+    "  val hi = fromEpochMillis(9223372036854i64)\n" +
+    "  match parseOptInstant(toIsoString(hi)) {\n" +
+    "    case Some(ph) -> {\n      if not instantEquals(ph, hi) {\n        return 22\n      }\n    }\n" +
+    "    case None -> {\n      return 23\n    }\n" +
+    "  }\n" +
+    "  val lo = fromEpochMillis(0i64 - 9223372036854i64)\n" +
+    "  match parseOptInstant(toIsoString(lo)) {\n" +
+    "    case Some(pl) -> {\n      if not instantEquals(pl, lo) {\n        return 24\n      }\n    }\n" +
+    "    case None -> {\n      return 25\n    }\n" +
+    "  }\n" +
+    "  if not instantEquals(addMonths(hi, 0), hi) {\n    return 26\n  }\n" +
+    "  match parseOptInstant(\"2262-04-12T00:00:00Z\") {\n" +
+    "    case Some(_) -> {\n      return 27\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  match parseOptInstant(\"1677-09-20T00:00:00Z\") {\n" +
+    "    case Some(_) -> {\n      return 28\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
     "  if totalMillis(hours(1.5)) != 5400000.0 {\n    return 18\n  }\n" +
     "  if totalSeconds(since(plus(fromEpochMillis(0i64), seconds(90.0)), fromEpochMillis(0i64))) != 90.0 {\n    return 19\n  }\n" +
     "  if not instantBefore(fromEpochMillis(0i64), fromEpochMillis(1i64)) {\n    return 20\n  }\n" +

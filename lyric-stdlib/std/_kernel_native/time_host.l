@@ -24,8 +24,10 @@
 //! that shape (optional fraction of 1..9 digits, trailing "Z") plus
 //! field range validation — the strict end of the parse contract
 //! Std.Time documents (.NET's TryParse stays lenient on its own
-//! target).  Years outside 1679..2261 are rejected rather than
-//! silently wrapping the nanosecond range, and calendar/duration
+//! target).  Dates outside the i64-nanos window (edges 1677-09-21 and
+//! 2262-04-11) are rejected via an exact reconstruction check rather
+//! than silently wrapping, so every constructible Instant — including
+//! the boundary ones — round-trips (#5219); calendar/duration
 //! arithmetic that would leave the window panics (#5213) — the native
 //! analog of the managed twins' out-of-range exceptions.
 //!
@@ -228,9 +230,13 @@ func addMonthsLong(t: in Instant, n: in Long): Instant {
   val y64 = if m0 >= 0i64 { m0 / 12i64 } else { (m0 - 11i64) / 12i64 }
   // The managed twins throw when the result leaves their range; the
   // native analog is a panic (#5213) — recomposing a year outside the
-  // i64-nanos window would silently wrap into the wrong century.
-  if y64 < 1678i64 or y64 > 2261i64 {
-    panic("Std.Time: addMonths/addYears result falls outside the native Instant range (years 1678..2261)")
+  // i64-nanos window would silently wrap into the wrong century.  The
+  // coarse filter admits the window's edge years (1677/2262, #5219 —
+  // a no-op addMonths on a boundary Instant must succeed); the exact
+  // reconstruction check below catches edge-year dates past the
+  // window.
+  if y64 < 1677i64 or y64 > 2262i64 {
+    panic("Std.Time: addMonths/addYears result falls outside the native Instant range (1677-09-21..2262-04-11)")
   }
   val y = y64.toInt()
   val m = (m0 - y64 * 12i64 + 1i64).toInt()
@@ -239,7 +245,12 @@ func addMonthsLong(t: in Instant, n: in Long): Instant {
   if d > dim {
     d = dim
   }
-  Instant(epochNanos = daysFromCivil(y, m, d) * nanosPerDay() + nanoOfDay)
+  val newDays = daysFromCivil(y, m, d)
+  val total = newDays * nanosPerDay() + nanoOfDay
+  if floorDivLong(total, nanosPerDay()) != newDays {
+    panic("Std.Time: addMonths/addYears result falls outside the native Instant range (1677-09-21..2262-04-11)")
+  }
+  Instant(epochNanos = total)
 }
 
 pub func hostAddMonths(t: in Instant, n: in Int): Instant {
@@ -412,10 +423,12 @@ pub func hostParseInstantOpt(s: in String): Option[Instant] {
   if year < 0 or month < 0 or day < 0 or hour < 0 or minute < 0 or second < 0 {
     return None
   }
-  // Reject years the int64-nanos representation cannot hold rather
-  // than silently wrapping (the full window is ~1678..2262; stay a
-  // year inside each end).
-  if year < 1679 or year > 2261 {
+  // Coarse year pre-filter: the i64-nanos window's edge dates are
+  // 1677-09-21 and 2262-04-11, so any constructible Instant formats
+  // to a year in 1677..2262 (#5219 — every toIsoString output must
+  // parse back).  Dates inside these years but past the exact edges
+  // are caught by the reconstruction check below.
+  if year < 1677 or year > 2262 {
     return None
   }
   if month < 1 or month > 12 or day < 1 or day > daysInMonth(year, month) {
@@ -450,7 +463,17 @@ pub func hostParseInstantOpt(s: in String): Option[Instant] {
   }
   val days = daysFromCivil(year, month, day)
   val secOfDay = (hour * 3600 + minute * 60 + second).toLong()
-  Some(value = Instant(epochNanos = days * nanosPerDay() + secOfDay * 1000000000i64 + frac))
+  val total = days * nanosPerDay() + secOfDay * 1000000000i64 + frac
+  // Exact window check (#5219): a date past the i64-nanos edges
+  // (before 1677-09-21T00:12:43.145224192Z or after
+  // 2262-04-11T23:47:16.854775807Z) wraps `total`; reconstructing the
+  // day index from the wrapped value lands on a different day, so the
+  // comparison rejects exactly the unrepresentable dates while every
+  // constructible boundary Instant round-trips.
+  if floorDivLong(total, nanosPerDay()) != days {
+    return None
+  }
+  Some(value = Instant(epochNanos = total))
 }
 
 // ── Epoch/monotonic seams and synchronous sleep ──────────────────────

@@ -110,6 +110,19 @@ func testParseRoundTrip(): Unit {
     case Some(_) -> assertTrue(false, "garbage must not parse")
     case None -> assertTrue(true, "garbage rejected")
   }
+  // The native i64-nanos window's boundary instants (1677-09-21 /
+  // 2262-04-11) must round-trip on every target (#5219); the managed
+  // ranges are far larger, so these are unremarkable there.
+  val hi = fromEpochMillis(9223372036854i64)
+  match parseOptInstant(toIsoString(hi)) {
+    case Some(p2) -> assertTrue(instantEquals(p2, hi), "upper boundary instant round-trips")
+    case None -> assertTrue(false, "upper boundary toIsoString output must parse")
+  }
+  val lo = fromEpochMillis(0 - 9223372036854i64)
+  match parseOptInstant(toIsoString(lo)) {
+    case Some(p3) -> assertTrue(instantEquals(p3, lo), "lower boundary instant round-trips")
+    case None -> assertTrue(false, "lower boundary toIsoString output must parse")
+  }
 }
 
 func main(): Unit {
