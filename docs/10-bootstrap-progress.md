@@ -25600,7 +25600,26 @@ defaults to `true`.  Issue #3936 tracks flipping this now that the release
 binary's two known corruption bugs are fixed (#3988), but D-progress-594
 found a third, real regression (a v0.4.14-seed-specific miscompile of
 `Jvm.Kernel.dblToSingle`) that only a download-seeded stage 1 running the
-full JVM self-test suite surfaces — #3936 remains open, blocked on #5094.
+full JVM self-test suite surfaces — #3936 remains open, blocked on #5094
+(the v0.4.14 defect itself is still unlocated).
+
+**Two CI safety-net jobs added (D-progress-595, #5094 / #5099) — detection,
+not a fix.**  `.github/workflows/seed-candidacy.yml` runs on every
+`release: published` event: it downloads that release as a
+`LYRIC_BOOTSTRAP_VERSION` seed (`LYRIC_BOOTSTRAP_MINT` left unset, unlike
+every other CI job), builds stage 1 from it, and runs a representative
+self-test subset (both `--target dotnet` and `--target jvm`, deliberately
+including the three tests — `pattern_lowering_self_test.l`,
+`silent_miscompile_guard_jvm_self_test.l`, `j3_lowering_self_test.l` — that
+caught the v0.4.14 regression) against that download-seeded stage 1, filing
+a `seed-regression` tracking issue on failure.  `.github/workflows/stage2-self-test.yml`
+runs nightly (`workflow_dispatch`-triggerable too): it builds stage 2 (mint
+stage-0, matching every other job) and runs the same representative subset
+against the stage-2 binary instead of stage 1, closing #5099's "CI never
+self-tests stage 2" gap.  Neither job root-causes the v0.4.14 defect or
+unblocks #3936 on its own — #3936 still needs either that defect located and
+fixed, or a future release confirmed clean by `seed-candidacy.yml` before it
+becomes the new download-seed default.
 
 ### D-progress-532 — `[build] kind = "exe"`: native apphost launcher emission
 

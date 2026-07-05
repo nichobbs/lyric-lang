@@ -1,0 +1,165 @@
+name: Stage-2 self-test
+
+# Issue #5099: every self-test job in ci.yml (compiler-self-tests-dotnet-a/b,
+# compiler-self-tests-jvm) runs against stage 1 — the AOT binary built
+# directly by whatever the stage-0 seed happens to be (today: the minted F#
+# bootstrap compiler). Per docs/10-bootstrap-progress.md's compiler-identity
+# table, the artifact that actually ships (standalone binaries, the NuGet
+# global tool) is stage 2 — the self-hosted compiler rebuilding itself + the
+# full stdlib into an isolated, self-consistent toolchain. Nothing in CI ran
+# the self-test suite against stage 2; the closest thing (the stdlib-builds
+# reproducibility check) only proves the stage-2 build is deterministic, not
+# that it is correct.
+#
+# #5094 made the gap concrete: switching the stage-0 seed to a download
+# (v0.4.14) crashed several JVM self-tests at stage 1 with a real
+# MissingMethodException, while the SAME tests passed 17/17 against stage 2
+# (the self-hosted compiler recompiling itself from current source, using
+# v0.4.14 only as the initial seed) — current source was correct the whole
+# time; the defect lived entirely in what that one released binary produced
+# when used as the compiling tool. Stage-1 testing conflated "current source
+# is correct" with "this seed happened to compile it correctly"; stage-2
+# testing is seed-agnostic by construction and directly verifies the artifact
+# that ships.
+#
+# This job builds stage 2 (mint stage-0, same as ci.yml, since this job's
+# purpose is isolating self-hosting correctness — seed-download trustworthi-
+# ness per release is the separate seed-candidacy.yml workflow's job) and
+# re-runs a representative self-test subset against THAT toolchain, with its
+# own stdlib pinned via LYRIC_STDLIB_BIN (make run-stage2's existing pattern).
+#
+# Scheduled rather than per-PR: a full self-host build is roughly double a
+# stage-1-only build, so duplicating this on every PR would double CI cost
+# for a gap that a nightly cadence already closes without slowing the PR
+# feedback loop (stage-1 self-testing stays the fast per-PR gate).
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BUILD_CONFIG: Debug
+
+jobs:
+  stage2-self-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
+        run: echo "TMPDIR=${{ runner.temp }}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520  # v5.4.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-stage2-${{ hashFiles('bootstrap/**/*.fsproj', 'bootstrap/**/*.csproj', 'bootstrap/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      # Same stage-0 acquisition ci.yml's build job uses (mint from git
+      # history). This job's question is "can the self-hosted compiler
+      # correctly compile itself", which is orthogonal to which seed produced
+      # stage 1 — seed-candidacy.yml covers the download-seed-trust question
+      # per release.
+      - name: Build stage 2 (self-hosted compiler rebuilding itself + full stdlib)
+        working-directory: ${{ github.workspace }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_MINT: '1'
+        run: ./scripts/bootstrap.sh --stage 2
+
+      # bootstrap.sh's own stage-2 runnability smoke is deliberately
+      # non-fatal (a self-hosted-emitter blocker is a "signal, not a gate"
+      # under its runnability-first model) — this job re-asserts it as a
+      # hard gate, since a silently-non-runnable stage 2 would otherwise
+      # make every self-test step below skip via its own missing-binary
+      # guard and the job would go green for the wrong reason.
+      - name: Verify stage-2 toolchain is runnable
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -x .bootstrap/stage2/bin/lyric ]; then
+            echo "::error::stage-2 binary missing; self-hosted rebuild did not produce a runnable toolchain"
+            exit 1
+          fi
+          LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib" .bootstrap/stage2/bin/lyric --version
+
+      # Representative subset, NOT the full ci.yml self-test suite — a full
+      # self-host build already costs roughly double a stage-1-only build,
+      # so duplicating every stage-1 self-test step here would double CI
+      # cost again on top of that. Chosen for front-end + middle-end + both-
+      # backend-target coverage, and deliberately includes the three tests
+      # that (per #5094's investigation) actually distinguished a broken
+      # stage 1 from a correct stage 2: pattern_lowering_self_test.l,
+      # silent_miscompile_guard_jvm_self_test.l, and j3_lowering_self_test.l.
+      # Expanding this list is a reasonable low-risk follow-up (tracked
+      # alongside #5099); this comment is the explicit record of what is
+      # deliberately left out rather than a silent cap.
+      - name: Compiler self-tests against stage 2 (--target dotnet)
+        working-directory: ${{ github.workspace }}
+        env:
+          LYRIC_STDLIB_BIN: ${{ github.workspace }}/.bootstrap/stage2/lib
+        run: |
+          set -euo pipefail
+          lyric_bin="$PWD/.bootstrap/stage2/bin/lyric"
+          for t in \
+            lyric-compiler/lyric/lexer_self_test.l \
+            lyric-compiler/lyric/parser_self_test.l \
+            lyric-compiler/lyric/typechecker_self_test.l \
+            lyric-compiler/lyric/modechecker_self_test.l \
+            lyric-compiler/lyric/contract_elaborator_self_test.l \
+            lyric-compiler/lyric/cfg_self_test.l \
+            lyric-compiler/lyric/derives_self_test.l \
+            lyric-compiler/lyric/mono_self_test.l \
+            lyric-compiler/lyric/fmt_self_test.l \
+            lyric-compiler/lyric/verifier_self_test.l \
+            lyric-compiler/lyric/weaver_self_test.l \
+            lyric-compiler/lyric/cfg_gate_self_test.l \
+            lyric-compiler/lyric/bitwise_self_test.l \
+            lyric-compiler/lyric/aspect_weave_self_test.l \
+            lyric-compiler/lyric/pattern_lowering_self_test.l ; do
+            echo "=== $t (dotnet) ==="
+            "$lyric_bin" test "$t"
+          done
+          echo "Stage-2 dotnet self-tests ran (representative subset; see workflow comments for what is excluded)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Compiler self-tests against stage 2 (--target jvm)
+        working-directory: ${{ github.workspace }}
+        env:
+          LYRIC_STDLIB_BIN: ${{ github.workspace }}/.bootstrap/stage2/lib
+        run: |
+          set -euo pipefail
+          lyric_bin="$PWD/.bootstrap/stage2/bin/lyric"
+          for t in \
+            lyric-compiler/lyric/bitwise_self_test.l \
+            lyric-compiler/lyric/aspect_weave_self_test.l \
+            lyric-compiler/lyric/pattern_lowering_self_test.l \
+            lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l \
+            lyric-compiler/jvm/j3_lowering_self_test.l \
+            lyric-compiler/lyric/auto_ffi_jvm_self_test.l \
+            lyric-compiler/lyric/hash_jvm_self_test.l ; do
+            echo "=== $t (jvm) ==="
+            "$lyric_bin" test --target jvm "$t"
+          done
+          echo "Stage-2 JVM self-tests ran (representative subset; see workflow comments for what is excluded)." >> "$GITHUB_STEP_SUMMARY"
