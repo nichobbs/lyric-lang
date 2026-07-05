@@ -41,6 +41,14 @@ on:
 permissions:
   contents: read
 
+# No step below references BUILD_CONFIG directly (unlike ci.yml, which uses
+# it to build the AOT entry-point project explicitly) — it is set here so it
+# is inherited into `./scripts/bootstrap.sh --stage 2`'s own environment:
+# bootstrap.sh reads it (`BUILD_CONFIG="${BUILD_CONFIG:-Release}"`) for the
+# `dotnet build --configuration "$BUILD_CONFIG"` step it runs internally to
+# AOT-link the stage-1 compiler before self-hosting stage 2. Pinning it to
+# Debug here matches ci.yml's rationale (faster CI builds) rather than
+# leaving it to bootstrap.sh's own Release default.
 env:
   BUILD_CONFIG: Debug
 

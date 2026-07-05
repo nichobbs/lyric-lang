@@ -198,10 +198,14 @@ jobs:
             --description "A published release is unsafe to use as a scripts/bootstrap.sh download seed (see #5094)" \
             2>/dev/null || true
 
+          # `gh --jq` takes a single jq expression as its argument — it does not
+          # understand jq's own `--arg` flag, so piping through the real `jq`
+          # binary (which does) is required to safely interpolate $VERSION
+          # into the filter without string-splicing it into the expression.
           EXISTING="$(gh issue list --repo "${{ github.repository }}" --state open \
-            --label seed-regression --json number,title \
-            --jq --arg v "v${VERSION}" '.[] | select(.title | contains($v)) | .number' \
-            2>/dev/null | head -1 || true)"
+            --label seed-regression --json number,title 2>/dev/null \
+            | jq -r --arg v "v${VERSION}" '.[] | select(.title | contains($v)) | .number' \
+            | head -1)" || EXISTING=""
 
           BODY_FILE="$(mktemp)"
           {
