@@ -9489,32 +9489,47 @@ fire-and-forget mistake: a `spawn` used as a **statement outside a
 `scope { }`").
 
 **Design — a sound positional rule, not full dataflow.** V0014 fires only
-for the unambiguous case (a `spawn` in statement position, not lexically
-inside a `scope`). Consuming positions are allowed by construction: the
-operand of `await` (`await spawn f()`), a binding initialiser
-(`val t = spawn f()`), and a bare `spawn` statement *inside* a `scope`
-(the scope joins it at exit). `scope` and lambda boundaries are tracked —
-a lambda body starts a fresh out-of-scope context because a lambda may
-outlive the enclosing scope. This is deliberately conservative: it has
-**zero false positives** on the existing tree (grep confirms every extant
-`spawn` is a binding or `await` operand — none is a discarded statement),
-so no existing well-formed program breaks. Two cases are left as tracked
-follow-ups rather than risk false positives: a `val` bound to a spawn but
-never awaited (needs use-analysis), and a spawn flowing into a value
-position (already caught by the native backend's codegen diagnostic,
-D-N-022).
+for the unambiguous case: a `spawn` used as a **non-trailing** statement
+(one with code after it, so its value is provably discarded), not
+lexically inside a `scope`. Consuming positions are allowed by
+construction: the operand of `await` (`await spawn f()`), a binding
+initialiser (`val t = spawn f()`), and a bare `spawn` statement *inside* a
+`scope` (the scope joins it at exit). Two positional subtleties handled
+after review (#5141, #5143):
+- A **trailing** `SExpr(spawn)` is in *value* position (it is the block's
+  value — a function return, an expression-block value, a branch result),
+  so it is **not** flagged; a function that returns the spawned task
+  (`async func f(): T { … ; spawn g() }`) is legal, not fire-and-forget.
+  Only a non-trailing `SExpr(spawn)` is flagged.
+- The walk covers `IFunc`, record/exposed-record members, **and interface
+  (`IMFunc`) and impl (`IMplFunc`) method bodies** — mirroring
+  `checkAwaitInTry` exactly, so a discarded `spawn` inside an
+  `impl Trait for Type { … }` async method is caught (a common ecosystem
+  pattern).
+
+`scope` and lambda boundaries are tracked — a lambda body starts a fresh
+out-of-scope context because a lambda may outlive the enclosing scope.
+This is deliberately conservative: it has **zero false positives** on the
+existing tree, so no existing well-formed program breaks. Two cases are
+left as tracked follow-ups rather than risk false positives: a `val` bound
+to a spawn but never awaited (needs use-analysis), and a *trailing*
+value-position spawn whose block value is itself discarded (needs
+value-position analysis; the value-flow variant is already caught by the
+native backend's codegen diagnostic, D-N-022).
 
 **Placement.** New pass `checkSpawnConsumption` in
 `lyric-compiler/lyric/mode_checker/modechecker_check.l`, called from
 `checkFileWithImports` alongside the existing `checkAwaitInTry` (V0012)
-pass and mirroring its exhaustive expr/stmt walk. Skipped for `@axiom`
-and `@proof_required` files (the latter already reject `spawn` via V0002,
-so V0014 would double-report).
+pass and mirroring its exhaustive expr/stmt walk and item coverage.
+Skipped for `@axiom` and `@proof_required` files (the latter already
+reject `spawn` via V0002, so V0014 would double-report).
 
-**Verification.** Five new cases in `modechecker_self_test.l` (52/52 pass):
-bare spawn statement outside scope → V0014; spawn bound + awaited → none;
-`await spawn` → none; bare spawn inside a `scope` → none; dropped spawn in
-a lambda → V0014. End-to-end via `./bin/lyric build` on both
+**Verification.** Seven cases in `modechecker_self_test.l` (54/54 pass):
+non-trailing spawn outside scope → V0014; trailing spawn in value position
+→ none (#5141); spawn bound + awaited → none; `await spawn` → none;
+non-trailing spawn inside a `scope` → none; non-trailing dropped spawn in
+a lambda → V0014; discarded spawn in an impl method → V0014 (#5143).
+End-to-end via `./bin/lyric build` on both
 `--target dotnet` and `--target jvm` (V0014 fires identically — it is a
 shared front-end check). Regression: `async_sm_self_test.l` (57/57,
 including the Phase-4 spawn tests) and the mode-checker suite pass

@@ -2225,10 +2225,19 @@ func walkExprForSpawn(ctx: in SpawnCtx, e: in Expr): Unit {
   }
 }
 
-func walkStmtForSpawn(ctx: in SpawnCtx, st: in Statement): Unit {
+// `isLast` marks the trailing statement of the enclosing block.  A trailing
+// `SExpr` is in *value* position (it is the block's value — a function return, an
+// expression-block value, a branch result), so a trailing `spawn` is not
+// discarded and must not be flagged (that would false-positive on a function
+// that returns the spawned task, #5141).  Only a *non-trailing* `SExpr(spawn)` —
+// which has code after it, so its value is provably thrown away — is
+// fire-and-forget.  (A trailing spawn in a statement-position block, e.g. a loop
+// body, is a value-position follow-up, deliberately not flagged here to stay
+// false-positive-free.)
+func walkStmtForSpawn(ctx: in SpawnCtx, isLast: in Bool, st: in Statement): Unit {
   match st.kind {
     case SExpr(x) -> {
-      if not ctx.inScope and isSpawnExprMc(x) {
+      if not ctx.inScope and not isLast and isSpawnExprMc(x) {
         ctx.diag.add(
           errorDiagnostic(
             "V0014",
@@ -2310,7 +2319,8 @@ func walkStmtForSpawn(ctx: in SpawnCtx, st: in Statement): Unit {
 func walkBlockForSpawn(ctx: in SpawnCtx, blk: in Block): Unit {
   var i = 0
   while i < blk.statements.count {
-    walkStmtForSpawn(ctx, blk.statements[i])
+    val isLast = i == blk.statements.count - 1
+    walkStmtForSpawn(ctx, isLast, blk.statements[i])
     i = i + 1
   }
 }
@@ -2344,6 +2354,28 @@ func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel,
         while mi < decl.members.count {
           match decl.members[mi] {
             case RMFunc(fn) -> checkFuncForSpawn(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IInterface(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMFunc(fn) -> checkFuncForSpawn(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IImpl(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> checkFuncForSpawn(fn, diag)
             case _ -> {
             }
           }

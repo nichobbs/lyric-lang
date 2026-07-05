@@ -140,10 +140,18 @@ test "unsafe block v0003" {
 }
 
 // ── V0014: a spawned task must be consumed (D119) ─────────────────────────────
-test "bare spawn statement outside scope is V0014" {
-  val src = "package P\nasync func f(): Unit {\n  spawn g()\n}\nasync func g(): Unit {}\n"
+test "non-trailing bare spawn outside scope is V0014" {
+  val src = "package P\nasync func f(): Unit {\n  spawn g()\n  val done = 1\n}\nasync func g(): Unit {}\n"
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0014"), "dropped spawn: V0014 emitted")
+}
+
+test "trailing spawn in value position is not V0014" {
+  // #5141: the trailing statement is the block's value (the return value here),
+  // so a trailing spawn is returned, not discarded — must not be flagged.
+  val src = "package P\nasync func f(): Int {\n  val a = 1\n  spawn g()\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "trailing spawn (return value): no V0014")
 }
 
 test "spawn bound and awaited is not V0014" {
@@ -158,16 +166,23 @@ test "await spawn is not V0014" {
   assertFalse(hasDiagCode(result, "V0014"), "await spawn: no V0014")
 }
 
-test "bare spawn statement inside scope is not V0014" {
-  val src = "package P\nasync func f(): Unit {\n  scope {\n    spawn g()\n  }\n}\nasync func g(): Unit {}\n"
+test "non-trailing bare spawn inside scope is not V0014" {
+  val src = "package P\nasync func f(): Unit {\n  scope {\n    spawn g()\n    val done = 1\n  }\n}\nasync func g(): Unit {}\n"
   val result = parseCheck(src)
   assertFalse(hasDiagCode(result, "V0014"), "spawn inside scope: no V0014 (scope joins it)")
 }
 
-test "dropped spawn inside a lambda is V0014" {
-  val src = "package P\nasync func f(): Unit {\n  val h = { x: Int -> spawn g() }\n}\nasync func g(): Unit {}\n"
+test "non-trailing dropped spawn inside a lambda is V0014" {
+  val src = "package P\nasync func f(): Unit {\n  val h = { x: Int -> spawn g()\n    x\n  }\n}\nasync func g(): Unit {}\n"
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in lambda: V0014 (lambda may outlive scope)")
+}
+
+test "discarded spawn in an impl method is V0014" {
+  // #5143: impl-method bodies must be checked too.
+  val src = "package P\ninterface Svc {\n  func run(): Unit\n}\nrecord R {}\nimpl Svc for R {\n  func run(): Unit {\n    spawn g()\n    val done = 1\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in impl method: V0014")
 }
 
 test "unsafe allowed no error" {
