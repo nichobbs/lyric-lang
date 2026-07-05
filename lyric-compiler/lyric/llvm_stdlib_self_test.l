@@ -1,6 +1,6 @@
 //! llvm_stdlib_self_test.l — end-to-end self-test for N5's stdlib
 //! native kernels: real programs importing `Std.File`, `Std.Environment`,
-//! `Std.Process`, and `Std.Time` compile through the full bridge
+//! `Std.Process`, `Std.Time`, and `Std.Uuid` compile through the full bridge
 //! pipeline (`Lyric.LlvmBridge.compileToNativeWithFlags` with the
 //! `_kernel_native/` twins loaded, exactly like `lyric build --target
 //! native`) and run with their runtime behaviour asserted via exit
@@ -270,6 +270,52 @@ test "Std.Time seams: epoch, monotonic, sleep (ASan)" {
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "clock seams")
+}
+
+test "Std.Uuid seams: v4 generation, formatting, four parse forms (ASan)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Uuid\n" + "func main(): Int {\n" +
+    "  val a = uuidToString(newUuid())\n" +
+    "  val b = uuidToString(newUuid())\n" +
+    "  if a.length != 36 or b.length != 36 {\n    return 1\n  }\n" +
+    "  if a == b {\n    return 2\n  }\n" +
+    "  if a.substring(8, 1) != \"-\" or a.substring(13, 1) != \"-\" or a.substring(18, 1) != \"-\" or a.substring(23, 1) != \"-\" {\n    return 3\n  }\n" +
+    "  if a.substring(14, 1) != \"4\" {\n    return 4\n  }\n" +
+    "  val variant = a.substring(19, 1)\n" +
+    "  if variant != \"8\" and variant != \"9\" and variant != \"a\" and variant != \"b\" {\n    return 5\n  }\n" +
+    "  if uuidToString(nilUuid()) != \"00000000-0000-0000-0000-000000000000\" {\n    return 6\n  }\n" +
+    "  match parseUuidOpt(a) {\n" +
+    "    case Some(u) -> {\n      if uuidToString(u) != a {\n        return 7\n      }\n    }\n" +
+    "    case None -> {\n      return 8\n    }\n" +
+    "  }\n" +
+    "  val d = \"550e8400-e29b-41d4-a716-446655440000\"\n" +
+    "  match parseUuidOpt(\"{550E8400-E29B-41D4-A716-446655440000}\") {\n" +
+    "    case Some(u2) -> {\n      if uuidToString(u2) != d {\n        return 9\n      }\n    }\n" +
+    "    case None -> {\n      return 10\n    }\n" +
+    "  }\n" +
+    "  match parseUuidOpt(\"550e8400e29b41d4a716446655440000\") {\n" +
+    "    case Some(u3) -> {\n      if uuidToString(u3) != d {\n        return 11\n      }\n    }\n" +
+    "    case None -> {\n      return 12\n    }\n" +
+    "  }\n" +
+    "  match parseUuidOpt(\"(\" + d + \")\") {\n" +
+    "    case Some(_) -> {\n    }\n" +
+    "    case None -> {\n      return 13\n    }\n" +
+    "  }\n" +
+    "  match parseUuidOpt(\"not-a-uuid\") {\n" +
+    "    case Some(_) -> {\n      return 14\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  match parseUuidOpt(\"550e8400-e29b-41d4-a716\") {\n" +
+    "    case Some(_) -> {\n      return 15\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  match parseUuidOpt(\"{550e8400e29b41d4a716446655440000}\") {\n" +
+    "    case Some(_) -> {\n      return 16\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "uuid seams")
 }
 
 test "Result[Unit, E] payloads and diverging value-if branches (ASan)" {

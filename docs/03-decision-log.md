@@ -5952,6 +5952,72 @@ grandchild (30 s sleep) or a budget stall would blow.
 #5107, #5176, `lyric-rt/src/lyric_process.c`,
 `lyric-rt/test/lyric_rt_test.c`.
 
+## D-N-026 — `Std.Uuid` on native: string-backed representation, shared canonicalizer, and a tri-target four-format parse contract
+
+**Date:** 2026-07-05
+**Status:** Accepted
+
+**Context.** `Std.Uuid` was one of the two remaining #4752 native
+gaps: no `_kernel_native/uuid_host.l` twin existed, so any native
+program importing it failed to build. The managed kernel's parse seam
+was `hostTryParseGuid(s, value: out Uuid): Bool` — a Bool+out shape
+the native backend cannot express (out/inout parameters are an
+explicit native-codegen panic), so a straight twin port was
+impossible; and the three targets silently disagreed about accepted
+input (`Guid.TryParse` took D/N/B/P/X, `java.util.UUID.fromString`
+took only the hyphenated form).
+
+**Decision — string-backed native representation.** On native, `Uuid`
+is a record holding its canonical lowercase hyphenated 36-char string.
+Formatting is the identity, the nil sentinel is a literal, and only v4
+generation crosses the C boundary: `lyric_uuid_v4` draws 16 bytes from
+the existing `lyric_secure_random` (getrandom(2) / getentropy), stamps
+the RFC 4122 version-4 and variant-10 bits, and formats once, in C.
+Alternatives rejected: a two-`Long` (hi/lo) record would need 64-bit
+shift/mask formatting and parsing in Lyric for zero benefit — nothing
+in the public surface reads the bits, and the string form is what
+every operation ultimately produces or consumes.
+
+**Decision — canonicalize in shared code; kernels parse only the
+canonical form.** `Std.Uuid.parseUuidOpt` now validates and rewrites
+the four cross-target formats ("D" hyphenated, "N" bare, "B" braced,
+"P" parenthesized; either hex case; surrounding ASCII whitespace
+trimmed) to the canonical lowercase "D" form in pure, target-neutral
+Lyric (restricted to `length`/`substring`/`==`/`+`, the String surface
+every backend implements), and each kernel exposes one exception-free
+Option seam, `hostParseCanonicalGuid(d)`, that only ever sees that
+form. Consequences:
+- The native twin's parse is a wrap (input already validated).
+- The JVM twin's historical divergence is retired: fromString never
+  accepted "N"/"B"/"P", so those forms failed on JVM while succeeding
+  on .NET; now all four parse identically everywhere.
+- The .NET-only exotic "X" form (`{0x..,0x..,..,{0x..}}`) is
+  **intentionally dropped** on .NET too: it was reachable only as an
+  accident of TryParse, was never named in `Std.Uuid`'s documented
+  format list, and tri-target parity of the documented contract wins
+  over preserving an undocumented single-target extra. The stdlib
+  test suite now pins its rejection on every target.
+- The managed kernel keeps its Bool+out `hostTryParseGuid` extern as
+  a private bridge to TryParse; the JVM twin's copy of that shape is
+  deleted.
+
+**Out-param note.** This slice deliberately does NOT add native
+out-param support — the Option-seam idiom (D-progress-557) already
+fits every kernel boundary shipped so far, and general out/inout
+lowering remains tracked separately.
+
+**Verification.** One new C unit test (format shape, version/variant
+positions, distinctness). One new `llvm_stdlib_self_test.l` case
+(ASan): v4 generation/format/distinctness, nil, round-trip, all four
+parse forms including case-folding, and malformed rejection on native.
+`uuid_tests.l` gains alternate-form and X-rejection cases that run on
+the managed targets.
+
+**Related:** #4752 (Std.Uuid half closed; Std.Time calendar surface
+remains), D-progress-557 (the Option-seam kernel idiom),
+`lyric-rt/src/lyric_posix.c` (`lyric_uuid_v4`),
+`lyric-stdlib/std/uuid.l`, all three `uuid_host.l` twins.
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The
