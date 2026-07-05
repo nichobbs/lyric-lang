@@ -70,25 +70,63 @@ pub interface CacheStore {
 // ─── In-process implementation ────────────────────────────────────────────────
 // In-process cache store backed by a mutable `Map[String, String]`.
 //
-// Eviction is FIFO by insertion order: when `maxEntries` is reached the
-// entry inserted first (among keys not yet deleted) is removed.
-//
-// TTL is accepted but not enforced in v1 — entries are never evicted by
-// expiry time, only by capacity.  For time-based expiry use a Redis-backed
-// implementation via the `CacheStore` interface.
+// Eviction is by whichever bound is hit first:
+//   - FIFO capacity: when `maxEntries` is reached the entry inserted first
+//     (among keys not yet deleted) is removed.
+//   - TTL expiry: a key set with `ttlSeconds > 0` is treated as absent by
+//     `get` once `Std.Time.nowEpochMillis()` passes its recorded expiry
+//     timestamp, and is evicted from all three backing collections at that
+//     point. `ttlSeconds == 0` means no expiry (the key is never
+//     TTL-evicted, only FIFO-evicted). Expiry is stored as epoch
+//     milliseconds (`Long`) rather than `Instant` — `Instant` is an extern
+//     struct (`System.DateTime`) and boxing it into a `Map`'s type-erased
+//     backing store is not yet a supported combination in the self-hosted
+//     MSIL emitter (`ilverify` StackUnexpected on the boxed field read).
 @stable(since = "0.1")
 pub record InProcessCacheStore {
   var valueMap: Map[String, String]  // key → cached value
   maxEntries: Int
   var insertionOrder: List[String]         // keys in FIFO insertion order; oldest first
+  var expiryMap: Map[String, Long]  // key → expiry epoch millis; absent means no expiry
+}
+
+// Remove `key` from all three backing collections of `store`. Shared by
+// `delete` and by `get`'s lazy TTL-expiry eviction.
+func evictKey(store: in InProcessCacheStore, key: in String): Unit {
+  store.valueMap.remove(key)
+  store.expiryMap.remove(key)
+  // Remove `key` from the insertion order by index: `List.remove(value)` is
+  // not a supported element-removal intrinsic on the MSIL backend (it lowers
+  // to a no-op), so a value-based remove would silently leave a stale entry
+  // and corrupt the FIFO eviction bound.  Scan for the index and `removeAt`.
+  var idx = 0
+  var found = 0 - 1
+  while idx < store.insertionOrder.count {
+    if store.insertionOrder[idx] == key {
+      found = idx
+      idx = store.insertionOrder.count
+    } else {
+      idx = idx + 1
+    }
+  }
+  if found >= 0 {
+    store.insertionOrder.removeAt(found)
+  }
 }
 
 impl CacheStore for InProcessCacheStore {
   func get(key: in String): Option[String] {
-    if self.valueMap.containsKey(key) {
-      return Some(value = self.valueMap[key])
+    if not self.valueMap.containsKey(key) {
+      return None
     }
-    return None
+    if self.expiryMap.containsKey(key) {
+      val expiresAtMillis = self.expiryMap[key]
+      if nowEpochMillis() >= expiresAtMillis {
+        evictKey(self, key)
+        return None
+      }
+    }
+    return Some(value = self.valueMap[key])
   }
 
   func set(key: in String, value: in String, ttlSeconds: in Int): Unit {
@@ -99,33 +137,24 @@ impl CacheStore for InProcessCacheStore {
     if isNew and self.maxEntries > 0 and self.insertionOrder.count >= self.maxEntries {
       val oldest = self.insertionOrder[0]
       self.valueMap.remove(oldest)
+      self.expiryMap.remove(oldest)
       self.insertionOrder.removeAt(0)
     }
     self.valueMap[key] = value
     if isNew {
       self.insertionOrder.add(key)
     }
+    if ttlSeconds > 0 {
+      self.expiryMap[key] = nowEpochMillis() + ttlSeconds.toLong() * 1000i64
+    } else if self.expiryMap.containsKey(key) {
+      // Re-`set` of a previously-TTL'd key with ttlSeconds = 0 makes it
+      // permanent again; drop the stale expiry entry.
+      self.expiryMap.remove(key)
+    }
   }
 
   func delete(key: in String): Unit {
-    self.valueMap.remove(key)
-    // Remove `key` from the insertion order by index: `List.remove(value)` is
-    // not a supported element-removal intrinsic on the MSIL backend (it lowers
-    // to a no-op), so a value-based remove would silently leave a stale entry
-    // and corrupt the FIFO eviction bound.  Scan for the index and `removeAt`.
-    var idx = 0
-    var found = 0 - 1
-    while idx < self.insertionOrder.count {
-      if self.insertionOrder[idx] == key {
-        found = idx
-        idx = self.insertionOrder.count
-      } else {
-        idx = idx + 1
-      }
-    }
-    if found >= 0 {
-      self.insertionOrder.removeAt(found)
-    }
+    evictKey(self, key)
   }
 
   func clear(): Unit {
@@ -135,6 +164,7 @@ impl CacheStore for InProcessCacheStore {
     // intrinsics on the MSIL backend; reassignment is the idiomatic reset.)
     self.valueMap = newMap()
     self.insertionOrder = newList()
+    self.expiryMap = newMap()
   }
 }
 
@@ -142,7 +172,12 @@ impl CacheStore for InProcessCacheStore {
 // Create an in-process store using the configured defaults.
 @stable(since = "0.1")
 pub func inProcess(): InProcessCacheStore {
-  return InProcessCacheStore(valueMap = newMap(), maxEntries = defaultMaxEntries, insertionOrder = newList())
+  return InProcessCacheStore(
+    valueMap = newMap(),
+    maxEntries = defaultMaxEntries,
+    insertionOrder = newList(),
+    expiryMap = newMap()
+  )
 }
 
 // Create an in-process store with an explicit capacity limit.
@@ -150,7 +185,12 @@ pub func inProcess(): InProcessCacheStore {
 pub func inProcessWithCapacity(maxEntries: in Int): InProcessCacheStore
   requires: maxEntries >= 1
 {
-  return InProcessCacheStore(valueMap = newMap(), maxEntries = maxEntries, insertionOrder = newList())
+  return InProcessCacheStore(
+    valueMap = newMap(),
+    maxEntries = maxEntries,
+    insertionOrder = newList(),
+    expiryMap = newMap()
+  )
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────

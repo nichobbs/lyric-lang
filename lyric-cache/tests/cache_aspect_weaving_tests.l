@@ -143,3 +143,34 @@ test "ItemCache aspect: repeating the same cacheKey reuses the cached value" {
   }
   assertEqualInt(itemCacheCalls.count, 1, "the handler body ran only once for the repeated key")
 }
+
+// The `enabled` master switch must bypass the cache entirely, mirroring
+// FunctionCache's `fnUncachedHandler` coverage above.
+aspect ItemCacheDisabled from Cache.Aspects.ItemCache {
+  matches: name like "itemUncached*"
+  config {
+    enabled: Bool = false
+  }
+}
+
+val itemUncachedCalls: CallCounter = CallCounter(count = 0)
+
+pub func itemUncachedHandler(cacheKey: in String): Result[String, String] {
+  itemUncachedCalls.count = itemUncachedCalls.count + 1
+  return Ok(cacheKey + "-" + itemUncachedCalls.count.toString())
+}
+
+test "ItemCache aspect: enabled=false runs the handler on every call, even for a repeated cacheKey" {
+  itemUncachedCalls.count = 0
+  val first = itemUncachedHandler("delta")
+  val second = itemUncachedHandler("delta")
+  match first {
+    case Ok(v) -> assertEqual(v, "delta-1", "first call runs the handler")
+    case Err(_) -> assertTrue(false, "handler must return Ok")
+  }
+  match second {
+    case Ok(v) -> assertEqual(v, "delta-2", "second call re-runs the handler when disabled, even with the same cacheKey")
+    case Err(_) -> assertTrue(false, "handler must return Ok")
+  }
+  assertEqualInt(itemUncachedCalls.count, 2, "a disabled cache must not suppress any call")
+}

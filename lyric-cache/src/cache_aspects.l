@@ -37,23 +37,6 @@ import Std.Core
 import Cache
 
 // ─── FunctionCache ────────────────────────────────────────────────────────────
-/// Configuration for the FunctionCache aspect template.
-///
-/// FunctionCache caches by `qualifiedName` (B-mode): all calls to the same
-/// function share one cache slot regardless of arguments.  Suitable for
-/// functions whose return value is argument-independent.
-@stable(since = "0.1")
-pub record FunctionCacheConfig {
-  enabled: Bool
-  ttlSeconds: Int
-}
-
-/// Return the default FunctionCache configuration (enabled, 300 s TTL).
-@stable(since = "0.1")
-pub func defaultFunctionCacheConfig(): FunctionCacheConfig {
-  return FunctionCacheConfig(enabled = true, ttlSeconds = 300)
-}
-
 /// Cache a matched handler's result by `call.qualifiedName` (B-mode).
 ///
 /// The handler's return type must be `Result[String, E]` for this aspect to
@@ -103,29 +86,15 @@ pub aspect FunctionCache {
 val functionCacheStore: CacheStore = Cache.inProcess()
 
 // ─── ItemCache ────────────────────────────────────────────────────────────────
-/// Configuration for the ItemCache aspect template.
-///
-/// ItemCache caches per-item using a caller-supplied key (row-constrained
-/// B'-mode). The effective cache key is `keyPrefix + cacheKey`.
-@stable(since = "0.1")
-pub record ItemCacheConfig {
-  enabled: Bool
-  ttlSeconds: Int
-  keyPrefix: String
-}
-
-/// Return the default ItemCache configuration (enabled, 300 s TTL, no prefix).
-@stable(since = "0.1")
-pub func defaultItemCacheConfig(): ItemCacheConfig {
-  return ItemCacheConfig(enabled = true, ttlSeconds = 300, keyPrefix = "")
-}
-
 /// Cache a matched handler's result by a caller-supplied per-item key.
 ///
 /// Row-constrained B'-mode (docs/56 / D115): reads `args.cacheKey` via a
 /// `where TArgs has { cacheKey: String }` row clause.  The handler must
 /// declare a `cacheKey: String` parameter; the weaver reports A0047 if it
-/// is absent or mistyped.
+/// is absent or mistyped.  A `requires: args.cacheKey != ""` contract
+/// (elaborated to a runtime assert in this `@runtime_checked` module, per
+/// `Storage.Aspects.ValidateKey`'s precedent) rejects an empty `cacheKey`
+/// before the handler runs.
 ///
 /// The handler's return type must be `Result[String, E]` for this aspect to
 /// compose correctly, for the same reason as FunctionCache above.
