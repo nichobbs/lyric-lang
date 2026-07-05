@@ -147,8 +147,8 @@ wire ProductionApp {
   contributes[Middleware] logging = Web.loggingMiddleware()
   contributes[Middleware] cors    = Web.corsMiddleware(Settings.cors)
   contributes[Middleware] auth    = MyApp.jwtMiddleware(config.jwtSecret)
-    after: logging
-    before: cors
+    inside: logging
+    wraps:  cors
 
   singleton router: Web.Router = Web.create(middlewares: Middleware)
 }
@@ -159,9 +159,15 @@ wire ProductionApp {
 Two or more `contributes[T]` entries for the same `T`, anywhere in the
 (fully expanded, post-`include`) wire graph, make the bare identifier
 `T` resolve as `List[T]` — ordered by declaration, adjusted by
-`before:`/`after:` clauses reusing aspects' existing ordering
-vocabulary (`docs/26` §6) rather than inventing new syntax. Mixing a
-plain `bind T -> impl` / `singleton x: T` with `contributes[T]` for the
+`wraps:`/`inside:` clauses reusing aspects' existing ordering
+vocabulary **literally**, not just conceptually: `docs/26` §6.2 defines
+`wraps: X` ("this is outer, X is inner") and `inside: X` ("this is
+inner, X is outer") as duals for composing nested advice, and a
+middleware/filter chain is exactly the same nesting shape — outer
+entries wrap inner ones — so the same pair of clauses transfers
+unchanged rather than inventing `before:`/`after:` list-position
+syntax that would mean the same thing with a different vocabulary.
+Mixing a plain `bind T -> impl` / `singleton x: T` with `contributes[T]` for the
 same `T` in one graph is a compile error — ambiguous whether `T` means
 "the instance" or "the collection."
 
@@ -229,7 +235,7 @@ wire ProductionApp {
   }
 
   contributes[Middleware] auth = MyApp.jwtMiddleware(config.jwtSecret)
-    after: logging
+    inside: logging
 
   expose router
 }
@@ -255,14 +261,14 @@ predicts.
 `include Web.ServerModule as Public { ... }` /
 `include Web.ServerModule as Admin { ... }` is calling the same
 "function" twice with different arguments — this falls out of §5's
-model for free, no special-casing needed. An exposed name auto-
-propagates into the includer's bare namespace *unless* it collides
-(with another inclusion's exposed name, or a name the includer already
-declared), in which case the includer must alias
-(`include ... as Public`) and access the value qualified —
-`Public.router` — reusing the same static-namespace access syntax
-config blocks already use (`Settings.field`), rather than inventing new
-disambiguation rules.
+model for free, no special-casing needed. **Working assumption, not yet
+settled (see Q-wire-002 in §7):** an exposed name auto-propagates into
+the includer's bare namespace *unless* it collides (with another
+inclusion's exposed name, or a name the includer already declared), in
+which case the includer must alias (`include ... as Public`) and access
+the value qualified — `Public.router` — reusing the same
+static-namespace access syntax config blocks already use
+(`Settings.field`), rather than inventing new disambiguation rules.
 
 ### 5.3 Nested inclusion and cycles
 
@@ -311,7 +317,7 @@ precedent that motivated C-mode doesn't transfer). Consequently:
   a strict subset of that trust; a separate `removable` marker would
   add surface without buying real additional safety.
 - **Reorder** two existing entries relative to each other
-  (`reorder cors after: auth`, keeping `cors`'s own implementation) —
+  (`reorder cors inside: auth`, keeping `cors`'s own implementation) —
   allowed unconditionally on an **open** collection, since reordering
   only risks "runs in the order the module assumed," not "does it run
   at all." `sealed` (§4.2) is the lever for a module that cares about
