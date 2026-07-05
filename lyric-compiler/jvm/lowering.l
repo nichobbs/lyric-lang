@@ -3863,7 +3863,7 @@ pub func lowerHotAsync(h: in LHotFunc, pool: in Pool): List[ClassFile] {
   result
 }
 
-// ── B129: lowerAsyncGenerator (Iterable<Object>+Iterator<Object> collect-all) ─
+// ── B129: lowerAsyncGenerator (Iterable<Object>+Iterator<Object>, lazy) ───────
 pub record LGenParam {
   paramName: String
   paramType: JvmType
@@ -3881,9 +3881,11 @@ pub record LGenFunc {
   elemType: JvmType
   /// Parameters captured from the callsite into generator fields.
   params: List[LGenParam]
-  /// Body instructions for RunBody.
+  /// Body instructions for the generator's `run()` (executed on the producer
+  /// virtual thread).
   /// `LYield` is a meta-insn: the preceding instructions must have left one
-  /// value on the stack; lowerAsyncGenerator replaces it with ArrayList.add.
+  /// value on the stack; lowerAsyncGenerator replaces it with a
+  /// `SynchronousQueue.put` handoff to the consumer (lazy, one value at a time).
   bodyInsns: List[LInsn]
 }
 

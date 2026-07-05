@@ -933,51 +933,66 @@ with the same eager `runBody()` pattern (B129, `lyric-compiler/jvm/lowering.l`).
 
 ## 15. Structured concurrency scopes
 
+> **Status (D119).** This section is rewritten to the *implementable*
+> self-hosted lowering. The earlier design (a `Lyric.Runtime.Scope`
+> runtime type with `try { __scope.JoinAll() } catch { __scope.Cancel();
+> throw }`) was never ported to the self-hosted backend and is
+> **not implementable as written** — V0012 rejects an `await` inside any
+> protected region, and `JoinAll()` awaits. The lowering below is
+> BCL-only (no bespoke runtime type) and keeps the join out of every
+> `try`. It lands as D119 slice S5, on the §7.3 cancellation token from
+> slice S4.
+
 ### 15.1 Scope-block lowering
 
-A `scope { ... }` block lowers to:
+A `scope { ... }` block opens a `CancellationTokenSource` linked to the
+ambient `cancellation` token (§16), plus a `List<Task>` collecting the
+tasks spawned inside it, then runs the body, then joins at exit:
 
 ```cs
-using var __scope = new Lyric.Runtime.Scope(parentScope);
-try {
-    ...
-    __scope.JoinAll();   // wait for all children
-}
-catch {
-    __scope.Cancel();
-    throw;
-}
+var __cts = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+var __scopeTasks = new List<Task>();
+// ... body: each `spawn e` registers its Task in __scopeTasks (§15.2) ...
+var __agg = Task.WhenAll(__scopeTasks.ToArray());
+await __agg.ContinueWith(_ => { });   // non-throwing join — NOT in a try (V0012-safe)
+if (__agg.IsFaulted) throw __agg.Exception;   // AggregateException, outside any try
 ```
 
-The `Scope` runtime type tracks all `spawn`-created tasks in a
-`ConcurrentBag<Task>`. `JoinAll()` awaits them in registration order;
-a failure on any child causes the surrounding `try/catch` to fire,
-which cancels the rest and propagates the first failure.
+The join awaits a *non-throwing* continuation of `Task.WhenAll(...)`, so
+it needs no protected region and does not trip V0012. The
+`AggregateException` is materialised and rethrown **after** the await,
+outside any `try`.
 
 ### 15.2 `spawn`
 
-`spawn e` lowers to a call that creates the task with the *current*
-`CancellationToken` linked to the surrounding scope. The result is a
-`Task<T>` (or `ValueTask<T>` when annotated) that is registered with
-the scope before being returned to the caller's local binding.
+`spawn e` lowers to the call `e` with `__cts.Token` threaded in as the
+ambient cancellation token (§16), producing the hot `Task<T>` (or
+`ValueTask<T>` when annotated) that .NET has already begun running. The
+emitter:
 
-A `spawn` outside a `scope` block is rejected at compile time; the
-parser admits `spawn` but the semantic analyser checks that the
-enclosing context is a scope (or a function whose entire body is the
-scope, by sugar). This guarantees structured concurrency: no
-fire-and-forget.
+1. registers the `Task` in the enclosing scope's `__scopeTasks`, and
+2. attaches a fault continuation
+   `task.ContinueWith(t => { if (t.IsFaulted) __cts.Cancel(); })` so the
+   *first* failure cancels `__cts`, and still-running sibling tasks
+   (which observe `cancellation`) stop cooperatively rather than running
+   to completion.
+
+The `Task<T>` is also bound to the caller's local for a later `await`
+(which, on a settled task, reads the result). A `spawn` outside a
+`scope` block is rejected at compile time by the shared front-end
+(**V0013**, D119 slice S2): the parser admits `spawn`, but the checker
+requires the enclosing lexical context to be a `scope` (or a function
+whose entire body is the scope, by sugar). No fire-and-forget.
 
 ### 15.3 Aggregate failure
 
-When two children of a scope fail, the runtime aggregates them:
-
-- The first failure becomes the propagated exception's primary cause.
-- Subsequent failures are attached as `e.AggregatedFailures` (a
-  generated property on the propagated `Bug`).
-
-The aggregation runs on the `Scope` runtime side; the IL for the
-scope block does not need to reason about this — it just rethrows
-whatever `Scope.JoinAll()` raises.
+`Task.WhenAll` already implements §7.4's aggregation: its faulted task's
+`.Exception` is a `System.AggregateException` whose `InnerExceptions`
+carry every child failure, with `InnerException` (the primary cause)
+being the first. The scope IL does not aggregate manually — it rethrows
+`__agg.Exception` (§15.1). Sibling *cancellation* on first failure is
+driven by the per-task fault continuation of §15.2 cancelling `__cts`,
+independently of the final `WhenAll` join.
 
 
 ## 16. Cancellation
@@ -990,7 +1005,16 @@ iteration.
 The runtime lowers cancellation tokens onto CLR
 `System.Threading.CancellationToken`. Scope cancellation is
 implemented as `CancellationTokenSource.Cancel()` on the scope's
-linked source.
+linked source (§15.2).
+
+> **Status (D119).** The implicit `cancellation` parameter, its ambient
+> propagation to child async calls, and `cancellation.checkOrThrow()`
+> (→ `CancellationToken.ThrowIfCancellationRequested()`) are **not yet
+> shipped** on the self-hosted MSIL backend; they land as D119 slice S4
+> and are the prerequisite for the §15 structured-concurrency lowering
+> (slice S5). Threading a token into every async signature is an
+> async-ABI change (kickoff stub, state-machine field set, and every
+> async call site), so it lands as its own slice with full parity.
 
 
 ## 17. Protected types (Q008, Q009)
