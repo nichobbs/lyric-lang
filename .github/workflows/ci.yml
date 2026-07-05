@@ -668,7 +668,7 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
-      # Block-shadow self-test (#5191 / D-progress-602).  Runtime regression test
+      # Block-shadow self-test (#5191 / D-progress-603).  Runtime regression test
       # for general nested-block variable shadowing on the self-hosted backends:
       # a nested `val`/`var` that shadows a still-live enclosing binding must not
       # clobber the enclosing slot or leak its name past the block.  Run via
@@ -716,7 +716,7 @@ jobs:
           echo "aspect-weave self-test ran: aspect_weave_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
       # Async structured-concurrency keyword self-test (D119 S4 / D120,
-      # D-progress-601).  Runs real `scope { }` / `spawn e` / `await t`: two
+      # D-progress-602).  Runs real `scope { }` / `spawn e` / `await t`: two
       # spawns joined by early `return` inside a scope, the same by fall-off, a
       # bare no-scope spawn, three concurrent spawns, and a Unit-returning spawn,
       # asserting every runtime value.  The `--target jvm` half (real
@@ -3134,7 +3134,7 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
 
-      # Block-shadow self-test on JVM (#5191 / D-progress-602) — the JVM half of
+      # Block-shadow self-test on JVM (#5191 / D-progress-603) — the JVM half of
       # the dotnet-job step of the same name.  Pins the general nested-block
       # shadowing fix (slot-reuse gate + scope undo log) on the JVM backend.
       - name: Block-shadow self-test on JVM (native lyric test --target jvm)
@@ -3154,7 +3154,7 @@ jobs:
           "$lyric_bin" test --target jvm lyric-compiler/lyric/block_shadow_self_test.l
 
       # Async spawn/scope/await self-test on JVM (D119 S4 / D120,
-      # D-progress-601) — the JVM half of the dotnet-job step of the same name.
+      # D-progress-602) — the JVM half of the dotnet-job step of the same name.
       # This is the load-bearing run: it exercises the real virtual-thread
       # `ExecutorService` codegen (`scope { }` open/close, `spawn` -> `Callable`
       # submit -> `Future`, `await` -> `__lyric_await` join + unbox).  Compiles

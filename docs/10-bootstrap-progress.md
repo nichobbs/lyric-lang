@@ -29533,3 +29533,38 @@ targets.
 
 **Related:** `docs/03-decision-log.md` D-progress-602 + D120 (the design),
 D-progress-598 (V0014), `docs/18-jvm-emission.md` §15.
+
+### D-progress-603 — General nested-block variable shadowing fixed on both backends (#5191)
+
+**Shipped.** A pre-existing correctness bug in both the self-hosted JVM and MSIL
+backends: a nested `{ }` block that re-bound a name still live in an enclosing
+scope reused the enclosing binding's local slot and never restored the name→slot
+mapping on block exit, so the outer binding read the inner (shadow) value after
+the block. Spawn-independent and identical on both targets — `val t = 7; if c {
+val t = 99 }; t` returned `99`, not `7`. Surfaced by review of the D119 S4 PR
+(#5184).
+
+- **Block-scoped slot reuse.** `FuncCtx` gains a `scopeBase` (`scopeBaseMsil` on
+  MSIL): `allocSlot`/`allocSlotMsil` reuse an existing slot for a re-bound name
+  only when it was allocated at or after that base (a current-block binding), so a
+  shadow of an enclosing binding gets a fresh slot and never clobbers it.
+- **Scope undo log.** `enterBlockScope`/`exitBlockScope` (`…Msil`), wrapping
+  `lowerBlock`/`lowerBlockExpr` (`lowerBlockMsil`/`lowerBlockExprMsil`) and the JVM
+  `lowerScopeStmt` body (#5204), maintain a per-function change log: `allocSlot`
+  records each re-bound name's prior slot/type via `recordScopeUndo`, and block
+  exit replays it back to the entry mark to restore enclosing bindings and drop
+  block-local ones. A change log of single-key map ops, not a whole-map
+  `mapEntries` snapshot — the snapshot form both mis-compiled under the pinned F#
+  stage-0 mint (nested-generic entry types) and corrupted the codegen dictionaries
+  at runtime.
+
+**Verification.** `lyric-compiler/lyric/block_shadow_self_test.l` (`@test_module`,
+10 cases: `if`-then/`else`, nested doubles, loop-body shadow, `var` mutation
+through a nested block, `match`-arm shadow, value-producing block shadow,
+reference-typed shadow, sibling scopes, and a `scope { }`-body shadow) runs on
+**both** `--target dotnet` and `--target jvm` via native `lyric test`. No
+regression across the native `lyric test` suite; verified against the pinned F#
+stage-0 mint (`FS_COMMIT=35c0d2e5`).
+
+**Related:** `docs/03-decision-log.md` D-progress-603, `docs/18-jvm-emission.md`
+§15.3, #5191 / #5204 (the `scope`-body follow-up).
