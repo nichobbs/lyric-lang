@@ -9488,52 +9488,57 @@ fire-and-forget mistake: a `spawn` used as a **statement outside a
 ("spawned task is discarded … bind and `await` it, or run it inside a
 `scope { }`").
 
-**Design — a sound positional rule, not full dataflow.** V0014 fires only
-for the unambiguous case: a `spawn` used as a **non-trailing** statement
-(one with code after it, so its value is provably discarded), not
-lexically inside a `scope`. Consuming positions are allowed by
-construction: the operand of `await` (`await spawn f()`), a binding
-initialiser (`val t = spawn f()`), and a bare `spawn` statement *inside* a
-`scope` (the scope joins it at exit). Two positional subtleties handled
-after review (#5141, #5143):
-- A **trailing** `SExpr(spawn)` is in *value* position (it is the block's
-  value — a function return, an expression-block value, a branch result),
-  so it is **not** flagged; a function that returns the spawned task
-  (`async func f(): T { … ; spawn g() }`) is legal, not fire-and-forget.
-  Only a non-trailing `SExpr(spawn)` is flagged.
-- The walk covers `IFunc`, record/exposed-record members, **and interface
-  (`IMFunc`) and impl (`IMplFunc`) method bodies** — mirroring
-  `checkAwaitInTry` exactly, so a discarded `spawn` inside an
-  `impl Trait for Type { … }` async method is caught (a common ecosystem
-  pattern).
+**Design — a value-position-aware positional rule.** V0014 flags a `spawn`
+whose result is *discarded*: a `spawn` in statement position (through
+parens) that is not lexically inside a `scope` and whose value is not used.
+Consuming positions are allowed by construction: the operand of `await`
+(`await spawn f()`), a binding initialiser (`val t = spawn f()`), and a
+bare `spawn` statement *inside* a `scope` (the scope joins it at exit).
+
+The check tracks **value position** — whether a statement's value is used —
+so it flags the real fire-and-forget shapes without false-positiving on a
+returned task (refined across review rounds #5141, #5143, #5145):
+- The walk threads a `valuePos` flag; a block's value flows only to its
+  **trailing** statement. A trailing `spawn` in a **value-position** block
+  (a function/lambda body, an expression-block, a value-context `if`/`match`
+  branch) is *returned*, not discarded, so it is **not** flagged — a
+  function that returns the spawned task (`async func f(): T { … ; spawn
+  g() }`) is legal (#5141).
+- A trailing `spawn` in a **statement-position** block (a `while`/`for`/
+  `loop` body, a `try`/`catch`/`finally` or `defer` body) *is* discarded and
+  **is** flagged (#5145); likewise a `spawn` ending a branch of an `if`/
+  `match` used as a non-trailing statement (its value is thrown away).
+- The walk covers `IFunc`, record/exposed-record members, interface
+  (`IMFunc`) and impl (`IMplFunc`) method bodies, **and protected-type
+  `entry`/`func` bodies (`PMEntry`/`PMFunc`)** (#5143) — a superset of
+  `checkAwaitInTry`'s coverage.
 
 `scope` and lambda boundaries are tracked — a lambda body starts a fresh
-out-of-scope context because a lambda may outlive the enclosing scope.
-This is deliberately conservative: it has **zero false positives** on the
-existing tree, so no existing well-formed program breaks. Two cases are
-left as tracked follow-ups rather than risk false positives: a `val` bound
-to a spawn but never awaited (needs use-analysis), and a *trailing*
-value-position spawn whose block value is itself discarded (needs
-value-position analysis; the value-flow variant is already caught by the
-native backend's codegen diagnostic, D-N-022).
+out-of-scope, value-position context because a lambda may outlive the
+enclosing scope. **Zero false positives** on the existing tree (every
+extant `spawn` is a binding or `await` operand). The one remaining
+follow-up is a `val` bound to a spawn but never awaited (needs
+use-analysis, not positional information).
 
 **Placement.** New pass `checkSpawnConsumption` in
 `lyric-compiler/lyric/mode_checker/modechecker_check.l`, called from
 `checkFileWithImports` alongside the existing `checkAwaitInTry` (V0012)
-pass and mirroring its exhaustive expr/stmt walk and item coverage.
-Skipped for `@axiom` and `@proof_required` files (the latter already
-reject `spawn` via V0002, so V0014 would double-report).
+pass and mirroring its exhaustive expr/stmt walk. Skipped for `@axiom` and
+`@proof_required` files (the latter already reject `spawn` via V0002, so
+V0014 would double-report).
 
-**Verification.** Seven cases in `modechecker_self_test.l` (54/54 pass):
-non-trailing spawn outside scope → V0014; trailing spawn in value position
-→ none (#5141); spawn bound + awaited → none; `await spawn` → none;
-non-trailing spawn inside a `scope` → none; non-trailing dropped spawn in
-a lambda → V0014; discarded spawn in an impl method → V0014 (#5143).
-End-to-end via `./bin/lyric build` on both
-`--target dotnet` and `--target jvm` (V0014 fires identically — it is a
-shared front-end check). Regression: `async_sm_self_test.l` (57/57,
-including the Phase-4 spawn tests) and the mode-checker suite pass
-unchanged; no existing spawn usage is newly rejected.
+**Verification.** Eleven `spawn` cases in `modechecker_self_test.l` (58/58
+pass): non-trailing spawn outside scope → V0014; trailing spawn in value
+position → none (#5141); spawn bound + awaited → none; `await spawn` →
+none; non-trailing spawn inside a `scope` → none; non-trailing dropped
+spawn in a lambda → V0014; discarded spawn in an impl method → V0014
+(#5143); trailing spawn in a loop body → V0014 (#5145); spawn in a
+non-trailing `if` branch → V0014 (#5145); spawn in a value-position `if`
+branch → none; discarded spawn in a protected `entry` → V0014 (#5143).
+End-to-end via `./bin/lyric build` on both `--target dotnet` and
+`--target jvm` (V0014 fires identically — it is a shared front-end check).
+Regression: `async_sm_self_test.l` (57/57, including the Phase-4 spawn
+tests) passes unchanged; no existing spawn usage is newly rejected.
 
 **Related:** D119 (slice plan; this is S2), D-N-022 (native value-position
 diagnostic V0014 generalises), V0012 (the sibling await-in-try pass this

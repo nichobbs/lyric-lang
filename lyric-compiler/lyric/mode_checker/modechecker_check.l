@@ -2078,104 +2078,114 @@ func isSpawnExprMc(e: in Expr): Bool {
   }
 }
 
-func walkExprOrBlockForSpawn(ctx: in SpawnCtx, eob: in ExprOrBlock): Unit {
+// `valuePos` = is this expr-or-block's value used?  A block's value-position
+// flows to its trailing statement (walkBlockForSpawn), which is what decides
+// whether a *trailing* `spawn` is consumed (returned) or discarded.
+func walkExprOrBlockForSpawn(ctx: in SpawnCtx, valuePos: in Bool, eob: in ExprOrBlock): Unit {
   match eob {
-    case EOBExpr(e) -> walkExprForSpawn(ctx, e)
-    case EOBBlock(blk) -> walkBlockForSpawn(ctx, blk)
+    case EOBExpr(e) -> walkExprForSpawn(ctx, valuePos, e)
+    case EOBBlock(blk) -> walkBlockForSpawn(ctx, valuePos, blk)
   }
 }
 
 // Walk an expression looking for statement-bearing sub-nodes (blocks, lambdas)
 // where a discarded `spawn` could appear.  A `spawn` in pure expression
-// position is not flagged here (only statement position is); this walk just
-// descends to reach nested statements, resetting `inScope` at lambda
-// boundaries.
-func walkExprForSpawn(ctx: in SpawnCtx, e: in Expr): Unit {
+// position is not flagged here (only statement position is); this walk descends
+// to reach nested statements, resetting `inScope` at lambda boundaries and
+// threading `valuePos` so a trailing spawn inside an `if`/`match` branch inherits
+// whether the branch's value is used.  Operand sub-expressions are always in
+// value position (their value is consumed by the operator/call), so they recurse
+// with `valuePos = true`; only the value-transparent forms (EParen, EBlock,
+// EUnsafe, ETry) and the branch bodies of EIf/EMatch propagate the incoming
+// `valuePos`.
+func walkExprForSpawn(ctx: in SpawnCtx, valuePos: in Bool, e: in Expr): Unit {
   match e.kind {
-    case EAwait(inner) -> walkExprForSpawn(ctx, inner)
-    case EParen(inner) -> walkExprForSpawn(ctx, inner)
+    case EAwait(inner) -> walkExprForSpawn(ctx, true, inner)
+    case EParen(inner) -> walkExprForSpawn(ctx, valuePos, inner)
     case ETuple(exprs) -> {
       var i = 0
       while i < exprs.count {
-        walkExprForSpawn(ctx, exprs[i])
+        walkExprForSpawn(ctx, true, exprs[i])
         i = i + 1
       }
     }
     case EList(exprs) -> {
       var i = 0
       while i < exprs.count {
-        walkExprForSpawn(ctx, exprs[i])
+        walkExprForSpawn(ctx, true, exprs[i])
         i = i + 1
       }
     }
     case EIf(cond, thenB, elseOpt, _) -> {
-      walkExprForSpawn(ctx, cond)
-      walkExprOrBlockForSpawn(ctx, thenB)
+      walkExprForSpawn(ctx, true, cond)
+      walkExprOrBlockForSpawn(ctx, valuePos, thenB)
       match elseOpt {
-        case Some(elseB) -> walkExprOrBlockForSpawn(ctx, elseB)
+        case Some(elseB) -> walkExprOrBlockForSpawn(ctx, valuePos, elseB)
         case None -> {
         }
       }
     }
     case EMatch(scrutinee, arms) -> {
-      walkExprForSpawn(ctx, scrutinee)
+      walkExprForSpawn(ctx, true, scrutinee)
       var i = 0
       while i < arms.count {
         match arms[i].guard {
-          case Some(g) -> walkExprForSpawn(ctx, g)
+          case Some(g) -> walkExprForSpawn(ctx, true, g)
           case None -> {
           }
         }
-        walkExprOrBlockForSpawn(ctx, arms[i].body)
+        walkExprOrBlockForSpawn(ctx, valuePos, arms[i].body)
         i = i + 1
       }
     }
-    case EYield(inner) -> walkExprForSpawn(ctx, inner)
-    case ESpawn(inner) -> walkExprForSpawn(ctx, inner)
-    case ETry(inner) -> walkExprForSpawn(ctx, inner)
-    case EOld(inner) -> walkExprForSpawn(ctx, inner)
-    case EPropagate(inner) -> walkExprForSpawn(ctx, inner)
-    case EPrefix(_, operand) -> walkExprForSpawn(ctx, operand)
+    case EYield(inner) -> walkExprForSpawn(ctx, true, inner)
+    case ESpawn(inner) -> walkExprForSpawn(ctx, true, inner)
+    case ETry(inner) -> walkExprForSpawn(ctx, valuePos, inner)
+    case EOld(inner) -> walkExprForSpawn(ctx, true, inner)
+    case EPropagate(inner) -> walkExprForSpawn(ctx, true, inner)
+    case EPrefix(_, operand) -> walkExprForSpawn(ctx, true, operand)
     case EBinop(_, lhs, rhs) -> {
-      walkExprForSpawn(ctx, lhs)
-      walkExprForSpawn(ctx, rhs)
+      walkExprForSpawn(ctx, true, lhs)
+      walkExprForSpawn(ctx, true, rhs)
     }
     case EAssign(target, _, value) -> {
-      walkExprForSpawn(ctx, target)
-      walkExprForSpawn(ctx, value)
+      walkExprForSpawn(ctx, true, target)
+      walkExprForSpawn(ctx, true, value)
     }
     case ECall(fn, args) -> {
-      walkExprForSpawn(ctx, fn)
+      walkExprForSpawn(ctx, true, fn)
       var i = 0
       while i < args.count {
         match args[i] {
-          case CANamed(_, v, _) -> walkExprForSpawn(ctx, v)
-          case CAPositional(x) -> walkExprForSpawn(ctx, x)
+          case CANamed(_, v, _) -> walkExprForSpawn(ctx, true, v)
+          case CAPositional(x) -> walkExprForSpawn(ctx, true, x)
         }
         i = i + 1
       }
     }
-    case ETypeApp(fn, _) -> walkExprForSpawn(ctx, fn)
+    case ETypeApp(fn, _) -> walkExprForSpawn(ctx, true, fn)
     case EIndex(recv, indices) -> {
-      walkExprForSpawn(ctx, recv)
+      walkExprForSpawn(ctx, true, recv)
       var i = 0
       while i < indices.count {
-        walkExprForSpawn(ctx, indices[i])
+        walkExprForSpawn(ctx, true, indices[i])
         i = i + 1
       }
     }
-    case EMember(recv, _) -> walkExprForSpawn(ctx, recv)
-    case EBlock(blk) -> walkBlockForSpawn(ctx, blk)
-    case EUnsafe(blk) -> walkBlockForSpawn(ctx, blk)
+    case EMember(recv, _) -> walkExprForSpawn(ctx, true, recv)
+    case EBlock(blk) -> walkBlockForSpawn(ctx, valuePos, blk)
+    case EUnsafe(blk) -> walkBlockForSpawn(ctx, valuePos, blk)
     case ELambda(_, body) -> {
+      // A lambda body is its own value-position context (it returns its value);
+      // reset inScope because the lambda may outlive the enclosing scope.
       val lambdaCtx = SpawnCtx(fnName = ctx.fnName, inScope = false, diag = ctx.diag)
-      walkBlockForSpawn(lambdaCtx, body)
+      walkBlockForSpawn(lambdaCtx, true, body)
     }
     case EInterpolated(segs) -> {
       var i = 0
       while i < segs.count {
         match segs[i] {
-          case ISExpr(x) -> walkExprForSpawn(ctx, x)
+          case ISExpr(x) -> walkExprForSpawn(ctx, true, x)
           case ISText(_, _) -> {
           }
         }
@@ -2185,32 +2195,32 @@ func walkExprForSpawn(ctx: in SpawnCtx, e: in Expr): Unit {
     case ERange(bound) -> {
       match bound {
         case RBClosed(lo, hi) -> {
-          walkExprForSpawn(ctx, lo)
-          walkExprForSpawn(ctx, hi)
+          walkExprForSpawn(ctx, true, lo)
+          walkExprForSpawn(ctx, true, hi)
         }
         case RBHalfOpen(lo, hi) -> {
-          walkExprForSpawn(ctx, lo)
-          walkExprForSpawn(ctx, hi)
+          walkExprForSpawn(ctx, true, lo)
+          walkExprForSpawn(ctx, true, hi)
         }
-        case RBLowerOpen(hi) -> walkExprForSpawn(ctx, hi)
-        case RBUpperOpen(lo) -> walkExprForSpawn(ctx, lo)
+        case RBLowerOpen(hi) -> walkExprForSpawn(ctx, true, hi)
+        case RBUpperOpen(lo) -> walkExprForSpawn(ctx, true, lo)
       }
     }
     case EForall(_, whereOpt, body) -> {
       match whereOpt {
-        case Some(w) -> walkExprForSpawn(ctx, w)
+        case Some(w) -> walkExprForSpawn(ctx, true, w)
         case None -> {
         }
       }
-      walkExprForSpawn(ctx, body)
+      walkExprForSpawn(ctx, true, body)
     }
     case EExists(_, whereOpt, body) -> {
       match whereOpt {
-        case Some(w) -> walkExprForSpawn(ctx, w)
+        case Some(w) -> walkExprForSpawn(ctx, true, w)
         case None -> {
         }
       }
-      walkExprForSpawn(ctx, body)
+      walkExprForSpawn(ctx, true, body)
     }
     case ELiteral(_) -> {
     }
@@ -2225,38 +2235,38 @@ func walkExprForSpawn(ctx: in SpawnCtx, e: in Expr): Unit {
   }
 }
 
-// `isLast` marks the trailing statement of the enclosing block.  A trailing
-// `SExpr` is in *value* position (it is the block's value — a function return, an
-// expression-block value, a branch result), so a trailing `spawn` is not
-// discarded and must not be flagged (that would false-positive on a function
-// that returns the spawned task, #5141).  Only a *non-trailing* `SExpr(spawn)` —
-// which has code after it, so its value is provably thrown away — is
-// fire-and-forget.  (A trailing spawn in a statement-position block, e.g. a loop
-// body, is a value-position follow-up, deliberately not flagged here to stay
-// false-positive-free.)
-func walkStmtForSpawn(ctx: in SpawnCtx, isLast: in Bool, st: in Statement): Unit {
+// `stmtValuePos` = is *this statement's* value used?  It is true only for the
+// trailing statement of a block that is itself in value position (a function or
+// lambda body, an expression-block, or a value-context `if`/`match` branch).  A
+// `spawn` in statement position is discarded (fire-and-forget) unless its value
+// is used, so V0014 fires when the statement is a `spawn` (through parens), is
+// not inside a `scope`, and is not in value position.  This correctly flags a
+// trailing spawn in a loop / `try` / `defer` body (whose value is thrown away)
+// and a spawn in a non-trailing `if` branch, while exempting a spawn returned as
+// a block's value (#5141) or joined by a `scope`.
+func walkStmtForSpawn(ctx: in SpawnCtx, stmtValuePos: in Bool, st: in Statement): Unit {
   match st.kind {
     case SExpr(x) -> {
-      if not ctx.inScope and not isLast and isSpawnExprMc(x) {
+      if not ctx.inScope and not stmtValuePos and isSpawnExprMc(x) {
         ctx.diag.add(
           errorDiagnostic(
             "V0014",
-            "spawned task is discarded in '" + ctx.fnName +
-              "': a `spawn` used as a statement outside a `scope { }` is fire-and-forget. " +
+            "spawned task is discarded in '" + ctx.fnName + "': a `spawn` whose result is thrown away is fire-and-forget. " +
               "Bind and `await` it (`val t = spawn ...; await t`), or run it inside a `scope { }`.",
             st.span
           )
         )
       }
-      walkExprForSpawn(ctx, x)
+      // The if/match branches inside x inherit this statement's value position.
+      walkExprForSpawn(ctx, stmtValuePos, x)
     }
     case SLocal(binding) -> {
       match binding {
-        case LBVal(_, _, init) -> walkExprForSpawn(ctx, init)
-        case LBLet(_, _, init) -> walkExprForSpawn(ctx, init)
+        case LBVal(_, _, init) -> walkExprForSpawn(ctx, true, init)
+        case LBLet(_, _, init) -> walkExprForSpawn(ctx, true, init)
         case LBVar(_, _, initOpt) -> {
           match initOpt {
-            case Some(init) -> walkExprForSpawn(ctx, init)
+            case Some(init) -> walkExprForSpawn(ctx, true, init)
             case None -> {
             }
           }
@@ -2264,48 +2274,50 @@ func walkStmtForSpawn(ctx: in SpawnCtx, isLast: in Bool, st: in Statement): Unit
       }
     }
     case SAssign(t, _, v) -> {
-      walkExprForSpawn(ctx, t)
-      walkExprForSpawn(ctx, v)
+      walkExprForSpawn(ctx, true, t)
+      walkExprForSpawn(ctx, true, v)
     }
     case SReturn(valOpt) -> {
       match valOpt {
-        case Some(v) -> walkExprForSpawn(ctx, v)
+        case Some(v) -> walkExprForSpawn(ctx, true, v)
         case None -> {
         }
       }
     }
-    case SThrow(x) -> walkExprForSpawn(ctx, x)
+    case SThrow(x) -> walkExprForSpawn(ctx, true, x)
     case STry(body, catches, finally_) -> {
-      walkBlockForSpawn(ctx, body)
+      // try / catch / finally bodies are statement-position (their trailing
+      // value is discarded), so a trailing spawn in them is fire-and-forget.
+      walkBlockForSpawn(ctx, false, body)
       var ci = 0
       while ci < catches.count {
-        walkBlockForSpawn(ctx, catches[ci].body)
+        walkBlockForSpawn(ctx, false, catches[ci].body)
         ci = ci + 1
       }
       match finally_ {
-        case Some(fb) -> walkBlockForSpawn(ctx, fb)
+        case Some(fb) -> walkBlockForSpawn(ctx, false, fb)
         case None -> {
         }
       }
     }
-    case SDefer(body) -> walkBlockForSpawn(ctx, body)
+    case SDefer(body) -> walkBlockForSpawn(ctx, false, body)
     case SScope(_, body) -> {
       val scopeCtx = SpawnCtx(fnName = ctx.fnName, inScope = true, diag = ctx.diag)
-      walkBlockForSpawn(scopeCtx, body)
+      walkBlockForSpawn(scopeCtx, false, body)
     }
     case SFor(_, _, iter, body) -> {
-      walkExprForSpawn(ctx, iter)
-      walkBlockForSpawn(ctx, body)
+      walkExprForSpawn(ctx, true, iter)
+      walkBlockForSpawn(ctx, false, body)
     }
     case SWhile(_, cond, body) -> {
-      walkExprForSpawn(ctx, cond)
-      walkBlockForSpawn(ctx, body)
+      walkExprForSpawn(ctx, true, cond)
+      walkBlockForSpawn(ctx, false, body)
     }
-    case SLoop(_, body) -> walkBlockForSpawn(ctx, body)
-    case SInvariant(x) -> walkExprForSpawn(ctx, x)
+    case SLoop(_, body) -> walkBlockForSpawn(ctx, false, body)
+    case SInvariant(x) -> walkExprForSpawn(ctx, true, x)
     case SRule(l, r) -> {
-      walkExprForSpawn(ctx, l)
-      walkExprForSpawn(ctx, r)
+      walkExprForSpawn(ctx, true, l)
+      walkExprForSpawn(ctx, true, r)
     }
     case SBreak(_) -> {
     }
@@ -2316,12 +2328,24 @@ func walkStmtForSpawn(ctx: in SpawnCtx, isLast: in Bool, st: in Statement): Unit
   }
 }
 
-func walkBlockForSpawn(ctx: in SpawnCtx, blk: in Block): Unit {
+// `valuePos` = is this block's trailing value used?  It flows to the trailing
+// statement only; every earlier statement is in statement position (its value
+// is discarded — there is code after it).
+func walkBlockForSpawn(ctx: in SpawnCtx, valuePos: in Bool, blk: in Block): Unit {
   var i = 0
   while i < blk.statements.count {
-    val isLast = i == blk.statements.count - 1
-    walkStmtForSpawn(ctx, isLast, blk.statements[i])
+    val stmtValuePos = valuePos and i == blk.statements.count - 1
+    walkStmtForSpawn(ctx, stmtValuePos, blk.statements[i])
     i = i + 1
+  }
+}
+
+// A function / entry body is in value position (its trailing value is the
+// return value).
+func walkBodyForSpawn(ctx: in SpawnCtx, body: in FunctionBody): Unit {
+  match body {
+    case FBExpr(e) -> walkExprForSpawn(ctx, true, e)
+    case FBBlock(blk) -> walkBlockForSpawn(ctx, true, blk)
   }
 }
 
@@ -2331,12 +2355,14 @@ func checkFuncForSpawn(fn: in FunctionDecl, diag: in List[Diagnostic]): Unit {
     }
     case Some(body) -> {
       val ctx = SpawnCtx(fnName = fn.name, inScope = false, diag = diag)
-      match body {
-        case FBExpr(e) -> walkExprForSpawn(ctx, e)
-        case FBBlock(blk) -> walkBlockForSpawn(ctx, blk)
-      }
+      walkBodyForSpawn(ctx, body)
     }
   }
+}
+
+func checkEntryForSpawn(entry: in EntryDecl, diag: in List[Diagnostic]): Unit {
+  val ctx = SpawnCtx(fnName = entry.name, inScope = false, diag = diag)
+  walkBodyForSpawn(ctx, entry.body)
 }
 
 func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel, diag: in List[Diagnostic]): Unit {
@@ -2377,6 +2403,20 @@ func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel,
           match decl.members[mi] {
             case IMplFunc(fn) -> checkFuncForSpawn(fn, diag)
             case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IProtected(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMFunc(fn) -> checkFuncForSpawn(fn, diag)
+            case PMEntry(entryDecl) -> checkEntryForSpawn(entryDecl, diag)
+            case PMField(_) -> {
+            }
+            case PMInvariant(_) -> {
             }
           }
           mi = mi + 1

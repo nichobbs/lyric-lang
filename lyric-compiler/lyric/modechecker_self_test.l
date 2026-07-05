@@ -185,6 +185,37 @@ test "discarded spawn in an impl method is V0014" {
   assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in impl method: V0014")
 }
 
+test "trailing spawn in a loop body is V0014" {
+  // #5145: a loop body's trailing value is discarded, so a trailing spawn there
+  // is fire-and-forget even though it is the block's last statement.
+  val src = "package P\nasync func f(): Unit {\n  while true {\n    spawn g()\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "trailing spawn in loop body: V0014")
+}
+
+test "spawn in a non-trailing if branch is V0014" {
+  // #5145: the `if` is a non-trailing statement, so its branch value is
+  // discarded — a spawn ending the branch is fire-and-forget.
+  val src = "package P\nasync func f(): Unit {\n  if true {\n    spawn g()\n  }\n  val done = 1\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "spawn in non-trailing if branch: V0014")
+}
+
+test "spawn in a value-position if branch is not V0014" {
+  // The `if` is the function's trailing (return) value, so a branch-ending spawn
+  // is returned, not discarded.
+  val src = "package P\nasync func f(): Int {\n  if true { spawn g() } else { spawn h() }\n}\nasync func g(): Int { 1 }\nasync func h(): Int { 2 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "spawn in value-position if branch: no V0014")
+}
+
+test "discarded spawn in a protected entry is V0014" {
+  // #5143: protected-type entry/func bodies must be checked too.
+  val src = "package P\nprotected type Pt {\n  var n: Int = 0\n  entry go(): Unit {\n    spawn g()\n    n = 1\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in protected entry: V0014")
+}
+
 test "unsafe allowed no error" {
   val src = "@proof_required(unsafe_blocks_allowed)\npackage P\nfunc f(): Unit { unsafe { } }\n"
   val result = parseCheck(src)
