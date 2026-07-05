@@ -2914,7 +2914,13 @@ pub func awaitLogicalType(ctx: in FuncCtx, inner: in Expr): Option[JvmType] {
     case EParen(e) -> awaitLogicalType(ctx, e)
     case EPath(p) -> {
       if p.segments.count == 1 {
-        mapGet(ctx.spawnResultTypes, lastSegment(p))
+        // Look the result type up by the name's current JVM slot (#5191): the
+        // await loads that slot, so a slot-keyed type keeps the coercion matched
+        // to the binding actually occupying it under nested-shadow slot reuse.
+        match lookupSlot(ctx, lastSegment(p)) {
+          case Some(slot) -> mapGet(ctx.spawnResultTypes, spawnSlotKey(slot))
+          case None -> None
+        }
       } else {
         None
       }

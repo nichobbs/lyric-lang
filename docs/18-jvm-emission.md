@@ -1225,6 +1225,18 @@ mutable state). The safe idioms — each `spawn` returns its result through
 `spawn` body that writes a captured outer `var` read by a sibling is exposed.
 Adding a capture-mutation diagnostic is the tracked follow-up.
 
+**Known limitation — nested-shadow slot reuse (tracked, #5191).** `await`'s
+unbox/checkcast coercion is keyed by the binding's JVM local **slot**
+(`spawnResultTypes`, keyed via `spawnSlotKey`), so it always matches the binding
+occupying that slot. What it inherits — like every local — is the JVM backend's
+pre-existing slot-reuse behaviour: a nested `if`/`match` binding that **shadows**
+an outer, still-live local of the same verifier type reuses the outer's slot
+(`allocSlot`'s same-frame-type reuse), clobbering it. This is spawn-independent —
+`val t = 7; if c { val t = 99 }; t` already yields `99`, not `7` — so a
+`spawn`-bound name shadowed the same way reads the inner task's `Future` after the
+inner block. The safe idiom (don't shadow a still-live spawn binding; use a fresh
+name) sidesteps it; the general slot-reuse fix is tracked in #5191.
+
 ### 15.4 Java-interop with `ExecutorService`
 
 A Lyric scope that calls into a Java library expecting an

@@ -15775,6 +15775,18 @@ func collectAwaitTypesStmtPB(
 // passed into recursion), which avoids the F# bootstrap emitter limitation where
 // two-arg .add() and one-arg .add() on `in Map[K,V]` / `in List[T]` parameters
 // may fail BCL dispatch when type args include non-BCL Lyric types.
+// The `spawn`'s inner expression of a (possibly parenthesised) initialiser
+// `val t = (spawn f(x))`, else `None`.  Peels `EParen` so a parenthesised spawn
+// is still recognised by the pre-scan (the MSIL analogue of the JVM #5194 fix),
+// mirroring `inferCallReturnTypePB`, which already peels `EParen`.
+func spawnInnerOfInitMsil(init: in Expr): Option[Expr] {
+  match init.kind {
+    case EParen(inner) -> spawnInnerOfInitMsil(inner)
+    case ESpawn(spawnInner) -> Some(value = spawnInner)
+    case _ -> None
+  }
+}
+
 // Record a single `val x = spawn asyncFn(…)` binding into the pre-scan spawn
 // lists when its initialiser is a `spawn` of a `Task`-typed call.  Split out of
 // `collectSpawnBindingsStmtMsil` so the `SLocal` case reads like its sibling
@@ -15790,15 +15802,15 @@ func collectSpawnBindingLocalMsil(
     case LBVal(pat, _, init) -> {
       match pat.kind {
         case PBinding(bindName, _) -> {
-          match init.kind {
-            case ESpawn(spawnInner) -> {
+          match spawnInnerOfInitMsil(init) {
+            case Some(spawnInner) -> {
               val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys)
               if isTaskTypeMsil(cctx, sTy) {
                 spawnNms.add(bindName)
                 spawnTys.add(sTy)
               }
             }
-            case _ -> {
+            case None -> {
             }
           }
         }
@@ -15815,7 +15827,7 @@ func collectSpawnBindingLocalMsil(
 // recursing into block-bearing statements (`scope { }`, loops, `try`) so a spawn
 // bound inside a `scope { }` — the structured-concurrency shape — is captured and
 // a later `await x` resolves the right TaskAwaiter<T> type.  Spawn bindings inside
-// `if` / `match` branch *expressions* remain a deferred case.
+// `if` / `match` branch *expressions* remain a deferred case (tracked in #5193).
 func collectSpawnBindingsStmtMsil(
   cctx: in CodegenCtx,
   pkgName: in String,

@@ -3363,6 +3363,12 @@ func findLoweredModuleVal(cache: in List[LoweredModuleVal], name: in String): Op
 // executor's wrapper.  Lives in its own method frame, so its exception region
 // begins with a clean operand stack — the reason `await` calls it via
 // `invokestatic` instead of inlining the try/catch (see `lowerFutureGet`).
+//
+// `InterruptedException` (the other checked exception `Future.get()` declares) is
+// intentionally not caught: it cannot arise on today's baseline, which never
+// interrupts a joining thread — the deferred JEP 505 sibling-cancel-on-first-fault
+// follow-up (D120) is what would introduce interruption, and it will add the
+// handler alongside the cancel wiring (tracked in #5192).
 func makeAwaitHelperFunc(): LFunc {
   val futureTy = JRef(className = "java/util/concurrent/Future")
   val objTy = JRef(className = "java/lang/Object")

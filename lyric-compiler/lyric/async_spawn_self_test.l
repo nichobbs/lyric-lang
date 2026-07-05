@@ -95,6 +95,17 @@ async func sumThree(a: in Int, b: in Int, c: in Int): Int {
   }
 }
 
+// Parenthesised spawn initialisers `val t = (spawn f(x))`: the result-type
+// recording must peel the `EParen` (#5194) or `await` would not unbox the
+// primitives and the sum would hit the both-`Object` arithmetic gap (#2862).
+async func parenSpawnSum(a: in Int, b: in Int): Int {
+  scope {
+    val ta = (spawn doubleIt(a))
+    val tb = (spawn doubleIt(b))
+    return await ta + await tb
+  }
+}
+
 // A `Unit`-returning spawned task: the synthesized `Callable` returns a boxed
 // null, which `await` discards.  The side effect (writing an outer var) is the
 // observable.  Confirms the void-return Callable path verifies and joins.
@@ -190,6 +201,11 @@ test "bare spawn without a scope round-trips through await" {
 test "three concurrent spawns combine correctly" {
   // double(5) + addOne(6) + double(7) = 10 + 7 + 14 = 31
   assertEqualInt(await sumThree(5, 6, 7), 31, "double(5)+addOne(6)+double(7)")
+}
+
+test "parenthesized spawn initializers unbox for arithmetic" {
+  assertEqualInt(await parenSpawnSum(3, 4), 14, "paren double(3)+double(4)")
+  assertEqualInt(await parenSpawnSum(10, 20), 60, "paren double(10)+double(20)")
 }
 
 test "unit-returning spawned task joins with no leaked value" {

@@ -1684,6 +1684,10 @@ func lowerScopeStmt(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, span
 pub func recordSpawnResultType(ctx: in FuncCtx, name: in String, init: in Expr): Unit {
   if ctx.scopeExecSlots.count > 0 {
     match init.kind {
+      // Unwrap a parenthesised initialiser `val t = (spawn f(x))` so the spawn is
+      // still recognised (#5194), mirroring `spawnInnerResultType` /
+      // `awaitLogicalType`, which already peel `EParen`.
+      case EParen(inner) -> recordSpawnResultType(ctx, name, inner)
       case ESpawn(spawnInner) -> {
         match spawnInnerResultType(ctx, spawnInner) {
           case Some(t) -> putSpawnResultType(ctx, name, t)
@@ -1695,21 +1699,41 @@ pub func recordSpawnResultType(ctx: in FuncCtx, name: in String, init: in Expr):
   }
 }
 
-// Store `name -> t` in `ctx.spawnResultTypes`, skipping a `Unit` result (nothing
-// to unbox).  Reusing a spawn-binding name (a `var` reassigned to a new spawn, or
-// two sibling `scope { }` blocks binding the same name) overwrites the prior
-// entry: `Map.add` is backed by `Dictionary.Add`, which throws on a duplicate
-// key, so the existing entry is removed first — mirroring the `containsKey` +
-// `remove` guard `recordVarGenericArgs` uses at the same call sites (#5185).  `t`
-// is a clean parameter so the `JvmType` match is emitter-safe (see
-// `isVoidJvmType`).
+// Record a spawn binding's result type keyed by its JVM local SLOT, not its name
+// (#5191).  `await` resolves a name to its current slot (`lookupSlot`) and looks
+// the type up by that slot, so the unbox/checkcast coercion always matches the
+// binding actually occupying the slot — even when a nested shadow reuses the slot
+// (`allocSlot`'s same-verifier-type reuse).  A name-keyed map instead let a
+// nested `if`/`match` shadow's entry corrupt an outer, still-live binding's
+// coercion at compile time regardless of which branch runs.  `Unit` results are
+// skipped (nothing to unbox); `Map.add` (= `Dictionary.Add`) throws on a
+// duplicate key, so an existing entry for the slot is removed first (mirrors the
+// `containsKey`+`remove` guard `recordVarGenericArgs` uses, #5185).  `t` is a
+// clean parameter so the `JvmType` match is emitter-safe (see `isVoidJvmType`).
+//
+// The residual wrong-*value* when a nested shadow aliases an outer binding's slot
+// is a pre-existing, spawn-independent JVM slot-reuse limitation — `val t = 7; if
+// c { val t = 99 }; t` already yields 99 with no spawn involved — tracked in
+// #5191, not introduced by this change.
 func putSpawnResultType(ctx: in FuncCtx, name: in String, t: in JvmType): Unit {
   if not isVoidJvmType(t) {
-    if ctx.spawnResultTypes.containsKey(name) {
-      ctx.spawnResultTypes.remove(name)
+    match lookupSlot(ctx, name) {
+      case Some(slot) -> {
+        val key = spawnSlotKey(slot)
+        if ctx.spawnResultTypes.containsKey(key) {
+          ctx.spawnResultTypes.remove(key)
+        }
+        ctx.spawnResultTypes.add(key, t)
+      }
+      case None -> ()
     }
-    ctx.spawnResultTypes.add(name, t)
   }
+}
+
+// The `spawnResultTypes` map key for a JVM local slot (#5191).  A `slot:` prefix
+// keeps these entries visually distinct from other string keys.
+pub func spawnSlotKey(slot: in Int): String {
+  "slot:" + toString(slot)
 }
 
 // Synthesize `defer { <jvmCloseExecutorIntrinsic>(<execName>) }` as an AST
