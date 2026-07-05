@@ -804,10 +804,6 @@ static void test_process_op_basic(void) {
 static void test_process_op_kill(void) {
     /* A sleeping child killed mid-run: partial output preserved, op done,
      * signal-termination exit code reported. */
-    LyricList* args = lyric_list_new(1);
-    LyricString* a = lyric_string_from_literal((const uint8_t*)"echo pre; sleep 30", 18);
-    lyric_list_push(args, (int64_t)(intptr_t)a);
-    lyric_release(a);
     LyricList* argv = lyric_list_new(1);
     LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
     lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
@@ -815,7 +811,6 @@ static void test_process_op_kill(void) {
     LyricString* script = lyric_string_from_literal((const uint8_t*)"echo pre; sleep 30", 18);
     lyric_list_push(argv, (int64_t)(intptr_t)script);
     lyric_release(script);
-    lyric_release(args);
     void* op = lyric_process_start("/bin/sh", argv);
     lyric_release(argv);
     CHECK(!lyric_process_spawn_failed(op));
