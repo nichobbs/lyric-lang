@@ -2046,12 +2046,429 @@ pub func checkNativeFfiBoundary(file: in SourceFile, diag: in List[Diagnostic]):
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §10b. V0014 — a spawned task must be consumed (no fire-and-forget).
+//
+// D119: `spawn e` produces a task that must be awaited or joined by an
+// enclosing `scope { }`.  This pass rejects the unambiguous fire-and-forget
+// case — a `spawn` used in *statement position* (its result discarded) that is
+// not lexically inside a `scope`.  Inside a `scope`, a bare `spawn` statement is
+// fine (the scope joins the task at exit); as an `await` operand or a binding
+// initialiser it is consumed by construction.  Broader consumption analysis
+// (a `val` bound to a spawn but never awaited; a spawn flowing into a value
+// position) is a documented follow-up — the value-position case is already
+// diagnosed by the native backend at codegen.  `scope`/lambda boundaries are
+// tracked: a lambda body starts a fresh (out-of-scope) context because a lambda
+// may outlive the enclosing scope.
+// ─────────────────────────────────────────────────────────────────────────────
+record SpawnCtx {
+  fnName: String
+  inScope: Bool
+  diag: List[Diagnostic]
+}
+
+// True when `e` is a `spawn` expression (through redundant parentheses).
+func isSpawnExprMc(e: in Expr): Bool {
+  match e.kind {
+    case ESpawn(_) -> true
+    case EParen(inner) -> isSpawnExprMc(inner)
+    case _ -> false
+  }
+}
+
+// `valuePos` = is this expr-or-block's value used?  A block's value-position
+// flows to its trailing statement (walkBlockForSpawn), which is what decides
+// whether a *trailing* `spawn` is consumed (returned) or discarded.
+func walkExprOrBlockForSpawn(ctx: in SpawnCtx, valuePos: in Bool, eob: in ExprOrBlock): Unit {
+  match eob {
+    case EOBExpr(e) -> walkExprForSpawn(ctx, valuePos, e)
+    case EOBBlock(blk) -> walkBlockForSpawn(ctx, valuePos, blk)
+  }
+}
+
+// Walk an expression looking for statement-bearing sub-nodes (blocks, lambdas)
+// where a discarded `spawn` could appear.  A `spawn` in pure expression
+// position is not flagged here (only statement position is); this walk descends
+// to reach nested statements, resetting `inScope` at lambda boundaries and
+// threading `valuePos` so a trailing spawn inside an `if`/`match` branch inherits
+// whether the branch's value is used.  Operand sub-expressions are always in
+// value position (their value is consumed by the operator/call), so they recurse
+// with `valuePos = true`; only the value-transparent forms (EParen, EBlock,
+// EUnsafe, ETry) and the branch bodies of EIf/EMatch propagate the incoming
+// `valuePos`.
+func walkExprForSpawn(ctx: in SpawnCtx, valuePos: in Bool, e: in Expr): Unit {
+  match e.kind {
+    case EAwait(inner) -> walkExprForSpawn(ctx, true, inner)
+    case EParen(inner) -> walkExprForSpawn(ctx, valuePos, inner)
+    case ETuple(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        walkExprForSpawn(ctx, true, exprs[i])
+        i = i + 1
+      }
+    }
+    case EList(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        walkExprForSpawn(ctx, true, exprs[i])
+        i = i + 1
+      }
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      walkExprForSpawn(ctx, true, cond)
+      walkExprOrBlockForSpawn(ctx, valuePos, thenB)
+      match elseOpt {
+        case Some(elseB) -> walkExprOrBlockForSpawn(ctx, valuePos, elseB)
+        case None -> {
+        }
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      walkExprForSpawn(ctx, true, scrutinee)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> walkExprForSpawn(ctx, true, g)
+          case None -> {
+          }
+        }
+        walkExprOrBlockForSpawn(ctx, valuePos, arms[i].body)
+        i = i + 1
+      }
+    }
+    case EYield(inner) -> walkExprForSpawn(ctx, true, inner)
+    case ESpawn(inner) -> walkExprForSpawn(ctx, true, inner)
+    case ETry(inner) -> walkExprForSpawn(ctx, valuePos, inner)
+    case EOld(inner) -> walkExprForSpawn(ctx, true, inner)
+    case EPropagate(inner) -> walkExprForSpawn(ctx, true, inner)
+    case EPrefix(_, operand) -> walkExprForSpawn(ctx, true, operand)
+    case EBinop(_, lhs, rhs) -> {
+      walkExprForSpawn(ctx, true, lhs)
+      walkExprForSpawn(ctx, true, rhs)
+    }
+    case EAssign(target, _, value) -> {
+      walkExprForSpawn(ctx, true, target)
+      walkExprForSpawn(ctx, true, value)
+    }
+    case ECall(fn, args) -> {
+      walkExprForSpawn(ctx, true, fn)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(_, v, _) -> walkExprForSpawn(ctx, true, v)
+          case CAPositional(x) -> walkExprForSpawn(ctx, true, x)
+        }
+        i = i + 1
+      }
+    }
+    case ETypeApp(fn, _) -> walkExprForSpawn(ctx, true, fn)
+    case EIndex(recv, indices) -> {
+      walkExprForSpawn(ctx, true, recv)
+      var i = 0
+      while i < indices.count {
+        walkExprForSpawn(ctx, true, indices[i])
+        i = i + 1
+      }
+    }
+    case EMember(recv, _) -> walkExprForSpawn(ctx, true, recv)
+    case EBlock(blk) -> walkBlockForSpawn(ctx, valuePos, blk)
+    case EUnsafe(blk) -> walkBlockForSpawn(ctx, valuePos, blk)
+    case ELambda(_, body) -> {
+      // A lambda body is its own value-position context (it returns its value);
+      // reset inScope because the lambda may outlive the enclosing scope.
+      val lambdaCtx = SpawnCtx(fnName = ctx.fnName, inScope = false, diag = ctx.diag)
+      walkBlockForSpawn(lambdaCtx, true, body)
+    }
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(x) -> walkExprForSpawn(ctx, true, x)
+          case ISText(_, _) -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          walkExprForSpawn(ctx, true, lo)
+          walkExprForSpawn(ctx, true, hi)
+        }
+        case RBHalfOpen(lo, hi) -> {
+          walkExprForSpawn(ctx, true, lo)
+          walkExprForSpawn(ctx, true, hi)
+        }
+        case RBLowerOpen(hi) -> walkExprForSpawn(ctx, true, hi)
+        case RBUpperOpen(lo) -> walkExprForSpawn(ctx, true, lo)
+      }
+    }
+    case EForall(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> walkExprForSpawn(ctx, true, w)
+        case None -> {
+        }
+      }
+      walkExprForSpawn(ctx, true, body)
+    }
+    case EExists(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> walkExprForSpawn(ctx, true, w)
+        case None -> {
+        }
+      }
+      walkExprForSpawn(ctx, true, body)
+    }
+    case ELiteral(_) -> {
+    }
+    case EPath(_) -> {
+    }
+    case ESelf -> {
+    }
+    case EResult -> {
+    }
+    case EError -> {
+    }
+  }
+}
+
+// `stmtValuePos` = is *this statement's* value used?  It is true only for the
+// trailing statement of a block that is itself in value position (a function or
+// lambda body, an expression-block, or a value-context `if`/`match` branch).  A
+// `spawn` in statement position is discarded (fire-and-forget) unless its value
+// is used, so V0014 fires when the statement is a `spawn` (through parens), is
+// not inside a `scope`, and is not in value position.  This correctly flags a
+// trailing spawn in a loop / `try` / `defer` body (whose value is thrown away)
+// and a spawn in a non-trailing `if` branch, while exempting a spawn returned as
+// a block's value (#5141) or joined by a `scope`.
+func walkStmtForSpawn(ctx: in SpawnCtx, stmtValuePos: in Bool, st: in Statement): Unit {
+  match st.kind {
+    case SExpr(x) -> {
+      if not ctx.inScope and not stmtValuePos and isSpawnExprMc(x) {
+        ctx.diag.add(
+          errorDiagnostic(
+            "V0014",
+            "spawned task is discarded in '" + ctx.fnName + "': a `spawn` whose result is thrown away is fire-and-forget. " +
+              "Bind and `await` it (`val t = spawn ...; await t`), or run it inside a `scope { }`.",
+            st.span
+          )
+        )
+      }
+      // The if/match branches inside x inherit this statement's value position.
+      walkExprForSpawn(ctx, stmtValuePos, x)
+    }
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> walkExprForSpawn(ctx, true, init)
+        case LBLet(_, _, init) -> walkExprForSpawn(ctx, true, init)
+        case LBVar(_, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> walkExprForSpawn(ctx, true, init)
+            case None -> {
+            }
+          }
+        }
+      }
+    }
+    case SAssign(t, _, v) -> {
+      walkExprForSpawn(ctx, true, t)
+      walkExprForSpawn(ctx, true, v)
+    }
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(v) -> walkExprForSpawn(ctx, true, v)
+        case None -> {
+        }
+      }
+    }
+    case SThrow(x) -> walkExprForSpawn(ctx, true, x)
+    case STry(body, catches, finally_) -> {
+      // A `try`/`catch` produces the statement's value (the try body's value, or
+      // a catch handler's on the exception path), so the try and catch bodies
+      // inherit this statement's value position — a trailing spawn there is
+      // returned, not discarded, when the `try` is in value position (#5148).
+      // A `finally` body's value is always discarded.
+      walkBlockForSpawn(ctx, stmtValuePos, body)
+      var ci = 0
+      while ci < catches.count {
+        walkBlockForSpawn(ctx, stmtValuePos, catches[ci].body)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> walkBlockForSpawn(ctx, false, fb)
+        case None -> {
+        }
+      }
+    }
+    case SDefer(body) -> walkBlockForSpawn(ctx, false, body)
+    case SScope(_, body) -> {
+      val scopeCtx = SpawnCtx(fnName = ctx.fnName, inScope = true, diag = ctx.diag)
+      walkBlockForSpawn(scopeCtx, false, body)
+    }
+    case SFor(_, _, iter, body) -> {
+      walkExprForSpawn(ctx, true, iter)
+      walkBlockForSpawn(ctx, false, body)
+    }
+    case SWhile(_, cond, body) -> {
+      walkExprForSpawn(ctx, true, cond)
+      walkBlockForSpawn(ctx, false, body)
+    }
+    case SLoop(_, body) -> walkBlockForSpawn(ctx, false, body)
+    case SInvariant(x) -> walkExprForSpawn(ctx, true, x)
+    case SRule(l, r) -> {
+      walkExprForSpawn(ctx, true, l)
+      walkExprForSpawn(ctx, true, r)
+    }
+    case SBreak(_) -> {
+    }
+    case SContinue(_) -> {
+    }
+    case SItem(_) -> {
+    }
+  }
+}
+
+// `valuePos` = is this block's trailing value used?  It flows to the trailing
+// statement only; every earlier statement is in statement position (its value
+// is discarded — there is code after it).
+func walkBlockForSpawn(ctx: in SpawnCtx, valuePos: in Bool, blk: in Block): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    val stmtValuePos = valuePos and i == blk.statements.count - 1
+    walkStmtForSpawn(ctx, stmtValuePos, blk.statements[i])
+    i = i + 1
+  }
+}
+
+// A function / entry body is in value position (its trailing value is the
+// return value).
+func walkBodyForSpawn(ctx: in SpawnCtx, body: in FunctionBody): Unit {
+  match body {
+    case FBExpr(e) -> walkExprForSpawn(ctx, true, e)
+    case FBBlock(blk) -> walkBlockForSpawn(ctx, true, blk)
+  }
+}
+
+func checkFuncForSpawn(fn: in FunctionDecl, diag: in List[Diagnostic]): Unit {
+  match fn.body {
+    case None -> {
+    }
+    case Some(body) -> {
+      val ctx = SpawnCtx(fnName = fn.name, inScope = false, diag = diag)
+      walkBodyForSpawn(ctx, body)
+    }
+  }
+}
+
+func checkEntryForSpawn(entryDecl: in EntryDecl, diag: in List[Diagnostic]): Unit {
+  val ctx = SpawnCtx(fnName = entryDecl.name, inScope = false, diag = diag)
+  walkBodyForSpawn(ctx, entryDecl.body)
+}
+
+// An aspect `around` body is spliced into every matched function during
+// weaving — which runs *after* mode checking and is never re-checked — so a
+// discarded `spawn` in the advice must be caught here (#5158).  The advice
+// body produces the wrapped call's result, so it is a value-position block.
+func checkAspectForSpawn(decl: in AspectDecl, diag: in List[Diagnostic]): Unit {
+  match decl.around {
+    case Some(a) -> {
+      val ctx = SpawnCtx(fnName = "aspect " + decl.name, inScope = false, diag = diag)
+      walkBlockForSpawn(ctx, true, a.body)
+    }
+    case None -> {
+    }
+  }
+}
+
+func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel, diag: in List[Diagnostic]): Unit {
+  // Proof-required functions already reject `spawn` outright (V0002); axiom
+  // bodies are exempt from mode checks.  Skip both to avoid overlap.
+  if vlIsAxiom(fileLevel) or vlIsProofRequired(fileLevel) {
+    return
+  }
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(fn) -> checkFuncForSpawn(fn, diag)
+      case IRecord(decl) | IExposedRec(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> checkFuncForSpawn(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IInterface(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMFunc(fn) -> checkFuncForSpawn(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IImpl(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> checkFuncForSpawn(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IProtected(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMFunc(fn) -> checkFuncForSpawn(fn, diag)
+            case PMEntry(entryDecl) -> checkEntryForSpawn(entryDecl, diag)
+            case PMField(_) -> {
+            }
+            case PMInvariant(_) -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IAspect(decl) -> checkAspectForSpawn(decl, diag)
+      case ITest(decl) -> {
+        // A `test { }` body is executed by `lyric test`; its trailing value is
+        // discarded, so a trailing spawn there is fire-and-forget (#5159).
+        val ctx = SpawnCtx(fnName = "test " + decl.title, inScope = false, diag = diag)
+        walkBlockForSpawn(ctx, false, decl.body)
+      }
+      case IProperty(decl) -> {
+        val ctx = SpawnCtx(fnName = "property " + decl.title, inScope = false, diag = diag)
+        walkBlockForSpawn(ctx, false, decl.body)
+      }
+      case IFixture(decl) -> {
+        // A fixture's init is a value-position expression (it produces the
+        // fixture value); a discarded spawn can still hide in a block within it.
+        val ctx = SpawnCtx(fnName = "fixture " + decl.name, inScope = false, diag = diag)
+        walkExprForSpawn(ctx, true, decl.init)
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §11. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta]): ModeCheckResult {
   val diag: List[Diagnostic] = newList()
   val fileLevel = levelOfFile(file, diag)
   checkAwaitInTry(file, fileLevel, diag)
+  checkSpawnConsumption(file, fileLevel, diag)
   checkNativeFfiBoundary(file, diag)
   if not vlIsProofRequired(fileLevel) {
     return ModeCheckResult(level = fileLevel, diagnostics = diag)

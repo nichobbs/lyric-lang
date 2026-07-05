@@ -139,6 +139,114 @@ test "unsafe block v0003" {
   assertTrue(hasDiagCode(result, "V0003"), "unsafe: V0003 emitted")
 }
 
+// ── V0014: a spawned task must be consumed (D119) ─────────────────────────────
+test "non-trailing bare spawn outside scope is V0014" {
+  val src = "package P\nasync func f(): Unit {\n  spawn g()\n  val done = 1\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn: V0014 emitted")
+}
+
+test "trailing spawn in value position is not V0014" {
+  // #5141: the trailing statement is the block's value (the return value here),
+  // so a trailing spawn is returned, not discarded — must not be flagged.
+  val src = "package P\nasync func f(): Int {\n  val a = 1\n  spawn g()\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "trailing spawn (return value): no V0014")
+}
+
+test "spawn bound and awaited is not V0014" {
+  val src = "package P\nasync func f(): Int {\n  val t = spawn g()\n  await t\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "spawn bound + awaited: no V0014")
+}
+
+test "await spawn is not V0014" {
+  val src = "package P\nasync func f(): Int {\n  await spawn g()\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "await spawn: no V0014")
+}
+
+test "non-trailing bare spawn inside scope is not V0014" {
+  val src = "package P\nasync func f(): Unit {\n  scope {\n    spawn g()\n    val done = 1\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "spawn inside scope: no V0014 (scope joins it)")
+}
+
+test "non-trailing dropped spawn inside a lambda is V0014" {
+  val src = "package P\nasync func f(): Unit {\n  val h = { x: Int -> spawn g()\n    x\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in lambda: V0014 (lambda may outlive scope)")
+}
+
+test "discarded spawn in an impl method is V0014" {
+  // #5143: impl-method bodies must be checked too.
+  val src = "package P\ninterface Svc {\n  func run(): Unit\n}\nrecord R {}\nimpl Svc for R {\n  func run(): Unit {\n    spawn g()\n    val done = 1\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in impl method: V0014")
+}
+
+test "trailing spawn in a loop body is V0014" {
+  // #5145: a loop body's trailing value is discarded, so a trailing spawn there
+  // is fire-and-forget even though it is the block's last statement.
+  val src = "package P\nasync func f(): Unit {\n  while true {\n    spawn g()\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "trailing spawn in loop body: V0014")
+}
+
+test "spawn in a non-trailing if branch is V0014" {
+  // #5145: the `if` is a non-trailing statement, so its branch value is
+  // discarded — a spawn ending the branch is fire-and-forget.
+  val src = "package P\nasync func f(): Unit {\n  if true {\n    spawn g()\n  }\n  val done = 1\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "spawn in non-trailing if branch: V0014")
+}
+
+test "spawn in a value-position if branch is not V0014" {
+  // The `if` is the function's trailing (return) value, so a branch-ending spawn
+  // is returned, not discarded.
+  val src = "package P\nasync func f(): Int {\n  if true { spawn g() } else { spawn h() }\n}\nasync func g(): Int { 1 }\nasync func h(): Int { 2 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "spawn in value-position if branch: no V0014")
+}
+
+test "discarded spawn in a protected entry is V0014" {
+  // #5143: protected-type entry/func bodies must be checked too.
+  val src = "package P\nprotected type Pt {\n  var n: Int = 0\n  entry go(): Unit {\n    spawn g()\n    n = 1\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in protected entry: V0014")
+}
+
+test "spawn in a value-position try/catch is not V0014" {
+  // #5148: a trailing try/catch is the block's value (the return value here),
+  // so a spawn ending the try or a catch handler is returned, not discarded.
+  val src = "package P\nasync func f(): Int {\n  try {\n    spawn g()\n  } catch Bug as _ {\n    spawn h()\n  }\n}\nasync func g(): Int { 1 }\nasync func h(): Int { 2 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "spawn in value-position try/catch: no V0014")
+}
+
+test "trailing spawn in a non-value try body is V0014" {
+  // #5148 (converse): a non-trailing try statement discards its value, so a
+  // trailing spawn in its body is fire-and-forget.
+  val src = "package P\nasync func f(): Unit {\n  try {\n    spawn g()\n  } catch Bug as _ {\n  }\n  val done = 1\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "trailing spawn in non-value try body: V0014")
+}
+
+test "discarded spawn in an aspect around body is V0014" {
+  // #5158: aspect `around` advice is spliced into real functions during weaving
+  // (after mode checking), so a fire-and-forget spawn there must be caught here.
+  val src = "package P\naspect A {\n  matches: name like \"f*\"\n  around(args) -> ret {\n    spawn g()\n    proceed(args)\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in aspect around: V0014")
+}
+
+test "discarded spawn in a test body is V0014" {
+  // #5159: `test { }` bodies are executed code and their value is discarded.
+  val src = "package P\ntest \"t\" {\n  spawn g()\n  val done = 1\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in test body: V0014")
+}
+
 test "unsafe allowed no error" {
   val src = "@proof_required(unsafe_blocks_allowed)\npackage P\nfunc f(): Unit { unsafe { } }\n"
   val result = parseCheck(src)
@@ -371,7 +479,6 @@ test "n0100 clean file no diagnostics" {
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "N0100")), "clean: no N0100")
 }
-
 
 test "n0100 nativenullptr outside unsafe_ffi" {
   val src = "package P\nfunc f(): Int {\n  val p = g(nativeNullPtr())\n  p\n}\nfunc g(x: Int): Int { x }\n"

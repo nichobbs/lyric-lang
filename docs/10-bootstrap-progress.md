@@ -29338,3 +29338,38 @@ leaf's prerequisite, where per-task pump cadences stop scaling.
 
 **Related:** D-N-023 (the decision entry), D-N-022, D-progress-593,
 #4752.
+
+### D-progress-598 — D119 slice S2: `V0014`, the shared front-end "spawned task must be consumed" diagnostic
+
+First runtime slice of D119's concurrency-gap resolution. The mode
+checker (`Lyric.ModeChecker`, shared by the MSIL, JVM, and native
+pipelines) now rejects the canonical fire-and-forget mistake — a `spawn`
+whose result is discarded (`error[V0014]`) — closing the most dangerous
+half of §7.4's "raw fire-and-forget is not available" guarantee before the
+runtime join machinery (slices S3–S6) lands.
+
+New pass `checkSpawnConsumption` in
+`lyric-compiler/lyric/mode_checker/modechecker_check.l`, wired into
+`checkFileWithImports` beside the V0012 await-in-try pass. It is a
+value-position-aware positional check: a `spawn` in statement position
+whose value is not used (not returned, not a binding initialiser, not an
+`await` operand) and not lexically inside a `scope` is flagged; the walk
+threads a `valuePos` flag so a *returned* trailing spawn is exempt while a
+trailing spawn in a `while`/`for`/`loop`/`try`/`defer` body or a
+non-trailing `if`/`match`/`try` branch is caught. Covers `IFunc`, record,
+interface, impl, and protected-type (`entry`/`func`) bodies, aspect
+`around` advice (spliced into real functions during weaving, which runs
+after mode checking), and `test`/`property`/`fixture` bodies. Zero false
+positives on the existing tree.
+
+Verified by 15 new `modechecker_self_test.l` cases (all pass), an
+`async_sm_self_test.l` regression run (57/57), and `./bin/lyric build` on
+both `--target dotnet` and `--target jvm`. Iterated through several review
+rounds (#5141 value-position false positive, #5143 impl/interface/protected
+coverage, #5145 loop/if discards, #5148 try/catch value position, #5158
+aspect `around` advice, #5159 test/property bodies) plus a CI-only
+`entry`-keyword collision the local v0.4.14 seed masked.
+
+**Related:** `docs/03-decision-log.md` D-progress-598 (full account) and
+D119 (the slice plan), D-N-022 (native value-position diagnostic V0014
+generalises), V0012 (the sibling await-in-try pass this mirrors).
