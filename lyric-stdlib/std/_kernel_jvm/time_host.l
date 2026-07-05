@@ -217,7 +217,7 @@ pub func hostSubDurations(a: in Duration, b: in Duration): Duration {
 // ISO-8601 formatting.
 // =====================================================================
 /// Instant.toString() returns ISO-8601 (e.g. "2021-01-01T00:00:00Z"),
-/// round-trippable via hostTryParseInstant.
+/// round-trippable via hostParseInstantOpt.
 pub func hostInstantToString(value: in Instant): String {
   value.toString()
 }

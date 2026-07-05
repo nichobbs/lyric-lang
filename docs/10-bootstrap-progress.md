@@ -29587,8 +29587,10 @@ parsing — works on native.
   instants decompose correctly); `addMonths` clamps day-of-month
   like both managed twins; ISO output is java.time-style (fraction
   only when non-zero, trimmed to 3/6/9 digits); the parser is strict
-  ISO with full field validation.  Fractional duration constructors
-  round via `llround(3)`.
+  ISO with full field validation; arithmetic that would leave the
+  i64-nanos window panics (#5213 — the analog of the managed twins'
+  out-of-range exceptions).  Fractional duration constructors round
+  via `llround(3)`.
 - **lyric-rt:** new `lyric_epoch_nanos` (full-resolution
   CLOCK_REALTIME) backs `hostNow`; C test pins it against
   `lyric_epoch_millis`.

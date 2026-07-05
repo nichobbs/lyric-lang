@@ -25,7 +25,9 @@
 //! field range validation — the strict end of the parse contract
 //! Std.Time documents (.NET's TryParse stays lenient on its own
 //! target).  Years outside 1679..2261 are rejected rather than
-//! silently wrapping the nanosecond range.
+//! silently wrapping the nanosecond range, and calendar/duration
+//! arithmetic that would leave the window panics (#5213) — the native
+//! analog of the managed twins' out-of-range exceptions.
 //!
 //! Fractional Duration constructors round to whole nanoseconds via
 //! llround(3) (libm, already on the native link line), mirroring the
@@ -166,8 +168,19 @@ pub func hostSince(later: in Instant, earlier: in Instant): Duration {
   Duration(nanos = later.epochNanos - earlier.epochNanos)
 }
 
+// The managed twins throw when instant arithmetic leaves their
+// representable range (ArgumentOutOfRangeException / DateTimeException);
+// the native analog is a panic (#5213) — silent i64 wraparound would
+// produce a valid-looking Instant from the wrong century.
 pub func hostPlus(t: in Instant, d: in Duration): Instant {
-  Instant(epochNanos = t.epochNanos + d.nanos)
+  val sum = t.epochNanos + d.nanos
+  if d.nanos > 0i64 and sum < t.epochNanos {
+    panic("Std.Time: instant arithmetic overflowed the native nanosecond range (years ~1678..2262)")
+  }
+  if d.nanos < 0i64 and sum > t.epochNanos {
+    panic("Std.Time: instant arithmetic overflowed the native nanosecond range (years ~1678..2262)")
+  }
+  Instant(epochNanos = sum)
 }
 
 // ── Inspection ───────────────────────────────────────────────────────
@@ -190,6 +203,12 @@ pub func hostAddMonths(t: in Instant, n: in Int): Instant {
   val m0 = c.year * 12 + (c.month - 1) + n
   val y = if m0 >= 0 { m0 / 12 } else { (m0 - 11) / 12 }
   val m = m0 - y * 12 + 1
+  // The managed twins throw when the result leaves their range; the
+  // native analog is a panic (#5213) — recomposing a year outside the
+  // i64-nanos window would silently wrap into the wrong century.
+  if y < 1678 or y > 2261 {
+    panic("Std.Time: addMonths/addYears result falls outside the native Instant range (years 1678..2261)")
+  }
   var d = c.day
   val dim = daysInMonth(y, m)
   if d > dim {

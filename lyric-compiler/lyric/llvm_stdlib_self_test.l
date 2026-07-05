@@ -361,6 +361,20 @@ test "Std.Time calendar: civil math, clamping, ISO round-trip (ASan)" {
   assertEqualInt(r.exitCode, 42, "time calendar seams")
 }
 
+// Instant arithmetic that would leave the i64-nanos window panics on
+// native (#5213) — the analog of the managed twins' out-of-range
+// exceptions.  A panic aborts the process, so this is its own program:
+// a successful (silently wrapped) run would exit 42 and fail the
+// assertion; the expected abort exits non-zero.
+test "Std.Time out-of-range calendar arithmetic panics on native (#5213)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val t = addYears(fromEpochMillis(0i64), 100000)\n" +
+    "  if instantAfter(t, fromEpochMillis(0i64)) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped-instead-of-panicked result would exit 42")
+}
+
 test "Result[Unit, E] payloads and diverging value-if branches (ASan)" {
   val src = "package T\n" + "import Std.Core\n" + "func mk(flag: Int): Result[Unit, String] {\n" + "  if flag == 0 {\n" +
     "    Ok(value = ())\n" +
