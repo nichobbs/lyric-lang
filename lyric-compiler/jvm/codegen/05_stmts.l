@@ -1684,9 +1684,31 @@ func lowerScopeStmt(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, span
 pub func recordSpawnResultType(ctx: in FuncCtx, name: in String, init: in Expr): Unit {
   if ctx.scopeExecSlots.count > 0 {
     match init.kind {
-      case ESpawn(spawnInner) -> match spawnInnerResultType(ctx, spawnInner) { case Some(t) -> match t { case JVoid -> (); case _ -> ctx.spawnResultTypes.add(name, t) }; case None -> () }
+      case ESpawn(spawnInner) -> {
+        match spawnInnerResultType(ctx, spawnInner) {
+          case Some(t) -> putSpawnResultType(ctx, name, t)
+          case None -> ()
+        }
+      }
       case _ -> ()
     }
+  }
+}
+
+// Store `name -> t` in `ctx.spawnResultTypes`, skipping a `Unit` result (nothing
+// to unbox).  Reusing a spawn-binding name (a `var` reassigned to a new spawn, or
+// two sibling `scope { }` blocks binding the same name) overwrites the prior
+// entry: `Map.add` is backed by `Dictionary.Add`, which throws on a duplicate
+// key, so the existing entry is removed first — mirroring the `containsKey` +
+// `remove` guard `recordVarGenericArgs` uses at the same call sites (#5185).  `t`
+// is a clean parameter so the `JvmType` match is emitter-safe (see
+// `isVoidJvmType`).
+func putSpawnResultType(ctx: in FuncCtx, name: in String, t: in JvmType): Unit {
+  if not isVoidJvmType(t) {
+    if ctx.spawnResultTypes.containsKey(name) {
+      ctx.spawnResultTypes.remove(name)
+    }
+    ctx.spawnResultTypes.add(name, t)
   }
 }
 

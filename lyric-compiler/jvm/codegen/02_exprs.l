@@ -1072,11 +1072,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         lowerFutureGet(ctx, insns)
         // The join yields `Object`; coerce back to the spawned value's real type
         // (unbox for a primitive, checkcast for a reference) so downstream use —
-        // arithmetic, member access — sees the right type.  A `Unit` spawn's null
-        // stays `Object` (it is discarded).
+        // arithmetic, member access — sees the right type.
         val objTy = JRef(className = "java/lang/Object")
         match awaitLogicalType(ctx, inner) {
-          case Some(pt) -> match pt { case JVoid -> objTy; case _ -> { coerceArgTo(insns, objTy, pt); pt } }
+          case Some(pt) -> coerceAwaitResult(insns, pt, objTy)
           case None -> objTy
         }
       } else {
@@ -2853,6 +2852,36 @@ pub func awaitHelperName(): String {
   "__lyric_await"
 }
 
+// True when `t` is the JVM `void` type — a small helper so `JvmType` is matched
+// as a clean parameter rather than as a value bound from an `Option` payload
+// (`case Some(t) -> match t { … }`), a form the pinned stage-0 F# emitter that
+// mints the CI bootstrap mis-compiles (`E5/E7: receiver type JvmType is not a
+// known record or distinct type`).
+pub func isVoidJvmType(t: in JvmType): Bool {
+  match t {
+    case JVoid -> true
+    case _ -> false
+  }
+}
+
+// The declared return JVM type of a resolvable call `f(args)`, looked up from the
+// callee's signature; `None` when the head is not a known function name.
+func funcSigRetType(ctx: in FuncCtx, fn: in Expr): Option[JvmType] {
+  match fn.kind {
+    case EPath(p) -> {
+      match mapGet(ctx.funcSigs, lastSegment(p)) {
+        case Some(sig) -> {
+          val rt = sig.ret
+          Some(value = rt)
+        }
+        case None -> None
+      }
+    }
+    case ETypeApp(inner2, _) -> funcSigRetType(ctx, inner2)
+    case _ -> None
+  }
+}
+
 // The JVM result type of a spawned expression `spawn e`, when `e` is a call to a
 // function with a known signature — used to unbox the `Future.get()` `Object`
 // back to the value's real type at the `await` site.  `None` when `e` is not a
@@ -2861,13 +2890,7 @@ pub func awaitHelperName(): String {
 pub func spawnInnerResultType(ctx: in FuncCtx, inner: in Expr): Option[JvmType] {
   match inner.kind {
     case EParen(e) -> spawnInnerResultType(ctx, e)
-    case ECall(fn, _) -> {
-      match fn.kind {
-        case EPath(p) -> match mapGet(ctx.funcSigs, lastSegment(p)) { case Some(sig) -> Some(value = sig.ret); case None -> None }
-        case ETypeApp(inner2, _) -> match inner2.kind { case EPath(p) -> match mapGet(ctx.funcSigs, lastSegment(p)) { case Some(sig) -> Some(value = sig.ret); case None -> None }; case _ -> None }
-        case _ -> None
-      }
-    }
+    case ECall(fn, _) -> funcSigRetType(ctx, fn)
     case _ -> None
   }
 }
@@ -2879,9 +2902,28 @@ pub func spawnInnerResultType(ctx: in FuncCtx, inner: in Expr): Option[JvmType] 
 pub func awaitLogicalType(ctx: in FuncCtx, inner: in Expr): Option[JvmType] {
   match inner.kind {
     case EParen(e) -> awaitLogicalType(ctx, e)
-    case EPath(p) -> if p.segments.count == 1 { mapGet(ctx.spawnResultTypes, lastSegment(p)) } else { None }
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        mapGet(ctx.spawnResultTypes, lastSegment(p))
+      } else {
+        None
+      }
+    }
     case ESpawn(e) -> spawnInnerResultType(ctx, e)
     case _ -> None
+  }
+}
+
+// Coerce the `Object` a spawn `Future.get()` yields back to the spawned value's
+// real type `pt` — unbox a primitive, checkcast a reference — leaving it on the
+// stack.  A `Unit` spawn's null stays `Object` (it is discarded).  `pt` is a
+// clean parameter so the `JvmType` match is emitter-safe (see `isVoidJvmType`).
+func coerceAwaitResult(insns: in List[LInsn], pt: in JvmType, objTy: in JvmType): JvmType {
+  if isVoidJvmType(pt) {
+    objTy
+  } else {
+    coerceArgTo(insns, objTy, pt)
+    pt
   }
 }
 

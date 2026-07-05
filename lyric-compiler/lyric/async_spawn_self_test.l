@@ -114,6 +114,38 @@ async func recordInto(x: in Int): Unit {
   val ignored = x + 0
 }
 
+// The same spawn-binding name reused across two sibling `scope { }` blocks.
+// Each binding records its result type under the same key, so the codegen's
+// `spawnResultTypes` map must overwrite rather than re-insert — `Map.add` is a
+// `Dictionary.Add` that throws on a duplicate key (#5185).  Before the guard
+// this crashed the compiler; the runtime value confirms both joins still work.
+async func reusedBindingName(a: in Int, b: in Int): Int {
+  var total = 0
+  scope {
+    val t = spawn doubleIt(a)
+    total = await t
+  }
+  scope {
+    val t = spawn doubleIt(b)
+    total = total + await t
+  }
+  return total
+}
+
+// A reference-typed (non-`Int`) spawn result: `await` checkcasts the joined
+// `Object` back to `String` rather than unboxing a primitive, exercising the
+// other arm of `coerceAwaitResult`.
+async func greet(name: in String): String {
+  return "hi-" + name
+}
+
+async func spawnStringResult(name: in String): String {
+  scope {
+    val t = spawn greet(name)
+    return await t
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -145,4 +177,14 @@ test "three concurrent spawns combine correctly" {
 
 test "unit-returning spawned task joins with no leaked value" {
   assertEqualInt(await spawnUnitTask(4), 12, "unit-task then x*3")
+}
+
+test "spawn-binding name reused across sibling scopes compiles and joins" {
+  assertEqualInt(await reusedBindingName(3, 4), 14, "double(3)+double(4) reused name")
+  assertEqualInt(await reusedBindingName(10, 5), 30, "double(10)+double(5) reused name")
+}
+
+test "reference-typed spawn result checkcasts on await" {
+  assertEqual(await spawnStringResult("bob"), "hi-bob", "greet(bob)")
+  assertEqual(await spawnStringResult("x"), "hi-x", "greet(x)")
 }
