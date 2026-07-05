@@ -225,8 +225,11 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > Standard-library modules with native kernels work out of
 > the box: `Std.Console`, `Std.File` (text I/O, existence probes,
 > directory create/delete), `Std.Environment` (variables, working
-> directory), `Std.Process.runCapture` (argv list, never a shell), and
-> `Std.Time` (epoch millis, monotonic nanos, sleep). Raw C interop
+> directory), `Std.Process.runCapture` / `runCaptureWithInput` (argv
+> list, never a shell; stdin content and deadline kills honored),
+> `Std.Time` (epoch millis, monotonic nanos, sleep), and `Std.Uuid`
+> (v4 generation, formatting, and the same four-format parse contract
+> as the managed targets). Raw C interop
 > (`extern func`, `NativePtr[T]`,
 > `nativeAddrOf`, `nativeNullPtr`, closures as C callbacks) is confined to
 > `@unsafe_ffi` functions and the standard library's kernel files — the
