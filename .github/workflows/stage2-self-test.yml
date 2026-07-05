@@ -57,6 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write
     steps:
       - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
         run: echo "TMPDIR=${{ runner.temp }}" >> "$GITHUB_ENV"
@@ -91,6 +92,7 @@ jobs:
       # stage 1 — seed-candidacy.yml covers the download-seed-trust question
       # per release.
       - name: Build stage 2 (self-hosted compiler rebuilding itself + full stdlib)
+        id: build_stage2
         working-directory: ${{ github.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -104,6 +106,7 @@ jobs:
       # make every self-test step below skip via its own missing-binary
       # guard and the job would go green for the wrong reason.
       - name: Verify stage-2 toolchain is runnable
+        id: verify_stage2_runnable
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -125,6 +128,7 @@ jobs:
       # alongside #5099); this comment is the explicit record of what is
       # deliberately left out rather than a silent cap.
       - name: Compiler self-tests against stage 2 (--target dotnet)
+        id: selftest_dotnet
         working-directory: ${{ github.workspace }}
         env:
           LYRIC_STDLIB_BIN: ${{ github.workspace }}/.bootstrap/stage2/lib
@@ -153,6 +157,7 @@ jobs:
           echo "Stage-2 dotnet self-tests ran (representative subset; see workflow comments for what is excluded)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Compiler self-tests against stage 2 (--target jvm)
+        id: selftest_jvm
         working-directory: ${{ github.workspace }}
         env:
           LYRIC_STDLIB_BIN: ${{ github.workspace }}/.bootstrap/stage2/lib
@@ -171,3 +176,60 @@ jobs:
             "$lyric_bin" test --target jvm "$t"
           done
           echo "Stage-2 JVM self-tests ran (representative subset; see workflow comments for what is excluded)." >> "$GITHUB_STEP_SUMMARY"
+
+      # Mirrors seed-candidacy.yml's failure-issue-filing step (#5161): a
+      # nightly red Actions run alone is easy to miss (nobody watches a
+      # schedule the way they watch an open PR). Scoped to the steps that
+      # actually exercise stage-2 build/self-hosting/self-test, not infra
+      # failures (checkout, dotnet/java setup, cache), which say nothing
+      # about self-hosting correctness.
+      - name: File a tracking issue on failure
+        if: >-
+          failure() && (
+            steps.build_stage2.outcome == 'failure' ||
+            steps.verify_stage2_runnable.outcome == 'failure' ||
+            steps.selftest_dotnet.outcome == 'failure' ||
+            steps.selftest_jvm.outcome == 'failure'
+          )
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Stage-2 self-test regression ($(date -u +%Y-%m-%d))"
+
+          gh label create "stage2-regression" --repo "${{ github.repository }}" \
+            --color "B60205" \
+            --description "The self-hosted compiler failed to correctly rebuild/test itself at stage 2 (see #5099)" \
+            2>/dev/null || true
+
+          # One issue per calendar day (UTC) is enough to avoid duplicate
+          # noise across retries on the same night without conflating
+          # regressions found on different days, mirroring
+          # seed-candidacy.yml's exact-title dedup (#5156).
+          EXISTING="$(gh issue list --repo "${{ github.repository }}" --state open \
+            --label stage2-regression --json number,title 2>/dev/null \
+            | jq -r --arg t "$TITLE" '.[] | select(.title == $t) | .number' \
+            | head -1)" || EXISTING=""
+
+          BODY_FILE="$(mktemp)"
+          {
+            echo "The \`stage2-self-test\` workflow found that the self-hosted compiler"
+            echo "failed to correctly rebuild itself + the full stdlib (stage 2) and/or"
+            echo "failed the self-test suite run against that rebuild."
+            echo
+            echo "See #5099 for why this matters: stage 2 is the artifact that actually"
+            echo "ships (standalone binaries, the NuGet global tool), and this is the"
+            echo "only CI job that verifies it directly rather than via stage 1."
+            echo
+            echo "Run: ${RUN_URL}"
+          } > "$BODY_FILE"
+
+          if [[ -n "$EXISTING" ]]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" \
+              --body "Re-confirmed: ${RUN_URL}"
+          else
+            gh issue create --repo "${{ github.repository }}" \
+              --title "$TITLE" --label "stage2-regression" --body-file "$BODY_FILE"
+          fi

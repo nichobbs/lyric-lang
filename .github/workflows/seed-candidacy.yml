@@ -120,7 +120,22 @@ jobs:
         run: |
           set -euo pipefail
           echo "Testing v${LYRIC_BOOTSTRAP_VERSION} as a download seed (LYRIC_BOOTSTRAP_MINT unset)"
-          ./scripts/bootstrap.sh --stage 1
+          ./scripts/bootstrap.sh --stage 1 2>&1 | tee /tmp/seed-candidacy-stage1.log
+
+          # scripts/bootstrap.sh's stage0() silently falls back to minting the
+          # F# bootstrap compiler if the release download fails for ANY reason
+          # (network blip, GitHub rate limit, missing archive for this
+          # platform, bad version) -- even with LYRIC_BOOTSTRAP_MINT left
+          # unset/0 (#5162). Left unchecked, that fallback would make this
+          # job "pass" having never actually exercised the download-seed
+          # path -- exactly the false-confidence failure mode that motivated
+          # this whole workflow (#5094 / PR #5090's insufficient sandbox
+          # verification). Both of stage0()'s mint code paths share this log
+          # line, so a single check catches either.
+          if grep -qF "minting clean stage-0 from F# history" /tmp/seed-candidacy-stage1.log; then
+            echo "::error::stage 0 fell back to minting the F# bootstrap compiler instead of downloading v${LYRIC_BOOTSTRAP_VERSION} -- this run did NOT test the download-seed path"
+            exit 1
+          fi
 
       - name: Build AOT entry-point
         id: build_aot
