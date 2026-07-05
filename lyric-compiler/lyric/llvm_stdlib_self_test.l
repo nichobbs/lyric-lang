@@ -318,6 +318,167 @@ test "Std.Uuid seams: v4 generation, formatting, four parse forms (ASan)" {
   assertEqualInt(r.exitCode, 42, "uuid seams")
 }
 
+test "Std.Time calendar: civil math, clamping, ISO round-trip (ASan)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  if toIsoString(fromEpochMillis(0i64)) != \"1970-01-01T00:00:00Z\" {\n    return 1\n  }\n" +
+    "  if toIsoString(fromEpochMillis(1000000000000i64)) != \"2001-09-09T01:46:40Z\" {\n    return 2\n  }\n" +
+    "  if toIsoString(fromEpochMillis(0i64 - 86400000i64)) != \"1969-12-31T00:00:00Z\" {\n    return 3\n  }\n" +
+    "  if toIsoString(fromEpochMillis(1500i64)) != \"1970-01-01T00:00:01.500Z\" {\n    return 4\n  }\n" +
+    "  val jan31Leap = fromEpochSeconds(65664000i64)\n" +
+    "  if toIsoString(jan31Leap) != \"1972-01-31T00:00:00Z\" {\n    return 5\n  }\n" +
+    "  if toIsoString(addMonths(jan31Leap, 1)) != \"1972-02-29T00:00:00Z\" {\n    return 6\n  }\n" +
+    "  if toIsoString(addMonths(fromEpochSeconds(34128000i64), 1)) != \"1971-02-28T00:00:00Z\" {\n    return 7\n  }\n" +
+    "  if toIsoString(addMonths(fromEpochSeconds(70848000i64), 0 - 1)) != \"1972-02-29T00:00:00Z\" {\n    return 8\n  }\n" +
+    "  if toIsoString(addYears(fromEpochMillis(0i64), 2)) != \"1972-01-01T00:00:00Z\" {\n    return 9\n  }\n" +
+    "  if toIsoString(addDays(fromEpochMillis(0i64), 1.5)) != \"1970-01-02T12:00:00Z\" {\n    return 10\n  }\n" +
+    "  match parseOptInstant(\"2021-01-01T00:00:00Z\") {\n" +
+    "    case Some(p) -> {\n      if toIsoString(p) != \"2021-01-01T00:00:00Z\" {\n        return 11\n      }\n    }\n" +
+    "    case None -> {\n      return 12\n    }\n" +
+    "  }\n" +
+    "  match parseOptInstant(\"2021-06-15T12:34:56.123456789Z\") {\n" +
+    "    case Some(p2) -> {\n      if toIsoString(p2) != \"2021-06-15T12:34:56.123456789Z\" {\n        return 13\n      }\n    }\n" +
+    "    case None -> {\n      return 14\n    }\n" +
+    "  }\n" +
+    "  match parseOptInstant(\"2021-02-29T00:00:00Z\") {\n" +
+    "    case Some(_) -> {\n      return 15\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  match parseOptInstant(\"not-a-date\") {\n" +
+    "    case Some(_) -> {\n      return 16\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  match parseOptInstant(\"1500-01-01T00:00:00Z\") {\n" +
+    "    case Some(_) -> {\n      return 17\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  val hi = fromEpochMillis(9223372036854i64)\n" +
+    "  match parseOptInstant(toIsoString(hi)) {\n" +
+    "    case Some(ph) -> {\n      if not instantEquals(ph, hi) {\n        return 22\n      }\n    }\n" +
+    "    case None -> {\n      return 23\n    }\n" +
+    "  }\n" +
+    "  val lo = fromEpochMillis(0i64 - 9223372036854i64)\n" +
+    "  match parseOptInstant(toIsoString(lo)) {\n" +
+    "    case Some(pl) -> {\n      if not instantEquals(pl, lo) {\n        return 24\n      }\n    }\n" +
+    "    case None -> {\n      return 25\n    }\n" +
+    "  }\n" +
+    "  if not instantEquals(addMonths(hi, 0), hi) {\n    return 26\n  }\n" +
+    "  match parseOptInstant(\"2262-04-12T00:00:00Z\") {\n" +
+    "    case Some(_) -> {\n      return 27\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  match parseOptInstant(\"1677-09-20T00:00:00Z\") {\n" +
+    "    case Some(_) -> {\n      return 28\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
+    "  if totalMillis(hours(1.5)) != 5400000.0 {\n    return 18\n  }\n" +
+    "  if totalSeconds(since(plus(fromEpochMillis(0i64), seconds(90.0)), fromEpochMillis(0i64))) != 90.0 {\n    return 19\n  }\n" +
+    "  if not instantBefore(fromEpochMillis(0i64), fromEpochMillis(1i64)) {\n    return 20\n  }\n" +
+    "  if not instantAfter(now(), fromEpochMillis(1500000000000i64)) {\n    return 21\n  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "time calendar seams")
+}
+
+// Instant arithmetic that would leave the i64-nanos window panics on
+// native (#5213, #5216, #5217) — the analog of the managed twins'
+// out-of-range exceptions.  A panic aborts the process, so each
+// scenario is its own program: a successful (silently wrapped) run
+// would exit 42 and fail the assertion; the expected abort exits
+// non-zero.
+test "Std.Time out-of-range calendar arithmetic panics on native (#5213)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val t = addYears(fromEpochMillis(0i64), 100000)\n" +
+    "  if instantAfter(t, fromEpochMillis(0i64)) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped-instead-of-panicked result would exit 42")
+}
+
+test "Std.Time epoch conversion past the nanos window panics on native (#5216)" {
+  // A year-296726 millisecond timestamp: n * 1e6 wraps i64 without the
+  // bounds check.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val t = fromEpochMillis(9300000000000000i64)\n" +
+    "  if instantAfter(t, fromEpochMillis(0i64)) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped epoch conversion would exit 42")
+}
+
+test "Std.Time since() across the full window panics instead of wrapping (#5216)" {
+  // Both instants are individually representable, but their difference
+  // (~584 years of nanos, doubled) overflows the Duration.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val a = fromEpochMillis(9223372036854i64)\n" +
+    "  val b = fromEpochMillis(0i64 - 9223372036854i64)\n" +
+    "  val d = since(a, b)\n" +
+    "  if totalMillis(d) > 0.0 {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped since() would exit 42")
+}
+
+test "Std.Time addMonths with an extreme month delta panics, not Int-wraps (#5217)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val t = addMonths(fromEpochMillis(0i64), 2147483647)\n" +
+    "  if instantAfter(t, fromEpochMillis(0i64)) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "an Int-wrapped month index would exit 42")
+}
+
+// The adversarial #5218 case: 357913941 years pre-multiplied by 12 in
+// Int32 wraps to exactly -4 months, i.e. a VALID-looking Instant four
+// months before the epoch — the one shape the recomposed-year window
+// check alone cannot catch.  With the Long widening it panics instead.
+test "Std.Time addMonths reconstruction check catches edge-year overflow (#5235)" {
+  // addMonths from the upper-boundary instant (2262-04-11) by one
+  // month recomposes to 2262-05-11 — INSIDE the coarse 1677..2262
+  // year filter, so only addMonthsLong's exact reconstruction check
+  // (the wrapped total lands on a different day) can reject it.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val hi = fromEpochMillis(9223372036854i64)\n" +
+    "  val t = addMonths(hi, 1)\n" +
+    "  if instantAfter(t, hi) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped edge-year recomposition would exit 42")
+}
+
+test "Std.Time negative addDays past the window panics via the checked add (#5231)" {
+  // Exercises checkedAddNanos' NEGATIVE overflow branch end-to-end:
+  // the lower-boundary instant minus ~100000 days wraps positive
+  // without the check.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val lo = fromEpochMillis(0i64 - 9223372036854i64)\n" +
+    "  val t = addDays(lo, 0.0 - 100000.0)\n" +
+    "  if instantBefore(t, lo) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped negative addDays would exit 42")
+}
+
+test "Std.Time duration constructor past the nanos window panics, not UB (#5221)" {
+  // llround(3) of an out-of-range double is C-standard undefined
+  // behavior; the bounds check must turn it into a controlled panic.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val d = hours(100000000000000000000.0)\n" +
+    "  if totalMillis(d) > 0.0 {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "an unchecked llround would exit 42 (or worse)")
+}
+
+test "Std.Time addYears cannot Int-wrap its year-to-month conversion (#5218)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val t = addYears(fromEpochMillis(0i64), 357913941)\n" +
+    "  if instantAfter(t, fromEpochMillis(0i64)) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped year-to-month conversion would exit 42")
+}
+
 test "Result[Unit, E] payloads and diverging value-if branches (ASan)" {
   val src = "package T\n" + "import Std.Core\n" + "func mk(flag: Int): Result[Unit, String] {\n" + "  if flag == 0 {\n" +
     "    Ok(value = ())\n" +

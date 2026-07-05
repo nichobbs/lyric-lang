@@ -475,6 +475,10 @@ static void test_posix(void) {
     lyric_mutex_destroy(mutex_buf);
 
     CHECK(lyric_epoch_millis() > 1000000000000LL); /* after 2001 */
+    int64_t en = lyric_epoch_nanos();
+    CHECK(en > 1000000000000000000LL); /* after 2001, in nanos */
+    CHECK(en / 1000000 - lyric_epoch_millis() < 1000 &&
+          lyric_epoch_millis() - en / 1000000 < 1000); /* same clock */
     int64_t t1 = lyric_monotonic_nanos();
     int64_t t2 = lyric_monotonic_nanos();
     CHECK(t2 >= t1);

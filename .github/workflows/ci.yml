@@ -4135,6 +4135,24 @@ jobs:
           out="$(java -jar "$work/uuid_tests.jar")"
           echo "$out" | tail -3
           printf '%s\n' "$out" | grep -q "uuid: ok" || { echo "::error::Std.Uuid JVM suite did not report success"; exit 1; }
+      # Std.Time end-to-end on JVM — the JVM leg of the D-N-027 calendar
+      # contract (the dotnet leg runs via `lyric run` in the stdlib
+      # coverage block; the native leg via llvm_stdlib_self_test).
+      - name: Std.Time tests on JVM (lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Time JVM tests"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-stdlib/tests/time_tests.l --target jvm -o "$work/time_tests.jar"
+          out="$(java -jar "$work/time_tests.jar")"
+          echo "$out" | tail -3
+          printf '%s\n' "$out" | grep -q "time: ok" || { echo "::error::Std.Time JVM suite did not report success"; exit 1; }
       # lyric-storage suite on JVM (band J6, #1444/#2669) — the first
       # multi-package ecosystem manifest exercised on --target jvm.  Pins the
       # in-process multi-package JVM project build (sibling packages bundled
@@ -4506,6 +4524,27 @@ jobs:
             exit 1
           fi
           "$lyric_bin" run lyric-stdlib/tests/uuid_tests.l
+
+      # Pins the D-N-027 calendar contract (epoch conversions, duration
+      # arithmetic, addMonths clamping, the toIsoString parse round-trip)
+      # on the managed target; plain-main program, so `lyric run`.
+      # TZ is deliberately non-UTC (#5233): DateTime.TryParse of a
+      # "Z"-suffixed string yields a LOCAL-kind result shifted to the
+      # host timezone, and the ToUniversalTime normalization in the
+      # parse seam only does real work off UTC — on the runners'
+      # default TZ=UTC the round-trip would pass even without it.
+      - name: Std.Time test coverage (lyric run, non-UTC host TZ)
+        working-directory: ${{ github.workspace }}
+        env:
+          TZ: America/New_York
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Time tests"
+            exit 1
+          fi
+          "$lyric_bin" run lyric-stdlib/tests/time_tests.l
 
       # Trust-anchor reproducibility gate (Q-dist-001 prerequisite): the
       # self-hosted MSIL emitter must be byte-for-byte reproducible.  Build each

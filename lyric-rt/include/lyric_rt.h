@@ -180,6 +180,10 @@ void lyric_mutex_destroy(void* m);
 
 /* Milliseconds since the Unix epoch (CLOCK_REALTIME). */
 int64_t lyric_epoch_millis(void);
+/* Nanoseconds since the Unix epoch (CLOCK_REALTIME) — the native
+ * Std.Time Instant representation (D-N-027); int64 covers years
+ * ~1678..2262. */
+int64_t lyric_epoch_nanos(void);
 /* Monotonic nanoseconds (CLOCK_MONOTONIC). */
 int64_t lyric_monotonic_nanos(void);
 

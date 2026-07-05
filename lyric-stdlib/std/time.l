@@ -1,9 +1,12 @@
 //! std/time.l - Time and date primitives.
 //!
-//! User-facing wrappers over `Std.TimeHost` (in `_kernel/`), which
-//! owns the trusted boundary against `System.DateTime`,
-//! `System.TimeSpan`, `System.DateTimeOffset`, and
-//! `System.TimeZoneInfo`.  See `docs/14-native-stdlib-plan.md` §6 P0/4.
+//! User-facing wrappers over `Std.TimeHost`, whose kernel twins own
+//! the trusted time boundary per target: `System.DateTime` /
+//! `System.TimeSpan` / `System.DateTimeOffset` on .NET (`_kernel/`),
+//! `java.time.*` on the JVM (`_kernel_jvm/`), and nanosecond-count
+//! records over lyric-rt's CLOCK_REALTIME on native
+//! (`_kernel_native/`, D-N-027).  See `docs/14-native-stdlib-plan.md`
+//! §6 P0/4.
 //!
 //! All times are UTC unless stated otherwise.  The wrappers
 //! deliberately avoid local-time conversion to keep behaviour
@@ -29,15 +32,17 @@ pub func zeroDuration(): Duration {
   hostZeroDuration()
 }
 
-/// Parse an ISO-8601-ish timestamp; returns `None` if the BCL refuses.
+/// Parse a timestamp; returns `None` if the host refuses.  The
+/// guaranteed cross-target contract is the `toIsoString` round-trip
+/// (ISO-8601 UTC instants); each host may additionally accept its
+/// platform's wider set (.NET `DateTime.TryParse` is lenient, JVM
+/// `Instant.parse` and the native parser are strict ISO).  Routed
+/// through the exception-free Option seam every kernel twin
+/// implements (D-N-027; the former Bool+out shape cannot be
+/// expressed on native).
 @stable(since = "1.0")
 pub func parseOptInstant(s: in String): Option[Instant] {
-  var v: Instant = default()
-  if hostTryParseInstant(s, v) {
-    Some(value = v)
-  } else {
-    None
-  }
+  hostParseInstantOpt(s)
 }
 
 // =====================================================================
@@ -151,23 +156,6 @@ pub func fromEpochMillis(n: in Long): Instant {
 @stable(since = "1.0")
 pub func fromEpochSeconds(n: in Long): Instant {
   dtoUtcDateTime(dtoFromEpochSeconds(n))
-}
-
-// =====================================================================
-// IANA / Windows timezone lookup.
-//
-// `System.TimeZoneInfo.FindSystemTimeZoneById` is the cross-platform
-// IANA-name lookup on .NET Core+ (`America/New_York`, `Europe/London`
-// etc. all resolve on Linux/macOS; on Windows it understands both
-// IANA and Windows-style identifiers).  Returns `Result[TimeZone,
-// IOError]` so users handle bad ids cleanly rather than catching
-// the host's `TimeZoneNotFoundException`.
-//
-// Bootstrap-grade: only the lookup itself; the projection ops
-// (UTC <-> zoned, DST detection) wait until programs need them.
-// =====================================================================
-func findTimeZone(id: in String): TimeZone {
-  hostFindTimeZone(id)
 }
 
 // =====================================================================

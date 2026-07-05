@@ -50,7 +50,7 @@ output_assembly = "Lyric.Stdlib.dll"
 
 # Tier 3 — time (environment and logging deferred; see below).
 # Std.TimeHost holds Std.Time's extern boundary (System.DateTime/TimeSpan/
-# DateTimeOffset/TimeZone externs, per the audited _kernel/ convention). It
+# DateTimeOffset externs, per the audited _kernel/ convention). It
 # must be registered explicitly here -- the bundle builder compiles exactly
 # the packages listed in [project.packages], not whatever a package's source
 # transitively imports -- or Std.Time's `import Std.TimeHost` fails to

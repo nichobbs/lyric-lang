@@ -6,7 +6,6 @@
 //!   Instant        = java.time.Instant        (UTC point in time)
 //!   Duration       = java.time.Duration       (elapsed time)
 //!   DateTimeOffset = java.time.OffsetDateTime  (instant + UTC offset)
-//!   TimeZone       = java.time.ZoneId          (IANA timezone name)
 //!
 //! Everything routes through the JVM auto-FFI (`extern type` resolved
 //! from JDK metadata at compile time — no F#/Java shim class, no
@@ -44,8 +43,6 @@ extern type Duration = "java.time.Duration"
 
 extern type DateTimeOffset = "java.time.OffsetDateTime"
 
-extern type TimeZone = "java.time.ZoneId"
-
 extern type UtcOffset = "java.time.ZoneOffset"
 
 extern type JMath = "java.lang.Math"
@@ -68,17 +65,16 @@ pub func hostZeroDuration(): Duration {
   Duration.ofMillis(0)
 }
 
-/// Parse an ISO-8601 instant.  Instant.parse throws
-/// DateTimeParseException on malformed input; the catch arm reports
-/// failure and leaves a placeholder in the out slot (callers ignore
-/// `value` when the result is false).
-pub func hostTryParseInstant(s: in String, value: out Instant): Bool {
+/// Parse an ISO-8601 instant — the exception-free Option seam all
+/// three kernel twins implement (D-N-027, replacing the former
+/// Bool+out shape the native backend cannot express).  Instant.parse
+/// throws DateTimeParseException on malformed input, absorbed into
+/// the None arm.
+pub func hostParseInstantOpt(s: in String): Option[Instant] {
   try {
-    value = Instant.parse(s)
-    true
+    Some(value = Instant.parse(s))
   } catch Bug as _ {
-    value = Instant.ofEpochMilli(0)
-    false
+    None
   }
 }
 
@@ -174,14 +170,6 @@ pub func hostDtoToEpochMillis(d: in DateTimeOffset): Long {
 }
 
 // =====================================================================
-// IANA timezone lookup.
-// =====================================================================
-/// java.time.ZoneId.of(id) — throws ZoneRulesException for unknown ids.
-pub func hostFindTimeZone(id: in String): TimeZone {
-  TimeZone.of(id)
-}
-
-// =====================================================================
 // Comparison.
 // =====================================================================
 pub func hostInstantBefore(a: in Instant, b: in Instant): Bool {
@@ -218,7 +206,7 @@ pub func hostSubDurations(a: in Duration, b: in Duration): Duration {
 // ISO-8601 formatting.
 // =====================================================================
 /// Instant.toString() returns ISO-8601 (e.g. "2021-01-01T00:00:00Z"),
-/// round-trippable via hostTryParseInstant.
+/// round-trippable via hostParseInstantOpt.
 pub func hostInstantToString(value: in Instant): String {
   value.toString()
 }
