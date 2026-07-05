@@ -2046,10 +2046,7 @@ pub func checkNativeFfiBoundary(file: in SourceFile, diag: in List[Diagnostic]):
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §11. Public entry points.
-// ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-// §9b. V0014 — a spawned task must be consumed (no fire-and-forget).
+// §10b. V0014 — a spawned task must be consumed (no fire-and-forget).
 //
 // D119: `spawn e` produces a task that must be awaited or joined by an
 // enclosing `scope { }`.  This pass rejects the unambiguous fire-and-forget
@@ -2286,12 +2283,15 @@ func walkStmtForSpawn(ctx: in SpawnCtx, stmtValuePos: in Bool, st: in Statement)
     }
     case SThrow(x) -> walkExprForSpawn(ctx, true, x)
     case STry(body, catches, finally_) -> {
-      // try / catch / finally bodies are statement-position (their trailing
-      // value is discarded), so a trailing spawn in them is fire-and-forget.
-      walkBlockForSpawn(ctx, false, body)
+      // A `try`/`catch` produces the statement's value (the try body's value, or
+      // a catch handler's on the exception path), so the try and catch bodies
+      // inherit this statement's value position — a trailing spawn there is
+      // returned, not discarded, when the `try` is in value position (#5148).
+      // A `finally` body's value is always discarded.
+      walkBlockForSpawn(ctx, stmtValuePos, body)
       var ci = 0
       while ci < catches.count {
-        walkBlockForSpawn(ctx, false, catches[ci].body)
+        walkBlockForSpawn(ctx, stmtValuePos, catches[ci].body)
         ci = ci + 1
       }
       match finally_ {
@@ -2429,6 +2429,9 @@ func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel,
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §11. Public entry points.
+// ─────────────────────────────────────────────────────────────────────────────
 pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta]): ModeCheckResult {
   val diag: List[Diagnostic] = newList()
   val fileLevel = levelOfFile(file, diag)

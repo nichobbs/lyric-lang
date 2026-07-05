@@ -216,6 +216,22 @@ test "discarded spawn in a protected entry is V0014" {
   assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in protected entry: V0014")
 }
 
+test "spawn in a value-position try/catch is not V0014" {
+  // #5148: a trailing try/catch is the block's value (the return value here),
+  // so a spawn ending the try or a catch handler is returned, not discarded.
+  val src = "package P\nasync func f(): Int {\n  try {\n    spawn g()\n  } catch Bug as _ {\n    spawn h()\n  }\n}\nasync func g(): Int { 1 }\nasync func h(): Int { 2 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "spawn in value-position try/catch: no V0014")
+}
+
+test "trailing spawn in a non-value try body is V0014" {
+  // #5148 (converse): a non-trailing try statement discards its value, so a
+  // trailing spawn in its body is fire-and-forget.
+  val src = "package P\nasync func f(): Unit {\n  try {\n    spawn g()\n  } catch Bug as _ {\n  }\n  val done = 1\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "trailing spawn in non-value try body: V0014")
+}
+
 test "unsafe allowed no error" {
   val src = "@proof_required(unsafe_blocks_allowed)\npackage P\nfunc f(): Unit { unsafe { } }\n"
   val result = parseCheck(src)

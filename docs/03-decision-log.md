@@ -9127,7 +9127,7 @@ before the runtime join lands, and the runtime slices deliver the rest.
   scope-joined" enforcement (the consumption rule, generalising native's
   value-position diagnostic). Closes the fire-and-forget hole on all
   targets without breaking the bare-`spawn`-then-`await` idiom.
-  Self-contained. **SHIPPED (D-progress-597):** the mode checker rejects a
+  Self-contained. **SHIPPED (D-progress-598):** the mode checker rejects a
   `spawn` used as a discarded statement outside a `scope`; the broader
   unused-binding case is left as a follow-up.
 - **S3:** restore **sibling-cancel-on-first-fault in `Std.Task.Scope`**
@@ -9476,7 +9476,7 @@ principle have carried, and why none of these three bugs are in that
 class), issue #5077 (the separate, larger stdlib-test-CI-wiring gap found
 in the same session), docs/57 §5.1/§7.
 
-## D-progress-597 — D119 slice S2: `V0014`, the shared front-end "spawned task must be consumed" diagnostic
+## D-progress-598 — D119 slice S2: `V0014`, the shared front-end "spawned task must be consumed" diagnostic
 
 **Date:** 2026-07-05
 **Status:** SHIPPED
