@@ -136,6 +136,19 @@ jobs:
       - name: Stage self-hosted compiler bundle
         id: stage_selfhosted_bundle
         working-directory: ${{ github.workspace }}
+        # LYRIC_STDLIB_BIN is required here (#5168), not just cosmetic:
+        # stage-selfhosted-compiler.sh runs the stage-2 binary itself to
+        # compile the bundle driver, and that invocation needs to resolve
+        # ITS OWN stdlib. Without this override, findCompiledLibDir()'s
+        # discovery order never even considers a sibling stage2/lib — it
+        # walks up for .bootstrap/stage1 instead (a real, existing directory
+        # left over from stage 2's own build, which builds stage 1 as an
+        # intermediate) and would silently succeed using stage 1's stdlib to
+        # build what is supposed to be a self-consistent stage-2 artifact.
+        # No crash, just quiet stage-1/stage-2 co-mingling -- exactly the
+        # class of silent regression (#5094) this workflow exists to catch.
+        env:
+          LYRIC_STDLIB_BIN: ${{ github.workspace }}/.bootstrap/stage2/lib
         run: |
           set -euo pipefail
           bash scripts/stage-selfhosted-compiler.sh \

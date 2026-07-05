@@ -216,6 +216,11 @@ jobs:
       - name: Self-tests against the download-seeded stage 1 (--target jvm)
         id: selftest_jvm
         working-directory: ${{ github.workspace }}
+        # VERSION threaded through env: + a shell variable rather than
+        # splicing ${{ steps.ver.outputs.VERSION }} straight into the script
+        # (#5169), matching every other GH-expression use in both workflows.
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
         run: |
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
@@ -230,7 +235,7 @@ jobs:
             echo "=== $t (jvm) ==="
             "$lyric_bin" test --target jvm "$t"
           done
-          echo "Seed-candidacy self-tests passed for v${{ steps.ver.outputs.VERSION }} as a download seed." >> "$GITHUB_STEP_SUMMARY"
+          echo "Seed-candidacy self-tests passed for v${VERSION} as a download seed." >> "$GITHUB_STEP_SUMMARY"
 
       # Scoped to the steps that actually exercise the candidate seed/self-test
       # suite (#5155) -- plain `if: failure()` would also fire on an
