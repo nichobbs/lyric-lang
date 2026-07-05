@@ -29568,9 +29568,8 @@ stage-0 mint (`FS_COMMIT=35c0d2e5`).
 
 **Related:** `docs/03-decision-log.md` D-progress-603, `docs/18-jvm-emission.md`
 §15.3, #5191 / #5204 (the `scope`-body follow-up).
-=======
 
-### D-progress-602 — `Std.Time`'s calendar surface works on `--target native` (D-N-027)
+### D-progress-604 — `Std.Time`'s calendar surface works on `--target native` (D-N-027)
 
 **Shipped.** The last substantial #4752 gap is closed: the full
 `Std.Time` surface — `Instant`/`Duration` construction and
