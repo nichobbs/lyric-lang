@@ -977,12 +977,24 @@ emitter:
    (which observe `cancellation`) stop cooperatively rather than running
    to completion.
 
+   > **Implementer note (D119).** This `ContinueWith(Action<Task>)` call
+   > does **not** resolve through auto-FFI today: the metadata reader
+   > mis-picks the `ContinueWith(Task, object)` overload and the program
+   > throws `MissingMethodException` at runtime (verified 2026-07-05).
+   > Slice S3 binds the `ContinueWith(System.Action<Task>)` MemberRef via
+   > an audited `_kernel/task.l` helper rather than the auto-FFI guess.
+
 The `Task<T>` is also bound to the caller's local for a later `await`
-(which, on a settled task, reads the result). A `spawn` outside a
-`scope` block is rejected at compile time by the shared front-end
-(**V0013**, D119 slice S2): the parser admits `spawn`, but the checker
-requires the enclosing lexical context to be a `scope` (or a function
-whose entire body is the scope, by sugar). No fire-and-forget.
+(which, on a settled task, reads the result). The structured-concurrency
+guarantee is enforced by the shared front-end via the **consumption rule**
+(**V0013**, D119 slice S2): a spawned task must be *consumed* — `await`ed,
+or joined by an enclosing `scope` — and a spawned task that is dropped
+(flows into a value position, or falls out of scope, without being
+awaited or scope-joined) is a compile error. This is *not* a strict
+"`spawn` only lexically inside `scope`" rule: the idiomatic
+`val t = spawn f(); … ; await t` (a bare `spawn` whose handle is later
+awaited) is well-formed and is what MSIL and native already run today
+(D-N-022). No fire-and-forget.
 
 ### 15.3 Aggregate failure
 
