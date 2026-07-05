@@ -55,6 +55,13 @@ env:
 jobs:
   stage2-self-test:
     runs-on: ubuntu-latest
+    # GitHub's default job timeout is 360 minutes; a hung/wedged self-hosting
+    # build (rather than a clean failure) would otherwise tie up a runner for
+    # up to 6 hours (#5165). A full stage-2 self-host build is roughly double
+    # a stage-1-only build, plus the self-test subset, so 90 minutes is a
+    # comfortable ceiling above a normal successful run without approaching
+    # the default hang risk.
+    timeout-minutes: 90
     permissions:
       contents: read
       issues: write

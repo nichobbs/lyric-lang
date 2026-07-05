@@ -47,6 +47,12 @@ env:
 jobs:
   seed-candidacy:
     runs-on: ubuntu-latest
+    # GitHub's default job timeout is 360 minutes; a hung download or a
+    # wedged dotnet/lyric build (rather than a clean failure) would otherwise
+    # tie up a runner for up to 6 hours before this job's own steps ever get
+    # a chance to report anything (#5165). A full stage-0(download)+stage-1
+    # build plus the self-test subset comfortably fits well under an hour.
+    timeout-minutes: 60
     permissions:
       contents: read
       issues: write
