@@ -18,7 +18,7 @@ package Std.ProcessCaptureHost
 
 import Std.Core
 import Std.Collections
-import Std.Time as Time
+import Std.Time
 
 // ── Public result record ───────────────────────────────────────────────────
 pub record ProcessCaptureResult {
@@ -126,7 +126,7 @@ pub async func hostRunCaptureListAsync(
       rtProcessKill(op)
       timedOut = true
     } else {
-      Time.sleepMillis(1)
+      sleepMillis(1)
     }
   }
   val code = if timedOut { 0 - 2 } else { rtProcessExitCode(op) }
