@@ -9127,7 +9127,9 @@ before the runtime join lands, and the runtime slices deliver the rest.
   scope-joined" enforcement (the consumption rule, generalising native's
   value-position diagnostic). Closes the fire-and-forget hole on all
   targets without breaking the bare-`spawn`-then-`await` idiom.
-  Self-contained.
+  Self-contained. **SHIPPED (D-progress-597):** the mode checker rejects a
+  `spawn` used as a discarded statement outside a `scope`; the broader
+  unused-binding case is left as a follow-up.
 - **S3:** restore **sibling-cancel-on-first-fault in `Std.Task.Scope`**
   via an audited `_kernel/task.l` `ContinueWith(Action<Task>)` helper
   (the residual FFI-overload blocker worked around at the kernel
@@ -9473,6 +9475,54 @@ seed-specific defect this entry's stage-1-only local build could in
 principle have carried, and why none of these three bugs are in that
 class), issue #5077 (the separate, larger stdlib-test-CI-wiring gap found
 in the same session), docs/57 §5.1/§7.
+
+## D-progress-597 — D119 slice S2: `V0014`, the shared front-end "spawned task must be consumed" diagnostic
+
+**Date:** 2026-07-05
+**Status:** SHIPPED
+
+First runtime slice of D119. The mode checker (`Lyric.ModeChecker`, shared
+by the MSIL, JVM, and native pipelines) now rejects the canonical
+fire-and-forget mistake: a `spawn` used as a **statement outside a
+`scope { }`**, where the task handle is discarded. Diagnostic **`V0014`**
+("spawned task is discarded … bind and `await` it, or run it inside a
+`scope { }`").
+
+**Design — a sound positional rule, not full dataflow.** V0014 fires only
+for the unambiguous case (a `spawn` in statement position, not lexically
+inside a `scope`). Consuming positions are allowed by construction: the
+operand of `await` (`await spawn f()`), a binding initialiser
+(`val t = spawn f()`), and a bare `spawn` statement *inside* a `scope`
+(the scope joins it at exit). `scope` and lambda boundaries are tracked —
+a lambda body starts a fresh out-of-scope context because a lambda may
+outlive the enclosing scope. This is deliberately conservative: it has
+**zero false positives** on the existing tree (grep confirms every extant
+`spawn` is a binding or `await` operand — none is a discarded statement),
+so no existing well-formed program breaks. Two cases are left as tracked
+follow-ups rather than risk false positives: a `val` bound to a spawn but
+never awaited (needs use-analysis), and a spawn flowing into a value
+position (already caught by the native backend's codegen diagnostic,
+D-N-022).
+
+**Placement.** New pass `checkSpawnConsumption` in
+`lyric-compiler/lyric/mode_checker/modechecker_check.l`, called from
+`checkFileWithImports` alongside the existing `checkAwaitInTry` (V0012)
+pass and mirroring its exhaustive expr/stmt walk. Skipped for `@axiom`
+and `@proof_required` files (the latter already reject `spawn` via V0002,
+so V0014 would double-report).
+
+**Verification.** Five new cases in `modechecker_self_test.l` (52/52 pass):
+bare spawn statement outside scope → V0014; spawn bound + awaited → none;
+`await spawn` → none; bare spawn inside a `scope` → none; dropped spawn in
+a lambda → V0014. End-to-end via `./bin/lyric build` on both
+`--target dotnet` and `--target jvm` (V0014 fires identically — it is a
+shared front-end check). Regression: `async_sm_self_test.l` (57/57,
+including the Phase-4 spawn tests) and the mode-checker suite pass
+unchanged; no existing spawn usage is newly rejected.
+
+**Related:** D119 (slice plan; this is S2), D-N-022 (native value-position
+diagnostic V0014 generalises), V0012 (the sibling await-in-try pass this
+mirrors), V0002 (proof-required spawn rejection, deduplicated against).
 
 ---
 ## Decisions deferred to v2 or later

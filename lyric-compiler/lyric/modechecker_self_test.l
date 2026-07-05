@@ -139,6 +139,37 @@ test "unsafe block v0003" {
   assertTrue(hasDiagCode(result, "V0003"), "unsafe: V0003 emitted")
 }
 
+// ── V0014: a spawned task must be consumed (D119) ─────────────────────────────
+test "bare spawn statement outside scope is V0014" {
+  val src = "package P\nasync func f(): Unit {\n  spawn g()\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn: V0014 emitted")
+}
+
+test "spawn bound and awaited is not V0014" {
+  val src = "package P\nasync func f(): Int {\n  val t = spawn g()\n  await t\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "spawn bound + awaited: no V0014")
+}
+
+test "await spawn is not V0014" {
+  val src = "package P\nasync func f(): Int {\n  await spawn g()\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "await spawn: no V0014")
+}
+
+test "bare spawn statement inside scope is not V0014" {
+  val src = "package P\nasync func f(): Unit {\n  scope {\n    spawn g()\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "spawn inside scope: no V0014 (scope joins it)")
+}
+
+test "dropped spawn inside a lambda is V0014" {
+  val src = "package P\nasync func f(): Unit {\n  val h = { x: Int -> spawn g() }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in lambda: V0014 (lambda may outlive scope)")
+}
+
 test "unsafe allowed no error" {
   val src = "@proof_required(unsafe_blocks_allowed)\npackage P\nfunc f(): Unit { unsafe { } }\n"
   val result = parseCheck(src)
@@ -371,7 +402,6 @@ test "n0100 clean file no diagnostics" {
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "N0100")), "clean: no N0100")
 }
-
 
 test "n0100 nativenullptr outside unsafe_ffi" {
   val src = "package P\nfunc f(): Int {\n  val p = g(nativeNullPtr())\n  p\n}\nfunc g(x: Int): Int { x }\n"

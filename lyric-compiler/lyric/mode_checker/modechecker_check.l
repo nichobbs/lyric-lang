@@ -2048,10 +2048,320 @@ pub func checkNativeFfiBoundary(file: in SourceFile, diag: in List[Diagnostic]):
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// §9b. V0014 — a spawned task must be consumed (no fire-and-forget).
+//
+// D119: `spawn e` produces a task that must be awaited or joined by an
+// enclosing `scope { }`.  This pass rejects the unambiguous fire-and-forget
+// case — a `spawn` used in *statement position* (its result discarded) that is
+// not lexically inside a `scope`.  Inside a `scope`, a bare `spawn` statement is
+// fine (the scope joins the task at exit); as an `await` operand or a binding
+// initialiser it is consumed by construction.  Broader consumption analysis
+// (a `val` bound to a spawn but never awaited; a spawn flowing into a value
+// position) is a documented follow-up — the value-position case is already
+// diagnosed by the native backend at codegen.  `scope`/lambda boundaries are
+// tracked: a lambda body starts a fresh (out-of-scope) context because a lambda
+// may outlive the enclosing scope.
+// ─────────────────────────────────────────────────────────────────────────────
+record SpawnCtx {
+  fnName: String
+  inScope: Bool
+  diag: List[Diagnostic]
+}
+
+// True when `e` is a `spawn` expression (through redundant parentheses).
+func isSpawnExprMc(e: in Expr): Bool {
+  match e.kind {
+    case ESpawn(_) -> true
+    case EParen(inner) -> isSpawnExprMc(inner)
+    case _ -> false
+  }
+}
+
+func walkExprOrBlockForSpawn(ctx: in SpawnCtx, eob: in ExprOrBlock): Unit {
+  match eob {
+    case EOBExpr(e) -> walkExprForSpawn(ctx, e)
+    case EOBBlock(blk) -> walkBlockForSpawn(ctx, blk)
+  }
+}
+
+// Walk an expression looking for statement-bearing sub-nodes (blocks, lambdas)
+// where a discarded `spawn` could appear.  A `spawn` in pure expression
+// position is not flagged here (only statement position is); this walk just
+// descends to reach nested statements, resetting `inScope` at lambda
+// boundaries.
+func walkExprForSpawn(ctx: in SpawnCtx, e: in Expr): Unit {
+  match e.kind {
+    case EAwait(inner) -> walkExprForSpawn(ctx, inner)
+    case EParen(inner) -> walkExprForSpawn(ctx, inner)
+    case ETuple(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        walkExprForSpawn(ctx, exprs[i])
+        i = i + 1
+      }
+    }
+    case EList(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        walkExprForSpawn(ctx, exprs[i])
+        i = i + 1
+      }
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      walkExprForSpawn(ctx, cond)
+      walkExprOrBlockForSpawn(ctx, thenB)
+      match elseOpt {
+        case Some(elseB) -> walkExprOrBlockForSpawn(ctx, elseB)
+        case None -> {
+        }
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      walkExprForSpawn(ctx, scrutinee)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> walkExprForSpawn(ctx, g)
+          case None -> {
+          }
+        }
+        walkExprOrBlockForSpawn(ctx, arms[i].body)
+        i = i + 1
+      }
+    }
+    case EYield(inner) -> walkExprForSpawn(ctx, inner)
+    case ESpawn(inner) -> walkExprForSpawn(ctx, inner)
+    case ETry(inner) -> walkExprForSpawn(ctx, inner)
+    case EOld(inner) -> walkExprForSpawn(ctx, inner)
+    case EPropagate(inner) -> walkExprForSpawn(ctx, inner)
+    case EPrefix(_, operand) -> walkExprForSpawn(ctx, operand)
+    case EBinop(_, lhs, rhs) -> {
+      walkExprForSpawn(ctx, lhs)
+      walkExprForSpawn(ctx, rhs)
+    }
+    case EAssign(target, _, value) -> {
+      walkExprForSpawn(ctx, target)
+      walkExprForSpawn(ctx, value)
+    }
+    case ECall(fn, args) -> {
+      walkExprForSpawn(ctx, fn)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(_, v, _) -> walkExprForSpawn(ctx, v)
+          case CAPositional(x) -> walkExprForSpawn(ctx, x)
+        }
+        i = i + 1
+      }
+    }
+    case ETypeApp(fn, _) -> walkExprForSpawn(ctx, fn)
+    case EIndex(recv, indices) -> {
+      walkExprForSpawn(ctx, recv)
+      var i = 0
+      while i < indices.count {
+        walkExprForSpawn(ctx, indices[i])
+        i = i + 1
+      }
+    }
+    case EMember(recv, _) -> walkExprForSpawn(ctx, recv)
+    case EBlock(blk) -> walkBlockForSpawn(ctx, blk)
+    case EUnsafe(blk) -> walkBlockForSpawn(ctx, blk)
+    case ELambda(_, body) -> {
+      val lambdaCtx = SpawnCtx(fnName = ctx.fnName, inScope = false, diag = ctx.diag)
+      walkBlockForSpawn(lambdaCtx, body)
+    }
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(x) -> walkExprForSpawn(ctx, x)
+          case ISText(_, _) -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          walkExprForSpawn(ctx, lo)
+          walkExprForSpawn(ctx, hi)
+        }
+        case RBHalfOpen(lo, hi) -> {
+          walkExprForSpawn(ctx, lo)
+          walkExprForSpawn(ctx, hi)
+        }
+        case RBLowerOpen(hi) -> walkExprForSpawn(ctx, hi)
+        case RBUpperOpen(lo) -> walkExprForSpawn(ctx, lo)
+      }
+    }
+    case EForall(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> walkExprForSpawn(ctx, w)
+        case None -> {
+        }
+      }
+      walkExprForSpawn(ctx, body)
+    }
+    case EExists(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> walkExprForSpawn(ctx, w)
+        case None -> {
+        }
+      }
+      walkExprForSpawn(ctx, body)
+    }
+    case ELiteral(_) -> {
+    }
+    case EPath(_) -> {
+    }
+    case ESelf -> {
+    }
+    case EResult -> {
+    }
+    case EError -> {
+    }
+  }
+}
+
+func walkStmtForSpawn(ctx: in SpawnCtx, st: in Statement): Unit {
+  match st.kind {
+    case SExpr(x) -> {
+      if not ctx.inScope and isSpawnExprMc(x) {
+        ctx.diag.add(
+          errorDiagnostic(
+            "V0014",
+            "spawned task is discarded in '" + ctx.fnName +
+              "': a `spawn` used as a statement outside a `scope { }` is fire-and-forget. " +
+              "Bind and `await` it (`val t = spawn ...; await t`), or run it inside a `scope { }`.",
+            st.span
+          )
+        )
+      }
+      walkExprForSpawn(ctx, x)
+    }
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> walkExprForSpawn(ctx, init)
+        case LBLet(_, _, init) -> walkExprForSpawn(ctx, init)
+        case LBVar(_, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> walkExprForSpawn(ctx, init)
+            case None -> {
+            }
+          }
+        }
+      }
+    }
+    case SAssign(t, _, v) -> {
+      walkExprForSpawn(ctx, t)
+      walkExprForSpawn(ctx, v)
+    }
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(v) -> walkExprForSpawn(ctx, v)
+        case None -> {
+        }
+      }
+    }
+    case SThrow(x) -> walkExprForSpawn(ctx, x)
+    case STry(body, catches, finally_) -> {
+      walkBlockForSpawn(ctx, body)
+      var ci = 0
+      while ci < catches.count {
+        walkBlockForSpawn(ctx, catches[ci].body)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> walkBlockForSpawn(ctx, fb)
+        case None -> {
+        }
+      }
+    }
+    case SDefer(body) -> walkBlockForSpawn(ctx, body)
+    case SScope(_, body) -> {
+      val scopeCtx = SpawnCtx(fnName = ctx.fnName, inScope = true, diag = ctx.diag)
+      walkBlockForSpawn(scopeCtx, body)
+    }
+    case SFor(_, _, iter, body) -> {
+      walkExprForSpawn(ctx, iter)
+      walkBlockForSpawn(ctx, body)
+    }
+    case SWhile(_, cond, body) -> {
+      walkExprForSpawn(ctx, cond)
+      walkBlockForSpawn(ctx, body)
+    }
+    case SLoop(_, body) -> walkBlockForSpawn(ctx, body)
+    case SInvariant(x) -> walkExprForSpawn(ctx, x)
+    case SRule(l, r) -> {
+      walkExprForSpawn(ctx, l)
+      walkExprForSpawn(ctx, r)
+    }
+    case SBreak(_) -> {
+    }
+    case SContinue(_) -> {
+    }
+    case SItem(_) -> {
+    }
+  }
+}
+
+func walkBlockForSpawn(ctx: in SpawnCtx, blk: in Block): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    walkStmtForSpawn(ctx, blk.statements[i])
+    i = i + 1
+  }
+}
+
+func checkFuncForSpawn(fn: in FunctionDecl, diag: in List[Diagnostic]): Unit {
+  match fn.body {
+    case None -> {
+    }
+    case Some(body) -> {
+      val ctx = SpawnCtx(fnName = fn.name, inScope = false, diag = diag)
+      match body {
+        case FBExpr(e) -> walkExprForSpawn(ctx, e)
+        case FBBlock(blk) -> walkBlockForSpawn(ctx, blk)
+      }
+    }
+  }
+}
+
+func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel, diag: in List[Diagnostic]): Unit {
+  // Proof-required functions already reject `spawn` outright (V0002); axiom
+  // bodies are exempt from mode checks.  Skip both to avoid overlap.
+  if vlIsAxiom(fileLevel) or vlIsProofRequired(fileLevel) {
+    return
+  }
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(fn) -> checkFuncForSpawn(fn, diag)
+      case IRecord(decl) | IExposedRec(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> checkFuncForSpawn(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
 pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta]): ModeCheckResult {
   val diag: List[Diagnostic] = newList()
   val fileLevel = levelOfFile(file, diag)
   checkAwaitInTry(file, fileLevel, diag)
+  checkSpawnConsumption(file, fileLevel, diag)
   checkNativeFfiBoundary(file, diag)
   if not vlIsProofRequired(fileLevel) {
     return ModeCheckResult(level = fileLevel, diagnostics = diag)
