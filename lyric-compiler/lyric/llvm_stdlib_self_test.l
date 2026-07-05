@@ -432,6 +432,19 @@ test "Std.Time addMonths with an extreme month delta panics, not Int-wraps (#521
 // Int32 wraps to exactly -4 months, i.e. a VALID-looking Instant four
 // months before the epoch — the one shape the recomposed-year window
 // check alone cannot catch.  With the Long widening it panics instead.
+test "Std.Time negative addDays past the window panics via the checked add (#5231)" {
+  // Exercises checkedAddNanos' NEGATIVE overflow branch end-to-end:
+  // the lower-boundary instant minus ~100000 days wraps positive
+  // without the check.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val lo = fromEpochMillis(0i64 - 9223372036854i64)\n" +
+    "  val t = addDays(lo, 0.0 - 100000.0)\n" +
+    "  if instantBefore(t, lo) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped negative addDays would exit 42")
+}
+
 test "Std.Time duration constructor past the nanos window panics, not UB (#5221)" {
   // llround(3) of an out-of-range double is C-standard undefined
   // behavior; the bounds check must turn it into a controlled panic.
