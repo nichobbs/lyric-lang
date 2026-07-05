@@ -116,6 +116,24 @@ jobs:
           fi
           LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib" .bootstrap/stage2/bin/lyric --version
 
+      # Required so the `--target dotnet` self-tests that `import Lyric.*`
+      # compiler packages (12 of the 15 below) resolve a self-consistent
+      # compiler (#5163), for the same reason as seed-candidacy.yml's
+      # identically-named step: without it, `lyric test` (with
+      # LYRIC_STDLIB_BIN pinned to .bootstrap/stage2/lib) falls back to
+      # linking the raw per-package stage-2 DLLs, which is NOT
+      # execution-clean for cross-package Lyric.* references (D112 /
+      # docs/41 §R7). Staged into both stage2/lib (what LYRIC_STDLIB_BIN
+      # actually points at) and stage2/bin (belt-and-suspenders, matching
+      # ci.yml's own dual-target-dir staging convention).
+      - name: Stage self-hosted compiler bundle
+        id: stage_selfhosted_bundle
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          bash scripts/stage-selfhosted-compiler.sh \
+            .bootstrap/stage2/bin/lyric .bootstrap/stage2/lib .bootstrap/stage2/bin
+
       # Representative subset, NOT the full ci.yml self-test suite — a full
       # self-host build already costs roughly double a stage-1-only build,
       # so duplicating every stage-1 self-test step here would double CI
@@ -188,6 +206,7 @@ jobs:
           failure() && (
             steps.build_stage2.outcome == 'failure' ||
             steps.verify_stage2_runnable.outcome == 'failure' ||
+            steps.stage_selfhosted_bundle.outcome == 'failure' ||
             steps.selftest_dotnet.outcome == 'failure' ||
             steps.selftest_jvm.outcome == 'failure'
           )

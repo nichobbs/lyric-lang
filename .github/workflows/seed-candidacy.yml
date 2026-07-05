@@ -153,6 +153,25 @@ jobs:
             exit 1
           fi
 
+      # Required so the `--target dotnet` self-tests that `import Lyric.*`
+      # compiler packages (12 of the 15 below) resolve a self-consistent
+      # compiler (#5163). Without this, `lyric test` falls back to linking
+      # the raw per-package DLLs `bootstrap.sh --stage 1` produces, which is
+      # NOT execution-clean for cross-package Lyric.* references (D112 /
+      # docs/41 §R7 — a self-hosted-emitted parser mis-parses even
+      # `package P`) and would fail regardless of whether the candidate seed
+      # under test is actually healthy, producing false-positive
+      # seed-regression reports. Mirrors ci.yml's own "Stage self-hosted
+      # compiler bundle" step exactly (same two target dirs).
+      - name: Stage self-hosted compiler bundle
+        id: stage_selfhosted_bundle
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          bin_dir="$(dirname "$lyric_bin")"
+          bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$bin_dir" .bootstrap/stage1
+
       # Same representative subset as stage2-self-test.yml / ci.yml's
       # compiler-self-tests-dotnet-a — not the full suite (this job already
       # duplicates a full stage-0(download)+stage-1+AOT build per release;
@@ -217,6 +236,7 @@ jobs:
           failure() && (
             steps.build_seed_stage1.outcome == 'failure' ||
             steps.build_aot.outcome == 'failure' ||
+            steps.stage_selfhosted_bundle.outcome == 'failure' ||
             steps.selftest_dotnet.outcome == 'failure' ||
             steps.selftest_jvm.outcome == 'failure'
           )
