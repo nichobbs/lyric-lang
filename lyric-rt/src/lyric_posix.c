@@ -98,6 +98,30 @@ int64_t lyric_monotonic_nanos(void) {
     return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
 }
 
+/* A version-4 (random) UUID as its canonical lowercase hyphenated
+ * 36-char string (RFC 4122 §4.4: 122 random bits, version nibble 4,
+ * variant bits 10).  The string IS the native Uuid representation
+ * (D-N-026), so formatting happens here, once.  Entropy failure is a
+ * panic: a "random" UUID from a broken RNG is a correctness bug, not
+ * a recoverable condition. */
+LyricString* lyric_uuid_v4(void) {
+    uint8_t b[16];
+    if (lyric_secure_random(b, 16) != 0) {
+        lyric_panic_msg("cannot draw entropy for a v4 UUID", "lyric_posix.c", __LINE__);
+    }
+    b[6] = (uint8_t)((b[6] & 0x0F) | 0x40);
+    b[8] = (uint8_t)((b[8] & 0x3F) | 0x80);
+    static const char hex[] = "0123456789abcdef";
+    char out[36];
+    int o = 0;
+    for (int i = 0; i < 16; i++) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) out[o++] = '-';
+        out[o++] = hex[b[i] >> 4];
+        out[o++] = hex[b[i] & 0x0F];
+    }
+    return lyric_string_from_literal((const uint8_t*)out, 36);
+}
+
 int32_t lyric_secure_random(uint8_t* buf, int64_t n) {
 #if defined(__APPLE__)
     /* getentropy caps each call at 256 bytes. */

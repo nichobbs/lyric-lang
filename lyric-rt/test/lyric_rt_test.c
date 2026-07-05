@@ -490,6 +490,28 @@ static void test_posix(void) {
     CHECK(lyric_file_size("/nonexistent-lyric-rt-test-path") == -1);
 }
 
+static void test_uuid_v4(void) {
+    /* Canonical lowercase hyphenated form with the RFC 4122 version-4
+     * and variant-10 marker positions, distinct across calls. */
+    LyricString* a = lyric_uuid_v4();
+    LyricString* b = lyric_uuid_v4();
+    CHECK(lyric_string_len(a) == 36);
+    CHECK(lyric_string_len(b) == 36);
+    const uint8_t* p = LYRIC_STRING_DATA(a);
+    for (int i = 0; i < 36; i++) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            CHECK(p[i] == '-');
+        } else {
+            CHECK((p[i] >= '0' && p[i] <= '9') || (p[i] >= 'a' && p[i] <= 'f'));
+        }
+    }
+    CHECK(p[14] == '4');
+    CHECK(p[19] == '8' || p[19] == '9' || p[19] == 'a' || p[19] == 'b');
+    CHECK(memcmp(LYRIC_STRING_DATA(a), LYRIC_STRING_DATA(b), 36) != 0);
+    lyric_release(a);
+    lyric_release(b);
+}
+
 static void test_file_io(void) {
     char dir_tmpl[] = "/tmp/lyric_rt_test_fs_XXXXXX";
     char* dir = mkdtemp(dir_tmpl);
@@ -1430,6 +1452,7 @@ int main(void) {
     test_map_keys_values();
     test_posix();
     test_ok_variants();
+    test_uuid_v4();
     test_file_io();
     test_directories();
     test_environment();

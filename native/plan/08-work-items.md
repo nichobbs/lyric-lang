@@ -781,6 +781,15 @@ Implement `Instant.now()` returning milliseconds since epoch via `clock_gettime`
 
 Generate 16 random bytes via `getrandom`, format as UUID string.
 
+**SHIPPED (D-N-026):** `lyric_uuid_v4` draws from `lyric_secure_random`
+and formats the canonical lowercase hyphenated string in C; the native
+twin represents `Uuid` as that string, and `Std.Uuid.parseUuidOpt`
+canonicalizes the four cross-target formats in shared pure Lyric so
+all three kernel twins parse through one exception-free Option seam
+(the Bool+out TryParse shape is gone from the shared surface — native
+has no out params). Verified by an ASan `llvm_stdlib_self_test.l`
+case and extended managed `uuid_tests.l` coverage.
+
 ---
 
 ### N5.6 — Update `Std.Environment` for native

@@ -159,6 +159,14 @@ values that differ between Linux x86-64 and macOS AArch64 (Phase 1 targets).
 
 ### `uuid_native.l`
 
+> **Shipped differently (D-N-026).** The sketch below predates the
+> loader-based kernel-twin model: the shipped file is
+> `_kernel_native/uuid_host.l`, declaring the SAME `Std.UuidHost`
+> package as its managed twin (no `Std.UuidNativeHost`), and the C
+> boundary is one call — `lyric_uuid_v4()` draws entropy via
+> `lyric_secure_random` and returns the canonical formatted string —
+> rather than a raw `getrandom` extern in Lyric.
+
 ```lyric
 package Std.UuidNativeHost
 

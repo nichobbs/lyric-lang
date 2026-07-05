@@ -64,8 +64,9 @@ support they surfaced (Unit-typed union/record payload fields for
 `llvm_stdlib_self_test.l`, which compiles real `Std.File` /
 `Std.Environment` / `Std.Process` / `Std.Time` programs through the
 full bridge pipeline.  The process runner's stdin/timeout deferrals
-were later closed by D-N-024; the remaining native-side deferrals
-(Std.Uuid, the Std.Time calendar surface) are tracked in #4752.
+were later closed by D-N-024, and Std.Uuid by D-N-026; the remaining
+native-side deferrals (file `stat`, the Std.Time calendar surface)
+are tracked in #4752.
 `slice[T]` SHIPPED (D-N-015, D-progress-562): slices share the RC'd
 list representation (immutable by construction; the planned borrowed
 fat pointer is superseded — see D-N-015), unlocking bytes-mode file
@@ -170,6 +171,17 @@ race, closing the D-N-024 deferral. The #5176 drain budget remains
 the backstop for `setsid` escapees. Verified by the tightened
 grandchild-writer C test, a new setsid-escapee budget test, and one
 new `llvm_self_test_async.l` case (31 total).
+
+`Std.Uuid` works on native (D-N-026): the native twin represents a
+`Uuid` as its canonical lowercase hyphenated string, `lyric_uuid_v4`
+draws entropy from `lyric_secure_random` and stamps the RFC 4122
+v4/variant bits in C, and `Std.Uuid.parseUuidOpt` now canonicalizes
+the four cross-target formats ("D"/"N"/"B"/"P") in shared pure Lyric
+so all three kernel twins parse identically through one exception-free
+Option seam (the Bool+out TryParse shape is gone from the shared
+surface — native has no out params). Verified by a new
+`llvm_stdlib_self_test.l` case under ASan and extended managed
+`uuid_tests.l` coverage.
 
 ## Reading order
 

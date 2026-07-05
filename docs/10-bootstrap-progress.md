@@ -29471,3 +29471,35 @@ kill is atomic over present and future members).
 
 **Related:** D-N-025 (the decision entry), D-N-024, D-progress-599,
 #4752, #5107, #5176.
+
+### D-progress-601 — `Std.Uuid` works on `--target native` (D-N-026)
+
+**Shipped.** The Std.Uuid half of #4752's remaining gaps is closed:
+native programs can generate, format, and parse UUIDs, and all three
+targets now honor the same documented four-format parse contract.
+
+- **lyric-rt:** `lyric_uuid_v4()` draws 16 bytes from the existing
+  `lyric_secure_random`, stamps the RFC 4122 version-4/variant-10
+  bits, and returns the canonical lowercase hyphenated 36-char
+  LyricString (one new C unit test).
+- **Native kernel twin** (`_kernel_native/uuid_host.l`): `Uuid` is a
+  record holding that canonical string (D-N-026) — formatting is the
+  identity, the nil sentinel a literal, parsing a wrap.
+- **Shared surface:** `Std.Uuid.parseUuidOpt` canonicalizes the four
+  formats ("D"/"N"/"B"/"P", either hex case, whitespace trimmed) in
+  pure target-neutral Lyric and calls one exception-free Option seam
+  (`hostParseCanonicalGuid`) every twin implements — replacing the
+  Bool+out `hostTryParseGuid` shape the native backend cannot express
+  (out params are a native-codegen panic; general support remains
+  tracked separately). This also retires the JVM twin's silent
+  divergence (fromString never accepted "N"/"B"/"P") and
+  intentionally drops the undocumented .NET-only "X" form everywhere
+  (see D-N-026).
+- **Verification:** new `llvm_stdlib_self_test.l` case (ASan) covering
+  generation/format/distinctness, nil, round-trip, all four parse
+  forms, and malformed rejection on native; `uuid_tests.l` gains
+  alternate-form and X-rejection cases for the managed targets;
+  lyric-rt C suite (clang + gcc) and `make ilverify` clean.
+
+**Related:** D-N-026 (the decision entry), D-progress-557 (the
+Option-seam idiom), #4752 (Std.Time calendar surface remains).

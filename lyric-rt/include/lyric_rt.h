@@ -187,6 +187,11 @@ int64_t lyric_monotonic_nanos(void);
  * success, -1 on failure.  getrandom(2) on Linux, getentropy on macOS. */
 int32_t lyric_secure_random(uint8_t* buf, int64_t n);
 
+/* A fresh version-4 (random) UUID as a fresh rc=1 LyricString in the
+ * canonical lowercase hyphenated 36-char form — the native Uuid
+ * representation (D-N-026).  Panics if the entropy source fails. */
+LyricString* lyric_uuid_v4(void);
+
 /* ── Files (lyric_fs.c) ────────────────────────────────────────────────
  *
  * `path` (and `old_path`/`new_path`) are NUL-terminated C strings — the

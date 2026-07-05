@@ -1520,10 +1520,11 @@ current working directory, `Std.Process.runCapture` and
 `timeoutMs` deadline kill both honored at managed parity, D-N-024;
 the kill takes the child's whole process group, so descendants die
 with it, D-N-025),
-and `Std.Time`'s epoch/monotonic/sleep functions all work on
-`--target native` today.  Bytes-mode file I/O, directory enumeration,
-`stat`, and the `Std.Time` calendar surface remain unavailable on
-native (tracked in #4752).
+`Std.Time`'s epoch/monotonic/sleep functions, and `Std.Uuid`
+(generation, formatting, and a four-format parse contract that is
+identical on every target, D-N-026) all work on `--target native`
+today.  File `stat` and the `Std.Time` calendar surface remain
+unavailable on native (tracked in #4752).
 
 `for x in list { ... }` over a `List[T]` diverges from the managed
 targets in one respect on `--target native`: the list's length is
