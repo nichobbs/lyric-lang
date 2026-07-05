@@ -291,12 +291,26 @@ several of these are core, not edge-case, functionality:
   need a live AWS account to test — it's the in-process test double.
   Recommend building event-source-specific dispatch tests against the
   local kernel first (one per handler type), since that infrastructure
-  already exists and needs no network access.
+  already exists and needs no network access. **Update:** the local
+  kernel turned out to be a real listening HTTP server (`serve()` blocks
+  indefinitely), not an in-process double — actually dispatching a
+  synthetic event through it needs server lifecycle test infrastructure
+  (spawn/wait-ready/HTTP-call/shutdown) that doesn't exist anywhere in
+  this repo yet (checked `lyric-web` for precedent; found none). Still
+  open — see §7 item 5.
 - **lyric-aws-secrets** (`tests/secrets_tests.l:5-6`): `init()`,
   `getSecret()`, `getParameter()` are untested; so is the `ttlSeconds`
   caching logic and the `AccessDenied`/`DecryptionError`/`ParseError`
   error paths. The library ships a `secrets_kernel_local.l` — same
-  opportunity as lambda above.
+  opportunity as lambda above. **Update:** `init()`/`getSecret()`/
+  `getSecretField()`/`getParameter()`/`getParameterRaw()` now have tests
+  against the local kernel's deterministic always-`Ok`/always-`NotFound`
+  contract (unlike lambda's, this local kernel genuinely is a pure no-op,
+  so no server infrastructure was needed). `ttlSeconds` caching and the
+  `AccessDenied`/`DecryptionError`/`ParseError` paths live in the AWS SDK
+  backend specifically (the local kernel ignores `ttlSeconds` and never
+  constructs those variants) and still need live AWS credentials to
+  test — out of scope here, unchanged. See §7 item 5.
 - **lyric-aws-xray** (`tests/xray_tests.l`): a single "package can be
   imported" smoke test. No coverage of `currentSubsegment()`,
   `annotate()`, `metadata()`, or the `Tracing` aspect weaving. Also
@@ -398,9 +412,33 @@ blocks closing this section and rollout item 7 below.
 4. ~~Fix `lyric-cache/src/cache_aspects.l` (§4) — either ship the two
    templates or correct the comment.~~ **Comment corrected** (same-day
    follow-up); shipping the two templates themselves remains open.
-5. Add local-kernel-backed tests for lyric-lambda event handlers and
+5. ~~Add local-kernel-backed tests for lyric-lambda event handlers and
    lyric-aws-secrets (§5.2) — no live-service dependency required, so this
-   is pure engineering time, not blocked on infra.
+   is pure engineering time, not blocked on infra.~~ **Partially done.**
+   lyric-aws-secrets: `init()`/`getSecret()`/`getSecretField()`/
+   `getParameter()`/`getParameterRaw()` now have real tests against the
+   local no-op kernel's always-`Ok`/always-`NotFound` contract, run via a
+   new CI step (`--features local`). Along the way, discovered and fixed a
+   latent gap: `lyric-aws-secrets/lyric.toml` has no `default` feature (an
+   established repo-wide pattern for backend-*choice* features — matches
+   `lyric-mail`/`lyric-search`), so the plain `lyric test` invocation
+   builds with **zero** features active and `AwsSecrets.Kernel.Net`'s
+   three candidate files all erase; any test that actually calls into it
+   crashes (`InvalidProgramException`) rather than compiling the local
+   backend. Not a compiler bug — the fix is running these specific new
+   tests with `--features local` explicitly (a new CI step), not changing
+   the package's feature defaults. lyric-lambda: unlike aws-secrets' local
+   kernel (a pure no-op), `Lambda.Kernel.Runtime`'s local backend
+   (`lambda_kernel_local.l`) is a **real** listening HTTP test server —
+   `serve()` blocks indefinitely, and no test infrastructure anywhere in
+   this repo (checked `lyric-web`, which has the same "local test server"
+   shape) spins up a server and drives it with a live HTTP round-trip in
+   a unit test. Added a CI step building lyric-lambda's existing test
+   suite with `--features local` (guards the local kernel package itself
+   still links cleanly), but did not add new dispatch-loop tests — that
+   needs actual async server lifecycle test infrastructure (spawn, wait
+   for ready, HTTP client call, shutdown) this pass didn't build. Left
+   open, scoped narrower than the original item.
 6. ~~Track backend-completeness asymmetry (§3) with one README sentence
    per library naming which backend is real vs. stubbed...~~
    `lyric-resilience`'s JVM kernel (§3, issue #5037) — the one exception

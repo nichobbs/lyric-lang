@@ -4235,8 +4235,11 @@ jobs:
           "$lyric_bin" test --manifest lyric-mail/lyric.toml || overall=$?
           echo "=== lyric-aws-xray tests ==="
           "$lyric_bin" test --manifest lyric-aws-xray/lyric.toml || overall=$?
-          echo "=== lyric-aws-secrets tests ==="
-          "$lyric_bin" test --manifest lyric-aws-secrets/lyric.toml || overall=$?
+          # --features local: exercises the no-op local kernel (init()/
+          # getSecret()/getParameter() always-NotFound contract). The AWS
+          # SDK backend needs live credentials and isn't tested here.
+          echo "=== lyric-aws-secrets tests (local feature) ==="
+          "$lyric_bin" test --manifest lyric-aws-secrets/lyric.toml --features local || overall=$?
           echo "=== lyric-feature-flags tests ==="
           "$lyric_bin" test --manifest lyric-feature-flags/lyric.toml || overall=$?
           echo "=== lyric-validation tests ==="
@@ -4270,6 +4273,12 @@ jobs:
           # library gained LambdaError factory functions + an authorizer split fix.
           echo "=== lyric-lambda tests ==="
           "$lyric_bin" test --manifest lyric-lambda/lyric.toml || overall=$?
+          # --features local: guards that the local-dev kernel (a real
+          # HTTP test server, Lambda.Kernel.Runtime) at least builds/links
+          # cleanly. The dispatch loop itself needs a live HTTP round-trip
+          # to exercise and isn't tested here — see docs/57 §5.2/§7 item 5.
+          echo "=== lyric-lambda tests (local feature) ==="
+          "$lyric_bin" test --manifest lyric-lambda/lyric.toml --features local || overall=$?
           # lyric-web went green once the generic-`ConcurrentDictionary` extern
           # codegen fix (#3392) landed: checkRateLimit is no longer a silent
           # no-op, so the rate-limit suite asserts real deny/burst behaviour.
