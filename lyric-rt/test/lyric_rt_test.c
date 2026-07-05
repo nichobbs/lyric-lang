@@ -703,21 +703,23 @@ static void test_process(void) {
 
 static void test_process_closed_stdio(void) {
     /* Regression: with fd 1/2 closed in the caller, pipe() hands the child
-     * those very numbers, dup2 onto itself is a no-op, and the old
-     * unconditional close then destroyed the just-installed descriptor.
-     * Run a capture with stdout/stderr closed and verify the output still
-     * comes back intact.  Assertions in the fork are reported through the
-     * exit status — its stderr is closed by construction. */
+     * those very numbers.  The original wiring dup2'ed in place (a no-op
+     * when source == target) and then unconditionally closed the source,
+     * destroying the just-installed descriptor; spawn_capture now
+     * F_DUPFD-lifts every source above 2 before dup2'ing onto 0/1/2, so
+     * no source can alias its target.  Run a capture with stdout/stderr
+     * closed and verify the output still comes back intact.  Assertions
+     * in the fork are reported through the exit status — its stderr is
+     * closed by construction. */
     pid_t pid = fork();
     CHECK(pid >= 0);
     if (pid == 0) {
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
-        /* With 1/2 closed, pipe() returns {1,2} for out_pipe, so the old
-         * close(out_pipe[1]) destroyed the descriptor stderr had just been
-         * dup2'ed onto.  The command must write to BOTH streams: with the
-         * bug, its stderr writes hit a closed fd and the err capture comes
-         * back empty. */
+        /* With 1/2 closed, pipe() returns {1,2} for out_pipe — the
+         * aliasing shape that broke the original wiring.  The command
+         * must write to BOTH streams: with the historical bug, stderr
+         * writes hit a closed fd and the err capture came back empty. */
         LyricList* args = lyric_list_new(2);
         LyricString* a1 = lyric_string_from_literal((const uint8_t*)"-c", 2);
         LyricString* a2 = lyric_string_from_literal(
@@ -745,10 +747,11 @@ static void test_process_closed_stdio(void) {
 
 static void test_process_closed_stdin_stdout(void) {
     /* With fds 0 and 1 closed, pipe() returns {0,1} for out_pipe, so
-     * out_pipe[1] IS STDOUT_FILENO and the child takes the no-dup2 branch.
-     * The pipes are created CLOEXEC; the child must clear the flag by hand
-     * on that branch or exec closes the just-wired stdout and the capture
-     * comes back empty. */
+     * out_pipe[1] IS STDOUT_FILENO.  The pipes are created CLOEXEC, and a
+     * self-aliased dup2 would leave that flag set (exec would close the
+     * just-wired stdout); spawn_capture's F_DUPFD lift above 2 guarantees
+     * a real dup2 happens, which clears CLOEXEC on the target, so the
+     * capture must come back non-empty. */
     pid_t pid = fork();
     CHECK(pid >= 0);
     if (pid == 0) {
