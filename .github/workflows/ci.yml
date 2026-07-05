@@ -1736,6 +1736,7 @@ jobs:
   # extending compiler-self-tests-dotnet-a's own `wait-all` barriers.
   native-backend-self-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     needs: [build]
     permissions:
       contents: read
