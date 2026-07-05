@@ -2866,10 +2866,20 @@ pub func isVoidJvmType(t: in JvmType): Bool {
 
 // The declared return JVM type of a resolvable call `f(args)`, looked up from the
 // callee's signature; `None` when the head is not a known function name.
+//
+// `sigOpt` carries an EXPLICIT `Option[JvmFuncSig]` annotation.  Without it, the
+// pinned stage-0 F# emitter that mints the CI bootstrap leaves its `ExpectedType`
+// hint set to this function's `Option[JvmType]` return type when emitting the
+// un-annotated `val`, then uses that hint to monomorphise the generic `mapGet` —
+// inferring the element type as `JvmType`, so the bound `sig` is typed `JvmType`
+// and `sig.ret` crashes (`E5/E7: receiver type JvmType is not a known record or
+// distinct type`).  The annotation resets `ExpectedType` to `Option[JvmFuncSig]`,
+// forcing the correct element type.
 func funcSigRetType(ctx: in FuncCtx, fn: in Expr): Option[JvmType] {
   match fn.kind {
     case EPath(p) -> {
-      match mapGet(ctx.funcSigs, lastSegment(p)) {
+      val sigOpt: Option[JvmFuncSig] = mapGet(ctx.funcSigs, lastSegment(p))
+      match sigOpt {
         case Some(sig) -> {
           val rt = sig.ret
           Some(value = rt)

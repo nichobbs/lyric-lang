@@ -146,6 +146,23 @@ async func spawnStringResult(name: in String): String {
   }
 }
 
+// A spawned task that panics: `await` must propagate its failure (§7.4's
+// first-failure-propagates guarantee).  On JVM the join helper `__lyric_await`
+// unwraps the `ExecutionException` to its cause so the original panic message
+// surfaces (not the executor's wrapper); on MSIL the async state machine rethrows
+// the faulted task's exception.  Either way the awaiting caller observes a `Bug`
+// carrying the task's message.
+async func boomTask(): Int {
+  panic("boom-in-spawned-task")
+}
+
+async func awaitFailingSpawn(): Unit {
+  scope {
+    val t = spawn boomTask()
+    val _ = await t
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -187,4 +204,11 @@ test "spawn-binding name reused across sibling scopes compiles and joins" {
 test "reference-typed spawn result checkcasts on await" {
   assertEqual(await spawnStringResult("bob"), "hi-bob", "greet(bob)")
   assertEqual(await spawnStringResult("x"), "hi-x", "greet(x)")
+}
+
+test "spawned task that panics propagates its cause through await" {
+  // The closure is a non-async lambda, so its `await` uses the blocking resolve
+  // path and V0012 (await-in-try, async-only) does not apply; the try/catch that
+  // observes the panic lives inside `assertPanicsWith`.
+  assertPanicsWith("failing spawn", "boom-in-spawned-task", { -> await awaitFailingSpawn() })
 }

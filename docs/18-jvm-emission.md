@@ -1214,6 +1214,17 @@ JEP 505) the scope type can be swapped to `LyricAggregatingScope` (a
 accumulate) with no preview plumbing; until then the baseline's
 first-failure propagation is the honest, non-preview behaviour.
 
+**Known limitation — shared-mutable-capture races (tracked, #5189).** Because
+JVM `spawn` now runs its `Callable` on a real virtual thread, two sibling
+`spawn`s in one `scope` that capture and mutate the *same* enclosing `var` race
+on it — a data hazard that was structurally impossible while `spawn` was
+synchronous everywhere. There is currently no mode-checker guard against it
+(unlike `protected type`, which the language reference mandates for shared
+mutable state). The safe idioms — each `spawn` returns its result through
+`await`, or shared state goes through a `protected type` — are unaffected; only a
+`spawn` body that writes a captured outer `var` read by a sibling is exposed.
+Adding a capture-mutation diagnostic is the tracked follow-up.
+
 ### 15.4 Java-interop with `ExecutorService`
 
 A Lyric scope that calls into a Java library expecting an

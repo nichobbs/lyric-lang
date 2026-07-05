@@ -895,8 +895,10 @@ need direction and have nothing else productive to do**.  Specifically:
     structured-concurrency keywords `scope { }` / `spawn e` / `await t` (D119
     slice S4 / D120, D-progress-601).  Runs real concurrent work and asserts
     runtime values: two spawns joined by early `return` inside a scope, the same
-    by fall-off, a bare no-scope spawn, three concurrent spawns, and a
-    `Unit`-returning spawn.  Run in CI via native `lyric test` on **both targets**
+    by fall-off, a bare no-scope spawn, three concurrent spawns, a
+    `Unit`-returning spawn, a spawn-binding name reused across sibling scopes, a
+    reference-typed (`String`) result, and a panicking spawned task whose failure
+    propagates through `await`.  Run in CI via native `lyric test` on **both targets**
     (like `bitwise_self_test.l`): `--target jvm` is the load-bearing run
     (real virtual-thread `ExecutorService` codegen — `scope` open/close,
     `spawn` → `Callable` submit → `Future`, `await` → `__lyric_await` join),

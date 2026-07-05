@@ -15775,6 +15775,42 @@ func collectAwaitTypesStmtPB(
 // passed into recursion), which avoids the F# bootstrap emitter limitation where
 // two-arg .add() and one-arg .add() on `in Map[K,V]` / `in List[T]` parameters
 // may fail BCL dispatch when type args include non-BCL Lyric types.
+// Record a single `val x = spawn asyncFn(…)` binding into the pre-scan spawn
+// lists when its initialiser is a `spawn` of a `Task`-typed call.  Split out of
+// `collectSpawnBindingsStmtMsil` so the `SLocal` case reads like its sibling
+// cases rather than a deeply-nested inline match.
+func collectSpawnBindingLocalMsil(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  binding: in LocalBinding,
+  spawnNms: in List[String],
+  spawnTys: in List[MsilType],
+): Unit {
+  match binding {
+    case LBVal(pat, _, init) -> {
+      match pat.kind {
+        case PBinding(bindName, _) -> {
+          match init.kind {
+            case ESpawn(spawnInner) -> {
+              val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys)
+              if isTaskTypeMsil(cctx, sTy) {
+                spawnNms.add(bindName)
+                spawnTys.add(sTy)
+              }
+            }
+            case _ -> {
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
+}
+
 // Collect `val x = spawn asyncFn(…)` bindings for the Phase B await pre-scan,
 // recursing into block-bearing statements (`scope { }`, loops, `try`) so a spawn
 // bound inside a `scope { }` — the structured-concurrency shape — is captured and
@@ -15788,7 +15824,7 @@ func collectSpawnBindingsStmtMsil(
   spawnTys: in List[MsilType],
 ): Unit {
   match st.kind {
-    case SLocal(binding) -> match binding { case LBVal(pat, _, init) -> match pat.kind { case PBinding(bindName, _) -> match init.kind { case ESpawn(spawnInner) -> { val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys); if isTaskTypeMsil(cctx, sTy) { spawnNms.add(bindName); spawnTys.add(sTy) } }; case _ -> {  } }; case _ -> {  } }; case _ -> {  } }
+    case SLocal(binding) -> collectSpawnBindingLocalMsil(cctx, pkgName, binding, spawnNms, spawnTys)
     case SScope(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
     case SLoop(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
     case SWhile(_, _, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
