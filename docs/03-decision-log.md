@@ -8087,20 +8087,31 @@ other opaque type in the stdlib) — throws
 '...' failed` when compiled by the published 0.4.14 tool against this
 repo's current stdlib source (via `LYRIC_STD_PATH`), reproduced against
 two independent opaque types (`Std.Http.Url`, `Std.Regex.CompiledRegex`)
-with minimal isolated repros. Since this would break virtually every
-opaque-type-using module in the stdlib and ecosystem if it reflected
-actual `main` behavior — and CI, which builds fully from source, is
-demonstrably green across exactly this code — the divergence is
-almost certainly in the published release's build/packaging pipeline
-(a Release-vs-Debug field-accessibility difference is the leading
-theory; CI builds with `BUILD_CONFIG=Debug`), not a real bug on `main`.
-Noted here rather than chased further: root-causing the release pipeline
-itself is out of scope for whatever task surfaced this. A session in
-this situation should treat the published tool as useful for syntax/
-name-resolution sanity (real compile errors it reports are real) but
-**not** as a runtime oracle for anything touching opaque types — trust
-CI's from-source build as the actual verification, the same posture
-this entry already establishes for `fmt`.
+with minimal isolated repros.
+
+**Correction (2026-07-05):** the conclusion above — "almost certainly a
+published-release-packaging artifact, not a real bug on `main`" — was
+**wrong**, and was reached without actually running the from-source CI
+build before writing it off. Real CI on PR #5084 hit the *identical*
+`FieldAccessException`, byte-for-byte, on `lyric-stdlib/tests/http_tests.l`
+— proving this is a genuine `main` bug, not a tool artifact. Root-caused
+and fixed in D-progress-596: non-projectable opaque types' backing
+fields were emitted with CLR-`Private` visibility
+(`lyric-compiler/msil/lowering.l`'s `lowerMOpaque`), which the CLR
+restricts to the *declaring type itself* — not the declaring package —
+so any same-package function other than a method of that exact class
+(e.g. `Std.Http`'s own free-standing `request()` reading `url.value`)
+faults exactly like this. See D-progress-596 for the fix and two more
+bugs (a cross-package generic-erasure match failure, and a qualified
+user function silently shadowed by a same-named compiler intrinsic)
+the same investigation surfaced. The methodological lesson generalizes
+beyond this one entry: a published-tool repro that looks like it would
+"break virtually everything" if real is a hypothesis to verify against
+CI, not a conclusion to reach from that plausibility argument alone —
+see D-progress-596's "why this went undetected" for why a bug this
+broad-sounding survived undetected (it required a *specific*,
+previously-untested combination: an opaque type's field read from a
+free function outside its own methods).
 
 ---
 
@@ -8954,6 +8965,162 @@ previously-known bugs this is distinct from), #4004 (flags #3988's fix as
 manually-verified-only with no automated regression test — same
 full-suite-coverage gap this entry's finding closes the case for), #5094
 (the new issue with full repro + proposed resolution paths), PR #5090.
+
+---
+
+## D-progress-596 — Three previously-undiscovered self-hosted MSIL codegen bugs found and fixed while adding `Std.Http` test coverage; one stdlib content-type bug fixed alongside
+
+**Context.** Writing `lyric-stdlib/tests/http_tests.l` (PR #5084, part of
+working through docs/57 §7's rollout list) surfaced real `main` failures in
+CI, not just published-tool noise (see D-progress-543's corrected addendum
+above — the initial published-`lyric`-0.4.14 repro was wrongly written off
+as a release-packaging artifact before checking real CI). This session
+built `./bin/lyric` from source in a sandbox that cannot reach GitHub
+releases or mint the retired F# bootstrap, by feeding the published NuGet
+`lyric` 0.4.14 tool's own installed DLLs into `.bootstrap/stage0-publish/`
+so `scripts/bootstrap.sh`'s cached-seed check accepts them as stage 0 —
+letting stage 1 recompile the *current* `lyric-compiler/**/*.l` source
+(including this entry's fixes) rather than only being able to test against
+whatever the published tool's own frozen behavior does. This is stage-1-only
+(no stage 2/3 self-recompilation), so per D-progress-594's finding it can
+carry residual v0.4.14-seed-specific defects for constructs the seed itself
+mis-emits — none of the three bugs below are in that category: each was
+root-caused by reading the actual `.l` source (not just observed
+empirically), each reproduces identically against real CI's from-scratch
+build (confirmed pre-fix on PR #5084), and all three fixes are ordinary
+`if`/`match`/field-flag changes with no JVM or seed-specific surface.
+
+**Bug A — non-projectable opaque type fields emit CLR-`Private`, not
+`Internal`, breaking same-package non-method access.**
+`lowerMOpaque` (`lyric-compiler/msil/lowering.l`) has two branches: a
+`@projectable` opaque type's backing fields already use `FDA_ASSEMBLY`
+(internal — CLR-accessible from anywhere in the same assembly/package),
+with a comment explaining exactly why: the Lyric type checker enforces the
+real package-level boundary, so the MSIL flag only needs to satisfy the
+*assembly* boundary. The non-projectable branch — the far more common case,
+used by `Std.Http.Url`, `Std.Regex.CompiledRegex`, and most opaque types in
+the stdlib — never got the same treatment and still used `FDA_PRIVATE`
+(CLR-`Private`, accessible only from the *declaring type itself*, not the
+declaring package). A method of the opaque type's own class can still read
+its private field; a free function elsewhere in the same package cannot.
+`Std.Http.request(method, url)` is exactly such a free function reading
+`url.value` — `System.FieldAccessException` at runtime. Fixed by changing
+the non-projectable branch's `FieldRow` flags from `FDA_PRIVATE` to
+`FDA_ASSEMBLY`, mirroring the projectable branch's existing, already-audited
+reasoning. This only *widens* CLR access (assembly-internal ⊇ type-private),
+so it cannot break any currently-working same-class access; it only fixes
+the previously-broken same-package, different-class case.
+
+**Bug B — a qualified call to a user function whose name collides with a
+compiler intrinsic silently ran the intrinsic instead.**
+`Std.Http.Url.toString(url)` printed `Std.Http.Url` (`Object.ToString()`'s
+default) instead of executing the real, user-written
+`pub func Url.toString(url: in Url): String { url.value }`.
+`lowerBuiltinOrStaticCallMsil` dispatches purely on the call's *bare last
+path segment* — `println`/`panic`/`assert`/`toString`/`intToLong`/
+`newList`/`format1`/… and 20 total names — before ever checking whether
+the qualifier names a real user-declared function of that exact name.
+Since `Url.toString`'s last segment is `"toString"`, and `Std.Core`'s
+global `toString(x)` intrinsic is also named `"toString"`, the intrinsic
+branch always won — the user's function was never reached, cross-package
+*or* same-package, for any call site. Fixed with a single guard,
+`hasQualifiedFuncOverrideMsil`, computed once per call: true only when the
+call path has 2+ segments (an explicit qualifier — `toString(x)` alone
+never matches) *and* `cctx.funcTokens` already has a registered function
+under that exact qualified FQN (or its arity-qualified key). Every one of
+the 20 intrinsic-name branches is now gated on `not hasQualifiedOverride`,
+falling through unchanged to the existing record-ctor / qualified-function
+resolution logic that already correctly handles every *other* function
+name. A grep across the entire stdlib and all 26 ecosystem libraries found
+exactly one existing collision (`Url.toString`) — this was a live,
+shipped-since-1.0 bug, not a hypothetical.
+
+**Bug C — a record field typed `Option[T]`/`Result[T,E]`, constructed with
+a bare `None`/`Ok`/`Err` in one already-compiled package and pattern-matched
+in another, erased to `Option_None<object>` and matched neither arm.**
+`HttpClientBuilder.new()` builds `HttpClientBuilder(socketPath = None, …)`;
+any consumer's `match b.socketPath { case None -> …; case Some(_) -> … }`
+panicked `Msil.Codegen: match not exhaustive … arms=2` — a fully exhaustive
+match failing both arms at runtime. The per-constructor-argument generic
+hint lookup (the loop in the "record constructor call" branch of
+`lowerBuiltinOrStaticCallMsil`) resolves each field's declared type via
+`cctx.fieldMsilTypes`, then pattern-matched the result with
+`case MGenericInst(_, _, innerArgs) -> { …push innerArgs as the hint… }`
+— but a field's declared type read back from an *already-compiled sibling
+package* resolves to the structurally-equivalent but differently-tagged
+`MGenericInstByName`, which fell through to `case _` (the
+List/Map-collection-hint branch) instead, silently dropping the hint. A
+bare `None` lowered with no hint erases its type argument
+(`Option_None<object>`); the consuming package's `match` then tests for
+`Option_Some<String>`/`Option_None<String>` via `isinst` against the
+*correct* concrete type and neither ever matches the erased instance. Only
+affects a bare nullary case (`None`, or a niladic union case) as a
+*record-field initializer specifically* — `Some(value = x)` carries its own
+concrete argument type regardless of representation, which is why
+`withRedirects`/`withUnixSocket` (both `Some(...)`) already worked and only
+the `None`-defaulted fields broke. Fixed by replacing the direct
+`MGenericInst` pattern match with `genericArgsOfMsil(innerHint)` (already
+used elsewhere in this same file, e.g. the match-expression scrutinee-hint
+seeding at line ~8153) — it handles `MGenericInst`, `MGenericInstByName`,
+and `MValueTypeGenericInst` uniformly, so the hint survives regardless of
+which representation a field's type happens to resolve to.
+
+**Why this combination went undetected for so long, despite sounding
+severe.** Bug A and Bug C both require a *specific* shape no prior test
+exercised: Bug A needs a free function (not a method) in the *same* package
+as the opaque type reading its field — most opaque-type-consuming code lives
+in a *different* package, where the (also broken, but differently) `T0100`-
+style boundary rules already forced a public accessor function, and the
+stdlib's own opaque accessors (`Url.toString`, `CompiledRegex`'s accessors)
+happen to be dotted D037-style functions — themselves hit by Bug B, so their
+`url.value`/`r.handle` reads never even reached codegen far enough to
+surface Bug A's `FieldAccessException` in isolation until this session
+untangled the two. Bug C needs an `Option`/`Result`-typed field defaulted to
+a bare nullary case *and* consumed from a separately-compiled package — the
+`HttpClientBuilder` fluent-builder pattern (build via `.new()` in one
+package, inspect fields via `match` in another) is exactly this shape, but
+nothing in the existing stdlib test suite matched on a builder's own
+fields before `http_tests.l`. All three are now covered end-to-end by
+`lyric-stdlib/tests/http_tests.l`'s 10 tests (previously 5/10 failing,
+now 10/10).
+
+**A fourth, unrelated stdlib bug fixed alongside:** `Std.Http`'s `post`/
+`put`/`patch`/`withTextBody`/`postAsync`/`postWithCancelAsync` all passed
+the full string `"text/plain; charset=utf-8"` as the `mediaType` argument
+to `.NET`'s `StringContent(body, encoding, mediaType)` 3-arg constructor —
+which builds the actual `Content-Type` header as
+`{mediaType}; charset={encoding.WebName}` itself, so passing an already-
+composed `mediaType` produces a doubled, invalid header value and throws
+`System.FormatException: The format of value 'text/plain; charset=utf-8'
+is invalid.` at every call site, unconditionally. Fixed by passing the bare
+`"text/plain"` at all 6 sites — `Encoding.UTF8` supplies the `charset=utf-8`
+suffix, so the actual resulting header is unchanged (matches the existing
+doc comments verbatim). Confirmed against a minimal C# repro of the same
+constructor overload before and after.
+
+**Verification.** All three MSIL fixes plus the content-type fix verified
+against a from-source `./bin/lyric` build (the stage-0-seed-substitution
+method above): `http_tests.l` went from 5/10 to 10/10; `file_tests.l`
+(11/11) and `directory_tests.l` (13/13) unaffected; the full stdlib bundle
+(`lyric build --manifest lyric-stdlib/lyric.toml`, 16 packages) builds
+clean; `regex_tests.l` (exercises the same opaque-type-field pattern via
+`Std.Regex.CompiledRegex`) passes; and a broad sweep of the compiler's own
+self-tests — `typechecker` (240), `modechecker` (47), `contract_elaborator`
+(33), `cfg` (12), `derives` (45), `mono` (21, including its own
+qualified-vs-unqualified-call-hijacking regression tests, #3627/#3677),
+`fmt` (110), `generic_extern` (6), `enum_msil` (8), `restored_packages`
+(15), `weaver` (46), `bitwise` (10), `aspect_weave` (7), `verifier` (52),
+`closure_correctness` (8), and `auto_ffi` (14) — all pass with no
+regressions. Real CI (which uses the proper F#-minted stage-0 seed, not
+this session's substitution) is the authoritative confirmation for the
+final PR.
+
+**Related:** PR #5084 (where this was found and fixed), D-progress-543
+(the corrected addendum above), D-progress-594 (documents the class of
+seed-specific defect this entry's stage-1-only local build could in
+principle have carried, and why none of these three bugs are in that
+class), issue #5077 (the separate, larger stdlib-test-CI-wiring gap found
+in the same session), docs/57 §5.1/§7.
 
 ---
 ## Decisions deferred to v2 or later

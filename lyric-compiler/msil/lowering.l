@@ -4847,19 +4847,32 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
 
     opaqueRowP
   } else {
-    // Non-projectable opaque: emit a sealed TypeDef with private fields and
-    // a synthesised .ctor (the original behaviour, unchanged).
+    // Non-projectable opaque: emit a sealed TypeDef with internal fields and
+    // a synthesised .ctor (the original behaviour, minus the FDA_PRIVATE bug
+    // below).
     val firstField = t.fields.count + 1
     val firstMethod = t.methodDefs.count + 1
 
-    // Emit private storage fields (no public field access outside the package).
+    // Emit internal storage fields (no public field access outside the
+    // package).  FDA_ASSEMBLY (internal), not FDA_PRIVATE, for the same
+    // reason the projectable branch above uses it: a non-projectable
+    // opaque type's own package can contain free functions (not just
+    // methods of the opaque type itself) that read the field directly —
+    // e.g. `Std.Http`'s own `request()` reading `url.value` — and
+    // FDA_PRIVATE (CLR-private, accessible only from the declaring TYPE,
+    // not the declaring ASSEMBLY/package) throws FieldAccessException for
+    // exactly that same-package-different-class access. The Lyric type
+    // checker enforces the stricter package-level visibility at the
+    // source level; the MSIL flag mirrors the assembly boundary, which
+    // corresponds to the package/compilation-unit boundary in the
+    // single-assembly output model.
     var fi = 0
     while fi < op.fields.count {
       val f = op.fields[fi]
       val sF = internString(sh, f.name)
       val fSig = buildFieldSigWithCtx(f.fieldType, ctx)
       val bSig = internBlob(bh, "ofield_" + op.className + "_" + f.name, fSig)
-      val fRow = addField(t, FieldRow(flags = FDA_PRIVATE, name = sF, signature = bSig))
+      val fRow = addField(t, FieldRow(flags = FDA_ASSEMBLY, name = sF, signature = bSig))
       recordPredictedFieldRow(ctx, op.className, f.name, fRow)
       fi = fi + 1
     }

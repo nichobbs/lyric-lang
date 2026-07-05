@@ -29224,3 +29224,65 @@ analysis), issue #5049, `lyric-compiler/msil/msil_self_test_m89.l`.
 D-progress-594 (a separately-discovered, distinct seed-binary bug in the
 same stage-0-bootstrap-path area this entry's open hypothesis points at —
 worth checking for overlap if this issue is picked up again).
+
+### D-progress-596 — MSIL: opaque-type field visibility (`FDA_PRIVATE`→`FDA_ASSEMBLY`), qualified-call intrinsic shadowing, and cross-package Option-field construction hint erasure — three codegen bugs found and fixed via `Std.Http` test coverage
+
+**Status:** Fixed. Full technical account (root cause, fix, and why each
+went undetected) lives in `docs/03-decision-log.md` D-progress-596 — this
+entry is the bootstrap-progress-tracker summary.
+
+Writing `lyric-stdlib/tests/http_tests.l` (PR #5084) surfaced three
+previously-undiscovered self-hosted MSIL codegen bugs, confirmed real on
+`main` by real CI (not published-tool noise — see D-progress-543's
+corrected addendum) and fixed in `lyric-compiler/msil/lowering.l` and
+`lyric-compiler/msil/codegen.l`:
+
+- **Opaque field visibility:** non-projectable opaque types' backing
+  fields were `FDA_PRIVATE` (CLR-private to the declaring type), not
+  `FDA_ASSEMBLY` like the already-audited projectable branch — breaking
+  any same-package free function (not a method of the type) reading the
+  field, e.g. `Std.Http.request()` reading `Url.value`
+  (`FieldAccessException`).
+- **Qualified-call intrinsic shadowing:** `lowerBuiltinOrStaticCallMsil`
+  dispatched on a call's bare last path segment before checking for a
+  real user-declared function of that name, so `Url.toString(url)`
+  silently ran the `Std.Core.toString` intrinsic (`Object.ToString()`)
+  instead of the user's own `Url.toString`. Fixed with a
+  `hasQualifiedFuncOverrideMsil` guard on all 20 intrinsic-name branches.
+- **Cross-package Option-field construction hint erasure:** a record
+  field typed `Option[T]`, defaulted with a bare `None` in one
+  already-compiled package and pattern-matched in another
+  (`HttpClientBuilder.new()` / `.build()`'s own `match b.socketPath`),
+  erased to `Option_None<object>` because the per-field generic-hint
+  lookup pattern-matched only `MGenericInst`, not the structurally
+  equivalent `MGenericInstByName` a sibling package's field type resolves
+  to. Fixed by routing through `genericArgsOfMsil` (already used
+  elsewhere in the same file) instead of a direct pattern match.
+
+A fourth, unrelated stdlib bug (not a compiler bug) was fixed alongside:
+`Std.Http`'s `post`/`put`/`patch`/`withTextBody` passed the *full*
+`"text/plain; charset=utf-8"` string as `StringContent`'s `mediaType`
+argument, which itself appends `; charset={encoding}` — doubling the
+charset parameter and throwing `FormatException` unconditionally at every
+call site. Fixed by passing the bare `"text/plain"` (6 call sites);
+`Encoding.UTF8` still produces the documented `text/plain; charset=utf-8`
+header.
+
+**Verification:** built `./bin/lyric` from source in a sandbox blocked from
+GitHub releases and the F# mint path, by substituting the published NuGet
+`lyric` 0.4.14 tool's own DLLs as the stage-0 seed (stage-1-only; see
+D-progress-594 for why that's not fully equivalent to CI's real seed, and
+why none of these three bugs are in the class that distinction would
+matter for). `http_tests.l` 5/10 → 10/10; `file_tests.l` (11/11),
+`directory_tests.l` (13/13), full stdlib bundle build, `regex_tests.l`
+(same opaque-field-access pattern via `Std.Regex.CompiledRegex`), and 15
+compiler self-test files (typechecker, modechecker, contract_elaborator,
+cfg, derives, mono, fmt, generic_extern, enum_msil, restored_packages,
+weaver, bitwise, aspect_weave, verifier, closure_correctness,
+auto_ffi — 674 assertions total) all pass with no regressions. Real CI
+(the proper F#-minted seed) is the authoritative confirmation for the PR.
+
+**Related:** `docs/03-decision-log.md` D-progress-596 (full account),
+D-progress-543 (the corrected published-tool addendum), D-progress-594
+(the seed-defect class this session's stage-1-only build could in
+principle have hit), PR #5084, issue #5077.
