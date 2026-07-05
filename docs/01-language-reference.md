@@ -996,19 +996,21 @@ func main(): Unit {
 
 `yield` binds its argument tightly — `yield a * 2` means `yield (a * 2)`, not `(yield a) * 2`. Note that `await` uses postfix precedence — `await a * 2` means `(await a) * 2`. The asymmetry is deliberate; `yield` is a statement-level construct and binds with expression precedence, while `await` acts on a single postfix operand.
 
-The compiler selects one of two lowering strategies based on the body's content:
+The lowering the compiler selects depends on the body's content:
 
-**Eager-producer** (body has `yield` but no `await`): the generator body runs to completion synchronously when the caller first calls `GetAsyncEnumerator`, buffering all yielded values in a `List<T>` that `MoveNextAsync` serves one at a time. Correct for generator comprehensions and producer pipelines.
+**Lazy producer** (body has `yield` but no `await`) — the shipped strategy on both backends (D119). The generator is a genuine lazy state machine: the body runs incrementally, suspending at each `yield` and resuming on the consumer's next pull, so **only one value is materialised at a time and infinite or very-large yield sequences are supported** without buffering. On MSIL this is an `IAsyncEnumerable<T>` state machine (a `TaskCompletionSource<bool>` plus one resume label per `yield`, `synthesizeGeneratorMsil`); on JVM it is a virtual-thread producer handing values across a `SynchronousQueue`. Correct for generator comprehensions, producer pipelines, and unbounded streams alike.
 
-*Constraints for eager-producer generators:* (a) The generator class is single-use per instance — calling `GetAsyncEnumerator` on the same instance concurrently (e.g. passing the same `IAsyncEnumerable<T>` to two nested `for` loops) is unsupported and produces undefined behaviour. The `for x in f(args)` desugaring creates a fresh instance on each call to `f`, so well-formed Lyric code is unaffected. (b) The eager-producer strategy buffers *all* yielded values before the first `MoveNextAsync` returns; generators with an unbounded yield sequence will consume unbounded memory and hang the process at the `for` site. Use `await` inside the body to force the async-iterator strategy when infinite or very-large sequences are needed.
+*Constraint (both backends):* the generator instance is single-use — calling `GetAsyncEnumerator` (MSIL) / `iterator()` (JVM) on the same instance concurrently (e.g. passing the same generator value to two nested `for` loops) is unsupported and produces undefined behaviour. The `for x in f(args)` desugaring creates a fresh instance on each call to `f`, so well-formed Lyric code is unaffected. *JVM note:* abandoning iteration early (a `break` out of the `for`) parks the producer virtual thread until GC reclaims it (tracked in #3565).
 
-**Async-iterator** (body has both `yield` and `await`): **not yet implemented** (tracked in issue #1490). The compiler synthesises a combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class per the design in D-progress-261 (§14.6.2 of `docs/09-msil-emission.md`), but the self-hosted MSIL backend does not yet lower this form. A function body containing both `yield` and `await` is currently a compile error. Use the eager-producer strategy (`yield` only) or a plain `async func` (`await` only) until this form lands.
+**Async-iterator** (body has both `yield` and `await`) — **works on MSIL, not on JVM** (D119, verified; the older "compile error, #1490" note is retired). Because the MSIL generator is itself an `IAsyncStateMachine`, an `await` between yields — including one that *genuinely suspends* (e.g. `await delay(ms)`) — suspends and resumes the generator step correctly; the consumer's next pull observes the awaited result. On **JVM** this form is unsupported: the generator runs on a synchronous virtual-thread producer with no state-machine suspension, and the `.NET`-only async leaf primitives (`Std.Task.delay` and friends) are not available on the JVM target at all, so a suspending `await` inside a JVM generator fails (unresolved primitive / `NoSuchMethodError`). Keep async-iterators to `--target dotnet`; on JVM use a lazy producer (`yield` only). Bringing JVM to parity is tracked in #1490.
 
 *Note on `@hot` interaction:* if a generator function is also annotated `@hot`, `IsGenerator` takes priority and `@hot` is silently ignored — the synthesised class uses `AsyncTaskMethodBuilder`, not `AsyncValueTaskMethodBuilder`. Combining `@hot` with `yield` produces a `T0096` warning at compile time.
 
 ### 7.3 Cancellation
 
 Every `async func` has an implicit `CancellationToken` parameter threaded by the compiler. It is accessible as `cancellation` inside the function and propagated to all child async calls automatically. Cancellation is cooperative: the function periodically checks the token at await points and on explicit `cancellation.checkOrThrow()` calls.
+
+**Status (D119).** Cancellation is the mechanism structured concurrency (§7.4) uses to cancel sibling tasks on failure, and is being implemented alongside it. It is *not yet shipped* on any backend: the implicit `cancellation` parameter, ambient propagation, and `checkOrThrow()` land as slice S5 (MSIL) / S7 (JVM) of the D119 plan. On native, async suspension itself is now real (D-N-022), but cooperative cancellation is still absent — gated on native cancellation machinery (D-N-003: panics abort, no unwinding) — and is a native follow-up.
 
 ### 7.4 Structured scopes
 
@@ -1028,13 +1030,20 @@ async func loadDashboard(userId: in UserId): Dashboard {
 }
 ```
 
-`scope { ... }` guarantees:
+`scope { ... }` is specified to guarantee (see the **Status (D119)** note below for the per-backend shipped state — these guarantees are landing in slices, not yet fully shipped on MSIL/JVM):
 - All spawned tasks complete (or are cancelled) before the scope exits
 - If any spawned task fails, all sibling tasks are cancelled
 - The first failure is propagated; subsequent failures are aggregated (accessible via the exception's `aggregated` field)
 - The scope cannot leak spawned tasks beyond its lexical extent
 
-This is the structured concurrency pattern; raw "fire and forget" is not available.
+This is the structured concurrency pattern; raw "fire and forget" is not available. The rule (D119) is that **every spawned task must be *consumed*** — either `await`ed, or joined by an enclosing `scope { }` — so no spawned task is silently dropped. A spawned task that flows into a value position, or falls out of scope, without being awaited or scope-joined **will be a compile error (V0014)**. (This generalises the diagnostic the native backend already emits for an un-awaited spawn in a value position, D-N-022.) Note this is the *consumption* rule, not a stricter "spawn only lexically inside `scope`" rule: the idiomatic `val t = spawn f(); … ; val v = await t` — a bare `spawn` whose handle is later awaited — is well-formed and is what MSIL and native already run today.
+
+**Status (D119).** The §7.4 guarantees are being implemented for real across MSIL and JVM in slices, not documented away. Shipped/landing state:
+- **Structural (V0014)** — the "spawned task must be awaited or scope-joined" check, shared by all backends (slice S2), will close the fire-and-forget hole structurally. Not yet shipped; native already enforces the value-position case (D-N-022).
+- **JVM runtime** — genuine forked concurrency: each `spawn` forks a virtual thread under a `java.util.concurrent.StructuredTaskScope` (`ShutdownOnFailure`, JDK 21–23; JDK 24+ tracked in #2263), which joins all subtasks at scope exit, cancels siblings and rethrows on the first failure (slice S4).
+- **MSIL runtime** — a BCL-only lowering (linked `CancellationTokenSource`, per-task fault→cancel continuation, `Task.WhenAll` join at scope exit, `AggregateException` propagation) that respects V0012 by keeping the join out of any protected region (slice S6, on the §7.3 token from S5).
+
+Until a backend's runtime slice lands, that backend keeps the interim behaviour (MSIL: `spawn` exposes the hot `Task<T>`, `scope` is a lexical block; JVM: `spawn` runs inline). See D119 for the full mechanism.
 
 **`--target native` (D-N-021, D-N-022):** `spawn f(...)` runs `f`'s
 body hot until its first suspension and binds the (possibly still

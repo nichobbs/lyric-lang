@@ -59,6 +59,8 @@ async func processItems(items: in slice[Item]): Unit {
 
 When `processItems` calls `processOne`, the same token is propagated automatically. The entire async call tree shares one cancellation signal. If you have five nested async calls, cancelling at the top cancels them all — you do not thread the token through each layer by hand.
 
+> **Implementation status.** This is the *specified* cancellation model. The implicit `cancellation` token, its automatic propagation, and `checkOrThrow()` are **not yet wired on the MSIL or JVM backends** — they land in decision-log D119 slices S5 (MSIL) / S7 (JVM). On native, cooperative cancellation is deferred entirely (no cancellation tokens; see the native sidebar in §10.3). Treat this section as the target semantics.
+
 ::: sidebar
 **Why implicit cancellation?** The most common mistake with explicit `CancellationToken` parameters in C# is forgetting to thread the token through one leg of a call graph. The result is a partially-cancellable async tree: some branches stop, others keep running, and resource cleanup behaves differently depending on which code path you are in. Making the token implicit eliminates the forgetting. Every async function participates in cancellation. The token is still there — `cancellation` gives you access — but propagation is the default, not the exception.
 :::
@@ -89,6 +91,8 @@ async func loadDashboard(userId: in UserId): Dashboard {
 2. **Failure cancels siblings.** If `loadProfile` throws, `loadRecentActivity` and `loadNotifications` are cancelled before the exception propagates.
 3. **First failure propagates.** The exception from the first failing task is the one you catch. You do not lose it in a `Task.WhenAll` aggregate.
 4. **Subsequent failures are accessible.** If multiple tasks fail after the first, those exceptions are collected in the aggregate field of the propagated exception — nothing is silently swallowed.
+
+> **Implementation status.** The `scope` / `spawn` syntax compiles today, but the four runtime guarantees above are landing in slices (decision-log D119): the structural "a spawned task must be consumed — awaited or scope-joined" check (diagnostic `V0014`, slice S2), then real forked joins with sibling-cancel and failure aggregation on JVM (`StructuredTaskScope`, slice S4) and MSIL (`Task.WhenAll` + linked `CancellationTokenSource`, slice S6). Until a backend's runtime slice lands, `spawn` exposes the underlying task and `scope` is a lexical block, so the guarantees hold only degenerately (every spawned call completes at its spawn site). Native async is genuinely concurrent (D-N-022), but its structured-guarantee layer — sibling-cancel and aggregation — is a separate follow-up.
 
 Compare this to the typical C# pattern:
 
@@ -223,14 +227,13 @@ async func main(): Unit {
 
 Here `fetchPage` is awaited inside the generator — the generator suspends while the HTTP request is in flight, then resumes to yield the items one by one to the consumer.
 
-**Implementation.** The compiler detects whether a generator body contains any `await` expression and selects one of two lowering strategies:
+**Implementation.** Generators are **always lazy** — the compiler synthesises a single suspending state machine that produces one value per pull, so `for x in gen() { … }` streams and an unbounded `while true { yield … }` generator works without exhausting memory:
 
-- *Eager-producer* (no `await` in body): `RunBody()` is called synchronously by `GetAsyncEnumerator`, buffers all yielded values in a list, and returns. Subsequent `MoveNextAsync()` calls step through the list. Simple and zero-overhead for pure-computation generators.
-  - *Note*: because the eager-producer buffers the entire output before returning the first element, a generator with an unbounded yield sequence (e.g. `while true { yield ... }`) will hang and exhaust memory. Add `await` anywhere in the body to switch to the async-iterator strategy, which suspends between elements.
-  - *Single-use per instance*: the `for x in f(args)` desugaring calls `f(args)` fresh on each loop, producing a new generator instance. Capturing the same `IAsyncEnumerable<T>` value and iterating it concurrently from two consumers is a usage error under the eager-producer strategy.
-- *Async-iterator* (`await` present in body): A combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class is synthesised. `MoveNextAsync()` creates a fresh `TaskCompletionSource<bool>`, kicks the state machine, and returns `ValueTask<bool>(tcs.Task)`. When the body yields, it stores the value in `<>2__current`, signals `tcs.SetResult(true)`, and suspends. When the body awaits a task, it hooks the continuation via `AwaitUnsafeOnCompleted` and suspends. Local variables that live across either a `yield` or an `await` boundary are promoted to fields on the class.
+- *MSIL* — a combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class. `MoveNextAsync()` creates a fresh `TaskCompletionSource<bool>`, drives the state machine one step, and returns `ValueTask<bool>(tcs.Task)`. Each `yield` stores the value in `<>2__current`, signals `tcs.SetResult(true)`, and suspends; an `await` inside the body hooks its continuation via `AwaitUnsafeOnCompleted` and suspends. Local variables that live across a `yield` or `await` boundary are promoted to fields. Because the same state machine handles both, `await` *and* `yield` can appear in one body on MSIL — including a genuinely-suspending `await` between yields.
+- *JVM* — the body runs on a JDK-21 virtual thread and hands each `yield` to the consumer across a `SynchronousQueue` (`put`/`take`), which is equally lazy. The one gap: a suspending `await` *inside* a JVM generator body is not supported (the `.NET`-only async leaf primitives aren't available on JVM) — tracked as #1490.
+- *Single-use per instance*: the `for x in f(args)` desugaring calls `f(args)` fresh on each loop, producing a new generator instance. Capturing one generator value and iterating it concurrently from two consumers is a usage error on both backends.
 
-Both strategies satisfy `IAsyncEnumerable<T>`, so the consumer (`for x in gen() { … }`) is identical regardless of which strategy was used.
+(The older *eager-producer* / *async-iterator* two-strategy split described earlier belonged to the retired F# emitter; the shipped self-hosted backends are lazy in all cases — see language reference §7.2.)
 
 ## §10.6 No raw locks
 

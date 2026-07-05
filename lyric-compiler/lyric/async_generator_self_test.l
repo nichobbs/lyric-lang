@@ -5,10 +5,15 @@
 //! generator class `<FuncName>__Gen_N` that implements:
 //!   IAsyncEnumerable<object>, IAsyncEnumerator<object>, IAsyncDisposable.
 //!
-//! Eager-producer pattern: the kickoff function allocates the generator,
-//! initialises `_values = new List<object>()`, copies user params to fields,
-//! calls `RunBody()` to eagerly collect all yields, then returns `this` as
-//! `IAsyncEnumerable<object>`.  Consumers use `for x in gen() { ... }`.
+//! Lazy-producer state machine (D119, verified): the kickoff allocates the
+//! generator (state = -1) and copies user params to fields.  Each `MoveNextAsync`
+//! creates a fresh `TaskCompletionSource<bool>`, drives `MoveNext` one step, and
+//! returns `new ValueTask<bool>(_tcs.Task)`; each `yield e` stores `box(e)` in
+//! `__current`, updates `_state`, calls `_tcs.SetResult(true)`, and leaves the
+//! try — so only one value is materialised at a time and infinite/large
+//! yield-only sequences stream without buffering.  Consumers use
+//! `for x in gen() { ... }`.  (The earlier eager "RunBody collects all yields"
+//! model is legacy/dead; see D119.)
 //!
 //!   lyric test lyric-compiler/lyric/async_generator_self_test.l
 @test_module

@@ -5996,6 +5996,17 @@ parameters).
 
 ## D092 — Band 3 Phase 5: `IAsyncEnumerable<object>` generator synthesis (#2070)
 
+> **PARTIALLY SUPERSEDED by D119 (2026-07-05).** The generator *feature*
+> and the `<FuncName>__Gen_N : IAsyncEnumerable<object>` class shape below
+> still ship, but the **eager-producer** lowering this entry describes
+> (`RunBody()` collecting all yields into `_values` before the first
+> `MoveNextAsync`) is **no longer what runs**. The shipped self-hosted
+> MSIL backend synthesises a *lazy* `TaskCompletionSource`-driven state
+> machine (`synthesizeGeneratorMsil`) that produces one value per pull —
+> verified empirically in D119 (interleaved-side-effect probe; infinite
+> yield-only sequences stream without buffering). Read the mechanism
+> below as historical; see D119 and `docs/09` §14.6 for the lazy model.
+
 **Context:** D091 completed the async/await self-hosted story through spawn semantics.
 Phase 5 targets `yield`-bearing `async func` bodies: previously these used a
 bootstrap-grade "collect-all" model that allocated a `List<object>`, appended each
@@ -8804,6 +8815,258 @@ resolution, before #5004's arg-count check ever runs), D-progress-578
 (the #5004 entry that first identified and scoped out this crash),
 #2494 (the related, already-closed silent-degradation-warning issue
 this fix incidentally seems to also resolve for `Std.Core.Result\`2`).
+
+## D119 — Concurrency gap resolution: real structured concurrency (§7.4) + implicit cancellation (§7.3) across MSIL/JVM, generator-laziness spec correction (§7.2); native async is real (D-N-022) but its §7.4 structured layer is a separate follow-up
+
+**Date:** 2026-07-04
+**Status:** ACCEPTED (design codification; implementation lands in slices — see §"Implementation plan")
+
+**Context — the audit.** Bringing the native (LLVM) backend's `async`/
+`spawn`/`defer` slices online (D-N-019, D-N-020, D-N-021) surfaced that
+the *reference* backends (MSIL, JVM) do not implement several §7
+guarantees the language reference presents as shipped. A four-way audit
+(native, MSIL, JVM, and the language reference) established the actual
+per-backend state:
+
+- **`defer` (§4.3)** — real and complete on MSIL (`try/finally` rewrite in
+  `lowerStmtsFromMsil`, all exit paths incl. exception unwind) and JVM
+  (`replayDefers` + catch-all region). Native runs it on all *normal*
+  paths but not on `panic` (D-N-020, no unwinding — intentional).
+  **One real MSIL limitation:** because `defer` lowers to `try/finally`
+  and V0012 forbids `await` inside any protected region, a `defer` cannot
+  span an `await` suspension point (async cleanup across a suspend is
+  impossible today). Tracked as a follow-up, not resolved here.
+- **`spawn`/`scope` structured concurrency (§7.4)** — **the headline
+  gap.** No backend implements the §7.4 guarantees (bounded task
+  lifetime, sibling-cancel-on-failure, first-failure propagation with
+  aggregation, no fire-and-forget):
+  - MSIL: `ESpawn` is a pure passthrough exposing the raw hot `Task<T>`;
+    `SScope` is a plain block. Real concurrency happens only via .NET's
+    hot-task model, but with *no* structure — a spawned handle can be
+    dropped un-awaited (fire-and-forget leak), directly contradicting
+    §7.4's "raw fire-and-forget is not available." `spawn` outside a
+    `scope` is not rejected.
+  - JVM: `ESpawn` runs its expression *synchronously inline*; `SScope`
+    is a plain inline block — no concurrency at all. A complete,
+    production-quality `StructuredTaskScope.ShutdownOnFailure` lowering
+    (`lowerScopeBlock`, `lowering.l`) exists in the emission library
+    ("Path A") but is **not wired into the user compile path**.
+  - Native: as of **D-N-022** (landed 2026-07-04, superseding the
+    D-N-019/D-N-021 passthrough), `async`/`spawn`/`await` are **real** —
+    LLVM coroutines + a cooperative `lyric-rt` scheduler with
+    `Std.Time.sleepMillis` as the async leaf, so spawned tasks make
+    genuine concurrent progress. But §7.4's *structured* guarantees
+    (sibling-cancel-on-fault, failure aggregation) are still absent on
+    native (D-N-003: panics abort, no cancellation machinery) — the same
+    §7.4 gap MSIL and JVM have, now on a real-concurrency substrate.
+  - `docs/09-msil-emission.md` §15 documents a `Lyric.Runtime.Scope`
+    runtime type (`ConcurrentBag<Task>` + `JoinAll`) that **does not
+    exist** in the self-hosted backend — aspirational F#-emitter-era
+    design, never ported.
+  - **A parallel *library* substrate already exists** (found while
+    auditing): `lyric-stdlib/std/_kernel/task.l` (`Std.Task`) ships a
+    real `Scope` **`protected type`** backed by a
+    `CancellationTokenSource` + `List[Task]`, with `makeScope` /
+    `scopeSpawn` / `awaitAll` (via `Task.WhenAll`) / `cancelScope` /
+    `disposeScope`, cancellable `delay`/`delayWithCancel`
+    (`Task.Delay(ms[, token])` — a *genuine* async leaf), and an
+    `@asyncLocal` ambient-token slot (D-progress-071). Its own header
+    documents the identical sibling-cancel gap: the F#-era
+    `LyricTaskScope.Add` attached a `Task.ContinueWith((Task) -> Unit)`
+    continuation to cancel siblings on first fault; that was **dropped**
+    pending a `(Task) -> Unit` FFI delegate ("G12 audit"). So the
+    language `spawn`/`scope` keywords (`ESpawn`/`SScope`) and this
+    library are two faces of one feature — the kernel comment even says
+    `scopeSpawn` is named to leave `spawn` free "for the future `spawn
+    expr` syntactic form." The intended architecture is that the
+    keywords lower onto (or share the substrate of) `Std.Task`, not that
+    each backend re-emits bespoke join/cancel IL.
+- **Cancellation (§7.3)** — the reference says every `async func` gets an
+  implicit `CancellationToken` (`cancellation`, `checkOrThrow()`,
+  auto-propagation). **Unimplemented on all three backends** and absent
+  from the shared type checker. Pure spec-vs-impl gap, and the mechanism
+  §7.4's sibling-cancellation needs.
+- **Generators (§7.2)** — the reference claims yield-only generators use
+  an *eager* "collect-all into a `List`" strategy and that laziness needs
+  `yield`+`await`. **Both false as of the shipped self-hosted backends:**
+  MSIL emits a genuinely *lazy* `IAsyncEnumerable` state machine (TCS +
+  per-yield resume labels, `synthesizeGeneratorMsil`), and JVM emits a
+  lazy virtual-thread + `SynchronousQueue` producer. Yield-only infinite
+  sequences already work on both. The eager path is dead/legacy. Several
+  self-test headers repeat the stale "collect-all" wording.
+- **`?` propagation** — *not* a gap: `docs/44` B-2 ("`?` is a synchronous
+  passthrough miscompile on JVM") is **stale**. A shared middle-end pass
+  (`Lyric.Propagate.lowerPropagateFile`) desugars every `?` into
+  `match`/`return` in all three bridges before codegen; the codegen
+  `EPropagate` passthrough is unreachable fallback.
+
+**Decision.**
+
+1. **§7.2 (generators) — correct the spec to *empirically verified*
+   shipped reality.** Rewrite §7.2 to state that yield-only generators
+   are *lazy* on both MSIL (`IAsyncEnumerable` TCS state machine) and JVM
+   (virtual thread + `SynchronousQueue`); infinite yield-only sequences
+   are supported. Retire the "eager collect-all / unbounded generators
+   hang" caveat. **Verification note (why the earlier "reject
+   `yield`+`await`" plan in a draft of this entry was dropped):** a
+   direct end-to-end test (`./bin/lyric run`) showed the `yield`+`await`
+   async-iterator form **already works on MSIL, including a genuinely
+   suspending `await delay(ms)` between yields** — the MSIL generator is
+   itself an `IAsyncStateMachine`, so it suspends/resumes correctly. The
+   long-standing "#1490 compile error" claim was stale; MSIL must *not*
+   reject this form (that would remove working functionality). JVM is the
+   real gap: its generator producer is a synchronous virtual thread with
+   no suspension, and `Std.Task`'s async leaf primitives are `.NET`-only,
+   so a suspending `await` in a JVM generator fails at runtime — #1490 is
+   reframed as "JVM async-iterator parity," not "unimplemented
+   everywhere." Fix the stale self-test / codegen headers.
+
+2. **§7.4 (structured concurrency) — implement for real on MSIL and JVM
+   (native's real-async substrate landed separately in D-N-022; its §7.4
+   structured layer is a native follow-up).** The guarantees are
+   implemented, not documented-away. Two target-specific mechanisms, one
+   shared front-end contract:
+
+   - **Shared front-end (consumption rule, not strict lexical scoping):**
+     every spawned task must be *consumed* — `await`ed, or joined by an
+     enclosing `scope { }`. A spawned task that is dropped (flows into a
+     value position, or falls out of scope, without being awaited or
+     scope-joined) is rejected by the shared checker (new diagnostic
+     **V0014** — `V0013` was already taken by the verifier's
+     NaN/±Infinity float-literal warning, `verifier/driver.l:239`),
+     enforcing "no fire-and-forget" on every target.
+     **Design correction (2026-07-05):** an earlier draft of this entry
+     said `spawn` must be *lexically inside* a `scope`, but that
+     contradicts shipped reality — `llvm_self_test_async.l:271`
+     (native, D-N-022) and `async_sm_self_test.l` (MSIL) both run and
+     assert `val t = spawn f(); … ; await t` with **no** enclosing
+     `scope`, and D-N-022's native backend already emits exactly the
+     value-position diagnostic V0014 generalises. The consumption rule
+     is the correct formulation: it closes the fire-and-forget hole
+     without breaking the idiomatic bare-`spawn`-then-`await` pattern or
+     the just-landed native async. No existing well-formed test needs
+     rewriting (only genuinely-dropped spawns, if any, become errors).
+
+   - **JVM (the tractable target — real forked concurrency):** wire the
+     existing `lowerScopeBlock` into the user path. Each `spawn e` inside
+     a `scope` synthesises a `Callable` class whose `call()` runs `e`
+     (reusing the closure-class synthesis machinery); the `scope` block
+     collects those callable names and emits the
+     `StructuredTaskScope.ShutdownOnFailure` fork/join/propagate sequence
+     (JDK 21–23; JDK 24+ raises the existing #2263 error). This gives
+     genuine §7.4 semantics — each spawn forks onto a virtual thread,
+     `join()` waits for all, a failed subtask shuts the scope down
+     (cancelling siblings) and rethrows the cause. `await handle` reads
+     the settled subtask result.
+
+   - **MSIL (build on `Std.Task`, not bespoke codegen IL):** since the
+     `Std.Task.Scope` substrate already exists (join via `Task.WhenAll`,
+     linked `CancellationTokenSource`, ambient token), the MSIL
+     `scope { }` / `spawn e` keywords lower **onto that library**, not
+     into hand-rolled per-scope IL. `scope { }` brackets the body with
+     `makeScope()` / `defer { cancelScope; disposeScope }` and joins with
+     `awaitAll`; `spawn e` registers the hot `Task<T>` with the ambient
+     scope (`scopeAdd`) and binds it for a later `await`. This reuses
+     tested runtime code and keeps codegen thin.
+     - **V0012 constraint (still load-bearing):** the docs/09 §15
+       `try { await JoinAll } catch { Cancel; throw }` shape is illegal
+       (V0012 forbids `await` in a protected region), so the join is
+       lowered as a **non-throwing** await —
+       `await awaitAll(scope).ContinueWith(_ -> unit)` — followed by an
+       `IsFaulted` check + `throw agg.Exception` *outside* any `try`
+       (`AggregateException` carries first + subsequent failures, §7.4's
+       aggregation for free).
+     - **Sibling-cancel-on-first-fault is the one genuinely blocked
+       piece.** It needs a per-task `Task.ContinueWith((Task) -> Unit)`
+       continuation that cancels `__cts` on the first fault — the exact
+       thing `Std.Task` dropped. **Verification (2026-07-05):** Epic
+       #1877 makes the `(Task) -> Unit` lambda lower to a real
+       `System.Action<Task>` (confirmed), but a direct FFI test showed
+       **auto-FFI overload resolution mis-resolves the instance method
+       `Task.ContinueWith(Action<Task>)`** — it picks
+       `ContinueWith(Task, Object)` and throws `MissingMethodException`
+       at runtime. So the residual blocker is auto-FFI
+       delegate-parameter overload resolution (epic #1622 family), *not*
+       lambda typing. Until that resolves, sibling-cancel is landed via a
+       small audited `_kernel/task.l` helper that binds the specific
+       `ContinueWith(Action<Task>)` MemberRef explicitly (an audited
+       kernel extern, permitted by the `_kernel/` boundary) rather than
+       through the auto-FFI guess.
+
+3. **§7.3 (cancellation) — implement as the mechanism §7.4 needs (bundled,
+   per the chosen resolution).** Every `async func` gains a compiler-
+   synthesised trailing `cancellation: CancellationToken` parameter;
+   `cancellation` resolves to it in the body and `cancellation.checkOrThrow()`
+   lowers to `CancellationToken.ThrowIfCancellationRequested()`. Ambient
+   propagation: a child `async` call inherits the caller's `cancellation`
+   automatically; inside a `scope`, the ambient token is `__cts.Token`
+   (so a scope failure cancels its whole subtree). This is an async-ABI
+   change (every async signature, kickoff stub, SM field set, and async
+   call site threads the token) and is therefore landed as its own slice
+   with full parity, not folded into an unrelated change. On JVM the
+   token maps onto the `StructuredTaskScope`'s own shutdown signal;
+   `checkOrThrow()` checks `Thread.interrupted()`.
+
+4. **Native — real async already, structured guarantees still open.**
+   D-N-022 (landed alongside this audit) shipped the async leaf D-N-021
+   anticipated (`Std.Time.sleepMillis` + LLVM coroutines + `lyric-rt`
+   scheduler), so native `spawn`/`await` are genuinely concurrent — this
+   entry does not alter that. What native still lacks is the §7.4
+   *structured* layer (sibling-cancel-on-fault, aggregation), gated on
+   native cancellation machinery (D-N-003). The V0014 structural
+   enforcement (2) applies to native too; the runtime structured layer
+   is a native follow-up outside this entry's MSIL/JVM scope.
+
+**Why not "align spec to reality" (option 2c) for §7.4.** The
+fire-and-forget leak is a real, reachable safety hole on MSIL (a dropped
+hot `Task` runs unobserved, and its failure is swallowed) — exactly the
+class of bug the language's structured-concurrency guarantee exists to
+prevent. Documenting the hole as intended would institutionalise it.
+V0014 (the spawned-task-must-be-consumed check) closes the hole even
+before the runtime join lands, and the runtime slices deliver the rest.
+
+**Implementation plan (slices, each its own PR / D-progress entry).**
+- **S1 (this PR):** spec/doc correction, all *empirically verified* on a
+  source-built `./bin/lyric` — §7.2 lazy generators (verified via an
+  interleaved-side-effect probe on both targets), §7.2 `yield`+`await`
+  works on MSIL / fails on JVM (verified, including a suspending
+  `await delay`), §7.3/§7.4 status, docs/09 §15 rewritten to the
+  library-based V0012-safe lowering, docs/09 §16 cancellation status,
+  and the stale "eager collect-all" self-test/codegen headers fixed. No
+  runtime codegen; no `yield`+`await` rejection (it works on MSIL).
+- **S2:** V0014 — shared front-end "spawned task must be awaited or
+  scope-joined" enforcement (the consumption rule, generalising native's
+  value-position diagnostic). Closes the fire-and-forget hole on all
+  targets without breaking the bare-`spawn`-then-`await` idiom.
+  Self-contained.
+- **S3:** restore **sibling-cancel-on-first-fault in `Std.Task.Scope`**
+  via an audited `_kernel/task.l` `ContinueWith(Action<Task>)` helper
+  (the residual FFI-overload blocker worked around at the kernel
+  boundary); library-level test. This is the highest-value real §7.4
+  slice and is backend-agnostic (both targets consume `Std.Task`).
+- **S4:** JVM real structured concurrency for the *keywords* —
+  `Callable` synthesis per `spawn`, wire `lowerScopeBlock`
+  (`StructuredTaskScope.ShutdownOnFailure`); runtime self-test on
+  `--target jvm`.
+- **S5:** MSIL cancellation-token ABI (§7.3) — implicit param threading,
+  `cancellation` / `checkOrThrow()`, ambient propagation (the
+  `@asyncLocal` slot already exists); self-test. Prereq for S6's ambient
+  linkage (ordered before S6 so the dependency runs forward).
+- **S6:** MSIL keyword lowering — `scope { }` / `spawn e` lower onto
+  `Std.Task` (makeScope / scopeAdd / non-throwing `awaitAll` join per
+  (2)); building on the §7.3 ambient token from S5; runtime self-test on
+  `--target dotnet`.
+- **S7:** JVM cancellation parity (`checkOrThrow()` → interrupt check),
+  and the `defer`-across-`await` (V0012) limitation write-up / tracked
+  issue.
+
+**Related:** D-N-019, D-N-020, D-N-021 (native slices that surfaced this),
+D086/D091 (MSIL async SM + `spawn` passthrough origin), D035 (async SM),
+D070 (async generators), `docs/01-language-reference.md` §7,
+`docs/09-msil-emission.md` §14–16, `docs/18-jvm-emission.md` §14–15,
+`docs/44-jvm-production-readiness-plan.md` (B-2 correction),
+`lyric-compiler/jvm/lowering.l` `lowerScopeBlock`, #1490 (async-iterator),
+#2263 (JDK 24+ `StructuredTaskScope`), V0012 (await-in-try).
 
 ---
 ## D-progress-592 — `lyric build`/`lyric run`/`lyric test` never copied resolved NuGet dependency DLLs (or, for the manifest test path, the stdlib bundle) into the output directory, crashing at runtime with `FileNotFoundException` (#5066)

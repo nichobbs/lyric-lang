@@ -836,44 +836,39 @@ the awaiter's interface.
 ### 14.6 Async generators (`yield` in `async func`)
 
 An `async func f(...): T` whose body contains at least one `yield`
-expression is an *async generator*. The compiler selects one of two
-synthesis strategies based on whether the body also contains `await`.
+expression is an *async generator*. **The self-hosted MSIL backend
+synthesises a single, always-lazy `IAsyncEnumerable` state machine** for
+every generator, whether or not the body also contains `await` (D119,
+verified end-to-end). The earlier two-strategy design documented here —
+an *eager-producer* `RunBody`/`List<T>` variant for yield-only bodies and
+a separate *async-iterator* variant for `yield`+`await` — belonged to the
+retired F# emitter (`bootstrap/src/Lyric.Emitter/AsyncGenerator.fs`, now
+deleted); it is **not** what ships. The lazy state machine below subsumes
+both cases: a yield-only body simply has no await-resume states.
 
-#### 14.6.1 Eager-producer (no `await` in body)
+#### 14.6.1 (retired) eager-producer
 
-Synthesises a sibling class `<f>__Gen_N`:
+The eager `RunBody`-into-`List<T>` strategy is **dead code** on the
+self-hosted backend — do not implement it. A yield-only generator is
+lowered by the *same* lazy state machine as §14.6.2, minus the
+await-resume states, so it streams one value per `MoveNextAsync` (verified
+via an interleaved-side-effect probe: `produced 0 / consumed 0 /
+produced 1 / …`). Infinite yield-only sequences are therefore supported
+without buffering. See §7.2 of the language reference.
+
+#### 14.6.2 Lazy `IAsyncEnumerable` state machine (all generators)
+
+Synthesises a combined class `<f>__Gen_N` (element type erased to
+`object`) that is simultaneously an `IAsyncStateMachine` and the
+enumerable. `yield`+`await` in the same body works on MSIL (the state
+machine suspends on both), including a genuinely-suspending `await` (e.g.
+`await delay(ms)`) between yields; the JVM backend does not yet support
+this combination (#1490 — JVM parity gap).
 
 ```
 sealed class <f>__Gen_N :
-    IAsyncEnumerable<T>, IAsyncEnumerator<T>, IAsyncDisposable {
-  // parameter fields (public, populated by kickoff)
-  List<T> _values; int _pos; T _current;
-  void RunBody() { /* user body; yield e → _values.Add(e) */ }
-  IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken) {
-    _values = new List<T>(); _pos = -1; RunBody(); return this; }
-  ValueTask<bool> MoveNextAsync() { /* serves from _values[_pos] */ }
-  T Current { get { return _current; } }
-  ValueTask DisposeAsync() { return default; }
-}
-static IAsyncEnumerable<T> f(...) {
-  var gen = new <f>__Gen_N(); gen.p0 = arg0; …; return gen;
-}
-```
-
-`RunBody` is called synchronously by `GetAsyncEnumerator`; all `yield`
-expressions execute eagerly before the first `MoveNextAsync` returns.
-Correct for generator comprehensions and producer pipelines whose body
-has no internal `await` (D-progress-260).
-
-#### 14.6.2 Async-iterator (body has both `yield` and `await`)
-
-Gap-4a (D-progress-261): synthesises a combined class `<f>__AsyncIter_N`
-that is simultaneously an `IAsyncStateMachine` and the enumerable:
-
-```
-sealed class <f>__AsyncIter_N :
     IAsyncStateMachine,
-    IAsyncEnumerable<T>, IAsyncEnumerator<T>, IAsyncDisposable {
+    IAsyncEnumerable<object>, IAsyncEnumerator<object>, IAsyncDisposable {
   // Fields
   int <>1__state;                       // -2=done, -1=running, 0..A-1=await, A..A+Y-1=yield
   AsyncTaskMethodBuilder <>t__builder;  // used only for AwaitUnsafeOnCompleted
@@ -916,12 +911,15 @@ by an IL local.  At every `MoveNext` entry the fields are loaded into the
 IL locals; at every suspend point (await or yield) the IL locals are
 flushed back to the fields.
 
-The kickoff stub is identical to the eager-producer: create instance,
-copy params to fields, return as `IAsyncEnumerable<T>`.
+The kickoff stub creates the instance, copies params to fields, sets
+`_state = -1`, and returns it as `IAsyncEnumerable<object>`.
 
-Both strategies are implemented in
-`bootstrap/src/Lyric.Emitter/AsyncGenerator.fs`; the routing is in
-`bootstrap/src/Lyric.Emitter/Emitter.fs`.
+This lazy state machine is implemented in the self-hosted MSIL backend
+by `synthesizeGeneratorMsil` in `lyric-compiler/msil/codegen.l` (the
+`EYield` lowering installs the per-yield TCS `SetResult`/resume-label
+protocol). The JVM counterpart (`lowerAsyncGenerator` in
+`lyric-compiler/jvm/lowering.l`) is a virtual-thread + `SynchronousQueue`
+producer — also lazy, but without the `await`-in-body support.
 
 `for x in gen() { … }` lowers to a standard `await foreach` —
 `GetAsyncEnumerator`, loop on `MoveNextAsync`, `Current` access,
@@ -933,51 +931,84 @@ with the same eager `runBody()` pattern (B129, `lyric-compiler/jvm/lowering.l`).
 
 ## 15. Structured concurrency scopes
 
+> **Status (D119).** This section is rewritten to the *implementable*
+> self-hosted lowering. The earlier design (a `Lyric.Runtime.Scope`
+> runtime type with `try { __scope.JoinAll() } catch { __scope.Cancel();
+> throw }`) was never ported to the self-hosted backend and is
+> **not implementable as written** — V0012 rejects an `await` inside any
+> protected region, and `JoinAll()` awaits. The lowering below is
+> BCL-only (no bespoke runtime type) and keeps the join out of every
+> `try`. It lands as D119 slice S6, on the §7.3 cancellation token from
+> slice S5.
+
 ### 15.1 Scope-block lowering
 
-A `scope { ... }` block lowers to:
+A `scope { ... }` block opens a `CancellationTokenSource` linked to the
+ambient `cancellation` token (§16), plus a `List<Task>` collecting the
+tasks spawned inside it, then runs the body, then joins at exit:
 
 ```cs
-using var __scope = new Lyric.Runtime.Scope(parentScope);
-try {
-    ...
-    __scope.JoinAll();   // wait for all children
-}
-catch {
-    __scope.Cancel();
-    throw;
-}
+var __cts = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+var __scopeTasks = new List<Task>();
+// ... body: each `spawn e` registers its Task in __scopeTasks (§15.2) ...
+var __agg = Task.WhenAll(__scopeTasks.ToArray());
+await __agg.ContinueWith(_ => { });   // non-throwing join — NOT in a try (V0012-safe)
+if (__agg.IsFaulted) throw __agg.Exception;          // AggregateException, outside any try
+if (__agg.IsCanceled) throw new OperationCanceledException();  // a cancelled sibling propagates too
 ```
 
-The `Scope` runtime type tracks all `spawn`-created tasks in a
-`ConcurrentBag<Task>`. `JoinAll()` awaits them in registration order;
-a failure on any child causes the surrounding `try/catch` to fire,
-which cancels the rest and propagates the first failure.
+The join awaits a *non-throwing* continuation of `Task.WhenAll(...)`, so
+it needs no protected region and does not trip V0012. The
+`AggregateException` is materialised and rethrown **after** the await,
+outside any `try`. Both failure states are handled: `Task.WhenAll`
+transitions to `Faulted` when a child throws (rethrown via
+`__agg.Exception`) and to `Canceled` when a child is cancelled with no
+fault (e.g. the sibling-cancel token fired) — the `IsCanceled` branch
+propagates that as an `OperationCanceledException` rather than swallowing
+it.
 
 ### 15.2 `spawn`
 
-`spawn e` lowers to a call that creates the task with the *current*
-`CancellationToken` linked to the surrounding scope. The result is a
-`Task<T>` (or `ValueTask<T>` when annotated) that is registered with
-the scope before being returned to the caller's local binding.
+`spawn e` lowers to the call `e` with `__cts.Token` threaded in as the
+ambient cancellation token (§16), producing the hot `Task<T>` (or
+`ValueTask<T>` when annotated) that .NET has already begun running. The
+emitter:
 
-A `spawn` outside a `scope` block is rejected at compile time; the
-parser admits `spawn` but the semantic analyser checks that the
-enclosing context is a scope (or a function whose entire body is the
-scope, by sugar). This guarantees structured concurrency: no
-fire-and-forget.
+1. registers the `Task` in the enclosing scope's `__scopeTasks`, and
+2. attaches a fault continuation
+   `task.ContinueWith(t => { if (t.IsFaulted) __cts.Cancel(); })` so the
+   *first* failure cancels `__cts`, and still-running sibling tasks
+   (which observe `cancellation`) stop cooperatively rather than running
+   to completion.
+
+   > **Implementer note (D119).** This `ContinueWith(Action<Task>)` call
+   > does **not** resolve through auto-FFI today: the metadata reader
+   > mis-picks the `ContinueWith(Task, object)` overload and the program
+   > throws `MissingMethodException` at runtime (verified 2026-07-05).
+   > Slice S3 binds the `ContinueWith(System.Action<Task>)` MemberRef via
+   > an audited `_kernel/task.l` helper rather than the auto-FFI guess.
+
+The `Task<T>` is also bound to the caller's local for a later `await`
+(which, on a settled task, reads the result). The structured-concurrency
+guarantee is enforced by the shared front-end via the **consumption rule**
+(**V0014**, D119 slice S2): a spawned task must be *consumed* — `await`ed,
+or joined by an enclosing `scope` — and a spawned task that is dropped
+(flows into a value position, or falls out of scope, without being
+awaited or scope-joined) is a compile error. This is *not* a strict
+"`spawn` only lexically inside `scope`" rule: the idiomatic
+`val t = spawn f(); … ; await t` (a bare `spawn` whose handle is later
+awaited) is well-formed and is what MSIL and native already run today
+(D-N-022). No fire-and-forget.
 
 ### 15.3 Aggregate failure
 
-When two children of a scope fail, the runtime aggregates them:
-
-- The first failure becomes the propagated exception's primary cause.
-- Subsequent failures are attached as `e.AggregatedFailures` (a
-  generated property on the propagated `Bug`).
-
-The aggregation runs on the `Scope` runtime side; the IL for the
-scope block does not need to reason about this — it just rethrows
-whatever `Scope.JoinAll()` raises.
+`Task.WhenAll` already implements §7.4's aggregation: its faulted task's
+`.Exception` is a `System.AggregateException` whose `InnerExceptions`
+carry every child failure, with `InnerException` (the primary cause)
+being the first. The scope IL does not aggregate manually — it rethrows
+`__agg.Exception` (§15.1). Sibling *cancellation* on first failure is
+driven by the per-task fault continuation of §15.2 cancelling `__cts`,
+independently of the final `WhenAll` join.
 
 
 ## 16. Cancellation
@@ -990,7 +1021,16 @@ iteration.
 The runtime lowers cancellation tokens onto CLR
 `System.Threading.CancellationToken`. Scope cancellation is
 implemented as `CancellationTokenSource.Cancel()` on the scope's
-linked source.
+linked source (§15.2).
+
+> **Status (D119).** The implicit `cancellation` parameter, its ambient
+> propagation to child async calls, and `cancellation.checkOrThrow()`
+> (→ `CancellationToken.ThrowIfCancellationRequested()`) are **not yet
+> shipped** on the self-hosted MSIL backend; they land as D119 slice S5
+> and are the prerequisite for the §15 structured-concurrency lowering
+> (slice S6). Threading a token into every async signature is an
+> async-ABI change (kickoff stub, state-machine field set, and every
+> async call site), so it lands as its own slice with full parity.
 
 
 ## 17. Protected types (Q008, Q009)
