@@ -2897,7 +2897,38 @@ config range constraint.
   requires a new `_kernel` package and NuGet dependency.  `CacheStore` allows
   it to be added without any API changes.
 
-**Revisions:** None.
+**Revisions (2026-07-05):** The `Cache.Aspects` design shipped differently
+from this entry's original description, once the two templates were
+actually implemented (docs/57-stdlib-ecosystem-library-review.md §4/§7
+item 4; this entry had shipped only `FunctionCacheConfig`/`ItemCacheConfig`
+config records with no `pub aspect` bodies until then):
+
+- **`ItemCache` shipped as row-constrained B'-mode (docs/56 / D115),
+  not C-mode.**  C-mode (`@inline_template`) predates B'-mode's row-typed
+  `args.<field>` access (D115), which didn't exist yet when this entry was
+  written. `ItemCache` reads `args.cacheKey` via a
+  `where TArgs has { cacheKey: String }` row clause instead; a mismatched
+  handler shape is reported as **A0047**, not A0042 (A0042 is C-mode's
+  arity-mismatch diagnostic and doesn't apply here).
+- **`FunctionCache` and `ItemCache` do *not* share a single store.**  Each
+  template holds its own module-level `InProcessCacheStore`
+  (`functionCacheStore`, `itemCacheStore`) — a `val` binding to a
+  mutable-field record, since Lyric has no module-level `var` primitive
+  (contrary to this entry's `var store` / `var entries` phrasing, written
+  before that constraint was worked out in practice). Every instantiation
+  of the *same* template shares that template's one store, exactly as this
+  entry anticipated; the two templates just don't share each other's.
+- **`ItemCache`'s key includes function identity.**  The effective key is
+  `call.qualifiedName + ":" + keyPrefix + args.cacheKey`, not just
+  `keyPrefix + args.cacheKey` — without the `qualifiedName` component, two
+  differently-matched handlers sharing `itemCacheStore` could collide on an
+  identical `cacheKey` (found via review on the shipping PR, tracked as
+  issue #5146).
+- **`InProcessCacheStore` enforces `ttlSeconds` as real expiry**, not just a
+  capacity-eviction-only value as this entry's "TTL 0 means no expiry"
+  section implies without stating the enforcement mechanism: a positive
+  `ttlSeconds` is tracked as an epoch-millis expiry (`Std.Time`) and lazily
+  evicted on `get` once elapsed (issue #5139).
 
 ---
 

@@ -11074,20 +11074,28 @@ Three follow-up items to the Maven Central linking feature (D052 / PR #252):
 
 **What shipped**
 
-**`lyric-cache/` library (D055):**
+**`lyric-cache/` library (D055; `Cache.Aspects` revised 2026-07-05, see D055
+revisions and D-progress-596):**
 - `lyric-cache/lyric.toml` — `Cache.dll` manifest; two packages
   (`Cache`, `Cache.Aspects`); depends on `Lyric.Stdlib`.
 - `src/cache.l` — `Cache` package: `CacheStore` interface (`get/set/delete/clear`),
-  `CacheEntry { value: String; expiresAt: Long }`, `InProcessCacheStore`
-  (`var entries: Map[String, CacheEntry]; maxEntries: Int`) implementing
-  `CacheStore`, `config Defaults { ttlSeconds: Int range 0..=86400 = 300;
-  maxEntries: Int range 1..=1000000 = 10000 }`, `inProcess()`,
-  `inProcessWithCapacity(maxEntries)`, and public API `get/set/setWithTtl/delete/clear`.
-- `src/cache_aspects.l` — `Cache.Aspects` package: module-level
-  `var store = Cache.inProcess()`, `pub aspect FunctionCache` (B-mode, caches
-  `Ok` results by `call.qualifiedName`), `@inline_template pub aspect ItemCache`
-  (C-mode, reads `args.cacheKey`, key = `keyPrefix + args.cacheKey`).
+  `InProcessCacheStore` (`var valueMap: Map[String, String]; maxEntries: Int;
+  var insertionOrder: List[String]; var expiryMap: Map[String, Long]`)
+  implementing `CacheStore` — FIFO capacity eviction plus real TTL-based
+  expiry (expiry tracked as epoch millis via `Std.Time`, lazily evicted on
+  `get`) — `inProcess()`, `inProcessWithCapacity(maxEntries)`, and public API
+  `get/set/setWithTtl/delete/clear`.
+- `src/cache_aspects.l` — `Cache.Aspects` package: `pub aspect FunctionCache`
+  (B-mode, caches `Ok` results by `call.qualifiedName`, own module-level
+  `functionCacheStore`) and `pub aspect ItemCache` (row-constrained B'-mode,
+  `where TArgs has { cacheKey: String }`, own module-level `itemCacheStore`,
+  key = `call.qualifiedName + ":" + keyPrefix + args.cacheKey` — the
+  `qualifiedName` component prevents two differently-matched handlers
+  sharing `itemCacheStore` from colliding on an identical `cacheKey`).
 - `lyric-cache/README.md` — interface extension guide, config table, aspect templates.
+- `lyric-cache/tests/cache_aspect_weaving_tests.l` — runtime weaving tests:
+  both templates woven against real handlers, asserting cache hits/misses,
+  `enabled=false` bypass, TTL expiry, and cross-function key isolation.
 
 **`lyric-db/` library (D056):**
 - `lyric-db/lyric.toml` — `Db.dll` manifest; three packages (`Db`,

@@ -212,14 +212,16 @@ unshipped, and the file ships two real `pub aspect` templates: a
 to the matched function share one cache slot), and an `ItemCache`
 B′-mode template keyed on a row-constrained `cacheKey` field
 (`where TArgs has { cacheKey: String }`, effective key
-`keyPrefix + args.cacheKey`), both following `lyric-storage`'s
-`ValidateKey` as a reference for expressing the "handler must return
-`Result[String, E]`" constraint the templates rely on. Both are
-verified by a new `lyric-cache/tests/cache_aspect_weaving_tests.l`
-(mirroring `lyric-auth/tests/auth_aspect_weaving_tests.l`'s pattern of
-weaving the template against a real handler and asserting cache hits
-are observable as "the handler body did not re-run"), not just a
-config-shape unit test.
+`call.qualifiedName + ":" + keyPrefix + args.cacheKey` — the
+`qualifiedName` component was added after review caught a cross-function
+collision risk on `itemCacheStore`'s shared, process-wide store, #5146),
+both following `lyric-storage`'s `ValidateKey` as a reference for
+expressing the "handler must return `Result[String, E]`" constraint the
+templates rely on. Both are verified by a new
+`lyric-cache/tests/cache_aspect_weaving_tests.l` (6/6 passing, mirroring
+`lyric-auth/tests/auth_aspect_weaving_tests.l`'s pattern of weaving the
+template against a real handler and asserting cache hits are observable
+as "the handler body did not re-run"), not just a config-shape unit test.
 
 One reviewed-and-rejected suggestion, for the record: a sub-review flagged
 `Auth.Aspects.ValidateKey` (`lyric-auth/src/auth_aspects.l:53-58`) for
@@ -420,7 +422,7 @@ blocks closing this section and rollout item 7 below.
    templates or correct the comment.~~ **Done** — both `FunctionCache`
    (B-mode, keyed on `call.qualifiedName`) and `ItemCache` (B′-mode,
    row-constrained on `cacheKey`) templates now ship, verified by a new
-   `cache_aspect_weaving_tests.l` (5/5 passing) that weaves each
+   `cache_aspect_weaving_tests.l` (6/6 passing) that weaves each
    template against a real handler and asserts cache hits/misses at
    runtime, not just config-record shape.
 5. ~~Add local-kernel-backed tests for lyric-lambda event handlers and

@@ -92,8 +92,9 @@ All calls to the same matched function share one cache slot.
 ### ItemCache
 
 Cache per-item results using a `cacheKey: String` parameter on the handler.
-Apply this template only to handlers that declare `cacheKey: String`; the
-compiler reports error A0042 otherwise.
+This is a row-constrained B'-mode aspect (`where TArgs has { cacheKey: String
+}`): apply it only to handlers that declare `cacheKey: String`, or the weaver
+reports row-constraint error A0047.
 
 ```lyric
 aspect UserCache from Cache.Aspects.ItemCache {
@@ -102,12 +103,17 @@ aspect UserCache from Cache.Aspects.ItemCache {
 }
 
 // Handler must declare cacheKey:
-func getUser(id: in String, cacheKey: in String): Result[User, ApiError] {
+func getUser(id: in String, cacheKey: in String): Result[String, ApiError] {
   // ...
 }
 ```
 
-The effective key is `keyPrefix + args.cacheKey`.
+The effective key is `call.qualifiedName + ":" + keyPrefix + args.cacheKey`.
+The `qualifiedName` component matters even though it's not written into the
+aspect declaration: `ItemCache`'s backing store is one process-wide store
+shared by every `ItemCache` instantiation, so without it, two differently
+matched handlers (or a single wildcard `matches:` pattern covering several
+handlers, as above) could collide on an identical `cacheKey`.
 
 ## Aspect config reference
 
@@ -121,12 +127,17 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 
 ## Shared store across aspect instantiations
 
-All templates in `Cache.Aspects` (`FunctionCache`, `ItemCache`) share a single
-module-level `InProcessCacheStore`.  If you instantiate both templates, or
-instantiate the same template twice with different TTLs, both instantiations
-read from and write to the same store.  Two instantiations with different
-`ttlSeconds` values will both write to the same key if their matched functions
-produce the same cache key; whichever `set` call runs last wins.
+`FunctionCache` and `ItemCache` each hold their own module-level
+`InProcessCacheStore` — `functionCacheStore` and `itemCacheStore`
+respectively — so the two templates never collide with each other. But
+*every* instantiation of the *same* template shares that template's one
+store. If you instantiate `FunctionCache` twice (or `ItemCache` twice) with
+different TTLs, both instantiations read from and write to the same store:
+two instantiations with different `ttlSeconds` values will both write to the
+same key if their matched functions produce the same cache key, and whichever
+`set` call runs last wins. `ItemCache` additionally folds `call.qualifiedName`
+into its key specifically to prevent two *different* matched functions from
+colliding on an identical `cacheKey` — see the `ItemCache` section above.
 
 If you need per-aspect isolation — for example, a short-TTL store for session
 data and a long-TTL store for config — write a custom aspect body that
