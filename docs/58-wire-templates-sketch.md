@@ -11,7 +11,10 @@ resolution model this extends), `docs/26-aspects.md` §18 and
 reusable typed extension point; consumer instantiates with local
 overrides" idiom this borrows and adapts), `docs/24-build-features.md`
 (D045 — settles the `@cfg`-is-compile-time-only /
-config-is-runtime-only boundary this proposal must respect).
+config-is-runtime-only boundary this proposal must respect), D051
+(`docs/03-decision-log.md` — "one keyword, different modifiers" for
+templates; §5 below applies this to `wire` rather than introducing a
+`wire_template`-shaped keyword D051 already argued against by analogy).
 **Decision-log entry:** none yet.
 
 ---
@@ -194,19 +197,37 @@ same `T` in one graph is a compile error — ambiguous whether `T` means
 
 ---
 
-## 5. Wire templates: `wire template` + `include`
+## 5. Wire templates: `pub wire` + `include`
 
 The composable, includable unit. Mental model, stated precisely
 because it resolves several otherwise-fuzzy questions at once:
 
-> **A `wire template` is a parameterized function from `@provided`
-> inputs to `expose`d outputs. `include Mod { ... }` is a call to that
-> function, textually spliced into the includer's scope — not a
-> runtime-resolved component.**
+> **A `pub wire` block declared in a library is a parameterized
+> function from `@provided` inputs to `expose`d outputs. `include Mod
+> { ... }` is a call to that function, textually spliced into the
+> includer's scope — not a runtime-resolved component.**
+
+No new declaration-side keyword: per **D051**
+(`docs/03-decision-log.md` — "Unify `aspect_template` into `aspect`"),
+a separate `aspect_template` keyword was retired in favor of `pub
+aspect` without `matches:`, and D051's own rationale cites `wire`
+lacking a separate `wire_template` keyword as *supporting evidence*
+for that unification ("Consistent with `wire`... the same 'one
+keyword, different modifiers' convention applies"). Introducing a
+`wire template` keyword here would contradict the precedent this
+proposal otherwise leans on. The same two-signal distinction applies
+instead: a plain `wire Name { ... }` is package-private — the
+package's own application graph, built directly; a `pub wire Name
+{ ... }` is an exported template — never bootstrapped as *this*
+package's own entry point in the ordinary case, only `include`d by
+another package's `wire` block. `include`/`from` remain new
+instantiation-side syntax, exactly as D051 kept `from` for aspects —
+the precedent is about not duplicating the *declaration* keyword, not
+about avoiding all new syntax.
 
 ```lyric
 // library: lyric-web
-pub wire template ServerModule {
+pub wire ServerModule {
   @provided config: AppConfig
 
   config StaticFiles from Web.StaticFiles {
@@ -431,6 +452,9 @@ replicate from `docs/27` §6.2.1, no per-use-site recompilation cost).
   templates participate in automatically once implemented.
 - `docs/26-aspects.md` §18, `docs/27-aspect-libraries.md` (D047/D050) —
   the template/`from` idiom this proposal generalizes beyond aspects.
+- D051 (`docs/03-decision-log.md`) — "one keyword, different
+  modifiers" precedent applied in §5 to reject a dedicated
+  `wire template` keyword in favor of plain `pub wire`.
 - `docs/56-row-typed-aspect-args-sketch.md` (D115) — the B′-mode
   row-constraint precedent that closed most of C-mode's real use case
   for aspects, cited in §6 as the reason the same escape hatch isn't
