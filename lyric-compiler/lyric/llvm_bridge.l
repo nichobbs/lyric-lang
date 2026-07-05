@@ -551,12 +551,13 @@ pub func compileToNativeWithFlags(
             fnWorklist.add(target)
           }
           // The async process leaf (D-N-023): the codegen intercept
-          // redirects in-coroutine `Std.Process.runCapture` calls to the
-          // kernel's async seam, a target no Lyric source names — keep
-          // the seam (and everything its body pulls in) reachable
-          // whenever runCapture is.  Arity-coupled to the intercept in
-          // llvm_codegen.l — change both together (#5108).
-          if target == "Std.Process.runCapture/3" {
+          // redirects in-coroutine `Std.Process.runCapture` /
+          // `runCaptureWithInput` calls to the kernel's async seam, a
+          // target no Lyric source names — keep the seam (and everything
+          // its body pulls in) reachable whenever either is.
+          // Arity-coupled to the intercept in llvm_codegen.l — change
+          // both together (#5108).
+          if target == "Std.Process.runCapture/3" or target == "Std.Process.runCaptureWithInput/4" {
             match mapGet(canonical, "Std.ProcessCaptureHost.hostRunCaptureListAsync/4") {
               case Some(seam) -> {
                 if not reachable.containsKey(seam) {

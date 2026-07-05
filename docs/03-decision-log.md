@@ -5804,6 +5804,81 @@ timeout half for coroutine callers), `lyric-rt/src/lyric_process.c`,
 `lyric-compiler/lyric/llvm_codegen.l` (`emitAsyncRunCapture`),
 `lyric-compiler/lyric/llvm_bridge.l` (reachability walk).
 
+## D-N-024 — Native process capture reaches managed parity: always-piped stdin and a sync deadline kill close the `runCapture` half of #4752
+
+**Date:** 2026-07-05
+**Status:** Accepted
+
+**Context.** After D-N-023, the native process runner still carried two
+gaps the managed twin does not have (#4752): no stdin pipe anywhere (a
+non-empty `stdinContent` was an explicit `Err` on both seams), and no
+timeout on the synchronous path (`timeoutMs` silently ignored,
+`timedOut` always false). Both were tracked deferrals, and both sat on
+the same C function.
+
+**Decision — always-piped stdin, interleaved with output reads.** The
+child's stdin is a pipe on every capture, matching the managed twin's
+`RedirectStandardInput = true`: a child that reads stdin sees the
+content then EOF, never the parent's terminal. In the child, all three
+pipe ends are `F_DUPFD`-lifted to fd ≥ 3 before the `dup2` fan-in onto
+0/1/2, replacing case analysis over pathological low-fd aliasing. The
+sync runner's poll loop gains the write end as a third entry —
+**nonblocking** (POSIX blocking pipe writes of more than `PIPE_BUF`
+bytes block until the full count is written, so a single large write
+would deadlock against the child's full stdout pipe; the C test suite
+pins this with a 256 KiB round-trip through `cat`). A child that exits
+without draining stdin surfaces as `EPIPE`/`POLLERR`, and the remaining
+content is silently dropped — the managed twin's absorbed writer throw.
+SIGPIPE cannot kill the process: the write end carries
+`F_SETNOSIGPIPE` on macOS; on Linux the write helper blocks the signal
+for the write's duration and consumes a self-generated pending SIGPIPE
+before restoring the mask (skipped when the caller already had it
+blocked, so an intentionally-pending SIGPIPE is preserved).
+
+**Decision — sync deadline kill with the #5107 contract.** `timeoutMs
+>= 0` arms a monotonic deadline on the sync path; on expiry the child
+is SIGKILLed, stdin feeding stops, and the loop keeps draining output
+in bounded 100 ms waits (a grandchild holding an inherited write end
+past the dead child cannot stall the EOF wait forever). After the
+blocking reap, `timedOut` reports 1 only when the reaped status shows
+the kill landed (`WIFSIGNALED`) — a child that exited normally in the
+poll-to-kill window reports its real exit, never a false timeout
+(the same contract D-N-023 established for the async op's kill,
+#5107). The kernel seam normalizes a timed-out capture to exit code
+-2, the managed-twin contract.
+
+**Consequences.**
+- Both native seams accept `stdinContent`; the async op copies it at
+  start and pumps it out through its nonblocking write end alongside
+  the output pumps. The explicit `Err` guards are gone.
+- `Std.Process.runCaptureWithInput` now works on native, and its
+  in-coroutine calls take the same async-seam redirect as `runCapture`
+  (the /4 intercept; the /3 form inserts the empty stdin the seam
+  expects). The bridge's reachability walk keeps the seam alive for
+  either spelling.
+- `lyric_process_run`'s signature grew (`stdin_content`, `timeout_ms`,
+  `out_timed_out`); pre-1.0 native runtime, no compatibility shim.
+- The runCapture half of #4752 is closed; the issue stays open for its
+  remaining non-process items.
+
+**Verification.** Five new C unit tests under clang and gcc: a stdin
+round-trip through `cat`; the 256 KiB no-deadlock interleave; a child
+that ignores 256 KiB of stdin (the `EPIPE` drop path, real exit code
+preserved); the sync deadline kill (`timedOut`, 128+SIGKILL raw
+status, pre-kill output preserved); and the async op's 256 KiB stdin
+pump. Four new `llvm_self_test_async.l` cases (30 total): sync
+`runCaptureWithInput` round-trip in a plain main; the sync timeout
+contract (`timedOut`/-2/pre-kill output); the 256 KiB sync round-trip
+ASan-clean; and an in-coroutine `runCaptureWithInput` through the /4
+intercept.
+
+**Related:** D-N-023 (the async op this extends), #4752 (the
+runCapture half closed here), #5107 (kill-vs-exit race contract),
+`lyric-rt/src/lyric_process.c`,
+`lyric-stdlib/std/_kernel_native/process_capture_host.l`,
+`lyric-compiler/lyric/llvm_codegen.l`,
+`lyric-compiler/lyric/llvm_bridge.l`, `lyric-stdlib/std/process.l`.
+
 ## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
 
 **Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The

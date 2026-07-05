@@ -32,9 +32,12 @@ async leaf is the intercepted `Std.Time.sleepMillis`. Async generators
 out of scope (D-N-003: panics abort). The first async I/O leaf shipped
 in D-N-023: in-coroutine `Std.Process.runCapture` drives a nonblocking
 lyric-rt capture op through the sleep leaf (1 ms pump cadence, the JVM
-kernel twin's documented idiom), honoring `timeoutMs`; `poll()`-based
-fd readiness in the scheduler is deferred to the socket leaf, where
-per-task pump cadences stop scaling.
+kernel twin's documented idiom), honoring `timeoutMs`; D-N-024
+extended the leaf to `runCaptureWithInput` (the op pumps stdin content
+out through a nonblocking pipe) and brought the synchronous runner to
+the same stdin/timeout parity. `poll()`-based fd readiness in the
+scheduler is deferred to the socket leaf, where per-task pump cadences
+stop scaling.
 
 ---
 

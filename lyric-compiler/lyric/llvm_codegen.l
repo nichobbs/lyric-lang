@@ -2531,13 +2531,18 @@ func lowerCallEx(
       // The async process leaf (D-N-023).  Only for awaited-in-place calls:
       // a direct `spawn runCapture(...)` keeps the blocking sync path (spawn
       // an async wrapper function to overlap captures).  Arity-coupled to
-      // `Std.Process.runCapture/3` and the seam's /4 — if either signature
-      // changes, update this intercept AND the llvm_bridge.l reachability
-      // walk together, or the redirect silently disables (#5108).
-      if ctx.curAsyncTask.count > 0 and not wantTask and sig.irName == "Std.Process.runCapture" and callArgs.count == 3 {
-        match emitAsyncRunCapture(ctx, insns, sig, callArgs) {
-          case Some(v) -> return v
-          case None -> {
+      // `Std.Process.runCapture/3`, `Std.Process.runCaptureWithInput/4`,
+      // and the seam's /4 — if any signature changes, update this intercept
+      // AND the llvm_bridge.l reachability walk together, or the redirect
+      // silently disables (#5108).
+      if ctx.curAsyncTask.count > 0 and not wantTask {
+        val isRunCapture = sig.irName == "Std.Process.runCapture" and callArgs.count == 3
+        val isRunCaptureWithInput = sig.irName == "Std.Process.runCaptureWithInput" and callArgs.count == 4
+        if isRunCapture or isRunCaptureWithInput {
+          match emitAsyncRunCapture(ctx, insns, sig, callArgs) {
+            case Some(v) -> return v
+            case None -> {
+            }
           }
         }
       }
@@ -4007,7 +4012,8 @@ func emitUnionPayloadFieldRead(
   NVal(ty = ui.cases[caseIdx].fieldTys[fi], value = NLocal(name = fieldVal))
 }
 
-/// `Std.Process.runCapture` inside a coroutine is the async process leaf
+/// `Std.Process.runCapture` / `runCaptureWithInput` inside a coroutine is
+/// the async process leaf
 /// (D-N-023): redirect to the kernel's nonblocking async seam
 /// (`Std.ProcessCaptureHost.hostRunCaptureListAsync`, which pumps the
 /// capture op through the sleep leaf), then project its
@@ -4068,13 +4074,21 @@ func emitAsyncRunCapture(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, c
   if rawOk < 0 or rawErr < 0 or tgtOk < 0 or tgtErr < 0 {
     return None
   }
-  // (exe, args, timeout) -> (exe, args, stdinContent = "", timeout).
-  val emptyStdin = emitStringLiteral(ctx, insns, "")
+  // runCapture/3 (exe, args, timeout) -> (exe, args, stdinContent = "",
+  // timeout); runCaptureWithInput/4 already matches the seam's arg order.
   val aArgs: List[NArg] = newList()
-  aArgs.add(callArgs[0])
-  aArgs.add(callArgs[1])
-  aArgs.add(NArg(ty = emptyStdin.ty, value = emptyStdin.value))
-  aArgs.add(callArgs[2])
+  if callArgs.count == 3 {
+    val emptyStdin = emitStringLiteral(ctx, insns, "")
+    aArgs.add(callArgs[0])
+    aArgs.add(callArgs[1])
+    aArgs.add(NArg(ty = emptyStdin.ty, value = emptyStdin.value))
+    aArgs.add(callArgs[2])
+  } else {
+    aArgs.add(callArgs[0])
+    aArgs.add(callArgs[1])
+    aArgs.add(callArgs[2])
+    aArgs.add(callArgs[3])
+  }
   val raw = emitAsyncCall(ctx, insns, asig.irName, aArgs, rawTy, false)
   // Project: match on the raw Result, per the lowerIf value-slot protocol.
   val structTy = match raw.ty { case NPtr(pointee) -> pointee; case _ -> return None }

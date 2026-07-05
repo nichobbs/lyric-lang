@@ -114,6 +114,12 @@ pub func runCapture(executable: in String, args: in List[String], timeoutMs: in 
 /// input, capture stdout and stderr, and return a `ProcessResult`.
 ///
 /// Returns `Err` if the executable cannot be started.
+/// Native-backend coupling (D-N-023): like `runCapture` above, calls to
+/// this function lowered inside an `async func` body on `--target native`
+/// are redirected to `Std.ProcessCaptureHost.hostRunCaptureListAsync` by
+/// arity-keyed lookups in `lyric-compiler/lyric/llvm_codegen.l` and
+/// `llvm_bridge.l` — changing this signature's arity silently disables
+/// that redirect; update both sites together.
 @stable(since = "1.0")
 pub func runCaptureWithInput(
   executable: in String, args: in List[String], stdin: in String, timeoutMs: in Int

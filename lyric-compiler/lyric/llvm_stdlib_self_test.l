@@ -199,7 +199,7 @@ test "Std.Environment seams: set/get, missing key, cwd (ASan)" {
   assertEqualInt(r.exitCode, 42, "environment seams")
 }
 
-test "Std.Process capture: argv passthrough, exec failure, stdin deferral (ASan)" {
+test "Std.Process capture: argv passthrough, exec failure, stdin round-trip (ASan)" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process\n" +
     "func main(): Int {\n" +
     "  val args: List[String] = newList()\n" +
@@ -235,16 +235,15 @@ test "Std.Process capture: argv passthrough, exec failure, stdin deferral (ASan)
     "      return 7\n" +
     "    }\n" +
     "  }\n" +
-    "  var stdinRejected = false\n" +
     "  match runCaptureWithInput(\"/bin/cat\", noArgs, \"some input\", 5000) {\n" +
-    "    case Ok(_) -> {\n" +
+    "    case Ok(res3) -> {\n" +
+    "      if res3.stdout != \"some input\" or res3.exitCode != 0 or res3.timedOut {\n" +
+    "        return 8\n" +
+    "      }\n" +
     "    }\n" +
     "    case Err(_) -> {\n" +
-    "      stdinRejected = true\n" +
+    "      return 9\n" +
     "    }\n" +
-    "  }\n" +
-    "  if not stdinRejected {\n" +
-    "    return 8\n" +
     "  }\n" +
     "  42\n" +
     "}\n"

@@ -1159,16 +1159,34 @@ three C unit tests). The native kernel twin gains
 `Std.ProcessCaptureHost.hostRunCaptureListAsync`, pumping the op at
 the JVM twin's documented 1 ms cadence with each iteration suspending
 through the sleep leaf — honoring `timeoutMs` (managed-twin contract:
-`timedOut`, exit -2), which the sync native seam still ignores
-(#4752). The backend redirects in-coroutine `Std.Process.runCapture`
-calls to the seam and projects the kernel Result into the call's
-`Result[ProcessResult, String]` (Ok payload via the stdlib's own
-`projectResult`); the bridge's reachability walk keeps the seam
-whenever `runCapture` is reachable. Six new `llvm_self_test_async.l`
-cases (26 total), including two spawned captures completing in
-reverse spawn order — impossible if either blocked the scheduler —
-and the same overlap under ASan. `poll()`-based scheduler fd
-readiness is deferred to the socket leaf.
+`timedOut`, exit -2). The backend redirects in-coroutine
+`Std.Process.runCapture` calls to the seam and projects the kernel
+Result into the call's `Result[ProcessResult, String]` (Ok payload via
+the stdlib's own `projectResult`); the bridge's reachability walk
+keeps the seam whenever `runCapture` is reachable. Six new
+`llvm_self_test_async.l` cases, including two spawned captures
+completing in reverse spawn order — impossible if either blocked the
+scheduler — and the same overlap under ASan. `poll()`-based scheduler
+fd readiness is deferred to the socket leaf.
+
+## Phase N8 (cont'd): process capture parity — stdin + sync timeout (Phase 2, D-N-024)
+
+**SHIPPED (D-N-024):** the runCapture half of #4752 closed. The child's
+stdin is always piped (managed `RedirectStandardInput` parity;
+`F_DUPFD`-lift-then-`dup2` child fd wiring; SIGPIPE-safe writes via
+macOS `F_SETNOSIGPIPE` / Linux mask-write-consume). `lyric_process_run`
+takes `stdin_content` + `timeout_ms` + `out_timed_out`: nonblocking
+stdin writes interleave with output reads in the poll loop (a blocking
+`> PIPE_BUF` write would deadlock against a full child stdout pipe),
+the deadline SIGKILLs with bounded post-kill drain, and `timedOut`
+follows the #5107 kill-vs-exit contract. The async op copies stdin at
+start and flushes it from its pump. Both kernel seams drop their stdin
+`Err` guards; the sync seam normalizes timeout to exit -2.
+`runCaptureWithInput` gains the same in-coroutine async-seam redirect
+(the /4 intercept). Five new C tests (clang + gcc: cat round-trip,
+256 KiB no-deadlock, EPIPE drop, sync deadline kill, async op stdin)
+and four new `llvm_self_test_async.l` cases (30 total). Process-tree
+kill remains a deferral (the runner kills the child only).
 
 ---
 

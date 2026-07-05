@@ -1515,13 +1515,13 @@ Where the managed kernels rely on host exceptions, the shared pure
 layer instead delegates to exception-free **Result/Option seams** that
 both kernel twins implement (issue #4752): `Std.File` text I/O and
 directory operations, `Std.Environment` variable get/set and the
-current working directory, `Std.Process.runCapture` (list-argv, no
-shell), and `Std.Time`'s epoch/monotonic/sleep functions all work on
-`--target native` today.  Native-side gaps are explicit errors, not
-silent drops: `runCaptureWithInput` with non-empty stdin returns `Err`
-on native (no stdin pipe yet) and `timeoutMs` is not enforced there;
-bytes-mode file I/O, directory enumeration, `stat`, and the `Std.Time`
-calendar surface remain unavailable on native (tracked in #4752).
+current working directory, `Std.Process.runCapture` and
+`runCaptureWithInput` (list-argv, no shell; stdin content and the
+`timeoutMs` deadline kill both honored at managed parity, D-N-024),
+and `Std.Time`'s epoch/monotonic/sleep functions all work on
+`--target native` today.  Bytes-mode file I/O, directory enumeration,
+`stat`, and the `Std.Time` calendar surface remain unavailable on
+native (tracked in #4752).
 
 `for x in list { ... }` over a `List[T]` diverges from the managed
 targets in one respect on `--target native`: the list's length is
