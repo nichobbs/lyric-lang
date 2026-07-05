@@ -877,6 +877,11 @@ static void test_process_op_exec_failure(void) {
     LyricString* out = lyric_process_stdout(op);
     CHECK(lyric_string_len(out) == 0);
     lyric_release(out);
+    /* The child _exits without writing anything: execvp itself is
+     * silent, so stderr must be empty too (#5116). */
+    LyricString* errs = lyric_process_stderr(op);
+    CHECK(lyric_string_len(errs) == 0);
+    lyric_release(errs);
     lyric_process_free(op);
 }
 
