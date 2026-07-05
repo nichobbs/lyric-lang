@@ -29460,8 +29460,9 @@ kill is atomic over present and future members).
   terminal Ctrl+C alongside the parent; parent death still closes
   the pipes (EOF/EPIPE). See D-N-025.
 - **Verification:** the grandchild-writer C test now asserts an
-  EOF-based drain exit under 1.5 s (>= 2 s would mean the kill
-  regressed to child-only and only the budget saved it); a new
+  EOF-based drain exit under 2 s (a child-only-kill regression cannot
+  finish before ~2.3 s — deadline + full drain budget — so the bound
+  discriminates while keeping CI-load headroom, #5187); a new
   setsid-escapee C test pins the budget path (self-skips without
   `setsid`(1)); both under clang and gcc. One new
   `llvm_self_test_async.l` case (31 total): a plain-main timeout over

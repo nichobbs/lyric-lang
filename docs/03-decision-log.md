@@ -5930,8 +5930,10 @@ the common grandchild-stall case, but a descendant that calls
 `setsid` leaves the group and survives; the 2 s post-kill drain
 budget remains the backstop that returns control to the caller. The
 C suite pins both sides: the grandchild-writer test now asserts an
-EOF-based drain exit *under* 1.5 s (a >= 2 s runtime would mean the
-kill regressed to child-only and the budget saved it), and a new
+EOF-based drain exit *under* 2 s — still discriminating, because a
+kill regressed to child-only cannot finish before ~2.3 s by
+construction (deadline + the full drain budget), while leaving
+CI-load headroom over the ~0.5 s good path (#5187) — and a new
 setsid-escapee test asserts the budget path still engages (>= 1.5 s,
 < 10 s; self-skips where `setsid`(1) does not exist, e.g. macOS).
 

@@ -1045,10 +1045,12 @@ static void test_process_sync_timeout_grandchild_writer(void) {
     int64_t elapsed_ms = (lyric_monotonic_nanos() - t0) / 1000000;
     CHECK(timed_out == 1);
     CHECK(code == 128 + SIGKILL);
-    /* ~300 ms deadline + EOF-based drain exit.  Anything >= 2 s means
-     * the writer survived the kill and only the drain budget saved
-     * the caller — i.e. the group kill regressed. */
-    CHECK(elapsed_ms < 1500);
+    /* ~300 ms deadline + EOF-based drain exit (~500 ms total).  A
+     * regression to child-only kills cannot finish before ~2.3 s by
+     * construction (deadline + the full 2 s drain budget), so a 2 s
+     * bound still discriminates while leaving ~1.5 s of headroom for
+     * loaded CI runners (#5187). */
+    CHECK(elapsed_ms < 2000);
     lyric_release(argv);
     lyric_release(out);
     lyric_release(err);

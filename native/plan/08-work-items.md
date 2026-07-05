@@ -1200,7 +1200,8 @@ race. #5107 contract unchanged; the #5176 drain budget remains the
 backstop for `setsid` escapees. Documented trade-off: a
 group-isolated child no longer receives terminal Ctrl+C with the
 parent (parent death still closes the pipes). Verified by the
-tightened grandchild-writer C test (EOF-based exit under 1.5 s), a
+tightened grandchild-writer C test (EOF-based exit under 2 s; a
+child-only-kill regression cannot finish before ~2.3 s), a
 new setsid-escapee budget test (self-skips without `setsid`(1)), and
 one new `llvm_self_test_async.l` case (31 total).
 
