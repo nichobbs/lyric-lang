@@ -955,13 +955,19 @@ var __scopeTasks = new List<Task>();
 // ... body: each `spawn e` registers its Task in __scopeTasks (§15.2) ...
 var __agg = Task.WhenAll(__scopeTasks.ToArray());
 await __agg.ContinueWith(_ => { });   // non-throwing join — NOT in a try (V0012-safe)
-if (__agg.IsFaulted) throw __agg.Exception;   // AggregateException, outside any try
+if (__agg.IsFaulted) throw __agg.Exception;          // AggregateException, outside any try
+if (__agg.IsCanceled) throw new OperationCanceledException();  // a cancelled sibling propagates too
 ```
 
 The join awaits a *non-throwing* continuation of `Task.WhenAll(...)`, so
 it needs no protected region and does not trip V0012. The
 `AggregateException` is materialised and rethrown **after** the await,
-outside any `try`.
+outside any `try`. Both failure states are handled: `Task.WhenAll`
+transitions to `Faulted` when a child throws (rethrown via
+`__agg.Exception`) and to `Canceled` when a child is cancelled with no
+fault (e.g. the sibling-cancel token fired) — the `IsCanceled` branch
+propagates that as an `OperationCanceledException` rather than swallowing
+it.
 
 ### 15.2 `spawn`
 

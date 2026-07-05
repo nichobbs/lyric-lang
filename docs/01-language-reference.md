@@ -1010,7 +1010,7 @@ The lowering the compiler selects depends on the body's content:
 
 Every `async func` has an implicit `CancellationToken` parameter threaded by the compiler. It is accessible as `cancellation` inside the function and propagated to all child async calls automatically. Cancellation is cooperative: the function periodically checks the token at await points and on explicit `cancellation.checkOrThrow()` calls.
 
-**Status (D119).** Cancellation is the mechanism structured concurrency (§7.4) uses to cancel sibling tasks on failure, and is being implemented alongside it. It is *not yet shipped* on any backend: the implicit `cancellation` parameter, ambient propagation, and `checkOrThrow()` land as slice S5 (MSIL) / S7 (JVM) of the D119 plan. On native it is deferred with the rest of real async suspension (D-N-021).
+**Status (D119).** Cancellation is the mechanism structured concurrency (§7.4) uses to cancel sibling tasks on failure, and is being implemented alongside it. It is *not yet shipped* on any backend: the implicit `cancellation` parameter, ambient propagation, and `checkOrThrow()` land as slice S5 (MSIL) / S7 (JVM) of the D119 plan. On native, async suspension itself is now real (D-N-022), but cooperative cancellation is still absent — gated on native cancellation machinery (D-N-003: panics abort, no unwinding) — and is a native follow-up.
 
 ### 7.4 Structured scopes
 
