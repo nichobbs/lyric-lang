@@ -8878,13 +8878,23 @@ per-backend state:
    implemented, not documented-away. Two target-specific mechanisms, one
    shared front-end contract:
 
-   - **Shared front-end:** `spawn` is legal *only* lexically inside a
-     `scope { }` (or a function whose entire body is a `scope`, by
-     sugar). A `spawn` elsewhere is rejected by the shared checker
-     (new diagnostic **V0013**), enforcing "no fire-and-forget"
-     structurally on every target. Existing self-tests that use bare
-     `spawn` as a "starter pattern" are rewritten to wrap the spawns in
-     a `scope`.
+   - **Shared front-end (consumption rule, not strict lexical scoping):**
+     every spawned task must be *consumed* — `await`ed, or joined by an
+     enclosing `scope { }`. A spawned task that is dropped (flows into a
+     value position, or falls out of scope, without being awaited or
+     scope-joined) is rejected by the shared checker (new diagnostic
+     **V0013**), enforcing "no fire-and-forget" on every target.
+     **Design correction (2026-07-05):** an earlier draft of this entry
+     said `spawn` must be *lexically inside* a `scope`, but that
+     contradicts shipped reality — `llvm_self_test_async.l:271`
+     (native, D-N-022) and `async_sm_self_test.l` (MSIL) both run and
+     assert `val t = spawn f(); … ; await t` with **no** enclosing
+     `scope`, and D-N-022's native backend already emits exactly the
+     value-position diagnostic V0013 generalises. The consumption rule
+     is the correct formulation: it closes the fire-and-forget hole
+     without breaking the idiomatic bare-`spawn`-then-`await` pattern or
+     the just-landed native async. No existing well-formed test needs
+     rewriting (only genuinely-dropped spawns, if any, become errors).
 
    - **JVM (the tractable target — real forked concurrency):** wire the
      existing `lowerScopeBlock` into the user path. Each `spawn e` inside
@@ -8961,8 +8971,8 @@ fire-and-forget leak is a real, reachable safety hole on MSIL (a dropped
 hot `Task` runs unobserved, and its failure is swallowed) — exactly the
 class of bug the language's structured-concurrency guarantee exists to
 prevent. Documenting the hole as intended would institutionalise it.
-V0013 (structural `spawn`-in-`scope`) closes the hole even before the
-runtime join lands, and the runtime slices deliver the rest.
+V0013 (the spawned-task-must-be-consumed check) closes the hole even
+before the runtime join lands, and the runtime slices deliver the rest.
 
 **Implementation plan (slices, each its own PR / D-progress entry).**
 - **S1 (this PR):** spec/doc correction, all *empirically verified* on a
@@ -8973,9 +8983,11 @@ runtime join lands, and the runtime slices deliver the rest.
   library-based V0012-safe lowering, docs/09 §16 cancellation status,
   and the stale "eager collect-all" self-test/codegen headers fixed. No
   runtime codegen; no `yield`+`await` rejection (it works on MSIL).
-- **S2:** V0013 — shared front-end `spawn`-only-in-`scope` enforcement;
-  rewrite bare-`spawn` self-tests into `scope`. Closes the fire-and-forget
-  hole structurally on all targets. Small, self-contained.
+- **S2:** V0013 — shared front-end "spawned task must be awaited or
+  scope-joined" enforcement (the consumption rule, generalising native's
+  value-position diagnostic). Closes the fire-and-forget hole on all
+  targets without breaking the bare-`spawn`-then-`await` idiom.
+  Self-contained.
 - **S3:** restore **sibling-cancel-on-first-fault in `Std.Task.Scope`**
   via an audited `_kernel/task.l` `ContinueWith(Action<Task>)` helper
   (the residual FFI-overload blocker worked around at the kernel
