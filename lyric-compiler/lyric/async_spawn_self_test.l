@@ -158,6 +158,22 @@ async func reassignedSpawnHandle(a: in Int, b: in Int): Int {
   }
 }
 
+// Nested `scope { scope { } }` (#5215): a `spawn` in the inner scope submits to
+// the innermost executor (`scopeExecSlots.last`) while the outer `spawn` used the
+// outer executor, exercising the `scopeExecSlots` stack push (on inner-scope
+// entry) and pop (on inner-scope exit).  Both awaited results combine.
+async func nestedScopeSpawns(a: in Int, b: in Int): Int {
+  scope {
+    val ta = spawn doubleIt(a)
+    var inner = 0
+    scope {
+      val tb = spawn addOne(b)
+      inner = await tb
+    }
+    return await ta + inner
+  }
+}
+
 // A reference-typed (non-`Int`) spawn result: `await` checkcasts the joined
 // `Object` back to `String` rather than unboxing a primitive, exercising the
 // other arm of `coerceAwaitResult`.
@@ -241,6 +257,13 @@ test "reassigned spawn handle awaits the second spawn's result" {
   // double(5) then addOne(10) = 10 + 11 = 21
   assertEqualInt(await reassignedSpawnHandle(5, 10), 21, "double(5)+addOne(10)")
   assertEqualInt(await reassignedSpawnHandle(2, 2), 7, "double(2)+addOne(2)")
+}
+
+test "nested scopes submit spawns to the innermost executor" {
+  // double(5) + addOne(10) = 10 + 11 = 21
+  assertEqualInt(await nestedScopeSpawns(5, 10), 21, "nested double(5)+addOne(10)")
+  // double(3) + addOne(3) = 6 + 4 = 10
+  assertEqualInt(await nestedScopeSpawns(3, 3), 10, "nested double(3)+addOne(3)")
 }
 
 test "spawned task that panics propagates through await" {

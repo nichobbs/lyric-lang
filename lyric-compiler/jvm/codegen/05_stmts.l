@@ -1724,19 +1724,18 @@ pub func recordSpawnResultType(ctx: in FuncCtx, name: in String, init: in Expr):
 // Record a spawn binding's result type keyed by its JVM local SLOT, not its name
 // (#5191).  `await` resolves a name to its current slot (`lookupSlot`) and looks
 // the type up by that slot, so the unbox/checkcast coercion always matches the
-// binding actually occupying the slot — even when a nested shadow reuses the slot
-// (`allocSlot`'s same-verifier-type reuse).  A name-keyed map instead let a
-// nested `if`/`match` shadow's entry corrupt an outer, still-live binding's
-// coercion at compile time regardless of which branch runs.  `Unit` results are
-// skipped (nothing to unbox); `Map.add` (= `Dictionary.Add`) throws on a
-// duplicate key, so an existing entry for the slot is removed first (mirrors the
-// `containsKey`+`remove` guard `recordVarGenericArgs` uses, #5185).  `t` is a
-// clean parameter so the `JvmType` match is emitter-safe (see `isVoidJvmType`).
-//
-// The residual wrong-*value* when a nested shadow aliases an outer binding's slot
-// is a pre-existing, spawn-independent JVM slot-reuse limitation — `val t = 7; if
-// c { val t = 99 }; t` already yields 99 with no spawn involved — tracked in
-// #5191, not introduced by this change.
+// binding actually occupying the slot.  A name-keyed map instead let a nested
+// `if`/`match` shadow's entry corrupt an outer, still-live binding's coercion at
+// compile time regardless of which branch runs.  With block-scoped slot
+// allocation (D-progress-603), a nested shadow of a still-live enclosing binding
+// now gets a FRESH slot rather than aliasing the enclosing one, so slot-keying
+// and the scope machinery agree — the general shadowing bug (`val t = 7; if c {
+// val t = 99 }; t` once yielded `99`, now correctly yields `7`) is fixed on both
+// backends, not a residual limitation.  `Unit` results are skipped (nothing to
+// unbox); `Map.add` (= `Dictionary.Add`) throws on a duplicate key, so an existing
+// entry for the slot is removed first (mirrors the `containsKey`+`remove` guard
+// `recordVarGenericArgs` uses, #5185).  `t` is a clean parameter so the `JvmType`
+// match is emitter-safe (see `isVoidJvmType`).
 func putSpawnResultType(ctx: in FuncCtx, name: in String, t: in JvmType): Unit {
   if not isVoidJvmType(t) {
     match lookupSlot(ctx, name) {
