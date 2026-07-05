@@ -162,6 +162,15 @@ async-seam redirect. Verified by seven new lyric-rt C tests
 total, 256 KiB stdin round-trip ASan-clean). This closes the
 runCapture half of #4752.
 
+Deadline kills take the child's whole process group (D-N-025): every
+capture child gets its own group at spawn (double setpgid) and both
+kill sites send `kill(-pid, SIGKILL)` — the managed twin's
+`Kill(entireProcessTree: true)` semantics without the descendant-walk
+race, closing the D-N-024 deferral. The #5176 drain budget remains
+the backstop for `setsid` escapees. Verified by the tightened
+grandchild-writer C test, a new setsid-escapee budget test, and one
+new `llvm_self_test_async.l` case (31 total).
+
 ## Reading order
 
 1. `01-design-decisions.md` — all architectural decisions with rationale. Read

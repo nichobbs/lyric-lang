@@ -1186,8 +1186,24 @@ start and flushes it from its pump. Both kernel seams drop their stdin
 (the /4 intercept). Seven new C tests (clang + gcc: cat round-trip,
 256 KiB no-deadlock, EPIPE drop, sync deadline kill, deadline kill
 with stdin still in flight, grandchild-writer drain budget, async op
-stdin) and four new `llvm_self_test_async.l` cases (30 total). Process-tree
-kill remains a deferral (the runner kills the child only).
+stdin) and four new `llvm_self_test_async.l` cases (30 total).
+
+## Phase N8 (cont'd): process-group deadline kills (Phase 2, D-N-025)
+
+**SHIPPED (D-N-025):** the D-N-024 process-tree-kill deferral closed.
+Every capture child runs in its own process group (double setpgid,
+child + parent) and both deadline kill sites send
+`kill(-pid, SIGKILL)`, so a timed-out `sh -c` pipeline no longer
+leaves grandchildren running — the managed twin's
+`Kill(entireProcessTree: true)` semantics without the descendant-walk
+race. #5107 contract unchanged; the #5176 drain budget remains the
+backstop for `setsid` escapees. Documented trade-off: a
+group-isolated child no longer receives terminal Ctrl+C with the
+parent (parent death still closes the pipes). Verified by the
+tightened grandchild-writer C test (EOF-based exit under 2 s; a
+child-only-kill regression cannot finish before ~2.3 s), a
+new setsid-escapee budget test (self-skips without `setsid`(1)), and
+one new `llvm_self_test_async.l` case (31 total).
 
 ---
 

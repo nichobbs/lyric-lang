@@ -22,7 +22,9 @@
 //! runner's stdin pipe and deadline kill (the runCapture half of #4752):
 //! stdin content is written interleaved with output reads (large content
 //! cannot deadlock), and a sync `timeoutMs` SIGKILLs on expiry with the
-//! managed-twin contract (timedOut = true, exit code -2).
+//! managed-twin contract (timedOut = true, exit code -2).  The kill
+//! takes the child's whole process group (D-N-025), so grandchildren
+//! holding the capture pipes die with the child.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -660,6 +662,30 @@ test "sync runCaptureWithInput with large stdin does not deadlock, leak-free und
     "}\n"
   val r = compileAndRunBundledAsan(src)
   assertEqualInt(r.exitCode, 77, "256 KiB of stdin round-trips through cat without deadlock, clean under ASan")
+}
+
+// The deadline kill takes the child's whole process group (D-N-025,
+// managed Kill(true) parity): a background grandchild holding the
+// stdout pipe dies with the child, so the capture returns promptly
+// instead of waiting out the grandchild's 30 s sleep.
+test "sync runCapture timeout kills the child's whole process group" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "import Std.Time as Time\n" +
+    "func main(): Int {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  args.add(\"-c\")\n" +
+    "  args.add(\"(while :; do echo g; sleep 0.05; done) & sleep 30\")\n" +
+    "  val t0 = Time.monotonicNanos()\n" +
+    "  match Process.runCapture(\"/bin/sh\", args, 300) {\n" +
+    "    case Ok(r) -> {\n" +
+    "      val elapsedMs = (Time.monotonicNanos() - t0) / 1000000i64\n" +
+    "      if r.timedOut and r.exitCode == 0 - 2 and elapsedMs < 8000i64 {\n        77\n      } else {\n        2\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> 3\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 77, "the group kill takes the grandchild writer; no 30 s wait, no budget stall")
 }
 
 // runCaptureWithInput inside a coroutine takes the same async-seam

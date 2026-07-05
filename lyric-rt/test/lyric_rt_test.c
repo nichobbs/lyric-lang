@@ -1022,12 +1022,12 @@ static void test_process_sync_timeout_pending_stdin(void) {
 }
 
 static void test_process_sync_timeout_grandchild_writer(void) {
-    /* lyric-rt kills only the direct child (process-tree kill is a
-     * tracked deferral): a grandchild that inherits the stdout write
-     * end and keeps producing faster than a full idle poll window must
-     * not keep the post-kill drain alive — the 2 s drain budget ends
-     * it (#5176).  The background writer then dies of SIGPIPE once the
-     * read ends are force-closed. */
+    /* Group kill (D-N-025): the background writer is in the child's
+     * process group, so the deadline kill takes it too — the drain
+     * then ends on pipe EOF well inside the 2 s budget (#5176), which
+     * the elapsed bound below discriminates: the pre-group-kill
+     * runtime survived the writer and only the budget ended the
+     * drain, at >= 2 s. */
     LyricList* argv = lyric_list_new(1);
     LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
     lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
@@ -1045,8 +1045,49 @@ static void test_process_sync_timeout_grandchild_writer(void) {
     int64_t elapsed_ms = (lyric_monotonic_nanos() - t0) / 1000000;
     CHECK(timed_out == 1);
     CHECK(code == 128 + SIGKILL);
-    /* ~300 ms deadline + ~2 s drain budget; well under the 30 s the
-     * grandchild would otherwise pin the loop for. */
+    /* ~300 ms deadline + EOF-based drain exit (~500 ms total).  A
+     * regression to child-only kills cannot finish before ~2.3 s by
+     * construction (deadline + the full 2 s drain budget), so a 2 s
+     * bound still discriminates while leaving ~1.5 s of headroom for
+     * loaded CI runners (#5187). */
+    CHECK(elapsed_ms < 2000);
+    lyric_release(argv);
+    lyric_release(out);
+    lyric_release(err);
+}
+
+static void test_process_sync_timeout_setsid_escapee(void) {
+    /* The drain-budget backstop (#5176) still matters for a
+     * descendant that leaves the child's process group: a setsid'd
+     * writer survives the group kill, holds the stdout write end, and
+     * keeps producing — the 2 s budget must end the drain (it dies of
+     * SIGPIPE at the force-close).  setsid(1) is util-linux; on
+     * platforms without it (macOS) this scenario cannot be built from
+     * a shell one-liner, so the test self-skips. */
+    if (access("/usr/bin/setsid", X_OK) != 0 && access("/bin/setsid", X_OK) != 0) {
+        return;
+    }
+    LyricList* argv = lyric_list_new(1);
+    LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
+    lyric_release(dash_c);
+    const char* cmd = "setsid sh -c 'while :; do echo g; sleep 0.05; done' & sleep 30";
+    LyricString* script = lyric_string_from_literal((const uint8_t*)cmd, (int64_t)strlen(cmd));
+    lyric_list_push(argv, (int64_t)(intptr_t)script);
+    lyric_release(script);
+    int32_t code = -1;
+    LyricString* out = NULL;
+    LyricString* err = NULL;
+    int32_t timed_out = -1;
+    int64_t t0 = lyric_monotonic_nanos();
+    CHECK(lyric_process_run("/bin/sh", argv, NULL, 300, &code, &out, &err, &timed_out) == 0);
+    int64_t elapsed_ms = (lyric_monotonic_nanos() - t0) / 1000000;
+    CHECK(timed_out == 1);
+    CHECK(code == 128 + SIGKILL);
+    /* The escapee kept the pipe alive past the kill, so the drain ran
+     * to its budget: at least ~2 s elapsed, but nowhere near the 30 s
+     * the writer would otherwise pin the loop for. */
+    CHECK(elapsed_ms >= 1500);
     CHECK(elapsed_ms < 10000);
     lyric_release(argv);
     lyric_release(out);
@@ -1405,6 +1446,7 @@ int main(void) {
     test_process_sync_timeout();
     test_process_sync_timeout_pending_stdin();
     test_process_sync_timeout_grandchild_writer();
+    test_process_sync_timeout_setsid_escapee();
     test_process_op_stdin();
     test_async_hot_completion();
     test_async_block_on_sleep();

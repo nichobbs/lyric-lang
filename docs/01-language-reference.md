@@ -1517,7 +1517,9 @@ both kernel twins implement (issue #4752): `Std.File` text I/O and
 directory operations, `Std.Environment` variable get/set and the
 current working directory, `Std.Process.runCapture` and
 `runCaptureWithInput` (list-argv, no shell; stdin content and the
-`timeoutMs` deadline kill both honored at managed parity, D-N-024),
+`timeoutMs` deadline kill both honored at managed parity, D-N-024;
+the kill takes the child's whole process group, so descendants die
+with it, D-N-025),
 and `Std.Time`'s epoch/monotonic/sleep functions all work on
 `--target native` today.  Bytes-mode file I/O, directory enumeration,
 `stat`, and the `Std.Time` calendar surface remain unavailable on
