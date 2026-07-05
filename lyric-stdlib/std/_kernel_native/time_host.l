@@ -153,7 +153,7 @@ pub func hostZeroDuration(): Duration {
 // comparisons and panics too.
 func nanosFromScaled(x: in Double, what: in String): Long {
   if not (x < 9223372036854775808.0 and x >= 0.0 - 9223372036854775808.0) {
-    panic("Std.Time: " + what + " duration overflows the native nanosecond range (years ~1678..2262)")
+    panic("Std.Time: " + what + " duration overflows the native 64-bit nanosecond range (magnitude ~292 years)")
   }
   cLlround(x)
 }
@@ -184,10 +184,10 @@ pub func hostDays(n: in Double): Duration {
 func checkedAddNanos(a: in Long, b: in Long, what: in String): Long {
   val sum = a + b
   if b > 0i64 and sum < a {
-    panic("Std.Time: " + what + " overflowed the native nanosecond range (years ~1678..2262)")
+    panic("Std.Time: " + what + " overflowed the native 64-bit nanosecond range")
   }
   if b < 0i64 and sum > a {
-    panic("Std.Time: " + what + " overflowed the native nanosecond range (years ~1678..2262)")
+    panic("Std.Time: " + what + " overflowed the native 64-bit nanosecond range")
   }
   sum
 }
@@ -195,10 +195,10 @@ func checkedAddNanos(a: in Long, b: in Long, what: in String): Long {
 func checkedSubNanos(a: in Long, b: in Long, what: in String): Long {
   val diff = a - b
   if b > 0i64 and diff > a {
-    panic("Std.Time: " + what + " overflowed the native nanosecond range (years ~1678..2262)")
+    panic("Std.Time: " + what + " overflowed the native 64-bit nanosecond range")
   }
   if b < 0i64 and diff < a {
-    panic("Std.Time: " + what + " overflowed the native nanosecond range (years ~1678..2262)")
+    panic("Std.Time: " + what + " overflowed the native 64-bit nanosecond range")
   }
   diff
 }

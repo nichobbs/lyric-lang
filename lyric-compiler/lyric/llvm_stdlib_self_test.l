@@ -432,6 +432,20 @@ test "Std.Time addMonths with an extreme month delta panics, not Int-wraps (#521
 // Int32 wraps to exactly -4 months, i.e. a VALID-looking Instant four
 // months before the epoch — the one shape the recomposed-year window
 // check alone cannot catch.  With the Long widening it panics instead.
+test "Std.Time addMonths reconstruction check catches edge-year overflow (#5235)" {
+  // addMonths from the upper-boundary instant (2262-04-11) by one
+  // month recomposes to 2262-05-11 — INSIDE the coarse 1677..2262
+  // year filter, so only addMonthsLong's exact reconstruction check
+  // (the wrapped total lands on a different day) can reject it.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val hi = fromEpochMillis(9223372036854i64)\n" +
+    "  val t = addMonths(hi, 1)\n" +
+    "  if instantAfter(t, hi) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped edge-year recomposition would exit 42")
+}
+
 test "Std.Time negative addDays past the window panics via the checked add (#5231)" {
   // Exercises checkedAddNanos' NEGATIVE overflow branch end-to-end:
   // the lower-boundary instant minus ~100000 days wraps positive
