@@ -109,6 +109,30 @@ pattern before sweeping the rest. Property-setter wrappers (e.g.
 lower-priority cleanup — `.new()` doesn't help there; leave them as-is
 unless auto-FFI gains property-assignment sugar.
 
+**Correction (2026-07-05), important for anyone picking up this backlog:**
+this recommendation is wrong for *any* file under `lyric-stdlib/std/` or
+`lyric-compiler/lyric/` (not just the two named candidates). `.new(args)`
+with a non-empty argument list cannot be used there yet — attempting it
+on `http_host.l` broke the real CI bootstrap (`.github/workflows/ci.yml`'s
+`build`/`build-and-test` jobs), not just this sandbox's known seed-
+substitution artifact (D-progress-543). Root cause: `scripts/bootstrap.sh
+--stage 1` compiles **both** the self-hosted compiler packages **and**
+the stdlib bundle using a pinned **stage-0** seed binary (a previous
+release), and that seed predates metadata-based `.new(args)` resolution
+(`a64e649`, 2026-07-03) — it panics with "auto-FFI call
+'System.Net.Http.HttpClient.new(...)' takes arguments, which the
+self-hosted emitter cannot resolve without the method's real signature."
+This is a real bootstrapping chicken-and-egg problem, not a stale-binary
+artifact: the feature can't be used by the very code that bootstraps the
+compiler that implements the feature, until a stage-0 seed *containing*
+the feature is cut and pinned. Filed as issue #5167 (tracks re-attempting
+this backlog once a `.new(args)`-capable seed is available, or scoping
+future bootstrap-closure kernel work to zero-argument `.new()` calls
+only, which the seed *does* support). Ecosystem libraries (`lyric-cache`,
+`lyric-mail`, `lyric-web`, etc.) are compiled by the fully-bootstrapped
+final compiler in their own separate `lyric build` step and are **not**
+affected by this constraint — `.new(args)` is safe to use there today.
+
 ---
 
 ## 3. Platform parity gaps (.NET / JVM / native / local)
@@ -410,9 +434,22 @@ blocks closing this section and rollout item 7 below.
 1. ~~Update `docs/47`/`docs/48` status headers to "Shipped" (§1) and wire
    `import_extern_self_test.l` into `Makefile`/`ci.yml` self-test
    targets.~~ **Done** (same-day follow-up to #5032).
-2. Pick one stdlib kernel file (`http_host.l` or `collections_host.l`) as
+2. ~~Pick one stdlib kernel file (`http_host.l` or `collections_host.l`) as
    the reference `.new()`/`import extern` migration; use it as the
-   pattern for the rest of §2's backlog.
+   pattern for the rest of §2's backlog.~~ **Redirected, not done as
+   originally scoped** — attempting `http_host.l` broke the real CI
+   bootstrap (see §2's correction and issue #5167): `.new(args)` isn't
+   usable in `lyric-stdlib/`/`lyric-compiler/` until a `.new(args)`-
+   capable stage-0 seed is cut. **Done instead** on a genuinely safe
+   target: `lyric-web/src/web.l`'s `newHttpListener()` — a zero-argument
+   constructor wrapper, and `lyric-web` is an ecosystem library compiled
+   by the final bootstrapped compiler, not part of the bootstrap closure
+   — now uses `HttpListener.new()` directly. All 34 `lyric-web` tests
+   pass unchanged. `collections_host.l` and the rest of the stdlib/
+   compiler backlog remain blocked on #5167; the ecosystem-library half
+   of §2's backlog (`lyric-mail`, `lyric-ws`/`lyric-mq`/`lyric-jobs`/
+   `lyric-resilience`'s `_kernel/net/*_kernel.l`, etc.) is unaffected and
+   open for the same treatment.
 3. ~~Close the stdlib I/O test gap: `file_tests.l`, `directory_tests.l`,
    `http_tests.l` (§5.1) — highest leverage since every ecosystem library
    built on top inherits the coverage.~~ **Done** — see §5.1's update.

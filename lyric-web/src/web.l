@@ -62,9 +62,6 @@ extern type IOStream = "System.IO.Stream"
 
 extern type Encoding = "System.Text.Encoding"
 
-@externTarget("System.Net.HttpListener..ctor")
-func newHttpListener(): HttpListener = ()
-
 @externTarget("System.Net.HttpListener.get_Prefixes")
 func listenerPrefixes(l: in HttpListener): PrefixCollection = ()
 
@@ -201,7 +198,7 @@ func serve(
     ",\"handlers\":" +
     webJsonArr(workerHandlers) +
     "}}"
-  val listener = newHttpListener()
+  val listener = HttpListener.new()
   val prefs = listenerPrefixes(listener)
   prefixAdd(prefs, prefix)
   try {
