@@ -362,10 +362,11 @@ test "Std.Time calendar: civil math, clamping, ISO round-trip (ASan)" {
 }
 
 // Instant arithmetic that would leave the i64-nanos window panics on
-// native (#5213) — the analog of the managed twins' out-of-range
-// exceptions.  A panic aborts the process, so this is its own program:
-// a successful (silently wrapped) run would exit 42 and fail the
-// assertion; the expected abort exits non-zero.
+// native (#5213, #5216, #5217) — the analog of the managed twins'
+// out-of-range exceptions.  A panic aborts the process, so each
+// scenario is its own program: a successful (silently wrapped) run
+// would exit 42 and fail the assertion; the expected abort exits
+// non-zero.
 test "Std.Time out-of-range calendar arithmetic panics on native (#5213)" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
     "  val t = addYears(fromEpochMillis(0i64), 100000)\n" +
@@ -373,6 +374,39 @@ test "Std.Time out-of-range calendar arithmetic panics on native (#5213)" {
     "}\n"
   val r = compileAndRunNative(src)
   assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped-instead-of-panicked result would exit 42")
+}
+
+test "Std.Time epoch conversion past the nanos window panics on native (#5216)" {
+  // A year-296726 millisecond timestamp: n * 1e6 wraps i64 without the
+  // bounds check.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val t = fromEpochMillis(9300000000000000i64)\n" +
+    "  if instantAfter(t, fromEpochMillis(0i64)) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped epoch conversion would exit 42")
+}
+
+test "Std.Time since() across the full window panics instead of wrapping (#5216)" {
+  // Both instants are individually representable, but their difference
+  // (~584 years of nanos, doubled) overflows the Duration.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val a = fromEpochMillis(9223372036854i64)\n" +
+    "  val b = fromEpochMillis(0i64 - 9223372036854i64)\n" +
+    "  val d = since(a, b)\n" +
+    "  if totalMillis(d) > 0.0 {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped since() would exit 42")
+}
+
+test "Std.Time addMonths with an extreme month delta panics, not Int-wraps (#5217)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val t = addMonths(fromEpochMillis(0i64), 2147483647)\n" +
+    "  if instantAfter(t, fromEpochMillis(0i64)) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "an Int-wrapped month index would exit 42")
 }
 
 test "Result[Unit, E] payloads and diverging value-if branches (ASan)" {

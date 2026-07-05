@@ -6069,11 +6069,17 @@ ranges) and rejects years outside 1679..2261 rather than silently
 wrapping the nanosecond range.  .NET's `DateTime.TryParse` stays
 lenient on its own target (documented host leniency, unlike the
 Uuid case where the format list was the documented contract).
-Calendar and duration arithmetic that would leave the window panics
-(#5213) — the native analog of the managed twins' out-of-range
-exceptions (`ArgumentOutOfRangeException` / `DateTimeException`),
-since a silent i64 wrap would produce a valid-looking Instant from
-the wrong century.
+Every arithmetic seam that could leave the window panics rather than
+wrapping (#5213, #5216, #5217) — the native analog of the managed
+twins' out-of-range exceptions (`ArgumentOutOfRangeException` /
+`DateTimeException`), since a silent i64 wrap would produce a
+valid-looking Instant from the wrong century: `plus`/`addDays` and
+duration add/sub via shared checked add/sub helpers, `since` via
+checked subtraction, the epoch-millis/seconds conversions via input
+bounds ahead of the scale-up multiply, and `addMonths`/`addYears` via
+Long month-index math plus a recomposed-year window check (an extreme
+`Int` delta could otherwise wrap the month index back INTO the valid
+window).
 
 **Decision — Option seam + dead-code removal.** `parseOptInstant`
 routes through a new `hostParseInstantOpt(s): Option[Instant]` seam

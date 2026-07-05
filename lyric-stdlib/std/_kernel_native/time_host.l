@@ -164,23 +164,40 @@ pub func hostDays(n: in Double): Duration {
 }
 
 // ── Duration arithmetic on Instant ───────────────────────────────────
+// Overflow-checked i64 add/sub (#5216): the same wrap-detection
+// pattern hostPlus uses, shared by every arithmetic seam below.
+func checkedAddNanos(a: in Long, b: in Long, what: in String): Long {
+  val sum = a + b
+  if b > 0i64 and sum < a {
+    panic("Std.Time: " + what + " overflowed the native nanosecond range (years ~1678..2262)")
+  }
+  if b < 0i64 and sum > a {
+    panic("Std.Time: " + what + " overflowed the native nanosecond range (years ~1678..2262)")
+  }
+  sum
+}
+
+func checkedSubNanos(a: in Long, b: in Long, what: in String): Long {
+  val diff = a - b
+  if b > 0i64 and diff > a {
+    panic("Std.Time: " + what + " overflowed the native nanosecond range (years ~1678..2262)")
+  }
+  if b < 0i64 and diff < a {
+    panic("Std.Time: " + what + " overflowed the native nanosecond range (years ~1678..2262)")
+  }
+  diff
+}
+
 pub func hostSince(later: in Instant, earlier: in Instant): Duration {
-  Duration(nanos = later.epochNanos - earlier.epochNanos)
+  Duration(nanos = checkedSubNanos(later.epochNanos, earlier.epochNanos, "since"))
 }
 
 // The managed twins throw when instant arithmetic leaves their
 // representable range (ArgumentOutOfRangeException / DateTimeException);
-// the native analog is a panic (#5213) — silent i64 wraparound would
-// produce a valid-looking Instant from the wrong century.
+// the native analog is a panic (#5213, #5216) — silent i64 wraparound
+// would produce a valid-looking Instant from the wrong century.
 pub func hostPlus(t: in Instant, d: in Duration): Instant {
-  val sum = t.epochNanos + d.nanos
-  if d.nanos > 0i64 and sum < t.epochNanos {
-    panic("Std.Time: instant arithmetic overflowed the native nanosecond range (years ~1678..2262)")
-  }
-  if d.nanos < 0i64 and sum > t.epochNanos {
-    panic("Std.Time: instant arithmetic overflowed the native nanosecond range (years ~1678..2262)")
-  }
-  Instant(epochNanos = sum)
+  Instant(epochNanos = checkedAddNanos(t.epochNanos, d.nanos, "plus"))
 }
 
 // ── Inspection ───────────────────────────────────────────────────────
@@ -200,15 +217,19 @@ pub func hostAddMonths(t: in Instant, n: in Int): Instant {
   val days = floorDivLong(t.epochNanos, nanosPerDay())
   val nanoOfDay = t.epochNanos - days * nanosPerDay()
   val c = civilFromDays(days)
-  val m0 = c.year * 12 + (c.month - 1) + n
-  val y = if m0 >= 0 { m0 / 12 } else { (m0 - 11) / 12 }
-  val m = m0 - y * 12 + 1
+  // Month-index math in Long (#5217): an extreme `n` would wrap the
+  // Int32 index before the range check below could see it, and a
+  // wrapped index can land back inside the valid window.
+  val m0 = c.year.toLong() * 12i64 + (c.month - 1).toLong() + n.toLong()
+  val y64 = if m0 >= 0i64 { m0 / 12i64 } else { (m0 - 11i64) / 12i64 }
   // The managed twins throw when the result leaves their range; the
   // native analog is a panic (#5213) — recomposing a year outside the
   // i64-nanos window would silently wrap into the wrong century.
-  if y < 1678 or y > 2261 {
+  if y64 < 1678i64 or y64 > 2261i64 {
     panic("Std.Time: addMonths/addYears result falls outside the native Instant range (years 1678..2261)")
   }
+  val y = y64.toInt()
+  val m = (m0 - y64 * 12i64 + 1i64).toInt()
   var d = c.day
   val dim = daysInMonth(y, m)
   if d > dim {
@@ -226,11 +247,22 @@ pub func hostAddDays(t: in Instant, n: in Double): Instant {
 }
 
 // ── Epoch conversions ────────────────────────────────────────────────
+// The multiply into nanos silently wraps for inputs past the window
+// (#5216) — e.g. a year-2300 millisecond timestamp — so bound the
+// input against Long.MAX / scale before scaling.  The managed twins
+// have far larger representable ranges; native's honest answer for a
+// value it cannot hold is a panic, not a wrong-century Instant.
 pub func hostDtoFromEpochMillis(n: in Long): DateTimeOffset {
+  if n > 9223372036854i64 or n < 0i64 - 9223372036854i64 {
+    panic("Std.Time: epoch-milliseconds value outside the native nanosecond range (years ~1678..2262)")
+  }
   DateTimeOffset(epochNanos = n * 1000000i64)
 }
 
 pub func hostDtoFromEpochSeconds(n: in Long): DateTimeOffset {
+  if n > 9223372036i64 or n < 0i64 - 9223372036i64 {
+    panic("Std.Time: epoch-seconds value outside the native nanosecond range (years ~1678..2262)")
+  }
   DateTimeOffset(epochNanos = n * 1000000000i64)
 }
 
@@ -260,11 +292,11 @@ pub func hostDurationGreater(a: in Duration, b: in Duration): Bool {
 }
 
 pub func hostAddDurations(a: in Duration, b: in Duration): Duration {
-  Duration(nanos = a.nanos + b.nanos)
+  Duration(nanos = checkedAddNanos(a.nanos, b.nanos, "duration addition"))
 }
 
 pub func hostSubDurations(a: in Duration, b: in Duration): Duration {
-  Duration(nanos = a.nanos - b.nanos)
+  Duration(nanos = checkedSubNanos(a.nanos, b.nanos, "duration subtraction"))
 }
 
 // ── ISO-8601 formatting ──────────────────────────────────────────────
