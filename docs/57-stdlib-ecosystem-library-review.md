@@ -87,7 +87,7 @@ Concrete examples surfaced across the sweep:
 | Library | File | Constructors |
 |---|---|---|
 | stdlib | `std/_kernel/collections_host.l:23-30` | `newList`, `newListWithCapacity`, `newMap` |
-| stdlib | `std/_kernel/http_host.l:20-30` | `HttpMethod`, `HttpRequestMessage`, `StringContent`, `HttpClient`, `HttpClientHandler`, `SocketsHttpHandler` |
+| stdlib | ~~`std/_kernel/http_host.l:20-30`~~ **migrated** | ~~`HttpMethod`, `HttpRequestMessage`, `StringContent`, `HttpClient`, `HttpClientHandler`~~ — done, see below. (`SocketsHttpHandler`'s wrapper, `newSocketsHandler`, turned out to be dead code — no call site anywhere in the repo — so it was left as-is rather than migrated for its own sake.) |
 | stdlib | `std/_kernel/random_host.l`, `std/_kernel/task.l`, `std/_kernel/process_capture_host.l` | `Random`, `CancellationTokenSource`, `ProcessStartInfo`/`MemoryStream`/`StreamReader` |
 | stdlib | `std/_kernel_jvm/collections_host.l:24-33` | JVM parity (`ArrayList`, `HashMap`) |
 | lyric-web | `src/web.l:65` | `HttpListener` |
@@ -104,7 +104,17 @@ types across 27 lines — the densest single offender found).
 **Recommendation:** pick one high-traffic module as the reference
 migration (stdlib's `http_host.l` or `collections_host.l` are good
 candidates — widely imported, moderate size) and use it to establish the
-pattern before sweeping the rest. Property-setter wrappers (e.g.
+pattern before sweeping the rest. **Done:** `http_host.l`'s five
+constructor wrappers (`newHttpMethod`, `newRequest`, `newStringContent`,
+`newClient`/`newClientFromHandler`, `newHandler`) are gone, replaced by
+direct `.new()` calls on the existing `extern type` declarations — no
+`import extern` needed, since `.new()` works directly against a bare
+`extern type X = "..."` alias (docs/48 §2.1). All wrapper call sites were
+private to the file itself (none were `pub`), so this was a
+self-contained, zero-external-call-site migration; `collections_host.l`
+remains open as the next candidate, but is materially higher-risk since
+`newList`/`newListWithCapacity`/`newMap` are `pub` and called from
+essentially every `.l` file in the repo. Property-setter wrappers (e.g.
 `mail_kernel.l`'s `smtpSetEnableSsl`/`mailSetFrom` family) are a separate,
 lower-priority cleanup — `.new()` doesn't help there; leave them as-is
 unless auto-FFI gains property-assignment sugar.
@@ -410,9 +420,15 @@ blocks closing this section and rollout item 7 below.
 1. ~~Update `docs/47`/`docs/48` status headers to "Shipped" (§1) and wire
    `import_extern_self_test.l` into `Makefile`/`ci.yml` self-test
    targets.~~ **Done** (same-day follow-up to #5032).
-2. Pick one stdlib kernel file (`http_host.l` or `collections_host.l`) as
+2. ~~Pick one stdlib kernel file (`http_host.l` or `collections_host.l`) as
    the reference `.new()`/`import extern` migration; use it as the
-   pattern for the rest of §2's backlog.
+   pattern for the rest of §2's backlog.~~ **Done** — `http_host.l`'s five
+   constructor wrappers now use `.new()` directly (see §2's update).
+   `collections_host.l` (and the rest of §2's backlog) remain open,
+   deliberately deferred: their wrapper functions are `pub` and called
+   from essentially every `.l` file in the repo, a much larger blast
+   radius than `http_host.l`'s fully self-contained (zero external call
+   sites) wrappers.
 3. ~~Close the stdlib I/O test gap: `file_tests.l`, `directory_tests.l`,
    `http_tests.l` (§5.1) — highest leverage since every ecosystem library
    built on top inherits the coverage.~~ **Done** — see §5.1's update.

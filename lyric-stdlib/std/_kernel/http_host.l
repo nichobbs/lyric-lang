@@ -54,32 +54,14 @@ extern type UnixDomainSocketEndPoint = "System.Net.Sockets.UnixDomainSocketEndPo
 @externTarget("System.Text.Encoding.UTF8")
 func utf8(): Encoding = ()
 
-@externTarget("System.Net.Http.HttpMethod..ctor")
-func newHttpMethod(name: in String): BclHttpMethod = ()
-
-@externTarget("System.Net.Http.HttpRequestMessage..ctor")
-func newRequest(method: in BclHttpMethod, url: in String): HttpRequestMessage = ()
-
 @externTarget("System.Net.Http.HttpRequestMessage.Headers")
 func requestHeaders(req: in HttpRequestMessage): HttpHeaders = ()
 
 @externTarget("System.Net.Http.Headers.HttpHeaders.TryAddWithoutValidation")
 func headersTryAdd(h: in HttpHeaders, name: in String, value: in String): Bool = ()
 
-@externTarget("System.Net.Http.StringContent..ctor")
-func newStringContent(body: in String, encoding: in Encoding, mediaType: in String): StringContent = ()
-
 @externTarget("System.Net.Http.HttpRequestMessage.set_Content")
 func setRequestContent(req: in HttpRequestMessage, content: in StringContent): Unit = ()
-
-@externTarget("System.Net.Http.HttpClient..ctor")
-func newClient(): HttpClientHandle = ()
-
-@externTarget("System.Net.Http.HttpClient..ctor")
-func newClientFromHandler(handler: in HttpClientHandler): HttpClientHandle = ()
-
-@externTarget("System.Net.Http.HttpClientHandler..ctor")
-func newHandler(): HttpClientHandler = ()
 
 @externTarget("System.Net.Http.HttpClientHandler.set_AllowAutoRedirect")
 func setAllowAutoRedirect(h: in HttpClientHandler, v: in Bool): Unit = ()
@@ -104,14 +86,18 @@ async func clientSendAsync(client: in HttpClientHandle, request: in HttpRequestM
 
 @externTarget("System.Net.Http.HttpClient.SendAsync")
 async func clientSendAsyncCancel(
-  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
+  client: in HttpClientHandle,
+  request: in HttpRequestMessage,
+  token: in CancellationToken,
 ): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.GetAsync")
 async func clientGetAsync(client: in HttpClientHandle, url: in String): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.GetAsync")
-async func clientGetAsyncCancel(client: in HttpClientHandle, url: in String, token: in CancellationToken): HttpResponseMessage = ()
+async func clientGetAsyncCancel(
+  client: in HttpClientHandle, url: in String, token: in CancellationToken
+): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.PostAsync")
 async func clientPostAsync(client: in HttpClientHandle, url: in String, content: in StringContent): HttpResponseMessage = ()
@@ -152,14 +138,14 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // (sockets stay in TIME_WAIT for two MSL after GC).
 // Named `processClient` (not `defaultClient`) to avoid a name-resolution clash with
 // the `Std.Http.defaultClient()` factory function when both packages are compiled together.
-val processClient: HttpClientHandle = newClient()
+val processClient: HttpClientHandle = HttpClientHandle.new()
 
 pub func hostDefaultClient(): HttpClientHandle {
   processClient
 }
 
 pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMessage {
-  newRequest(newHttpMethod(httpMethod), url)
+  HttpRequestMessage.new(BclHttpMethod.new(httpMethod), url)
 }
 
 pub func hostWithHeader(request: in HttpRequestMessage, key: in String, value: in String): HttpRequestMessage {
@@ -168,7 +154,7 @@ pub func hostWithHeader(request: in HttpRequestMessage, key: in String, value: i
 }
 
 pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in String, body: in String): HttpRequestMessage {
-  setRequestContent(request, newStringContent(body, utf8(), contentType))
+  setRequestContent(request, StringContent.new(body, utf8(), contentType))
   request
 }
 
@@ -183,7 +169,7 @@ pub async func hostGet(client: in HttpClientHandle, url: in String): HttpRespons
 pub async func hostPostString(
   client: in HttpClientHandle, url: in String, body: in String, contentType: in String
 ): HttpResponseMessage {
-  await clientPostAsync(client, url, newStringContent(body, utf8(), contentType))
+  await clientPostAsync(client, url, StringContent.new(body, utf8(), contentType))
 }
 
 pub func hostStatusCode(response: in HttpResponseMessage): Int {
@@ -202,7 +188,9 @@ pub async func hostReadBodyBytes(response: in HttpResponseMessage): slice[Byte] 
 // Phase C cancellation-aware overloads (D-progress-070).
 // ---------------------------------------------------------------------------
 pub async func hostSendWithCancel(
-  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
+  client: in HttpClientHandle,
+  request: in HttpRequestMessage,
+  token: in CancellationToken,
 ): HttpResponseMessage {
   await clientSendAsyncCancel(client, request, token)
 }
@@ -220,7 +208,7 @@ pub async func hostPostStringWithCancel(
   contentType: in String,
   token: in CancellationToken,
 ): HttpResponseMessage {
-  await clientPostAsyncCancel(client, url, newStringContent(body, utf8(), contentType), token)
+  await clientPostAsyncCancel(client, url, StringContent.new(body, utf8(), contentType), token)
 }
 
 pub async func hostReadBodyTextWithCancel(response: in HttpResponseMessage, token: in CancellationToken): String {
@@ -228,16 +216,16 @@ pub async func hostReadBodyTextWithCancel(response: in HttpResponseMessage, toke
 }
 
 pub func hostClientWithRedirects(maxRedirects: in Int): HttpClientHandle {
-  val handler = newHandler()
+  val handler = HttpClientHandler.new()
   setAllowAutoRedirect(handler, true)
   setMaxAutomaticRedirections(handler, maxRedirects)
-  newClientFromHandler(handler)
+  HttpClientHandle.new(handler)
 }
 
 pub func hostClientNoRedirects(): HttpClientHandle {
-  val handler = newHandler()
+  val handler = HttpClientHandler.new()
   setAllowAutoRedirect(handler, false)
-  newClientFromHandler(handler)
+  HttpClientHandle.new(handler)
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +308,9 @@ pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): 
 // SM resume labels, and the `try` block compiles as ordinary (non-SM) IL
 // — no label ever lands inside a CLR protected region.
 // ---------------------------------------------------------------------------
-pub async func hostSendSafe(client: in HttpClientHandle, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
+pub async func hostSendSafe(
+  client: in HttpClientHandle, request: in HttpRequestMessage
+): Result[HttpResponseMessage, String] {
   return try {
     Ok(value = await clientSendAsync(client, request))
   } catch Bug as b {
@@ -340,7 +330,7 @@ pub async func hostPostStringSafe(
   client: in HttpClientHandle, url: in String, body: in String, contentType: in String
 ): Result[HttpResponseMessage, String] {
   return try {
-    Ok(value = await clientPostAsync(client, url, newStringContent(body, utf8(), contentType)))
+    Ok(value = await clientPostAsync(client, url, StringContent.new(body, utf8(), contentType)))
   } catch Bug as b {
     Err(error = b.message)
   }
@@ -363,7 +353,9 @@ pub async func hostReadBodyBytesSafe(response: in HttpResponseMessage): Result[s
 }
 
 pub async func hostSendWithCancelSafe(
-  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
+  client: in HttpClientHandle,
+  request: in HttpRequestMessage,
+  token: in CancellationToken,
 ): Result[HttpResponseMessage, String] {
   return try {
     Ok(value = await clientSendAsyncCancel(client, request, token))
@@ -390,7 +382,7 @@ pub async func hostPostStringWithCancelSafe(
   token: in CancellationToken,
 ): Result[HttpResponseMessage, String] {
   return try {
-    Ok(value = await clientPostAsyncCancel(client, url, newStringContent(body, utf8(), contentType), token))
+    Ok(value = await clientPostAsyncCancel(client, url, StringContent.new(body, utf8(), contentType), token))
   } catch Bug as b {
     Err(error = b.message)
   }
