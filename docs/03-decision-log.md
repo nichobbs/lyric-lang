@@ -9381,7 +9381,7 @@ before the runtime join lands, and the runtime slices deliver the rest.
   boundary); library-level test. This is the highest-value real §7.4
   slice and is backend-agnostic (both targets consume `Std.Task`).
 - **S4:** JVM real structured concurrency for the *keywords* — **shipped
-  (D-progress-601)** per the D120 approach (not the original
+  (D-progress-602)** per the D120 approach (not the original
   `StructuredTaskScope.ShutdownOnFailure` wiring, which was rejected as a
   preview-only API; see D120). `scope { }` opens a non-preview virtual-thread
   `ExecutorService` closed on every exit path via a synthesized `defer`; `spawn e`
@@ -9892,7 +9892,88 @@ mirrors), V0014/D-progress-598 (the front-end `spawn`-consumption rule).
 
 ---
 
-## D-progress-601 — D119 slice S4: JVM structured-concurrency keyword codegen (`scope`/`spawn`/`await`) shipped per D120; MSIL async spawn-in-scope pre-scan fix
+## D-progress-603 — General nested-block shadowing fixed on both backends: block-scoped slot allocation + name-map restore (#5191)
+
+**Date:** 2026-07-05
+**Status:** SHIPPED
+
+Fixes a pre-existing correctness bug in **both** the JVM and MSIL self-hosted
+backends: a nested-block local binding that **shadows** an enclosing, still-live
+local of the same verifier type reused the enclosing binding's slot and never
+restored the outer name→slot mapping on block exit, so the outer binding read the
+inner (shadow) value after the block. Surfaced as the root cause of review finding
+#5191 on PR #5184 (a `spawn`-bound name shadowed inside a nested block), but proven
+spawn-independent and general to all locals:
+
+```
+func f(): Int { val t = 7; if c { val t = 99 }; return t }   // returned 99, should be 7
+```
+
+Both backends independently miscompiled this identically (the JVM via `allocSlot`'s
+same-frame-type slot reuse, the MSIL via `allocSlotMsil`'s identical-type reuse),
+because neither treated a `{ … }` block as a lexical scope for slot allocation or
+name resolution.
+
+**Fix (mirrored on both backends).**
+- **Block-scoped slot reuse.** `FuncCtx` gains a `scopeBase` (`scopeBaseMsil` on
+  MSIL): the slot high-water mark captured when the current nested block was
+  entered. `allocSlot`/`allocSlotMsil` now reuse an existing slot for a re-bound
+  name **only** when that slot was allocated at or after the base
+  (`existing >= scopeBase`) — a binding in the *current* block, safe to overwrite.
+  A name whose slot predates the base is an *enclosing*-scope binding; shadowing it
+  falls through to a **fresh** slot, so the enclosing binding's still-live value is
+  never clobbered. Same-scope sequential rebinds still reuse (leanness preserved).
+- **Name-map restore via a change log.** `enterBlockScope`/`exitBlockScope`
+  (`…Msil` on MSIL), wrapping `lowerBlock`/`lowerBlockExpr`
+  (`lowerBlockMsil`/`lowerBlockExprMsil`), bracket each block. `allocSlot`
+  (`allocSlotMsil`) calls `recordScopeUndo` (`…Msil`) before every (re)binding to
+  push the name's prior `Option[slot]` / `Option[type]` onto a per-function
+  `scopeUndo` log; `exitBlockScope` replays the entries pushed during the block
+  (innermost first) back to the entry mark, restoring each enclosing name→slot /
+  name→type mapping the block overwrote and dropping names the block introduced.
+  `enterBlockScope` returns just two ints (`prevBase`, `undoMark`) — no generic
+  collections cross a function boundary.
+  - A **change log**, not a whole-map `mapEntries` snapshot: the snapshot form
+    both mis-monomorphised under the pinned F# stage-0 mint (its nested-generic
+    `List[MapEntry[String, …]]` entry types produced corrupt IL) and, once
+    compiled, corrupted the codegen dictionaries at runtime during the whole-map
+    enumeration inside `mapEntries`. The change log touches `slots`/`types`
+    exactly the single-key way (`mapGet`/`add`/`remove`/`containsKey`) that
+    `allocSlot` already does — no whole-map iteration anywhere.
+  - The binding-metadata maps (`varGenericArgs` on JVM, `funcValRetTypes`/
+    `funcValParamTypes` on MSIL, and the hoisted-cell maps) are NOT scoped: they
+    were never restored before this fix either (the JVM's `recordVarGenericArgs`
+    already overwrites shadow-safely at the binding site), so leaving them is not
+    a regression — the value-clobbering bug is fixed by the `slots`/`types` +
+    `scopeBase` machinery alone.
+- **Ticker not rolled back.** Inner slots stay allocated (dead after the block).
+  On JVM this keeps every slot a single verifier type across the method's uniform
+  StackMapTable frame (the reason `allocSlot` already gated reuse on
+  `sameFrameSlotType`); on MSIL it keeps the LocalVarSig valid and composes with the
+  discard-relower (`rollbackFuncCtxSlotsSinceMsil`) and async-SM promoted-local
+  tracking. `var` reassignment through a nested block is unaffected — assignment
+  resolves the still-in-scope slot rather than rebinding.
+
+**Verification.** A 10-case shadow suite (plain `if`-then, `if`/`else`, nested
+doubles, `while`-body shadow, `var` mutation through a nested block, `match`-arm
+shadow, value-producing block shadow, reference-typed shadow, sibling scopes)
+returns the correct value on **both** `--target jvm` and `--target dotnet`. No
+regression across the native `lyric test` CI suite (compiler self-tests, `async_sm`
+57/57, `closure_correctness`, `bitwise`, `aspect_weave`, `async_spawn`,
+`closure_zero_overhead`, `auto_ffi` on both targets). Re-verified against the pinned
+F# stage-0 mint (`FS_COMMIT=35c0d2e5`). No new MSIL/JVM codegen surface; the fix is
+purely in slot allocation and lexical-scope bookkeeping.
+
+**Files:** `lyric-compiler/jvm/codegen/{01_types,02_exprs,05_stmts,06_items}.l`,
+`lyric-compiler/msil/codegen.l`, `docs/18-jvm-emission.md` §15.3.
+
+**Related:** D-progress-602 / #5184 (the PR whose review surfaced #5191),
+D-progress-569 (`varGenericArgs` remove-then-add shadow-safety, the narrower
+precedent this generalises), `docs/18-jvm-emission.md` §15.3.
+
+---
+
+## D-progress-602 — D119 slice S4: JVM structured-concurrency keyword codegen (`scope`/`spawn`/`await`) shipped per D120; MSIL async spawn-in-scope pre-scan fix
 
 **Date:** 2026-07-05
 **Status:** SHIPPED

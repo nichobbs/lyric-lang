@@ -1423,7 +1423,13 @@ func lowerTryCatch(
 // §7. Block lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func lowerBlock(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Unit {
+  // A Lyric `{ … }` block is a lexical scope: snapshot the block-local binding
+  // maps on entry and restore them on exit so a nested `val`/`var` (including
+  // one that shadows an enclosing binding of the same name) does not leak past
+  // the block or clobber the enclosing binding's slot (general shadowing, #5191).
+  val blockScope = enterBlockScope(ctx)
   lowerBlockStmtsFrom(ctx, insns, block.statements, 0)
+  exitBlockScope(ctx, blockScope)
 }
 
 // True when the last meaningful instruction unconditionally transfers control

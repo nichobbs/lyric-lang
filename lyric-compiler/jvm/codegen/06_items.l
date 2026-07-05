@@ -83,7 +83,9 @@ func makeFuncCtx(
     wireClassName = "",
     wireBindingTypes = newMap(),
     scopeExecSlots = newList(),
-    spawnResultTypes = newMap()
+    spawnResultTypes = newMap(),
+    scopeBase = 0,
+    scopeUndo = newList()
   )
 }
 
@@ -126,7 +128,9 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     wireClassName = wireClassName,
     wireBindingTypes = wireBindingTypes,
     scopeExecSlots = ctx.scopeExecSlots,
-    spawnResultTypes = ctx.spawnResultTypes
+    spawnResultTypes = ctx.spawnResultTypes,
+    scopeBase = ctx.scopeBase,
+    scopeUndo = ctx.scopeUndo
   )
 }
 
@@ -187,7 +191,9 @@ func makeFuncCtxForGenerator(
     wireClassName = "",
     wireBindingTypes = newMap(),
     scopeExecSlots = newList(),
-    spawnResultTypes = newMap()
+    spawnResultTypes = newMap(),
+    scopeBase = 0,
+    scopeUndo = newList()
   )
 }
 
@@ -250,7 +256,9 @@ func makeFuncCtxInstance(
     wireClassName = "",
     wireBindingTypes = newMap(),
     scopeExecSlots = newList(),
-    spawnResultTypes = newMap()
+    spawnResultTypes = newMap(),
+    scopeBase = 0,
+    scopeUndo = newList()
   )
 }
 

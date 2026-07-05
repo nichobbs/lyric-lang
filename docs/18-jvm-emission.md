@@ -1163,7 +1163,7 @@ try (var __exec = Executors.newVirtualThreadPerTaskExecutor()) {
 orderly shutdown and *blocks until all tasks complete*, so no spawned
 task can outlive the scope. The executor slot is opened at scope entry
 and closed on every exit path (normal fall-off, `return`, `break`/`continue`,
-exception). **Shipped codegen (D-progress-601):** rather than emit a bespoke
+exception). **Shipped codegen (D-progress-602):** rather than emit a bespoke
 `try`/`finally`, `lowerScopeStmt` prepends a *synthesized*
 `defer { <close-intrinsic>(<exec>) }` to the scope body and lowers it through
 the ordinary defer machinery, so the executor close reuses the proven
@@ -1177,7 +1177,7 @@ synthesized `java.util.concurrent.Callable` class whose `call()` runs
 `ELambda`, §"lambda synthesis", but implementing `Callable`/`call()`
 instead of `Lyric$Lambda`/`invoke`). The result is a `Future<T>` the
 enclosing scope's executor tracks (`lowerSpawnSubmit`/`lowerSpawnCallable`,
-D-progress-601).
+D-progress-602).
 
 A `spawn` *inside* a `scope` submits to that scope's executor. A `spawn`
 *outside* any scope has no executor, so it stays **degenerate** — `e` runs
@@ -1225,17 +1225,33 @@ mutable state). The safe idioms — each `spawn` returns its result through
 `spawn` body that writes a captured outer `var` read by a sibling is exposed.
 Adding a capture-mutation diagnostic is the tracked follow-up.
 
-**Known limitation — nested-shadow slot reuse (tracked, #5191).** `await`'s
-unbox/checkcast coercion is keyed by the binding's JVM local **slot**
-(`spawnResultTypes`, keyed via `spawnSlotKey`), so it always matches the binding
-occupying that slot. What it inherits — like every local — is the JVM backend's
-pre-existing slot-reuse behaviour: a nested `if`/`match` binding that **shadows**
-an outer, still-live local of the same verifier type reuses the outer's slot
-(`allocSlot`'s same-frame-type reuse), clobbering it. This is spawn-independent —
-`val t = 7; if c { val t = 99 }; t` already yields `99`, not `7` — so a
-`spawn`-bound name shadowed the same way reads the inner task's `Future` after the
-inner block. The safe idiom (don't shadow a still-live spawn binding; use a fresh
-name) sidesteps it; the general slot-reuse fix is tracked in #5191.
+**General nested-block shadowing — fixed (#5191).** `await`'s unbox/checkcast
+coercion is keyed by the binding's JVM local **slot** (`spawnResultTypes`, keyed
+via `spawnSlotKey`), so it always matches the binding occupying that slot. It
+inherited — like every local — the JVM backend's earlier slot-reuse behaviour: a
+nested `if`/`match` binding that **shadowed** an outer, still-live local of the
+same verifier type reused the outer's slot (`allocSlot`'s same-frame-type reuse)
+and never restored the outer name→slot mapping on block exit, clobbering the
+enclosing binding. This was spawn-independent — `val t = 7; if c { val t = 99 }; t`
+yielded `99`, not `7` — and identical on both backends. It is now fixed by
+scoping every block's local bindings: `FuncCtx` carries a `scopeBase` (the slot
+high-water mark at block entry), `allocSlot` reuses a slot only when it was
+allocated in the *current* block (`existing >= scopeBase`) so an enclosing
+binding's slot is never reused for a shadow, and `enterBlockScope`/`exitBlockScope`
+(wrapping `lowerBlock` and `lowerBlockExpr`) maintain a per-function scope undo
+log: `allocSlot` records each name's prior slot/type before rebinding it
+(`recordScopeUndo`), and block exit replays the log back to the block's entry mark
+to restore every enclosing name→slot / name→type mapping the block overwrote (and
+drop names it introduced). The undo log is a change log of single-key map ops —
+not a whole-map snapshot — because the `mapEntries` snapshot form both
+mis-compiled under the pinned F# stage-0 mint and corrupted the codegen
+dictionaries at runtime. The MSIL backend carries the identical fix
+(`scopeBaseMsil` + `enterBlockScopeMsil`/`exitBlockScopeMsil` around
+`lowerBlockMsil`/`lowerBlockExprMsil`). The slot ticker is deliberately not rolled
+back on block exit — inner slots stay allocated (dead after the block), which
+keeps each slot a single verifier type across the method's uniform StackMapTable
+frame. Verified by `shadow` cases across `if`-then/`else`, nested doubles, loop
+bodies, `match` arms, value-producing blocks, and sibling scopes on both targets.
 
 ### 15.4 Java-interop with `ExecutorService`
 

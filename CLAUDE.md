@@ -893,7 +893,7 @@ need direction and have nothing else productive to do**.  Specifically:
     library template — a runtime test is tracked separately (#3498).
   - `async_spawn_self_test.l` — `@test_module` runtime regression test for the
     structured-concurrency keywords `scope { }` / `spawn e` / `await t` (D119
-    slice S4 / D120, D-progress-601).  Runs real concurrent work and asserts
+    slice S4 / D120, D-progress-602).  Runs real concurrent work and asserts
     runtime values: two spawns joined by early `return` inside a scope, the same
     by fall-off, a bare no-scope spawn, three concurrent spawns, a
     `Unit`-returning spawn, a spawn-binding name reused across sibling scopes, a

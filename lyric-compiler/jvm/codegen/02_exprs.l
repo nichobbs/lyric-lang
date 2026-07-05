@@ -1825,7 +1825,20 @@ func lowerIfExpr(
 // §5c. Block expression lowering.
 //      Returns the type of the trailing value (last SExpr), or JVoid.
 // ─────────────────────────────────────────────────────────────────────────────
+// A value-producing `{ … }` block is a lexical scope like a statement block:
+// snapshot the block-local binding maps on entry and restore them on exit so a
+// nested `val`/`var` (including a shadow of an enclosing binding) neither leaks
+// past the block nor clobbers the enclosing binding's slot (general shadowing,
+// #5191).  Wraps `lowerBlockExprInner`, whose several return points make an
+// inline enter/exit bracket unwieldy.
 func lowerBlockExpr(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): JvmType {
+  val blockScope = enterBlockScope(ctx)
+  val ty = lowerBlockExprInner(ctx, insns, block)
+  exitBlockScope(ctx, blockScope)
+  ty
+}
+
+func lowerBlockExprInner(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): JvmType {
   val n = block.statements.count
   if n == 0 {
     return JVoid

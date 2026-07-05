@@ -668,6 +668,27 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
+      # Block-shadow self-test (#5191 / D-progress-602).  Runtime regression test
+      # for general nested-block variable shadowing on the self-hosted backends:
+      # a nested `val`/`var` that shadows a still-live enclosing binding must not
+      # clobber the enclosing slot or leak its name past the block.  Run via
+      # native `lyric test` (imports only `Std.*`), asserting every runtime value.
+      - name: Block-shadow self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping block-shadow self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping block-shadow self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/block_shadow_self_test.l
+
       # Aspect-weave end-to-end self-test (#3402).  Runs real woven functions
       # (out-variable `ret = proceed()` advice, the `call.proceed()` library-
       # template spelling, short-circuit advice, `call.shortName`, expression-
@@ -3112,6 +3133,25 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # Block-shadow self-test on JVM (#5191 / D-progress-602) — the JVM half of
+      # the dotnet-job step of the same name.  Pins the general nested-block
+      # shadowing fix (slot-reuse gate + scope undo log) on the JVM backend.
+      - name: Block-shadow self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping block-shadow JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping block-shadow JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/block_shadow_self_test.l
 
       # Async spawn/scope/await self-test on JVM (D119 S4 / D120,
       # D-progress-601) — the JVM half of the dotnet-job step of the same name.

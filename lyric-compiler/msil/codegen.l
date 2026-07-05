@@ -3401,6 +3401,90 @@ pub record FuncCtx {
   // is lowering the MoveNext body (singleton then).  The EYield handler checks
   // this to emit the TCS-based lazy suspend protocol.
   lazyGenCtx: List[LazyGenCtx]
+  // Lexical-scope slot base (general shadowing fix, #5191): the `slotTicker`
+  // high-water mark captured when the current nested block was entered (via
+  // `enterBlockScopeMsil`).  `allocSlotMsil` reuses an existing slot for a
+  // re-bound name ONLY when that slot was allocated at or after this base — a
+  // binding in the *current* block, safe to overwrite.  A name whose existing
+  // slot predates the base is an *enclosing*-scope binding; shadowing it gets a
+  // FRESH slot so the enclosing binding's still-live value is never clobbered,
+  // and `exitBlockScopeMsil` restores the outer name→slot mapping on block exit.
+  // 0 at function entry; saved/restored through `BlockScopeMsil`.
+  var scopeBaseMsil: Int
+  // Per-function scope undo log (general shadowing fix, #5191).  `allocSlotMsil`
+  // pushes each re-bound name's prior slot/type here via `recordScopeUndoMsil`;
+  // `exitBlockScopeMsil` replays entries back to the entering block's mark to
+  // restore enclosing bindings a nested block shadowed (and drop names the block
+  // introduced).  A change log rather than a whole-map snapshot — see
+  // `BlockScopeMsil`.  Initialised `newList()` at the construction site.
+  scopeUndoMsil: List[ScopeUndoMsil]
+}
+
+// A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a
+// lexical scope: `enterBlockScopeMsil` records the current slot high-water mark
+// (into `scopeBaseMsil`) and the length of the per-function scope undo log;
+// `exitBlockScopeMsil` replays the log entries pushed during the block (innermost
+// binding first) to restore every enclosing name→slot / name→type mapping the
+// block's `val`/`var` bindings overwrote, and drops names the block introduced.
+//
+// This is a CHANGE LOG (single-key map ops only via `recordScopeUndoMsil`), NOT a
+// whole-map `mapEntries` snapshot: the snapshot form both mis-monomorphised under
+// the pinned F# stage-0 mint (nested-generic entry types) and, once compiled,
+// corrupted the codegen dictionaries at runtime during its whole-map enumeration.
+// The change log touches `slots`/`types` exactly the single-key way
+// `allocSlotMsil` already does.  The slot ticker / `locals` list are NOT rolled
+// back: inner slots stay declared in the LocalVarSig (dead after the block, always
+// valid IL), which composes with the discard-relower
+// (`rollbackFuncCtxSlotsSinceMsil`) and async-SM promoted-local tracking.
+pub record ScopeUndoMsil {
+  name: String
+  priorSlot: Option[Int]
+  priorType: Option[MsilType]
+}
+
+pub record BlockScopeMsil {
+  prevBase: Int
+  undoMark: Int
+}
+
+// Enter a nested lexical scope.
+pub func enterBlockScopeMsil(fctx: in FuncCtx): BlockScopeMsil {
+  val bs = BlockScopeMsil(prevBase = fctx.scopeBaseMsil, undoMark = fctx.scopeUndoMsil.count)
+  fctx.scopeBaseMsil = fctx.slotTicker.count
+  bs
+}
+
+// Record `name`'s current slot/type binding on the scope undo log BEFORE
+// `allocSlotMsil` rebinds it, so `exitBlockScopeMsil` can restore the enclosing
+// binding (or drop the name if it was newly introduced in the block).
+pub func recordScopeUndoMsil(fctx: in FuncCtx, name: in String): Unit {
+  val priorSlot: Option[Int] = mapGet(fctx.slots, name)
+  val priorType: Option[MsilType] = mapGet(fctx.types, name)
+  fctx.scopeUndoMsil.add(ScopeUndoMsil(name = name, priorSlot = priorSlot, priorType = priorType))
+}
+
+// Exit a nested lexical scope: replay the undo log back to the block's entry mark
+// (innermost binding first) and restore `scopeBaseMsil`.
+pub func exitBlockScopeMsil(fctx: in FuncCtx, bs: in BlockScopeMsil): Unit {
+  while fctx.scopeUndoMsil.count > bs.undoMark {
+    val u = fctx.scopeUndoMsil[fctx.scopeUndoMsil.count - 1]
+    fctx.scopeUndoMsil.removeAt(fctx.scopeUndoMsil.count - 1)
+    if fctx.slots.containsKey(u.name) {
+      fctx.slots.remove(u.name)
+    }
+    match u.priorSlot {
+      case Some(s) -> fctx.slots.add(u.name, s)
+      case None -> ()
+    }
+    if fctx.types.containsKey(u.name) {
+      fctx.types.remove(u.name)
+    }
+    match u.priorType {
+      case Some(t) -> fctx.types.add(u.name, t)
+      case None -> ()
+    }
+  }
+  fctx.scopeBaseMsil = bs.prevBase
 }
 
 // Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
@@ -3555,10 +3639,19 @@ func msilTypeListIdentical(a: in List[MsilType], b: in List[MsilType]): Bool {
 // wrong location; add a diagnostic at the cross-reference site if that pattern
 // is ever introduced.
 pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int {
+  // Log `name`'s prior binding so an enclosing scope's mapping is restored when
+  // the current block exits (general shadowing fix, #5191).
+  recordScopeUndoMsil(fctx, name)
   match mapGet(fctx.slots, name) {
     case Some(existing) -> {
       val existingTy = match mapGet(fctx.types, name) { case Some(t) -> t; case None -> ty }
-      if msilTypeIdentical(existingTy, ty) {
+      // Reuse the slot only when it was allocated in the CURRENT block scope
+      // (`existing >= fctx.scopeBaseMsil`): reusing an enclosing-scope slot would
+      // clobber that still-live binding's value (the general shadowing bug,
+      // #5191).  A shadow of an enclosing binding falls through to a fresh slot;
+      // `exitBlockScopeMsil` restores the enclosing name→slot mapping on block
+      // exit.  The exact-type check keeps the reused slot's LocalVarSig valid.
+      if existing >= fctx.scopeBaseMsil and msilTypeIdentical(existingTy, ty) {
         // Exact type match: reuse the slot and its LocalVarSig entry unchanged.
         existing
       } else {
@@ -7498,7 +7591,14 @@ func lowerIfExprMsil(
 //      Returns the MsilType of the trailing value (last SExpr), or MVoid.
 // ─────────────────────────────────────────────────────────────────────────────
 func lowerBlockExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], block: in Block): MsilType {
-  lowerStmtsExprFromMsil(cctx, fctx, insns, block.statements, 0)
+  // A value-producing `{ … }` block is a lexical scope like a statement block
+  // (general shadowing, #5191): snapshot the block-local binding maps on entry,
+  // restore on exit.  The trailing value stays on the IL stack across the
+  // restore (which only touches the name→slot maps, not the stack).
+  val blockScope = enterBlockScopeMsil(fctx)
+  val ty = lowerStmtsExprFromMsil(cctx, fctx, insns, block.statements, 0)
+  exitBlockScopeMsil(fctx, blockScope)
+  ty
 }
 
 // Value-producing counterpart of `lowerStmtsFromMsil`: lower statements[start..]
@@ -12926,7 +13026,13 @@ func lowerTryCatchExprMsil(
 // §7. Block lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func lowerBlockMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], block: in Block): Unit {
+  // A Lyric `{ … }` block is a lexical scope: snapshot the block-local binding
+  // maps on entry and restore them on exit so a nested `val`/`var` (including a
+  // shadow of an enclosing binding) neither leaks past the block nor clobbers
+  // the enclosing binding's slot (general shadowing, #5191).
+  val blockScope = enterBlockScopeMsil(fctx)
   lowerStmtsFromMsil(cctx, fctx, insns, block.statements, 0)
+  exitBlockScopeMsil(fctx, blockScope)
 }
 
 // Lower statements[start..] (statement / void context) honouring `defer`.  A
@@ -13036,7 +13142,9 @@ func makeFuncCtxMsil(
     hoistedCellType = hoistedCellType,
     captureCellNames = captureCellNames,
     phaseBCtx = newList(),
-    lazyGenCtx = newList()
+    lazyGenCtx = newList(),
+    scopeBaseMsil = 0,
+    scopeUndoMsil = newList()
   )
 }
 
