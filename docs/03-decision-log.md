@@ -10331,8 +10331,7 @@ exceeds pre-allocated resume labels`) — confirmed present identically both
 with and without this fix (verified by temporarily reverting via `git
 stash` and re-testing), so it is a separate bug in the qualified-path
 branch of `inferCallReturnTypePB`'s candidate resolution, not a regression
-from or a target of this change. Not filed as a separate issue yet — flagged
-here for whoever picks it up next.
+from or a target of this change. Filed and tracked as #5222.
 
 **Verification.** Reproduced the reporter's exact 4-package minimal repro
 (`Manager` awaits `Primitives.createContainer` unqualified, with an
@@ -10357,7 +10356,9 @@ asserting stdout — 28/28 in that file including it.
 two independent root causes found for it — see D-progress-599 for the
 first), #3196/#5030/#4958/#4947 (the same "prediction pass has a blind
 spot" bug family), D-progress-599 (this issue's first fix, and the
-`PEReader`-based investigation technique reused here).
+`PEReader`-based investigation technique reused here), #5222 (the
+fully-qualified cross-package `await` crash found — and confirmed
+pre-existing — while narrowing this fix).
 
 ---
 ## Decisions deferred to v2 or later
