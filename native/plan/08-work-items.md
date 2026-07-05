@@ -949,14 +949,18 @@ Depends on: Phase N6 complete.
 ### N7.1 — CI workflow for native targets
 
 **PARTIALLY SHIPPED** (D-progress-576): a single-OS (`ubuntu-latest`) native
-backend CI job already runs on every PR in `.github/workflows/ci.yml`
-("Native backend self-tests" + the `lyric test --target native` smoke-test
-step below N7.2) — it builds `lyric-rt.a` under both clang and gcc, runs the
-full `llvm_self_test_n*.l` suite, and now also compiles+runs a real
-`--target native` test module (pass and fail cases). The originally
-envisioned dedicated `native-ci.yml` workflow and 3-OS matrix
-(`ubuntu-24.04-arm`, `macos-14`) are **not** shipped — deferred as a
-follow-up; the single-OS job is the production gate today.
+backend CI job already runs on every PR in `.github/workflows/ci.yml` — the
+dedicated `native-backend-self-tests` job ("Native backend self-tests" + the
+`lyric test --target native` smoke-test step below N7.2) — it builds
+`lyric-rt.a` under both clang and gcc, runs the full `llvm_self_test_n*.l`
+suite, and now also compiles+runs a real `--target native` test module (pass
+and fail cases). It was split out of `compiler-self-tests-dotnet-a` into its
+own job so its ~124 sequential `clang`/ASan-linked subprocess invocations get
+a dedicated runner instead of competing for CPU with that job's other
+concurrent self-test steps. The originally envisioned dedicated
+`native-ci.yml` workflow and 3-OS matrix (`ubuntu-24.04-arm`, `macos-14`) are
+**not** shipped — deferred as a follow-up; the single-OS job is the
+production gate today.
 
 **Files to create:** `.github/workflows/native-ci.yml`
 

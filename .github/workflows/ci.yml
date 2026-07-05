@@ -1345,123 +1345,6 @@ jobs:
           fi
           LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cross_package_generics_self_test.l
 
-      # Native (LLVM) backend self-tests — N7.1 (docs/10 D-progress-540/545).
-      # Builds lyric-rt (C unit tests under both clang and gcc), then runs the
-      # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar
-      # programs compiled through parse -> codegen -> clang -> run), and
-      # llvm_heap (N2 records/unions/enums/distinct/match; its ARC cases build
-      # with -fsanitize=address so a missed/premature/double release fails),
-      # and llvm_self_test_n3 (N3.2 interface vtable dispatch; its ARC cases
-      # likewise build under ASan to prove the interface box releases its
-      # implementing object), and llvm_self_test_n34 (N3.4 protected types;
-      # its ASan case proves the mutex buffer and a ref-typed field are both
-      # torn down cleanly), llvm_self_test_async (D-N-022 real async:
-      # async func lowers to an LLVM coroutine on the lyric-rt cooperative
-      # scheduler; the sleep-driven cases prove spawned tasks genuinely
-      # interleave, with the ARC/frame protocol ASan-checked),
-      # and llvm_self_test_defer (P2.D1 `defer`: no try/finally on native,
-      # so each lexical scope's pending deferred blocks run explicitly at
-      # every scope exit -- fall-off, return, break, continue -- mirroring
-      # the existing ARC scope-exit stack; a panic still bypasses it
-      # entirely per D-N-003).
-      # The tests import `Lyric.Llvm*` compiler packages by source, so
-      # LYRIC_LOAD_COMPILER=1.
-      - name: Native backend self-tests (lyric-rt + llvm via native lyric test)
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping native backend self-tests"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping native backend self-tests"
-            exit 1
-          fi
-          command -v clang >/dev/null || { echo "::error::clang not found on the runner"; exit 1; }
-          # ASan preflight: the heap self-test links -fsanitize=address.
-          # Use $TMPDIR (redirected to runner.temp above), not a hardcoded
-          # /tmp, so this step doesn't bypass the SIGBUS/resource-pressure
-          # mitigation the rest of this job relies on (#4975).
-          echo 'int main(void){return 0;}' > "$TMPDIR/asan_preflight.c"
-          if ! clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight" 2>/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
-            clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight"
-          fi
-          make -C lyric-rt test
-          make -C lyric-rt clean && make -C lyric-rt test CC=gcc
-          for t in \
-            lyric-compiler/lyric/llvm_ir_self_test.l \
-            lyric-compiler/lyric/llvm_codegen_self_test.l \
-            lyric-compiler/lyric/llvm_heap_self_test.l \
-            lyric-compiler/lyric/llvm_ffi_self_test.l \
-            lyric-compiler/lyric/llvm_collections_self_test.l \
-            lyric-compiler/lyric/llvm_stdlib_self_test.l \
-            lyric-compiler/lyric/llvm_self_test_n3.l \
-            lyric-compiler/lyric/llvm_self_test_n34.l \
-            lyric-compiler/lyric/llvm_self_test_async.l \
-            lyric-compiler/lyric/llvm_self_test_defer.l ; do
-            echo "=== $t ==="
-            LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
-          done
-
-      # `lyric test --target native` smoke test (N7.2): an ordinary
-      # `@test_module` (no compiler-package imports, unlike the llvm_self_test_n*
-      # files above) compiles through `Emitter.emitNative` and runs as a
-      # self-contained binary — not via LYRIC_LOAD_COMPILER's in-process MSIL
-      # host.  Native has no try/catch (D-N-003), so `TestSynth.synthesizeNative`
-      # calls each test straight through: a passing suite prints normal TAP
-      # output and exits 0; a failing assertion `panic`s the whole process
-      # (nonzero/abort exit, no per-test isolation) — asserted here too, so a
-      # future change that silently swallows the failure (exit 0) is caught.
-      - name: Native lyric test --target native smoke test (N7.2)
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          # The "Native backend self-tests" step above is `background: true`
-          # and does not block, so it can run concurrently with this step —
-          # and it does `make -C lyric-rt clean && make -C lyric-rt test
-          # CC=gcc` partway through its own run, which deletes and rebuilds
-          # the SHARED lyric-rt/build/ directory out from under any other
-          # step reading lyric_rt.a from that same path at the same time
-          # (observed: a clang link failure because the .a was mid-`rm -rf`
-          # when this step tried to read it). Building into a private
-          # directory and pointing the CLI at it via LYRIC_RT_PATH avoids
-          # sharing mutable state with the background step entirely.
-          rt_build_dir="$(mktemp -d)/lyric-rt-build"
-          make -C lyric-rt BUILD="$rt_build_dir"
-          export LYRIC_RT_PATH="$rt_build_dir/lyric_rt.a"
-          work="$(mktemp -d)"
-          cat > "$work/pass_test.l" <<'LYR'
-          @test_module
-          package NativeTestSmoke
-
-          import Std.Testing
-
-          test "addition" {
-            assertEqualInt(2 + 2, 4, "2+2==4")
-          }
-          LYR
-          "$lyric_bin" test "$work/pass_test.l" --target native
-          cat > "$work/fail_test.l" <<'LYR'
-          @test_module
-          package NativeTestSmokeFail
-
-          import Std.Testing
-
-          test "deliberately wrong" {
-            assertEqualInt(2 + 2, 5, "2+2==5")
-          }
-          LYR
-          if "$lyric_bin" test "$work/fail_test.l" --target native; then
-            echo "::error::expected a nonzero exit for a failing --target native test"
-            exit 1
-          fi
-          echo "Native lyric test --target native smoke test passed"
-
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
       # Before this fix, @externTarget async func left Task<T> on the stack where
@@ -1837,6 +1720,164 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_await_expr_forms_self_test.l
+
+  # Native (LLVM) backend self-tests — N7.1 (docs/10 D-progress-540/545).
+  # Split out into its own job (previously a `background: true` step inside
+  # compiler-self-tests-dotnet-a) because the work here is CPU-bound rather
+  # than wait-bound: the ten llvm_*_self_test.l files below contain ~124
+  # individual `test { }` cases, and each one spawns its own `clang`
+  # subprocess (compile a `.ll` module, link against lyric_rt.a, run the
+  # binary) — 34 of them linking under `-fsanitize=address`, which is slow
+  # to compile. Running that inside compiler-self-tests-dotnet-a meant these
+  # ~124 sequential clang invocations competed for the runner's CPU with
+  # ~20-40 other concurrent `background: true` steps in that job. A
+  # dedicated runner gives clang/ASan the whole machine instead of queuing
+  # behind unrelated self-tests, and keeps a slow native-backend run from
+  # extending compiler-self-tests-dotnet-a's own `wait-all` barriers.
+  native-backend-self-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
+        run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+
+      # Builds lyric-rt (C unit tests under both clang and gcc), then runs the
+      # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar
+      # programs compiled through parse -> codegen -> clang -> run), and
+      # llvm_heap (N2 records/unions/enums/distinct/match; its ARC cases build
+      # with -fsanitize=address so a missed/premature/double release fails),
+      # and llvm_self_test_n3 (N3.2 interface vtable dispatch; its ARC cases
+      # likewise build under ASan to prove the interface box releases its
+      # implementing object), and llvm_self_test_n34 (N3.4 protected types;
+      # its ASan case proves the mutex buffer and a ref-typed field are both
+      # torn down cleanly), llvm_self_test_async (D-N-022 real async:
+      # async func lowers to an LLVM coroutine on the lyric-rt cooperative
+      # scheduler; the sleep-driven cases prove spawned tasks genuinely
+      # interleave, with the ARC/frame protocol ASan-checked),
+      # and llvm_self_test_defer (P2.D1 `defer`: no try/finally on native,
+      # so each lexical scope's pending deferred blocks run explicitly at
+      # every scope exit -- fall-off, return, break, continue -- mirroring
+      # the existing ARC scope-exit stack; a panic still bypasses it
+      # entirely per D-N-003).
+      # The tests import `Lyric.Llvm*` compiler packages by source, so
+      # LYRIC_LOAD_COMPILER=1.
+      - name: Native backend self-tests (lyric-rt + llvm via native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping native backend self-tests"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping native backend self-tests"
+            exit 1
+          fi
+          command -v clang >/dev/null || { echo "::error::clang not found on the runner"; exit 1; }
+          # ASan preflight: the heap self-test links -fsanitize=address.
+          # Use $TMPDIR (redirected to runner.temp above), not a hardcoded
+          # /tmp, so this step doesn't bypass the SIGBUS/resource-pressure
+          # mitigation the rest of this job relies on (#4975).
+          echo 'int main(void){return 0;}' > "$TMPDIR/asan_preflight.c"
+          if ! clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight" 2>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
+            clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight"
+          fi
+          make -C lyric-rt test
+          make -C lyric-rt clean && make -C lyric-rt test CC=gcc
+          for t in \
+            lyric-compiler/lyric/llvm_ir_self_test.l \
+            lyric-compiler/lyric/llvm_codegen_self_test.l \
+            lyric-compiler/lyric/llvm_heap_self_test.l \
+            lyric-compiler/lyric/llvm_ffi_self_test.l \
+            lyric-compiler/lyric/llvm_collections_self_test.l \
+            lyric-compiler/lyric/llvm_stdlib_self_test.l \
+            lyric-compiler/lyric/llvm_self_test_n3.l \
+            lyric-compiler/lyric/llvm_self_test_n34.l \
+            lyric-compiler/lyric/llvm_self_test_async.l \
+            lyric-compiler/lyric/llvm_self_test_defer.l ; do
+            echo "=== $t ==="
+            LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
+          done
+
+      # `lyric test --target native` smoke test (N7.2): an ordinary
+      # `@test_module` (no compiler-package imports, unlike the llvm_self_test_n*
+      # files above) compiles through `Emitter.emitNative` and runs as a
+      # self-contained binary — not via LYRIC_LOAD_COMPILER's in-process MSIL
+      # host.  Native has no try/catch (D-N-003), so `TestSynth.synthesizeNative`
+      # calls each test straight through: a passing suite prints normal TAP
+      # output and exits 0; a failing assertion `panic`s the whole process
+      # (nonzero/abort exit, no per-test isolation) — asserted here too, so a
+      # future change that silently swallows the failure (exit 0) is caught.
+      - name: Native lyric test --target native smoke test (N7.2)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          # The "Native backend self-tests" step above is `background: true`
+          # and does not block, so it can run concurrently with this step —
+          # and it does `make -C lyric-rt clean && make -C lyric-rt test
+          # CC=gcc` partway through its own run, which deletes and rebuilds
+          # the SHARED lyric-rt/build/ directory out from under any other
+          # step reading lyric_rt.a from that same path at the same time
+          # (observed: a clang link failure because the .a was mid-`rm -rf`
+          # when this step tried to read it). Building into a private
+          # directory and pointing the CLI at it via LYRIC_RT_PATH avoids
+          # sharing mutable state with the background step entirely.
+          rt_build_dir="$(mktemp -d)/lyric-rt-build"
+          make -C lyric-rt BUILD="$rt_build_dir"
+          export LYRIC_RT_PATH="$rt_build_dir/lyric_rt.a"
+          work="$(mktemp -d)"
+          cat > "$work/pass_test.l" <<'LYR'
+          @test_module
+          package NativeTestSmoke
+
+          import Std.Testing
+
+          test "addition" {
+            assertEqualInt(2 + 2, 4, "2+2==4")
+          }
+          LYR
+          "$lyric_bin" test "$work/pass_test.l" --target native
+          cat > "$work/fail_test.l" <<'LYR'
+          @test_module
+          package NativeTestSmokeFail
+
+          import Std.Testing
+
+          test "deliberately wrong" {
+            assertEqualInt(2 + 2, 5, "2+2==5")
+          }
+          LYR
+          if "$lyric_bin" test "$work/fail_test.l" --target native; then
+            echo "::error::expected a nonzero exit for a failing --target native test"
+            exit 1
+          fi
+          echo "Native lyric test --target native smoke test passed"
+
+      - name: Wait for native backend self-tests
+        wait-all: true
+
   compiler-self-tests-dotnet-b:
     runs-on: ubuntu-latest
     needs: [build]
@@ -5916,7 +5957,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required]
+    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required]
     if: always()
     permissions:
       contents: read
