@@ -1408,3 +1408,15 @@ test "extern func without return type round trips" {
   assertTrue(not Str.contains(acc, "free(ptr: NativePtr[Byte]):"), "extern func no-ret: no synthesised return type")
   assertTrue(isFormatted(acc, parse(acc)), "extern func no-ret: idempotent")
 }
+
+test "val binding named result round trips" {
+  // #4778: a `val` binding named `result` (a valid binding name outside
+  // `ensures:` position) was formatted with its name dropped, producing
+  // `val  = 1` and tripping the loss-checker's refusal.
+  val src = "package T\n\nfunc main(): Unit {\n  val result = 1\n  val x = result + 1\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "val result: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "val result = 1"), "val result: binding name preserved")
+  assertTrue(isFormatted(acc, parse(acc)), "val result: idempotent")
+}
