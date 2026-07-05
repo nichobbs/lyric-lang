@@ -29148,3 +29148,79 @@ previously-known bugs this is distinct from), #4004 (flags #3988's fix as
 manually-verified-only with no automated regression test — same
 full-suite-coverage gap this entry's finding closes the case for), #5094
 (the new issue with full repro + proposed resolution paths), PR #5090.
+
+### D-progress-595 — Issue #5049 investigation: nested if/match outer-var mutation does not reproduce under the mint toolchain
+
+**Status:** Investigated, not reproduced; regression test added regardless.
+Issue #5049 (opened from D-progress-591 / docs/57 §8) tracks whether the
+self-hosted MSIL backend has a genuine codegen gap for mutating an outer
+`var` of `Option[Record]` type from inside a `match` arm nested inside an
+`if`-expression branch — the "attempt 1" shape from D-progress-591 that
+compiled cleanly but crashed at runtime with a `NullReferenceException` in
+`joinSpans` when CI built and ran it.
+
+**This sandbox, unlike D-progress-591's, could build stage 0 from source**
+(`scripts/mint-stage0-fsharp.sh`, which rebuilds the historical F# bootstrap
+compiler from git history — `git fetch --unshallow` was needed first, since
+the container's default clone is shallow and lacks the F# compiler's last
+commit). With a working mint toolchain (`make mint` → `./bin/lyric`), six
+escalating-fidelity attempts were made to reproduce the crash:
+
+1. A minimal standalone repro (`Option[Record]` var, if/match nesting, no
+   surrounding complexity).
+2. The same shape with a preceding `while` loop and an `inout`-mutated state
+   parameter as the match's scrutinee (mirroring `tryEatPunct`'s side
+   effects).
+3. The same, with `Span`'s real shape — a record of two nested records
+   (`Position { offset, line, column }`) instead of a flat one-field record.
+4. The same, with the `if`-expression's own yielded value union-case-wrapped
+   in `Option` (mirroring `Some(value = ISGroup(items = items))`) alongside
+   the unrelated record-typed var mutation.
+5. **The literal original code, restored verbatim into
+   `parser_core.l::parseImportDecl` itself** (replacing the shipped
+   `tryParseImportSelectorGroup`-based fix), rebuilding stage 1 and the AOT
+   CLI bundle from it, then running the rebuilt compiler against a real
+   `.{...}` selector-group import.
+6. The same rebuilt (attempt-1) compiler run against
+   `lyric-compiler/lyric/import_extern_self_test.l` — the exact file whose
+   compilation originally surfaced the crash.
+
+**None reproduced.** All six ran to completion with correct output; none
+threw. This means either: the crash was specific to the exact stage-0
+binary CI's `compiler-self-tests-dotnet-a` job bootstraps from scratch
+(distinct from this sandbox's F#-recovery "mint" path — the W0005
+`TypeRef/TypeDef not found for MGenericInstByName ... signature degraded to
+System.Object (#2494)` warnings observed live during every build in this
+investigation are a reminder that generic-metadata-resolution bugs of
+exactly the class `mint-stage0-fsharp.sh`'s header describes are still an
+active, tracked concern in the current stage-0/stage-1 boundary); or the
+original crash depended on some precondition not captured by the prose
+description in D-progress-591/docs/57 §8; or it was an artifact specific to
+that one CI run. A brief attempt to bootstrap the default (non-mint,
+release-download) stage-0 path to test the first hypothesis directly hung
+on a network fetch and was abandoned rather than burning further time on a
+secondary hypothesis.
+
+**What shipped from this investigation:** the shape was confirmed via
+static analysis (three specific codegen mechanisms in
+`lyric-compiler/msil/codegen.l` — the `lowerIfExprMsil` discard-and-relower
+path, `lowerAssignExprMsil`'s reassignment arm, and the
+`pushAnnoHintTyArgs`/`restoreHintTyArgs` hint-stack — were each read and
+ruled out as the direct cause) and via search to be completely untested
+anywhere in the tree. `lyric-compiler/msil/msil_self_test_m89.l` now locks
+it down as a permanent regression guard, independent of root cause: three
+cases (`Some` arm reaches the read-back, `None` arm reaches the read-back,
+`if`-false branch never enters the match) all assert on the actual runtime
+values. Wired into CI in `compiler-self-tests-dotnet-a` alongside
+`msil_self_test_m87.l`.
+
+Issue #5049 stays open: the underlying question ("is there a real
+self-hosted codegen gap here") is more narrowed but not resolved. Whoever
+picks it up next should start from the stage-0-bootstrap-path hypothesis
+above rather than re-deriving the AST shape from scratch.
+
+**Related:** D-progress-591, docs/57 §8, docs/41 (self-hosted compiler gap
+analysis), issue #5049, `lyric-compiler/msil/msil_self_test_m89.l`.
+D-progress-594 (a separately-discovered, distinct seed-binary bug in the
+same stage-0-bootstrap-path area this entry's open hypothesis points at —
+worth checking for overlap if this issue is picked up again).
