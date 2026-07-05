@@ -409,6 +409,19 @@ test "Std.Time addMonths with an extreme month delta panics, not Int-wraps (#521
   assertTrue(r.exitCode != 42 and r.exitCode != 0, "an Int-wrapped month index would exit 42")
 }
 
+// The adversarial #5218 case: 357913941 years pre-multiplied by 12 in
+// Int32 wraps to exactly -4 months, i.e. a VALID-looking Instant four
+// months before the epoch — the one shape the recomposed-year window
+// check alone cannot catch.  With the Long widening it panics instead.
+test "Std.Time addYears cannot Int-wrap its year-to-month conversion (#5218)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val t = addYears(fromEpochMillis(0i64), 357913941)\n" +
+    "  if instantAfter(t, fromEpochMillis(0i64)) {\n    42\n  } else {\n    42\n  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a wrapped year-to-month conversion would exit 42")
+}
+
 test "Result[Unit, E] payloads and diverging value-if branches (ASan)" {
   val src = "package T\n" + "import Std.Core\n" + "func mk(flag: Int): Result[Unit, String] {\n" + "  if flag == 0 {\n" +
     "    Ok(value = ())\n" +

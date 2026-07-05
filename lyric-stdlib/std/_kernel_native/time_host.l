@@ -213,14 +213,18 @@ pub func hostTotalSeconds(d: in Duration): Double {
 // Decompose, shift the month index, clamp day-of-month to the target
 // month's length (DateTime.AddMonths / java.time.plusMonths
 // semantics), recompose; the time-of-day rides along unchanged.
-pub func hostAddMonths(t: in Instant, n: in Int): Instant {
+//
+// The whole month pipeline runs in Long (#5217, #5218): an extreme
+// `Int` delta would wrap the Int32 index before the range check could
+// see it, and a wrapped index can land back inside the valid window
+// (e.g. n = 357913941 years pre-multiplied in Int32 wraps to exactly
+// -4 months — a valid-looking wrong Instant).  Both entry points
+// widen to Long BEFORE any multiplication.
+func addMonthsLong(t: in Instant, n: in Long): Instant {
   val days = floorDivLong(t.epochNanos, nanosPerDay())
   val nanoOfDay = t.epochNanos - days * nanosPerDay()
   val c = civilFromDays(days)
-  // Month-index math in Long (#5217): an extreme `n` would wrap the
-  // Int32 index before the range check below could see it, and a
-  // wrapped index can land back inside the valid window.
-  val m0 = c.year.toLong() * 12i64 + (c.month - 1).toLong() + n.toLong()
+  val m0 = c.year.toLong() * 12i64 + (c.month - 1).toLong() + n
   val y64 = if m0 >= 0i64 { m0 / 12i64 } else { (m0 - 11i64) / 12i64 }
   // The managed twins throw when the result leaves their range; the
   // native analog is a panic (#5213) — recomposing a year outside the
@@ -238,8 +242,14 @@ pub func hostAddMonths(t: in Instant, n: in Int): Instant {
   Instant(epochNanos = daysFromCivil(y, m, d) * nanosPerDay() + nanoOfDay)
 }
 
+pub func hostAddMonths(t: in Instant, n: in Int): Instant {
+  addMonthsLong(t, n.toLong())
+}
+
 pub func hostAddYears(t: in Instant, n: in Int): Instant {
-  hostAddMonths(t, n * 12)
+  // Widen before the *12: |Int32| * 12 fits Long with room to spare,
+  // so the year->month conversion itself can never wrap (#5218).
+  addMonthsLong(t, n.toLong() * 12i64)
 }
 
 pub func hostAddDays(t: in Instant, n: in Double): Instant {
