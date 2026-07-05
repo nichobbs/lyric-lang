@@ -1,0 +1,305 @@
+name: Seed candidacy check
+
+# Issue #5094: a published self-hosted release can carry an emitter defect
+# that is only exposed when THAT release is used as the stage-0 seed
+# compiling stage 1. v0.4.14 crashed multiple JVM self-tests with
+# `MissingMethodException: Method not found: 'System.Single
+# System.Convert.ToSingle(Double)'` in `Jvm.Kernel.Program.dblToSingle` when
+# used as a download seed for `scripts/bootstrap.sh --stage 1`, even though
+# current source (self-hosting at stage 2) compiled the exact same
+# `@externTarget` binding correctly — the defect lived entirely in what
+# v0.4.14's own compiled emitter logic did when used as the compiling tool,
+# not in current `.l` source.
+#
+# CI's stage-1 self-test jobs (compiler-self-tests-dotnet-*,
+# compiler-self-tests-jvm) always force LYRIC_BOOTSTRAP_MINT=1, so a
+# download-seed-only regression like this is invisible until someone
+# manually attempts the #3936 bootstrap-seed cutover — which is exactly what
+# happened: PR #5090's sandbox verification (stage-1 smoke +
+# --target dotnet-only stage-3 reproducibility) passed cleanly, and real CI
+# caught the JVM-only regression only after the cutover had already landed.
+#
+# This workflow implements #5094's proposed resolution path 3: on every
+# finalized release, download THAT release as a LYRIC_BOOTSTRAP_VERSION
+# seed, build stage 1 from it (mint deliberately OFF, unlike every other CI
+# job — the whole point is exercising the download path), and run the
+# self-test suite for both targets against that download-seeded stage 1. A
+# release that fails here is unsafe to use as a future download-seed
+# default; the job files (or re-confirms) a tracking issue so the finding is
+# discoverable without babysitting this workflow's run history.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to test as a download seed (e.g. 0.4.14, with or without the v prefix)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  BUILD_CONFIG: Debug
+
+jobs:
+  seed-candidacy:
+    runs-on: ubuntu-latest
+    # GitHub's default job timeout is 360 minutes; a hung download or a
+    # wedged dotnet/lyric build (rather than a clean failure) would otherwise
+    # tie up a runner for up to 6 hours before this job's own steps ever get
+    # a chance to report anything (#5165). A full stage-0(download)+stage-1
+    # build plus the self-test subset comfortably fits well under an hour.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Resolve release version under test
+        id: ver
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          RAW="${RELEASE_TAG:-$DISPATCH_VERSION}"
+          if [[ -z "$RAW" ]]; then
+            echo "::error::no release tag (release event) or version input (workflow_dispatch) available" >&2
+            exit 1
+          fi
+          VERSION="${RAW#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
+        run: echo "TMPDIR=${{ runner.temp }}" >> "$GITHUB_ENV"
+
+      # Deliberately checked out at the DEFAULT BRANCH's current HEAD, not the
+      # release tag under test (#5154). The risk this workflow exists to
+      # de-risk is "can this old/candidate seed correctly bootstrap TODAY's
+      # main source" (the actual #3936/#5094 scenario: a stale seed compiling
+      # newer .l source it never saw) -- checking out the release tag itself
+      # would instead compile that release's own contemporaneous source with
+      # its own seed, a tautological self-consistency check that can never
+      # catch a seed miscompiling constructs introduced after that release.
+      # This matters most for the workflow_dispatch "test an arbitrary past
+      # version" path, where the gap between the seed's vintage and current
+      # main is largest.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520  # v5.4.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-seedcand-${{ hashFiles('bootstrap/**/*.fsproj', 'bootstrap/**/*.csproj', 'bootstrap/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      # LYRIC_BOOTSTRAP_MINT is deliberately left unset/0 here — every other
+      # CI job sets it to 1 (mint from git history), which is precisely why
+      # this class of bug went undetected until a manual #3936 attempt.
+      # LYRIC_BOOTSTRAP_VERSION pins the exact release under test so
+      # scripts/bootstrap.sh downloads it instead of resolving "latest".
+      - name: Build stage 1 from the released version as a download seed
+        id: build_seed_stage1
+        working-directory: ${{ github.workspace }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_VERSION: ${{ steps.ver.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          echo "Testing v${LYRIC_BOOTSTRAP_VERSION} as a download seed (LYRIC_BOOTSTRAP_MINT unset)"
+          ./scripts/bootstrap.sh --stage 1 2>&1 | tee /tmp/seed-candidacy-stage1.log
+
+          # scripts/bootstrap.sh's stage0() silently falls back to minting the
+          # F# bootstrap compiler if the release download fails for ANY reason
+          # (network blip, GitHub rate limit, missing archive for this
+          # platform, bad version) -- even with LYRIC_BOOTSTRAP_MINT left
+          # unset/0 (#5162). Left unchecked, that fallback would make this
+          # job "pass" having never actually exercised the download-seed
+          # path -- exactly the false-confidence failure mode that motivated
+          # this whole workflow (#5094 / PR #5090's insufficient sandbox
+          # verification). Both of stage0()'s mint code paths share this log
+          # line, so a single check catches either.
+          if grep -qF "minting clean stage-0 from F# history" /tmp/seed-candidacy-stage1.log; then
+            echo "::error::stage 0 fell back to minting the F# bootstrap compiler instead of downloading v${LYRIC_BOOTSTRAP_VERSION} -- this run did NOT test the download-seed path"
+            exit 1
+          fi
+
+      - name: Build AOT entry-point
+        id: build_aot
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; download-seeded build failed upstream"
+            exit 1
+          fi
+          dotnet build bootstrap/src/Lyric.Cli.Aot --configuration "$BUILD_CONFIG"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT entry-point binary not found at $lyric_bin"
+            exit 1
+          fi
+
+      # Required so the `--target dotnet` self-tests that `import Lyric.*`
+      # compiler packages (12 of the 15 below) resolve a self-consistent
+      # compiler (#5163). Without this, `lyric test` falls back to linking
+      # the raw per-package DLLs `bootstrap.sh --stage 1` produces, which is
+      # NOT execution-clean for cross-package Lyric.* references (D112 /
+      # docs/41 §R7 — a self-hosted-emitted parser mis-parses even
+      # `package P`) and would fail regardless of whether the candidate seed
+      # under test is actually healthy, producing false-positive
+      # seed-regression reports. Mirrors ci.yml's own "Stage self-hosted
+      # compiler bundle" step exactly (same two target dirs).
+      - name: Stage self-hosted compiler bundle
+        id: stage_selfhosted_bundle
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          bin_dir="$(dirname "$lyric_bin")"
+          bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$bin_dir" .bootstrap/stage1
+
+      # Same representative subset as stage2-self-test.yml / ci.yml's
+      # compiler-self-tests-dotnet-a — not the full suite (this job already
+      # duplicates a full stage-0(download)+stage-1+AOT build per release;
+      # running literally everything here would make every release take as
+      # long as several PR builds combined). Deliberately includes
+      # pattern_lowering_self_test.l, silent_miscompile_guard_jvm_self_test.l,
+      # and j3_lowering_self_test.l — the three tests that actually caught
+      # the v0.4.14 dblToSingle regression this workflow exists to catch
+      # earlier next time.
+      - name: Self-tests against the download-seeded stage 1 (--target dotnet)
+        id: selftest_dotnet
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          for t in \
+            lyric-compiler/lyric/lexer_self_test.l \
+            lyric-compiler/lyric/parser_self_test.l \
+            lyric-compiler/lyric/typechecker_self_test.l \
+            lyric-compiler/lyric/modechecker_self_test.l \
+            lyric-compiler/lyric/contract_elaborator_self_test.l \
+            lyric-compiler/lyric/cfg_self_test.l \
+            lyric-compiler/lyric/derives_self_test.l \
+            lyric-compiler/lyric/mono_self_test.l \
+            lyric-compiler/lyric/fmt_self_test.l \
+            lyric-compiler/lyric/verifier_self_test.l \
+            lyric-compiler/lyric/weaver_self_test.l \
+            lyric-compiler/lyric/cfg_gate_self_test.l \
+            lyric-compiler/lyric/bitwise_self_test.l \
+            lyric-compiler/lyric/aspect_weave_self_test.l \
+            lyric-compiler/lyric/pattern_lowering_self_test.l ; do
+            echo "=== $t (dotnet) ==="
+            "$lyric_bin" test "$t"
+          done
+
+      - name: Self-tests against the download-seeded stage 1 (--target jvm)
+        id: selftest_jvm
+        working-directory: ${{ github.workspace }}
+        # VERSION threaded through env: + a shell variable rather than
+        # splicing ${{ steps.ver.outputs.VERSION }} straight into the script
+        # (#5169), matching every other GH-expression use in both workflows.
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          for t in \
+            lyric-compiler/lyric/bitwise_self_test.l \
+            lyric-compiler/lyric/aspect_weave_self_test.l \
+            lyric-compiler/lyric/pattern_lowering_self_test.l \
+            lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l \
+            lyric-compiler/jvm/j3_lowering_self_test.l \
+            lyric-compiler/lyric/auto_ffi_jvm_self_test.l \
+            lyric-compiler/lyric/hash_jvm_self_test.l ; do
+            echo "=== $t (jvm) ==="
+            "$lyric_bin" test --target jvm "$t"
+          done
+          echo "Seed-candidacy self-tests passed for v${VERSION} as a download seed." >> "$GITHUB_STEP_SUMMARY"
+
+      # Scoped to the steps that actually exercise the candidate seed/self-test
+      # suite (#5155) -- plain `if: failure()` would also fire on an
+      # infra-level failure (checkout, dotnet/java setup, cache, version
+      # resolution), which says nothing about the seed's compiler correctness
+      # and would file a misleading seed-regression issue.
+      - name: File a tracking issue on failure
+        if: >-
+          failure() && (
+            steps.build_seed_stage1.outcome == 'failure' ||
+            steps.build_aot.outcome == 'failure' ||
+            steps.stage_selfhosted_bundle.outcome == 'failure' ||
+            steps.selftest_dotnet.outcome == 'failure' ||
+            steps.selftest_jvm.outcome == 'failure'
+          )
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Seed regression: v${VERSION} unsafe as a bootstrap download seed"
+
+          gh label create "seed-regression" --repo "${{ github.repository }}" \
+            --color "B60205" \
+            --description "A published release is unsafe to use as a scripts/bootstrap.sh download seed (see #5094)" \
+            2>/dev/null || true
+
+          # `gh --jq` takes a single jq expression as its argument — it does not
+          # understand jq's own `--arg` flag, so piping through the real `jq`
+          # binary (which does) is required to safely interpolate $TITLE
+          # into the filter without string-splicing it into the expression.
+          # Match on EXACT title equality, not substring containment (#5156):
+          # TITLE is fully deterministic from VERSION, so an unanchored
+          # `contains()` risked a shorter version string (e.g. v0.4.1)
+          # false-matching an existing issue for a longer one that has it as
+          # a prefix (e.g. v0.4.14), silently conflating two distinct
+          # releases' regressions.
+          EXISTING="$(gh issue list --repo "${{ github.repository }}" --state open \
+            --label seed-regression --json number,title 2>/dev/null \
+            | jq -r --arg t "$TITLE" '.[] | select(.title == $t) | .number' \
+            | head -1)" || EXISTING=""
+
+          BODY_FILE="$(mktemp)"
+          {
+            echo "The \`seed-candidacy\` workflow found that release v${VERSION}, used as a"
+            echo "\`LYRIC_BOOTSTRAP_VERSION\` download seed for \`scripts/bootstrap.sh --stage 1\`,"
+            echo "fails the self-test suite. See #5094 for the class of bug this catches — a"
+            echo "defect in a released binary's own compiled emitter, not in current \`.l\` source"
+            echo "(current source self-hosting at stage 2 can still be correct even when this"
+            echo "fails)."
+            echo
+            echo "This release must not become the stage-0 download-seed default (relevant to"
+            echo "the #3936 cutover) until the failure is root-caused and a newer, clean release"
+            echo "is cut."
+            echo
+            echo "Run: ${RUN_URL}"
+          } > "$BODY_FILE"
+
+          if [[ -n "$EXISTING" ]]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" \
+              --body "Re-confirmed: ${RUN_URL}"
+          else
+            gh issue create --repo "${{ github.repository }}" \
+              --title "$TITLE" --label "seed-regression" --body-file "$BODY_FILE"
+          fi

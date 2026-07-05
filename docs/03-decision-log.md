@@ -9582,6 +9582,76 @@ diagnostic V0014 generalises), V0012 (the sibling await-in-try pass this
 mirrors), V0002 (proof-required spawn rejection, deduplicated against).
 
 ---
+
+## D-progress-595 — Two CI safety-net jobs: stage-2 self-testing (#5099) and per-release seed candidacy (#5094 resolution path 3)
+
+**Status:** Shipped. Neither #5094's underlying v0.4.14 emitter defect nor
+#3936's blocked cutover is resolved by this entry — both new jobs are
+detection, not a fix.
+
+**Context.** D-progress-594 / #5094 found that CI's self-test jobs verify
+only stage 1 (built directly by whatever the stage-0 seed is), and that a
+download-seeded stage 1 can carry a seed-binary-specific defect invisible to
+every existing job, since `ci.yml`/`bench.yml` force
+`LYRIC_BOOTSTRAP_MINT=1`. #5099, filed from the same investigation,
+generalised the finding: stage 1 testing can never verify "the self-hosted
+compiler correctly compiles itself" (stage 2's defining property, and the
+property the shipped artifact — standalone binaries, the NuGet global tool —
+actually depends on), because stage 1 is materialized by the seed, not by
+self-hosting.
+
+**What shipped.**
+
+1. `.github/workflows/stage2-self-test.yml` (#5099) — a nightly-scheduled
+   (`workflow_dispatch`-triggerable) job that runs `./scripts/bootstrap.sh
+   --stage 2` (mint stage-0, matching every other CI job — this job isolates
+   self-hosting correctness, not seed-download trust), asserts stage 2 is
+   runnable as a hard gate (`bootstrap.sh`'s own stage-2 smoke check is
+   deliberately non-fatal under its runnability-first model; this job
+   re-asserts it as a gate so a non-runnable stage 2 cannot silently read as
+   green), then runs a representative self-test subset — front-end,
+   middle-end, and both backend targets — against the stage-2 binary with
+   `LYRIC_STDLIB_BIN` pinned to `.bootstrap/stage2/lib` (`make run-stage2`'s
+   existing pattern). Deliberately includes `pattern_lowering_self_test.l`,
+   `silent_miscompile_guard_jvm_self_test.l`, and `j3_lowering_self_test.l` —
+   the three tests D-progress-594 found actually distinguished a broken
+   stage 1 from a correct stage 2.
+2. `.github/workflows/seed-candidacy.yml` (#5094 proposed resolution path 3)
+   — triggered on every `release: published` event (plus `workflow_dispatch`
+   for testing an arbitrary past version, e.g. re-confirming v0.4.14):
+   downloads that release as a `LYRIC_BOOTSTRAP_VERSION` seed with
+   `LYRIC_BOOTSTRAP_MINT` deliberately left unset (every other CI job sets it
+   to `1`, which is precisely why the v0.4.14 regression went undetected
+   until a manual #3936 attempt), builds stage 1 from it, and runs the same
+   representative self-test subset against that download-seeded stage 1 for
+   both `--target dotnet` and `--target jvm`. On failure it files (or
+   re-confirms) a `seed-regression`-labeled tracking issue naming the
+   offending version, so a bad seed candidate is discoverable without
+   babysitting workflow run history.
+
+Both jobs run a curated subset, not the full `ci.yml` self-test matrix — a
+full self-host build already costs roughly double a stage-1-only build, and
+duplicating literally every stage-1 self-test step in either job would
+double CI cost again on top of that (stage2-self-test.yml on top of its own
+nightly cadence, seed-candidacy.yml on top of every release). The subset and
+the reasoning for it are logged in both workflow files' comments rather than
+silently applied, per the coverage explicitly called out in each job.
+
+**What this does NOT do:** it does not root-cause the v0.4.14
+`dblToSingle`/`Convert.ToSingle(Double)` defect (still unlocated — D-progress-594
+narrowed it to "the MemberRef signature v0.4.14's own emitter produces for
+this overload" and no further), and it does not unblock #3936 — that cutover
+still requires either locating and fixing the defect, or cutting a new
+release whose own stage-0 seed is confirmed clean by `seed-candidacy.yml`
+before it is adopted as the new download-seed default.
+
+**Related:** #5094, #5099, D-progress-594 (the investigation both jobs
+respond to), #3936 (the cutover `seed-candidacy.yml` is meant to eventually
+de-risk), #3988 (the two prior release-corruption bugs), `docs/10-bootstrap-progress.md`
+§"Bootstrap vs self-hosted — which compiler am I running?" (the compiler-identity
+table #5099's framing is built on).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
