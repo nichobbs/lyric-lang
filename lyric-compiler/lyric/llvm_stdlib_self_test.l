@@ -308,6 +308,10 @@ test "Std.Uuid seams: v4 generation, formatting, four parse forms (ASan)" {
     "    case Some(_) -> {\n      return 15\n    }\n" +
     "    case None -> {\n    }\n" +
     "  }\n" +
+    "  match parseUuidOpt(\"{550e8400e29b41d4a716446655440000}\") {\n" +
+    "    case Some(_) -> {\n      return 16\n    }\n" +
+    "    case None -> {\n    }\n" +
+    "  }\n" +
     "  42\n" +
     "}\n"
   val r = compileAndRunNative(src)

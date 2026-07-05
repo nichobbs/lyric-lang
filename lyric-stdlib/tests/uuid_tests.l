@@ -94,6 +94,11 @@ func testParseRejectsExoticForms(): Unit {
   assertRejects("{550e8400-e29b-41d4-a716-446655440000)", "mismatched wrappers rejected")
   assertRejects("550e8400-e29b-41d4-a716-44665544000g", "non-hex digit rejected")
   assertRejects("550e8400-e29b-41d4-a71644-6655440000", "misplaced hyphens rejected")
+  // Wrappers are defined around the hyphenated form only (#5199): a
+  // braced/parenthesized bare 32-hex string is not one of the four
+  // formats and must not be silently accepted.
+  assertRejects("{550e8400e29b41d4a716446655440000}", "braced N form rejected")
+  assertRejects("(550e8400e29b41d4a716446655440000)", "parenthesized N form rejected")
 }
 
 func main(): Unit {

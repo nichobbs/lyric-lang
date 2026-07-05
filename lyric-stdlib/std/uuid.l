@@ -104,14 +104,23 @@ func uuidTrim(s: in String): String {
 /// canonical lowercase hyphenated "D" form, or None if malformed.
 func uuidCanonicalize(s: in String): Option[String] {
   var t = uuidTrim(s)
+  // The "B"/"P" wrappers are defined around the HYPHENATED form only
+  // (matching .NET's format definitions): a braced/parenthesized bare
+  // 32-hex string is rejected below, not silently accepted (#5199).
+  var wrapped = false
   if t.length >= 2 {
     val first = t.substring(0, 1)
     val last = t.substring(t.length - 1, 1)
     if first == "{" and last == "}" {
       t = t.substring(1, t.length - 2)
+      wrapped = true
     } else if first == "(" and last == ")" {
       t = t.substring(1, t.length - 2)
+      wrapped = true
     }
+  }
+  if t.length == 32 and wrapped {
+    return None
   }
   if t.length == 36 {
     var acc = ""

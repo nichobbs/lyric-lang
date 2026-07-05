@@ -4384,6 +4384,20 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_tests.l
 
+      # Pins the D-N-026 four-format parse contract (and #5196's inline-match
+      # workaround) on the managed target; uuid_tests.l is a plain-main
+      # program, so it runs via `lyric run` rather than `lyric test` (#5200).
+      - name: Std.Uuid test coverage (lyric run)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Uuid tests"
+            exit 1
+          fi
+          "$lyric_bin" run lyric-stdlib/tests/uuid_tests.l
+
       # Trust-anchor reproducibility gate (Q-dist-001 prerequisite): the
       # self-hosted MSIL emitter must be byte-for-byte reproducible.  Build each
       # corpus twice and assert an exact `cmp` (no normalization — the
