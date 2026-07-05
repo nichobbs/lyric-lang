@@ -2360,9 +2360,9 @@ func checkFuncForSpawn(fn: in FunctionDecl, diag: in List[Diagnostic]): Unit {
   }
 }
 
-func checkEntryForSpawn(entry: in EntryDecl, diag: in List[Diagnostic]): Unit {
-  val ctx = SpawnCtx(fnName = entry.name, inScope = false, diag = diag)
-  walkBodyForSpawn(ctx, entry.body)
+func checkEntryForSpawn(entryDecl: in EntryDecl, diag: in List[Diagnostic]): Unit {
+  val ctx = SpawnCtx(fnName = entryDecl.name, inScope = false, diag = diag)
+  walkBodyForSpawn(ctx, entryDecl.body)
 }
 
 func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel, diag: in List[Diagnostic]): Unit {
