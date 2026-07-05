@@ -4013,16 +4013,51 @@ func emitUnionPayloadFieldRead(
 /// the Ok payload through the stdlib's own `Std.Process.projectResult`.
 /// Returns None (caller falls through to the blocking sync call) when
 /// the async seam is not in the bundle.
-func emitAsyncRunCapture(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, callArgs: in List[NArg]): Option[NVal] {
-  val asig = match mapGet(ctx.sigs, "Std.ProcessCaptureHost.hostRunCaptureListAsync/4") {
+func mustLeafSig(
+  // #4631 seed workaround: these unwraps live in dedicated helpers whose
+  // return type equals the payload, because the frozen mint seed's
+  // match-binding inference unifies a `Some(x)` binding with an ENCLOSING
+  // function's Option return type — inside `emitAsyncRunCapture`
+  // (returning Option[NVal]) it typed the bindings as NVal and rejected
+  // their field reads.  Callers check presence first.
+  o: in Option[NFuncSig],
+): NFuncSig {
+  match o {
     case Some(s) -> s
-    case None -> return None
+    case None -> panic("Lyric.LlvmCodegen: internal — leaf sig checked present")
   }
-  val projSig = match mapGet(ctx.sigs, "Std.Process.projectResult/1") { case Some(s) -> s; case None -> return None }
+}
+
+func mustLeafUnion(o: in Option[NUnionInfo]): NUnionInfo {
+  match o {
+    case Some(u) -> u
+    case None -> panic("Lyric.LlvmCodegen: internal — leaf union checked present")
+  }
+}
+
+func isNoneUnion(o: in Option[NUnionInfo]): Bool {
+  match o {
+    case Some(_) -> false
+    case None -> true
+  }
+}
+
+func emitAsyncRunCapture(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, callArgs: in List[NArg]): Option[NVal] {
+  if not ctx.sigs.containsKey("Std.ProcessCaptureHost.hostRunCaptureListAsync/4") {
+    return None
+  }
+  if not ctx.sigs.containsKey("Std.Process.projectResult/1") {
+    return None
+  }
+  val asig = mustLeafSig(mapGet(ctx.sigs, "Std.ProcessCaptureHost.hostRunCaptureListAsync/4"))
+  val projSig = mustLeafSig(mapGet(ctx.sigs, "Std.Process.projectResult/1"))
   val rawTy = retTypeToN(ctx, asig.retTy)
   val targetTy = retTypeToN(ctx, sig.retTy)
-  val rawUi = match unionInfoOfType(ctx, rawTy) { case Some(u) -> u; case None -> return None }
-  val targetUi = match unionInfoOfType(ctx, targetTy) { case Some(u) -> u; case None -> return None }
+  if isNoneUnion(unionInfoOfType(ctx, rawTy)) or isNoneUnion(unionInfoOfType(ctx, targetTy)) {
+    return None
+  }
+  val rawUi = mustLeafUnion(unionInfoOfType(ctx, rawTy))
+  val targetUi = mustLeafUnion(unionInfoOfType(ctx, targetTy))
   val rawOk = unionCaseIndexOf(rawUi, "Ok")
   val rawErr = unionCaseIndexOf(rawUi, "Err")
   val tgtOk = unionCaseIndexOf(targetUi, "Ok")
