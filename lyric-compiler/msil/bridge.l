@@ -212,6 +212,17 @@ pub func compileToMsilWithVersion(
   // Walk the AST and produce the MSIL package IR.
   val pkg = codegenMPackage(liftedFile, cctx)
 
+  // Append any closure-class records synthesized while lowering this
+  // package's lambdas (#5177) — a single-file compile has exactly one
+  // package, so draining once here (after its own tokens are already
+  // predicted/emitted) is always correct.
+  val closureItems = drainLambdaClosureRecordsMsil(cctx)
+  var clzi = 0
+  while clzi < closureItems.count {
+    pkg.items.add(closureItems[clzi])
+    clzi = clzi + 1
+  }
+
   // Determine the entry-point MethodDef token (0 = no entry point / library).
   val entryToken = resolveEntryToken(cctx)
 
@@ -782,6 +793,28 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)
     ci = ci + 1
+  }
+
+  // Append every closure-class record synthesized while lowering ANY
+  // package's lambdas onto the LAST package, once, only after every
+  // package's own items (and every package's addPackageTokens-predicted
+  // MethodDef/FieldDef tokens) are already finalized (#5177).
+  // `cctx.lambdaClosureRecordList` is shared across the whole bundle;
+  // draining it per-package (the previous behaviour) re-emitted earlier
+  // packages' closures into every later package too, and — even once
+  // de-duplicated — positioned each package's own closures "in between"
+  // packages, a position addPackageTokens's prediction pass has no way to
+  // account for (a closure class is synthesized during expression lowering,
+  // never visible to the source-level pre-scan).  Draining exactly once,
+  // at the very end, means no package's predicted tokens ever need to
+  // account for a closure row landing before them.
+  if mpkgs.count > 0 {
+    val closureItems = drainLambdaClosureRecordsMsil(cctx)
+    var clzi = 0
+    while clzi < closureItems.count {
+      mpkgs[mpkgs.count - 1].items.add(closureItems[clzi])
+      clzi = clzi + 1
+    }
   }
 
   // Phase 5: pick an entry point.  When any package defined a `main` function

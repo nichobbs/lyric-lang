@@ -9889,6 +9889,113 @@ de-risk), #3988 (the two prior release-corruption bugs), `docs/10-bootstrap-prog
 table #5099's framing is built on).
 
 ---
+
+## D-progress-599 — Self-hosted MSIL bundler: a cross-package closure silently corrupted every later FieldDef/MethodDef token, including the entry point (#5177)
+
+**Status:** ACCEPTED
+
+**Symptom.** #5177 reported `System.MissingFieldException` on a real
+multi-package `output = "single"` project, naming a field
+(`CloudAgents.Db.RecycleAction.StopAndIdle`) that the crashing function
+never references and that raw PE-metadata inspection confirmed is present,
+public, and correctly shaped. Every attempt to reproduce with a synthetic
+multi-package project — enums, unions, protected types, config blocks,
+distinct types, records, interfaces/impls, async functions with
+`for`/`while`/`match` + `await`, non-literal module-level `pub val`s, up to
+13 packages and ~250 declared items — ran correctly. The eventual
+reproduction needed a completely different ingredient the original report's
+own failed-repro list never tried: a capturing lambda (`{ x: Int -> ... }`
+closed over an outer `var`) declared in one in-bundle package and called
+from another. A minimal 2-package repro reproduces reliably; metadata
+inspection (`System.Reflection.Metadata.PEReader`) on the miscompiled
+output showed the exact mechanism: two things, compounding.
+
+**Root cause, two independent bugs sharing one symptom.**
+
+1. `Msil.Codegen.codegenMPackage`'s closure-record emission (`## Epic #1877
+   Phase 2`) walked `cctx.lambdaClosureRecordList` — a list of synthesized
+   `__Closure_<i>` records shared across the *entire bundle* (one `cctx`
+   lowers every package) — from index 0 on every call. `codegenMPackage`
+   runs once per package, so any package processed after the one that
+   synthesized a closure re-walked from 0 and re-emitted that same closure
+   record into its own `MPackage` too. Confirmed via `PEReader`: a 2-package
+   bundle with one closure in package A produced *two* separate `TypeDef`
+   rows both named `A.__Closure_0` (with their own duplicate `.ctor`
+   `MethodDef` and captured-var `FieldDef`), the second interleaved into
+   package B's own item list.
+2. Even with (1) fixed (a per-`cctx` cursor,
+   `lambdaClosureEmittedCount`, so each record drains exactly once),
+   the closure record still landed physically *in between* the two
+   packages' own items in the final `TypeDef`/`MethodDef`/`FieldDef`
+   tables. `addPackageTokens`'s two-pass FieldDef/MethodDef row prediction
+   (the running `fieldDefRow`/`methodDefRow` counters threaded across
+   packages, first documented for this bug class at #3196) has no way to
+   account for that closure row: a closure class is synthesized during
+   *expression lowering* (`synthesizeClosureClassMsil`, invoked from inside
+   `lowerExprMsil`'s `ELambda` arm once real codegen reaches the capturing
+   lambda's construction site), never from a source-level `Item` the
+   pre-scan pass can see or count ahead of time. So every predicted token
+   for anything in a *later* package — including `cctx.mainEntryToken`,
+   recorded from the very same predicted `funcTok` — silently pointed one
+   row (per bundle-wide closure) too early. Confirmed via `PEReader`: the
+   PE's COR header entry-point token resolved to the closure's own `.ctor`
+   `MethodDef`, not `main` — the "field not found" symptom's sibling for
+   method tokens.
+
+**Fix.** `lyric-compiler/msil/codegen.l`: removed the per-package drain
+from `codegenMPackage` entirely and extracted it into a standalone
+`drainLambdaClosureRecordsMsil(cctx)`, gated by the new
+`lambdaClosureEmittedCount` cursor (mirrors the existing
+`nextFieldDefRow`/`nextMethodDefRow` length-as-value counter convention).
+`lyric-compiler/msil/bridge.l`: call the drain exactly once — immediately
+after the lone `codegenMPackage` call for a single-file compile
+(`compileToMsilWithVersion`), and once after *every* package's
+`codegenMPackage` call for a bundle (`compileProjectToMsilWithRestoredAndVersion`),
+appending the result onto the *last* package's `MPackage.items`. This is an
+architectural fix rather than a matching prediction: closures for the whole
+bundle now always sort after every package's own items, so no package's
+`addPackageTokens` prediction ever needs to account for a closure row
+landing before it — sidestepping the "two independently-maintained
+bookkeeping passes must agree" hazard entirely for this construct, rather
+than adding a third piece of duplicated (and equally driftable) capture-count
+prediction logic to `addPackageTokens`.
+
+**Verification.** All of `closure_correctness_self_test.l` (8/8),
+`closure_zero_overhead_self_test.l` (18/18), `async_sm_self_test.l`
+(57/57), `cross_package_generics_self_test.l` (6/6),
+`aspect_weave_self_test.l` (7/7), and `bitwise_self_test.l` (10/10) pass
+unchanged. Added `msil_project_bridge_self_test.l`'s "cross-package closure
+does not corrupt later tokens or the entry point" — a 2-package repro
+pinning both a same-package function declared after the closure and a
+second package's entry point. Also re-ran the synthetic 13-package,
+~250-item stress project built while investigating #5177 (enums, unions,
+protected types, config blocks, distinct types, async control flow) plus
+the minimal reproductions built along the way — all produce correct output
+and correct `PEReader`-inspected metadata (single `TypeDef` per closure,
+correct entry-point token) after the fix, where they previously either
+threw `System.MissingFieldException`/`InvalidProgramException` or produced
+a corrupted entry point.
+
+**What this does NOT do:** it does not confirm this was cloud-agents'
+*exact* trigger for #5177 (the original report's project was not directly
+reproduced against — only a synthetic minimization exercising the same
+mechanism); the issue should stay open until re-verified against the
+original repro or a NuGet release incorporating this fix. Two unrelated
+bugs surfaced incidentally while building repro projects for this
+investigation — an aspect-weaving `InvalidProgramException` when advice
+runs a statement after `proceed(args)` (#5182), and a contract-elaborator
+`InvalidProgramException` for `ensures: result.isOk implies result.value ...`
+over a `Result[T, E]` where `E` carries payload fields (#5183) — are filed
+separately and are out of scope here.
+
+**Related:** #5177 (the reported symptom), #3196 (the first documented
+instance of this general "prediction pass has a blind spot for a
+codegen-synthesized item kind" bug class, for enum `value__` fields),
+#5030 and #4958/#4947 (two further instances of the same class, for
+cross-package field signatures and an unaccounted `RMFunc` row
+respectively), #5182, #5183 (unrelated bugs found during the investigation).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

@@ -241,6 +241,12 @@ pub record CodegenCtx {
   // Parallel list of closure records in synthesis order (for emission to module).
   // Maintained in sync with lambdaClosureClasses.add() calls.
   lambdaClosureRecordList: List[MRecord]
+  // Counter (length-as-value, mirroring nextFieldDefRow/nextMethodDefRow):
+  // how many entries of lambdaClosureRecordList have already been drained
+  // by drainLambdaClosureRecordsMsil.  Guards against draining the same
+  // record twice if that function is ever called more than once for the
+  // same cctx (#5177).
+  lambdaClosureEmittedCount: List[Int]
   // Constructor tokens for synthesized closure classes.
   // Key = lambda name (e.g. "__lambda_0"); value = MemberRef token for __Closure_<i>.ctor.
   lambdaClosureCtorTokens: Map[String, Int]
@@ -1657,6 +1663,7 @@ pub func newCodegenCtx(
     lambdaCaptureCells = newMap(),
     lambdaClosureClasses = newMap(),
     lambdaClosureRecordList = newList(),
+    lambdaClosureEmittedCount = newList(),
     lambdaClosureCtorTokens = newMap(),
     constValues = newMap(),
     constBareClaimed = newMap(),
@@ -24192,17 +24199,6 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     items.add(MPFuncs(hostClass = pkgName, funcs = fns, staticFields = staticFields))
   }
 
-  // ── Epic #1877 Phase 2: Emit closure records ────────────────────────────────
-  // For each lambda that was synthesized with captures, emit the closure record
-  // type that was synthesized during code generation (lowerFuncMsil).
-  // These records are required at runtime so System.Func/System.Action delegate
-  // instances can load their closure type references.
-  var ci = 0
-  while ci < cctx.lambdaClosureRecordList.count {
-    items.add(MPRecord(rec = cctx.lambdaClosureRecordList[ci]))
-    ci = ci + 1
-  }
-
   // ── #878: MPImpl emission ─────────────────────────────────────────────────
   // After every record/interface/host-class TypeDef has been added to `items`,
   // queue one `MPImpl(MImplData)` per pre-pass entry so the lowering layer
@@ -24244,6 +24240,44 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   }
 
   MPackage(packageName = pkgName, items = items)
+}
+
+// ── Epic #1877 Phase 2: drain pending closure-class records ───────────────────
+// `cctx.lambdaClosureRecordList` accumulates one entry per capturing lambda
+// synthesized anywhere in the bundle — the list (and the ticker that names
+// each `__Closure_<i>` class) is shared across every package lowered against
+// the same `cctx`.  `addPackageTokens`'s per-package FieldDef/MethodDef
+// row prediction has no visibility into these records (a closure class is
+// synthesized during expression lowering, not from a source-level `Item`
+// a pre-scan pass could see), so a closure record emitted "in between" two
+// packages' own items would shift every later package's predicted tokens —
+// the #5177 symptom (a caller's `ldsfld`/`call` token silently lands on
+// whatever real row happens to sit where the miscounted prediction expected
+// something else).
+//
+// The fix is architectural rather than a matching prediction: closure
+// records for the WHOLE bundle are drained exactly once, after every
+// package's own items (and every package's own addPackageTokens-predicted
+// tokens) are already finalized, and appended to the LAST package's item
+// list.  That way no package's prediction ever needs to account for a
+// closure row landing before its own items — closures always sort after
+// everything addPackageTokens predicted for.  Call this at most once for a
+// single-file compile (immediately after its lone `codegenMPackage` call)
+// and at most once for a multi-package bundle (after every package's
+// `codegenMPackage` call has run) — never per-package.
+//
+// The `lambdaClosureEmittedCount` cursor still guards against ever draining
+// the same record twice, in case this is called more than once for the same
+// cctx (e.g. defensive re-entry).
+pub func drainLambdaClosureRecordsMsil(cctx: in CodegenCtx): List[MPackageItem] {
+  val drained: List[MPackageItem] = newList()
+  var ci = cctx.lambdaClosureEmittedCount.count
+  while ci < cctx.lambdaClosureRecordList.count {
+    drained.add(MPRecord(rec = cctx.lambdaClosureRecordList[ci]))
+    cctx.lambdaClosureEmittedCount.add(0)
+    ci = ci + 1
+  }
+  drained
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
