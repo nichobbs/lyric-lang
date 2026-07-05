@@ -96,6 +96,12 @@ func projectResult(raw: in ProcessCaptureResult): ProcessResult = ProcessResult(
 ///
 /// Stdout and stderr are drained in parallel to avoid pipe-buffer deadlock.
 /// Returns `Err` if the executable cannot be started.
+/// Native-backend coupling (D-N-023): calls to this function lowered
+/// inside an `async func` body on `--target native` are redirected to
+/// `Std.ProcessCaptureHost.hostRunCaptureListAsync` by arity-keyed
+/// lookups in `lyric-compiler/lyric/llvm_codegen.l` (the intercept) and
+/// `llvm_bridge.l` (the reachability walk).  Changing this signature's
+/// arity silently disables that redirect — update both sites together.
 @stable(since = "1.0")
 pub func runCapture(executable: in String, args: in List[String], timeoutMs: in Int): Result[ProcessResult, String] {
   match hostRunCaptureList(executable, args, "", timeoutMs) {

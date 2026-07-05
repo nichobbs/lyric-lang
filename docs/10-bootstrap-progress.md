@@ -29286,3 +29286,47 @@ auto_ffi — 674 assertions total) all pass with no regressions. Real CI
 D-progress-543 (the corrected published-tool addendum), D-progress-594
 (the seed-defect class this session's stage-1-only build could in
 principle have hit), PR #5084, issue #5077.
+
+### D-progress-597 — Native async process leaf: in-coroutine `Std.Process.runCapture` no longer blocks the scheduler (D-N-023)
+
+**Shipped.** The first async I/O leaf on the D-N-022 scheduler, and the
+first closure of a #4752 gap: a coroutine capturing a subprocess now
+parks between nonblocking pumps instead of stalling every other task
+for the child's lifetime, and the async path honors `timeoutMs` (the
+sync native seam still ignores it).
+
+- **lyric-rt:** nonblocking capture op (`lyric_process_start` /
+  `_pump` / `_kill` / accessors / `_free`) over the same fork/execvp
+  spawn path as the sync runner (now factored into a shared
+  `spawn_capture`), with `O_NONBLOCK` pipe read ends, `WNOHANG` reap,
+  and a SIGKILL timeout path that preserves already-captured output.
+  Three C unit tests under clang and gcc.
+- **Kernel seam:** `Std.ProcessCaptureHost.hostRunCaptureListAsync`
+  (native twin only — no cross-target surface change): starts the op
+  and pumps it at the JVM twin's documented 1 ms cadence, each
+  iteration suspending through the `sleepMillis` async leaf; on
+  deadline it kills and reports the managed-twin contract
+  (`timedOut = true`, exit -2, pre-kill output preserved).
+- **Backend:** in-coroutine `Std.Process.runCapture` call sites
+  redirect to the seam (same mechanism as the sleep leaf) and project
+  `Result[ProcessCaptureResult, String]` into the call's
+  `Result[ProcessResult, String]` — the Ok payload through the
+  stdlib's own `projectResult`, the rewrap via the existing union
+  helpers under the `lowerIf` value-slot ARC protocol. The bridge's
+  reachability walk keeps the seam whenever `runCapture` is reachable
+  (no Lyric source names it; the walk's bare/fully-qualified-only key
+  matching is documented in D-N-023).
+- **Verification:** six new `llvm_self_test_async.l` cases (26
+  total): seam round-trip, two spawned captures completing in reverse
+  spawn order (0.1 s before 0.35 s — impossible under a blocked
+  scheduler), the same ASan-clean, the timeout contract, and
+  missing-binary exit 127. Full native suite, lyric-rt C suite
+  (clang + gcc), and `make ilverify` all clean.
+
+**Deferred (tracked):** stdin pipe (#4752, `runCaptureWithInput` stays
+sync/Err on native); process-tree kill (the C op kills the child
+only); `poll()`-based fd readiness in the scheduler — the socket
+leaf's prerequisite, where per-task pump cadences stop scaling.
+
+**Related:** D-N-023 (the decision entry), D-N-022, D-progress-593,
+#4752.

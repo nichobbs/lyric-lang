@@ -372,6 +372,30 @@ int32_t lyric_process_run(const char* path, LyricList* args,
                            LyricString** out_stdout,
                            LyricString** out_stderr);
 
+/* Nonblocking capture op (the async process leaf, D-N-023): the same
+ * fork/execvp capture as lyric_process_run, driven by repeated
+ * nonblocking pumps instead of one blocking drain, so a coroutine can
+ * park itself between pumps.  Lifecycle: start -> pump until it
+ * returns 1 (or kill on timeout, after which the op is done) ->
+ * exit_code/stdout/stderr accessors -> free.  The handle is a raw
+ * malloc'd struct, not ARC-managed.  start never returns NULL: a
+ * pipe/fork failure yields a done op with spawn_failed set (an execvp
+ * failure in the child is exit code 127, matching lyric_process_run).
+ * The stdout/stderr accessors return fresh rc=1 LyricStrings.  kill
+ * sends SIGKILL to the child only (not its process tree), drains what
+ * already arrived, and reaps; it returns 1 when the kill terminated
+ * the child and 0 when the child had already exited (its real exit
+ * status is preserved — the caller must not report a timeout then,
+ * #5107). */
+void* lyric_process_start(const char* path, LyricList* args);
+int32_t lyric_process_spawn_failed(void* op);
+int32_t lyric_process_pump(void* op);
+int32_t lyric_process_kill(void* op);
+int32_t lyric_process_exit_code(void* op);
+LyricString* lyric_process_stdout(void* op);
+LyricString* lyric_process_stderr(void* op);
+void lyric_process_free(void* op);
+
 #ifdef __cplusplus
 }
 #endif

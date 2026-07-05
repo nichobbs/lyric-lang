@@ -15,6 +15,9 @@
 //! so the pre-coroutine cases below double as a regression net for the
 //! coroutine path, and the sleep-driven cases prove genuine concurrency
 //! (effect interleaving that a sequential execution cannot produce).
+//! The D-N-023 cases cover the async process leaf: in-coroutine
+//! `Std.Process.runCapture` redirects to the kernel's nonblocking
+//! capture op, so subprocess captures overlap and honor `timeoutMs`.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -464,4 +467,133 @@ test "async func main returning Unit: process exits 0 after the task completes" 
   val src = "package T\n" + "import Std.Time as Time\n" + "async func main(): Unit {\n  Time.sleepMillis(10)\n}\n"
   val r = compileAndRunBundled(src)
   assertEqualInt(r.exitCode, 0, "a Unit async main drives to completion and exits 0")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The async process leaf (D-N-023): `Std.Process.runCapture` inside a
+// coroutine redirects to the kernel's nonblocking capture op and parks
+// only the calling task between pumps.
+// ─────────────────────────────────────────────────────────────────────────────
+test "async runCapture: coroutine capture returns the child's output through the async seam" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "async func run(): Int {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  args.add(\"async-leaf\")\n" +
+    "  match Process.runCapture(\"/bin/echo\", args, 5000) {\n" +
+    "    case Ok(r) -> {\n" +
+    "      if r.stdout == \"async-leaf\\n\" and r.exitCode == 0 and not r.timedOut {\n        42\n      } else {\n        3\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> 4\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n  run()\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 42, "captured stdout, exit code, and timedOut all round-trip through the async op")
+}
+
+// Two spawned subprocess captures overlap: the 0.1s child finishes (and
+// logs) before the 0.35s child spawned FIRST — impossible if either
+// capture blocked the scheduler thread.
+test "two spawned runCaptures interleave: the shorter child completes first" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "async func worker(log: in List[Int], tag: in Int, secs: in String): Unit {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  args.add(\"-c\")\n" +
+    "  args.add(\"sleep \" + secs)\n" +
+    "  val _ = Process.runCapture(\"/bin/sh\", args, 10000)\n" +
+    "  log.add(tag)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val log: List[Int] = newList()\n" +
+    "  val a = spawn worker(log, 1, \"0.35\")\n" +
+    "  val b = spawn worker(log, 2, \"0.1\")\n" +
+    "  await a\n  await b\n" +
+    "  if log.count == 2 and log[0] == 2 and log[1] == 1 {\n    77\n  } else {\n    1\n  }\n" +
+    "}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 77, "the 0.1s capture completes before the 0.35s capture spawned first")
+}
+
+// The same overlap run under ASan: op buffers, task refs, and captured
+// Strings crossing the pump-loop suspends must all balance.
+test "interleaved runCaptures are leak-free under ASan" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "async func worker(log: in List[Int], tag: in Int, secs: in String): Unit {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  args.add(\"-c\")\n" +
+    "  args.add(\"sleep \" + secs + \"; echo t\" + tag.toString())\n" +
+    "  val _ = Process.runCapture(\"/bin/sh\", args, 10000)\n" +
+    "  log.add(tag)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val log: List[Int] = newList()\n" +
+    "  val a = spawn worker(log, 1, \"0.35\")\n" +
+    "  val b = spawn worker(log, 2, \"0.1\")\n" +
+    "  await a\n  await b\n" +
+    "  if log.count == 2 and log[0] == 2 and log[1] == 1 {\n    77\n  } else {\n    1\n  }\n" +
+    "}\n"
+  val r = compileAndRunBundledAsan(src)
+  assertEqualInt(r.exitCode, 77, "overlapped captures are clean under AddressSanitizer")
+}
+
+// timeoutMs is honored on the async path (the sync native seam still
+// ignores it, #4752): the child is killed at the deadline, partial
+// output is preserved, and the managed-twin contract (timedOut = true,
+// exit code -2) is reported.
+test "async runCapture timeout kills the child and reports the managed-twin contract" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "async func run(): Int {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  args.add(\"-c\")\n" +
+    "  args.add(\"echo early; sleep 5\")\n" +
+    "  match Process.runCapture(\"/bin/sh\", args, 300) {\n" +
+    "    case Ok(r) -> {\n" +
+    "      if r.timedOut and r.exitCode == 0 - 2 and r.stdout == \"early\\n\" {\n        77\n      } else {\n        2\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> 3\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n  run()\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 77, "the deadline kill preserves pre-timeout output and reports timedOut/-2")
+}
+
+// An execvp failure inside the child is exit 127 (shell convention),
+// not an Err — matching the sync seam and lyric_process_run.
+test "async runCapture of a missing binary reports exit 127 through the async seam" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "async func run(): Int {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  match Process.runCapture(\"/nonexistent-lyric-async-binary\", args, 5000) {\n" +
+    "    case Ok(r) -> {\n" +
+    "      if r.exitCode == 127 and not r.timedOut {\n        77\n      } else {\n        2\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> 3\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n  run()\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 77, "exec failure surfaces as exit 127 with Ok, matching the sync seam")
+}
+
+// timeoutMs == 0 kills at the first pump after the deadline check
+// (#5111); a slow child makes the outcome deterministic — with the
+// #5107 fix, a child that beat the kill would report its real exit
+// instead, so /bin/echo here would be flaky by design.
+test "async runCapture with timeoutMs 0 kills at the first pump" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "async func run(): Int {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  args.add(\"-c\")\n" +
+    "  args.add(\"sleep 5\")\n" +
+    "  match Process.runCapture(\"/bin/sh\", args, 0) {\n" +
+    "    case Ok(r) -> {\n" +
+    "      if r.timedOut and r.exitCode == 0 - 2 {\n        77\n      } else {\n        2\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> 3\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n  run()\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 77, "a zero deadline kills the sleeping child at the first pump")
 }

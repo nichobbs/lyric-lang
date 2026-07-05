@@ -142,6 +142,16 @@ verified by effect-order tests under ASan in `llvm_self_test_async.l`
 the coroutine path). See D-N-022 and the status header of
 `06-async-design.md` for the shipped-vs-sketch deltas.
 
+The first async I/O leaf (D-N-023) SHIPPED on top: in-coroutine
+`Std.Process.runCapture` drives a nonblocking lyric-rt capture op
+through the sleep leaf (1 ms pump cadence, the JVM kernel twin's
+documented idiom), so subprocess captures overlap instead of stalling
+the scheduler — and `timeoutMs` is honored on this path (the sync
+native seam still ignores it, #4752). Verified by six more
+`llvm_self_test_async.l` cases (26 total) including reverse-order
+completion of two spawned captures under ASan. `poll()`-based fd
+readiness in the scheduler is deferred to the socket leaf.
+
 ## Reading order
 
 1. `01-design-decisions.md` — all architectural decisions with rationale. Read
