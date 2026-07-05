@@ -215,8 +215,10 @@ lacking a separate `wire_template` keyword as *supporting evidence*
 for that unification ("Consistent with `wire`... the same 'one
 keyword, different modifiers' convention applies"). Introducing a
 `wire template` keyword here would contradict the precedent this
-proposal otherwise leans on. The same two-signal distinction applies
-instead: a plain `wire Name { ... }` is package-private — the
+proposal otherwise leans on. A single-signal distinction applies
+instead — `wire` has no `matches:`-equivalent to pair `pub` with, so
+`pub` alone carries the weight D051's aspect table splits across two
+columns: a plain `wire Name { ... }` is package-private — the
 package's own application graph, built directly; a `pub wire Name
 { ... }` is an exported template — never bootstrapped as *this*
 package's own entry point in the ordinary case, only `include`d by
