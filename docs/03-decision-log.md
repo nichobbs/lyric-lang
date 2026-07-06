@@ -10908,6 +10908,171 @@ not triggered by this slice), #5304 (the closure-lowering bug blocking the
 Unix-socket migration itself).
 
 ---
+
+## D123 — Single-file `lyric build <source.l>` gains manifest-driven dependency resolution via a synthetic one-package `EmitProjectRequest`
+
+**Date:** 2026-07-06
+**Status:** ACCEPTED
+
+**Problem.** `lyric build` has always had two structurally independent
+code paths in `cli/cli_build.l`: project mode (`buildProject`, driven by
+`lyric.toml`'s `[project.packages]`) resolves workspace/path/NuGet
+dependencies into `Emitter.EmitProjectRequest.restoredDllPaths` and routes
+through `Emitter.emitProject`; single-file mode (`buildOneNative`) builds a
+bare `Emitter.EmitRequest` with no dependency fields at all and routes
+through `Emitter.emit`. A loose `.l` file compiled directly — even one
+sitting right next to a `lyric.toml` that declares real dependencies —
+structurally could not see anything outside `Std.*`: there was no code
+path that resolved NuGet/Maven/workspace/path deps for a single-file
+compile, regardless of what manifest happened to be nearby.
+
+**Decision.** Rather than hand-rolling a second, parallel dependency
+resolver for the single-file path, `buildOneNative` now synthesizes a
+one-package `EmitProjectRequest` and routes it through the exact same
+`Emitter.emitProject` pipeline `buildProject` uses, when (and only when) a
+manifest actually contributes something. Concretely (`cli/cli_build.l`'s
+`emitSingleFileOrProject`, `discoverManifestForSourceFile`,
+`loadManifestForSingleFileBuild`; `cli/workspace_builder.l`'s
+`resolveManifestDependencies` / `resolveManifestFeatures` /
+`injectMavenClasspathForJvm`, extracted out of `buildProject` so both
+callers share one implementation instead of two copies):
+
+1. **Manifest discovery walks from the SOURCE FILE's own directory, not
+   the shell's cwd.** An explicit `--manifest` always wins; otherwise
+   `Lyric.Discovery.findNearestManifest` is called on
+   `Path.dirname(absolutize(sourcePath))` — deliberately different from
+   every other project-aware command (`discoverManifest` in
+   `cli_shared.l`), which walks from `Environment.currentDirectory()`.
+   `lyric build sub/dir/foo.l` must find a `lyric.toml` relative to
+   `foo.l`'s own location (matching what a project rooted at `sub/dir/`
+   would see) regardless of where the invoking shell happens to be
+   sitting. `sourcePath` is absolutized first because a bare relative
+   filename's `Path.dirname` is `"."`, and walking up from `"."` alone can
+   never leave the cwd.
+2. **No new dependency-declaration syntax.** Dependencies only ever come
+   from an actual discovered/explicit `lyric.toml` — there is no new
+   annotation or header-block form for declaring a dependency inside a
+   bare `.l` file. "Synthetic" describes the project-SHAPED request
+   (`EmitProjectRequest` with one `ProjectPackage`), not a new syntax.
+3. **The synthetic path only fires when it would actually change
+   anything.** Routing every single-file compile through `emitProject`
+   unconditionally was measured (empirically, by diffing PE bytes) to
+   change the output even with zero dependencies: `emitProject`'s MSIL
+   bridge embeds its `Lyric.Contract` resource as `Lyric.Contract.<pkg>`
+   (the multi-package convention), while the single-file bridge
+   (`Msil.Bridge.compileToMsilWithVersion`) embeds the bare
+   `Lyric.Contract` — an inherent, bridge-level naming difference,
+   not something fixable from the CLI layer without touching shared
+   codegen. So `emitSingleFileOrProject` computes whatever a nearby
+   manifest would contribute (`restoredDlls`, `nugetThirdPartyPaths`,
+   `activeFeatures`, `declaredFeatures`, `depTemplateSrcs`, and — JVM only
+   — whether `[maven]` entries exist) and falls back to the historical
+   `Emitter.emit(req)` path, byte-for-byte unchanged, whenever all of
+   those are empty. This covers both "no manifest found anywhere" (the
+   overwhelmingly common case: a standalone script, a stdlib self-test)
+   and "a manifest was found but declares nothing dependency/feature
+   relevant" — both verified empirically byte-identical to this change's
+   pre-existing compiled output, and covered by
+   `cli_build_self_test.l`'s "byte-identical to no manifest" case.
+   When a manifest DOES contribute something, the resulting
+   `Lyric.Contract.<pkg>` resource-naming difference is an accepted,
+   documented trade-off of reusing the project pipeline rather than
+   forking it — there is nothing to be "identical" to for a capability
+   that didn't exist before.
+4. **Conservative default: fail loud, never implicitly restore.**
+   `lyric build foo.l` has never touched the network, and that is
+   preserved. If a discovered/explicit manifest names a workspace/path
+   dependency that has not been built yet (no DLL at its expected `bin/`
+   path, or no `lyric.toml` at all at the declared path), the build fails
+   with the same message wording `buildProject` already uses
+   (`Release.localDepNotBuiltMessage` / "no lyric.toml found at") rather
+   than silently compiling without the dependency or silently kicking off
+   a restore. This is a deliberate, conservative choice — `buildProject`
+   itself has historically only *warned* on this exact condition (prints
+   the message, keeps going, and lets the eventual typecheck surface a
+   real error) rather than treating it as fatal; single-file mode is
+   strictly more conservative here on the theory that a build with no
+   manifest-driven precedent to fall back on should not compile a broken
+   half-result. `resolveManifestDependencies`'s `hadUnbuiltLocalDep` flag
+   carries this distinction: `buildProject` ignores it (preserving its
+   exact historical behavior byte-for-byte); the new single-file path
+   checks it and fails immediately.
+5. **`[features]` manifest defaults thread through; no new CLI flags.**
+   Single-file mode has no `--features`/`--no-default-features`/
+   `--all-features` flags of its own (none were added). Its call into the
+   shared `resolveManifestFeatures` always passes an empty CLI feature
+   list and `false`/`false`, which resolves to exactly the manifest's
+   `[features].default` set — a low-risk, natural extension of the same
+   plumbing, not new CLI surface.
+6. **JVM Maven classpath injection is wired in whenever the synthetic
+   path fires on the JVM target**, mirroring `buildProject`'s
+   `LYRIC_FFI_JARS` injection around its own `emitProject` call — a
+   manifest that declares `[maven]` entries (even with no `[dependencies]`
+   at all) is itself enough to trigger the synthetic path, so a JVM
+   single-file build near a Maven-dependent manifest does not silently
+   produce a build that cannot resolve the referenced Java types.
+7. **Colocation extended to match.** `buildOneNative`'s existing
+   `Release.declaresEntryMain`-gated stdlib colocation step now also
+   copies the newly-resolved restored-dependency and third-party-NuGet
+   DLLs beside a runnable program's output (`copyRestoredDepDlls` /
+   `copyNugetAssembliesBeside`), exactly like `buildProject` already does
+   — otherwise a program that now compiles against a workspace/path
+   dependency would fail at `dotnet exec` time with a missing-assembly
+   error. Verified end-to-end: a `func main` single file compiled next to
+   an unlisted manifest with an already-built path dependency runs
+   correctly under `dotnet exec` and prints the dependency's output.
+
+**Explicitly out of scope for this change:**
+- `lyric run`'s single-file path (`cli_run.l`'s `runOnce`) gets this
+  capability for free — it already calls `buildOneNative` directly with
+  `manifestPath = None`, so auto-discovery now applies there too with no
+  code changes. Verified end-to-end.
+- `lyric test`'s single-file path (`cli_test.l`) does **not** get this
+  capability: it calls `Emitter.emit` directly rather than going through
+  `buildOneNative`/`buildOne`, so extending it would require a second,
+  separate wiring pass through `cli_test.l`'s own build logic — left as a
+  precisely-scoped follow-up rather than attempted partially.
+- A pre-existing, orthogonal gap was found (not caused by this change):
+  `Emitter.emitProject`'s JVM path (`emitProjectJvmInProcess`) never reads
+  `EmitProjectRequest.restoredDllPaths` at all — cross-package calls into
+  a restored dependency's `pub func`s compile but fail at runtime with a
+  bytecode `VerifyError` (`Bad type on operand stack`), because the JVM
+  bridge has no restored-artifact-loading equivalent to the MSIL bridge's
+  `RestoredPackages`/`SynthesisedArtifact` machinery — only the aspect
+  weaver's `depTemplateSrcs` source-text mechanism is wired for JVM.
+  Reproduced identically via plain, pre-existing `buildProject` (manifest
+  project mode) against the same fixture, confirming it predates and is
+  independent of this change. Tracked as a follow-up; the MSIL target is
+  unaffected and fully functional.
+- `--target native` is untouched, as `Emitter.emitProject` already
+  hard-rejects native multi-package builds (`emitter.l`'s `case Native ->
+  failResult(...)` in `emitProject`), so there is no manifest-shaped native
+  path to reuse.
+
+**Verification.** Empirically diffed compiled PE bytes (`cmp`) between the
+pre-change single-file path and an equivalent one-package manifest-driven
+project build to find the `Lyric.Contract` resource-naming difference
+above; confirmed byte-identical output before and after this change for a
+bare file with no manifest anywhere, and for a bare file next to a
+manifest declaring nothing dependency-relevant. End-to-end manual
+verification: (a) no-manifest single-file build unchanged; (b) a loose
+`.l` file next to a `lyric.toml` with an already-built path dependency —
+compiled directly, not listed in any `[project.packages]` — resolves the
+dependency, colocates its DLL, and runs correctly under `dotnet exec`;
+(c) the same with the dependency not yet built fails loudly with the
+expected message; (d) `lyric build sub/dir/foo.l` invoked from an
+unrelated cwd resolves `sub/dir/lyric.toml`, not any manifest at the cwd.
+Extended `cli_build_self_test.l` with four new cases (dependency resolves,
+dependency unbuilt fails loud, bare-manifest byte-identical, plus the
+existing colocation cases continuing to pass); full existing self-test
+suite (`cli_build_self_test.l`, `cli_workspace_builder_self_test.l`,
+`cli_restore_self_test.l`, `cli_version_self_test.l`) passes unchanged.
+
+**Related:** `docs/20-project-as-dll.md` (project bundling this
+reuses), `docs/24-test-runner-plan.md` (the `lyric test` follow-up this
+does not attempt).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

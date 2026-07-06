@@ -909,6 +909,14 @@ lyric build --manifest lyric.toml      # build from project manifest
                                        # Lyric.Contract.<Pkg> resource per package)
                                        # auto-restores [dependencies] when lyric.lock is missing/stale
                                        # ([nuget]/[maven] edits aren't detected — run `lyric restore`)
+lyric build <file.l>                   # single-file mode also resolves dependencies from a nearby
+                                       # lyric.toml (--target dotnet/jvm): explicit --manifest wins,
+                                       # else discovered by walking up from <file.l>'s OWN directory
+                                       # (not the shell's cwd). No new dependency syntax in the .l
+                                       # file itself; an unbuilt dependency fails loud (never
+                                       # auto-restores). No-op (byte-identical build) when no
+                                       # manifest is found, or one is found with nothing
+                                       # dependency/feature-relevant to contribute (#5270).
 lyric build --no-restore               # build against the lock as-is (skip auto-restore)
 lyric build --package-version <ver>   # override the version string embedded in Lyric.Contract.*
                                        # metadata resources (instead of the version in lyric.toml);

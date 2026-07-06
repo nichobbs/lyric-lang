@@ -21,6 +21,22 @@ preserving package boundaries as namespaces and contract resources.
 Multi-file packages (one package, multiple `.l` files) is a
 prerequisite shipped per `docs/19-multi-file-packages.md`.
 
+**Reuse beyond project mode (D121, #5270).** `Emitter.emitProject` — the
+`EmitProjectRequest` → bundle pipeline this document specifies — is not
+exclusive to a manifest's `[project.packages]` list. `lyric build
+<source.l>`'s single-file path (`cli/cli_build.l`'s `buildOneNative`) now
+also synthesizes a one-package `EmitProjectRequest` and routes through
+this same pipeline whenever a nearby `lyric.toml` (explicit or
+auto-discovered from the source file's own directory) actually contributes
+dependencies, NuGet/Maven assets, or features — giving a loose `.l` file
+access to a project's dependency graph without adding it to
+`[project.packages]`. See `docs/01-language-reference.md` §13.1
+("Single-file dependency resolution") for the user-facing behavior and
+`docs/03-decision-log.md` D121 for the full design rationale, including
+why this only fires when there is something for it to contribute (a
+one-package request built unconditionally was measured to change the
+embedded `Lyric.Contract` resource name even with zero dependencies).
+
 ## 2. The `internal` visibility tier
 
 Lyric today has two tiers: package-private (default) and `pub`. With
