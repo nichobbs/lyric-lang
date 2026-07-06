@@ -306,6 +306,16 @@ val i: Int range 0 ..= 99 = ...
 val v = xs[i]                      // no runtime bounds check; proof discharged
 ```
 
+`slice[T]` supports three non-mutating operations, each returning a new slice — there is no in-place mutation (see §5.2 on reference-immutability):
+
+```
+val ys = xs.append(v)              // new slice, v appended at the end
+val zs = xs.concat(ys)              // new slice, xs's elements then ys's
+val sub = xs.slice(start, end)       // new slice, the half-open sub-range [start, end)
+```
+
+`.slice(start, end)` panics if `start < 0`, `end < start`, or `end > xs.length` — the full range must satisfy `0 <= start <= end <= xs.length`.
+
 ### 2.8 Opaque types
 
 ```

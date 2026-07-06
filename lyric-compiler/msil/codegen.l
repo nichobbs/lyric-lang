@@ -11148,6 +11148,16 @@ func emitSliceCopyLoopMsil(
   insns.add(MLabel(id = afterL))
 }
 
+// True when `ty` is the lowered static type of `slice[T]` — gates the
+// `.append`/`.concat`/`.slice` dispatch in `lowerMethodCallMsil` so a future
+// non-slice receiver reaching that fallback with a same-named,
+// same-arity method can't be silently mis-dispatched as a slice op
+// (mirroring the JVM lowering's `match recvTy { case JArray(_) -> ...}`
+// guard, #5256).
+func isSliceRecvMsil(ty: in MsilType): Bool {
+  match ty { case MArray(_) -> true; case _ -> false }
+}
+
 // Store a freshly-lowered Int constant into a new slot, returning the slot —
 // a small helper so the append/concat/slice lowerings below can feed a
 // compile-time-constant start index (always 0, except `.slice`'s runtime
@@ -12156,11 +12166,11 @@ func lowerMethodCallMsil(
       insns.add(MConvI4)
       MInt
     }
-  } else if memberName == "append" and args.count == 1 {
+  } else if memberName == "append" and args.count == 1 and isSliceRecvMsil(recvTy) {
     lowerSliceAppendMsil(cctx, fctx, insns, recvTy, args)
-  } else if memberName == "concat" and args.count == 1 {
+  } else if memberName == "concat" and args.count == 1 and isSliceRecvMsil(recvTy) {
     lowerSliceConcatMsil(cctx, fctx, insns, recvTy, args)
-  } else if memberName == "slice" and args.count == 2 {
+  } else if memberName == "slice" and args.count == 2 and isSliceRecvMsil(recvTy) {
     lowerSliceSliceMsil(cctx, fctx, insns, recvTy, args)
   } else {
     // Unrecognised method on this receiver.  Previously this popped the
