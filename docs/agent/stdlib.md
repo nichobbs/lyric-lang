@@ -33,13 +33,13 @@ union Result[T, E] {
 
 Common operations:
 ```lyric
-isOk(r: Result[T, E]): Bool
-isErr(r: Result[T, E]): Bool
-unwrapResult(r: Result[T, E]): T                     // panics on Err
-unwrapResultOr(r: Result[T, E], default: T): T
-mapResult(r: Result[T, E], f: (T) -> U): Result[U, E]
-mapResultErr(r: Result[T, E], f: (E) -> F): Result[T, F]
-andThenResult(r: Result[T, E], f: (T) -> Result[U, E]): Result[U, E]  // flatMap
+r.isOk(): Bool
+r.isErr(): Bool
+r.unwrapResult(): T                     // panics on Err
+r.unwrapResultOr(default: T): T
+r.mapResult { v -> transform(v) }: Result[U, E]
+r.mapResultErr { e -> transform(e) }: Result[T, F]
+r.andThenResult { v -> other(v) }: Result[U, E]  // flatMap
 ```
 
 ### Option[T]
@@ -53,13 +53,13 @@ union Option[T] {
 
 Common operations:
 ```lyric
-isSome(o: Option[T]): Bool
-isNone(o: Option[T]): Bool
-unwrapOption(o: Option[T]): T                        // panics on None
-unwrapOr(o: Option[T], default: T): T
-mapOption(o: Option[T], f: (T) -> U): Option[U]
-filterOption(o: Option[T], pred: (T) -> Bool): Option[T]
-orElse(o: Option[T], other: () -> Option[T]): Option[T]
+o.isSome(): Bool
+o.isNone(): Bool
+o.unwrapOption(): T                     // panics on None
+o.unwrapOr(default: T): T
+o.mapOption { v -> transform(v) }: Option[U]
+o.filterOption { v -> predicate(v) }: Option[T]
+o.orElse { -> other() }: Option[T]
 ```
 
 ### Builtins
@@ -292,7 +292,7 @@ lyric-web = "^1.0"
 import Web.{Handler, Router, Request, Response, HttpError}
 
 pub async func getUser(req: in Request): Result[Response, HttpError] {
-  val id = andThen(req.pathParam("id"), { s -> UserId.tryFrom(tryParseLong(s)?) })?
+  val id = req.pathParam("id").andThen { s -> UserId.tryFrom(tryParseLong(s)?) }?
   val user = await userService.findById(id)?
   return match user {
     case Some(u) -> Ok(Response.json(u.toJson()))
