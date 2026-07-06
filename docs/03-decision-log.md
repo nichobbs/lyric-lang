@@ -11117,6 +11117,74 @@ reuses), `docs/24-test-runner-plan.md` (the `lyric test` follow-up this
 does not attempt), #5341 (that follow-up's tracking issue).
 
 ---
+
+## D-progress-620 — G1 resolved: JVM is an independently-versioned Phase-6 target, not a v1.0 SemVer channel; `docs/44` band-order note
+
+**Date:** 2026-07-06
+**Branch:** docs/CI audit sweep (this session)
+
+### Context
+
+`docs/44-jvm-production-readiness-plan.md`'s header has, since it was
+written, asked for a decision-log entry: *"File a decision-log entry to
+codify the band ordering and the G1 channel decision before band J1
+lands."* Band J1 (and J2, J3) shipped historically (see `docs/44` §6 for
+the band breakdown), so this entry was overdue — it does not gate any
+already-shipped work, it records a decision that was made in practice and
+makes it discoverable.
+
+`docs/36-v1-roadmap.md` §1 independently poses the same question as gate
+**G1**: *"Is `--target jvm` a v1.0 supported channel, or is it Phase-6
+ecosystem work with its own versioning?"* with the stakes spelled out:
+if yes, Q-J012/Q-J013 (JVM checked-exception call-site wrapping) are
+release-blocking; if no, the language reference documents JVM as
+"supported but not v1.0 SemVer-guaranteed."
+
+### Decision
+
+**G1 resolved: JVM is an independently-versioned Phase-6 target, not a
+v1.0 SemVer-guaranteed channel.** `--target jvm` continues to ship fixes,
+PRs, and new capability on its own cadence (tracked via the JVM umbrella
+epic #2663 and `docs/44`'s J0–J7 bands) without blocking the v1.0 release
+train for the primary `--target dotnet` channel. This mirrors the
+existing G4 precedent (D066): the `lyric-*` ecosystem service libraries
+already ship under independent versioning rather than v1.0 SemVer, and
+JVM — as a whole secondary compilation target, not a single library —
+gets the same treatment.
+
+Consequence for `docs/36` G1: resolves to the "no" branch. Per that gate's
+own stakes table, `docs/01-language-reference.md` §0.1 (or the platform
+support matrix) should carry a note that `--target jvm` is supported and
+tested but carries no v1.0 SemVer guarantee; breaking changes may land in
+minor releases until JVM support is separately declared stable. (Filing
+this note in the language reference itself is left to whichever session
+next touches `docs/36` R3/G1 bookkeeping — this entry's scope is codifying
+the decision, not the full downstream doc sweep.)
+
+### Band-order note (docs/44)
+
+For the record, the band sequencing this decision unblocks: J0–J3 shipped
+in earlier sessions (JVM audit, F#-host kernel debt elimination
+`Lyric.Jvm.Hosts` deletion, `defer`/opaque/protected/wire lowering).  This
+session's docs/CI audit pass (alongside sibling sessions working the same
+effort in parallel — Maven resolver distribution, a `Std.Task.Scope` JVM
+correctness fix, JVM auto-FFI robustness, and `lyric-search` API wiring,
+none detailed here since they are each other sessions' scope) targets the
+J5/J6-adjacent documentation-accuracy gaps: the M-17/B-11 stale-finding
+corrections and the m-11 doc-drift sweep recorded elsewhere in `docs/44`
+and in this entry's sibling commits.
+
+### Consequences
+
+- `docs/44-jvm-production-readiness-plan.md`'s header no longer describes
+  an "Unbacked plan" for the G1 half of its ask — the channel decision is
+  now recorded here. Band ordering itself remains documented in `docs/44`
+  §6 (J0–J7); this entry does not re-litigate that sequencing, only
+  confirms bands J1–J3 are historical fact by the time this was written.
+- `docs/36-v1-roadmap.md` G1 should be marked resolved (cross-reference
+  this entry) the next time that document is touched.
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
