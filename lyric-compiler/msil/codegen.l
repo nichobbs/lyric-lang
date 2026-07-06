@@ -11311,10 +11311,9 @@ func lowerSliceSliceMsil(
   insns.add(MLdcI4(v = 0))
   insns.add(MClt)
   insns.add(MBrFalse(label = okL))
-  val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: slice(start, end) requires end >= start")
+  val msgTok = ctxInternUs(cctx.lctx, "slice(start, end) requires end >= start")
   insns.add(MLdStr(token = msgTok))
-  insns.add(MNewobj(ctorToken = cctx.tokInvalidOpExceptionCtor))
-  insns.add(MThrow)
+  emitMsilPanicFromStack(cctx, insns)
   insns.add(MLabel(id = okL))
   val zeroSlot = storeIntConstSlotMsil(fctx, insns, 0)
   val elemTokOpt = match recvTy { case MArray(e) -> arrayElemTokenOpt(cctx, e); case _ -> None }

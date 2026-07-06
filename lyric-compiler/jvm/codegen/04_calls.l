@@ -2492,7 +2492,7 @@ func lowerSliceSliceJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmTy
   val okL = freshLabel(ctx)
   emitLoad(insns, cntSlot, JInt)
   insns.add(LIfge(label = okL))
-  insns.add(LPushString(s = "Jvm.Codegen: slice(start, end) requires end >= start"))
+  insns.add(LPushString(s = "slice(start, end) requires end >= start"))
   emitPanicFromStack(ctx, insns)
   insns.add(LLabel(name = okL))
   val zeroSlot = storeIntConstSlotJvm(ctx, insns, 0)

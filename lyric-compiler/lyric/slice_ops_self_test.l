@@ -131,6 +131,20 @@ test "slice of an empty range" {
   assertEqualInt(empty.length, 0, "empty range length")
 }
 
+test "slice with end < start panics with the expected message" {
+  val xs: slice[Int] = [1, 2, 3]
+  var panicked = false
+  var msg = ""
+  try {
+    val _ = xs.slice(2, 0)
+  } catch Bug as b {
+    panicked = true
+    msg = b.message
+  }
+  assertTrue(panicked, "slice(2, 0) should panic")
+  assertTrue(msg.contains("requires end >= start"), "panic message: " + msg)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Chained / composed usage
 // ─────────────────────────────────────────────────────────────────────────────
