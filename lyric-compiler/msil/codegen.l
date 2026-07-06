@@ -10182,6 +10182,21 @@ func callArgExpr(arg: in CallArg): Expr {
   }
 }
 
+// Strip any wrapping `EParen` layers so `(( { x -> x } ))` is recognized the
+// same as the unparenthesized `{ x -> x }` — a grammar-valid, semantically
+// identical form. Used at the #1939 lambda-argument-propagation and F0026
+// direct-literal checks below: a bare `case ELambda(_, _) ->` match on the
+// unwrapped `callArgExpr(...).kind` would otherwise miss a parenthesized
+// lambda literal entirely, either silently skipping the #1939 param-type
+// propagation or (for an `@externTarget` delegate-bridging parameter)
+// spuriously raising F0026 on a valid direct literal (#5335).
+func unwrapParenExpr(e: in Expr): Expr {
+  match e.kind {
+    case EParen(inner) -> unwrapParenExpr(inner)
+    case _ -> e
+  }
+}
+
 // Reorder a record/union-case constructor's arguments to field-declaration
 // order (#1730).  A named-argument call (`R(c = …, a = …)`) may list fields in
 // any order, but the constructor `newobj` consumes them positionally in
@@ -11308,7 +11323,7 @@ func lowerBuiltinOrStaticCallMsil(
                     // them under the lambda's index (the next lambdaTicker value,
                     // which the ELambda arm will consume) so the lambda body
                     // unboxes its boxed params to the propagated types.
-                    match callArgExpr(callArgs[i]).kind {
+                    match unwrapParenExpr(callArgExpr(callArgs[i])).kind {
                       case ELambda(_, _) -> {
                         val fnInnerKey = tokKey + "#" + toString(i)
                         match mapGet(cctx.funcParamFnInner, fnInnerKey) {
