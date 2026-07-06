@@ -229,6 +229,11 @@ func emitSingleFileOrProject(
   val emptyCliFeatures: List[String] = newList()
   val (activeFeatures, declaredFeatures) = resolveManifestFeatures(lm.mfText, lm.mfPath, emptyCliFeatures, false, false)
   val resolvedDeps = resolveManifestDependencies(lm.manifest, lm.mfPath, req.target)
+  if resolvedDeps.hadWorkspaceError {
+    return failedEmitOutcome(
+      sourcePath + ": build failed (workspace dependency declared in " + lm.mfPath + " failed to build; see above)"
+    )
+  }
   if resolvedDeps.hadUnbuiltLocalDep {
     return failedEmitOutcome(
       sourcePath + ": build failed (unresolved dependency declared in " + lm.mfPath + "; see above)"

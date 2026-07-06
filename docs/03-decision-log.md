@@ -11068,6 +11068,20 @@ existing colocation cases continuing to pass); full existing self-test
 suite (`cli_build_self_test.l`, `cli_workspace_builder_self_test.l`,
 `cli_restore_self_test.l`, `cli_version_self_test.l`) passes unchanged.
 
+**Review hardening (same PR).** `emitSingleFileOrProject` checked
+`resolvedDeps.hadUnbuiltLocalDep` but never `resolvedDeps.hadWorkspaceError`,
+so a manifest declaring a broken `{ workspace = true }` dependency (a
+member name absent from the workspace, unlike a `path` dependency this is
+detected purely from the workspace member index, with no DLL-existence
+check involved) silently fell through to a dependency-less compile instead
+of failing loud — directly contradicting this entry's own "fail loud,
+never implicitly restore" guarantee (point 4 above). Fixed by checking
+`hadWorkspaceError` first, mirroring `buildProject`'s existing immediate
+`return 1` for the same condition. Added a fifth `cli_build_self_test.l`
+case: a workspace root with a member manifest declaring a dependency on a
+nonexistent member, compiled directly via `buildOneNative`, now fails
+instead of silently succeeding.
+
 **Related:** `docs/20-project-as-dll.md` (project bundling this
 reuses), `docs/24-test-runner-plan.md` (the `lyric test` follow-up this
 does not attempt).
