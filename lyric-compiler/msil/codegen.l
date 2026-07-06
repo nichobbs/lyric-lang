@@ -3055,6 +3055,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           val constTy = typeExprToMsilCtx(cctx, decl.ty, pkgName)
           cctx.staticValTokens.add(decl.name, fieldTok)
           cctx.staticValMsilTypes.add(decl.name, constTy)
+          // Package-qualified key too (mirrors `funcTokens`'/`constValues`'s
+          // FQN convention) so a cross-package qualified reference
+          // (`Other.Pkg.name`, which the parser leaves as nested `EMember`s —
+          // see `tryQualifiedStaticValNameMsil`) resolves the *correct*
+          // package's field even when another package declares a same-named
+          // `pub const`/`pub val` (#5258).
+          cctx.staticValTokens.add(pkgName + "." + decl.name, fieldTok)
+          cctx.staticValMsilTypes.add(pkgName + "." + decl.name, constTy)
         }
         fieldDefRow = fieldDefRow + 1
       }
@@ -3074,6 +3082,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           val valTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MObject }
           cctx.staticValTokens.add(valName, fieldTok)
           cctx.staticValMsilTypes.add(valName, valTy)
+          // Package-qualified key too — see the matching IConst comment above (#5258).
+          cctx.staticValTokens.add(pkgName + "." + valName, fieldTok)
+          cctx.staticValMsilTypes.add(pkgName + "." + valName, valTy)
         }
         fieldDefRow = fieldDefRow + 1
       }
@@ -4238,6 +4249,46 @@ func tryQualifiedEnumOrdinalMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in
       }
     }
     case _ -> -1
+  }
+}
+
+// Cross-package qualified reference to a module-level `pub val`/`pub const`
+// in value position (`App.Util.httpsPrefix`), whose multi-segment package
+// prefix the parser leaves as nested `EMember`s — same shape as the
+// qualified free-function-call fix in `lowerMethodCallMsil` (~line 11450:
+// "Fully-qualified free-function call whose multi-segment package prefix
+// the parser left as nested EMembers"), which flattens the receiver via
+// `flattenPathExprSegs` and checks the flattened name against `funcTokens`.
+// `staticValTokens`/`staticValMsilTypes` gained an equivalent
+// package-qualified key (`pkgName + "." + name`) alongside the existing
+// bare-name key when each package's tokens are registered — without this
+// check, a qualified module-val reference falls through to `EMember`'s
+// generic record-field-access fallback (which has no case for "this is
+// actually another package's static field") and silently resolves to a
+// null literal instead (#5258).
+//
+// Returns the qualified key to look up in `staticValTokens`, or "" if
+// `expr` isn't such a reference.  A receiver whose first segment names a
+// local is left to the normal `EMember` arm, mirroring
+// `tryQualifiedEnumOrdinalMsil`.
+func tryQualifiedStaticValNameMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr): String {
+  match expr.kind {
+    case EMember(_, _) -> {
+      val segs = flattenPathExprSegs(expr)
+      if segs.count < 2 {
+        return ""
+      }
+      if fctx.slots.containsKey(segs[0]) {
+        return ""
+      }
+      val qualifiedName = joinSegsMsil(segs, ".")
+      if cctx.staticValTokens.containsKey(qualifiedName) {
+        qualifiedName
+      } else {
+        ""
+      }
+    }
+    case _ -> ""
   }
 }
 
@@ -5556,6 +5607,17 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
   if qEnumOrd >= 0 {
     insns.add(MLdcI4(v = qEnumOrd))
     return MInt
+  }
+  // Cross-package qualified module-level `pub val`/`pub const` reference
+  // (#5258): short-circuited here for the same reason as the enum-ordinal
+  // check above — restructuring the `EMember` arm to add this case inline
+  // risks mis-lowering ordinary field access.
+  val qStaticValName = tryQualifiedStaticValNameMsil(cctx, fctx, expr)
+  if qStaticValName.length > 0 {
+    val qFieldTok = match mapGet(cctx.staticValTokens, qStaticValName) { case Some(t) -> t; case None -> 0 }
+    val qTy = match mapGet(cctx.staticValMsilTypes, qStaticValName) { case Some(t) -> t; case None -> MObject }
+    insns.add(MLdsfld(fieldToken = qFieldTok))
+    return qTy
   }
   match expr.kind {
 
