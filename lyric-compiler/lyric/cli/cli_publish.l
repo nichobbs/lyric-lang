@@ -419,8 +419,8 @@ func runRestoreWithRetry(restoreArgs: in List[String]): Int {
     }
     val backoffMs = attempt * 30000
     printErr(
-      "publish: NU1102 (NuGet indexing delay) on attempt " + Str.fromInt(attempt) + "; retrying in " +
-        Str.fromInt(backoffMs / 1000) +
+      "publish: NU1102 (NuGet indexing delay) on attempt " + toString(attempt) + "; retrying in " +
+        toString(backoffMs / 1000) +
         "s"
     )
     Time.sleepMillis(backoffMs)
