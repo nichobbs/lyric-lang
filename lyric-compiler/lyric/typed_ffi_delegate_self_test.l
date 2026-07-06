@@ -79,10 +79,6 @@ func socketsSetConnectCallback(
   cb: in (SocketsHttpConnectionContext, CancellationToken) -> ValueTaskOfStream,
 ): Unit = ()
 
-@externInstance
-@externTarget("System.Net.Http.SocketsHttpHandler.get_ConnectCallback")
-func socketsGetConnectCallback(h: in SocketsHttpHandler): Bool = ()
-
 test "a lambda closing over a value binds to a real closed Func<RefType, ValueType, ValueType> BCL delegate parameter" {
   val socketPath = "/tmp/lyric_typed_ffi_delegate_self_test.sock"
   val handler = newSocketsHandler()

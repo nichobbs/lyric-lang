@@ -3233,7 +3233,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         val isLit = if isAsyncLocalPv { false } else { isLiteralI4ExprMsilWithEnv(decl.init, constEnv) }
         if not isLit {
           val fieldTok = 0x04000000 + fieldDefRow
-          val valTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> inferUntypedStaticValMsilType(decl.init) }
+          val valTy = match decl.ty {
+            case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
+            case None -> inferUntypedStaticValMsilType(decl.init)
+          }
           cctx.staticValTokens.add(valName, fieldTok)
           cctx.staticValMsilTypes.add(valName, valTy)
           // Package-qualified key too — see the matching IConst comment above (#5258).
@@ -3624,19 +3627,7 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 func inferUntypedStaticValMsilType(e: in Expr): MsilType {
   match e.kind {
     case EParen(inner) -> inferUntypedStaticValMsilType(inner)
-    case ELiteral(lit) -> match lit {
-      case LString(_) -> MString
-      case LTripleString(_) -> MString
-      case LRawString(_) -> MString
-      case LFloat(_, _, _) -> MDouble
-      case LInt(v, suffix, _) -> match suffix {
-        case I64 | U64 -> MLong
-        case _ -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MLong }
-      }
-      case LBool(_) -> MBool
-      case LChar(_) -> MChar
-      case LUnit -> MVoid
-    }
+    case ELiteral(lit) -> match lit { case LString(_) -> MString; case LTripleString(_) -> MString; case LRawString(_) -> MString; case LFloat(_, _, _) -> MDouble; case LInt(v, suffix, _) -> match suffix { case I64 | U64 -> MLong; case _ -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MLong } }; case LBool(_) -> MBool; case LChar(_) -> MChar; case LUnit -> MVoid }
     case EInterpolated(_) -> MString
     // `-40` parses as EPrefix(PreNeg, ELiteral(LInt(40, ...))) (#5300): mirror
     // lowerExprMsil's EPrefix arm, which derives the type from the operand
@@ -3644,11 +3635,7 @@ func inferUntypedStaticValMsilType(e: in Expr): MsilType {
     // emitting `neg` — negation never changes the field's runtime type.
     // PreNot always produces MBool regardless of operand type; PreRef is a
     // bare passthrough of the operand's type. Both mirror lowerExprMsil too.
-    case EPrefix(op, inner) -> match op {
-      case PreNeg -> inferUntypedStaticValMsilType(inner)
-      case PreNot -> MBool
-      case PreRef -> inferUntypedStaticValMsilType(inner)
-    }
+    case EPrefix(op, inner) -> match op { case PreNeg -> inferUntypedStaticValMsilType(inner); case PreNot -> MBool; case PreRef -> inferUntypedStaticValMsilType(inner) }
     case _ -> MObject
   }
 }
@@ -11301,35 +11288,37 @@ func lowerBuiltinOrStaticCallMsil(
                         val fnInnerKey = tokKey + "#" + toString(i)
                         match mapGet(cctx.funcParamFnInner, fnInnerKey) {
                           case Some(inner) -> {
-                            if inner.count > 0 {
-                              val predName = "__lambda_" + toString(cctx.lambdaTicker.count)
-                              if not cctx.lambdaParamTypes.containsKey(predName) {
-                                cctx.lambdaParamTypes.add(predName, inner)
-                              }
-                              // FFI delegate-bridging trigger (Epic #1877/#3923 FFI-boundary
-                              // slice): only when this parameter belongs to an `@externTarget`
-                              // function does the lambda need a real closed System.Func/Action
-                              // instead of the uniform boxed ABI — see
-                              // funcParamIsExternTargetDelegate's doc comment.
-                              val isDelegateTarget = match mapGet(cctx.funcParamIsExternTargetDelegate, fnInnerKey) {
-                                case Some(v) -> v
-                                case None -> false
-                              }
-                              // Keyed by package + bare lambda name (not just the bare name,
-                              // like the older lambdaParamTypes/lambdaClosureClasses maps):
-                              // the per-package-reset lambdaTicker means two different
-                              // packages' capturing lambdas can both be "__lambda_0", and a
-                              // bare key silently aliases them together (harmless for the
-                              // uniform boxed ABI, but fatal here since a typed delegate's
-                              // real signature won't match another package's colliding
-                              // "__lambda_0" — surfaced by #Std.HttpHost's ConnectCallback
-                              // lambda in the full stdlib bundle).
-                              val qualifiedPredName = fctx.pkgName + "." + predName
-                              if isDelegateTarget and not cctx.lambdaExternDelegateParamTypes.containsKey(qualifiedPredName) {
-                                cctx.lambdaExternDelegateParamTypes.add(qualifiedPredName, inner)
-                                val fnRet = match mapGet(cctx.funcParamFnRetType, fnInnerKey) { case Some(rt) -> rt; case None -> MVoid }
-                                cctx.lambdaExternDelegateRetType.add(qualifiedPredName, fnRet)
-                              }
+                            val predName = "__lambda_" + toString(cctx.lambdaTicker.count)
+                            if inner.count > 0 and not cctx.lambdaParamTypes.containsKey(predName) {
+                              cctx.lambdaParamTypes.add(predName, inner)
+                            }
+                            // FFI delegate-bridging trigger (Epic #1877/#3923 FFI-boundary
+                            // slice): only when this parameter belongs to an `@externTarget`
+                            // function does the lambda need a real closed System.Func/Action
+                            // instead of the uniform boxed ABI — see
+                            // funcParamIsExternTargetDelegate's doc comment. Checked
+                            // unconditionally (not nested under `inner.count > 0`, which only
+                            // gates the pre-existing #1939 param-unboxing map above) so a
+                            // zero-arg `() -> T` delegate parameter still gets the real typed
+                            // `Func<T>` instead of silently keeping the boxed ABI (#5309).
+                            val isDelegateTarget = match mapGet(cctx.funcParamIsExternTargetDelegate, fnInnerKey) {
+                              case Some(v) -> v
+                              case None -> false
+                            }
+                            // Keyed by package + bare lambda name (not just the bare name,
+                            // like the older lambdaParamTypes/lambdaClosureClasses maps):
+                            // the per-package-reset lambdaTicker means two different
+                            // packages' capturing lambdas can both be "__lambda_0", and a
+                            // bare key silently aliases them together (harmless for the
+                            // uniform boxed ABI, but fatal here since a typed delegate's
+                            // real signature won't match another package's colliding
+                            // "__lambda_0" — surfaced by #Std.HttpHost's ConnectCallback
+                            // lambda in the full stdlib bundle).
+                            val qualifiedPredName = fctx.pkgName + "." + predName
+                            if isDelegateTarget and not cctx.lambdaExternDelegateParamTypes.containsKey(qualifiedPredName) {
+                              cctx.lambdaExternDelegateParamTypes.add(qualifiedPredName, inner)
+                              val fnRet = match mapGet(cctx.funcParamFnRetType, fnInnerKey) { case Some(rt) -> rt; case None -> MVoid }
+                              cctx.lambdaExternDelegateRetType.add(qualifiedPredName, fnRet)
                             }
                           }
                           case None -> {
@@ -14633,7 +14622,7 @@ func resolveValueTaskGenericMsilType(cctx: in CodegenCtx, te: in TypeExpr): Opti
         case Some(clrFqn) -> {
           val prefix = "System.Threading.Tasks.ValueTask`1["
           if startsWith(clrFqn, prefix) and endsWith(clrFqn, "]") {
-            val innerFqn = Str.substring(clrFqn, prefix.length, clrFqn.length - prefix.length - 1)
+            val innerFqn = clrFqn.substring(prefix.length, clrFqn.length - prefix.length - 1)
             ensureMetadataIndex(cctx)
             val innerSp = splitTypeFqn(innerFqn)
             val innerAsm = assemblyForTypeMsil(cctx, innerFqn)
