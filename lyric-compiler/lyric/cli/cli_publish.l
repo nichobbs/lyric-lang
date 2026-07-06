@@ -385,18 +385,24 @@ func cmdPublish(argv: in slice[String]): Int {
 
 // Run `dotnet restore` for the temp publish csproj, retrying on NU1102.
 //
-// NuGet.org's search index can lag behind a `dotnet nuget push` that already
-// returned success: a Lyric package dependency declared in this manifest
-// (e.g. a sibling ecosystem library published moments earlier in the same
-// release run) can still 404 with NU1102 for a short window after its own
-// push has completed. Retry with the same 30s/60s/90s backoff the ecosystem
-// publish workflow already uses around `lyric build` (see
-// .github/workflows/publish.yml) -- this restore sits inside `lyric publish`
-// itself and was previously unretried, so it failed immediately on the same
-// transient race the workflow-level retry was meant to cover.
+// A Lyric package dependency declared in this manifest (e.g. a sibling
+// ecosystem library published moments earlier in the same release run) can
+// still 404 with NU1102 for a while after its own `dotnet nuget push`
+// returned success -- NuGet.org's restore-side registration/validation
+// pipeline lags behind the push, not just its full-text search index.
+//
+// A first cut of this retry (30s/60s/90s, 4 attempts, ~180s total) was
+// observed in production still failing NU1102 on the final attempt for six
+// ecosystem libraries at once (a whole release tier pushes its packages in
+// a tight burst, which appears to make the lag worse) -- 180s falls short
+// of NuGet.org's real worst-case propagation window, it isn't just close.
+// Escalate for the first 4 attempts, then hold at a 120s plateau for the
+// rest: 8 attempts total, ~660s (11 min) of backoff before giving up. Any
+// restore failure that ISN'T NU1102 still fails immediately.
 func runRestoreWithRetry(restoreArgs: in List[String]): Int {
+  val maxAttempts = 8
   var attempt = 1
-  while attempt <= 4 {
+  while attempt <= maxAttempts {
     val captureResult = try {
       ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 300000)
     } catch Bug as b {
@@ -420,10 +426,10 @@ func runRestoreWithRetry(restoreArgs: in List[String]): Int {
       return 0
     }
     val isIndexingLag = captureResult.stdout.contains("NU1102") or captureResult.stderr.contains("NU1102")
-    if not isIndexingLag or attempt == 4 {
+    if not isIndexingLag or attempt == maxAttempts {
       return captureResult.exitCode
     }
-    val backoffMs = attempt * 30000
+    val backoffMs = if attempt <= 4 { attempt * 30000 } else { 120000 }
     printErr(
       "publish: NU1102 (NuGet indexing delay) on attempt " + toString(attempt) + "; retrying in " +
         toString(backoffMs / 1000) +
