@@ -14604,6 +14604,32 @@ func buildTypedFuncOrActionMsilType(cctx: in CodegenCtx, paramTys: in List[MsilT
   }
 }
 
+// Looks up a `TypeExpr`'s declared CLR FQN string (the extern type's mapped
+// name, e.g. "System.Threading.Tasks.ValueTask`1[System.IO.Stream]"), or ""
+// if it isn't a simple `TRef` to a known extern type. Split out as its own
+// `String`-returning function (no `MsilType`/`Option[MsilType]` anywhere in
+// its signature or body) so `resolveValueTaskGenericMsilType` doesn't do its
+// own `String` field access (`.length` etc.) nested inside a branch of a
+// match whose overall type is `Option[MsilType]` — that nesting shape is
+// exactly what confused the retiring F# bootstrap emitter's (much weaker)
+// type inference into treating the string local as `MsilType` itself
+// ("receiver type MsilType is not a known record or distinct type"); the
+// self-hosted stage-0 compiler has no such issue. Mirrors the same
+// hoist-to-a-dedicated-function workaround already applied to
+// buildValueTaskGenericMsilTypeFromClrFqn below.
+func lookupDeclaredClrFqnForTypeExpr(cctx: in CodegenCtx, te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> {
+      val seg = lastSegmentMsil(path)
+      match mapGet(cctx.externTypeNames, seg) {
+        case Some(fqn) -> fqn
+        case None -> ""
+      }
+    }
+    case _ -> ""
+  }
+}
+
 // Builds the closed `MValueTypeGenericInst` for `System.Threading.Tasks.
 // ValueTask`1<InnerFqn>` given the extern type's already-extracted, plain
 // `declaredClrFqn: String` (assumed to already match the
@@ -14643,19 +14669,20 @@ func buildValueTaskGenericMsilTypeFromClrFqn(cctx: in CodegenCtx, declaredClrFqn
 // than a general bracket-string parser — every other TFunction/extern-type
 // resolution is unaffected. Returns None for anything else, so callers fall
 // back to the normal (possibly erased) resolution unchanged.
+//
+// Deliberately resolves `declaredClrFqn` via lookupDeclaredClrFqnForTypeExpr
+// (a plain String-returning call) rather than matching on `te.kind` directly
+// in this function's body: the latter nests `String` field access inside a
+// branch of a match whose overall type is `Option[MsilType]`, which is the
+// exact shape that crashed the mint-only F# emitter (see
+// lookupDeclaredClrFqnForTypeExpr's doc comment).
 func resolveValueTaskGenericMsilType(cctx: in CodegenCtx, te: in TypeExpr): Option[MsilType] {
-  match te.kind {
-    case TRef(path) -> {
-      val seg = lastSegmentMsil(path)
-      val declaredClrFqn = match mapGet(cctx.externTypeNames, seg) { case Some(fqn) -> fqn; case None -> "" }
-      val prefix = "System.Threading.Tasks.ValueTask`1["
-      if declaredClrFqn.length > 0 and startsWith(declaredClrFqn, prefix) and endsWith(declaredClrFqn, "]") {
-        Some(value = buildValueTaskGenericMsilTypeFromClrFqn(cctx, declaredClrFqn))
-      } else {
-        None
-      }
-    }
-    case _ -> None
+  val declaredClrFqn = lookupDeclaredClrFqnForTypeExpr(cctx, te)
+  val prefix = "System.Threading.Tasks.ValueTask`1["
+  if declaredClrFqn.length > 0 and startsWith(declaredClrFqn, prefix) and endsWith(declaredClrFqn, "]") {
+    Some(value = buildValueTaskGenericMsilTypeFromClrFqn(cctx, declaredClrFqn))
+  } else {
+    None
   }
 }
 
@@ -15398,7 +15425,10 @@ func emitExternTargetBody(
         pi = pi + 1
       }
       val retTy = match decl.ret {
-        case Some(te) -> match resolveValueTaskGenericMsilType(cctx, te) { case Some(rt) -> rt; case None -> typeExprToMsilCtx(cctx, te, pkgName) }
+        case Some(te) -> match resolveValueTaskGenericMsilType(cctx, te) {
+          case Some(rt) -> rt
+          case None -> typeExprToMsilCtx(cctx, te, pkgName)
+        }
         case None -> MVoid
       }
       // For the FFI/BCL MemberRef signature a nullable *reference* return
