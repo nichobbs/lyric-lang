@@ -3205,7 +3205,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         val isLit = if isAsyncLocalPv { false } else { isLiteralI4ExprMsilWithEnv(decl.init, constEnv) }
         if not isLit {
           val fieldTok = 0x04000000 + fieldDefRow
-          val valTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MObject }
+          val valTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> inferUntypedStaticValMsilType(decl.init) }
           cctx.staticValTokens.add(valName, fieldTok)
           cctx.staticValMsilTypes.add(valName, valTy)
           // Package-qualified key too — see the matching IConst comment above (#5258).
@@ -3525,6 +3525,48 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
       }
     }
     case _ -> false
+  }
+}
+
+// Best-effort static-type inference for an untyped package-scope `val`'s
+// initializer (#5298).  Only reached when `decl.ty` is `None` AND
+// `isLiteralI4ExprMsilWithEnv` returned false (int/bool/char/unit literals
+// that fit the constant-fold path never reach here).  Recognizes the
+// literal forms whose runtime type is knowable without full expression
+// lowering — most importantly string literals, which previously defaulted
+// to `MObject` and then mis-dispatched `.length` through the List/IList
+// fallback (`InvalidCastException: String -> IList`).  Anything else
+// (calls, records, collections, …) still falls back to `MObject`; an
+// explicit type annotation is required to type those precisely.
+func inferUntypedStaticValMsilType(e: in Expr): MsilType {
+  match e.kind {
+    case EParen(inner) -> inferUntypedStaticValMsilType(inner)
+    case ELiteral(lit) -> match lit {
+      case LString(_) -> MString
+      case LTripleString(_) -> MString
+      case LRawString(_) -> MString
+      case LFloat(_, _, _) -> MDouble
+      case LInt(v, suffix, _) -> match suffix {
+        case I64 | U64 -> MLong
+        case _ -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MLong }
+      }
+      case LBool(_) -> MBool
+      case LChar(_) -> MChar
+      case LUnit -> MVoid
+    }
+    case EInterpolated(_) -> MString
+    // `-40` parses as EPrefix(PreNeg, ELiteral(LInt(40, ...))) (#5300): mirror
+    // lowerExprMsil's EPrefix arm, which derives the type from the operand
+    // alone (magnitude, pre-negation) and passes it through unchanged after
+    // emitting `neg` — negation never changes the field's runtime type.
+    // PreNot always produces MBool regardless of operand type; PreRef is a
+    // bare passthrough of the operand's type. Both mirror lowerExprMsil too.
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> inferUntypedStaticValMsilType(inner)
+      case PreNot -> MBool
+      case PreRef -> inferUntypedStaticValMsilType(inner)
+    }
+    case _ -> MObject
   }
 }
 
