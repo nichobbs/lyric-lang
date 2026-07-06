@@ -1,5 +1,16 @@
 # FFI Target Delegate Instantiation (Proposal)
 
+_Specced in D122 (`docs/03-decision-log.md`): shipped bounded to `@externTarget`
+functions' own `TFunction`-typed parameters, not the fully general lambda-ABI
+version this proposal describes below (that would require changing
+`typeExprToMsilCtx`'s shared default, used by every native HOF/lambda call
+site across the stdlib and every ecosystem library — too much blast radius).
+See `lyric-compiler/lyric/typed_ffi_delegate_self_test.l` for the verification
+case and `CodegenCtx.funcParamIsExternTargetDelegate`'s doc comment in
+`lyric-compiler/msil/codegen.l` for the exact trigger condition. The proposal
+below is kept as-is for historical context on the fully general form, which
+remains unimplemented._
+
 Provide a way to pass Lyric lambdas or method references to .NET methods expecting strongly typed delegates via auto FFI.
 
 ## Goal Description

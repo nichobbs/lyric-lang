@@ -29787,3 +29787,42 @@ plus a helper-function arithmetic test.
 writeup, including the #5300 review-hardening addendum), D-progress-606
 (#5258 — the sibling `staticValTokens`/`staticValMsilTypes`-rooted bug,
 fixed via qualified lookup keys rather than initializer-type inference).
+
+### D-progress-609 — Typed FFI delegate bridging for `@externTarget` functions (Epic #1877/#3923 FFI-boundary slice, D122)
+
+**Status:** Shipped, bounded (`lyric-compiler/msil/codegen.l`). A lambda
+passed directly to an `@externTarget` function's `TFunction`-typed parameter
+now binds to a real closed `System.Func<T1,...,Tn,TReturn>`/
+`System.Action<T1,...,Tn>` — including value-type arguments like
+`CancellationToken`, which delegate variance cannot bridge — instead of the
+uniform boxed `Func<object,...,object>` ABI every lambda used before. New
+`CodegenCtx` fields (`funcParamIsExternTargetDelegate`, `funcParamFnRetType`,
+`lambdaExternDelegateParamTypes`, `lambdaExternDelegateRetType`) mark exactly
+this case from each function's own declared AST; `typeExprToMsilCtx`'s shared
+`TFunction` default (used by every native HOF/lambda call site) is untouched.
+`resolveValueTaskGenericMsilType` narrowly resolves a
+`ValueTask`1[InnerFqn]`-shaped extern type's real closed instantiation for
+this same bounded case, bypassing (only here) the general `object`-erasure
+decision #4025 makes for bracket-bearing extern type names.
+
+Verified against a real BCL API with a value-type delegate argument —
+`System.Net.Http.SocketsHttpHandler.ConnectCallback`
+(`Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>>`)
+— in `lyric-compiler/lyric/typed_ffi_delegate_self_test.l`, wired into CI
+(dotnet-only; the feature is MSIL-specific).
+
+**Not shipped in this slice:** migrating
+`bootstrap/src/Lyric.Cli.Aot/UnixSocketHttpClient.cs` to pure Lyric — the
+motivating use case — which needs a capturing lambda added to
+`Std.HttpHost`, not the stdlib bundle's last package. That surfaced a
+separate, pre-existing `Msil.Lowering` bug (#5304): a non-last package's
+closure `.ctor` fails to resolve once a large-enough subsequent package
+follows it. `UnixSocketHttpClient.cs` stays in place pending that fix.
+General Predicate/Comparison/custom-named-delegate FFI support also remains
+unimplemented.
+
+**Related:** D122, docs/50-ffi-delegates-proposal.md, #1877, #3923 (updated
+to reflect this bounded slice), #4077/#4084/#4089/#4091 (prior PR #3885
+cleanup this slice's typed-ctor work supersedes), #4025, #4601/#5206
+(investigated, confirmed not triggered by this slice), #5304 (blocks the
+Unix-socket migration itself).

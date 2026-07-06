@@ -669,6 +669,25 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
+      # Typed FFI delegate bridging (Epic #1877/#3923 FFI-boundary slice):
+      # dotnet-only — the feature is MSIL-specific (SocketsHttpHandler is a
+      # BCL type; the fix lives entirely in Msil.Codegen), no JVM analog.
+      - name: Typed FFI delegate self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping typed FFI delegate self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping typed FFI delegate self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/typed_ffi_delegate_self_test.l
+
       # docs/58 (D121) self-tests, one step to keep this batch's background
       # concurrency where it was (#4486/#4841 corruption guidance): the
       # wire-expander unit suite (config templates, contributes[T], include

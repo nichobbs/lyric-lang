@@ -226,11 +226,35 @@ pub record CodegenCtx {
   // params unbox correctly (#1939).  Flat (not nested) to sidestep the stage-0
   // emitter's List[List[_]] indexing inference.
   funcParamFnInner: Map[String, List[MsilType]]
+  // Real (non-erased) return MsilType of a function-typed parameter, parallel
+  // to funcParamFnInner (same "<fqn>#<paramIdx>" keys).  Only populated for
+  // function-typed parameters; used to build the delegate's real closed
+  // instantiation for `@externTarget` targets (see funcParamIsExternTargetDelegate).
+  funcParamFnRetType: Map[String, MsilType]
+  // True when the parameter at this "<fqn>#<paramIdx>" key belongs to an
+  // `@externTarget`-annotated function (hasExternTargetMsil).  Distinguishes
+  // "this lambda argument must bridge to a real closed System.Func/Action for
+  // an FFI call" from "this is a Lyric-native HOF parameter, keep the uniform
+  // boxed ABI" — the trigger for the bounded typed-delegate-bridging path
+  // (Epic #1877/#3923's FFI-boundary slice; see docs/50). Deliberately does
+  // NOT touch typeExprToMsilCtx's shared TFunction default: every existing
+  // native HOF/lambda call site is unaffected because this flag is only ever
+  // true for `@externTarget` functions' own function-typed parameters.
+  funcParamIsExternTargetDelegate: Map[String, Bool]
   // Propagated parameter MsilTypes for a lifted lambda, keyed by lambda name
   // ("__lambda_<idx>").  Recorded at the call site (from funcParamFnInner) before
   // the lambda arg is lowered; consumed by lowerFuncMsil's `__lambda_*` path to
   // seed boxedParamTypes for un-annotated params.  #1939.
   lambdaParamTypes: Map[String, List[MsilType]]
+  // Real (non-erased) parameter/return MsilTypes for a lambda passed directly
+  // to an `@externTarget` function's function-typed parameter (see
+  // funcParamIsExternTargetDelegate).  Keyed by lambda name ("__lambda_<idx>").
+  // Presence of an entry is the trigger `lowerFuncMsil`'s `__lambda_*` path and
+  // ELambda construction use to emit a real closed `System.Func`/`System.Action`
+  // instead of the uniform boxed ABI.  Absent (the common case) ⇒ unchanged
+  // existing behavior.
+  lambdaExternDelegateParamTypes: Map[String, List[MsilType]]
+  lambdaExternDelegateRetType: Map[String, MsilType]
   // Capturing closures (#1479).  Keyed by lambda name ("__lambda_<idx>"): the
   // enclosing-scope variable names a lambda captures, and their MsilTypes
   // (parallel lists).  Recorded at the capture site; consumed by lowerFuncMsil's
@@ -1674,7 +1698,11 @@ pub func newCodegenCtx(
     funcDefaultExprs = newMap(),
     // flat "fqn/paramN" → name
     funcParamFnInner = newMap(),
+    funcParamFnRetType = newMap(),
+    funcParamIsExternTargetDelegate = newMap(),
     lambdaParamTypes = newMap(),
+    lambdaExternDelegateParamTypes = newMap(),
+    lambdaExternDelegateRetType = newMap(),
     lambdaCaptureNames = newMap(),
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
@@ -3205,7 +3233,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         val isLit = if isAsyncLocalPv { false } else { isLiteralI4ExprMsilWithEnv(decl.init, constEnv) }
         if not isLit {
           val fieldTok = 0x04000000 + fieldDefRow
-          val valTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> inferUntypedStaticValMsilType(decl.init) }
+          val valTy = match decl.ty {
+            case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
+            case None -> inferUntypedStaticValMsilType(decl.init)
+          }
           cctx.staticValTokens.add(valName, fieldTok)
           cctx.staticValMsilTypes.add(valName, valTy)
           // Package-qualified key too — see the matching IConst comment above (#5258).
@@ -3350,13 +3381,55 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // List-backed argument, matching the erased parameter slot.
         // declGenerics (computed above for the return type) covers the same decl,
         // so we reuse it here (#2597: no need for a separate declGenericsP).
+        val isExternTargetFn = hasExternTargetMsil(decl.annotations)
         val paramTys: List[MsilType] = newList()
         var ppi = 0
         while ppi < decl.params.count {
-          if declGenerics.count > 0 {
-            paramTys.add(typeExprToMsilGenBody(cctx, decl.params[ppi].ty, pkgName, declGenerics))
+          // Whether this parameter is the specific bounded case that needs the
+          // real closed System.Func/Action instead of the shared (erasing)
+          // typeExprToMsilCtx TFunction default (Epic #1877/#3923 FFI-boundary
+          // slice). Tracked as a plain Bool rather than building an
+          // intermediate Option[MsilType] and matching on it afterward — the
+          // Option[MsilType] intermediate form triggered a silent (non-crashing)
+          // miscompilation in the retiring F# bootstrap mint-emitter that
+          // corrupted unrelated generic-collection codegen elsewhere in the
+          // compiled Msil.Codegen.dll (observed as spurious `List<object>` vs
+          // `List<ProtoField>` CLR-cast failures in lyric-proto/lyric-search,
+          // #5334); the self-hosted stage-0 compiler has no such issue. A
+          // direct Bool-gated if/else, with each branch adding straight to
+          // paramTys, avoids the pattern entirely.
+          val isExternDelegateParam = if isExternTargetFn {
+            match decl.params[ppi].ty.kind {
+              case TFunction(_, _) -> true
+              case _ -> false
+            }
           } else {
-            paramTys.add(typeExprToMsilCtx(cctx, decl.params[ppi].ty, pkgName))
+            false
+          }
+          if isExternDelegateParam {
+            match decl.params[ppi].ty.kind {
+              case TFunction(fnParams, fnRetTe) -> {
+                val innerParamTys: List[MsilType] = newList()
+                var ipi = 0
+                while ipi < fnParams.count {
+                  innerParamTys.add(typeExprToMsilCtx(cctx, fnParams[ipi], pkgName))
+                  ipi = ipi + 1
+                }
+                val innerRetTy = match resolveValueTaskGenericMsilType(cctx, fnRetTe) {
+                  case Some(rt) -> rt
+                  case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
+                }
+                paramTys.add(buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy))
+              }
+              case _ -> {
+              }
+            }
+          } else {
+            if declGenerics.count > 0 {
+              paramTys.add(typeExprToMsilGenBody(cctx, decl.params[ppi].ty, pkgName, declGenerics))
+            } else {
+              paramTys.add(typeExprToMsilCtx(cctx, decl.params[ppi].ty, pkgName))
+            }
           }
           ppi = ppi + 1
         }
@@ -3369,15 +3442,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // Inner parameter types of each function-typed parameter (#1939), so a
         // call site can propagate them into a lambda passed directly as an arg.
         // Keyed "<fqn>#<paramIdx>" (flat List value) for both fqn aliases.
+        // Also records the real return type and, when this function carries
+        // `@externTarget`, marks the slot as an FFI delegate-bridging target
+        // (Epic #1877/#3923 FFI-boundary slice — see docs/50 and the
+        // funcParamIsExternTargetDelegate field doc for why this is scoped to
+        // `@externTarget` functions only).
         var pfi = 0
         while pfi < decl.params.count {
           match decl.params[pfi].ty.kind {
-            case TFunction(fnParams, _) -> {
+            case TFunction(fnParams, fnRetTe) -> {
               val inner: List[MsilType] = newList()
-              var fpj = 0
-              while fpj < fnParams.count {
-                inner.add(typeExprToMsilCtx(cctx, fnParams[fpj], pkgName))
-                fpj = fpj + 1
+              var ipfi = 0
+              while ipfi < fnParams.count {
+                inner.add(typeExprToMsilCtx(cctx, fnParams[ipfi], pkgName))
+                ipfi = ipfi + 1
               }
               val aKey = arityKey + "#" + toString(pfi)
               val fKey = fqn + "#" + toString(pfi)
@@ -3386,6 +3464,39 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               }
               if not cctx.funcParamFnInner.containsKey(fKey) {
                 cctx.funcParamFnInner.add(fKey, inner)
+              }
+              // The real (non-erased) return-type resolution below — including
+              // resolveValueTaskGenericMsilType's ValueTask-shaped-extern-type
+              // check and the typeExprToMsilCtx fallback — is only meaningful
+              // for `@externTarget` functions (Epic #1877/#3923 FFI-boundary
+              // slice). Every other TFunction param (the overwhelming common
+              // case — an ordinary native Lyric HOF's callback parameter) must
+              // NOT run this: `fnRetTe` there is frequently a bare generic type
+              // variable (e.g. `T` in `map[T](f: (A) -> T): List[T]`), and
+              // calling typeExprToMsilCtx on it outside a generics-aware
+              // context/call site pollutes shared per-package codegen state
+              // (observed as spurious `List<object>` vs `List<T>` CLR-cast
+              // failures in unrelated packages, e.g. lyric-proto/lyric-search,
+              // #5334) — gate the computation itself, not just the
+              // funcParamIsExternTargetDelegate marker, so non-FFI functions
+              // never touch this path at all.
+              if isExternTargetFn {
+                val fnRetMsil = match resolveValueTaskGenericMsilType(cctx, fnRetTe) {
+                  case Some(rt) -> rt
+                  case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
+                }
+                if not cctx.funcParamFnRetType.containsKey(aKey) {
+                  cctx.funcParamFnRetType.add(aKey, fnRetMsil)
+                }
+                if not cctx.funcParamFnRetType.containsKey(fKey) {
+                  cctx.funcParamFnRetType.add(fKey, fnRetMsil)
+                }
+                if not cctx.funcParamIsExternTargetDelegate.containsKey(aKey) {
+                  cctx.funcParamIsExternTargetDelegate.add(aKey, true)
+                }
+                if not cctx.funcParamIsExternTargetDelegate.containsKey(fKey) {
+                  cctx.funcParamIsExternTargetDelegate.add(fKey, true)
+                }
               }
             }
             case _ -> {
@@ -3541,19 +3652,7 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 func inferUntypedStaticValMsilType(e: in Expr): MsilType {
   match e.kind {
     case EParen(inner) -> inferUntypedStaticValMsilType(inner)
-    case ELiteral(lit) -> match lit {
-      case LString(_) -> MString
-      case LTripleString(_) -> MString
-      case LRawString(_) -> MString
-      case LFloat(_, _, _) -> MDouble
-      case LInt(v, suffix, _) -> match suffix {
-        case I64 | U64 -> MLong
-        case _ -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MLong }
-      }
-      case LBool(_) -> MBool
-      case LChar(_) -> MChar
-      case LUnit -> MVoid
-    }
+    case ELiteral(lit) -> match lit { case LString(_) -> MString; case LTripleString(_) -> MString; case LRawString(_) -> MString; case LFloat(_, _, _) -> MDouble; case LInt(v, suffix, _) -> match suffix { case I64 | U64 -> MLong; case _ -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MLong } }; case LBool(_) -> MBool; case LChar(_) -> MChar; case LUnit -> MVoid }
     case EInterpolated(_) -> MString
     // `-40` parses as EPrefix(PreNeg, ELiteral(LInt(40, ...))) (#5300): mirror
     // lowerExprMsil's EPrefix arm, which derives the type from the operand
@@ -3561,11 +3660,7 @@ func inferUntypedStaticValMsilType(e: in Expr): MsilType {
     // emitting `neg` — negation never changes the field's runtime type.
     // PreNot always produces MBool regardless of operand type; PreRef is a
     // bare passthrough of the operand's type. Both mirror lowerExprMsil too.
-    case EPrefix(op, inner) -> match op {
-      case PreNeg -> inferUntypedStaticValMsilType(inner)
-      case PreNot -> MBool
-      case PreRef -> inferUntypedStaticValMsilType(inner)
-    }
+    case EPrefix(op, inner) -> match op { case PreNeg -> inferUntypedStaticValMsilType(inner); case PreNot -> MBool; case PreRef -> inferUntypedStaticValMsilType(inner) }
     case _ -> MObject
   }
 }
@@ -7084,18 +7179,35 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // Lambdas that return void use System.Action; those with non-void returns use System.Func.
           val retType = mapGet(cctx.funcRetTypes, lambdaKey)
           val returnsVoid = match retType { case Some(MVoid) -> true; case None -> true; case _ -> false }
-          // All lambdas use an all-object delegate TypeSpec so the ctor, castclass, and
-          // callvirt Invoke all reference the same TypeSpec row (#4266). Typed delegate
-          // instantiation (Predicate<T>, Comparison<T>, context-driven Func<T,R>) is
-          // deferred to Phase 2 — see #4077.
+          // Lambdas default to an all-object delegate TypeSpec so the ctor, castclass,
+          // and callvirt Invoke all reference the same TypeSpec row (#4266). The one
+          // exception: a lambda passed directly to an `@externTarget` function's
+          // function-typed parameter gets a real closed System.Func/Action instead —
+          // required so the FFI call's argument actually matches the real BCL method's
+          // delegate parameter type (Epic #1877/#3923 FFI-boundary slice; see
+          // CodegenCtx.funcParamIsExternTargetDelegate's doc comment). Every other
+          // lambda (the common case — lambdaExternDelegateParamTypes has no entry)
+          // is unaffected.
           val ctorTok = if returnsVoid {
             if nparams == 0 {
               cctx.tokActionCtor
             } else {
-              buildActionNCtorTok(cctx, nparams)
+              match mapGet(cctx.lambdaExternDelegateParamTypes, lambdaKey) {
+                case Some(paramTys) -> buildActionNTypedCtorTok(cctx, nparams, paramTys)
+                case None -> buildActionNCtorTok(cctx, nparams)
+              }
             }
           } else {
-            buildFuncNCtorTok(cctx, nparams)
+            match mapGet(cctx.lambdaExternDelegateParamTypes, lambdaKey) {
+              case Some(paramTys) -> {
+                val delegateRetTy = match mapGet(cctx.lambdaExternDelegateRetType, lambdaKey) {
+                  case Some(rt) -> rt
+                  case None -> MObject
+                }
+                buildFuncNTypedCtorTok(cctx, nparams, paramTys, delegateRetTy)
+              }
+              case None -> buildFuncNCtorTok(cctx, nparams)
+            }
           }
           // Phase 2: Use typed closure classes instead of object[] arrays.
           // Each capturing lambda gets a synthesized __Closure_<i> record with typed fields
@@ -10070,6 +10182,21 @@ func callArgExpr(arg: in CallArg): Expr {
   }
 }
 
+// Strip any wrapping `EParen` layers so `(( { x -> x } ))` is recognized the
+// same as the unparenthesized `{ x -> x }` — a grammar-valid, semantically
+// identical form. Used at the #1939 lambda-argument-propagation and F0026
+// direct-literal checks below: a bare `case ELambda(_, _) ->` match on the
+// unwrapped `callArgExpr(...).kind` would otherwise miss a parenthesized
+// lambda literal entirely, either silently skipping the #1939 param-type
+// propagation or (for an `@externTarget` delegate-bridging parameter)
+// spuriously raising F0026 on a valid direct literal (#5335).
+func unwrapParenExpr(e: in Expr): Expr {
+  match e.kind {
+    case EParen(inner) -> unwrapParenExpr(inner)
+    case _ -> e
+  }
+}
+
 // Reorder a record/union-case constructor's arguments to field-declaration
 // order (#1730).  A named-argument call (`R(c = …, a = …)`) may list fields in
 // any order, but the constructor `newobj` consumes them positionally in
@@ -11196,15 +11323,42 @@ func lowerBuiltinOrStaticCallMsil(
                     // them under the lambda's index (the next lambdaTicker value,
                     // which the ELambda arm will consume) so the lambda body
                     // unboxes its boxed params to the propagated types.
-                    match callArgExpr(callArgs[i]).kind {
+                    match unwrapParenExpr(callArgExpr(callArgs[i])).kind {
                       case ELambda(_, _) -> {
-                        match mapGet(cctx.funcParamFnInner, tokKey + "#" + toString(i)) {
+                        val fnInnerKey = tokKey + "#" + toString(i)
+                        match mapGet(cctx.funcParamFnInner, fnInnerKey) {
                           case Some(inner) -> {
-                            if inner.count > 0 {
-                              val predName = "__lambda_" + toString(cctx.lambdaTicker.count)
-                              if not cctx.lambdaParamTypes.containsKey(predName) {
-                                cctx.lambdaParamTypes.add(predName, inner)
-                              }
+                            val predName = "__lambda_" + toString(cctx.lambdaTicker.count)
+                            if inner.count > 0 and not cctx.lambdaParamTypes.containsKey(predName) {
+                              cctx.lambdaParamTypes.add(predName, inner)
+                            }
+                            // FFI delegate-bridging trigger (Epic #1877/#3923 FFI-boundary
+                            // slice): only when this parameter belongs to an `@externTarget`
+                            // function does the lambda need a real closed System.Func/Action
+                            // instead of the uniform boxed ABI — see
+                            // funcParamIsExternTargetDelegate's doc comment. Checked
+                            // unconditionally (not nested under `inner.count > 0`, which only
+                            // gates the pre-existing #1939 param-unboxing map above) so a
+                            // zero-arg `() -> T` delegate parameter still gets the real typed
+                            // `Func<T>` instead of silently keeping the boxed ABI (#5309).
+                            val isDelegateTarget = match mapGet(cctx.funcParamIsExternTargetDelegate, fnInnerKey) {
+                              case Some(v) -> v
+                              case None -> false
+                            }
+                            // Keyed by package + bare lambda name (not just the bare name,
+                            // like the older lambdaParamTypes/lambdaClosureClasses maps):
+                            // the per-package-reset lambdaTicker means two different
+                            // packages' capturing lambdas can both be "__lambda_0", and a
+                            // bare key silently aliases them together (harmless for the
+                            // uniform boxed ABI, but fatal here since a typed delegate's
+                            // real signature won't match another package's colliding
+                            // "__lambda_0" — surfaced by #Std.HttpHost's ConnectCallback
+                            // lambda in the full stdlib bundle).
+                            val qualifiedPredName = fctx.pkgName + "." + predName
+                            if isDelegateTarget and not cctx.lambdaExternDelegateParamTypes.containsKey(qualifiedPredName) {
+                              cctx.lambdaExternDelegateParamTypes.add(qualifiedPredName, inner)
+                              val fnRet = match mapGet(cctx.funcParamFnRetType, fnInnerKey) { case Some(rt) -> rt; case None -> MVoid }
+                              cctx.lambdaExternDelegateRetType.add(qualifiedPredName, fnRet)
                             }
                           }
                           case None -> {
@@ -11212,6 +11366,59 @@ func lowerBuiltinOrStaticCallMsil(
                         }
                       }
                       case _ -> {
+                        // F0026: an `@externTarget` function's function-typed
+                        // parameter is declared with a real closed
+                        // System.Func/Action (Epic #1877/#3923 FFI-boundary
+                        // slice) — but that typed delegate is only ever
+                        // constructed for a lambda passed as a *direct*
+                        // literal at the call site (the ELambda arm above).
+                        // Any other argument shape (a `val`-bound lambda
+                        // passed by name, one returned from a helper
+                        // function, a method reference, …) would still
+                        // carry the pre-existing uniform boxed
+                        // `Func<object,...,object>` value, which does not
+                        // match the callee's now-real-typed declared
+                        // parameter — silently miscompiling to an
+                        // `InvalidProgramException` / FFI-boundary crash at
+                        // runtime instead of failing here with a clear
+                        // message. Detected structurally (no dataflow/alias
+                        // tracking needed): reject anything but a direct
+                        // lambda literal at this specific call-argument
+                        // position.
+                        val fnInnerKey = tokKey + "#" + toString(i)
+                        val isDelegateTarget = match mapGet(cctx.funcParamIsExternTargetDelegate, fnInnerKey) {
+                          case Some(v) -> v
+                          case None -> false
+                        }
+                        // Only an actually-*generic* closed delegate shape is at risk of a
+                        // mismatch: a zero-arg, `Unit`-returning parameter always builds the
+                        // non-generic `System.Action` (buildTypedFuncOrActionMsilType's
+                        // `isVoidRet and nparams == 0` branch) on BOTH the typed-bridging path
+                        // and the pre-existing uniform-boxed path — there is no type-argument
+                        // slot for the two paths to disagree on, so a forwarded (non-literal)
+                        // `() -> Unit` argument (e.g. Std.Task.taskRunWithCancel's existing
+                        // `taskRunWithCancel(action, tok)` call, which forwards its own `action`
+                        // parameter) is safe exactly as the original scoping analysis found.
+                        // Every other shape (any params, or a non-`Unit` return) builds a real
+                        // `System.Func`N`/`System.Action`N`` generic instantiation, where the
+                        // boxed uniform ABI's `object` type arguments really would mismatch.
+                        val isGenericDelegateShape = if isDelegateTarget {
+                          val innerTys = match mapGet(cctx.funcParamFnInner, fnInnerKey) { case Some(pts) -> pts; case None -> newList() }
+                          val fnRetMsil = match mapGet(cctx.funcParamFnRetType, fnInnerKey) { case Some(rt) -> rt; case None -> MVoid }
+                          val isVoidRet = match fnRetMsil { case MVoid -> true; case _ -> false }
+                          not (isVoidRet and innerTys.count == 0)
+                        } else {
+                          false
+                        }
+                        if isGenericDelegateShape {
+                          panic(
+                            "F0026: call to '" + tokKey + "' passes a non-literal expression for " +
+                            "parameter #" + toString(i) + ", which is bridged to a real .NET delegate " +
+                            "type at the FFI boundary (Epic #1877/#3923). Pass a lambda literal " +
+                            "(`{ ... -> ... }`) directly as this argument — binding it to a `val` " +
+                            "first, or otherwise producing it indirectly, is not yet supported here."
+                          )
+                        }
                       }
                     }
                     // `out`/`inout` parameter: pass the argument's address (a
@@ -14364,6 +14571,214 @@ func buildFuncNTypedTypeSpec(
   ctxAddTypeSpec(cctx.lctx, specKey, gblob)
 }
 
+// Build a newobj token for a strongly-typed System.Func<T1,...,Tn,TReturn>::.ctor(object, nativeint),
+// closed over the *real* parameter/return types instead of the uniform object-based
+// ABI (codegen.l's default lambda ctor path). Used only for lambdas passed directly
+// to an `@externTarget` function's function-typed parameter — see
+// CodegenCtx.funcParamIsExternTargetDelegate's doc comment for why this is scoped to
+// FFI-boundary functions rather than every lambda (Epic #1877/#3923 FFI-boundary slice).
+func buildFuncNTypedCtorTok(
+  cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType
+): Int {
+  if paramTypes.count < nparams {
+    return buildFuncNCtorTok(cctx, nparams)
+  }
+  val tsRow = buildFuncNTypedTypeSpec(cctx, nparams, paramTypes, retType)
+  val ctorPs: List[MsilType] = newList()
+  ctorPs.add(MObject)
+  ctorPs.add(MNativeInt)
+  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
+  val typeKeySuffix = funcNTypedKeySuffix(paramTypes, nparams, retType)
+  val mrRow = ctxAddMemberRefForTypeSpec(
+    cctx.lctx,
+    tsRow,
+    ".ctor",
+    "func_ctor_typed_" + toString(nparams) + typeKeySuffix,
+    ctorSig
+  )
+  0x0A000000 + mrRow
+}
+
+// Action`N analog of funcNTypedGenericInstBlob: every type argument is a real
+// parameter type (no return-type slot).
+func actionNTypedGenericInstBlob(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType]): List[Byte] {
+  val trN = internActionTypeRef(cctx, nparams)
+  val codedIdx = (trN * 4) + 1
+  val actualArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams {
+    actualArgs.add(paramTypes[ai])
+    ai = ai + 1
+  }
+  buildGenericInstBlob(codedIdx, actualArgs)
+}
+
+func actionNTypedKeySuffix(paramTypes: in List[MsilType], nparams: in Int): String {
+  var typeKeySuffix = ""
+  var ti = 0
+  while ti < paramTypes.count and ti < nparams {
+    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
+    ti = ti + 1
+  }
+  typeKeySuffix
+}
+
+// Action`N analog of buildFuncNTypedTypeSpec.
+func buildActionNTypedTypeSpec(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType]): Int {
+  if paramTypes.count < nparams {
+    return internActionTypeRef(cctx, nparams)
+  }
+  val gblob = actionNTypedGenericInstBlob(cctx, nparams, paramTypes)
+  val specKey = "ActionSpec_typed_" + toString(nparams) + actionNTypedKeySuffix(paramTypes, nparams)
+  ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+}
+
+// Action`N analog of buildFuncNTypedCtorTok — see its doc comment.
+func buildActionNTypedCtorTok(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType]): Int {
+  if paramTypes.count < nparams {
+    return buildActionNCtorTok(cctx, nparams)
+  }
+  val tsRow = buildActionNTypedTypeSpec(cctx, nparams, paramTypes)
+  val ctorPs: List[MsilType] = newList()
+  ctorPs.add(MObject)
+  ctorPs.add(MNativeInt)
+  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
+  val typeKeySuffix = actionNTypedKeySuffix(paramTypes, nparams)
+  val mrRow = ctxAddMemberRefForTypeSpec(
+    cctx.lctx,
+    tsRow,
+    ".ctor",
+    "action_ctor_typed_" + toString(nparams) + typeKeySuffix,
+    ctorSig
+  )
+  0x0A000000 + mrRow
+}
+
+// Build a strongly-typed System.Func<T1,...,Tn,TReturn> / System.Action<T1,...,Tn>
+// MsilType from real (non-erased) parameter/return types — the FFI-signature
+// counterpart to buildFuncNTypedCtorTok/buildActionNTypedCtorTok (used at
+// lambda-construction sites). Used only by emitExternTargetBody's own
+// param/return-type resolution for a `TFunction`-typed `@externTarget`
+// parameter (Epic #1877/#3923 FFI-boundary slice — see
+// CodegenCtx.funcParamIsExternTargetDelegate's doc comment). Mirrors the
+// shared (erasing) TFunction branch of typeExprToMsilCtx, but with real
+// argument types instead of hardcoded MObject; never called from
+// typeExprToMsilCtx itself, so no existing caller is affected.
+func buildTypedFuncOrActionMsilType(cctx: in CodegenCtx, paramTys: in List[MsilType], retTy: in MsilType): MsilType {
+  // MGenericInst (not MGenericInstByName) is required here: the context-free
+  // signature encoder emitExternTargetBody's MemberRef signature goes through
+  // (bufMsilType in lowering.l) degrades MGenericInstByName to plain `object`
+  // — it has no LoweringCtx to resolve a TypeRef by name, so it only fully
+  // encodes the GENERICINST blob when the TypeRef row is already resolved
+  // (MGenericInst's typeRefCode field). MGenericInstByName is for contexts
+  // that run through bufMsilTypeWithCtx instead (ordinary user signatures).
+  val isVoidRet = match retTy { case MVoid -> true; case _ -> false }
+  val nparams = paramTys.count
+  if isVoidRet and nparams == 0 {
+    MClass("System.Action")
+  } else if isVoidRet {
+    val trRow = internActionTypeRef(cctx, nparams)
+    MGenericInst(typeRefCode = (trRow * 4) + 1, headFqn = "System.Action`" + toString(nparams), typeArgs = paramTys)
+  } else if nparams == 0 {
+    val trRow = internFuncTypeRef(cctx, 0)
+    val args: List[MsilType] = newList()
+    args.add(retTy)
+    MGenericInst(typeRefCode = (trRow * 4) + 1, headFqn = "System.Func`1", typeArgs = args)
+  } else {
+    val trRow = internFuncTypeRef(cctx, nparams)
+    val args: List[MsilType] = newList()
+    var ai = 0
+    while ai < nparams {
+      args.add(paramTys[ai])
+      ai = ai + 1
+    }
+    args.add(retTy)
+    MGenericInst(typeRefCode = (trRow * 4) + 1, headFqn = "System.Func`" + toString(nparams + 1), typeArgs = args)
+  }
+}
+
+// Looks up a `TypeExpr`'s declared CLR FQN string (the extern type's mapped
+// name, e.g. "System.Threading.Tasks.ValueTask`1[System.IO.Stream]"), or ""
+// if it isn't a simple `TRef` to a known extern type. Split out as its own
+// `String`-returning function (no `MsilType`/`Option[MsilType]` anywhere in
+// its signature or body) so `resolveValueTaskGenericMsilType` doesn't do its
+// own `String` field access (`.length` etc.) nested inside a branch of a
+// match whose overall type is `Option[MsilType]` — that nesting shape is
+// exactly what confused the retiring F# bootstrap emitter's (much weaker)
+// type inference into treating the string local as `MsilType` itself
+// ("receiver type MsilType is not a known record or distinct type"); the
+// self-hosted stage-0 compiler has no such issue. Mirrors the same
+// hoist-to-a-dedicated-function workaround already applied to
+// buildValueTaskGenericMsilTypeFromClrFqn below.
+func lookupDeclaredClrFqnForTypeExpr(cctx: in CodegenCtx, te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> {
+      val seg = lastSegmentMsil(path)
+      match mapGet(cctx.externTypeNames, seg) {
+        case Some(fqn) -> fqn
+        case None -> ""
+      }
+    }
+    case _ -> ""
+  }
+}
+
+// Builds the closed `MValueTypeGenericInst` for `System.Threading.Tasks.
+// ValueTask`1<InnerFqn>` given the extern type's already-extracted, plain
+// `declaredClrFqn: String` (assumed to already match the
+// `System.Threading.Tasks.ValueTask`1[...]` shape — the caller,
+// `resolveValueTaskGenericMsilType`, checks that before calling this). Split
+// out as its own function with an unambiguous `String -> MsilType`
+// signature — nesting this directly inside a match arm whose enclosing
+// function returns `Option[MsilType]` confused the retiring F# bootstrap
+// emitter's (much weaker) type inference into treating the
+// `Option[String]`-sourced local as `MsilType` itself ("no method
+// 'substring' on type MsilType"); the self-hosted stage-0 compiler has no
+// such issue. Not a design change, purely a workaround for the mint-only
+// inference bug (mirrors the "hoist to a local" mint-only workarounds
+// already documented in docs/10-bootstrap-progress.md).
+func buildValueTaskGenericMsilTypeFromClrFqn(cctx: in CodegenCtx, declaredClrFqn: in String): MsilType {
+  val prefix = "System.Threading.Tasks.ValueTask`1["
+  val innerFqn = declaredClrFqn.substring(prefix.length, declaredClrFqn.length - prefix.length - 1)
+  ensureMetadataIndex(cctx)
+  val innerSp = splitTypeFqn(innerFqn)
+  val innerAsm = assemblyForTypeMsil(cctx, innerFqn)
+  val innerRow = internFfiTypeRef(cctx, innerAsm, innerSp.ns, innerSp.name)
+  val innerTy = MClassRef(typeRefCode = (innerRow * 4) + 1, clrFqn = innerFqn)
+  val vtAsm = assemblyForTypeMsil(cctx, "System.Threading.Tasks.ValueTask`1")
+  val vtRow = internFfiTypeRef(cctx, vtAsm, "System.Threading.Tasks", "ValueTask`1")
+  val args: List[MsilType] = newList()
+  args.add(innerTy)
+  MValueTypeGenericInst(typeRefCode = (vtRow * 4) + 1, headFqn = "System.Threading.Tasks.ValueTask`1", typeArgs = args)
+}
+
+// Resolve a `System.Threading.Tasks.ValueTask`1[InnerFqn]`-shaped extern type's
+// real closed MsilType (a GENERICINST value type), bypassing
+// typeExprToMsilCtx's deliberate erasure of any extern type whose declared
+// CLR name contains `[` (#4025 — erased there to avoid a malformed
+// flat-bracket TypeRef name for the general case). Narrowly scoped to this
+// one shape (needed for `SocketsHttpHandler.ConnectCallback`'s
+// `ValueTask<Stream>` return, Epic #1877/#3923 FFI-boundary slice) rather
+// than a general bracket-string parser — every other TFunction/extern-type
+// resolution is unaffected. Returns None for anything else, so callers fall
+// back to the normal (possibly erased) resolution unchanged.
+//
+// Deliberately resolves `declaredClrFqn` via lookupDeclaredClrFqnForTypeExpr
+// (a plain String-returning call) rather than matching on `te.kind` directly
+// in this function's body: the latter nests `String` field access inside a
+// branch of a match whose overall type is `Option[MsilType]`, which is the
+// exact shape that crashed the mint-only F# emitter (see
+// lookupDeclaredClrFqnForTypeExpr's doc comment).
+func resolveValueTaskGenericMsilType(cctx: in CodegenCtx, te: in TypeExpr): Option[MsilType] {
+  val declaredClrFqn = lookupDeclaredClrFqnForTypeExpr(cctx, te)
+  val prefix = "System.Threading.Tasks.ValueTask`1["
+  if declaredClrFqn.length > 0 and startsWith(declaredClrFqn, prefix) and endsWith(declaredClrFqn, "]") {
+    Some(value = buildValueTaskGenericMsilTypeFromClrFqn(cctx, declaredClrFqn))
+  } else {
+    None
+  }
+}
+
 // Build a callvirt token for a strongly-typed System.Func<T1,...,Tn,TReturn>::Invoke(T1,...,Tn): TReturn.
 // This is the Phase 3 variant that emits typed parameters and return type instead of object-based.
 // Used for lambda invocation when parameter and return types are known at the call site.
@@ -15076,12 +15491,39 @@ func emitExternTargetBody(
       val paramTypes: List[MsilType] = newList()
       var pi = 0
       while pi < decl.params.count {
-        val baseTy = typeExprToMsilCtx(cctx, decl.params[pi].ty, pkgName)
+        // A `TFunction`-typed `@externTarget` parameter needs its real (non-erased)
+        // closed System.Func/Action so the FFI call's argument genuinely matches the
+        // real BCL method's delegate parameter type — typeExprToMsilCtx's shared
+        // TFunction case hardcodes MObject for every type argument (Epic #1877/#3923's
+        // remaining, still-open scope; see docs/50). Bounded to `@externTarget`
+        // functions only: every other TFunction usage is unaffected.
+        val baseTy = match decl.params[pi].ty.kind {
+          case TFunction(fnParams, fnRetTe) -> {
+            val innerParamTys: List[MsilType] = newList()
+            var ipi2 = 0
+            while ipi2 < fnParams.count {
+              innerParamTys.add(typeExprToMsilCtx(cctx, fnParams[ipi2], pkgName))
+              ipi2 = ipi2 + 1
+            }
+            val innerRetTy = match resolveValueTaskGenericMsilType(cctx, fnRetTe) {
+              case Some(rt) -> rt
+              case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
+            }
+            buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy)
+          }
+          case _ -> typeExprToMsilCtx(cctx, decl.params[pi].ty, pkgName)
+        }
         val finalTy = if isByrefMode(decl.params[pi].mode) { MByRef(inner = baseTy) } else { baseTy }
         paramTypes.add(finalTy)
         pi = pi + 1
       }
-      val retTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
+      val retTy = match decl.ret {
+        case Some(te) -> match resolveValueTaskGenericMsilType(cctx, te) {
+          case Some(rt) -> rt
+          case None -> typeExprToMsilCtx(cctx, te, pkgName)
+        }
+        case None -> MVoid
+      }
       // For the FFI/BCL MemberRef signature a nullable *reference* return
       // (`String?`) is just the underlying reference type at the CLR level —
       // nullability is an annotation, not a distinct type (`System.IO.Path.
@@ -19002,7 +19444,15 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     // the same Object, so construction and the emitted method signature agree.
     // The earlier hardcoded `MVoid` made every lambda a void method wrapped in
     // a Func delegate, so invoking it returned garbage and faulted on use.
-    MObject
+    // Exception: a lambda passed directly to an `@externTarget` function's
+    // function-typed parameter uses its real return type instead (Epic
+    // #1877/#3923 FFI-boundary slice — see
+    // CodegenCtx.funcParamIsExternTargetDelegate's doc comment). Every other
+    // lambda (no entry in lambdaExternDelegateRetType) is unaffected.
+    match mapGet(cctx.lambdaExternDelegateRetType, pkgName + "." + decl.name) {
+      case Some(rt) -> rt
+      case None -> MObject
+    }
   } else {
     match decl.ret {
       case Some(te) -> {
@@ -19077,6 +19527,15 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // is never a "__lambda_*" key) and lambdas not passed directly to a typed
   // `(…) -> R` parameter.
   val lambdaPropagated = match mapGet(cctx.lambdaParamTypes, decl.name) { case Some(ts) -> ts; case None -> newList() }
+  // A lambda passed directly to an `@externTarget` function's function-typed
+  // parameter gets its real parameter types in both the logical slot type and
+  // the physical method signature (Epic #1877/#3923 FFI-boundary slice — see
+  // CodegenCtx.funcParamIsExternTargetDelegate's doc comment). Empty for every
+  // other lambda, which falls through to the unchanged object-based behavior.
+  val lambdaExternParamTys = match mapGet(cctx.lambdaExternDelegateParamTypes, pkgName + "." + decl.name) {
+    case Some(ts) -> ts
+    case None -> newList()
+  }
   var pi = 0
   while pi < decl.params.count {
     val p = decl.params[pi]
@@ -19113,7 +19572,10 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     // For lambda parameters with a logical type (annotated or propagated), record
     // the slot's logical type in boxedParamTypes. The load-side code at codegen.l:5080
     // consults this to emit castObjectToMsil (unbox) on parameter reads (#1939, #4101).
-    if isLambdaFn and paramTy != MObject {
+    // Skipped when this parameter already has a real (non-object) physical signature
+    // type (the `@externTarget` delegate-bridging case above) — there the argument
+    // arrives as its genuine type, never boxed, so unboxing it would be wrong.
+    if isLambdaFn and paramTy != MObject and pi >= lambdaExternParamTys.count {
       fctx.boxedParamTypes.add(slot, paramTy)
     }
     // Phase 1: lambda method signature uses object-based parameters for delegate
@@ -19233,7 +19695,9 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   }
   var pi2 = 0
   while pi2 < decl.params.count {
-    if isLambdaFn {
+    if isLambdaFn and pi2 < lambdaExternParamTys.count {
+      paramTypes.add(lambdaExternParamTys[pi2])
+    } else if isLambdaFn {
       // Phase 1: lambda method signature uses object-based parameters to match
       // the object-based delegate wrapper (Func<object,...,object>). Propagated
       // and annotated parameter types are collected for type-checking but not
@@ -19245,6 +19709,29 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
       // as plain `object` in the signature so a List-backed argument matches the
       // slot; the body uses the IList slice path, never genuine array ops.
       paramTypes.add(typeExprToMsilGenSig(cctx, decl.params[pi2].ty, pkgName, fnGenerics))
+    } else if hasExternTargetMsil(decl.annotations) and match decl.params[pi2].ty.kind { case TFunction(_, _) -> true; case _ -> false } {
+      // An `@externTarget` function's own `TFunction`-typed parameter is declared
+      // with the real closed System.Func/Action, matching the real BCL call its
+      // body makes and the typed delegate its caller constructs — otherwise the
+      // caller's typed delegate mismatches an object-erased declared parameter
+      // (Epic #1877/#3923 FFI-boundary slice; see
+      // CodegenCtx.funcParamIsExternTargetDelegate's doc comment).
+      match decl.params[pi2].ty.kind {
+        case TFunction(fnParams, fnRetTe) -> {
+          val innerParamTys: List[MsilType] = newList()
+          var ipi3 = 0
+          while ipi3 < fnParams.count {
+            innerParamTys.add(typeExprToMsilCtx(cctx, fnParams[ipi3], pkgName))
+            ipi3 = ipi3 + 1
+          }
+          val innerRetTy = match resolveValueTaskGenericMsilType(cctx, fnRetTe) {
+            case Some(rt) -> rt
+            case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
+          }
+          paramTypes.add(buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy))
+        }
+        case _ -> paramTypes.add(typeExprToMsilCtx(cctx, decl.params[pi2].ty, pkgName))
+      }
     } else {
       // Non-generic free function: the parameter signature uses the ctx-aware
       // concrete encoding (`Option[String]` → `Option`1<String>`, a record →

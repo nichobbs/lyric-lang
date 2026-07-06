@@ -10826,6 +10826,88 @@ templates precompiled-only), #5021 (MSIL wire ABI — fixed here), #2972
 unchanged).
 
 ---
+
+## D122 — Typed FFI delegate bridging for `@externTarget` functions (Epic #1877/#3923's FFI-boundary slice), bounded to that boundary rather than the general lambda ABI
+
+**Date:** 2026-07-06
+**Status:** ACCEPTED (implemented)
+
+**Context.** `docs/50-ffi-delegates-proposal.md` proposed letting Lyric
+lambdas bind directly to nominally-typed .NET delegates once the lambda ABI
+became strongly typed (Epic #1877). Investigating whether
+`bootstrap/src/Lyric.Cli.Aot/UnixSocketHttpClient.cs` could migrate to pure
+Lyric (its header names this exact prerequisite) found that issue #4077's
+closure — believed to be the blocker — was actually closed by *removing* a
+buggy shape-based Predicate/Comparison special case, not by shipping typed
+delegate construction. The lambda ABI still unconditionally built
+`Func<object,...,object>`/`Action<object,...>` for every lambda, and
+`typeExprToMsilCtx`'s `TFunction` branch (`lyric-compiler/msil/codegen.l`)
+hardcoded `MObject` for every type argument regardless of the real declared
+types — the shared default used by every function-typed value's signature
+resolution across the stdlib and all 26 ecosystem libraries, not just
+lambdas. Fixing that shared default generally would touch every native
+HOF/lambda call site in the codebase — too much blast radius for this task.
+
+**Decision.** Add typed delegate construction, but bounded strictly to
+`@externTarget` functions' own function-typed parameters — a small, distinct
+subset of all functions, already handled by a separate code path
+(`emitExternTargetBody`) from the general default:
+
+- New `CodegenCtx` fields (`funcParamIsExternTargetDelegate`,
+  `funcParamFnRetType`, `lambdaExternDelegateParamTypes`,
+  `lambdaExternDelegateRetType`) mark exactly the case "a lambda passed
+  directly to an `@externTarget` function's `TFunction`-typed parameter,"
+  populated purely from each function's own declared AST (no type-checker
+  dependency).
+- `buildTypedFuncOrActionMsilType`/`buildFuncNTypedCtorTok`/
+  `buildActionNTypedCtorTok` construct the real closed
+  `System.Func<T1,...,Tn,TReturn>`/`System.Action<T1,...,Tn>` — including
+  value-type arguments (e.g. `CancellationToken`), which delegate variance
+  cannot bridge — instead of the uniform boxed ABI, for exactly that case.
+- `resolveValueTaskGenericMsilType` narrowly resolves a
+  `System.Threading.Tasks.ValueTask`1[InnerFqn]`-shaped extern type to its
+  real closed value-type instantiation, bypassing the general (and separate,
+  correct) `object`-erasure decision #4025 makes for any extern type whose
+  CLR name contains `[` — needed because that erasure, applied generally,
+  would defeat this slice's whole point for a `ValueTask<T>`-returning
+  delegate.
+- `typeExprToMsilCtx`'s shared default is never modified. Every existing
+  native HOF/lambda call site is unaffected — verified no existing
+  `@externTarget` function in the stdlib declares a non-trivial
+  `TFunction`-typed parameter today (the sole existing example,
+  `Std.Task`'s `taskRunWithCancel(action: in () -> Unit, ...)`, is a
+  zero-arg non-generic `System.Action` with no type argument to erase in
+  the first place, so it never exercised the erasure bug either way).
+
+**Verification.** `lyric-compiler/lyric/typed_ffi_delegate_self_test.l`
+targets a real BCL API — `System.Net.Http.SocketsHttpHandler.ConnectCallback`
+(`Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>>`)
+— specifically because `CancellationToken` is a value type and
+`SocketsHttpConnectionContext` is a plain (non-generic-declaring-type)
+reference type, pinning the exact shape the erasure bug corrupted and that
+Predicate/Comparison special-casing never covered. Wired into CI via native
+`lyric test` (dotnet-only — the feature is MSIL-specific).
+
+**Scope not covered.** Migrating `UnixSocketHttpClient.cs` itself did not
+land in the same change: adding the Unix-socket `ConnectCallback`'s
+capturing lambda to `Std.HttpHost` (not the stdlib bundle's last package)
+surfaced a separate, pre-existing `Msil.Lowering` bug — #5304 — where a
+non-last package's closure `.ctor` fails to resolve once a large-enough
+subsequent package follows it. `UnixSocketHttpClient.cs` remains in place
+pending that fix. General Predicate/Comparison/custom-named-delegate FFI
+support also remains unimplemented — not needed for the `Func`/`Action`
+shapes this slice targets.
+
+**Related:** docs/50-ffi-delegates-proposal.md (backing proposal), #1877 /
+#3923 (epic; #3923 updated to reflect this bounded slice vs. its original
+general-ABI scope), #4077/#4084/#4089/#4091 (the PR #3885 review-finding
+cleanup that removed shape-based Predicate/Comparison dispatch without
+replacing it), #4025 (the `object`-erasure decision this slice narrowly
+bypasses for one specific shape), #4601/#5206 (investigated and confirmed
+not triggered by this slice), #5304 (the closure-lowering bug blocking the
+Unix-socket migration itself).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
