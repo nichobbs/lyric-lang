@@ -397,36 +397,27 @@ func cmdPublish(argv: in slice[String]): Int {
 func runRestoreWithRetry(restoreArgs: in List[String]): Int {
   var attempt = 1
   while attempt <= 4 {
-    var exitCode = 1
-    var stdout = ""
-    var stderr = ""
-    var spawnFailed = false
-    match Process.runCapture("dotnet", restoreArgs, 300000) {
-      case Ok(r) -> {
-        exitCode = r.exitCode
-        stdout = r.stdout
-        stderr = r.stderr
-      }
-      case Err(e) -> {
-        printErr("publish: dotnet restore failed: " + e)
-        spawnFailed = true
-      }
+    val captureResult = ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 300000)
+    if not Str.isEmpty(captureResult.stdout) {
+      Console.print(captureResult.stdout)
     }
-    if spawnFailed {
+    if not Str.isEmpty(captureResult.stderr) {
+      Console.error(captureResult.stderr)
+    }
+    if captureResult.timedOut {
+      printErr("publish: dotnet restore timed out after 300 seconds")
       return 1
     }
-    if not Str.isEmpty(stdout) {
-      Console.print(stdout)
+    if captureResult.exitCode == -1 {
+      printErr("publish: dotnet restore failed to start (is dotnet on PATH?)")
+      return 1
     }
-    if not Str.isEmpty(stderr) {
-      Console.error(stderr)
-    }
-    if exitCode == 0 {
+    if captureResult.exitCode == 0 {
       return 0
     }
-    val isIndexingLag = stdout.contains("NU1102") or stderr.contains("NU1102")
+    val isIndexingLag = captureResult.stdout.contains("NU1102") or captureResult.stderr.contains("NU1102")
     if not isIndexingLag or attempt == 4 {
-      return exitCode
+      return captureResult.exitCode
     }
     val backoffMs = attempt * 30000
     printErr(
