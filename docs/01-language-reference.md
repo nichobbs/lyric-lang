@@ -1263,6 +1263,113 @@ Scopes are entered and exited via host integration. The HTTP framework integrate
 
 A program may declare multiple wires (test wires, production wires, integration wires). Each wire is independent; they may share interfaces but not instances.
 
+### 10.5 `contributes[T]` — ordered multi-value bindings (D121)
+
+`bind` / `singleton` model exactly one instance per name. Some extension
+points are inherently a collection contributed to from multiple
+declaration sites — an HTTP middleware pipeline being the motivating
+case:
+
+```
+wire ProductionApp {
+  contributes[Middleware] logging = Web.loggingMiddleware()
+  contributes[Middleware] cors    = Web.corsMiddleware()
+  contributes[Middleware] auth    = MyApp.jwtMiddleware(config.jwtSecret)
+    inside: logging
+    wraps:  cors
+
+  singleton router: Web.Router = Web.create(middlewares: Middleware)
+}
+```
+
+When a wire graph (after `include` expansion, §10.6) has `contributes[T]`
+entries, the bare identifier `T` resolves as an ordered `List[T]`:
+declaration order, adjusted by `wraps:` / `inside:` clauses (the same
+vocabulary aspects use for composing advice: `wraps: X` — this entry is
+outside X; `inside: X` — this entry is inside X), outermost-first.
+Constraint cycles are `W0021`; a clause naming an unknown entry is
+`W0022`. Mixing a plain `bind T -> impl` / `singleton x: T` with
+`contributes[T]` for the same `T` in one graph is `W0020` — ambiguous
+whether `T` means the instance or the collection.
+
+Collections are **open by default**: any declaration site in the graph
+may add an entry. `sealed contributes[T]` closes the entry's collection
+against external add / remove / reorder (`W0023`); replacement of an
+`overridable` entry stays possible (it preserves membership and
+position). Contributions are singleton-scope only (`scoped[X]`
+contributions are out of scope, as is `scoped` generally — #2972).
+
+### 10.6 Wire templates: `pub wire` + `include` (D121)
+
+A `pub wire` in a library package is a **template** — a parameterized
+recipe from `@provided` inputs to `expose`d outputs, never bootstrapped
+as the declaring package's own graph. A consumer splices it into its own
+wire with `include`, at compile time; the result is indistinguishable
+from hand-writing the same members locally (no runtime container):
+
+```
+// library
+pub wire ServerModule {
+  @provided config: AppConfig
+
+  contributes[Middleware] cors    = Web.corsMiddleware()
+  contributes[Middleware] logging = Web.loggingMiddleware()
+
+  singleton router: Web.Router = Web.create(middlewares: Middleware)
+
+  expose router
+  overridable cors
+}
+
+// consumer
+wire ProductionApp {
+  @provided config: AppConfig
+
+  include Web.ServerModule {
+    cors = MyApp.customCors()      // replace (must be overridable)
+  }
+
+  contributes[Middleware] auth = MyApp.jwtMiddleware(config.jwtSecret)
+    inside: logging
+
+  expose router
+}
+```
+
+Rules:
+
+- **`@provided` mapping is name-based.** A template input with the same
+  bare name as an includer binding passes through automatically; a
+  differently-named input needs an explicit `@provided name: value`
+  adjustment in the include body (`W0017` when neither applies; `W0025`
+  for a mapping that names no template input).
+- **Exposed names propagate into the includer's scope, not its
+  surface.** They are referenceable (and re-exposable) inside the
+  including wire, but only the consumer's own `expose` list is reachable
+  from outside. Contributes-entry names are likewise part of the
+  template's surface (consumer ordering clauses may reference them);
+  everything else is internal and collision-proofed.
+- **Replace and remove are gated** by the template's
+  `overridable name, …` allow-list (`W0018`; unknown targets `W0019`);
+  `reorder name wraps:/inside: other` is allowed on any non-sealed
+  collection.
+- **`include … as Alias` isolates the instance**: exposed members are
+  reached as `Alias.member`, the instance's collections and entries stay
+  internal, and its config instantiations get an `Alias_` prefix.
+  Including the same template twice without aliases collides (`W0024`).
+- **Templates may include other templates**; cycles are `W0016`, an
+  unknown template is `W0015`.
+- A `config Local from Pkg.Template { … }` member instantiates a config
+  template (see `docs/25-config-blocks.md` §12) scoped to the graph: it
+  hoists to an ordinary module-level config block under the local name
+  and is usable as a *value* inside the wire's initialisers.
+
+Templates resolve against source-available packages (the compilation's
+own packages and path-dependency sources) — the same availability rule
+as cross-package aspect templates. Full semantics, the expansion model,
+and the `W0010`–`W0026` diagnostic table are specified in D121
+(`docs/03-decision-log.md`), backing `docs/58-wire-templates-sketch.md`.
+
 ## 11. FFI
 
 ### 11.1 Extern packages

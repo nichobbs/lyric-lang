@@ -115,8 +115,12 @@ each package to own its configuration surface, which composes better
 with `@proof_required` (the verifier sees only what the package
 itself declares).
 
-`pub config` is **rejected** at parse time
-(`G0008: config blocks are package-private; remove 'pub'`).
+`pub config` was originally rejected outright (`G0008`). Since D121
+(docs/58), `pub config` is legal with exactly one meaning: a **config
+template** declaration — a reusable field schema another package
+instantiates with `from`, never an env-backed block itself. See §12.
+A config-template *instantiation* remains package-private; `pub` on one
+is rejected (`W0013`).
 
 ---
 
@@ -330,7 +334,7 @@ initialisation, separate fail-fast scope.
 | `G0003` | Field value fails to parse against declared type (runtime, exit code 78). |
 | `G0004` | Field value parses but fails range / enum check (runtime, exit code 78). |
 | `G0005` | List field has unbalanced backslash escape (runtime, exit code 78). |
-| `G0008` | `pub config` rejected at compile time. |
+| `G0008` | Historical: `pub config` rejected outright. Superseded by D121 — `pub config` now declares a config template (§12); `pub` on an *instantiation* is `W0013`. |
 | `G0009` | Disallowed type in `config` field (v1 allows `Bool`, `Int`, `Long`, `Float`, `Double`, `String`). |
 | `G0010` | Field default is not a compile-time literal constant of the declared type. |
 | `G0011` | `via "..."` value is not upper-snake. |
@@ -453,3 +457,52 @@ export LYRIC_CONFIG_CHECKOUTSERVICE_FEATURES_PARTNERS="acme,initech,umbrella"
 
 If `DATABASE_URL` is unset, the process aborts before binding the
 HTTP socket, with a clear diagnostic naming the missing field.
+
+---
+
+## 12. Config templates: `pub config` + `from` (docs/58, D121)
+
+A library can expose a typed, overridable configuration schema without
+giving up the package-private-instance rule:
+
+```lyric
+// library: lyric-web
+package Web
+
+pub config StaticFiles {
+  root:                String = "./public"
+  cacheControlSeconds: Int    = 3600
+  fallbackToIndex:     Bool   = false
+}
+```
+
+A `pub config` block is a **template**: it declares a field schema plus
+a nominal type (the compiler synthesises a `pub record StaticFiles`
+twin carrying the same fields), and produces no env-backed state in the
+declaring package. A consumer materialises it with `from`, mirroring
+aspect-template instantiation:
+
+```lyric
+config Assets from Web.StaticFiles {
+  root: String = "./wwwroot"   // override; other fields keep template defaults
+}
+```
+
+The instantiation is an ordinary config block from that point on:
+fields in template order, override defaults applied, env vars derived
+from the **local** name (`LYRIC_CONFIG_<PKG>_ASSETS_<FIELD>`, §5), the
+same startup semantics (§4–§6). Overrides are validated against the
+template: an unknown field is `W0011`, a type mismatch `W0012`, `pub`
+on an instantiation `W0013`, an unresolvable template `W0010`, a
+template field outside the §3 type set `W0014`.
+
+Inside a `wire` graph, an instantiation is additionally usable as a
+*value* of the template's record type (`Web.create(staticFiles:
+Assets)`), and may be declared directly inside the wire body — see
+`docs/01-language-reference.md` §10.6 and D121 for the wire-side
+semantics (hoisting, include-body `Name { field = value }` overrides,
+alias prefixing).
+
+Template resolution follows the aspect-template rule: templates come
+from source-available packages (the compilation's own packages and
+path-dependency sources).

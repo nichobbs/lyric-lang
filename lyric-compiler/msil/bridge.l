@@ -26,6 +26,7 @@ import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
 import Std.Encoding as Encoding
 import Lyric.Weaver as Weaver
+import Lyric.WireExpand as WireExpand
 import Msil.Lowering
 import Msil.Codegen
 import Msil.Tables
@@ -120,7 +121,25 @@ pub func compileToMsilWithVersion(
   // production F# emitter runs immediately after parse.  Then synthesise the
   // `@stubbable` interface stubs (record + impl) so the type checker and codegen
   // see them — mirrors the F# `Lyric.Parser.Stubbable` pre-typecheck pass.
-  val file0 = Stubbable.stubbableRewriteFile(Aliases.rewriteFile(parseResult.file))
+  // Expand docs/58 constructs (config templates, contributes[T], wire
+  // templates) BEFORE alias rewriting, so an include alias's qualified
+  // access (`Core.router`) is consumed by the expander rather than being
+  // collapsed by the import-alias rewriter when the alias name happens to
+  // match an imported package's last segment (`import Std.Core` → `Core`).
+  // Single-file compile: templates resolve within this file's package.
+  val weWires: Map[String, CollectedWireTemplate] = newMap()
+  val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  WireExpand.collectWireTemplates(
+    parseResult.file.items,
+    segmentsToString(parseResult.file.packageDecl.path.segments),
+    weWires,
+    weConfigs
+  )
+  val weRes = WireExpand.expandFile(parseResult.file, weWires, weConfigs)
+  if reportAndAbort(weRes.diagnostics) {
+    return false
+  }
+  val file0 = Stubbable.stubbableRewriteFile(Aliases.rewriteFile(weRes.file))
 
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
   // Type errors in a single-file build are now fatal, matching the project path.
@@ -456,9 +475,46 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     if reportAndAbort(cfgRes.diagnostics) {
       return false
     }
-    val file0 = Stubbable.stubbableRewriteFile(Aliases.rewriteFile(cfgRes.file))
-    parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = file0))
+    parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = cfgRes.file))
     pi = pi + 1
+  }
+
+  // docs/58 (D121): collect wire/config templates across every in-bundle
+  // package and every path-dependency source package, then expand each
+  // in-bundle package's docs/58 constructs (config-template
+  // materialisation, contributes[T] lists, wire-template inclusion) before
+  // anything indexes or typechecks the items.  Expansion runs BEFORE the
+  // alias/stubbable rewrites so an include alias's qualified access
+  // (`Core.router`) is consumed by the expander rather than collapsed by
+  // the import-alias rewriter when the alias name matches an imported
+  // package's last segment.
+  val weWires: Map[String, CollectedWireTemplate] = newMap()
+  val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  var wti = 0
+  while wti < parsedPkgs.count {
+    val wpp: ParsedUserPkg = parsedPkgs[wti]
+    WireExpand.collectWireTemplates(wpp.file.items, wpp.name, weWires, weConfigs)
+    wti = wti + 1
+  }
+  var wtd = 0
+  while wtd < depTemplatePkgs.count {
+    val wdtPkg = depTemplatePkgs[wtd]
+    val wdtParseRes = parse(wdtPkg.source)
+    WireExpand.collectWireTemplates(wdtParseRes.file.items, wdtPkg.name, weWires, weConfigs)
+    wtd = wtd + 1
+  }
+  var wei = 0
+  while wei < parsedPkgs.count {
+    val wep: ParsedUserPkg = parsedPkgs[wei]
+    val weRes = WireExpand.expandFile(wep.file, weWires, weConfigs)
+    if reportAndAbort(weRes.diagnostics) {
+      return false
+    }
+    parsedPkgs[wei] = ParsedUserPkg(
+      name = wep.name,
+      file = Stubbable.stubbableRewriteFile(Aliases.rewriteFile(weRes.file))
+    )
+    wei = wei + 1
   }
 
   // Phase 1b: index each in-bundle package by name so the per-package

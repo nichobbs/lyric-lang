@@ -112,6 +112,40 @@ config Timeouts {
 
 Both blocks contribute env vars under the same package prefix.
 
+## Config templates
+
+A library can declare a reusable config *schema* with `pub config` — a
+**config template** (D121, `docs/58`).  A template produces no env-backed
+state of its own; it is a field shape (plus a nominal record type of the
+same name) that consumers materialise with `from`:
+
+```lyric
+// library: lyric-web
+pub config StaticFiles {
+  root:         String = "./public"
+  cacheSeconds: Int    = 3600
+}
+
+// your application
+config Assets from Web.StaticFiles {
+  root: String = "./wwwroot"    // override; cacheSeconds keeps the library default
+}
+```
+
+`Assets` is an ordinary config block from then on: it resolves env vars
+under *your* package and *its local name*
+(`LYRIC_CONFIG_<PKG>_ASSETS_ROOT`), so two instantiations of the same
+template are configured independently.  Overrides must match the
+template's fields and types (`W0011` / `W0012`).
+
+Inside a `wire` graph an instantiation is also usable as a *value* of the
+template's record type — `Web.create(staticFiles: Assets)` — and may be
+declared directly inside the wire body; see Chapter 11 §11.7.
+
+Note: config blocks (and therefore config-template instantiations) emit
+runtime state on the .NET target; JVM config emission is a known,
+separately tracked gap (#3228).
+
 ## Config vs wire injection
 
 `config` blocks are for *scalar* values read from env vars (URLs, timeouts,

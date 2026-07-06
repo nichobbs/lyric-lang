@@ -1440,6 +1440,20 @@ func wireExprDepsJvm(e: in Expr, knownNames: in Map[String, Bool], acc: in List[
       }
     }
     case EMember(receiver, _) -> wireExprDepsJvm(receiver, knownNames, acc)
+    case EList(exprs) -> {
+      var li = 0
+      while li < exprs.count {
+        wireExprDepsJvm(exprs[li], knownNames, acc)
+        li = li + 1
+      }
+    }
+    case ETuple(exprs) -> {
+      var ti = 0
+      while ti < exprs.count {
+        wireExprDepsJvm(exprs[ti], knownNames, acc)
+        ti = ti + 1
+      }
+    }
     case EBlock(block) -> wireBlockDepsJvm(block, knownNames, acc)
     case EIf(cond, thenBranch, elseBranch, _) -> {
       wireExprDepsJvm(cond, knownNames, acc)
@@ -1502,6 +1516,9 @@ func wireMemberInitJvm(m: in WireMember): Option[Expr] {
     case WMBind(_, provider, _) -> Some(value = provider)
     case WMProvided(_, _, _) -> None
     case WMExpose(_, _) -> None
+    // docs/58 (D121) members are rewritten away by Lyric.WireExpand before
+    // codegen; they carry no init at this stage.
+    case _ -> None
   }
 }
 
@@ -1514,6 +1531,8 @@ func wireMemberNameJvm(m: in WireMember): String {
     case WMBind(iface, _, _) -> match iface.kind { case TRef(path) -> lastSegment(path); case _ -> "__bind" }
     case WMProvided(name, _, _) -> name
     case WMExpose(name, _) -> name
+    case WMContributes(_, name, _, _, _, _) -> name
+    case _ -> ""
   }
 }
 
@@ -1847,6 +1866,15 @@ func buildWire(
       case WMExpose(name, _) -> exposes.add(name)
       case WMScoped(_, _, _, _, _) -> {
         // ThreadLocal-backed scoping deferred to #2972; not lowered until then.
+      }
+      case _ -> {
+        // WMContributes / WMInclude / WMOverridable / WMConfigInst (docs/58,
+        // D121) are rewritten into plain members by Lyric.WireExpand before
+        // codegen.  Seeing one here means the expander did not run.
+        panic(
+          "Jvm.Codegen: wire '" + decl.name + "' still contains a docs/58 template member at codegen time; " +
+            "Lyric.WireExpand.expandFile must run before lowering."
+        )
       }
     }
     mi = mi + 1

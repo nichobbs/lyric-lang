@@ -18,6 +18,7 @@ import Lyric.Propagate
 import Lyric.Cfg as Cfg
 import Lyric.AliasRewriter as Aliases
 import Lyric.Weaver as Weaver
+import Lyric.WireExpand as WireExpand
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
 import Lyric.Derives
@@ -159,7 +160,24 @@ pub func compileToJar(
   // `injectWeaveImports` ensures `import Std.Time` is present before any
   // import-driven resolution when an aspect references `call.elapsed`
   // (#1298) — the weave itself runs later, in `runMiddleEnd`.
-  val file0 = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(Aliases.rewriteFile(parseResult.file)))
+  // Expand docs/58 constructs (config templates, contributes[T], wire
+  // templates) BEFORE the alias rewrite — parity with the MSIL bridge:
+  // an include alias's qualified access (`Core.router`) must be consumed
+  // by the expander, not collapsed by the import-alias rewriter when the
+  // alias name matches an imported package's last segment.
+  val weWires: Map[String, CollectedWireTemplate] = newMap()
+  val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  WireExpand.collectWireTemplates(
+    parseResult.file.items,
+    dottedPath(parseResult.file.packageDecl.path),
+    weWires,
+    weConfigs
+  )
+  val weRes = WireExpand.expandFile(parseResult.file, weWires, weConfigs)
+  if reportAndAbort(weRes.diagnostics) {
+    return false
+  }
+  val file0 = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(Aliases.rewriteFile(weRes.file)))
 
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
   reportDiagnostics(tcRes.diagnostics)
@@ -1187,13 +1205,44 @@ pub func compileProjectToJarBundledWithFeatures(
     if reportAndAbort(cfgRes.diagnostics) {
       return false
     }
-    val uf = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(Aliases.rewriteFile(cfgRes.file)))
+    val uf = cfgRes.file
     if not sawMain and fileHasTopLevelMain(uf) {
       mainIdx = psi
       sawMain = true
     }
     userFiles.add(uf)
     psi = psi + 1
+  }
+
+  // docs/58 (D121): collect wire/config templates across every project
+  // package and path-dependency source package, then expand each project
+  // file before anything downstream indexes it — parity with the MSIL
+  // bridge's project path.  Expansion runs BEFORE the alias/stubbable
+  // rewrites so an include alias's qualified access (`Core.router`) is
+  // consumed by the expander rather than collapsed by the import-alias
+  // rewriter when the alias name matches an imported package's last
+  // segment; the standard rewrite chain is applied to the expanded file.
+  val weWires: Map[String, CollectedWireTemplate] = newMap()
+  val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  var wti = 0
+  while wti < userFiles.count {
+    WireExpand.collectWireTemplates(userFiles[wti].items, dottedPath(userFiles[wti].packageDecl.path), weWires, weConfigs)
+    wti = wti + 1
+  }
+  var wtd = 0
+  while wtd < depTemplateSrcs.count {
+    val wdtPr = parse(depTemplateSrcs[wtd])
+    WireExpand.collectWireTemplates(wdtPr.file.items, dottedPath(wdtPr.file.packageDecl.path), weWires, weConfigs)
+    wtd = wtd + 1
+  }
+  var wei = 0
+  while wei < userFiles.count {
+    val weRes = WireExpand.expandFile(userFiles[wei], weWires, weConfigs)
+    if reportAndAbort(weRes.diagnostics) {
+      return false
+    }
+    userFiles[wei] = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(Aliases.rewriteFile(weRes.file)))
+    wei = wei + 1
   }
   val userFile = userFiles[mainIdx]
   match mainReturns2SlotType(userFile) {

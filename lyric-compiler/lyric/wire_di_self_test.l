@@ -17,11 +17,12 @@
 //! accounted for the parameter frame itself when the body touches none of
 //! its parameters).
 //!
-//! CI wiring: `--target jvm` only. `--target dotnet` still fails at
-//! runtime — MSIL has no equivalent of `registerStaticWireSig` or its
-//! `lowerMethodCall` lookup fast path at all, so `<Wire>.bootstrap()` /
-//! exposed-accessor calls have never resolved on that target for *any*
-//! wire (tracked separately as #5021, out of scope here).
+//! CI wiring: BOTH targets. `--target dotnet` works since the #5021 fix
+//! (D121): the MSIL backend now emits the JVM-parity wire ABI — one
+//! host-class static field per exposed binding, `<Wire>_bootstrap`
+//! storing them, one accessor per exposed binding — with
+//! `<Wire>.bootstrap()` / accessor call sites resolving through the
+//! static-call path via tokens registered in `addPackageTokens`.
 @test_module
 package Lyric.WireDISelfTest
 

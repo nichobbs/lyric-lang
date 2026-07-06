@@ -269,6 +269,19 @@ Custom name: `port: Int = 8080 via "APP_PORT"`.
 Field types: `Bool`, `Int`, `Long`, `Float`, `Double`, `String`, range subtypes, simple enums, `[T]` (comma-separated).  
 Exit code 78 (`EX_CONFIG`) on startup failure.  See chapter 21.
 
+```lyric
+// Config template (docs/58, D121): a library-declared schema + record twin.
+pub config StaticFiles {
+  root:         String = "./public"
+  cacheSeconds: Int    = 3600
+}
+
+// Instantiation: an ordinary env-backed block under the LOCAL name.
+config Assets from Web.StaticFiles {
+  root: String = "./wwwroot"       // override; other fields keep template defaults
+}
+```
+
 ### Aspects
 
 ```lyric
@@ -335,6 +348,35 @@ wire ProductionApp {
   expose transferService
 }
 // Generates: bootstrap(config, cancellationToken) -> WireInstance
+// Call: ProductionApp.bootstrap(cfg, token); ProductionApp.transferService()
+```
+
+```lyric
+// Wire template + include + contributes[T] (docs/58, D121)
+pub wire ServerModule {                       // template: never bootstrapped itself
+  @provided config: AppConfig
+  contributes[Middleware] cors    = Web.corsMiddleware()
+  contributes[Middleware] logging = Web.loggingMiddleware()
+  singleton router: Web.Router = Web.create(middlewares: Middleware)
+  expose router
+  overridable cors                            // consumer may replace / remove cors
+}
+
+wire ProductionApp {
+  @provided config: AppConfig
+  include Web.ServerModule {                  // splice; `as Alias` isolates an instance
+    cors = MyApp.customCors()                 // replace (gated by overridable)
+  }
+  contributes[Middleware] auth = MyApp.jwtMiddleware(config.jwtSecret)
+    inside: logging                           // ordering: same wraps:/inside: vocabulary
+    wraps:  cors                              //   as aspects; outermost-first list order
+  expose router
+}
+// The bare collection name (Middleware) resolves as an ordered List[Middleware].
+// Include-body adjustments: `@provided name: value`, `name = expr`,
+// `Name { field = value }` (config-instance override), `remove name`,
+// `reorder name wraps:/inside: other`.  `sealed contributes[T]` closes a
+// collection against external add/remove/reorder.
 ```
 
 ---

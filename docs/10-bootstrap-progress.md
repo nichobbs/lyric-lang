@@ -29673,3 +29673,54 @@ println(ys.length)`) now prints `4` on both targets instead of throwing.
 
 **Related:** #5244, #2539 (the MSIL dual-representation precedent this
 follows), `docs/agent/reference.md` (the canonical example this fixes).
+
+### D-progress-607 — docs/58 library-contributed DI extensions ship (D121): config templates, `contributes[T]`, wire templates; MSIL wire bootstrap/accessor ABI fixed (#5021)
+
+**Shipped.** The full docs/58 surface, specced and implemented per **D121**
+(`docs/03-decision-log.md`):
+
+- **Front end (shared by both backends).** New `Lyric.WireExpand` package
+  (`lyric-compiler/lyric/wire_expand/wire_expand.l`) expands every docs/58
+  construct BEFORE type checking, run by `Msil.Bridge` and `Jvm.Bridge`
+  (single-file and project paths) with templates collected across all
+  in-bundle and path-dependency source packages — the aspect-weaver
+  collection shape.  `pub config` templates become synthesised
+  `pub record` twins; `config X from T { … }` materialises an ordinary
+  env-backed block under the local name (wire-body instantiations hoist
+  to module scope, and value-position uses inside wire initialisers
+  rewrite to record construction over the config statics);
+  `contributes[T]` entries lower to typed members plus one synthesised
+  ordered `List[T]` member per collection (`wraps:`/`inside:` Kahn
+  ordering, outermost-first); `include` splices `pub wire` templates
+  (`@provided` mapping/passthrough, `overridable`-gated replace/remove,
+  reorder, `as`-alias isolation, nested includes with cycle detection);
+  `pub wire` template items are dropped from the declaring file.
+  Diagnostics `W0010`–`W0026`; parser diagnostics `P0332`–`P0343`.
+- **Parser/AST.** `ConfigDecl.from`, `WMContributes` (with `sealed` flag
+  and ordering clauses), `WMInclude` (alias + adjustment body),
+  `WMOverridable`, `WMConfigInst`; alias-rewriter and formatter cover all
+  new forms (`pub` on wire headers was previously dropped by the
+  formatter and now round-trips).
+- **MSIL wire ABI (#5021).** The dead `<name>_create` factory is replaced
+  with the JVM-parity ABI: one host-class static field per exposed
+  binding, `<Wire>_bootstrap(provided…)`, one accessor per exposed
+  binding, with `<Wire>.bootstrap(…)` / `<Wire>.<name>()` call sites
+  resolving through the static-call path (tokens registered in
+  `addPackageTokens` Pass 1b/2).  Wire member initialisers now push the
+  declared type as construction context (concrete `List<T>` literals in
+  wire graphs).  `wire_di_self_test.l` runs on `--target dotnet` too.
+
+**Verification.** `wire_expand_self_test.l` (32 expander unit cases: all
+W-codes, splice shapes, ordering, aliasing, nesting, cross-package
+resolution; CI via native `lyric test` linking the stage-1 DLLs);
+`wire_templates_self_test.l` (runtime asserts on BOTH targets: include,
+cross-scope contributes ordering, provided mapping, replace/remove,
+aliased access, re-bootstrap); `config_templates_self_test.l` (runtime,
+`--target dotnet`: materialised defaults/overrides, env-var override
+under the local name, wire value-position rewrite, record-twin
+construction — dotnet-only because JVM `IConfig` emission is a
+pre-existing gap, unchanged by this work); plus docs/58 parser and
+formatter round-trip cases in `parser_self_test.l` / `fmt_self_test.l`.
+
+**Related:** D121, docs/58 (now specced), docs/01 §10.5–§10.6, docs/25
+§12, #5021 (closed by this entry), #2972 (`scoped[X]` unchanged/deferred).

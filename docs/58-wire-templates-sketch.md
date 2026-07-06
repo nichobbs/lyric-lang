@@ -1,9 +1,15 @@
 # 58 — Library-contributed DI extensions: config templates, `contributes[T]`, wire templates
 
-**Status:** Unbacked sketch — pressure-tested across a design conversation,
-no decision-log entry yet. Written up per the discussion's conclusion;
-before implementation, the open tensions in §7 need explicit decisions
-recorded as a new `D-` entry in `docs/03-decision-log.md`.
+**Status:** Specced and implemented in **D121** (`docs/03-decision-log.md`),
+which resolves the §7 open tensions: Q-wire-001 → open by default with
+`sealed` opt-in; Q-wire-002 → exposed names propagate into the includer's
+*scope*, never auto-re-exposed; Q-wire-003 → confirmed no verifier
+surface; Q-wire-004 → deferred (zero `overridable` names is already
+closed). Shipped as the `Lyric.WireExpand` pre-typecheck expansion on
+both backends, with the MSIL wire bootstrap/accessor ABI (#5021) fixed
+alongside. Normative text now lives in
+`docs/01-language-reference.md` §10.5–§10.6, `docs/25-config-blocks.md`
+§12, and D121; this sketch is the design-rationale record.
 **Builds on:** `docs/25-config-blocks.md` (D046 — config-block semantics
 this extends), `docs/01-language-reference.md` §10 (wire / DI — the
 resolution model this extends), `docs/26-aspects.md` §18 and

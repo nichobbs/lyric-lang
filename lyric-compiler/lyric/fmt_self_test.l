@@ -1420,3 +1420,65 @@ test "val binding named result round trips" {
   assertTrue(Str.contains(acc, "val result = 1"), "val result: binding name preserved")
   assertTrue(isFormatted(acc, parse(acc)), "val result: idempotent")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// docs/58 (D121) — wire templates, contributes[T], include, config `from`.
+// ─────────────────────────────────────────────────────────────────────────────
+test "config from clause round trips" {
+  val src = "package P\n\nconfig Assets from Web.StaticFiles {\n  root: String = \"./www\"\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "config-from: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "config Assets from Web.StaticFiles {"), "config-from: header preserved")
+}
+
+test "contributes entries with ordering clauses round trip" {
+  val src = "package P\n\nwire W {\n" + "  contributes[Mw] cors = make()\n" + "  sealed contributes[Mw] auth = make()\n" +
+    "    inside: cors\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "contributes: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "contributes[Mw] cors = make()"), "contributes: plain entry preserved")
+  assertTrue(Str.contains(acc, "sealed contributes[Mw] auth = make()"), "contributes: sealed entry preserved")
+  assertTrue(Str.contains(acc, "inside: cors"), "contributes: ordering clause preserved")
+}
+
+test "include with alias and adjustments round trips" {
+  val src = "package P\n\nwire W {\n" + "  include Web.ServerModule as Core {\n" + "    @provided config: appCfg\n" +
+    "    Files {\n      root = \"./x\"\n    }\n" +
+    "    cors = custom()\n" +
+    "    remove logging\n" +
+    "    reorder cors wraps: auth\n" +
+    "  }\n" +
+    "  expose router\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "include: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "include Web.ServerModule as Core {"), "include: header preserved")
+  assertTrue(Str.contains(acc, "@provided config: appCfg"), "include: provided mapping preserved")
+  assertTrue(Str.contains(acc, "remove logging"), "include: remove preserved")
+  assertTrue(Str.contains(acc, "reorder cors wraps: auth"), "include: reorder preserved")
+}
+
+test "bare include and empty include body round trip" {
+  val src = "package P\n\nwire W {\n  include Web.A\n  include Web.B {\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "bare/empty include: round-trips")
+}
+
+test "pub wire template with overridable and wire-body config round trips" {
+  val src = "package P\n\npub wire T {\n" + "  @provided cfg: AppConfig\n" +
+    "  config Files from Web.StaticFiles {\n    root: String = \"./m\"\n  }\n" +
+    "  singleton router: Router = make(Files)\n" +
+    "  expose router\n" +
+    "  overridable Files, router\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "pub wire template: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "pub wire T {"), "pub wire: visibility preserved")
+  assertTrue(Str.contains(acc, "config Files from Web.StaticFiles {"), "pub wire: config-inst preserved")
+  assertTrue(Str.contains(acc, "overridable Files, router"), "pub wire: overridable preserved")
+}

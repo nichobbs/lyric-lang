@@ -1556,6 +1556,296 @@ func parseProtectedTypeBody(st: inout ParseState, genericsPrefix: Option[Generic
   )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// docs/58 (D121) — wire-template member parsing: `contributes[T]`,
+// `include`, `overridable`, wire-body `config … from …`, and the
+// `wraps:`/`inside:` ordering clauses shared with `reorder`.
+// ─────────────────────────────────────────────────────────────────────────────
+// True when the next non-STMT_END token starts a `wraps:` / `inside:`
+// ordering clause.  Ordering clauses may sit on continuation lines below
+// the entry's init expression, so the lookahead must see across the
+// statement-end tokens the lexer inserted at those line breaks.
+func wireOrderingClauseAhead(st: in ParseState): Bool {
+  var k = 0
+  var scanning = true
+  var found = false
+  while scanning {
+    val t = peekAt(st, k)
+    match t.token {
+      case TStmtEnd -> {
+        k = k + 1
+      }
+      case TIdent(s) -> {
+        scanning = false
+        if s == "wraps" or s == "inside" {
+          found = isPunct(peekAt(st, k + 1).token, Colon)
+        }
+      }
+      case _ -> {
+        scanning = false
+      }
+    }
+  }
+  found
+}
+
+func parseWireOrderingClauses(st: inout ParseState): List[WireOrdering] {
+  val xs: List[WireOrdering] = newList()
+  while wireOrderingClauseAhead(st) {
+    val _ = skipStmtEnds(st)
+    val kwTok = advance(st)
+    val kw = identStr(kwTok.token)
+    match tryEatPunct(st, Colon) {
+      case Some(_) -> {
+      }
+      case None -> {
+        emitErr(st, "P0332", "expected ':' after '" + kw + "'", peekSpan(st))
+      }
+    }
+    val ns = readIdent(st, kw)
+    if kw == "wraps" {
+      xs.add(WOWraps(name = ns.name, span = joinSpans(kwTok.span, ns.span)))
+    } else {
+      xs.add(WOInside(name = ns.name, span = joinSpans(kwTok.span, ns.span)))
+    }
+  }
+  xs
+}
+
+// `contributes[T] name = expr [wraps:/inside: other]` — caller has already
+// consumed an optional leading `sealed` and passes `isSealed`.
+func parseContributesMember(st: inout ParseState, startSpan: in Span, isSealed: in Bool): WireMember {
+  val _ = advance(st)
+  // 'contributes'
+  match tryEatPunct(st, LBracket) {
+    case Some(_) -> {
+    }
+    case None -> {
+      emitErr(st, "P0333", "expected '[' after 'contributes'", peekSpan(st))
+    }
+  }
+  val iface = parseTypeExpr(st)
+  match tryEatPunct(st, RBracket) {
+    case Some(_) -> {
+    }
+    case None -> {
+      emitErr(st, "P0334", "expected ']' to close 'contributes[…]'", peekSpan(st))
+    }
+  }
+  val ns = readIdent(st, "contributes entry")
+  match tryEatPunct(st, Eq) {
+    case Some(_) -> {
+    }
+    case None -> {
+      emitErr(st, "P0335", "expected '=' in contributes entry", peekSpan(st))
+    }
+  }
+  val init = parseExpr(st)
+  val ordering = parseWireOrderingClauses(st)
+  WMContributes(
+    iface = iface,
+    name = ns.name,
+    init = init,
+    ordering = ordering,
+    isSealed = isSealed,
+    span = joinSpans(startSpan, lastSpan(st))
+  )
+}
+
+// `Name { field = value, ... }` config-override adjustment body.  The '{'
+// has not been consumed yet.
+func parseIncludeConfigOverride(st: inout ParseState, name: in String, startSpan: in Span): IncludeAdjust {
+  val _ = advance(st)
+  // '{'
+  val _ = skipStmtEnds(st)
+  val fields: List[ConfigFieldOverride] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = mark(st)
+    val fs = peekSpan(st)
+    val fns = readIdent(st, "config override field")
+    match tryEatPunct(st, Eq) {
+      case Some(_) -> {
+      }
+      case None -> {
+        emitErr(st, "P0336", "expected '=' after config override field name", peekSpan(st))
+      }
+    }
+    val value = parseExpr(st)
+    fields.add(ConfigFieldOverride(name = fns.name, value = value, span = joinSpans(fs, value.span)))
+    match peekToken(st) {
+      case TStmtEnd -> {
+        val _ = advance(st)
+        val _ = skipStmtEnds(st)
+      }
+      case TPunct(p) -> {
+        match p {
+          case Comma -> {
+            val _ = advance(st)
+            val _ = skipStmtEnds(st)
+          }
+          case _ -> {
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {
+    }
+    case None -> {
+      emitErr(st, "P0337", "expected '}' to close config override", peekSpan(st))
+    }
+  }
+  IAConfigOverride(name = name, fields = fields, span = joinSpans(startSpan, lastSpan(st)))
+}
+
+func parseIncludeAdjust(st: inout ParseState): IncludeAdjust {
+  val startSpan = peekSpan(st)
+  match peekToken(st) {
+    case TPunct(p) -> {
+      match p {
+        case At -> {
+          val next1 = peekAt(st, 1)
+          if identStr(next1.token) == "provided" {
+            val _ = advance(st)
+            // @
+            val _ = advance(st)
+            // provided
+            val ns = readIdent(st, "@provided mapping")
+            match tryEatPunct(st, Colon) {
+              case Some(_) -> {
+              }
+              case None -> {
+                emitErr(st, "P0338", "expected ':' after @provided mapping name", peekSpan(st))
+              }
+            }
+            val value = parseExpr(st)
+            IAProvided(name = ns.name, value = value, span = joinSpans(startSpan, value.span))
+          } else {
+            emitErr(st, "P0339", "expected include adjustment", peekSpan(st))
+            if not isAtEnd(st) {
+              val _ = advance(st)
+            }
+            IARemove(name = "<error>", span = startSpan)
+          }
+        }
+        case _ -> {
+          emitErr(st, "P0339", "expected include adjustment", peekSpan(st))
+          if not isAtEnd(st) {
+            val _ = advance(st)
+          }
+          IARemove(name = "<error>", span = startSpan)
+        }
+      }
+    }
+    case TIdent(s) -> {
+      if s == "remove" {
+        val _ = advance(st)
+        val ns = readIdent(st, "remove")
+        IARemove(name = ns.name, span = joinSpans(startSpan, ns.span))
+      } else if s == "reorder" {
+        val _ = advance(st)
+        val ns = readIdent(st, "reorder")
+        val ordering = parseWireOrderingClauses(st)
+        if ordering.count == 0 {
+          emitErr(st, "P0340", "expected 'wraps:' or 'inside:' after 'reorder " + ns.name + "'", peekSpan(st))
+        }
+        IAReorder(name = ns.name, ordering = ordering, span = joinSpans(startSpan, lastSpan(st)))
+      } else {
+        val ns = readIdent(st, "include adjustment")
+        if isPunct(peekToken(st), LBrace) {
+          parseIncludeConfigOverride(st, ns.name, startSpan)
+        } else {
+          match tryEatPunct(st, Eq) {
+            case Some(_) -> {
+            }
+            case None -> {
+              emitErr(st, "P0341", "expected '=' or '{' after include adjustment name", peekSpan(st))
+            }
+          }
+          val value = parseExpr(st)
+          IAReplace(name = ns.name, value = value, span = joinSpans(startSpan, value.span))
+        }
+      }
+    }
+    case _ -> {
+      emitErr(st, "P0339", "expected include adjustment", peekSpan(st))
+      if not isAtEnd(st) {
+        val _ = advance(st)
+      }
+      IARemove(name = "<error>", span = startSpan)
+    }
+  }
+}
+
+// `include Pkg.Module [as Alias] [{ adjustments }]`
+func parseIncludeMember(st: inout ParseState, startSpan: in Span): WireMember {
+  val _ = advance(st)
+  // 'include'
+  val path = parseModulePath(st)
+  // `as` is a real keyword (KwAs, shared with `import X as Y`).
+  val aliasName: Option[String] = match peekToken(st) {
+    case TKeyword(k) -> {
+      match k {
+        case KwAs -> {
+          val _ = advance(st)
+          val a = readIdent(st, "include alias")
+          Some(value = a.name)
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+  val adjustments: List[IncludeAdjust] = newList()
+  var hasBody = false
+  if isPunct(peekToken(st), LBrace) {
+    hasBody = true
+    val _ = advance(st)
+    val _ = skipStmtEnds(st)
+    while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+      val before = mark(st)
+      adjustments.add(parseIncludeAdjust(st))
+      match peekToken(st) {
+        case TStmtEnd -> {
+          val _ = advance(st)
+          val _ = skipStmtEnds(st)
+        }
+        case TPunct(p) -> {
+          match p {
+            case Comma -> {
+              val _ = advance(st)
+              val _ = skipStmtEnds(st)
+            }
+            case _ -> {
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
+      forceAdvanceIfStuck(st, before)
+    }
+    match tryEatPunct(st, RBrace) {
+      case Some(_) -> {
+      }
+      case None -> {
+        emitErr(st, "P0342", "expected '}' to close include body", peekSpan(st))
+      }
+    }
+  }
+  WMInclude(
+    path = path,
+    aliasName = aliasName,
+    adjustments = adjustments,
+    hasBody = hasBody,
+    span = joinSpans(startSpan, lastSpan(st))
+  )
+}
+
 func parseWireMember(st: inout ParseState): WireMember {
   val startSpan = peekSpan(st)
   match peekToken(st) {
@@ -1697,11 +1987,49 @@ func parseWireMember(st: inout ParseState): WireMember {
         }
       }
     }
-    case TIdent(_) -> {
-      if identStr(peekToken(st)) == "expose" {
+    case TIdent(idn) -> {
+      if idn == "expose" {
         val _ = advance(st)
         val ns = readIdent(st, "expose")
         WMExpose(name = ns.name, span = joinSpans(startSpan, ns.span))
+      } else if idn == "contributes" {
+        parseContributesMember(st, startSpan, false)
+      } else if idn == "sealed" and identStr(peekAt(st, 1).token) == "contributes" {
+        val _ = advance(st)
+        // 'sealed'
+        parseContributesMember(st, startSpan, true)
+      } else if idn == "include" {
+        parseIncludeMember(st, startSpan)
+      } else if idn == "overridable" {
+        val _ = advance(st)
+        val names: List[String] = newList()
+        val first = readIdent(st, "overridable")
+        names.add(first.name)
+        while isPunct(peekToken(st), Comma) {
+          val _ = advance(st)
+          val nxt = readIdent(st, "overridable")
+          names.add(nxt.name)
+        }
+        WMOverridable(names = names, span = joinSpans(startSpan, lastSpan(st)))
+      } else if idn == "config" {
+        // `config Name from Pkg.Template { ... }` inside a wire body — a
+        // config-template instantiation the wire expander hoists to module
+        // scope (docs/58 §5, D121).  Requires a `from` clause: a plain
+        // config block has no meaning inside a wire graph.
+        val decl = parseConfigBody(st)
+        match decl.from {
+          case Some(_) -> {
+          }
+          case None -> {
+            emitErr(
+              st,
+              "P0343",
+              "config block inside a wire body must instantiate a template: 'config " + decl.name + " from Pkg.Template { ... }'",
+              decl.span
+            )
+          }
+        }
+        WMConfigInst(decl = decl, span = decl.span)
       } else {
         emitErr(st, "P0258", "expected wire member", peekSpan(st))
         if not isAtEnd(st) {
@@ -2143,6 +2471,19 @@ func parseConfigBody(st: inout ParseState): ConfigDecl {
   val startTok = advance(st)
   // 'config' (TIdent)
   val ns = readIdent(st, "config block")
+  // Optional `from Pkg.Template` clause (config-template instantiation,
+  // docs/58 §3 / D121) — same contextual-`from` idiom as `parseAspectBody`.
+  val fromPath: Option[ModulePath] = match peekToken(st) {
+    case TIdent(s) -> {
+      if s == "from" {
+        val _ = advance(st)
+        Some(parseModulePath(st))
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
   val _ = skipStmtEnds(st)
   match tryEatPunct(st, LBrace) {
     case Some(_) -> {
@@ -2180,7 +2521,7 @@ func parseConfigBody(st: inout ParseState): ConfigDecl {
       sp
     }
   }
-  ConfigDecl(name = ns.name, fields = fields, span = joinSpans(startTok.span, endSpan))
+  ConfigDecl(name = ns.name, from = fromPath, fields = fields, span = joinSpans(startTok.span, endSpan))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

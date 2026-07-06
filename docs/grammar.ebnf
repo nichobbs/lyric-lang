@@ -401,6 +401,7 @@ ItemKind =
     | InterfaceDecl
     | ImplDecl
     | WireDecl
+    | ConfigDecl                                (* docs/25 (D046) / docs/58 (D121) *)
     | AspectDecl
     | ScopeKindDecl
     | ExternPackageDecl
@@ -1174,6 +1175,9 @@ ContractExpr = Expr ;
 
 (* §10.1 Wire blocks (compile-time DI graph; reference §10) *)
 
+(* A 'pub wire' is a wire TEMPLATE (docs/58, D121): never bootstrapped as
+ * the declaring package's own graph, only 'include'd by another wire.
+ * The pub/template distinction is enforced post-parse. *)
 WireDecl =
     'wire' IDENT [ WireParams ]
         '{' { NL } { WireMember NL } '}' ;
@@ -1186,7 +1190,11 @@ WireMember =
     | ScopedDecl
     | BindDecl
     | ExposeDecl
-    | LocalAlias ;
+    | LocalAlias
+    | ContributesDecl                         (* docs/58 §4 (D121) *)
+    | IncludeDecl                             (* docs/58 §5 (D121) *)
+    | OverridableDecl                         (* docs/58 §5.5 (D121) *)
+    | WireConfigInst ;                        (* docs/58 §5 (D121) *)
 
 ProvidedDecl =
       '@provided' IDENT ':' Type ;            (* parameter to bootstrap *)
@@ -1205,6 +1213,49 @@ ExposeDecl =
 
 LocalAlias =
       'val' IDENT [ ':' Type ] '=' Expr ;     (* internal helper binding inside a wire *)
+
+(* docs/58 (D121): ordered multi-value collection entry.  'sealed' blocks
+ * external add/remove/reorder of the entry's collection.  Ordering clauses
+ * may continue on the following lines (after NL). *)
+ContributesDecl =
+      [ 'sealed' ] 'contributes' '[' Type ']' IDENT '=' Expr
+        { { NL } WireOrderingClause } ;
+
+WireOrderingClause =
+      ( 'wraps' | 'inside' ) ':' IDENT ;
+
+(* docs/58 (D121): splice a 'pub wire' template into this wire. *)
+IncludeDecl =
+      'include' ModulePath [ 'as' IDENT ]
+        [ '{' { NL } { IncludeAdjust NL } '}' ] ;
+
+IncludeAdjust =
+      '@provided' IDENT ':' Expr              (* map a template input *)
+    | IDENT '{' { NL } { IDENT '=' Expr NL } '}'   (* config-instance override *)
+    | IDENT '=' Expr                          (* replace an overridable entry *)
+    | 'remove' IDENT                          (* remove an overridable entry *)
+    | 'reorder' IDENT WireOrderingClause { WireOrderingClause } ;
+
+OverridableDecl =
+      'overridable' IDENT { ',' IDENT } ;
+
+(* docs/58 (D121): config-template instantiation inside a wire body; the
+ * 'from' clause is mandatory here (P0343). *)
+WireConfigInst = ConfigDecl ;
+
+(* Module-level config block (docs/25, D046) with the docs/58 (D121)
+ * template forms.  'config' is a contextual identifier, not a keyword:
+ *   - 'pub config Name { ... }'        — config TEMPLATE declaration
+ *     (replaced at expansion by a synthesised 'pub record' twin);
+ *   - 'config Name from Path { ... }'  — template instantiation
+ *     (materialises an ordinary env-backed block under the local name);
+ *   - 'config Name { ... }'            — ordinary env-backed block.
+ *)
+ConfigDecl =
+    'config' IDENT [ 'from' ModulePath ]
+        '{' { NL } { ConfigFieldDecl NL } '}' ;
+
+ConfigFieldDecl = { Annotation } IDENT ':' Type [ '=' Expr ] ;
 
 (* §10.2 Aspects (docs/26-aspects.md; Phase 2) *)
 
