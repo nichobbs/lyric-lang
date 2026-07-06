@@ -235,16 +235,97 @@ test-parser: ## Run the parser self-test
 test-typechecker: ## Run the type-checker self-test
 	$(MAKE) self-test NAME=typechecker
 
-test-emitter: ## Run every lyric-compiler/lyric/*_self_test.l self-test (mirrors ci.yml's compiler-self-tests jobs)
+# The exact `--target dotnet`, no-special-env self-test set that ci.yml's
+# compiler-self-tests-dotnet-a/-b jobs run this way today (union of both
+# jobs' file lists, #5296).  This is deliberately NOT `find lyric-compiler
+# -name '*_self_test.l'`: dozens of other self-test files need something
+# this loop doesn't provide — `LYRIC_LOAD_COMPILER=1` (e.g. the llvm_*
+# native-backend self-tests — see `test-native` below, and
+# cross_package_generics_self_test.l, run by the separate
+# `crosspackage-and-codegen-tests` CI job), `--target jvm` (e.g.
+# auto_ffi_jvm_self_test.l, hash_jvm_self_test.l — no dedicated Makefile
+# target yet; run via `./bin/lyric test --target jvm <file>` by hand, or
+# see the `compiler-self-tests-jvm` CI job for the full list), or aren't
+# wired into `lyric test` at all yet (contract_meta_emit_self_test.l,
+# #2580).  Running those through this generic loop produces spurious
+# failures unrelated to what you're actually testing.  Keep this list in
+# sync with ci.yml's two compiler-self-tests-dotnet-* jobs when either
+# changes.
+TEST_EMITTER_FILES := \
+	lyric-compiler/lyric/alias_impl_self_test.l \
+	lyric-compiler/lyric/alias_rewriter_self_test.l \
+	lyric-compiler/lyric/app_host_self_test.l \
+	lyric-compiler/lyric/async_generator_self_test.l \
+	lyric-compiler/lyric/cfg_self_test.l \
+	lyric-compiler/lyric/class_encoding_self_test.l \
+	lyric-compiler/lyric/cli_build_self_test.l \
+	lyric-compiler/lyric/cli_restore_self_test.l \
+	lyric-compiler/lyric/cli_suggest_self_test.l \
+	lyric-compiler/lyric/cli_upgrade_self_test.l \
+	lyric-compiler/lyric/cli_version_self_test.l \
+	lyric-compiler/lyric/cli_workspace_builder_self_test.l \
+	lyric-compiler/lyric/closure_correctness_self_test.l \
+	lyric-compiler/lyric/contract_elaborator_self_test.l \
+	lyric-compiler/lyric/contract_meta_self_test.l \
+	lyric-compiler/lyric/datetime_tostring_self_test.l \
+	lyric-compiler/lyric/derives_self_test.l \
+	lyric-compiler/lyric/emitter_project_self_test.l \
+	lyric-compiler/lyric/ensures_self_test.l \
+	lyric-compiler/lyric/enum_msil_self_test.l \
+	lyric-compiler/lyric/equality_self_test.l \
+	lyric-compiler/lyric/fmt_self_test.l \
+	lyric-compiler/lyric/func_default_args_self_test.l \
+	lyric-compiler/lyric/generator/generator_self_test.l \
+	lyric-compiler/lyric/generic_extern_self_test.l \
+	lyric-compiler/lyric/generic_specialization_self_test.l \
+	lyric-compiler/lyric/hof_type_propagation_self_test.l \
+	lyric-compiler/lyric/impl_method_self_test.l \
+	lyric-compiler/lyric/implicit_self_msil_self_test.l \
+	lyric-compiler/lyric/init_self_test.l \
+	lyric-compiler/lyric/lexer_self_test.l \
+	lyric-compiler/lyric/list_value_compare_self_test.l \
+	lyric-compiler/lyric/manifest_self_test.l \
+	lyric-compiler/lyric/map_key_self_test.l \
+	lyric-compiler/lyric/map_option_self_test.l \
+	lyric-compiler/lyric/map_value_self_test.l \
+	lyric-compiler/lyric/modechecker_self_test.l \
+	lyric-compiler/lyric/module_val_self_test.l \
+	lyric-compiler/lyric/mono_self_test.l \
+	lyric-compiler/lyric/mono_shadow_self_test.l \
+	lyric-compiler/lyric/msil_project_bridge_self_test.l \
+	lyric-compiler/lyric/named_arg_order_self_test.l \
+	lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
+	lyric-compiler/lyric/nested_generic_self_test.l \
+	lyric-compiler/lyric/outparam_self_test.l \
+	lyric-compiler/lyric/parser_self_test.l \
+	lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
+	lyric-compiler/lyric/propagate_self_test.l \
+	lyric-compiler/lyric/quantifier_ident_self_test.l \
+	lyric-compiler/lyric/range_subtype_self_test.l \
+	lyric-compiler/lyric/record_option_field_self_test.l \
+	lyric-compiler/lyric/release_self_test.l \
+	lyric-compiler/lyric/restored_packages_self_test.l \
+	lyric-compiler/lyric/self_method_call_self_test.l \
+	lyric-compiler/lyric/slice_append_widening_self_test.l \
+	lyric-compiler/lyric/stdlib_generic_mono_self_test.l \
+	lyric-compiler/lyric/stubbable_self_test.l \
+	lyric-compiler/lyric/test_synth_self_test.l \
+	lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
+	lyric-compiler/lyric/typechecker_self_test.l \
+	lyric-compiler/lyric/union_ctor_return_context_self_test.l \
+	lyric-compiler/lyric/union_list_match_self_test.l \
+	lyric-compiler/lyric/verifier_self_test.l
+
+test-emitter: ## Run the ci.yml compiler-self-tests-dotnet-a/-b file set (--target dotnet, no special env)
 	@test -x bin/lyric || { echo "no ./bin/lyric; run 'make lyric' (or 'make mint') first"; exit 2; }
 	@status=0; \
-	for t in $$(find lyric-compiler/lyric -name '*_self_test.l' | sort); do \
+	for t in $(TEST_EMITTER_FILES); do \
 	  echo "=== $$t ==="; \
-	  ./bin/lyric test "$$t" || status=1; \
+	  ./bin/lyric test --target dotnet "$$t" || status=1; \
 	done; \
 	exit $$status
 
-test: test-emitter ## Run every self-hosted compiler self-test (dotnet target; see test-emitter)
+test: test-emitter ## Run every self-hosted compiler self-test (dotnet target; see test-emitter's header comment for what's intentionally excluded, and test-native for the LLVM backend)
 
 # ── Native backend (LLVM) ───────────────────────────────────────────────────
 # The Lyric.Llvm* packages build into stage 1 automatically
