@@ -45,6 +45,8 @@ import Std.Collections
 import Std.String
 import Std.Environment as Env
 import Mail.Kernel.Net as MailKernel
+import extern System.Net.{ NetworkCredential }
+import extern System.Net.Mail.{ SmtpClient, MailMessage, MailAddress, MailAddressCollection, Attachment as BclAttachment, AttachmentCollection }
 
 // ─── Address and attachment types ────────────────────────────────────────────
 /// An email address with an optional display name.
@@ -137,7 +139,7 @@ impl MailSender for MailSenderStub {
 // The SmtpClient is held directly as an opaque extern type — no integer
 // handle registry needed (Gap 1: BCL reference type storage via extern type).
 record NativeSender {
-  client: MailKernel.SmtpClient
+  client: SmtpClient
 }
 
 impl MailSender for NativeSender {
@@ -167,70 +169,70 @@ impl MailSender for NativeSender {
       gi = gi + 1
     }
     try {
-      val mailMsg = MailKernel.newMailMessage()
-      val fromAddr = MailKernel.newMailAddress(msg.from.address)
-      MailKernel.mailSetFrom(mailMsg, fromAddr)
-      MailKernel.mailSetSubject(mailMsg, msg.subject)
-      val toCollection = MailKernel.mailGetTo(mailMsg)
+      val mailMsg = MailMessage.new()
+      val fromAddr = MailAddress.new(msg.from.address)
+      mailMsg.set_From(fromAddr)
+      mailMsg.set_Subject(msg.subject)
+      val toCollection = mailMsg.get_To()
       var i = 0
       while i < msg.to.length {
         if msg.to[i].address.length > 0 {
-          val addr = MailKernel.newMailAddress(msg.to[i].address)
-          MailKernel.mailAddressCollectionAdd(toCollection, addr)
+          val addr = MailAddress.new(msg.to[i].address)
+          toCollection.Add(addr)
         }
         i = i + 1
       }
-      val ccCollection = MailKernel.mailGetCc(mailMsg)
+      val ccCollection = mailMsg.get_Cc()
       var ci = 0
       while ci < msg.cc.length {
         if msg.cc[ci].address.length > 0 {
-          val addr = MailKernel.newMailAddress(msg.cc[ci].address)
-          MailKernel.mailAddressCollectionAdd(ccCollection, addr)
+          val addr = MailAddress.new(msg.cc[ci].address)
+          ccCollection.Add(addr)
         }
         ci = ci + 1
       }
-      val bccCollection = MailKernel.mailGetBcc(mailMsg)
+      val bccCollection = mailMsg.get_Bcc()
       var bi = 0
       while bi < msg.bcc.length {
         if msg.bcc[bi].address.length > 0 {
-          val addr = MailKernel.newMailAddress(msg.bcc[bi].address)
-          MailKernel.mailAddressCollectionAdd(bccCollection, addr)
+          val addr = MailAddress.new(msg.bcc[bi].address)
+          bccCollection.Add(addr)
         }
         bi = bi + 1
       }
       match msg.replyTo {
         case Some(rt) -> {
           if rt.address.length > 0 {
-            val replyToList = MailKernel.mailGetReplyToList(mailMsg)
-            val rtAddr = MailKernel.newMailAddress(rt.address)
-            MailKernel.mailAddressCollectionAdd(replyToList, rtAddr)
+            val replyToList = mailMsg.get_ReplyToList()
+            val rtAddr = MailAddress.new(rt.address)
+            replyToList.Add(rtAddr)
           }
         }
         case None -> ()
       }
       if msg.htmlBody.length > 0 {
-        MailKernel.mailSetIsBodyHtml(mailMsg, true)
-        MailKernel.mailSetBody(mailMsg, msg.htmlBody)
+        mailMsg.set_IsBodyHtml(true)
+        mailMsg.set_Body(msg.htmlBody)
       } else {
-        MailKernel.mailSetIsBodyHtml(mailMsg, false)
-        MailKernel.mailSetBody(mailMsg, msg.textBody)
+        mailMsg.set_IsBodyHtml(false)
+        mailMsg.set_Body(msg.textBody)
       }
       // Decode each base64 attachment payload and append it to the BCL
       // MailMessage.Attachments collection.
       // MemoryStreams created here are never explicitly disposed: they are
       // byte-array-backed (no unmanaged resources), so the GC reclaims them
       // safely on both the success and the throw path.
-      val attColl = MailKernel.mailGetAttachments(mailMsg)
+      val attColl = mailMsg.get_Attachments()
       var ai = 0
       while ai < msg.attachments.length {
         val att = msg.attachments[ai]
         val bytes = MailKernel.base64Decode(att.dataBase64)
         val stream = MailKernel.newMemoryStream(bytes)
         val bclAtt = MailKernel.newBclAttachment(stream, att.filename, att.contentType)
-        MailKernel.attachmentCollectionAdd(attColl, bclAtt)
+        attColl.Add(bclAtt)
         ai = ai + 1
       }
-      MailKernel.smtpClientSend(self.client, mailMsg)
+      self.client.Send(mailMsg)
       Ok(())
     } catch Exception as e {
       Err(MailError(message = e.message, code = "SEND_ERROR"))
@@ -239,7 +241,7 @@ impl MailSender for NativeSender {
 
   func close(): Unit {
     try {
-      MailKernel.smtpClientDispose(self.client)
+      self.client.Dispose()
     } catch Exception as e {
       // Swallow dispose errors — same policy as the legacy F# shim.
       ()
@@ -273,12 +275,12 @@ pub func connectSmtp(): Result[MailSender, MailError] {
   val useTls = useTlsStr != "false"
   val timeoutMs = match parseInt(toMs) { case Some(n) -> n; case None -> 30000 }
   try {
-    val client = MailKernel.newSmtpClient(host, port)
-    MailKernel.smtpSetEnableSsl(client, useTls)
-    MailKernel.smtpSetTimeout(client, timeoutMs)
+    val client = SmtpClient.new(host, port)
+    client.set_EnableSsl(useTls)
+    client.set_Timeout(timeoutMs)
     if username.length > 0 {
-      val cred = MailKernel.newNetworkCredential(username, password)
-      MailKernel.smtpSetCredentials(client, cred)
+      val cred = NetworkCredential.new(username, password)
+      client.set_Credentials(cred)
     }
     Ok(NativeSender(client = client))
   } catch Exception as e {

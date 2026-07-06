@@ -75,11 +75,6 @@ pub func connectSqlite(url: in String, connectTimeoutMs: in Int): Result[Int, St
   MicrosoftDataSqlite.connect(url, connectTimeoutMs)
 }
 
-// ─── Numeric widening helper ─────────────────────────────────────────────────
-/// Widen an Int (32-bit) to a Long (64-bit).  Backed by System.Convert.ToInt64.
-@externTarget("System.Convert.ToInt64")
-pub func intAsLong(n: in Int): Long = ()
-
 // ─── Shared connection operations ─────────────────────────────────────────────
 // Bootstrap-grade stubs for shared ADO.NET operations.  The actual driver
 // calls are provided by the native runtime.  The `extern package Ado` block

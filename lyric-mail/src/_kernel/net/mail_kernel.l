@@ -36,81 +36,7 @@ pub extern type MailAddressCollection = "System.Net.Mail.MailAddressCollection"
 @axiom("BCL System.Net.NetworkCredential")
 pub extern type NetworkCredential = "System.Net.NetworkCredential"
 
-// ─── SmtpClient construction and configuration ────────────────────────────────
-@axiom("new System.Net.Mail.SmtpClient(host, port)")
-@externTarget("System.Net.Mail.SmtpClient..ctor")
-pub func newSmtpClient(host: in String, port: in Int): SmtpClient = ()
 
-@axiom("System.Net.Mail.SmtpClient.EnableSsl setter")
-@externTarget("System.Net.Mail.SmtpClient.set_EnableSsl")
-pub func smtpSetEnableSsl(client: in SmtpClient, value: in Bool): Unit = ()
-
-@axiom("System.Net.Mail.SmtpClient.Timeout setter")
-@externTarget("System.Net.Mail.SmtpClient.set_Timeout")
-pub func smtpSetTimeout(client: in SmtpClient, value: in Int): Unit = ()
-
-@axiom("new System.Net.NetworkCredential(username, password)")
-@externTarget("System.Net.NetworkCredential..ctor")
-pub func newNetworkCredential(username: in String, password: in String): NetworkCredential = ()
-
-@axiom("System.Net.Mail.SmtpClient.Credentials setter — parameter type is ICredentialsByHost; NetworkCredential satisfies it at the CLR level")
-@externTarget("System.Net.Mail.SmtpClient.set_Credentials")
-pub func smtpSetCredentials(client: in SmtpClient, cred: in NetworkCredential): Unit = ()
-
-@axiom("System.Net.Mail.SmtpClient.Send(MailMessage) — instance method, callvirt")
-@externTarget("System.Net.Mail.SmtpClient.Send")
-pub func smtpClientSend(client: in SmtpClient, msg: in MailMessage): Unit = ()
-
-@axiom("System.Net.Mail.SmtpClient.Dispose() — releases the underlying TCP connection")
-@externTarget("System.Net.Mail.SmtpClient.Dispose")
-pub func smtpClientDispose(client: in SmtpClient): Unit = ()
-
-// ─── MailMessage construction and mutation ────────────────────────────────────
-@axiom("new System.Net.Mail.MailMessage()")
-@externTarget("System.Net.Mail.MailMessage..ctor")
-pub func newMailMessage(): MailMessage = ()
-
-@axiom("System.Net.Mail.MailMessage.From setter")
-@externTarget("System.Net.Mail.MailMessage.set_From")
-pub func mailSetFrom(msg: in MailMessage, addr: in MailAddress): Unit = ()
-
-@axiom("System.Net.Mail.MailMessage.Subject setter")
-@externTarget("System.Net.Mail.MailMessage.set_Subject")
-pub func mailSetSubject(msg: in MailMessage, subject: in String): Unit = ()
-
-@axiom("System.Net.Mail.MailMessage.IsBodyHtml setter")
-@externTarget("System.Net.Mail.MailMessage.set_IsBodyHtml")
-pub func mailSetIsBodyHtml(msg: in MailMessage, value: in Bool): Unit = ()
-
-@axiom("System.Net.Mail.MailMessage.Body setter")
-@externTarget("System.Net.Mail.MailMessage.set_Body")
-pub func mailSetBody(msg: in MailMessage, body: in String): Unit = ()
-
-@axiom("System.Net.Mail.MailMessage.To getter — returns the MailAddressCollection for recipient mutation")
-@externTarget("System.Net.Mail.MailMessage.get_To")
-pub func mailGetTo(msg: in MailMessage): MailAddressCollection = ()
-
-@axiom("System.Net.Mail.MailMessage.CC getter — returns the MailAddressCollection for carbon-copy recipient mutation")
-@externTarget("System.Net.Mail.MailMessage.get_CC")
-pub func mailGetCc(msg: in MailMessage): MailAddressCollection = ()
-
-@axiom("System.Net.Mail.MailMessage.Bcc getter — returns the MailAddressCollection for blind-carbon-copy recipient mutation")
-@externTarget("System.Net.Mail.MailMessage.get_Bcc")
-pub func mailGetBcc(msg: in MailMessage): MailAddressCollection = ()
-
-@axiom("System.Net.Mail.MailMessage.ReplyToList getter — returns the MailAddressCollection for reply-to mutation (the legacy ReplyTo property is obsolete)")
-@externTarget("System.Net.Mail.MailMessage.get_ReplyToList")
-pub func mailGetReplyToList(msg: in MailMessage): MailAddressCollection = ()
-
-// ─── MailAddress construction ─────────────────────────────────────────────────
-@axiom("new System.Net.Mail.MailAddress(address) — 1-arg constructor")
-@externTarget("System.Net.Mail.MailAddress..ctor")
-pub func newMailAddress(address: in String): MailAddress = ()
-
-// ─── MailAddressCollection mutation ──────────────────────────────────────────
-@axiom("System.Net.Mail.MailAddressCollection.Add(MailAddress) — exact-type match picks this overload over Add(string)")
-@externTarget("System.Net.Mail.MailAddressCollection.Add")
-pub func mailAddressCollectionAdd(coll: in MailAddressCollection, addr: in MailAddress): Unit = ()
 
 // ─── Attachment support ───────────────────────────────────────────────────────
 @axiom("BCL System.Net.Mail.AttachmentCollection")
@@ -134,13 +60,7 @@ pub func newMemoryStream(buf: in slice[Byte]): MemoryStream = ()
 @externTarget("System.Net.Mail.Attachment..ctor")
 pub func newBclAttachment(stream: in MemoryStream, name: in String, mediaType: in String): BclAttachment = ()
 
-@axiom("System.Net.Mail.MailMessage.Attachments getter — returns the AttachmentCollection for mutation")
-@externTarget("System.Net.Mail.MailMessage.get_Attachments")
-pub func mailGetAttachments(msg: in MailMessage): AttachmentCollection = ()
 
-@axiom("System.Net.Mail.AttachmentCollection.Add(Attachment) — append an attachment to the collection")
-@externTarget("System.Net.Mail.AttachmentCollection.Add")
-pub func attachmentCollectionAdd(coll: in AttachmentCollection, att: in BclAttachment): Unit = ()
 
 // ─── Amazon SES (Phase 4 follow-up of #733) ──────────────────────────────────
 @axiom("Amazon SES backend not yet implemented (#733 follow-up)")
