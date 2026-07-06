@@ -208,31 +208,43 @@ selfhost-check: ## Classify a repro: real self-hosted bug vs artifact (FILE=repr
 	@if [ -z "$(FILE)" ]; then echo "usage: make selfhost-check FILE=path/to/repro.l"; exit 2; fi
 	bash scripts/selfhost-check.sh "$(FILE)"
 
-# ── F# test suites (Expecto console apps) ───────────────────────────────────
-
-test: test-lexer test-parser test-typechecker test-emitter ## Run F# test suites
-
-test-lexer: ## Run the lexer test suite
-	dotnet run --project bootstrap/tests/Lyric.Lexer.Tests -c $(BUILD_CONFIG)
-
-test-parser: ## Run the parser test suite
-	dotnet run --project bootstrap/tests/Lyric.Parser.Tests -c $(BUILD_CONFIG)
-
-test-typechecker: ## Run the type-checker test suite
-	dotnet run --project bootstrap/tests/Lyric.TypeChecker.Tests -c $(BUILD_CONFIG)
-
-test-emitter: ## Run the emitter test suite (includes all self-hosted self-tests)
-	dotnet run --project bootstrap/tests/Lyric.Emitter.Tests -c $(BUILD_CONFIG)
-
 # ── Self-hosted self-tests (fast inner-loop verification) ───────────────────
-# Usage: make self-test NAME=parser   (runs the `<NAME>_self_test_passes` case)
+# Replaces the deleted F# Expecto test projects (`bootstrap/tests/Lyric.*.Tests`,
+# #2364): every `*_self_test.l` is a `@test_module` run directly through the
+# AOT `./bin/lyric test` binary, which resolves its `Lyric.*` compiler-package
+# imports by linking the already-built stage-1 bundle DLLs as restored deps —
+# no `LYRIC_LOAD_COMPILER=1` recompile-from-source needed.  Requires a
+# previously-built `./bin/lyric` (`make lyric` or `make mint`); it is NOT
+# rebuilt by these targets, so pair with `make stage1-fast` for the fast loop.
+#
+# Usage: make self-test NAME=parser   (runs lyric-compiler/lyric/parser_self_test.l)
 # Valid NAMEs include: lexer parser typechecker modechecker contract_elaborator
 #                      test_synth manifest fmt cfg contract_meta restored_packages
-#                      verifier
+#                      verifier  (see lyric-compiler/lyric/*_self_test.l for the rest)
 self-test: ## Run one self-hosted self-test, e.g. `make self-test NAME=parser`
 	@if [ -z "$(NAME)" ]; then echo "usage: make self-test NAME=parser"; exit 2; fi
-	dotnet run --project bootstrap/tests/Lyric.Emitter.Tests -c $(BUILD_CONFIG) \
-	  -- --filter-test-case "$(NAME)_self_test_passes"
+	@test -x bin/lyric || { echo "no ./bin/lyric; run 'make lyric' (or 'make mint') first"; exit 2; }
+	./bin/lyric test lyric-compiler/lyric/$(NAME)_self_test.l
+
+test-lexer: ## Run the lexer self-test
+	$(MAKE) self-test NAME=lexer
+
+test-parser: ## Run the parser self-test
+	$(MAKE) self-test NAME=parser
+
+test-typechecker: ## Run the type-checker self-test
+	$(MAKE) self-test NAME=typechecker
+
+test-emitter: ## Run every lyric-compiler/lyric/*_self_test.l self-test (mirrors ci.yml's compiler-self-tests jobs)
+	@test -x bin/lyric || { echo "no ./bin/lyric; run 'make lyric' (or 'make mint') first"; exit 2; }
+	@status=0; \
+	for t in $$(find lyric-compiler/lyric -name '*_self_test.l' | sort); do \
+	  echo "=== $$t ==="; \
+	  ./bin/lyric test "$$t" || status=1; \
+	done; \
+	exit $$status
+
+test: test-emitter ## Run every self-hosted compiler self-test (dotnet target; see test-emitter)
 
 # ── Native backend (LLVM) ───────────────────────────────────────────────────
 # The Lyric.Llvm* packages build into stage 1 automatically
