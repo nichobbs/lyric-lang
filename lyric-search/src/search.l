@@ -41,14 +41,45 @@ import Std.Core
 import Std.Collections
 import Std.Json
 import Std.Iter
+import Search.Kernel.Net
+import Search.Kernel.Jvm
 
-// ─── Kernel boundary (unconditional stubs) ───────────────────────────────────
-// These stubs are always available regardless of feature flags.  When an
-// elasticsearch or meilisearch feature is enabled, the actual BCL-backed
-// implementations are provided by Search.Kernel.Net; these stubs serve as
-// the fallback type-correct placeholders used by NativeSearchClient.
-@axiom("Elastic.Clients.Elasticsearch .NET client")
+// ─── Kernel boundary (target-dispatching wrappers) ───────────────────────────
+// Each wrapper below delegates to the fully-qualified kernel function for the
+// active target (`Search.Kernel.Net` on `dotnet`, `Search.Kernel.Jvm` on
+// `jvm`).  The two kernels export identical signatures per-backend
+// (elasticsearch / meilisearch), so calling through a fully-qualified name
+// here — rather than an unqualified, import-flattened one — avoids colliding
+// with this package's own public API of the same name (e.g. `Search.index`,
+// `Search.search`, `Search.delete`).
+//
+// KNOWN COMPILER LIMITATION (verified 2026-07-06, tracked as a follow-up to
+// #5067): `Search.Kernel.Net` / `Search.Kernel.Jvm` bind the Elasticsearch and
+// Meilisearch clients via `extern package <Dotted.Path> { pub func ... }`
+// blocks.  On the current self-hosted compiler this mechanism does not
+// resolve to a real FFI call on *either* backend — a call through it
+// compiles cleanly but throws `"unsupported method '<member>' on the
+// receiver type at this call site (no matching user method, extern
+// binding, or built-in intrinsic)"` (MSIL) / an equivalent JVM auto-FFI
+// resolution failure at runtime, confirmed with both a minimal isolated
+// repro and this package's own kernel.  This is a different, deeper defect
+// than #5067's original finding ("nobody calls the kernel") — the kernel's
+// own extern declarations do not work, independent of this file.  Every
+// wrapper below therefore catches that failure and surfaces it as a typed,
+// honest `Err` instead of an unhandled crash.  This `try`/`catch` is not a
+// permanent design — once `extern package` codegen lands (or the kernels
+// are ported to the working `extern type` + `@externTarget` mechanism, as
+// lyric-mail's and lyric-session's `.NET` kernels already do), these calls
+// will simply start returning real results with no change needed here.
+// See lyric-search/README.md "Platform parity" for the full writeup.
+func searchKernelFfiUnavailable(op: in String, cause: in String): String {
+  return "search kernel FFI binding for '" + op +
+    "' did not resolve on this target (extern package codegen is not yet implemented in the self-hosted compiler — see lyric-search/README.md \"Platform parity\"): " +
+    cause
+}
+
 @cfg(feature = "elasticsearch")
+@cfg(feature = "dotnet")
 func searchConnectElasticsearch(
   url: in String,
   apiKey: in String,
@@ -56,40 +87,198 @@ func searchConnectElasticsearch(
   password: in String,
   connectTimeoutMs: in Int,
   requestTimeoutMs: in Int,
-): Result[Int, String] = Err("elasticsearch not linked")
+): Result[Int, String] {
+  try {
+    Search.Kernel.Net.connectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("connectElasticsearch", bug.message))
+  }
+}
 
-@axiom("Meilisearch .NET client")
-@cfg(feature = "meilisearch")
-func searchConnectMeilisearch(url: in String, apiKey: in String, connectTimeoutMs: in Int): Result[Int, String] = Err("meilisearch not linked")
-
-func searchIndex(clientHandle: in Int, docJson: in String): Result[String, String] = Err("no search backend configured; enable the elasticsearch or meilisearch feature")
-
-func searchIndexBatch(clientHandle: in Int, docsJson: in String): Result[String, String] = Err("no search backend configured")
-
-func searchQuery(clientHandle: in Int, queryJson: in String): Result[String, String] = Err("no search backend configured")
-
-func searchSuggest(
-  clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int
-): Result[String, String] = Err("no search backend configured")
-
-func searchDelete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String] = Err("no search backend configured")
-
-func searchDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, String] = Err("no search backend configured")
-
-func searchExists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String] = Err("no search backend configured")
-
-func searchCreateIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String] = Err("no search backend configured")
-
-func searchConnectBackendElasticsearch(
+@cfg(feature = "elasticsearch")
+@cfg(feature = "jvm")
+func searchConnectElasticsearch(
   url: in String,
   apiKey: in String,
   username: in String,
   password: in String,
   connectTimeoutMs: in Int,
   requestTimeoutMs: in Int,
-): Result[Int, String] = Err("no elasticsearch backend configured; enable the elasticsearch feature in lyric.toml")
+): Result[Int, String] {
+  try {
+    Search.Kernel.Jvm.connectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("connectElasticsearch", bug.message))
+  }
+}
 
-func searchConnectBackendMeilisearch(url: in String, apiKey: in String, connectTimeoutMs: in Int): Result[Int, String] = Err("no meilisearch backend configured; enable the meilisearch feature in lyric.toml")
+@cfg(feature = "meilisearch")
+@cfg(feature = "dotnet")
+func searchConnectMeilisearch(url: in String, apiKey: in String, connectTimeoutMs: in Int): Result[Int, String] {
+  try {
+    Search.Kernel.Net.connectMeilisearch(url, apiKey, connectTimeoutMs)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("connectMeilisearch", bug.message))
+  }
+}
+
+@cfg(feature = "meilisearch")
+@cfg(feature = "jvm")
+func searchConnectMeilisearch(url: in String, apiKey: in String, connectTimeoutMs: in Int): Result[Int, String] {
+  try {
+    Search.Kernel.Jvm.connectMeilisearch(url, apiKey, connectTimeoutMs)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("connectMeilisearch", bug.message))
+  }
+}
+
+@cfg(feature = "dotnet")
+func searchIndex(clientHandle: in Int, docJson: in String): Result[String, String] {
+  try {
+    Search.Kernel.Net.index(clientHandle, docJson)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("index", bug.message))
+  }
+}
+
+@cfg(feature = "jvm")
+func searchIndex(clientHandle: in Int, docJson: in String): Result[String, String] {
+  try {
+    Search.Kernel.Jvm.index(clientHandle, docJson)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("index", bug.message))
+  }
+}
+
+@cfg(feature = "dotnet")
+func searchIndexBatch(clientHandle: in Int, docsJson: in String): Result[String, String] {
+  try {
+    Search.Kernel.Net.indexBatch(clientHandle, docsJson)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("indexBatch", bug.message))
+  }
+}
+
+@cfg(feature = "jvm")
+func searchIndexBatch(clientHandle: in Int, docsJson: in String): Result[String, String] {
+  try {
+    Search.Kernel.Jvm.indexBatch(clientHandle, docsJson)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("indexBatch", bug.message))
+  }
+}
+
+@cfg(feature = "dotnet")
+func searchQuery(clientHandle: in Int, queryJson: in String): Result[String, String] {
+  try {
+    Search.Kernel.Net.search(clientHandle, queryJson)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("search", bug.message))
+  }
+}
+
+@cfg(feature = "jvm")
+func searchQuery(clientHandle: in Int, queryJson: in String): Result[String, String] {
+  try {
+    Search.Kernel.Jvm.search(clientHandle, queryJson)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("search", bug.message))
+  }
+}
+
+@cfg(feature = "dotnet")
+func searchSuggest(
+  clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int
+): Result[String, String] {
+  try {
+    Search.Kernel.Net.suggest(clientHandle, index, text, field, size)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("suggest", bug.message))
+  }
+}
+
+@cfg(feature = "jvm")
+func searchSuggest(
+  clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int
+): Result[String, String] {
+  try {
+    Search.Kernel.Jvm.suggest(clientHandle, index, text, field, size)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("suggest", bug.message))
+  }
+}
+
+@cfg(feature = "dotnet")
+func searchDelete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String] {
+  try {
+    Search.Kernel.Net.delete(clientHandle, index, id)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("delete", bug.message))
+  }
+}
+
+@cfg(feature = "jvm")
+func searchDelete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String] {
+  try {
+    Search.Kernel.Jvm.delete(clientHandle, index, id)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("delete", bug.message))
+  }
+}
+
+@cfg(feature = "dotnet")
+func searchDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, String] {
+  try {
+    Search.Kernel.Net.deleteIndex(clientHandle, index)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("deleteIndex", bug.message))
+  }
+}
+
+@cfg(feature = "jvm")
+func searchDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, String] {
+  try {
+    Search.Kernel.Jvm.deleteIndex(clientHandle, index)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("deleteIndex", bug.message))
+  }
+}
+
+@cfg(feature = "dotnet")
+func searchExists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String] {
+  try {
+    Search.Kernel.Net.exists(clientHandle, index, id)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("exists", bug.message))
+  }
+}
+
+@cfg(feature = "jvm")
+func searchExists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String] {
+  try {
+    Search.Kernel.Jvm.exists(clientHandle, index, id)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("exists", bug.message))
+  }
+}
+
+@cfg(feature = "dotnet")
+func searchCreateIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String] {
+  try {
+    Search.Kernel.Net.createIndex(clientHandle, index, mappingJson)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("createIndex", bug.message))
+  }
+}
+
+@cfg(feature = "jvm")
+func searchCreateIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String] {
+  try {
+    Search.Kernel.Jvm.createIndex(clientHandle, index, mappingJson)
+  } catch Bug as bug {
+    Err(searchKernelFfiUnavailable("createIndex", bug.message))
+  }
+}
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 /// Error returned by SearchClient operations.
@@ -321,22 +510,18 @@ pub func connectMeilisearch(
   }
 }
 
-/// Dispatch to the configured backend.  Returns Err when no feature is enabled.
+/// Dispatch to the configured backend by name.  Returns Err for a provider
+/// string that does not match the backend feature compiled into this build
+/// (`@cfg(feature = "elasticsearch")` / `@cfg(feature = "meilisearch")` — see
+/// lyric.toml; the two features are mutually exclusive per build, mirroring
+/// the `dotnet` / `jvm` target split).
 @experimental
+@cfg(feature = "elasticsearch")
 pub func connect(provider: in String): Result[SearchClient, SearchError]
   requires: provider.length > 0
 {
   if provider == "elasticsearch" {
-    match searchConnectBackendElasticsearch("", "", "", "", 5000, 30000) {
-      case Ok(handle) -> {
-        val sc: SearchClient = NativeSearchClient(clientHandle = handle)
-        return Ok(sc)
-      }
-      case Err(err) -> return Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
-    }
-  }
-  if provider == "meilisearch" {
-    match searchConnectBackendMeilisearch("", "", 5000) {
+    match searchConnectElasticsearch("", "", "", "", 5000, 30000) {
       case Ok(handle) -> {
         val sc: SearchClient = NativeSearchClient(clientHandle = handle)
         return Ok(sc)
@@ -346,7 +531,30 @@ pub func connect(provider: in String): Result[SearchClient, SearchError]
   }
   return Err(
     SearchError(
-      message = "Unknown search provider: " + provider + ". Use \"elasticsearch\" or \"meilisearch\".",
+      message = "Unknown search provider: " + provider + ". This build only supports \"elasticsearch\".",
+      code = "UNKNOWN_PROVIDER",
+      statusCode = 0
+    )
+  )
+}
+
+@experimental
+@cfg(feature = "meilisearch")
+pub func connect(provider: in String): Result[SearchClient, SearchError]
+  requires: provider.length > 0
+{
+  if provider == "meilisearch" {
+    match searchConnectMeilisearch("", "", 5000) {
+      case Ok(handle) -> {
+        val sc: SearchClient = NativeSearchClient(clientHandle = handle)
+        return Ok(sc)
+      }
+      case Err(err) -> return Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
+    }
+  }
+  return Err(
+    SearchError(
+      message = "Unknown search provider: " + provider + ". This build only supports \"meilisearch\".",
       code = "UNKNOWN_PROVIDER",
       statusCode = 0
     )
