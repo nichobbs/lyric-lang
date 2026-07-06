@@ -2462,10 +2462,12 @@ func lowerSliceConcatJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmT
 }
 
 // `xs.slice(start, end)`: a new slice holding the half-open sub-range
-// `[start, end)`.  A negative `end - start` throws explicitly (`newarray`
-// with a negative size already faults with `NegativeArraySizeException`, but
-// spelling it out here keeps the guard's wording consistent with the MSIL
-// backend's explicit check).
+// `[start, end)`.  `start < 0`, `end < start`, or `end > xs.length` all throw
+// explicitly with the same panic convention (#5252) — otherwise an
+// out-of-range `start`/`end` would fall through to `System.arraycopy` and
+// surface as a raw `ArrayIndexOutOfBoundsException` instead of the project's
+// user-panic convention, and disagree with what MSIL's `IList`-backed path
+// would fault on first.
 func lowerSliceSliceJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmType, args: in List[CallArg]): JvmType {
   val e = sliceElemTypeJvm(recvTy)
   val recvSlot = allocSlot(ctx, "__slicesub_recv_" + toString(ctx.slotTicker.count), recvTy)
@@ -2484,15 +2486,28 @@ func lowerSliceSliceJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmTy
   }
   val endSlot = allocSlot(ctx, "__slicesub_end_" + toString(ctx.slotTicker.count), JInt)
   emitStore(insns, endSlot, JInt)
+  val lengthSlot = allocSlot(ctx, "__slicesub_len_" + toString(ctx.slotTicker.count), JInt)
+  emitLoad(insns, recvSlot, recvTy)
+  insns.add(LArraylength)
+  emitStore(insns, lengthSlot, JInt)
   emitLoad(insns, endSlot, JInt)
   emitLoad(insns, startSlot, JInt)
   insns.add(LIsub)
   val cntSlot = allocSlot(ctx, "__slicesub_cnt_" + toString(ctx.slotTicker.count), JInt)
   emitStore(insns, cntSlot, JInt)
+  val badL = freshLabel(ctx)
   val okL = freshLabel(ctx)
-  emitLoad(insns, cntSlot, JInt)
-  insns.add(LIfge(label = okL))
-  insns.add(LPushString(s = "slice(start, end) requires end >= start"))
+  emitLoad(insns, startSlot, JInt)
+  insns.add(LIflt(label = badL))
+  emitLoad(insns, endSlot, JInt)
+  emitLoad(insns, startSlot, JInt)
+  insns.add(LIfIcmplt(label = badL))
+  emitLoad(insns, endSlot, JInt)
+  emitLoad(insns, lengthSlot, JInt)
+  insns.add(LIfIcmpgt(label = badL))
+  insns.add(LGoto(label = okL))
+  insns.add(LLabel(name = badL))
+  insns.add(LPushString(s = "slice(start, end) requires 0 <= start <= end <= length"))
   emitPanicFromStack(ctx, insns)
   insns.add(LLabel(name = okL))
   val zeroSlot = storeIntConstSlotJvm(ctx, insns, 0)

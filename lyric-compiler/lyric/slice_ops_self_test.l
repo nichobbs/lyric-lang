@@ -132,17 +132,40 @@ test "slice of an empty range" {
 }
 
 test "slice with end < start panics with the expected message" {
+  // A direct try/catch (not a lambda passed to `assertPanics`/
+  // `assertPanicsWith`) sidesteps a pre-existing, unrelated JVM-only bug
+  // where a lambda argument's caught exception message comes back as the
+  // closure's class name instead of the thrown message (#5251).
   val xs: slice[Int] = [1, 2, 3]
-  var panicked = false
   var msg = ""
   try {
     val _ = xs.slice(2, 0)
   } catch Bug as b {
-    panicked = true
     msg = b.message
   }
-  assertTrue(panicked, "slice(2, 0) should panic")
-  assertTrue(msg.contains("requires end >= start"), "panic message: " + msg)
+  assertTrue(msg.contains("requires 0 <= start <= end <= length"), "panic message: " + msg)
+}
+
+test "slice with a negative start panics" {
+  val xs: slice[Int] = [1, 2, 3]
+  var msg = ""
+  try {
+    val _ = xs.slice(-1, 2)
+  } catch Bug as b {
+    msg = b.message
+  }
+  assertTrue(msg.contains("requires 0 <= start <= end <= length"), "panic message: " + msg)
+}
+
+test "slice with end past the slice's length panics" {
+  val xs: slice[Int] = [1, 2, 3]
+  var msg = ""
+  try {
+    val _ = xs.slice(0, 100)
+  } catch Bug as b {
+    msg = b.message
+  }
+  assertTrue(msg.contains("requires 0 <= start <= end <= length"), "panic message: " + msg)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

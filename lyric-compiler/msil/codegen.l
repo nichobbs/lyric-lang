@@ -11274,10 +11274,13 @@ func lowerSliceConcatMsil(
 }
 
 // `xs.slice(start, end)`: a new slice holding the half-open sub-range
-// `[start, end)`.  A negative `end - start` (an invalid range) throws
-// explicitly rather than the List-backed path silently returning an empty
-// result while the array-backed path would fault inside `newarr` — the two
-// runtime representations must agree, not just the common in-range case.
+// `[start, end)`.  `start < 0`, `end < start`, or `end > xs.length` all throw
+// explicitly with the same panic convention (#5252) — otherwise an
+// out-of-range `start`/`end` would fall through to the copy loop and surface
+// as a raw `IndexOutOfRangeException`/`ArgumentOutOfRangeException` instead
+// of the project's user-panic convention, and the array-backed vs
+// `List`-backed representations could disagree on exactly which access
+// faults first.
 func lowerSliceSliceMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -11301,17 +11304,33 @@ func lowerSliceSliceMsil(
   }
   val endSlot = allocSlotMsil(fctx, "__slicesub_end_" + toString(fctx.slotTicker.count), MInt)
   emitStoreSlot(insns, endSlot, fctx.paramCount)
+  val lengthSlot = allocSlotMsil(fctx, "__slicesub_len_" + toString(fctx.slotTicker.count), MInt)
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  emitListCastRecv(cctx, insns, recvTy)
+  emitListGetCount(cctx, insns, recvTy)
+  emitStoreSlot(insns, lengthSlot, fctx.paramCount)
   val cntSlot = allocSlotMsil(fctx, "__slicesub_cnt_" + toString(fctx.slotTicker.count), MInt)
   emitLoadSlot(insns, endSlot, fctx.paramCount)
   emitLoadSlot(insns, startSlot, fctx.paramCount)
   insns.add(MSub)
   emitStoreSlot(insns, cntSlot, fctx.paramCount)
+  val badL = freshLabelMsil(fctx)
   val okL = freshLabelMsil(fctx)
-  emitLoadSlot(insns, cntSlot, fctx.paramCount)
+  emitLoadSlot(insns, startSlot, fctx.paramCount)
   insns.add(MLdcI4(v = 0))
   insns.add(MClt)
-  insns.add(MBrFalse(label = okL))
-  val msgTok = ctxInternUs(cctx.lctx, "slice(start, end) requires end >= start")
+  insns.add(MBrTrue(label = badL))
+  emitLoadSlot(insns, endSlot, fctx.paramCount)
+  emitLoadSlot(insns, startSlot, fctx.paramCount)
+  insns.add(MClt)
+  insns.add(MBrTrue(label = badL))
+  emitLoadSlot(insns, endSlot, fctx.paramCount)
+  emitLoadSlot(insns, lengthSlot, fctx.paramCount)
+  insns.add(MCgt)
+  insns.add(MBrTrue(label = badL))
+  insns.add(MBr(label = okL))
+  insns.add(MLabel(id = badL))
+  val msgTok = ctxInternUs(cctx.lctx, "slice(start, end) requires 0 <= start <= end <= length")
   insns.add(MLdStr(token = msgTok))
   emitMsilPanicFromStack(cctx, insns)
   insns.add(MLabel(id = okL))
