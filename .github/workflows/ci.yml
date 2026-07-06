@@ -3328,18 +3328,6 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/wire_di_self_test.l
           echo "wire-DI self-test ran: wire_di_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
-          # docs/58 (D121) wire-templates RUNTIME self-test on JVM — real
-          # expanded wires (include, contributes[T], provided mapping,
-          # replace/remove, aliasing) compiled through the self-hosted
-          # `Jvm.Bridge` `compileToJarBundled` and run under `java`.
-          # Imports only `Std.*`; the dotnet half runs in the .NET job.
-          # Runs inside this step (not as its own `background: true` step)
-          # so the batch's peak concurrency stays at its pre-docs/58 count —
-          # a standalone step reproduced the #4486/#4841 concurrent-output
-          # corruption (SIGABRT ~9s in, output interleaved into unrelated
-          # steps' groups).
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/wire_templates_self_test.l
-          echo "wire-templates self-test ran: wire_templates_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
       # Aspect-weave self-test on JVM (#3402) — the JVM half of the dotnet-job
       # step above.  Pins the JVM woven-call resolution fix (`collectAspectWovenSigs`
@@ -4328,6 +4316,35 @@ jobs:
 
       - name: Wait for all parallel tests
         wait-all: true
+
+      # docs/58 (D121) wire-templates RUNTIME self-test on JVM — real
+      # expanded wires (include, contributes[T], provided mapping,
+      # replace/remove, aliasing) compiled through the self-hosted
+      # `Jvm.Bridge` `compileToJarBundled` and run under `java`.  Imports
+      # only `Std.*`; the dotnet half runs in the .NET job.
+      #
+      # Deliberately AFTER the wait-all barrier (fully serialized), not in
+      # the background batch: two consecutive batch placements of this
+      # suite aborted in CI with signatures that do not reproduce locally
+      # against the same stage-1 artifact, Debug AOT binary, and run order
+      # (first a SIGABRT ~9s in with interleaved output, then a
+      # once-off NRE ~65s in) — the #4486/#4841 batch-pressure flake class
+      # this job's earlier comments document, and the same remediation.
+      - name: Wire-templates self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping wire-templates JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping wire-templates JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/wire_templates_self_test.l
+          echo "wire-templates self-test ran: wire_templates_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
   ecosystem-security-tests:
     runs-on: ubuntu-latest
     needs: [build]
