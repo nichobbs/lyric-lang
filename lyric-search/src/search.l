@@ -53,8 +53,8 @@ import Search.Kernel.Jvm
 // with this package's own public API of the same name (e.g. `Search.index`,
 // `Search.search`, `Search.delete`).
 //
-// KNOWN COMPILER LIMITATION (verified 2026-07-06, tracked as a follow-up to
-// #5067): `Search.Kernel.Net` / `Search.Kernel.Jvm` bind the Elasticsearch and
+// KNOWN COMPILER LIMITATION (verified 2026-07-06, tracked as #5324):
+// `Search.Kernel.Net` / `Search.Kernel.Jvm` bind the Elasticsearch and
 // Meilisearch clients via `extern package <Dotted.Path> { pub func ... }`
 // blocks.  On the current self-hosted compiler this mechanism does not
 // resolve to a real FFI call on *either* backend — a call through it

@@ -59,10 +59,8 @@ precedent for the real fix: either implement `extern package` codegen in
 both `lyric-compiler/msil/codegen.l` and `lyric-compiler/jvm/codegen/`, or
 port each affected kernel to the working `extern type` + `@externTarget`
 mechanism `lyric-mail`'s `.NET` kernel and `lyric-session`'s `.NET` kernel
-already use. Recommend filing this as its own tracked issue — call it
-"extern package calls crash at runtime on both MSIL and JVM backends" —
-and treating it as a prerequisite for #5067's *live-connectivity* goal,
-independent of the wiring fix landed here.
+already use. Tracked as **issue #5324**, a prerequisite for #5067's
+*live-connectivity* goal, independent of the wiring fix landed here.
 
 **Also discovered, also pre-existing and out of scope here:**
 `serializeDoc`'s `for k in doc.fields` loop (a `Map[String, String]`

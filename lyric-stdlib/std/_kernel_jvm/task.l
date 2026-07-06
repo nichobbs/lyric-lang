@@ -355,6 +355,12 @@ pub func disposeScope(s: in Scope): Unit {
 // =====================================================================
 val __ambientSlot: JThreadLocal = JThreadLocal.new()
 
+// Deadline companion to `__ambientSlot`, always `.set()` in lockstep with
+// it (install/restore below) — `flag` alone can't carry a
+// `makeCancelSourceTimeout` token's deadline, so a token round-tripped
+// through the ambient slot silently lost its auto-cancel (#5320).
+val __ambientDeadlineSlot: JThreadLocal = JThreadLocal.new()
+
 // A ThreadLocal that is never `.set()` anywhere, so `.get()` reliably
 // returns the JVM-default `null` on any thread — used as a comparison
 // sentinel since Lyric has no `null` literal (#4775).
@@ -367,7 +373,8 @@ pub func currentToken(): CancellationToken {
   if v == __ambientNullProbe.get() {
     noCancellation()
   } else {
-    CancellationToken(flag = v, deadlineMs = 0i64)
+    val d: Long = __ambientDeadlineSlot.get()
+    CancellationToken(flag = v, deadlineMs = d)
   }
 }
 
@@ -376,12 +383,14 @@ pub func currentToken(): CancellationToken {
 pub func installToken(token: in CancellationToken): CancellationToken {
   val previous = currentToken()
   __ambientSlot.set(token.flag)
+  __ambientDeadlineSlot.set(token.deadlineMs)
   previous
 }
 
 /// Restore the ambient slot to `previous`.
 pub func restoreToken(previous: in CancellationToken): Unit {
   __ambientSlot.set(previous.flag)
+  __ambientDeadlineSlot.set(previous.deadlineMs)
 }
 
 /// True when the ambient slot holds an installed token on this

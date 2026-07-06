@@ -253,8 +253,11 @@ test-typechecker: ## Run the type-checker self-test
 #     llvm_codegen_self_test.l, llvm_collections_self_test.l,
 #     llvm_ffi_self_test.l, llvm_heap_self_test.l, llvm_stdlib_self_test.l
 #     (see `test-native` below for llvm_ir_self_test.l's sibling).
-#   - blocked on a known issue on `--target dotnet` specifically:
-#     wire_di_self_test.l (#5021; passes `--target jvm`, per docs/44 m-85).
+#     wire_di_self_test.l previously listed here too (blocked on #5021 for
+#     `--target dotnet`, docs/44 m-85) — #5021 shipped (D121), so it's back
+#     in the list below along with its docs/58 siblings
+#     (config_templates_self_test.l, wire_expand_self_test.l,
+#     wire_templates_self_test.l).
 #   - pre-existing, CI-unwired, currently broken on this grammar/type-checker
 #     version (parse or type errors, unrelated to this Makefile fix, predate
 #     every change in this PR — confirmed via `git log` on each file):
@@ -286,6 +289,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/cli_workspace_builder_self_test.l \
 	lyric-compiler/lyric/closure_correctness_self_test.l \
 	lyric-compiler/lyric/closure_zero_overhead_self_test.l \
+	lyric-compiler/lyric/config_templates_self_test.l \
 	lyric-compiler/lyric/const_pattern_self_test.l \
 	lyric-compiler/lyric/contract_elaborator_self_test.l \
 	lyric-compiler/lyric/contract_meta_emit_self_test.l \
@@ -368,6 +372,9 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/verifier_records_self_test.l \
 	lyric-compiler/lyric/verifier_self_test.l \
 	lyric-compiler/lyric/weaver_self_test.l \
+	lyric-compiler/lyric/wire_di_self_test.l \
+	lyric-compiler/lyric/wire_expand_self_test.l \
+	lyric-compiler/lyric/wire_templates_self_test.l \
 	lyric-compiler/lyric/yaml_stdlib_field_abi_self_test.l
 
 test-emitter: ## Run the empirically-verified --target dotnet, no-special-env self-test set (see the list comment above for exclusions)

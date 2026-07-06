@@ -11351,6 +11351,47 @@ choice follows), D-progress-543/555/519 (the phantom-kernel-shim fix
 pattern this JVM rewrite follows), Epic #1877 (closure ABI, `Action<T>`
 erasure), docs/44 (JVM production-readiness plan).
 
+**Review hardening (same PR, #5320/#5321/#5323).** Three findings from
+re-review, all fixed in the same change:
+
+1. **#5320 — JVM ambient slot silently dropped `deadlineMs`.**
+   `_kernel_jvm/task.l`'s `__ambientSlot` (a raw `java.lang.ThreadLocal`,
+   not a compiler-synthesised `AsyncLocal[T]` like the .NET side) only
+   threaded `token.flag` through `installToken`/`currentToken`/
+   `restoreToken`; a token created via `makeCancelSourceTimeout` and
+   installed as ambient lost its deadline the moment it was read back via
+   `currentToken()` (`deadlineMs` hardcoded to `0i64`), silently disabling
+   its auto-cancel. Fixed with a second, lockstep `__ambientDeadlineSlot`
+   ThreadLocal. Verified with a standalone repro: `currentToken().deadlineMs`
+   now round-trips a real epoch-ms value instead of `0`.
+2. **#5323 — `task_tests.l`'s sequential `main()` masked two of the three
+   Scope tests' real status.** A bare sequential call list aborts the whole
+   program at the first `Bug` panic, so once
+   `testScopeNormalCompletionRunsEveryChild` started failing, the two Scope
+   tests after it never ran at all — their pass/fail status was simply
+   unknown, not "known to fail" as the header implied. Fixed with a
+   `runScopeTest` helper that `try`/`catch Bug`-wraps each Scope test
+   individually and reports it, so the suite always completes and every
+   test's real status is observed. This surfaced a **new finding**:
+   `testScopeWithNoChildrenCompletesImmediately` — which spawns zero
+   children — also fails on both targets, with a null-dereference inside
+   `awaitAll` itself, not the cross-package closure-invocation bug the
+   non-empty-scope tests hit. All three Scope tests are confirmed failing
+   on both targets now (not two), each independently reported.
+3. **#5322 — no tracked issue for the `lyric-search` extern-package FFI
+   gap.** Filed as **issue #5324** ("`extern package` FFI binding
+   mechanism doesn't resolve to a real call on either backend") so the
+   WS3 finding (`extern package` FFI resolution crashing at runtime on
+   both targets, affecting at least 14 other ecosystem-library kernels)
+   isn't only discoverable via git history; `lyric-search/README.md` and
+   `search.l`'s kernel-boundary comment now link it directly instead of
+   only recommending that someone file it.
+
+None of the three change the headline conclusion (`Scope`'s *public* API
+logic is sound; the bugs are in the shared `awaitAll`/closure-invocation
+plumbing beneath it) — they make the existing, already-honest disclosure
+more precise and closer to what the code actually does.
+
 ---
 ## Decisions deferred to v2 or later
 
