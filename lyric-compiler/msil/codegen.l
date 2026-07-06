@@ -11198,6 +11198,14 @@ func lowerSliceAppendMsil(
       emitLoadSlot(insns, argSlot, fctx.paramCount)
       if e == MObject {
         boxIfNeededMsil(cctx, insns, argTy)
+      } else {
+        // M6 numeric widening (typechecker_exprs.l `argSatisfiesParam`) lets
+        // `xs.append(4)` type-check against a `slice[Long]` receiver — the
+        // pushed `Int` (`ldc.i4`) must be widened to the destination array's
+        // element width before `stelem`, or it silently zero-extends into a
+        // wrong 64-bit value instead of a proper `conv.i8` sign-extension
+        // (#5254).
+        coerceCallArgMsil(cctx, insns, argTy, e)
       }
       insns.add(MStelem(typeToken = tok))
       emitLoadSlot(insns, newSlot, fctx.paramCount)

@@ -612,6 +612,7 @@ jobs:
             lyric-compiler/lyric/cli_build_self_test.l \
             lyric-compiler/lyric/verifier_self_test.l \
             lyric-compiler/lyric/closure_correctness_self_test.l \
+            lyric-compiler/lyric/slice_append_widening_self_test.l \
             lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
             lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
             lyric-compiler/lyric/app_host_self_test.l \
