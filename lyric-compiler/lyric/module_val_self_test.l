@@ -12,6 +12,14 @@
 //! The tests below exercise both paths and verify that function bodies can
 //! read module-level vals of each kind at runtime.
 //!
+//! An untyped (no `: Type` annotation) module-level val whose type must be
+//! inferred from its initializer is a THIRD path, gated on #5298: the token
+//! pre-scan used to default an untyped val's recorded MSIL type to `MObject`
+//! regardless of what the initializer actually produced, so a later `.length`
+//! read mis-dispatched through the List/IList fallback and crashed at runtime
+//! with `InvalidCastException: String -> IList`. `untypedGreeting` below
+//! covers the regression.
+//!
 //! JVM target parity is tracked in issue #2210.  The JVM emitter currently
 //! no-ops on `IVal` items at package scope; this CI step covers MSIL only.
 //!
@@ -68,6 +76,16 @@ val negated: Int = 0 - 55
 // Reference-typed extern val: initialized via newSb() in .cctor (#1576).
 val sharedSb: SB = newSb()
 
+// ── Untyped inits (type must be inferred from the initializer, #5298) ────────
+// No `: String` annotation: before the fix, the pre-scan recorded MObject for
+// this field's read type (instead of the String the initializer actually
+// produces), so `.length` below crashed with InvalidCastException.
+val untypedGreeting = "https://"
+
+func untypedGreetingLength(): Int {
+  untypedGreeting.length
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,4 +126,12 @@ test "module-level String val usable in string operations" {
 test "extern-type val initialized in .cctor (#1576)" {
   val result = sbToString(sharedSb)
   assertEqual(result, "", "extern-type val is non-null: empty StringBuilder produces empty string")
+}
+
+test "untyped module-level String val infers String, not MObject (#5298)" {
+  assertEqualInt(untypedGreeting.length, 8, "untypedGreeting.length")
+}
+
+test "untyped module-level String val readable from a helper function (#5298)" {
+  assertEqualInt(untypedGreetingLength(), 8, "untypedGreetingLength()")
 }

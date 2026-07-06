@@ -29751,3 +29751,30 @@ dependencies (both backends).
 **Related:** D121, docs/58 (now specced), docs/01 §10.5–§10.6, docs/25
 §12, #5021 (closed by this entry), #2972 (`scoped[X]` unchanged/deferred),
 #5284–#5290 (review findings addressed above).
+
+### D-progress-608 — MSIL: untyped top-level `val`'s inferred type no longer defaults to `MObject` (#5298)
+
+**Fixed.** An untyped (no `: Type` annotation) package-scope `val` whose
+initializer is a literal — most importantly a `String` literal — used to
+have its pre-scan-recorded MSIL type default to `MObject` regardless of
+the initializer's actual type. A later `.length` read on such a val then
+mis-dispatched through the generic `MObject` fallback (which assumes a
+List-backed slice) and crashed with `InvalidCastException: Unable to cast
+object of type 'System.String' to type 'System.Collections.IList'` — even
+for reads within the same package/file, no cross-package access involved.
+
+`lyric-compiler/msil/codegen.l`'s new `inferUntypedStaticValMsilType`
+infers the MSIL type from the initializer's literal shape (string/float/
+int/bool/char/unit/interpolated-string, recursing through parens) at the
+`IVal` pre-scan arm whenever `decl.ty` is `None`, replacing the `MObject`
+default. Non-literal initializers (calls, records, collections, …) are
+unchanged and still record `MObject`.
+
+**Tests.** `lyric-compiler/lyric/module_val_self_test.l` gained an
+untyped `String` val plus two regression tests (direct `.length` read and
+a read through a helper function), covering the exact reported shape.
+
+**Related:** `docs/03-decision-log.md` D-progress-608 (full root-cause
+writeup), D-progress-606 (#5258 — the sibling `staticValTokens`/
+`staticValMsilTypes`-rooted bug, fixed via qualified lookup keys rather
+than initializer-type inference).

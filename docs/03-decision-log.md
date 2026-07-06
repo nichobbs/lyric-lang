@@ -10546,7 +10546,76 @@ downstream report against), #5177/#5222/D-progress-599/D-progress-600
 (a different cross-package MSIL bundler bug family with superficially
 similar symptoms), docs/45 (contract-metadata direct resolution, relevant
 to the restored-dependency scope boundary above).
+
 ---
+
+## D-progress-608 — MSIL: untyped top-level `val`'s inferred type defaulted to `MObject`, crashing `.length` with `InvalidCastException: String -> IList` (#5298)
+
+**Status:** ACCEPTED
+
+**Symptom.** A package-scope (top-level) `val` declared without an explicit
+type annotation, whose initializer is a `String` literal (e.g. `val prefix
+= "https://"`), crashed at runtime with `System.InvalidCastException:
+Unable to cast object of type 'System.String' to type
+'System.Collections.IList'` when its `.length` property was read —
+anywhere in the program, including from the same package, with no
+cross-package reference involved. Explicitly annotating the `val` (`val
+prefix: String = "https://"`) was one, but not the only, workaround.
+
+**Root cause.** `lyric-compiler/msil/codegen.l`'s item pre-scan (the pass
+that registers package-scope `IVal` declarations' MSIL type for later
+`EPath`/qualified-access reads via `cctx.staticValMsilTypes`) only recorded
+the correct type when the `val` had an explicit annotation
+(`typeExprToMsilCtx(cctx, te, pkgName)`); an untyped `val` — `decl.ty ==
+None` — fell back to `MObject` unconditionally, discarding the fact that
+the initializer was a string literal. A read site later looked up this
+recorded `MObject` type and fed it into `.length`'s generic-receiver
+fallback arm, which assumes any `MObject`-typed receiver is a
+`List`-backed slice and unconditionally emits `castclass IList` +
+`ICollection.get_Count` — correct for actual slices (whose static type
+also erases to `MObject`), wrong for a boxed `System.String`, which does
+not implement `IList`. The field's *actual* runtime type was already
+inferred correctly at the separate emission-site pass (`lowerExprMsil` on
+the initializer, used to build the real FieldDef signature) — only the
+pre-scan's separately-tracked bookkeeping copy was wrong, so the produced
+program was internally inconsistent: a real `String` field whose readers
+believed it was an opaque `MObject`/List.
+
+Not a regression — present since early static-val support, independent of
+D-progress-606's cross-package qualified-access fix (#5258), which added
+qualified lookup keys to the same maps but did not touch the
+`decl.ty`-only inference this bug lives in.
+
+`ConstDecl.ty` is a non-optional `TypeExpr` in the AST (`parser_ast.l`), so
+the equivalent `IConst` arm cannot hit this gap — the bug is `IVal`-only.
+
+**Fix.** Added `inferUntypedStaticValMsilType(e: in Expr): MsilType`,
+matching on `decl.init`'s literal shape (String/triple-string/raw-string →
+`MString`, float → `MDouble`, int → `MInt`/`MLong` per range and suffix,
+bool/char/unit → `MBool`/`MChar`/`MVoid`, interpolated string → `MString`,
+parenthesized → recurse), used at the `IVal` pre-scan arm in place of the
+`MObject` default whenever `decl.ty` is `None`. Anything outside this
+literal set (calls, records, collections, …) still falls back to
+`MObject` — unchanged prior behavior for those shapes; an explicit type
+annotation is still required to type those precisely.
+
+**Verification.** Reproduced the reporter's exact single-file repro (an
+untyped top-level `val` whose `.length` is read from `main`) by inspection
+against the fixed pre-scan logic. Extended
+`lyric-compiler/lyric/module_val_self_test.l` with an untyped `String` val
+(`untypedGreeting`) and two new tests: reading `.length` directly, and
+reading it through a separate top-level helper function (matching the
+downstream report's "read via a helper function" shape) — both assert the
+correct length rather than faulting.
+
+**Related:** D-progress-606 (#5258 — the other `staticValTokens`/
+`staticValMsilTypes`-rooted `.length`/IList-cast bug, cross-package
+qualified access rather than untyped-declaration inference), #2539
+(comments at the `.length` generic-fallback dispatch site explaining the
+List/IList assumption this bug's read site fell into).
+
+---
+
 ## D121 — Library-contributed DI extensions ship per docs/58: config templates, `contributes[T]`, wire templates — implemented as a front-end expansion (`Lyric.WireExpand`), with the MSIL wire bootstrap/accessor ABI (#5021) fixed to make wires callable on both targets
 
 **Date:** 2026-07-06
