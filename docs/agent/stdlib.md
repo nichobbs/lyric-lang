@@ -35,11 +35,11 @@ Common operations:
 ```lyric
 r.isOk(): Bool
 r.isErr(): Bool
-r.unwrap(): T                    // panics on Err
-r.unwrapOr(default: T): T
-r.map { v -> transform(v) }: Result[U, E]
-r.mapErr { e -> transform(e) }: Result[T, F]
-r.andThen { v -> other(v) }: Result[U, E]  // flatMap
+r.unwrapResult(): T                     // panics on Err
+r.unwrapResultOr(default: T): T
+r.mapResult { v -> transform(v) }: Result[U, E]
+r.mapResultErr { e -> transform(e) }: Result[T, F]
+r.andThenResult { v -> other(v) }: Result[U, E]  // flatMap
 ```
 
 ### Option[T]
@@ -55,12 +55,11 @@ Common operations:
 ```lyric
 o.isSome(): Bool
 o.isNone(): Bool
-o.unwrap(): T                    // panics on None
+o.unwrapOption(): T                     // panics on None
 o.unwrapOr(default: T): T
-o.map { v -> transform(v) }: Option[U]
-o.filter { v -> predicate(v) }: Option[T]
+o.mapOption { v -> transform(v) }: Option[U]
+o.filterOption { v -> predicate(v) }: Option[T]
 o.orElse { -> other() }: Option[T]
-o.toResult(err: E): Result[T, E]
 ```
 
 ### Builtins
