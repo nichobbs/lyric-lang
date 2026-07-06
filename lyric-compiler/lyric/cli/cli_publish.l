@@ -397,7 +397,11 @@ func cmdPublish(argv: in slice[String]): Int {
 func runRestoreWithRetry(restoreArgs: in List[String]): Int {
   var attempt = 1
   while attempt <= 4 {
-    val captureResult = ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 300000)
+    val captureResult = try {
+      ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 300000)
+    } catch Bug as b {
+      CaptureResult(stdout = "", stderr = b.message, exitCode = -1, timedOut = false)
+    }
     if not Str.isEmpty(captureResult.stdout) {
       Console.print(captureResult.stdout)
     }
