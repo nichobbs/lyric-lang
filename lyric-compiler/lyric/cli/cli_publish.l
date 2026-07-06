@@ -12,6 +12,7 @@ import Std.Errors
 import Std.Hash as Hash
 import Std.Char as Ch
 import Std.ProcessCapture as ProcessCapture
+import Std.Time as Time
 import Lyric.Manifest as Mf
 import Lyric.Pack as Pack
 import Lyric.Workspace as Ws
@@ -270,13 +271,7 @@ func cmdPublish(argv: in slice[String]): Int {
       }
     }
   }
-  val restoreExit = match Process.run("dotnet", restoreArgs) {
-    case Ok(code) -> code
-    case Err(e) -> {
-      printErr("publish: dotnet restore failed: " + IOError.message(e))
-      return 1
-    }
-  }
+  val restoreExit = runRestoreWithRetry(restoreArgs)
   if restoreExit != 0 {
     return restoreExit
   }
@@ -386,6 +381,58 @@ func cmdPublish(argv: in slice[String]): Int {
 
   Console.println("publish: pushed " + pkg.name + " " + effectiveVersion + " to " + pushRegistry)
   0
+}
+
+// Run `dotnet restore` for the temp publish csproj, retrying on NU1102.
+//
+// NuGet.org's search index can lag behind a `dotnet nuget push` that already
+// returned success: a Lyric package dependency declared in this manifest
+// (e.g. a sibling ecosystem library published moments earlier in the same
+// release run) can still 404 with NU1102 for a short window after its own
+// push has completed. Retry with the same 30s/60s/90s backoff the ecosystem
+// publish workflow already uses around `lyric build` (see
+// .github/workflows/publish.yml) -- this restore sits inside `lyric publish`
+// itself and was previously unretried, so it failed immediately on the same
+// transient race the workflow-level retry was meant to cover.
+func runRestoreWithRetry(restoreArgs: in List[String]): Int {
+  var attempt = 1
+  while attempt <= 4 {
+    val captureResult = try {
+      ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 300000)
+    } catch Bug as b {
+      CaptureResult(stdout = "", stderr = b.message, exitCode = -1, timedOut = false)
+    }
+    if not Str.isEmpty(captureResult.stdout) {
+      Console.print(captureResult.stdout)
+    }
+    if not Str.isEmpty(captureResult.stderr) {
+      Console.error(captureResult.stderr)
+    }
+    if captureResult.timedOut {
+      printErr("publish: dotnet restore timed out after 300 seconds")
+      return 1
+    }
+    if captureResult.exitCode == -1 {
+      printErr("publish: dotnet restore failed to start (is dotnet on PATH?)")
+      return 1
+    }
+    if captureResult.exitCode == 0 {
+      return 0
+    }
+    val isIndexingLag = captureResult.stdout.contains("NU1102") or captureResult.stderr.contains("NU1102")
+    if not isIndexingLag or attempt == 4 {
+      return captureResult.exitCode
+    }
+    val backoffMs = attempt * 30000
+    printErr(
+      "publish: NU1102 (NuGet indexing delay) on attempt " + toString(attempt) + "; retrying in " +
+        toString(backoffMs / 1000) +
+        "s"
+    )
+    Time.sleepMillis(backoffMs)
+    attempt += 1
+  }
+  1
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
