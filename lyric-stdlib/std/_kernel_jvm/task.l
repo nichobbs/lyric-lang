@@ -128,12 +128,20 @@ pub record CancellationToken {
   deadlineMs: Long
 }
 
+// The single shared flag every `noCancellation()` token carries (#5331):
+// `hasAmbient()` recognises this exact reference to mean "no ambient
+// cancellation source," matching .NET's `CancellationToken.CanBeCanceled`
+// semantics (false for `CancellationToken.None`) — not `JAtomicBoolean`
+// identity of *some* fresh flag, which a round-tripped `noCancellation()`
+// token would also have and so couldn't be told apart from a real one.
+val __noCancellationFlag: JAtomicBoolean = JAtomicBoolean.new(false)
+
 /// A token that's never cancelled — equivalent to
 /// `CancellationToken.None` on .NET.  Use as the "no cancellation
 /// requested" sentinel when an API requires a token but the caller
 /// has no source.
 pub func noCancellation(): CancellationToken {
-  CancellationToken(flag = JAtomicBoolean.new(false), deadlineMs = 0i64)
+  CancellationToken(flag = __noCancellationFlag, deadlineMs = 0i64)
 }
 
 /// Create a fresh `CancellationTokenSource`.  Project its token via
@@ -403,9 +411,13 @@ pub func restoreToken(previous: in CancellationToken): Unit {
   __ambientDeadlineSlot.set(previous.deadlineMs)
 }
 
-/// True when the ambient slot holds an installed token on this
-/// thread.
+/// True when the ambient slot holds a token that can actually be
+/// cancelled — false both when nothing has ever been installed on this
+/// thread AND when the ambient has been explicitly installed/restored to
+/// `noCancellation()` (#5331; matches .NET's `CancellationToken
+/// .CanBeCanceled`, which is false for `CancellationToken.None` too, not
+/// an identity/"was install ever called" check).
 pub func hasAmbient(): Bool {
   val v: JAtomicBoolean = __ambientSlot.get()
-  not (v == __ambientNullProbe.get())
+  not (v == __ambientNullProbe.get()) and not (v == __noCancellationFlag)
 }
