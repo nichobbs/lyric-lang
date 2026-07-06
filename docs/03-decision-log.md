@@ -10467,6 +10467,87 @@ fully-qualified cross-package `await` crash found — and confirmed
 pre-existing — while narrowing this fix).
 
 ---
+
+## D-progress-606 — MSIL: cross-package qualified module-val access silently resolved to null (#5258)
+
+**Status:** ACCEPTED
+
+**Symptom.** In a single-bundle multi-package project (`[project.packages]`,
+`output = "single"`), a cross-package qualified reference to another
+package's module-level `pub val` (e.g. `App.Util.httpsPrefix` referenced
+from `App.Main`) silently resolved to `null` at runtime instead of the
+actual static field — `println(App.Util.httpsPrefix)` threw
+`NullReferenceException`; depending on how the mistracked value was used
+downstream, a `.length` call on it could instead throw `InvalidCastException:
+Unable to cast String to IList` (the exact symptom of a downstream bug
+report this fix traces back to, alongside #5177/#5222's cross-package
+token-corruption family — a separate root cause hiding behind
+superficially similar-looking "cross-package access breaks" reports).
+
+**Root cause.** `App.Util.httpsPrefix` parses as nested `EMember`s
+(`EMember(EMember(EPath(["App"]), "Util"), "httpsPrefix")`), not a flat
+multi-segment `EPath` (`parser_exprs.l`'s `parsePostfixExpr` wraps the
+receiver in one more `EMember` layer per `.ident`; only a single bare
+identifier ever produces `EPath`). Cross-package **qualified free-function
+calls** already handled this shape correctly: `lowerMethodCallMsil`
+flattens the receiver via `flattenPathExprSegs` and checks the flattened
+dotted name against `funcTokens` before falling back to method dispatch
+(the #3332/#3349 fix family). **Module-level `pub val`/`pub const` access
+in value position had no equivalent** — `lowerExprMsil`'s `EPath` arm's
+"Module-level val" fallback (`staticValTokens`/`staticValMsilTypes`) was
+keyed by the bare name only and was only reached for a genuinely
+single-segment `EPath`, so a qualified reference never reached it at all;
+it fell through `EMember`'s generic record-field-access fallback (no case
+for "this is actually another package's static field") and defaulted to
+pushing a null literal.
+
+**Fix.** `lyric-compiler/msil/codegen.l`: `staticValTokens`/
+`staticValMsilTypes` now also register a package-qualified key
+(`pkgName + "." + name`) alongside the existing bare-name key, mirroring
+`funcTokens`'s FQN convention. A new `tryQualifiedStaticValNameMsil`,
+short-circuited at the top of `lowerExprMsil` (same pattern and same
+"don't restructure the `EMember` arm" safety rationale as the existing
+`tryQualifiedEnumOrdinalMsil` check), flattens an `EMember` chain via the
+existing `flattenPathExprSegs`, guards against a local-variable-rooted
+chain, and emits `ldsfld` directly when the flattened dotted name matches
+a registered qualified static val.
+
+**Scope boundary.** Two related gaps are documented, not fixed, here:
+
+1. The restored-dependency case (`[dependencies] = { path = ... }`, two
+   separately-compiled DLLs) has the identical symptom via a completely
+   different mechanism — contract-metadata cross-DLL resolution
+   (`Lyric.ContractMeta`/`Lyric.RestoredPackages`) doesn't emit non-literal
+   `pub val` declarations at all today (only literal-foldable `pub const`s
+   round-trip, via the pre-existing, unrelated compile-time-inlining path).
+   Fixing it needs a contract-metadata schema change; ties into the
+   docs/45 phased work, whose phases 2–5 are already deferred pending
+   #2580.
+2. JVM: multi-package manifest builds don't support `--target jvm` at all
+   yet (a separate, already-tracked gap per docs/44), so the JVM analog
+   isn't independently testable via the documented multi-package flow
+   today. By code inspection, `Jvm.Codegen`'s `EPath` handling
+   (`ctx.moduleVals`, bare-name-keyed) and `lowerMethodCall` (single-segment
+   qualified calls only, no `flattenPathExprSegs` equivalent) have the same
+   shape of gap and will need the analogous fix once JVM multi-package
+   builds work.
+
+**Verification.** Added `msil_project_bridge_self_test.l`'s "multi-segment
+qualified static val resolves correctly" (mirroring that file's existing
+"multi-segment qualified call resolves correctly" test for the function
+case) — reads a qualified `pub val`, its `.length`, and a qualified `pub
+func` call, all from a different package in the same bundle — 29/29 in
+that file including it. `enum_msil_self_test.l` (8/8, touches the same
+`lowerExprMsil` short-circuit area) and `slice_ops_self_test.l` (13/13)
+pass unchanged.
+
+**Related:** #5248 (the PR this fix was found while investigating a
+downstream report against), #5177/#5222/D-progress-599/D-progress-600
+(a different cross-package MSIL bundler bug family with superficially
+similar symptoms), docs/45 (contract-metadata direct resolution, relevant
+to the restored-dependency scope boundary above).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

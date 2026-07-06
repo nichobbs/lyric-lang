@@ -652,6 +652,38 @@ test "multi-segment qualified call resolves correctly" {
   assertEqual(Str.trim(result.stdout), "21", "multi_segment_qualified_call: stdout=21")
 }
 
+// ─── Regression: multi-segment qualified static val access (#5258) ──────────
+// A consumer references a library's non-literal `pub val` with the
+// fully-qualified two-segment path `Lib.Pkg.NAME` (not the bare unqualified
+// form the existing "cross-package pub val read" test above covers).
+// `Lib.Pkg.NAME` parses as nested `EMember`s, exactly like the qualified-call
+// case above, but `lowerExprMsil`'s "Module-level val" fallback had no
+// flattening + qualified-lookup equivalent to `lowerMethodCallMsil`'s — it
+// silently loaded a null literal instead of the real static field.
+test "multi-segment qualified static val resolves correctly" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "MultiSegVal.Lib",
+      "package MultiSegVal.Lib\n" + "\n" + "pub val GREETING: String = \"hi\"\n" + "\n" +
+        "pub func shout(): String { \"HI\" }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "MultiSegVal.App",
+      "package MultiSegVal.App\n" + "\n" + "import MultiSegVal.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  println(MultiSegVal.Lib.GREETING)\n" +
+        "  println(MultiSegVal.Lib.GREETING.length.toString())\n" +
+        "  println(MultiSegVal.Lib.shout())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("multisegval", packages, "MultiSegVal")
+  assertEqualInt(result.exitCode, 0, "multi_segment_qualified_static_val: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "hi\n2\nHI", "multi_segment_qualified_static_val: stdout matches expected")
+}
+
 // ─── Regression: UFCS chained member read through `self` (#3353) ────────────
 // `func Outer.rd(self: in Outer)` with body `self.inner.value` used to
 // produce invalid IL because ESelf returned MClass(pkgName) instead of
