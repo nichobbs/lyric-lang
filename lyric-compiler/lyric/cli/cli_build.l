@@ -14,6 +14,7 @@ import Std.Hash as Hash
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Workspace as Ws
+import Lyric.Discovery as Disc
 import Lyric.Release as Release
 import Lyric.Generator as Generator
 import Lyric.Emitter as Emitter
@@ -114,6 +115,178 @@ pub func filterExtraRefsDlls(files: in List[String], dllBase: in String): List[S
   result
 }
 
+// The parsed manifest driving a single-file build's dependency resolution,
+// alongside the raw path/text `resolveManifestFeatures` also needs (feature
+// resolution scans the raw TOML text directly rather than the parsed
+// `Manifest` — see `Mf.readFeatureDefaultsFromToml`).
+record LoadedManifest {
+  manifest: Manifest
+  mfPath: String
+  mfText: String
+}
+
+// The result of `emitSingleFileOrProject`: the emit outcome plus whatever
+// restored-dependency / third-party-NuGet DLL paths it resolved (empty when
+// no manifest contributed anything).  `buildOneNative` needs these back so
+// its existing stdlib-colocation step can ALSO colocate the newly-resolved
+// dependency DLLs beside a runnable program's output — otherwise a program
+// that now compiles against a workspace/path dependency would fail at
+// `dotnet exec` time with a missing-assembly error (#5270).
+record NonNativeEmitOutcome {
+  emitResult: EmitResult
+  restoredDlls: List[String]
+  nugetThirdPartyPaths: List[String]
+}
+
+// Discover the nearest lyric.toml for a SINGLE-FILE build by walking up from
+// the source file's OWN directory — deliberately NOT
+// `Environment.currentDirectory()` (the convention `discoverManifest` / the
+// project-mode commands use).  `lyric build sub/dir/foo.l` must find a
+// lyric.toml relative to `foo.l`'s own location, matching what a project
+// rooted at `sub/dir/` would see, regardless of where the invoking shell's
+// cwd happens to be.  `sourcePath` is absolutized first: a bare relative
+// filename like "foo.l" has `Path.dirname` == "." and walking up from "."
+// alone can never leave the cwd, so resolving against
+// `Environment.currentDirectory()` first is required for the walk to reach
+// any parent directory at all (#5270).
+func discoverManifestForSourceFile(sourcePath: in String): Option[String] {
+  val absSource = if Path.isAbsolute(sourcePath) {
+    sourcePath
+  } else {
+    Path.join(Environment.currentDirectory(), sourcePath)
+  }
+  Disc.findNearestManifest(Path.dirname(absSource))
+}
+
+// Load + parse the manifest that should drive a single-file build's
+// dependency resolution.  Mirrors `resolveNativeConfig`'s explicit-vs-
+// discovered asymmetry (#4863): an EXPLICIT `--manifest` that fails to read
+// or parse is a loud `Err` (the user pointed at this file on purpose); a
+// manifest found by walking up from the source file's own directory
+// degrades silently to `Ok(None)` on any read/parse failure (or when none is
+// found at all), so an unrelated malformed lyric.toml elsewhere in the tree
+// never blocks an otherwise-independent single-file build.
+func loadManifestForSingleFileBuild(
+  sourcePath: in String, explicitManifest: in Option[String]
+): Result[Option[LoadedManifest], String] {
+  val noneLm: Option[LoadedManifest] = None
+  match explicitManifest {
+    case Some(p) -> match File.readText(p) { case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e)); case Ok(mfText) -> match Mf.parseManifest(mfText, p) { case Err(me) -> Err(error = "build: " + ManifestError.message(me)); case Ok(m) -> Ok(value = Some(value = LoadedManifest(manifest = m, mfPath = p, mfText = mfText))) } }
+    case None -> match discoverManifestForSourceFile(sourcePath) { case None -> Ok(value = noneLm); case Some(mf) -> match File.readText(mf) { case Err(_) -> Ok(value = noneLm); case Ok(mfText) -> match Mf.parseManifest(mfText, mf) { case Err(_) -> Ok(value = noneLm); case Ok(m) -> Ok(value = Some(value = LoadedManifest(manifest = m, mfPath = mf, mfText = mfText))) } } }
+  }
+}
+
+func noContributionOutcome(req: in EmitRequest): NonNativeEmitOutcome {
+  NonNativeEmitOutcome(emitResult = Emitter.emit(req), restoredDlls = newList(), nugetThirdPartyPaths = newList())
+}
+
+func failedEmitOutcome(msg: in String): NonNativeEmitOutcome {
+  printErr(msg)
+  val noDiags: List[Diagnostic] = newList()
+  NonNativeEmitOutcome(
+    emitResult = EmitResult(outputPath = None, diagnostics = noDiags),
+    restoredDlls = newList(),
+    nugetThirdPartyPaths = newList()
+  )
+}
+
+// Non-native (Dotnet/Jvm) emit path for `buildOneNative`.  When the source
+// file sits near a lyric.toml — an explicit `--manifest`, or one discovered
+// by walking up from the source file's own directory
+// (`discoverManifestForSourceFile`) — that actually declares dependencies,
+// NuGet/Maven assets, or features, synthesizes a one-package
+// `EmitProjectRequest` and routes it through `Emitter.emitProject`: the same
+// dependency-resolution and bundling pipeline `buildProject` uses for a
+// manifest's `[project.packages]`, instead of the standalone `Emitter.emit`
+// path, which structurally cannot see anything outside `Std.*` (#5270).
+//
+// Falls back to the historical `Emitter.emit(req)` path UNCHANGED whenever
+// there is nothing for the new pipeline to contribute: no manifest found at
+// all, or a manifest found but declaring nothing dependency/feature-relevant
+// — so the overwhelmingly common case (a standalone script, a stdlib
+// self-test, anything with no nearby lyric.toml) compiles byte-for-byte
+// identically to before.  This gate is deliberate, not incidental: routing
+// EVERY single-file compile through `emitProject` unconditionally was
+// measured (empirically, by diffing output bytes) to change the output even
+// with zero dependencies — the project bridge embeds its `Lyric.Contract`
+// resource as `Lyric.Contract.<pkg>` (the multi-package convention) rather
+// than single-file's bare `Lyric.Contract` — so the new path is only taken
+// when it is actually earning its keep.
+//
+// A dependency the manifest declares but that has not been built/restored
+// yet fails the build loudly (`hadUnbuiltLocalDep`) instead of silently
+// compiling without it: single-file mode never triggers an implicit
+// restore (a deliberate, conservative default — see the decision log).
+func emitSingleFileOrProject(
+  req: in EmitRequest, sourcePath: in String, manifestPath: in Option[String]
+): NonNativeEmitOutcome {
+  val loaded = match loadManifestForSingleFileBuild(sourcePath, manifestPath) {
+    case Err(msg) -> return failedEmitOutcome(msg)
+    case Ok(opt) -> opt
+  }
+  val lm = match loaded { case None -> return noContributionOutcome(req); case Some(l) -> l }
+
+  val emptyCliFeatures: List[String] = newList()
+  val (activeFeatures, declaredFeatures) = resolveManifestFeatures(lm.mfText, lm.mfPath, emptyCliFeatures, false, false)
+  val resolvedDeps = resolveManifestDependencies(lm.manifest, lm.mfPath, req.target)
+  if resolvedDeps.hadUnbuiltLocalDep {
+    return failedEmitOutcome(
+      sourcePath + ": build failed (unresolved dependency declared in " + lm.mfPath + "; see above)"
+    )
+  }
+
+  val hasMavenEntries = match lm.manifest.maven { case Some(m) -> m.entries.count > 0; case None -> false }
+  val jvmNeedsMaven = match req.target { case Jvm -> hasMavenEntries; case _ -> false }
+
+  val hasContribution = resolvedDeps.restoredDlls.count > 0 or resolvedDeps.nugetThirdPartyPaths.count > 0 or
+    activeFeatures.count > 0 or
+    declaredFeatures.count > 0 or
+    resolvedDeps.depTemplateSrcs.count > 0 or
+    jvmNeedsMaven
+
+  if not hasContribution {
+    return noContributionOutcome(req)
+  }
+
+  val pkgNameRaw = Release.packageNameOf(req.source)
+  val pkgName = if pkgNameRaw.length > 0 { pkgNameRaw } else { req.assemblyName }
+  val srcs: List[String] = newList()
+  srcs.add(req.source)
+  val pkgs: List[ProjectPackage] = newList()
+  pkgs.add(ProjectPackage(name = pkgName, sources = srcs))
+
+  val projReq = EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = pkgName,
+    outputPath = req.outputPath,
+    target = req.target,
+    restoredDllPaths = resolvedDeps.restoredDlls,
+    activeFeatures = activeFeatures,
+    declaredFeatures = declaredFeatures,
+    packageVersion = req.packageVersion,
+    depTemplateSrcs = resolvedDeps.depTemplateSrcs,
+    nugetAssemblyPaths = resolvedDeps.nugetThirdPartyPaths
+  )
+
+  var mavenSaved: Option[String] = None
+  match req.target {
+    case Jvm -> {
+      val injection = injectMavenClasspathForJvm(Path.dirname(lm.mfPath), lm.manifest)
+      mavenSaved = injection.savedFfiJars
+    }
+    case _ -> ()
+  }
+
+  val emitResult = Emitter.emitProject(projReq)
+  restoreMavenClasspath(mavenSaved)
+
+  NonNativeEmitOutcome(
+    emitResult = emitResult,
+    restoredDlls = resolvedDeps.restoredDlls,
+    nugetThirdPartyPaths = resolvedDeps.nugetThirdPartyPaths
+  )
+}
+
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
@@ -197,7 +370,16 @@ pub func buildOneNative(
       case Ok(ncOpt) -> match ncOpt { case Some(nc) -> { if effTriple == "" { effTriple = nc.triple }; if effOpt == "" { effOpt = nc.optLevel }; for lib in nc.extraLibs { effLibs.add(lib) } }; case None -> () }
     }
   }
-  val result = if isNativeTarget { Emitter.emitNative(req, effTriple, effOpt, effLibs) } else { Emitter.emit(req) }
+  var resolvedRestoredDlls: List[String] = newList()
+  var resolvedNugetPaths: List[String] = newList()
+  val result = if isNativeTarget {
+    Emitter.emitNative(req, effTriple, effOpt, effLibs)
+  } else {
+    val outcome = emitSingleFileOrProject(req, sourcePath, manifestPath)
+    resolvedRestoredDlls = outcome.restoredDlls
+    resolvedNugetPaths = outcome.nugetThirdPartyPaths
+    outcome.emitResult
+  }
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {
