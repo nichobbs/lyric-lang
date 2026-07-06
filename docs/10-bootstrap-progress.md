@@ -29774,7 +29774,16 @@ unchanged and still record `MObject`.
 untyped `String` val plus two regression tests (direct `.length` read and
 a read through a helper function), covering the exact reported shape.
 
+**Review hardening (same PR, #5300).** `inferUntypedStaticValMsilType`
+didn't unwrap `EPrefix(PreNeg, ...)` (a leading unary minus, e.g. `val
+minTemp = -40`), so a negative-literal untyped val still fell through to
+`MObject` — the identical bug class for negative literals instead of
+strings. Fixed by adding the full `EPrefix` match (`PreNeg` recurses into
+the operand, `PreNot` yields `MBool`, `PreRef` passes through), mirroring
+`lowerExprMsil`'s actual `EPrefix` semantics. Added `untypedNegInt = -40`
+plus a helper-function arithmetic test.
+
 **Related:** `docs/03-decision-log.md` D-progress-608 (full root-cause
-writeup), D-progress-606 (#5258 — the sibling `staticValTokens`/
-`staticValMsilTypes`-rooted bug, fixed via qualified lookup keys rather
-than initializer-type inference).
+writeup, including the #5300 review-hardening addendum), D-progress-606
+(#5258 — the sibling `staticValTokens`/`staticValMsilTypes`-rooted bug,
+fixed via qualified lookup keys rather than initializer-type inference).

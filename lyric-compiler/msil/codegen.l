@@ -3555,6 +3555,17 @@ func inferUntypedStaticValMsilType(e: in Expr): MsilType {
       case LUnit -> MVoid
     }
     case EInterpolated(_) -> MString
+    // `-40` parses as EPrefix(PreNeg, ELiteral(LInt(40, ...))) (#5300): mirror
+    // lowerExprMsil's EPrefix arm, which derives the type from the operand
+    // alone (magnitude, pre-negation) and passes it through unchanged after
+    // emitting `neg` — negation never changes the field's runtime type.
+    // PreNot always produces MBool regardless of operand type; PreRef is a
+    // bare passthrough of the operand's type. Both mirror lowerExprMsil too.
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> inferUntypedStaticValMsilType(inner)
+      case PreNot -> MBool
+      case PreRef -> inferUntypedStaticValMsilType(inner)
+    }
     case _ -> MObject
   }
 }

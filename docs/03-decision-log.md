@@ -10600,19 +10600,44 @@ literal set (calls, records, collections, …) still falls back to
 annotation is still required to type those precisely.
 
 **Verification.** Reproduced the reporter's exact single-file repro (an
-untyped top-level `val` whose `.length` is read from `main`) by inspection
-against the fixed pre-scan logic. Extended
+untyped top-level `val` whose `.length` is read from `main`) end-to-end:
+built the self-hosted compiler from source with this fix (stage 1, using
+the published NuGet `lyric` 0.4.18 tool as the stage-0 seed, since this
+sandbox's GitHub API release-listing call is blocked but direct release-
+asset downloads work — see D-progress-543's sandbox-limitation precedent),
+confirmed the unpatched 0.4.18 tool reproduces the crash on the repro
+verbatim, then confirmed the locally-built fix runs it cleanly. Extended
 `lyric-compiler/lyric/module_val_self_test.l` with an untyped `String` val
 (`untypedGreeting`) and two new tests: reading `.length` directly, and
 reading it through a separate top-level helper function (matching the
 downstream report's "read via a helper function" shape) — both assert the
-correct length rather than faulting.
+correct length rather than faulting. `lyric test
+lyric-compiler/lyric/module_val_self_test.l` against the local build: all
+tests pass.
+
+**Review hardening (same PR, #5300).** `claude-review` on PR #5299 found
+`inferUntypedStaticValMsilType` didn't unwrap `EPrefix(PreNeg, ...)` — the
+AST shape for a leading unary minus (`val minTemp = -40` parses as
+`EPrefix(PreNeg, ELiteral(LInt(40)))`) — so a negative-literal untyped val
+still fell through to the `MObject` default even though its real FieldDef
+type is a primitive `Int`/`Long`/`Double`, reproducing the identical
+"recorded type ≠ real field type" bug class for negative literals instead
+of strings. Fixed by adding an `EPrefix` arm: `PreNeg` recurses into the
+operand (mirroring `lowerExprMsil`'s `EPrefix`/`PreNeg` arm, which derives
+its type from the un-negated operand and passes it through unchanged after
+emitting `neg` — negation never changes the runtime type), `PreNot` always
+yields `MBool`, and `PreRef` is a bare passthrough — all three mirroring
+`lowerExprMsil`'s actual `EPrefix` semantics exactly. Added
+`untypedNegInt = -40` plus a helper-function arithmetic test
+(`untypedNegIntPlusTen`) to `module_val_self_test.l`; local build/test
+(13/13) passes.
 
 **Related:** D-progress-606 (#5258 — the other `staticValTokens`/
 `staticValMsilTypes`-rooted `.length`/IList-cast bug, cross-package
 qualified access rather than untyped-declaration inference), #2539
 (comments at the `.length` generic-fallback dispatch site explaining the
-List/IList assumption this bug's read site fell into).
+List/IList assumption this bug's read site fell into), #5300 (the review
+finding addressed above).
 
 ---
 

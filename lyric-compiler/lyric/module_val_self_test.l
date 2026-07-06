@@ -18,7 +18,9 @@
 //! regardless of what the initializer actually produced, so a later `.length`
 //! read mis-dispatched through the List/IList fallback and crashed at runtime
 //! with `InvalidCastException: String -> IList`. `untypedGreeting` below
-//! covers the regression.
+//! covers the regression. `untypedNegInt` covers the same bug class for a
+//! negative-literal `Int` (`EPrefix(PreNeg, ...)`, #5300), a follow-up gap
+//! the inference function initially missed.
 //!
 //! JVM target parity is tracked in issue #2210.  The JVM emitter currently
 //! no-ops on `IVal` items at package scope; this CI step covers MSIL only.
@@ -86,6 +88,17 @@ func untypedGreetingLength(): Int {
   untypedGreeting.length
 }
 
+// `-40` parses as EPrefix(PreNeg, ELiteral(LInt(40))) (#5300): before the
+// fix, inferUntypedStaticValMsilType fell through to MObject for this AST
+// shape even though the field's real FieldDef type is Int32 — the same
+// "recorded type != real field type" bug class as #5298, triggered by a
+// negative literal instead of a string.
+val untypedNegInt = -40
+
+func untypedNegIntPlusTen(): Int {
+  untypedNegInt + 10
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -134,4 +147,12 @@ test "untyped module-level String val infers String, not MObject (#5298)" {
 
 test "untyped module-level String val readable from a helper function (#5298)" {
   assertEqualInt(untypedGreetingLength(), 8, "untypedGreetingLength()")
+}
+
+test "untyped negative-literal Int val infers Int, not MObject (#5300)" {
+  assertEqualInt(untypedNegInt, -40, "untypedNegInt")
+}
+
+test "untyped negative-literal Int val usable in arithmetic via a helper function (#5300)" {
+  assertEqualInt(untypedNegIntPlusTen(), -30, "untypedNegIntPlusTen()")
 }
