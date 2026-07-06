@@ -21125,7 +21125,29 @@ func wireExprDepsMsil(e: in Expr, knownNames: in Map[String, Bool], acc: in List
       }
     }
     case ECall(fn, args) -> {
-      wireExprDepsMsil(fn, knownNames, acc)
+      // A call head that names a List-typed wire member (knownNames value
+      // false) is really the element TYPE's constructor — the common
+      // `contributes[Route] home = Route(path = "/")` shape, where the
+      // synthesised collection shares the type's name.  Counting it as a
+      // dependency manufactures a false entry→collection→entry cycle
+      // (spurious W0001).  A List value can never be a call head, so the
+      // skip loses nothing.
+      val skipFn = match fn.kind {
+        case EPath(p) -> {
+          if p.segments.count == 1 {
+            match mapGet(knownNames, p.segments[0]) {
+              case Some(callable) -> not callable
+              case None -> false
+            }
+          } else {
+            false
+          }
+        }
+        case _ -> false
+      }
+      if not skipFn {
+        wireExprDepsMsil(fn, knownNames, acc)
+      }
       var ai = 0
       while ai < args.count {
         match args[ai] {
@@ -21224,6 +21246,21 @@ func wireMemberInitMsil(m: in WireMember): Option[Expr] {
   }
 }
 
+// True when the member's declared type is List[…] — i.e. it can hold a
+// synthesised contributes collection and can never be a call head.
+func wireMemberIsListTypedMsil(m: in WireMember): Bool {
+  val tyOpt: Option[TypeExpr] = match m {
+    case WMSingleton(_, ty, _, _) -> Some(value = ty)
+    case WMLocal(_, ty, _, _) -> ty
+    case WMScoped(_, _, ty, _, _) -> Some(value = ty)
+    case _ -> None
+  }
+  match tyOpt {
+    case Some(t) -> match t.kind { case TGenericApp(head, _) -> lastSegmentMsil(head) == "List"; case _ -> false }
+    case None -> false
+  }
+}
+
 // Name of a WireMember, or "" for unnamed members.
 func wireMemberNameMsil(m: in WireMember): String {
   match m {
@@ -21259,7 +21296,10 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
     sep = sep + 1
   }
 
-  // Build name → member index and known-name set.
+  // Build name → member index and known-name set.  The knownNames value is
+  // false for List-typed members (synthesised contributes collections):
+  // wireExprDepsMsil uses it to skip call-head "references" to them, which
+  // are really the element type's constructor (see the ECall case).
   val nameToIdx: Map[String, Int] = newMap()
   val knownNames: Map[String, Bool] = newMap()
   var i = 0
@@ -21267,7 +21307,7 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
     val n = wireMemberNameMsil(sortable[i])
     if n.length > 0 and not nameToIdx.containsKey(n) {
       nameToIdx.add(n, i)
-      knownNames.add(n, true)
+      knownNames.add(n, not wireMemberIsListTypedMsil(sortable[i]))
     }
     i = i + 1
   }
@@ -21470,11 +21510,15 @@ func lowerWireMsil(
   }
 
   // Pre-pass: collect @provided members to determine the factory's param count.
+  // Iterate `decl.members` (declaration order), NOT the topo-sorted list: the
+  // Pass 2 signature registration in `addPackageTokens` scans the declaration
+  // order too, so both passes share one source of truth for the bootstrap
+  // param order instead of relying on the sort preserving it (#5287).
   val providedNames: List[String] = newList()
   val providedTypes: List[MsilType] = newList()
   var fpi = 0
-  while fpi < sortedMembers.count {
-    match sortedMembers[fpi] {
+  while fpi < decl.members.count {
+    match decl.members[fpi] {
       case WMProvided(pname, pty, _) -> {
         providedNames.add(pname)
         providedTypes.add(typeExprToMsilCtx(cctx, pty, pkgName))
@@ -21548,7 +21592,14 @@ func lowerWireMsil(
         val ifaceName = match iface.kind { case TRef(path) -> lastSegmentMsil(path); case _ -> "__bind" }
         val localTy = typeExprToMsilCtx(cctx, iface, pkgName)
         val localSlot = allocSlotMsil(createFctx, ifaceName, localTy)
+        // Same construction-context treatment as WMSingleton/WMLocal (#5288):
+        // a list-literal or nullary-case provider closes over the bound
+        // interface type's annotation.
+        val savedH = pushAnnoHintTyArgs(createFctx, localTy)
+        pushCollExpect(createFctx, localTy)
         lowerExprMsil(cctx, createFctx, createInsns, provider)
+        popCollExpect(createFctx)
+        restoreHintTyArgs(createFctx, savedH)
         createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
       }
       case WMExpose(_, _) -> {
@@ -21584,9 +21635,12 @@ func lowerWireMsil(
         createInsns.add(MStsfld(fieldToken = fldTok))
       }
       case None -> {
+        // Unreachable in a normal build: Lyric.WireExpand validates every
+        // expose against the finished wire's bindings (W0027) before
+        // codegen.  Kept as an ICE backstop for direct-codegen callers.
         panic(
           "Msil.Codegen: wire '" + decl.name + "' exposes '" + en +
-            "', which names no @provided/singleton/bind/val member of the wire"
+            "', which names no @provided/singleton/bind/val member of the wire (expander W0027 should have caught this)"
         )
       }
     }

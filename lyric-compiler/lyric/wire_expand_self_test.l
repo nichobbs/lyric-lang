@@ -692,6 +692,32 @@ test "reorder adjustment repositions an existing entry" {
   assertEqual(order[1], "logging", "logging now inner")
 }
 
+test "aliased include remaps reorder ordering-clause names" {
+  // Before the #5284 fix the `inside: logging` clause was appended without
+  // the alias remap, dangled (spurious W0022), and the reorder was dropped.
+  val app = "package App\n" + "import Web\n" + "wire Prod {\n" + "  @provided cfg: String\n" +
+    "  include Web.ServerModule as Core {\n" +
+    "    reorder cors inside: logging\n" +
+    "  }\n" +
+    "}\n"
+  val res = expandTwo(libTemplate(), app)
+  assertEqualInt(diagCount(res), 0, "no spurious W0022 under alias (#5284)")
+  // An aliased include's non-exposed contributes entries and collection are
+  // isolated under the internal `__incl<N>_` prefix.
+  val order = listElemNames(firstWire(res, "Prod"), "__incl1_Mw")
+  assertEqualInt(order.count, 2, "both entries present")
+  assertEqual(order[0], "__incl1_logging", "logging now outer (#5284)")
+  assertEqual(order[1], "__incl1_cors", "cors moved inside logging (#5284)")
+}
+
+test "expose of an unknown name reports W0027" {
+  val src = "package P\n" + "record R { v: Int }\n" + "wire W {\n" + "  singleton r: R = R(v = 1)\n" + "  expose r\n" +
+    "  expose nonexistent\n" +
+    "}\n"
+  val res = expandSrc(src)
+  assertTrue(hasDiag(res, "W0027"), "unknown expose target reported at expansion time (#5285)")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Config instantiation inside a wire body.
 // ─────────────────────────────────────────────────────────────────────────────

@@ -34,7 +34,7 @@
 //! config statics (`Assets(root = Assets.root, …)` shape).  Field access
 //! (`Assets.root`) is left untouched — it stays ordinary config access.
 //!
-//! Diagnostics: W0010–W0026 (see docs/03-decision-log.md D121 for the
+//! Diagnostics: W0010–W0027 (see docs/03-decision-log.md D121 for the
 //! full table).
 package Lyric.WireExpand
 
@@ -661,6 +661,12 @@ record WireScope {
   names: Map[String, Bool]
   pendingProvided: List[PendingProvided]
   diags: List[Diagnostic]
+  // Include-site ticker: count = number of include sites processed so far
+  // (top-level and nested alike).  Each site takes `count + 1` as its
+  // ordinal, so ordinals are unique per site — the previous arithmetic
+  // scheme (`ordinal * 100 + memberIndex + 1`) collided for templates with
+  // ≥ 100 members, weakening the sealed-origin check (#5286).
+  inclTicker: List[Int]
 }
 
 func scopeAddName(sc: in WireScope, name: in String, span: in Span): Unit {
@@ -1188,9 +1194,22 @@ func expandInclude(
           }
           match mapGet(reorderMap, n) {
             case Some(extra) -> {
+              // Reorder clauses name sibling entries by their pre-include
+              // names, exactly like the template's own ordering clauses —
+              // remap them through contribTargets too, or an aliased include
+              // leaves them pointing at names that no longer exist (#5284).
               var xi = 0
               while xi < extra.count {
-                ord2.add(extra[xi])
+                match extra[xi] {
+                  case WOWraps(on, osp) -> {
+                    val tn = match mapGet(contribTargets, on) { case Some(t) -> t; case None -> on }
+                    ord2.add(WOWraps(name = tn, span = osp))
+                  }
+                  case WOInside(on, osp) -> {
+                    val tn = match mapGet(contribTargets, on) { case Some(t) -> t; case None -> on }
+                    ord2.add(WOInside(name = tn, span = osp))
+                  }
+                }
                 xi = xi + 1
               }
             }
@@ -1229,6 +1248,10 @@ func expandInclude(
           si = si + 1
         }
         stack2.add(fqn)
+        // Fresh per-site ordinal from the scope ticker: unique across
+        // top-level and nested include sites alike (#5286).
+        sc.inclTicker.add(0)
+        val nestedOrdinal = sc.inclTicker.count
         expandInclude(
           sc,
           wires,
@@ -1238,8 +1261,8 @@ func expandInclude(
           ialias,
           iadjs,
           ispan,
-          inclOrdinal * 100 + mi + 1,
-          originId * 100 + mi + 1,
+          nestedOrdinal,
+          nestedOrdinal,
           stack2,
           exposedTargets
         )
@@ -1305,7 +1328,8 @@ func hoistConfigInstance(
     var tf = 0
     while tf < tmpl.decl.fields.count {
       if tmpl.decl.fields[tf].name == ov.name {
-        ty = Some(value = tmpl.decl.fields[tf].ty)
+        val fieldTy = tmpl.decl.fields[tf].ty
+        ty = Some(value = fieldTy)
       }
       tf = tf + 1
     }
@@ -1316,12 +1340,16 @@ func hoistConfigInstance(
         // An include-body override for a field wins over any
         // declaration-site override for the same field: overwrite it in
         // place when present, else append.
+        // Hoisted for the same stage-0 emitter Option-mislowering reason as
+        // the contributes-entry `ty` above: a `Some(value = <field read>)`
+        // nested inline in a constructor argument comes back null.
+        val ovValue = ov.value
         val newField = ConfigField(
           docComments = emptyDocs,
           annotations = emptyAnns,
           name = ov.name,
           ty = t,
-          default = Some(value = ov.value),
+          default = Some(value = ovValue),
           span = ov.span
         )
         var replacedAt = 0 - 1
@@ -1512,7 +1540,8 @@ func expandWireDecl(
     memberRewrites = newMap(),
     names = newMap(),
     pendingProvided = newList(),
-    diags = diags
+    diags = diags,
+    inclTicker = newList()
   )
   // Module-level config instantiations are in scope for this wire's
   // value-position rewrite.
@@ -1522,12 +1551,12 @@ func expandWireDecl(
     mci = mci + 1
   }
 
-  var inclOrdinal = 0
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
       case WMInclude(path, aliasOpt, adjustments, _, mspan) -> {
-        inclOrdinal = inclOrdinal + 1
+        sc.inclTicker.add(0)
+        val inclOrdinal = sc.inclTicker.count
         val stack: List[String] = newList()
         stack.add(pkgName + "." + decl.name)
         val noParentTargets: Map[String, String] = newMap()
@@ -1679,8 +1708,15 @@ func expandWireDecl(
   var cei = 0
   while cei < sc.contribs.count {
     val e = sc.contribs[cei]
+    // Hoist the field read into a local before wrapping it in `Some`: the
+    // historical F# bootstrap emitter (CI's mint stage-0) miscompiles a
+    // union-case constructor whose named argument is an inline record-field
+    // read nested inside another constructor (`ty = Some(value = e.iface)`),
+    // producing a null Option — which downstream codegen then encoded as a
+    // malformed 0x00 LocalVarSig entry (BadImageFormatException at run time).
+    val entryIface = e.iface
     outMembers.add(
-      WMLocal(name = e.name, ty = Some(value = e.iface), init = substExpr(finalSubst, e.init), span = e.span)
+      WMLocal(name = e.name, ty = Some(value = entryIface), init = substExpr(finalSubst, e.init), span = e.span)
     )
     cei = cei + 1
   }
@@ -1725,9 +1761,43 @@ func expandWireDecl(
     )
     cli = cli + 1
   }
+  // W0027: every `expose` must name a real binding of the finished wire
+  // (a plain member, a contributes entry, or a synthesised collection).
+  // Validating here covers BOTH backends — without it the MSIL lowering's
+  // no-slot panic was the first (ICE-shaped) report a user saw (#5285).
+  val bindableNames: List[String] = newList()
+  var bni = 0
+  while bni < outMembers.count {
+    match outMembers[bni] {
+      case WMProvided(bn, _, _) -> bindableNames.add(bn)
+      case WMSingleton(bn, _, _, _) -> bindableNames.add(bn)
+      case WMLocal(bn, _, _, _) -> bindableNames.add(bn)
+      case WMScoped(_, bn, _, _, _) -> bindableNames.add(bn)
+      case WMBind(biface, _, _) -> bindableNames.add(collectionNameOf(biface))
+      case _ -> {
+      }
+    }
+    bni = bni + 1
+  }
   var exi = 0
   while exi < sc.exposes.count {
-    outMembers.add(sc.exposes[exi])
+    val exm = sc.exposes[exi]
+    match exm {
+      case WMExpose(exn, exsp) -> {
+        if listContainsWE(bindableNames, exn) {
+          outMembers.add(exm)
+        } else {
+          diags.add(
+            errorDiagnostic(
+              "W0027",
+              "wire '" + decl.name + "' exposes '" + exn + "', which names no @provided/singleton/bind/val member of the wire",
+              exsp
+            )
+          )
+        }
+      }
+      case _ -> outMembers.add(exm)
+    }
     exi = exi + 1
   }
 
@@ -1794,22 +1864,12 @@ func fileNeedsExpansion(file: in SourceFile): Bool {
           }
         }
       }
-      case IWire(decl) -> {
-        if isPub {
-          return true
-        }
-        var mi = 0
-        while mi < decl.members.count {
-          match decl.members[mi] {
-            case WMContributes(_, _, _, _, _, _) -> return true
-            case WMInclude(_, _, _, _, _) -> return true
-            case WMOverridable(_, _) -> return true
-            case WMConfigInst(_, _) -> return true
-            case _ -> {
-            }
-          }
-          mi = mi + 1
-        }
+      case IWire(_) -> {
+        // Every wire goes through expandWireDecl — even one with no
+        // docs/58 members — so the W0027 expose validation covers all
+        // wires on both targets (#5285).  For a vanilla wire the
+        // expansion is the identity apart from that check.
+        return true
       }
       case _ -> {
       }

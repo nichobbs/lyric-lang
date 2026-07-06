@@ -1367,7 +1367,7 @@ Rules:
 Templates resolve against source-available packages (the compilation's
 own packages and path-dependency sources) — the same availability rule
 as cross-package aspect templates. Full semantics, the expansion model,
-and the `W0010`–`W0026` diagnostic table are specified in D121
+and the `W0010`–`W0027` diagnostic table are specified in D121
 (`docs/03-decision-log.md`), backing `docs/58-wire-templates-sketch.md`.
 
 ## 11. FFI

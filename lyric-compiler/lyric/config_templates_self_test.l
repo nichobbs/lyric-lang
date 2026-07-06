@@ -60,10 +60,18 @@ test "module-level instantiation materialises overrides and template defaults" {
   assertTrue(not Assets.fallbackToIndex, "bool template default preserved")
 }
 
-test "env var named after the LOCAL instantiation overrides the merged default" {
-  // Must run before anything reads EnvAssets: the block's .cctor resolves
-  // the environment exactly once, at first static access.
+test "set env override before EnvAssets is first touched" {
+  // Paired with the next test.  The set and the read live in SEPARATE test
+  // methods: under `beforefieldinit` the CLR may run EnvAssets' .cctor as
+  // early as entry to any method that references the type, so a setVar in
+  // the SAME method body could legally run after the .cctor already read
+  // the environment (#5290).  No method references EnvAssets until the
+  // next test, so by then the variable is durably set.
   Env.setVar("LYRIC_CONFIG_LYRIC_CONFIGTEMPLATESSELFTEST_ENVASSETS_ROOT", "/from-env")
+  assertTrue(true, "env var set")
+}
+
+test "env var named after the LOCAL instantiation overrides the merged default" {
   assertEqual(EnvAssets.root, "/from-env", "env var wins over template default")
   assertEqualInt(EnvAssets.cacheSeconds, 60, "unset env leaves declaration-site override")
 }

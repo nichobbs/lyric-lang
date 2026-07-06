@@ -29695,7 +29695,7 @@ follows), `docs/agent/reference.md` (the canonical example this fixes).
   (`@provided` mapping/passthrough, `overridable`-gated replace/remove,
   reorder, `as`-alias isolation, nested includes with cycle detection);
   `pub wire` template items are dropped from the declaring file.
-  Diagnostics `W0010`–`W0026`; parser diagnostics `P0332`–`P0343`.
+  Diagnostics `W0010`–`W0027`; parser diagnostics `P0332`–`P0343`.
 - **Parser/AST.** `ConfigDecl.from`, `WMContributes` (with `sealed` flag
   and ordering clauses), `WMInclude` (alias + adjustment body),
   `WMOverridable`, `WMConfigInst`; alias-rewriter and formatter cover all
@@ -29722,5 +29722,32 @@ construction — dotnet-only because JVM `IConfig` emission is a
 pre-existing gap, unchanged by this work); plus docs/58 parser and
 formatter round-trip cases in `parser_self_test.l` / `fmt_self_test.l`.
 
+**Review/CI hardening (same PR).** Post-review fixes: aliased-include
+`reorder` clauses now remap their `wraps:`/`inside:` sibling names
+through the alias mangling like the entries themselves (#5284); `expose`
+of an unknown name is a proper expander diagnostic `W0027` on both
+targets instead of an ICE-shaped MSIL codegen panic (#5285); nested
+include sites take unique ordinals from a scope ticker instead of the
+collision-prone `ordinal*100+index` arithmetic (#5286); `@provided`
+bootstrap params are collected in declaration order on both backends so
+signature registration and emission share one source of truth (#5287);
+`WMBind` providers get the same construction-context treatment as
+singletons (#5288); nested-include and aliased-reorder runtime tests
+added (#5289); the config env-var override test sets the variable in a
+separate test method so `beforefieldinit` static-init timing cannot
+race it (#5290).  Two mint-only regressions found via CI (the released
+stage-0 compiles these correctly; the historical F# mint emitter used
+by CI does not): a `Some(value = <record-field read>)` nested inline in
+a constructor argument mislowers to a null `Option` under the mint
+stage-0 (the docs/58 contributes-entry `ty` then encoded a malformed
+`0x00` LocalVarSig → `BadImageFormatException`; sibling of the
+documented `if/else`-yielding-`Option` mislowering in
+`parser_items.l`) — worked around by hoisting the field read to a
+local; and a false `W0001` cycle when a contributes collection's name
+doubles as the entries' constructor (`contributes[Cors] a = Cors(…)`)
+— call heads naming List-typed members are no longer counted as wire
+dependencies (both backends).
+
 **Related:** D121, docs/58 (now specced), docs/01 §10.5–§10.6, docs/25
-§12, #5021 (closed by this entry), #2972 (`scoped[X]` unchanged/deferred).
+§12, #5021 (closed by this entry), #2972 (`scoped[X]` unchanged/deferred),
+#5284–#5290 (review findings addressed above).

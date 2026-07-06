@@ -21,8 +21,12 @@
 //! and explicit mapping, `contributes[T]` collection synthesis with
 //! cross-scope ordering (consumer entry ordered against template
 //! entries via `wraps:`/`inside:`), `overridable`-gated replace and
-//! remove, aliased inclusion with `Alias.member` access, and multiple
-//! independent wires per file.
+//! remove, aliased inclusion with `Alias.member` access, multiple
+//! independent wires per file, direct contributes with no include (the
+//! mint-toolchain LocalVarSig regression shape), a collection whose
+//! name doubles as the entries' constructor (false-W0001 regression),
+//! an aliased-include `reorder` adjustment (#5284), and a nested
+//! include with transitive re-expose (#5289).
 @test_module
 package Lyric.WireTemplatesSelfTest
 
@@ -135,6 +139,64 @@ wire MinimalApp {
   expose router
 }
 
+// Consumer 4: aliased include with a reorder adjustment.  The ordering
+// clause's sibling name (`logging`) must be remapped through the alias
+// mangling exactly like the entries themselves — before the #5284 fix it
+// dangled, producing a spurious W0022 and silently dropping the reorder.
+wire ReorderApp {
+  @provided tag: String
+  include ServerModule as Core {
+    @provided tag: tag
+    reorder cors inside: logging
+  }
+  singleton reorderRouter: Router = Core.router
+  expose reorderRouter
+}
+
+// Consumer 4b: contributes directly in a plain wire with NO include at
+// all — the minimal shape of the CI-only mint-toolchain failure (the
+// bootstrap's contributes-entry locals emitted a malformed LocalVarSig).
+wire DirectApp {
+  @provided tag: String
+  contributes[Middleware] cors = Cors(tag = tag)
+  contributes[Middleware] logging = Logging(tag = tag)
+  singleton directRouter: Router = makeRouter(tag, Middleware)
+  expose directRouter
+}
+
+func corsCount(ms: in List[Cors]): Int {
+  ms.count
+}
+
+// Consumer 4c: the collection's element-type name doubles as the entries'
+// constructor (`contributes[Cors] first = Cors(...)`).  The ctor call head
+// must not count as a dependency on the synthesised collection, or the
+// topo sort manufactures a false entry→collection→entry W0001 cycle.
+wire SameNameApp {
+  @provided tag: String
+  contributes[Cors] first = Cors(tag = tag)
+  contributes[Cors] second = Cors(tag = tag)
+  singleton total: Int = corsCount(Cors)
+  expose total
+}
+
+// Mid-level template: itself includes ServerModule and contributes an
+// extra entry — nested-include runtime coverage (#5289).
+pub wire ExtendedModule {
+  @provided tag: String
+  include ServerModule
+  contributes[Middleware] extra = Auth(tag = tag)
+  expose router
+}
+
+// Consumer 5: includes the mid-level template; the exposed `router` must
+// re-expose transitively through both include levels.
+wire NestedApp {
+  @provided tag: String
+  include ExtendedModule
+  expose router
+}
+
 test "included template boots; collection order spans template and consumer entries" {
   ProdApp.bootstrap("t1")
   val r = ProdApp.router()
@@ -164,4 +226,33 @@ test "re-bootstrap rebinds provided values" {
   ProdApp.bootstrap("t2")
   val r = ProdApp.router()
   assertEqual(r.labels, "log:t2,auth:t2,cors:t2", "second bootstrap rebuilds the graph")
+}
+
+test "direct contributes in a plain wire, no include" {
+  DirectApp.bootstrap("d1")
+  val r = DirectApp.directRouter()
+  assertEqual(r.labels, "cors:d1,log:d1", "collection synthesised without any template involvement")
+  assertEqual(r.tag, "d1", "provided passthrough")
+}
+
+test "collection named after the entries' constructor type" {
+  SameNameApp.bootstrap("s2")
+  assertEqualInt(SameNameApp.total(), 2, "ctor call head is not a collection dependency (no false W0001)")
+}
+
+test "aliased include reorder remaps ordering-clause names" {
+  ReorderApp.bootstrap("r1")
+  val r = ReorderApp.reorderRouter()
+  // Template order is (cors, logging); `reorder cors inside: logging`
+  // moves cors after logging.
+  assertEqual(r.labels, "log:r1,cors:r1", "reorder repositions the entry under an alias (#5284)")
+}
+
+test "nested include splices transitively and re-exposes" {
+  NestedApp.bootstrap("n1")
+  val r = NestedApp.router()
+  // ServerModule's entries (cors, logging) arrive through the nested
+  // include first, then ExtendedModule's own contribution.
+  assertEqual(r.labels, "cors:n1,log:n1,auth:n1", "entries from both include levels in order")
+  assertEqual(r.tag, "note-n1", "provided value reaches the innermost template")
 }

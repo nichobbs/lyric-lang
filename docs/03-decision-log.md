@@ -10682,7 +10682,7 @@ static-call path via tokens registered in `addPackageTokens`.
 `wire_di_self_test.l` now runs on `--target dotnet` as well as
 `--target jvm`.
 
-**Diagnostics (wire expander, W0010–W0026).**
+**Diagnostics (wire expander, W0010–W0027).**
 
 | Code | Meaning |
 |---|---|
@@ -10703,6 +10703,7 @@ static-call path via tokens registered in `addPackageTokens`.
 | W0024 | bare-name collision when splicing an include |
 | W0025 | `@provided` mapping names a non-input of the template |
 | W0026 | (warning) `overridable` in a non-template wire |
+| W0027 | `expose` names no binding of the finished wire |
 
 Parser diagnostics P0332–P0343 cover the new syntax forms
 (`contributes[…]`, ordering clauses, include bodies, `remove`/`reorder`,
