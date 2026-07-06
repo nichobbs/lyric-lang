@@ -38,6 +38,7 @@ import Std.Collections
 import Std.Json as StdJson
 import Std.Environment as Environment
 import Db.Kernel.Net as DbKernel
+import extern System.{ Convert }
 
 // ─── Error ────────────────────────────────────────────────────────────────────
 /// A database error with a driver-reported code and message.
@@ -380,7 +381,7 @@ pub func getLong(row: in DbRow, name: in String): Long
 {
   match col(row, name) {
     case DbLong(v) -> return v
-    case DbInt(v) -> return DbKernel.intAsLong(v)
+    case DbInt(v) -> return Convert.ToInt64(v)
     case _ -> return 0i64
   }
 }
@@ -434,7 +435,7 @@ pub func getLongOpt(row: in DbRow, name: in String): Option[Long]
   match col(row, name) {
     case DbNull -> return None
     case DbLong(v) -> return Some(value = v)
-    case DbInt(v) -> return Some(value = DbKernel.intAsLong(v))
+    case DbInt(v) -> return Some(value = Convert.ToInt64(v))
     case _ -> return None
   }
 }

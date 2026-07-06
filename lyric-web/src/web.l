@@ -43,64 +43,9 @@ import Std.Environment as Env
 import Std.Iter
 import Std.Parse
 
-// ─── Kernel boundary (inlined) ────────────────────────────────────────────────
-// Declared here rather than imported from Web.Kernel.Net because intra-project
-// import resolution does not yet propagate function signatures to the caller's
-// type-checker.
-//
-// Direct BCL targeting: System.Net.HttpListener + System.Text.Encoding.
-// Replaces the former @externTarget("Lyric.Web.HttpListenerHost.serve") which
-// pointed at a non-existent F# host shim (#733 Phase 8 follow-up).
-extern type HttpListener = "System.Net.HttpListener"
-
-extern type HttpListenerCtx = "System.Net.HttpListenerContext"
-
-extern type HttpListenerResp = "System.Net.HttpListenerResponse"
-
-extern type PrefixCollection = "System.Net.HttpListenerPrefixCollection"
-
-extern type IOStream = "System.IO.Stream"
-
-extern type Encoding = "System.Text.Encoding"
-
-@externTarget("System.Net.HttpListener.get_Prefixes")
-func listenerPrefixes(l: in HttpListener): PrefixCollection = ()
-
-@externTarget("System.Net.HttpListenerPrefixCollection.Add")
-func prefixAdd(c: in PrefixCollection, prefix: in String): Unit = ()
-
-@externTarget("System.Net.HttpListener.Start")
-func listenerStart(l: in HttpListener): Unit = ()
-
-@externTarget("System.Net.HttpListener.GetContext")
-func listenerGetContext(l: in HttpListener): HttpListenerCtx = ()
-
-@externTarget("System.Net.HttpListener.Close")
-func listenerClose(l: in HttpListener): Unit = ()
-
-@externTarget("System.Net.HttpListenerContext.get_Response")
-func contextResponse(ctx: in HttpListenerCtx): HttpListenerResp = ()
-
-@externTarget("System.Net.HttpListenerResponse.set_StatusCode")
-func responseSetStatus(r: in HttpListenerResp, code: in Int): Unit = ()
-
-@externTarget("System.Net.HttpListenerResponse.set_ContentType")
-func responseSetContentType(r: in HttpListenerResp, ct: in String): Unit = ()
-
-@externTarget("System.Net.HttpListenerResponse.get_OutputStream")
-func responseOutputStream(r: in HttpListenerResp): IOStream = ()
-
-@externTarget("System.IO.Stream.Write")
-func streamWrite(s: in IOStream, buffer: in slice[Byte], offset: in Int, count: in Int): Unit = ()
-
-@externTarget("System.IO.Stream.Close")
-func streamClose(s: in IOStream): Unit = ()
-
-@externTarget("System.Text.Encoding.get_UTF8")
-func encodingUtf8(): Encoding = ()
-
-@externTarget("System.Text.Encoding.GetBytes")
-func encodingGetBytes(enc: in Encoding, str: in String): slice[Byte] = ()
+import extern System.IO.{ Stream }
+import extern System.Net.{ HttpListener, HttpListenerContext, HttpListenerResponse, HttpListenerPrefixCollection }
+import extern System.Text.{ Encoding }
 
 func webJsonStr(s: in String): String {
   var r = "\""
@@ -200,26 +145,26 @@ func serve(
     webJsonArr(workerHandlers) +
     "}}"
   val listener = HttpListener.new()
-  val prefs = listenerPrefixes(listener)
-  prefixAdd(prefs, prefix)
+  val prefs = listener.get_Prefixes()
+  prefs.Add(prefix)
   try {
-    listenerStart(listener)
+    listener.Start()
   } catch Bug as e {
     Console.error("[lyric-web] failed to start listening on " + prefix + ": " + e.message)
-    listenerClose(listener)
+    listener.Close()
     Env.exitCode(1)
   }
   while true {
     try {
-      val ctx = listenerGetContext(listener)
-      val resp = contextResponse(ctx)
-      responseSetStatus(resp, 200)
-      responseSetContentType(resp, "application/json")
-      val utf8 = encodingUtf8()
-      val bytes = encodingGetBytes(utf8, payload)
-      val stream = responseOutputStream(resp)
-      streamWrite(stream, bytes, 0, bytes.length)
-      streamClose(stream)
+      val ctx = listener.GetContext()
+      val resp = ctx.get_Response()
+      resp.set_StatusCode(200)
+      resp.set_ContentType("application/json")
+      val utf8 = Encoding.get_UTF8()
+      val bytes = utf8.GetBytes(payload)
+      val stream = resp.get_OutputStream()
+      stream.Write(bytes, 0, bytes.length)
+      stream.Close()
     } catch Bug as e {
       // A caught Bug here means the request loop can no longer make progress
       // (e.g. the known cross-package codegen bug lyric-lang#5177). Surface
@@ -227,7 +172,7 @@ func serve(
       // down cleanly — a silent exit 0 looks like success to process
       // supervisors and masks the underlying defect from whoever is debugging it.
       Console.error("[lyric-web] request handling failed on " + prefix + ": " + e.message)
-      listenerClose(listener)
+      listener.Close()
       Env.exitCode(1)
     }
   }
