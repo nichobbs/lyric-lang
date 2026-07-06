@@ -3394,17 +3394,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           val externDelegateTy = if isExternTargetFn {
             match decl.params[ppi].ty.kind {
               case TFunction(fnParams, fnRetTe) -> {
-                val innerParamTys: List[MsilType] = newList()
-                var fpk = 0
-                while fpk < fnParams.count {
-                  innerParamTys.add(typeExprToMsilCtx(cctx, fnParams[fpk], pkgName))
-                  fpk = fpk + 1
-                }
-                val innerRetTy = match resolveValueTaskGenericMsilType(cctx, fnRetTe) {
-                  case Some(rt) -> rt
-                  case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
-                }
-                Some(value = buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy))
+                val resolved = resolveTFunctionRealTypes(cctx, fnParams, fnRetTe, pkgName)
+                Some(value = buildTypedFuncOrActionMsilType(cctx, resolved.paramTys, resolved.retTy))
               }
               case _ -> None
             }
@@ -3441,16 +3432,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         while pfi < decl.params.count {
           match decl.params[pfi].ty.kind {
             case TFunction(fnParams, fnRetTe) -> {
-              val inner: List[MsilType] = newList()
-              var fpj = 0
-              while fpj < fnParams.count {
-                inner.add(typeExprToMsilCtx(cctx, fnParams[fpj], pkgName))
-                fpj = fpj + 1
-              }
-              val fnRetMsil = match resolveValueTaskGenericMsilType(cctx, fnRetTe) {
-                case Some(rt) -> rt
-                case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
-              }
+              val resolved = resolveTFunctionRealTypes(cctx, fnParams, fnRetTe, pkgName)
+              val inner = resolved.paramTys
+              val fnRetMsil = resolved.retTy
               val aKey = arityKey + "#" + toString(pfi)
               val fKey = fqn + "#" + toString(pfi)
               if not cctx.funcParamFnInner.containsKey(aKey) {
@@ -14619,10 +14603,10 @@ func resolveValueTaskGenericMsilType(cctx: in CodegenCtx, te: in TypeExpr): Opti
     case TRef(path) -> {
       val seg = lastSegmentMsil(path)
       match mapGet(cctx.externTypeNames, seg) {
-        case Some(clrFqn) -> {
+        case Some(vtDeclaredClrFqn) -> {
           val prefix = "System.Threading.Tasks.ValueTask`1["
-          if startsWith(clrFqn, prefix) and endsWith(clrFqn, "]") {
-            val innerFqn = clrFqn.substring(prefix.length, clrFqn.length - prefix.length - 1)
+          if startsWith(vtDeclaredClrFqn, prefix) and endsWith(vtDeclaredClrFqn, "]") {
+            val innerFqn = vtDeclaredClrFqn.substring(prefix.length, vtDeclaredClrFqn.length - prefix.length - 1)
             ensureMetadataIndex(cctx)
             val innerSp = splitTypeFqn(innerFqn)
             val innerAsm = assemblyForTypeMsil(cctx, innerFqn)
@@ -14648,6 +14632,37 @@ func resolveValueTaskGenericMsilType(cctx: in CodegenCtx, te: in TypeExpr): Opti
     }
     case _ -> None
   }
+}
+
+// Real (non-erased) parameter/return MsilTypes for a `TFunction` type
+// expression's inner shape, shared by every typed-delegate-bridging call
+// site (Epic #1877/#3923 FFI-boundary slice): addPackageTokens'
+// funcParamFnInner/funcParamFnRetType registration and its own paramTys
+// signature-building, emitExternTargetBody's param-type resolution, and
+// lowerFuncMsil's non-lambda param loop all resolved this identically
+// before being deduplicated into this one helper.
+pub record TFunctionResolvedTypes {
+  paramTys: List[MsilType]
+  retTy: MsilType
+}
+
+func resolveTFunctionRealTypes(
+  cctx: in CodegenCtx,
+  fnParams: in List[TypeExpr],
+  fnRetTe: in TypeExpr,
+  pkgName: in String,
+): TFunctionResolvedTypes {
+  val paramTys: List[MsilType] = newList()
+  var fpi = 0
+  while fpi < fnParams.count {
+    paramTys.add(typeExprToMsilCtx(cctx, fnParams[fpi], pkgName))
+    fpi = fpi + 1
+  }
+  val retTy = match resolveValueTaskGenericMsilType(cctx, fnRetTe) {
+    case Some(rt) -> rt
+    case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
+  }
+  TFunctionResolvedTypes(paramTys = paramTys, retTy = retTy)
 }
 
 // Build a callvirt token for a strongly-typed System.Func<T1,...,Tn,TReturn>::Invoke(T1,...,Tn): TReturn.
@@ -15370,17 +15385,8 @@ func emitExternTargetBody(
         // functions only: every other TFunction usage is unaffected.
         val baseTy = match decl.params[pi].ty.kind {
           case TFunction(fnParams, fnRetTe) -> {
-            val innerParamTys: List[MsilType] = newList()
-            var fpj = 0
-            while fpj < fnParams.count {
-              innerParamTys.add(typeExprToMsilCtx(cctx, fnParams[fpj], pkgName))
-              fpj = fpj + 1
-            }
-            val innerRetTy = match resolveValueTaskGenericMsilType(cctx, fnRetTe) {
-              case Some(rt) -> rt
-              case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
-            }
-            buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy)
+            val resolved = resolveTFunctionRealTypes(cctx, fnParams, fnRetTe, pkgName)
+            buildTypedFuncOrActionMsilType(cctx, resolved.paramTys, resolved.retTy)
           }
           case _ -> typeExprToMsilCtx(cctx, decl.params[pi].ty, pkgName)
         }
@@ -19586,17 +19592,8 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
       // CodegenCtx.funcParamIsExternTargetDelegate's doc comment).
       match decl.params[pi2].ty.kind {
         case TFunction(fnParams, fnRetTe) -> {
-          val innerParamTys: List[MsilType] = newList()
-          var fpm = 0
-          while fpm < fnParams.count {
-            innerParamTys.add(typeExprToMsilCtx(cctx, fnParams[fpm], pkgName))
-            fpm = fpm + 1
-          }
-          val innerRetTy = match resolveValueTaskGenericMsilType(cctx, fnRetTe) {
-            case Some(rt) -> rt
-            case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
-          }
-          paramTypes.add(buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy))
+          val resolved = resolveTFunctionRealTypes(cctx, fnParams, fnRetTe, pkgName)
+          paramTypes.add(buildTypedFuncOrActionMsilType(cctx, resolved.paramTys, resolved.retTy))
         }
         case _ -> paramTypes.add(typeExprToMsilCtx(cctx, decl.params[pi2].ty, pkgName))
       }
