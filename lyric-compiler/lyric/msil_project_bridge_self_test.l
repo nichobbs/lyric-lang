@@ -684,6 +684,40 @@ test "multi-segment qualified static val resolves correctly" {
   assertEqual(Str.trim(result.stdout), "hi\n2\nHI", "multi_segment_qualified_static_val: stdout matches expected")
 }
 
+// ─── Regression: local shadowing a package name is not mistaken for a
+// qualified static val (#5265) ────────────────────────────────────────────
+// `tryQualifiedStaticValNameMsil`'s first-segment-local guard (mirroring
+// `tryQualifiedEnumOrdinalMsil`'s) must leave an ordinary field-access chain
+// alone when its root names a LOCAL, even if the chain's flattened dotted
+// name happens to collide with a real cross-package qualified static val
+// key. A local named `ShadowVal` (matching the imported `ShadowVal.Lib`
+// package's own first segment) with a nested `Lib.secret` field must read
+// its own field (`local-not-static`), not `ShadowVal.Lib`'s unrelated
+// `pub val secret`.
+test "local shadowing a package name reads its own field, not the qualified static val" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("ShadowVal.Lib", "package ShadowVal.Lib\n" + "\n" + "pub val secret: String = \"from-package\"\n"))
+  packages.add(
+    mkPkg(
+      "ShadowVal.App",
+      "package ShadowVal.App\n" + "\n" + "import ShadowVal.Lib\n" + "\n" + "record Inner { secret: String }\n" +
+        "record Outer { Lib: Inner }\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val ShadowVal = Outer(Lib = Inner(secret = \"local-not-static\"))\n" +
+        "  println(ShadowVal.Lib.secret)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("shadowval", packages, "ShadowVal")
+  assertEqualInt(result.exitCode, 0, "local_shadows_package_name: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "local-not-static",
+    "local_shadows_package_name: local field wins over qualified static val"
+  )
+}
+
 // ─── Regression: UFCS chained member read through `self` (#3353) ────────────
 // `func Outer.rd(self: in Outer)` with body `self.inner.value` used to
 // produce invalid IL because ESelf returned MClass(pkgName) instead of
