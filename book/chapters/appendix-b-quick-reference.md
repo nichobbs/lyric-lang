@@ -916,7 +916,7 @@ lyric build <file.l>                   # single-file mode also resolves dependen
                                        # file itself; an unbuilt dependency fails loud (never
                                        # auto-restores). No-op (byte-identical build) when no
                                        # manifest is found, or one is found with nothing
-                                       # dependency/feature-relevant to contribute (#5270).
+                                       # dependency/feature-relevant to contribute.
 lyric build --no-restore               # build against the lock as-is (skip auto-restore)
 lyric build --package-version <ver>   # override the version string embedded in Lyric.Contract.*
                                        # metadata resources (instead of the version in lyric.toml);

@@ -364,7 +364,7 @@ func checkDllIsStale(dllPath: in String, manifestPath: in String, sourceDir: in 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §3. Shared manifest dependency/feature resolution (#5270)
+// §3. Shared manifest dependency/feature resolution (D122)
 // ─────────────────────────────────────────────────────────────────────────────
 // The following three groups back BOTH `buildProject`'s `[project.packages]`
 // compiles and `buildOneNative`'s single-file synthetic one-package request
@@ -434,7 +434,7 @@ pub record ResolvedManifestDeps {
   /// `lyric.toml` at all.  `buildProject` has historically treated this as
   /// a non-fatal warning (the downstream typecheck surfaces the real
   /// error); `buildOneNative`'s single-file synthetic project request
-  /// treats it as fatal per #5270's "fail loud instead of silently
+  /// treats it as fatal per D122's "fail loud instead of silently
   /// degrading" conservative default.
   hadUnbuiltLocalDep: Bool
 }
