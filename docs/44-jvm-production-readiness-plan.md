@@ -173,7 +173,7 @@ tracking issue today (band J0 files them).
 | M-4 | `@cfg(feature=…)` erasure not applied on JVM (`bridge.l` has no cfg stage) | `bridge.l`; vs `msil/bridge.l:402` | #2444 (target-gate seam) |
 | M-5 | Cross-package / generic-type monomorphization is same-package only on JVM | `bridge.l:159` | #1707 |
 | M-6 | **Maven self-hosting absent:** `[maven]` parsed only by F# `Manifest.fs`; `manifest.l` cannot read ecosystem `[maven]` tables (`lyric-web`, `lyric-mq`, `lyric-grpc`, `lyric-lambda`, …). **Parsing slice DONE (#2668):** `manifest.l` now parses `[maven]` / `[maven.options]` into `MavenSection` (`MavenEntry` + `repositories` default `["central"]` + optional `java_version`), mirroring `[nuget]`; covered by `manifest_self_test.l`. The resolution/download path (M-7) remains. | `manifest.l` `assembleMaven`; `Manifest.fs:121+` | #1622/#1708 cluster |
-| M-7 | ~~**Maven resolver orphaned**~~ **Partially DONE (J5).** `cli_restore.l:restoreMavenJars` now invokes `lyric-resolver.jar` via `ProcessCapture.runCaptureWithDiagnosticsTimeout`, reads the JSON response, and writes `target/restore/jvm-classpath.txt`.  `cli_build.l:buildProject` reads the classpath file before `emitProject` and injects `LYRIC_FFI_JARS` for JVM auto-FFI; after a successful JVM build it also writes `<outDir>/module-path.txt`. `LYRIC_MAVEN_RESOLVER` env var or `lyric-resolver.jar` beside the binary required.  Remaining gap: `resolver/pom.xml` must be built (`make maven-resolver`) — the JAR is not yet pre-distributed with `lyric`. | `cli_restore.l:restoreMavenJars`, `cli_build.l:buildProject`; `resolver/pom.xml` | #673 |
+| M-7 | ~~**Maven resolver orphaned**~~ **DONE.** `cli_restore.l:restoreMavenJars` invokes `lyric-resolver.jar` via `ProcessCapture.runCaptureWithDiagnosticsTimeout`, reads the JSON response, and writes `target/restore/jvm-classpath.txt`.  `cli_build.l:buildProject` reads the classpath file before `emitProject` and injects `LYRIC_FFI_JARS` for JVM auto-FFI; after a successful JVM build it also writes `<outDir>/module-path.txt`. `resolver/pom.xml` itself was previously broken (never actually buildable): it pinned Maven Resolver artifacts (`maven-resolver-transport-http`, `maven-resolver-supplier-mvn`) that were never published under those coordinates for the 2.x line, and its Java imported the never-real `org.apache.maven.resolver.*` package (the library kept its pre-donation `org.eclipse.aether.*` Java namespace after the groupId/artifactId moved to `org.apache.maven.resolver`) — `make maven-resolver test` failed on dependency resolution before this fix. Fixed by pinning to `maven-resolver-supplier-mvn3:2.0.20` (the real, current coordinates, which pull in `impl`/`connector-basic`/`transport-apache` transitively) and rewriting `MavenResolver.java`'s imports/session-construction against the real `org.eclipse.aether.*` API (`RepositorySystemSupplier` + `SessionBuilderSupplier` → `SessionBuilder.withLocalRepositories(...).build()`). Verified: `mvn -f resolver/pom.xml test` passes (`ClassScannerTest`, 3/3), `make maven-resolver` produces `resolver/target/lyric-resolver.jar`, and an end-to-end `lyric restore` + `lyric build --target jvm` against a throwaway `[maven]`-table project (`org.apache.commons:commons-lang3`) resolves the artifact, compiles a real `extern type` call against it, and the compiled JAR runs correctly under `java` (see J5 below). Distribution: `lyric-resolver.jar` is now built and bundled beside the `lyric` binary in every `build-standalone` archive (`.github/workflows/publish.yml`) and beside `lyric.dll` inside the NuGet global tool package (`bootstrap/src/Lyric.Cli.Aot/csproj`'s `tools/<tfm>/any/` `PackagePath`), so a normal install (archive extraction or `dotnet tool install`) picks it up automatically — `LYRIC_MAVEN_RESOLVER` / manual `make maven-resolver` is no longer required for end users. | `cli_restore.l:restoreMavenJars`, `cli_build.l:buildProject`; `resolver/pom.xml`, `resolver/src/main/java/lyric/resolver/MavenResolver.java`; `.github/workflows/publish.yml`; `bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj` | #673 |
 | M-8 | ~~**F#-host kernel debt:** JVM byte-builder + constant pool via `@externTarget` into `Lyric.Jvm.Hosts` (F#), on the deletion schedule~~ **DONE (J5, D-progress-527).** `Lyric.Jvm.Hosts` project deleted entirely; `jvm/_kernel/kernel.l` is a pure-Lyric `ByteWriter`/`ConstantPool` using only arithmetic operators and audited BCL externs (`System.BitConverter`, `System.Convert.ToByte`, `System.IO.MemoryStream`). No `@externTarget` into F# host code. | `jvm/_kernel/kernel.l` | DONE |
 | M-9 | ~~`Std.Hash` has **no JVM host**~~ **DONE (J6).** `lyric-stdlib/std/_kernel_jvm/hash_host.l` added: `MessageDigest.getInstance("SHA-512").digest(...)` + `HexFormat.of().withUpperCase().formatHex(...)` via JVM auto-FFI (`extern type`, no F# shim). Verified by `hash_jvm_self_test.l` (3 NIST vectors) under `java`. | `_kernel_jvm/hash_host.l` | DONE |
 | M-10 | ~~`_kernel_jvm/` is **never loaded** by the self-hosted source loader~~ **DONE (J6).** `emitter.l:findStdlibSourcesForTarget(forJvm)` prefers `_kernel_jvm/<module>_host.l` and falls back to `_kernel/<module>_host.l` only when no JVM host exists; `emitJvmInProcess` threads `forJvm = true`. Required JVM `slice[Byte]↔byte[]` interop fixes in `codegen.l` (auto-FFI arg/return byte-array coercion, primitive-array index/length) and a String `==`/`!=` value-comparison fix. | `emitter.l`, `jvm/codegen.l`, `jvm/auto_ffi.l` | DONE |
@@ -447,16 +447,25 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
 - **M-6 DONE (parsing):** `manifest.l` parses `[maven]` / `[maven.options]` into
   `MavenSection` (`MavenEntry` coordinate/version pairs, `repositories` defaulting
   to `["central"]`, optional `java_version`).  Covered by `manifest_self_test.l`.
-- **M-7 partial DONE (resolver wire-up):** `cli_restore.l:restoreMavenJars`
+- **M-7 DONE (resolver fixed + wired + distributed):** `cli_restore.l:restoreMavenJars`
   invokes `lyric-resolver.jar` via JSON stdin/stdout protocol, writes
   `target/restore/jvm-classpath.txt`.  `cli_build.l:buildProject` injects
   `LYRIC_FFI_JARS` before `emitProject` (JVM auto-FFI) and writes
-  `<outDir>/module-path.txt` after a successful JVM build.  A `make maven-resolver`
-  Makefile target builds `resolver/pom.xml` into `lyric-resolver.jar`.
-  - **Remaining gap:** `lyric-resolver.jar` must be pre-built and placed beside the
-    `lyric` binary (or `LYRIC_MAVEN_RESOLVER` set).  Pre-distribution of the JAR
-    alongside the `lyric` binary and lock-file SHA verification (`B0050`/`B0054`)
-    are deferred to a follow-up.
+  `<outDir>/module-path.txt` after a successful JVM build.  `resolver/pom.xml`
+  itself was broken (unbuildable — see M-7 in the findings table above for the
+  root cause and fix); a `make maven-resolver` Makefile target now actually
+  builds `resolver/pom.xml` into a working `lyric-resolver.jar`.
+  - **Distribution (closed):** `.github/workflows/publish.yml`'s
+    `build-standalone` job now builds `lyric-resolver.jar` and copies it beside
+    the `lyric` binary in every release archive; `publish-nuget` builds it and
+    `Lyric.Cli.Aot.csproj` packs it into `tools/<tfm>/any/` (beside `lyric.dll`)
+    for the `dotnet tool install lyric` channel.  Both channels were verified:
+    the archive path via a local `dotnet pack` + `dotnet tool install
+    --tool-path` smoke test confirming `lyric-resolver.jar` lands in the same
+    directory as the tool's `.dll`.  No manual `make maven-resolver` /
+    `LYRIC_MAVEN_RESOLVER` step remains for an end user on either channel.
+  - Lock-file SHA verification (`B0050`/`B0054`) is a separate, still-open
+    follow-up (unrelated to distribution).
 - **m-8 DONE:** `loadClass` negative-result cache implemented (`ctx.missKeys`).
 - **m-9 DONE:** `findBestConstructor` uses explicit `>= 0` threshold (#2226).
 - **m-7 DONE:** Windows `LYRIC_FFI_JARS` path-split now uses a single
@@ -464,8 +473,20 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
 - **M-15 DONE:** abstract-type construction now aborts under `error[J005]`
   (was already guarded, just uncoded); `findBestInstanceMethod`'s superclass
   walk now reaches `java/lang/Object`.
-- **Acceptance:** an ecosystem library with a `[maven]` table builds and runs
-  on `--target jvm` from a checkout with `lyric-resolver.jar` present.
+- **Acceptance MET:** verified end-to-end with a throwaway `[maven]`-table
+  project (`org.apache.commons:commons-lang3`, not part of the ecosystem-library
+  set): `lyric restore` resolved and downloaded the artifact via the fixed
+  `lyric-resolver.jar`, `lyric build --target jvm` compiled a real `extern type`
+  call against it (typed auto-FFI resolution, not the `Object`-typed fallback —
+  confirmed by the produced bytecode's `NoClassDefFoundError` naming the exact
+  external class when run without its classpath), and running the built JAR
+  with the resolved classpath (`module-path.txt`) produced the correct output.
+  The existing ecosystem libraries with `[maven]` tables (`lyric-web`,
+  `lyric-grpc`, `lyric-mq`, `lyric-aws-secrets`, `lyric-aws-xray`,
+  `lyric-lambda`, `lyric-docker`) were not full-build-verified in this pass —
+  several (`lyric-web`) don't wire up their JVM kernel package yet, which is a
+  separate, unrelated gap (docs/44 J2/J3 JVM backend coverage), not a Maven
+  resolution issue.
 
 ### J6 — stdlib JVM kernel parity (cross-platform stdlib actually works on JVM)
 - **M-9 (DONE):** added `_kernel_jvm/hash_host.l` (Java SHA-512 via

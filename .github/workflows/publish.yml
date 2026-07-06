@@ -248,6 +248,12 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
 
+      - name: Set up Java 21 (for the Maven resolver jar)
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520  # v5.4.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Build stage 2 (self-hosted compiler)
         shell: bash
         # Seeds from the latest published self-hosted release (`download`), then
@@ -341,6 +347,26 @@ jobs:
           mkdir -p bootstrap/publish/${{ matrix.rid }}/lib
           cp .bootstrap/stage2/lib/Lyric.Stdlib*.dll \
              bootstrap/publish/${{ matrix.rid }}/lib/
+
+      # ── Bundle the Maven resolver beside the binary ───────────────────────
+      # docs/44-jvm-production-readiness-plan.md finding M-7: `lyric restore`
+      # shells out to lyric-resolver.jar for `--target jvm` [maven] table
+      # resolution.  `cli_restore.l`'s search order checks
+      # `<appBaseDir>/lyric-resolver.jar` first (after the
+      # LYRIC_MAVEN_RESOLVER env var) — appBaseDir is the directory
+      # containing the running `lyric` binary, i.e. this archive's root —
+      # so a normal install picks the jar up with zero manual steps. The JAR
+      # is managed bytecode (platform-independent), so one build covers every
+      # RID in this matrix.
+      - name: Build Maven resolver jar
+        shell: bash
+        run: make maven-resolver
+
+      - name: Stage lyric-resolver.jar beside the binary
+        shell: bash
+        run: |
+          cp resolver/target/lyric-resolver.jar \
+             bootstrap/publish/${{ matrix.rid }}/lyric-resolver.jar
 
       # ── Package archive ───────────────────────────────────────────────────
       - name: Package tar.gz archive (Linux / macOS)
@@ -440,6 +466,19 @@ jobs:
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
+
+      - name: Set up Java 21 (for the Maven resolver jar)
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520  # v5.4.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # docs/44-jvm-production-readiness-plan.md finding M-7: bundle
+      # lyric-resolver.jar into the NuGet global tool too (Lyric.Cli.Aot.csproj
+      # picks it up from resolver/target/lyric-resolver.jar via ResolverJarPath
+      # when present, landing in tools/<tfm>/any/ beside lyric.dll).
+      - name: Build Maven resolver jar
+        run: make maven-resolver
 
       - name: Restore
         working-directory: bootstrap

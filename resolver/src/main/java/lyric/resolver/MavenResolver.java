@@ -4,18 +4,18 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.apache.maven.resolver.RepositorySystem;
-import org.apache.maven.resolver.RepositorySystemSession;
-import org.apache.maven.resolver.artifact.DefaultArtifact;
-import org.apache.maven.resolver.collection.CollectRequest;
-import org.apache.maven.resolver.graph.Dependency;
-import org.apache.maven.resolver.repository.LocalRepository;
-import org.apache.maven.resolver.repository.RemoteRepository;
-import org.apache.maven.resolver.resolution.ArtifactResult;
-import org.apache.maven.resolver.resolution.DependencyRequest;
-import org.apache.maven.resolver.resolution.DependencyResult;
-import org.apache.maven.resolver.supplier.maven.MavenRepositorySystemSupplier;
-import org.apache.maven.resolver.util.DefaultRepositorySystemSession;
+import org.eclipse.aether.RepositorySystem;
+import org.eclipse.aether.RepositorySystemSession;
+import org.eclipse.aether.artifact.DefaultArtifact;
+import org.eclipse.aether.collection.CollectRequest;
+import org.eclipse.aether.graph.Dependency;
+import org.eclipse.aether.repository.LocalRepository;
+import org.eclipse.aether.repository.RemoteRepository;
+import org.eclipse.aether.resolution.ArtifactResult;
+import org.eclipse.aether.resolution.DependencyRequest;
+import org.eclipse.aether.resolution.DependencyResult;
+import org.eclipse.aether.supplier.RepositorySystemSupplier;
+import org.eclipse.aether.supplier.SessionBuilderSupplier;
 
 import java.io.File;
 import java.io.IOException;
@@ -106,13 +106,11 @@ public class MavenResolver {
         }
 
         // Set up Maven Resolver.
-        MavenRepositorySystemSupplier supplier = new MavenRepositorySystemSupplier();
-        RepositorySystem system = supplier.get();
-        DefaultRepositorySystemSession session =
-            (DefaultRepositorySystemSession) supplier.getSession();
-        session.setLocalRepositoryManager(
-            system.newLocalRepositoryManager(session,
-                new LocalRepository(new File(cacheDir))));
+        RepositorySystem system = new RepositorySystemSupplier().get();
+        RepositorySystemSession.SessionBuilder sessionBuilder =
+            new SessionBuilderSupplier(system).get();
+        sessionBuilder.withLocalRepositories(new LocalRepository(new File(cacheDir)));
+        RepositorySystemSession session = sessionBuilder.build();
 
         // Collect and resolve the full dependency graph.
         CollectRequest collectRequest = new CollectRequest();

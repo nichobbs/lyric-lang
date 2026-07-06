@@ -31,8 +31,15 @@
     <maven.compiler.target>21</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-    <!-- Maven Resolver 2.x (bundled, no external mvn/mvnd required) -->
-    <maven.resolver.version>2.0.4</maven.resolver.version>
+    <!-- Maven Resolver 2.x (bundled, no external mvn/mvnd required).
+         2.0.4 (the previously-pinned version) never published
+         maven-resolver-transport-http or maven-resolver-supplier-mvn under
+         those coordinates for the 2.x line: transport-http was replaced by
+         maven-resolver-transport-apache (wired in automatically by the
+         renamed supplier module) and the plain "supplier-mvn" artifact was
+         published as "supplier-mvn3"/"supplier-mvn4" instead.  Pinned to the
+         latest 2.0.x release that ships both under their real coordinates. -->
+    <maven.resolver.version>2.0.20</maven.resolver.version>
     <!-- ASM for bytecode class-surface extraction -->
     <asm.version>9.7</asm.version>
     <!-- Jackson for JSON I/O -->
@@ -42,30 +49,22 @@
   </properties>
 
   <dependencies>
-    <!-- Maven Resolver API + connector -->
+    <!-- Maven Resolver API (org.eclipse.aether.* packages: the project
+         kept its pre-Apache-donation Java package namespace even after the
+         groupId/artifactId moved to org.apache.maven.resolver). -->
     <dependency>
       <groupId>org.apache.maven.resolver</groupId>
       <artifactId>maven-resolver-api</artifactId>
       <version>${maven.resolver.version}</version>
     </dependency>
+    <!-- Maven-3-flavored supplier: wires together the resolver impl,
+         basic connector, and the Apache HttpClient transport
+         (org.eclipse.aether.supplier.RepositorySystemSupplier /
+         SessionBuilderSupplier) so no explicit impl/connector-basic/
+         transport dependency is needed. -->
     <dependency>
       <groupId>org.apache.maven.resolver</groupId>
-      <artifactId>maven-resolver-impl</artifactId>
-      <version>${maven.resolver.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.maven.resolver</groupId>
-      <artifactId>maven-resolver-connector-basic</artifactId>
-      <version>${maven.resolver.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.maven.resolver</groupId>
-      <artifactId>maven-resolver-transport-http</artifactId>
-      <version>${maven.resolver.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.maven.resolver</groupId>
-      <artifactId>maven-resolver-supplier-mvn</artifactId>
+      <artifactId>maven-resolver-supplier-mvn3</artifactId>
       <version>${maven.resolver.version}</version>
     </dependency>
 
