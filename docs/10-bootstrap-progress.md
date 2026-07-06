@@ -20599,7 +20599,11 @@ jmods when resolving a class.  JAR entries use the flat
 `"com/example/Foo.class"` path (no `"classes/"` JMOD prefix).
 `tryLoadFromArchive` is the unified entry point for both JMOD and JAR loading;
 `tryLoadFromJmod` delegates to it.  `javaFqnToJarEntry` produces the JAR-layout
-path.  `splitPathList` handles both `:` (Unix) and `;` (Windows) separators.
+path.  `splitPathList` splits on the platform-correct separator only — `;` on
+Windows, `:` everywhere else, chosen via `Std.Environment.runtimeIdentifier()`
+— rather than treating both characters as delimiters, which used to misparse
+a Windows drive-letter colon (`C:\foo.jar`) as a separator (#2214, fixed via
+`splitPathListOn(s, isWin)`).
 
 To integrate Maven-resolved dependencies:
 ```
