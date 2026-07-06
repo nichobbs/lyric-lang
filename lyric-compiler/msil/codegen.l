@@ -14588,6 +14588,35 @@ func buildTypedFuncOrActionMsilType(cctx: in CodegenCtx, paramTys: in List[MsilT
   }
 }
 
+// Builds the closed `MValueTypeGenericInst` for `System.Threading.Tasks.
+// ValueTask`1<InnerFqn>` given the extern type's already-extracted, plain
+// `declaredClrFqn: String` (assumed to already match the
+// `System.Threading.Tasks.ValueTask`1[...]` shape — the caller,
+// `resolveValueTaskGenericMsilType`, checks that before calling this). Split
+// out as its own function with an unambiguous `String -> MsilType`
+// signature — nesting this directly inside a match arm whose enclosing
+// function returns `Option[MsilType]` confused the retiring F# bootstrap
+// emitter's (much weaker) type inference into treating the
+// `Option[String]`-sourced local as `MsilType` itself ("no method
+// 'substring' on type MsilType"); the self-hosted stage-0 compiler has no
+// such issue. Not a design change, purely a workaround for the mint-only
+// inference bug (mirrors the "hoist to a local" mint-only workarounds
+// already documented in docs/10-bootstrap-progress.md).
+func buildValueTaskGenericMsilTypeFromClrFqn(cctx: in CodegenCtx, declaredClrFqn: in String): MsilType {
+  val prefix = "System.Threading.Tasks.ValueTask`1["
+  val innerFqn = declaredClrFqn.substring(prefix.length, declaredClrFqn.length - prefix.length - 1)
+  ensureMetadataIndex(cctx)
+  val innerSp = splitTypeFqn(innerFqn)
+  val innerAsm = assemblyForTypeMsil(cctx, innerFqn)
+  val innerRow = internFfiTypeRef(cctx, innerAsm, innerSp.ns, innerSp.name)
+  val innerTy = MClassRef(typeRefCode = (innerRow * 4) + 1, clrFqn = innerFqn)
+  val vtAsm = assemblyForTypeMsil(cctx, "System.Threading.Tasks.ValueTask`1")
+  val vtRow = internFfiTypeRef(cctx, vtAsm, "System.Threading.Tasks", "ValueTask`1")
+  val args: List[MsilType] = newList()
+  args.add(innerTy)
+  MValueTypeGenericInst(typeRefCode = (vtRow * 4) + 1, headFqn = "System.Threading.Tasks.ValueTask`1", typeArgs = args)
+}
+
 // Resolve a `System.Threading.Tasks.ValueTask`1[InnerFqn]`-shaped extern type's
 // real closed MsilType (a GENERICINST value type), bypassing
 // typeExprToMsilCtx's deliberate erasure of any extern type whose declared
@@ -14602,32 +14631,12 @@ func resolveValueTaskGenericMsilType(cctx: in CodegenCtx, te: in TypeExpr): Opti
   match te.kind {
     case TRef(path) -> {
       val seg = lastSegmentMsil(path)
-      match mapGet(cctx.externTypeNames, seg) {
-        case Some(vtDeclaredClrFqn) -> {
-          val prefix = "System.Threading.Tasks.ValueTask`1["
-          if startsWith(vtDeclaredClrFqn, prefix) and endsWith(vtDeclaredClrFqn, "]") {
-            val innerFqn = vtDeclaredClrFqn.substring(prefix.length, vtDeclaredClrFqn.length - prefix.length - 1)
-            ensureMetadataIndex(cctx)
-            val innerSp = splitTypeFqn(innerFqn)
-            val innerAsm = assemblyForTypeMsil(cctx, innerFqn)
-            val innerRow = internFfiTypeRef(cctx, innerAsm, innerSp.ns, innerSp.name)
-            val innerTy = MClassRef(typeRefCode = (innerRow * 4) + 1, clrFqn = innerFqn)
-            val vtAsm = assemblyForTypeMsil(cctx, "System.Threading.Tasks.ValueTask`1")
-            val vtRow = internFfiTypeRef(cctx, vtAsm, "System.Threading.Tasks", "ValueTask`1")
-            val args: List[MsilType] = newList()
-            args.add(innerTy)
-            Some(
-              value = MValueTypeGenericInst(
-                typeRefCode = (vtRow * 4) + 1,
-                headFqn = "System.Threading.Tasks.ValueTask`1",
-                typeArgs = args
-              )
-            )
-          } else {
-            None
-          }
-        }
-        case None -> None
+      val declaredClrFqn = match mapGet(cctx.externTypeNames, seg) { case Some(fqn) -> fqn; case None -> "" }
+      val prefix = "System.Threading.Tasks.ValueTask`1["
+      if declaredClrFqn.length > 0 and startsWith(declaredClrFqn, prefix) and endsWith(declaredClrFqn, "]") {
+        Some(value = buildValueTaskGenericMsilTypeFromClrFqn(cctx, declaredClrFqn))
+      } else {
+        None
       }
     }
     case _ -> None
