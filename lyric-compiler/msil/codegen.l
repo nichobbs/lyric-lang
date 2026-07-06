@@ -11074,6 +11074,272 @@ func lowerBuiltinOrStaticCallMsil(
   }
 }
 
+// ── slice[T] non-mutating ops: .append/.concat/.slice (#5244) ──────────────
+// `slice[T]` (`MArray(elemTy)`) has two possible runtime representations
+// behind that one static type — a genuine CLR array or a `List<object>`
+// (see the `MArray` arm of the `EMember` lowering above) — so every read
+// here goes through the non-generic `IList`/`ICollection` (`emitListCastRecv`
+// / `emitListGetItem` / `emitListGetCount`), exactly like `.length`/indexing.
+// The NEW value's write representation is decided once, from the receiver's
+// own `elemTy` via `arrayElemTokenOpt`: when it names a real array-element
+// token (primitive/String/Object) a genuine `newarr`+`stelem` array is built
+// (mirroring the `EList` literal lowering); otherwise a `List<object>`
+// fallback is built instead, matching every other slice-producing site in
+// this file (record/union element types have no array token — #2539).
+// Copy `countSlot` elements read (via IList) from `srcSlot` starting at
+// `srcStartSlot` into `dstSlot` starting at `dstStartSlot`.  `dstElemTokOpt`
+// selects the write path: `Some(tok)` stores via `stelem tok` into a genuine
+// array (unboxing each `IList.get_Item` read to `dstElem` first); `None`
+// stores via `List<object>::Add` (no unboxing — the read is already boxed).
+func emitSliceCopyLoopMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  srcSlot: in Int,
+  srcTy: in MsilType,
+  srcStartSlot: in Int,
+  countSlot: in Int,
+  dstSlot: in Int,
+  dstElemTokOpt: in Option[Int],
+  dstElem: in MsilType,
+  dstStartSlot: in Int,
+): Unit {
+  val iSlot = allocSlotMsil(fctx, "__slicecp_i_" + toString(fctx.slotTicker.count), MInt)
+  insns.add(MLdcI4(v = 0))
+  emitStoreSlot(insns, iSlot, fctx.paramCount)
+  val loopL = freshLabelMsil(fctx)
+  val afterL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = loopL))
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  emitLoadSlot(insns, countSlot, fctx.paramCount)
+  insns.add(MClt)
+  insns.add(MBrFalse(label = afterL))
+  match dstElemTokOpt {
+    case Some(tok) -> {
+      emitLoadSlot(insns, dstSlot, fctx.paramCount)
+      emitLoadSlot(insns, dstStartSlot, fctx.paramCount)
+      emitLoadSlot(insns, iSlot, fctx.paramCount)
+      insns.add(MAdd)
+      emitLoadSlot(insns, srcSlot, fctx.paramCount)
+      emitListCastRecv(cctx, insns, srcTy)
+      emitLoadSlot(insns, srcStartSlot, fctx.paramCount)
+      emitLoadSlot(insns, iSlot, fctx.paramCount)
+      insns.add(MAdd)
+      emitListGetItem(cctx, insns, srcTy)
+      castObjectToMsil(cctx, insns, dstElem)
+      insns.add(MStelem(typeToken = tok))
+    }
+    case None -> {
+      emitLoadSlot(insns, dstSlot, fctx.paramCount)
+      emitLoadSlot(insns, srcSlot, fctx.paramCount)
+      emitListCastRecv(cctx, insns, srcTy)
+      emitLoadSlot(insns, srcStartSlot, fctx.paramCount)
+      emitLoadSlot(insns, iSlot, fctx.paramCount)
+      insns.add(MAdd)
+      emitListGetItem(cctx, insns, srcTy)
+      insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+    }
+  }
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  insns.add(MLdcI4(v = 1))
+  insns.add(MAdd)
+  emitStoreSlot(insns, iSlot, fctx.paramCount)
+  insns.add(MBr(label = loopL))
+  insns.add(MLabel(id = afterL))
+}
+
+// Store a freshly-lowered Int constant into a new slot, returning the slot —
+// a small helper so the append/concat/slice lowerings below can feed a
+// compile-time-constant start index (always 0, except `.slice`'s runtime
+// `start` arg) to the shared `emitSliceCopyLoopMsil` uniformly.
+func storeIntConstSlotMsil(fctx: in FuncCtx, insns: in List[MInsn], v: in Int): Int {
+  val slot = allocSlotMsil(fctx, "__sliceconst_" + toString(fctx.slotTicker.count), MInt)
+  insns.add(MLdcI4(v = v))
+  emitStoreSlot(insns, slot, fctx.paramCount)
+  slot
+}
+
+// `xs.append(x)`: a new slice one element longer than `xs`, `x` at the end.
+func lowerSliceAppendMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  recvTy: in MsilType,
+  args: in List[CallArg],
+): MsilType {
+  val recvSlot = allocSlotMsil(fctx, "__sliceapp_recv_" + toString(fctx.slotTicker.count), recvTy)
+  emitStoreSlot(insns, recvSlot, fctx.paramCount)
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  emitListCastRecv(cctx, insns, recvTy)
+  emitListGetCount(cctx, insns, recvTy)
+  val cntSlot = allocSlotMsil(fctx, "__sliceapp_cnt_" + toString(fctx.slotTicker.count), MInt)
+  emitStoreSlot(insns, cntSlot, fctx.paramCount)
+  // `append`'s builtinMember TyFunction signature (typechecker_exprs.l) hard-
+  // requires exactly 1 arg (T0042 otherwise), so a mismatched call never
+  // reaches codegen from a type-checked program; the `else` is an
+  // unreachable defensive default, not a real call shape.
+  val argTy = if args.count > 0 { lowerCallArgMsil(cctx, fctx, insns, args[0]) } else { insns.add(MLdNull); MObject }
+  val argSlot = allocSlotMsil(fctx, "__sliceapp_arg_" + toString(fctx.slotTicker.count), argTy)
+  emitStoreSlot(insns, argSlot, fctx.paramCount)
+  val zeroSlot = storeIntConstSlotMsil(fctx, insns, 0)
+  val elemTokOpt = match recvTy { case MArray(e) -> arrayElemTokenOpt(cctx, e); case _ -> None }
+  match elemTokOpt {
+    case Some(tok) -> {
+      val e = match recvTy { case MArray(ee) -> ee; case _ -> MObject }
+      emitLoadSlot(insns, cntSlot, fctx.paramCount)
+      insns.add(MLdcI4(v = 1))
+      insns.add(MAdd)
+      insns.add(MNewarr(typeToken = tok))
+      val newSlot = allocSlotMsil(fctx, "__sliceapp_new_" + toString(fctx.slotTicker.count), MArray(elemTy = e))
+      emitStoreSlot(insns, newSlot, fctx.paramCount)
+      emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, zeroSlot, cntSlot, newSlot, elemTokOpt, e, zeroSlot)
+      emitLoadSlot(insns, newSlot, fctx.paramCount)
+      emitLoadSlot(insns, cntSlot, fctx.paramCount)
+      emitLoadSlot(insns, argSlot, fctx.paramCount)
+      if e == MObject {
+        boxIfNeededMsil(cctx, insns, argTy)
+      }
+      insns.add(MStelem(typeToken = tok))
+      emitLoadSlot(insns, newSlot, fctx.paramCount)
+      MArray(elemTy = e)
+    }
+    case None -> {
+      insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+      val newSlot = allocSlotMsil(fctx, "__sliceapp_new_" + toString(fctx.slotTicker.count), MObject)
+      emitStoreSlot(insns, newSlot, fctx.paramCount)
+      emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, zeroSlot, cntSlot, newSlot, None, MObject, zeroSlot)
+      emitLoadSlot(insns, newSlot, fctx.paramCount)
+      emitLoadSlot(insns, argSlot, fctx.paramCount)
+      boxIfNeededMsil(cctx, insns, argTy)
+      insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+      emitLoadSlot(insns, newSlot, fctx.paramCount)
+      MObject
+    }
+  }
+}
+
+// `xs.concat(ys)`: a new slice holding every element of `xs` then every
+// element of `ys`.
+func lowerSliceConcatMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  recvTy: in MsilType,
+  args: in List[CallArg],
+): MsilType {
+  val recvSlot = allocSlotMsil(fctx, "__sliceccat_recv_" + toString(fctx.slotTicker.count), recvTy)
+  emitStoreSlot(insns, recvSlot, fctx.paramCount)
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  emitListCastRecv(cctx, insns, recvTy)
+  emitListGetCount(cctx, insns, recvTy)
+  val cntSlot = allocSlotMsil(fctx, "__sliceccat_cnt_" + toString(fctx.slotTicker.count), MInt)
+  emitStoreSlot(insns, cntSlot, fctx.paramCount)
+  // See the matching comment in `lowerSliceAppendMsil`: `concat`'s signature
+  // hard-requires exactly 1 arg, so this `else` is unreachable from a
+  // type-checked program.
+  val otherTy = if args.count > 0 { lowerCallArgMsil(cctx, fctx, insns, args[0]) } else { insns.add(MLdNull); MObject }
+  val otherSlot = allocSlotMsil(fctx, "__sliceccat_other_" + toString(fctx.slotTicker.count), otherTy)
+  emitStoreSlot(insns, otherSlot, fctx.paramCount)
+  emitLoadSlot(insns, otherSlot, fctx.paramCount)
+  emitListCastRecv(cctx, insns, otherTy)
+  emitListGetCount(cctx, insns, otherTy)
+  val otherCntSlot = allocSlotMsil(fctx, "__sliceccat_ocnt_" + toString(fctx.slotTicker.count), MInt)
+  emitStoreSlot(insns, otherCntSlot, fctx.paramCount)
+  val zeroSlot = storeIntConstSlotMsil(fctx, insns, 0)
+  val elemTokOpt = match recvTy { case MArray(e) -> arrayElemTokenOpt(cctx, e); case _ -> None }
+  match elemTokOpt {
+    case Some(tok) -> {
+      val e = match recvTy { case MArray(ee) -> ee; case _ -> MObject }
+      emitLoadSlot(insns, cntSlot, fctx.paramCount)
+      emitLoadSlot(insns, otherCntSlot, fctx.paramCount)
+      insns.add(MAdd)
+      insns.add(MNewarr(typeToken = tok))
+      val newSlot = allocSlotMsil(fctx, "__sliceccat_new_" + toString(fctx.slotTicker.count), MArray(elemTy = e))
+      emitStoreSlot(insns, newSlot, fctx.paramCount)
+      emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, zeroSlot, cntSlot, newSlot, elemTokOpt, e, zeroSlot)
+      emitSliceCopyLoopMsil(cctx, fctx, insns, otherSlot, otherTy, zeroSlot, otherCntSlot, newSlot, elemTokOpt, e, cntSlot)
+      emitLoadSlot(insns, newSlot, fctx.paramCount)
+      MArray(elemTy = e)
+    }
+    case None -> {
+      insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+      val newSlot = allocSlotMsil(fctx, "__sliceccat_new_" + toString(fctx.slotTicker.count), MObject)
+      emitStoreSlot(insns, newSlot, fctx.paramCount)
+      emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, zeroSlot, cntSlot, newSlot, None, MObject, zeroSlot)
+      emitSliceCopyLoopMsil(cctx, fctx, insns, otherSlot, otherTy, zeroSlot, otherCntSlot, newSlot, None, MObject, zeroSlot)
+      emitLoadSlot(insns, newSlot, fctx.paramCount)
+      MObject
+    }
+  }
+}
+
+// `xs.slice(start, end)`: a new slice holding the half-open sub-range
+// `[start, end)`.  A negative `end - start` (an invalid range) throws
+// explicitly rather than the List-backed path silently returning an empty
+// result while the array-backed path would fault inside `newarr` — the two
+// runtime representations must agree, not just the common in-range case.
+func lowerSliceSliceMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  recvTy: in MsilType,
+  args: in List[CallArg],
+): MsilType {
+  val recvSlot = allocSlotMsil(fctx, "__slicesub_recv_" + toString(fctx.slotTicker.count), recvTy)
+  emitStoreSlot(insns, recvSlot, fctx.paramCount)
+  if args.count > 0 {
+    val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
+  } else {
+    insns.add(MLdcI4(v = 0))
+  }
+  val startSlot = allocSlotMsil(fctx, "__slicesub_start_" + toString(fctx.slotTicker.count), MInt)
+  emitStoreSlot(insns, startSlot, fctx.paramCount)
+  if args.count > 1 {
+    val _ = lowerCallArgMsil(cctx, fctx, insns, args[1])
+  } else {
+    insns.add(MLdcI4(v = 0))
+  }
+  val endSlot = allocSlotMsil(fctx, "__slicesub_end_" + toString(fctx.slotTicker.count), MInt)
+  emitStoreSlot(insns, endSlot, fctx.paramCount)
+  val cntSlot = allocSlotMsil(fctx, "__slicesub_cnt_" + toString(fctx.slotTicker.count), MInt)
+  emitLoadSlot(insns, endSlot, fctx.paramCount)
+  emitLoadSlot(insns, startSlot, fctx.paramCount)
+  insns.add(MSub)
+  emitStoreSlot(insns, cntSlot, fctx.paramCount)
+  val okL = freshLabelMsil(fctx)
+  emitLoadSlot(insns, cntSlot, fctx.paramCount)
+  insns.add(MLdcI4(v = 0))
+  insns.add(MClt)
+  insns.add(MBrFalse(label = okL))
+  val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: slice(start, end) requires end >= start")
+  insns.add(MLdStr(token = msgTok))
+  insns.add(MNewobj(ctorToken = cctx.tokInvalidOpExceptionCtor))
+  insns.add(MThrow)
+  insns.add(MLabel(id = okL))
+  val zeroSlot = storeIntConstSlotMsil(fctx, insns, 0)
+  val elemTokOpt = match recvTy { case MArray(e) -> arrayElemTokenOpt(cctx, e); case _ -> None }
+  match elemTokOpt {
+    case Some(tok) -> {
+      val e = match recvTy { case MArray(ee) -> ee; case _ -> MObject }
+      emitLoadSlot(insns, cntSlot, fctx.paramCount)
+      insns.add(MNewarr(typeToken = tok))
+      val newSlot = allocSlotMsil(fctx, "__slicesub_new_" + toString(fctx.slotTicker.count), MArray(elemTy = e))
+      emitStoreSlot(insns, newSlot, fctx.paramCount)
+      emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, startSlot, cntSlot, newSlot, elemTokOpt, e, zeroSlot)
+      emitLoadSlot(insns, newSlot, fctx.paramCount)
+      MArray(elemTy = e)
+    }
+    case None -> {
+      insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+      val newSlot = allocSlotMsil(fctx, "__slicesub_new_" + toString(fctx.slotTicker.count), MObject)
+      emitStoreSlot(insns, newSlot, fctx.paramCount)
+      emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, startSlot, cntSlot, newSlot, None, MObject, zeroSlot)
+      emitLoadSlot(insns, newSlot, fctx.paramCount)
+      MObject
+    }
+  }
+}
+
 // Lower a method call on a receiver: recv.memberName(args…).
 // Dispatches by name to known BCL tokens for List<object> and
 // Dictionary<object,object>; falls back to a safe stub for unknowns.
@@ -11864,6 +12130,12 @@ func lowerMethodCallMsil(
       insns.add(MConvI4)
       MInt
     }
+  } else if memberName == "append" and args.count == 1 {
+    lowerSliceAppendMsil(cctx, fctx, insns, recvTy, args)
+  } else if memberName == "concat" and args.count == 1 {
+    lowerSliceConcatMsil(cctx, fctx, insns, recvTy, args)
+  } else if memberName == "slice" and args.count == 2 {
+    lowerSliceSliceMsil(cctx, fctx, insns, recvTy, args)
   } else {
     // Unrecognised method on this receiver.  Previously this popped the
     // receiver/args and pushed `null` — a silent miscompile: the call appeared

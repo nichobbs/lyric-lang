@@ -668,6 +668,32 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
+      # Slice-ops self-test (#5244).  `slice[T].append`/`.concat`/`.slice` —
+      # the compiler's own documented canonical `slice[T]` example
+      # (docs/agent/reference.md) — threw "unsupported method" at runtime on
+      # every element type: the type checker had no real signature for these
+      # calls (silently degrading to `TyError`, so `lyric build` succeeded)
+      # and neither backend's codegen had a lowering for them.  Covers
+      # `.append` on `Int`/`String`/record element types (MSIL's
+      # `List<object>`-backed fallback path for the record case), `.concat`,
+      # `.slice` sub-ranges, and composed chained calls.  Imports only
+      # `Std.*`.
+      - name: Slice-ops self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping slice-ops self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping slice-ops self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/slice_ops_self_test.l
+
       # Block-shadow self-test (#5191 / D-progress-603).  Runtime regression test
       # for general nested-block variable shadowing on the self-hosted backends:
       # a nested `val`/`var` that shadows a still-live enclosing binding must not
@@ -3133,6 +3159,28 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # Slice-ops self-test on JVM (#5244) — the JVM half of the dotnet-job
+      # step of the same name.  JVM slices are uniformly `Object[]`
+      # (`Jvm.Codegen`'s `TSlice(_) -> JArray(elem = Object)` erasure), so
+      # this exercises the same `.append`/`.concat`/`.slice` lowerings via
+      # `System.arraycopy` + `newarray`/`anewarray` rather than MSIL's dual
+      # array/`List<object>` representation.
+      - name: Slice-ops self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping slice-ops JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping slice-ops JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/slice_ops_self_test.l
 
       # Block-shadow self-test on JVM (#5191 / D-progress-603) — the JVM half of
       # the dotnet-job step of the same name.  Pins the general nested-block

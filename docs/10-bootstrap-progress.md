@@ -29611,3 +29611,65 @@ parsing — works on native.
 
 **Related:** D-N-027 (the decision entry), D-N-026, D-progress-601,
 #4752 (file `stat` is the last remaining item).
+
+### D-progress-605 — `slice[T].append`/`.concat`/`.slice` implemented on both targets (#5244)
+
+**Shipped.** `slice[T]`'s three documented non-mutating ops — `xs.append(x)`,
+`xs.concat(ys)`, `xs.slice(start, end)` (`docs/agent/reference.md`,
+`book/chapters/03-data-structures.md` §3.5) — threw "unsupported method
+'<name>' on the receiver type at this call site" at runtime on every element
+type, on both build targets, despite `lyric build` succeeding.  The type
+checker's `builtinMember` had no case for any of the three names on
+`TySlice`, so `inferMember` fell through to a silently-unvalidated `TyError`
+(the `ECall` arm's `TyError` branch adds no diagnostic) instead of a real
+`TyFunction` signature — and neither `Msil.Codegen`'s `lowerMethodCallMsil`
+nor `Jvm.Codegen`'s `lowerMethodCall` had a lowering for any of the three,
+so both fell through to their respective unknown-method stubs.
+
+- **Type checker** (`typechecker_exprs.l` `builtinMember`'s `TySlice` arm):
+  `append`/`concat`/`slice` now resolve to real `TyFunction` signatures
+  (`(elem) -> slice[elem]`, `(slice[elem]) -> slice[elem]`,
+  `(Int, Int) -> slice[elem]`), so the `ECall` arm's existing T0042/T0043
+  arg-count/arg-type validation now runs against them instead of silently
+  degrading to `TyError`.
+- **MSIL** (`lowerSliceAppendMsil`/`lowerSliceConcatMsil`/`lowerSliceSliceMsil`
+  in `codegen.l`): `slice[T]` lowers to `MArray(elemTy)`, but a value
+  carrying that static type may be a genuine CLR array OR a
+  `List<object>` (#2539) — every read goes through the non-generic
+  `IList`/`ICollection` (`emitListCastRecv`/`emitListGetItem`/
+  `emitListGetCount`, the same helpers `.length`/indexing already use), and
+  the new value's write representation is decided once from
+  `arrayElemTokenOpt` on the receiver's `elemTy`: a genuine `newarr`+`stelem`
+  array when a token exists (primitive/String/Object), a `List<object>`
+  fallback otherwise (record/union element types), mirroring the `EList`
+  literal lowering exactly.  A shared `emitSliceCopyLoopMsil` runtime copy
+  loop backs all three ops.
+- **JVM** (`lowerSliceAppendJvm`/`lowerSliceConcatJvm`/`lowerSliceSliceJvm`
+  in `jvm/codegen/04_calls.l`): every `slice[T]` erases to a single
+  `JArray(elem = Object)` representation (`Jvm.Codegen`'s `TSlice(_) ->
+  JArray(elem = Object)`), so no dual-representation reconciliation is
+  needed — each op is a `newarray`/`anewarray` plus `System.arraycopy` bulk
+  copies (no per-element read loop).  `.concat`'s second operand still
+  needs an explicit `coerceArgTo(..., JArray(elem = e))` before use: unlike
+  a normal function call, this dispatch bypasses the usual call-arg
+  coercion against a declared parameter type, so an inline `slice[T]`
+  literal argument (a `java/util/ArrayList` per the `EList` lowering) would
+  otherwise fault `arraylength`/`arraycopy` on a non-array reference.
+  `.slice`'s `end < start` case throws explicitly on both targets (rather
+  than the MSIL array path faulting via `newarr` while a JVM/MSIL
+  `List`-backed fallback path silently returned an empty result) so the
+  two representations agree on invalid-range behaviour.
+
+**Verification.** `lyric-compiler/lyric/slice_ops_self_test.l`
+(`@test_module`, imports only `Std.*`): `.append` growing an empty and a
+non-empty `slice[Int]`, `slice[String]`, and a 2-field record element type
+(exercises the MSIL `List<object>`-backed fallback path); `.concat` of two
+non-empty slices and with an empty operand; `.slice` for a middle
+sub-range, the full range, and an empty range; and a composed
+append→concat→slice chain.  Runs in CI via native `lyric test` on both
+`--target dotnet` and `--target jvm`.  The issue's exact repro
+(`val dynamic: slice[Int] = [1, 2, 3]; val ys = dynamic.append(42);
+println(ys.length)`) now prints `4` on both targets instead of throwing.
+
+**Related:** #5244, #2539 (the MSIL dual-representation precedent this
+follows), `docs/agent/reference.md` (the canonical example this fixes).

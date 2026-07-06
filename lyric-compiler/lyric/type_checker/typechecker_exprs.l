@@ -910,9 +910,32 @@ func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, spa
 func builtinMember(recvRaw: in Type, name: in String): Option[Type] {
   val recv = unrefine(recvRaw)
   match recv {
-    case TySlice(_) -> {
+    case TySlice(elem) -> {
       if name == "length" {
         return Some(value = TyPrim(pt = PtInt))
+      }
+      // `.append`/`.concat`/`.slice` (docs/agent/reference.md "Arrays and
+      // slices") never mutate in place — each returns a NEW `slice[T]` — so
+      // they are typed as real `TyFunction`s (not a bare return type)
+      // precisely so the `ECall` arm's existing arg-count/arg-type
+      // validation (T0042/T0043) runs against them, rather than silently
+      // degrading to `TyError` the way an unrecognised method name on this
+      // receiver would (#5244).
+      if name == "append" {
+        val ps: List[Type] = newList()
+        ps.add(elem)
+        return Some(value = TyFunction(params = ps, ret = TySlice(element = elem), isAsync = false))
+      }
+      if name == "concat" {
+        val ps: List[Type] = newList()
+        ps.add(TySlice(element = elem))
+        return Some(value = TyFunction(params = ps, ret = TySlice(element = elem), isAsync = false))
+      }
+      if name == "slice" {
+        val ps: List[Type] = newList()
+        ps.add(TyPrim(pt = PtInt))
+        ps.add(TyPrim(pt = PtInt))
+        return Some(value = TyFunction(params = ps, ret = TySlice(element = elem), isAsync = false))
       }
       None
     }

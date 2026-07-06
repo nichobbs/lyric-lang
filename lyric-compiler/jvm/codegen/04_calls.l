@@ -2330,6 +2330,181 @@ func emitToDoubleJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   }   // int-like → double
 }
 
+// ── slice[T] non-mutating ops: .append/.concat/.slice (#5244) ──────────────
+// `slice[T]` (`JArray(elemTy)`) is always a genuine fixed-size JVM array —
+// unlike the MSIL backend, there is no second (List-backed) runtime
+// representation to reconcile — so building a new slice is just a fresh
+// `newarray`/`anewarray` plus `System.arraycopy` bulk copies; no per-element
+// read loop is needed.
+// Store an `Int` constant into a fresh local slot, returning the slot.
+func storeIntConstSlotJvm(ctx: in FuncCtx, insns: in List[LInsn], v: in Int): Int {
+  val slot = allocSlot(ctx, "__sliceconst_" + toString(ctx.slotTicker.count), JInt)
+  insns.add(LIconst(v = v))
+  emitStore(insns, slot, JInt)
+  slot
+}
+
+// `System.arraycopy(src, srcPos, dest, destPos, length): void`.
+func emitArraycopyJvm(
+  insns: in List[LInsn],
+  srcSlot: in Int,
+  srcTy: in JvmType,
+  srcPosSlot: in Int,
+  dstSlot: in Int,
+  dstTy: in JvmType,
+  dstPosSlot: in Int,
+  lenSlot: in Int,
+): Unit {
+  val objTy = JRef(className = "java/lang/Object")
+  emitLoad(insns, srcSlot, srcTy)
+  emitLoad(insns, srcPosSlot, JInt)
+  emitLoad(insns, dstSlot, dstTy)
+  emitLoad(insns, dstPosSlot, JInt)
+  emitLoad(insns, lenSlot, JInt)
+  val acPs: List[JvmType] = newList()
+  acPs.add(objTy)
+  acPs.add(JInt)
+  acPs.add(objTy)
+  acPs.add(JInt)
+  acPs.add(JInt)
+  insns.add(LInvokestatic(owner = "java/lang/System", name = "arraycopy", params = acPs, ret = JVoid))
+}
+
+// The element type of a slice receiver, defaulting to `Object` for a non-
+// `JArray` receiver (never reached in practice — `.append`/`.concat`/`.slice`
+// are exclusively slice ops, dispatched by name in `lowerMethodCall` below).
+func sliceElemTypeJvm(recvTy: in JvmType): JvmType {
+  match recvTy {
+    case JArray(e) -> e
+    case _ -> JRef(className = "java/lang/Object")
+  }
+}
+
+// `xs.append(x)`: a new slice one element longer than `xs`, `x` at the end.
+func lowerSliceAppendJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmType, args: in List[CallArg]): JvmType {
+  val e = sliceElemTypeJvm(recvTy)
+  val recvSlot = allocSlot(ctx, "__sliceapp_recv_" + toString(ctx.slotTicker.count), recvTy)
+  emitStore(insns, recvSlot, recvTy)
+  emitLoad(insns, recvSlot, recvTy)
+  insns.add(LArraylength)
+  val cntSlot = allocSlot(ctx, "__sliceapp_cnt_" + toString(ctx.slotTicker.count), JInt)
+  emitStore(insns, cntSlot, JInt)
+  // `append`'s builtinMember TyFunction signature (typechecker_exprs.l) hard-
+  // requires exactly 1 arg (T0042 otherwise); the `else` below is an
+  // unreachable defensive default, matching the MSIL lowering's comment.
+  val argTy = if args.count > 0 {
+    lowerCallArg(ctx, insns, args[0])
+  } else {
+    insns.add(LAconstNull)
+    JRef(className = "java/lang/Object")
+  }
+  coerceArgTo(insns, argTy, e)
+  val argSlot = allocSlot(ctx, "__sliceapp_arg_" + toString(ctx.slotTicker.count), e)
+  emitStore(insns, argSlot, e)
+  val zeroSlot = storeIntConstSlotJvm(ctx, insns, 0)
+  emitLoad(insns, cntSlot, JInt)
+  insns.add(LIconst(v = 1))
+  insns.add(LIadd)
+  emitNewarray(insns, e)
+  val newSlot = allocSlot(ctx, "__sliceapp_new_" + toString(ctx.slotTicker.count), JArray(elem = e))
+  emitStore(insns, newSlot, JArray(elem = e))
+  emitArraycopyJvm(insns, recvSlot, recvTy, zeroSlot, newSlot, JArray(elem = e), zeroSlot, cntSlot)
+  emitLoad(insns, newSlot, JArray(elem = e))
+  emitLoad(insns, cntSlot, JInt)
+  emitLoad(insns, argSlot, e)
+  emitArrayStore(insns, e)
+  emitLoad(insns, newSlot, JArray(elem = e))
+  JArray(elem = e)
+}
+
+// `xs.concat(ys)`: a new slice holding every element of `xs` then every
+// element of `ys`.
+func lowerSliceConcatJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmType, args: in List[CallArg]): JvmType {
+  val e = sliceElemTypeJvm(recvTy)
+  val recvSlot = allocSlot(ctx, "__sliceccat_recv_" + toString(ctx.slotTicker.count), recvTy)
+  emitStore(insns, recvSlot, recvTy)
+  emitLoad(insns, recvSlot, recvTy)
+  insns.add(LArraylength)
+  val cntSlot = allocSlot(ctx, "__sliceccat_cnt_" + toString(ctx.slotTicker.count), JInt)
+  emitStore(insns, cntSlot, JInt)
+  // See the matching comment in `lowerSliceAppendJvm`: `concat`'s signature
+  // hard-requires exactly 1 arg, so this `else` is unreachable.
+  val otherTyRaw = if args.count > 0 {
+    lowerCallArg(ctx, insns, args[0])
+  } else {
+    insns.add(LAconstNull)
+    JArray(elem = e)
+  }
+  // Unlike a normal function call, this dispatch bypasses the usual call-arg
+  // `coerceArgTo` against a declared param type — so an inline `slice[T]`
+  // literal argument (still a `java/util/ArrayList` at this point, per the
+  // `EList` lowering) must be explicitly converted to a genuine array here,
+  // or `arraylength`/`arraycopy` below fault on a non-array reference.
+  coerceArgTo(insns, otherTyRaw, JArray(elem = e))
+  val otherTy = JArray(elem = e)
+  val otherSlot = allocSlot(ctx, "__sliceccat_other_" + toString(ctx.slotTicker.count), otherTy)
+  emitStore(insns, otherSlot, otherTy)
+  emitLoad(insns, otherSlot, otherTy)
+  insns.add(LArraylength)
+  val otherCntSlot = allocSlot(ctx, "__sliceccat_ocnt_" + toString(ctx.slotTicker.count), JInt)
+  emitStore(insns, otherCntSlot, JInt)
+  val zeroSlot = storeIntConstSlotJvm(ctx, insns, 0)
+  emitLoad(insns, cntSlot, JInt)
+  emitLoad(insns, otherCntSlot, JInt)
+  insns.add(LIadd)
+  emitNewarray(insns, e)
+  val newSlot = allocSlot(ctx, "__sliceccat_new_" + toString(ctx.slotTicker.count), JArray(elem = e))
+  emitStore(insns, newSlot, JArray(elem = e))
+  emitArraycopyJvm(insns, recvSlot, recvTy, zeroSlot, newSlot, JArray(elem = e), zeroSlot, cntSlot)
+  emitArraycopyJvm(insns, otherSlot, otherTy, zeroSlot, newSlot, JArray(elem = e), cntSlot, otherCntSlot)
+  emitLoad(insns, newSlot, JArray(elem = e))
+  JArray(elem = e)
+}
+
+// `xs.slice(start, end)`: a new slice holding the half-open sub-range
+// `[start, end)`.  A negative `end - start` throws explicitly (`newarray`
+// with a negative size already faults with `NegativeArraySizeException`, but
+// spelling it out here keeps the guard's wording consistent with the MSIL
+// backend's explicit check).
+func lowerSliceSliceJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmType, args: in List[CallArg]): JvmType {
+  val e = sliceElemTypeJvm(recvTy)
+  val recvSlot = allocSlot(ctx, "__slicesub_recv_" + toString(ctx.slotTicker.count), recvTy)
+  emitStore(insns, recvSlot, recvTy)
+  if args.count > 0 {
+    val _ = lowerCallArg(ctx, insns, args[0])
+  } else {
+    insns.add(LIconst(v = 0))
+  }
+  val startSlot = allocSlot(ctx, "__slicesub_start_" + toString(ctx.slotTicker.count), JInt)
+  emitStore(insns, startSlot, JInt)
+  if args.count > 1 {
+    val _ = lowerCallArg(ctx, insns, args[1])
+  } else {
+    insns.add(LIconst(v = 0))
+  }
+  val endSlot = allocSlot(ctx, "__slicesub_end_" + toString(ctx.slotTicker.count), JInt)
+  emitStore(insns, endSlot, JInt)
+  emitLoad(insns, endSlot, JInt)
+  emitLoad(insns, startSlot, JInt)
+  insns.add(LIsub)
+  val cntSlot = allocSlot(ctx, "__slicesub_cnt_" + toString(ctx.slotTicker.count), JInt)
+  emitStore(insns, cntSlot, JInt)
+  val okL = freshLabel(ctx)
+  emitLoad(insns, cntSlot, JInt)
+  insns.add(LIfge(label = okL))
+  insns.add(LPushString(s = "Jvm.Codegen: slice(start, end) requires end >= start"))
+  emitPanicFromStack(ctx, insns)
+  insns.add(LLabel(name = okL))
+  val zeroSlot = storeIntConstSlotJvm(ctx, insns, 0)
+  emitLoad(insns, cntSlot, JInt)
+  emitNewarray(insns, e)
+  val newSlot = allocSlot(ctx, "__slicesub_new_" + toString(ctx.slotTicker.count), JArray(elem = e))
+  emitStore(insns, newSlot, JArray(elem = e))
+  emitArraycopyJvm(insns, recvSlot, recvTy, startSlot, newSlot, JArray(elem = e), zeroSlot, cntSlot)
+  emitLoad(insns, newSlot, JArray(elem = e))
+  JArray(elem = e)
+}
+
 func lowerMethodCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -2634,6 +2809,22 @@ func lowerMethodCall(
       )
       return JArray(elem = JRef(className = "java/lang/Object"))
     }
+  }
+
+  // `.append`/`.concat`/`.slice` (#5244): exclusively slice ops, so dispatch
+  // by name against a genuine `JArray` receiver before any auto-FFI /
+  // record-field fallback gets a chance to mis-resolve them.
+  match recvTy {
+    case JArray(_) -> {
+      if memberName == "append" and args.count == 1 {
+        return lowerSliceAppendJvm(ctx, insns, recvTy, args)
+      } else if memberName == "concat" and args.count == 1 {
+        return lowerSliceConcatJvm(ctx, insns, recvTy, args)
+      } else if memberName == "slice" and args.count == 2 {
+        return lowerSliceSliceJvm(ctx, insns, recvTy, args)
+      }
+    }
+    case _ -> ()
   }
 
   // Instance auto-FFI: when the receiver is a JRef to a JDK class (returned
