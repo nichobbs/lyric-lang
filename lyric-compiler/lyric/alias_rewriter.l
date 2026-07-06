@@ -1023,8 +1023,53 @@ func rewriteWireMember(aliases: in List[String], m: in WireMember): WireMember {
     case WMBind(iface, provider, span) -> return WMBind(iface = rewriteTypeExpr(aliases, iface), provider = rewriteExpr(aliases, provider), span = span)
     case WMExpose(name, span) -> return WMExpose(name = name, span = span)
     case WMLocal(name, ty, init, span) -> return WMLocal(name = name, ty = rewriteOptType(aliases, ty), init = rewriteExpr(aliases, init), span = span)
+    case WMContributes(iface, name, init, ordering, isSealed, span) -> return WMContributes(
+      iface = rewriteTypeExpr(aliases, iface),
+      name = name,
+      init = rewriteExpr(aliases, init),
+      ordering = ordering,
+      isSealed = isSealed,
+      span = span
+    )
+    // Like `AspectDecl.from`, the include path is resolved by the wire
+    // expander against collected template FQNs, not alias-rewritten here.
+    case WMInclude(path, aliasName, adjustments, hasBody, span) -> return WMInclude(
+      path = path,
+      aliasName = aliasName,
+      adjustments = rewriteIncludeAdjusts(aliases, adjustments),
+      hasBody = hasBody,
+      span = span
+    )
+    case WMOverridable(names, span) -> return WMOverridable(names = names, span = span)
+    case WMConfigInst(decl, span) -> return WMConfigInst(decl = rewriteConfigDecl(aliases, decl), span = span)
   }
   return m
+}
+
+func rewriteIncludeAdjusts(aliases: in List[String], xs: in List[IncludeAdjust]): List[IncludeAdjust] {
+  val ys: List[IncludeAdjust] = newList()
+  var i = 0
+  while i < xs.count {
+    match xs[i] {
+      case IAProvided(name, value, span) -> ys.add(IAProvided(name = name, value = rewriteExpr(aliases, value), span = span))
+      case IAConfigOverride(name, fields, span) -> {
+        val fs: List[ConfigFieldOverride] = newList()
+        var j = 0
+        while j < fields.count {
+          fs.add(
+            ConfigFieldOverride(name = fields[j].name, value = rewriteExpr(aliases, fields[j].value), span = fields[j].span)
+          )
+          j = j + 1
+        }
+        ys.add(IAConfigOverride(name = name, fields = fs, span = span))
+      }
+      case IAReplace(name, value, span) -> ys.add(IAReplace(name = name, value = rewriteExpr(aliases, value), span = span))
+      case IARemove(name, span) -> ys.add(IARemove(name = name, span = span))
+      case IAReorder(name, ordering, span) -> ys.add(IAReorder(name = name, ordering = ordering, span = span))
+    }
+    i = i + 1
+  }
+  ys
 }
 
 func rewriteWireDecl(aliases: in List[String], d: in WireDecl): WireDecl {
@@ -1121,7 +1166,7 @@ func rewriteConfigFields(aliases: in List[String], fields: in List[ConfigField])
 }
 
 func rewriteConfigDecl(aliases: in List[String], d: in ConfigDecl): ConfigDecl {
-  ConfigDecl(name = d.name, fields = rewriteConfigFields(aliases, d.fields), span = d.span)
+  ConfigDecl(name = d.name, from = d.from, fields = rewriteConfigFields(aliases, d.fields), span = d.span)
 }
 
 func rewriteArgsRowField(aliases: in List[String], f: in ArgsRowField): ArgsRowField {

@@ -194,6 +194,78 @@ For custom scope kinds like `Tenant`, you control entry and exit explicitly in t
 
 Scope state propagates across `await` boundaries via .NET's `AsyncLocal<T>`. When a `scoped[Request]` value is resolved inside an async function, the active scope is the one that was current when the request started — even if several `await` expressions have intervened.
 
+## §11.7 Wire templates, `include`, and `contributes[T]`
+
+Everything so far had you hand-assemble each graph. A library can instead
+ship a reusable, typed bundle of bindings — a **wire template** — that you
+splice into your own wire and adjust locally (D121, `docs/58`).
+
+A template is a `pub wire`. It is never bootstrapped as the library's own
+graph; it is a parameterized recipe from `@provided` inputs to `expose`d
+outputs:
+
+```lyric
+// library: lyric-web
+pub wire ServerModule {
+  @provided config: AppConfig
+
+  contributes[Middleware] cors    = Web.corsMiddleware()
+  contributes[Middleware] logging = Web.loggingMiddleware()
+
+  singleton router: Web.Router = Web.create(middlewares: Middleware)
+
+  expose router
+  overridable cors
+}
+```
+
+Two new pieces appear here. `contributes[Middleware]` declares one named
+entry of an **ordered collection**: when a graph has contributes entries
+for `Middleware`, the bare name `Middleware` resolves as an ordered
+`List[Middleware]` — declaration order, adjusted by the same `wraps:` /
+`inside:` clauses aspects use, outermost first. And `overridable cors` is
+the template's allow-list: only listed entries may be replaced or removed
+by a consumer.
+
+The consumer splices the template with `include` and composes its own
+additions against the template's entries by name:
+
+```lyric
+wire ProductionApp {
+  @provided config: AppConfig
+
+  include Web.ServerModule {
+    cors = MyApp.customCors()          // replace (must be overridable)
+  }
+
+  contributes[Middleware] auth = MyApp.jwtMiddleware(config.jwtSecret)
+    inside: logging                     // after logging …
+    wraps:  cors                        // … but before cors
+
+  expose router
+}
+```
+
+Inclusion is compile-time splicing — the result is exactly what you would
+get by hand-writing the same members locally, with the template's internal
+names collision-proofed. The template's `@provided config` is satisfied by
+your same-named binding automatically; a differently-named input needs an
+explicit mapping (`@provided config: myAppConfig`) in the include body.
+Exposed names (like `router`) become referenceable inside your wire — but
+your own `expose` list still decides what leaves it.
+
+Other adjustments: `remove cors` drops an overridable entry entirely;
+`reorder cors wraps: logging` repositions an entry without replacing it;
+`include Web.ServerModule as Admin` isolates a second instance (reach its
+outputs as `Admin.router`). A library that must protect a collection's
+composition — say, auth middleware ordering — declares the entry
+`sealed contributes[Middleware] auth = …`, which blocks external
+add/remove/reorder for that collection.
+
+Templates may also declare `config Local from Pkg.Template { … }` members
+— config-template instantiations usable as values in the graph; chapter 21
+covers config templates.
+
 ## Exercises
 
 1. Create a `wire` with a missing binding: declare a `singleton` for a service that depends on an interface, but do not add a `bind` entry for that interface. Build the project and read the compile error. It should name the unsatisfied dependency precisely.

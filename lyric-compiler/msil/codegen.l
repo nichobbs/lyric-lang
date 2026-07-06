@@ -476,6 +476,13 @@ pub record CodegenCtx {
   // (spurious) receiver expression.
   configFieldTokens: Map[String, Int]
   configFieldMsilTypes: Map[String, MsilType]
+  // Wire exposed-binding fields (#5021).  Keyed "<pkg>.<Wire>/<binding>" (#5280) →
+  // 0x04000000 | FieldDef row on the package host class.  Pre-computed in
+  // `addPackageTokens` (Pass 1b, alongside IConst/IVal static fields) so
+  // `lowerWireMsil` can `stsfld` each exposed binding in `bootstrap` and the
+  // per-expose accessor can `ldsfld` it.
+  wireFieldTokens: Map[String, Int]
+  wireFieldMsilTypes: Map[String, MsilType]
   // BCL tokens for the config .cctor body.  Registered in `newCodegenCtx` at stable
   // row positions (after the generator group) so callers can thread them through
   // MPConfig.configToks into lowerMConfig.
@@ -1769,6 +1776,8 @@ pub func newCodegenCtx(
     tokDictObjGetValues = tokDictObjGetValues,
     configFieldTokens = newMap(),
     configFieldMsilTypes = newMap(),
+    wireFieldTokens = newMap(),
+    wireFieldMsilTypes = newMap(),
     tokCfgGetEnvVar = tokCfgGetEnvVar,
     tokCfgIsNullOrEmpty = tokCfgIsNullOrEmpty,
     tokCfgConsoleError = tokCfgConsoleError,
@@ -2045,6 +2054,123 @@ pub func preSeedBundleAsyncRetTypesMsil(
       ii = ii + 1
     }
     fi = fi + 1
+  }
+}
+
+// ── Wire ABI helpers (#5021) ─────────────────────────────────────────────────
+// A wire lowers to static state + methods on the package host class:
+// one private static field per EXPOSED binding, a `<Wire>_bootstrap`
+// method that evaluates the graph and stores the exposed bindings, and a
+// `<Wire>_<name>` accessor per exposed binding — mirroring the JVM
+// backend's `bootstrap()` / accessor ABI so `TestWire.bootstrap(cfg)` /
+// `TestWire.logger()` resolve identically on both targets.
+func wireListContainsMsil(xs: in List[String], s: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == s {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Exposed binding names of a wire, in expose order, deduplicated.
+func wireExposedNamesMsil(decl: in WireDecl): List[String] {
+  val xs: List[String] = newList()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case WMExpose(n, _) -> {
+        if not wireListContainsMsil(xs, n) {
+          xs.add(n)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  xs
+}
+
+// The declared MSIL type of a wire binding, for the exposed field / accessor.
+func wireBindingMsilType(cctx: in CodegenCtx, decl: in WireDecl, pkgName: in String, name: in String): MsilType {
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case WMSingleton(n, ty, _, _) -> {
+        if n == name {
+          return typeExprToMsilCtx(cctx, ty, pkgName)
+        }
+      }
+      case WMLocal(n, tyOpt, _, _) -> {
+        if n == name {
+          return match tyOpt { case Some(t) -> typeExprToMsilCtx(cctx, t, pkgName); case None -> MObject }
+        }
+      }
+      case WMBind(iface, _, _) -> {
+        val bn = match iface.kind { case TRef(path) -> lastSegmentMsil(path); case _ -> "__bind" }
+        if bn == name {
+          return typeExprToMsilCtx(cctx, iface, pkgName)
+        }
+      }
+      case WMProvided(n, ty, _) -> {
+        if n == name {
+          return typeExprToMsilCtx(cctx, ty, pkgName)
+        }
+      }
+      case WMScoped(_, n, ty, _, _) -> {
+        if n == name {
+          return typeExprToMsilCtx(cctx, ty, pkgName)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  MObject
+}
+
+// Register one wire static method (`bootstrap` or an exposed-binding
+// accessor) under the four call-site key shapes the static-call lowering
+// tries: `<Wire>.<method>` (bare, same-package or import-bare call sites),
+// `<pkg>.<Wire>.<method>` (fully qualified), each with and without the
+// `/arity` suffix.
+func registerWireStaticMsil(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  wireName: in String,
+  methodName: in String,
+  arity: in Int,
+  tok: in Int,
+  retTy: in MsilType,
+  paramTys: in List[MsilType],
+  paramModes: in List[ParamMode],
+): Unit {
+  val bare = wireName + "." + methodName
+  val keys: List[String] = newList()
+  keys.add(bare)
+  keys.add(bare + "/" + toString(arity))
+  keys.add(pkgName + "." + bare)
+  keys.add(pkgName + "." + bare + "/" + toString(arity))
+  var i = 0
+  while i < keys.count {
+    val k = keys[i]
+    if not cctx.funcTokens.containsKey(k) {
+      cctx.funcTokens.add(k, tok)
+    }
+    if not cctx.funcRetTypes.containsKey(k) {
+      cctx.funcRetTypes.add(k, retTy)
+    }
+    if not cctx.funcParamTypes.containsKey(k) {
+      cctx.funcParamTypes.add(k, paramTys)
+    }
+    if not cctx.funcParamModes.containsKey(k) {
+      cctx.funcParamModes.add(k, paramModes)
+    }
+    i = i + 1
   }
 }
 
@@ -3088,6 +3214,22 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         }
         fieldDefRow = fieldDefRow + 1
       }
+      case IWire(decl) -> {
+        // #5021: one host-class static field per EXPOSED wire binding, in
+        // expose order — `lowerWireMsil` appends the matching MStaticField
+        // entries at the same item position, so the rows line up.
+        val wireExposes = wireExposedNamesMsil(decl)
+        var wei = 0
+        while wei < wireExposes.count {
+          val wKey = pkgName + "." + decl.name + "/" + wireExposes[wei]
+          if not cctx.wireFieldTokens.containsKey(wKey) {
+            cctx.wireFieldTokens.add(wKey, 0x04000000 + fieldDefRow)
+            cctx.wireFieldMsilTypes.add(wKey, wireBindingMsilType(cctx, decl, pkgName, wireExposes[wei]))
+          }
+          fieldDefRow = fieldDefRow + 1
+          wei = wei + 1
+        }
+      }
       case _ -> {
       }
     }
@@ -3286,10 +3428,57 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         }
         methodDefRow = methodDefRow + 1
       }
-      // IWire emits exactly one static factory method (<name>_create) in MPFuncs.
-      // Reserve its MethodDef row so subsequent IFunc token assignments remain correct.
-      case IWire(_) -> {
+      // IWire emits `<Wire>_bootstrap` plus one `<Wire>_<name>` accessor per
+      // exposed binding in MPFuncs (#5021).  Reserve the MethodDef rows in
+      // that order (matching `lowerWireMsil`'s emission) and register the
+      // tokens so `TestWire.bootstrap(cfg)` / `TestWire.logger()` call
+      // sites resolve through the static-call path.
+      case IWire(decl) -> {
+        val providedTys: List[MsilType] = newList()
+        val providedModes: List[ParamMode] = newList()
+        var wpi = 0
+        while wpi < decl.members.count {
+          match decl.members[wpi] {
+            case WMProvided(_, pty, _) -> {
+              providedTys.add(typeExprToMsilCtx(cctx, pty, pkgName))
+              providedModes.add(PMIn)
+            }
+            case _ -> {
+            }
+          }
+          wpi = wpi + 1
+        }
+        registerWireStaticMsil(
+          cctx,
+          pkgName,
+          decl.name,
+          "bootstrap",
+          providedTys.count,
+          0x06000000 + methodDefRow,
+          MVoid,
+          providedTys,
+          providedModes
+        )
         methodDefRow = methodDefRow + 1
+        val wireExposes = wireExposedNamesMsil(decl)
+        var wei = 0
+        while wei < wireExposes.count {
+          val accTys: List[MsilType] = newList()
+          val accModes: List[ParamMode] = newList()
+          registerWireStaticMsil(
+            cctx,
+            pkgName,
+            decl.name,
+            wireExposes[wei],
+            0,
+            0x06000000 + methodDefRow,
+            wireBindingMsilType(cctx, decl, pkgName, wireExposes[wei]),
+            accTys,
+            accModes
+          )
+          methodDefRow = methodDefRow + 1
+          wei = wei + 1
+        }
       }
       case _ -> {
       }
@@ -11217,7 +11406,10 @@ func emitSliceCopyLoopMsil(
 // (mirroring the JVM lowering's `match recvTy { case JArray(_) -> ...}`
 // guard, #5256).
 func isSliceRecvMsil(ty: in MsilType): Bool {
-  match ty { case MArray(_) -> true; case _ -> false }
+  match ty {
+    case MArray(_) -> true
+    case _ -> false
+  }
 }
 
 // Store a freshly-lowered Int constant into a new slot, returning the slot —
@@ -20933,7 +21125,29 @@ func wireExprDepsMsil(e: in Expr, knownNames: in Map[String, Bool], acc: in List
       }
     }
     case ECall(fn, args) -> {
-      wireExprDepsMsil(fn, knownNames, acc)
+      // A call head that names a List-typed wire member (knownNames value
+      // false) is really the element TYPE's constructor — the common
+      // `contributes[Route] home = Route(path = "/")` shape, where the
+      // synthesised collection shares the type's name.  Counting it as a
+      // dependency manufactures a false entry→collection→entry cycle
+      // (spurious W0001).  A List value can never be a call head, so the
+      // skip loses nothing.
+      val skipFn = match fn.kind {
+        case EPath(p) -> {
+          if p.segments.count == 1 {
+            match mapGet(knownNames, p.segments[0]) {
+              case Some(callable) -> not callable
+              case None -> false
+            }
+          } else {
+            false
+          }
+        }
+        case _ -> false
+      }
+      if not skipFn {
+        wireExprDepsMsil(fn, knownNames, acc)
+      }
       var ai = 0
       while ai < args.count {
         match args[ai] {
@@ -20944,6 +21158,20 @@ func wireExprDepsMsil(e: in Expr, knownNames: in Map[String, Bool], acc: in List
       }
     }
     case EMember(receiver, _) -> wireExprDepsMsil(receiver, knownNames, acc)
+    case EList(exprs) -> {
+      var li = 0
+      while li < exprs.count {
+        wireExprDepsMsil(exprs[li], knownNames, acc)
+        li = li + 1
+      }
+    }
+    case ETuple(exprs) -> {
+      var ti = 0
+      while ti < exprs.count {
+        wireExprDepsMsil(exprs[ti], knownNames, acc)
+        ti = ti + 1
+      }
+    }
     case EBlock(block) -> wireBlockDepsMsil(block, knownNames, acc)
     case EIf(cond, thenBranch, elseBranch, _) -> {
       wireExprDepsMsil(cond, knownNames, acc)
@@ -21012,6 +21240,24 @@ func wireMemberInitMsil(m: in WireMember): Option[Expr] {
     case WMBind(_, provider, _) -> Some(value = provider)
     case WMProvided(_, _, _) -> None
     case WMExpose(_, _) -> None
+    // docs/58 (D121) members are rewritten away by Lyric.WireExpand before
+    // codegen; they carry no init at this stage.
+    case _ -> None
+  }
+}
+
+// True when the member's declared type is List[…] — i.e. it can hold a
+// synthesised contributes collection and can never be a call head.
+func wireMemberIsListTypedMsil(m: in WireMember): Bool {
+  val tyOpt: Option[TypeExpr] = match m {
+    case WMSingleton(_, ty, _, _) -> Some(value = ty)
+    case WMLocal(_, ty, _, _) -> ty
+    case WMScoped(_, _, ty, _, _) -> Some(value = ty)
+    case _ -> None
+  }
+  match tyOpt {
+    case Some(t) -> match t.kind { case TGenericApp(head, _) -> lastSegmentMsil(head) == "List"; case _ -> false }
+    case None -> false
   }
 }
 
@@ -21024,6 +21270,8 @@ func wireMemberNameMsil(m: in WireMember): String {
     case WMBind(iface, _, _) -> match iface.kind { case TRef(path) -> lastSegmentMsil(path); case _ -> "__bind" }
     case WMProvided(name, _, _) -> name
     case WMExpose(name, _) -> name
+    case WMContributes(_, name, _, _, _, _) -> name
+    case _ -> ""
   }
 }
 
@@ -21048,7 +21296,10 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
     sep = sep + 1
   }
 
-  // Build name → member index and known-name set.
+  // Build name → member index and known-name set.  The knownNames value is
+  // false for List-typed members (synthesised contributes collections):
+  // wireExprDepsMsil uses it to skip call-head "references" to them, which
+  // are really the element type's constructor (see the ECall case).
   val nameToIdx: Map[String, Int] = newMap()
   val knownNames: Map[String, Bool] = newMap()
   var i = 0
@@ -21056,7 +21307,7 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
     val n = wireMemberNameMsil(sortable[i])
     if n.length > 0 and not nameToIdx.containsKey(n) {
       nameToIdx.add(n, i)
-      knownNames.add(n, true)
+      knownNames.add(n, not wireMemberIsListTypedMsil(sortable[i]))
     }
     i = i + 1
   }
@@ -21225,20 +21476,29 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
 }
 
 // ── Wire block lowering ───────────────────────────────────────────────────────
-// Lower a wire block to a static factory class with a `<wireName>_create()`
-// method that instantiates the dependency graph in topological order.
+// Lower a wire block to JVM-parity static DI state on the package host
+// class (#5021):
+//   - one private static field per EXPOSED binding (appended to
+//     `staticFields`, rows pre-allocated by addPackageTokens Pass 1b);
+//   - `<Wire>_bootstrap(provided…)`: evaluates every binding initialiser
+//     in topological order into locals, then stores each exposed binding
+//     to its static field;
+//   - `<Wire>_<name>()`: a public static accessor per exposed binding.
+// Call sites (`TestWire.bootstrap(cfg)`, `TestWire.logger()`) resolve via
+// the funcTokens entries registered in addPackageTokens Pass 2.
 // Supported member kinds:
 //   singleton / local — evaluated once, stored as a local
 //   scoped[X]         — AsyncLocal<T>-backed scoping deferred to #2972
 //   bind I -> impl    — impl evaluated and stored under interface's simple name
-//   @provided n: T    — becomes a parameter of the create() function
-//   expose n          — loads n and leaves it on the stack for return
+//   @provided n: T    — becomes a parameter of bootstrap()
+//   expose n          — persisted to a static field + accessor
 func lowerWireMsil(
   cctx: in CodegenCtx,
   decl: in WireDecl,
   pkgName: in String,
   items: in List[MPackageItem],
   fns: in List[MFunc],
+  staticFields: in List[MStaticField],
 ): Unit {
   // Topologically sort members and detect dependency cycles before emitting code.
   val sortedMembers: List[WireMember] = match wireTopoSortMsil(decl.members) {
@@ -21250,11 +21510,15 @@ func lowerWireMsil(
   }
 
   // Pre-pass: collect @provided members to determine the factory's param count.
+  // Iterate `decl.members` (declaration order), NOT the topo-sorted list: the
+  // Pass 2 signature registration in `addPackageTokens` scans the declaration
+  // order too, so both passes share one source of truth for the bootstrap
+  // param order instead of relying on the sort preserving it (#5287).
   val providedNames: List[String] = newList()
   val providedTypes: List[MsilType] = newList()
   var fpi = 0
-  while fpi < sortedMembers.count {
-    match sortedMembers[fpi] {
+  while fpi < decl.members.count {
+    match decl.members[fpi] {
       case WMProvided(pname, pty, _) -> {
         providedNames.add(pname)
         providedTypes.add(typeExprToMsilCtx(cctx, pty, pkgName))
@@ -21267,7 +21531,7 @@ func lowerWireMsil(
 
   val providedCount = providedNames.count
   val createInsns: List[MInsn] = newList()
-  val createFctx = makeFuncCtxMsil(pkgName, pkgName, "__wire_create", providedCount, MObject)
+  val createFctx = makeFuncCtxMsil(pkgName, pkgName, "__wire_bootstrap", providedCount, MVoid)
 
   // Register provided parameters as argument slots (0..providedCount-1) so that
   // init expressions in subsequent members can reference them by name.
@@ -21289,13 +21553,25 @@ func lowerWireMsil(
       case WMSingleton(name, ty, init, _) -> {
         val localTy = typeExprToMsilCtx(cctx, ty, pkgName)
         val localSlot = allocSlotMsil(createFctx, name, localTy)
+        // Push the declared type as the construction context so a list
+        // literal builds the concrete `List<T>` (and a bare nullary case
+        // closes over the annotation's type args) — same treatment as an
+        // annotated `val` binding.
+        val savedH = pushAnnoHintTyArgs(createFctx, localTy)
+        pushCollExpect(createFctx, localTy)
         lowerExprMsil(cctx, createFctx, createInsns, init)
+        popCollExpect(createFctx)
+        restoreHintTyArgs(createFctx, savedH)
         createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
       }
       case WMLocal(name, ty, init, _) -> {
         val localTy = match ty { case Some(t) -> typeExprToMsilCtx(cctx, t, pkgName); case None -> MObject }
         val localSlot = allocSlotMsil(createFctx, name, localTy)
+        val savedH = pushAnnoHintTyArgs(createFctx, localTy)
+        pushCollExpect(createFctx, localTy)
         lowerExprMsil(cctx, createFctx, createInsns, init)
+        popCollExpect(createFctx)
+        restoreHintTyArgs(createFctx, savedH)
         createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
       }
       case WMScoped(_, memberName, _, _, _) -> {
@@ -21316,21 +21592,59 @@ func lowerWireMsil(
         val ifaceName = match iface.kind { case TRef(path) -> lastSegmentMsil(path); case _ -> "__bind" }
         val localTy = typeExprToMsilCtx(cctx, iface, pkgName)
         val localSlot = allocSlotMsil(createFctx, ifaceName, localTy)
+        // Same construction-context treatment as WMSingleton/WMLocal (#5288):
+        // a list-literal or nullary-case provider closes over the bound
+        // interface type's annotation.
+        val savedH = pushAnnoHintTyArgs(createFctx, localTy)
+        pushCollExpect(createFctx, localTy)
         lowerExprMsil(cctx, createFctx, createInsns, provider)
+        popCollExpect(createFctx)
+        restoreHintTyArgs(createFctx, savedH)
         createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
       }
-      case WMExpose(name, _) -> {
-        match mapGet(createFctx.slots, name) {
-          case Some(slot) -> {
-            emitLoadSlot(createInsns, slot, createFctx.paramCount)
-          }
-          case None -> {
-            createInsns.add(MLdNull)
-          }
-        }
+      case WMExpose(_, _) -> {
+        // Persisted after the member loop (below): each exposed binding's
+        // local is stored to its host-class static field.
+      }
+      case _ -> {
+        // WMContributes / WMInclude / WMOverridable / WMConfigInst (docs/58,
+        // D121) are rewritten into plain members by Lyric.WireExpand before
+        // codegen.  Seeing one here means the expander did not run.
+        panic(
+          "Msil.Codegen: wire '" + decl.name + "' still contains a docs/58 template member at codegen time; " +
+            "Lyric.WireExpand.expandFile must run before lowering."
+        )
       }
     }
     mi = mi + 1
+  }
+
+  // Store each exposed binding to its pre-allocated static field (#5021).
+  val wireExposes = wireExposedNamesMsil(decl)
+  var sei = 0
+  while sei < wireExposes.count {
+    val en = wireExposes[sei]
+    val wKey = pkgName + "." + decl.name + "/" + en
+    val fldTok = match mapGet(cctx.wireFieldTokens, wKey) { case Some(t) -> t; case None -> 0 }
+    if fldTok == 0 {
+      panic("Msil.Codegen: wire '" + decl.name + "' exposed binding '" + en + "' has no pre-allocated field token")
+    }
+    match mapGet(createFctx.slots, en) {
+      case Some(slot) -> {
+        emitLoadSlot(createInsns, slot, createFctx.paramCount)
+        createInsns.add(MStsfld(fieldToken = fldTok))
+      }
+      case None -> {
+        // Unreachable in a normal build: Lyric.WireExpand validates every
+        // expose against the finished wire's bindings (W0027) before
+        // codegen.  Kept as an ICE backstop for direct-codegen callers.
+        panic(
+          "Msil.Codegen: wire '" + decl.name + "' exposes '" + en +
+            "', which names no @provided/singleton/bind/val member of the wire (expander W0027 should have caught this)"
+        )
+      }
+    }
+    sei = sei + 1
   }
   createInsns.add(MRet)
 
@@ -21344,14 +21658,54 @@ func lowerWireMsil(
   fns.add(
     MFunc(
       flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
-      name = decl.name + "_create",
+      name = decl.name + "_bootstrap",
       params = createParams,
-      ret = MObject,
+      ret = MVoid,
       insns = createInsns,
       maxStack = computeMaxStackMsil(createInsns),
       locals = createFctx.locals
     )
   )
+
+  // One host-class static field + one public static accessor per exposed
+  // binding.  Field rows were pre-allocated by addPackageTokens Pass 1b in
+  // this same expose order; accessor MethodDef rows in Pass 2, directly
+  // after the bootstrap row.
+  var fei = 0
+  while fei < wireExposes.count {
+    val en = wireExposes[fei]
+    val wKey = pkgName + "." + decl.name + "/" + en
+    val fldTok = match mapGet(cctx.wireFieldTokens, wKey) { case Some(t) -> t; case None -> 0 }
+    val fldTy = match mapGet(cctx.wireFieldMsilTypes, wKey) { case Some(t) -> t; case None -> MObject }
+    val noInit: List[MInsn] = newList()
+    staticFields.add(
+      MStaticField(
+        flags = FDA_PUBLIC + FDA_STATIC,
+        name = decl.name + "__" + en,
+        fieldType = fldTy,
+        constValue = 0,
+        hasLiteral = false,
+        initInsns = noInit
+      )
+    )
+    val accInsns: List[MInsn] = newList()
+    accInsns.add(MLdsfld(fieldToken = fldTok))
+    accInsns.add(MRet)
+    val accParams: List[MsilType] = newList()
+    val accFctx = makeFuncCtxMsil(pkgName, pkgName, "__wire_accessor", 0, fldTy)
+    fns.add(
+      MFunc(
+        flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
+        name = decl.name + "_" + en,
+        params = accParams,
+        ret = fldTy,
+        insns = accInsns,
+        maxStack = computeMaxStackMsil(accInsns),
+        locals = accFctx.locals
+      )
+    )
+    fei = fei + 1
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24800,8 +25154,9 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         lowerProtectedMsil(cctx, decl, pkgName, items, fns)
       }
       case IWire(decl) -> {
-        // Band-2 #855: wire block — static DI factory class.
-        lowerWireMsil(cctx, decl, pkgName, items, fns)
+        // Band-2 #855 / #5021: wire block — bootstrap + accessor ABI on the
+        // package host class, with one static field per exposed binding.
+        lowerWireMsil(cctx, decl, pkgName, items, fns, staticFields)
       }
       case IAspect(_) -> {
       }  // consumed by weaveAspectsMsil above

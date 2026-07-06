@@ -669,6 +669,36 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
+      # docs/58 (D121) self-tests, one step to keep this batch's background
+      # concurrency where it was (#4486/#4841 corruption guidance): the
+      # wire-expander unit suite (config templates, contributes[T], include
+      # splicing, the full W0010–W0026 diagnostic surface — links the
+      # stage-1 DLLs as restored deps like the weaver self-test), the
+      # wire-templates RUNTIME suite (real expanded wires through the #5021
+      # MSIL wire ABI; JVM half runs in the JVM job), the config-templates
+      # RUNTIME suite (dotnet only — the JVM IConfig emission gap is
+      # pre-existing, #3228), and the wire-DI suite on dotnet (the #5021
+      # fix's direct regression test; JVM half already runs in the JVM job).
+      - name: docs/58 wire/config-template self-tests (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping docs/58 self-tests"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping docs/58 self-tests"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/wire_expand_self_test.l
+          "$lyric_bin" test lyric-compiler/lyric/wire_templates_self_test.l
+          "$lyric_bin" test lyric-compiler/lyric/config_templates_self_test.l
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/wire_di_self_test.l
+          echo "docs/58 self-tests ran: wire_expand, wire_templates, config_templates, wire_di (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
+
       # Slice-ops self-test (#5244).  `slice[T].append`/`.concat`/`.slice` —
       # the compiler's own documented canonical `slice[T]` example
       # (docs/agent/reference.md) — threw "unsupported method" at runtime on
@@ -3280,9 +3310,8 @@ jobs:
       # implementing an interface with an empty-bodied method failed class
       # load with ClassFormatError (#5022, `inferMaxLocals` never accounted
       # for the parameter frame when the body touches none of its params).
-      # `--target dotnet` is not run here: MSIL has no equivalent call-site
-      # resolution for wire `bootstrap()`/accessor calls at all (#5021,
-      # tracked separately). Needs JDK 21 (this job).
+      # `--target dotnet` runs in the .NET job (the #5021 MSIL wire ABI
+      # shipped with D121). Needs JDK 21 (this job).
       - name: Wire-DI self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
@@ -4287,6 +4316,35 @@ jobs:
 
       - name: Wait for all parallel tests
         wait-all: true
+
+      # docs/58 (D121) wire-templates RUNTIME self-test on JVM — real
+      # expanded wires (include, contributes[T], provided mapping,
+      # replace/remove, aliasing) compiled through the self-hosted
+      # `Jvm.Bridge` `compileToJarBundled` and run under `java`.  Imports
+      # only `Std.*`; the dotnet half runs in the .NET job.
+      #
+      # Deliberately AFTER the wait-all barrier (fully serialized), not in
+      # the background batch: two consecutive batch placements of this
+      # suite aborted in CI with signatures that do not reproduce locally
+      # against the same stage-1 artifact, Debug AOT binary, and run order
+      # (first a SIGABRT ~9s in with interleaved output, then a
+      # once-off NRE ~65s in) — the #4486/#4841 batch-pressure flake class
+      # this job's earlier comments document, and the same remediation.
+      - name: Wire-templates self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping wire-templates JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping wire-templates JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/wire_templates_self_test.l
+          echo "wire-templates self-test ran: wire_templates_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
   ecosystem-security-tests:
     runs-on: ubuntu-latest
     needs: [build]

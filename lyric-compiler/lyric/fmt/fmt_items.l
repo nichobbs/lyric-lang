@@ -622,7 +622,7 @@ pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
     case IProtected(pd) -> concatDoc(header, protectedTypeDoc(visStr, pd, ctx))
     case IInterface(id) -> concatDoc(header, interfaceDoc(visStr, id, ctx))
     case IImpl(id) -> concatDoc(header, implDoc(id, ctx))
-    case IWire(wd) -> concatDoc(header, wireDoc(wd, ctx))
+    case IWire(wd) -> concatDoc(header, wireDoc(visStr, wd, ctx))
     case IScopeKind(sd) -> concatDoc(header, singleLineDoc("scope_kind " + sd.name))
     case IConst(cd) -> concatDoc(header, constDoc(visStr, cd))
     case IVal(vd) -> concatDoc(header, valDoc(visStr, vd))
@@ -920,7 +920,42 @@ func implDoc(id: in ImplDecl, ctx: inout FmtCtx): List[String] {
   acc
 }
 
-func wireDoc(wd: in WireDecl, ctx: inout FmtCtx): List[String] {
+func wireOrderingStr(o: in WireOrdering): String {
+  match o {
+    case WOWraps(n, _) -> "wraps: " + n
+    case WOInside(n, _) -> "inside: " + n
+  }
+}
+
+func includeAdjustLines(a: in IncludeAdjust): List[String] {
+  val acc: List[String] = newList()
+  match a {
+    case IAProvided(n, value, _) -> acc.add("@provided " + n + ": " + exprInline(0, value))
+    case IAConfigOverride(n, fields, _) -> {
+      acc.add(n + " {")
+      var i = 0
+      while i < fields.count {
+        acc.add("  " + fields[i].name + " = " + exprInline(0, fields[i].value))
+        i = i + 1
+      }
+      acc.add("}")
+    }
+    case IAReplace(n, value, _) -> acc.add(n + " = " + exprInline(0, value))
+    case IARemove(n, _) -> acc.add("remove " + n)
+    case IAReorder(n, ordering, _) -> {
+      var line = "reorder " + n
+      var i = 0
+      while i < ordering.count {
+        line = line + " " + wireOrderingStr(ordering[i])
+        i = i + 1
+      }
+      acc.add(line)
+    }
+  }
+  acc
+}
+
+func wireDoc(visStr: in String, wd: in WireDecl, ctx: inout FmtCtx): List[String] {
   val params = paramsStr(wd.params)
   val mLines: List[String] = newList()
   var i = 0
@@ -935,11 +970,57 @@ func wireDoc(wd: in WireDecl, ctx: inout FmtCtx): List[String] {
         val tyStr = match ty { case Some(t) -> ": " + typeStr(t); case None -> "" }
         mLines.add("val " + n + tyStr + " = " + exprInline(0, init))
       }
+      case WMContributes(iface, n, init, ordering, isSealed, _) -> {
+        val sealedStr = if isSealed { "sealed " } else { "" }
+        mLines.add(sealedStr + "contributes[" + typeStr(iface) + "] " + n + " = " + exprInline(0, init))
+        var oi = 0
+        while oi < ordering.count {
+          mLines.add("  " + wireOrderingStr(ordering[oi]))
+          oi = oi + 1
+        }
+      }
+      case WMInclude(path, aliasName, adjustments, hasBody, _) -> {
+        val aliasStr = match aliasName { case Some(a) -> " as " + a; case None -> "" }
+        if not hasBody {
+          mLines.add("include " + pathStr(path) + aliasStr)
+        } else if adjustments.count == 0 {
+          mLines.add("include " + pathStr(path) + aliasStr + " {")
+          mLines.add("}")
+        } else {
+          mLines.add("include " + pathStr(path) + aliasStr + " {")
+          var ai = 0
+          while ai < adjustments.count {
+            val aLines = includeAdjustLines(adjustments[ai])
+            var li = 0
+            while li < aLines.count {
+              mLines.add("  " + aLines[li])
+              li = li + 1
+            }
+            ai = ai + 1
+          }
+          mLines.add("}")
+        }
+      }
+      case WMOverridable(names, _) -> mLines.add("overridable " + joinStrings(names, ", "))
+      case WMConfigInst(decl, _) -> {
+        val fromStr = match decl.from { case Some(mp) -> " from " + pathStr(mp); case None -> "" }
+        mLines.add("config " + decl.name + fromStr + " {")
+        var fi = 0
+        while fi < decl.fields.count {
+          mLines.add("  " + configFieldLine(decl.fields[fi]))
+          fi = fi + 1
+        }
+        mLines.add("}")
+      }
     }
     i = i + 1
   }
   val acc: List[String] = newList()
-  val wireHeader = if params.length > 0 { "wire " + wd.name + "(" + params + ") {" } else { "wire " + wd.name + " {" }
+  val wireHeader = if params.length > 0 {
+    visStr + "wire " + wd.name + "(" + params + ") {"
+  } else {
+    visStr + "wire " + wd.name + " {"
+  }
   acc.add(wireHeader)
   val ind = indentDoc(2, mLines)
   i = 0
@@ -1125,7 +1206,9 @@ func configDoc(visStr: in String, cd: in ConfigDecl, ctx: inout FmtCtx): List[St
   // last field is re-attached to its line rather than split onto its own.
   appendTriviaInto(mLines, ctx, cd.span.endPos.offset, true)
   val acc: List[String] = newList()
-  acc.add(visStr + "config " + cd.name + " {")
+  // Instantiation form (docs/58, D121): `config Name from Pkg.Template { … }`.
+  val fromStr = match cd.from { case Some(mp) -> " from " + pathStr(mp); case None -> "" }
+  acc.add(visStr + "config " + cd.name + fromStr + " {")
   val ind = indentDoc(2, mLines)
   i = 0
   while i < ind.count {

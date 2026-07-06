@@ -10546,6 +10546,190 @@ downstream report against), #5177/#5222/D-progress-599/D-progress-600
 (a different cross-package MSIL bundler bug family with superficially
 similar symptoms), docs/45 (contract-metadata direct resolution, relevant
 to the restored-dependency scope boundary above).
+---
+## D121 — Library-contributed DI extensions ship per docs/58: config templates, `contributes[T]`, wire templates — implemented as a front-end expansion (`Lyric.WireExpand`), with the MSIL wire bootstrap/accessor ABI (#5021) fixed to make wires callable on both targets
+
+**Date:** 2026-07-06
+**Status:** ACCEPTED (implemented; docs/58 is the backing sketch and is now
+specced by this entry)
+
+**Context.** `docs/58-wire-templates-sketch.md` proposed three additive
+DI-extension mechanisms — config templates (`pub config` + `from`),
+`contributes[T]` ordered multi-value wire bindings, and wire templates
+(`pub wire` + `include`) — and left four open tensions (Q-wire-001 …
+Q-wire-004) plus an implementation-shape question open. This entry
+codifies the decisions and records what shipped.
+
+**Decision 1 — implementation shape: a pre-typecheck AST expansion, not
+backend codegen.** All three mechanisms are rewritten into ordinary items
+and plain wire members by a new compiler package,
+`lyric-compiler/lyric/wire_expand/wire_expand.l` (`Lyric.WireExpand`),
+run by both bridges (`Msil.Bridge`, `Jvm.Bridge`) immediately after the
+alias/stubbable rewrites and BEFORE type checking — the same
+collect-templates-across-packages shape as the aspect weaver
+(`collectAspectTemplates` / `weaveFileWithDiagsAndTemplates`):
+
+- `pub config Name { fields }` (template declaration) is replaced by a
+  synthesised `pub record Name` carrying the template's field shape —
+  the template is a schema plus a nominal type, never an env-backed
+  block in the declaring package.
+- `config Local from Pkg.Template { overrides }` (module level, or
+  inside a wire body — the wire form is hoisted to module scope)
+  materialises an ordinary `config Local` block: template fields in
+  template order, override defaults applied, env vars derived from the
+  LOCAL name exactly as docs/25 §5 already specifies for ordinary
+  blocks. Inside wire member initialisers, a value-position reference
+  to the instantiation rewrites to a record construction of the
+  template's record twin reading the instantiation's config statics
+  (`Server(files = Files)` → `Server(files = StaticFiles(root =
+  Files.root, …))`); `Local.field` access anywhere stays ordinary
+  config access. **v1 scope:** the value-position rewrite applies
+  inside wire member initialisers only — the DI-consumption site the
+  mechanism exists for; general expression positions can construct the
+  record twin explicitly.
+- `contributes[T] name = expr` entries lower to plain typed wire
+  members plus one synthesised `val <T>: List[T] = [entries…]` member
+  per collection, so the bare identifier `T` resolves as the ordered
+  list with zero new codegen on either backend. Order = declaration
+  order adjusted by `wraps:`/`inside:` constraints (Kahn's algorithm,
+  smallest-declaration-index tiebreak), **outermost-first** in the
+  list.
+- `include Pkg.Module [as Alias] { adjustments }` splices the collected
+  `pub wire` template: `@provided` inputs are name-substituted (explicit
+  `@provided x: expr` mapping, or bare same-name passthrough); exposed /
+  contributes-entry / config-instance names enter the includer's scope
+  bare; non-surface members get collision-proof `__incl<N>_` internal
+  names; `replace` / `remove` are gated by the template's `overridable`
+  allow-list; nested includes expand recursively with cycle detection.
+- `pub wire` template items are dropped from the declaring file's
+  output (never bootstrapped as that package's own graph), matching
+  docs/58 §5's "one keyword, different modifiers" reading of D051.
+
+Because expansion happens before the type checker, the synthesised
+records and config blocks flow through the existing checking and
+lowering paths unchanged, and neither backend gained docs/58-specific
+codegen. Codegen backstops (`panic` on an unexpanded docs/58 member)
+guard against a bridge that skips the expander.
+
+Expansion runs **before the import-alias rewrite** (and the stubbable
+rewrite) in every bridge path. This ordering is load-bearing: the alias
+rewriter collapses `X.member` to bare `member` whenever `X` matches an
+import alias or an imported package's last segment, so an include alias
+that happens to collide with one (`include … as Core` in a file with
+`import Std.Core`) would have its `Core.router` access destroyed before
+the expander could resolve it. With expansion first, the include alias
+wins inside wire member initialisers; outside wire graphs the
+import-alias collapse behaves exactly as before. (Like `AspectDecl.from`,
+`include` / `config … from` paths are matched as written — an
+import-ALIAS-qualified template path is not resolved through the alias
+table on either mechanism.)
+
+**Decision 2 — Q-wire-001 (open vs sealed collections): open by
+default,** `sealed contributes[T]` as the per-collection opt-in, exactly
+as docs/58 §4.2 leaned. A sealed collection rejects add / remove /
+reorder from outside the declaring scope (W0023); `replace` of a sealed
+entry remains possible when (and only when) the entry is `overridable`,
+since replacement preserves both membership and position.
+
+**Decision 3 — Q-wire-002 (expose propagation): exposed names propagate
+into the includer's SCOPE, not its public surface.** An included
+template's `expose`d names become bare bindings referenceable inside the
+including wire (and re-exposable by it), but the consumer wire's own
+`expose` list alone determines what is reachable from outside — no
+auto-re-expose. This keeps the includer's `expose` list a complete
+enumeration of its surface (the legibility half of the tension) while
+still eliminating the re-declaration boilerplate (the motivation half).
+One documented v1 looseness: because inclusion flattens into a single
+scope, a nested include's exposed names are reachable in the outermost
+consumer even when the middle template does not re-expose them.
+
+**Decision 4 — Q-wire-004 (blanket closed-module marker): deferred,** as
+the sketch suggested — a template with zero `overridable` names is
+already fully closed by construction.
+
+**Q-wire-003 (verifier interaction):** confirmed nothing to design —
+`wire` has no proof-obligation surface; the expander runs before the
+verifier driver's weave step and produces only ordinary members.
+
+**Decision 5 — aliasing isolates.** `include … as Alias` mangles the
+template's exposed names to `__incl_<Alias>_<name>` (reached via
+`Alias.<name>`, rewritten during expansion), prefixes its hoisted config
+instantiations `<Alias>_<Name>` (env vars follow, per the local-name
+rule), and keeps its contributes entries and collections internal — two
+aliased instances of one module never share a collection, and a
+consumer-level `contributes[T]` entry joins only the bare (unaliased)
+collection. Unaliased inclusion shares the consumer's bare namespace;
+collisions are a hard error (W0024) directing the user to alias.
+
+**Decision 6 — template resolution is source-availability-scoped, like
+aspect templates.** `include` / `config … from` resolve against
+templates collected from the compilation's own packages and
+path-dependency source packages (the same set
+`collectAspectTemplates` sees). Templates inside restored (binary)
+packages await the contract-metadata channel — the same standing gap as
+cross-package aspect templates from restored deps (#3498 family), not a
+new one.
+
+**Decision 7 — #5021 fixed as part of this work: MSIL wires get the
+JVM-parity ABI.** Wire templates are pointless on a target where no wire
+is callable, so the MSIL backend's dead `<name>_create` factory was
+replaced with the JVM-shaped ABI: one host-class static field per
+EXPOSED binding, `<Wire>_bootstrap(provided…)` evaluating the graph in
+topological order and storing exposed bindings, and one
+`<Wire>_<name>()` accessor per exposed binding, with call sites
+(`TestWire.bootstrap(cfg)`, `TestWire.logger()`) resolving through the
+static-call path via tokens registered in `addPackageTokens`.
+`wire_di_self_test.l` now runs on `--target dotnet` as well as
+`--target jvm`.
+
+**Diagnostics (wire expander, W0010–W0027).**
+
+| Code | Meaning |
+|---|---|
+| W0010 | `config … from` references an unknown config template |
+| W0011 | config override names a field the template lacks |
+| W0012 | config override's declared type differs from the template's |
+| W0013 | `pub` on a config-template instantiation |
+| W0014 | config template field has a type outside the config set |
+| W0015 | `include` references an unknown wire template |
+| W0016 | include cycle |
+| W0017 | unmapped `@provided` input with no same-named binding in the includer |
+| W0018 | replace/remove target not in the template's `overridable` list |
+| W0019 | adjustment target does not exist in the template |
+| W0020 | a name has both `contributes[T]` entries and a plain binding |
+| W0021 | `wraps:`/`inside:` constraint cycle |
+| W0022 | ordering clause references an unknown entry |
+| W0023 | sealed-collection violation (external add/remove/reorder) |
+| W0024 | bare-name collision when splicing an include |
+| W0025 | `@provided` mapping names a non-input of the template |
+| W0026 | (warning) `overridable` in a non-template wire |
+| W0027 | `expose` names no binding of the finished wire |
+
+Parser diagnostics P0332–P0343 cover the new syntax forms
+(`contributes[…]`, ordering clauses, include bodies, `remove`/`reorder`,
+and the wire-body `config` form's mandatory `from`).
+
+**Known target gap (pre-existing, unchanged by this entry):** module-level
+config blocks emit runtime state on `--target dotnet` only — the JVM
+backend emits nothing for `IConfig`, so config-template *runtime*
+behaviour is .NET-only until JVM config emission ships (#3228; see
+`config_templates_self_test.l`'s header). The docs/58
+front-end expansion itself is target-independent, and wire templates +
+`contributes[T]` run end-to-end on both targets.
+
+**Tests.** `wire_expand_self_test.l` (expander unit coverage: all
+W-codes, splice shapes, ordering, aliasing, nesting — CI via native
+`lyric test` linking the stage-1 DLLs), `wire_templates_self_test.l`
+(runtime, BOTH targets), `config_templates_self_test.l` (runtime,
+`--target dotnet`), plus parser and formatter round-trip cases in
+`parser_self_test.l` / `fmt_self_test.l`.
+
+**Related:** docs/58 (backing sketch — now specced by this entry), D046
+(config blocks), D047/D050/D051 (aspect-template idiom and the
+one-keyword precedent), D045 (feature-set freeze that makes wire
+templates precompiled-only), #5021 (MSIL wire ABI — fixed here), #2972
+(`scoped[X]` members remain deferred and are passed through inclusion
+unchanged).
 
 ---
 ## Decisions deferred to v2 or later

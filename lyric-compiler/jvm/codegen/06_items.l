@@ -1429,7 +1429,28 @@ func wireExprDepsJvm(e: in Expr, knownNames: in Map[String, Bool], acc: in List[
       }
     }
     case ECall(fn, args) -> {
-      wireExprDepsJvm(fn, knownNames, acc)
+      // A call head that names a List-typed wire member (knownNames value
+      // false) is really the element TYPE's constructor — the common
+      // `contributes[Route] home = Route(path = "/")` shape, where the
+      // synthesised collection shares the type's name.  Counting it as a
+      // dependency manufactures a false entry→collection→entry cycle
+      // (spurious W0001).  Mirrors wireExprDepsMsil.
+      val skipFn = match fn.kind {
+        case EPath(p) -> {
+          if p.segments.count == 1 {
+            match mapGet(knownNames, p.segments[0]) {
+              case Some(callable) -> not callable
+              case None -> false
+            }
+          } else {
+            false
+          }
+        }
+        case _ -> false
+      }
+      if not skipFn {
+        wireExprDepsJvm(fn, knownNames, acc)
+      }
       var ai = 0
       while ai < args.count {
         match args[ai] {
@@ -1440,6 +1461,20 @@ func wireExprDepsJvm(e: in Expr, knownNames: in Map[String, Bool], acc: in List[
       }
     }
     case EMember(receiver, _) -> wireExprDepsJvm(receiver, knownNames, acc)
+    case EList(exprs) -> {
+      var li = 0
+      while li < exprs.count {
+        wireExprDepsJvm(exprs[li], knownNames, acc)
+        li = li + 1
+      }
+    }
+    case ETuple(exprs) -> {
+      var ti = 0
+      while ti < exprs.count {
+        wireExprDepsJvm(exprs[ti], knownNames, acc)
+        ti = ti + 1
+      }
+    }
     case EBlock(block) -> wireBlockDepsJvm(block, knownNames, acc)
     case EIf(cond, thenBranch, elseBranch, _) -> {
       wireExprDepsJvm(cond, knownNames, acc)
@@ -1502,6 +1537,25 @@ func wireMemberInitJvm(m: in WireMember): Option[Expr] {
     case WMBind(_, provider, _) -> Some(value = provider)
     case WMProvided(_, _, _) -> None
     case WMExpose(_, _) -> None
+    // docs/58 (D121) members are rewritten away by Lyric.WireExpand before
+    // codegen; they carry no init at this stage.
+    case _ -> None
+  }
+}
+
+// True when the member's declared type is List[…] — i.e. it can hold a
+// synthesised contributes collection and can never be a call head.
+// Mirrors wireMemberIsListTypedMsil.
+func wireMemberIsListTypedJvm(m: in WireMember): Bool {
+  val tyOpt: Option[TypeExpr] = match m {
+    case WMSingleton(_, ty, _, _) -> Some(value = ty)
+    case WMLocal(_, ty, _, _) -> ty
+    case WMScoped(_, _, ty, _, _) -> Some(value = ty)
+    case _ -> None
+  }
+  match tyOpt {
+    case Some(t) -> match t.kind { case TGenericApp(head, _) -> lastSegment(head) == "List"; case _ -> false }
+    case None -> false
   }
 }
 
@@ -1514,6 +1568,8 @@ func wireMemberNameJvm(m: in WireMember): String {
     case WMBind(iface, _, _) -> match iface.kind { case TRef(path) -> lastSegment(path); case _ -> "__bind" }
     case WMProvided(name, _, _) -> name
     case WMExpose(name, _) -> name
+    case WMContributes(_, name, _, _, _, _) -> name
+    case _ -> ""
   }
 }
 
@@ -1534,6 +1590,9 @@ func wireTopoSortJvm(members: in List[WireMember]): WireTopoResult {
     sep = sep + 1
   }
 
+  // knownNames value is false for List-typed members (synthesised
+  // contributes collections): wireExprDepsJvm uses it to skip call-head
+  // "references" to them (the element type's constructor).
   val nameToIdx: Map[String, Int] = newMap()
   val knownNames: Map[String, Bool] = newMap()
   var i = 0
@@ -1541,7 +1600,7 @@ func wireTopoSortJvm(members: in List[WireMember]): WireTopoResult {
     val n = wireMemberNameJvm(sortable[i])
     if n.length > 0 and not nameToIdx.containsKey(n) {
       nameToIdx.add(n, i)
-      knownNames.add(n, true)
+      knownNames.add(n, not wireMemberIsListTypedJvm(sortable[i]))
     }
     i = i + 1
   }
@@ -1745,9 +1804,12 @@ func buildWire(
 
   // Pre-pass: collect @provided members so their types are in bindingTypes before
   // the main loop processes bindings that may reference them.
+  // Iterate `decl.members` (declaration order), not the topo-sorted list: the
+  // bootstrap-descriptor registration elsewhere scans declaration order, so
+  // both passes share one source of truth for the param order (#5287).
   var ppi = 0
-  while ppi < sortedMembers.count {
-    match sortedMembers[ppi] {
+  while ppi < decl.members.count {
+    match decl.members[ppi] {
       case WMProvided(pname, pty, _) -> {
         val bty = typeExprToJvm(pty, pkgName)
         providedParams.add(LWireParam(name = pname, valType = bty))
@@ -1847,6 +1909,15 @@ func buildWire(
       case WMExpose(name, _) -> exposes.add(name)
       case WMScoped(_, _, _, _, _) -> {
         // ThreadLocal-backed scoping deferred to #2972; not lowered until then.
+      }
+      case _ -> {
+        // WMContributes / WMInclude / WMOverridable / WMConfigInst (docs/58,
+        // D121) are rewritten into plain members by Lyric.WireExpand before
+        // codegen.  Seeing one here means the expander did not run.
+        panic(
+          "Jvm.Codegen: wire '" + decl.name + "' still contains a docs/58 template member at codegen time; " +
+            "Lyric.WireExpand.expandFile must run before lowering."
+        )
       }
     }
     mi = mi + 1

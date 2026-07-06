@@ -1310,3 +1310,172 @@ test "lambda: parenthesised param with type annotation parses clean" {
   val pr = parse("package P\nfunc f(): Int {\n  val g = { (k: String) -> k }\n  return 0\n}\n")
   assertEqualInt(diagCount(pr), 0, "lambda: `{ (k: String) -> k }` parses clean")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// docs/58 (D121) — wire templates, contributes[T], include, config `from`.
+// ─────────────────────────────────────────────────────────────────────────────
+test "config from: instantiation clause parses onto ConfigDecl.from" {
+  val pr = parse("package P\nconfig Assets from Web.StaticFiles {\n  root: String = \"./www\"\n}\n")
+  assertEqualInt(diagCount(pr), 0, "config-from: parses clean")
+  match pr.file.items[0].kind {
+    case IConfig(cd) -> {
+      match cd.from {
+        case Some(mp) -> assertEqualInt(mp.segments.count, 2, "config-from: two-segment template path")
+        case None -> assertTrue(false, "config-from: from clause captured")
+      }
+      assertEqualInt(cd.fields.count, 1, "config-from: override field captured")
+    }
+    case _ -> assertTrue(false, "config-from: item is IConfig")
+  }
+}
+
+test "config without from keeps ConfigDecl.from = None" {
+  val pr = parse("package P\nconfig Server {\n  port: Int = 8080\n}\n")
+  assertEqualInt(diagCount(pr), 0, "plain config: parses clean")
+  match pr.file.items[0].kind {
+    case IConfig(cd) -> {
+      match cd.from {
+        case Some(_) -> assertTrue(false, "plain config: no from clause")
+        case None -> assertTrue(true, "plain config: from is None")
+      }
+    }
+    case _ -> assertTrue(false, "plain config: item is IConfig")
+  }
+}
+
+func firstWireMembers(pr: in ParseResult): List[WireMember] {
+  match pr.file.items[0].kind {
+    case IWire(wd) -> wd.members
+    case _ -> panic("firstWireMembers: first item is not a wire")
+  }
+}
+
+test "contributes entry with continuation-line ordering clauses parses" {
+  val pr = parse("package P\nwire W {\n  contributes[Mw] auth = make()\n    inside: logging\n    wraps: cors\n}\n")
+  assertEqualInt(diagCount(pr), 0, "contributes: parses clean")
+  val ms = firstWireMembers(pr)
+  assertEqualInt(ms.count, 1, "contributes: one member")
+  match ms[0] {
+    case WMContributes(_, n, _, ordering, isSealed, _) -> {
+      assertEqual(n, "auth", "contributes: entry name")
+      assertEqualInt(ordering.count, 2, "contributes: both ordering clauses")
+      assertTrue(not isSealed, "contributes: not sealed")
+      match ordering[0] {
+        case WOInside(on, _) -> assertEqual(on, "logging", "contributes: inside target")
+        case _ -> assertTrue(false, "contributes: first clause is inside:")
+      }
+      match ordering[1] {
+        case WOWraps(on, _) -> assertEqual(on, "cors", "contributes: wraps target")
+        case _ -> assertTrue(false, "contributes: second clause is wraps:")
+      }
+    }
+    case _ -> assertTrue(false, "contributes: member is WMContributes")
+  }
+}
+
+test "sealed contributes parses with the sealed flag" {
+  val pr = parse("package P\nwire W {\n  sealed contributes[Mw] auth = make()\n}\n")
+  assertEqualInt(diagCount(pr), 0, "sealed contributes: parses clean")
+  match firstWireMembers(pr)[0] {
+    case WMContributes(_, _, _, _, isSealed, _) -> assertTrue(isSealed, "sealed contributes: flag set")
+    case _ -> assertTrue(false, "sealed contributes: member is WMContributes")
+  }
+}
+
+test "include with alias and every adjustment form parses" {
+  val pr = parse(
+    "package P\nwire W {\n  include Web.ServerModule as Core {\n    @provided config: appCfg\n" +
+      "    Files { root = \"./x\" }\n" +
+      "    cors = custom()\n" +
+      "    remove logging\n" +
+      "    reorder cors wraps: auth\n" +
+      "  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "include: parses clean")
+  match firstWireMembers(pr)[0] {
+    case WMInclude(path, aliasName, adjustments, hasBody, _) -> {
+      assertEqualInt(path.segments.count, 2, "include: template path")
+      match aliasName {
+        case Some(a) -> assertEqual(a, "Core", "include: alias captured")
+        case None -> assertTrue(false, "include: alias present")
+      }
+      assertTrue(hasBody, "include: body flag set")
+      assertEqualInt(adjustments.count, 5, "include: five adjustments")
+      match adjustments[0] {
+        case IAProvided(n, _, _) -> assertEqual(n, "config", "include: @provided mapping name")
+        case _ -> assertTrue(false, "include: adj 0 is @provided")
+      }
+      match adjustments[1] {
+        case IAConfigOverride(n, fields, _) -> {
+          assertEqual(n, "Files", "include: config override target")
+          assertEqualInt(fields.count, 1, "include: one override field")
+        }
+        case _ -> assertTrue(false, "include: adj 1 is config override")
+      }
+      match adjustments[2] {
+        case IAReplace(n, _, _) -> assertEqual(n, "cors", "include: replace target")
+        case _ -> assertTrue(false, "include: adj 2 is replace")
+      }
+      match adjustments[3] {
+        case IARemove(n, _) -> assertEqual(n, "logging", "include: remove target")
+        case _ -> assertTrue(false, "include: adj 3 is remove")
+      }
+      match adjustments[4] {
+        case IAReorder(n, ordering, _) -> {
+          assertEqual(n, "cors", "include: reorder target")
+          assertEqualInt(ordering.count, 1, "include: reorder clause")
+        }
+        case _ -> assertTrue(false, "include: adj 4 is reorder")
+      }
+    }
+    case _ -> assertTrue(false, "include: member is WMInclude")
+  }
+}
+
+test "include without body keeps hasBody false" {
+  val pr = parse("package P\nwire W {\n  include Web.ServerModule\n  expose router\n}\n")
+  assertEqualInt(diagCount(pr), 0, "bare include: parses clean")
+  match firstWireMembers(pr)[0] {
+    case WMInclude(_, aliasName, adjustments, hasBody, _) -> {
+      match aliasName {
+        case Some(_) -> assertTrue(false, "bare include: no alias")
+        case None -> assertTrue(true, "bare include: alias None")
+      }
+      assertEqualInt(adjustments.count, 0, "bare include: no adjustments")
+      assertTrue(not hasBody, "bare include: hasBody false")
+    }
+    case _ -> assertTrue(false, "bare include: member is WMInclude")
+  }
+}
+
+test "overridable list and wire-body config-from parse" {
+  val pr = parse(
+    "package P\npub wire T {\n  overridable cors, Files\n  config Files from Web.StaticFiles {\n    root: String = \"./m\"\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "overridable/config-inst: parses clean")
+  val ms = firstWireMembers(pr)
+  match ms[0] {
+    case WMOverridable(names, _) -> {
+      assertEqualInt(names.count, 2, "overridable: two names")
+      assertEqual(names[0], "cors", "overridable: first name")
+    }
+    case _ -> assertTrue(false, "overridable: member 0 is WMOverridable")
+  }
+  match ms[1] {
+    case WMConfigInst(cd, _) -> assertEqual(cd.name, "Files", "config-inst: local name")
+    case _ -> assertTrue(false, "config-inst: member 1 is WMConfigInst")
+  }
+}
+
+test "wire-body config without from is P0343" {
+  val pr = parse("package P\nwire W {\n  config Files {\n    root: String = \"./m\"\n  }\n}\n")
+  var saw = false
+  var i = 0
+  while i < pr.diagnostics.count {
+    if pr.diagnostics[i].code == "P0343" {
+      saw = true
+    }
+    i = i + 1
+  }
+  assertTrue(saw, "wire-body config without from raises P0343")
+}

@@ -563,6 +563,44 @@ pub record ImplDecl {
   span: Span
 }
 
+/// Ordering clause on a `contributes[T]` entry or a `reorder` include
+/// adjustment (docs/58 §4.1 / §5.5, D121).  Reuses the aspect vocabulary
+/// literally: `wraps: X` places this entry outside (before) `X` in the
+/// collection order; `inside: X` places it inside (after) `X`.
+pub union WireOrdering {
+  case WOWraps(name: String, span: Span)
+  case WOInside(name: String, span: Span)
+}
+
+/// One `field = value` override inside an `include` body's config-override
+/// adjustment (docs/58 §5, D121).  Unlike a module-level `config … from …`
+/// instantiation the field is untyped here — the type comes from the
+/// template's declaration and is validated by the wire expander.
+pub record ConfigFieldOverride {
+  name: String
+  value: Expr
+  span: Span
+}
+
+/// One adjustment inside an `include Pkg.Module { ... }` body (docs/58 §5,
+/// D121).  Replace/remove are gated by the template's `overridable`
+/// allow-list; reorder is allowed on any non-`sealed` collection.
+pub union IncludeAdjust {
+  /// `@provided name: expr` — maps a template `@provided` input to an
+  /// includer-side expression (only needed when the bare name differs).
+  case IAProvided(name: String, value: Expr, span: Span)
+  /// `Name { field = value, ... }` — overrides fields of a config-template
+  /// instantiation declared inside the included module.
+  case IAConfigOverride(name: String, fields: List[ConfigFieldOverride], span: Span)
+  /// `name = expr` — replaces a named entry's value.
+  case IAReplace(name: String, value: Expr, span: Span)
+  /// `remove name` — drops a named entry entirely.
+  case IARemove(name: String, span: Span)
+  /// `reorder name wraps:/inside: other` — repositions an existing entry
+  /// within its `contributes[T]` collection, keeping its implementation.
+  case IAReorder(name: String, ordering: List[WireOrdering], span: Span)
+}
+
 pub union WireMember {
   case WMProvided(name: String, ty: TypeExpr, span: Span)
   case WMSingleton(name: String, ty: TypeExpr, init: Expr, span: Span)
@@ -570,6 +608,21 @@ pub union WireMember {
   case WMBind(iface: TypeExpr, provider: Expr, span: Span)
   case WMExpose(name: String, span: Span)
   case WMLocal(name: String, ty: Option[TypeExpr], init: Expr, span: Span)
+  /// `[sealed] contributes[T] name = expr [wraps:/inside: other]` — one named
+  /// entry of the ordered multi-value collection for `T` (docs/58 §4, D121).
+  case WMContributes(iface: TypeExpr, name: String, init: Expr, ordering: List[WireOrdering], isSealed: Bool, span: Span)
+  /// `include Pkg.Module [as Alias] [{ adjustments }]` — splices a `pub wire`
+  /// template into this wire (docs/58 §5, D121).  `hasBody` records whether
+  /// the source wrote an (possibly empty) adjustment block, so the formatter
+  /// can round-trip `include X { }` vs `include X` token-faithfully.
+  case WMInclude(path: ModulePath, aliasName: Option[String], adjustments: List[IncludeAdjust], hasBody: Bool, span: Span)
+  /// `overridable name, name, ...` — the template's allow-list of entries a
+  /// consumer may replace or remove (docs/58 §5.5, D121).
+  case WMOverridable(names: List[String], span: Span)
+  /// `config Name from Pkg.Template { overrides }` declared inside a wire
+  /// body — a config-template instantiation hoisted to module scope by the
+  /// wire expander (docs/58 §5, D121).
+  case WMConfigInst(decl: ConfigDecl, span: Span)
 }
 
 pub record WireDecl {
@@ -718,6 +771,11 @@ pub record ConfigField {
 
 pub record ConfigDecl {
   name: String
+  /// `config Name from Pkg.Template { ... }` — the config template this
+  /// block instantiates (docs/58 §3, D121).  `None` for an ordinary
+  /// (non-template-derived) config block and for `pub config` template
+  /// declarations themselves.
+  from: Option[ModulePath]
   fields: List[ConfigField]
   span: Span
 }
