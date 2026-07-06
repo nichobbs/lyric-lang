@@ -29911,3 +29911,40 @@ reused `emitProject` pipeline), `docs/03-decision-log.md` D123 (full
 design rationale).
 
 **Related:** D123, docs/20-project-as-dll.md.
+
+---
+
+### D-progress-621 — JVM: `Std.Task.Scope` phantom kernel fixed over real JDK primitives; MSIL: `await` never blocked on an extern `Task`, fixed; D119 slice S3 sibling-cancel investigated, blocked on newly-found bugs
+
+`lyric-stdlib/std/_kernel_jvm/task.l` declared `extern type Scope =
+"lyric.runtime.LyricTaskScope"` against a class that doesn't exist —
+every `Std.Task` call on `--target jvm` threw `NoClassDefFoundError`.
+Rewritten as pure Lyric over real JDK classes (`AtomicBoolean`/
+`AtomicReference`, `Thread`, `System`; JDK interfaces like
+`ExecutorService`/`Future` are unusable — the JVM auto-FFI class reader
+skips `ACC_INTERFACE` files). `scopeSpawn` defers actions into a list;
+`awaitAll` runs them concurrently via the `spawn`/`scope { }` keywords
+(real JDK 21 virtual threads), with genuine sibling-cancel-on-first-fault
+(shared `AtomicBoolean` flag + `AtomicReference.compareAndSet` first-fault
+tracking).
+
+Separately, MSIL's `await` on any extern-declared `Task` value never
+actually blocked (`isTaskTypeMsil` compared against a TypeRef row the
+extern-type intern path never populates) — fixed in
+`Msil.Codegen.isTaskTypeMsil`; `await delay(3000)` now genuinely takes
+~3.9s instead of ~0.9s.
+
+D119 slice S3 (.NET sibling-cancel-on-first-fault via `Task.ContinueWith`)
+remains **not shipped**: three independent pre-existing MSIL bugs block
+any fix (generic delegate erasure makes `Action<Task>` unbindable;
+`GetAwaiter()/OnCompleted()` alongside any closure corrupts closure-class
+resolution; `Task.Run(Action, ...)`'s delegate never invokes at all,
+independent of sibling-cancel). A fourth bug was found verifying the JVM
+side: a closure stored via `scopeSpawn` and invoked via `spawn` from a
+different function throws `ClassCastException` across package boundaries.
+`lyric-stdlib/tests/task_tests.l` (new) verifies token/delay/cancellation
+behaviour on both targets (all pass); the two `Scope`-based assertions
+currently fail on both, pinned by the test with the reason documented.
+
+**Related:** `docs/03-decision-log.md` D-progress-621 (full account) and
+D119 (the parent decision).

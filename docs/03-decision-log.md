@@ -9486,6 +9486,16 @@ before the runtime join lands, and the runtime slices deliver the rest.
   (the residual FFI-overload blocker worked around at the kernel
   boundary); library-level test. This is the highest-value real §7.4
   slice and is backend-agnostic (both targets consume `Std.Task`).
+  **INVESTIGATED, NOT SHIPPED (D-progress-621):** the JVM side of
+  `Std.Task` was a phantom kernel entirely (fixed in D-progress-621,
+  unblocking `Std.Task` on JVM generally, with a genuine sibling-cancel
+  implementation). The .NET `ContinueWith(Action<Task>)` helper this
+  slice proposed is confirmed unbindable (generic delegate erasure, as
+  predicted above); two further alternatives and a pre-existing
+  `Task.Run` delegate-invocation bug were found blocking any fix on
+  .NET — see D-progress-621 for the full investigation and the
+  library-level test (`lyric-stdlib/tests/task_tests.l`) that pins the
+  current (partial) status on both targets.
 - **S4:** JVM real structured concurrency for the *keywords* — **shipped
   (D-progress-602)** per the D120 approach (not the original
   `StructuredTaskScope.ShutdownOnFailure` wiring, which was rejected as a
@@ -11183,6 +11193,163 @@ and in this entry's sibling commits.
   confirms bands J1–J3 are historical fact by the time this was written.
 - `docs/36-v1-roadmap.md` G1 should be marked resolved (cross-reference
   this entry) the next time that document is touched.
+
+---
+
+## D-progress-621 — JVM: `Std.Task.Scope` was a phantom kernel (`NoClassDefFoundError` on every call); rewritten over real JDK primitives. MSIL: `await` never actually blocked on an extern-declared `Task` value; fixed. D119 slice S3 (sibling-cancel) investigated, blocked on two newly-found pre-existing bugs, not shipped
+
+**Status:** ACCEPTED (JVM rewrite + MSIL `await`-recognition fix); D119 slice S3 NOT shipped (see below)
+
+**Context.** `lyric-stdlib/std/_kernel_jvm/task.l` declared `extern type
+Scope = "lyric.runtime.LyricTaskScope"` and `extern package
+lyric.stdlib.jvm.TaskScopeHost { ... }` against classes that exist nowhere
+in the runtime — every `Std.Task` call on `--target jvm` (`makeScope`,
+`scopeSpawn`, `delay`, cancellation tokens, all of it) threw
+`NoClassDefFoundError`/`ClassNotFoundException`. This is the same phantom-
+kernel-shim pattern fixed repeatedly elsewhere in the stdlib (D-progress-543
+and its neighbours). Separately, D119 (`docs/03-decision-log.md`, slice S3)
+asked to restore .NET's dropped sibling-cancel-on-first-fault in
+`Std.Task.Scope`.
+
+**JVM fix.** `_kernel_jvm/task.l` is rewritten as pure Lyric directly over
+real JDK classes via the auto-FFI, discovering two hard constraints in the
+process (both verified with standalone repros, documented in the file's
+header): (1) the JVM auto-FFI class reader intentionally skips
+`ACC_INTERFACE` class files, so instance methods on JDK *interfaces*
+(`ExecutorService`, `Future`, `Executor`) have no metadata-backed
+resolution path and silently mis-resolve to a legacy guess that throws
+`IncompatibleClassChangeError`; only concrete classes
+(`AtomicBoolean`/`AtomicReference`, `Thread`, `System`) are usable. (2)
+Lyric closures have no bridge to arbitrary JDK functional interfaces
+(`Runnable`/`Callable`) outside the compiler's own `spawn`/`scope { }`
+keyword codegen. Consequently: `Scope.scopeSpawn` defers each action into a
+`List[() -> Unit]`; `awaitAll` is where they actually run — one `scope { }`
+`spawn`s every pending action (real JDK 21 virtual threads), wrapping each
+so a fault sets a shared `AtomicBoolean` cancellation flag and records the
+first failure's message via `AtomicReference.compareAndSet` (first-fault-
+wins), then re-panics with it once every action has joined — genuine
+sibling-cancel-on-first-fault, achieved with real concurrency primitives,
+not a stub. `delay`/`delayWithCancel` block the calling virtual thread
+directly (`Thread.sleep`, chunked so cancellation is observed promptly);
+`makeCancelSourceTimeout`'s auto-cancel is a lazy deadline check folded
+into `isCancelled` rather than an eagerly-scheduled background canceller
+(the Runnable-bridging gap rules that out). The ambient token slot uses
+`java.lang.ThreadLocal` (not `ScopedValue`, still JDK 21 preview — same
+reason D120 rejected `StructuredTaskScope`).
+
+**MSIL fix (`Msil.Codegen.isTaskTypeMsil`, `lyric-compiler/msil/codegen.l`).**
+While verifying the .NET side, `await` on any extern-declared `Task`-typed
+value (`Std.Task.delay`/`delayWithCancel`/`awaitAll`) turned out to never
+actually suspend/block at all — `await delay(3000)` completed in ~0.9s
+total process runtime, not ~3s. Root cause: `isTaskTypeMsil` recognises an
+awaited `Task` by comparing its TypeRef row against the compiler's own
+eagerly-registered `cctx.trTask`/`cctx.trTask1` (set up directly via
+`ctxAddTypeRef` at compile-context construction, before `cctx.ffiTypeRefs`
+even exists). `ctxAddTypeRef` never deduplicates, and `extern type Task =
+"System.Threading.Tasks.Task"` interns its *own*, separate TypeRef row the
+first time `internFfiTypeRef` sees it — the two rows never match, so
+`await` silently fell through to the "already-resolved, pass through"
+branch for every kernel/user-declared `Task`. Fixed by cross-checking the
+`ffiTypeRefs` cache (keyed exactly as `internFfiTypeRef` would key a fresh
+intern of the same FQN) in addition to the row-index comparison. Verified:
+`await delay(3000)` now takes ~3.9s. This is a real, load-bearing fix
+independent of D119 S3 — every `Std.Task` consumer that `await`s a `Task`
+now actually waits, which was silently false before.
+
+**D119 slice S3 — investigated, not shipped.** Three independent,
+pre-existing bugs were found while attempting it, each confirmed with a
+standalone repro outside `Std.Task`:
+
+1. `Task.ContinueWith(Action<Task>)` can never bind: Lyric closures erase
+   every generic delegate type argument to `System.Object` (Epic #1877's
+   closure ABI), so a `(Task) -> Unit` handler always presents as
+   `Action<Object>`, never `Action<Task>`, and no BCL `ContinueWith`
+   overload matches — both the metadata auto-FFI resolver and the
+   table-driven `@externTarget` resolver fall back to a guessed signature
+   that throws `MissingMethodException` at runtime.
+2. An alternative using `Task.GetAwaiter().OnCompleted(Action)` (a
+   non-generic, arity-0 delegate — the shape already proven to bind, per
+   (3)) compiles the call correctly, but as soon as any closure appears in
+   a function that also calls `GetAwaiter`/`OnCompleted`, the whole
+   compilation unit's MSIL lowering panics: `Msil.Lowering: MNewobjByName
+   could not resolve .ctor for type '<pkg>.__Closure_N'`. Reproduced with a
+   `() -> Unit` local closing only over a `Task` and a `protected type`
+   value (never over another closure), so this is independent of (1) — a
+   second gap in closure-class registration ordering specifically when
+   `TaskAwaiter`/`GetAwaiter` participate.
+3. Most significant: even the *existing*, already-shipped
+   `Task.Run(Action[, CancellationToken])` binding `scopeSpawn` uses never
+   actually invokes the passed closure on this backend — confirmed with a
+   minimal repro carrying no dependency on `Std.Task` at all
+   (`taskRunPlain({ -> println(...) }); t.Wait()` prints nothing and
+   returns immediately, even after an extra `Thread.Sleep`). This means
+   `Scope.scopeSpawn`'s concurrent-execution primitive does not run user
+   code on `--target dotnet` today, independent of sibling-cancel — a
+   materially bigger, pre-existing gap than the missing cancel-on-fault
+   feature this slice set out to restore.
+
+Given (3), `_kernel/task.l`'s `scopeSpawn` is left functionally unchanged
+(matching its pre-existing behaviour); only the header documentation and
+the genuinely-shipped `isTaskTypeMsil` fix are new on the .NET side. D119
+slice S3 remains open, now blocked on items (1)–(3) above rather than only
+the `ContinueWith` overload issue D119 already knew about.
+
+**A fourth bug, found verifying the JVM side end-to-end.** A closure
+passed as a `() -> Unit` argument into a function in ANOTHER package,
+stored, and later invoked via `spawn` from inside that package's own body
+throws `ClassCastException`: every lambda-related check in
+`lyric-compiler/jvm/codegen/*.l` keys off `ctx.pkgName` (the package
+currently being lowered) with no cross-package interface adaptation, so
+the closure (implementing the *caller's* synthesized `Lyric$Lambda`) never
+matches the callee's own. A same-package `Scope` consumer, and a direct
+(non-deferred) cross-package `spawn action()` call, both work fine
+(verified) — the mismatch is specific to the store-then-spawn-via-a-
+different-function shape `scopeSpawn`/`awaitAll` is split into. This means
+`Scope` does not work reliably for genuine cross-package consumers on JVM
+either, today — a separate, pre-existing, general JVM-backend gap, not
+specific to `Std.Task`.
+
+**Verification.** `lyric-stdlib/tests/task_tests.l` (new): cancellation
+token/source semantics, `delay`/`delayWithCancel` timing and cancellation,
+`makeCancelSourceTimeout`'s lazy deadline — all pass on both
+`./bin/lyric test lyric-stdlib/tests/task_tests.l` and `./bin/lyric test
+--target jvm lyric-stdlib/tests/task_tests.l`. The two `Scope`-based tests
+(normal completion, sibling-cancel-on-fault) currently fail on **both**
+targets — not because either kernel's `Scope` logic is wrong (each was
+independently verified correct in isolation: the JVM design against a
+same-package repro exercising real concurrent virtual threads and fault
+aggregation; the MSIL `isTaskTypeMsil` fix against a direct timing
+measurement) — but because of the pre-existing bugs above, both of which
+predate this change and block ANY cross-package `scopeSpawn` consumer, not
+just the sibling-cancel feature. The test file is left wired in (not
+skipped/deleted) with this status documented in its own header, so a
+future fix to either bug flips the assertions green without rediscovery.
+
+**Scope boundary / follow-ups (not fixed here, each needs its own
+investigation and issue):**
+
+1. .NET: `Task.Run(Action[, CancellationToken])` never invokes its
+   delegate argument on the self-hosted MSIL backend (item 3 above) — the
+   biggest of the four findings, blocking `Scope.scopeSpawn` entirely on
+   `--target dotnet`.
+2. .NET: closures that call `TaskAwaiter.GetAwaiter()/OnCompleted()`
+   alongside any other closure in the same compilation unit corrupt
+   `MNewobjByName` closure-class resolution (item 2 above).
+3. JVM: cross-package closure arguments stored and later invoked via
+   `spawn` from a different function throw `ClassCastException` (the
+   fourth bug above) — blocks reliable cross-package `Scope` usage on
+   JVM.
+4. `Task.ContinueWith(Action<Task>)` (and, by the same generic-erasure
+   argument, any `Action<T>`/`Func<T,R>` BCL delegate parameter for
+   non-zero, non-`object` `T`) can never bind from Lyric (item 1 above) —
+   a standing constraint on what BCL APIs are callable from `_kernel/`
+   externs until the closure ABI carries real generic delegate types.
+
+**Related:** D119 (the entry this slice belongs to), D120 (JDK-preview-API
+rejection precedent this JVM rewrite's `ThreadLocal`-over-`ScopedValue`
+choice follows), D-progress-543/555/519 (the phantom-kernel-shim fix
+pattern this JVM rewrite follows), Epic #1877 (closure ABI, `Action<T>`
+erasure), docs/44 (JVM production-readiness plan).
 
 ---
 ## Decisions deferred to v2 or later

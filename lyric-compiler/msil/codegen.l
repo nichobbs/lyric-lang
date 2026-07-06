@@ -16522,6 +16522,29 @@ func taskTypeToAwaiterMsilType(cctx: in CodegenCtx, taskTy: in MsilType): MsilTy
   }
 }
 
+// `ctxAddTypeRef` never deduplicates: the eagerly-created
+// `cctx.trTask` / `cctx.trTask1` rows (registered directly against `lctx` at
+// compile-context setup, before `cctx.ffiTypeRefs` even exists) are never
+// seeded into that cache.  A kernel/user `extern type Task =
+// "System.Threading.Tasks.Task"` declaration therefore interns its OWN,
+// numerically-distinct TypeRef row for the identical CLR type the first time
+// `internFfiTypeRef` sees it — so a row-index-only comparison against
+// `cctx.trTask` silently fails for any such extern-declared Task value, and
+// `await` on it falls through to the "already-resolved, pass through" branch
+// instead of actually blocking (`Std.Task`'s `delay`/`delayWithCancel`/
+// `awaitAll` never really awaited on this backend).  Cross-check the
+// `ffiTypeRefs` cache (keyed exactly as `internFfiTypeRef` would key a fresh
+// intern of the same FQN) so either TypeRef row for the same CLR type counts.
+func isFfiTaskTypeRefMsil(cctx: in CodegenCtx, trCode: in Int, simpleName: in String): Bool {
+  val fqn = "System.Threading.Tasks." + simpleName
+  val asm = assemblyForTypeMsil(cctx, fqn)
+  val key = asm + "/System.Threading.Tasks." + simpleName
+  match mapGet(cctx.ffiTypeRefs, key) {
+    case Some(row) -> trCode == tdrTypeRef(row)
+    case None -> false
+  }
+}
+
 // True when ty is the IL representation of Task (void) or Task<T> (non-void).
 // Used by the EAwait handler and pre-scan to distinguish real async awaitables
 // from already-resolved values — e.g. a blocking @externTarget async function
@@ -16529,8 +16552,8 @@ func taskTypeToAwaiterMsilType(cctx: in CodegenCtx, taskTy: in MsilType): MsilTy
 // pass the value through without invoking GetAwaiter/GetResult again.
 func isTaskTypeMsil(cctx: in CodegenCtx, ty: in MsilType): Bool {
   match ty {
-    case MGenericInst(trCode, _, _) -> trCode == tdrTypeRef(cctx.trTask1)
-    case MClassRef(trCode, _) -> trCode == tdrTypeRef(cctx.trTask)
+    case MGenericInst(trCode, _, _) -> trCode == tdrTypeRef(cctx.trTask1) or isFfiTaskTypeRefMsil(cctx, trCode, "Task`1")
+    case MClassRef(trCode, _) -> trCode == tdrTypeRef(cctx.trTask) or isFfiTaskTypeRefMsil(cctx, trCode, "Task")
     case _ -> false
   }
 }
