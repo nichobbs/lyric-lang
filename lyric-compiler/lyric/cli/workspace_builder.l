@@ -19,9 +19,11 @@ import Std.Console as Console
 import Std.File as File
 import Std.Path as Path
 import Std.String as Str
+import Std.Environment as Environment
 import Std.Errors
 import Lyric.Manifest as Mf
 import Lyric.Workspace as Ws
+import Lyric.Release as Release
 import Lyric.Emitter as Emitter
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -358,5 +360,295 @@ func checkDllIsStale(dllPath: in String, manifestPath: in String, sourceDir: in 
         }
       }
     }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3. Shared manifest dependency/feature resolution (#5270)
+// ─────────────────────────────────────────────────────────────────────────────
+// The following three groups back BOTH `buildProject`'s `[project.packages]`
+// compiles and `buildOneNative`'s single-file synthetic one-package request
+// (`cli_build.l::emitSingleFileOrProject`), so a bare `.l` file sitting near a
+// lyric.toml resolves dependencies/features/Maven classpath identically to a
+// project build of the same manifest, instead of maintaining two copies of
+// this logic.
+/// Resolve a manifest's active/declared feature sets for `@cfg` erasure:
+/// the manifest's `[features].default` set unless `--no-default-features`,
+/// `--all-features` selecting every declared feature, else CLI `--features`
+/// layered on top of the defaults.  Single-file builds have no
+/// `--features`/`--no-default-features`/`--all-features` CLI flags of their
+/// own, so their caller always passes an empty `cliFeatures` and
+/// `false`/`false`, which resolves to exactly the manifest's own defaults.
+pub func resolveManifestFeatures(
+  mfText: in String,
+  mfPath: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+): (List[String], List[String]) {
+  val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
+  val mfDeclared = Mf.readFeatureDeclaredFromToml(mfText, mfPath)
+  val activeFeatures: List[String] = newList()
+  if allFeatures {
+    var ai = 0
+    while ai < mfDeclared.count {
+      activeFeatures.add(mfDeclared[ai])
+      ai += 1
+    }
+  } else {
+    if not noDefaultFeatures {
+      var ai = 0
+      while ai < mfDefaults.count {
+        activeFeatures.add(mfDefaults[ai])
+        ai += 1
+      }
+    }
+    var ci = 0
+    while ci < cliFeatures.count {
+      activeFeatures.add(cliFeatures[ci])
+      ci += 1
+    }
+  };
+  (activeFeatures, mfDeclared)
+}
+
+/// Aggregated result of `resolveManifestDependencies`.
+pub record ResolvedManifestDeps {
+  /// "depName\tdllPath" entries, appendable directly to
+  /// `EmitProjectRequest.restoredDllPaths`.
+  restoredDlls: List[String]
+  /// Source packages from path dependencies, for cross-package aspect
+  /// template resolution (#3498) — appendable directly to
+  /// `EmitProjectRequest.depTemplateSrcs`.
+  depTemplateSrcs: List[ProjectPackage]
+  /// Genuine third-party NuGet assembly paths (not Lyric packages) —
+  /// appendable directly to `EmitProjectRequest.nugetAssemblyPaths`.
+  nugetThirdPartyPaths: List[String]
+  /// True when a `{ workspace = true }` dependency failed to build.
+  /// `buildProject` has always treated this as an immediate `return 1`
+  /// (mirrors `buildWorkspaceDeps`'s own fatal signal); callers that want
+  /// the same behavior should check this first.
+  hadWorkspaceError: Bool
+  /// True when a local `path = "..."` dependency's DLL was not found on
+  /// disk (not yet built) — including when the dependency directory has no
+  /// `lyric.toml` at all.  `buildProject` has historically treated this as
+  /// a non-fatal warning (the downstream typecheck surfaces the real
+  /// error); `buildOneNative`'s single-file synthetic project request
+  /// treats it as fatal per #5270's "fail loud instead of silently
+  /// degrading" conservative default.
+  hadUnbuiltLocalDep: Bool
+}
+
+/// Resolve every dependency a manifest declares — workspace deps (built
+/// recursively via `buildWorkspaceDeps`), local `path = "..."` deps, and
+/// `[nuget]` assets that are themselves Lyric packages — into the
+/// `restoredDllPaths` / `nugetAssemblyPaths` / `depTemplateSrcs` shape
+/// `Emitter.EmitProjectRequest` expects.  Does NOT resolve feature sets (see
+/// `resolveManifestFeatures`) or `[maven]` classpath injection (see
+/// `injectMavenClasspathForJvm`) — those are independent concerns with
+/// their own callers.  Never triggers a restore: a dependency that isn't
+/// already built is reported via `hadUnbuiltLocalDep` / the printed
+/// message, not fetched.
+pub func resolveManifestDependencies(
+  manifest: in Manifest, mfPath: in String, target: in Emitter.CompileTarget
+): ResolvedManifestDeps {
+  val mfDir = Path.dirname(mfPath)
+  val restoredDlls: List[String] = newList()
+  val depTemplatePkgsList: List[ProjectPackage] = newList()
+  val seenDeps: List[String] = newList()
+  var hadUnbuiltLocalDep = false
+
+  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, target)
+  if wsHadError {
+    return ResolvedManifestDeps(
+      restoredDlls = restoredDlls,
+      depTemplateSrcs = depTemplatePkgsList,
+      nugetThirdPartyPaths = newList(),
+      hadWorkspaceError = true,
+      hadUnbuiltLocalDep = false
+    )
+  }
+  var wdi = 0
+  while wdi < wsDepDlls.count {
+    val wsEntry = wsDepDlls[wdi]
+    restoredDlls.add(wsEntry)
+    val wsTab = wsEntry.indexOf("\t")
+    val wsName = if wsTab >= 0 { wsEntry.substring(0, wsTab) } else { wsEntry }
+    seenDeps.add(wsName)
+    wdi += 1
+  }
+
+  var di = 0
+  while di < manifest.deps.count {
+    val dep = manifest.deps[di]
+    match dep.source {
+      case Mf.DepSource.Path(dir) -> {
+        val depDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
+        val depToml = Path.join(depDir, "lyric.toml")
+        val depBinDir = Path.join(depDir, "bin")
+        if File.fileExists(depToml) {
+          match File.readText(depToml) {
+            case Ok(depMfText) -> {
+              match Mf.parseManifest(depMfText, depToml) {
+                case Ok(depMf) -> {
+                  val dllName = match depMf.project {
+                    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
+                    case None -> depMf.packageSection.name + ".dll"
+                  }
+                  val dllPath = Path.join(depBinDir, dllName)
+                  if File.fileExists(dllPath) {
+                    if not stringListContains(seenDeps, dep.name) {
+                      restoredDlls.add(dep.name + "\t" + dllPath)
+                      seenDeps.add(dep.name)
+                      collectTransitiveDepDlls(depDir, wsCtxOpt, seenDeps, restoredDlls)
+                    }
+                  } else {
+                    printErr("build: " + Release.localDepNotBuiltMessage(dep.name, dllPath, depToml))
+                    hadUnbuiltLocalDep = true
+                  }
+                  // Collect source files from this path dependency so the weaver can
+                  // resolve cross-package `from`-instance aspect templates (#3498).
+                  match depMf.project {
+                    case Some(proj) -> {
+                      var pki = 0
+                      while pki < proj.packages.count {
+                        val pkgEntry = proj.packages[pki]
+                        val srcList: List[String] = newList()
+                        if pkgEntry.paths.count > 0 {
+                          var fi = 0
+                          while fi < pkgEntry.paths.count {
+                            val srcPath = Path.join(depDir, pkgEntry.paths[fi])
+                            match File.readText(srcPath) {
+                              case Ok(srcText) -> srcList.add(srcText)
+                              case Err(e) -> {
+                                printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                              }
+                            }
+                            fi += 1
+                          }
+                        } else {
+                          val srcPath = Path.join(depDir, pkgEntry.path)
+                          match File.readText(srcPath) {
+                            case Ok(srcText) -> srcList.add(srcText)
+                            case Err(e) -> {
+                              printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                            }
+                          }
+                        }
+                        if srcList.count > 0 {
+                          depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList))
+                        }
+                        pki += 1
+                      }
+                    }
+                    case None -> ()
+                  }
+                }
+                case Err(e) -> {
+                  printErr("build: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
+                }
+              }
+            }
+            case Err(e) -> {
+              printErr("build: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
+            }
+          }
+        } else {
+          printErr(
+            "build: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml +
+              "'; check the path = \"...\" entry in your lyric.toml"
+          )
+          hadUnbuiltLocalDep = true
+        }
+      }
+      case Mf.DepSource.Workspace(_) -> ()
+      case _ -> ()
+    }
+    di += 1
+  }
+
+  val nugetPaths = resolveNugetAssets(mfDir)
+  warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
+  val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
+  var nli = 0
+  while nli < nugetLyricEntries.count {
+    restoredDlls.add(nugetLyricEntries[nli])
+    nli += 1
+  }
+
+  ResolvedManifestDeps(
+    restoredDlls = restoredDlls,
+    depTemplateSrcs = depTemplatePkgsList,
+    nugetThirdPartyPaths = nugetThirdPartyPaths,
+    hadWorkspaceError = false,
+    hadUnbuiltLocalDep = hadUnbuiltLocalDep
+  )
+}
+
+/// Result of `injectMavenClasspathForJvm`: the previous `LYRIC_FFI_JARS`
+/// value (restore via `restoreMavenClasspath` once the compile finishes;
+/// `None` when nothing was injected) alongside the colon-joined classpath
+/// string (`buildProject` reuses this to write `bin/module-path.txt`).
+pub record MavenClasspathInjection {
+  savedFfiJars: Option[String]
+  classpathColonSep: String
+}
+
+/// For a JVM build, read the manifest's resolved Maven classpath
+/// (`target/restore/jvm-classpath.txt`, written by `lyric restore`) and
+/// inject it into `LYRIC_FFI_JARS` so the JVM auto-FFI resolver can locate
+/// downloaded Maven JARs at compile time.  A missing classpath file is a
+/// non-fatal warning when the manifest actually declares `[maven]` entries
+/// (mirroring the historical `buildProject` behavior — an unrestored Maven
+/// dependency surfaces as a normal downstream typecheck/link error, not a
+/// hard stop here) and silent when it doesn't.
+pub func injectMavenClasspathForJvm(mfDir: in String, manifest: in Manifest): MavenClasspathInjection {
+  var mavenJarColonSep = ""
+  val classpathFile = Path.join(Path.join(Path.join(mfDir, "target"), "restore"), "jvm-classpath.txt")
+  match File.readText(classpathFile) {
+    case Ok(text) -> {
+      val trimmed = Str.trim(text)
+      if trimmed.length > 0 {
+        val lines = Str.split(trimmed, "\n")
+        var li = 0
+        while li < lines.length {
+          val line = Str.trim(lines[li])
+          if line.length > 0 {
+            if mavenJarColonSep.length > 0 {
+              mavenJarColonSep = mavenJarColonSep + ":"
+            }
+            mavenJarColonSep = mavenJarColonSep + line
+          }
+          li += 1
+        }
+      }
+    }
+    case Err(_) -> {
+      val hasMaven = match manifest.maven { case Some(m) -> m.entries.count > 0; case None -> false }
+      if hasMaven {
+        printErr(
+          "build: note: target/restore/jvm-classpath.txt not found; Maven JARs will not be available to the JVM emitter"
+        )
+        printErr("  run `lyric restore` first to download Maven dependencies")
+      }
+    }
+  }
+  var savedFfiJars: Option[String] = None
+  if mavenJarColonSep.length > 0 {
+    val prevFfi = match Environment.getVar("LYRIC_FFI_JARS") { case Ok(v) -> v; case Err(_) -> "" }
+    savedFfiJars = Some(value = prevFfi)
+    val injected = if prevFfi.length > 0 { prevFfi + ":" + mavenJarColonSep } else { mavenJarColonSep }
+    Environment.setVar("LYRIC_FFI_JARS", injected)
+  }
+  MavenClasspathInjection(savedFfiJars = savedFfiJars, classpathColonSep = mavenJarColonSep)
+}
+
+/// Restore `LYRIC_FFI_JARS` to the value `injectMavenClasspathForJvm`
+/// captured, undoing its injection once a compile finishes.  A no-op when
+/// nothing was injected (`None`).
+pub func restoreMavenClasspath(saved: in Option[String]): Unit {
+  match saved {
+    case Some(prev) -> Environment.setVar("LYRIC_FFI_JARS", prev)
+    case None -> ()
   }
 }
