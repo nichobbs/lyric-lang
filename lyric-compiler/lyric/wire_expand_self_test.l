@@ -756,3 +756,165 @@ test "include-body config override wins over template instantiation default" {
   val cd = firstConfig(res, "Files")
   assertEqual(configFieldDefaultStr(cd, "root"), "./consumer", "include-body override wins")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5. Review follow-ups (#5278, #5279, #5281–#5283).
+// ─────────────────────────────────────────────────────────────────────────────
+test "aliased include prefixes config-instance field access in spliced inits" {
+  val lib = "package Web\n" + "pub config StaticFiles {\n" + "  root: String = \"./public\"\n" + "}\n" +
+    "record Server { files: StaticFiles }\n" +
+    "pub wire ServerModule {\n" +
+    "  config Files from StaticFiles {\n" +
+    "    root: String = \"./module\"\n" +
+    "  }\n" +
+    "  singleton server: Server = Server(files = Files)\n" +
+    "  singleton banner: String = Files.root\n" +
+    "  expose server\n" +
+    "  expose banner\n" +
+    "}\n"
+  val app = "package App\n" + "import Web\n" + "wire Prod {\n" + "  include Web.ServerModule as Core\n" +
+    "  singleton mainServer: Server = Core.server\n" +
+    "  expose mainServer\n" +
+    "}\n"
+  val res = expandTwo(lib, app)
+  assertEqualInt(diagCount(res), 0, "no diagnostics")
+  // The instance hoists under the alias-prefixed name...
+  val cd = firstConfig(res, "Core_Files")
+  assertEqual(configFieldDefaultStr(cd, "root"), "./module", "aliased instance hoisted with its override")
+  // ...and the spliced member's value-position rewrite reads fields
+  // through that hoisted name, not the dangling un-prefixed one (#5278).
+  val w = firstWire(res, "Prod")
+  val init = findLocalInit(w, "__incl_Core_server")
+  var sawPrefixedRead = false
+  match init.kind {
+    case ECall(_, args) -> {
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(_, value, _) -> {
+            match value.kind {
+              case ECall(_, ctorArgs) -> {
+                var j = 0
+                while j < ctorArgs.count {
+                  match ctorArgs[j] {
+                    case CANamed(_, fieldRead, _) -> {
+                      match fieldRead.kind {
+                        case EMember(recv, _) -> {
+                          match recv.kind {
+                            case EPath(p) -> {
+                              if p.segments[p.segments.count - 1] == "Core_Files" {
+                                sawPrefixedRead = true
+                              }
+                            }
+                            case _ -> {
+                            }
+                          }
+                        }
+                        case _ -> {
+                        }
+                      }
+                    }
+                    case _ -> {
+                    }
+                  }
+                  j = j + 1
+                }
+              }
+              case _ -> {
+              }
+            }
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+  assertTrue(sawPrefixedRead, "spliced config field access follows the alias-prefixed name")
+  // Direct field access in a spliced init (`Files.root`) must follow the
+  // hoisted name too — the exact #5278 dangling-reference shape.
+  val bannerInit = findLocalInit(w, "__incl_Core_banner")
+  var bannerRecv = ""
+  match bannerInit.kind {
+    case EMember(recv, _) -> {
+      match recv.kind {
+        case EPath(p) -> {
+          bannerRecv = p.segments[p.segments.count - 1]
+        }
+        case _ -> {
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
+  assertEqual(bannerRecv, "Core_Files", "direct spliced field access renamed to the hoisted instance")
+}
+
+test "config-instance name colliding with a wire binding is W0024" {
+  val src = "package P\n" + "pub config T { root: String = \"a\" }\n" + "wire W {\n" +
+    "  singleton Files: String = \"occupied\"\n" +
+    "  config Files from T {\n" +
+    "    root: String = \"b\"\n" +
+    "  }\n" +
+    "  expose Files\n" +
+    "}\n"
+  val res = expandSrc(src)
+  assertTrue(hasDiag(res, "W0024"), "config-instance name collision reported (#5279)")
+}
+
+test "overridable in a non-template wire warns W0026" {
+  val src = "package P\n" + "record R { v: Int }\n" + "wire W {\n" + "  singleton r: R = R(v = 1)\n" +
+    "  overridable r\n" +
+    "  expose r\n" +
+    "}\n"
+  val res = expandSrc(src)
+  assertTrue(hasDiag(res, "W0026"), "overridable outside a template warns (#5281)")
+}
+
+test "sealed collection rejects remove and reorder adjustments with W0023" {
+  val lib = "package Web\n" + "record C { tag: String }\n" + "interface Mw { func wrap(x: in Int): Int }\n" +
+    "pub wire Sealed {\n" +
+    "  sealed contributes[Mw] auth = C(tag = \"auth\")\n" +
+    "  contributes[Mw] log = C(tag = \"log\")\n" +
+    "  singleton r: C = C(tag = \"r\")\n" +
+    "  expose r\n" +
+    "  overridable auth\n" +
+    "}\n"
+  val appRemove = "package App\n" + "import Web\n" + "wire Prod {\n" + "  include Web.Sealed {\n" + "    remove auth\n" +
+    "  }\n" +
+    "  expose r\n" +
+    "}\n"
+  val resRemove = expandTwo(lib, appRemove)
+  assertTrue(hasDiag(resRemove, "W0023"), "sealed remove rejected (#5282)")
+  val appReorder = "package App\n" + "import Web\n" + "wire Prod {\n" + "  include Web.Sealed {\n" +
+    "    reorder auth inside: log\n" +
+    "  }\n" +
+    "  expose r\n" +
+    "}\n"
+  val resReorder = expandTwo(lib, appReorder)
+  assertTrue(hasDiag(resReorder, "W0023"), "sealed reorder rejected (#5282)")
+}
+
+test "nested-include exposed name is reachable even when the middle template does not re-expose it" {
+  // Documents the D121 Decision-3 v1 looseness (#5283): inclusion
+  // flattens into one scope, so Inner's exposed name lands bare in the
+  // outermost consumer although Outer never re-exposes it.
+  val lib = "package Web\n" + "record R { v: Int }\n" + "record S { v: Int }\n" + "pub wire Inner {\n" +
+    "  singleton innerVal: S = S(v = 7)\n" +
+    "  expose innerVal\n" +
+    "}\n" +
+    "pub wire Outer {\n" +
+    "  include Web.Inner\n" +
+    "  singleton outerVal: R = R(v = 1)\n" +
+    "  expose outerVal\n" +
+    "}\n"
+  val app = "package App\n" + "import Web\n" + "wire Prod {\n" + "  include Web.Outer\n" + "  expose outerVal\n" + "}\n"
+  val res = expandTwo(lib, app)
+  assertEqualInt(diagCount(res), 0, "no diagnostics")
+  val w = firstWire(res, "Prod")
+  assertTrue(hasMemberNamed(w, "innerVal"), "nested exposed name reachable bare (documented v1 looseness)")
+}

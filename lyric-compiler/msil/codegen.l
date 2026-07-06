@@ -476,7 +476,7 @@ pub record CodegenCtx {
   // (spurious) receiver expression.
   configFieldTokens: Map[String, Int]
   configFieldMsilTypes: Map[String, MsilType]
-  // Wire exposed-binding fields (#5021).  Keyed "WireName/bindingName" →
+  // Wire exposed-binding fields (#5021).  Keyed "<pkg>.<Wire>/<binding>" (#5280) →
   // 0x04000000 | FieldDef row on the package host class.  Pre-computed in
   // `addPackageTokens` (Pass 1b, alongside IConst/IVal static fields) so
   // `lowerWireMsil` can `stsfld` each exposed binding in `bootstrap` and the
@@ -3221,7 +3221,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         val wireExposes = wireExposedNamesMsil(decl)
         var wei = 0
         while wei < wireExposes.count {
-          val wKey = decl.name + "/" + wireExposes[wei]
+          val wKey = pkgName + "." + decl.name + "/" + wireExposes[wei]
           if not cctx.wireFieldTokens.containsKey(wKey) {
             cctx.wireFieldTokens.add(wKey, 0x04000000 + fieldDefRow)
             cctx.wireFieldMsilTypes.add(wKey, wireBindingMsilType(cctx, decl, pkgName, wireExposes[wei]))
@@ -21573,7 +21573,7 @@ func lowerWireMsil(
   var sei = 0
   while sei < wireExposes.count {
     val en = wireExposes[sei]
-    val wKey = decl.name + "/" + en
+    val wKey = pkgName + "." + decl.name + "/" + en
     val fldTok = match mapGet(cctx.wireFieldTokens, wKey) { case Some(t) -> t; case None -> 0 }
     if fldTok == 0 {
       panic("Msil.Codegen: wire '" + decl.name + "' exposed binding '" + en + "' has no pre-allocated field token")
@@ -21620,7 +21620,7 @@ func lowerWireMsil(
   var fei = 0
   while fei < wireExposes.count {
     val en = wireExposes[fei]
-    val wKey = decl.name + "/" + en
+    val wKey = pkgName + "." + decl.name + "/" + en
     val fldTok = match mapGet(cctx.wireFieldTokens, wKey) { case Some(t) -> t; case None -> 0 }
     val fldTy = match mapGet(cctx.wireFieldMsilTypes, wKey) { case Some(t) -> t; case None -> MObject }
     val noInit: List[MInsn] = newList()

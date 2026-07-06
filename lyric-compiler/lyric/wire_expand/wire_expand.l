@@ -241,6 +241,11 @@ func lookupConfigTemplate(
 record SubstCtx {
   renames: Map[String, Expr]
   memberRewrites: Map[String, String]
+  // Receiver-only renames: `EMember(EPath([old]), f)` becomes
+  // `EMember(EPath([new]), f)` with the member untouched — the
+  // alias-prefixed config instances of an aliased include, whose field
+  // accesses must follow the hoisted local name (#5278).
+  recvRenames: Map[String, String]
   configRecvs: Map[String, Bool]
 }
 
@@ -347,6 +352,16 @@ func substExpr(ctx: in SubstCtx, e: in Expr): Expr {
             return Expr(kind = EPath(path = ModulePath(segments = segs, span = e.span)), span = e.span)
           }
           case None -> {
+            match mapGet(ctx.recvRenames, recvSingle) {
+              case Some(newRecv) -> {
+                val rsegs: List[String] = newList()
+                rsegs.add(newRecv)
+                val recv2 = Expr(kind = EPath(path = ModulePath(segments = rsegs, span = receiver.span)), span = receiver.span)
+                return Expr(kind = EMember(receiver = recv2, memberName = memberName), span = e.span)
+              }
+              case None -> {
+              }
+            }
             if ctx.configRecvs.containsKey(recvSingle) {
               // Ordinary config-static access — leave the receiver alone.
               return e
@@ -978,7 +993,12 @@ func expandInclude(
   }
 
   // Config instances: hoist under the local (or alias-prefixed) name.
+  // For an aliased include, spliced field accesses (`Files.root`) must
+  // follow the hoisted local name (`Alias_Files.root`) — receiver-only
+  // renames handle that (#5278); value-position uses go through the
+  // ordinary rename map.
   val localCfgNames: Map[String, String] = newMap()
+  val recvRenames: Map[String, String] = newMap()
   var ci = 0
   while ci < cfgInstNames.count {
     val cn = cfgInstNames[ci]
@@ -990,12 +1010,10 @@ func expandInclude(
     localCfgNames.add(cn, localCfg)
     if localCfg != cn {
       renameTo(renames, cn, localCfg, span)
+      recvRenames.add(cn, localCfg)
     }
     if not configRecvs.containsKey(localCfg) {
       configRecvs.add(localCfg, true)
-    }
-    if not configRecvs.containsKey(cn) {
-      configRecvs.add(cn, true)
     }
     ci = ci + 1
   }
@@ -1076,7 +1094,13 @@ func expandInclude(
     }
   }
 
-  val subst = SubstCtx(renames = renames, memberRewrites = newMap(), configRecvs = configRecvs)
+  val noMemberRewrites: Map[String, String] = newMap()
+  val subst = SubstCtx(
+    renames = renames,
+    memberRewrites = noMemberRewrites,
+    recvRenames = recvRenames,
+    configRecvs = configRecvs
+  )
 
   // Splice members.
   var mi = 0
@@ -1326,6 +1350,11 @@ func hoistConfigInstance(
     }
     xo = xo + 1
   }
+  // The instance's local name lives in the wire's bare namespace (it is
+  // referenceable in value position and as a config-static qualifier), so
+  // a collision with any existing binding is W0024 like any other splice
+  // (#5279).
+  scopeAddName(sc, localName, span)
   val materialized = materializeConfigInstance(sc.diags, localName, tmpl.decl, overrides, span)
   val emptyDocs2: List[DocComment] = newList()
   val emptyAnns2: List[Annotation] = newList()
@@ -1365,17 +1394,17 @@ func orderContribEntries(diags: in List[Diagnostic], entries: in List[ContribEnt
 
   var ei = 0
   while ei < n {
-    val entry = entries[ei]
+    val ce = entries[ei]
     var oi = 0
-    while oi < entry.ordering.count {
-      match entry.ordering[oi] {
+    while oi < ce.ordering.count {
+      match ce.ordering[oi] {
         case WOWraps(on, osp) -> {
           val target = indexOfContribEntry(entries, on)
           if target < 0 {
             diags.add(
               errorDiagnostic(
                 "W0022",
-                "'wraps: " + on + "' references an entry that is not part of collection '" + entry.collection + "'",
+                "'wraps: " + on + "' references an entry that is not part of collection '" + ce.collection + "'",
                 osp
               )
             )
@@ -1390,7 +1419,7 @@ func orderContribEntries(diags: in List[Diagnostic], entries: in List[ContribEnt
             diags.add(
               errorDiagnostic(
                 "W0022",
-                "'inside: " + on + "' references an entry that is not part of collection '" + entry.collection + "'",
+                "'inside: " + on + "' references an entry that is not part of collection '" + ce.collection + "'",
                 osp
               )
             )
@@ -1622,7 +1651,13 @@ func expandWireDecl(
     }
     fci = fci + 1
   }
-  val finalSubst = SubstCtx(renames = finalRenames, memberRewrites = sc.memberRewrites, configRecvs = finalConfigRecvs)
+  val noRecvRenames: Map[String, String] = newMap()
+  val finalSubst = SubstCtx(
+    renames = finalRenames,
+    memberRewrites = sc.memberRewrites,
+    recvRenames = noRecvRenames,
+    configRecvs = finalConfigRecvs
+  )
 
   // Assemble the final member list: plain members (with the final rewrite
   // applied), contributes entries as typed locals in declaration order,
@@ -1665,10 +1700,10 @@ func expandWireDecl(
     val elems: List[Expr] = newList()
     var oi2 = 0
     while oi2 < order.count {
-      val entry = group[order[oi2]]
+      val ce = group[order[oi2]]
       val segs: List[String] = newList()
-      segs.add(entry.name)
-      elems.add(Expr(kind = EPath(path = ModulePath(segments = segs, span = entry.span)), span = entry.span))
+      segs.add(ce.name)
+      elems.add(Expr(kind = EPath(path = ModulePath(segments = segs, span = ce.span)), span = ce.span))
       oi2 = oi2 + 1
     }
     val ifaceTy = group[0].iface
