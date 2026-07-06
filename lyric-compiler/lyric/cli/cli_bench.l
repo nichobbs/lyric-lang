@@ -198,16 +198,13 @@ func cmdBench(argv: in slice[String]): Int {
   // Project-mode: no explicit source file — discover or use --manifest.
   // Scans all [project.packages] source files for @bench_module and runs each.
   if positional.count == 0 {
-    val mfPath = match discoverManifest(manifestArg) {
-      case Some(p) -> p
-      case None -> {
+    val sourcePaths = match resolveProjectSources(manifestArg) {
+      case ProjSourcesMissingManifest -> {
         printErr("bench: missing source file and no lyric.toml found")
         return 1
       }
-    }
-    val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
-    if hadFatal {
-      return 1
+      case ProjSourcesFatal -> return 1
+      case ProjSourcesFound(_, paths) -> paths
     }
     val benchFiles: List[String] = newList()
     val benchSources: List[String] = newList()

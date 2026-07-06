@@ -48,16 +48,13 @@ func cmdDoc(argv: in slice[String]): Int {
   // Project-mode: no explicit source file — discover or use --manifest.
   // Writes <stem>.md for each source file into docs/ (or -o <dir>).
   if positional.count == 0 {
-    val mfPath = match discoverManifest(manifestArg) {
-      case Some(p) -> p
-      case None -> {
+    val (mfPath, sourcePaths) = match resolveProjectSources(manifestArg) {
+      case ProjSourcesMissingManifest -> {
         printErr("doc: missing source file and no lyric.toml found")
         return 1
       }
-    }
-    val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
-    if hadFatal {
-      return 1
+      case ProjSourcesFatal -> return 1
+      case ProjSourcesFound(mf, paths) -> (mf, paths)
     }
     if sourcePaths.count == 0 {
       printErr("doc: no source files found in project")

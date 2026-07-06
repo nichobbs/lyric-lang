@@ -265,6 +265,30 @@ func discoverManifest(explicit: in Option[String]): Option[String] {
   }
 }
 
+// Outcome of resolving a project-mode command's source file list: shared by
+// lint/doc/bench/fmt/prove, which all fork into project-mode when no
+// positional source file is given.  A missing manifest and a fatal
+// collection error are kept distinct because callers react differently
+// (some print `printUsage()` on a missing manifest); `collectProjectSourcePaths`
+// already reports its own fatal errors, so that case needs no extra message.
+union ProjectSourcesResult {
+  case ProjSourcesMissingManifest
+  case ProjSourcesFatal
+  case ProjSourcesFound(mfPath: String, paths: List[String])
+}
+
+// Discover the manifest (explicit --manifest or nearest lyric.toml) and
+// collect its [project.packages] source paths.  Callers still print their
+// own command-prefixed error messages, so wording is unchanged per command.
+func resolveProjectSources(manifestArg: in Option[String]): ProjectSourcesResult {
+  val mfPath = match discoverManifest(manifestArg) { case Some(p) -> p; case None -> return ProjSourcesMissingManifest }
+  val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
+  if hadFatal {
+    return ProjSourcesFatal
+  }
+  ProjSourcesFound(mfPath = mfPath, paths = sourcePaths)
+}
+
 // Whether `lyric build` should auto-restore before building: true when the
 // manifest declares dependencies and `lyric.lock` is missing or out of sync
 // with the `[dependencies]` table (a dep is absent from the lock, or a
