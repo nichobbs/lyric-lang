@@ -38,6 +38,7 @@ package Web
 
 import Std.Core
 import Std.Char
+import Std.Console
 import Std.Environment as Env
 import Std.Iter
 import Std.Parse
@@ -203,26 +204,33 @@ func serve(
   prefixAdd(prefs, prefix)
   try {
     listenerStart(listener)
-    var running = true
-    while running {
-      try {
-        val ctx = listenerGetContext(listener)
-        val resp = contextResponse(ctx)
-        responseSetStatus(resp, 200)
-        responseSetContentType(resp, "application/json")
-        val utf8 = encodingUtf8()
-        val bytes = encodingGetBytes(utf8, payload)
-        val stream = responseOutputStream(resp)
-        streamWrite(stream, bytes, 0, bytes.length)
-        streamClose(stream)
-      } catch Bug as e {
-        running = false
-      }
-    }
   } catch Bug as e {
-    ()
+    Console.error("[lyric-web] failed to start listening on " + prefix + ": " + e.message)
+    listenerClose(listener)
+    Env.exitCode(1)
   }
-  listenerClose(listener)
+  while true {
+    try {
+      val ctx = listenerGetContext(listener)
+      val resp = contextResponse(ctx)
+      responseSetStatus(resp, 200)
+      responseSetContentType(resp, "application/json")
+      val utf8 = encodingUtf8()
+      val bytes = encodingGetBytes(utf8, payload)
+      val stream = responseOutputStream(resp)
+      streamWrite(stream, bytes, 0, bytes.length)
+      streamClose(stream)
+    } catch Bug as e {
+      // A caught Bug here means the request loop can no longer make progress
+      // (e.g. the known cross-package codegen bug lyric-lang#5177). Surface
+      // the failure loudly instead of exiting 0 as if the server had shut
+      // down cleanly — a silent exit 0 looks like success to process
+      // supervisors and masks the underlying defect from whoever is debugging it.
+      Console.error("[lyric-web] request handling failed on " + prefix + ": " + e.message)
+      listenerClose(listener)
+      Env.exitCode(1)
+    }
+  }
 }
 
 // ─── ApiError ─────────────────────────────────────────────────────────────────
