@@ -297,17 +297,26 @@ pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
 }
 
 // Run `action`; on a caught exception, record the first failure's
-// message (first-fault-wins) and set the scope's cancellation flag so
-// cooperative siblings still running observe it.  Swallows the
-// exception rather than rethrowing: `awaitAll` inspects `firstFault`
-// itself after every spawned action has joined, rather than relying on
-// the joined `Future`'s own (unreachable via plain auto-FFI; see the
-// module header) exception surface.
-func runGuardedJvm(action: in () -> Unit, flag: in JAtomicBoolean, firstFault: in JAtomicReference): Unit {
+// message (first-fault-wins, guarded by `hasFault` rather than an
+// empty-string sentinel on `firstFault` — a sibling panicking with an
+// empty message must still be treated as a real fault, #5327) and set
+// the scope's cancellation flag so cooperative siblings still running
+// observe it.  Swallows the exception rather than rethrowing: `awaitAll`
+// inspects `firstFault`/`hasFault` itself after every spawned action has
+// joined, rather than relying on the joined `Future`'s own (unreachable
+// via plain auto-FFI; see the module header) exception surface.
+func runGuardedJvm(
+  action: in () -> Unit,
+  flag: in JAtomicBoolean,
+  hasFault: in JAtomicBoolean,
+  firstFault: in JAtomicReference,
+): Unit {
   try {
     action()
   } catch Bug as b {
-    val _ = firstFault.compareAndSet("", b.message)
+    if hasFault.compareAndSet(false, true) {
+      firstFault.set(b.message)
+    }
     flag.set(true)
   }
 }
@@ -319,19 +328,20 @@ func runGuardedJvm(action: in () -> Unit, flag: in JAtomicBoolean, firstFault: i
 /// action has completed — matching `_kernel/task.l`'s "rethrows the
 /// underlying exception" contract.
 pub func awaitAll(s: in Scope): Task {
+  val hasFault: JAtomicBoolean = JAtomicBoolean.new(false)
   val firstFault: JAtomicReference = JAtomicReference.new("")
   scope {
     var i = 0
     while i < s.actions.count {
       val act = s.actions[i]
-      spawn runGuardedJvm(act, s.flag, firstFault)
+      spawn runGuardedJvm(act, s.flag, hasFault, firstFault)
       i = i + 1
     }
   }
-  val msg: String = firstFault.get()
-  if msg == "" {
+  if not hasFault.get() {
     Task(done = true)
   } else {
+    val msg: String = firstFault.get()
     panic(msg)
   }
 }

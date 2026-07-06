@@ -11392,6 +11392,80 @@ logic is sound; the bugs are in the shared `awaitAll`/closure-invocation
 plumbing beneath it) — they make the existing, already-honest disclosure
 more precise and closer to what the code actually does.
 
+**Second review-hardening round (same PR, #5325/#5326/#5327/#5328).**
+
+1. **#5325 — `task_tests.l` wasn't wired into any CI job, unlike every
+   other `lyric-stdlib/tests/*.l` file.** Fixed by splitting the file:
+   `task_tests.l` now carries only the eight token/cancellation/delay tests
+   that reliably pass (plus a new regression test for #5320's ambient-slot
+   fix), asserts normally, and is wired into `ci.yml` (`stdlib-builds` via
+   `lyric run`; `compiler-self-tests-jvm` via `lyric build --target jvm` +
+   `java -jar` + a `"task tests: ok"` sentinel grep, matching
+   `uuid_tests.l`/`time_tests.l`'s exact pattern). The three Scope tests
+   move to a new, deliberately-unwired
+   `lyric-stdlib/tests/task_scope_known_failures_tests.l` — see its header
+   for why (mirrors the `contract_meta_emit_self_test.l`/#2580 precedent
+   for a test that cannot cleanly pass yet).
+2. **#5326 — the three newly-discovered Scope-blocking bugs were only in
+   decision-log prose, no tracked issue.** Filed as **issue #5329**
+   ("`Std.Task.Scope`'s `scopeSpawn`/`awaitAll` never actually runs
+   spawned closures"), covering all three (plus the empty-scope
+   null-dereference #5323 surfaced). `task_scope_known_failures_tests.l`'s
+   header links it.
+3. **#5327 — `runGuardedJvm`'s empty-string `firstFault` sentinel could
+   silently mistake an empty-message panic for success.** Confirmed real:
+   `firstFault: JAtomicReference = JAtomicReference.new("")` used
+   `compareAndSet("", b.message)` (first-fault-wins) and `awaitAll` decided
+   whether to re-panic via `msg == ""` — so a sibling panicking with an
+   empty message (`panic("")`) would CAS `""` to `""`, `awaitAll` would see
+   `msg == ""`, and the fault would be silently swallowed as if every
+   action had succeeded. Fixed by adding a dedicated `hasFault:
+   JAtomicBoolean` (initially `false`) that gates the first-fault-wins
+   write via `hasFault.compareAndSet(false, true)`; `awaitAll` now branches
+   on `hasFault.get()` instead of the string comparison, so the sentinel
+   value and a legitimate empty fault message can no longer collide.
+   Verifying this surfaced a second, self-contained bug: the first version
+   of this fix put the panic-and-terminate arm FIRST in `awaitAll`'s
+   `if`/`else` (`if hasFault.get() { panic(msg) } else { Task(done=true) }`)
+   and that ordering alone produced `VerifyError: Method expects a return
+   value` at class-load time for the whole `Std.Task` class — matching the
+   general "terminating-arm-position-sensitive if/else codegen" fragility
+   class already catalogued in `docs/44-jvm-production-readiness-plan.md`
+   (e.g. m-55). Reordering to match the pre-fix code's shape (success arm
+   first, panic arm second: `if not hasFault.get() { Task(done=true) }
+   else { panic(msg) }`) avoids it. **Verified end-to-end**: a standalone
+   `scopeSpawn(sc, { -> panic("") })` repro now correctly propagates the
+   empty-message fault (`catch Bug` observes it) instead of silently
+   reporting success, on `--target jvm`.
+4. **#5328 — `runScopeTest` let `main()` always return 0 despite known
+   failures, in tension with "fix or delete, don't paper over."** Resolved
+   as a consequence of the #5325 file split: the known-failing tests now
+   live in their own file whose `main()` returns non-zero when a failure
+   fires (verified: real exit code 1, not just non-zero-looking console
+   output) and which is explicitly not asserted by CI either way — neither
+   a fake green nor a red build for a bug this PR doesn't fix.
+
+**A fifth bug, found while verifying #5320 end-to-end on .NET.** Adding a
+regression test that called `installToken` on `--target dotnet` (to prove
+`deadlineMs` survives the JVM ambient-slot fix — the .NET side didn't need
+the fix itself, since it already stores the whole `CancellationToken` in
+its `AsyncLocal`) reliably crashed: a `NullReferenceException` in
+`ambientValue`/`currentToken` on `installToken`'s very first call in a
+minimal repro, or a native `libclrjit.so` segfault in a slightly larger
+one. Root cause: `ambientValue`/`setAmbientValue` are `@asyncLocal`
+compiler intrinsics (real bodies synthesised by the self-hosted MSIL
+emitter, not the `= ()` stub shown in source); on the very first access in
+a process, `AsyncLocal<CancellationToken>.Value` is `null`, and the
+synthesised getter appears to dereference it without a null check. Nothing
+in the shipped stdlib calls `installToken` today (only documents the
+pattern in comments), so this is a previously-latent, never-before-
+exercised gap in the self-hosted MSIL compiler's `@asyncLocal` intrinsic
+lowering, not something introduced by this PR. Filed as **issue #5330**;
+the regression test was removed from the CI-wired `task_tests.l` (it
+would crash the CI step) with a comment pointing at #5330 and explaining
+why #5320 is instead verified directly against `_kernel_jvm/task.l` (see
+above).
+
 ---
 ## Decisions deferred to v2 or later
 

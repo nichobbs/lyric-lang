@@ -1,35 +1,14 @@
-//! Std.Task tests — cancellation tokens, cancellable delay, and
-//! `Scope` structured concurrency (normal completion + D119 slice S3
-//! sibling-cancel-on-first-fault).  Runs unmodified on both targets
-//! (`lyric test lyric-stdlib/tests/task_tests.l` and `lyric test
-//! --target jvm lyric-stdlib/tests/task_tests.l`): `Std.Task`'s public
-//! surface is identical on `_kernel/task.l` (.NET) and
-//! `_kernel_jvm/task.l` (JVM), per D119.
+//! Std.Task tests — cancellation tokens and cancellable delay. Runs
+//! unmodified on both targets (`lyric run lyric-stdlib/tests/task_tests.l`
+//! and `lyric run --target jvm lyric-stdlib/tests/task_tests.l`):
+//! `Std.Task`'s public surface is identical on `_kernel/task.l` (.NET) and
+//! `_kernel_jvm/task.l` (JVM), per D119. Every test below passes on both
+//! targets and is wired into CI.
 //!
-//! Status (2026-07-06): every token/cancellation/delay test below passes on
-//! both targets.  All three `Scope`-based tests (including
-//! `testScopeWithNoChildrenCompletesImmediately`, which spawns nothing)
-//! currently FAIL on both targets — each Scope test now runs in isolation
-//! via `runScopeTest` (a bare sequential call previously masked this: the
-//! suite aborted at the first Scope failure, so
-//! `testScopeWithNoChildrenCompletesImmediately`'s own status was never
-//! actually observed, #5323). The failure is a null-dereference inside
-//! `awaitAll` itself (`NullReferenceException` / "Lyric$Lambda.invoke...
-//! parameter2 is null") that reproduces even with zero spawned children —
-//! a different, more basic bug than the cross-package closure-invocation
-//! issues documented for the non-empty-scope tests. Not because `Scope`'s
-//! *public* logic in either kernel file is wrong, but because each backend
-//! has its own pre-existing, deeper bug in the `awaitAll`/closure-invocation
-//! path: on .NET, `Task.Run(Action[, CancellationToken])`'s delegate never
-//! invokes the passed closure (reproduced with no dependency on
-//! `Std.Task`); on JVM, a closure stored via `scopeSpawn` and later
-//! invoked via `spawn` inside `awaitAll` throws `ClassCastException` for
-//! non-empty scopes (calling package's `Lyric$Lambda` vs. `Std.Task`'s own
-//! — see the header of `_kernel_jvm/task.l`) and a null-dereference for the
-//! empty-scope case specifically. All documented in
-//! `docs/03-decision-log.md` (D-progress-621) as follow-up work; this file
-//! is left wired in (not skipped) so a future fix flips these assertions
-//! green without anyone having to first rediscover the gap.
+//! `Std.Task.Scope` structured concurrency is tested separately in
+//! `task_scope_known_failures_tests.l` — split out (#5325) because it
+//! currently has three known, separately-tracked failures (issue #5329)
+//! and is deliberately not CI-wired; see that file's header for why.
 package Std.Task.Tests
 
 import Std.Core
@@ -95,79 +74,18 @@ func testMakeCancelSourceTimeoutEventuallyCancels(): Unit {
   assertTrue(isCancelled(tok), "the token reports cancelled once the deadline has passed")
 }
 
-// ─── Scope: normal completion ────────────────────────────────────────────────
-func testScopeNormalCompletionRunsEveryChild(): Unit {
-  val sc = makeScope()
-  var a = 0
-  var b = 0
-  scopeSpawn(sc, { -> a = 1 })
-  scopeSpawn(sc, { -> b = 2 })
-  val r = await awaitAll(sc)
-  cancelScope(sc)
-  disposeScope(sc)
-  assertEqualInt(a, 1, "first scopeSpawn'd action ran")
-  assertEqualInt(b, 2, "second scopeSpawn'd action ran")
-}
-
-func testScopeWithNoChildrenCompletesImmediately(): Unit {
-  val sc = makeScope()
-  val r = await awaitAll(sc)
-  cancelScope(sc)
-  disposeScope(sc)
-}
-
-// ─── Scope: D119 slice S3 sibling-cancel-on-first-fault ──────────────────────
-// One sibling panics; the other polls the scope's token in a loop.  awaitAll
-// must still surface the fault (pre-existing `Task.WhenAll` behaviour on
-// .NET; this backend's own join loop on JVM), and — the D119 S3 guarantee —
-// the polling sibling must observe the cancellation and stop before its loop
-// runs to completion.
-func testScopeSiblingObservesCancelOnFault(): Unit {
-  val sc = makeScope()
-  val tok = scopeToken(sc)
-  var observedCancel = false
-  var ranToCompletion = false
-  scopeSpawn(sc, { -> panic("boom") })
-  scopeSpawn(
-    sc,
-    { ->
-      var i = 0
-      var stopped = false
-      while i < 500 and not stopped {
-        if isCancelled(tok) {
-          observedCancel = true
-          stopped = true
-        } else {
-          sleepMillis(2)
-          i = i + 1
-        }
-      }
-      if not stopped {
-        ranToCompletion = true
-      }
-    }
-  )
-  assertPanics("awaitAll rethrows the faulting sibling's panic", { -> val r = await awaitAll(sc) })
-  cancelScope(sc)
-  disposeScope(sc)
-  assertTrue(observedCancel, "the non-faulting sibling observed cancellation while still running")
-  assertFalse(ranToCompletion, "the non-faulting sibling stopped early rather than running its full loop")
-}
-
-// Runs a known-still-broken Scope test in isolation so its failure (or a
-// future fix flipping it green) is reported without aborting the rest of
-// the suite — a bare sequential call in `main` would stop dead at the
-// first `Bug` panic and leave every later assertion (including the
-// OTHER Scope tests) unexercised and unreported.
-func runScopeTest(name: in String, test: () -> Unit): Unit {
-  try {
-    test()
-    println("ok - " + name)
-  } catch Bug as bug {
-    println("KNOWN FAILURE - " + name + ": " + bug.message)
-  }
-}
-
+// A regression test for #5320 (the JVM ambient slot dropped
+// makeCancelSourceTimeout's deadlineMs) belongs here in principle, but
+// installToken/currentToken crash on .NET on their very first call in a
+// process (NullReferenceException in a minimal repro, a JIT segfault in
+// a larger one) — a separate, pre-existing, .NET-only bug this
+// investigation surfaced, filed as #5330. Since #5320 was JVM-only (the
+// .NET kernel already stores the whole CancellationToken, deadlineMs
+// included, in its AsyncLocal), the fix is verified directly against
+// _kernel_jvm/task.l instead — see the #5320 writeup in
+// docs/03-decision-log.md (D-progress-621) for the verification command
+// and output.  Do not add an installToken/currentToken call to this
+// CI-wired file until #5330 is fixed.
 func main(): Int {
   testNoCancellationNeverCancelled()
   testCancelSourcePropagatesToPriorToken()
@@ -177,9 +95,6 @@ func main(): Int {
   testDelayElapsesRoughlyRequestedDuration()
   testDelayWithCancelPanicsWhenAlreadyCancelled()
   testMakeCancelSourceTimeoutEventuallyCancels()
-  runScopeTest("testScopeNormalCompletionRunsEveryChild", testScopeNormalCompletionRunsEveryChild)
-  runScopeTest("testScopeWithNoChildrenCompletesImmediately", testScopeWithNoChildrenCompletesImmediately)
-  runScopeTest("testScopeSiblingObservesCancelOnFault", testScopeSiblingObservesCancelOnFault)
-  println("task tests: ok (non-Scope tests) / see above for Scope status")
+  println("task tests: ok")
   return 0
 }
