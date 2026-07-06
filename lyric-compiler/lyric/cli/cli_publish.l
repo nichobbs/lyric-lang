@@ -397,25 +397,36 @@ func cmdPublish(argv: in slice[String]): Int {
 func runRestoreWithRetry(restoreArgs: in List[String]): Int {
   var attempt = 1
   while attempt <= 4 {
-    val result = match Process.runCapture("dotnet", restoreArgs, 300000) {
-      case Ok(r) -> r
+    var exitCode = 1
+    var stdout = ""
+    var stderr = ""
+    var spawnFailed = false
+    match Process.runCapture("dotnet", restoreArgs, 300000) {
+      case Ok(r) -> {
+        exitCode = r.exitCode
+        stdout = r.stdout
+        stderr = r.stderr
+      }
       case Err(e) -> {
         printErr("publish: dotnet restore failed: " + e)
-        return 1
+        spawnFailed = true
       }
     }
-    if not Str.isEmpty(result.stdout) {
-      Console.print(result.stdout)
+    if spawnFailed {
+      return 1
     }
-    if not Str.isEmpty(result.stderr) {
-      Console.error(result.stderr)
+    if not Str.isEmpty(stdout) {
+      Console.print(stdout)
     }
-    if result.exitCode == 0 {
+    if not Str.isEmpty(stderr) {
+      Console.error(stderr)
+    }
+    if exitCode == 0 {
       return 0
     }
-    val isIndexingLag = result.stdout.contains("NU1102") or result.stderr.contains("NU1102")
+    val isIndexingLag = stdout.contains("NU1102") or stderr.contains("NU1102")
     if not isIndexingLag or attempt == 4 {
-      return result.exitCode
+      return exitCode
     }
     val backoffMs = attempt * 30000
     printErr(
