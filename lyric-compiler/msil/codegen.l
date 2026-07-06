@@ -3395,7 +3395,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           // corrupted unrelated generic-collection codegen elsewhere in the
           // compiled Msil.Codegen.dll (observed as spurious `List<object>` vs
           // `List<ProtoField>` CLR-cast failures in lyric-proto/lyric-search,
-          // #5320); the self-hosted stage-0 compiler has no such issue. A
+          // #5334); the self-hosted stage-0 compiler has no such issue. A
           // direct Bool-gated if/else, with each branch adding straight to
           // paramTys, avoids the pattern entirely.
           val isExternDelegateParam = if isExternTargetFn {
@@ -3477,7 +3477,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               // context/call site pollutes shared per-package codegen state
               // (observed as spurious `List<object>` vs `List<T>` CLR-cast
               // failures in unrelated packages, e.g. lyric-proto/lyric-search,
-              // #5320) — gate the computation itself, not just the
+              // #5334) — gate the computation itself, not just the
               // funcParamIsExternTargetDelegate marker, so non-FFI functions
               // never touch this path at all.
               if isExternTargetFn {
