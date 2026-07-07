@@ -6270,8 +6270,37 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       ty
                     }
                     case None -> {
-                      insns.add(MLdNull)
-                      MObject
+                      // F0027 (#5362): `name` matched no local, capture, const,
+                      // enum case, union-case constructor, or static val — the
+                      // only remaining possibility is a bare top-level `func`
+                      // used directly as a value (e.g. `apply(double, 21)`
+                      // instead of `apply({ x -> double(x) }, 21)`).  A named
+                      // function is not itself a delegate: there is no codegen
+                      // path that turns a bare `ldftn`-able static method into
+                      // the uniform boxed `Func<object,…,object>` ABI every
+                      // other function-typed value (closures, function-typed
+                      // params/locals) relies on, so silently falling through
+                      // to `ldnull` produced a `Func` wrapping a null target —
+                      // compiling cleanly but crashing with
+                      // `NullReferenceException` on first invocation.  Reject
+                      // at compile time instead.
+                      if cctx.funcTokens.containsKey(fctx.pkgName + "." + name) {
+                        panic(
+                          "F0027: '" + name + "' is a function name used directly as a value " +
+                            "(e.g. passed as a function-typed argument) — this is not yet " +
+                            "supported on --target dotnet (#5362).  Wrap it in a closure " +
+                            "instead: `{ " +
+                            "x -> " +
+                            name +
+                            "(x) }` (adjust the parameter " +
+                            "list to match " +
+                            name +
+                            "'s signature)."
+                        )
+                      } else {
+                        insns.add(MLdNull)
+                        MObject
+                      }
                     }
                   }
                 }
@@ -7127,7 +7156,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       if lparams.count > 0 {
         val lpRefs: List[String] = newList()
         collectRefNamesBlock(lbody, lpRefs)
-        val propagated = match mapGet(cctx.lambdaParamTypes, "__lambda_" + toString(cctx.lambdaTicker.count)) {
+        // Package-qualified (#5363): mirrors the write site's `qualifiedPredNameEarly`.
+        val propagated = match mapGet(cctx.lambdaParamTypes, fctx.pkgName + ".__lambda_" + toString(cctx.lambdaTicker.count)) {
           case Some(ts) -> ts
           case None -> newList()
         }
@@ -7157,22 +7187,32 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       cctx.lambdaTicker.add(0)
       val lname = "__lambda_" + toString(idx)
       val nparams = lparams.count
+      // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
+      // `addPackageTokens` as `<pkg>.__lambda_<idx>`.  Every per-lambda map
+      // below must be keyed by this PACKAGE-QUALIFIED name, not the bare
+      // `lname` — `cctx.lambdaTicker` resets to 0 at the start of every
+      // package (see `codegenMPackage`'s `cctx.lambdaTicker.clear()`), so two
+      // different packages' first capturing lambda both produce `lname =
+      // "__lambda_0"`.  A bare key lets a later package's `lowerFuncMsil`
+      // read an EARLIER package's stale capture/closure-class metadata for
+      // its own (possibly non-capturing) `__lambda_0`, corrupting its
+      // MethodDef signature with a bogus leading closure-class parameter —
+      // silent cross-package delegate corruption (#5363).  Mirrors the same
+      // fix already applied to `lambdaExternDelegateParamTypes` for #5309.
+      val lambdaKey = fctx.pkgName + "." + lname
       // Record the capture set so lowerFuncMsil's `__lambda_*` path prepends the
       // `object[] __caps` parameter and resolves captured reads (#1479).
       if caps.count > 0 {
-        cctx.lambdaCaptureNames.add(lname, caps)
-        cctx.lambdaCaptureTypes.add(lname, capTypes)
-        cctx.lambdaCaptureCells.add(lname, capCells)
+        cctx.lambdaCaptureNames.add(lambdaKey, caps)
+        cctx.lambdaCaptureTypes.add(lambdaKey, capTypes)
+        cctx.lambdaCaptureCells.add(lambdaKey, capCells)
         // Synthesize closure class (#1877 Phase 1): emit a __Closure_<i> record with
         // typed fields for captures instead of object[] array. Store in context for
         // emission to the module's TypeDef table and use in delegate instantiation.
         val closureClass = synthesizeClosureClassMsil(cctx, lname, fctx.pkgName, idx, caps, capTypes, capCells)
-        cctx.lambdaClosureClasses.add(lname, closureClass)
+        cctx.lambdaClosureClasses.add(lambdaKey, closureClass)
         cctx.lambdaClosureRecordList.add(closureClass)
       }
-      // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
-      // `addPackageTokens` as `<pkg>.__lambda_<idx>`.
-      val lambdaKey = fctx.pkgName + "." + lname
       match mapGet(cctx.funcTokens, lambdaKey) {
         case Some(tok) -> {
           // Determine delegate type based on lambda return type.
@@ -7217,7 +7257,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             // Phase 2: Instantiate the closure class with typed fields.
             // The closure class is synthesized and registered in cctx.lambdaClosureClasses
             // during the ELambda type-checking pass above (lines 6224-6229).
-            match mapGet(cctx.lambdaClosureClasses, lname) {
+            match mapGet(cctx.lambdaClosureClasses, lambdaKey) {
               case Some(closureRecord) -> {
                 val closureClassFqn = closureRecord.className
                 // Create closure instance via parameterless constructor.
@@ -9956,21 +9996,34 @@ func lowerPatternBindMsil(
           fi = fi + 1
         }
       } else {
-        // MObject scrutinee (e.g. from mapGet): bind each named field directly
-        // to the scrutinee slot.  In the bootstrap representation the raw
-        // mapGet value IS the inner value (e.g. Some.value), so no field load
-        // is required — we store the scrutinee slot into the binding variable.
+        // Erased scrutinee (e.g. from mapGet, or a raw-value-encoded case such
+        // as `.indexOf`/`.lastIndexOf`'s sentinel-int `Option[Int]`): bind each
+        // named field directly to the scrutinee slot.  In the bootstrap
+        // representation the raw scrutinee value IS the inner value (e.g.
+        // Some.value), so no field load is required — we store the scrutinee
+        // slot into the binding variable.
         // TODO(#1825): bootstrap runtime assumption — mapGet returns the
         // inner value unboxed; revisit when the F# shim is eliminated.
+        //
+        // The binding slot must be typed `scrutTy`, not hardcoded `MObject`
+        // (#5364): when the scrutinee is itself a raw value type (e.g. `MInt`
+        // for the sentinel-`Option[Int]` case above), the physical stack value
+        // is an UNBOXED int32, never boxed.  Declaring the slot `MObject`
+        // stored a raw int32 bit pattern into an `object`-typed local — `stloc`
+        // /`ldloc` tolerate the mismatch, but a later `callvirt` argument slot
+        // (e.g. passing the bound variable straight into `str.substring(...)`)
+        // does not, crashing with `InvalidProgramException`.  Using `scrutTy`
+        // keeps the slot correctly typed `MInt` end to end; the true
+        // `MObject`-scrutinee case (`scrutTy` already `MObject`) is unaffected.
         var fi = 0
         while fi < fields.count {
           match fields[fi].kind {
             case PBinding(fname, innerOpt) -> {
-              val fSlot = allocSlotMsil(fctx, fname, MObject)
+              val fSlot = allocSlotMsil(fctx, fname, scrutTy)
               emitLoadSlot(insns, scrutSlot, fctx.paramCount)
               emitStoreSlot(insns, fSlot, fctx.paramCount)
               match innerOpt {
-                case Some(innerPat) -> lowerPatternBindMsil(cctx, fctx, insns, innerPat, fSlot, MObject)
+                case Some(innerPat) -> lowerPatternBindMsil(cctx, fctx, insns, innerPat, fSlot, scrutTy)
                 case None -> {
                 }
               }
@@ -11329,8 +11382,13 @@ func lowerBuiltinOrStaticCallMsil(
                         match mapGet(cctx.funcParamFnInner, fnInnerKey) {
                           case Some(inner) -> {
                             val predName = "__lambda_" + toString(cctx.lambdaTicker.count)
-                            if inner.count > 0 and not cctx.lambdaParamTypes.containsKey(predName) {
-                              cctx.lambdaParamTypes.add(predName, inner)
+                            // Package-qualified (#5363/#5309): `lambdaTicker` resets to 0
+                            // per package, so a bare `predName` can alias two different
+                            // packages' lambdas.  See `qualifiedPredName` below — hoisted
+                            // here so `lambdaParamTypes` uses the same qualified key.
+                            val qualifiedPredNameEarly = fctx.pkgName + "." + predName
+                            if inner.count > 0 and not cctx.lambdaParamTypes.containsKey(qualifiedPredNameEarly) {
+                              cctx.lambdaParamTypes.add(qualifiedPredNameEarly, inner)
                             }
                             // FFI delegate-bridging trigger (Epic #1877/#3923 FFI-boundary
                             // slice): only when this parameter belongs to an `@externTarget`
@@ -11412,11 +11470,11 @@ func lowerBuiltinOrStaticCallMsil(
                         }
                         if isGenericDelegateShape {
                           panic(
-                            "F0026: call to '" + tokKey + "' passes a non-literal expression for " +
-                            "parameter #" + toString(i) + ", which is bridged to a real .NET delegate " +
-                            "type at the FFI boundary (Epic #1877/#3923). Pass a lambda literal " +
-                            "(`{ ... -> ... }`) directly as this argument — binding it to a `val` " +
-                            "first, or otherwise producing it indirectly, is not yet supported here."
+                            "F0026: call to '" + tokKey + "' passes a non-literal expression for " + "parameter #" + toString(i) +
+                              ", which is bridged to a real .NET delegate " +
+                              "type at the FFI boundary (Epic #1877/#3923). Pass a lambda literal " +
+                              "(`{ ... -> ... }`) directly as this argument — binding it to a `val` " +
+                              "first, or otherwise producing it indirectly, is not yet supported here."
                           )
                         }
                       }
@@ -12522,21 +12580,32 @@ func lowerMethodCallMsil(
     // 1-arg form: str.substring(start) — instance method, index → end.
     if args.count == 3 {
       insns.add(MPop)
+      // #5364: `lowerCallArgMsil` pushes whatever `fctx.types` tracks for the
+      // argument expression, which can be a stale `MObject` for a value that
+      // is physically an unboxed int32 (e.g. a match-arm-bound local whose
+      // scrutinee is a raw-int-encoded `Option[Int]` such as
+      // `.indexOf`/`.lastIndexOf`'s sentinel return — the pattern-bind
+      // fallback path types the payload slot `MObject` even though nothing
+      // ever boxed it).  `String.Substring(int32,int32)` is a `callvirt`,
+      // and unlike `stloc`/`ldloc` the JIT's IL importer rejects an
+      // `Object`-typed value at a `callvirt` argument slot with
+      // `InvalidProgramException`.  Coerce explicitly rather than trusting
+      // the tracked type matches the real BCL parameter.
       lowerCallArgMsil(cctx, fctx, insns, args[0])
-      lowerCallArgMsil(cctx, fctx, insns, args[1])
-      lowerCallArgMsil(cctx, fctx, insns, args[2])
+      coerceCallArgMsil(cctx, insns, lowerCallArgMsil(cctx, fctx, insns, args[1]), MInt)
+      coerceCallArgMsil(cctx, insns, lowerCallArgMsil(cctx, fctx, insns, args[2]), MInt)
       insns.add(MCallvirt(methodToken = cctx.tokStringSubstring))
       MString
     } else if args.count == 2 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
-      lowerCallArgMsil(cctx, fctx, insns, args[1])
+      coerceCallArgMsil(cctx, insns, lowerCallArgMsil(cctx, fctx, insns, args[0]), MInt)
+      coerceCallArgMsil(cctx, insns, lowerCallArgMsil(cctx, fctx, insns, args[1]), MInt)
       insns.add(MCallvirt(methodToken = cctx.tokStringSubstring))
       MString
     } else if args.count == 1 {
       // 1-arg form: str.substring(start): string — index → end of string.
       // Receiver already on the stack; push the start index, callvirt the
-      // single-int overload `String.Substring(int32)`.
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
+      // single-int overload `String.Substring(int32)`.  See #5364 note above.
+      coerceCallArgMsil(cctx, insns, lowerCallArgMsil(cctx, fctx, insns, args[0]), MInt)
       insns.add(MCallvirt(methodToken = cctx.tokStringSubstring1))
       MString
     } else {
@@ -15518,10 +15587,7 @@ func emitExternTargetBody(
         pi = pi + 1
       }
       val retTy = match decl.ret {
-        case Some(te) -> match resolveValueTaskGenericMsilType(cctx, te) {
-          case Some(rt) -> rt
-          case None -> typeExprToMsilCtx(cctx, te, pkgName)
-        }
+        case Some(te) -> match resolveValueTaskGenericMsilType(cctx, te) { case Some(rt) -> rt; case None -> typeExprToMsilCtx(cctx, te, pkgName) }
         case None -> MVoid
       }
       // For the FFI/BCL MemberRef signature a nullable *reference* return
@@ -19500,8 +19566,23 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // Capturing closure (#1479): a capturing `__lambda_*` takes a synthetic leading
   // `object[] __caps` parameter (the closed-over delegate target).  It occupies
   // slot 0, shifting the lambda's own params to 1+, so paramCount grows by one.
-  val lambdaCaps = match mapGet(cctx.lambdaCaptureNames, decl.name) { case Some(c) -> c; case None -> newList() }
-  val lambdaCapTys = match mapGet(cctx.lambdaCaptureTypes, decl.name) { case Some(t) -> t; case None -> newList() }
+  // Package-qualified (#5363): `cctx.lambdaTicker` resets to 0 at the start of
+  // every package, so two different packages' first capturing lambda both
+  // produce `decl.name == "__lambda_0"`.  These maps are written under
+  // `pkgName + "." + lname` by the ELambda codegen site (see the matching
+  // comment there); reading them by bare `decl.name` let a later package's
+  // non-capturing `__lambda_0` pick up an EARLIER package's stale capture
+  // metadata, corrupting its MethodDef signature with a bogus leading
+  // closure-class parameter.
+  val qualifiedLambdaName = pkgName + "." + decl.name
+  val lambdaCaps = match mapGet(cctx.lambdaCaptureNames, qualifiedLambdaName) {
+    case Some(c) -> c
+    case None -> newList()
+  }
+  val lambdaCapTys = match mapGet(cctx.lambdaCaptureTypes, qualifiedLambdaName) {
+    case Some(t) -> t
+    case None -> newList()
+  }
   val hasCaps = lambdaCaps.count > 0
   val effectiveParamCount = if hasCaps { decl.params.count + 1 } else { decl.params.count }
   val fctx = makeFuncCtxMsil(pkgName, className, decl.name, effectiveParamCount, retTy)
@@ -19516,7 +19597,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     val capsSlot = fctx.slotTicker.count
     fctx.slots.add("__caps", capsSlot)
     // Phase 2 detection: check if this lambda has a closure class
-    match mapGet(cctx.lambdaClosureClasses, decl.name) {
+    match mapGet(cctx.lambdaClosureClasses, qualifiedLambdaName) {
       case Some(closureRecord) -> {
         // Phase 2: __caps is the closure class instance
         fctx.types.add("__caps", MClass(className = closureRecord.className))
@@ -19527,7 +19608,10 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
       }
     }
     fctx.slotTicker.add(0)
-    val capCells = match mapGet(cctx.lambdaCaptureCells, decl.name) { case Some(c) -> c; case None -> newList() }
+    val capCells = match mapGet(cctx.lambdaCaptureCells, qualifiedLambdaName) {
+      case Some(c) -> c
+      case None -> newList()
+    }
     var cni = 0
     while cni < lambdaCaps.count {
       fctx.captureNameToIndex.add(lambdaCaps[cni], cni)
@@ -19549,7 +19633,10 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // used when a lambda param is un-annotated.  Empty for non-lambdas (decl.name
   // is never a "__lambda_*" key) and lambdas not passed directly to a typed
   // `(…) -> R` parameter.
-  val lambdaPropagated = match mapGet(cctx.lambdaParamTypes, decl.name) { case Some(ts) -> ts; case None -> newList() }
+  val lambdaPropagated = match mapGet(cctx.lambdaParamTypes, qualifiedLambdaName) {
+    case Some(ts) -> ts
+    case None -> newList()
+  }
   // A lambda passed directly to an `@externTarget` function's function-typed
   // parameter gets its real parameter types in both the logical slot type and
   // the physical method signature (Epic #1877/#3923 FFI-boundary slice — see
@@ -19707,7 +19794,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // Capturing lambda: the leading `__caps` (closed-over target) is the
   // method's first parameter (#1479, #1877 Phase 2).
   if hasCaps {
-    match mapGet(cctx.lambdaClosureClasses, decl.name) {
+    match mapGet(cctx.lambdaClosureClasses, qualifiedLambdaName) {
       case Some(closureRecord) -> {
         paramTypes.add(MClass(className = closureRecord.className))
       }

@@ -30013,3 +30013,38 @@ self-tests touching arrays/slices/calls with no failures.
 
 **Related:** `docs/03-decision-log.md` D-progress-623 (full account), docs/44
 M-10 (the original byte-only interop this generalizes).
+
+---
+
+### D-progress-624 — Self-hosted MSIL backend: three of the four D-progress-622 closure/codegen bugs fixed; the fourth downgraded to a compile-time diagnostic
+
+Fixed #5361 (a missing `recordUserTypeDefRow` call in `lowerMEnum`
+desynced the positional TypeDef-row-to-FQN list every subsequent type
+lowering relied on for forward references) and #5363 (five per-lambda
+maps in `Msil.Codegen` were keyed by a bare lambda name that collides
+across packages because the numbering ticker resets per package —
+qualified all five with the package name, mirroring the earlier #5309
+fix that only covered one of the six affected maps). Fixed #5364 (the
+`.indexOf`/`.lastIndexOf` sentinel-`Int` "Option" pattern-bind fallback
+hardcoded its bound variable's slot type to `MObject` instead of the
+scrutinee's real type, leaving an unboxed `int32` in an object-declared
+local — harmless for `stloc`/`ldloc` but rejected by the JIT at a
+`callvirt` argument slot). #5362 (bare named function used as a
+delegate value) is not fully fixed — the uniform boxed `Func` ABI has
+no path to bridge a real typed BCL method signature without either a
+call-site desugaring pass or ABI work larger than this slice — instead
+downgraded from a silent runtime `NullReferenceException` to a clear
+compile-time `F0027`, matching the issue's own stated fallback ask.
+#5359/#5360 confirmed still correctly scoped as documented follow-ups
+(one stale doc line in `Web.OpenApi` fixed). Verifying #5363's fix
+end-to-end surfaced a second, unrelated, pre-existing bug (confirmed
+via a from-scratch `main` rebuild predating this session): a
+function/closure value bound without a literal `(T) -> U` annotation
+never gets its return type registered for unboxing, so arithmetic on
+its call result silently corrupts — filed as **#5366**, not fixed here
+(root-caused with a proposed fix sketch; the fix itself needs
+alias-resolution machinery `codegen.l` doesn't currently have).
+
+**Related:** `docs/03-decision-log.md` D-progress-624 (full account),
+D-progress-622 (the entry these four bugs were originally filed
+against), #5309 (the earlier, narrower fix this generalizes).

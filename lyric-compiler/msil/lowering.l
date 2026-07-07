@@ -1078,7 +1078,6 @@ pub record LoweringCtx {
   resolvedAssemblyVersions: Map[String, Mdr.AssemblyVersion]
 }
 
-
 // Build and intern the Microsoft framework public key token blob.
 func internMsKeyToken(bh: in BlobHeap): Int {
   val w = bufNew()
@@ -1243,7 +1242,6 @@ pub func newLoweringCtxWithVersions(
 pub func newLoweringCtx(packageName: in String, major: in Int, minor: in Int): LoweringCtx {
   newLoweringCtxWithVersions(packageName, major, minor, newMap())
 }
-
 
 // Return the TypeDefOrRef coded index for System.Object.
 pub func objectTypeToken(ctx: in LoweringCtx): Int {
@@ -1427,10 +1425,7 @@ pub func ctxAddTypeRef(ctx: in LoweringCtx, namespaceName: in String, typeName: 
 // describe nested types (e.g. Dictionary`2+KeyCollection).
 pub func ctxAddNestedTypeRef(ctx: in LoweringCtx, outerTypeRefRow: in Int, nestedTypeName: in String): Int {
   val sName = ctxInternStr(ctx, nestedTypeName)
-  addTypeRef(
-    ctx.tables,
-    TypeRefRow(resolutionScope = rsTypeRef(outerTypeRefRow), typeName = sName, typeNamespace = 0)
-  )
+  addTypeRef(ctx.tables, TypeRefRow(resolutionScope = rsTypeRef(outerTypeRefRow), typeName = sName, typeNamespace = 0))
 }
 
 // Add a MemberRef row (external method reference) and return its 1-based row index.
@@ -3478,7 +3473,8 @@ pub func lowerMEnum(e: in MEnum, ctx: in LoweringCtx): Int {
   // (namespace, simpleName).  Interning the full FQN here produced a
   // doubled display name (`Std.Log` + `Std.Log.LogLevel`) that no
   // consumer TypeRef could resolve (#3196).
-  val sName = internString(sh, simpleNameFromFqn(e.namespace, e.className))
+  val simpleNameStr = simpleNameFromFqn(e.namespace, e.className)
+  val sName = internString(sh, simpleNameStr)
   val sNs = internString(sh, e.namespace)
 
   // Allocate TypeDef row first (field list starts right after current fields).
@@ -3538,7 +3534,7 @@ pub func lowerMEnum(e: in MEnum, ctx: in LoweringCtx): Int {
   }
 
   // Emit the TypeDef itself — must extend System.Enum.
-  addTypeDef(
+  val typeRow = addTypeDef(
     t,
     TypeDefRow(
       flags = TDF_PUBLIC + TDF_SEALED,
@@ -3549,6 +3545,19 @@ pub func lowerMEnum(e: in MEnum, ctx: in LoweringCtx): Int {
       methodList = firstMethod
     )
   )
+  // Every other type-lowering function (record, union, distinct type,
+  // interface, opaque) registers its TypeDef row here so `typeDefRowFqns`
+  // (a positional list consumed by `findMethodDefRowOfType` /
+  // `findFieldDefRowOfType`'s `row - 2` reverse-lookup fallback) stays in
+  // lock-step with the real TypeDef row numbering.  `lowerMEnum` omitting
+  // this call desynced that list: every type lowered after an enum landed
+  // one slot too early in `typeDefRowFqns`, so a forward-referenced type
+  // (e.g. a closure class drained after the enum's package, resolved by
+  // name before its own TypeDef row exists yet) either read the wrong
+  // FQN or fell out of bounds and panicked "could not resolve .ctor" /
+  // "could not resolve field" (#5361).
+  recordUserTypeDefRow(ctx, e.namespace, simpleNameStr, typeRow)
+  typeRow
 }
 
 // ── Interface lowering ────────────────────────────────────────────────────────
