@@ -79,14 +79,18 @@ func listContains(list: in List[String], value: in String): Bool {
 
 test "resolveNugetAssets: no obj/project.assets.json yields an empty list" {
   val mfDir = freshTempDir("no-assets")
-  defer { cleanup(mfDir) }
+  defer {
+    cleanup(mfDir)
+  }
   val paths = Cli.resolveNugetAssets(mfDir)
   assertEqualInt(paths.count, 0, "resolveNugetAssets: missing project.assets.json")
 }
 
 test "resolveNugetAssets: malformed JSON yields an empty list" {
   val mfDir = freshTempDir("malformed")
-  defer { cleanup(mfDir) }
+  defer {
+    cleanup(mfDir)
+  }
   val objDir = Path.join(mfDir, "obj")
   match File.createDir(objDir) {
     case Ok(_) -> ()
@@ -103,9 +107,13 @@ test "resolveNugetAssets: malformed JSON yields an empty list" {
 // be excluded from the result.
 test "resolveNugetAssets: happy path resolves a real runtime DLL and skips non-package entries" {
   val mfDir = freshTempDir("happy-path")
-  defer { cleanup(mfDir) }
+  defer {
+    cleanup(mfDir)
+  }
   val pkgsDir = freshTempDir("happy-path-pkgs")
-  defer { cleanup(pkgsDir) }
+  defer {
+    cleanup(pkgsDir)
+  }
   val objDir = Path.join(mfDir, "obj")
   match File.createDir(objDir) {
     case Ok(_) -> ()
@@ -115,12 +123,28 @@ test "resolveNugetAssets: happy path resolves a real runtime DLL and skips non-p
   val dllPath = touchNugetDll(pkgsDir, "Newtonsoft.Json", "13.0.3", "lib/netstandard2.0/Newtonsoft.Json.dll")
 
   val assetsJson = "{\n" + "  \"targets\": {\n" + "    \".NETCoreApp,Version=v10.0\": {\n" +
-    "      \"Newtonsoft.Json/13.0.3\": {\n" + "        \"type\": \"package\",\n" + "        \"runtime\": {\n" +
-    "          \"lib/netstandard2.0/Newtonsoft.Json.dll\": {}\n" + "        }\n" + "      },\n" +
-    "      \"Fixture.LocalProject/1.0.0\": {\n" + "        \"type\": \"project\",\n" + "        \"runtime\": {\n" +
-    "          \"bin/Fixture.LocalProject.dll\": {}\n" + "        }\n" + "      }\n" + "    }\n" + "  },\n" +
-    "  \"project\": {\n" + "    \"restore\": {\n" + "      \"packagesPath\": \"" +
-    Str.replace(pkgsDir, "\\", "\\\\") + "\"\n" + "    }\n" + "  }\n" + "}\n"
+    "      \"Newtonsoft.Json/13.0.3\": {\n" +
+    "        \"type\": \"package\",\n" +
+    "        \"runtime\": {\n" +
+    "          \"lib/netstandard2.0/Newtonsoft.Json.dll\": {}\n" +
+    "        }\n" +
+    "      },\n" +
+    "      \"Fixture.LocalProject/1.0.0\": {\n" +
+    "        \"type\": \"project\",\n" +
+    "        \"runtime\": {\n" +
+    "          \"bin/Fixture.LocalProject.dll\": {}\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  },\n" +
+    "  \"project\": {\n" +
+    "    \"restore\": {\n" +
+    "      \"packagesPath\": \"" +
+    Str.replace(pkgsDir, "\\", "\\\\") +
+    "\"\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
   writeFileOrPanic(Path.join(objDir, "project.assets.json"), assetsJson)
 
   val paths = Cli.resolveNugetAssets(mfDir)
@@ -133,9 +157,13 @@ test "resolveNugetAssets: happy path resolves a real runtime DLL and skips non-p
 // returned as a dangling path.
 test "resolveNugetAssets: runtime entry with no file on disk is skipped" {
   val mfDir = freshTempDir("missing-dll")
-  defer { cleanup(mfDir) }
+  defer {
+    cleanup(mfDir)
+  }
   val pkgsDir = freshTempDir("missing-dll-pkgs")
-  defer { cleanup(pkgsDir) }
+  defer {
+    cleanup(pkgsDir)
+  }
   val objDir = Path.join(mfDir, "obj")
   match File.createDir(objDir) {
     case Ok(_) -> ()
@@ -144,10 +172,22 @@ test "resolveNugetAssets: runtime entry with no file on disk is skipped" {
   // Deliberately do NOT create the DLL file under pkgsDir.
 
   val assetsJson = "{\n" + "  \"targets\": {\n" + "    \".NETCoreApp,Version=v10.0\": {\n" +
-    "      \"Widget/1.0.0\": {\n" + "        \"type\": \"package\",\n" + "        \"runtime\": {\n" +
-    "          \"lib/netstandard2.0/Widget.dll\": {}\n" + "        }\n" + "      }\n" + "    }\n" + "  },\n" +
-    "  \"project\": {\n" + "    \"restore\": {\n" + "      \"packagesPath\": \"" +
-    Str.replace(pkgsDir, "\\", "\\\\") + "\"\n" + "    }\n" + "  }\n" + "}\n"
+    "      \"Widget/1.0.0\": {\n" +
+    "        \"type\": \"package\",\n" +
+    "        \"runtime\": {\n" +
+    "          \"lib/netstandard2.0/Widget.dll\": {}\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  },\n" +
+    "  \"project\": {\n" +
+    "    \"restore\": {\n" +
+    "      \"packagesPath\": \"" +
+    Str.replace(pkgsDir, "\\", "\\\\") +
+    "\"\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
   writeFileOrPanic(Path.join(objDir, "project.assets.json"), assetsJson)
 
   val paths = Cli.resolveNugetAssets(mfDir)
@@ -156,7 +196,9 @@ test "resolveNugetAssets: runtime entry with no file on disk is skipped" {
 
 test "resolveNugetAssets: empty targets yields an empty list" {
   val mfDir = freshTempDir("empty-targets")
-  defer { cleanup(mfDir) }
+  defer {
+    cleanup(mfDir)
+  }
   val objDir = Path.join(mfDir, "obj")
   match File.createDir(objDir) {
     case Ok(_) -> ()
@@ -186,7 +228,9 @@ func expectSome(reason: in Option[String], label: in String): String {
 // the pre-existing missing-file case (#4326).
 test "nugetUnresolvedReason: assets.json present but resolves to zero paths warns with the stale reason" {
   val mfDir = freshTempDir("stale-assets")
-  defer { cleanup(mfDir) }
+  defer {
+    cleanup(mfDir)
+  }
   val objDir = Path.join(mfDir, "obj")
   match File.createDir(objDir) {
     case Ok(_) -> ()
@@ -204,7 +248,9 @@ test "nugetUnresolvedReason: assets.json present but resolves to zero paths warn
 // case: no `obj/project.assets.json` at all (never restored).
 test "nugetUnresolvedReason: missing assets.json warns with the not-found reason" {
   val mfDir = freshTempDir("missing-assets")
-  defer { cleanup(mfDir) }
+  defer {
+    cleanup(mfDir)
+  }
 
   val reason = Cli.nugetUnresolvedReason(mfDir, Some(value = oneEntryNugetSection()), newList())
   val r = expectSome(reason, "nugetUnresolvedReason: missing assets.json")
@@ -213,7 +259,9 @@ test "nugetUnresolvedReason: missing assets.json warns with the not-found reason
 
 test "nugetUnresolvedReason: no [nuget] section yields no warning" {
   val mfDir = freshTempDir("no-nuget-section")
-  defer { cleanup(mfDir) }
+  defer {
+    cleanup(mfDir)
+  }
 
   val reason = Cli.nugetUnresolvedReason(mfDir, None, newList())
   match reason {
@@ -224,7 +272,9 @@ test "nugetUnresolvedReason: no [nuget] section yields no warning" {
 
 test "nugetUnresolvedReason: resolved paths present yields no warning" {
   val mfDir = freshTempDir("resolved-paths")
-  defer { cleanup(mfDir) }
+  defer {
+    cleanup(mfDir)
+  }
   val resolved: List[String] = newList()
   resolved.add("/fake/pkgs/widget/1.0.0/lib/netstandard2.0/Widget.dll")
 
@@ -248,7 +298,9 @@ func selfDllPath(): String {
 
 test "partitionNugetLyricDeps: Lyric-contract DLL routes to restored deps, third-party DLL does not" {
   val pkgsDir = freshTempDir("partition-pkgs")
-  defer { cleanup(pkgsDir) }
+  defer {
+    cleanup(pkgsDir)
+  }
   val thirdPartyDll = touchNugetDll(pkgsDir, "Newtonsoft.Json", "13.0.3", "lib/netstandard2.0/Newtonsoft.Json.dll")
 
   val nugetPaths: List[String] = newList()
@@ -263,4 +315,56 @@ test "partitionNugetLyricDeps: Lyric-contract DLL routes to restored deps, third
   )
   assertEqualInt(thirdPartyPaths.count, 1, "partitionNugetLyricDeps: exactly one third-party entry")
   assertEqual(thirdPartyPaths[0], thirdPartyDll, "partitionNugetLyricDeps: the non-Lyric DLL is left for auto-FFI")
+}
+
+// Direct coverage for `resolveProjectSources` (#5333): the shared
+// discovery/collection helper now backs `cmdLint`/`cmdDoc`/`cmdBench`/
+// `cmdFmt`/`cmdProve`'s project-mode fork, but previously had no test of
+// its own. Both cases here pass an explicit `--manifest` path so the
+// result is independent of the test process's current working directory
+// (an implicit discovery walk from cwd is exercised end-to-end by the CLI
+// self-tests instead, where cwd is controlled).
+test "resolveProjectSources: explicit manifest with two package files resolves both paths" {
+  val mfDir = freshTempDir("proj-sources-ok")
+  defer {
+    cleanup(mfDir)
+  }
+  val srcA = Path.join(mfDir, "a.l")
+  val srcB = Path.join(mfDir, "b.l")
+  writeFileOrPanic(srcA, "package Fixture.A\n\npub func a(): Int {\n  1\n}\n")
+  writeFileOrPanic(srcB, "package Fixture.B\n\npub func b(): Int {\n  2\n}\n")
+  val mfPath = Path.join(mfDir, "lyric.toml")
+  writeFileOrPanic(
+    mfPath,
+    "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Fixture\"\n\n[project.packages]\n\"A\" = \"a.l\"\n\"B\" = \"b.l\"\n"
+  )
+
+  match Cli.resolveProjectSources(Some(value = mfPath)) {
+    case Cli.ProjSourcesFound(foundMfPath, paths) -> {
+      assertEqual(foundMfPath, mfPath, "resolveProjectSources: returns the manifest path it discovered/was given")
+      assertEqualInt(paths.count, 2, "resolveProjectSources: both [project.packages] source files collected")
+      assertTrue(listContains(paths, srcA), "resolveProjectSources: package A's source file is present")
+      assertTrue(listContains(paths, srcB), "resolveProjectSources: package B's source file is present")
+    }
+    case Cli.ProjSourcesMissingManifest -> panic("resolveProjectSources: expected ProjSourcesFound, got ProjSourcesMissingManifest")
+    case Cli.ProjSourcesFatal -> panic("resolveProjectSources: expected ProjSourcesFound, got ProjSourcesFatal")
+  }
+}
+
+test "resolveProjectSources: a [project.packages] entry pointing at a missing file is fatal" {
+  val mfDir = freshTempDir("proj-sources-fatal")
+  defer {
+    cleanup(mfDir)
+  }
+  val mfPath = Path.join(mfDir, "lyric.toml")
+  writeFileOrPanic(
+    mfPath,
+    "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Fixture\"\n\n[project.packages]\n\"Missing\" = \"does_not_exist.l\"\n"
+  )
+
+  match Cli.resolveProjectSources(Some(value = mfPath)) {
+    case Cli.ProjSourcesFatal -> ()
+    case Cli.ProjSourcesFound(_, _) -> panic("resolveProjectSources: expected ProjSourcesFatal, got ProjSourcesFound")
+    case Cli.ProjSourcesMissingManifest -> panic("resolveProjectSources: expected ProjSourcesFatal, got ProjSourcesMissingManifest")
+  }
 }

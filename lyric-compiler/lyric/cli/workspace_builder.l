@@ -429,13 +429,14 @@ pub record ResolvedManifestDeps {
   /// (mirrors `buildWorkspaceDeps`'s own fatal signal); callers that want
   /// the same behavior should check this first.
   hadWorkspaceError: Bool
-  /// True when a local `path = "..."` dependency's DLL was not found on
-  /// disk (not yet built) — including when the dependency directory has no
-  /// `lyric.toml` at all.  `buildProject` has historically treated this as
-  /// a non-fatal warning (the downstream typecheck surfaces the real
-  /// error); `buildOneNative`'s single-file synthetic project request
-  /// treats it as fatal per D122's "fail loud instead of silently
-  /// degrading" conservative default.
+  /// True when a local `path = "..."` dependency could not be resolved to a
+  /// usable DLL for any reason: its DLL was not found on disk (not yet
+  /// built), the dependency directory has no `lyric.toml` at all, its
+  /// `lyric.toml` could not be read, or its `lyric.toml` failed to parse.
+  /// `buildProject` has historically treated this as a non-fatal warning
+  /// (the downstream typecheck surfaces the real error); `buildOneNative`'s
+  /// single-file synthetic project request treats it as fatal per D122's
+  /// "fail loud instead of silently degrading" conservative default.
   hadUnbuiltLocalDep: Bool
 }
 
@@ -546,11 +547,13 @@ pub func resolveManifestDependencies(
                 }
                 case Err(e) -> {
                   printErr("build: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
+                  hadUnbuiltLocalDep = true
                 }
               }
             }
             case Err(e) -> {
               printErr("build: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
+              hadUnbuiltLocalDep = true
             }
           }
         } else {

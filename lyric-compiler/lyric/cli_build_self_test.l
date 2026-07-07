@@ -358,6 +358,42 @@ test "buildOneNative: single-file build near a manifest fails loudly on a broken
   )
 }
 
+// Regression for a second review finding on this PR: the "malformed
+// lyric.toml" and "cannot read lyric.toml" branches for a `path = "..."`
+// dependency printed an error but never set `hadUnbuiltLocalDep`, unlike
+// their sibling "no lyric.toml found" / "DLL not built" branches a few
+// lines away — the same silent-swallow shape as the workspace-error bug
+// above, just in different branches of the same function.
+test "buildOneNative: single-file build near a manifest fails loudly on a malformed dependency manifest" {
+  val depDir = freshTempDir("dep-malformed")
+  defer {
+    cleanup(depDir)
+  }
+  // Deliberately broken TOML: an inline table missing its closing brace.
+  writeManifestOrPanic(Path.join(depDir, "lyric.toml"), "[package]\nname = \"DepD122Malformed\n")
+
+  val appDir = freshTempDir("app-malformed")
+  defer {
+    cleanup(appDir)
+  }
+  writeManifestOrPanic(
+    Path.join(appDir, "lyric.toml"),
+    "[package]\n" + "name = \"AppD122Malformed\"\n" + "version = \"0.1.0\"\n" + "\n" + "[dependencies]\n" +
+      "DepD122Malformed = { path = \"" +
+      depDir +
+      "\" }\n"
+  )
+  val looseSrcPath = Path.join(appDir, "loose.l")
+  writeFileOrPanic(looseSrcPath, "package AppD122Malformed.Loose\n\npub func run(): Int {\n  1\n}\n")
+  val outPath = Path.join(appDir, "loose.dll")
+
+  val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Dotnet, None, "", "")
+  assertTrue(
+    exitCode != 0,
+    "single-file build fails loudly on a malformed dependency manifest instead of silently compiling without it"
+  )
+}
+
 test "buildOneNative: a manifest with no dependencies/features near a single file is byte-identical to no manifest" {
   val noManifestDir = freshTempDir("nomanifest")
   defer {

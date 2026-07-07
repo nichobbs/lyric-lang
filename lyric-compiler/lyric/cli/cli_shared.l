@@ -271,7 +271,7 @@ func discoverManifest(explicit: in Option[String]): Option[String] {
 // collection error are kept distinct because callers react differently
 // (some print `printUsage()` on a missing manifest); `collectProjectSourcePaths`
 // already reports its own fatal errors, so that case needs no extra message.
-union ProjectSourcesResult {
+pub union ProjectSourcesResult {
   case ProjSourcesMissingManifest
   case ProjSourcesFatal
   case ProjSourcesFound(mfPath: String, paths: List[String])
@@ -280,7 +280,9 @@ union ProjectSourcesResult {
 // Discover the manifest (explicit --manifest or nearest lyric.toml) and
 // collect its [project.packages] source paths.  Callers still print their
 // own command-prefixed error messages, so wording is unchanged per command.
-func resolveProjectSources(manifestArg: in Option[String]): ProjectSourcesResult {
+// `pub` so `cli_shared_self_test.l` can drive it directly against fixture
+// manifests (#5333).
+pub func resolveProjectSources(manifestArg: in Option[String]): ProjectSourcesResult {
   val mfPath = match discoverManifest(manifestArg) { case Some(p) -> p; case None -> return ProjSourcesMissingManifest }
   val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
   if hadFatal {
