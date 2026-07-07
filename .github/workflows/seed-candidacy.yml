@@ -10,19 +10,9 @@ name: Seed candidacy check
 # `@externTarget` binding correctly — the defect lived entirely in what
 # v0.4.14's own compiled emitter logic did when used as the compiling tool,
 # not in current `.l` source.
-#
-# CI's stage-1 self-test jobs (compiler-self-tests-dotnet-*,
-# compiler-self-tests-jvm) always force LYRIC_BOOTSTRAP_MINT=1, so a
-# download-seed-only regression like this is invisible until someone
-# manually attempts the #3936 bootstrap-seed cutover — which is exactly what
-# happened: PR #5090's sandbox verification (stage-1 smoke +
-# --target dotnet-only stage-3 reproducibility) passed cleanly, and real CI
-# caught the JVM-only regression only after the cutover had already landed.
-#
 # This workflow implements #5094's proposed resolution path 3: on every
 # finalized release, download THAT release as a LYRIC_BOOTSTRAP_VERSION
-# seed, build stage 1 from it (mint deliberately OFF, unlike every other CI
-# job — the whole point is exercising the download path), and run the
+# seed, build stage 1 from it (exercising the download path), and run the
 # self-test suite for both targets against that download-seeded stage 1. A
 # release that fails here is unsafe to use as a future download-seed
 # default; the job files (or re-confirms) a tracking issue so the finding is
@@ -112,9 +102,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      # LYRIC_BOOTSTRAP_MINT is deliberately left unset/0 here — every other
-      # CI job sets it to 1 (mint from git history), which is precisely why
-      # this class of bug went undetected until a manual #3936 attempt.
       # LYRIC_BOOTSTRAP_VERSION pins the exact release under test so
       # scripts/bootstrap.sh downloads it instead of resolving "latest".
       - name: Build stage 1 from the released version as a download seed
@@ -125,23 +112,8 @@ jobs:
           LYRIC_BOOTSTRAP_VERSION: ${{ steps.ver.outputs.VERSION }}
         run: |
           set -euo pipefail
-          echo "Testing v${LYRIC_BOOTSTRAP_VERSION} as a download seed (LYRIC_BOOTSTRAP_MINT unset)"
-          ./scripts/bootstrap.sh --stage 1 2>&1 | tee /tmp/seed-candidacy-stage1.log
-
-          # scripts/bootstrap.sh's stage0() silently falls back to minting the
-          # F# bootstrap compiler if the release download fails for ANY reason
-          # (network blip, GitHub rate limit, missing archive for this
-          # platform, bad version) -- even with LYRIC_BOOTSTRAP_MINT left
-          # unset/0 (#5162). Left unchecked, that fallback would make this
-          # job "pass" having never actually exercised the download-seed
-          # path -- exactly the false-confidence failure mode that motivated
-          # this whole workflow (#5094 / PR #5090's insufficient sandbox
-          # verification). Both of stage0()'s mint code paths share this log
-          # line, so a single check catches either.
-          if grep -qF "minting clean stage-0 from F# history" /tmp/seed-candidacy-stage1.log; then
-            echo "::error::stage 0 fell back to minting the F# bootstrap compiler instead of downloading v${LYRIC_BOOTSTRAP_VERSION} -- this run did NOT test the download-seed path"
-            exit 1
-          fi
+          echo "Testing v${LYRIC_BOOTSTRAP_VERSION} as a download seed"
+          ./scripts/bootstrap.sh --stage 1
 
       - name: Build AOT entry-point
         id: build_aot

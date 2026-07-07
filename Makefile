@@ -21,40 +21,19 @@
 # Path.GetTempPath()), none of these targets need the old `TMPDIR=/tmp` prefix.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# BOOTSTRAP (mint) vs SELF-HOSTED — which compiler am I running?
+# BOOTSTRAP vs SELF-HOSTED — which compiler am I running?
 # ─────────────────────────────────────────────────────────────────────────────
-# There are THREE compilers in play.  Knowing which one you built is the
-# difference between "this is a real self-hosted bug" and "I'm running the wrong
-# binary".  See docs/10-bootstrap-progress.md §"Bootstrap vs self-hosted" for
-# the full model.  In short:
+# There are TWO compilers in play.
+# See docs/10-bootstrap-progress.md §"Bootstrap vs self-hosted" for the model.
 #
-#   1. MINT STAGE-0  — the historical F# bootstrap compiler, rebuilt from git
-#      history by scripts/mint-stage0-fsharp.sh.  Its emitter is correct, so
-#      everything it produces is VALID IL.  This is the seed CI uses
-#      (LYRIC_BOOTSTRAP_MINT=1).
+#   1. STAGE 1 (BOOTSTRAP) — the self-hosted compiler sources compiled BY the downloaded
+#      Stage 0 seed. Build it with `make lyric`. Use it for day-to-day development.
 #
-#   2. MINT STAGE-1 (a.k.a. the BOOTSTRAP compiler) — the self-hosted compiler
-#      `.l` sources compiled BY the mint seed.  Valid IL; this is exactly what
-#      CI ships and runs.  Build it with `make mint`.  Use it for all day-to-day
-#      development: it RUNS the self-hosted codegen, so compiling a program with
-#      it exercises the self-hosted emitter on USER code while staying runnable.
-#
-#   3. SELF-HOSTED STAGE-2 — the self-hosted compiler compiled BY ITSELF, built
+#   2. STAGE 2 (SELF-HOSTED) — the self-hosted compiler compiled BY ITSELF, built
 #      as an ISOLATED, self-consistent toolchain by `make stage2`
-#      (.bootstrap/stage2/{lib,bin}; no co-mingling with the seed).  This is the
-#      END GOAL and the SHIP/TEST toolchain: run everything against it via
-#      `make run-stage2 ARGS=...` (which pins LYRIC_STDLIB_BIN to its own
-#      stdlib).  It is only runnable once the self-hosted EMITTER produces valid
-#      IL for its own closure; `make stage2` reports the blocker non-fatally
-#      when it does not, and `make ilverify` quantifies it.  Until stage 2 runs,
-#      use the mint toolchain (#2) for day-to-day development.
-#
-# Decision rule when a test/program misbehaves:
-#   * Reproduce with `make mint` (CI-faithful, known-good).  If it still fails,
-#     the bug is real (self-hosted emitter or logic).  `make selfhost-check
-#     FILE=repro.l` classifies it (valid IL + runs vs invalid IL).
-#   * If it only fails with a bare `make lyric` binary, you were running the
-#     not-yet-runnable full self-hosted toolchain — rebuild with `make mint`.
+#      (.bootstrap/stage2/{lib,bin}; no co-mingling with the seed). This is the
+#      end-goal and the ship/test toolchain. Run things against it with
+#      `make run-stage2 ARGS="..."`.
 
 BUILD_CONFIG ?= Release
 # `net10.0` must stay in sync with the TFM in `bootstrap/global.json` and
@@ -66,9 +45,8 @@ AOT_BIN := bootstrap/src/Lyric.Cli.Aot/bin/$(BUILD_CONFIG)/net10.0/lyric
 .PHONY: help stage1 stage1-fast aot lyric selfhosted-compiler \
         native-rt test-native-rt test-native \
         stage2 stage3 run-stage2 \
-        mint ilverify selfhost-check \
-        test test-lexer test-parser test-typechecker test-emitter \
-        self-test clean
+        ilverify selfhost-check \
+        test clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) \
@@ -171,68 +149,28 @@ run-stage2: ## Run the stage-2 toolchain with stdlib pinned, e.g. ARGS="--versio
 	@test -x .bootstrap/stage2/bin/lyric || { echo "no stage-2 toolchain; run 'make stage2' first"; exit 2; }
 	LYRIC_STDLIB_BIN="$$PWD/.bootstrap/stage2/lib" .bootstrap/stage2/bin/lyric $(ARGS)
 
-# ── Bootstrap (mint) toolchain + self-hosted-emitter diagnostics ────────────
-# The CI-faithful, known-good dev toolchain.  Builds mint stage-1 (F#-emitted,
-# valid IL — what CI ships) and the AOT entry point on top of it, then stages
-# the runtime stdlib.  Use this for day-to-day development and for reproducing
-# failures: if a program/test fails here, the bug is real.  Contrast with a
-# bare `make lyric`, which builds the not-yet-runnable full self-hosted stage-1.
-mint: ## Build the CI-faithful mint (bootstrap) toolchain -> ./bin/lyric (valid IL)
-	LYRIC_BOOTSTRAP_MINT=1 ./scripts/bootstrap.sh --stage 1
-	@touch .bootstrap/stage1.stamp
-	dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $(BUILD_CONFIG) --no-incremental
-	@mkdir -p bin
-	@ln -sf "../$(AOT_BIN)" bin/lyric
-	@echo "mint (bootstrap) lyric ready: ./bin/lyric -> $(AOT_BIN)  [valid IL, CI-faithful]"
-	@bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
-ifeq ($(SKIP_SELFHOSTED_COMPILER),1)
-	@echo "SKIP_SELFHOSTED_COMPILER=1; skipping the self-hosted compiler-DLL staging"
-else
-	@echo "staging self-hosted compiler DLLs for native lyric test (#3086) ..."
-	@bash scripts/stage-selfhosted-compiler.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
-endif
+# ── Self-hosted-emitter diagnostics ─────────────────────────────────────────
 
 # Measure self-hosted-EMITTER IL validity: emit the whole compiler closure with
 # the self-hosted emitter (the AOT binary routes --target dotnet through
 # Msil.Bridge) and run `ilverify` over every emitted DLL.  0 errors is the gate
-# for the full self-hosted toolchain (item 3 above) being runnable.  Requires a
-# built binary — run `make mint` (or `make lyric`) first.
+# for the full self-hosted toolchain (item 2 above) being runnable.  Requires a
+# built binary — run `make lyric` first.
 ilverify: ## Run the self-hosted-emitter IL-validity gate (scripts/ilverify-selfhosted.sh)
 	bash scripts/ilverify-selfhosted.sh "$(AOT_BIN)"
 
 # Classify a single repro: is a misbehaving construct a REAL self-hosted-emitter
-# bug, or an environment artifact?  Compiles FILE with the mint (bootstrap)
-# toolchain — which runs the self-hosted codegen — then runs it and ilverifies
+# bug, or an environment artifact?  Compiles FILE with the stage-1 toolchain
+# — which runs the self-hosted codegen — then runs it and ilverifies
 # the emitted DLL, printing a verdict.  Usage: make selfhost-check FILE=repro.l
 selfhost-check: ## Classify a repro: real self-hosted bug vs artifact (FILE=repro.l)
 	@if [ -z "$(FILE)" ]; then echo "usage: make selfhost-check FILE=path/to/repro.l"; exit 2; fi
 	bash scripts/selfhost-check.sh "$(FILE)"
 
-# ── F# test suites (Expecto console apps) ───────────────────────────────────
+# ── Compiler & stdlib test suite ────────────────────────────────────────────
 
-test: test-lexer test-parser test-typechecker test-emitter ## Run F# test suites
-
-test-lexer: ## Run the lexer test suite
-	dotnet run --project bootstrap/tests/Lyric.Lexer.Tests -c $(BUILD_CONFIG)
-
-test-parser: ## Run the parser test suite
-	dotnet run --project bootstrap/tests/Lyric.Parser.Tests -c $(BUILD_CONFIG)
-
-test-typechecker: ## Run the type-checker test suite
-	dotnet run --project bootstrap/tests/Lyric.TypeChecker.Tests -c $(BUILD_CONFIG)
-
-test-emitter: ## Run the emitter test suite (includes all self-hosted self-tests)
-	dotnet run --project bootstrap/tests/Lyric.Emitter.Tests -c $(BUILD_CONFIG)
-
-# ── Self-hosted self-tests (fast inner-loop verification) ───────────────────
-# Usage: make self-test NAME=parser   (runs the `<NAME>_self_test_passes` case)
-# Valid NAMEs include: lexer parser typechecker modechecker contract_elaborator
-#                      test_synth manifest fmt cfg contract_meta restored_packages
-#                      verifier
-self-test: ## Run one self-hosted self-test, e.g. `make self-test NAME=parser`
-	@if [ -z "$(NAME)" ]; then echo "usage: make self-test NAME=parser"; exit 2; fi
-	dotnet run --project bootstrap/tests/Lyric.Emitter.Tests -c $(BUILD_CONFIG) \
-	  -- --filter-test-case "$(NAME)_self_test_passes"
+test: ## Run the compiler and standard library test suite
+	./bin/lyric test --manifest lyric-session/lyric.toml
 
 # ── Native backend (LLVM) ───────────────────────────────────────────────────
 # The Lyric.Llvm* packages build into stage 1 automatically
