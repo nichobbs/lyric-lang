@@ -11031,7 +11031,8 @@ callers share one implementation instead of two copies):
   capability: it calls `Emitter.emit` directly rather than going through
   `buildOneNative`/`buildOne`, so extending it would require a second,
   separate wiring pass through `cli_test.l`'s own build logic — left as a
-  precisely-scoped follow-up rather than attempted partially.
+  precisely-scoped follow-up rather than attempted partially, tracked in
+  #5341.
 - A pre-existing, orthogonal gap was found (not caused by this change):
   `Emitter.emitProject`'s JVM path (`emitProjectJvmInProcess`) never reads
   `EmitProjectRequest.restoredDllPaths` at all — cross-package calls into
@@ -11082,9 +11083,38 @@ case: a workspace root with a member manifest declaring a dependency on a
 nonexistent member, compiled directly via `buildOneNative`, now fails
 instead of silently succeeding.
 
+**Review hardening, round 2 (same PR).** The same silent-swallow shape
+existed in two more branches of `resolveManifestDependencies`: a `path`
+dependency whose `lyric.toml` is unreadable or fails to parse printed an
+error but never set `hadUnbuiltLocalDep`, unlike the sibling "no
+lyric.toml found" / "DLL not built" branches a few lines away. Fixed by
+setting the flag in both branches too. Added a sixth
+`cli_build_self_test.l` case (a malformed dependency `lyric.toml`).
+Also added direct unit tests for the shared helpers this PR extracted
+(`resolveProjectSources` in `cli_shared_self_test.l`;
+`resolveManifestFeatures`/`injectMavenClasspathForJvm` in
+`cli_workspace_builder_self_test.l`), which previously had none of their
+own.
+
+**Review hardening, round 3 (same PR).** `emitSingleFileOrProject` set
+`EmitProjectRequest.assemblyName` to the Lyric package's declared name
+instead of `req.assemblyName` (the output file's stem) — the convention
+both the pre-existing single-file path and `buildProject`'s multi-package
+path use, and the value that becomes the emitted PE's actual `AssemblyDef`
+Name row on `--target dotnet`. Fixed. Also: renamed `cli_build_self_test.l`'s
+fixture identifiers (previously embedding the decision number itself, e.g.
+`DepD122`) to decision-number-independent names, since embedding a D-number
+that can itself be renumbered by a future rebase collision (as happened
+twice already while landing this PR) is a self-defeating naming choice;
+added a JVM-target case exercising the `jvmNeedsMaven`/
+`injectMavenClasspathForJvm` branch (a manifest with `[maven]` entries but
+no `[dependencies]` is itself enough to trigger the synthetic path on
+`--target jvm`); and filed #5341 to track the `lyric test` single-file
+follow-up, which previously had no linked issue.
+
 **Related:** `docs/20-project-as-dll.md` (project bundling this
 reuses), `docs/24-test-runner-plan.md` (the `lyric test` follow-up this
-does not attempt).
+does not attempt), #5341 (that follow-up's tracking issue).
 
 ---
 ## Decisions deferred to v2 or later

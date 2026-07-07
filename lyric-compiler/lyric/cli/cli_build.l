@@ -262,7 +262,7 @@ func emitSingleFileOrProject(
 
   val projReq = EmitProjectRequest(
     packages = pkgs,
-    assemblyName = pkgName,
+    assemblyName = req.assemblyName,
     outputPath = req.outputPath,
     target = req.target,
     restoredDllPaths = resolvedDeps.restoredDlls,

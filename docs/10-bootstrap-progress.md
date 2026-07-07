@@ -29881,7 +29881,8 @@ declaring real workspace/path/NuGet/Maven dependencies could not use them.
   calls `buildOneNative` directly, so this capability applies to `lyric
   run <source.l>` too with no code changes there. `lyric test`'s
   single-file path does not get it (`cli_test.l` calls `Emitter.emit`
-  directly, bypassing `buildOneNative` entirely) — left as a follow-up.
+  directly, bypassing `buildOneNative` entirely) — left as a follow-up,
+  tracked in #5341.
 - **Pre-existing, unrelated gap found while testing**: `Emitter.emitProject`'s
   JVM path never reads `restoredDllPaths` at all, so a cross-package call
   into a restored dependency's `pub func` compiles but fails at runtime
