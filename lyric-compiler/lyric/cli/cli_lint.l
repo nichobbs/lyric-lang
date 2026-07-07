@@ -42,17 +42,14 @@ func cmdLint(argv: in slice[String]): Int {
 
   // Project-mode: no explicit source file — discover or use --manifest.
   if positional.count == 0 {
-    val mfPath = match discoverManifest(manifestArg) {
-      case Some(p) -> p
-      case None -> {
+    val sourcePaths = match resolveProjectSources(manifestArg) {
+      case ProjSourcesMissingManifest -> {
         printErr("lint: missing source file and no lyric.toml found")
         printUsage()
         return 1
       }
-    }
-    val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
-    if hadFatal {
-      return 1
+      case ProjSourcesFatal -> return 1
+      case ProjSourcesFound(_, paths) -> paths
     }
     if sourcePaths.count == 0 {
       printErr("lint: no source files found in project")
@@ -100,7 +97,9 @@ func cmdLint(argv: in slice[String]): Int {
     }
     var summary = ""
     if errorCount > 0 or warningCount > 0 {
-      summary = "lint: " + toString(errorCount) + " error(s), " + toString(warningCount) + " warning(s) in " + toString(fileCount) + " file(s)"
+      summary = "lint: " + toString(errorCount) + " error(s), " + toString(warningCount) + " warning(s) in " +
+        toString(fileCount) +
+        " file(s)"
     } else {
       summary = "lint: " + toString(fileCount) + " file(s) clean"
     }

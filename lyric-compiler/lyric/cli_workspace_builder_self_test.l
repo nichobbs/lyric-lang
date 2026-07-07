@@ -227,3 +227,118 @@ test "buildWorkspaceDeps: tuple's Option element round-trips without crashing on
 
   cleanup(root)
 }
+
+// Direct coverage for `resolveManifestFeatures` (#5333): the shared helper
+// now backs both `buildProject` and `buildOneNative`'s single-file
+// synthetic project path, but previously had no test of its own.
+test "resolveManifestFeatures: manifest defaults are active with no CLI overrides" {
+  val mfPath = "/tmp/fixture-not-read/lyric.toml"
+  val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[features]\ndefault = [\"a\", \"b\"]\na = []\nb = []\nc = []\n"
+  val (active, declared) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, false)
+  assertEqualInt(active.count, 2, "resolveManifestFeatures: default features are active")
+  assertTrue(
+    listContainsPrefix(active, "a") and listContainsPrefix(active, "b"),
+    "resolveManifestFeatures: both defaults present"
+  )
+  assertEqualInt(declared.count, 3, "resolveManifestFeatures: all declared features returned regardless of activation")
+}
+
+test "resolveManifestFeatures: noDefaultFeatures suppresses defaults, CLI features still apply" {
+  val mfPath = "/tmp/fixture-not-read/lyric.toml"
+  val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[features]\ndefault = [\"a\"]\na = []\nb = []\n"
+  val cliFeatures: List[String] = newList()
+  cliFeatures.add("b")
+  val (active, _) = Cli.resolveManifestFeatures(mfText, mfPath, cliFeatures, true, false)
+  assertEqualInt(active.count, 1, "resolveManifestFeatures: only the CLI feature is active, default suppressed")
+  assertTrue(listContainsPrefix(active, "b"), "resolveManifestFeatures: CLI-supplied feature is active")
+}
+
+test "resolveManifestFeatures: allFeatures activates every declared feature" {
+  val mfPath = "/tmp/fixture-not-read/lyric.toml"
+  val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[features]\ndefault = []\na = []\nb = []\nc = []\n"
+  val (active, declared) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, true)
+  assertEqualInt(
+    active.count,
+    declared.count,
+    "resolveManifestFeatures: --all-features activates every declared feature"
+  )
+}
+
+test "resolveManifestFeatures: no [features] table yields empty active and declared sets" {
+  val mfPath = "/tmp/fixture-not-read/lyric.toml"
+  val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n"
+  val (active, declared) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, false)
+  assertEqualInt(active.count, 0, "resolveManifestFeatures: no [features] table means no active features")
+  assertEqualInt(declared.count, 0, "resolveManifestFeatures: no [features] table means no declared features")
+}
+
+// Direct coverage for `injectMavenClasspathForJvm` / `restoreMavenClasspath`
+// (#5333): the shared helper backs both `buildProject`'s JVM path and
+// `buildOneNative`'s single-file synthetic project path.
+test "injectMavenClasspathForJvm: no classpath file and no [maven] entries is a silent no-op" {
+  val mfDir = freshTempDir("maven-noop")
+  defer {
+    cleanup(mfDir)
+  }
+  val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n"
+  val mfPath = Path.join(mfDir, "lyric.toml")
+  val manifest = match Mf.parseManifest(mfText, mfPath) {
+    case Ok(m) -> m
+    case Err(e) -> panic("cannot parse fixture manifest: " + ManifestError.message(e))
+  }
+  val injection = Cli.injectMavenClasspathForJvm(mfDir, manifest)
+  match injection.savedFfiJars {
+    case Some(_) -> panic("injectMavenClasspathForJvm: expected no injection with no classpath file")
+    case None -> ()
+  }
+  assertEqual(injection.classpathColonSep, "", "injectMavenClasspathForJvm: empty classpath with no restore output")
+}
+
+test "injectMavenClasspathForJvm: existing classpath file injects LYRIC_FFI_JARS, restore undoes it" {
+  val mfDir = freshTempDir("maven-inject")
+  defer {
+    cleanup(mfDir)
+  }
+  val restoreDir = Path.join(Path.join(mfDir, "target"), "restore")
+  match File.createDir(restoreDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + restoreDir + ": " + IOError.message(e))
+  }
+  writeFileOrPanic(Path.join(restoreDir, "jvm-classpath.txt"), "/fake/a.jar\n/fake/b.jar\n")
+  val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[maven]\n\"com.example:widget\" = \"1.0.0\"\n"
+  val mfPath = Path.join(mfDir, "lyric.toml")
+  val manifest = match Mf.parseManifest(mfText, mfPath) {
+    case Ok(m) -> m
+    case Err(e) -> panic("cannot parse fixture manifest: " + ManifestError.message(e))
+  }
+
+  // Normalized to the underlying value (defaulting absent to ""), matching
+  // how `injectMavenClasspathForJvm`/`restoreMavenClasspath` themselves
+  // treat "was unset" as "" rather than truly removing the variable —
+  // pre-existing behavior this test isn't changing, just verifying.
+  val prevFfi = match Environment.getVar("LYRIC_FFI_JARS") { case Ok(v) -> v; case Err(_) -> "" }
+
+  val injection = Cli.injectMavenClasspathForJvm(mfDir, manifest)
+  // Safety net: guarantees LYRIC_FFI_JARS is restored even if an assertion
+  // below fails, so this test can never leak env-var state into later
+  // tests. The explicit restore call further down still runs first and is
+  // itself verified; this defer just makes a second, idempotent restore.
+  defer {
+    Cli.restoreMavenClasspath(injection.savedFfiJars)
+  }
+  assertEqual(
+    injection.classpathColonSep,
+    "/fake/a.jar:/fake/b.jar",
+    "injectMavenClasspathForJvm: classpath lines are colon-joined in file order"
+  )
+  val duringInject = match Environment.getVar("LYRIC_FFI_JARS") { case Ok(v) -> v; case Err(_) -> "" }
+  assertEqual(
+    duringInject,
+    "/fake/a.jar:/fake/b.jar",
+    "injectMavenClasspathForJvm: LYRIC_FFI_JARS reflects the injected classpath"
+  )
+
+  Cli.restoreMavenClasspath(injection.savedFfiJars)
+  val afterRestore = match Environment.getVar("LYRIC_FFI_JARS") { case Ok(v) -> v; case Err(_) -> "" }
+  assertEqual(afterRestore, prevFfi, "restoreMavenClasspath: LYRIC_FFI_JARS restored to its prior value")
+}

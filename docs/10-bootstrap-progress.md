@@ -29826,3 +29826,84 @@ to reflect this bounded slice), #4077/#4084/#4089/#4091 (prior PR #3885
 cleanup this slice's typed-ctor work supersedes), #4025, #4601/#5206
 (investigated, confirmed not triggered by this slice), #5304 (blocks the
 Unix-socket migration itself).
+
+### D-progress-610 — Single-file `lyric build <source.l>` gains manifest-driven dependency resolution (D123)
+
+**Shipped.** Single-file builds (`buildOneNative` in `cli/cli_build.l`)
+were structurally unable to depend on anything outside `Std.*`: unlike
+project mode (`buildProject`), the single-file path built a bare
+`Emitter.EmitRequest` with no dependency fields and never consulted a
+manifest for anything beyond generator preprocessing / `[native]` /
+build-kind lookups. A loose `.l` file sitting right next to a `lyric.toml`
+declaring real workspace/path/NuGet/Maven dependencies could not use them.
+
+- **Manifest discovery from the source file's own directory**
+  (`discoverManifestForSourceFile`), not the shell's cwd — deliberately
+  different from every other project-aware command's discovery
+  convention, since a single file's "project" is wherever the file itself
+  lives, not wherever the invoker happens to be standing.
+- **Shared dependency/feature resolution, extracted out of `buildProject`**
+  into `cli/workspace_builder.l`'s `resolveManifestDependencies` /
+  `resolveManifestFeatures` / `injectMavenClasspathForJvm`, so both the
+  project-mode and new single-file paths resolve workspace deps (via the
+  existing `buildWorkspaceDeps`), local `path = "..."` deps, `[nuget]`
+  Lyric-package assets, `[features]` defaults, and the JVM Maven classpath
+  identically instead of maintaining two copies of ~150 lines of logic.
+  `buildProject`'s own control flow and diagnostics are unchanged
+  byte-for-byte by this refactor (verified: full existing self-test suite
+  passes).
+- **Synthesizes a one-package `EmitProjectRequest`**
+  (`cli_build.l`'s `emitSingleFileOrProject`) and routes through
+  `Emitter.emitProject` — the exact pipeline `buildProject` already
+  uses — but ONLY when a manifest actually contributes dependencies,
+  NuGet/Maven assets, or features. When nothing is found (or a manifest is
+  found but contributes nothing), the historical `Emitter.emit(req)` path
+  runs unchanged: empirically verified byte-identical PE output for both
+  cases (a bare file with no manifest anywhere, and a bare file next to a
+  `[package]`-only manifest). Unconditionally routing every single-file
+  compile through `emitProject` was measured to change output even at
+  zero dependencies (the project bridge's embedded `Lyric.Contract`
+  resource is named `Lyric.Contract.<pkg>`, the multi-package convention,
+  vs. the single-file bridge's bare `Lyric.Contract`) — an inherent
+  bridge-level difference not fixable from the CLI layer, so the gate
+  exists specifically to preserve regression safety for the common case.
+- **Fails loud, never restores.** An unbuilt/undeclared local dependency
+  is a hard build failure with the same message `buildProject` already
+  prints for the analogous (historically non-fatal) case — single-file
+  mode is deliberately more conservative here. No implicit `lyric restore`
+  or network access is introduced.
+- **Colocation extended**: `buildOneNative`'s existing
+  `Release.declaresEntryMain`-gated stdlib colocation now also colocates
+  newly-resolved restored-dependency / third-party-NuGet DLLs, so a
+  runnable program that now compiles against a dependency can also load it
+  at `dotnet exec` time.
+- **Free extension to `lyric run`**: `runOnce` (`cli/cli_run.l`) already
+  calls `buildOneNative` directly, so this capability applies to `lyric
+  run <source.l>` too with no code changes there. `lyric test`'s
+  single-file path does not get it (`cli_test.l` calls `Emitter.emit`
+  directly, bypassing `buildOneNative` entirely) — left as a follow-up,
+  tracked in #5341.
+- **Pre-existing, unrelated gap found while testing**: `Emitter.emitProject`'s
+  JVM path never reads `restoredDllPaths` at all, so a cross-package call
+  into a restored dependency's `pub func` compiles but fails at runtime
+  with a JVM bytecode `VerifyError`. Reproduced identically via plain,
+  pre-existing manifest-mode `buildProject` against the same fixture,
+  confirming this predates and is independent of this change; tracked as a
+  separate follow-up.
+
+**Verification.** `cli_build_self_test.l` gained four new cases: a
+dependency resolves and the built program runs correctly end-to-end
+(verified manually with `dotnet exec`); an unbuilt dependency fails loud;
+a bare-`[package]`-only manifest produces byte-identical output to no
+manifest at all (byte-for-byte, not just length); plus the two pre-existing
+colocation cases continue to pass. Manual end-to-end verification also
+covered: `lyric build sub/dir/foo.l` from an unrelated cwd resolving
+`sub/dir/lyric.toml` (not any manifest at the cwd); the JVM target's
+classpath-injection wiring; and `lyric run`'s free extension.
+
+**Docs:** `docs/01-language-reference.md` §13.1 ("Single-file dependency
+resolution"), `docs/20-project-as-dll.md` §1 (cross-reference to the
+reused `emitProject` pipeline), `docs/03-decision-log.md` D123 (full
+design rationale).
+
+**Related:** D123, docs/20-project-as-dll.md.

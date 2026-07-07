@@ -110,16 +110,13 @@ func cmdProve(argv: in slice[String]): Int {
       printErr("prove: --explain requires a source file")
       return 1
     }
-    val mfPath = match discoverManifest(manifestArg) {
-      case Some(p) -> p
-      case None -> {
+    val sourcePaths = match resolveProjectSources(manifestArg) {
+      case ProjSourcesMissingManifest -> {
         printErr("prove: missing source file and no lyric.toml found")
         return 1
       }
-    }
-    val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
-    if hadFatal {
-      return 1
+      case ProjSourcesFatal -> return 1
+      case ProjSourcesFound(_, paths) -> paths
     }
     if sourcePaths.count == 0 {
       printErr("prove: no source files found in project")

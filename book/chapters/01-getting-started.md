@@ -112,6 +112,8 @@ dotnet hello.dll           # run the produced assembly
 
 `lyric build` is incremental: if neither the source nor the standard library has changed since the last build, it is a no-op. Pass `--force` to rebuild unconditionally.
 
+A single file compiled directly (not listed in any project's `[project.packages]`) can still see a `lyric.toml`'s dependencies: `lyric build` discovers the nearest manifest by walking up from **the source file's own directory** and, if it declares any `[dependencies]`/`[nuget]`/`[maven]`/`[features]`, resolves them the same way a project build would. There is nothing to configure — it is a no-op when no manifest is nearby, or one is found but has nothing to contribute.
+
 A project can produce a directly-runnable launcher instead of a bare `.dll` by setting `kind = "exe"` in its `lyric.toml`:
 
 ```toml

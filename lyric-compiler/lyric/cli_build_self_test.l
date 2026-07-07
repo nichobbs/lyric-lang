@@ -100,7 +100,10 @@ test "releaseFromDllIgnoredArgsWarning: multiple positional args are comma-joine
 test "releaseFromDllIgnoredArgsWarning: empty list yields a warning with no filenames" {
   val positional: List[String] = newList()
   val msg = Cli.releaseFromDllIgnoredArgsWarning(positional)
-  assertTrue(Str.contains(msg, "--release-from-dll"), "warning still names the flag with no positional args, got: " + msg)
+  assertTrue(
+    Str.contains(msg, "--release-from-dll"),
+    "warning still names the flag with no positional args, got: " + msg
+  )
 }
 
 // ─── filterExtraRefsDlls (#4282) ─────────────────────────────────────────
@@ -162,7 +165,9 @@ func writeFileOrPanic(path: in String, content: in String): Unit {
 
 test "buildOneNative: a runnable program (declares main) colocates Lyric.Stdlib.dll beside the output" {
   val dir = freshTempDir("exe")
-  defer { cleanup(dir) }
+  defer {
+    cleanup(dir)
+  }
   val srcPath = Path.join(dir, "hello.l")
   writeFileOrPanic(srcPath, "package ExeColocationFixture\n\nfunc main(): Unit {\n  println(1)\n}\n")
   val outPath = Path.join(dir, "hello.dll")
@@ -178,7 +183,9 @@ test "buildOneNative: a runnable program (declares main) colocates Lyric.Stdlib.
 
 test "buildOneNative: a library (no main) does NOT colocate Lyric.Stdlib.dll beside the output" {
   val dir = freshTempDir("lib")
-  defer { cleanup(dir) }
+  defer {
+    cleanup(dir)
+  }
   val srcPath = Path.join(dir, "lib.l")
   writeFileOrPanic(srcPath, "package LibColocationFixture\n\npub func helper(): Int {\n  1\n}\n")
   val outPath = Path.join(dir, "lib.dll")
@@ -189,5 +196,266 @@ test "buildOneNative: a library (no main) does NOT colocate Lyric.Stdlib.dll bes
   assertTrue(
     not File.fileExists(Path.join(dir, "Lyric.Stdlib.dll")),
     "buildOneNative: a library build must not colocate Lyric.Stdlib.dll (would clobber a stdlib self-build)"
+  )
+}
+
+// ─── single-file + nearby-manifest dependency resolution (D123) ────────
+// Exercises `buildOneNative` auto-discovering a lyric.toml near a loose .l
+// file — one that is compiled directly (`lyric build thatfile.l`), NOT via
+// that manifest's `[project.packages]` — and resolving a `path = "..."`
+// dependency declared there.  The dependency's DLL is produced with a
+// direct `buildOneNative` call (mirroring how a real `lyric build
+// --manifest dep/lyric.toml` populates `dep/bin/<Name>.dll`) rather than
+// pulling in the full project-manifest machinery, keeping the fixture
+// self-contained.
+func writeManifestOrPanic(path: in String, content: in String): Unit {
+  writeFileOrPanic(path, content)
+}
+
+func bytesEqual(a: in List[Byte], b: in List[Byte]): Bool {
+  if a.count != b.count {
+    return false
+  }
+  var i = 0
+  while i < a.count {
+    if a[i] != b[i] {
+      return false
+    }
+    i += 1
+  }
+  true
+}
+
+test "buildOneNative: single-file build near a manifest resolves an already-built path dependency" {
+  val depDir = freshTempDir("dep")
+  defer {
+    cleanup(depDir)
+  }
+  // `resolveManifestDependencies` requires the dependency directory to have
+  // its own lyric.toml (to read its output-assembly name) even though this
+  // fixture builds the DLL directly via `buildOneNative` rather than
+  // `buildProject` — matching what a real `lyric build --manifest
+  // dep/lyric.toml` would leave behind.
+  writeManifestOrPanic(
+    Path.join(depDir, "lyric.toml"),
+    "[package]\n" + "name = \"DepSf\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" + "name = \"DepSfProj\"\n" +
+      "output_assembly = \"DepSf.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"DepSf\" = \"dep.l\"\n"
+  )
+  val depSrcPath = Path.join(depDir, "dep.l")
+  writeFileOrPanic(depSrcPath, "package DepSf\n\npub func greet(name: String): String {\n  \"hi \" + name\n}\n")
+  val depDllPath = Path.join(Path.join(depDir, "bin"), "DepSf.dll")
+  val depExit = Cli.buildOneNative(depSrcPath, depDllPath, Emitter.Dotnet, None, "", "")
+  assertEqualInt(depExit, 0, "fixture dependency compiles cleanly")
+  assertTrue(File.fileExists(depDllPath), "fixture dependency DLL exists at the expected bin/ path")
+
+  val appDir = freshTempDir("app")
+  defer {
+    cleanup(appDir)
+  }
+  writeManifestOrPanic(
+    Path.join(appDir, "lyric.toml"),
+    "[package]\n" + "name = \"AppSf\"\n" + "version = \"0.1.0\"\n" + "\n" + "[dependencies]\n" + "DepSf = { path = \"" +
+      depDir +
+      "\" }\n"
+  )
+  val looseSrcPath = Path.join(appDir, "loose.l")
+  writeFileOrPanic(
+    looseSrcPath,
+    "package AppSf.Loose\n\nimport DepSf\n\npub func run(): String {\n  greet(\"world\")\n}\n"
+  )
+  val outPath = Path.join(appDir, "loose.dll")
+
+  // manifestPath = None: this is the auto-discovery path, not an explicit
+  // --manifest — `loose.l` is never listed in any `[project.packages]`.
+  val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Dotnet, None, "", "")
+  assertEqualInt(exitCode, 0, "single-file build resolves the nearby manifest's path dependency")
+  assertTrue(File.fileExists(outPath), "output DLL is produced")
+}
+
+test "buildOneNative: single-file build near a manifest fails loudly on an unbuilt path dependency" {
+  val depDir = freshTempDir("dep-unbuilt")
+  defer {
+    cleanup(depDir)
+  }
+  // The dependency is a well-formed, buildable package (it has its own
+  // lyric.toml) — it has just never been built, so no bin/DepSfb.dll
+  // exists yet.  This exercises `Release.localDepNotBuiltMessage`'s branch
+  // specifically, distinct from the "no lyric.toml at all" branch.
+  writeManifestOrPanic(
+    Path.join(depDir, "lyric.toml"),
+    "[package]\n" + "name = \"DepSfb\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" + "name = \"DepSfbProj\"\n" +
+      "output_assembly = \"DepSfb.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"DepSfb\" = \"dep.l\"\n"
+  )
+  val depSrcPath = Path.join(depDir, "dep.l")
+  writeFileOrPanic(depSrcPath, "package DepSfb\n\npub func greet(name: String): String {\n  \"hi \" + name\n}\n")
+
+  val appDir = freshTempDir("app-unbuilt")
+  defer {
+    cleanup(appDir)
+  }
+  writeManifestOrPanic(
+    Path.join(appDir, "lyric.toml"),
+    "[package]\n" + "name = \"AppSfb\"\n" + "version = \"0.1.0\"\n" + "\n" + "[dependencies]\n" + "DepSfb = { path = \"" +
+      depDir +
+      "\" }\n"
+  )
+  val looseSrcPath = Path.join(appDir, "loose.l")
+  writeFileOrPanic(
+    looseSrcPath,
+    "package AppSfb.Loose\n\nimport DepSfb\n\npub func run(): String {\n  greet(\"world\")\n}\n"
+  )
+  val outPath = Path.join(appDir, "loose.dll")
+
+  val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Dotnet, None, "", "")
+  assertTrue(exitCode != 0, "single-file build fails loudly instead of silently ignoring the unbuilt dependency")
+}
+
+// Regression for a review finding on this PR: `emitSingleFileOrProject`
+// originally checked `resolvedDeps.hadUnbuiltLocalDep` but never
+// `resolvedDeps.hadWorkspaceError`, so a manifest declaring a broken
+// `{ workspace = true }` dependency (unlike a `path` dependency, this
+// resolves purely from the workspace member index — no DLL-existence
+// check) fell through to a silent, dependency-less compile instead of
+// failing loud like `buildProject` already does for the same condition.
+// `MissingMember` is deliberately never a workspace member, so
+// `Ws.resolveDep` returns `None` and `buildWorkspaceDeps` reports
+// `hadError = true` purely from manifest resolution — no real package
+// build is attempted, keeping this deterministic and fast.
+test "buildOneNative: single-file build near a manifest fails loudly on a broken workspace dependency" {
+  val wsRoot = freshTempDir("ws-broken")
+  defer {
+    cleanup(wsRoot)
+  }
+  writeManifestOrPanic(Path.join(wsRoot, "lyric.toml"), "[workspace]\n")
+
+  val appDir = Path.join(wsRoot, "app")
+  match File.createDir(appDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create app dir " + appDir + ": " + IOError.message(e))
+  }
+  writeManifestOrPanic(
+    Path.join(appDir, "lyric.toml"),
+    "[package]\n" + "name = \"AppSfWs\"\n" + "version = \"0.1.0\"\n" + "\n" + "[dependencies]\n" +
+      "MissingMember = { workspace = true }\n"
+  )
+  val looseSrcPath = Path.join(appDir, "loose.l")
+  writeFileOrPanic(looseSrcPath, "package AppSfWs.Loose\n\npub func run(): Int {\n  1\n}\n")
+  val outPath = Path.join(appDir, "loose.dll")
+
+  val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Dotnet, None, "", "")
+  assertTrue(
+    exitCode != 0,
+    "single-file build fails loudly on a broken workspace dependency instead of silently compiling without it"
+  )
+}
+
+// Regression for a second review finding on this PR: the "malformed
+// lyric.toml" and "cannot read lyric.toml" branches for a `path = "..."`
+// dependency printed an error but never set `hadUnbuiltLocalDep`, unlike
+// their sibling "no lyric.toml found" / "DLL not built" branches a few
+// lines away — the same silent-swallow shape as the workspace-error bug
+// above, just in different branches of the same function.
+test "buildOneNative: single-file build near a manifest fails loudly on a malformed dependency manifest" {
+  val depDir = freshTempDir("dep-malformed")
+  defer {
+    cleanup(depDir)
+  }
+  // Deliberately broken TOML: an inline table missing its closing brace.
+  writeManifestOrPanic(Path.join(depDir, "lyric.toml"), "[package]\nname = \"DepSfMalformed\n")
+
+  val appDir = freshTempDir("app-malformed")
+  defer {
+    cleanup(appDir)
+  }
+  writeManifestOrPanic(
+    Path.join(appDir, "lyric.toml"),
+    "[package]\n" + "name = \"AppSfMalformed\"\n" + "version = \"0.1.0\"\n" + "\n" + "[dependencies]\n" +
+      "DepSfMalformed = { path = \"" +
+      depDir +
+      "\" }\n"
+  )
+  val looseSrcPath = Path.join(appDir, "loose.l")
+  writeFileOrPanic(looseSrcPath, "package AppSfMalformed.Loose\n\npub func run(): Int {\n  1\n}\n")
+  val outPath = Path.join(appDir, "loose.dll")
+
+  val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Dotnet, None, "", "")
+  assertTrue(
+    exitCode != 0,
+    "single-file build fails loudly on a malformed dependency manifest instead of silently compiling without it"
+  )
+}
+
+// Exercises the JVM branch of `emitSingleFileOrProject`: a manifest
+// declaring `[maven]` entries (but no `[dependencies]`) is itself enough to
+// flip `hasContribution` to true via `jvmNeedsMaven`, routing the compile
+// through the synthetic project path and `injectMavenClasspathForJvm` on
+// `--target jvm` — a code path none of the other new cases exercise since
+// they all use `Emitter.Dotnet`. Deliberately does NOT declare a real
+// restored Maven JAR (no `target/restore/jvm-classpath.txt`): the source
+// itself uses no Java FFI types, so the build only needs to prove the
+// routing/injection fires without error, not resolve a real classpath —
+// `injectMavenClasspathForJvm` degrades to an empty classpath and a
+// stderr note when the restore file is absent, not a failure.
+test "buildOneNative: a manifest with [maven] entries near a single file compiles on --target jvm" {
+  val appDir = freshTempDir("app-jvm-maven")
+  defer {
+    cleanup(appDir)
+  }
+  writeManifestOrPanic(
+    Path.join(appDir, "lyric.toml"),
+    "[package]\n" + "name = \"AppSfJvmMaven\"\n" + "version = \"0.1.0\"\n" + "\n" + "[maven]\n" +
+      "\"io.undertow:undertow-core\" = \"2.3.13.Final\"\n"
+  )
+  val looseSrcPath = Path.join(appDir, "loose.l")
+  writeFileOrPanic(looseSrcPath, "package AppSfJvmMaven.Loose\n\npub func run(): Int {\n  1\n}\n")
+  val outPath = Path.join(appDir, "loose.jar")
+
+  val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Jvm, None, "", "")
+  assertEqualInt(exitCode, 0, "single-file JVM build with [maven]-only manifest compiles cleanly")
+  assertTrue(File.fileExists(outPath), "single-file JVM build produces the output JAR")
+}
+
+test "buildOneNative: a manifest with no dependencies/features near a single file is byte-identical to no manifest" {
+  val noManifestDir = freshTempDir("nomanifest")
+  defer {
+    cleanup(noManifestDir)
+  }
+  val srcA = Path.join(noManifestDir, "plain.l")
+  writeFileOrPanic(srcA, "package PlainSf\n\nfunc main(): Unit {\n  println(1)\n}\n")
+  val outA = Path.join(noManifestDir, "plain.dll")
+  val exitA = Cli.buildOneNative(srcA, outA, Emitter.Dotnet, None, "", "")
+  assertEqualInt(exitA, 0, "no-manifest fixture compiles cleanly")
+
+  val bareManifestDir = freshTempDir("baremanifest")
+  defer {
+    cleanup(bareManifestDir)
+  }
+  writeManifestOrPanic(
+    Path.join(bareManifestDir, "lyric.toml"),
+    "[package]\n" + "name = \"BareManifestSf\"\n" + "version = \"0.1.0\"\n"
+  )
+  val srcB = Path.join(bareManifestDir, "plain.l")
+  writeFileOrPanic(srcB, "package PlainSf\n\nfunc main(): Unit {\n  println(1)\n}\n")
+  val outB = Path.join(bareManifestDir, "plain.dll")
+  val exitB = Cli.buildOneNative(srcB, outB, Emitter.Dotnet, None, "", "")
+  assertEqualInt(exitB, 0, "bare-manifest fixture compiles cleanly")
+
+  val bytesA = match File.readBytes(outA) {
+    case Ok(b) -> b
+    case Err(e) -> panic("cannot read " + outA + ": " + IOError.message(e))
+  }
+  val bytesB = match File.readBytes(outB) {
+    case Ok(b) -> b
+    case Err(e) -> panic("cannot read " + outB + ": " + IOError.message(e))
+  }
+  assertTrue(
+    bytesEqual(bytesA, bytesB),
+    "a manifest with nothing dependency/feature-relevant does not change the compiled output (byte-for-byte)"
   )
 }

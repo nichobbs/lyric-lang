@@ -14,6 +14,7 @@ import Std.Hash as Hash
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Workspace as Ws
+import Lyric.Discovery as Disc
 import Lyric.Release as Release
 import Lyric.Generator as Generator
 import Lyric.Emitter as Emitter
@@ -114,6 +115,183 @@ pub func filterExtraRefsDlls(files: in List[String], dllBase: in String): List[S
   result
 }
 
+// The parsed manifest driving a single-file build's dependency resolution,
+// alongside the raw path/text `resolveManifestFeatures` also needs (feature
+// resolution scans the raw TOML text directly rather than the parsed
+// `Manifest` — see `Mf.readFeatureDefaultsFromToml`).
+record LoadedManifest {
+  manifest: Manifest
+  mfPath: String
+  mfText: String
+}
+
+// The result of `emitSingleFileOrProject`: the emit outcome plus whatever
+// restored-dependency / third-party-NuGet DLL paths it resolved (empty when
+// no manifest contributed anything).  `buildOneNative` needs these back so
+// its existing stdlib-colocation step can ALSO colocate the newly-resolved
+// dependency DLLs beside a runnable program's output — otherwise a program
+// that now compiles against a workspace/path dependency would fail at
+// `dotnet exec` time with a missing-assembly error (D123).
+record NonNativeEmitOutcome {
+  emitResult: EmitResult
+  restoredDlls: List[String]
+  nugetThirdPartyPaths: List[String]
+}
+
+// Discover the nearest lyric.toml for a SINGLE-FILE build by walking up from
+// the source file's OWN directory — deliberately NOT
+// `Environment.currentDirectory()` (the convention `discoverManifest` / the
+// project-mode commands use).  `lyric build sub/dir/foo.l` must find a
+// lyric.toml relative to `foo.l`'s own location, matching what a project
+// rooted at `sub/dir/` would see, regardless of where the invoking shell's
+// cwd happens to be.  `sourcePath` is absolutized first: a bare relative
+// filename like "foo.l" has `Path.dirname` == "." and walking up from "."
+// alone can never leave the cwd, so resolving against
+// `Environment.currentDirectory()` first is required for the walk to reach
+// any parent directory at all (D123).
+func discoverManifestForSourceFile(sourcePath: in String): Option[String] {
+  val absSource = if Path.isAbsolute(sourcePath) {
+    sourcePath
+  } else {
+    Path.join(Environment.currentDirectory(), sourcePath)
+  }
+  Disc.findNearestManifest(Path.dirname(absSource))
+}
+
+// Load + parse the manifest that should drive a single-file build's
+// dependency resolution.  Mirrors `resolveNativeConfig`'s explicit-vs-
+// discovered asymmetry (#4863): an EXPLICIT `--manifest` that fails to read
+// or parse is a loud `Err` (the user pointed at this file on purpose); a
+// manifest found by walking up from the source file's own directory
+// degrades silently to `Ok(None)` on any read/parse failure (or when none is
+// found at all), so an unrelated malformed lyric.toml elsewhere in the tree
+// never blocks an otherwise-independent single-file build.
+func loadManifestForSingleFileBuild(
+  sourcePath: in String, explicitManifest: in Option[String]
+): Result[Option[LoadedManifest], String] {
+  val noneLm: Option[LoadedManifest] = None
+  match explicitManifest {
+    case Some(p) -> match File.readText(p) { case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e)); case Ok(mfText) -> match Mf.parseManifest(mfText, p) { case Err(me) -> Err(error = "build: " + ManifestError.message(me)); case Ok(m) -> Ok(value = Some(value = LoadedManifest(manifest = m, mfPath = p, mfText = mfText))) } }
+    case None -> match discoverManifestForSourceFile(sourcePath) { case None -> Ok(value = noneLm); case Some(mf) -> match File.readText(mf) { case Err(_) -> Ok(value = noneLm); case Ok(mfText) -> match Mf.parseManifest(mfText, mf) { case Err(_) -> Ok(value = noneLm); case Ok(m) -> Ok(value = Some(value = LoadedManifest(manifest = m, mfPath = mf, mfText = mfText))) } } }
+  }
+}
+
+func noContributionOutcome(req: in EmitRequest): NonNativeEmitOutcome {
+  NonNativeEmitOutcome(emitResult = Emitter.emit(req), restoredDlls = newList(), nugetThirdPartyPaths = newList())
+}
+
+func failedEmitOutcome(msg: in String): NonNativeEmitOutcome {
+  printErr(msg)
+  val noDiags: List[Diagnostic] = newList()
+  NonNativeEmitOutcome(
+    emitResult = EmitResult(outputPath = None, diagnostics = noDiags),
+    restoredDlls = newList(),
+    nugetThirdPartyPaths = newList()
+  )
+}
+
+// Non-native (Dotnet/Jvm) emit path for `buildOneNative`.  When the source
+// file sits near a lyric.toml — an explicit `--manifest`, or one discovered
+// by walking up from the source file's own directory
+// (`discoverManifestForSourceFile`) — that actually declares dependencies,
+// NuGet/Maven assets, or features, synthesizes a one-package
+// `EmitProjectRequest` and routes it through `Emitter.emitProject`: the same
+// dependency-resolution and bundling pipeline `buildProject` uses for a
+// manifest's `[project.packages]`, instead of the standalone `Emitter.emit`
+// path, which structurally cannot see anything outside `Std.*` (D123).
+//
+// Falls back to the historical `Emitter.emit(req)` path UNCHANGED whenever
+// there is nothing for the new pipeline to contribute: no manifest found at
+// all, or a manifest found but declaring nothing dependency/feature-relevant
+// — so the overwhelmingly common case (a standalone script, a stdlib
+// self-test, anything with no nearby lyric.toml) compiles byte-for-byte
+// identically to before.  This gate is deliberate, not incidental: routing
+// EVERY single-file compile through `emitProject` unconditionally was
+// measured (empirically, by diffing output bytes) to change the output even
+// with zero dependencies — the project bridge embeds its `Lyric.Contract`
+// resource as `Lyric.Contract.<pkg>` (the multi-package convention) rather
+// than single-file's bare `Lyric.Contract` — so the new path is only taken
+// when it is actually earning its keep.
+//
+// A dependency the manifest declares but that has not been built/restored
+// yet fails the build loudly (`hadUnbuiltLocalDep`) instead of silently
+// compiling without it: single-file mode never triggers an implicit
+// restore (a deliberate, conservative default — see the decision log).
+func emitSingleFileOrProject(
+  req: in EmitRequest, sourcePath: in String, manifestPath: in Option[String]
+): NonNativeEmitOutcome {
+  val loaded = match loadManifestForSingleFileBuild(sourcePath, manifestPath) {
+    case Err(msg) -> return failedEmitOutcome(msg)
+    case Ok(opt) -> opt
+  }
+  val lm = match loaded { case None -> return noContributionOutcome(req); case Some(l) -> l }
+
+  val emptyCliFeatures: List[String] = newList()
+  val (activeFeatures, declaredFeatures) = resolveManifestFeatures(lm.mfText, lm.mfPath, emptyCliFeatures, false, false)
+  val resolvedDeps = resolveManifestDependencies(lm.manifest, lm.mfPath, req.target)
+  if resolvedDeps.hadWorkspaceError {
+    return failedEmitOutcome(
+      sourcePath + ": build failed (workspace dependency declared in " + lm.mfPath + " failed to build; see above)"
+    )
+  }
+  if resolvedDeps.hadUnbuiltLocalDep {
+    return failedEmitOutcome(
+      sourcePath + ": build failed (unresolved dependency declared in " + lm.mfPath + "; see above)"
+    )
+  }
+
+  val hasMavenEntries = match lm.manifest.maven { case Some(m) -> m.entries.count > 0; case None -> false }
+  val jvmNeedsMaven = match req.target { case Jvm -> hasMavenEntries; case _ -> false }
+
+  val hasContribution = resolvedDeps.restoredDlls.count > 0 or resolvedDeps.nugetThirdPartyPaths.count > 0 or
+    activeFeatures.count > 0 or
+    declaredFeatures.count > 0 or
+    resolvedDeps.depTemplateSrcs.count > 0 or
+    jvmNeedsMaven
+
+  if not hasContribution {
+    return noContributionOutcome(req)
+  }
+
+  val pkgNameRaw = Release.packageNameOf(req.source)
+  val pkgName = if pkgNameRaw.length > 0 { pkgNameRaw } else { req.assemblyName }
+  val srcs: List[String] = newList()
+  srcs.add(req.source)
+  val pkgs: List[ProjectPackage] = newList()
+  pkgs.add(ProjectPackage(name = pkgName, sources = srcs))
+
+  val projReq = EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = req.assemblyName,
+    outputPath = req.outputPath,
+    target = req.target,
+    restoredDllPaths = resolvedDeps.restoredDlls,
+    activeFeatures = activeFeatures,
+    declaredFeatures = declaredFeatures,
+    packageVersion = req.packageVersion,
+    depTemplateSrcs = resolvedDeps.depTemplateSrcs,
+    nugetAssemblyPaths = resolvedDeps.nugetThirdPartyPaths
+  )
+
+  var mavenSaved: Option[String] = None
+  match req.target {
+    case Jvm -> {
+      val injection = injectMavenClasspathForJvm(Path.dirname(lm.mfPath), lm.manifest)
+      mavenSaved = injection.savedFfiJars
+    }
+    case _ -> ()
+  }
+
+  val emitResult = Emitter.emitProject(projReq)
+  restoreMavenClasspath(mavenSaved)
+
+  NonNativeEmitOutcome(
+    emitResult = emitResult,
+    restoredDlls = resolvedDeps.restoredDlls,
+    nugetThirdPartyPaths = resolvedDeps.nugetThirdPartyPaths
+  )
+}
+
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
@@ -197,7 +375,16 @@ pub func buildOneNative(
       case Ok(ncOpt) -> match ncOpt { case Some(nc) -> { if effTriple == "" { effTriple = nc.triple }; if effOpt == "" { effOpt = nc.optLevel }; for lib in nc.extraLibs { effLibs.add(lib) } }; case None -> () }
     }
   }
-  val result = if isNativeTarget { Emitter.emitNative(req, effTriple, effOpt, effLibs) } else { Emitter.emit(req) }
+  var resolvedRestoredDlls: List[String] = newList()
+  var resolvedNugetPaths: List[String] = newList()
+  val result = if isNativeTarget {
+    Emitter.emitNative(req, effTriple, effOpt, effLibs)
+  } else {
+    val outcome = emitSingleFileOrProject(req, sourcePath, manifestPath)
+    resolvedRestoredDlls = outcome.restoredDlls
+    resolvedNugetPaths = outcome.nugetThirdPartyPaths
+    outcome.emitResult
+  }
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {
@@ -239,13 +426,16 @@ pub func buildOneNative(
       // `lyric run`.  Libraries (no `main`) are left untouched: colocation there
       // is unnecessary and must never run for a stdlib self-build (which has no
       // `main` and would otherwise be clobbered by the seed bundle).
-      // Deliberately does NOT call copyRestoredDepDlls: buildOne is the
-      // single-file compile path and never resolves manifest dependencies to
-      // DLL paths (only buildProject does, via [project.packages] +
-      // [dependencies]).  If buildOne ever grows dep resolution using
-      // `manifestPath`, add a matching copyRestoredDepDlls call here (#4126).
+      // `emitSingleFileOrProject` (D123) resolves manifest dependencies to
+      // DLL paths when a nearby lyric.toml contributes any — colocate those
+      // beside the output exactly like `buildProject` does, so a runnable
+      // single-file program that now compiles against a workspace/path/NuGet
+      // dependency can also actually load it at `dotnet exec` time.  Empty
+      // lists (the common no-manifest case) make these calls no-ops.
       if Release.declaresEntryMain(source) {
         copyRuntimeDepsBeside(outPath, findCompiledLibDir())
+        copyRestoredDepDlls(outPath, resolvedRestoredDlls)
+        copyNugetAssembliesBeside(outPath, resolvedNugetPaths)
       }
     }
     case Jvm -> ()
@@ -961,37 +1151,18 @@ func buildProject(
   }
 
   // D045: resolve active feature set from manifest defaults + CLI flags.
-  // `getManifestFeaturesOrEmpty` returns the whole FeaturesSection record from
-  // the match arm (bootstrap-emitter-safe pattern); field access happens after
-  // the match, outside any match arm body.
-  // D045: resolve active feature set from manifest defaults + CLI flags.
-  // readFeatureDefaultsFromToml / readFeatureDeclaredFromToml bypass the
+  // `resolveManifestFeatures` (cli/workspace_builder.l, D123) bypasses the
   // Manifest.features field (which has a bootstrap-emitter match quirk when
-  // the field type is Option[FeaturesSection]) and scan the raw TOML text
-  // directly.  mfText was already read at the top of this function.
-  val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
-  val mfDeclared = Mf.readFeatureDeclaredFromToml(mfText, mfPath)
-  val activeFeatures: List[String] = newList()
-  if allFeatures {
-    var ai = 0
-    while ai < mfDeclared.count {
-      activeFeatures.add(mfDeclared[ai])
-      ai += 1
-    }
-  } else {
-    if not noDefaultFeatures {
-      var ai = 0
-      while ai < mfDefaults.count {
-        activeFeatures.add(mfDefaults[ai])
-        ai += 1
-      }
-    }
-    var ci = 0
-    while ci < cliFeatures.count {
-      activeFeatures.add(cliFeatures[ci])
-      ci += 1
-    }
-  }
+  // the field type is Option[FeaturesSection]) and scans the raw TOML text
+  // directly.  mfText was already read at the top of this function.  Shared
+  // with `buildOneNative`'s single-file synthetic project request.
+  val (activeFeatures, mfDeclared) = resolveManifestFeatures(
+    mfText,
+    mfPath,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures
+  )
 
   val mfDir = Path.dirname(mfPath)
   val buildKind = getBuildKind(manifest)
@@ -1146,136 +1317,21 @@ func buildProject(
     return 1
   }
 
-  // Resolve all dependencies (workspace and path) to DLL paths and collect their
-  // source packages for cross-package aspect template resolution (#3498).
-  // Format: "depName\tdllPath" — passed to emitter.l which writes "DEP\t..." lines.
-  val restoredDlls: List[String] = newList()
-  val depTemplatePkgsList: List[ProjectPackage] = newList()
-  val seenDeps: List[String] = newList()
-
-  // First, build all workspace dependencies (if we're in a workspace).
-  // buildWorkspaceDeps now expands transitive deps so allArts in emitProjectInProcess
-  // covers types from all reachable packages, preventing T0010 on cross-DLL types.
-  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, target)
-  if wsHadError {
+  // Resolve all dependencies (workspace, path, and NuGet-as-Lyric-package) to
+  // DLL paths and collect their source packages for cross-package aspect
+  // template resolution (#3498).  `resolveManifestDependencies`
+  // (cli/workspace_builder.l, D123) is shared with `buildOneNative`'s
+  // single-file synthetic project request — see its doc comment for the
+  // workspace-error-vs-unbuilt-local-dep distinction this function preserves
+  // verbatim (a workspace failure has always been an immediate `return 1`
+  // here; an unbuilt local `path` dep has always been a non-fatal warning).
+  val resolved = resolveManifestDependencies(manifest, mfPath, target)
+  if resolved.hadWorkspaceError {
     return 1
   }
-  var wdi = 0
-  while wdi < wsDepDlls.count {
-    val wsEntry = wsDepDlls[wdi]
-    restoredDlls.add(wsEntry)
-    val wsTab = wsEntry.indexOf("\t")
-    val wsName = if wsTab >= 0 { wsEntry.substring(0, wsTab) } else { wsEntry }
-    seenDeps.add(wsName)
-    wdi += 1
-  }
-
-  // Then, resolve path dependencies (for backwards compat with non-workspace projects).
-  var di = 0
-  while di < manifest.deps.count {
-    val dep = manifest.deps[di]
-    match dep.source {
-      case Path(dir) -> {
-        val depDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
-        val depToml = Path.join(depDir, "lyric.toml")
-        val depBinDir = Path.join(depDir, "bin")
-        if File.fileExists(depToml) {
-          match File.readText(depToml) {
-            case Ok(depMfText) -> {
-              match Mf.parseManifest(depMfText, depToml) {
-                case Ok(depMf) -> {
-                  val dllName = match depMf.project {
-                    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
-                    case None -> depMf.packageSection.name + ".dll"
-                  }
-                  val dllPath = Path.join(depBinDir, dllName)
-                  if File.fileExists(dllPath) {
-                    if not stringListContains(seenDeps, dep.name) {
-                      restoredDlls.add(dep.name + "\t" + dllPath)
-                      seenDeps.add(dep.name)
-                      collectTransitiveDepDlls(depDir, wsCtxOpt, seenDeps, restoredDlls)
-                    }
-                  } else {
-                    printErr("build: " + Release.localDepNotBuiltMessage(dep.name, dllPath, depToml))
-                  }
-                  // Collect source files from this path dependency so the weaver can
-                  // resolve cross-package `from`-instance aspect templates (#3498).
-                  match depMf.project {
-                    case Some(proj) -> {
-                      var pki = 0
-                      while pki < proj.packages.count {
-                        val pkgEntry = proj.packages[pki]
-                        val srcList: List[String] = newList()
-                        if pkgEntry.paths.count > 0 {
-                          // Explicit file list from dep's TOML array entry.
-                          var fi = 0
-                          while fi < pkgEntry.paths.count {
-                            val srcPath = Path.join(depDir, pkgEntry.paths[fi])
-                            match File.readText(srcPath) {
-                              case Ok(srcText) -> srcList.add(srcText)
-                              case Err(e) -> {
-                                printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
-                              }
-                            }
-                            fi += 1
-                          }
-                        } else {
-                          val srcPath = Path.join(depDir, pkgEntry.path)
-                          match File.readText(srcPath) {
-                            case Ok(srcText) -> srcList.add(srcText)
-                            case Err(e) -> {
-                              printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
-                            }
-                          }
-                        }
-                        if srcList.count > 0 {
-                          depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList))
-                        }
-                        pki += 1
-                      }
-                    }
-                    case None -> ()
-                  }
-                }
-                case Err(e) -> {
-                  printErr("build: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
-                }
-              }
-            }
-            case Err(e) -> {
-              printErr("build: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
-            }
-          }
-        } else {
-          printErr(
-            "build: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml +
-              "'; check the path = \"...\" entry in your lyric.toml"
-          )
-        }
-      }
-      case Mf.DepSource.Workspace(_) -> {
-        // Workspace dependencies should have been handled above by buildWorkspaceDeps.
-        // If we reach here, it means buildWorkspaceDeps didn't find it, which
-        // already printed an error.
-        ()
-      }
-      case _ -> ()
-    }
-    di += 1
-  }
-
-  val nugetPaths = resolveNugetAssets(mfDir)
-  warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
-  // A `[nuget]` dependency may itself be a Lyric package (e.g. `Lyric.Web`),
-  // not just a third-party .NET library — route its contract through the
-  // same restored-dep path a workspace/path dependency uses instead of
-  // leaving it to the auto-FFI metadata guess (#5004).
-  val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
-  var nli = 0
-  while nli < nugetLyricEntries.count {
-    restoredDlls.add(nugetLyricEntries[nli])
-    nli += 1
-  }
+  val restoredDlls = resolved.restoredDlls
+  val depTemplatePkgsList = resolved.depTemplateSrcs
+  val nugetThirdPartyPaths = resolved.nugetThirdPartyPaths
 
   val asmName = stemOf(Path.basename(outPath), 4)
   val projReq = EmitProjectRequest(
@@ -1295,9 +1351,12 @@ func buildProject(
   )
 
   // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM
-  // auto-FFI resolver can locate downloaded Maven JARs at compile time.
-  // The `:` separator is the POSIX path-list separator; Windows drive-letter
-  // ambiguity is a known gap tracked in #2214 (both sides fixed together).
+  // auto-FFI resolver can locate downloaded Maven JARs at compile time, via
+  // the shared `injectMavenClasspathForJvm` (cli/workspace_builder.l,
+  // D123) — also used by `buildOneNative`'s single-file synthetic project
+  // request.  The `:` separator is the POSIX path-list separator; Windows
+  // drive-letter ambiguity is a known gap tracked in #2214 (both sides
+  // fixed together).
   //
   // The original LYRIC_FFI_JARS value is restored immediately after emitProject
   // returns so that multi-package builds do not accumulate stale entries (#3554).
@@ -1313,41 +1372,9 @@ func buildProject(
       return 1
     }
     case Jvm -> {
-      val classpathFile = Path.join(Path.join(Path.join(mfDir, "target"), "restore"), "jvm-classpath.txt")
-      match File.readText(classpathFile) {
-        case Ok(text) -> {
-          val trimmed = Str.trim(text)
-          if trimmed.length > 0 {
-            val lines = Str.split(trimmed, "\n")
-            var li = 0
-            while li < lines.length {
-              val line = Str.trim(lines[li])
-              if line.length > 0 {
-                if mavenJarColonSep.length > 0 {
-                  mavenJarColonSep = mavenJarColonSep + ":"
-                }
-                mavenJarColonSep = mavenJarColonSep + line
-              }
-              li += 1
-            }
-          }
-        }
-        case Err(_) -> {
-          val hasMaven = match manifest.maven { case Some(m) -> m.entries.count > 0; case None -> false }
-          if hasMaven {
-            printErr(
-              "build: note: target/restore/jvm-classpath.txt not found; Maven JARs will not be available to the JVM emitter"
-            )
-            printErr("  run `lyric restore` first to download Maven dependencies")
-          }
-        }
-      }
-      if mavenJarColonSep.length > 0 {
-        val prevFfi = match Environment.getVar("LYRIC_FFI_JARS") { case Ok(v) -> v; case Err(_) -> "" }
-        savedFfiJars = Some(value = prevFfi)
-        val injected = if prevFfi.length > 0 { prevFfi + ":" + mavenJarColonSep } else { mavenJarColonSep }
-        Environment.setVar("LYRIC_FFI_JARS", injected)
-      }
+      val injection = injectMavenClasspathForJvm(mfDir, manifest)
+      mavenJarColonSep = injection.classpathColonSep
+      savedFfiJars = injection.savedFfiJars
     }
     case Dotnet -> ()
   }
@@ -1356,10 +1383,7 @@ func buildProject(
 
   // Restore LYRIC_FFI_JARS immediately — before any early return — so
   // subsequent buildProject calls in the same process start clean (#3554).
-  match savedFfiJars {
-    case Some(prev) -> Environment.setVar("LYRIC_FFI_JARS", prev)
-    case None -> ()
-  }
+  restoreMavenClasspath(savedFfiJars)
 
   var hadError = false
   for d in result.diagnostics.toArray() {

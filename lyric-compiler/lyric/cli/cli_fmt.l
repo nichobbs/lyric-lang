@@ -257,17 +257,14 @@ func cmdFmt(argv: in slice[String]): Int {
   // Project-mode: no explicit source file — discover or use --manifest.
   // Project-mode: default is dry-run (lists what would change); --write applies changes; --check gates CI.
   if positional.count == 0 {
-    val mfPath = match discoverManifest(manifestArg) {
-      case Some(p) -> p
-      case None -> {
+    val sourcePaths = match resolveProjectSources(manifestArg) {
+      case ProjSourcesMissingManifest -> {
         printErr("fmt: missing source file and no lyric.toml found")
         printUsage()
         return 1
       }
-    }
-    val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
-    if hadFatal {
-      return 1
+      case ProjSourcesFatal -> return 1
+      case ProjSourcesFound(_, paths) -> paths
     }
     if sourcePaths.count == 0 {
       printErr("fmt: no source files found in project")
