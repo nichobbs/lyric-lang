@@ -25,20 +25,28 @@
 //!     return health
 //!   }
 //!
-//!   // Web routes are name-based, so expose the endpoints as ordinary
-//!   // handlers in your own package and register them with addGet:
-//!   pub func healthLive(): Result[String, String] {
-//!     return Health.runLiveness(buildHealth())
+//!   // Web.Route handlers are (Web.Request) -> Web.Response; wrap the
+//!   // Result[String, String] runLiveness/runReadiness return in a thin
+//!   // adapter and register the adapter directly (a function reference,
+//!   // no name-based dispatch):
+//!   pub func healthLive(req: in Web.Request): Web.Response {
+//!     match Health.runLiveness(buildHealth()) {
+//!       case Ok(body) -> Web.json(200, body)
+//!       case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
+//!     }
 //!   }
 //!
-//!   pub func healthReady(): Result[String, String] {
-//!     return Health.runReadiness(buildHealth())
+//!   pub func healthReady(req: in Web.Request): Web.Response {
+//!     match Health.runReadiness(buildHealth()) {
+//!       case Ok(body) -> Web.json(200, body)
+//!       case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
+//!     }
 //!   }
 //!
 //!   func main(): Unit {
 //!     var router = Web.create()
-//!     router = addGet(router, "/health/live", "MyService.healthLive")
-//!     router = addGet(router, "/health/ready", "MyService.healthReady")
+//!     router = Web.addGet(router, "/health/live", healthLive)
+//!     router = Web.addGet(router, "/health/ready", healthReady)
 //!     Web.start(router)
 //!   }
 //!

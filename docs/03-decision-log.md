@@ -11467,6 +11467,232 @@ why #5320 is instead verified directly against `_kernel_jvm/task.l` (see
 above).
 
 ---
+
+## D124 — `lyric-web` gets real HTTP dispatch, static file serving, and a middleware pipeline (CORS included); `Handler`/`Middleware` are interfaces, not closures, after discovering closures are unreliable across 2+ packages
+
+**Date:** 2026-07-07
+
+### Context
+
+`Web.serve()` (`lyric-web/src/web.l`) accepted a fully-populated `Router` —
+routes registered by method, URL pattern, and a `handlerName: String`
+meant to be resolved "via DLL reflection at server startup" per D054 —
+but that dispatcher was never implemented. Every request, regardless of
+method or path, got the same hardcoded JSON payload describing the
+registered routes. `lyric-web`'s own module doc already flagged this
+("the end-to-end pipeline... has not been exercised against a live HTTP
+client in CI"); `docs/57`'s ecosystem audit independently found the same
+gap. There was also no static file serving and no middleware pipeline
+(CORS config was parsed from the environment and silently never applied).
+
+D099 already fixed the identical bug shape for `lyric-health`
+(`HealthCheck.handlerName: String` → `handler: () -> CheckStatus`,
+rejecting the DLL-reflection design outright as AOT-hostile and contrary
+to this project's direction away from runtime reflection — D006) but
+explicitly left `lyric-web`'s own router unfixed: "the web router is
+name-based, so a registry value cannot reach a name-resolved handler."
+This entry is that fix, plus the static-file and middleware pipeline the
+user asked to see built on top of it, plus the docs/58 wire-template
+integration for composing them.
+
+### Decision 1 — real dispatch: `Request`/`Response`/`Handler`, pure `Web.dispatch`, `Std.HttpServer`-backed `Web.serve`
+
+`Web.Router`/`Web.Route` gain `Request` (method, path, `pathParams`,
+`queryParams`, `headers: Map[String,String]`, `body: String`),
+`Response` (status, contentType, `bodyBytes: slice[Byte]`,
+`headers: Map[String,String]`), and route handlers move from
+`handlerName: String` to a `Handler` value (see Decision 4 for why this
+ended up as an interface, not the originally-planned closure).
+`Web.dispatch(router, req): Response` is a **pure** function — method +
+`{name}`/`{*name}` path-pattern matching (segment-by-segment, with a
+trailing `{*name}` capturing the remainder including further `/`),
+path/query percent-decoding, case-insensitive header lookup, then
+middleware composition (Decision 3) around the matched route's handler,
+falling back to a 404 `ApiError` JSON body when nothing matches. `Web.serve`
+is a thin I/O shell around `dispatch`, built on `Std.HttpServer`
+(`lyric-stdlib/std/_kernel/http_server.l`, already proven end-to-end in CI
+via `examples/rest_service.l`'s live-socket smoke test) rather than
+reinventing `HttpListener` bindings inside `lyric-web` itself. `Std.HttpServer`
+gained `requestQuery`, `requestHeaders`, `urlDecode`, `respondBytes`,
+`respondBytesWithHeaders` (dotnet-only additions; the JVM twin routes
+through an out-of-repo prebuilt JAR and doesn't yet expose these — a
+pre-existing Phase-6 gap, not one this entry introduces).
+
+There is no automatic request-body deserialization or
+path/query-parameter-to-handler-argument binding (the "flat typed
+parameters" D054 envisioned) — implementing that would require either
+runtime reflection (rejected outright by D006/D099) or a source-generator
+pass this project doesn't have. Handlers read `req.body`/`pathParam`/
+`queryParam`/`header` explicitly instead; aspect-guarded business logic
+keeps its original parameter shape (the aspect's row-constraint reads a
+named parameter like `authToken: in String`) and a thin `Handler` wraps
+it — see `examples/ledger|rbac|jobqueue`'s `Api.l` files for the pattern
+this entry established.
+
+### Decision 2 — static file serving: `Web.StaticFiles` config template, canonical-path traversal guard, multi-mount support
+
+`pub config StaticFiles { root, mountPrefix, cacheControlSeconds,
+fallbackToIndex }` — a docs/58 config template (D121), instantiable
+directly (`Web.withStaticFiles(router, Web.StaticFiles(...))`) or via
+`config Assets from Web.StaticFiles { ... }` in a `wire` graph. Multiple
+mounts are just multiple `withStaticFiles` calls with different
+`mountPrefix`/`root` pairs — no new mechanism needed. Path traversal is
+rejected by resolving the candidate path to its canonical absolute form
+via `Path.GetFullPath` and requiring it fall within the canonically
+resolved root (plus a null-byte reject) — not a substring check on the
+raw request path, which an encoding trick could evade; a request that
+resolves to no file falls through to the rest of the pipeline (routes,
+then 404) rather than answering directly, so static files can be mounted
+before or after API routes freely.
+
+### Decision 3 — middleware pipeline: `Web.Middleware`, CORS finally wired up, `Web.requestLogger`
+
+`Web.Middleware { func wrap(req, next: Handler): Response }`, registered
+with `Web.withMiddleware` in **outermost-first** order (first-registered
+sees the request first, response last) — the same ordering
+`contributes[Middleware]` uses in a wire graph (D121 §4.1), so a
+library's own internal middleware and a consumer's `contributes[Middleware]`
+entries compose with one mental model. CORS (previously parsed from
+`LYRIC_CONFIG_WEB_CORS_*` and never applied — a `attachRegistry`-shaped
+silently-dropped-argument violation per D099's own standard) is now a
+real `Middleware` (`Web.corsMiddleware`) that `Web.start` attaches
+automatically when enabled; `Web.requestLogger()` is a second built-in
+middleware (`METHOD path -> status`), not attached by default.
+
+### Decision 4 — `Handler`/`Middleware` are interfaces, not closures: closures are unreliable across 2+ packages in the current self-hosted MSIL backend
+
+The first implementation modeled `Handler` as `alias Handler = (Request)
+-> Response` (docs/58's own illustrative `Middleware`/`Handler` sketch
+used a closure shape), with route handlers registered as either bare
+named-function references or inline closure literals. This surfaced,
+in order of discovery, **four previously-unknown self-hosted MSIL
+backend bugs**, filed as:
+
+- **#5361** — a payload-free `enum` with 2+ cases anywhere in the same
+  compiled unit as a closure crashes closure lowering
+  (`MNewobjByName could not resolve .ctor`/`MStfldByName could not
+  resolve field`). Worked around in this entry by converting
+  `Web.OpenApi.SchemaType`/`ParameterLocation` from `enum` to payload-free
+  `union` (identical case lists; neither is pattern-matched or has
+  ordinal/`.toString()` usage anywhere in the repo) — the same class of
+  fix D099 already applied to `lyric-health`'s `CheckGroup` for a related
+  enum cross-package dispatch bug.
+- **#5362** — passing a **bare named function** (not a closure literal)
+  as a function-typed value crashes at runtime
+  (`NullReferenceException`) the first time it's invoked, whether stored
+  in a record field or passed straight through — reproduced with a
+  10-line repro completely unrelated to `lyric-web`. The project's own
+  precedent (D099, D064 `Lambda.Direct`) recommends exactly this "register
+  a function reference" pattern; every actual usage found in the repo
+  (`lyric-health`'s `{ -> checkFn() }` call sites) already wraps the
+  reference in a closure literal rather than passing it bare — quite
+  possibly an unstated workaround for this exact bug, not a style choice.
+- **#5363** — the severe one: invoking closures from **two or more
+  different packages compiled into the same program** is unreliable —
+  symptoms ranged from `InvalidProgramException` and
+  `InvalidCastException` (casting completely unrelated types, e.g.
+  `Web.Response` to `Web.ApiError`, inside a method that never
+  references `ApiError`) to **silent wrong-value corruption with no
+  exception at all**, reproduced with two trivial hand-written packages,
+  no aspects/weaver involved. `lyric-web` (closures in its own package)
+  plus any real consumer package (which will define its own closures to
+  adapt handler functions — exactly what `examples/ledger|rbac|jobqueue`
+  originally did) is precisely this shape. The confirmed-safe
+  alternative, verified with the identical two-package repro: a
+  single-method **interface** (`impl Handler for SomeRecord { func
+  handle(...) }`, invoked via `h.handle(x)`) instead of a stored
+  closure/`Func<...>` value — consistent with every other
+  pluggable-behavior abstraction already in this codebase (`WsHandler`,
+  `MailSender`, `StorageBucket`, …) being an interface rather than a
+  stored closure, which may be exactly why this bug had gone unnoticed
+  until now.
+- **#5364** — unrelated to closures entirely (single package, single
+  file, zero closures): passing a `match`-arm-**bound** variable
+  (`case Some(eq) -> ...`) directly as a call argument from inside that
+  same arm crashes with `InvalidProgramException`
+  (`pair.substring(0, eq)` where `eq` came from `Some(eq)`); copying it
+  into a fresh local first (`val n: Int = eq; pair.substring(0, n)`) is a
+  confirmed-reliable workaround, applied throughout `web.l` wherever this
+  shape occurred (`parseQueryPair`'s query-string split index, among
+  others).
+
+**Given #5363, `Handler` and `Middleware` are both interfaces
+(`Handler.handle(req): Response`, `Middleware.wrap(req, next: Handler):
+Response`)**, and `Web.dispatch`'s middleware-composition + route-dispatch
+tail are built from small `Handler`-implementing records
+(`MiddlewareChain`, `RouteDispatchHandler`) rather than a composed closure
+chain — zero closures appear anywhere in `lyric-web`'s own implementation.
+Every route-handler registration across the library, its tests, and the
+three example services (`ledger`, `rbac`, `jobqueue`) uses a small
+zero-field record + `impl Web.Handler for X { func handle(req) {...} }`,
+never a closure literal or bare function reference.
+
+### Consequences
+
+- `lyric-web` is functional end-to-end on `--target dotnet`: real
+  method/path dispatch with path parameters, static file serving
+  (multi-mount, traversal-safe), a middleware pipeline with working CORS,
+  verified by `lyric-web/tests/dispatch_tests.l` (23 tests exercising
+  `Web.dispatch` directly — routing, path/query/header extraction,
+  wildcard routes, middleware ordering and short-circuiting, CORS
+  preflight/allow/deny, static file serving including path-traversal
+  rejection) and by a live `HttpListener` + `curl` smoke test against a
+  router consumed as a genuine path dependency from a separate project
+  (the exact configuration #5363 made unreliable) covering path params,
+  query strings, headers, static files, and 404s across multiple
+  sequential requests with no crash and correct bodies.
+- `examples/ledger`, `examples/rbac`, and `examples/jobqueue` migrate
+  their route tables and health endpoints to the `Handler` interface,
+  and gain hand-rolled `Std.Json`-based request-body parsers (the
+  previously-assumed "the Web kernel deserializes the JSON request body"
+  comment was aspirational and never true).
+- `Web.addWorker`/`WorkerRegistration` are explicitly **not** touched by
+  this entry — still registered, still never invoked. The obvious fix
+  (structured-concurrency `spawn`) is a synchronous no-op on
+  `--target dotnet` today (D119/D120), so a correct implementation needs
+  either MSIL structured concurrency (D119 S5/S6, not yet shipped) or a
+  hand-rolled thread/timer extern boundary; tracked as **issue #5359**
+  rather than shipped as a bootstrap-grade workaround.
+- Live OpenAPI JSON / Swagger UI serving (`LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED`,
+  previously parsed and silently ignored — the same class of violation
+  CORS was in before this entry) is removed from `Web.start`/`serve()`
+  rather than left as a dead env var; tracked as **issue #5360**. Use the
+  build-time `lyric web spec` workflow until it ships.
+- `lyric-web` remains `dotnet`-only; `Std.HttpServer`'s JVM kernel routes
+  through an out-of-repo prebuilt JAR that doesn't yet expose the
+  query-string/header/byte-body primitives this library needs (a
+  pre-existing gap, not newly introduced).
+
+### Alternatives considered
+
+- **Keep the closure-based `Handler` design and work around #5363 by
+  telling consumers to avoid defining their own closures.** Rejected:
+  unenforceable (nothing stops a consumer package from writing a closure
+  literal for an unrelated reason and silently corrupting `lyric-web`
+  dispatch), and the interface alternative has no real ergonomic cost
+  beyond one extra `record`/`impl` block per handler.
+- **DLL-reflection dispatcher (the original D054 design).** Rejected on
+  the same grounds D099 already rejected it for `lyric-health`: AOT-hostile,
+  contrary to D006, and reflection was never actually implementable for
+  this without the metadata-based auto-FFI infrastructure (docs/42),
+  which solves compile-time FFI signature resolution, not runtime
+  dynamic dispatch by name.
+- **Ship the live-Swagger/worker-dispatch env vars as documented but
+  silently inert**, matching the pre-existing state. Rejected per
+  D099's own precedent: a config value that's read and then ignored is a
+  production-quality violation, not a neutral no-op.
+
+**Related:** D054 (original router design), D099 (function-reference
+dispatch precedent, enum → union cross-package workaround precedent),
+D006 (no runtime reflection), D119/D120 (structured concurrency,
+dotnet-target synchronous-degenerate gap), D121 (config templates /
+`contributes[T]` / wire templates this entry's static-file and
+middleware config build on), docs/57 (ecosystem review that independently
+flagged the dispatch gap), issues #5359 (worker dispatch), #5360 (live
+spec serving), #5361–#5364 (the four closure/codegen bugs found and
+worked around in this entry).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

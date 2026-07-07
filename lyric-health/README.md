@@ -34,21 +34,28 @@ func buildHealth(): HealthRegistry {
   return health
 }
 
-// Web routes are name-based, so expose the endpoints as ordinary
-// handlers in your own package:
-pub func healthLive(): Result[String, ApiError] {
-  return Health.runLiveness(buildHealth())
+// Web.Route handlers are (Web.Request) -> Web.Response; wrap
+// runLiveness/runReadiness's Result[String, String] in a thin adapter
+// and register the adapter directly (a function reference, no
+// name-based dispatch):
+pub func healthLive(req: in Web.Request): Web.Response {
+  match Health.runLiveness(buildHealth()) {
+    case Ok(body) -> Web.json(200, body)
+    case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
+  }
 }
 
-pub func healthReady(): Result[String, ApiError] {
-  return Health.runReadiness(buildHealth())
+pub func healthReady(req: in Web.Request): Web.Response {
+  match Health.runReadiness(buildHealth()) {
+    case Ok(body) -> Web.json(200, body)
+    case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
+  }
 }
 
 func main(): Unit {
   var router = Web.create()
-  router = Web.addGet(router, "/users/{id}", "MyService.Handlers.getUser")
-  router = Web.addGet(router, "/health/live", "MyService.healthLive")
-  router = Web.addGet(router, "/health/ready", "MyService.healthReady")
+  router = Web.addGet(router, "/health/live", healthLive)
+  router = Web.addGet(router, "/health/ready", healthReady)
   Web.start(router)
 }
 ```
@@ -95,9 +102,10 @@ When any check fails:
 }
 ```
 
-`runLiveness` / `runReadiness` map the report onto the lyric-web handler
-convention: `Ok(body)` (HTTP 200) when every check passes, and an
-`Err(ApiError)` with status 503 naming the failing checks when degraded.
+`runLiveness` / `runReadiness` return `Ok(body)` (the JSON above) when
+every check passes, or `Err(message)` naming the failing checks when
+degraded — map the `Err` case to `Web.serviceUnavailable(message)` (503)
+in your route adapter, as the Quick start example above does.
 
 ## Check groups
 
@@ -127,8 +135,8 @@ Health.addReadinessCheck(registry, name, handler): HealthRegistry
 Health.pass(): CheckStatus
 Health.fail(detail): CheckStatus
 Health.runChecks(registry, group): HealthReport
-Health.runLiveness(registry): Result[String, ApiError]
-Health.runReadiness(registry): Result[String, ApiError]
+Health.runLiveness(registry): Result[String, String]
+Health.runReadiness(registry): Result[String, String]
 Health.isLiveness(group): Bool
 Health.isReadiness(group): Bool
 ```

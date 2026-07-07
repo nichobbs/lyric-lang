@@ -20,6 +20,7 @@ package Ledger.Api
 import Std.Core
 import Std.Collections
 import Std.Json
+import Std.Parse
 import Ledger.Accounting
 import Ledger.Accounts
 import Ledger.Transfers
@@ -224,14 +225,174 @@ pub func handleGetTransfer(id: Long): Result[String, ApiError] {
   }
 }
 
+// ─── Web.Request adapters ───────────────────────────────────────────────────────
+//
+// `Web.Route` handlers have signature `(Web.Request) -> Web.Response` — the
+// aspect-guarded business logic above keeps its original signature (path/body
+// values as plain parameters, `authToken` as the field the `Auth` aspect's row
+// constraint reads) and each adapter below does the request-shape plumbing:
+// extract path params and the Authorization header, parse the JSON body, call
+// the guarded handler, and map its `Result` to a `Web.Response`.
+func authTokenFrom(req: in Web.Request): String {
+  match Web.header(req, "authorization") {
+    case Some(v) -> if v.startsWith("Bearer ") { v.substring(7) } else { v }
+    case None -> ""
+  }
+}
+
+func idPathParam(req: in Web.Request): Result[Long, ApiError] {
+  match Web.pathParam(req, "id") {
+    case None -> Err(Web.badRequest("missing path parameter: id"))
+    case Some(raw) -> match parseOptLong(raw) { case Some(n) -> Ok(n); case None -> Err(Web.badRequest("id must be an integer: " + raw)) }
+  }
+}
+
+func toResponse(result: in Result[String, ApiError]): Web.Response {
+  match result {
+    case Ok(body) -> Web.json(200, body)
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func parseCreateAccountRequest(body: in String): Result[CreateAccountRequest, ApiError] {
+  return try {
+    val doc = parseJson(body)
+    val root = rootElement(doc)
+    val req = CreateAccountRequest(
+      name = getString(getProperty(root, "name")),
+      kind = getString(getProperty(root, "kind")),
+      currency = getString(getProperty(root, "currency"))
+    )
+    disposeJson(doc)
+    Ok(req)
+  } catch Bug as e {
+    Err(Web.badRequest("malformed request body: " + e.message))
+  }
+}
+
+func parseCreateTransferRequest(body: in String): Result[CreateTransferRequest, ApiError] {
+  return try {
+    val doc = parseJson(body)
+    val root = rootElement(doc)
+    val req = CreateTransferRequest(
+      fromId = getInt64(getProperty(root, "fromId")),
+      toId = getInt64(getProperty(root, "toId")),
+      amount = getInt64(getProperty(root, "amount")),
+      note = getString(getProperty(root, "note"))
+    )
+    disposeJson(doc)
+    Ok(req)
+  } catch Bug as e {
+    Err(Web.badRequest("malformed request body: " + e.message))
+  }
+}
+
+pub func adaptCreateAccount(req: in Web.Request): Web.Response {
+  match parseCreateAccountRequest(req.body) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(body) -> toResponse(handleCreateAccount(body, authTokenFrom(req)))
+  }
+}
+
+pub func adaptListAccounts(req: in Web.Request): Web.Response {
+  return toResponse(handleListAccounts())
+}
+
+pub func adaptGetAccount(req: in Web.Request): Web.Response {
+  match idPathParam(req) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(id) -> toResponse(handleGetAccount(id))
+  }
+}
+
+pub func adaptGetAccountEntries(req: in Web.Request): Web.Response {
+  match idPathParam(req) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(id) -> toResponse(handleGetAccountEntries(id))
+  }
+}
+
+pub func adaptCreateTransfer(req: in Web.Request): Web.Response {
+  match parseCreateTransferRequest(req.body) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(body) -> toResponse(handleCreateTransfer(body, authTokenFrom(req)))
+  }
+}
+
+pub func adaptGetTransfer(req: in Web.Request): Web.Response {
+  match idPathParam(req) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(id) -> toResponse(handleGetTransfer(id))
+  }
+}
+
+// ─── Route handlers ───────────────────────────────────────────────────────────
+// Web.Handler is an interface, not a stored closure: invoking a closure
+// defined in one package from another package that also defines its own
+// closures is unreliable in the current self-hosted MSIL backend (issue
+// #5363), so each adapter above is registered via a small record wrapper.
+record CreateAccountHandler {
+}
+
+impl Web.Handler for CreateAccountHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptCreateAccount(req)
+  }
+}
+
+record ListAccountsHandler {
+}
+
+impl Web.Handler for ListAccountsHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptListAccounts(req)
+  }
+}
+
+record GetAccountHandler {
+}
+
+impl Web.Handler for GetAccountHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptGetAccount(req)
+  }
+}
+
+record GetAccountEntriesHandler {
+}
+
+impl Web.Handler for GetAccountEntriesHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptGetAccountEntries(req)
+  }
+}
+
+record CreateTransferHandler {
+}
+
+impl Web.Handler for CreateTransferHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptCreateTransfer(req)
+  }
+}
+
+record GetTransferHandler {
+}
+
+impl Web.Handler for GetTransferHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptGetTransfer(req)
+  }
+}
+
 // ─── Route table ──────────────────────────────────────────────────────────────
 pub func routes(): Web.Router {
   val r = Web.create()
-  val r = Web.addPost(r, "/accounts", "Ledger.Api.handleCreateAccount")
-  val r = Web.addGet(r, "/accounts", "Ledger.Api.handleListAccounts")
-  val r = Web.addGet(r, "/accounts/{id}", "Ledger.Api.handleGetAccount")
-  val r = Web.addGet(r, "/accounts/{id}/entries", "Ledger.Api.handleGetAccountEntries")
-  val r = Web.addPost(r, "/transfers", "Ledger.Api.handleCreateTransfer")
-  val r = Web.addGet(r, "/transfers/{id}", "Ledger.Api.handleGetTransfer")
+  val r = Web.addPost(r, "/accounts", CreateAccountHandler())
+  val r = Web.addGet(r, "/accounts", ListAccountsHandler())
+  val r = Web.addGet(r, "/accounts/{id}", GetAccountHandler())
+  val r = Web.addGet(r, "/accounts/{id}/entries", GetAccountEntriesHandler())
+  val r = Web.addPost(r, "/transfers", CreateTransferHandler())
+  val r = Web.addGet(r, "/transfers/{id}", GetTransferHandler())
   return r
 }
