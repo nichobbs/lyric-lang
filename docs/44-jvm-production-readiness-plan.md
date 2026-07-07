@@ -1,8 +1,9 @@
 # 44 — JVM Production-Readiness Remediation Plan
 
-**Status:** Unbacked plan (audit + remediation sequencing). File a decision-log
-entry to codify the band ordering and the G1 channel decision before band J1
-lands.
+**Status:** Backed by D-progress-620 (`docs/03-decision-log.md`), which
+codifies the G1 channel decision: JVM is an independently-versioned Phase-6
+target, not a v1.0 SemVer-guaranteed channel. Band ordering (J0–J7) is
+documented in §5 below; J0–J3 shipped historically.
 
 **Method.** This plan was produced by auditing the **code as source of truth**
 (docs and issues were treated as possibly-stale corroboration), cross-checked
@@ -158,7 +159,7 @@ tracking issue today (band J0 files them).
 | B-8 | ~~Union construction emits a call to a non-existent factory in some paths → `NoSuchMethodError`~~ **Fixed (D-progress-464):** field-bearing + nullary cases emit `new`+`invokespecial`. | `codegen/02_exprs.l`,`04_calls.l` | #1675, #2664 |
 | B-9 | No auto-FFI resolution for `extern type` method calls beyond the JDK-class fast path on some receivers; user `extern type` libraries mis-bind | #1708; `auto_ffi.l` JDK-first | #1708 |
 | B-10 | ~~`lyric build --target jvm foo.l` (no `-o`) writes the JAR as `foo.dll`; spurious .NET `runtimeconfig.json` emitted~~ **RESOLVED** | `cli.l:712`, `cli.l:545`; observed | #2664 (resolved) |
-| B-11 | JUnit tests do not actually execute on JVM — `lyric test --jvm` annotates `@LyricTest` but `LyricTestEngine` is deferred; generated test bodies are stub `return` | `test_engine.l:17-21`; `docs/18` Q-J007 | #676 |
+| B-11 | ~~JUnit tests do not actually execute on JVM — `lyric test --jvm` annotates `@LyricTest` but `LyricTestEngine` is deferred; generated test bodies are stub `return`~~ **Not a defect — stale.** Empirically verified: `./bin/lyric test --target jvm` on a 2-case `@test_module` file runs both tests for real and prints correct TAP output (`ok 1 - …` / `not ok 2 - …`), exiting non-zero on the failing case. `cli_test.l`'s test flow uses the **same** `Lyric.TestSynth` rewrite + compile + execute path for both `--target dotnet` and `--target jvm` — it never goes through `test_engine.l`'s `@LyricTest`/stub-body mechanism. `Jvm.TestEngine` (`test_engine.l`) is built into stage1 but genuinely dormant: grepping `lyric-compiler/jvm/*.l` and `lyric-compiler/lyric/cli/*.l` for `Jvm.TestEngine` / `TestEngine` shows nothing in `cli_test.l`/`bridge.l`/`codegen.l` ever references it. It is scaffolding toward the **future** JUnit 5 Platform / IDE-gutter-icon / Maven-Surefire integration in `docs/32-junit-runner-sketch.md` (which itself already correctly scopes the remaining gap as tooling integration, not test execution — see `docs/32` §1 line 23: "The existing `Lyric.TestSynth` binary still works for quick CLI smoke tests"). Downgraded from BLOCKER: test *execution* works; only the JUnit5 `TestEngine` SPI/IDE/Surefire layer (`docs/32` §5–7) remains open under #676. | `cli/cli_test.l` (live path); `test_engine.l` (dormant); `docs/32` §5–7 | #676 (narrowed scope) |
 | B-12 | ~~Record instance methods (`RMFunc`) emitted as **static** but called via `invokevirtual` → `VerifyError "Expecting non-static method"`; records-with-methods unusable~~ **Fixed (D-progress-475):** `lowerRecord` now lowers each `RMFunc` through `lowerRecordMethod` as a true non-static instance method (slot 0 = `this`, `selfClass` field reads, generic params erased to `Object` matching the registered `<class>#<method>` `invokevirtual` sig); non-static methods route through `lowerFuncForClass` so slot 0 is typed as the record class in the StackMapTable (also hardens protected entries). | `codegen/06_items.l` (`lowerRecord`/`lowerRecordMethod`/`registerInstanceSigErased`), `lowering.l` (`lowerRecord`) | #2865 |
 | B-13 | ~~A function/method whose tail `if`/`else` (or `match`) `return`s on every arm got a stray trailing void `return` appended → `VerifyError`~~ **Fixed (D-progress-476):** the `if`/`match` lowering no longer lands the unreachable `afterL` join label (its `StackMapTable` frame pointed past the method body) when every arm terminates, and an AST-level `blockTerminates` predicate is consulted alongside `endsWithReturn` at every function-body return-decision point so the implicit return is suppressed when control is already terminated. The implicit-return / fall-off path (`Unit` fall-off, else-less `if` + tail value) is unchanged. | `codegen/02_exprs.l` (`lowerIfExpr`), `codegen/03_match.l` (`lowerMatchExpr`), `codegen/06_items.l` (`blockTerminates`) | #2870 |
 
@@ -166,13 +167,13 @@ tracking issue today (band J0 files them).
 
 | ID | Finding | Evidence | Issue |
 |---|---|---|---|
-| M-1 | ~~Generics **erased to `Object`**; the erased model was **incorrect** — generic `Result`/`Option` and user generic records/unions VerifyError'd at class load (construction did not box primitive payloads into the `Object` field; match-extraction read the `Object` field without `checkcast` + unbox)~~ **DONE (J4 M-1, D-progress-473).** Generic type params now erase to `java/lang/Object` via `typeExprToJvmErased` (decl `generics` threaded through `lowerUnion`/`lowerRecord`/`collectFileCases`); construction boxes a primitive payload into the `Object` field (`coerceArgTo` primitive→ref); match-extraction + erased-operand use-sites (`reconcileCmpOperands` for compare/arith, function-return/`SReturn` coercion, mixed-arm `match` result boxing, `return`-terminated arms skipped) `checkcast` + unbox to the binding's concrete type. The `?`-propagation JVM runtime now runs. Verified by `generic_jvm_self_test.l` (13 cases). Async/generic interplay (M-12) and `scope` (M-17) remain. Still erased (no `Signature` attrs / reified generics — Q-J001), matching `docs/18` §6.1/§10. | `jvm/codegen/{01_types,02_exprs,03_match,04_calls,06_items}.l` | #1707, #2574, #2667 |
+| M-1 | ~~Generics **erased to `Object`**; the erased model was **incorrect** — generic `Result`/`Option` and user generic records/unions VerifyError'd at class load (construction did not box primitive payloads into the `Object` field; match-extraction read the `Object` field without `checkcast` + unbox)~~ **DONE (J4 M-1, D-progress-473).** Generic type params now erase to `java/lang/Object` via `typeExprToJvmErased` (decl `generics` threaded through `lowerUnion`/`lowerRecord`/`collectFileCases`); construction boxes a primitive payload into the `Object` field (`coerceArgTo` primitive→ref); match-extraction + erased-operand use-sites (`reconcileCmpOperands` for compare/arith, function-return/`SReturn` coercion, mixed-arm `match` result boxing, `return`-terminated arms skipped) `checkcast` + unbox to the binding's concrete type. The `?`-propagation JVM runtime now runs. Verified by `generic_jvm_self_test.l` (13 cases). Async/generic interplay (M-12) remains (`scope`/M-17 is fixed/moot per D120). Still erased (no `Signature` attrs / reified generics — Q-J001), matching `docs/18` §6.1/§10. | `jvm/codegen/{01_types,02_exprs,03_match,04_calls,06_items}.l` | #1707, #2574, #2667 |
 | M-2 | ~~`defer` panics on JVM~~ **DONE (J3, D-progress-472).** `defer { D }` runs `D` on every non-exception exit (normal fall-off, early `return`, `break`/`continue`) plus exception unwind, mirroring MSIL #1477: statement blocks route through `lowerBlockStmtsFrom`/`lowerDeferRegion` and value-producing blocks through `lowerBlockExprWithDefer`; the suffix after a defer runs inside a catch-all-rethrow region, and `FuncCtx.deferStack` lets early transfers replay the pending blocks first. | `codegen/05_stmts.l` | #1833 |
 | M-3 | ~~Opaque / protected / wire / config types recognized but **not emitted** (no-op)~~ **DONE (J3, D-progress-472).** `06_items.l`'s `IOpaque`/`IProtected`/`IWire` arms now dispatch to the real lowering: opaque → `lowerOpaqueType`/`lowerOpaqueFacade` (construction + `$<name>()`-accessor field reads, public ctor for in-package construction); protected → record-shaped class (field-args ctor + lock-wrapped instance entries; bare-name field reads/writes resolve via `selfClass`); wire → `lowerWire` DI factory (`bootstrap()` + exposed-binding accessors, callable as `AppWire.bootstrap()`/`AppWire.<binding>()`). `IConfig` stays an intentional no-op (DI-phase-consumed, parity with MSIL). | `codegen/06_items.l`, `lowering.l` | (#2666) |
 | M-4 | `@cfg(feature=…)` erasure not applied on JVM (`bridge.l` has no cfg stage) | `bridge.l`; vs `msil/bridge.l:402` | #2444 (target-gate seam) |
 | M-5 | Cross-package / generic-type monomorphization is same-package only on JVM | `bridge.l:159` | #1707 |
 | M-6 | **Maven self-hosting absent:** `[maven]` parsed only by F# `Manifest.fs`; `manifest.l` cannot read ecosystem `[maven]` tables (`lyric-web`, `lyric-mq`, `lyric-grpc`, `lyric-lambda`, …). **Parsing slice DONE (#2668):** `manifest.l` now parses `[maven]` / `[maven.options]` into `MavenSection` (`MavenEntry` + `repositories` default `["central"]` + optional `java_version`), mirroring `[nuget]`; covered by `manifest_self_test.l`. The resolution/download path (M-7) remains. | `manifest.l` `assembleMaven`; `Manifest.fs:121+` | #1622/#1708 cluster |
-| M-7 | ~~**Maven resolver orphaned**~~ **Partially DONE (J5).** `cli_restore.l:restoreMavenJars` now invokes `lyric-resolver.jar` via `ProcessCapture.runCaptureWithDiagnosticsTimeout`, reads the JSON response, and writes `target/restore/jvm-classpath.txt`.  `cli_build.l:buildProject` reads the classpath file before `emitProject` and injects `LYRIC_FFI_JARS` for JVM auto-FFI; after a successful JVM build it also writes `<outDir>/module-path.txt`. `LYRIC_MAVEN_RESOLVER` env var or `lyric-resolver.jar` beside the binary required.  Remaining gap: `resolver/pom.xml` must be built (`make maven-resolver`) — the JAR is not yet pre-distributed with `lyric`. | `cli_restore.l:restoreMavenJars`, `cli_build.l:buildProject`; `resolver/pom.xml` | #673 |
+| M-7 | ~~**Maven resolver orphaned**~~ **DONE.** `cli_restore.l:restoreMavenJars` invokes `lyric-resolver.jar` via `ProcessCapture.runCaptureWithDiagnosticsTimeout`, reads the JSON response, and writes `target/restore/jvm-classpath.txt`.  `cli_build.l:buildProject` reads the classpath file before `emitProject` and injects `LYRIC_FFI_JARS` for JVM auto-FFI; after a successful JVM build it also writes `<outDir>/module-path.txt`. `resolver/pom.xml` itself was previously broken (never actually buildable): it pinned Maven Resolver artifacts (`maven-resolver-transport-http`, `maven-resolver-supplier-mvn`) that were never published under those coordinates for the 2.x line, and its Java imported the never-real `org.apache.maven.resolver.*` package (the library kept its pre-donation `org.eclipse.aether.*` Java namespace after the groupId/artifactId moved to `org.apache.maven.resolver`) — `make maven-resolver test` failed on dependency resolution before this fix. Fixed by pinning to `maven-resolver-supplier-mvn3:2.0.20` (the real, current coordinates, which pull in `impl`/`connector-basic`/`transport-apache` transitively) and rewriting `MavenResolver.java`'s imports/session-construction against the real `org.eclipse.aether.*` API (`RepositorySystemSupplier` + `SessionBuilderSupplier` → `SessionBuilder.withLocalRepositories(...).build()`). Verified: `mvn -f resolver/pom.xml test` passes (`ClassScannerTest`, 3/3), `make maven-resolver` produces `resolver/target/lyric-resolver.jar`, and an end-to-end `lyric restore` + `lyric build --target jvm` against a throwaway `[maven]`-table project (`org.apache.commons:commons-lang3`) resolves the artifact, compiles a real `extern type` call against it, and the compiled JAR runs correctly under `java` (see J5 below). Distribution: `lyric-resolver.jar` is now built and bundled beside the `lyric` binary in every `build-standalone` archive (`.github/workflows/publish.yml`) and beside `lyric.dll` inside the NuGet global tool package (`bootstrap/src/Lyric.Cli.Aot/csproj`'s `tools/<tfm>/any/` `PackagePath`), so a normal install (archive extraction or `dotnet tool install`) picks it up automatically — `LYRIC_MAVEN_RESOLVER` / manual `make maven-resolver` is no longer required for end users. | `cli_restore.l:restoreMavenJars`, `cli_build.l:buildProject`; `resolver/pom.xml`, `resolver/src/main/java/lyric/resolver/MavenResolver.java`; `.github/workflows/publish.yml`; `bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj` | #673 |
 | M-8 | ~~**F#-host kernel debt:** JVM byte-builder + constant pool via `@externTarget` into `Lyric.Jvm.Hosts` (F#), on the deletion schedule~~ **DONE (J5, D-progress-527).** `Lyric.Jvm.Hosts` project deleted entirely; `jvm/_kernel/kernel.l` is a pure-Lyric `ByteWriter`/`ConstantPool` using only arithmetic operators and audited BCL externs (`System.BitConverter`, `System.Convert.ToByte`, `System.IO.MemoryStream`). No `@externTarget` into F# host code. | `jvm/_kernel/kernel.l` | DONE |
 | M-9 | ~~`Std.Hash` has **no JVM host**~~ **DONE (J6).** `lyric-stdlib/std/_kernel_jvm/hash_host.l` added: `MessageDigest.getInstance("SHA-512").digest(...)` + `HexFormat.of().withUpperCase().formatHex(...)` via JVM auto-FFI (`extern type`, no F# shim). Verified by `hash_jvm_self_test.l` (3 NIST vectors) under `java`. | `_kernel_jvm/hash_host.l` | DONE |
 | M-10 | ~~`_kernel_jvm/` is **never loaded** by the self-hosted source loader~~ **DONE (J6).** `emitter.l:findStdlibSourcesForTarget(forJvm)` prefers `_kernel_jvm/<module>_host.l` and falls back to `_kernel/<module>_host.l` only when no JVM host exists; `emitJvmInProcess` threads `forJvm = true`. Required JVM `slice[Byte]↔byte[]` interop fixes in `codegen.l` (auto-FFI arg/return byte-array coercion, primitive-array index/length) and a String `==`/`!=` value-comparison fix. | `emitter.l`, `jvm/codegen.l`, `jvm/auto_ffi.l` | DONE |
@@ -180,9 +181,9 @@ tracking issue today (band J0 files them).
 | M-12 | ~~Async generators are eager "collect-all", not lazy~~ **Not a defect (D119 audit, 2026-07-05):** JVM async generators are already **lazy** — `lowerAsyncGenerator` runs the body on a JDK-21 virtual thread and hands each `yield` across a `SynchronousQueue` (`put`/`take`), producing one value on demand (verified via an interleaved-side-effect probe). The "eager collect-all" description was stale (the cited `lowering.l:3493-3518` no longer points at generator code). Remaining JVM gap: `yield`+`await` in the same body (a suspending await inside a generator) — the `.NET`-only async leaf primitives aren't available on JVM, tracked as #1490 parity. | `jvm/lowering.l` (`lowerAsyncGenerator`) | #2469, #1490 |
 | M-13 | Range/refined types erased to `JInt`, no bounds checks | `codegen.l:283` | (new) |
 | M-14 | Self-hosted JVM **pipeline** coverage is ~4 programs vs 132 library self-tests; the front-end → JVM path is barely exercised | `ci.yml` (4 native `--target jvm` steps) | #2000, #2595 (per-test) |
-| M-15 | `extern type` robustness gaps: `T.new()` on abstract type → runtime `InstantiationError` (no compile guard); `findBestInstanceMethod` stops before `java/lang/Object` | #2215, #2219 | #2215, #2219 |
+| M-15 | ~~`extern type` robustness gaps: `T.new()` on abstract type → runtime `InstantiationError` (no compile guard); `findBestInstanceMethod` stops before `java/lang/Object`~~ **Fixed.** Part 1 (#2215): `lowerAutoFfiConstructorCall` already rejected `ci.isAbstract` constructors, but only via a bare, uncoded `panic(...)`; the message now carries `error[J005]` (the next free code after `J001`–`J004`) so the abort is a recognisable compiler diagnostic rather than an anonymous message — verified by `jvm_auto_ffi_bridge_self_test.l` (constructing `java.io.Reader` asserts the caught `Bug` message contains `error[J005]` and "abstract"; a same-shape negative case confirms a concrete class like `StringBuilder` never false-positives). Part 2 (#2219): `findBestInstanceMethod`'s superclass walk no longer special-cases `java/lang/Object` — `ClassInfo.superName` is `""` for Object itself, so the loop now terminates naturally once Object has been scored, and `final` Object-only methods (`getClass()`, `notify()`, `notifyAll()`, `wait()`) resolve correctly; verified by a new `getClass()`/`getName()` case in `auto_ffi_jvm_self_test.l`, run on real `--target jvm`. | `jvm/auto_ffi.l`, `jvm/codegen/04_calls.l` | #2215 ✅, #2219 ✅ |
 | M-16 | Slice ABI fork: F#-built `Lyric.Stdlib.dll` uses `!0[]` arrays for generic `slice[T]` while self-hosted callers are List-backed | #2592 | #2592 |
-| M-17 | `scope` (structured concurrency) panics on JDK 24+ (StructuredTaskScope became an interface); supports 21–23 only | `lowering.l:3904-3914` | #2263 |
+| M-17 | ~~`scope` (structured concurrency) panics on JDK 24+ (StructuredTaskScope became an interface); supports 21–23 only~~ **Fixed/moot (D120, D-progress-602).** The finding's premise no longer applies: real `scope { }`/`spawn`/`await` codegen (`jvm/codegen/05_stmts.l:lowerScopeStmt`, the only path the compile pipeline actually calls) never used `StructuredTaskScope` at all — D120 chose a non-preview `java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()` `ExecutorService` instead, specifically to avoid JDK-24's `StructuredTaskScope` preview-API churn. So the keyword construct works unchanged on every JDK 21+ target. `lowering.l:lowerScopeBlock`/`lowerStructuredScope` (the JDK 21–23/24+ dual-path `StructuredTaskScope` code this finding cited) and its self-test `self_test_b120.l` are orphaned Path-A emission-library code — nothing in `jvm/bridge.l`/`jvm/codegen.l` calls them (verified: only `lowering.l` and `self_test_b120.l` reference `lowerStructuredScope`/`lowerScopeBlock`). Left in place as unused legacy code; deleting it is a separate call about the emission-library API surface. | `codegen/05_stmts.l:lowerScopeStmt` (live path); `lowering.l:4337-4525` (orphaned) | #2263 (moot) |
 | M-18 | JVM distribution: ~~no `lyric run --target jvm` (#674)~~ **DONE** (`cli_run.l` builds the bundled JAR via the in-process `Jvm.Bridge` and execs `java -jar`); ~~`main(slice[String])` argv `VerifyError` + `Int` return not propagated to the exit code (#3303)~~ **Fixed (D-progress-543):** `isMainFunc` accepts the `argv: slice[String]` form, the synthesised `main(String[])` wrapper forwards the incoming `String[]` to the erased `Object[]` slice parameter (JVM array covariance, no copy), `args.count` lowers to `arraylength`, and an `Int`-returning main routes through `java.lang.System.exit(int)` (branchless — no StackMapTable needed); verified by `entry_args_jvm_main.l` + the CI argv/exit-code check; ~~`lyric bench --target jvm` (#680) blocked on JVM `Std.Time` (#3302)~~ **unblocked (D-progress-543):** `_kernel_jvm/time_host.l` is now pure Lyric over the JVM auto-FFI (no static-field externs, no phantom `lyric.stdlib.jvm.*` shim classes; `Duration.ZERO` → `ofMillis(0)`, arg-order/unit divergences bridged in Lyric bodies, fractional durations preserved via `ofNanos` + `Math.round`), verified by `time_jvm_self_test.l`; GraalVM native-image path (#675/#1975) still outstanding | #675, #1975 | #674 ✅; #680 ✅ (#3302 fixed); #3303 ✅; #675/#1975 open |
 
 ### MINORS (coverage, polish, diagnostics)
@@ -195,11 +196,11 @@ tracking issue today (band J0 files them).
 | m-4 | intra-impl `self.m`/bare `m` calls | #1722 | #1722 |
 | m-5 | ~~nested-generic union case construction (`Result[Option[T],E]`)~~ **Fixed (D-progress-575):** #1707's closure was premature — `Map[K, V]` subscript syntax (`m[k]`, `m[k] = v`) still crashed (`VerifyError`, misrouted to `ArrayList` codegen) and compound-assignment through any reference-typed subscript silently dropped the operator. Both fixed in `EIndex` lowering (`02_exprs.l`/`05_stmts.l`); `nested_generic_self_test.l` and the new `subscript_assign_jvm_self_test.l` (10 cases) are green on `--target jvm`. Three separate, deeper, pre-existing gaps this crash had been masking are tracked in #4982. | `codegen/02_exprs.l`, `codegen/05_stmts.l` | #1707 ✅ (follow-ups: #4982) |
 | m-6 | JVM regex daemon-thread timeout shim | #1103 | #1103 |
-| m-7 | `splitPathList` splits on `:` and `;`, breaking Windows `LYRIC_FFI_JARS` (`C:\path` drive letter treated as separator) | #2214 | #2214 |
+| m-7 | ~~`splitPathList` splits on `:` and `;`, breaking Windows `LYRIC_FFI_JARS` (`C:\path` drive letter treated as separator)~~ **Fixed.** `splitPathListOn(s, isWin)` now splits on a single, platform-correct separator only (`;` on Windows, `:` elsewhere), selected via `Std.Environment.runtimeIdentifier()` (the CLI process's own host platform, mirroring the `Str.startsWith(rid, "win")` check `AppHost`/`Release` already use) instead of the previous always-split-on-both-characters behaviour. `isWin` is an explicit parameter (mirroring `AppHost.launcherName`/`preferHostRid`'s testability pattern) so `jvm_auto_ffi_bridge_self_test.l` asserts the Windows behaviour deterministically without needing an actual Windows CI host. | `jvm/auto_ffi.l` | #2214 ✅ |
 | m-8 | ~~negative `loadClass` results not cached (repeated JMOD scans)~~ **DONE.** `loadClass` maintains `ctx.missKeys` (linear scan); repeated lookups of unknown classes skip the JMOD scan entirely. | `auto_ffi.l:284-306` | #2181 DONE |
 | m-9 | ~~`findBestConstructor` implicit score threshold vs explicit `>= 0`~~ **DONE.** `findBestConstructor` uses `if s >= 0 and s > bestScore` (#2226). | `auto_ffi.l:553` | #2226 DONE |
 | m-10 | `Std.Time.sleepMillis` is a JVM stub; doc omits the limitation | #2101 | #2101 |
-| m-11 | Doc contradictions: Q-J012/Q-J013 marked "shipped" in `docs/36` but "NOT present / Phase 6" in `docs/31`/`docs/03`; self-test counts drift (B124/B125/B130) across `docs/18`/`docs/33`/`docs/04`; parity count "20-program" vs "22-program" | `docs/31:409-434` vs `docs/36:123-150`; count drift | (Band J0 docs sweep) |
+| m-11 | ~~Doc contradictions: Q-J012/Q-J013 marked "shipped" in `docs/36` but "NOT present / Phase 6" in `docs/31`/`docs/03`; self-test counts drift (B124/B125/B130) across `docs/18`/`docs/33`/`docs/04`; parity count "20-program" vs "22-program"~~ **Fixed (docs sweep).** Ground truth per `docs/10-bootstrap-progress.md` D-progress-249/D-progress-254: both Q-J012 (`lowerCatchIntrinsic`) and Q-J013 (`lowerExternTargetBody`) are genuinely shipped; `docs/31` §5 (checked-exceptions overview) and §13 (the Q-J012/Q-J013 open-questions entries) updated from "NOT currently present"/"Phase 6 deliverable" to RESOLVED, matching `docs/36`'s already-correct status. `docs/03` needed no edit (its Q-J012/Q-J013 mentions are an append-only, correctly-historical 2026-05-10 revision note, not a current-status claim). Self-test counts corrected in `docs/18`/`docs/33`/`docs/04` to the actual current 132 files (B3–B134); `docs/33`'s "22-program"/`docs/04`'s "20-program" discrepancy resolved by noting the underlying `bootstrap/tests/Lyric.Cli.Tests/ParityTests.fs` F# suite both cited no longer exists post-F#-removal (dated pre-removal snapshot, `docs/33` now carries a stale-doc note). | `docs/31` §5/§13; `docs/18`/`docs/33`/`docs/04` self-test counts | (Band J0 docs sweep, done) |
 | m-12 | ~~`Float`/`Double` ordered comparisons used `fcmpl`/`dcmpl` for all six operators → NaN compared as less-than-everything for `<`/`<=` (IEEE 754 §5.11 violation)~~ **Fixed (D-progress-508):** `floatCmpInsn(op, isDouble)` selects `fcmpg`/`dcmpg` for `<`/`<=` and `fcmpl`/`dcmpl` otherwise, in both `lowerCmp` and `lowerCmpFail`; verified by `nan_compare_jvm_self_test.l`. | `codegen/02_exprs.l` | #2772 |
 | m-13 | ~~`lowerTryCatchExpr` value-less catch arm (type-checker gap #2042) aborted with a bare `panic(...)` carrying no source location~~ **DONE (D-progress-509).** Now a source-located `error[J004]: <line>:<col>: …` built from the offending catch clause's span, re-emitted under `error[J002]` by the `Jvm.Bridge` `Bug` catch for bundled packages. `J004` is the next free code after `J001`–`J003`. Regression-guarded by `try_catch_expr_jvm_self_test.l` (4 valid cases) in CI on `--target jvm`. | `codegen/05_stmts.l` | #3193 |
 | m-14 | ~~Extern/`JRef` local used across a basic-block boundary (loop back-edge / `if`) was framed as `java/lang/Object` in the `StackMapTable` → `VerifyError` on the next `invokevirtual`~~ **Fixed (D-progress-513):** `emitStore` emits `LAstoreAs(slot, cls)` so the frame carries the resolved class; verified by `extern_loop_jvm_self_test.l`. Unblocks loop-driven `_kernel_jvm` auto-FFI hosts (#1065). | `codegen/01_types.l` | #3307 (loop case) |
@@ -435,7 +436,8 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   remains an open follow-up.
 - B-2/M-12: real async lowering (futures / virtual threads per `docs/18` §14)
   and lazy generator synthesis — parity with MSIL #2070 Phase 5.
-- M-17: JDK 24+ `scope` support.
+- **M-17 Fixed/moot (D120, D-progress-602):** the real `scope`/`spawn`/`await`
+  codegen path never used `StructuredTaskScope`, so it needed no JDK-24 fix.
 - **Acceptance:** async + generator + generics self-tests on `--target jvm`.
 
 ### J5 — Eliminate F# host debt and ship Maven (self-hosting + ecosystem)
@@ -445,22 +447,46 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
 - **M-6 DONE (parsing):** `manifest.l` parses `[maven]` / `[maven.options]` into
   `MavenSection` (`MavenEntry` coordinate/version pairs, `repositories` defaulting
   to `["central"]`, optional `java_version`).  Covered by `manifest_self_test.l`.
-- **M-7 partial DONE (resolver wire-up):** `cli_restore.l:restoreMavenJars`
+- **M-7 DONE (resolver fixed + wired + distributed):** `cli_restore.l:restoreMavenJars`
   invokes `lyric-resolver.jar` via JSON stdin/stdout protocol, writes
   `target/restore/jvm-classpath.txt`.  `cli_build.l:buildProject` injects
   `LYRIC_FFI_JARS` before `emitProject` (JVM auto-FFI) and writes
-  `<outDir>/module-path.txt` after a successful JVM build.  A `make maven-resolver`
-  Makefile target builds `resolver/pom.xml` into `lyric-resolver.jar`.
-  - **Remaining gap:** `lyric-resolver.jar` must be pre-built and placed beside the
-    `lyric` binary (or `LYRIC_MAVEN_RESOLVER` set).  Pre-distribution of the JAR
-    alongside the `lyric` binary and lock-file SHA verification (`B0050`/`B0054`)
-    are deferred to a follow-up.
+  `<outDir>/module-path.txt` after a successful JVM build.  `resolver/pom.xml`
+  itself was broken (unbuildable — see M-7 in the findings table above for the
+  root cause and fix); a `make maven-resolver` Makefile target now actually
+  builds `resolver/pom.xml` into a working `lyric-resolver.jar`.
+  - **Distribution (closed):** `.github/workflows/publish.yml`'s
+    `build-standalone` job now builds `lyric-resolver.jar` and copies it beside
+    the `lyric` binary in every release archive; `publish-nuget` builds it and
+    `Lyric.Cli.Aot.csproj` packs it into `tools/<tfm>/any/` (beside `lyric.dll`)
+    for the `dotnet tool install lyric` channel.  Both channels were verified:
+    the archive path via a local `dotnet pack` + `dotnet tool install
+    --tool-path` smoke test confirming `lyric-resolver.jar` lands in the same
+    directory as the tool's `.dll`.  No manual `make maven-resolver` /
+    `LYRIC_MAVEN_RESOLVER` step remains for an end user on either channel.
+  - Lock-file SHA verification (`B0050`/`B0054`) is a separate, still-open
+    follow-up (unrelated to distribution).
 - **m-8 DONE:** `loadClass` negative-result cache implemented (`ctx.missKeys`).
 - **m-9 DONE:** `findBestConstructor` uses explicit `>= 0` threshold (#2226).
-- m-7/M-15: Windows `LYRIC_FFI_JARS` path-split (`:` vs `;`) and abstract-type
-  guard / `java/lang/Object` walk remain open.
-- **Acceptance:** an ecosystem library with a `[maven]` table builds and runs
-  on `--target jvm` from a checkout with `lyric-resolver.jar` present.
+- **m-7 DONE:** Windows `LYRIC_FFI_JARS` path-split now uses a single
+  platform-correct separator (`splitPathListOn`).
+- **M-15 DONE:** abstract-type construction now aborts under `error[J005]`
+  (was already guarded, just uncoded); `findBestInstanceMethod`'s superclass
+  walk now reaches `java/lang/Object`.
+- **Acceptance MET:** verified end-to-end with a throwaway `[maven]`-table
+  project (`org.apache.commons:commons-lang3`, not part of the ecosystem-library
+  set): `lyric restore` resolved and downloaded the artifact via the fixed
+  `lyric-resolver.jar`, `lyric build --target jvm` compiled a real `extern type`
+  call against it (typed auto-FFI resolution, not the `Object`-typed fallback —
+  confirmed by the produced bytecode's `NoClassDefFoundError` naming the exact
+  external class when run without its classpath), and running the built JAR
+  with the resolved classpath (`module-path.txt`) produced the correct output.
+  The existing ecosystem libraries with `[maven]` tables (`lyric-web`,
+  `lyric-grpc`, `lyric-mq`, `lyric-aws-secrets`, `lyric-aws-xray`,
+  `lyric-lambda`, `lyric-docker`) were not full-build-verified in this pass —
+  several (`lyric-web`) don't wire up their JVM kernel package yet, which is a
+  separate, unrelated gap (docs/44 J2/J3 JVM backend coverage), not a Maven
+  resolution issue.
 
 ### J6 — stdlib JVM kernel parity (cross-platform stdlib actually works on JVM)
 - **M-9 (DONE):** added `_kernel_jvm/hash_host.l` (Java SHA-512 via
@@ -503,8 +529,9 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   `@test_module` tests) to run through the **compile pipeline**, not just the
   emission library, and delete the F# `JvmLoweringB*Test.fs` wrappers as the
   native path subsumes them.
-- B-11/#676: ship the full JUnit 5 `LyricTestEngine` so `lyric test --jvm`
-  executes tests.
+- B-11/#676 (narrowed scope, not a blocker — `lyric test --jvm` already
+  executes tests for real via `Lyric.TestSynth`): ship the full JUnit 5
+  `LyricTestEngine` for IDE-gutter-icon / Gradle / Maven Surefire integration.
 - M-18: `lyric run --target jvm` (#674) ships; `main(args: slice[String]): Int`
   argv forwarding and `System.exit` exit-code propagation shipped in
   D-progress-543 (#3303 fixed). `lyric bench --target jvm` (#680) works — the
@@ -574,9 +601,9 @@ and J4 (async), and the J2→J4 logical dependency holds — so Track A
 
 ## 8. Open decisions for the maintainer
 
-- **G1 (gating):** Is `--target jvm` a v1.0 SemVer-guaranteed channel, or a
-  Phase-6 target with independent versioning? (`docs/36` §G1.) Determines the
-  J7 bar and whether JVM blocks the v1.0 release.
+- **G1: RESOLVED (D-progress-620).** `--target jvm` is an independently-versioned
+  Phase-6 target, not a v1.0 SemVer-guaranteed channel (`docs/36` §G1); it does
+  not block the v1.0 release train and continues shipping on its own cadence.
 - **Generics on JVM:** accept erased + `checkcast` for v1 (recommended; matches
   `docs/18`), or invest in specialised helpers / await Valhalla (Q-J001/Q-J003)?
 - **Maven resolver:** revive the orphaned Java `resolver/` (pragmatic, but adds

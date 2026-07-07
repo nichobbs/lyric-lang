@@ -155,6 +155,24 @@ test "ArrayList(Collection) copy constructor — verified reference assignabilit
   assertEqualInt(copy.size(), 3, "copied ArrayList preserves element count")
 }
 
+// ── Inherited java.lang.Object method resolution (M-15 part 2, #2219) ────────
+//
+// `findBestInstanceMethod` used to stop walking the superclass chain one
+// step before `java/lang/Object`, so a method declared ONLY on `Object` and
+// never overridden anywhere in a class's superclass chain (`getClass()`,
+// `notify()`, `notifyAll()`, `wait()` — all `final`, so no subclass can ever
+// override them) was invisible to auto-FFI instance-method resolution.
+// `ArrayList` -> `AbstractList` -> `AbstractCollection` -> `Object`: none of
+// the first three declare `getClass()`, so resolving it exercises the walk
+// all the way to Object.  Chaining `.getName()` on the returned
+// `java.lang.Class` also exercises instance auto-FFI resolution against the
+// JvmType returned by a prior auto-FFI call (same chaining shape as
+// `Integer.valueOf(42).intValue()` above).
+test "getClass() resolves through the superclass chain to java.lang.Object (#2219)" {
+  val name = JArrayList.new().getClass().getName()
+  assertEqual(name, "java.util.ArrayList", "ArrayList.getClass().getName() == \"java.util.ArrayList\"")
+}
+
 // Phase 5 (F0015-J): @externTarget with metadata-verified signature.
 // The function names follow the Maven TypeName_methodName convention so
 // isStaticExternByName returns true, matching the emitted invokestatic.

@@ -129,16 +129,21 @@ Trait/interface-based generics ship in v1. Package generics (parameterizing whol
 **Status:** PHASE 6 SHIPPED (end-to-end `lyric build --target jvm` works)
 
 The self-hosted JVM emitter (`lyric-compiler/jvm/`) is operational.
-`Jvm.Lowering` (29 `lowerXxx` functions) and `Jvm.Driver` pass 129 self-tests
-(B3–B130).  The CLI pipeline — F# bootstrap `Emitter.emit` → JVM-flavoured
-stdlib precompile → `SelfHostedJvm.compileToJar` → runnable JAR — is wired and
-exercised by the 22-program × 3-path parity smoke suite in
-`bootstrap/tests/Lyric.Cli.Tests/ParityTests.fs` (`Lyric.Cli.Parity smoke-tests`).
-A Lyric source declaring `func main(): Int` or `func main(): Unit` compiles
-to a `java -jar`-runnable archive whose `Main-Class` is derived from the
-source's `package` declaration.  Library / ecosystem maturity (real-world
-benchmarks, Maven Central publishing flow at scale, native-image AOT) is
-still post-v1 work.
+`Jvm.Lowering` (29 `lowerXxx` functions) and `Jvm.Driver` pass 132 self-tests
+(B3–B134, `lyric-compiler/jvm/self_test_b*.l`).  The CLI pipeline is fully
+self-hosted, no F# involved: `lyric build --target jvm` routes through
+`Jvm.Bridge` (`lyric-compiler/jvm/bridge.l`), which parses + type-checks the
+source via `Lyric.Parser`/`Lyric.TypeChecker` and drives `Jvm.Codegen` →
+`Jvm.Lowering.lowerPackage` → `Jvm.Driver.writeJarFromClasses` → runnable JAR.
+(The earlier F# bootstrap `Emitter.emit` → `SelfHostedJvm.compileToJar` path
+and the 22-program × 3-path `bootstrap/tests/Lyric.Cli.Tests/ParityTests.fs`
+smoke suite this section previously cited no longer exist — F# was fully
+removed; see `CLAUDE.md` "No F# code allowed" and `docs/33` for the
+historical snapshot.)  A Lyric source declaring `func main(): Int` or
+`func main(): Unit` compiles to a `java -jar`-runnable archive whose
+`Main-Class` is derived from the source's `package` declaration.  Library /
+ecosystem maturity (real-world benchmarks, Maven Central publishing flow at
+scale, native-image AOT) is still post-v1 work.
 
 **Original rationale (v1):** Building two backends in parallel risks shipping
 neither. JVM's erased generics and reflection-heavy ecosystem make it a worse

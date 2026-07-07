@@ -1324,16 +1324,16 @@ func lowerAutoFfiInstanceCall(
 // `new <class>; dup; <args>; invokespecial <init>`.  Receiver reference is
 // produced by the `new` opcode and duplicated so the initialised reference
 // remains on the stack after `invokespecial` consumes the bottom copy.
-// Abstract classes are rejected at compile time: emitting `new` for an
-// abstract class produces bytecode that throws `InstantiationError` at runtime
-// rather than a clear diagnostic (#2215).
+// Abstract classes are rejected at compile time under `error[J005]`: emitting
+// `new` for an abstract class would otherwise produce bytecode that throws
+// `InstantiationError` at runtime instead of a clear diagnostic (#2215).
 func lowerAutoFfiConstructorCall(
   ctx: in FuncCtx, insns: in List[LInsn], ci: in ClassInfo, args: in List[CallArg]
 ): JvmType {
   if ci.isAbstract {
     val fqn = ci.binaryName.replace("/", ".")
     panic(
-      "JVM auto-FFI: cannot construct abstract class '" + fqn +
+      "error[J005]: JVM auto-FFI: cannot construct abstract class '" + fqn +
         "' — declare a concrete subclass and instantiate that instead"
     )
   }

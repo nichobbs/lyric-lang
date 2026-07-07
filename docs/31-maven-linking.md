@@ -209,8 +209,8 @@ Shim generator policy:
 
 Unchecked exceptions (`RuntimeException` and `Error` subclasses) propagate
 as unhandled bugs — the same as a contract violation — and are not wrapped.
-The caller can convert them to `JvmException` via a future `Std.Jvm.catch`
-intrinsic if needed (tracked under Q-J012).
+The caller can convert them to `JvmException` via the `Std.Jvm.catch`
+intrinsic (Q-J012, shipped — see below).
 
 `JvmException` is a single opaque wrapper over `java.lang.Exception`.
 Callers that need to distinguish exception types call `typeName` and match
@@ -397,41 +397,33 @@ subclasses thrown by Java code (e.g. `NullPointerException` escaping a
 poorly-written library). Today there is no Lyric-level way to intercept
 unchecked exceptions without crashing the thread.
 
-**Resolution:** `Std.Jvm.catch[T](action: func(): T): Result[T, JvmException]`
-has been added to `lyric-stdlib/std/_kernel/jvm.l`, gated behind `@experimental`.
-The declaration routes to `lyric.runtime.jvm.ExceptionHelper.catch` (a
-static helper in the JVM stdlib kernel JAR that wraps a Callable). `Error`
+**RESOLVED (shipped, D-progress-249):** `Std.Jvm.catch[T](action: func(): T):
+Result[T, JvmException]` in `lyric-stdlib/std/_kernel/jvm.l` is
+`@stable(since="1.0")` and is a real JVM codegen intrinsic —
+`lowerCatchIntrinsic` (`lyric-compiler/jvm/codegen/04_calls.l`) macro-expands
+a literal-lambda `catch({ -> body })` call to an inline try-catch: the lambda
+body lowers as the try region, success wraps the result in `Result$Ok`, and
+any `java.lang.Exception` is caught and wrapped in `Result$Err`. No separate
+`ExceptionHelper.catch` Java helper or `invokedynamic` path is needed. `Error`
 subclasses are NOT caught (they propagate as unrecoverable JVM errors) per
-the conservative bootstrap default. The JVM emitter call-site wrapper and
-the `ExceptionHelper.catch` Java implementation are Phase 6 deliverables
-(see Q-J013).
+the conservative bootstrap default. Known limitation: a non-literal lambda
+argument falls through to the general call path, which fails at JVM load
+time. Verified by stage B127 (`lyric-compiler/jvm/self_test_b127.l`).
 
 ### Q-J013: JVM emitter call-site try-catch for checked-exception methods
 
-When the JVM emitter compiles a call to an `@externTarget` function whose
-declared Lyric return type is `Result[T, JvmException]` (i.e. a Java method
-with checked exceptions in its `throws` clause), it must emit a try-catch
-block rather than a plain `invokestatic` / `invokevirtual`:
-
-1. Begin a protected region.
-2. Emit the Java method call.
-3. Box the return value into `Ok(result)`.
-4. Catch `java.lang.Exception`; box the caught exception into `Err(exception)`.
-
-This wrapping is NOT currently present in `lyric-compiler/jvm/lowering.l`.
-The shim generator (`MavenShim.fs`) correctly declares the Lyric return type
-as `Result[T, JvmException]` so the type checker accepts call sites correctly,
-but the JVM emitter will produce incorrect bytecode (no try-catch) until this
-is implemented.
-
-`Std.Jvm.catch[T]` (Q-J012) similarly needs the JVM emitter to recognise the
-`ExceptionHelper.catch` target and emit an `invokedynamic`/`invokestatic` +
-exception-table entry rather than a direct call.
-
-**Recommended default:** implement as part of the Phase 6 `@externTarget`
-lowering pass in `lyric-compiler/jvm/`. Add an `LExternCall` instruction
-variant (or annotate `LInvokestatic` / `LInvokevirtual` with a `checkedWrap`
-flag) so `lowerFunc` emits the exception table entry automatically.
+**RESOLVED (shipped, D-progress-254):** the JVM emitter now emits a real
+try-catch when lowering a body-less `@externTarget` function whose declared
+Lyric return type is `Result[T, JvmException]`, rather than a plain
+`invokestatic` / `invokevirtual`. `lowerExternTargetBody`
+(`lyric-compiler/jvm/codegen/04_calls.l`) detects the `@externTarget`
+annotation, resolves `isResultJvmException(ret)`, and when true wraps the
+invoke in the same `Result$Ok`/`Result$Err` try-catch pattern
+`lowerCatchIntrinsic` (Q-J012) uses. Direct (non-wrapped) return otherwise.
+Verified by stage B128 (`lyric-compiler/jvm/self_test_b128.l`): a
+`ParseWrapper.tryParseInt(String): Object` externTarget wrapping
+`Integer.parseInt` returns `ok:42` for `"42"` and `err:NumberFormatException`
+for `"abc"`.
 
 ### Q-J011: GPG signature verification
 
