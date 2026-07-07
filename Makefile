@@ -366,6 +366,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/try_catch_expr_self_test.l \
 	lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
 	lyric-compiler/lyric/typechecker_self_test.l \
+	lyric-compiler/lyric/typed_ffi_delegate_self_test.l \
 	lyric-compiler/lyric/union_case_collision_self_test.l \
 	lyric-compiler/lyric/union_ctor_return_context_self_test.l \
 	lyric-compiler/lyric/union_list_match_self_test.l \
