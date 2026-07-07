@@ -1,6 +1,6 @@
 //! Ledger — enterprise double-entry bookkeeping service.
 //!
-//! Wires together the HTTP router, health probes, and the Kestrel server.
+//! Wires together the HTTP router, health probes, and the HTTP server.
 //!
 //! Build:   lyric build --manifest examples/ledger/lyric.toml
 //! Run:     lyric run   --manifest examples/ledger/lyric.toml
@@ -10,9 +10,6 @@
 //!   LYRIC_CONFIG_DB_CONNECTION_URL   — PostgreSQL URL
 //!                                      e.g. "Host=localhost;Database=ledger;Username=app;Password=..."
 //!   LYRIC_CONFIG_WEB_SERVER_PORT     — HTTP port (default 8080)
-//!
-//! Optional:
-//!   LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED=true  — serve Swagger UI at /swagger
 //!
 //! Quick-start (after applying schema.sql):
 //!
@@ -70,27 +67,47 @@ func healthRegistry(): HealthRegistry {
   Health.addReadinessCheck(health, "postgres", { -> readiness() })
 }
 
-/// GET /health/live — registered by name on the router below.
-pub func healthLive(): Result[String, ApiError] {
+/// GET /health/live
+pub func healthLive(req: in Web.Request): Web.Response {
   match Health.runLiveness(healthRegistry()) {
-    case Ok(body) -> Ok(body)
-    case Err(msg) -> Err(Web.serviceUnavailable(msg))
+    case Ok(body) -> Web.json(200, body)
+    case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
   }
 }
 
-/// GET /health/ready — registered by name on the router below.
-pub func healthReady(): Result[String, ApiError] {
+/// GET /health/ready
+pub func healthReady(req: in Web.Request): Web.Response {
   match Health.runReadiness(healthRegistry()) {
-    case Ok(body) -> Ok(body)
-    case Err(msg) -> Err(Web.serviceUnavailable(msg))
+    case Ok(body) -> Web.json(200, body)
+    case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
+  }
+}
+
+// Web.Handler is an interface, not a stored closure — see Ledger.Api's
+// handler-wrapper comment (issue #5363).
+record HealthLiveHandler {
+}
+
+impl Web.Handler for HealthLiveHandler {
+  func handle(req: in Web.Request): Web.Response {
+    healthLive(req)
+  }
+}
+
+record HealthReadyHandler {
+}
+
+impl Web.Handler for HealthReadyHandler {
+  func handle(req: in Web.Request): Web.Response {
+    healthReady(req)
   }
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 pub func main(): Unit {
   val router = Ledger.Api.routes()
-  val router = Web.addGet(router, "/health/live", "Ledger.healthLive")
-  val router = Web.addGet(router, "/health/ready", "Ledger.healthReady")
+  val router = Web.addGet(router, "/health/live", HealthLiveHandler())
+  val router = Web.addGet(router, "/health/ready", HealthReadyHandler())
 
   Web.start(router)
 }

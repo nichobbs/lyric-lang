@@ -9,16 +9,16 @@
 //! Two composition modes (may be combined in the same LambdaApp):
 //!
 //!   1. lyric-web router reuse
-//!      Build a Web.Router exactly as you would for a Kestrel service, then
-//!      attach it with withRouter().  API Gateway v1 (REST API), v2 (HTTP API),
-//!      and ALB events are all routed through the same Web.Route dispatch
-//!      logic — the same handler functions work unchanged.
+//!      Build a Web.Router exactly as you would for a standalone lyric-web
+//!      service, then attach it with withRouter().  API Gateway v1 (REST
+//!      API), v2 (HTTP API), and ALB events are all routed through the same
+//!      Web.Route dispatch logic — the same handler functions work unchanged.
 //!
 //!      Example:
 //!        val router = Web.create()
-//!          |> Web.addGet("/users/{id}", "MyApp.Users.getUser")
-//!          |> Web.addPost("/users",     "MyApp.Users.createUser")
-//!        Lambda.serve(Lambda.newApp() |> Lambda.withRouter(router))
+//!        val router = Web.addGet(router, "/users/{id}", MyApp.Users.getUser)
+//!        val router = Web.addPost(router, "/users", MyApp.Users.createUser)
+//!        Lambda.serve(Lambda.withRouter(Lambda.newApp(), router))
 //!
 //!   2. Custom event source handlers
 //!      Register handlers by fully-qualified function name with the

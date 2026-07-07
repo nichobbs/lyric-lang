@@ -394,10 +394,14 @@ several of these are core, not edge-case, functionality:
   exhausted locale-fallback chain (request locale absent, primary
   fallback absent, secondary fallback absent).
 - **lyric-web / lyric-ws**: CORS, rate-limiting, and aspect weaving are
-  tested; routing/handler dispatch and WebSocket connection lifecycle are
-  not (this converges with §3's note that HTTP kernel dispatch itself is
-  a pending compiler/runtime milestone, so some of this is intentionally
-  blocked, not neglected).
+  tested; **update (see D124):** `lyric-web` routing/handler dispatch,
+  static file serving, and the middleware pipeline are now implemented
+  (`Web.dispatch`, built on `Std.HttpServer`) and covered by
+  `lyric-web/tests/dispatch_tests.l` — the "pending compiler/runtime
+  milestone" framing below no longer applies to `lyric-web`; it was never
+  a compiler gap, `Web.serve()` simply never matched requests against
+  registered routes (D124's root cause). WebSocket connection lifecycle
+  (`lyric-ws`) is untouched by D124 and remains untested.
 
 ### 5.3 `lyric-testing` mock coverage vs. the interfaces it should cover
 

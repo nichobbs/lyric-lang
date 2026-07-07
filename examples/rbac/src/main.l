@@ -56,26 +56,46 @@ func healthRegistry(): HealthRegistry {
   Health.addReadinessCheck(health, "postgres", { -> readiness() })
 }
 
-/// GET /health/live — registered by name on the router below.
-pub func healthLive(): Result[String, ApiError] {
+/// GET /health/live
+pub func healthLive(req: in Web.Request): Web.Response {
   match Health.runLiveness(healthRegistry()) {
-    case Ok(body) -> Ok(body)
-    case Err(msg) -> Err(Web.serviceUnavailable(msg))
+    case Ok(body) -> Web.json(200, body)
+    case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
   }
 }
 
-/// GET /health/ready — registered by name on the router below.
-pub func healthReady(): Result[String, ApiError] {
+/// GET /health/ready
+pub func healthReady(req: in Web.Request): Web.Response {
   match Health.runReadiness(healthRegistry()) {
-    case Ok(body) -> Ok(body)
-    case Err(msg) -> Err(Web.serviceUnavailable(msg))
+    case Ok(body) -> Web.json(200, body)
+    case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
+  }
+}
+
+// Web.Handler is an interface, not a stored closure — see Rbac.Api's
+// handler-wrapper comment (issue #5363).
+record HealthLiveHandler {
+}
+
+impl Web.Handler for HealthLiveHandler {
+  func handle(req: in Web.Request): Web.Response {
+    healthLive(req)
+  }
+}
+
+record HealthReadyHandler {
+}
+
+impl Web.Handler for HealthReadyHandler {
+  func handle(req: in Web.Request): Web.Response {
+    healthReady(req)
   }
 }
 
 pub func main(): Unit {
   val router = Rbac.Api.routes()
-  val router = Web.addGet(router, "/health/live", "Rbac.healthLive")
-  val router = Web.addGet(router, "/health/ready", "Rbac.healthReady")
+  val router = Web.addGet(router, "/health/live", HealthLiveHandler())
+  val router = Web.addGet(router, "/health/ready", HealthReadyHandler())
 
   Web.start(router)
 }

@@ -15,14 +15,24 @@
 //! Bootstrap-grade: synchronous, single-threaded, no router, no
 //! middleware.  Good enough to demonstrate end-to-end REST shape;
 //! real servers come later (or via a hand-curated wrapper around
-//! ASP.NET Core minimal APIs).
+//! ASP.NET Core minimal APIs).  `lyric-web` (`Web.start`) builds its
+//! router, middleware pipeline, and static file serving on top of
+//! this kernel — see `requestQuery`, `requestHeaders`, `urlDecode`,
+//! `respondBytes`, and `respondBytesWithHeaders` below.
 //!
 //! G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
 //! the F# `Lyric.Stdlib.HttpServerHost` shim retires entirely.
 //! Direct-extern primitives + Lyric-level orchestration live below.
+//!
+//! dotnet-only: the JVM twin (`_kernel_jvm/http_server.l`) routes
+//! through an out-of-repo prebuilt JAR (`lyric.stdlib.jvm.HttpServerHost`)
+//! and does not yet expose query string / header / byte-body support —
+//! a pre-existing Phase-6 JVM-parity gap (see `docs/44`), not one this
+//! extension introduces.
 package Std.HttpServer
 
 import Std.Core
+import Std.Collections
 
 // =====================================================================
 // Extern types — BCL classes the helpers below reference.
@@ -44,6 +54,8 @@ extern type Encoding = "System.Text.Encoding"
 extern type Stream = "System.IO.Stream"
 
 extern type StreamReader = "System.IO.StreamReader"
+
+extern type WebHeaderCollection = "System.Net.WebHeaderCollection"
 
 // =====================================================================
 // Primitive externs (private to this kernel file).
@@ -95,6 +107,29 @@ func requestUrl(req: in HttpListenerRequest): Uri = ()
 @externInstance
 @externTarget("System.Uri.get_AbsolutePath")
 func uriAbsolutePath(u: in Uri): String = ()
+
+@externInstance
+@externTarget("System.Uri.get_Query")
+func uriQuery(u: in Uri): String = ()
+
+@externTarget("System.Uri.UnescapeDataString")
+func uriUnescape(s: in String): String = ()
+
+@externInstance
+@externTarget("System.Net.HttpListenerRequest.get_Headers")
+func requestHeadersRaw(req: in HttpListenerRequest): WebHeaderCollection = ()
+
+@externInstance
+@externTarget("System.Net.WebHeaderCollection.get_AllKeys")
+func headersAllKeys(h: in WebHeaderCollection): slice[String] = ()
+
+@externInstance
+@externTarget("System.Collections.Specialized.NameValueCollection.Get")
+func headersGet(h: in WebHeaderCollection, name: in String): String = ()
+
+@externInstance
+@externTarget("System.Net.HttpListenerResponse.AddHeader")
+func responseAddHeader(resp: in HttpListenerResponse, name: in String, value: in String): Unit = ()
 
 @externInstance
 @externTarget("System.Net.HttpListenerRequest.get_InputStream")
@@ -207,6 +242,51 @@ pub func requestBody(c: in HttpContext): String {
   }
 }
 
+/// Raw query string with no leading `?` (e.g. `"a=1&b=2"`), or `""` if
+/// the URL has none or the host throws.
+pub func requestQuery(c: in HttpContext): String {
+  return try {
+    val q = uriQuery(requestUrl(ctxRequest(c)))
+    if q.length > 0 and q[0] == '?' {
+      q.substring(1)
+    } else {
+      q
+    }
+  } catch Bug as _ {
+    ""
+  }
+}
+
+/// Every request header as a name/value map.  Multi-valued headers are
+/// comma-joined by the BCL's `WebHeaderCollection.Get`, matching HTTP's
+/// own multi-value-header folding rule (RFC 7230 §3.2.2).  Returns an
+/// empty map if the host throws.
+pub func requestHeaders(c: in HttpContext): Map[String, String] {
+  val result: Map[String, String] = newMap()
+  try {
+    val h = requestHeadersRaw(ctxRequest(c))
+    val names = headersAllKeys(h)
+    var i = 0
+    while i < names.length {
+      val name = names[i]
+      result.add(name, headersGet(h, name))
+      i = i + 1
+    }
+  } catch Bug as _ {
+    ()
+  }
+  return result
+}
+
+/// Percent-decode a URL-encoded string (query/path segment values).
+pub func urlDecode(s: in String): String {
+  return try {
+    uriUnescape(s)
+  } catch Bug as _ {
+    s
+  }
+}
+
 // Internal: shared response writer for both the text and JSON helpers.
 // Sets status + content-type, encodes the body to UTF-8 bytes, writes
 // the full buffer, then closes the output stream and the response.
@@ -233,4 +313,52 @@ pub func respondText(c: in HttpContext, status: in Int, body: in String): Unit {
 /// shapes.
 pub func respondJson(c: in HttpContext, status: in Int, body: in String): Unit {
   respondWith(c, status, "application/json; charset=utf-8", body)
+}
+
+// Internal: shared byte-body response writer.  Extra headers are added
+// before the body is written (the BCL requires headers to be set before
+// the first write to the output stream).
+func respondBytesWith(
+  c: in HttpContext,
+  status: in Int,
+  contentType: in String,
+  body: in slice[Byte],
+  headers: in Map[String, String],
+): Unit {
+  val resp = ctxResponse(c)
+  setResponseStatus(resp, status)
+  setResponseContentType(resp, contentType)
+  val names = mapKeys(headers).toArray()
+  var i = 0
+  while i < names.length {
+    val name = names[i]
+    match mapGet(headers, name) {
+      case Some(value) -> responseAddHeader(resp, name, value)
+      case None -> ()
+    }
+    i = i + 1
+  }
+  setResponseContentLength(resp, intToLong(body.length))
+  val outStream = responseOutputStream(resp)
+  streamWrite(outStream, body, 0, body.length)
+  streamClose(outStream)
+  responseClose(resp)
+}
+
+/// Reply with a raw byte body (e.g. a static file, an image, a binary
+/// download); closes the response.
+pub func respondBytes(c: in HttpContext, status: in Int, contentType: in String, body: in slice[Byte]): Unit {
+  respondBytesWith(c, status, contentType, body, newMap())
+}
+
+/// Reply with a raw byte body plus extra response headers; closes the
+/// response.
+pub func respondBytesWithHeaders(
+  c: in HttpContext,
+  status: in Int,
+  contentType: in String,
+  body: in slice[Byte],
+  headers: in Map[String, String],
+): Unit {
+  respondBytesWith(c, status, contentType, body, headers)
 }

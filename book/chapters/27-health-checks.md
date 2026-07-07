@@ -36,21 +36,34 @@ func buildHealth(): HealthRegistry {
   return health
 }
 
-// Web routes are name-based, so the endpoints are ordinary handlers
-// in your own package:
-pub func healthLive(): Result[String, ApiError] {
-  Health.runLiveness(buildHealth())
+// Web.Route handlers implement Web.Handler; wrap runLiveness/runReadiness's
+// Result[String, String] in a thin handler (a function reference, no
+// name-based dispatch):
+record HealthLiveHandler {}
+impl Web.Handler for HealthLiveHandler {
+  func handle(req: in Web.Request): Web.Response {
+    match Health.runLiveness(buildHealth()) {
+      case Ok(body) -> Web.json(200, body)
+      case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
+    }
+  }
 }
 
-pub func healthReady(): Result[String, ApiError] {
-  Health.runReadiness(buildHealth())
+record HealthReadyHandler {}
+impl Web.Handler for HealthReadyHandler {
+  func handle(req: in Web.Request): Web.Response {
+    match Health.runReadiness(buildHealth()) {
+      case Ok(body) -> Web.json(200, body)
+      case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
+    }
+  }
 }
 
 func main(): Unit {
   var router = Web.create()
-  router = Web.addGet(router, "/users/{id}", "MyService.Handlers.getUser")
-  router = Web.addGet(router, "/health/live", "MyService.healthLive")
-  router = Web.addGet(router, "/health/ready", "MyService.healthReady")
+  router = Web.addGet(router, "/users/{id}", GetUserHandler())
+  router = Web.addGet(router, "/health/live", HealthLiveHandler())
+  router = Web.addGet(router, "/health/ready", HealthReadyHandler())
 
   Web.start(router)
 }
@@ -103,10 +116,11 @@ report.healthy   // Bool — true only when every check in the group passed
 report.body      // String — the JSON response body below
 ```
 
-`runLiveness(registry)` / `runReadiness(registry)` map the report onto
-the lyric-web handler convention (`Result[String, ApiError]`):
-`Ok(body)` when healthy, `Err(ApiError)` with status 503 naming the
-failing checks when degraded.
+`runLiveness(registry)` / `runReadiness(registry)` return
+`Result[String, String]`: `Ok(body)` when healthy, `Err(message)`
+naming the failing checks when degraded — map the `Err` case to
+`Web.serviceUnavailable(message)` (503) in your route handler, as the
+Quick start example above does.
 
 ## Response format
 

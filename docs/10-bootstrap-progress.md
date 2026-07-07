@@ -29948,3 +29948,48 @@ currently fail on both, pinned by the test with the reason documented.
 
 **Related:** `docs/03-decision-log.md` D-progress-621 (full account) and
 D119 (the parent decision).
+
+---
+
+### D-progress-622 — `lyric-web` gets real HTTP dispatch, static file serving, and a middleware pipeline (D124); `Handler`/`Middleware` redesigned as interfaces after discovering closures are unreliable across 2+ packages
+
+`Web.serve()` never matched incoming requests against registered routes —
+every request got the same hardcoded JSON payload describing the route
+table, regardless of method or path. Fixed with a pure `Web.dispatch(router,
+request): Response` (method + `{name}`/`{*name}` path matching, path/query
+percent-decoding, case-insensitive headers) built on `Std.HttpServer`
+(extended with `requestQuery`/`requestHeaders`/`urlDecode`/`respondBytes*`),
+plus static file serving (`Web.StaticFiles` config template, canonical-path
+traversal guard, multi-mount) and a middleware pipeline (`Web.Middleware`,
+CORS finally wired up from the previously-parsed-and-ignored env vars,
+`Web.requestLogger`).
+
+Along the way, four previously-unknown self-hosted MSIL backend bugs
+surfaced and are filed as issues #5361–#5364 (payload-free enum +
+closure in one compile unit crashes closure lowering; bare named
+function references crash when converted to a delegate value;
+**closures invoked across 2+ packages are unreliable up to silent
+wrong-value corruption with no exception** — this last one corroborates
+D-progress-621's JVM `ClassCastException`-across-package-boundaries
+finding above, now root-caused more broadly; and a match-arm-bound
+variable used as a call argument from inside its own arm crashes
+regardless of closures). Given the severity of the third bug,
+`Web.Handler`/`Web.Middleware` are interfaces rather than closures —
+`Web.dispatch`'s middleware composition is a small `Handler`-implementing
+record chain, not composed closures — matching every other
+pluggable-behavior abstraction already in this codebase (`WsHandler`,
+`MailSender`, `StorageBucket`, …).
+
+Verified by `lyric-web/tests/dispatch_tests.l` (23 tests) and a live
+`HttpListener` + `curl` smoke test against a router consumed as a
+genuine path dependency from a separate project — the exact
+configuration the closure bug made unreliable — covering path params,
+query strings, headers, static files, and repeated sequential requests
+with no crash. `examples/ledger`/`rbac`/`jobqueue` migrate to the
+`Handler` interface and gain hand-rolled `Std.Json` request-body parsers.
+
+**Related:** `docs/03-decision-log.md` D124 (full account), D099
+(the `lyric-health` function-reference precedent this generalizes),
+issues #5359 (`Web.addWorker` still not dispatched — separately
+tracked), #5360 (live OpenAPI/Swagger serving — separately tracked),
+#5361–#5364.
