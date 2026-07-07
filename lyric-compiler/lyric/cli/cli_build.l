@@ -131,7 +131,7 @@ record LoadedManifest {
 // its existing stdlib-colocation step can ALSO colocate the newly-resolved
 // dependency DLLs beside a runnable program's output — otherwise a program
 // that now compiles against a workspace/path dependency would fail at
-// `dotnet exec` time with a missing-assembly error (D122).
+// `dotnet exec` time with a missing-assembly error (D123).
 record NonNativeEmitOutcome {
   emitResult: EmitResult
   restoredDlls: List[String]
@@ -148,7 +148,7 @@ record NonNativeEmitOutcome {
 // filename like "foo.l" has `Path.dirname` == "." and walking up from "."
 // alone can never leave the cwd, so resolving against
 // `Environment.currentDirectory()` first is required for the walk to reach
-// any parent directory at all (D122).
+// any parent directory at all (D123).
 func discoverManifestForSourceFile(sourcePath: in String): Option[String] {
   val absSource = if Path.isAbsolute(sourcePath) {
     sourcePath
@@ -198,7 +198,7 @@ func failedEmitOutcome(msg: in String): NonNativeEmitOutcome {
 // `EmitProjectRequest` and routes it through `Emitter.emitProject`: the same
 // dependency-resolution and bundling pipeline `buildProject` uses for a
 // manifest's `[project.packages]`, instead of the standalone `Emitter.emit`
-// path, which structurally cannot see anything outside `Std.*` (D122).
+// path, which structurally cannot see anything outside `Std.*` (D123).
 //
 // Falls back to the historical `Emitter.emit(req)` path UNCHANGED whenever
 // there is nothing for the new pipeline to contribute: no manifest found at
@@ -426,7 +426,7 @@ pub func buildOneNative(
       // `lyric run`.  Libraries (no `main`) are left untouched: colocation there
       // is unnecessary and must never run for a stdlib self-build (which has no
       // `main` and would otherwise be clobbered by the seed bundle).
-      // `emitSingleFileOrProject` (D122) resolves manifest dependencies to
+      // `emitSingleFileOrProject` (D123) resolves manifest dependencies to
       // DLL paths when a nearby lyric.toml contributes any — colocate those
       // beside the output exactly like `buildProject` does, so a runnable
       // single-file program that now compiles against a workspace/path/NuGet
@@ -1151,7 +1151,7 @@ func buildProject(
   }
 
   // D045: resolve active feature set from manifest defaults + CLI flags.
-  // `resolveManifestFeatures` (cli/workspace_builder.l, D122) bypasses the
+  // `resolveManifestFeatures` (cli/workspace_builder.l, D123) bypasses the
   // Manifest.features field (which has a bootstrap-emitter match quirk when
   // the field type is Option[FeaturesSection]) and scans the raw TOML text
   // directly.  mfText was already read at the top of this function.  Shared
@@ -1320,7 +1320,7 @@ func buildProject(
   // Resolve all dependencies (workspace, path, and NuGet-as-Lyric-package) to
   // DLL paths and collect their source packages for cross-package aspect
   // template resolution (#3498).  `resolveManifestDependencies`
-  // (cli/workspace_builder.l, D122) is shared with `buildOneNative`'s
+  // (cli/workspace_builder.l, D123) is shared with `buildOneNative`'s
   // single-file synthetic project request — see its doc comment for the
   // workspace-error-vs-unbuilt-local-dep distinction this function preserves
   // verbatim (a workspace failure has always been an immediate `return 1`
@@ -1353,7 +1353,7 @@ func buildProject(
   // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM
   // auto-FFI resolver can locate downloaded Maven JARs at compile time, via
   // the shared `injectMavenClasspathForJvm` (cli/workspace_builder.l,
-  // D122) — also used by `buildOneNative`'s single-file synthetic project
+  // D123) — also used by `buildOneNative`'s single-file synthetic project
   // request.  The `:` separator is the POSIX path-list separator; Windows
   // drive-letter ambiguity is a known gap tracked in #2214 (both sides
   // fixed together).

@@ -364,7 +364,7 @@ func checkDllIsStale(dllPath: in String, manifestPath: in String, sourceDir: in 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §3. Shared manifest dependency/feature resolution (D122)
+// §3. Shared manifest dependency/feature resolution (D123)
 // ─────────────────────────────────────────────────────────────────────────────
 // The following three groups back BOTH `buildProject`'s `[project.packages]`
 // compiles and `buildOneNative`'s single-file synthetic one-package request
@@ -435,7 +435,7 @@ pub record ResolvedManifestDeps {
   /// `lyric.toml` could not be read, or its `lyric.toml` failed to parse.
   /// `buildProject` has historically treated this as a non-fatal warning
   /// (the downstream typecheck surfaces the real error); `buildOneNative`'s
-  /// single-file synthetic project request treats it as fatal per D122's
+  /// single-file synthetic project request treats it as fatal per D123's
   /// "fail loud instead of silently degrading" conservative default.
   hadUnbuiltLocalDep: Bool
 }

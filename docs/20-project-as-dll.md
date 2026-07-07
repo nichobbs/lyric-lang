@@ -21,7 +21,7 @@ preserving package boundaries as namespaces and contract resources.
 Multi-file packages (one package, multiple `.l` files) is a
 prerequisite shipped per `docs/19-multi-file-packages.md`.
 
-**Reuse beyond project mode (D122).** `Emitter.emitProject` — the
+**Reuse beyond project mode (D123).** `Emitter.emitProject` — the
 `EmitProjectRequest` → bundle pipeline this document specifies — is not
 exclusive to a manifest's `[project.packages]` list. `lyric build
 <source.l>`'s single-file path (`cli/cli_build.l`'s `buildOneNative`) now
@@ -32,7 +32,7 @@ dependencies, NuGet/Maven assets, or features — giving a loose `.l` file
 access to a project's dependency graph without adding it to
 `[project.packages]`. See `docs/01-language-reference.md` §13.1
 ("Single-file dependency resolution") for the user-facing behavior and
-`docs/03-decision-log.md` D122 for the full design rationale, including
+`docs/03-decision-log.md` D123 for the full design rationale, including
 why this only fires when there is something for it to contribute (a
 one-package request built unconditionally was measured to change the
 embedded `Lyric.Contract` resource name even with zero dependencies).

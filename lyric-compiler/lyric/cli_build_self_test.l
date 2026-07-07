@@ -199,7 +199,7 @@ test "buildOneNative: a library (no main) does NOT colocate Lyric.Stdlib.dll bes
   )
 }
 
-// ─── single-file + nearby-manifest dependency resolution (D122) ────────
+// ─── single-file + nearby-manifest dependency resolution (D123) ────────
 // Exercises `buildOneNative` auto-discovering a lyric.toml near a loose .l
 // file — one that is compiled directly (`lyric build thatfile.l`), NOT via
 // that manifest's `[project.packages]` — and resolving a `path = "..."`
