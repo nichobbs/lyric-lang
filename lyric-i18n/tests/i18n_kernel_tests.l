@@ -17,9 +17,11 @@ val fixtureJson: String = "{\"en\":{\"greeting\":\"Hello, {name}!\",\"farewell\"
 
 // Mirrors lyric-stdlib/tests/file_tests.l's scratchDir() convention: scope
 // scratch files under $TMPDIR (never the working tree) and clean up after.
-func withFixtureFile(body: in (String) -> Unit): Unit {
+// Each call site passes its own suffix so concurrent test runs (docs/24
+// Stage 4) never share one fixture path.
+func withFixtureFile(suffix: in String, body: in (String) -> Unit): Unit {
   val base = Environment.getVarOrDefault("TMPDIR", "/tmp")
-  val path = base + "/lyric_i18n_kernel_test_fixture.json"
+  val path = base + "/lyric_i18n_kernel_test_fixture_" + suffix + ".json"
   val _ = File.writeText(path, fixtureJson)
   body(path)
   val _ = File.deleteFile(path)
@@ -27,6 +29,7 @@ func withFixtureFile(body: in (String) -> Unit): Unit {
 
 test "loadStore loads a real file and returns a usable handle" {
   withFixtureFile(
+    "load_store",
     { path ->
       match loadStore(path, "en") {
         case Ok(handle) -> assertTrue(handle > 0, "handle is a positive Int")
@@ -38,6 +41,7 @@ test "loadStore loads a real file and returns a usable handle" {
 
 test "translate resolves an exact locale match" {
   withFixtureFile(
+    "exact_match",
     { path ->
       match loadStore(path, "en") {
         case Ok(handle) -> assertEqual(translate(handle, "greeting", "en-US"), "Hey, {name}!", "en-US exact match")
@@ -49,6 +53,7 @@ test "translate resolves an exact locale match" {
 
 test "translate falls back to language-only locale" {
   withFixtureFile(
+    "lang_fallback",
     { path ->
       match loadStore(path, "en") {
         case Ok(handle) -> assertEqual(translate(handle, "greeting", "en-GB"), "Hello, {name}!", "en-GB falls back to en")
@@ -60,6 +65,7 @@ test "translate falls back to language-only locale" {
 
 test "translate falls back to the configured fallback locale" {
   withFixtureFile(
+    "configured_fallback",
     { path ->
       match loadStore(path, "fr") {
         case Ok(handle) -> assertEqual(translate(handle, "farewell", "de"), "Au revoir.", "unknown locale de falls back to fr")
@@ -71,6 +77,7 @@ test "translate falls back to the configured fallback locale" {
 
 test "translate returns the key itself when no translation is found anywhere" {
   withFixtureFile(
+    "missing_key",
     { path ->
       match loadStore(path, "en") {
         case Ok(handle) -> assertEqual(translate(handle, "nonexistent", "en"), "nonexistent", "missing key returns itself")
@@ -82,6 +89,7 @@ test "translate returns the key itself when no translation is found anywhere" {
 
 test "hasKey is true for a present key and false for an absent one" {
   withFixtureFile(
+    "has_key",
     { path ->
       match loadStore(path, "en") {
         case Ok(handle) -> {
@@ -96,6 +104,7 @@ test "hasKey is true for a present key and false for an absent one" {
 
 test "availableLocalesJson lists every registered locale" {
   withFixtureFile(
+    "available_locales",
     { path ->
       match loadStore(path, "en") {
         case Ok(handle) -> {
@@ -134,6 +143,7 @@ test "parseTranslationsJson produces a flat array of locale/key/value triples" {
 
 test "loadFromPath reads the raw file contents" {
   withFixtureFile(
+    "load_from_path",
     { path ->
       match loadFromPath(path) {
         case Ok(text) -> {

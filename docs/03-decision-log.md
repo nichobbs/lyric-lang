@@ -12334,9 +12334,14 @@ cases) both pass on `--target dotnet`; on `--target jvm`,
 compiler-bug workarounds above were applied. `I18n.I18nTests` has one
 pre-existing, unrelated JVM failure (`I18n.Locale cannot be cast to
 java.lang.String`) in a test this change does not touch — a distinct,
-separate bug in `i18n.l`'s own `translateWithLocale`/`localeKey`
-JVM-target codegen, not filed as part of this entry since it long
-predates and is orthogonal to the kernel work.
+separate bug in `i18n.l`'s own `availableLocales()` JVM-target codegen
+(a `slice[Record]`-from-`List.toArray()` erasure gap), not caused by
+the kernel work but filed as #5439 in the review-hardening round below
+since it was surfaced by this entry's JVM verification pass and had
+never been filed. A second, cosmetic finding from the same JVM run —
+benign false-positive "unknown name" `T0020` diagnostics for
+cross-package `Std.*` calls that resolve and run correctly — is filed
+as #5440.
 
 **Review hardening.** A review round found three real gaps in the
 initial version of this entry's work:
@@ -12362,8 +12367,29 @@ initial version of this entry's work:
   tests pass on both `--target dotnet` and `--target jvm` against the
   single consolidated package.
 
+A second review round found and fixed:
+
+- **SUGGESTION (#5438):** `tests/i18n_kernel_tests.l`'s `withFixtureFile`
+  wrote every test's fixture to one shared hardcoded filename
+  (`lyric_i18n_kernel_test_fixture.json`) — a latent race once parallel
+  test runs ship (docs/24 Stage 4). Fixed by threading a per-call-site
+  suffix through `withFixtureFile` so each of the 10 tests gets its own
+  scratch path.
+- **SUGGESTION (#5437):** `book/chapters/29-application-libraries.md`'s
+  library-availability matrix still listed `lyric-i18n` JVM as
+  "planned". While fixing this, running `i18n_tests.l` on `--target jvm`
+  for the first time (CI only ever builds ecosystem libraries on the
+  default `dotnet` target, never runs `lyric test --target jvm` for
+  them) surfaced the real, previously-unfiled #5439 (JVM
+  `ClassCastException` in `availableLocales()`) and #5440 (cosmetic
+  false-positive JVM diagnostics) noted above. Updated the book row to
+  "stable (1 known JVM-only gap, #5439)" rather than a blanket "stable",
+  corrected the README's platform-parity table and prose to the same
+  precision, and replaced the stale `lyric.toml` comment (which still
+  cited the long-closed #3719) with the real current test status.
+
 **Related:** D-progress-625, D-progress-627, issue #5324, #5422, #5423,
-#5426, #5427, #5428.
+#5426, #5427, #5428, #5437, #5438, #5439, #5440.
 
 ---
 ## Decisions deferred to v2 or later

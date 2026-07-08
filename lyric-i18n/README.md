@@ -7,13 +7,20 @@ Internationalization with placeholder substitution and locale fallback.
 | Feature flag | Backend                                              | Status                |
 |--------------|------------------------------------------------------|-----------------------|
 | `dotnet`     | `Std.File` + `Std.Json` for translation file loads   | Available             |
-| `jvm`        | `Std.File` + `Std.Json` for translation file loads   | Available             |
+| `jvm`        | `Std.File` + `Std.Json` for translation file loads   | Available, one known gap (below) |
 
 `I18n`'s public API (`src/i18n.l`) needs no platform-specific kernel at
 all: `Std.File`/`Std.Json` are already cross-platform (`Std.Json`'s
-JVM backend was rewritten to pure Lyric in D-progress-555), so
-`InProcessTranslationStore`/`fromJson`/`loadFromPath` genuinely work
-identically on both targets today.
+JVM backend was rewritten to pure Lyric in D-progress-555). Verified
+against `tests/i18n_tests.l` on both targets: 25/25 pass on
+`--target dotnet`; 24/25 pass on `--target jvm`, with one genuine
+JVM-only `ClassCastException` in `availableLocales()` tracked in #5439
+(a `slice[Record]`-from-`List.toArray()` erasure gap in the JVM
+backend, not specific to this library). `translate`/`translateWith`/
+`hasKey`/`fromJson`/`loadFromPath` are all confirmed working on JVM.
+`--target jvm` test runs also print benign false-positive "unknown
+name" diagnostics for cross-package `Std.*` calls that resolve and run
+correctly — tracked separately in #5440, does not affect correctness.
 
 `I18n.Kernel` is a separate, standalone handle-based entry point
 (`loadStore`/`translate`/`hasKey`/`availableLocalesJson`/

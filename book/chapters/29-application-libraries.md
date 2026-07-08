@@ -278,7 +278,7 @@ func processWithNewFlow(order: in Order): Unit {
 | lyric-mail | stable | planned | D056 |
 | lyric-storage | stable | planned | D056 |
 | lyric-search | stable | planned | D056 |
-| lyric-i18n | stable | planned | D056 |
+| lyric-i18n | stable | stable (1 known JVM-only gap, #5439) | D-progress-628 |
 | lyric-feature-flags | stable | planned | D056 |
 | lyric-jobs | stable | planned | D056 |
 | lyric-ws | stable | planned | D057 |
