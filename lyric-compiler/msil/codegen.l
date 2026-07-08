@@ -6270,37 +6270,30 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       ty
                     }
                     case None -> {
-                      // F0027 (#5362): `name` matched no local, capture, const,
-                      // enum case, union-case constructor, or static val — the
-                      // only remaining possibility is a bare top-level `func`
-                      // used directly as a value (e.g. `apply(double, 21)`
-                      // instead of `apply({ x -> double(x) }, 21)`).  A named
-                      // function is not itself a delegate: there is no codegen
-                      // path that turns a bare `ldftn`-able static method into
-                      // the uniform boxed `Func<object,…,object>` ABI every
-                      // other function-typed value (closures, function-typed
-                      // params/locals) relies on, so silently falling through
-                      // to `ldnull` produced a `Func` wrapping a null target —
-                      // compiling cleanly but crashing with
-                      // `NullReferenceException` on first invocation.  Reject
-                      // at compile time instead.
-                      if cctx.funcTokens.containsKey(fctx.pkgName + "." + name) {
-                        panic(
-                          "F0027: '" + name + "' is a function name used directly as a value " +
-                            "(e.g. passed as a function-typed argument) — this is not yet " +
-                            "supported on --target dotnet (#5362).  Wrap it in a closure " +
-                            "instead: `{ " +
-                            "x -> " +
-                            name +
-                            "(x) }` (adjust the parameter " +
-                            "list to match " +
-                            name +
-                            "'s signature)."
-                        )
-                      } else {
-                        insns.add(MLdNull)
-                        MObject
-                      }
+                      // #5362: a bare top-level `func` used directly as a
+                      // value (e.g. `apply(double, 21)`) has no codegen path
+                      // that turns it into the uniform boxed
+                      // `Func<object,…,object>` ABI, so this falls through to
+                      // `ldnull` and crashes with `NullReferenceException` on
+                      // first invocation if the *delegate* is ever actually
+                      // constructed and called.
+                      //
+                      // An earlier version of this fix panicked here whenever
+                      // `name` resolved to a known top-level function — but
+                      // that fires unconditionally on *every* EPath reference
+                      // to a function name reaching this fallback, including
+                      // call sites the monomorphizer (`Lyric.Mono`) specialises
+                      // away entirely (e.g. `map(rows, rowToProduct)` passed
+                      // to a generic HOF that gets inlined against the
+                      // concrete function — no delegate is ever constructed,
+                      // so the pattern is safe there).  That false-positived
+                      // on real, working code (`examples/product-catalog`)
+                      // and was reverted; see #5362 for the correct fix, which
+                      // needs to distinguish "delegate must be materialised"
+                      // call sites from monomorphized ones rather than firing
+                      // on every unresolved bare function name.
+                      insns.add(MLdNull)
+                      MObject
                     }
                   }
                 }
