@@ -19,12 +19,20 @@ functions in the bundle (ambiguous-symbol build error). Select exactly
 one, matching `--target`:
 
 ```sh
-lyric build --manifest lyric-session/lyric.toml                                    # --target dotnet (default features)
+lyric build --manifest lyric-session/lyric.toml --features dotnet
 lyric build --manifest lyric-session/lyric.toml --target jvm --no-default-features --features jvm
 ```
 
-The `jvm` feature needs `io.lettuce:lettuce-core` resolved via `lyric
-restore` (the `[maven]` table in `lyric.toml`); `lyric-resolver.jar`
+Neither feature is a default — unlike `lyric-auth`/`lyric-storage`'s
+NuGet-free `dotnet` default, this library's kernels have a genuine
+mandatory external dependency (StackExchange.Redis / Lettuce), so a
+plain `lyric build`/`lyric test` with no `--features` flag builds only
+the kernel-free `Session` package (safe for use as a workspace
+dependency with no prior `lyric restore`). The `dotnet` feature needs
+`StackExchange.Redis` resolved via `lyric restore` (the `[nuget]` table
+in `lyric.toml`); the `jvm` feature needs `io.lettuce:lettuce-core`
+resolved via `lyric restore` (the `[maven]` table in `lyric.toml`);
+`lyric-resolver.jar`
 must be on `PATH`/beside the `lyric` binary/`$LYRIC_MAVEN_RESOLVER` (see
 `docs/31-maven-linking.md`).
 
@@ -41,14 +49,16 @@ SessionData]` value read appears to resolve against an unrelated
 `Map[String, Long]` instantiation elsewhere in the JVM bundle). Use the
 Redis-backed `NativeSessionStore` on JVM until #5451 is fixed.
 
-**Known gap:** `lyric test --target jvm` and `lyric run --target jvm`
-exec the compiled JAR as a plain `java -jar`, with no `-cp`/
-`--module-path` for `[maven]`-restored dependencies (a pre-existing gap
-in `cli_test.l`/`cli_run.l`, not specific to this library). `lyric build
---target jvm` works correctly and produces a real, auto-FFI-resolved
-JAR; running that JAR standalone (against a live Redis) needs the
-classpath from `target/restore/jvm-classpath.txt` appended manually,
-e.g.:
+`lyric test --target jvm` now correctly injects the `[maven]`-restored
+classpath (`cli_test.l` runs the compiled test JAR with `java -cp
+<maven-jars>:<jar>` when Maven deps are present, instead of a bare
+`java -jar` that can't see them) — `lyric restore` followed by `lyric
+test --manifest lyric-session/lyric.toml --target jvm --no-default-features
+--features jvm` runs the real Lettuce Redis test suite directly, no
+manual classpath assembly needed. `lyric run --target jvm` for a
+standalone program still execs a plain `java -jar` and needs the
+classpath from `target/restore/jvm-classpath.txt` appended manually if
+it uses `[maven]` deps, e.g.:
 
 ```sh
 lyric restore --manifest lyric-session/lyric.toml

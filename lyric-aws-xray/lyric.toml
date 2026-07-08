@@ -71,8 +71,11 @@ output_assembly = "AwsXRay.dll"
 "AwsXRay" = "src/xray.l"
 
 [nuget]
-# X-Ray recorder core — included when feature = "aws".
-"Amazon.XRay.Recorder.Core" = { version = "2.14.0", features = ["aws"] }
+# X-Ray recorder core — included when feature = "aws".  NuGet package ID is
+# "AWSXRayRecorder.Core" (the .NET namespace is "Amazon.XRay.Recorder.Core",
+# which is not the same string as the package ID — the manifest previously
+# named the namespace here, which does not exist on nuget.org).
+"AWSXRayRecorder.Core" = { version = "2.14.0", features = ["aws"] }
 
 [maven]
 # X-Ray recorder SDK core — included when feature = "jvm".

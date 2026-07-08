@@ -2,22 +2,25 @@
 
 AWS X-Ray integration for [Lyric](https://github.com/nichobbs/lyric-lang). Provides distributed tracing via X-Ray subsegments and a B-mode aspect template for automatic call instrumentation.
 
-> **Status**: @experimental — the active-tracing aspect compiles and unit tests cover the AWS X-Ray header shape, but the end-to-end pipeline has not been exercised against a live X-Ray segment service in CI. Both `.NET` and JVM targets are supported via feature flags.
+> **Status**: @experimental — `aws` and `jvm` bind directly to the real AWS X-Ray SDKs (`AWSXRayRecorder.Core` / `aws-xray-recorder-sdk-core`) via `extern type` + auto-FFI, verified against those real SDK assemblies (no daemon or AWS credentials required — see "Verification" below), but the end-to-end pipeline has not been exercised against a live X-Ray segment service in CI, and the `Tracing` aspect template does not yet work on `jvm` (see "Platform parity").
 
 ## Platform parity
 
 | Feature flag | Backend | Status |
 |---|---|---|
-| `aws` | Amazon.XRay.Recorder.Core (.NET) | Available |
-| `jvm` | aws-xray-recorder-sdk-core (Java) | Available |
+| `aws` | Amazon.XRay.Recorder.Core (.NET) | `currentSubsegment`/`beginSubsegment`/`endSubsegment`/`annotate`/`metadata` verified against the real SDK. The `Tracing` aspect works (cross-package B'-mode weaving is fine on `.NET`). |
+| `jvm` | aws-xray-recorder-sdk-core (Java) | `currentSubsegment`/`beginSubsegment`/`endSubsegment`/`annotate`/`metadata` verified against the real SDK. The `Tracing` aspect does **not** work on this target: cross-package `from`-instance aspect instantiation is B'-mode, and B'-mode's JVM call-context codegen has a pre-existing weaver bug (`NoSuchMethodError` on the synthesised `__LyricBModeCallContext` at runtime) unrelated to this library — use `beginSubsegment`/`endSubsegment` directly instead until that's fixed. |
 | `local` | Local stub (no-op) | Available |
+
+## Verification
+
+`aws` and `jvm` are verified by `tests/xray_tests.l` compiling and running against the real `AWSXRayRecorder.Core` NuGet package and `aws-xray-recorder-sdk-core` Maven artifact respectively — no live X-Ray daemon or AWS credentials are needed: both SDKs are designed to run without one (segment/subsegment emission is fire-and-forget UDP, silently dropped when nothing is listening) and default to a log-and-continue `ContextMissingStrategy` rather than throwing when no segment/subsegment is active. What is **not** verified is that a real X-Ray backend actually receives the emitted trace data — that needs a live daemon or the X-Ray console.
 
 ## Packages
 
 | Package | Description |
 |---|---|
-| `AwsXRay` | Core: subsegment handle, annotation/metadata, `Tracing` aspect template |
-| `AwsXRay.Kernel.Net` | Extern boundary (one per feature) |
+| `AwsXRay` | Core: subsegment handle, `beginSubsegment`/`endSubsegment`, annotation/metadata, `Tracing` aspect template. The extern boundary for `aws`/`jvm` is `@cfg`-gated directly inside this package (`src/xray.l`), not a separate `Kernel` package. |
 
 ## Installation
 
@@ -151,6 +154,29 @@ The `namespace` field is prepended to the subsegment name: if `namespace = "MySe
 
 ## Low-level API
 
+### `beginSubsegment(name)` / `endSubsegment(handle)`
+
+Open and close a subsegment manually — useful for programmatic control over
+subsegment boundaries instead of (or nested inside) an aspect-wrapped call.
+This is what the `Tracing` aspect's `around` advice calls internally.
+
+```lyric
+pub func beginSubsegment(name: in String): SubsegmentHandle
+pub func endSubsegment(handle: in SubsegmentHandle): Unit
+```
+
+```lyric
+import AwsXRay
+
+func processOrder(orderId: in Long): Result[Unit, String] {
+  val seg = AwsXRay.beginSubsegment("processOrder")
+  AwsXRay.annotate(seg, "order_id", orderId.toString())
+  val result = saveOrder(orderId)
+  AwsXRay.endSubsegment(seg)
+  result
+}
+```
+
 ### `currentSubsegment()`
 
 Get the active subsegment opened by the enclosing `Tracing` aspect.
@@ -278,11 +304,13 @@ lyric-aws-xray/
   lyric.toml                  package manifest
   README.md                   this file
   src/
-    xray.l                    AwsXRay  (subsegments, annotations, Tracing aspect)
-    _kernel/
-      xray_kernel_aws.l       AwsXRay.Kernel.Net @cfg(feature="aws")
-      xray_kernel_jvm.l       AwsXRay.Kernel.Jvm @cfg(feature="jvm")
-      xray_kernel_local.l     AwsXRay.Kernel.Net @cfg(feature="local")
+    xray.l                    AwsXRay (subsegments, annotations, Tracing aspect,
+                               and the aws/jvm/local extern boundary, each
+                               @cfg-gated inline in this one file)
+    _kernel/                  orphaned scaffolding predating the extern-type
+                               boundary in xray.l — not registered in
+                               lyric.toml, not imported by anything; kept
+                               (not deleted) but not the live code path
   tests/
     *_tests.l                 test modules
 ```

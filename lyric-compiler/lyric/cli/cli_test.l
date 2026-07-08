@@ -1077,6 +1077,27 @@ func cmdTestManifest(
     nli += 1
   }
 
+  // For a JVM manifest suite, inject the resolved Maven classpath into
+  // LYRIC_FFI_JARS (mirroring `buildProject`'s `injectMavenClasspathForJvm`
+  // call) so `[maven]`-declared types resolve at compile time, and keep the
+  // classpath string around to run the compiled JAR with `java -cp` below —
+  // a bundled JVM test JAR does not embed its Maven dependencies, so `java
+  // -jar` alone cannot find them at runtime.  `defer` runs at this
+  // function's scope exit (fall-off or the `failFast` early return below),
+  // so `savedFfiJarsOpt` is declared in this outer scope rather than inside
+  // the `if` — a `defer` nested in the `if` would instead fire when that
+  // narrower block exits, immediately undoing the injection.
+  var mavenJarColonSep = ""
+  var savedFfiJarsOpt: Option[String] = None
+  if targetJvm {
+    val injection = injectMavenClasspathForJvm(mfDir, manifest)
+    mavenJarColonSep = injection.classpathColonSep
+    savedFfiJarsOpt = injection.savedFfiJars
+  }
+  defer {
+    restoreMavenClasspath(savedFfiJarsOpt)
+  }
+
   var ti = 0
   while ti < proj.tests.count {
     val testEntry = proj.tests[ti]
@@ -1180,10 +1201,24 @@ func cmdTestManifest(
     // single-file `cmdTest` path.  Without this `dotnet exec` fails with
     // `Could not load file or assembly 'Lyric.Stdlib.Core'` (#1468 / #1841).
     val testExitCode = if targetJvm {
-      // JVM: bundled JAR is self-contained; skip .NET-specific runtime staging.
+      // JVM: the bundled JAR is self-contained for pure-Lyric/JDK code, but
+      // `[maven]` third-party classes are resolved from `mavenJarColonSep`
+      // only at compile time (LYRIC_FFI_JARS) — they are not copied into the
+      // JAR — so a manifest with Maven deps must run with an explicit `-cp`
+      // (which requires the Main-Class name, since `-cp` and `-jar` are
+      // mutually exclusive on the `java` command line; `testEntry.name` is
+      // exactly that name — see `Jvm.Bridge`'s Main-Class derivation from the
+      // dotted package declaration, which for a synthesised test module is
+      // the manifest's `[project.tests]` key).
       val jvmArgs: List[String] = newList()
-      jvmArgs.add("-jar")
-      jvmArgs.add(outPath)
+      if mavenJarColonSep.length > 0 {
+        jvmArgs.add("-cp")
+        jvmArgs.add(mavenJarColonSep + ":" + outPath)
+        jvmArgs.add(testEntry.name)
+      } else {
+        jvmArgs.add("-jar")
+        jvmArgs.add(outPath)
+      }
       val jvmRes = ProcessCapture.runCaptureWithDiagnosticsTimeout("java", jvmArgs, "", 600000)
       Console.print(jvmRes.stdout)
       if jvmRes.stderr.length > 0 {

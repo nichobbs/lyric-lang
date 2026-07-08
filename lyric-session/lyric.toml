@@ -37,13 +37,25 @@ output_assembly = "Session.dll"
 # `dotnet` and `jvm` are MUTUALLY EXCLUSIVE (#1444/#4-progress pattern shared with
 # lyric-storage/lyric-auth/lyric-resilience): activating both leaves two definitions
 # of `Session.Kernel.*`'s Redis-backed dispatch in `session.l` (ambiguous-symbol build
-# error). Select exactly one, matching `--target`:
-#   --target dotnet                          (default features: dotnet)
+# error). Neither is a default feature (see above) — select exactly one explicitly:
+#   --features dotnet
 #   --target jvm --no-default-features --features jvm
 [features]
-default = ["dotnet"]
-dotnet  = []   # Redis-backed sessions on .NET (StackExchange.Redis) — activates Session.Kernel.Net
-jvm     = []   # Redis-backed sessions on JVM (Lettuce) — activates Session.Kernel.Jvm
+# No default target feature: unlike lyric-auth/lyric-storage's `dotnet`
+# default (which needs no external package — pure Lyric + BCL), this
+# library's `dotnet`/`jvm` kernels have a genuine mandatory NuGet/Maven
+# dependency (StackExchange.Redis / Lettuce). Defaulting either one on
+# means every plain `lyric build`/`lyric test` — including a workspace
+# dependent that builds this package transitively with no explicit
+# `--features` override (`buildWorkspaceDep` does not auto-restore) —
+# would try to compile against an unresolved NuGet reference and crash
+# with "cannot be resolved to any indexed reference assembly" (caught by
+# CI's `ecosystem-security-tests` job building `lyric-testing` -> ... ->
+# this package). Select a target explicitly, matching `--target`:
+#   --features dotnet
+#   --target jvm --no-default-features --features jvm
+dotnet = []   # Redis-backed sessions on .NET (StackExchange.Redis) — activates Session.Kernel.Net
+jvm    = []   # Redis-backed sessions on JVM (Lettuce) — activates Session.Kernel.Jvm
 
 [dependencies]
 "Lyric.Cache"  = { workspace = true }

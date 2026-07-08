@@ -12755,12 +12755,32 @@ registered but gated on a bare `redis` feature with no `default` in
    rather than ported, matching the `lyric-feature-flags` `Flags.Registry`
    precedent (D-progress-627 on `main`, not yet present on this branch's base).
 3. **`[features]`** changed from the vestigial `redis`/`inmemory` pair (the
-   `inmemory` feature gated nothing real) to `default = ["dotnet"]`,
-   `dotnet = []`, `jvm = []` — matching `lyric-auth`/`lyric-resilience`/
-   `lyric-storage`'s established platform-feature convention.
-   `Session.Kernel.Net`'s package-level gate moved from `feature = "redis"`
-   to `feature = "dotnet"`; `Session.Kernel.Jvm` registered in
-   `[project.packages]` for the first time, gated `feature = "jvm"`.
+   `inmemory` feature gated nothing real) to `dotnet = []`, `jvm = []`,
+   **no default feature**. An initial version of this change set
+   `default = ["dotnet"]`, matching `lyric-auth`/`lyric-resilience`/
+   `lyric-storage`'s platform-feature convention on the surface — but
+   unlike those libraries' `dotnet` default (needs no external package:
+   pure Lyric + BCL), this library's `dotnet` kernel has a genuine
+   mandatory NuGet dependency (`StackExchange.Redis`). Defaulting it on
+   broke CI: `ecosystem-security-tests` (building `lyric-testing` ->
+   `lyric-mq` -> `lyric-session` as a workspace dependency, which does
+   not restore NuGet for transitive deps) and `stdlib-builds` (the
+   tier-1 ecosystem-library build loop, plain `lyric build --manifest
+   lyric-session/lyric.toml`, no restore) both crashed with `FFI extern
+   'StackExchange.Redis.ConnectionMultiplexer.Connect' ... cannot be
+   resolved to any indexed reference assembly`, since neither path had
+   run `lyric restore` first. Caught by CI on this same PR before merge;
+   fixed by removing the default so a bare `lyric build`/`lyric test`
+   (no explicit `--features`) only ever compiles the kernel-free
+   `Session` package — safe for any workspace-dependent consumer with no
+   prior restore — and updating `.github/workflows/ci.yml`'s dedicated
+   `lyric-session` test step to `lyric restore` then
+   `lyric test --features dotnet` explicitly, matching how the `jvm`
+   feature was already invoked (`--target jvm --no-default-features
+   --features jvm`). `Session.Kernel.Net`'s package-level gate moved
+   from `feature = "redis"` to `feature = "dotnet"`; `Session.Kernel.Jvm`
+   registered in `[project.packages]` for the first time, gated
+   `feature = "jvm"`.
    `session.l`'s `NativeSessionStore` record, its `SessionStore` impl, and
    `connectRedis()` are each duplicated into `@cfg(feature = "dotnet")` /
    `@cfg(feature = "jvm")` pairs (the `auth.l` dispatch idiom), since the
@@ -12891,29 +12911,33 @@ registered but gated on a bare `redis` feature with no `default` in
 7. **Verified against a real local Redis 7.0.15 server** (`redis-server`,
    available in this sandbox): all 13 cases pass on `--target jvm
    --no-default-features --features jvm` via real Lettuce calls (`lyric
-   restore` resolving the real Maven artifact, `lyric build` producing a
-   real auto-FFI-compiled JAR, then the JAR run manually with `java -cp
-   <jar>:<restored-jars>` — see item 8). All 13 also pass on default
-   `--target dotnet` when no Redis URL is configured (skip path); with a
-   live Redis and the StackExchange.Redis-format URL, 4/13 pass and 9/13
-   hit an unrelated, independently-reproduced pre-existing MSIL bug (item 9).
-8. **Confirmed pre-existing gap (not fixed): `lyric test --target jvm` /
-   `lyric run --target jvm` never wire the `[maven]`-restored classpath at
-   *run* time.** `lyric build --target jvm` correctly reads
-   `target/restore/jvm-classpath.txt` and injects `LYRIC_FFI_JARS` for
-   auto-FFI resolution at *compile* time (`cli_build.l`), but both
-   `cli_test.l` and `cli_run.l` exec the produced JAR as a bare `java -jar`
-   with no `-cp`/`--module-path` for the same restored dependencies, so a
-   Maven-dependent JVM program built and compiled correctly still throws
-   `ClassNotFoundException` at *run* time via either command. `lyric test`
-   was run with `LYRIC_FFI_JARS` manually exported (a documented workaround
-   used by `auto_ffi_jvm_self_test.l`-style self-tests too) to get past
-   *compilation*, and the compiled test JAR was then run directly with
-   `java -cp <jar>:<jvm-classpath.txt entries>` to get past *execution* —
-   this is the only way to exercise a Maven-dependent `lyric test`/`lyric
-   run --target jvm` program end-to-end today. Not specific to
-   `lyric-session`; affects every `[maven]`-declared ecosystem library.
-   `lyric-session/README.md` documents the exact workaround command.
+   restore` resolving the real Maven artifact, then `lyric test` directly
+   — see item 8 for the classpath-injection fix that made this possible
+   without a manual `java -cp` step). All 13 also pass on `--target
+   dotnet --features dotnet` when no Redis URL is configured (skip path);
+   with a live Redis and the StackExchange.Redis-format URL, 4/13 pass
+   and 9/13 hit an unrelated, independently-reproduced pre-existing MSIL
+   bug (item 9).
+8. **Originally found as a pre-existing gap (`lyric test --target jvm`
+   never wired the `[maven]`-restored classpath at *run* time) and fixed
+   in the same PR by `lyric-aws-xray`'s integration.** `lyric build
+   --target jvm` correctly read `target/restore/jvm-classpath.txt` and
+   injected `LYRIC_FFI_JARS` for auto-FFI resolution at *compile* time
+   (`cli_build.l`), but `cli_test.l` exec'd the produced JAR as a bare
+   `java -jar` with no `-cp`/`--module-path` for the same restored
+   dependencies, so a Maven-dependent JVM test JAR, correctly compiled,
+   still threw `ClassNotFoundException` at *run* time. Originally worked
+   around here (in this entry's initial version) by manually exporting
+   `LYRIC_FFI_JARS` and running the compiled test JAR directly via `java
+   -cp` — now fixed at the root by `cli_test.l`'s
+   `injectMavenClasspathForJvm`/`java -cp <maven-jars>:<jar> <MainClass>`
+   change (see the `lyric-aws-xray` decision-log entry, integrated into
+   this same PR), re-verified here:
+   `lyric-session/tests/session_redis_jvm_tests.l`'s 13 cases now pass via
+   a direct `lyric test --manifest lyric-session/lyric.toml --target jvm
+   --no-default-features --features jvm` with no manual classpath
+   assembly. Not specific to `lyric-session`; the fix benefits every
+   `[maven]`-declared ecosystem library's `lyric test --target jvm`.
 9. **Confirmed pre-existing, independently-reproduced bug (not fixed,
    out of scope): MSIL cross-package `System.Nullable\`1[T]` value type
    fails to load when 3+ packages are bundled via `lyric test`.**
@@ -12968,6 +12992,211 @@ fix), D-progress-625 (`extern package` no-op precedent), D-progress-627 on
 present on this branch's base commit), #5439, #5442, #5444, #5451 (the
 erased-generic-confusion family this entry's item 10 adds a fifth
 instance to).
+
+
+---
+## D-progress-632 — `lyric-aws-xray`: `aws`/`jvm` migrated off `extern package` onto `extern type` + auto-FFI against the real AWS X-Ray SDKs; JVM auto-FFI interface dispatch (adopted from D-progress-631), `lyric test --target jvm` Maven classpath, and a wrong NuGet package ID fixed as prerequisites; 2 new pre-existing MSIL auto-FFI gaps found and documented (1 filed as #5452, its `lyric-session` risk checked and ruled out), JVM `Tracing` aspect blocked on a pre-existing weaver bug (not fixed here)
+
+**Status:** ACCEPTED (bindings shipped and verified on all 3 features); 2 newly-discovered MSIL gaps and 1 pre-existing JVM weaver gap deliberately NOT fixed here (see below)
+
+**Context.** `lyric-aws-xray/src/xray.l`'s `aws` (.NET) and `jvm` feature
+blocks were each a hand-written `extern package` — a confirmed permanent
+no-op in both the type checker and both codegens (`docs/03` recent
+`extern package` entries; issue #5324) — so both features compiled but
+`currentSubsegment`/`annotate`/`metadata`/the `Tracing` aspect silently did
+nothing at runtime on either target. Only `local` (an intentional no-op) was
+real. A separate `src/_kernel/xray_kernel_{local,jvm,aws}.l` trio was
+orphaned dead code (never registered in `lyric.toml`, never imported) and is
+left in place per the "don't delete, roll forward" policy — it was not
+touched.
+
+**What shipped in `xray.l`.**
+
+- **`SubsegmentHandle`** is now three separate `@cfg`-gated declarations
+  (only one survives erasure per build) instead of one shared zero-field
+  opaque record: `local` keeps the opaque no-op record; `aws` aliases
+  directly to `Amazon.XRay.Recorder.Core.Internal.Entities.Entity` (the
+  `.Internal` namespace segment is real, confirmed via `System.Reflection`
+  against the actual NuGet package — the type itself is public); `jvm`
+  aliases directly to `com.amazonaws.xray.entities.Entity` (the interface,
+  not the narrower `Subsegment`, because `putAnnotation`/`putMetadata` are
+  declared on `Entity` itself and every real producer — `beginSubsegment`,
+  `getCurrentSubsegment`, `DummySubsegment` — is a `Subsegment`, which
+  extends `Entity`, a safe upcast). This mirrors the `Std.ProcessHost
+  .ProcessHandle = "java.lang.Process"` no-wrapper-record precedent
+  (D-progress-625's `process_host.l`).
+- **`aws`:** `AWSXRayRecorder.Instance` (static property) plus
+  `BeginSubsegment`/`EndSubsegment`/`AddAnnotation`/`AddMetadata`/
+  `GetEntity`/`IsEntityPresent` (all instance) as `@externTarget` wrappers.
+  The .NET SDK is ambient/thread-local (unlike Java): these calls act on the
+  recorder's *current* entity, not an explicit handle — the `handle`
+  parameters `annotate`/`metadata`/`endSubsegment` accept are unused on this
+  backend, which is correct because `beginSubsegment`/`endSubsegment` pairs
+  always run on the same call stack. `AWSXRayRecorder.GetEntity()` is the
+  one call that throws (not log-and-continue) when no segment/subsegment is
+  active — verified directly by invoking the real SDK via
+  `System.Reflection` outside this compiler entirely — so `awsSafeEntity`
+  guards it with `IsEntityPresent()` first and falls back to `default()` (a
+  null `Entity`), which is safe specifically because nothing on this
+  backend ever dereferences the handle value.
+- **`jvm`:** `AWSXRay.getGlobalRecorder()` (static) plus
+  `AWSXRayRecorder.beginSubsegment`/`endSubsegment` and
+  `Entity.putAnnotation`/`putMetadata` as bare auto-FFI dot-calls (the
+  Java SDK returns the real subsegment object from `beginSubsegment`, so
+  `annotate`/`metadata` call directly on the handle rather than through the
+  recorder). `getCurrentSubsegment()`'s nullable return falls back to a real
+  SDK `DummySubsegment` (constructed via `.new(recorder)`) on `null`,
+  mirroring the Java SDK's own designed-for-this-purpose no-op entity type.
+- **New public API:** `AwsXRay.beginSubsegment(name): SubsegmentHandle` /
+  `AwsXRay.endSubsegment(handle): Unit`, exposing the same manual lifecycle
+  the `Tracing` aspect's `around` advice already ran internally. Added
+  because `tests/xray_tests.l` needed a way to exercise the real begin →
+  annotate/metadata → end sequence without depending on the aspect weaver
+  (see the JVM weaver gap below), and because it is a genuinely useful
+  capability this library previously had no public entry point for.
+
+**Three prerequisite fixes, all required to get `xray.l` compiling and
+running for real (none aws-xray-specific — each is a general compiler/CLI
+gap that happened to block this task first):**
+
+1. **JVM auto-FFI never resolved interface types at all** (not
+   `jvm`-instance-dispatch-specific — a class-file-parsing gap).
+   `Jvm.ClassReader.parseClass` unconditionally returned `None` for any
+   `ACC_INTERFACE` class file (`lyric-compiler/jvm/class_reader.l`), so an
+   `extern type` naming a Java interface (`com.amazonaws.xray.entities
+   .Entity`) failed to load at all — independently discovered here at
+   essentially the same time as `lyric-session`'s Lettuce Redis kernel
+   work hit the identical gap (`io.lettuce.core.api.sync.RedisCommands`,
+   also interface-typed). The version that landed is `lyric-session`'s
+   (D-progress-631): it adds the same `ClassInfo.isInterface` field and
+   `invokeinterface`-vs-`invokevirtual` selection this entry's own draft
+   fix did, plus a superset this entry's narrower fix didn't need —
+   `Jvm.AutoFfi.findBestInstanceMethod`'s recursive superinterface walk
+   (`scoreInterfacesRec`), required because Lettuce's `RedisCommands`
+   declares almost none of its own methods (they live on sibling
+   interfaces it extends), unlike X-Ray's `Entity`/`Subsegment` which
+   declare `putAnnotation`/`putMetadata` directly. Verified with no
+   regressions against the adopted fix: the full `auto_ffi_jvm_self_test.l`
+   (22 cases), `iface_dispatch_jvm_self_test.l` (3 cases),
+   `bitwise_self_test.l`, and `aspect_weave_self_test.l` on `--target jvm`
+   all still pass, and `xray_tests.l`'s 4 cases pass on `--features jvm`
+   against the real X-Ray Java SDK.
+2. **`lyric test --target jvm` never resolved `[maven]` dependencies at
+   all** for manifest (multi-package) test suites — `cli_build.l`'s
+   `injectMavenClasspathForJvm` (compile-time `LYRIC_FFI_JARS` injection)
+   was never called from `cli_test.l`'s `cmdTestManifest`, and even with
+   `LYRIC_FFI_JARS` set manually the compiled JAR was run as `java -jar
+   <jar>` unconditionally — Maven-resolved third-party classes are never
+   copied into the bundled JAR (`module-path.txt`, written by `cli_build.l`
+   for exactly this reason, documents the same constraint for `lyric
+   build`), so `-jar` alone can never find them regardless of compile-time
+   resolution. Fixed: `cmdTestManifest` now calls
+   `injectMavenClasspathForJvm` before compiling (restored via `defer`),
+   and runs with `java -cp "<mavenClasspath>:<jar>" <MainClass>` instead of
+   `-jar` when a non-empty Maven classpath was resolved (`<MainClass>` is
+   the manifest's `[project.tests]` key, matching `Jvm.Bridge`'s Main-Class
+   derivation from the dotted package declaration). Verified: 34/34 on
+   `lyric-storage` (`--target jvm`, no `[maven]` — confirms the `-jar`
+   fallback path is unaffected) and 11/11 on `lyric-session` (`--target
+   dotnet` — confirms the dotnet path is untouched).
+3. **`lyric-aws-xray/lyric.toml`'s `[nuget]` entry named the wrong package
+   ID.** `"Amazon.XRay.Recorder.Core"` is the .NET *namespace*, not the
+   NuGet package ID (`AWSXRayRecorder.Core`) — confirmed via the live
+   NuGet.org search API (`amazon.xray.recorder.core` 404s;
+   `awsxrayrecorder.core` is the real package, version 2.14.0 exists).
+   `lyric restore` silently reported `NU1101` for the wrong name; nothing
+   in the existing test suite exercised a real restore, so this had never
+   been caught. Fixed the manifest entry.
+
+**Two newly-discovered MSIL auto-FFI gaps, deliberately NOT fixed here**
+(both are general `Msil.Codegen`/`Msil.Ffi` limitations well outside this
+task's scope; worked around in `xray.l` itself, documented inline there):
+
+- **A Lyric `extern type` alias for a closed-generic value type (e.g.
+  `"System.Nullable\`1[System.DateTime]"`) has no flat TypeRef identity and
+  silently erases to `object`** in `typeExprToMsilCtx`, producing a
+  MemberRef that doesn't bind to the real `Nullable<T>`-typed BCL parameter
+  (`MissingMethodException` at runtime, not a build-time diagnostic).
+  Metadata-resolved `Nullable<T>` params/returns built from a real BCL
+  signature during `@externTarget`'s trailing-optional-parameter auto-fill
+  do *not* have this problem (they route through `resolvedSigToMsil`,
+  which correctly builds `MValueTypeGenericInst`) — `xray.l` avoids the bug
+  entirely by never declaring a `Nullable<T>` extern type itself, leaving
+  every `DateTime?` parameter unsupplied for the compiler to auto-fill.
+- **Neither the `@externTarget` metadata resolver
+  (`Mdr.resolveExternMethodScored`/`resolveExternMethodScoredIn`) nor the
+  bare-dot-call auto-FFI resolver (`Mdr.resolveExtern`/`resolveOverloadIn`)
+  walks a BCL type's superclass chain.** A member inherited from a base
+  class (not literally declared on the exact TypeDef the `@externTarget`
+  names) with a non-trivial parameter list — anything beyond zero
+  parameters, where there is nothing for a wrong fallback encoding to get
+  wrong — silently falls back to the Lyric-declared (possibly wrong: e.g.
+  `string` where the BCL takes `object`) signature instead of failing
+  loudly, producing a `MissingMethodException` at runtime rather than a
+  build-time diagnostic. Confirmed with `AWSXRayRecorder.AddAnnotation`/
+  `AddMetadata` (declared on the base class `AWSXRayRecorderImpl`, not on
+  `AWSXRayRecorder`): resolution only succeeded once the `@externTarget`
+  target string named `AWSXRayRecorderImpl` directly.  `GetEntity`/
+  `IsEntityPresent` (same base-class situation, zero parameters) worked
+  regardless, which is what makes this gap easy to miss. Filed as #5452.
+  This raised a suspected risk for `lyric-session/src/_kernel/net
+  /session_kernel.l`, integrated into this same PR (D-progress-631):
+  `getDatabase`/`strSetCreate`/`strSetKeepTtl`/`strGet`/`keyDel`/
+  `keyExpire`/`redisValueIsNull`/`redisValueToString` are ALL declared
+  without `@externStatic`/`@externInstance` against `StackExchange.Redis`
+  interface members (`IDatabase`/`RedisValue`) with multi-parameter
+  signatures — the same shape that silently mis-emitted here. **Checked
+  directly against a real local Redis server** (`redis-server`,
+  `LYRIC_CONFIG_SESSION_REDISSESSION_URL="redis://127.0.0.1:6379,
+  abortConnect=false"`, `--features dotnet`): `connectRedis()`,
+  `load()` for an unknown id, `set()` on an unknown id, and `destroy()`
+  on an absent id all completed real `IDatabase`/`RedisValue` round
+  trips with no `MissingMethodException` — the risk did not materialize
+  for this specific interface (`getDatabase`/`strGet`/`keyDel` etc. must
+  each be declared directly on `IDatabase` itself, not inherited from a
+  base type, unlike `AWSXRayRecorderImpl`). The remaining 9/13 cases
+  failed on the already-known, unrelated `System.Nullable\`1` bug
+  (D-progress-631 item 9), exactly as that entry documents. No follow-up
+  needed for `lyric-session` specifically; #5452 remains open as the
+  general `Msil.Ffi` gap for any future `@externTarget` binding an
+  inherited BCL member with a non-trivial signature.
+
+**One pre-existing JVM weaver gap, deliberately NOT fixed here:**
+`AwsXRay.Tracing` is a `pub aspect` without `@inline_template`, so any
+cross-package `aspect X from AwsXRay.Tracing { ... }` instantiation is
+B'-mode (docs/55). B'-mode's JVM call-context codegen throws
+`NoSuchMethodError` on the synthesised `__LyricBModeCallContext` at runtime
+— reproduced with a minimal single-matched-function case, confirmed absent
+on `--target dotnet` (MSIL handles the identical cross-package B'-mode
+shape correctly) and confirmed pre-existing:
+`aspect_weave_self_test.l` — the only existing runtime coverage for
+B'-mode aspect weaving on JVM — exercises only same-package, non-`from`
+aspects, and its own header note already flags "the multi-file scenario
+where a consumer package imports a library template" as untested (tracked
+separately as #3498 per docs/26's changelog). `tests/xray_tests.l` works
+around this by testing the real `beginSubsegment`/`annotate`/`metadata`/
+`endSubsegment` SDK calls directly instead of through the aspect — the
+`Tracing` aspect itself is unaffected on `local`/`aws` and works correctly
+there; only cross-package instantiation on `--target jvm` is blocked.
+README's platform-parity table documents this precisely.
+
+**Verified:** `lyric-aws-xray`'s full `tests/xray_tests.l` suite (4 cases)
+passes on all three features: `--features local` (default target),
+`--features aws --target dotnet`, and `--features jvm --target jvm` (via
+`lyric restore` + `make maven-resolver` + `LYRIC_MAVEN_RESOLVER`). All four
+cases exercise the real SDK: package import, `currentSubsegment`/
+`annotate`/`metadata` with no active context (the `awsSafeEntity`/
+`DummySubsegment` fallback paths), and the full `beginSubsegment` →
+`currentSubsegment`/`annotate`/`metadata` → `endSubsegment` lifecycle on
+both the happy path and the error-annotation path. `lyric fmt --write` run
+on every changed `.l` file.
+
+**Related:** #5452 (the `@externInstance`-required MSIL gap this entry
+found), #3498 (pre-existing JVM B'-mode cross-package weaver gap,
+already tracked), #5324 (`extern package` no-op), D-progress-631
+(`lyric-session`'s Lettuce kernel — the JVM interface auto-FFI fix that
+landed, and the `Session.Kernel.Net` risk this entry raised and
+verified against).
 
 
 ---
