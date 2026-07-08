@@ -12148,9 +12148,6 @@ initial version of this migration:
 #5391, #5392, #5393, #5394, #5395.
 
 ---
-## Decisions deferred to v2 or later
-
----
 
 ## D-progress-627 — `lyric-feature-flags`: deleted the dead `extern package` HTTP-polling scaffold and rewrote `Flags.Registry` as pure Lyric, closing the FlagGated aspect's silent no-op
 
@@ -12247,9 +12244,88 @@ never did — `Flags.Kernel.Jvm` was itself orphaned, referenced by no
 import anywhere in the repo, prior to this entry), so `--target jvm` is
 not part of this library's build.
 
-**Related:** D-progress-625, D-progress-626, issue #5324 (`extern
-package` FFI resolution mechanism), lyric-lang #411 (`protected type`
-weaver, referenced by the thread-safety caveat).
+**Related:** D-progress-625, issue #5324 (`extern package` FFI
+resolution mechanism), lyric-lang #411 (`protected type` weaver,
+referenced by the thread-safety caveat).
+
+---
+
+## D-progress-628 — `lyric-i18n`: rewrote `I18n.Kernel.{Net,Jvm}` as pure Lyric (no extern boundary), registered into the build, both targets real and tested
+
+**Status:** ACCEPTED
+
+**Context.** `lyric-i18n/src/_kernel/{net,jvm}/i18n_kernel.l` each declared
+an `extern package Lyric.I18n.FileLoader` / `lyric.i18n.FileLoader` block
+(loadFromPath/parseTranslationsJson/loadStore/translate/
+availableLocalesJson/hasKey) — the mechanism confirmed broken in
+D-progress-625/#5324. Neither file was even registered in
+`lyric-i18n/lyric.toml`'s `[project.packages]`, and `I18n`'s own public
+package (`src/i18n.l`) never imported either kernel — it reimplements
+the same translation-loading logic directly against `Std.File`/
+`Std.Json`, which already work identically on both targets (`Std.Json`'s
+JVM backend was rewritten to pure Lyric in D-progress-555). Per explicit
+direction to roll forward and fix rather than delete dormant code, both
+kernel files are rewritten as pure Lyric (no extern boundary — reading a
+file and looking up a parsed JSON object needs no BCL/JDK object
+reference) and registered into the build as a real, standalone,
+handle-based alternative entry point.
+
+**What shipped.**
+
+- Both `i18n_kernel.l` files rewritten identically (the same pure-Lyric
+  logic, since neither needs any platform-specific behavior): a
+  module-level `I18nKernelState` record holds two parallel
+  `Map[Int, ...]` tables (translations, fallback locale) keyed by an
+  incrementing handle, following the same "eliminate the extern boundary
+  entirely" idiom as `Flags.Registry` (D-progress-627).
+- Registered `I18n.Kernel.Net` and `I18n.Kernel.Jvm` in
+  `lyric-i18n/lyric.toml`'s `[project.packages]` (neither was compiled
+  as part of the build before this).
+- Added `tests/i18n_kernel_tests.l` (10 cases) exercising `loadStore`/
+  `translate`/`hasKey`/`availableLocalesJson`/`parseTranslationsJson`/
+  `loadFromPath` against a real JSON fixture file on disk — all 10 pass
+  on both `--target dotnet` and `--target jvm`.
+- `i18n.l` itself is unchanged: it already works correctly on both
+  targets without any kernel, so this is a genuinely separate, optional
+  entry point, not a redesign of the primary public API.
+
+**Two new JVM/MSIL compiler bugs found and worked around (not fixed
+here, filed separately):**
+
+- **#5422** — `Std.Collections.mapKeys()` called directly on a
+  `match`-pattern-bound `Map` value throws a runtime cast exception on
+  BOTH `--target dotnet` and `--target jvm` (`Dictionary`/`HashMap`
+  cannot be cast to `IList`/`List`). Reproduces with a two-line minimal
+  repro; does NOT reproduce for a plain `val`-bound (non-`match`) Map,
+  regardless of nesting depth. Worked around by re-binding the
+  match-bound value to an explicitly-typed local before calling
+  `mapKeys` — used three times in the new kernel files, each commented.
+- **#5423** — calling a native `String` method (e.g. `.contains`) on a
+  `String` value bound inside a `match { case Ok(x) -> ... }` arm can
+  crash `--target jvm` compilation entirely: the JVM backend's type
+  tracking loses the value's `String` type inside the arm and falls
+  through to the auto-FFI instance-call resolver, which then fails to
+  find `.contains` on the erased `java.lang.Object`. `--target dotnet`
+  compiles the identical code with no issue. Worked around the same way
+  as #5422 — re-bind to an explicitly-typed local first — used twice in
+  `tests/i18n_kernel_tests.l`, each commented. Possibly the same root
+  cause as #5422 (match-bound pattern types losing precision before a
+  subsequent call).
+
+**Verification.** `./bin/lyric test --manifest lyric-i18n/lyric.toml`
+on both `--target dotnet` and `--target jvm --features jvm`: the
+pre-existing `I18n.I18nTests` (25 cases, `i18n.l`'s own logic,
+unaffected by this change) and the new `I18n.I18nKernelTests` (10
+cases) both pass on `--target dotnet`; on `--target jvm`,
+`I18n.I18nKernelTests` also passes fully (10/10) once the two
+compiler-bug workarounds above were applied. `I18n.I18nTests` has one
+pre-existing, unrelated JVM failure (`I18n.Locale cannot be cast to
+java.lang.String`) in a test this change does not touch — a distinct,
+separate bug in `i18n.l`'s own `translateWithLocale`/`localeKey`
+JVM-target codegen, not filed as part of this entry since it long
+predates and is orthogonal to the kernel work.
+
+**Related:** D-progress-625, D-progress-627, issue #5324, #5422, #5423.
 
 ---
 ## Decisions deferred to v2 or later

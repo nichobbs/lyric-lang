@@ -18,7 +18,7 @@ A previous revision of this library declared a remote HTTP-polling client
 (`Flags.connectRemote()` / `NativeFlagStore`) via `extern package`, which
 never resolves to a real binding on either backend (issue #5324) and had
 zero callers anywhere in the repo. It was removed rather than fixed — see
-`docs/03-decision-log.md` D-progress-626.
+`docs/03-decision-log.md` D-progress-627.
 
 ## Packages
 
@@ -132,7 +132,7 @@ There is no remote (HTTP-polling) `FlagStore` implementation today. A prior
 version of this library scaffolded one (`Flags.connectRemote()`) behind an
 `extern package` boundary that never resolved to a real HTTP client on either
 backend — it was dead, broken code with zero callers, and was removed rather
-than fixed (`docs/03-decision-log.md` D-progress-626).
+than fixed (`docs/03-decision-log.md` D-progress-627).
 
 Building a real one is possible but out of scope here: it needs `Std.Http`'s
 client, a background poll loop, and a JSON decoder for the remote payload.
@@ -178,4 +178,4 @@ follow-up stage.
 
 ## Decision log
 
-See `docs/03-decision-log.md` D-progress-261 and D-progress-626.
+See `docs/03-decision-log.md` D-progress-261 and D-progress-627.

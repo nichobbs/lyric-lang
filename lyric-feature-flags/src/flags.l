@@ -6,7 +6,7 @@
 //! in-process implementation.  There is no remote (HTTP-polling) store yet —
 //! implement `FlagStore` yourself against `Std.Http` for a LaunchDarkly-,
 //! Unleash-, or custom-endpoint-backed store (see docs/03-decision-log.md
-//! D-progress-626 for why the previous `connectRemote()` scaffolding was
+//! D-progress-627 for why the previous `connectRemote()` scaffolding was
 //! removed rather than fixed).
 //!
 //! Usage:

@@ -11,10 +11,13 @@ output          = "single"
 output_assembly = "I18n.dll"
 
 [project.packages]
-"I18n" = "src/i18n.l"
+"I18n"            = "src/i18n.l"
+"I18n.Kernel.Net" = "src/_kernel/net/i18n_kernel.l"
+"I18n.Kernel.Jvm" = "src/_kernel/jvm/i18n_kernel.l"
 
 # tests/i18n_tests.l is written and idiomatic.  Std.Json.enumerateObject
 # runtime method-resolution issue tracked in #3719 blocks these tests.
 [project.tests]
-"I18n.I18nTests" = "tests/i18n_tests.l"
+"I18n.I18nTests"       = "tests/i18n_tests.l"
+"I18n.I18nKernelTests" = "tests/i18n_kernel_tests.l"
 

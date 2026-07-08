@@ -13100,7 +13100,7 @@ Note: `V0009` is reserved by the mode checker for `assume` outside `unsafe {}`. 
 
 **Security hardening in service libraries.**
 
-- `lyric-feature-flags` — `connectRemote()` rejects plaintext HTTP when an API key is configured (`INSECURE_URL` error code, CWE-319 / OWASP A02:2021).
+- `lyric-feature-flags` — ~~`connectRemote()` rejects plaintext HTTP when an API key is configured (`INSECURE_URL` error code, CWE-319 / OWASP A02:2021).~~ **Superseded (D-progress-627):** `connectRemote()` and the remote HTTP-polling backend this fix described were never actually implemented — the `TLS`-enforcement code this bullet claims never existed. The dead `extern package`-based scaffold it would have wrapped was deleted in D-progress-627; see `lyric-feature-flags/README.md` for the corrected, honest platform-parity claims.
 - `lyric-ws` — `createRegistry()` fails fast with `WS_AUTH_MISCONFIGURED` when JWT auth is enabled but no secret is set, preventing a panic at the first upgrade attempt.
 - `lyric-storage` — `presignedUrl` adds `requires: expiresInSeconds <= 604800` (7-day cap) on both the interface and public wrapper.
 - `lyric-resilience` — `Retry` aspect config gains `maxDelayMs = 30000` (cap on exponential backoff) and `jitterFraction = 0.1` (10 % uniform jitter added to each delay interval); `backoffDelay` rewritten with safe multiplication and clamping to prevent overflow.
@@ -30104,3 +30104,18 @@ the documented stdio-inheritance contract and risking a pipe-buffer
 deadlock.
 
 **Related:** `docs/03-decision-log.md` D-progress-625 (full account).
+
+### D-progress-628 — lyric-i18n kernel rewritten as pure Lyric, registered into the build
+
+`I18n.Kernel.{Net,Jvm}` were dead `extern package` scaffolding, never
+registered in `lyric-i18n/lyric.toml` and never imported by `i18n.l`
+(which already works on both targets via `Std.File`/`Std.Json`
+directly). Rewrote both as pure Lyric (no extern boundary needed) and
+registered them into the build as a standalone handle-based entry
+point; `tests/i18n_kernel_tests.l` (10 cases) passes on both
+`--target dotnet` and `--target jvm`. Found and worked around two new
+JVM/MSIL compiler bugs along the way (filed as #5422, #5423 — both
+about match-bound pattern variables losing type precision at a
+subsequent generic/method call site).
+
+**Related:** `docs/03-decision-log.md` D-progress-628.
