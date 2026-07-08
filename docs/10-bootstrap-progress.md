@@ -9,24 +9,19 @@ what has shipped and what remains open.
 
 ---
 
-## Bootstrap vs self-hosted — which compiler am I running?
+## Bootstrap stages — which compiler am I running?
 
-Most wasted debugging time on this project comes from not knowing **which of
-three compilers** produced a binary or a failure.  They are not
-interchangeable, and a failure under one is not a failure under another.
+Most wasted debugging time on this project comes from not knowing **which of the bootstrap stages** produced a binary or a failure. They are not interchangeable, and a failure under one is not a failure under another.
 
-| # | Compiler | Built by | IL validity | Build command | Use it to… |
-|---|----------|----------|-------------|---------------|-----------|
-| 1 | **mint stage-0** _(retired)_ | `scripts/mint-stage0-fsharp.sh` (rebuilds the historical F# bootstrap from git history) | valid (F# emitter is correct) | `LYRIC_BOOTSTRAP_MINT=1` seeds it automatically (still functional locally — the Makefile target and env-var code path were **not** removed by #4387) | seed stage-1; never run directly. **Historical artefact** — the `seed: mint` workflow input and the mint release path were retired in #4387; this is no longer part of the release pipeline. |
-| 2 | **mint stage-1** _(retired)_ | the mint seed compiling the self-hosted `.l` sources | **valid** (historical artefact) | `make mint` (still functional locally — not removed by #4387, just no longer used for releases) | Was used for day-to-day dev before stage-2 was runnable. **Retired in #4387** — the `seed: mint` release *path* is gone; releases now ship from stage-2 only (row 3). |
-| 3 | **self-hosted stage-2** | the stage-1 true compiler compiling **itself + the full stdlib** into an isolated toolchain (`.bootstrap/stage2/{lib,bin}`) | **runnable — stage-3 byte-reproducibility fixpoint confirmed (101/101 DLLs); D-progress-531** | `make stage2` | **the SHIP toolchain.** Release binaries (standalone and NuGet tool) are AOT-linked from stage-2 DLLs; run things via `make run-stage2 ARGS=…` |
+| Stage | Compiler | Built by | IL validity | Build command | Use it to… |
+|-------|----------|----------|-------------|---------------|------------|
+| **0** | **stage-0 seed** | Downloaded stable self-hosted release binary (`stage0-publish`) | **valid** (stable release seed) | Handled automatically by bootstrap script | Seeds stage-1; never run directly. Shipped as the trusted entry point of the pipeline. |
+| **1** | **stage-1** | The stage-0 seed compiling the compiler `.l` package sources | **valid** (compiled by stable seed) | `make stage1` | Seeds stage-2. Compiles fast because it does not rebuild the stdlib. |
+| **2** | **stage-2** | The stage-1 compiler compiling **itself + the full stdlib** into an isolated toolchain | **runnable** (this is the SHIP toolchain; D125) | `make stage2` | **The SHIP toolchain.** Release binaries (standalone and NuGet tool) are AOT-linked from stage-2 DLLs. Run things via `make run-stage2 ARGS="..."`. |
+| **3** | **stage-3** | The stage-2 compiler compiling **itself + the full stdlib** | **identical to stage-2** (fixpoint holds) | `make stage3` | **Fixpoint reproducibility verification.** Stage 3 and Stage 2 must be 100% byte-for-byte identical. |
 
-Key consequence: **a bare `make lyric` builds compiler #3 (stage-2)**, which
-is now **fully runnable** (D-progress-531: 101/101 DLLs byte-for-byte
-reproducible at the stage-3 fixpoint; P0040 parser bug fixed in #4020).
-`make stage2` and `make lyric` both produce a working self-hosted toolchain.
-The mint path (#1, #2) was retired in #4387 — `publish.yml` no longer has a
-`seed: mint` input.  Use `make lyric` (stage-2) for all dev and release work.
+Key consequence: **a bare `make lyric` builds the stage-1 bootstrap toolchain** (the fast day-to-day dev loop); **`make stage2` builds the stage-2 self-hosted toolchain**, which is **fully runnable** (D125) and achieves byte-for-byte reproducibility at the stage-3 fixpoint (D-progress-531).
+The legacy F# mint path has been completely decommissioned and deleted. Use the self-hosted pipeline for all dev and release work.
 
 ### The IL-validity gate
 
@@ -75,7 +70,7 @@ the runnability gate now exposes.  Run things against the toolchain with
 ### "Is this a real bug?" — one command
 
 ```sh
-make lyric                             # build the stage-2 toolchain once
+make lyric                             # build the stage-1 toolchain once
 make selfhost-check FILE=repro.l       # → scripts/selfhost-check.sh
 ```
 
@@ -25595,17 +25590,10 @@ links the self-hosted DLLs (D-progress-531: 101/101 DLLs byte-for-byte
 reproducible at the stage-3 fixpoint).  The released binary contains code
 emitted exclusively by the self-hosted Lyric compiler.
 
-**Bootstrap seed cutover (stage-0): still minting by default — attempted and
-reverted, see D-progress-594.**  #4387 (above) is about which artifact
-*ships*; it says nothing about how stage-0 (the untrusted seed used to
-bootstrap stage 1) is acquired.  `ci.yml`/`bench.yml` still hard-code
-`LYRIC_BOOTSTRAP_MINT=1` and `publish.yml`'s `mint_stage0` input still
-defaults to `true`.  Issue #3936 tracks flipping this now that the release
-binary's two known corruption bugs are fixed (#3988), but D-progress-594
-found a third, real regression (a v0.4.14-seed-specific miscompile of
-`Jvm.Kernel.dblToSingle`) that only a download-seeded stage 1 running the
-full JVM self-test suite surfaces — #3936 remains open, blocked on #5094
-(the v0.4.14 defect itself is still unlocated).
+**Bootstrap seed cutover (stage-0): completed, now downloading by default (D125).**
+The legacy F# bootstrapping/minting mechanism and Cecil-based reference rewriter have been fully decommissioned. The bootstrap seed stage-0 is now permanently downloaded from the latest stable self-hosted release. The underlying JVM `dblToSingle` / `System.Single` signature defect that caused the previous regression was successfully root-caused and resolved in D125 (correcting metadata signature mapping for primitive floating types on the MSIL backend), unblocking and completing the cutover!
+
+**D125's `System.Single` fix was incomplete; fixed in D126, with a CI consequence worth knowing about.** D125 patched `argTyToSig` (the auto-FFI resolution path); D126 found and fixed the same gap in `bufMsilType` (the `@externTarget` explicit-binding path that `dblToSingle`'s own declaration actually uses). Because `dblToSingle` lives inside the compiler's own source, this class of fix only takes effect once the compiler recompiles *itself* with the fix applied — stage-1 (built by the externally published stage-0 seed) cannot exercise it, only stage-2 can, until a new stage-0 seed release is cut from a commit at or after D126. `compiler-self-tests-jvm`'s five affected steps (pattern-lowering, silent-miscompile-guard, J3-lowering, NaN-comparison, lyric-resilience) now build and test against a dedicated `build-stage2` CI job's stage-2 artifact instead of stage-1; every other step in that job (and every other `compiler-self-tests-*` job) is untouched and still runs against stage-1.
 
 **Two CI safety-net jobs added (D-progress-595, #5094 / #5099) — detection,
 not a fix.**  `.github/workflows/seed-candidacy.yml` runs on every
@@ -25754,7 +25742,7 @@ directly in `$STAGE2_BIN_DIR/lyric` — no intermediate copy.
 
 **What still uses `Lyric.Cli.Aot`:** only the stage-1/development build
 (`build_aot_binary()` in `bootstrap.sh`, and `make lyric` / `make aot` /
-`make mint`).  At that point no `lyric` binary exists yet, so we must use
+`make stage1`).  At that point no `lyric` binary exists yet, so we must use
 the C# trampoline.  Once the release binary that carries `--release-from-dll`
 is the seed, `build_aot_binary()` can switch to the pure-Lyric path and
 `Lyric.Cli.Aot` can be deleted (tracked in #4390).

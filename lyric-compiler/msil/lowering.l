@@ -268,9 +268,19 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
       bufU1(w, idx)
     }
     case MClass(_) -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
-    case MValueTypeRef(typeRefCode, _) -> {
-      bufU1(w, 0x11)   // ELEMENT_TYPE_VALUETYPE
-      writeCompressedInt(w, typeRefCode)
+    case MValueTypeRef(typeRefCode, clrFqn) -> {
+      // System.Single must be primitive-encoded (ELEMENT_TYPE_R4), not a named
+      // valuetype ref, to match the BCL's real method signatures — the same
+      // fix `argTyToSig` applies for auto-FFI resolution (D125), needed here
+      // too since `@externTarget` signature encoding goes through this
+      // function instead, and misses it otherwise (e.g. `dblToSingle`'s
+      // `Single`-typed return in `_kernel/kernel.l`).
+      if clrFqn == "System.Single" {
+        bufU1(w, 0x0C)   // ELEMENT_TYPE_R4
+      } else {
+        bufU1(w, 0x11)   // ELEMENT_TYPE_VALUETYPE
+        writeCompressedInt(w, typeRefCode)
+      }
     }
     case MClassRef(typeRefCode, _) -> {
       bufU1(w, 0x12)   // ELEMENT_TYPE_CLASS

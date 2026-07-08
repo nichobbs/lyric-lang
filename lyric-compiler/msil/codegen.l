@@ -9061,7 +9061,15 @@ func pickCaseFqnByScrutinee(
   if candidates.count == 1 {
     return candidates[0]
   }
-  val parentFqn = match scrutTy { case MClass(cls) -> cls; case MGenericInst(_, fqn, _) -> fqn; case _ -> "" }
+  val parentFqn = match scrutTy {
+    case MClass(cls) -> cls
+    case MGenericInst(_, fqn, _) -> stripGenericArity(fqn)
+    case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
+    case MValueTypeGenericInst(_, fqn, _) -> stripGenericArity(fqn)
+    case MClassRef(_, clrFqn) -> stripGenericArity(clrFqn)
+    case MValueTypeRef(_, clrFqn) -> stripGenericArity(clrFqn)
+    case _ -> ""
+  }
   if parentFqn.length > 0 {
     var i = 0
     while i < candidates.count {
@@ -9460,6 +9468,7 @@ func lowerPatternTestMsil(
         case MClass(cls) -> cls
         case MGenericInst(_, fqn, _) -> fqn
         case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
+        case MValueTypeGenericInst(_, fqn, _) -> stripGenericArity(fqn)
         case _ -> ""
       }
       if baseCls.length > 0 {
@@ -9474,6 +9483,9 @@ func lowerPatternTestMsil(
         // the concrete type args; a bare open TypeRef would fail isinst at runtime.
         match scrutTy {
           case MGenericInst(_, _, typeArgs) -> {
+            insns.add(MIsinstGeneric(className = caseClass, typeArgs = typeArgs))
+          }
+          case MValueTypeGenericInst(_, _, typeArgs) -> {
             insns.add(MIsinstGeneric(className = caseClass, typeArgs = typeArgs))
           }
           case MGenericInstByName(_, typeArgs) -> {
@@ -9504,6 +9516,14 @@ func lowerPatternTestMsil(
           }
           val castTy = match scrutTy {
             case MGenericInst(_, _, typeArgs) -> {
+              val dotIdx = caseClass.lastIndexOf(".")
+              val caseKey = if dotIdx < 0 { "" } else { caseClass.substring(0, dotIdx) + "/" + caseClass }
+              match mapGet(cctx.ffiTypeRefs, caseKey) {
+                case Some(refRow) -> MGenericInst(typeRefCode = tdrTypeRef(refRow), headFqn = caseClass, typeArgs = typeArgs)
+                case None -> MClass(className = caseClass)
+              }
+            }
+            case MValueTypeGenericInst(_, _, typeArgs) -> {
               val dotIdx = caseClass.lastIndexOf(".")
               val caseKey = if dotIdx < 0 { "" } else { caseClass.substring(0, dotIdx) + "/" + caseClass }
               match mapGet(cctx.ffiTypeRefs, caseKey) {
@@ -20174,11 +20194,14 @@ func genericBacktickFqn(plainFqn: in String, arity: in Int): String {
 // input unchanged when there is no suffix.
 func stripGenericArity(fqn: in String): String {
   val bt = fqn.lastIndexOf("`")
-  if bt < 0 {
-    fqn
-  } else {
-    fqn.substring(0, bt)
+  if bt >= 0 {
+    return fqn.substring(0, bt)
   }
+  val sq = fqn.lastIndexOf("'")
+  if sq >= 0 {
+    return fqn.substring(0, sq)
+  }
+  fqn
 }
 
 // Index of `name` in `generics`, or -1 if absent.
@@ -23742,7 +23765,11 @@ func argTyToSig(t: in MsilType): Option[Mdr.SigType] {
   } else {
     val fqn = externRefFqn(t)
     if fqn.length > 0 {
-      Some(value = Mdr.mkNamedSig(fqn, msilIsValueTypeRef(t)))
+      if fqn == "System.Single" {
+        Some(value = Mdr.mkPrimSig(0x0C))
+      } else {
+        Some(value = Mdr.mkNamedSig(fqn, msilIsValueTypeRef(t)))
+      }
     } else {
       None
     }

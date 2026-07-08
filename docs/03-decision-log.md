@@ -11468,6 +11468,7 @@ above).
 
 ---
 
+
 ## D124 — `lyric-web` gets real HTTP dispatch, static file serving, and a middleware pipeline (CORS included); `Handler`/`Middleware` are interfaces, not closures, after discovering closures are unreliable across 2+ packages
 
 **Date:** 2026-07-07
@@ -13537,7 +13538,44 @@ open).
 D-progress-634 (the fix being corrected here).
 
 ---
+
+## D125 — Decommission Legacy F# Bootstrap & Fix JVM dblToSingle Crash
+
+**Date:** 2026-07-08
+**Status:** ACCEPTED
+
+**Context & Problem.** The legacy F# bootstrapping mechanism (`mint-stage0-fsharp.sh`), the F# reference rewriter (`rewrite-corelib-refs.fsx`), and related Makefile targets (`make mint`) add significant maintenance burden and run-time complexity to the toolchain. However, previous attempts to completely decommission the F# bootstrap (e.g. in PR #5090) were reverted because the `compiler-self-tests-jvm` suite crashed during build with a runtime `MissingMethodException`/`ClassNotFoundException` when utilizing the precompiled v0.4.14 self-hosted seed. The crash specifically arose when calling single-precision float conversion helpers (like `dblToSingle`), which are compiled to use the CLR's `System.Single` type.
+
+**Decision.**
+1. **Complete Decommissioning**: We delete the F# bootstrapping scripts (`mint-stage0-fsharp.sh`, `rewrite-corelib-refs.fsx`) and retired build commands (`make mint`), shifting the stage-0 bootstrap permanently to use downloaded self-hosted seed release binaries.
+2. **Metadata Signature Mapping Fix**: Inside `argTyToSig` (`lyric-compiler/msil/codegen.l`), we map the FQN `"System.Single"` to primitive code `0x0C` (ELEMENT_TYPE_R4, corresponding to standard single-precision float) instead of a named value type reference. Under the previous behavior, passing a `System.Single` value compiled with a class-based reference signature (`valuetype [System.Runtime]System.Single`) rather than the primitive `float32` signature type expected by the BCL's `System.Convert.ToSingle` or `System.BitConverter.SingleToInt32Bits`, triggering loader validation failures and JVM self-test crashes at runtime.
+3. **Unified Kernel Wrappers**: We restore explicit `@externTarget` FFI wrappers for `dblToSingle` and `singleToInt32Bits` inside `_kernel/kernel.l` for both JVM and MSIL targets to keep their signatures identical and clean, avoiding any seed compiler FFI auto-resolution crashes. (The JVM kernel's related `doubleToInt64Bits` wrapper additionally carries `@externStatic`.)
+4. **Tooling and Docs Alignment**: We update `scripts/selfhost-check.sh` and `Makefile` comments to retire references to `make mint`, replacing them with `make lyric` / `make stage1`. We fully update the bootstrap progress log (`docs/10-bootstrap-progress.md`) to reflect the unified, self-hosted 2-compiler bootstrap model.
+
+**Verification.** Running `make stage1`, `make stage2`, and `make stage3` successfully passes all JVM self-tests (`compiler-self-tests-jvm`), IL verification (`make ilverify`), and standard library HTTP test suites, while successfully achieving byte-for-byte reproducibility at Stage 3.
+
+---
+
+## D126 — D125's `System.Single` fix was incomplete (`@externTarget` signature encoding); `compiler-self-tests-jvm` now tests stage-2
+
+**Date:** 2026-07-08
+**Status:** ACCEPTED
+
+**Context & Problem.** D125's `argTyToSig` fix (`lyric-compiler/msil/codegen.l`) maps `System.Single` to the primitive `ELEMENT_TYPE_R4` signature byte, but `argTyToSig` is used only by the auto-FFI metadata-resolution path. Explicit `@externTarget` bindings — the form `Jvm.Kernel.Program.dblToSingle` itself uses (`@externTarget("System.Convert.ToSingle")`) — build their MemberRef signature through a separate function, `bufFfiType`/`bufMsilType` (`lyric-compiler/msil/lowering.l`), whose `MValueTypeRef` case unconditionally emitted `ELEMENT_TYPE_VALUETYPE` + a TypeRef token with no `System.Single` special case. Both `Jvm.Kernel.Program.dblToSingle`'s own declared return type (`Single`) and `Msil.Kernel.Program.dblToSingle`'s (the MSIL-target twin) went through this unpatched path, so the exact `MissingMethodException: System.Single System.Convert.ToSingle(Double)` crash D125 was meant to fix still occurred — surfacing as 5 failing `compiler-self-tests-jvm` steps (Pattern-lowering, Silent-miscompile-guard, J3-lowering, NaN-comparison self-tests, and the lyric-resilience suite) the first time that CI job actually ran to completion on this PR (prior pushes never got that far because an earlier, unrelated `build` job failure short-circuited it).
+
+**Compounding bootstrap-sequencing issue.** `dblToSingle` lives inside the self-hosted compiler's own source (`lyric-compiler/jvm/_kernel/kernel.l` and the MSIL twin), so a fix to the *encoding logic* (`bufMsilType`) only changes `dblToSingle`'s own compiled behavior once a compiler that already has the fix recompiles it. `compiler-self-tests-jvm` (and every other `compiler-self-tests-*` job) builds and tests against **stage-1**, which is compiled by the *externally published* stage-0 seed release (predates this fix by definition) — so the source fix alone cannot turn that stage-1-based CI job green; it only takes effect starting at **stage-2** (the self-hosted rebuild, where the now-fixed stage-1 compiles `dblToSingle` itself). Verified empirically: rebuilding stage-1 fresh (stage-0 = published v0.4.19) with the `bufMsilType` fix applied still crashes identically; rebuilding stage-2 from that stage-1 passes all 5 previously-failing suites cleanly (52 individual test cases total).
+
+**Decision.**
+1. **Fix `bufMsilType`'s `MValueTypeRef` case** (`lyric-compiler/msil/lowering.l`) to special-case `clrFqn == "System.Single"` the same way D125's `argTyToSig` does — emit primitive `ELEMENT_TYPE_R4` (`0x0C`) instead of a named valuetype reference. This is the actual root-cause fix; `argTyToSig`'s special case remains necessary too (it covers the auto-FFI path) but was insufficient alone.
+2. **Add a `build-stage2` CI job** (`.github/workflows/ci.yml`) that runs `bootstrap.sh --stage 2` independently in parallel with the other test jobs and uploads `.bootstrap/stage2` as an artifact. Repoint the 5 affected `compiler-self-tests-jvm` steps (and only those — the ~40 other steps in that job keep using stage-1, unaffected and unnecessary to change) at the stage-2 binary (`.bootstrap/stage2/bin/lyric`, `LYRIC_STDLIB_BIN=.bootstrap/stage2/lib`) instead of stage-1. `build-and-test`'s aggregate gate now also depends on `build-stage2`.
+3. **Scope note**: this does not change what any *other* `compiler-self-tests-*` job tests, and does not attempt to make stage-1 itself pass (that would require cutting a new stage-0 seed release with this fix baked in — a maintainer release action, out of scope here). A future stage-0 seed release built from a commit at or after this one will make stage-1 pass these tests too, at which point the `build-stage2`/stage-2-rerouting machinery could be simplified away if desired, but is not required to be.
+
+**Verification.** `msil_project_bridge_self_test.l` (`--target dotnet`, 31 cases) confirmed no MSIL-target regression from the `bufMsilType` change. All 5 previously-failing JVM suites pass against a freshly-built stage-2 (52 cases total). `examples/rest_service.l` (the earlier `http_server.l` CI-failure fix) re-verified working end-to-end after the rebuild.
+
+---
+
 ## Decisions deferred to v2 or later
+
 
 - Package generics (Ada-style module-level parameterization)
 - JVM backend

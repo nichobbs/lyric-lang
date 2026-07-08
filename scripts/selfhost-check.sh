@@ -4,8 +4,8 @@
 # self-hosted-EMITTER bug, or an environment artifact (wrong binary / stdlib
 # ABI / stale DLLs)?
 #
-# This is the committed, documented form of the mint-vs-self-hosted A/B loop.
-# It compiles FILE with the MINT (bootstrap) toolchain — which is itself valid
+# This is the committed, documented form of the stage-1-vs-self-hosted A/B loop.
+# It compiles FILE with the stage-1 (bootstrap) toolchain — which is itself valid
 # IL but RUNS the self-hosted codegen — so compiling/running a program exercises
 # the self-hosted emitter on user code while staying reproducible and
 # CI-faithful.  It then:
@@ -26,7 +26,7 @@
 # header for the three-compiler model.
 #
 # Usage:
-#   make mint                      # build the toolchain once (CI-faithful)
+#   make lyric                     # build the toolchain once (CI-faithful)
 #   scripts/selfhost-check.sh repro.l
 #   scripts/selfhost-check.sh repro.l --no-run     # skip execution (compile + ilverify only)
 # ---------------------------------------------------------------------------
@@ -43,18 +43,18 @@ if [[ -z "$FILE" || ! -f "$FILE" ]]; then
   exit 2
 fi
 
-# LYRIC_BIN may be overridden (e.g. to point at a mint-seeded bootstrap binary
-# staged elsewhere); defaults to the AOT entry point built by `make mint`.
+# LYRIC_BIN may be overridden (e.g. to point at a lyric-seeded bootstrap binary
+# staged elsewhere); defaults to the AOT entry point built by `make lyric`.
 LYRIC_BIN="${LYRIC_BIN:-$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/bin/$BUILD_CONFIG/net10.0/lyric}"
 LIB_DIR="$(dirname "$LYRIC_BIN")"
 if [[ ! -x "$LYRIC_BIN" ]]; then
-  echo "FATAL: mint toolchain not built at $LYRIC_BIN" >&2
-  echo "  build it first:  make mint   (CI-faithful, valid IL)" >&2
+  echo "FATAL: lyric toolchain not built at $LYRIC_BIN" >&2
+  echo "  build it first:  make lyric  (CI-faithful, valid IL)" >&2
   exit 2
 fi
 if [[ ! -d "$LIB_DIR/userlib" ]]; then
   echo "WARNING: $LIB_DIR/userlib is missing; the run step may fail to load the" >&2
-  echo "  suffixed stdlib.  Re-run 'make mint' to stage it." >&2
+  echo "  suffixed stdlib.  Re-run 'make lyric' to stage it." >&2
 fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/selfhost-check.XXXXXX")"
@@ -65,7 +65,7 @@ verdict_real() { echo; echo "VERDICT: REAL SELF-HOSTED BUG — $1"; exit 1; }
 verdict_ok()   { echo; echo "VERDICT: OK — $1"; exit 0; }
 
 echo "== selfhost-check: $FILE =="
-echo "   toolchain: $LYRIC_BIN  (mint/bootstrap — valid IL, runs self-hosted codegen)"
+echo "   toolchain: $LYRIC_BIN  (stage-1/bootstrap — valid IL, runs self-hosted codegen)"
 echo
 
 # 1. Compile with the self-hosted emitter.

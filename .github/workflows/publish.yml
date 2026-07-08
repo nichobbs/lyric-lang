@@ -29,13 +29,6 @@ on:
         required: false
         default: true
         type: boolean
-      mint_stage0:
-        description: >-
-          Mint Stage-0 compiler from git history instead of downloading
-          previous release (breaks bad-seed cycles).
-        required: false
-        default: true
-        type: boolean
 
 permissions:
   contents: write   # upload release assets
@@ -222,14 +215,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          # Full history: "Build stage 2" below runs bootstrap.sh --stage 3
-          # with LYRIC_BOOTSTRAP_MINT=1 (mint_stage0 defaults to true), which
-          # can invoke scripts/mint-stage0-fsharp.sh — it resolves the
-          # historical F# bootstrap commit via `git rev-parse 44a0d1e7~1` and
-          # `git worktree add`s it, both of which require that commit object
-          # to be present locally.  A shallow clone lacks it.
-          fetch-depth: 0
 
       - name: Install ARM64 cross-compilation toolchain (Ubuntu)
         if: matrix.os == 'ubuntu-latest' && matrix.rid == 'linux-arm64'
@@ -260,11 +245,10 @@ jobs:
         # has the stage-1 true compiler re-emit itself + the full stdlib into
         # .bootstrap/stage2/lib/.  The released binary is AOT-linked from those
         # self-hosted DLLs — it contains code emitted by the self-hosted Lyric
-        # compiler, not by the F# bootstrap (D-progress-531, 101/101 DLLs
-        # byte-for-byte reproducible at stage-3 fixpoint).
+        # compiler (D-progress-531, 101/101 DLLs byte-for-byte reproducible at
+        # stage-3 fixpoint).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LYRIC_BOOTSTRAP_MINT: ${{ inputs.mint_stage0 != false && '1' || '0' }}
         run: |
           ./scripts/bootstrap.sh --stage 3
 
@@ -451,16 +435,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          # Full history: "Build stage 2 (for NuGet package)" below runs
-          # bootstrap.sh --stage 3 with LYRIC_BOOTSTRAP_MINT=1 (mint_stage0
-          # defaults to true), which can invoke scripts/mint-stage0-fsharp.sh
-          # — it resolves the historical F# bootstrap commit via `git
-          # rev-parse 44a0d1e7~1` and `git worktree add`s it, both of which
-          # require that commit object to be present locally.  A shallow
-          # clone lacks it.  See build-standalone's checkout step for the
-          # identical rationale.
-          fetch-depth: 0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
@@ -492,7 +466,6 @@ jobs:
         # self-hosted-emitted stdlib and can compile user code at runtime.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LYRIC_BOOTSTRAP_MINT: ${{ inputs.mint_stage0 != false && '1' || '0' }}
         run: |
           ./scripts/bootstrap.sh --stage 3
 

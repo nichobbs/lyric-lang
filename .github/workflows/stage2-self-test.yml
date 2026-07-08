@@ -2,8 +2,8 @@ name: Stage-2 self-test
 
 # Issue #5099: every self-test job in ci.yml (compiler-self-tests-dotnet-a/b,
 # compiler-self-tests-jvm) runs against stage 1 — the AOT binary built
-# directly by whatever the stage-0 seed happens to be (today: the minted F#
-# bootstrap compiler). Per docs/10-bootstrap-progress.md's compiler-identity
+# directly by whatever the stage-0 seed happens to be (the downloaded self-hosted
+# Lyric release). Per docs/10-bootstrap-progress.md's compiler-identity
 # table, the artifact that actually ships (standalone binaries, the NuGet
 # global tool) is stage 2 — the self-hosted compiler rebuilding itself + the
 # full stdlib into an isolated, self-consistent toolchain. Nothing in CI ran
@@ -22,11 +22,12 @@ name: Stage-2 self-test
 # testing is seed-agnostic by construction and directly verifies the artifact
 # that ships.
 #
-# This job builds stage 2 (mint stage-0, same as ci.yml, since this job's
-# purpose is isolating self-hosting correctness — seed-download trustworthi-
-# ness per release is the separate seed-candidacy.yml workflow's job) and
-# re-runs a representative self-test subset against THAT toolchain, with its
-# own stdlib pinned via LYRIC_STDLIB_BIN (make run-stage2's existing pattern).
+# This job builds stage 2 (download stage-0 release, same as ci.yml, since this
+# job's purpose is isolating self-hosting correctness — seed-download
+# trustworthiness per release is the separate seed-candidacy.yml workflow's
+# job) and re-runs a representative self-test subset against THAT toolchain,
+# with its own stdlib pinned via LYRIC_STDLIB_BIN (make run-stage2's existing
+# pattern).
 #
 # Scheduled rather than per-PR: a full self-host build is roughly double a
 # stage-1-only build, so duplicating this on every PR would double CI cost
@@ -93,17 +94,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      # Same stage-0 acquisition ci.yml's build job uses (mint from git
-      # history). This job's question is "can the self-hosted compiler
-      # correctly compile itself", which is orthogonal to which seed produced
-      # stage 1 — seed-candidacy.yml covers the download-seed-trust question
-      # per release.
+      # Same stage-0 acquisition ci.yml's build job uses (download from release).
+      # This job's question is "can the self-hosted compiler correctly compile
+      # itself", which is orthogonal to which seed produced stage 1 —
+      # seed-candidacy.yml covers the download-seed-trust question per release.
       - name: Build stage 2 (self-hosted compiler rebuilding itself + full stdlib)
         id: build_stage2
         working-directory: ${{ github.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LYRIC_BOOTSTRAP_MINT: '1'
         run: ./scripts/bootstrap.sh --stage 2
 
       # bootstrap.sh's own stage-2 runnability smoke is deliberately

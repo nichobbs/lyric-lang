@@ -6,10 +6,8 @@
 # reads only from the previous stage and writes only to its own isolated root.
 #
 # Stage 0:  Acquire a SEED binary we don't yet trust — download the latest
-#           self-hosted Lyric release (default), or, when that is unavailable or
-#           `LYRIC_BOOTSTRAP_MINT=1`, mint the historical F# bootstrap compiler
-#           from git history (`scripts/mint-stage0-fsharp.sh`).  Either way the
-#           seed's own emission ABI is untrusted; stage 2 normalises it.
+#           self-hosted Lyric release.  Either way the seed's own emission
+#           ABI is untrusted; stage 2 normalises it.
 #           Output: `.bootstrap/stage0-publish/`.
 #
 # Stage 1:  The seed compiles the current true-compiler `.l` sources into a
@@ -83,7 +81,6 @@ TMP_BASE="${TMP_BASE%/}"   # strip any trailing slash so the glob is well-formed
 MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
-SKIP_COREREF_REWRITE="${SKIP_COREREF_REWRITE:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -100,11 +97,19 @@ ok() { echo "[bootstrap] OK: $*"; }
 # Download and extract self-hosted binary from latest release
 # ---------------------------------------------------------------------------
 try_bootstrap_from_release() {
-  # Check if binary already exists (skip download if it does)
+  # Check if binary already exists (skip download if it does). A cache hit
+  # requires lib/ too — a binary with no lib/ can't locate Lyric.Stdlib at
+  # runtime, so a partial/stale cache from an interrupted extraction must
+  # not short-circuit here; clear it and fall through to a fresh download.
   mkdir -p "$BUILD_DIR/stage0-publish"
-  if [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
+  if { [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; } \
+      && [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
     info "  Using cached stage0-publish binary (skipping download)"
     return 0
+  elif [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
+    info "  Cached stage0-publish binary found but lib/ is missing (stale/partial cache); clearing and re-downloading"
+    rm -rf "${BUILD_DIR:?}/stage0-publish"
+    mkdir -p "$BUILD_DIR/stage0-publish"
   fi
   # Detect platform and architecture for downloading the right binary
   local platform
@@ -291,39 +296,9 @@ stage0() {
   mkdir -p "$BUILD_DIR/stage0-publish"
   mkdir -p "$(dirname "$STAGE0_BIN")"
 
-  # The published release stage-0 binary is currently regressed: it mis-emits
-  # >64 KB string-heap indices (truncated to 2 bytes) and generic-union case
-  # TypeRefs (missing the `\`N` arity suffix), corrupting any large per-package
-  # DLL — notably Lyric.Lyric.Cli, whose type names come back mangled so the AOT
-  # entry-point cannot resolve `Lyric.Cli.Program`.  Both bugs are fixed in the
-  # current self-hosted emitter source but are baked into the released binary,
-  # so a clean checkout cannot escape them via the download.
-  #
-  # `scripts/mint-stage0-fsharp.sh` rebuilds the historical F# bootstrap
-  # compiler (a separate emitter with neither bug) from git history and uses it
-  # to produce a clean stage-0 carrying the current (fixed) self-hosted emitter.
-  # Opt in with LYRIC_BOOTSTRAP_MINT=1 (set in CI until a fixed binary ships);
-  # otherwise download, and fall back to minting if the download fails.  The
-  # mint populates $BUILD_DIR/stage0-publish, which try_bootstrap_from_release
-  # then reuses instead of downloading.
-  local stage0_minted=0
-  if [[ "${LYRIC_BOOTSTRAP_MINT:-0}" == "1" ]] && \
-     [[ ! -f "$BUILD_DIR/stage0-publish/lyric" ]] && \
-     [[ ! -f "$BUILD_DIR/stage0-publish/lyric.dll" ]] && \
-     [[ ! -f "$BUILD_DIR/stage0-publish/lyric.exe" ]]; then
-    info "Stage 0: LYRIC_BOOTSTRAP_MINT=1 — minting clean stage-0 from F# history"
-    FAST="${MINT_FAST:-1}" bash "$REPO_ROOT/scripts/mint-stage0-fsharp.sh" \
-      || die "Stage 0: mint failed (scripts/mint-stage0-fsharp.sh)"
-    stage0_minted=1
-  fi
-
-  # Download self-hosted binary from latest release (reuses a minted
-  # stage0-publish if present), minting from F# history if the download fails.
+  # Download self-hosted binary from latest release.
   if ! try_bootstrap_from_release; then
-    info "Stage 0: release download failed — minting clean stage-0 from F# history"
-    FAST="${MINT_FAST:-1}" bash "$REPO_ROOT/scripts/mint-stage0-fsharp.sh" \
-      || die "Stage 0: download failed AND mint failed (scripts/mint-stage0-fsharp.sh)"
-    stage0_minted=1
+    die "Stage 0: release download failed"
   fi
   info "Stage 0: using self-hosted binary"
 
@@ -368,27 +343,22 @@ stage0() {
 
   # Copy the lib/ directory containing Lyric.Stdlib.dll and other runtime dependencies.
   # The binary resolves these at runtime via findCompiledStdlibDir(<binary>/lib).
-  # Only the downloaded release archive ships a lib/ subfolder; the mint path
-  # (scripts/mint-stage0-fsharp.sh) AOT-links straight from $STAGE1_DIR and copies
-  # its DLLs flat into stage0-publish/, with no lib/ subdirectory (D-progress-541
-  # discovered this: LYRIC_BOOTSTRAP_MINT=1 is set in CI, so hard-failing on a
-  # minted build's missing lib/ broke every CI bootstrap). $STAGE0_BIN itself is
-  # never invoked downstream — invoke_stage0() runs the binary straight out of
-  # $STAGE0_PUBLISH_DIR — so a missing lib/ here only matters for someone running
-  # the copied $STAGE0_BIN directly outside this script.
+  # A partial/stale stage0-publish (e.g. an interrupted prior extraction) can
+  # have a binary with no lib/; clear it and retry the download once before
+  # giving up, so a stale cache doesn't leave the user stuck.
+  if [[ ! -d "$BUILD_DIR/stage0-publish/lib" ]]; then
+    info "  lib/ directory not found in stage0-publish; clearing cache and retrying download once"
+    rm -rf "${BUILD_DIR:?}/stage0-publish"
+    mkdir -p "$BUILD_DIR/stage0-publish"
+    try_bootstrap_from_release || die "Stage 0: release download failed on retry"
+  fi
   if [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
     mkdir -p "$(dirname "$STAGE0_BIN")/lib"
     cp -r "$BUILD_DIR/stage0-publish/lib/." "$(dirname "$STAGE0_BIN")/lib/" \
       || die "Stage 0: failed to copy lib/ directory from stage0-publish"
     info "  copied lib/ directory with runtime dependencies"
-  elif [[ "$stage0_minted" == "1" ]] || [[ -f "$BUILD_DIR/stage0-publish/Lyric.Lyric.Cli.dll" ]]; then
-    # A minted publish dir copies its DLLs flat (no lib/ subfolder) — detect
-    # that layout directly so a CACHED minted stage0-publish (second and later
-    # local runs, where try_bootstrap_from_release short-circuits and
-    # stage0_minted stays 0) doesn't hard-fail here.
-    info "  lib/ directory not present in a minted stage0-publish (expected; mint copies DLLs flat)"
   else
-    die "lib/ directory not found in stage0-publish — stage-0 binary will not be able to locate Lyric.Stdlib"
+    die "lib/ directory not found in stage0-publish after retry — the release archive appears to be missing lib/"
   fi
 
   ok "Stage 0 complete — $STAGE0_BIN"
@@ -501,37 +471,6 @@ stage1() {
 # Stage 1 — CLI bundle precompile (Track A, A1.2)
 # ---------------------------------------------------------------------------
 stage1_cli_bundle() {
-  # When stage-0 was minted from the F# bootstrap compiler, the mint already
-  # emitted the entire Lyric.Cli closure (per-package, CoreLib-retargeted) into
-  # $STAGE1_DIR.  Those F#-emitted DLLs are the reference output for STAGE 1, the
-  # ABI-mixed bootstrap toolchain.  Reuse the minted closure here; only the
-  # freshly-built stdlib bundle needs its CoreLib refs retargeted (the mint
-  # already retargeted the closure DLLs, and the rewrite is idempotent for those).
-  #
-  # This reuse is a STAGE-1 detail, not a self-host limitation.  Stage 2 — the
-  # stage-1 compiler rebuilding ITSELF — now produces a fully runnable,
-  # byte-for-byte reproducible toolchain (D-progress-531: stage 2 RUNS, stage 3
-  # closure 101/101 DLLs + stdlib byte-identical).  The last per-package blocker
-  # (#3920 / #4020) was a cross-package nullary-union-case singleton
-  # mis-detection: the restored path used an arity-suffix proxy that missed the
-  # non-generic `Lyric.Lexer`, so the self-emitted parser `newobj`'d keyword
-  # cases that never `Object.Equals`'d the lexer's tokens and hung on
-  # `opaque type` (the one item consumed via `tryEatKw`).  #4020 detects the
-  # `Instance` field directly, clearing it.  Stage 1 still reuses the minted
-  # closure only because it is intentionally ABI-mixed (its own runtime stdlib is
-  # seed-emitted); stage 2 is the self-consistent ship/test toolchain.
-  if [[ "${LYRIC_BOOTSTRAP_MINT:-0}" == "1" ]] && [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]]; then
-    info "Stage 1 (CLI bundle): reusing minted F#-emitted closure (intentional — stage 1 is the ABI-mixed bootstrap toolchain; stage 2 is the self-hosted rebuild)"
-    if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
-      info "  retargeting System.Private.CoreLib refs -> public facades"
-      dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE1_DIR"/*.dll \
-        > "$BUILD_DIR/rewrite-corelib-refs.log" 2>&1 || \
-        die "stage-1 CLI bundle: corelib-ref rewrite failed"
-    fi
-    ok "Stage 1 CLI bundle complete — minted F#-emitted closure in $STAGE1_DIR"
-    return
-  fi
-
   info "Stage 1 (CLI bundle): precompiling Lyric.Cli + transitive deps"
 
   local driver_dir="$BUILD_DIR/stage1-cli-driver"
@@ -552,8 +491,7 @@ EOF
 
   # Emit the driver's transitive import closure as per-package DLLs straight
   # into the stage-1 output dir via the self-hosted per-package emitter
-  # (`emitPerPackageClosure`).  This replaces the retired F# `--internal-build`
-  # + /tmp-cache-harvest path: the released self-hosted binary emits each
+  # (`emitPerPackageClosure`).  The released self-hosted binary emits each
   # Lyric.* / Msil.* / Jvm.* / Std.* package as its own DLL directly.  Do NOT
   # pin LYRIC_STD_PATH at the bundle dir here — the emitter must resolve every
   # package from `lyric-stdlib/std` source to recompile the whole closure.
@@ -565,15 +503,6 @@ EOF
     die "stage-1 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE1_DIR after emit"
   local copied
   copied="$(ls "$STAGE1_DIR"/*.dll 2>/dev/null | wc -l)"
-
-  if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
-    info "  retargeting System.Private.CoreLib refs -> public facades"
-    dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE1_DIR"/*.dll \
-      > "$BUILD_DIR/rewrite-corelib-refs.log" 2>&1 || \
-      die "stage-1 CLI bundle: corelib-ref rewrite failed"
-  else
-    info "SKIP_COREREF_REWRITE=1; leaving stage-1 DLLs with raw CoreLib refs"
-  fi
 
   ok "Stage 1 CLI bundle complete — Lyric.Lyric.Cli.dll + $((copied - 1)) deps in $STAGE1_DIR"
 }

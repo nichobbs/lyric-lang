@@ -50,13 +50,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          # Full history: LYRIC_BOOTSTRAP_MINT=1 below runs
-          # scripts/mint-stage0-fsharp.sh, which resolves the historical F#
-          # bootstrap commit via `git rev-parse 44a0d1e7~1` (falling back to a
-          # hardcoded SHA) and `git worktree add`s it — both require the
-          # commit object to be present locally, which a shallow clone lacks.
-          fetch-depth: 0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
@@ -72,15 +65,12 @@ jobs:
             ${{ runner.os }}-nuget-
 
       # Bootstrap.sln and the F# `src/Lyric.Cli` project were deleted once the
-      # self-hosted compiler became the sole toolchain (see ci.yml's
-      # build-and-test job for the canonical pattern this mirrors). Mint the
-      # stage-1 self-hosted bundle from F# history, then build the AOT
-      # entry-point project — the resulting `lyric` binary is what `lyric
-      # bench` runs through below.
-      - name: Bootstrap stage 1 (mint clean stage-0 from F# history → self-hosted packages)
+      # self-hosted compiler became the sole toolchain. Download the stage-0
+      # seed and build stage 1 from source, then build the AOT entry-point
+      # project — the resulting `lyric` binary is what `lyric bench` runs through.
+      - name: Bootstrap stage 1 (download stage-0 release → self-hosted packages)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LYRIC_BOOTSTRAP_MINT: '1'
         run: ./scripts/bootstrap.sh --stage 1
 
       - name: Build AOT entry-point
