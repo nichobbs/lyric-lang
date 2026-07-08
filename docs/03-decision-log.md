@@ -12007,7 +12007,7 @@ type` + JVM auto-FFI, mirroring the pattern already proven in
   of the extern mechanism) — replaced with the real `Std.Char.toInt` UFCS
   method (`c.toInt()`).
 
-**Verification.** `lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l` (8
+**Verification.** `lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l` (10
 cases) exercises all four kernels directly (not through `Std.Environment`/
 `Std.Process`/`Std.Log`, for reasons below) on `--target jvm`, wired into CI.
 Manually verified end-to-end: `Std.Environment.getVar`/`runtimeDirectory`/

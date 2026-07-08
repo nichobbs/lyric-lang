@@ -30080,7 +30080,7 @@ Unicode kernel needed a new 30-entry translation table (Java's
 `UnicodeCategory` this kernel must produce) — verified identical output
 across both targets for 10 code points spanning distinct Unicode
 categories. Verified by `lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l`
-(8 cases), wired into CI.
+(10 cases), wired into CI.
 
 Found and filed (not fixed, each independent of this migration) 6
 pre-existing JVM codegen bugs while verifying end-to-end: #5377

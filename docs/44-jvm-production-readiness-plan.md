@@ -539,7 +539,7 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   mechanism.  `unicode_host.l` needed a new 30-entry Java-category →
   .NET-`UnicodeCategory` translation table, verified identical across both
   targets for 10 code points.  Verified by
-  `lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l` (8 cases), wired in
+  `lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l` (10 cases), wired in
   CI.  Found and filed (not fixed here) 5 pre-existing, independent JVM
   codegen bugs surfaced only because this fix let execution reach far
   enough to hit them: #5377 (`Std.Environment.args()` unimplementable
@@ -551,7 +551,7 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
 - **Acceptance (MET for M-9/M-10/M-11/M-19; storage blocked on M-4/#2444):**
   `hash_jvm_self_test.l` gates M-9/M-10; `process_capture_jvm_self_test.l`
   gates M-11 (10 real subprocess assertions on `--target jvm`);
-  `stdlib_jvm_kernels_self_test.l` gates M-19 (8 cases across all four
+  `stdlib_jvm_kernels_self_test.l` gates M-19 (10 cases across all four
   migrated kernels).  `lyric-storage` kernel waits on JVM `@cfg` erasure
   (#2444).
 
