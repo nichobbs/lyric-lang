@@ -215,7 +215,8 @@ test "buildWorkspaceDeps: tuple's Option element round-trips without crashing on
   }
 
   val directIsWorkspace = isSomeWs(Ws.findWorkspaceRoot(Path.dirname(mfPath)))
-  val (dllPaths, hadError, wsCtxOpt) = Cli.buildWorkspaceDeps(manifest, mfPath, Emitter.Dotnet)
+  val noFeatures: List[String] = newList()
+  val (dllPaths, hadError, wsCtxOpt) = Cli.buildWorkspaceDeps(manifest, mfPath, Emitter.Dotnet, noFeatures)
   val tupleIsWorkspace = isSomeWs(wsCtxOpt)
 
   assertEqualInt(dllPaths.count, 0, "buildWorkspaceDeps: no {workspace = true} deps declared, so nothing is built")

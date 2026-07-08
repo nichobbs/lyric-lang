@@ -18,6 +18,13 @@
 //!     "startedAt":N,"finishedAt":N},...]
 //!
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//!
+//! Only active when compiled with feature = "dotnet" (the default; #1444-style
+//! target-kernel split with `Jobs.Kernel.Jvm`) — the file-level `@cfg` erases
+//! this whole file, including the module-level `val schedulerMap`/`jobMap`
+//! that would otherwise call BCL-only `ConcurrentDictionary` externs, on a
+//! `--target jvm` build.
+@cfg(feature = "dotnet")
 package Jobs.Kernel.Net
 
 import Std.Core

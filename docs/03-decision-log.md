@@ -13198,6 +13198,256 @@ already tracked), #5324 (`extern package` no-op), D-progress-631
 landed, and the `Session.Kernel.Net` risk this entry raised and
 verified against).
 
+---
+
+## D-progress-633 — `lyric-jobs`: real Quartz JVM kernel; `Class-Path:` manifest embedding for `lyric run`/`lyric test --target jvm`; `List[T].removeAt` JVM support; two new record-constructor/erased-generics JVM bugs found
+
+**Status:** ACCEPTED (`Jobs.Kernel.Jvm` + 3 compiler fixes); 2 newly-found
+JVM backend bugs deliberately NOT fixed here (see below).
+
+**Context.** `Jobs.Kernel.Jvm`'s Quartz binding predated this PR as dead
+scaffolding: an `extern package`-based forward declaration (confirmed
+permanent no-op, D-progress-625/#5324), never registered as a real
+working backend. `InProcessJobScheduler` (pure Lyric, no kernel) was the
+only genuinely functional scheduler.
+
+**What shipped.**
+
+- `lyric-jobs/src/_kernel/jvm/jobs_kernel.l`: real `org.quartz-scheduler
+  :quartz`/`quartz-jobs` bindings via `extern type` + JVM auto-FFI —
+  `SchedulerFactory`/`Scheduler`/`JobDetail`/`Trigger`/`CronTrigger`
+  wired to schedule, run, poll, cancel, and report errors for real jobs
+  executed on Quartz's own thread pool. Bound to Quartz's public
+  `org.quartz.impl.StdScheduler` facade class rather than the
+  `Scheduler` interface it implements (a deliberate workaround for the
+  interface-auto-FFI gap — see below — that predates and is independent
+  of that gap's actual fix; both now work, and the facade binding was
+  left as-is rather than switched).
+- **Two new JVM backend bugs found, one fixed, one filed:**
+  - **Fixed directly** (`lyric-compiler/jvm/codegen/04_calls.l`):
+    `List[T].removeAt(index: Int): Unit` had no JDK translation at all
+    — Lyric's `List` maps to `java.util.ArrayList`, whose index-based
+    removal is `remove(int)`, but `ArrayList` also overloads
+    `remove(Object)` for value-based removal, so the emitted call must
+    force the argument through as a raw (unboxed) `int` to select the
+    correct overload rather than autoboxing into the wrong one. First
+    hit by `InProcessJobScheduler.cancel`'s `self.queue.removeAt(i)` —
+    blocked compiling `Jobs` for JVM at all before this fix.
+  - **Filed as #5457, not fixed** (general record-constructor codegen
+    gap): a `var …: Bool` field declared immediately adjacent to a
+    `Long` field, or a defaulted field (`= default()`) ahead of a
+    `Long`/trailing-reference field, miscompiles the record constructor
+    (`VerifyError: Bad type on operand stack` — a local-slot width bug,
+    reproduced independently of `lyric-jobs` in a minimal record with
+    the same field shape). Worked around in `JobRecord` by field
+    reordering (both `Long` fields declared before the `Bool` field)
+    and supplying every field explicitly at every construction site (no
+    `= default()` anywhere).
+  - The interface-auto-FFI gap this kernel's `StdScheduler`-facade
+    workaround predates (`ClassInfo`/`ACC_INTERFACE` skipped entirely,
+    causing `invokevirtual`-against-interface `VerifyError`s) was
+    independently found and fixed by `lyric-session`'s Lettuce Redis
+    kernel work in this same PR (D-progress-631) — not re-fixed here.
+- **`Class-Path:` JAR manifest embedding**
+  (`lyric-compiler/jvm/{bridge,driver,manifest}.l`): `PackageMeta`
+  gained a `classpathJars: List[String]` field (populated from
+  `autoFfi.jarPaths`, itself `LYRIC_FFI_JARS` — a restored project's
+  `target/restore/jvm-classpath.txt`), embedded as a JAR manifest
+  `Class-Path:` attribute (wrapped to the JAR spec's 72-byte
+  continuation-line limit) whenever a package has Maven dependencies.
+  Fixes `lyric run --target jvm` (which execs a bare `java -jar` and,
+  before this, could never see `[maven]`-restored classes at runtime —
+  a gap `lyric-session`'s D-progress-631 entry documented as still open
+  for `lyric run` specifically after its own `lyric test`-only fix) and
+  complements `cli_test.l`'s independently-landed `java -cp` injection
+  for `lyric test --target jvm` (D-progress-632). **A bug in this
+  change's own line-wrapping logic** (`wrapManifestLine`'s continuation
+  branch called `remaining.substring(limit, remaining.length)` — passing
+  the *original* remaining length as the substring's `count` parameter
+  instead of `remaining.length - limit`, always requesting more
+  characters than actually remained) crashed `System.String.Substring`
+  with `ArgumentOutOfRangeException` for any classpath long enough to
+  need wrapping (7+ Maven JARs, first hit integrating `lyric-ws`'s
+  Undertow + transitive dependency set into this same PR). Fixed as part
+  of this integration; the `removeAt` fix's own shorter classpath (2
+  Quartz JARs) never exercised the wrapping branch, so this was a
+  latent bug in the originally-landed code, not a new regression.
+
+**Verification.** `./bin/lyric test --manifest lyric-jobs/lyric.toml`:
+`--target dotnet` (default features) 17/17 pass, no regression.
+`--target jvm --no-default-features --features jvm,inprocess`: 10/17
+pass — the real Quartz end-to-end case (schedule/run/poll/cancel/error)
+passes cleanly; the 7 failures are `InProcessJobScheduler`/`JobResult`
+cases hitting a newly-found, separate erased-generics bug (`List[JobSpec]`
+confused with an unrelated `Integer`-typed value elsewhere in the JVM
+bundle — filed as #5456, same family as #5439/#5442/#5444/#5451, not
+caused by or specific to the Quartz kernel work above).
+`lyric-jobs/README.md`'s platform-parity table corrected: `dotnet`
+`InProcessJobScheduler` remains Available; `jvm` `InProcessJobScheduler`
+is now honestly marked Broken (#5456) rather than the prior blanket
+Available claim.
+
+**Related:** #5324, #5456, #5457, D-progress-631 (the interface-auto-FFI
+fix this kernel's workaround predates), D-progress-632 (`lyric test
+--target jvm` Maven classpath — the `cli_test.l` half of the same
+run-time classpath problem this entry's `Class-Path:` manifest work
+complements).
+
+---
+
+## D-progress-634 — `lyric-ws`: real Undertow JVM WebSocket kernel; workspace dependencies now inherit the consumer's `--features`/`--target` selection (general compiler fix); three more JVM backend gaps found and precisely diagnosed, not fixed
+
+**Status:** ACCEPTED (`Ws.Kernel.Jvm` + compiler fixes); 3 newly-discovered
+JVM backend bugs filed via this entry and deliberately NOT fixed here —
+each precisely diagnosed and worked around in the file/comment nearest
+its symptom.
+
+**Context.** `lyric-ws/src/_kernel/jvm/ws_kernel.l` declared `extern
+package` FFI blocks (a confirmed no-op mechanism) for a fake Int-handle
+Undertow WebSocket server; `Ws.Kernel.Jvm` was registered in
+`lyric-ws/lyric.toml`'s `[project.packages]` (so it compiled) but
+`ws.l` never imported it, so the JVM feature was unreachable. No
+`[maven]` table existed for `io.undertow:undertow-core`.
+
+**What shipped.**
+
+- `lyric-ws/lyric.toml`: added a `[maven]` table for
+  `io.undertow:undertow-core` (same version as `lyric-web`'s Undertow
+  HTTP kernel, `2.3.13.Final`).
+- `lyric-ws/src/_kernel/jvm/ws_kernel.l`: full rewrite off `extern
+  package` onto `extern type` + auto-FFI against real
+  `io.undertow.*`/`org.xnio.*`/JDK classes. `WebSocketConnectionCallback`
+  and the receive/close listeners (`org.xnio.ChannelListener`) are real
+  Lyric records implementing the real JDK interfaces via `impl
+  <ExternInterface> for Record`. `startServer`/`stopServer` start and
+  stop a genuine `io.undertow.Undertow` server upgrading a configurable
+  path to WebSocket; `send`/`broadcast`/`close` dispatch real frames via
+  `io.undertow.websockets.core.WebSockets`'s blocking send methods;
+  `connectionCount`/`isConnected` query a real per-registry
+  `ConcurrentHashMap<String, WebSocketChannel>`. Documented, non-silent
+  gaps: fragmented (multi-frame) messages are drained but not
+  reassembled; ping-interval keepalives are not scheduled; text decoding
+  is lenient UTF-8 (see #5453 below).
+- `lyric-ws/src/ws.l`: added a `kernelXxx` `@cfg(feature =
+  "dotnet"/"jvm")`-paired dispatch layer (mirrors `Auth`'s
+  `Auth.Kernel.Net`/`Auth.Kernel.Jvm` split) so every existing kernel
+  call site now selects the right backend; added new public API
+  `startServer`/`startServerWithConfig`/`stopServer` (the library
+  previously had no way to actually bind a `WsHandler` to a running
+  server on either target). `Ws.Kernel.Net` grew matching
+  `startServer`/`stopServer` stubs returning `Err(code =
+  "NOT_IMPLEMENTED")` — the real ASP.NET Core WebSocket upgrade path
+  stays deferred to #778, now with the same public surface on both
+  targets.
+- **`impl <ExternInterface> for Record` JVM support** (three
+  compiler bugs in `constraintRefToJvmClass`/`holderAwareParamTypes`/
+  `lowerImplMethod`) — independently discovered here at essentially the
+  same time as `lyric-session`'s Lettuce Redis kernel work
+  (D-progress-631) hit the identical class of gap. The version that
+  landed is `lyric-session`'s: the same `ClassInfo.isInterface`
+  field and `invokeinterface`-vs-`invokevirtual` selection this entry's
+  own draft fix also had, plus a superset this entry's narrower fix
+  didn't need (recursive superinterface walk, required for Lettuce's
+  deeper interface hierarchy but not for Undertow's flatter one).
+  Verified against the adopted fix: `ffi_iface_impl_jvm_self_test.l`
+  (2/2), `auto_ffi_jvm_self_test.l` (22/22), and `lyric-ws`'s own
+  `impl JHttpHandler`-shaped Undertow bindings all compile and dispatch
+  correctly on `--target jvm`.
+- **Workspace dependencies now inherit the consumer's resolved feature
+  set** (`lyric-compiler/lyric/cli/{workspace_builder,cli_build}.l`,
+  `cli_workspace_builder_self_test.l`): `{ workspace = true }`
+  dependencies always built with their *own* manifest's default
+  features, never the consumer's `--features`/`--no-default-features`
+  selection — `buildWorkspaceDep`'s recursive `buildProject` call
+  hardcoded `newList()` (no CLI features) and `false` (use defaults). A
+  `--target jvm --features jvm --no-default-features` consumer build of
+  `lyric-ws` therefore built its `Lyric.Auth` workspace dependency with
+  `default = ["dotnet"]` active — compiling `Auth`'s `@cfg(feature =
+  "dotnet")` branches into JVM bytecode and erasing the `@cfg(feature =
+  "jvm")` ones, so `lyric-auth` (a `lyric-ws` dependency) could never
+  actually build for JVM. Fixed by threading the consumer's
+  already-resolved `activeFeatures` through `resolveManifestDependencies`
+  -> `buildWorkspaceDeps` -> `buildWorkspaceDep`, forcing it verbatim
+  (`noDefaultFeatures = true`) onto every workspace dependency's build.
+  Confirmed both via `lyric-ws --target jvm --features jvm` and a
+  minimal two-package isolated repro before landing. General compiler
+  fix, not specific to `lyric-ws`/`lyric-auth` — benefits any workspace
+  dependency whose behavior varies by feature.
+- `cli_test.l`'s Maven-classpath-for-`lyric test` injection (needed to
+  actually run the new `Ws.Kernel.Jvm`-exercising test suite on
+  `--target jvm`) was independently discovered here too, at essentially
+  the same time as `lyric-aws-xray`'s integration (D-progress-632). The
+  version that landed is `lyric-aws-xray`'s (already integrated into
+  this PR); this entry's own near-identical draft (differing only in
+  classpath-vs-jar ordering) was not re-applied.
+
+**Three newly-found, precisely-diagnosed JVM backend gaps, deliberately
+NOT fixed here (each general, not `lyric-ws`-specific — filed with full
+repros):**
+
+- **#5453** — `Std.Encoding`'s pure-Lyric byte-indexing helpers
+  (`tryDecodeUtf8`, `encodeBase64`, `tryDecodeBase64`, `encodeHex`,
+  `tryDecodeHex`) fail to compile on `--target jvm` at all: indexing a
+  `slice[Byte]` yields the JVM-erased `Object` element type, so a
+  subsequent `.toInt()` on the element fails to resolve. Systemic —
+  breaks `Std.Encoding` entirely on JVM. Both `lyric-ws` and
+  `lyric-auth` (see D-progress-631's `decodeBase64Utf8`-style
+  workaround, independently arrived at here too for `Ws.Kernel.Jvm`)
+  route around it with direct `java.util.Base64`/`java.lang.String
+  (byte[], String)` calls, accepting a lenient-UTF-8 trade-off.
+- **#5454** — a `val x: slice[Byte] = <externCall returning byte[]>`
+  local declared directly inside a loop body (or, less reliably, in
+  some larger straight-line functions) triggers a JVM `VerifyError`
+  ("[B is not assignable to [Ljava/lang/Object;") — a stack-map-merge
+  conflict between the concrete `[B` an extern call actually returns
+  and the generic `Object[]` slice ABI a different code path expects
+  for the same declared type. `Ws.Kernel.Jvm`'s own frame-reading
+  functions were written defensively (the `slice[Byte]` local lives in
+  its own non-looping function) and never hit this;
+  `ws_jvm_e2e_test.l`'s `pollForTextFrame` needed the same treatment
+  plus inlining the local away entirely to avoid it.
+- **#5455** — cross-package `impl` of a *native* (non-extern) Lyric
+  interface, where an interface method's reference-typed parameter or
+  return is a record/union declared in a *third* package, emits a wrong
+  class reference (`NoClassDefFoundError` at runtime). Confirmed
+  specific to `impl`-method signatures (`Ws.WsTests`'s ordinary
+  cross-package union *matching* works fine on JVM). Needs a
+  cross-package type-declaration lookup threaded through the JVM
+  codegen's type resolution, comparable in shape to `externTypes` but
+  covering every bundled package's own declarations — a real feature,
+  not a small fix. `tests/ws_jvm_e2e_test.l` is written, real, and
+  documents this fully in its header; deliberately not registered in
+  `[project.tests]` until the gap is fixed.
+
+**Verification.** `lyric-ws`'s registered `[project.tests]` suite
+(`Ws.WsTests`, `Ws.WsSecurityAspectWeavingTests`) is 12/12 green on
+`--target dotnet` (no regression). On `--target jvm --features jvm`
+(never previously reachable, since `Ws.Kernel.Jvm` was unregistered from
+`ws.l`'s imports): `Ws.WsTests` is 4/6 (the 2 failures are a
+pre-existing, separately-tracked nullary-union-case JVM matching gap,
+`WsCloseCode.GoingAway`/`ProtocolError`, unrelated to this work and not
+investigated further here); `Ws.WsSecurityAspectWeavingTests` is 0/6
+(the pre-existing B′-mode aspect-weaver JVM codegen gap already seen in
+`lyric-auth`/`lyric-web`/`lyric-feature-flags` this same PR —
+`__LyricBModeCallContext` not found at runtime — exercising
+`Ws.Aspects`, not `Ws.Kernel.Jvm`; also not investigated further here).
+Both are newly-*exposed* by making the JVM feature reachable for the
+first time, not regressions introduced by this change.
+`ffi_iface_impl_jvm_self_test.l` (the adopted compiler fix's own
+regression test) is 2/2 green on `--target jvm`.
+
+**Formatting note:** `lyric-ws/src/ws.l` could not be run through
+`lyric fmt --write` — it refuses with "formatting would change the
+code-token sequence" for this file's `{ (a: T, b: T) -> ... }`
+multi-parameter, block-bodied lambda literals (the language reference's
+`LambdaExpr` grammar form; no other `.l` file in the repo uses this
+exact shape). Left unformatted per the "never hand-format around a
+refusal" policy; the formatter bug itself was not investigated.
+
+**Related:** #5453, #5454, #5455, #5324, D-progress-631 (the JVM
+interface-auto-FFI fix adopted here, and `lyric-auth`'s parallel
+`Std.Encoding` workaround), D-progress-632 (the `lyric test --target
+jvm` Maven-classpath fix adopted here).
 
 ---
 ## Decisions deferred to v2 or later

@@ -781,7 +781,7 @@ func cmdTestManifest(
 
   // Build workspace dependencies first, so their DLLs are available when building
   // path deps and test packages. This mirrors the integration in cli_build.l.
-  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, testTarget)
+  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, testTarget, activeFeatures)
   if wsHadError {
     return 1
   }

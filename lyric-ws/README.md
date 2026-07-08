@@ -4,15 +4,38 @@ WebSocket server with pluggable backends and aspect-based security.
 
 ## Platform parity
 
-| Feature flag | Backend                                              | Status                |
-|--------------|------------------------------------------------------|-----------------------|
-| `dotnet`     | ASP.NET Core WebSockets via `Ws.Kernel.Net`          | Available             |
-| `jvm`        | Undertow WebSocket via `Ws.Kernel.Jvm`               | Planned (Phase 6)     |
+| Feature flag | Backend                                     | Status                                                    |
+|--------------|----------------------------------------------|-----------------------------------------------------------|
+| `jvm`        | Undertow WebSocket via `Ws.Kernel.Jvm`       | Real: `Ws.startServer` runs a genuine `io.undertow.Undertow` server; connect, send (text/binary/ping/pong/close), receive (single-frame text/binary/ping/pong), and connection-registry queries are all backed by real Undertow/XNIO calls |
+| `dotnet`     | ASP.NET Core WebSockets via `Ws.Kernel.Net`  | Bookkeeping only: `createRegistry`/`send`/`broadcast`/`close`/`connectionCount`/`isConnected` validate state but never touch a socket; `Ws.startServer` returns `Err(code = "SERVER_START_FAILED")` (`NOT_IMPLEMENTED`) — the real ASP.NET Core WebSocket upgrade path is deferred to #778 |
 
-`Ws.Kernel.Jvm` declares the Undertow WebSocket bindings; the JVM
-helper classes are supplied by the Lyric JVM stdlib JAR (out-of-repo).
-Until that JAR ships, only the `dotnet` feature produces a runnable
-artifact.
+`Ws.Kernel.Jvm` binds `io.undertow:undertow-core` (declared in this
+package's `[maven]` table) via `extern type` + auto-FFI — no
+`extern package` (a confirmed no-op FFI mechanism) and no hand-routed
+host shim. `WebSocketConnectionCallback` and the receive/close listeners
+(`org.xnio.ChannelListener`) are real Lyric records implementing the
+real JDK interfaces via `impl <ExternInterface> for Record` — the JVM
+analog of docs/51's MSIL-only support, whose interface-name and
+param/return-type resolution this library's development fixed in the
+self-hosted JVM backend (`lyric-compiler/jvm/codegen/06_items.l`; see
+`ffi_iface_impl_jvm_self_test.l`).
+
+Known JVM-kernel gaps (documented in `Ws.Kernel.Jvm`'s own header, not
+silent stubs): fragmented (multi-frame) WebSocket messages are not
+reassembled; automatic ping-interval keepalives are not scheduled; text
+decoding is lenient UTF-8 (substitutes U+FFFD) rather than
+`Std.Encoding.tryDecodeUtf8`'s strict validate-and-reject, because that
+pure-Lyric helper hits a separate, pre-existing self-hosted JVM backend
+bug (`slice[Byte]` element indexing resolves to the JVM-erased `Object`
+type instead of `Byte`, so `.toInt()` fails to compile) unrelated to
+this library. A real end-to-end test
+(`tests/ws_jvm_e2e_test.l` — starts a real server, connects a real
+Undertow `WebSocketClient`, sends/receives a frame) is written but not
+yet runnable end-to-end: it hits a further, precisely-diagnosed
+self-hosted JVM backend gap in cross-package `impl` of a *native*
+(non-extern) interface — see that file's header for the full
+diagnosis. It is intentionally not registered in `[project.tests]`
+until that gap is fixed.
 
 ## Packages
 

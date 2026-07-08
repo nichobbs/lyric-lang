@@ -14,14 +14,27 @@ output_assembly = "Jobs.dll"
 "Jobs"            = "src/jobs.l"
 "Jobs.Aspects"    = "src/jobs_aspects.l"
 "Jobs.Kernel.Net" = "src/_kernel/net/jobs_kernel.l"
+"Jobs.Kernel.Jvm" = "src/_kernel/jvm/jobs_kernel.l"
 
 [project.tests]
 "Jobs.JobsTests" = "tests/jobs_tests.l"
 
 [features]
-inprocess = []  # in-memory scheduler backend (Jobs.Kernel.Net inprocess path)
-hangfire = []   # Hangfire backend for .NET (Hangfire.Core + Hangfire.SqlServer)
-quartz   = []   # Quartz.NET scheduler
+default  = ["dotnet", "inprocess"]
+# Target-kernel selection (mirrors lyric-storage's dotnet/jvm split, #1444):
+# `Jobs.Kernel.Net` is gated on `dotnet`, `Jobs.Kernel.Jvm` on `jvm`. `dotnet`
+# and `jvm` are MUTUALLY EXCLUSIVE — select exactly one, matching `--target`:
+#   --target dotnet                                   (default features)
+#   --target jvm --no-default-features --features jvm,quartz
+dotnet   = []
+jvm      = []
+# Backend selection within a kernel — also mutually exclusive with each
+# other (each defines its own `connect`/`enqueue`/`schedule`/`cancel`/
+# `status`/`results`; two active at once is an ambiguous-symbol build error).
+inprocess = []  # in-memory scheduler backend (ConcurrentDictionary/ConcurrentHashMap)
+hangfire  = []  # Hangfire backend for .NET (Hangfire.Core + Hangfire.SqlServer);
+                # real Quartz Scheduler binding on JVM (Hangfire has no JVM port)
+quartz    = []  # Quartz.NET on .NET (not yet implemented); real Quartz Scheduler on JVM
 
 [dependencies]
 "Lyric.Resilience" = { workspace = true }
@@ -32,3 +45,11 @@ quartz   = []   # Quartz.NET scheduler
 "Hangfire.SqlServer" = "1.8.14"
 # feature = "quartz" — Quartz.NET scheduler
 "Quartz"             = "3.9.0"
+
+# feature = "hangfire" or "quartz" (JVM target only — Hangfire has no JVM port,
+# so both features are satisfied by the same real Quartz Scheduler binding).
+# `quartz-jobs` supplies `org.quartz.jobs.NativeJob`, the built-in Job
+# implementation this kernel schedules (see src/_kernel/jvm/jobs_kernel.l).
+[maven]
+"org.quartz-scheduler:quartz"      = "2.3.2"
+"org.quartz-scheduler:quartz-jobs" = "2.3.2"

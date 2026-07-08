@@ -20,6 +20,9 @@ output_assembly = "Ws.dll"
 "Ws.WsTests"                       = "tests/ws_tests.l"
 "Ws.WsSecurityAspectWeavingTests"  = "tests/ws_security_aspect_weaving_tests.l"
 
+# tests/ws_jvm_e2e_test.l is NOT registered here — see its header for why
+# (a real, self-hosted JVM backend bug blocks it from passing today).
+
 [features]
 default = ["dotnet"]
 dotnet = []   # ASP.NET Core WebSockets
@@ -33,3 +36,8 @@ jvm    = []   # Undertow WebSockets (Phase 6)
 # #778) will add Microsoft.AspNetCore.WebSockets when that work lands.
 # System.Threading.RateLimiting and Microsoft.AspNetCore.WebSockets both
 # ship in the .NET 10 BCL and do not require separate NuGet packages.
+
+[maven]
+# JVM WebSocket server backend (Ws.Kernel.Jvm).  Same coordinate/version as
+# lyric-web's Undertow HTTP kernel for consistency across the ecosystem.
+"io.undertow:undertow-core" = "2.3.13.Final"

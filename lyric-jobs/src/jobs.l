@@ -1,17 +1,24 @@
 //! Jobs — background job scheduling and execution library for Lyric.
-//! Stability: @experimental — the in-process scheduler has tests; the Hangfire
-//! and Quartz.NET backends have not been driven against a live deployment in
-//! CI.
+//! Stability: @experimental — the in-process scheduler has tests; the
+//! `NativeJobScheduler` (Hangfire/Quartz) path is tested against a real,
+//! live Quartz Scheduler on `jvm` (`tests/jobs_tests.l`); Hangfire/Quartz.NET
+//! on `dotnet` are not yet implemented (see README "Platform parity").
 //!
 //! `JobScheduler` is the public interface; implement it to add a custom
 //! backend.  Two implementations are provided:
 //!
-//!   NativeJobScheduler   — delegates to Jobs.Kernel.Net (Hangfire or Quartz)
+//!   NativeJobScheduler   — delegates to Jobs.Kernel.Net or Jobs.Kernel.Jvm
+//!                          (whichever the `dotnet`/`jvm` feature selects)
 //!   InProcessJobScheduler — in-memory queue for tests and single-process use
 //!
-//! Supported backends (feature-gated via lyric.toml [features]):
-//!   hangfire — Hangfire.Core + Hangfire.SqlServer background processing
-//!   quartz   — Quartz.NET cron-capable scheduler
+//! Supported backends (feature-gated via lyric.toml [features]; exactly one
+//! of `inprocess`/`hangfire`/`quartz` must be active, alongside exactly one
+//! of `dotnet`/`jvm` selecting the platform kernel):
+//!   inprocess — ConcurrentDictionary (.NET) / ConcurrentHashMap (JVM) backend
+//!   hangfire  — Hangfire.Core + Hangfire.SqlServer on `dotnet` (not yet
+//!               implemented); real Quartz Scheduler on `jvm` (no JVM port)
+//!   quartz    — Quartz.NET on `dotnet` (not yet implemented); real Quartz
+//!               Scheduler (RAMJobStore) on `jvm`
 //!
 //! Usage:
 //!
@@ -25,10 +32,18 @@
 //!     case Err(e) -> println("error: " + e)
 //!   }
 //!
+//! `Jobs.connectHangfire()` / `Jobs.connectQuartz()` are explicit
+//! backend-named alternatives to `Jobs.connect()` (which just uses whichever
+//! single backend feature is active).
+//!
 //! Runtime config env vars (LYRIC_CONFIG_JOBS_DEFAULTS_*):
 //!   LYRIC_CONFIG_JOBS_DEFAULTS_MAXATTEMPTS       — retry limit (default: 3)
 //!   LYRIC_CONFIG_JOBS_DEFAULTS_DEFAULTTIMEOUTMS  — execution timeout ms (default: 30000)
 //!   LYRIC_CONFIG_JOBS_DEFAULTS_WORKERCOUNT       — parallel worker threads (default: 4)
+//!   LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING  — SQL Server/Redis connection
+//!                                                  string (`dotnet` only; a
+//!                                                  non-empty value is ignored
+//!                                                  with a warning on `jvm`)
 //!
 //! See docs/03-decision-log.md D056 and lyric-jobs/README.md.
 @runtime_checked
@@ -38,7 +53,52 @@ import Std.Core
 import Std.Collections
 import Std.Parse
 import Std.Iter
-import Jobs.Kernel.Net
+import Std.Log
+import Std.Environment
+import Jobs.Kernel.Net as KernelNet
+import Jobs.Kernel.Jvm as KernelJvm
+
+// ─── Platform kernel dispatch ─────────────────────────────────────────────────
+// `Jobs.Kernel.Net` / `Jobs.Kernel.Jvm` are imported aliased (rather than
+// bare, as an earlier draft of this file did) because a bare import would put
+// the kernel's own `connect(workerCount: Int)` in scope unqualified, directly
+// colliding with this package's zero-arg `pub func connect()` below.  These
+// thin wrappers re-export the platform's real threading/identity primitives
+// under `Jobs`'s own name so the rest of this file (and `Jobs.Aspects`, which
+// calls `nowMs()` bare after `import Jobs`) keeps working unqualified.
+@cfg(feature = "dotnet")
+pub func nowMs(): Long {
+  KernelNet.nowMs()
+}
+
+@cfg(feature = "jvm")
+pub func nowMs(): Long {
+  KernelJvm.nowMs()
+}
+
+@cfg(feature = "dotnet")
+pub func sleepMs(ms: in Int): Unit
+  requires: ms >= 0
+{
+  KernelNet.sleepMs(ms)
+}
+
+@cfg(feature = "jvm")
+pub func sleepMs(ms: in Int): Unit
+  requires: ms >= 0
+{
+  KernelJvm.sleepMs(ms)
+}
+
+@cfg(feature = "dotnet")
+func generateId(): String {
+  KernelNet.generateId()
+}
+
+@cfg(feature = "jvm")
+func generateId(): String {
+  KernelJvm.generateId()
+}
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
 /// A unique job identifier (opaque string).  Obtained from `enqueue` or `schedule`.
@@ -405,14 +465,67 @@ val defaultTimeoutMs: Int = 30000
 val defaultWorkerCount: Int = 4
 
 // ─── Factory functions ────────────────────────────────────────────────────────
-/// Open a backend scheduler connection using the configured defaults.
-/// Returns a `NativeJobScheduler` backed by the active feature (Hangfire or Quartz).
-@stable(since = "0.1")
-pub func connect(): Result[NativeJobScheduler, String] {
+func connectNative(): Result[NativeJobScheduler, String] {
   match jobsConnectBackend(defaultWorkerCount) {
     case Ok(schedulerId) -> Ok(NativeJobScheduler(schedulerId = schedulerId))
     case Err(msg) -> Err(msg)
   }
+}
+
+/// Open a backend scheduler connection using the configured defaults.
+/// Returns a `NativeJobScheduler` backed by the active feature (`inprocess`,
+/// `hangfire`, or `quartz` — exactly one must be enabled in `[features]`).
+@stable(since = "0.1")
+pub func connect(): Result[NativeJobScheduler, String] {
+  connectNative()
+}
+
+@cfg(feature = "jvm")
+func warnIfHangfireConnectionStringIgnored(): Unit {
+  // Called bare (not `Std.Environment.getVarOrDefault(...)` /
+  // `Std.Log.warn(...)`): a fully package-qualified call to another Lyric
+  // package's function mis-resolves as a JVM auto-FFI instance call on a
+  // `java.lang.Object` receiver and fails to compile — a general JVM
+  // backend gap (reproduced independently of this file), not fixed here.
+  // Every kernel in this codebase already calls stdlib functions bare after
+  // a plain `import Std.X`, for the same reason.
+  val conn = getVarOrDefault("LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING", "")
+  if conn.length > 0 {
+    warn(
+      "lyric-jobs: Hangfire connection string ignored on JVM; Quartz uses RAMJobStore (in-memory). Persistence configured for .NET-only Hangfire.SqlServer."
+    )
+  }
+}
+
+@cfg(feature = "dotnet")
+func warnIfHangfireConnectionStringIgnored(): Unit {
+  ()
+}
+
+/// Open a Hangfire-backed scheduler (`hangfire` feature).  On `dotnet`,
+/// Hangfire integration itself is not yet implemented — the returned
+/// `Result` carries `Err(...)` (tracked, Phase 3 follow-up of #733).  On
+/// `jvm`, `hangfire` maps to a real Quartz Scheduler binding (Hangfire has
+/// no JVM port); see README "Platform parity".  The connection string is
+/// read from `LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING` — there is no
+/// connection-string parameter, since neither kernel's `connect` accepts one
+/// (the JVM path warns, rather than silently downgrading, when a non-empty
+/// value is set but can only be honoured on `dotnet`).
+@stable(since = "0.1")
+@cfg(feature = "hangfire")
+pub func connectHangfire(): Result[NativeJobScheduler, String] {
+  warnIfHangfireConnectionStringIgnored()
+  connectNative()
+}
+
+/// Open a Quartz-backed scheduler (`quartz` feature).  On `dotnet`, Quartz.NET
+/// integration is not yet implemented (same tracking as Hangfire above). On
+/// `jvm`, this is a real Quartz Scheduler binding backed by an in-memory
+/// `RAMJobStore` (not persistent); see README "Platform parity".
+@stable(since = "0.1")
+@cfg(feature = "quartz")
+pub func connectQuartz(): Result[NativeJobScheduler, String] {
+  connectNative()
 }
 
 /// Create an in-process scheduler for testing.
@@ -487,17 +600,45 @@ pub func newJobId(): String {
   return generateId()
 }
 
-// ─── Private kernel stubs ─────────────────────────────────────────────────────
-// When neither the hangfire nor the quartz feature is enabled the
-// @cfg-guarded kernel functions are excluded from compilation.  These
-// stubs stand in so the type-checker can resolve the call sites; at
-// runtime they return Err to signal "no backend configured".
-func jobsConnectBackend(workerCount: in Int): Result[Int, String] = Err("no backend configured; enable the hangfire or quartz feature in lyric.toml")
+// ─── Kernel backend dispatch ──────────────────────────────────────────────────
+// `Jobs.Kernel.Net` / `Jobs.Kernel.Jvm` each export identically-named
+// `connect`/`enqueue`/`schedule`/`cancel`/`status`/`results` functions, each
+// gated by the active backend feature (`inprocess`/`hangfire`/`quartz`,
+// #733). These wrappers pick the platform kernel via the mutually exclusive
+// `dotnet`/`jvm` features and forward under a distinct name so they don't
+// collide with `NativeJobScheduler`'s own same-named interface methods.
+//
+// Exactly one of {inprocess, hangfire, quartz} MUST be active for
+// `NativeJobScheduler`/`connect()`/`connectHangfire()`/`connectQuartz()` to
+// compile: selecting none is now a build-time error (an unresolved
+// `KernelNet.connect`/`KernelJvm.connect` symbol, since the entire backend
+// feature's function bodies are `@cfg`-erased) rather than a runtime call
+// that silently always fails.
+@cfg(feature = "dotnet")
+func jobsConnectBackend(workerCount: in Int): Result[Int, String] {
+  KernelNet.connect(workerCount)
+}
 
+@cfg(feature = "jvm")
+func jobsConnectBackend(workerCount: in Int): Result[Int, String] {
+  KernelJvm.connect(workerCount)
+}
+
+@cfg(feature = "dotnet")
 func jobsEnqueueBackend(
   schedulerId: in Int, name: in String, payload: in String, maxAttempts: in Int, timeoutMs: in Int
-): Result[String, String] = Err("no backend configured")
+): Result[String, String] {
+  KernelNet.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
+}
 
+@cfg(feature = "jvm")
+func jobsEnqueueBackend(
+  schedulerId: in Int, name: in String, payload: in String, maxAttempts: in Int, timeoutMs: in Int
+): Result[String, String] {
+  KernelJvm.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
+}
+
+@cfg(feature = "dotnet")
 func jobsScheduleBackend(
   schedulerId: in Int,
   name: in String,
@@ -505,13 +646,51 @@ func jobsScheduleBackend(
   cronExpr: in String,
   maxAttempts: in Int,
   timeoutMs: in Int,
-): Result[String, String] = Err("no backend configured")
+): Result[String, String] {
+  KernelNet.schedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
+}
 
-func jobsCancelBackend(schedulerId: in Int, jobId: in String): Result[Unit, String] = Err("no backend configured")
+@cfg(feature = "jvm")
+func jobsScheduleBackend(
+  schedulerId: in Int,
+  name: in String,
+  payload: in String,
+  cronExpr: in String,
+  maxAttempts: in Int,
+  timeoutMs: in Int,
+): Result[String, String] {
+  KernelJvm.schedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
+}
 
-func jobsStatusBackend(schedulerId: in Int, jobId: in String): Result[String, String] = Err("no backend configured")
+@cfg(feature = "dotnet")
+func jobsCancelBackend(schedulerId: in Int, jobId: in String): Result[Unit, String] {
+  KernelNet.cancel(schedulerId, jobId)
+}
 
-func jobsResultsBackend(schedulerId: in Int, jobId: in String): Result[String, String] = Err("no backend configured")
+@cfg(feature = "jvm")
+func jobsCancelBackend(schedulerId: in Int, jobId: in String): Result[Unit, String] {
+  KernelJvm.cancel(schedulerId, jobId)
+}
+
+@cfg(feature = "dotnet")
+func jobsStatusBackend(schedulerId: in Int, jobId: in String): Result[String, String] {
+  KernelNet.status(schedulerId, jobId)
+}
+
+@cfg(feature = "jvm")
+func jobsStatusBackend(schedulerId: in Int, jobId: in String): Result[String, String] {
+  KernelJvm.status(schedulerId, jobId)
+}
+
+@cfg(feature = "dotnet")
+func jobsResultsBackend(schedulerId: in Int, jobId: in String): Result[String, String] {
+  KernelNet.results(schedulerId, jobId)
+}
+
+@cfg(feature = "jvm")
+func jobsResultsBackend(schedulerId: in Int, jobId: in String): Result[String, String] {
+  KernelJvm.results(schedulerId, jobId)
+}
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 // Parse a status string returned by the kernel into a JobStatus variant.
