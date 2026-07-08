@@ -11946,9 +11946,9 @@ remaining four per-lambda maps), #1877 (uniform boxed `Func` ABI both
 #5362 and #5366 live in), #3196 (the earlier enum-FieldDef-row-shift bug
 in the same family as #5361, though a different specific gap).
 
-## D-progress-625 — JVM: 4 stdlib `_kernel_jvm/*.l` files migrated off `extern package` onto `extern type` + auto-FFI, restoring `Std.Environment`/`Std.Process`/`Std.Log`/the self-hosted lexer's Unicode classification on `--target jvm`; 6 pre-existing JVM codegen bugs found and tracked
+## D-progress-625 — JVM: 4 stdlib `_kernel_jvm/*.l` files migrated off `extern package` onto `extern type` + auto-FFI, restoring `Std.Environment`/`Std.Process`/`Std.Log`/the self-hosted lexer's Unicode classification on `--target jvm`; 7 pre-existing JVM codegen/bridge bugs found and tracked
 
-**Status:** ACCEPTED (migration); 5 newly-discovered bugs filed and deliberately NOT fixed here (see below)
+**Status:** ACCEPTED (migration); 7 newly-discovered bugs filed and deliberately NOT fixed here (see below)
 
 **Context.** A reconnaissance pass across all 33 `extern package` declarations
 in the repo (prompted by a design discussion on retiring `extern package` in
@@ -12108,8 +12108,44 @@ initial version of this migration:
   ... }` closure before invoking it). `assertPanics` (occurrence-only, no
   message check) is unaffected and was used instead; the real panic text
   was verified manually with no closure indirection.
+- **SUGGESTION (#5389):** `stdlib_jvm_kernels_self_test.l` grew from 8 to
+  10 cases (adding the appBaseDirectory/currentDirectory test and the
+  hostGetCommandLineArgs panic test above) but the PR description and 3
+  docs still said "8 cases" — fixed.
+- **SUGGESTION (#5390):** `docs/17-axiom-audit.md`'s prose still said "21
+  files" carry `@axiom(...)` after `Std.LogHost`'s axiom was dropped
+  (§18's summary table already said 20) — fixed.
+- **SUGGESTION (#5391, #5392):** `docs/44`'s M-19 entry listed only the
+  original 5 pre-existing bugs (missing #5388), and this entry called
+  #5388 the "SEVENTH" bug when it's the sixth — both fixed.
+- **REQUIRED (#5393):** `assertPanics("...", { -> hostGetCommandLineArgs() })`
+  in the new self-test does not actually type-check: `hostGetCommandLineArgs`'s
+  *declared* return type is `slice[String]` (its body unconditionally
+  panics, but that's a runtime fact the type checker cannot see from the
+  signature alone), so the closure infers as `() -> slice[String]`, which
+  `argSatisfiesParam` does not accept where `assertPanics` expects
+  `() -> Unit` (only a literal `Never`-returning closure body, e.g. a bare
+  `{ -> panic(...) }`, is special-cased). Confirmed with a standalone
+  repro reproducing the exact `T0043` diagnostic. Fixed by appending
+  `; ()` to the closure body (`{ -> hostGetCommandLineArgs(); () }`),
+  making its own inferred return type genuinely `Unit`; reverified the
+  fixed file passes all 10 cases with `lyric test --target jvm`.
+  Investigating this surfaced a SEVENTH pre-existing bug, filed
+  separately as **#5395**: `Jvm.Bridge`'s single-file path treats
+  type-checker diagnostics as advisory rather than fatal, so the
+  original (broken) form of this test's `T0043` did not actually fail
+  `lyric build --target jvm` (exit 0, JAR produced) even though the
+  identical source correctly fails `--target dotnet` (exit 1). This is
+  the still-open half of `docs/41-self-hosted-compiler-gap-analysis.md`
+  §C1's single-file type-check flip (the MSIL side flipped in
+  D-progress-438; the JVM side did not) — #5395 gives it a concrete
+  tracked number and a live repro.
+- **SUGGESTION (#5394):** this entry's own `**Status:**` line still said
+  "5 newly-discovered bugs" after #5388 brought the count to 6 (now 7,
+  after #5395) — fixed.
 
-**Related:** #5383, #5384, #5385, #5386, #5387, #5388.
+**Related:** #5383, #5384, #5385, #5386, #5387, #5388, #5389, #5390,
+#5391, #5392, #5393, #5394, #5395.
 
 ---
 ## Decisions deferred to v2 or later

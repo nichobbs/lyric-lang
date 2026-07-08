@@ -85,7 +85,21 @@ test "hostGetCommandLineArgs panics (issue #5377) rather than crashing on the ol
   // .message is unreliable on JVM (issue #5388, found while writing this
   // test), independent of hostGetCommandLineArgs itself -- manually
   // verified the real panic text separately (see the PR description).
-  assertPanics("hostGetCommandLineArgs panics rather than returning/crashing silently", { -> hostGetCommandLineArgs() })
+  //
+  // The trailing `; ()` is required, not stylistic (issue #5393):
+  // `hostGetCommandLineArgs`'s declared return type is `slice[String]`
+  // (its body unconditionally panics, but that's a runtime fact, not a
+  // static one -- the type checker only infers `Never` for a closure body
+  // whose registered return type already says so, e.g. a bare
+  // `{ -> panic(...) }`).  `assertPanics` expects `fn: in () -> Unit`, and
+  // `argSatisfiesParam` has no "declared-Unit-parameter discards any
+  // return type" rule for closure arguments, so `{ -> hostGetCommandLineArgs() }`
+  // alone fails to type-check (T0043).  Appending `; ()` makes the
+  // closure's own inferred return type genuinely `Unit`.
+  assertPanics(
+    "hostGetCommandLineArgs panics rather than returning/crashing silently",
+    { -> hostGetCommandLineArgs(); () }
+  )
 }
 
 // ── Std.ProcessHost ──────────────────────────────────────────────────────────
