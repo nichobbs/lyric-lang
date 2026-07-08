@@ -137,6 +137,7 @@ func indexOfCharAfter(s: in String, ch: in Char, pos: in Int): Int {
 // provides belt-and-suspenders algorithm enforcement at the Lyric layer in
 // case the host shim has not yet wired `allowedAlgorithms` to the BCL
 // validator's `ValidAlgorithms` list (see lyric-lang #443).
+@cfg(feature = "dotnet")
 func jwtAlg(token: in String): String {
   // JWT format: base64url(header).base64url(payload).signature
   val dot = token.indexOf(".")
@@ -175,6 +176,53 @@ func jwtAlg(token: in String): String {
           if ve < 0 {
             return ""
           }
+          header.substring(vs, ve - vs)
+        }
+      }
+    }
+  }
+}
+
+// JVM twin of the `dotnet` `jwtAlg` above: same belt-and-suspenders
+// algorithm extraction, but the base64url decode goes through
+// `AuthKernelJvm.tryFromBase64Url` (a `Bool` + `out slice[Byte]` decoder)
+// instead of `Std.Encoding.tryDecodeBase64`'s `Option[slice[Byte]]`.  On
+// `--target jvm`, a `slice[Byte]` value extracted from a generic
+// `Option`/`Result` match arm stays erased to `java.lang.Object` with no
+// `checkcast` to the array type `[Ljava/lang/Object;` (D-progress-554 only
+// unboxes primitive scalar payloads at the bind site); forwarding such a
+// value to `Std.Encoding.tryDecodeUtf8`'s `slice[Byte]` parameter fails JVM
+// bytecode verification.  See `Auth.Kernel.Jvm.tryFromBase64Url` for the
+// full explanation.
+@cfg(feature = "jvm")
+func jwtAlg(token: in String): String {
+  val dot = token.indexOf(".")
+  if dot < 0 {
+    return ""
+  }
+  val seg = token.substring(0, dot)
+  var headerBytes: slice[Byte] = []
+  if not AuthKernelJvm.tryFromBase64Url(seg, headerBytes) {
+    return ""
+  }
+  match tryDecodeUtf8(headerBytes) {
+    case None -> ""
+    case Some(header) -> {
+      // Scan for the "alg":"VALUE" key-value pair in the header JSON.
+      // Use lastIndexOf so duplicate alg keys resolve to the last occurrence,
+      // matching last-wins parser semantics (RFC 8259 §4 permits duplicates;
+      // many JWT libraries use the last value).  This prevents a crafted first
+      // alg=RS256 from masking a final alg=none in the same header.
+      val pfx = "\"alg\":\""
+      val pfxPos = header.lastIndexOf(pfx)
+      if pfxPos < 0 {
+        ""
+      } else {
+        val vs = pfxPos + pfx.length
+        val ve = indexOfCharAfter(header, '"', vs)
+        if ve < 0 {
+          ""
+        } else {
           header.substring(vs, ve - vs)
         }
       }
@@ -344,7 +392,7 @@ pub func extractClaim(token: in String, claimKey: in String): Option[String]
 pub func extractClaim(token: in String, claimKey: in String): Option[String]
   requires: claimKey.length > 0
 {
-  return AuthKernelJvm.extractClaim(token, claimKey)
+  return AuthKernelJvm.extractClaimImpl(token, claimKey)
 }
 
 // ─── API key verification ─────────────────────────────────────────────────────
@@ -372,7 +420,7 @@ pub func verifyApiKey(provided: in String, expected: in String): Bool
 pub func verifyApiKey(provided: in String, expected: in String): Bool
   requires: expected.length > 0
 {
-  return AuthKernelJvm.verifyApiKey(provided, expected)
+  return AuthKernelJvm.verifyApiKeyImpl(provided, expected)
 }
 
 // ─── Role claim helpers ───────────────────────────────────────────────────────

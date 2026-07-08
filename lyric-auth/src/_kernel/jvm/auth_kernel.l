@@ -1,71 +1,805 @@
 //! Auth.Kernel.Jvm — JVM authentication extern boundary.
 //!
-//! Bridges Auth's verification functions to io.jsonwebtoken (JJWT) for
-//! JWT handling and MessageDigest for constant-time key comparison.
+//! JVM counterpart of `Auth.Kernel.Net`.  Every JWT/API-key operation that
+//! does not need a real cryptographic primitive is implemented here in pure
+//! Lyric — base64url decoding, JSON claim scanning, `exp`/`nbf` validation,
+//! algorithm allow-list enforcement, and constant-time byte comparison —
+//! ported verbatim from `Auth.Kernel.Net` (it depends only on cross-platform
+//! `Std.*` modules, not BCL specifics, so the two kernels' logic is
+//! identical).  The ONE truly host-bound operation, HMAC-SHA256, binds to
+//! the JDK's own `javax.crypto.Mac` / `javax.crypto.spec.SecretKeySpec` via
+//! JVM auto-FFI (`extern type`, JDK metadata resolved at compile time) —
+//! the same `_kernel_jvm` idiom already used by `Std.HashHost`
+//! (`java.security.MessageDigest`) and `Storage.Kernel.Jvm`.  No Maven
+//! dependency is needed: `javax.crypto` ships in `java.base`.
 //!
-//! Only active when compiled with feature = "jvm" (Phase 6).
+//! This replaces the former `extern package io.jsonwebtoken { ... }` /
+//! `extern package java.security { ... }` declarations.  `extern package`
+//! is a confirmed no-op in both the type checker and the MSIL/JVM codegens
+//! (it parses but generates no real binding), so the previous kernel was
+//! dead code — it could never have verified a real JWT or compared a real
+//! API key at runtime, regardless of the `jvm` feature flag.
+//!
+//! Algorithm support matches `Auth.Kernel.Net`:
+//!   HS256 — JDK `Mac` with algorithm "HmacSHA256" (no Maven dependency).
+//!   RS256 and other public-key algorithms — fail closed (Err("ALG_UNSUPPORTED")).
+//!   Full JJWT / public-key integration remains tracked in #443.
+//!
+//! base64url decoding is a from-scratch pure-Lyric decoder here rather than
+//! a thin wrapper over `Std.Encoding.tryDecodeBase64` — see `tryFromBase64Url`
+//! below for why: extracting a `slice[Byte]` payload from a generic
+//! `Option`/`Result` match binding is a known incomplete area of the
+//! self-hosted JVM backend (D-progress-554 unboxes primitive scalar
+//! payloads at the bind site but explicitly leaves reference/array payloads
+//! boxed as `java.lang.Object`), so `Std.Encoding.tryDecodeBase64`'s
+//! `Option[slice[Byte]]` result cannot be safely consumed here today.
+//!
+//! Only active when compiled with feature = "jvm".
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-//!
-//! Algorithm enforcement is applied at the Lyric layer in Auth.verifyJwt
-//! before this extern is called, so alg=none and algorithm-confusion attacks
-//! are rejected before reaching the JVM validator.  The host shim should
-//! also configure JJWT's parser with the matching `SignatureAlgorithm`
-//! whitelist for defence-in-depth (see lyric-lang #443 and #315 follow-up).
-//!
-//! The Bool-returning extern is wrapped by `verifyJwtImpl` so the public
-//! surface matches the .NET kernel — both expose `Result[Unit, String]`
-//! where the string is a stable error code (#1090).  The JVM path cannot
-//! distinguish specific failure modes today (JJWT throws a single
-//! `JwtException` for any verification failure), so it returns either
-//! Ok(()) or Err("VERIFICATION_FAILED").  Surface-richer JVM errors are
-//! tracked in #443.
+@axiom("javax.crypto.Mac with algorithm \"HmacSHA256\" conforms to documented JDK HMAC-SHA256 semantics; it is a pure function of (key, message)")
 @cfg(feature = "jvm")
 package Auth.Kernel.Jvm
 
 import Std.Core
+import Std.Encoding
+import Std.String
+import Std.Char
+import Std.Math
+import Std.Time
+import Std.Collections
 
-@axiom("io.jsonwebtoken:jjwt-api for JWT verification")
-extern package io.jsonwebtoken {
-  /// Validate a Bearer JWT against an explicit allow-list of algorithms.
-  /// `allowedAlgorithms` is a comma-separated string of JWT `alg` values
-  /// (e.g. "HS256" or "HS256,RS256") that the caller is prepared to honour.
-  ///
-  /// `clockSkewSeconds` widens both the `exp` and `nbf` validation windows
-  /// symmetrically.  Default at the public API is 60 seconds (industry
-  /// standard).  The host shim — when implemented as part of #443 / Phase 6
-  /// — MUST forward this argument to JJWT's `allowedClockSkew` builder.
-  /// Until the JVM AuthHost lands, this extern is a forward declaration only
-  /// and the JVM target is documented as not yet shipped (see lyric-auth/
-  /// lyric.toml `[features]` table: `jvm` is opt-in).  Ignoring
-  /// `clockSkewSeconds` in the eventual host implementation would silently
-  /// re-introduce the strict-expiry behaviour fixed by #1081 — flagged in
-  /// #1153 so the JJWT bridge is shipped with leeway enforcement intact.
-  pub func verifyJwt(token: String, secret: String, issuer: String, audience: String, allowedAlgorithms: String, clockSkewSeconds: Int): Bool
-    requires: secret.length > 0
-    requires: allowedAlgorithms.length > 0
-    requires: clockSkewSeconds >= 0
+// ─── JDK extern boundary ─────────────────────────────────────────────────────
+extern type JMac = "javax.crypto.Mac"
 
-  pub func extractClaim(token: String, claimKey: String): Option[String]
-    requires: claimKey.length > 0
-}
+extern type JSecretKeySpec = "javax.crypto.spec.SecretKeySpec"
 
-@axiom("java.security.MessageDigest for constant-time comparison")
-extern package java.security {
-  pub func verifyApiKey(provided: String, expected: String): Bool
-    requires: expected.length > 0
-}
-
-/// Wrap the Bool-returning extern in a Result so the JVM kernel exposes the
-/// same public-API contract as Auth.Kernel.Net's `verifyJwtImpl`.  See file
-/// header for the algorithm-pinning split between the Lyric layer and the
-/// host validator.
+/// Compute HMAC-SHA256 of `message` using `key`.
+/// Returns the raw 32-byte MAC as a byte array.
 ///
-/// Returns:
-///   Ok(())                       — token verified successfully
-///   Err("VERIFICATION_FAILED")   — any failure (signature, claims, exp/nbf,
-///                                  issuer, audience, alg).  The JVM path
-///                                  cannot distinguish failure modes today;
-///                                  surface-rich errors tracked in #443.
+/// `SecretKeySpec.new(key, "HmacSHA256")` builds the key material,
+/// `Mac.getInstance("HmacSHA256")` selects the algorithm, `.init(keySpec)`
+/// binds the key to the `Mac` instance, and `.doFinal(message)` computes
+/// the MAC — the standard three-step JCE HMAC lifecycle.  Mirrors the same
+/// static-factory → instance-method chaining already proven by
+/// `Std.HashHost.hostSha256Bytes` (`MessageDigest.getInstance(...).digest(...)`)
+/// and `Storage.Kernel.Jvm.hostWriteAllBytes` (`val fos = ...; fos.write(...);
+/// fos.close()`) for a `val`-bound instance receiving two sequential calls.
+func hmacSha256(key: in slice[Byte], message: in slice[Byte]): slice[Byte]
+  requires: key.length > 0
+{
+  val keySpec = JSecretKeySpec.new(key, "HmacSHA256")
+  val mac = JMac.getInstance("HmacSHA256")
+  mac.init(keySpec)
+  mac.doFinal(message)
+}
+
+/// Byte-content-constant-time comparison of `a` and `b`.
+///
+/// Branchless XOR-accumulate: every byte position is compared and the
+/// differences are OR-folded into an accumulator, so the running time
+/// depends only on the input length — never on the byte values or on the
+/// position of the first mismatch.  Ported verbatim from
+/// `Auth.Kernel.Net.fixedTimeEqualBytes` — pure Lyric, no BCL/JDK
+/// dependency, so both kernels share byte-identical semantics.
+///
+/// Length is treated as non-secret: the function exits early on a length
+/// mismatch.  For fixed-format secrets such as HMAC tags and API keys the
+/// length is not sensitive.
+func fixedTimeEqualBytes(a: in slice[Byte], b: in slice[Byte]): Bool {
+  if a.length != b.length {
+    return false
+  }
+  var diff: Int = 0
+  var i = 0
+  while i < a.length {
+    // `val a0: Byte = a[i]` (not `a[i].toInt()` inline): the JVM backend's
+    // numeric-conversion intrinsic (`.toInt()`) only recognizes a receiver
+    // whose static type is a genuine numeric `JvmType`; an un-annotated
+    // slice-index expression used directly as a method receiver loses its
+    // `Byte` element type before that check runs and falls through to
+    // auto-FFI against `java.lang.Object`, which has no `toInt()` method.
+    // Binding the indexed element to an explicitly `Byte`-typed local first
+    // keeps the receiver's static type intact for the intrinsic.
+    val a0: Byte = a[i]
+    val b0: Byte = b[i]
+    val ai: Int = a0.toInt()
+    val bi: Int = b0.toInt()
+    diff = diff.or(ai.xor(bi))
+    i = i + 1
+  }
+  diff == 0
+}
+
+// ─── Base64url decoding ───────────────────────────────────────────────────────
+// Decode a single base64 alphabet character to its 0..63 value, or -1 for a
+// non-alphabet character.  Local copy of `Std.Encoding.base64CharValue`
+// (that function is package-private to `Std.Encoding`); mirrors
+// `Std.EncodingHost.b64v`'s JVM decode table exactly.
+func base64Val(c: in Char): Int {
+  val cp = toInt(c)
+  if cp >= 65 and cp <= 90 {
+    return cp - 65
+  }  // A-Z -> 0-25
+  if cp >= 97 and cp <= 122 {
+    return cp - 97 + 26
+  }  // a-z -> 26-51
+  if cp >= 48 and cp <= 57 {
+    return cp - 48 + 52
+  }  // 0-9 -> 52-61
+  if cp == 43 {
+    return 62
+  }  // + -> 62
+  if cp == 47 {
+    return 63
+  }  // / -> 63
+  return -1
+}
+
+// Decode a base64url segment (no padding) to raw bytes, writing the decoded
+// bytes to `result` and returning true on success.  Returns false (with
+// `result` set to `[]`) for invalid base64 input, including rem==1 which is
+// not valid base64url.
+//
+// This is a from-scratch pure-Lyric decoder (validation ported from
+// `Std.Encoding.tryDecodeBase64`, byte accumulation from
+// `Std.EncodingHost.hostFromBase64`) returning via a `Bool` + `out`
+// parameter rather than `Std.Encoding.tryDecodeBase64`'s
+// `Option[slice[Byte]]` — deliberately, not for style: on `--target jvm`, a
+// `slice[T]` value extracted from a generic `Option`/`Result` match arm
+// stays erased to `java.lang.Object` with no `checkcast` inserted to the
+// slice's real erasure `[Ljava/lang/Object;` (D-progress-554's fix only
+// unboxes PRIMITIVE scalar payloads — Int/Long/Double/Float/Boolean — at
+// the match bind site; reference/array payloads are explicitly documented
+// as staying boxed).  Forwarding such a value to any function expecting a
+// concrete `slice[Byte]` parameter — `Std.Encoding.tryDecodeUtf8`,
+// `fixedTimeEqualBytes`, `getStringClaim` below — then fails JVM bytecode
+// verification with `VerifyError: ... not assignable to
+// '[Ljava/lang/Object;'`.  Writing through an `out slice[Byte]` parameter
+// instead assigns the concretely-typed local directly from this function's
+// own `List[Byte].toArray()` result (never through an `Option[slice[Byte]]`
+// intermediate), which keeps the JVM backend's type inference intact — the
+// same `List` + `newList` + `.toArray()` construction already proven
+// working by `Std.EncodingHost.hostFromBase64` and `Std.HashHost`.
+//
+// `pub` (unlike the .NET kernel's private `fromBase64Url`): `Auth.jwtAlg`'s
+// jvm-cfg branch (auth.l) hits the same erasure limitation for its own
+// belt-and-suspenders header decode and reuses this function rather than
+// duplicating the decoder a third time.
+pub func tryFromBase64Url(seg: in String, result: out slice[Byte]): Bool {
+  val std64 = seg.replace("-", "+").replace("_", "/")
+  val rem = std64.length % 4
+  val padded = if rem == 0 { std64 } else if rem == 2 { std64 + "==" } else if rem == 3 { std64 + "=" } else { "" }
+  val len = padded.length
+  if len == 0 or len % 4 != 0 {
+    result = []
+    return false
+  }
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < len {
+    val c0 = base64Val(padded[i])
+    val c1 = base64Val(padded[i + 1])
+    if c0 < 0 or c1 < 0 {
+      result = []
+      return false
+    }
+    val ch2 = padded[i + 2]
+    val ch3 = padded[i + 3]
+    if ch2 == '=' {
+      if ch3 != '=' or i + 4 != len {
+        result = []
+        return false
+      }
+      acc.add(c0 * 4 + c1 / 16)
+    } else {
+      val c2 = base64Val(ch2)
+      if c2 < 0 {
+        result = []
+        return false
+      }
+      if ch3 == '=' {
+        if i + 4 != len {
+          result = []
+          return false
+        }
+        acc.add(c0 * 4 + c1 / 16)
+        acc.add(c1 % 16 * 16 + c2 / 4)
+      } else {
+        val c3 = base64Val(ch3)
+        if c3 < 0 {
+          result = []
+          return false
+        }
+        acc.add(c0 * 4 + c1 / 16)
+        acc.add(c1 % 16 * 16 + c2 / 4)
+        acc.add(c2 % 4 * 64 + c3)
+      }
+    }
+    i += 4
+  }
+  result = acc.toArray()
+  true
+}
+
+// ─── JSON string escape decoding (#1079) ─────────────────────────────────────
+// Decode a single hex digit ('0'..'9', 'a'..'f', 'A'..'F') to its value 0..15.
+// Returns -1 for non-hex input.
+func hexDigit(c: in Char): Int {
+  val cp = toInt(c)
+  if cp >= 48 and cp <= 57 {
+    return cp - 48
+  }  // '0'..'9'
+  if cp >= 97 and cp <= 102 {
+    return 10 + cp - 97
+  }  // 'a'..'f'
+  if cp >= 65 and cp <= 70 {
+    return 10 + cp - 65
+  }  // 'A'..'F'
+  return -1  // non-hex digit
+}
+
+// Append the UTF-8 encoding of a Unicode code point to `acc`.
+// Returns the new accumulated string.  Code points within the BMP are emitted
+// directly via Std.Char.fromInt; astral code points (>0xFFFF) are split into a
+// UTF-16 surrogate pair (matching how Std.Encoding.tryDecodeUtf8 reconstructs
+// 4-byte UTF-8 — see std/encoding.l).  Invalid inputs (outside Unicode range,
+// lone surrogate) emit U+FFFD so the function is total.
+func appendCodepoint(acc: in String, cp: in Int): String {
+  if cp < 0 or cp > 1114111 or (cp >= 55296 and cp <= 57343) {
+    // U+FFFD REPLACEMENT CHARACTER.
+    return acc + "�"
+  }
+  if cp <= 65535 {
+    return acc + ("" + fromInt(cp))
+  }
+  // Astral plane: encode as UTF-16 surrogate pair.
+  val cp1 = cp - 65536
+  val high = 55296 + cp1 / 1024
+  val low = 56320 + cp1 % 1024
+  acc + ("" + fromInt(high)) + ("" + fromInt(low))
+}
+
+// Decode JSON string escape sequences in `s` (RFC 8259 §7).
+//
+// Recognises all standard escapes:
+//   \" \\ \/ \b \f \n \r \t  — single-char escapes
+//   \uXXXX                    — basic multilingual plane
+//   \uHHHH\uLLLL              — surrogate pair → astral code point
+//
+// Invalid escapes (unknown letter, short \uXXXX, lone surrogate) emit
+// U+FFFD at the offending position so the function is total — callers do
+// not have to handle a parse failure.  This matches `System.Text.Json`'s
+// permissive-but-faithful behaviour for JWT payloads (which are
+// machine-emitted and almost never carry malformed escapes).
+func decodeJsonEscapes(s: in String): String {
+  var acc = ""
+  var i = 0
+  while i < s.length {
+    val c = s[i]
+    if c != '\\' {
+      acc = acc + substring(s, i, 1)
+      i = i + 1
+    } else {
+      // c == '\\'.  Consume the escape sequence.
+      if i + 1 >= s.length {
+        // Dangling backslash at end of string — emit replacement.
+        acc = acc + "�"
+        i = i + 1
+      } else {
+        val esc = s[i + 1]
+        if esc == '"' {
+          acc = acc + "\""
+          i = i + 2
+        } else if esc == '\\' {
+          acc = acc + "\\"
+          i = i + 2
+        } else if esc == '/' {
+          acc = acc + "/"
+          i = i + 2
+        } else if esc == 'b' {
+          acc = acc + "\u{0008}"
+          i = i + 2
+        } else if esc == 'f' {
+          acc = acc + "\u{000c}"
+          i = i + 2
+        } else if esc == 'n' {
+          acc = acc + "\n"
+          i = i + 2
+        } else if esc == 'r' {
+          acc = acc + "\r"
+          i = i + 2
+        } else if esc == 't' {
+          acc = acc + "\t"
+          i = i + 2
+        } else if esc == 'u' {
+          // \uXXXX — need 4 hex digits.
+          if i + 5 >= s.length {
+            acc = acc + "�"
+            i = s.length
+          } else {
+            val h0 = hexDigit(s[i + 2])
+            val h1 = hexDigit(s[i + 3])
+            val h2 = hexDigit(s[i + 4])
+            val h3 = hexDigit(s[i + 5])
+            if h0 < 0 or h1 < 0 or h2 < 0 or h3 < 0 {
+              acc = acc + "�"
+              i = i + 2  // skip past \u, retry on the bad nibble
+            } else {
+              val cp = (h0 * 4096) + (h1 * 256) + (h2 * 16) + h3
+              // Handle surrogate pair for astral code points.
+              // 0xD800 = 55296, 0xDBFF = 56319, 0xDC00 = 56320, 0xDFFF = 57343.
+              if cp >= 55296 and cp <= 56319 {
+                // High surrogate — expect \uLLLL low surrogate next.
+                if i + 11 < s.length and s[i + 6] == '\\' and s[i + 7] == 'u' {
+                  val l0 = hexDigit(s[i + 8])
+                  val l1 = hexDigit(s[i + 9])
+                  val l2 = hexDigit(s[i + 10])
+                  val l3 = hexDigit(s[i + 11])
+                  if l0 < 0 or l1 < 0 or l2 < 0 or l3 < 0 {
+                    acc = acc + "�"
+                    i = i + 6
+                  } else {
+                    val lo = (l0 * 4096) + (l1 * 256) + (l2 * 16) + l3
+                    if lo >= 56320 and lo <= 57343 {
+                      // Combine surrogate pair to astral code point.
+                      val combined = 65536 + ((cp - 55296) * 1024) + (lo - 56320)
+                      acc = appendCodepoint(acc, combined)
+                      i = i + 12
+                    } else {
+                      // Lone high surrogate — emit replacement, retry from low.
+                      acc = acc + "�"
+                      i = i + 6
+                    }
+                  }
+                } else {
+                  acc = acc + "�"
+                  i = i + 6
+                }
+              } else if cp >= 56320 and cp <= 57343 {
+                // Lone low surrogate — emit replacement.
+                acc = acc + "�"
+                i = i + 6
+              } else {
+                acc = appendCodepoint(acc, cp)
+                i = i + 6
+              }
+            }
+          }
+        } else {
+          // Unknown escape — emit replacement, skip the backslash.
+          acc = acc + "�"
+          i = i + 2
+        }
+      }
+    }
+  }
+  acc
+}
+
+// ─── JSON claim scanning ──────────────────────────────────────────────────────
+// Walk past a JSON-encoded string starting at the opening quote position
+// `quotePos` (json[quotePos] == '"'). Returns the index of the matching
+// closing quote, or -1 if the string is unterminated or malformed.
+//
+// Honours backslash escapes — `\"` does NOT terminate the string.  The
+// escape sequence itself is preserved in the substring; callers should
+// pass the raw substring to `decodeJsonEscapes` before using it.
+func scanJsonString(json: in String, quotePos: in Int): Int {
+  if quotePos < 0 or quotePos >= json.length {
+    return -1
+  }
+  if json[quotePos] != '"' {
+    return -1
+  }
+  var i = quotePos + 1
+  while i < json.length {
+    val c = json[i]
+    if c == '"' {
+      return i
+    }
+    if c == '\\' {
+      if i + 1 >= json.length {
+        return -1
+      }
+      i = i + 2  // skip backslash + escaped char (or \uXXXX prefix)
+    } else {
+      i = i + 1
+    }
+  }
+  -1
+}
+
+// Return true when the JSON payload string contains duplicate `aud` keys.
+// A duplicate occurs when either:
+//   (a) both `"aud":"` (string form) and `"aud":[` (array form) are present, or
+//   (b) the same form appears more than once (first != last occurrence).
+// Used by `validatePayload` to reject duplicate-aud tokens before audience
+// matching (#2714).
+//
+// Parsing-model assumption: this function — like the rest of the file — scans
+// the raw base64url-decoded payload string for the literal byte sequences
+// `"aud":"` and `"aud":[` rather than constructing a full JSON parse tree.
+// The assumption holds when claim *values* do not themselves embed those exact
+// byte patterns (e.g. a string claim whose decoded value contains the substring
+// `"aud":"`).  In the worst case a crafted claim value could trigger a false
+// positive (incorrectly reporting a duplicate and denying a valid token) — this
+// is an availability-only risk, not a security risk, because the function fails
+// closed on any ambiguity.  A full structural JSON parser would eliminate the
+// false-positive surface; tracked for a future hardening pass (#3165).
+func audHasDuplicates(json: in String): Bool {
+  val pfxStr = "\"aud\":\""
+  val pfxArr = "\"aud\":["
+  val strFirst = json.indexOf(pfxStr)
+  val strLast = json.lastIndexOf(pfxStr)
+  val arrFirst = json.indexOf(pfxArr)
+  val arrLast = json.lastIndexOf(pfxArr)
+  // Both string-form and array-form present simultaneously.
+  if strFirst >= 0 and arrFirst >= 0 {
+    return true
+  }
+  // Same form appears more than once.
+  if strFirst >= 0 and strFirst != strLast {
+    return true
+  }
+  if arrFirst >= 0 and arrFirst != arrLast {
+    return true
+  }
+  return false
+}
+
+// Check whether `audience` appears in the `aud` claim of `json`, where
+// `aud` may be either a string (RFC 7519 §4.1.3 string form) or a JSON
+// array of strings.  Returns true when the audience matches either form;
+// false when the claim is absent or no element matches.  Used by
+// `validatePayload` so JWT issuers that emit array-form audiences
+// (Keycloak, Auth0, some AWS services) validate correctly (#1089).
+//
+// Both forms apply `decodeJsonEscapes` to the raw string contents before
+// comparison so escape sequences in the issuer's aud match callers'
+// unescaped expected audiences (#1079).
+//
+// Callers must check `audHasDuplicates` before calling this function — tokens
+// with duplicate `aud` keys are rejected before audience matching (#2714).
+func audienceMatches(json: in String, audience: in String): Bool {
+  if audience.length == 0 {
+    return true
+  }
+  val pfxStr = "\"aud\":\""
+  val pfxStrPos = json.lastIndexOf(pfxStr)
+  val pfxArr = "\"aud\":["
+  val pfxArrPos = json.lastIndexOf(pfxArr)
+  // Only the later occurrence is authoritative — earlier `aud` declarations
+  // are shadowed (#1162).  When both forms appear, the one with the larger
+  // byte offset wins; the other is not consulted.
+  val useArr = pfxArrPos > pfxStrPos
+  if useArr {
+    var i = pfxArrPos + pfxArr.length
+    while i < json.length and json[i] != ']' {
+      if json[i] == '"' {
+        val openQuote = i
+        val closeQuote = scanJsonString(json, openQuote)
+        if closeQuote < 0 {
+          return false
+        }
+        val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
+        if decodeJsonEscapes(raw) == audience {
+          return true
+        }
+        i = closeQuote + 1
+      } else {
+        i = i + 1
+      }
+    }
+    return false
+  }
+  if pfxStrPos < 0 {
+    return false
+  }
+  val openQuote = pfxStrPos + pfxStr.length - 1
+  val closeQuote = scanJsonString(json, openQuote)
+  if closeQuote <= openQuote {
+    return false
+  }
+  val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
+  decodeJsonEscapes(raw) == audience
+}
+
+// Extract a string-valued claim from a JSON object string.
+// Scans for `"key":"VALUE"` using lastIndexOf for last-wins duplicate-key
+// semantics (RFC 8259 §4; matches most JWT library parsers).
+//
+// Honours backslash-escape sequences so `\"` inside the value does not
+// terminate scanning prematurely (#1079).  The result is passed through
+// `decodeJsonEscapes` so callers see the actual character data, not the
+// raw backslash-encoded form (i.e. `"O\"Brien"` returns `O"Brien`,
+// `"line1\nline2"` returns the two lines joined by a literal LF, and
+// `"é"` returns U+00E9).
+//
+// Returns "" when the key is absent or the JSON is malformed.
+func getStringClaimFromJson(json: in String, key: in String): String {
+  val pfx = "\"" + key + "\":\""
+  val pfxPos = json.lastIndexOf(pfx)
+  if pfxPos < 0 {
+    return ""
+  }
+  // Opening quote of the value (the second `"` in `"key":"`).
+  val openQuote = pfxPos + pfx.length - 1
+  val closeQuote = scanJsonString(json, openQuote)
+  if closeQuote < 0 {
+    return ""
+  }
+  val count = closeQuote - openQuote - 1
+  if count == 0 {
+    return ""
+  }
+  decodeJsonEscapes(substring(json, openQuote + 1, count))
+}
+
+// Extract a string claim from a UTF-8-encoded payload byte slice.
+// Returns "" when decoding fails or the claim is absent.
+func getStringClaim(payloadBytes: in slice[Byte], key: in String): String {
+  match tryDecodeUtf8(payloadBytes) {
+    case None -> ""
+    case Some(json) -> getStringClaimFromJson(json, key)
+  }
+}
+
+// ─── parseLong (#1088) ────────────────────────────────────────────────────────
+// Parse a non-negative decimal integer string to Long, with JWT-specific
+// semantics: rejects empty input and any non-digit character, and treats
+// any input longer than 18 digits as overflow.  Designed for JWT
+// exp/nbf claims and intentionally narrower than `Std.Parse.parseLong`;
+// not part of the kernel public API (package-private, #1159).
+//
+// Returns:
+//   Ok(value)            — successfully parsed
+//   Err("parse_error")   — empty input or non-digit character
+//   Err("overflow")      — input longer than 18 digits (Long.MaxValue has 19
+//                          digits; 18-digit cap prevents unchecked overflow
+//                          from turning large-but-present exp/nbf claims into
+//                          negative values that silently bypass expiry — #1078).
+//
+// 18 digits is conservative (Long.MaxValue is 9223372036854775807, 19 digits)
+// but avoids per-digit overflow checks in the hot loop and keeps the spec
+// simple.
+func parseLong(s: in String): Result[Long, String] {
+  if s.length == 0 {
+    return Err("parse_error")
+  }
+  if s.length > 18 {
+    return Err("overflow")
+  }
+  // Variable name avoids `result` because that's a reserved keyword
+  // in `ensures:` clauses; the parser/elaborator treats every
+  // occurrence as the special `EResult` expression even when the
+  // enclosing function has no `ensures:` and will hit
+  // "E11 codegen: EResult outside contract context" at lower time.
+  var acc: Long = 0i64
+  var i = 0
+  while i < s.length {
+    if not isDigit(s[i]) {
+      return Err("parse_error")
+    }
+    val d = toInt(s[i]) - toInt('0')
+    acc = acc * 10i64 + intToLong(d)
+    i = i + 1
+  }
+  Ok(acc)
+}
+
+// Extract a numeric (integer) claim from a JSON object string.
+// Scans for `"key":NUMBER` using lastIndexOf for last-wins duplicate-key
+// semantics.
+//
+// Returns Result[Option[Long], String]:
+//   Ok(None)         — key absent (caller should skip the claim check)
+//   Ok(Some(v))      — key present and parsed successfully
+//   Err("overflow")  — key present but value overflows Long (caller MUST
+//                      reject the token — skipping the check on a present-
+//                      but-unparseable claim would silently bypass exp/nbf
+//                      enforcement, #1078)
+//   Err("parse_error") — key present but value malformed (non-digit, empty)
+func getLongClaimFromJson(json: in String, key: in String): Result[Option[Long], String] {
+  val pfx = "\"" + key + "\":"
+  val pfxPos = json.lastIndexOf(pfx)
+  if pfxPos < 0 {
+    return Ok(None)
+  }
+  var vs = pfxPos + pfx.length
+  // Skip any whitespace between ':' and the number.
+  while vs < json.length and json[vs] == ' ' {
+    vs = vs + 1
+  }
+  // Key is present from here on; any parse failure is Err, not Ok(None).
+  if vs >= json.length {
+    return Err("parse_error")
+  }
+  if not isDigit(json[vs]) {
+    return Err("parse_error")
+  }
+  var ve = vs
+  while ve < json.length and isDigit(json[ve]) {
+    ve = ve + 1
+  }
+  val count = ve - vs
+  if count == 0 {
+    return Err("parse_error")
+  }
+  val numStr = substring(json, vs, count)
+  match parseLong(numStr) {
+    case Ok(v) -> Ok(Some(value = v))
+    case Err(e) -> Err(e)
+  }
+}
+
+// ─── Algorithm allow-list ─────────────────────────────────────────────────────
+// Check whether a comma-separated algorithm list contains `alg`.
+// Whitespace around each entry is trimmed.  Empty entries never match.
+func algListContains(list: in String, alg: in String): Bool {
+  if list.length == 0 {
+    return false
+  }
+  if alg.length == 0 {
+    return false
+  }
+  var start: Int = 0
+  var i: Int = 0
+  while i <= list.length {
+    val atEnd = i == list.length
+    val atComma = not atEnd and list[i] == ','
+    if atEnd or atComma {
+      val count = i - start
+      if count > 0 {
+        val candidate = trim(substring(list, start, count))
+        if candidate == alg {
+          return true
+        }
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  false
+}
+
+// ─── JWT header alg extraction ────────────────────────────────────────────────
+// Decode the base64url JWT header segment and return the `alg` claim value.
+// Returns "" on any decode or parse failure.
+func jwtAlgFromHeader(headerSeg: in String): String {
+  var headerBytes: slice[Byte] = []
+  if not tryFromBase64Url(headerSeg, headerBytes) {
+    return ""
+  }
+  match tryDecodeUtf8(headerBytes) {
+    case None -> ""
+    case Some(headerJson) -> getStringClaimFromJson(headerJson, "alg")
+  }
+}
+
+// ─── JWT payload claim validation ────────────────────────────────────────────
+// Decode the base64url JWT payload segment and validate iss, aud, exp, and nbf
+// claims.  Returns:
+//   Ok(())                       — payload well-formed and all checks passed
+//   Err("MALFORMED_PAYLOAD")     — base64url or UTF-8 decode failed
+//   Err("ISSUER_MISMATCH")       — iss claim does not match expected issuer
+//   Err("AUDIENCE_MISMATCH")     — aud claim does not contain expected audience,
+//                                   OR aud claim has duplicate keys (#2714)
+//   Err("EXP_OVERFLOW")          — exp present but malformed/overflowed
+//   Err("EXPIRED")               — exp in the past (beyond clockSkewSeconds)
+//   Err("NBF_OVERFLOW")          — nbf present but malformed/overflowed
+//   Err("NOT_YET_VALID")         — nbf in the future (beyond clockSkewSeconds)
+//
+// `clockSkewSeconds` (#1081) widens the validity window symmetrically:
+//   token valid if  exp + clockSkewSeconds >= nowSec
+//   token valid if  nbf - clockSkewSeconds <= nowSec
+// The default at the public API layer is 60 seconds (industry standard;
+// Auth0, AWS Cognito, etc.).
+func validatePayload(
+  payloadSeg: in String, issuer: in String, audience: in String, clockSkewSeconds: in Int
+): Result[Unit, String] {
+  var payloadBytes: slice[Byte] = []
+  if not tryFromBase64Url(payloadSeg, payloadBytes) {
+    return Err("MALFORMED_PAYLOAD")
+  }
+  match tryDecodeUtf8(payloadBytes) {
+    case None -> Err("MALFORMED_PAYLOAD")
+    case Some(payloadJson) -> {
+      // Capture the current time once for consistent exp/nbf evaluation.
+      val nowSec: Long = nowEpochMillis() / 1000i64
+      val skewLong: Long = clockSkewSeconds.toLong()
+      // Validate iss claim when the caller supplied a non-empty issuer.
+      if issuer.length > 0 {
+        val iss = getStringClaimFromJson(payloadJson, "iss")
+        if iss != issuer {
+          return Err("ISSUER_MISMATCH")
+        }
+      }
+      // Reject tokens with duplicate `aud` keys before audience matching
+      // (#2714).  RFC 8259 §4 says duplicate keys SHOULD NOT appear; in a
+      // security context the ambiguity is exploitable (one system may resolve
+      // the first occurrence, another the last) so we fail closed.
+      if audHasDuplicates(payloadJson) {
+        return Err("AUDIENCE_MISMATCH")
+      }
+      // Validate aud claim when the caller supplied a non-empty audience.
+      // RFC 7519 §4.1.3 permits both string and array forms; see
+      // audienceMatches (#1089).
+      if audience.length > 0 {
+        if not audienceMatches(payloadJson, audience) {
+          return Err("AUDIENCE_MISMATCH")
+        }
+      }
+      // Validate exp with clock-skew leeway (#1081).  A present-but-
+      // malformed exp is fatal (#1078).
+      match getLongClaimFromJson(payloadJson, "exp") {
+        case Err(_) -> {
+          return Err("EXP_OVERFLOW")
+        }
+        case Ok(opt) -> {
+          match opt {
+            case None -> ()
+            case Some(exp) -> {
+              // Reject when nowSec is past exp + skew.
+              if nowSec > exp + skewLong {
+                return Err("EXPIRED")
+              }
+            }
+          }
+        }
+      }
+      // Validate nbf with clock-skew leeway (#1081).
+      match getLongClaimFromJson(payloadJson, "nbf") {
+        case Err(_) -> {
+          return Err("NBF_OVERFLOW")
+        }
+        case Ok(opt) -> {
+          match opt {
+            case None -> ()
+            case Some(nbf) -> {
+              // Reject when nowSec is earlier than nbf - skew.
+              if nowSec < nbf - skewLong {
+                return Err("NOT_YET_VALID")
+              }
+            }
+          }
+        }
+      }
+      Ok(())
+    }
+  }
+}
+
+// ─── JWT verification ─────────────────────────────────────────────────────────
+/// Validate a Bearer JWT against an explicit allow-list of algorithms.
+///
+/// This kernel enforces that the token's `alg` header is `"HS256"`, since
+/// HS256 is the only algorithm supported by the JDK extern boundary.  RS256
+/// and other public-key algorithms return Err("ALG_UNSUPPORTED"); full
+/// public-key support is tracked in #443.
+///
+/// Returns Result[Unit, String]:
+///   Ok(())                   — token well-formed, signature verified, all claims passed
+///   Err("MALFORMED_TOKEN")   — wrong number of dot-separated segments
+///   Err("MALFORMED_HEADER")  — header base64url/UTF-8/JSON parse failed
+///   Err("ALG_UNSUPPORTED")   — token alg is not HS256 (kernel limitation)
+///   Err("ALG_REJECTED")      — alg not in allowedAlgorithms
+///   Err("BAD_SIGNATURE")     — HMAC verification failed
+///   Err("MALFORMED_PAYLOAD") — payload base64url/UTF-8/JSON parse failed
+///   Err("ISSUER_MISMATCH")   — iss claim mismatched
+///   Err("AUDIENCE_MISMATCH") — aud claim mismatched
+///   Err("EXP_OVERFLOW")      — exp present but malformed
+///   Err("EXPIRED")           — exp in the past
+///   Err("NBF_OVERFLOW")      — nbf present but malformed
+///   Err("NOT_YET_VALID")     — nbf in the future
+///
+/// `clockSkewSeconds` adds symmetric leeway to exp and nbf checks (#1081).
+///
+/// Named verifyJwtImpl (not verifyJwt), matching `Auth.Kernel.Net`, to avoid
+/// a same-name collision with the `Auth.verifyJwt` wrapper in auth.l when
+/// compiled in project mode: `Lyric.AliasRewriter` rewrites
+/// `AuthKernelJvm.verifyJwt(...)` to bare `verifyJwt(...)`, which would
+/// resolve to the current package's own function (`Auth.verifyJwt`) rather
+/// than this kernel function (#1127, #1094).
 @stable(since = "0.1")
 pub func verifyJwtImpl(
   token: in String,
@@ -79,9 +813,112 @@ pub func verifyJwtImpl(
   requires: allowedAlgorithms.length > 0
   requires: clockSkewSeconds >= 0
 {
-  if verifyJwt(token, secret, issuer, audience, allowedAlgorithms, clockSkewSeconds) {
-    Ok(())
-  } else {
-    Err("VERIFICATION_FAILED")
+  // Split into header.payload.signature — must be exactly three parts.
+  val parts = split(token, ".")
+  if parts.length != 3 {
+    return Err("MALFORMED_TOKEN")
   }
+
+  // Extract alg from header.
+  val alg = jwtAlgFromHeader(parts[0])
+  if alg.length == 0 {
+    return Err("MALFORMED_HEADER")
+  }
+
+  // Reject before signature verification when alg is not in the caller's
+  // allow-list (#1090) — surfaces a distinct error from BAD_SIGNATURE so
+  // callers can distinguish algorithm rejection from cryptographic failure.
+  if not algListContains(allowedAlgorithms, alg) {
+    return Err("ALG_REJECTED")
+  }
+
+  // This kernel only implements HS256.  When the caller-allowed alg is
+  // something else (e.g. RS256), return ALG_UNSUPPORTED to make the
+  // limitation explicit rather than masking it as BAD_SIGNATURE (#1090).
+  if alg != "HS256" {
+    return Err("ALG_UNSUPPORTED")
+  }
+
+  // Verify HMAC-SHA256 signature over header.payload.
+  val signingInput = parts[0] + "." + parts[1]
+  val signingInputBytes = encodeUtf8(signingInput)
+  val secretBytes = encodeUtf8(secret)
+  val expectedSig = hmacSha256(secretBytes, signingInputBytes)
+  var providedSig: slice[Byte] = []
+  if not tryFromBase64Url(parts[2], providedSig) {
+    return Err("BAD_SIGNATURE")
+  }
+  if not fixedTimeEqualBytes(expectedSig, providedSig) {
+    return Err("BAD_SIGNATURE")
+  }
+
+  // Validate payload claims (iss, aud, exp, nbf) with clock-skew leeway.
+  return validatePayload(parts[1], issuer, audience, clockSkewSeconds)
+}
+
+// ─── Claim extraction ─────────────────────────────────────────────────────────
+/// Try to extract a named string claim from a JWT payload segment.
+/// Sets `value` to the claim string and returns true on success.
+/// Sets `value` to `""` and returns false for absent claims or malformed tokens.
+/// Call only on tokens already accepted by verifyJwt.
+@stable(since = "0.1")
+pub func tryExtractClaim(token: in String, claimKey: in String, value: out String): Bool
+  requires: claimKey.length > 0
+{
+  val parts = split(token, ".")
+  if parts.length < 2 {
+    value = ""
+    return false
+  }
+  var payloadBytes: slice[Byte] = []
+  if not tryFromBase64Url(parts[1], payloadBytes) {
+    value = ""
+    return false
+  }
+  val claim = getStringClaim(payloadBytes, claimKey)
+  if claim.length == 0 {
+    value = ""
+    return false
+  }
+  value = claim
+  true
+}
+
+/// Extract a named claim from a JWT payload without re-verifying the signature.
+/// Call only on tokens already accepted by verifyJwt.
+/// Returns None if the claim is absent or the token is malformed.
+///
+/// Named extractClaimImpl (not extractClaim), matching `Auth.Kernel.Net`, to
+/// avoid the same alias-rewriter same-name collision described on
+/// `verifyJwtImpl` above — `Auth.extractClaim` (the jvm-cfg branch) calls
+/// `AuthKernelJvm.extractClaimImpl`, not `extractClaim` (#1127, #1094).
+@stable(since = "0.1")
+pub func extractClaimImpl(token: in String, claimKey: in String): Option[String]
+  requires: claimKey.length > 0
+{
+  var v: String = ""
+  if tryExtractClaim(token, claimKey, v) {
+    return Some(v)
+  }
+  return None
+}
+
+// ─── API key verification ─────────────────────────────────────────────────────
+/// Byte-content-constant-time comparison of `provided` against `expected`.
+/// Returns true iff the two strings are byte-for-byte identical.
+/// Constant-time with respect to content when both encode to the same byte
+/// length, preventing value-oracle timing attacks.  Length mismatches exit
+/// early; for fixed-format keys the length is not secret so this is acceptable.
+///
+/// Named verifyApiKeyImpl (not verifyApiKey), matching `Auth.Kernel.Net`, to
+/// avoid the same alias-rewriter same-name collision described on
+/// `verifyJwtImpl` above — `Auth.verifyApiKey` (the jvm-cfg branch) calls
+/// `AuthKernelJvm.verifyApiKeyImpl`, not `verifyApiKey` (#1127, #1094).
+@stable(since = "0.1")
+pub func verifyApiKeyImpl(provided: in String, expected: in String): Bool
+  requires: expected.length > 0
+{
+  val a = encodeUtf8(provided)
+  val b = encodeUtf8(expected)
+  fixedTimeEqualBytes(a, b)
 }

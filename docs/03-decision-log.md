@@ -12593,6 +12593,134 @@ a refusal" policy — a genuine formatter bug, not addressed here.
 D-progress-625, D-progress-628.
 
 ---
+## D-progress-630 — lyric-auth: real JVM JWT/API-key kernel (`javax.crypto.Mac`), replacing dead `extern package` (#5324)
+
+**Context.** `lyric-auth/src/_kernel/jvm/auth_kernel.l` declared two
+`extern package` blocks (`io.jsonwebtoken` for `verifyJwt`/`extractClaim`,
+`java.security` for `verifyApiKey`). `extern package` is a confirmed no-op
+in both the type checker and the MSIL/JVM codegens — it parses but
+generates no real binding — so the JVM kernel was dead code: it could
+never have verified a real JWT or compared a real API key at runtime, and
+was already opt-in and CI-invisible (`lyric-auth/lyric.toml`
+`[features] default = ["dotnet"]`). No Maven dependency for JJWT had ever
+actually been wired either — the `io.jsonwebtoken` extern was purely
+aspirational.
+
+**Decision.** Do not bind the full JJWT fluent builder chain (a new Maven
+dependency for no real benefit, and a multi-call object-lifecycle pattern
+that doesn't fit `Auth.Kernel.Net`'s proven approach). Instead: port
+`Auth.Kernel.Net`'s ~450 lines of pure-Lyric, platform-independent JWT
+logic (base64url decode, JSON claim scanning with `aud` duplicate-key
+detection, `parseLong` with overflow guards, the RFC 8725 §3.1 algorithm
+allow-list, `exp`/`nbf` validation with clock-skew tolerance,
+`fixedTimeEqualBytes`) verbatim into the JVM kernel, and bind exactly ONE
+real native primitive via `extern type` + JVM auto-FFI: HMAC-SHA256 using
+`javax.crypto.Mac`/`javax.crypto.spec.SecretKeySpec` (both in `java.base`,
+no Maven dependency) — `SecretKeySpec.new(key, "HmacSHA256")` builds the
+key material, `Mac.getInstance("HmacSHA256")` selects the algorithm,
+`.init(keySpec)` binds it, `.doFinal(message)` computes the MAC. This is
+the same `_kernel_jvm` idiom already proven by `Std.HashHost`
+(`MessageDigest.getInstance(...).digest(...)`) and `Storage.Kernel.Jvm`.
+`verifyApiKey` needed no extern binding at all — `fixedTimeEqualBytes` is
+pure Lyric and ported unchanged. This collapses the JVM kernel from "two
+broken `extern package` blocks with zero real dependency" to "one small
+`extern type` HMAC-SHA256 primitive + a straight port of already-tested
+pure-Lyric logic."
+
+**Two additional pre-existing bugs blocked verification and were fixed
+alongside (both narrowly scoped, both required to actually exercise the
+new kernel on `--target jvm` rather than ship it untested):**
+
+1. **`lyric-stdlib/std/encoding.l`'s `tryDecodeUtf8`** indexed a
+   `slice[Byte]` into an unannotated `val b0 = bytes[i]` before calling
+   `.toInt()`. On `--target jvm`, an un-annotated slice-index expression
+   used as a numeric-intrinsic receiver loses its `Byte` element type
+   before the `.toInt()`/`.toLong()`/etc. intrinsic check runs, so it fell
+   through to JVM auto-FFI against `java.lang.Object` (which has no
+   `toInt()` method), crashing `Jvm.Codegen` with an unhandled
+   `System.Exception` for ANY program that imports `Std.Encoding` and
+   compiles for JVM — a pre-existing, general stdlib/JVM-backend gap,
+   reproduced independently of lyric-auth with a 9-line repro. Fixed by
+   annotating the four `b0`/`b1`/`b2`/`b3` locals in `tryDecodeUtf8` as
+   `Byte` explicitly (`val b0: Byte = bytes[i]`) — a type-annotation-only
+   change, no behavior change, confirmed by both `lyric-auth` test suites
+   passing unchanged on `--target dotnet` before and after.
+2. **Generic `Option`/`Result` payload erasure for `slice[T]` on JVM.**
+   D-progress-554 taught the JVM match-lowering to unbox PRIMITIVE scalar
+   payloads (Int/Long/Double/Float/Boolean) bound from a generic
+   `Option`/`Result` case, but explicitly left reference/array payloads
+   boxed as `java.lang.Object` (documented in that entry as "stays
+   boxed — pre-fix behaviour"). A `slice[Byte]` value extracted from
+   `Std.Encoding.tryDecodeBase64`'s `Option[slice[Byte]]` result and then
+   forwarded to ANY function expecting a concrete `slice[Byte]`
+   parameter — including `Std.Encoding.tryDecodeUtf8` itself — fails JVM
+   bytecode verification (`VerifyError: ... not assignable to
+   '[Ljava/lang/Object;'`), reproduced with a 9-line repro fully
+   independent of lyric-auth and of `tryDecodeBase64` specifically (a
+   bare `Option[slice[Byte]]`-returning function has the same failure).
+   This is a genuine, general self-hosted JVM backend limitation, not
+   fixed here (out of scope — it needs the same `checkcast`-insertion
+   treatment D-progress-554 gave primitives, generalized to array types,
+   in `Jvm.Codegen`'s match-arm binding). Worked around locally: the JVM
+   kernel implements its own base64url decoder
+   (`tryFromBase64Url(seg, result: out slice[Byte]): Bool`,
+   validation ported from `Std.Encoding.tryDecodeBase64`, byte
+   accumulation from `Std.EncodingHost.hostFromBase64`) that returns via
+   `Bool` + `out slice[Byte]` instead of `Option[slice[Byte]]` — writing
+   through an `out` parameter assigns the concretely-typed local directly
+   from a `List[Byte].toArray()` result, never through an
+   `Option[slice[Byte]]` intermediate, which keeps the JVM backend's type
+   inference intact (the same `List` + `newList` + `.toArray()`
+   construction already proven by `Std.HashHost`/`Std.EncodingHost`).
+   `Auth.jwtAlg` in `auth.l` (pre-existing, non-`@cfg`-gated
+   belt-and-suspenders algorithm extraction, unrelated to the kernel
+   rewrite) had the identical shape and was hitting the identical
+   `VerifyError`; it is now `@cfg`-split into a `dotnet` branch (unchanged
+   original body) and a `jvm` branch that calls the kernel's
+   (now-`pub`) `tryFromBase64Url`.
+
+**Alias-rewriter collision avoided defensively.** The JVM kernel's public
+functions are named `verifyJwtImpl`/`extractClaimImpl`/`verifyApiKeyImpl`
+(not `verifyJwt`/`extractClaim`/`verifyApiKey`), matching
+`Auth.Kernel.Net`'s existing naming and its documented rationale
+(`Lyric.AliasRewriter` is scope-blind: `AuthKernelJvm.extractClaim(...)`
+rewrites to bare `extractClaim(...)`, which would otherwise resolve to
+`Auth.extractClaim`'s own recursive call rather than the kernel — #1127,
+#1094). The former (dead, `extern package`-only) kernel used
+non-`Impl`-suffixed names that were never actually exercised at runtime;
+`auth.l`'s two `@cfg(feature = "jvm")` call sites were updated to match.
+
+**Verification.** HMAC-SHA256 is deterministic and byte-identical across
+platforms, so `lyric-auth/tests/auth_security_tests.l`'s existing 32 test
+cases (algorithm pinning, duplicate-alg/duplicate-aud attacks, exp/nbf
+overflow, clock-skew, JSON escape decoding) — written once, shared
+unconditionally across both `@cfg`-gated `Auth.verifyJwt` overloads — now
+pass identically on both targets:
+
+```
+./bin/lyric test --manifest lyric-auth/lyric.toml
+  # dotnet (default features): 2 passed, 0 failed (32 + 4 tests)
+./bin/lyric test --manifest lyric-auth/lyric.toml --target jvm --no-default-features --features jvm
+  # Auth.AuthSecurityTests: 32/32 pass (was: build crash / dead extern)
+```
+
+`Auth.AuthAspectWeavingTests` (4 tests, `Auth.Aspects.ValidateKey`) passes
+on `dotnet` but fails on `jvm` with a `NoSuchMethodError`-shaped
+`__LyricBModeCallContext` runtime crash. Confirmed via the FIRST (pre-fix)
+JVM test run's raw output that this exact failure signature was already
+present before any change in this entry — it is the self-hosted JVM
+backend's B′-mode aspect-weaver codegen (D114/D115), a subsystem entirely
+independent of `Auth.Kernel.Jvm`/`Auth.jwtAlg`, and out of scope here.
+`lyric-auth/README.md`'s platform-parity table is corrected accordingly:
+`Auth` is genuinely available and verified on both targets;
+`Auth.Aspects.ValidateKey` is `.NET`-only pending that separate fix.
+
+**Related:** #5324, D-progress-554 (the primitive-only unboxing this
+entry's workaround routes around for `slice[Byte]`), D114/D115 (the
+B′-mode aspect weaver whose JVM codegen gap this entry surfaces but does
+not fix).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
