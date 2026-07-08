@@ -47,68 +47,38 @@ extern type JCharacter = "java.lang.Character"
 //   Zp  14   13
 // (Java category 17 is unassigned/reserved — no Character.* constant uses it.)
 func jvmCategoryToNetConvention(javaCategory: in Int): Int {
-  if javaCategory == 0 {
-    29
-  } else if javaCategory == 1 {
-    0
-  } else if javaCategory == 2 {
-    1
-  } else if javaCategory == 3 {
-    2
-  } else if javaCategory == 4 {
-    3
-  } else if javaCategory == 5 {
-    4
-  } else if javaCategory == 6 {
-    5
-  } else if javaCategory == 7 {
-    7
-  } else if javaCategory == 8 {
-    6
-  } else if javaCategory == 9 {
-    8
-  } else if javaCategory == 10 {
-    9
-  } else if javaCategory == 11 {
-    10
-  } else if javaCategory == 12 {
-    11
-  } else if javaCategory == 13 {
-    12
-  } else if javaCategory == 14 {
-    13
-  } else if javaCategory == 15 {
-    14
-  } else if javaCategory == 16 {
-    15
-  } else if javaCategory == 18 {
-    17
-  } else if javaCategory == 19 {
-    16
-  } else if javaCategory == 20 {
-    19
-  } else if javaCategory == 21 {
-    20
-  } else if javaCategory == 22 {
-    21
-  } else if javaCategory == 23 {
-    18
-  } else if javaCategory == 24 {
-    24
-  } else if javaCategory == 25 {
-    25
-  } else if javaCategory == 26 {
-    26
-  } else if javaCategory == 27 {
-    27
-  } else if javaCategory == 28 {
-    28
-  } else if javaCategory == 29 {
-    22
-  } else if javaCategory == 30 {
-    23
-  } else {
-    29
+  match javaCategory {
+    case 0 -> 29
+    case 1 -> 0
+    case 2 -> 1
+    case 3 -> 2
+    case 4 -> 3
+    case 5 -> 4
+    case 6 -> 5
+    case 7 -> 7
+    case 8 -> 6
+    case 9 -> 8
+    case 10 -> 9
+    case 11 -> 10
+    case 12 -> 11
+    case 13 -> 12
+    case 14 -> 13
+    case 15 -> 14
+    case 16 -> 15
+    case 18 -> 17
+    case 19 -> 16
+    case 20 -> 19
+    case 21 -> 20
+    case 22 -> 21
+    case 23 -> 18
+    case 24 -> 24
+    case 25 -> 25
+    case 26 -> 26
+    case 27 -> 27
+    case 28 -> 28
+    case 29 -> 22
+    case 30 -> 23
+    case _ -> 29
   }
 }
 
