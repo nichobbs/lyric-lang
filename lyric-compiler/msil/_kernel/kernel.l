@@ -156,6 +156,12 @@ pub func bufF8Le(w: in ByteWriter, v: in Double): Unit {
   bufBytes(w, f8GetBytes(v))
 }
 
+// IEEE-754 binary32 (`ldc.r4`).  Narrow the `Double` to `float` and reinterpret
+// its 32-bit pattern as an Int via `System.BitConverter`, then write it
+// little-endian through `bufU4`.  `Single` flows only between the two BCL calls
+// (never into a Lyric local), so the narrowing + bit pattern are exactly the
+// CLR's `(float)v` -> `SingleToInt32Bits`, matching the former host's
+// `BitConverter.GetBytes(single v)`.
 import extern System.{ Single }
 
 @externTarget("System.Convert.ToSingle")
