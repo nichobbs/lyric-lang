@@ -11946,6 +11946,129 @@ remaining four per-lambda maps), #1877 (uniform boxed `Func` ABI both
 #5362 and #5366 live in), #3196 (the earlier enum-FieldDef-row-shift bug
 in the same family as #5361, though a different specific gap).
 
+## D-progress-625 — JVM: 4 stdlib `_kernel_jvm/*.l` files migrated off `extern package` onto `extern type` + auto-FFI, restoring `Std.Environment`/`Std.Process`/`Std.Log`/the self-hosted lexer's Unicode classification on `--target jvm`; 5 pre-existing JVM codegen bugs found and tracked
+
+**Status:** ACCEPTED (migration); 5 newly-discovered bugs filed and deliberately NOT fixed here (see below)
+
+**Context.** A reconnaissance pass across all 33 `extern package` declarations
+in the repo (prompted by a design discussion on retiring `extern package` in
+favor of `extern type`/`import extern`) found that `environment_host.l`,
+`process_host.l`, `log_host.l`, and `unicode_host.l` in
+`lyric-stdlib/std/_kernel_jvm/` were the highest-priority migration targets:
+unlike the ~29 ecosystem-library `extern package` usages (mostly dead code or
+requiring real hand-written adapter glue, per the reconnaissance report), these
+four are core stdlib, on live call paths, and each maps onto a genuinely real,
+simple JDK API (`System.getenv`/`System.exit`, `ProcessBuilder`/`Process`,
+plain stderr write, `Character.getType`) — `extern package`'s permanent no-op
+status meant `Std.Environment`, `Std.Process`, and `Std.Log` were **entirely
+non-functional on `--target jvm`**, and the self-hosted lexer's Unicode
+identifier classification (`Lyric.Lexer` via `Std.UnicodeHost`) was degraded.
+
+**What shipped.** All four kernels rewritten as pure Lyric over `extern
+type` + JVM auto-FFI, mirroring the pattern already proven in
+`console_host.l`/`time_host.l`/`collections_host.l`/`file_host.l`:
+
+- `environment_host.l`: `hostGetVarOpt` → `System.getenv`; `hostExit` →
+  `System.exit` (works because `Never` erases to `JVoid`, matching
+  `System.exit`'s real `void` return exactly — no "throw after call" trick
+  needed). Also fixed two exports (`hostGetCommandLineArgs`, `hostExit`)
+  that were **missing from the file entirely** — `std/environment.l` called
+  both unconditionally, so `Std.Environment` failed to even *load* as a
+  class on JVM (a `VerifyError` cascading from the malformed/absent method,
+  which poisons the whole class file, not just the missing function) before
+  this fix, independent of the `extern package` no-op. `hostGetCommandLineArgs`
+  has no real implementation (the JDK exposes no process-wide argv retrieval
+  the way .NET does) — panics with a diagnostic instead of the previous
+  crash; real implementation needs new entry-point codegen, filed as #5377.
+- `process_host.l`: `ProcessHandle` is now `extern type ... = "java.lang.Process"`
+  directly (was an indirect `exposed type` re-export through the dead shim).
+  `hostSpawn` reuses `Std.ProcessCaptureHost.parseArgString` (made `pub`)
+  rather than re-implementing the shared `buildArgString` quoting format.
+  Also added `hostDisposeProc` (**also entirely missing** — `std/process.l`
+  called it unconditionally; a genuine no-op on JVM, not a stub, since
+  `java.lang.Process` holds no handle requiring explicit release the way
+  .NET's `Process.Dispose()` does).
+- `log_host.l`: rewritten to match the `.NET` kernel exactly (a plain
+  stderr write via `Std.ConsoleHost`) rather than the originally-envisioned
+  `java.util.logging.Logger` shim, which would have given `Std.Log`
+  independent per-target level-filtering/handler behavior instead of
+  identical cross-platform output.
+- `unicode_host.l`: `Character.getType(int)` returns Java's own category
+  ordinals, numbered differently from .NET's `System.Globalization.
+  UnicodeCategory` (the convention `_kernel/unicode_host.l` and the
+  self-hosted lexer both expect). Added `jvmCategoryToNetConvention`, a
+  30-entry translation table cross-referencing both platforms' constants
+  via the shared underlying Unicode General_Category property. Verified
+  against 10 code points spanning distinct categories (letters, digits,
+  punctuation, symbols, separator) with **identical output on `--target
+  dotnet` and `--target jvm`** for the same source. Also fixed a pre-existing,
+  independently-broken call to a nonexistent `charToInt` function (not
+  `extern package`-related — this line was never going to compile regardless
+  of the extern mechanism) — replaced with the real `Std.Char.toInt` UFCS
+  method (`c.toInt()`).
+
+**Verification.** `lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l` (8
+cases) exercises all four kernels directly (not through `Std.Environment`/
+`Std.Process`/`Std.Log`, for reasons below) on `--target jvm`, wired into CI.
+Manually verified end-to-end: `Std.Environment.getVar`/`runtimeDirectory`/
+`runtimeIdentifier`/`setVar`/`exitCode` (real subprocess exit code
+round-trip, confirmed via a real `java -jar` exit-code check, not just
+"doesn't crash"); real child-process spawn/wait/exit-code via
+`Std.ProcessHost` directly.
+
+**Five pre-existing JVM codegen bugs found while verifying end-to-end,
+deliberately NOT fixed in this entry** — each independent of the `extern
+package` migration itself (confirmed by reproducing each with this
+migration's changes stashed out), each requiring its own investigation:
+
+- **#5377** — `Std.Environment.args()` has no implementation path (the JDK
+  exposes no process-wide argv retrieval; needs new entry-point codegen).
+- **#5378** — a `Never`-returning function's call used as the bare TAIL
+  expression of a differently-typed function (e.g. `func main(): Int {
+  ...; exitCode(42) }`, no trailing value) produces a class-load
+  `VerifyError`. Does not affect the non-tail form (`exitCode(42); 0`),
+  which works correctly — confirmed via a real subprocess exit code.
+- **#5379** — discarding the result of an instance auto-FFI call whose
+  receiver is a function PARAMETER (of an extern type) in non-tail
+  statement position emits no invoke instruction at all (`VerifyError:
+  Operand stack underflow`). Reproduced independently with both
+  `java.lang.StringBuilder` and `java.lang.Process`. Worked around in
+  `process_host.l`'s `hostWait` by making the call the function's sole tail
+  expression instead of a discarded mid-block statement.
+- **#5380** — a nullary enum case value is corrupted when passed as a
+  function argument: `match`ing on it in the callee always resolves to the
+  FIRST-declared case regardless of which case was actually passed.
+  Confirmed independent of `Std.Log` with a minimal `enum`/`match` repro;
+  confirmed JVM-specific (`--target dotnet` produces correct output for the
+  identical source). This is why `Std.Log.info`/`warn`/`error` currently
+  print `[DEBUG]` for every level on JVM — `Std.LogHost.write` itself (this
+  entry's fix) is unaffected and correct when called with an explicit level
+  string, verified directly in the self-test.
+- **#5381** — `Std.Process.buildArgString`'s `args[i].contains(" ")`
+  (`args: List[String]`) fails to bundle on JVM: `List[String]` indexing
+  loses the element's `String` static type for auto-FFI method resolution,
+  resolving the receiver as bare `java.lang.Object`. Blocks
+  `Std.Process.run()`/`runChecked()` end-to-end on JVM even after this
+  entry's kernel fix — `Std.ProcessHost`'s kernel functions work correctly
+  when called directly with an already-formatted argument string (as the
+  self-test does), confirming the kernel itself, not this entry's fix, is
+  unaffected.
+
+Each of these blocks a *public-facing* wrapper (`Std.Environment.args`/
+`exitCode`'s tail form, `Std.Log.info`/`warn`/`error`'s level display,
+`Std.Process.run`) from working end-to-end even though the underlying
+kernel this entry fixed is independently correct — filed separately rather
+than expanding this migration's scope, per the "smaller correct slice"
+principle: each is a distinct, general JVM codegen defect unrelated to
+`extern package`, discovered only because this fix let execution reach far
+enough to expose them (previously every one of these call paths crashed
+immediately on the `extern package` no-op, before ever reaching these bugs).
+
+**Related:** the ongoing `extern package` retirement discussion (deprecate
+in favor of `extern type`/`import extern`); the reconnaissance report
+classifying the other ~29 `extern package` usages (mostly ASPIRATIONAL-ADAPTER
+or dead code, not simple syntax migrations).
+
 ---
 ## Decisions deferred to v2 or later
 

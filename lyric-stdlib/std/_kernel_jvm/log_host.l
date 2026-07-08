@@ -1,13 +1,19 @@
 //! std/_kernel_jvm/log_host.l - JVM host boundary for diagnostics output.
 //!
-//! Mirrors _kernel/log_host.l for the JVM target.  Routes through a
-//! shim backed by java.util.logging.Logger.  The logger is named
-//! "lyric.stdlib" and honours the standard JVM logging configuration
-//! (logging.properties / JUL handlers).
-@axiom("lyric.stdlib.jvm.LogHost writes diagnostic messages via java.util.logging.Logger")
+//! Mirrors _kernel/log_host.l for the JVM target exactly: writes to stderr
+//! in the format "[LEVEL] message", composing the JVM console-stderr path
+//! (Std.ConsoleHost). Replaces a `lyric.stdlib.jvm.LogHost` shim class
+//! (routed through `java.util.logging.Logger`) that never existed at
+//! runtime -- the `extern package` mechanism it used is a no-op in both the
+//! type checker and both codegens. Deliberately matches the .NET kernel's
+//! plain-stderr behavior rather than introducing JUL's independent level
+//! filtering/handler configuration, which would make Std.Log behave
+//! differently per target.
 package Std.LogHost
 
-extern package lyric.stdlib.jvm.LogHost {
-  pub func write(level: in String, message: in String): Unit
-    requires: level.length > 0
+import Std.String as Str
+import Std.ConsoleHost as Con
+
+pub func write(level: in String, message: in String): Unit {
+  Con.hostConsoleErrorWriteLine("[" + Str.toUpper(level) + "] " + message)
 }

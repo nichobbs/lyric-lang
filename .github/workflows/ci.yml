@@ -3576,6 +3576,27 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/hash_jvm_self_test.l
+      # Stdlib JVM kernel migration off extern package (a no-op mechanism in
+      # both the type checker and both codegens): environment_host.l,
+      # process_host.l, log_host.l, unicode_host.l migrated onto plain
+      # extern type + JVM auto-FFI.  Before this migration every function in
+      # these four files crashed immediately on first call.  Imports only
+      # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Stdlib JVM kernels self-test (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping stdlib JVM kernels self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping stdlib JVM kernels self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l
       # Silent-miscompile guard (JVM, band J1 / #2664 / epic #2663): pins the
       # five JVM-backend codegen fixes that previously produced wrong-but-running
       # output — Float emitted as 32-bit (not double), complex assignment

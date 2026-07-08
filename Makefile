@@ -246,7 +246,8 @@ test-typechecker: ## Run the type-checker self-test
 #   done
 # This is deliberately NOT `find lyric-compiler -name '*_self_test.l'`
 # unfiltered — of the 117 files in the directory, 11 fail this way:
-#   - `--target jvm` only: auto_ffi_jvm_self_test.l, hash_jvm_self_test.l
+#   - `--target jvm` only: auto_ffi_jvm_self_test.l, hash_jvm_self_test.l,
+#     stdlib_jvm_kernels_self_test.l
 #     (run via `./bin/lyric test --target jvm <file>` by hand, or see the
 #     `compiler-self-tests-jvm` CI job for the full jvm-target list).
 #   - needs `LYRIC_LOAD_COMPILER=1` and/or the native toolchain:
