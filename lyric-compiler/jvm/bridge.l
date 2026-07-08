@@ -256,7 +256,13 @@ pub func compileToJar(
     mainClassName = acc
   }
 
-  val req = BuildRequest(packageName = packageName, mainClass = mainClassName, version = "0.1.0", outPath = outputPath)
+  val req = BuildRequest(
+    packageName = packageName,
+    mainClass = mainClassName,
+    version = "0.1.0",
+    outPath = outputPath,
+    classpathJars = newList()
+  )
 
   writeJarFromClasses(req, classes)
 }
