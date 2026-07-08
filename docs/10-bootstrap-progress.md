@@ -20594,7 +20594,11 @@ jmods when resolving a class.  JAR entries use the flat
 `"com/example/Foo.class"` path (no `"classes/"` JMOD prefix).
 `tryLoadFromArchive` is the unified entry point for both JMOD and JAR loading;
 `tryLoadFromJmod` delegates to it.  `javaFqnToJarEntry` produces the JAR-layout
-path.  `splitPathList` handles both `:` (Unix) and `;` (Windows) separators.
+path.  `splitPathList` splits on the platform-correct separator only — `;` on
+Windows, `:` everywhere else, chosen via `Std.Environment.runtimeIdentifier()`
+— rather than treating both characters as delimiters, which used to misparse
+a Windows drive-letter colon (`C:\foo.jar`) as a separator (#2214, fixed via
+`splitPathListOn(s, isWin)`).
 
 To integrate Maven-resolved dependencies:
 ```
@@ -29894,3 +29898,153 @@ reused `emitProject` pipeline), `docs/03-decision-log.md` D123 (full
 design rationale).
 
 **Related:** D123, docs/20-project-as-dll.md.
+
+---
+
+### D-progress-621 — JVM: `Std.Task.Scope` phantom kernel fixed over real JDK primitives; MSIL: `await` never blocked on an extern `Task`, fixed; D119 slice S3 sibling-cancel investigated, blocked on newly-found bugs
+
+`lyric-stdlib/std/_kernel_jvm/task.l` declared `extern type Scope =
+"lyric.runtime.LyricTaskScope"` against a class that doesn't exist —
+every `Std.Task` call on `--target jvm` threw `NoClassDefFoundError`.
+Rewritten as pure Lyric over real JDK classes (`AtomicBoolean`/
+`AtomicReference`, `Thread`, `System`; JDK interfaces like
+`ExecutorService`/`Future` are unusable — the JVM auto-FFI class reader
+skips `ACC_INTERFACE` files). `scopeSpawn` defers actions into a list;
+`awaitAll` runs them concurrently via the `spawn`/`scope { }` keywords
+(real JDK 21 virtual threads), with genuine sibling-cancel-on-first-fault
+(shared `AtomicBoolean` flag + `AtomicReference.compareAndSet` first-fault
+tracking).
+
+Separately, MSIL's `await` on any extern-declared `Task` value never
+actually blocked (`isTaskTypeMsil` compared against a TypeRef row the
+extern-type intern path never populates) — fixed in
+`Msil.Codegen.isTaskTypeMsil`; `await delay(3000)` now genuinely takes
+~3.9s instead of ~0.9s.
+
+D119 slice S3 (.NET sibling-cancel-on-first-fault via `Task.ContinueWith`)
+remains **not shipped**: three independent pre-existing MSIL bugs block
+any fix (generic delegate erasure makes `Action<Task>` unbindable;
+`GetAwaiter()/OnCompleted()` alongside any closure corrupts closure-class
+resolution; `Task.Run(Action, ...)`'s delegate never invokes at all,
+independent of sibling-cancel). A fourth bug was found verifying the JVM
+side: a closure stored via `scopeSpawn` and invoked via `spawn` from a
+different function throws `ClassCastException` across package boundaries.
+`lyric-stdlib/tests/task_tests.l` (new) verifies token/delay/cancellation
+behaviour on both targets (all pass); the two `Scope`-based assertions
+currently fail on both, pinned by the test with the reason documented.
+
+**Related:** `docs/03-decision-log.md` D-progress-621 (full account) and
+D119 (the parent decision).
+
+---
+
+### D-progress-622 — `lyric-web` gets real HTTP dispatch, static file serving, and a middleware pipeline (D124); `Handler`/`Middleware` redesigned as interfaces after discovering closures are unreliable across 2+ packages
+
+`Web.serve()` never matched incoming requests against registered routes —
+every request got the same hardcoded JSON payload describing the route
+table, regardless of method or path. Fixed with a pure `Web.dispatch(router,
+request): Response` (method + `{name}`/`{*name}` path matching, path/query
+percent-decoding, case-insensitive headers) built on `Std.HttpServer`
+(extended with `requestQuery`/`requestHeaders`/`urlDecode`/`respondBytes*`),
+plus static file serving (`Web.StaticFiles` config template, canonical-path
+traversal guard, multi-mount) and a middleware pipeline (`Web.Middleware`,
+CORS finally wired up from the previously-parsed-and-ignored env vars,
+`Web.requestLogger`).
+
+Along the way, four previously-unknown self-hosted MSIL backend bugs
+surfaced and are filed as issues #5361–#5364 (payload-free enum +
+closure in one compile unit crashes closure lowering; bare named
+function references crash when converted to a delegate value;
+**closures invoked across 2+ packages are unreliable up to silent
+wrong-value corruption with no exception** — this last one corroborates
+D-progress-621's JVM `ClassCastException`-across-package-boundaries
+finding above, now root-caused more broadly; and a match-arm-bound
+variable used as a call argument from inside its own arm crashes
+regardless of closures). Given the severity of the third bug,
+`Web.Handler`/`Web.Middleware` are interfaces rather than closures —
+`Web.dispatch`'s middleware composition is a small `Handler`-implementing
+record chain, not composed closures — matching every other
+pluggable-behavior abstraction already in this codebase (`WsHandler`,
+`MailSender`, `StorageBucket`, …).
+
+Verified by `lyric-web/tests/dispatch_tests.l` (23 tests) and a live
+`HttpListener` + `curl` smoke test against a router consumed as a
+genuine path dependency from a separate project — the exact
+configuration the closure bug made unreliable — covering path params,
+query strings, headers, static files, and repeated sequential requests
+with no crash. `examples/ledger`/`rbac`/`jobqueue` migrate to the
+`Handler` interface and gain hand-rolled `Std.Json` request-body parsers.
+
+**Related:** `docs/03-decision-log.md` D124 (full account), D099
+(the `lyric-health` function-reference precedent this generalizes),
+issues #5359 (`Web.addWorker` still not dispatched — separately
+tracked), #5360 (live OpenAPI/Swagger serving — separately tracked),
+#5361–#5364.
+
+### D-progress-623 — JVM: primitive-array `slice[T]` marshaling generalized from `byte[]`-only to all 8 primitive types, in both directions, and fixed for explicit `return` statements
+
+The JVM backend's only primitive-array ↔ `slice[T]` (`Object[]`-erased)
+coercion loop was `byte[]`-only, and even that only fired for an implicit
+tail-expression return; an explicit `return` on any primitive array skipped
+it entirely, and the overload scorer that decides which JDK method/
+constructor overload even matches a `slice[T]` argument was likewise
+byte-only. Generalized to all 8 JVM primitive element types
+(`boolean`/`char`/`float`/`double`/`byte`/`short`/`int`/`long`) in both
+directions (return-side boxing, argument-side unboxing) and fixed the
+explicit-`return` gap so it gets the same coercion as tail position.
+Verified with a non-byte element (`Character.toChars(int): char[]`) through
+tail-expression return, explicit return, and argument-unbox
+(`String(char[])`'s constructor) — none previously exercised on any
+primitive type other than `byte`. Regression-swept against 8 other JVM
+self-tests touching arrays/slices/calls with no failures.
+
+**Related:** `docs/03-decision-log.md` D-progress-623 (full account), docs/44
+M-10 (the original byte-only interop this generalizes).
+
+---
+
+### D-progress-624 — Self-hosted MSIL backend: three of the four D-progress-622 closure/codegen bugs fixed with new regression coverage; the fourth investigated but left unfixed after a compile-time-diagnostic attempt regressed CI
+
+Fixed #5361 (a missing `recordUserTypeDefRow` call in `lowerMEnum`
+desynced the positional TypeDef-row-to-FQN list every subsequent type
+lowering relied on for forward references) and #5363 (five per-lambda
+maps in `Msil.Codegen` were keyed by a bare lambda name that collides
+across packages because the numbering ticker resets per package —
+qualified all five with the package name, mirroring the earlier #5309
+fix that only covered one of the six affected maps). Fixed #5364 (the
+`.indexOf`/`.lastIndexOf` sentinel-`Int` "Option" pattern-bind fallback
+hardcoded its bound variable's slot type to `MObject` instead of the
+scrutinee's real type, leaving an unboxed `int32` in an object-declared
+local — harmless for `stloc`/`ldloc` but rejected by the JIT at a
+`callvirt` argument slot). New regression coverage:
+`enum_closure_pattern_bind_self_test.l` (#5361, #5364) and a new
+cross-package case in `msil_project_bridge_self_test.l` (#5363).
+
+#5362 (bare named function used as a delegate value) remains
+**unfixed** — the uniform boxed `Func` ABI has no path to bridge a
+real typed BCL method signature without either a call-site desugaring
+pass or ABI work larger than this slice. A first attempt added a
+compile-time `F0027` diagnostic instead, but this repo's own CI
+(`build`/`build-and-test`) caught it false-positiving on
+`examples/product-catalog`'s `map(rows, rowToProduct)` — a bare
+function reference passed to a generic higher-order function that
+`Lyric.Mono` monomorphizes at that call site, never constructing a
+real delegate, so no bug is present there. The diagnostic couldn't
+distinguish that safe case from the genuinely buggy one without more
+work than this slice allows, so it was reverted before merge; #5362
+is left exactly as documented (open, runtime `NullReferenceException`
+on invocation).
+
+#5359/#5360 confirmed still correctly scoped as documented follow-ups
+(one stale doc line in `Web.OpenApi` fixed). Verifying #5363's fix
+end-to-end surfaced a second, unrelated, pre-existing bug (confirmed
+via a from-scratch `main` rebuild predating this session): a
+function/closure value bound without a literal `(T) -> U` annotation
+never gets its return type registered for unboxing, so arithmetic on
+its call result silently corrupts — filed as **#5366**, not fixed here
+(root-caused with a proposed fix sketch; the fix itself needs
+alias-resolution machinery `codegen.l` doesn't currently have).
+
+**Related:** `docs/03-decision-log.md` D-progress-624 (full account),
+D-progress-622 (the entry these four bugs were originally filed
+against), #5309 (the earlier, narrower fix this generalizes).

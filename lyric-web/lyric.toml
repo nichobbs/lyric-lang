@@ -1,13 +1,14 @@
-# lyric-web — OpenAPI-first web service library for Lyric.
+# lyric-web — HTTP web service library for Lyric.
 #
 # Ships four packages:
-#   Web                — core types (ApiError, Router, Header, Route), server
-#                        entry point, and runtime config blocks.
+#   Web                — Router/Request/Response/Middleware, static file
+#                        serving, the HTTP server entry point (built on
+#                        Std.HttpServer), and runtime config blocks.
 #   Web.OpenApi        — OpenAPI 3.1 spec type vocabulary and code-first
 #                        spec-builder.
 #   Web.Aspects        — pub aspect templates: RequiresAuth, RequiresRole,
 #                        ApiKey, RateLimit, HttpCircuitBreaker.
-#   Web.Kernel.Net     — ASP.NET Core / Kestrel extern boundary.
+#   Web.Kernel.Net     — rate-limiter extern boundary (ConcurrentDictionary).
 #
 # Both development workflows are supported:
 #   Code-first:  annotate handlers with @get / @post / etc., run
@@ -15,7 +16,8 @@
 #   Spec-first:  run `lyric generate openapi spec.yaml` to produce
 #                handler stubs + record types, then implement the bodies.
 #
-# See docs/26-aspects.md §18, docs/27-aspect-libraries.md, D053.
+# See docs/26-aspects.md §18, docs/27-aspect-libraries.md,
+# docs/58-wire-templates-sketch.md, D053, D124.
 
 [package]
 name        = "Lyric.Web"
@@ -52,13 +54,15 @@ output_assembly = "Web.dll"
 "Web.CorsGuardTests"   = "tests/cors_guard_tests.l"
 "Web.RateLimitTests"   = "tests/rate_limit_tests.l"
 "Web.SecurityAspectWeavingTests" = "tests/security_aspect_weaving_tests.l"
+"Web.DispatchTests"    = "tests/dispatch_tests.l"
 
 [dependencies]
 "Lyric.Auth"         = { workspace = true }
 "Lyric.Resilience"   = { workspace = true }
 
 [nuget]
-# ASP.NET Core is part of the .NET SDK; no extra package needed for Kestrel.
+# The dotnet HTTP server (Std.HttpServer, System.Net.HttpListener) is part
+# of the base class library; no extra package needed.
 # Add if using OpenTelemetry integration:
 # "OpenTelemetry.Extensions.Hosting" = "1.9.0"
 

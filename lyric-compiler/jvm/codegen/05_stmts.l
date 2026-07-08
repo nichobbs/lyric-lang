@@ -917,8 +917,11 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // Coerce to the declared return type so the value matches the method
           // descriptor (e.g. a plain Double literal in a `: Float` function
           // narrows with d2f).  Skip for void / generator contexts where the
-          // declared return type isn't threaded.
-          val rt = match ctx.retTy { case JVoid -> ty; case t -> { coerceArgTo(insns, ty, t); t } }
+          // declared return type isn't threaded.  Routes through
+          // `coerceReturnValue` (not bare `coerceArgTo`) so an explicit
+          // `return someIntArray` gets the same primitive-array boxing an
+          // equivalent tail-expression return already got.
+          val rt = match ctx.retTy { case JVoid -> ty; case t -> { coerceReturnValue(ctx, insns, ty, t); t } }
           // A `return` exits the function, so every still-pending `defer` block
           // (the whole stack) must run first.  Stash the already-coerced value
           // in a temp so the deferred blocks run on an empty operand stack, then

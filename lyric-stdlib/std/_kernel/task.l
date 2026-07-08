@@ -24,10 +24,63 @@
 //!     `Scope` is now a native Lyric `protected type` backed by a
 //!     `CancellationTokenSource` + `List[Task]`.  `TaskScopeHost`
 //!     statics are replaced by thin Lyric wrapper functions calling
-//!     the protected type's entry/func methods.  Bootstrap note:
-//!     the `ContinueWith`-based "cancel-siblings-on-first-fault"
-//!     feature is dropped for now; `Task.WhenAll` still propagates
-//!     the first exception to the caller.
+//!     the protected type's entry/func methods.
+//!
+//! D119 slice S3 (sibling-cancel-on-first-fault) — investigated, NOT
+//! shipped; the module remains as before (`awaitAll` propagates the first
+//! fault via `Task.WhenAll`; there is no eager cross-sibling cancel).  Three
+//! independent, pre-existing MSIL-backend bugs were found while attempting
+//! this, each confirmed with a standalone repro outside `Std.Task` (so none
+//! of them are specific to this module):
+//!
+//!   1. `Task.ContinueWith(Action<Task>)` can never bind: Lyric closures
+//!      erase every generic delegate type argument to `System.Object`
+//!      (Epic #1877's closure ABI), so a `(Task) -> Unit` handler always
+//!      presents as `Action<Object>` at the call site — never
+//!      `Action<Task>` — and no BCL `ContinueWith` overload matches;
+//!      both the metadata auto-FFI resolver and the table-driven
+//!      `@externTarget` resolver fall back to a guessed signature that
+//!      throws `MissingMethodException` at runtime.
+//!   2. An alternative using `Task.GetAwaiter().OnCompleted(Action)`
+//!      (a *non-generic*, arity-0 delegate — the one shape already proven
+//!      to bind, per (3) below) compiles the call correctly, but as soon
+//!      as any closure appears in a function that also calls
+//!      `GetAwaiter`/`OnCompleted`, the whole compilation unit's MSIL
+//!      lowering panics: `Msil.Lowering: MNewobjByName could not resolve
+//!      .ctor for type '<pkg>.__Closure_N'` — the closure class's own
+//!      TypeDef/`.ctor` registration is not visible by the time lowering
+//!      reaches it.  Reproduced with a `() -> Unit` local closing only
+//!      over a `Task` and a `protected type` value (never over another
+//!      closure), so this is not the generic-erasure issue from (1) — it
+//!      is a second, independent gap in closure-class registration
+//!      ordering when `TaskAwaiter`/`GetAwaiter` participate.
+//!   3. Most significant: even the *existing*, already-shipped
+//!      `Task.Run(Action[, CancellationToken])` binding used by
+//!      `scopeSpawn` below never actually invokes the passed closure on
+//!      this backend — confirmed with a minimal repro with no dependency
+//!      on this file at all (`taskRunPlain({ -> println(...) }); t.Wait()`
+//!      prints nothing and returns immediately).  This means
+//!      `Scope.scopeSpawn`'s concurrent-execution primitive itself does
+//!      not run user code on `--target dotnet` today, independent of
+//!      sibling-cancel — a materially bigger gap than the missing
+//!      cancel-on-fault feature this slice set out to restore, and out of
+//!      scope for this change to root-cause and fix.  Needs its own
+//!      dedicated investigation and issue.
+//!
+//! What *did* ship from this investigation: `await` on any extern-declared
+//! `Task`-typed value (`delay`, `delayWithCancel`, `awaitAll` below) did not
+//! actually suspend/block at all before this change — `isTaskTypeMsil`
+//! compared the awaited expression's TypeRef row against the compiler's own
+//! eagerly-registered `cctx.trTask`/`cctx.trTask1` rows, which are never
+//! seeded into the `ffiTypeRefs` cache `extern type Task = "System.Threading
+//! .Tasks.Task"` interns through, so the two never matched and `await`
+//! silently fell through to the "already-resolved" pass-through branch
+//! (verified with `await delay(3000)`: ~0.9s total runtime before the fix,
+//! ~3.9s after).  Fixed in `Msil.Codegen.isTaskTypeMsil`
+//! (`lyric-compiler/msil/codegen.l`) by also recognizing a TypeRef cached
+//! under the matching FFI key.  This is a real, load-bearing fix
+//! independent of the three items above — every `Std.Task` consumer that
+//! `await`s a `Task` value now actually waits.
 //!
 //! Group D1 / D-progress-stdlib-expand (2026-05):
 //!   - `@externTarget("Lyric.Stdlib.AmbientSlot.Slot")` retired.
@@ -156,13 +209,11 @@ func taskWhenAll(tasks: in slice[Task]): Task = ()
 // Entry methods (addChild, cancel, dispose) acquire the write lock;
 // func methods (token, snapshot) acquire the read lock.
 //
-// Bootstrap note: the original F# `LyricTaskScope.Add` attached a
-// `Task.ContinueWith` continuation so that any child fault
-// automatically cancelled siblings.  That continuation requires a
-// `(Task) -> Unit` delegate (G12 audit pending).  For now `addChild`
-// just tracks the task; `awaitAll` uses `Task.WhenAll` which still
-// surfaces the first fault to the caller.  Add `ContinueWith`-based
-// cancel-on-fault in a follow-up once G12 is fully audited.
+// D119 slice S3 (sibling-cancel-on-first-fault) is NOT shipped here — see
+// the module header for the three pre-existing MSIL-backend bugs found
+// while investigating it.  `awaitAll` below still surfaces the first
+// child's fault to the caller via `Task.WhenAll`; there is no eager
+// cross-sibling cancel yet.
 //
 // The canonical usage pattern is unchanged:
 //

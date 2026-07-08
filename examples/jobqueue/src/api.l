@@ -13,6 +13,7 @@ package JobQueue.Api
 import Std.Core
 import Std.Collections
 import Std.Json
+import Std.Parse
 import JobQueue.Domain
 import JobQueue.Jobs
 import Db
@@ -132,11 +133,102 @@ pub func handleGetJob(id: Long): Result[String, ApiError] {
   }
 }
 
+// ─── Web.Request adapters ───────────────────────────────────────────────────────
+// See Ledger.Api for the adapter rationale (aspect-guarded handlers keep their
+// original parameter list; each adapter does the request-shape plumbing).
+func authTokenFrom(req: in Web.Request): String {
+  match Web.header(req, "authorization") {
+    case Some(v) -> if v.startsWith("Bearer ") { v.substring(7) } else { v }
+    case None -> ""
+  }
+}
+
+func idPathParam(req: in Web.Request): Result[Long, ApiError] {
+  match Web.pathParam(req, "id") {
+    case None -> Err(Web.badRequest("missing path parameter: id"))
+    case Some(raw) -> match parseOptLong(raw) { case Some(n) -> Ok(n); case None -> Err(Web.badRequest("id must be an integer: " + raw)) }
+  }
+}
+
+func toResponse(result: in Result[String, ApiError]): Web.Response {
+  match result {
+    case Ok(body) -> Web.json(200, body)
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func parseEnqueueRequest(body: in String): Result[EnqueueRequest, ApiError] {
+  return try {
+    val doc = parseJson(body)
+    val root = rootElement(doc)
+    val req = EnqueueRequest(
+      kind = getString(getProperty(root, "kind")),
+      payload = getString(getProperty(root, "payload")),
+      maxRetries = getInt32(getProperty(root, "maxRetries"))
+    )
+    disposeJson(doc)
+    Ok(req)
+  } catch Bug as e {
+    Err(Web.badRequest("malformed request body: " + e.message))
+  }
+}
+
+pub func adaptEnqueue(req: in Web.Request): Web.Response {
+  match parseEnqueueRequest(req.body) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(body) -> toResponse(handleEnqueue(body, authTokenFrom(req)))
+  }
+}
+
+pub func adaptListJobs(req: in Web.Request): Web.Response {
+  val status = match Web.queryParam(req, "status") { case Some(s) -> s; case None -> "" }
+  return toResponse(handleListJobs(status))
+}
+
+pub func adaptGetJob(req: in Web.Request): Web.Response {
+  match idPathParam(req) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(id) -> toResponse(handleGetJob(id))
+  }
+}
+
+// ─── Route handlers ───────────────────────────────────────────────────────────
+// Web.Handler is an interface, not a stored closure: invoking a closure
+// defined in one package from another package that also defines its own
+// closures is unreliable in the current self-hosted MSIL backend (issue
+// #5363), so each adapter above is registered via a small record wrapper.
+record EnqueueHandler {
+}
+
+impl Web.Handler for EnqueueHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptEnqueue(req)
+  }
+}
+
+record ListJobsHandler {
+}
+
+impl Web.Handler for ListJobsHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptListJobs(req)
+  }
+}
+
+record GetJobHandler {
+}
+
+impl Web.Handler for GetJobHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptGetJob(req)
+  }
+}
+
 // ─── Route table ──────────────────────────────────────────────────────────────
 pub func routes(): Web.Router {
   val r = Web.create()
-  val r = Web.addPost(r, "/jobs", "JobQueue.Api.handleEnqueue")
-  val r = Web.addGet(r, "/jobs", "JobQueue.Api.handleListJobs")
-  val r = Web.addGet(r, "/jobs/{id}", "JobQueue.Api.handleGetJob")
+  val r = Web.addPost(r, "/jobs", EnqueueHandler())
+  val r = Web.addGet(r, "/jobs", ListJobsHandler())
+  val r = Web.addGet(r, "/jobs/{id}", GetJobHandler())
   return r
 }

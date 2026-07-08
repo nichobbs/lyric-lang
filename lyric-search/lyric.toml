@@ -13,13 +13,32 @@ output_assembly = "Search.dll"
 [project.packages]
 "Search"            = "src/search.l"
 "Search.Kernel.Net" = "src/_kernel/net/search_kernel.l"
+"Search.Kernel.Jvm" = "src/_kernel/jvm/search_kernel.l"
 
 [project.tests]
 "Search.SearchTests" = "tests/search_tests.l"
 
+# Target-kernel selection (#5067, mirrors lyric-storage/#1444 and
+# lyric-grpc): `Search.Kernel.Net` is gated on `dotnet`, `Search.Kernel.Jvm`
+# on `jvm`.  Both kernels export the same connect/index/search/suggest/
+# delete/... surface; the inactive one is erased.
+#
+# `dotnet` and `jvm` are MUTUALLY EXCLUSIVE: activating both leaves two
+# definitions of every shared kernel wrapper in the bundle (ambiguous-symbol
+# build error).  Select exactly one, matching `--target`.
+#
+# `elasticsearch` and `meilisearch` are similarly MUTUALLY EXCLUSIVE per
+# build: `search.l`'s generic client operations (index/search/suggest/
+# delete/...) resolve to whichever single backend feature is active.
+# `default` picks `dotnet` + `elasticsearch` so the crate is usable
+# out of the box; pass `--no-default-features --features jvm,meilisearch`
+# (or any other combination) to select a different target/backend pair.
 [features]
-elasticsearch = []   # Elasticsearch (Elastic.Clients.Elasticsearch on .NET)
-meilisearch   = []   # Meilisearch (Meilisearch .NET client)
+default       = ["dotnet", "elasticsearch"]
+dotnet        = []   # Target the .NET kernel (`Search.Kernel.Net`)
+jvm           = []   # Target the JVM kernel (`Search.Kernel.Jvm`)
+elasticsearch = []   # Elasticsearch (Elastic.Clients.Elasticsearch on .NET / co.elastic.clients:elasticsearch-java on JVM)
+meilisearch   = []   # Meilisearch (Meilisearch .NET client / com.meilisearch.sdk:meilisearch-java on JVM)
 
 [dependencies]
 "Lyric.Resilience" = { workspace = true }
@@ -29,3 +48,9 @@ meilisearch   = []   # Meilisearch (Meilisearch .NET client)
 "Elastic.Clients.Elasticsearch" = "8.14.0"
 # feature = "meilisearch" — Meilisearch .NET client
 "Meilisearch"                   = "0.18.0"
+
+[maven]
+# feature = "elasticsearch" — Elasticsearch Java client
+"co.elastic.clients:elasticsearch-java" = "8.14.0"
+# feature = "meilisearch" — Meilisearch Java client
+"com.meilisearch.sdk:meilisearch-java"  = "0.13.2"

@@ -4,6 +4,17 @@ _Status: R1–R6 shipped (D-progress-227–239). MSIL bridge tests (6) shipped (
 _Backing decision: D058 (see `docs/03-decision-log.md`)._
 _Note: the 60-test suite covers only a 20-program common subset; the full JVM production-readiness audit and remediation plan (closing the much larger gap beyond this subset) lives in `docs/44-jvm-production-readiness-plan.md`._
 
+_Stale-doc note (docs/44 m-11 sweep): this document (and the `dotnet-legacy` /
+F# `Emitter.emit` / `bootstrap/tests/Lyric.Cli.Tests/ParityTests.fs` references
+throughout it) describe a pre-F#-removal snapshot (2026-05-11). F# has since
+been fully removed (see `CLAUDE.md` "No F# code allowed"); `bootstrap/tests/`
+and `ParityTests.fs` no longer exist, so the "20 programs × 3 paths" smoke
+suite described here does not run today in that form. The self-test count
+below (125 self-tests, B3–B125) is also stale — `lyric-compiler/jvm/self_test_b*.l`
+currently has 132 files (B3–B134). This note records the drift for the record;
+re-establishing an equivalent self-hosted-only cross-target parity suite is
+tracked separately (`docs/44` M-14)._
+
 ## 1. Motivation
 
 An audit of the repository on 2026-05-10 identified three classes of problem:
@@ -220,7 +231,8 @@ all present. (D-progress-239)
 - `lyric-compiler/jvm/lowering.l` — complete high-level lowering (29 functions)
 - `lyric-compiler/jvm/driver.l` — `writeJarFromClasses` JAR assembler
 - `lyric-compiler/jvm/bytecode.l`, `classfile.l` — binary class-file emission
-- `lyric-compiler/jvm/self_test_b*.l` — 125 self-tests (B3–B125)
+- `lyric-compiler/jvm/self_test_b*.l` — 125 self-tests (B3–B125) at time of
+  planning; 132 self-tests (B3–B134) as of this sweep
 - `lyric-compiler/lyric/parser/` — self-hosted parser (`Lyric.Parser`)
 - `lyric-compiler/lyric/type_checker/` — self-hosted type checker
   (`Lyric.TypeChecker`)

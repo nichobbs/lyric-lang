@@ -22,6 +22,7 @@ import Std.Core
 import Std.Collections
 import Std.Environment as Env
 import Std.File as File
+import Std.String as Str
 import Jvm.ZipReader
 import Jvm.ClassReader
 
@@ -109,20 +110,37 @@ func findJmodsDir(): String {
   }
 }
 
-// Split a colon/semicolon-delimited path string into individual paths.
-// Handles both `:` (Unix) and `;` (Windows) separators, treating each as a
-// delimiter.  NOTE: on Windows, absolute paths contain a drive-letter colon
-// (e.g. `C:\foo.jar`).  Because `:` is also treated as a delimiter here,
-// `C:\foo.jar;D:\bar.jar` is incorrectly split into four parts.  Windows
-// users must use `;` exclusively as the separator AND ensure no drive-letter
-// colons appear in the value — or, better, use a semicolon-only list (#2214).
-func splitPathList(s: in String): List[String] {
+// True when the running Lyric CLI process's own host platform is Windows.
+// Mirrors the `Str.startsWith(rid, "win")` check against
+// `Std.Environment.runtimeIdentifier()` (e.g. "win-x64", "linux-x64",
+// "osx-arm64") already used in `app_host.l` / `release.l`.  This is the host
+// platform the CLI itself runs on — `LYRIC_FFI_JARS` is set by the shell
+// that invokes the CLI, so its separator convention follows that host, not
+// the JVM target being compiled for.
+func isWindowsHost(): Bool {
+  Str.startsWith(Env.runtimeIdentifier(), "win")
+}
+
+// Split a path-list string into individual paths on a single caller-chosen
+// separator character, using the platform-correct separator only: `;` on
+// Windows, `:` everywhere else (#2214).  Splitting on BOTH characters
+// unconditionally (the previous behaviour) misparsed a Windows absolute
+// path's drive-letter colon (e.g. `C:\foo.jar;D:\bar.jar` split into four
+// bogus parts instead of two).
+//
+// Takes `isWin` explicitly (rather than calling `isWindowsHost()` directly)
+// so tests can exercise the Windows-separator behaviour deterministically
+// regardless of the actual host the test suite runs on — the same
+// explicit-platform-parameter pattern `AppHost.launcherName` /
+// `AppHost.preferHostRid` use for testability.
+pub func splitPathListOn(s: in String, isWin: in Bool): List[String] {
+  val sep = if isWin { ';' } else { ':' }
   val parts: List[String] = newList()
   var start = 0
   var i = 0
   while i < s.length {
     val c = s[i]
-    if c == ':' or c == ';' {
+    if c == sep {
       if i > start {
         parts.add(s.substring(start, i - start))
       }
@@ -134,6 +152,10 @@ func splitPathList(s: in String): List[String] {
     parts.add(s.substring(start, s.length - start))
   }
   parts
+}
+
+func splitPathList(s: in String): List[String] {
+  splitPathListOn(s, isWindowsHost())
 }
 
 // Discover additional JAR paths from the LYRIC_FFI_JARS environment variable.
@@ -383,8 +405,18 @@ pub func parseDescriptorParams(descriptor: in String): List[String] {
   params
 }
 
+// True when `desc` is one of the 8 JVM primitive array descriptors
+// (`boolean[]`/`char[]`/`float[]`/`double[]`/`byte[]`/`short[]`/`int[]`/
+// `long[]`).  Self-contained (no dependency on `Jvm.Codegen`'s `JvmType`) so
+// `scoreParamMatch` can recognize any primitive array as a valid — if
+// low-priority — target for a Lyric slice argument.
+func isPrimitiveArrayDesc(desc: in String): Bool {
+  desc == "[Z" or desc == "[C" or desc == "[F" or desc == "[D" or desc == "[B" or desc == "[S" or desc == "[I" or
+    desc == "[J"
+}
+
 // Context-free descriptor scoring (numeric widening, exact match, any-ref→Object,
-// byte-slice→byte[]).  Returns -1 for incompatible AND for reference/reference
+// slice→primitive-array).  Returns -1 for incompatible AND for reference/reference
 // pairs — those need the class hierarchy, which `scoreParam` resolves via
 // `isAssignableRef`.  Module-private: external callers must use `scoreParam` (which
 // layers the IS-A check on top), so a bare reference/reference pair here never
@@ -438,12 +470,14 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
   if argDesc == "" and paramDesc.startsWith("L") {
     return 3
   }
-  // Lyric byte slice (`[Ljava/lang/Object;`, the erased slice[Byte]
-  // representation) → JDK primitive `byte[]`.  `emitFfiCoerce` materialises
-  // a real `byte[]` by unboxing each element, so this is a valid (if low-
-  // priority) match.  Enables `_kernel_jvm` hosts to hand byte slices to
-  // JDK APIs such as `java.security.MessageDigest.digest(byte[])`.
-  if argDesc == "[Ljava/lang/Object;" and paramDesc == "[B" {
+  // Lyric slice (`[Ljava/lang/Object;`, the erased slice[T] representation)
+  // → any JDK primitive array.  `emitFfiCoerce` materialises a real
+  // primitive array by unboxing each element (generalized from a
+  // byte[]-only special case), so this is a valid (if low-priority) match
+  // for any of the 8 JVM primitive array element types.  Enables
+  // `_kernel_jvm` hosts to hand slices to JDK APIs such as
+  // `java.security.MessageDigest.digest(byte[])` or `String(char[])`.
+  if argDesc == "[Ljava/lang/Object;" and isPrimitiveArrayDesc(paramDesc) {
     return 2
   }
   // Reference/reference pairs are not classified here: the descriptor strings
@@ -547,6 +581,61 @@ func scoreMethod(ctx: in AutoFfiCtx, method: in ClassMethod, argDescs: in List[S
   total
 }
 
+// True when `desc` is the erased Lyric slice representation used for a
+// `slice[T]` argument (`Object[]`, per `typeExprToJvm`'s `TSlice` erasure in
+// `jvm/codegen/01_types.l`).
+func isErasedSliceDesc(desc: in String): Bool {
+  desc == "[Ljava/lang/Object;"
+}
+
+// Panics with a compile-time diagnostic when 2+ candidates tied at the
+// winning score bind the SAME `slice[T]` argument position to DIFFERENT
+// primitive array parameter types.  `scoreParamMatch`'s generalization (any
+// of the 8 JVM primitive-array descriptors scores equally against an erased
+// `slice[T]` argument) means a JDK overload family differing only by
+// primitive element type — `String(byte[])` vs `String(char[])`,
+// `Arrays.hashCode(int[])` vs `Arrays.hashCode(long[])`, and dozens of
+// similar `java.util.Arrays` families — would otherwise tie and silently
+// resolve to whichever overload happens to appear first in the parsed class
+// metadata, not the caller's actual intent.  A Lyric `slice[T]` erases to
+// `Object[]` before this resolver ever sees it, with no element-type
+// information surviving to disambiguate correctly here, so refusing with a
+// diagnostic is the honest alternative to silently guessing.
+func checkPrimitiveArraySliceAmbiguity(
+  what: in String,
+  argDescs: in List[String],
+  candidates: in List[ClassMethod],
+  scores: in List[Int],
+  bestScore: in Int,
+): Unit {
+  var argIdx = 0
+  while argIdx < argDescs.count {
+    if isErasedSliceDesc(argDescs[argIdx]) {
+      val seenTypes: List[String] = newList()
+      var j = 0
+      while j < candidates.count {
+        if scores[j] == bestScore {
+          val params = parseDescriptorParams(candidates[j].descriptor)
+          if argIdx < params.count {
+            val pd = params[argIdx]
+            if isPrimitiveArrayDesc(pd) and not seenTypes.contains(pd) {
+              seenTypes.add(pd)
+            }
+          }
+        }
+        j = j + 1
+      }
+      if seenTypes.count > 1 {
+        panic(
+          "JVM auto-FFI: ambiguous overload for '" + what +
+            "' — a Lyric slice[T] argument matches more than one primitive array parameter type with equal score, and the erased slice[T] representation carries no element-type information to disambiguate. Use a differently-shaped call, or bind the target member explicitly (e.g. @externTarget), to select an unambiguous overload."
+        )
+      }
+    }
+    argIdx = argIdx + 1
+  }
+}
+
 /// Find the best-matching method in `ci` for the given name and argument
 /// descriptor strings.  Each element of `argDescs` is a JVM type descriptor
 /// produced by `jvmTypeToDescStr` in Jvm.Codegen.
@@ -557,6 +646,8 @@ pub func findBestMethod(
   argDescs: in List[String],
   wantStatic: in Bool,
 ): Option[ClassMethod] {
+  val candidates: List[ClassMethod] = newList()
+  val scores: List[Int] = newList()
   var best: Option[ClassMethod] = None
   var bestScore: Int = -1
   var i = 0
@@ -564,12 +655,19 @@ pub func findBestMethod(
     val m = ci.methods[i]
     if m.name == methodName {
       val s = scoreMethod(ctx, m, argDescs, wantStatic)
-      if s > bestScore {
-        bestScore = s
-        best = Some(value = m)
+      if s >= 0 {
+        candidates.add(m)
+        scores.add(s)
+        if s > bestScore {
+          bestScore = s
+          best = Some(value = m)
+        }
       }
     }
     i = i + 1
+  }
+  if bestScore >= 0 {
+    checkPrimitiveArraySliceAmbiguity(ci.binaryName + "." + methodName, argDescs, candidates, scores, bestScore)
   }
   best
 }
@@ -577,6 +675,8 @@ pub func findBestMethod(
 /// Find the best-matching constructor in `ci` for the given argument descriptor
 /// strings.  Searches the `constructors` list (public `<init>` entries).
 pub func findBestConstructor(ctx: in AutoFfiCtx, ci: in ClassInfo, argDescs: in List[String]): Option[ClassMethod] {
+  val candidates: List[ClassMethod] = newList()
+  val scores: List[Int] = newList()
   var best: Option[ClassMethod] = None
   var bestScore: Int = -1
   var i = 0
@@ -588,11 +688,18 @@ pub func findBestConstructor(ctx: in AutoFfiCtx, ci: in ClassInfo, argDescs: in 
     // initialisation of `bestScore = -1` provides an equivalent implicit guard
     // today, but the explicit form is more robust if the sentinel ever shifts
     // (e.g. scoreMethod returning 0 for no-match in a future refactor) (#2226).
-    if s >= 0 and s > bestScore {
-      bestScore = s
-      best = Some(value = m)
+    if s >= 0 {
+      candidates.add(m)
+      scores.add(s)
+      if s > bestScore {
+        bestScore = s
+        best = Some(value = m)
+      }
     }
     i = i + 1
+  }
+  if bestScore >= 0 {
+    checkPrimitiveArraySliceAmbiguity(ci.binaryName + ".<init>", argDescs, candidates, scores, bestScore)
   }
   best
 }
@@ -675,14 +782,15 @@ pub func findBestInstanceMethod(
   //      argument — the known-safe pattern for cross-package record types
   //      under stage-0 (which drops bindings accessed in block bodies).
   //
-  // NOTE (#2219): the loop terminates before reaching `java/lang/Object`, so
-  // methods declared *only* in Object and not overridden in any non-Object
-  // superclass are invisible to the resolver.  Affected methods include
-  // `getClass()`, `notify()`, `notifyAll()`, `wait()`, and unoverridden
-  // `hashCode()`/`equals()`/`toString()`.  A follow-up must extend the loop
-  // to include Object itself to support those calls via auto-FFI.
+  // The walk continues all the way up to (and including) `java/lang/Object`
+  // (#2219): `ClassInfo.superName` is "" for Object itself (see
+  // `class_reader.l`), so the loop terminates naturally once Object has been
+  // scored — no explicit `java/lang/Object` cutoff is needed.  Before this
+  // fix, methods declared *only* on Object and never overridden anywhere in
+  // the chain (`getClass()`, `notify()`, `notifyAll()`, `wait()`) were
+  // invisible to the resolver.
   var superBin = ci.superName
-  while superBin.length > 0 and superBin != "java/lang/Object" {
+  while superBin.length > 0 {
     val superFqn = superBin.replace("/", ".")
     loadClass(autoFfi, superFqn)
     // populate cache; return value intentionally unused
@@ -704,6 +812,9 @@ pub func findBestInstanceMethod(
       best = Some(value = allMethods[k])
     }
     k = k + 1
+  }
+  if bestScore >= 0 {
+    checkPrimitiveArraySliceAmbiguity(ci.binaryName + "." + methodName, argDescs, allMethods, allScores, bestScore)
   }
   best
 }

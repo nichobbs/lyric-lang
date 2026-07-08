@@ -84,14 +84,25 @@ lyric/                          (install root, e.g. /usr/local/lib/lyric)
 │   ├── Lyric.Stdlib.Json       (per-package contract metadata
 │   │                            extracted as a sibling JSON file
 │   │                            so `lyric doc` can render fast)
-│   ├── lyric-resolver.jar      (bundled Maven resolver for JVM targets;
-│   │                            see docs/31-maven-linking.md §3)
 │   └── …
 ├── share/
 │   └── stdlib/                 (optional source bundle for
 │                                IDE go-to-definition / debugging)
 └── version                     (semver of the SDK)
 ```
+
+As actually shipped (docs/44-jvm-production-readiness-plan.md M-7), the
+Maven resolver (`lyric-resolver.jar`, see docs/31-maven-linking.md §3) is
+placed directly beside the `lyric` binary itself — not under `lib/` as this
+idealized layout would suggest — because `cli_restore.l`'s
+`findMavenResolverJar` searches `Environment.appBaseDirectory()` (the
+binary's own directory) first, then one level up, then
+`$HOME/.lyric/tools/`.  The current flat GitHub-release archive and NuGet
+global-tool package both put `lyric`/`lyric.dll` and `lyric-resolver.jar`
+in the same directory, matching that search order; the `bin/`+`lib/`+`share/`
+split this diagram sketches has not been implemented (today's archives are
+flatter — see `docs/34-distribution-strategy.md` §2 for the actual current
+layout).
 
 The runtime stdlib lookup in `Emitter.fs:locateBuiltinFile` extends
 its search order:

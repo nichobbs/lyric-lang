@@ -2045,8 +2045,10 @@ The emitter is staged into existence:
 | B8    | Differential-fuzzing tooling                | none                        |
 
 The coarse B1–B8 buckets above map to fine-grained self-test stages.
-All stages B90–B124 have shipped; the full-pipeline smoke test (stage B2)
-was also verified passing after the B90–B124 codegen improvements:
+All stages B90–B134 have shipped (`lyric-compiler/jvm/self_test_b3.l`
+through `self_test_b134.l`, 132 files); the full-pipeline smoke test
+(stage B2) was also verified passing after the B90–B124 codegen
+improvements:
 
 | Stage | Function added | Construct covered (§ ref) | Status |
 |-------|---------------|--------------------------|--------|
@@ -2077,6 +2079,16 @@ was also verified passing after the B90–B124 codegen improvements:
 | B122  | `lowerDeriveEquality` | §21, §5.4 | Shipped |
 | B123  | `lowerDeriveOrd` | §21, §6.3 | Shipped |
 | B124  | `lowerPackage` | §23.7 | Shipped |
+| B125  | `lowerOpaqueFacade` (Java interop facade) | §7.3 | Shipped |
+| B126  | `@LyricTest` annotation + `lowerTestModuleClass` | §24 Q-J007 | Shipped |
+| B127  | `lowerCatchIntrinsic` (`Std.Jvm.catch`) | `docs/31` Q-J012 | Shipped |
+| B128  | `lowerExternTargetBody` (`Result[T, JvmException]` wrap) | `docs/31` Q-J013 | Shipped |
+| B129  | `lowerAsyncGenerator` (lazy VT + `SynchronousQueue`) | §14 (no dedicated subsection) | Shipped |
+| B130  | Async generator pipeline integration | §14 (no dedicated subsection) | Shipped |
+| B131  | `IEnum` codegen pipeline integration | §8.2 | Shipped |
+| B132  | `IDistinctType` codegen pipeline integration | §6 | Shipped |
+| B133  | `IInterface` codegen pipeline | (no dedicated section) | Shipped |
+| B134  | `IImpl` codegen pipeline | (no dedicated section) | Shipped |
 
 Estimated effort: 8–14 person-months for stages B1–B6, and another
 3–4 person-months for B7–B8.  This is comparable to the F# emitter's

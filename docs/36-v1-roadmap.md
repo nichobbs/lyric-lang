@@ -49,7 +49,7 @@ are 1.x.  Record the answers as decision-log entries.
 
 | # | Question | Stakes |
 |---|---|---|
-| G1 | Is `--target jvm` a v1.0 supported channel, or is it Phase-6 ecosystem work with its own versioning? | If yes, Q-J012 and Q-J013 (§2-R3) are release-blocking. If no, document JVM as "supported but not v1.0 SemVer-guaranteed" in the language reference §0.1. |
+| G1 | Is `--target jvm` a v1.0 supported channel, or is it Phase-6 ecosystem work with its own versioning? | **Resolved (D-progress-620):** Phase-6 ecosystem work with its own independent versioning, not a v1.0 SemVer-guaranteed channel. (Q-J012/Q-J013 are non-blocking either way — both already shipped, see §2-R3.) Language reference §0.1 / platform support matrix should carry the "supported but not v1.0 SemVer-guaranteed" note per the original stakes column; not yet done as of this entry. |
 | G2 | Which `@experimental` items graduate to `@stable(since="1.0")` and which stay experimental? | Triggers R1.  Until this list exists, SemVer is unenforceable and any user relying on an `@experimental` item has no compatibility guarantees. |
 | G3 | Does `--legacy` / `LYRIC_FMT_LEGACY=1` survive as a supported flag past 1.0, or does it sunset with `Fmt.fs`? | **Resolved (D066):** Flag survives as deprecated through v1.0; removed in v1.1.  Per-expression CST gap deferred to 1.1. |
 | G4 | Do the `lyric-*` service libraries (`lyric-web`, `lyric-cache`, `lyric-db`, `lyric-health`, `lyric-logging`, `lyric-otel`, `lyric-lambda`, `lyric-aws-secrets`, `lyric-aws-xray`) ship under v1.0 SemVer, or under their own independent versioning? | **Resolved (D066):** Independent versioning per library; each declares its own stability policy in `lyric.toml`. |

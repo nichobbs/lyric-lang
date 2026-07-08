@@ -54,31 +54,54 @@ func healthRegistry(): HealthRegistry {
   Health.addReadinessCheck(health, "postgres", { -> readiness() })
 }
 
-/// GET /health/live — registered by name on the router below.
-pub func healthLive(): Result[String, ApiError] {
+/// GET /health/live
+pub func healthLive(req: in Web.Request): Web.Response {
   match Health.runLiveness(healthRegistry()) {
-    case Ok(body) -> Ok(body)
-    case Err(msg) -> Err(Web.serviceUnavailable(msg))
+    case Ok(body) -> Web.json(200, body)
+    case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
   }
 }
 
-/// GET /health/ready — registered by name on the router below.
-pub func healthReady(): Result[String, ApiError] {
+/// GET /health/ready
+pub func healthReady(req: in Web.Request): Web.Response {
   match Health.runReadiness(healthRegistry()) {
-    case Ok(body) -> Ok(body)
-    case Err(msg) -> Err(Web.serviceUnavailable(msg))
+    case Ok(body) -> Web.json(200, body)
+    case Err(msg) -> Web.errorResponse(Web.serviceUnavailable(msg))
+  }
+}
+
+// Web.Handler is an interface, not a stored closure — see JobQueue.Api's
+// handler-wrapper comment (issue #5363).
+record HealthLiveHandler {
+}
+
+impl Web.Handler for HealthLiveHandler {
+  func handle(req: in Web.Request): Web.Response {
+    healthLive(req)
+  }
+}
+
+record HealthReadyHandler {
+}
+
+impl Web.Handler for HealthReadyHandler {
+  func handle(req: in Web.Request): Web.Response {
+    healthReady(req)
   }
 }
 
 pub func main(): Unit {
   var router = JobQueue.Api.routes()
 
-  // Register the background worker poller.
-  // Fires every Worker.pollIntervalMs milliseconds (default 2 s).
+  // Register the background worker poller.  Fires every
+  // Worker.pollIntervalMs milliseconds (default 2 s) — NOTE: registered
+  // workers are not yet actually invoked by Web.serve (issue #5359);
+  // run JobQueue.Worker's poll loop as a separate process/entry point
+  // until that ships.
   val router = Web.addWorker(router, "job-poller", JobQueue.Worker.Worker.pollIntervalMs, "JobQueue.Worker.workerTick")
 
-  val router = Web.addGet(router, "/health/live", "JobQueue.healthLive")
-  val router = Web.addGet(router, "/health/ready", "JobQueue.healthReady")
+  val router = Web.addGet(router, "/health/live", HealthLiveHandler())
+  val router = Web.addGet(router, "/health/ready", HealthReadyHandler())
 
   Web.start(router)
 }

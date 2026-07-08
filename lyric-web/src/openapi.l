@@ -3,8 +3,9 @@
 //! Two uses:
 //!
 //! 1. Code-first spec builder: populate Spec values in your package and pass
-//!    them to `lyric web spec` via the `Lyric.Web.OpenApi.Spec` export, or
-//!    serve them live via `Web.start(router)` with swagger enabled.
+//!    them to `lyric web spec` via the `Lyric.Web.OpenApi.Spec` export.
+//!    (Live serving at runtime via `Web.start(router)` swagger flags is not
+//!    yet implemented — tracked in issue #5360.)
 //!
 //! 2. Spec-first reference: `lyric generate openapi spec.yaml` uses these types
 //!    internally to represent the parsed spec before generating .l stubs.
@@ -71,8 +72,14 @@ pub record Info {
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 /// JSON Schema type keyword values used in OpenAPI 3.1.
+/// A payload-free `union` rather than `enum`: co-compiling a payload-free
+/// `enum` with a closure (as `Web`'s `Route`/`Middleware` now uses) crashes
+/// the self-hosted MSIL backend's closure lowering (issue #5361); `union`
+/// with an identical case list is unaffected, mirroring the enum -> union
+/// workaround D099 applied to `lyric-health`'s `CheckGroup` for a related
+/// cross-package enum-dispatch bug.
 @stable(since = "0.1")
-pub enum SchemaType {
+pub union SchemaType {
   case SchemaString
   case SchemaInteger
   case SchemaNumber
@@ -189,8 +196,9 @@ pub func refSchema(name: in String): Schema {
 }
 
 // ─── Parameters and request body ─────────────────────────────────────────────
+/// A payload-free `union` — see `SchemaType`'s doc comment above (issue #5361).
 @stable(since = "0.1")
-pub enum ParameterLocation {
+pub union ParameterLocation {
   case Path
   case Query
   case Header

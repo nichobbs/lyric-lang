@@ -992,12 +992,187 @@ func returnDescFromMethodDesc(descriptor: String): String {
   "V"
 }
 
+// True when `elemTy` is one of the 8 JVM primitive types — a valid
+// primitive array element type (`boolean[]`/`char[]`/`float[]`/`double[]`/
+// `byte[]`/`short[]`/`int[]`/`long[]`).
+func isJvmPrimitiveElemType(elemTy: in JvmType): Bool {
+  match elemTy {
+    case JInt -> true
+    case JLong -> true
+    case JDouble -> true
+    case JFloat -> true
+    case JBoolean -> true
+    case JByte -> true
+    case JChar -> true
+    case JShort -> true
+    case _ -> false
+  }
+}
+
+// The `newarray` type code (JVM spec §6.5.newarray) for a primitive array
+// element type.
+func primitiveNewarrayCode(elemTy: in JvmType): Int {
+  match elemTy {
+    case JBoolean -> 4
+    case JChar -> 5
+    case JFloat -> 6
+    case JDouble -> 7
+    case JByte -> 8
+    case JShort -> 9
+    case JInt -> 10
+    case JLong -> 11
+    case _ -> panic("primitiveNewarrayCode: not a JVM primitive array element type")
+  }
+}
+
+// The boxed wrapper class binary name for a primitive array element type
+// (used to `LAnewarray` an `Object[]`-compatible array of boxed instances —
+// distinct from `primitiveNewarrayCode`, which allocates the primitive
+// array itself via `LNewarray`).
+func wrapperClassNameFor(elemTy: in JvmType): String {
+  match elemTy {
+    case JInt -> "java/lang/Integer"
+    case JLong -> "java/lang/Long"
+    case JFloat -> "java/lang/Float"
+    case JDouble -> "java/lang/Double"
+    case JBoolean -> "java/lang/Boolean"
+    case JByte -> "java/lang/Byte"
+    case JChar -> "java/lang/Character"
+    case JShort -> "java/lang/Short"
+    case _ -> panic("wrapperClassNameFor: not a JVM primitive array element type")
+  }
+}
+
+// The `Txaload` instruction for reading one element out of a primitive array
+// of element type `elemTy`.  `boolean[]` shares `baload` with `byte[]`.
+func primitiveArrayLoadInsn(elemTy: in JvmType): LInsn {
+  match elemTy {
+    case JInt -> LIaload
+    case JLong -> LLaload
+    case JFloat -> LFaload
+    case JDouble -> LDaload
+    case JBoolean -> LBaload
+    case JByte -> LBaload
+    case JChar -> LCaload
+    case JShort -> LSaload
+    case _ -> panic("primitiveArrayLoadInsn: not a JVM primitive array element type")
+  }
+}
+
+// The `Txastore` instruction for writing one element into a primitive array
+// of element type `elemTy`.  `boolean[]` shares `bastore` with `byte[]`.
+func primitiveArrayStoreInsn(elemTy: in JvmType): LInsn {
+  match elemTy {
+    case JInt -> LIastore
+    case JLong -> LLastore
+    case JFloat -> LFastore
+    case JDouble -> LDastore
+    case JBoolean -> LBastore
+    case JByte -> LBastore
+    case JChar -> LCastore
+    case JShort -> LSastore
+    case _ -> panic("primitiveArrayStoreInsn: not a JVM primitive array element type")
+  }
+}
+
+// Unbox one boxed-wrapper reference already loaded on the operand stack down
+// to the primitive `elemTy`.  Byte and Short tolerate a wider boxed numeric
+// type (an int literal added to a `List[Byte]`/`List[Short]` boxes as
+// `Integer`, not `Byte`/`Short`): unbox through `Number.intValue` + a
+// narrowing conversion, mirroring the pre-existing byte-only tolerance this
+// generalizes.
+func unboxArrayElement(insns: in List[LInsn], elemTy: in JvmType): Unit {
+  match elemTy {
+    case JInt -> {
+      insns.add(LCheckcast(className = "java/lang/Integer"))
+      insns.add(LUnboxInt)
+    }
+    case JLong -> {
+      insns.add(LCheckcast(className = "java/lang/Long"))
+      insns.add(LUnboxLong)
+    }
+    case JFloat -> {
+      insns.add(LCheckcast(className = "java/lang/Float"))
+      insns.add(LUnboxFloat)
+    }
+    case JDouble -> {
+      insns.add(LCheckcast(className = "java/lang/Double"))
+      insns.add(LUnboxDouble)
+    }
+    case JBoolean -> {
+      insns.add(LCheckcast(className = "java/lang/Boolean"))
+      insns.add(LUnboxBool)
+    }
+    case JChar -> {
+      insns.add(LCheckcast(className = "java/lang/Character"))
+      insns.add(LUnboxChar)
+    }
+    case JByte -> {
+      insns.add(LCheckcast(className = "java/lang/Number"))
+      val ps: List[JvmType] = newList()
+      insns.add(LInvokevirtual(owner = "java/lang/Number", name = "intValue", params = ps, ret = JInt))
+      insns.add(LI2b)
+    }
+    case JShort -> {
+      insns.add(LCheckcast(className = "java/lang/Number"))
+      val ps: List[JvmType] = newList()
+      insns.add(LInvokevirtual(owner = "java/lang/Number", name = "intValue", params = ps, ret = JInt))
+      insns.add(LI2s)
+    }
+    case _ -> panic("unboxArrayElement: not a JVM primitive array element type")
+  }
+}
+
+// Replace a Lyric slice (`[Ljava/lang/Object;`) on top of the operand stack
+// with a freshly built primitive array of element type `elemTy`, unboxing
+// each element.  Generalizes the byte-only loop this replaced (see
+// `emitBoxPrimitiveArray` in `06_items.l` for the inverse direction).
+func emitUnboxObjectArray(ctx: in FuncCtx, insns: in List[LInsn], elemTy: in JvmType): Unit {
+  val srcSlot = allocSlot(ctx, "__ffi_arr_src_" + freshLabel(ctx), JArray(elem = JRef(className = "java/lang/Object")))
+  val dstSlot = allocSlot(ctx, "__ffi_arr_dst_" + freshLabel(ctx), JArray(elem = elemTy))
+  val idxSlot = allocSlot(ctx, "__ffi_arr_idx_" + freshLabel(ctx), JInt)
+  val lenSlot = allocSlot(ctx, "__ffi_arr_len_" + freshLabel(ctx), JInt)
+  val loopL = freshLabel(ctx)
+  val endL = freshLabel(ctx)
+  // `LAstoreAs` carries the array descriptor so the StackMapTable types the
+  // slots precisely (`[Ljava/lang/Object;` / the primitive array descriptor);
+  // a plain-Object slot type makes `aaload` / a primitive `Txastore` a
+  // VerifyError.
+  insns.add(LAstoreAs(slot = srcSlot, className = "[Ljava/lang/Object;"))
+  insns.add(LAload(slot = srcSlot))
+  insns.add(LArraylength)
+  insns.add(LNewarray(typeCode = primitiveNewarrayCode(elemTy)))
+  insns.add(LAstoreAs(slot = dstSlot, className = jvmTypeToDescStr(JArray(elem = elemTy))))
+  // Hoist arraylength out of the loop condition — avoids re-fetching the
+  // array header on every iteration (#2752).
+  insns.add(LAload(slot = srcSlot))
+  insns.add(LArraylength)
+  insns.add(LIstore(slot = lenSlot))
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = idxSlot))
+  insns.add(LLabel(name = loopL))
+  insns.add(LIload(slot = idxSlot))
+  insns.add(LIload(slot = lenSlot))
+  insns.add(LIfIcmpge(label = endL))
+  insns.add(LAload(slot = dstSlot))
+  insns.add(LIload(slot = idxSlot))
+  insns.add(LAload(slot = srcSlot))
+  insns.add(LIload(slot = idxSlot))
+  insns.add(LAaload)
+  unboxArrayElement(insns, elemTy)
+  insns.add(primitiveArrayStoreInsn(elemTy))
+  insns.add(LIinc(slot = idxSlot, delta = 1))
+  insns.add(LGoto(label = loopL))
+  insns.add(LLabel(name = endL))
+  insns.add(LAload(slot = dstSlot))
+}
+
 // Emit a widening numeric coercion instruction from `fromDesc` to `toDesc`.
 // No-op when the types are identical or the widening is handled at the JVM
-// reference level (reference → Object).  Also bridges a Lyric byte slice
-// (`[Ljava/lang/Object;`, of boxed `java.lang.Byte`) to a JDK primitive
-// `byte[]` by materialising a fresh `byte[]` and unboxing each element —
-// see `scoreParamMatch`'s `[Ljava/lang/Object; -> [B` arm.
+// reference level (reference → Object).  Also bridges a Lyric slice
+// (`[Ljava/lang/Object;`, of boxed wrapper values) to any JDK primitive
+// array by materialising a fresh primitive array and unboxing each element —
+// see `scoreParamMatch`'s `[Ljava/lang/Object; -> primitive[]` arm.
 func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, toDesc: in String): Unit {
   if fromDesc == toDesc {
     return ()
@@ -1044,66 +1219,21 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
       return ()
     }
   }
-  // Lyric byte slice (`[Ljava/lang/Object;`) → JDK primitive `byte[]`.
-  // The source array reference is on the operand stack; replace it with a
-  // freshly-built primitive `byte[]` copy.  Generated bytecode:
-  //
-  //     astore  src          // src = Object[] slice
-  //     aload src; arraylength; newarray byte; astore dst   // dst = new byte[len]
-  //     iconst_0; istore i
-  //   loop:
-  //     iload i; aload src; arraylength; if_icmpge end
-  //     aload dst; iload i
-  //     aload src; iload i; aaload; checkcast java/lang/Byte
-  //     invokevirtual Byte.byteValue()B
-  //     bastore
-  //     iinc i 1; goto loop
-  //   end:
-  //     aload dst            // leave the byte[] on the stack
-  if fromDesc == "[Ljava/lang/Object;" and toDesc == "[B" {
-    val srcSlot = allocSlot(ctx, "__ffi_arr_src_" + freshLabel(ctx), JArray(elem = JRef(className = "java/lang/Object")))
-    val dstSlot = allocSlot(ctx, "__ffi_arr_dst_" + freshLabel(ctx), JArray(elem = JByte))
-    val idxSlot = allocSlot(ctx, "__ffi_arr_idx_" + freshLabel(ctx), JInt)
-    val lenSlot = allocSlot(ctx, "__ffi_arr_len_" + freshLabel(ctx), JInt)
-    val loopL = freshLabel(ctx)
-    val endL = freshLabel(ctx)
-    // `LAstoreAs` carries the array descriptor so the StackMapTable types the
-    // slots precisely (`[Ljava/lang/Object;` / `[B`); a plain-Object slot type
-    // makes `aaload` / `bastore` a VerifyError.
-    insns.add(LAstoreAs(slot = srcSlot, className = "[Ljava/lang/Object;"))
-    insns.add(LAload(slot = srcSlot))
-    insns.add(LArraylength)
-    insns.add(LNewarray(typeCode = 8))
-    // T_BYTE
-    insns.add(LAstoreAs(slot = dstSlot, className = "[B"))
-    // Hoist arraylength out of the loop condition — avoids re-fetching the
-    // array header on every iteration (#2752).
-    insns.add(LAload(slot = srcSlot))
-    insns.add(LArraylength)
-    insns.add(LIstore(slot = lenSlot))
-    insns.add(LIconst(v = 0))
-    insns.add(LIstore(slot = idxSlot))
-    insns.add(LLabel(name = loopL))
-    insns.add(LIload(slot = idxSlot))
-    insns.add(LIload(slot = lenSlot))
-    insns.add(LIfIcmpge(label = endL))
-    insns.add(LAload(slot = dstSlot))
-    insns.add(LIload(slot = idxSlot))
-    insns.add(LAload(slot = srcSlot))
-    insns.add(LIload(slot = idxSlot))
-    insns.add(LAaload)
-    // Elements may be boxed as Byte OR Integer (an int literal added to a
-    // List[Byte] boxes as Integer): unbox through Number.intValue + i2b.
-    insns.add(LCheckcast(className = "java/lang/Number"))
-    val bvPs: List[JvmType] = newList()
-    insns.add(LInvokevirtual(owner = "java/lang/Number", name = "intValue", params = bvPs, ret = JInt))
-    insns.add(LI2b)
-    insns.add(LBastore)
-    insns.add(LIinc(slot = idxSlot, delta = 1))
-    insns.add(LGoto(label = loopL))
-    insns.add(LLabel(name = endL))
-    insns.add(LAload(slot = dstSlot))
-    return ()
+  // Lyric slice (`[Ljava/lang/Object;`) → any JDK primitive array.  The
+  // source array reference is on the operand stack; `emitUnboxObjectArray`
+  // replaces it with a freshly-built primitive array copy (element-copy
+  // loop with per-element unboxing, generalized from the byte-only loop this
+  // replaced to all 8 JVM primitive array element types).
+  if fromDesc == "[Ljava/lang/Object;" {
+    match descStrToJvmType(toDesc) {
+      case JArray(elemTy) -> {
+        if isJvmPrimitiveElemType(elemTy) {
+          emitUnboxObjectArray(ctx, insns, elemTy)
+          return ()
+        }
+      }
+      case _ -> ()
+    }
   }
 }
 
@@ -1324,16 +1454,16 @@ func lowerAutoFfiInstanceCall(
 // `new <class>; dup; <args>; invokespecial <init>`.  Receiver reference is
 // produced by the `new` opcode and duplicated so the initialised reference
 // remains on the stack after `invokespecial` consumes the bottom copy.
-// Abstract classes are rejected at compile time: emitting `new` for an
-// abstract class produces bytecode that throws `InstantiationError` at runtime
-// rather than a clear diagnostic (#2215).
+// Abstract classes are rejected at compile time under `error[J005]`: emitting
+// `new` for an abstract class would otherwise produce bytecode that throws
+// `InstantiationError` at runtime instead of a clear diagnostic (#2215).
 func lowerAutoFfiConstructorCall(
   ctx: in FuncCtx, insns: in List[LInsn], ci: in ClassInfo, args: in List[CallArg]
 ): JvmType {
   if ci.isAbstract {
     val fqn = ci.binaryName.replace("/", ".")
     panic(
-      "JVM auto-FFI: cannot construct abstract class '" + fqn +
+      "error[J005]: JVM auto-FFI: cannot construct abstract class '" + fqn +
         "' — declare a concrete subclass and instantiate that instead"
     )
   }
@@ -1888,8 +2018,11 @@ func lowerStaticCallWithHolders(
       val aTy = lowerCallArg(ctx, insns, callArgs[pvi])
       var slotTy = aTy
       if pvi < sig.params.count {
-        if isByteArrayToObjectArray(aTy, sig.params[pvi]) {
-          emitBoxByteArray(ctx, insns)
+        if isPrimitiveArrayToObjectArray(aTy, sig.params[pvi]) {
+          match aTy {
+            case JArray(fe) -> emitBoxPrimitiveArray(ctx, insns, fe)
+            case _ -> ()
+          }
         } else {
           coerceArgTo(insns, aTy, sig.params[pvi])
         }
@@ -2182,16 +2315,16 @@ func lowerGeneralStaticCall(
       if anyHolderMode(sig.paramModes) {
         return lowerStaticCallWithHolders(ctx, insns, funcName, sig, callArgs)
       }
-      // A primitive `byte[]` (e.g. a JDK `getBytes()` / `digest()` result)
-      // passed where a Lyric `slice[Byte]` (`[Ljava/lang/Object;`) is
-      // declared is boxed element-by-element by `emitBoxByteArray` — a
-      // BRANCHING conversion, and the StackMapTable declares an empty
-      // operand stack at every branch target, so it must never run with
-      // earlier arguments already stacked.  When any parameter is
-      // slice-shaped (a reference array), lower and coerce EVERY argument
-      // into a temp slot first (the constructor-path pattern), then reload
-      // in order (hit by `hostWriteAllBytes(path, stringToUtf8Bytes(s))`
-      // in Std.FileHost).
+      // A primitive array (e.g. a JDK `getBytes()` / `digest()` `byte[]`, or
+      // any other primitive array) passed where a Lyric `slice[T]`
+      // (`[Ljava/lang/Object;`) is declared is boxed element-by-element by
+      // `emitBoxPrimitiveArray` — a BRANCHING conversion, and the
+      // StackMapTable declares an empty operand stack at every branch
+      // target, so it must never run with earlier arguments already
+      // stacked.  When any parameter is slice-shaped (a reference array),
+      // lower and coerce EVERY argument into a temp slot first (the
+      // constructor-path pattern), then reload in order (hit by
+      // `hostWriteAllBytes(path, stringToUtf8Bytes(s))` in Std.FileHost).
       if anyRefArrayParam(sig.params) {
         val argSlots: List[Int] = newList()
         var si = 0
@@ -2199,8 +2332,11 @@ func lowerGeneralStaticCall(
           val aTy = lowerCallArg(ctx, insns, callArgs[si])
           var slotTy = aTy
           if si < sig.params.count {
-            if isByteArrayToObjectArray(aTy, sig.params[si]) {
-              emitBoxByteArray(ctx, insns)
+            if isPrimitiveArrayToObjectArray(aTy, sig.params[si]) {
+              match aTy {
+                case JArray(fe) -> emitBoxPrimitiveArray(ctx, insns, fe)
+                case _ -> ()
+              }
             } else {
               coerceArgTo(insns, aTy, sig.params[si])
             }

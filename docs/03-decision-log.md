@@ -9486,6 +9486,16 @@ before the runtime join lands, and the runtime slices deliver the rest.
   (the residual FFI-overload blocker worked around at the kernel
   boundary); library-level test. This is the highest-value real §7.4
   slice and is backend-agnostic (both targets consume `Std.Task`).
+  **INVESTIGATED, NOT SHIPPED (D-progress-621):** the JVM side of
+  `Std.Task` was a phantom kernel entirely (fixed in D-progress-621,
+  unblocking `Std.Task` on JVM generally, with a genuine sibling-cancel
+  implementation). The .NET `ContinueWith(Action<Task>)` helper this
+  slice proposed is confirmed unbindable (generic delegate erasure, as
+  predicted above); two further alternatives and a pre-existing
+  `Task.Run` delegate-invocation bug were found blocking any fix on
+  .NET — see D-progress-621 for the full investigation and the
+  library-level test (`lyric-stdlib/tests/task_tests.l`) that pins the
+  current (partial) status on both targets.
 - **S4:** JVM real structured concurrency for the *keywords* — **shipped
   (D-progress-602)** per the D120 approach (not the original
   `StructuredTaskScope.ShutdownOnFailure` wiring, which was rejected as a
@@ -11458,7 +11468,488 @@ above).
 
 ---
 
-## D124 — Decommission Legacy F# Bootstrap & Fix JVM dblToSingle Crash
+
+## D124 — `lyric-web` gets real HTTP dispatch, static file serving, and a middleware pipeline (CORS included); `Handler`/`Middleware` are interfaces, not closures, after discovering closures are unreliable across 2+ packages
+
+**Date:** 2026-07-07
+
+### Context
+
+`Web.serve()` (`lyric-web/src/web.l`) accepted a fully-populated `Router` —
+routes registered by method, URL pattern, and a `handlerName: String`
+meant to be resolved "via DLL reflection at server startup" per D054 —
+but that dispatcher was never implemented. Every request, regardless of
+method or path, got the same hardcoded JSON payload describing the
+registered routes. `lyric-web`'s own module doc already flagged this
+("the end-to-end pipeline... has not been exercised against a live HTTP
+client in CI"); `docs/57`'s ecosystem audit independently found the same
+gap. There was also no static file serving and no middleware pipeline
+(CORS config was parsed from the environment and silently never applied).
+
+D099 already fixed the identical bug shape for `lyric-health`
+(`HealthCheck.handlerName: String` → `handler: () -> CheckStatus`,
+rejecting the DLL-reflection design outright as AOT-hostile and contrary
+to this project's direction away from runtime reflection — D006) but
+explicitly left `lyric-web`'s own router unfixed: "the web router is
+name-based, so a registry value cannot reach a name-resolved handler."
+This entry is that fix, plus the static-file and middleware pipeline the
+user asked to see built on top of it, plus the docs/58 wire-template
+integration for composing them.
+
+### Decision 1 — real dispatch: `Request`/`Response`/`Handler`, pure `Web.dispatch`, `Std.HttpServer`-backed `Web.serve`
+
+`Web.Router`/`Web.Route` gain `Request` (method, path, `pathParams`,
+`queryParams`, `headers: Map[String,String]`, `body: String`),
+`Response` (status, contentType, `bodyBytes: slice[Byte]`,
+`headers: Map[String,String]`), and route handlers move from
+`handlerName: String` to a `Handler` value (see Decision 4 for why this
+ended up as an interface, not the originally-planned closure).
+`Web.dispatch(router, req): Response` is a **pure** function — method +
+`{name}`/`{*name}` path-pattern matching (segment-by-segment, with a
+trailing `{*name}` capturing the remainder including further `/`),
+path/query percent-decoding, case-insensitive header lookup, then
+middleware composition (Decision 3) around the matched route's handler,
+falling back to a 404 `ApiError` JSON body when nothing matches. `Web.serve`
+is a thin I/O shell around `dispatch`, built on `Std.HttpServer`
+(`lyric-stdlib/std/_kernel/http_server.l`, already proven end-to-end in CI
+via `examples/rest_service.l`'s live-socket smoke test) rather than
+reinventing `HttpListener` bindings inside `lyric-web` itself. `Std.HttpServer`
+gained `requestQuery`, `requestHeaders`, `urlDecode`, `respondBytes`,
+`respondBytesWithHeaders` (dotnet-only additions; the JVM twin routes
+through an out-of-repo prebuilt JAR and doesn't yet expose these — a
+pre-existing Phase-6 gap, not one this entry introduces).
+
+There is no automatic request-body deserialization or
+path/query-parameter-to-handler-argument binding (the "flat typed
+parameters" D054 envisioned) — implementing that would require either
+runtime reflection (rejected outright by D006/D099) or a source-generator
+pass this project doesn't have. Handlers read `req.body`/`pathParam`/
+`queryParam`/`header` explicitly instead; aspect-guarded business logic
+keeps its original parameter shape (the aspect's row-constraint reads a
+named parameter like `authToken: in String`) and a thin `Handler` wraps
+it — see `examples/ledger|rbac|jobqueue`'s `Api.l` files for the pattern
+this entry established.
+
+### Decision 2 — static file serving: `Web.StaticFiles` config template, canonical-path traversal guard, multi-mount support
+
+`pub config StaticFiles { root, mountPrefix, cacheControlSeconds,
+fallbackToIndex }` — a docs/58 config template (D121), instantiable
+directly (`Web.withStaticFiles(router, Web.StaticFiles(...))`) or via
+`config Assets from Web.StaticFiles { ... }` in a `wire` graph. Multiple
+mounts are just multiple `withStaticFiles` calls with different
+`mountPrefix`/`root` pairs — no new mechanism needed. Path traversal is
+rejected by resolving the candidate path to its canonical absolute form
+via `Path.GetFullPath` and requiring it fall within the canonically
+resolved root (plus a null-byte reject) — not a substring check on the
+raw request path, which an encoding trick could evade; a request that
+resolves to no file falls through to the rest of the pipeline (routes,
+then 404) rather than answering directly, so static files can be mounted
+before or after API routes freely.
+
+### Decision 3 — middleware pipeline: `Web.Middleware`, CORS finally wired up, `Web.requestLogger`
+
+`Web.Middleware { func wrap(req, next: Handler): Response }`, registered
+with `Web.withMiddleware` in **outermost-first** order (first-registered
+sees the request first, response last) — the same ordering
+`contributes[Middleware]` uses in a wire graph (D121 §4.1), so a
+library's own internal middleware and a consumer's `contributes[Middleware]`
+entries compose with one mental model. CORS (previously parsed from
+`LYRIC_CONFIG_WEB_CORS_*` and never applied — a `attachRegistry`-shaped
+silently-dropped-argument violation per D099's own standard) is now a
+real `Middleware` (`Web.corsMiddleware`) that `Web.start` attaches
+automatically when enabled; `Web.requestLogger()` is a second built-in
+middleware (`METHOD path -> status`), not attached by default.
+
+### Decision 4 — `Handler`/`Middleware` are interfaces, not closures: closures are unreliable across 2+ packages in the current self-hosted MSIL backend
+
+The first implementation modeled `Handler` as `alias Handler = (Request)
+-> Response` (docs/58's own illustrative `Middleware`/`Handler` sketch
+used a closure shape), with route handlers registered as either bare
+named-function references or inline closure literals. This surfaced,
+in order of discovery, **four previously-unknown self-hosted MSIL
+backend bugs**, filed as:
+
+- **#5361** — a payload-free `enum` with 2+ cases anywhere in the same
+  compiled unit as a closure crashes closure lowering
+  (`MNewobjByName could not resolve .ctor`/`MStfldByName could not
+  resolve field`). Worked around in this entry by converting
+  `Web.OpenApi.SchemaType`/`ParameterLocation` from `enum` to payload-free
+  `union` (identical case lists; neither is pattern-matched or has
+  ordinal/`.toString()` usage anywhere in the repo) — the same class of
+  fix D099 already applied to `lyric-health`'s `CheckGroup` for a related
+  enum cross-package dispatch bug.
+- **#5362** — passing a **bare named function** (not a closure literal)
+  as a function-typed value crashes at runtime
+  (`NullReferenceException`) the first time it's invoked, whether stored
+  in a record field or passed straight through — reproduced with a
+  10-line repro completely unrelated to `lyric-web`. The project's own
+  precedent (D099, D064 `Lambda.Direct`) recommends exactly this "register
+  a function reference" pattern; every actual usage found in the repo
+  (`lyric-health`'s `{ -> checkFn() }` call sites) already wraps the
+  reference in a closure literal rather than passing it bare — quite
+  possibly an unstated workaround for this exact bug, not a style choice.
+- **#5363** — the severe one: invoking closures from **two or more
+  different packages compiled into the same program** is unreliable —
+  symptoms ranged from `InvalidProgramException` and
+  `InvalidCastException` (casting completely unrelated types, e.g.
+  `Web.Response` to `Web.ApiError`, inside a method that never
+  references `ApiError`) to **silent wrong-value corruption with no
+  exception at all**, reproduced with two trivial hand-written packages,
+  no aspects/weaver involved. `lyric-web` (closures in its own package)
+  plus any real consumer package (which will define its own closures to
+  adapt handler functions — exactly what `examples/ledger|rbac|jobqueue`
+  originally did) is precisely this shape. The confirmed-safe
+  alternative, verified with the identical two-package repro: a
+  single-method **interface** (`impl Handler for SomeRecord { func
+  handle(...) }`, invoked via `h.handle(x)`) instead of a stored
+  closure/`Func<...>` value — consistent with every other
+  pluggable-behavior abstraction already in this codebase (`WsHandler`,
+  `MailSender`, `StorageBucket`, …) being an interface rather than a
+  stored closure, which may be exactly why this bug had gone unnoticed
+  until now.
+- **#5364** — unrelated to closures entirely (single package, single
+  file, zero closures): passing a `match`-arm-**bound** variable
+  (`case Some(eq) -> ...`) directly as a call argument from inside that
+  same arm crashes with `InvalidProgramException`
+  (`pair.substring(0, eq)` where `eq` came from `Some(eq)`); copying it
+  into a fresh local first (`val n: Int = eq; pair.substring(0, n)`) is a
+  confirmed-reliable workaround, applied throughout `web.l` wherever this
+  shape occurred (`parseQueryPair`'s query-string split index, among
+  others).
+
+**Given #5363, `Handler` and `Middleware` are both interfaces
+(`Handler.handle(req): Response`, `Middleware.wrap(req, next: Handler):
+Response`)**, and `Web.dispatch`'s middleware-composition + route-dispatch
+tail are built from small `Handler`-implementing records
+(`MiddlewareChain`, `RouteDispatchHandler`) rather than a composed closure
+chain — zero closures appear anywhere in `lyric-web`'s own implementation.
+Every route-handler registration across the library, its tests, and the
+three example services (`ledger`, `rbac`, `jobqueue`) uses a small
+zero-field record + `impl Web.Handler for X { func handle(req) {...} }`,
+never a closure literal or bare function reference.
+
+### Consequences
+
+- `lyric-web` is functional end-to-end on `--target dotnet`: real
+  method/path dispatch with path parameters, static file serving
+  (multi-mount, traversal-safe), a middleware pipeline with working CORS,
+  verified by `lyric-web/tests/dispatch_tests.l` (23 tests exercising
+  `Web.dispatch` directly — routing, path/query/header extraction,
+  wildcard routes, middleware ordering and short-circuiting, CORS
+  preflight/allow/deny, static file serving including path-traversal
+  rejection) and by a live `HttpListener` + `curl` smoke test against a
+  router consumed as a genuine path dependency from a separate project
+  (the exact configuration #5363 made unreliable) covering path params,
+  query strings, headers, static files, and 404s across multiple
+  sequential requests with no crash and correct bodies.
+- `examples/ledger`, `examples/rbac`, and `examples/jobqueue` migrate
+  their route tables and health endpoints to the `Handler` interface,
+  and gain hand-rolled `Std.Json`-based request-body parsers (the
+  previously-assumed "the Web kernel deserializes the JSON request body"
+  comment was aspirational and never true).
+- `Web.addWorker`/`WorkerRegistration` are explicitly **not** touched by
+  this entry — still registered, still never invoked. The obvious fix
+  (structured-concurrency `spawn`) is a synchronous no-op on
+  `--target dotnet` today (D119/D120), so a correct implementation needs
+  either MSIL structured concurrency (D119 S5/S6, not yet shipped) or a
+  hand-rolled thread/timer extern boundary; tracked as **issue #5359**
+  rather than shipped as a bootstrap-grade workaround.
+- Live OpenAPI JSON / Swagger UI serving (`LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED`,
+  previously parsed and silently ignored — the same class of violation
+  CORS was in before this entry) is removed from `Web.start`/`serve()`
+  rather than left as a dead env var; tracked as **issue #5360**. Use the
+  build-time `lyric web spec` workflow until it ships.
+- `lyric-web` remains `dotnet`-only; `Std.HttpServer`'s JVM kernel routes
+  through an out-of-repo prebuilt JAR that doesn't yet expose the
+  query-string/header/byte-body primitives this library needs (a
+  pre-existing gap, not newly introduced).
+
+### Alternatives considered
+
+- **Keep the closure-based `Handler` design and work around #5363 by
+  telling consumers to avoid defining their own closures.** Rejected:
+  unenforceable (nothing stops a consumer package from writing a closure
+  literal for an unrelated reason and silently corrupting `lyric-web`
+  dispatch), and the interface alternative has no real ergonomic cost
+  beyond one extra `record`/`impl` block per handler.
+- **DLL-reflection dispatcher (the original D054 design).** Rejected on
+  the same grounds D099 already rejected it for `lyric-health`: AOT-hostile,
+  contrary to D006, and reflection was never actually implementable for
+  this without the metadata-based auto-FFI infrastructure (docs/42),
+  which solves compile-time FFI signature resolution, not runtime
+  dynamic dispatch by name.
+- **Ship the live-Swagger/worker-dispatch env vars as documented but
+  silently inert**, matching the pre-existing state. Rejected per
+  D099's own precedent: a config value that's read and then ignored is a
+  production-quality violation, not a neutral no-op.
+
+**Related:** D054 (original router design), D099 (function-reference
+dispatch precedent, enum → union cross-package workaround precedent),
+D006 (no runtime reflection), D119/D120 (structured concurrency,
+dotnet-target synchronous-degenerate gap), D121 (config templates /
+`contributes[T]` / wire templates this entry's static-file and
+middleware config build on), docs/57 (ecosystem review that independently
+flagged the dispatch gap), issues #5359 (worker dispatch), #5360 (live
+spec serving), #5361–#5364 (the four closure/codegen bugs found and
+worked around in this entry).
+
+---
+## D-progress-623 — JVM: primitive-array `slice[T]` marshaling at the auto-FFI/`@externTarget` boundary generalized from a `byte[]`-only, tail-position-only special case to all 8 primitive element types, in both directions, and fixed for explicit `return` statements
+
+**Status:** ACCEPTED
+
+**Context.** The JVM backend's `slice[T]` is uniformly erased to
+`java.lang.Object[]` regardless of `T` (`jvm/codegen/01_types.l`). Reference
+element types are covariant with `Object[]`, so no conversion is needed, but
+a real JDK primitive array (`int[]`, `char[]`, etc.) is a distinct bytecode
+array type from `Object[]` and cannot be treated as one without an explicit
+per-element box/unbox loop. Before this entry, exactly one such loop existed
+— `byte[]` only — and it only fired for an *implicit tail-expression*
+return; an explicit `return someIntArray` (or any non-byte primitive array
+return, or a `slice[T]` argument passed into a JDK API expecting a primitive
+array) skipped the coercion entirely and either silently mismatched the
+descriptor or crashed at runtime (`VerifyError` / `ClassCastException`
+depending on the call shape). This blocked ecosystem-kernel migrations that
+need to hand a real JDK primitive array (not just `byte[]`) across the
+`slice[T]` boundary — found while scoping a broader `extern package` →
+`extern type`/`import extern` migration, which needs this fixed first for
+any kernel that touches a non-byte primitive array.
+
+**Decision.** Generalized the byte-only loops to all 8 JVM primitive array
+element types (`boolean`/`char`/`float`/`double`/`byte`/`short`/`int`/
+`long`), in both directions:
+
+- **Return-side (primitive array → `Object[]`):** `emitBoxByteArray` →
+  `emitBoxPrimitiveArray(ctx, insns, elemTy)` (`jvm/codegen/06_items.l`),
+  parameterized over element type via `primitiveNewarrayCode`/
+  `primitiveArrayLoadInsn`/`wrapperClassNameFor` (`jvm/codegen/04_calls.l`).
+  Split `emitReturnArrayCoerced` into a `coerceReturnValue` half (the
+  coercion itself) and the trailing `emitReturn` call, so the explicit
+  `return` statement (`05_stmts.l`'s `SReturn`) can call `coerceReturnValue`
+  directly instead of the bare `coerceArgTo` it used before — this is the
+  fix for the explicit-return gap, independent of the element-type
+  generalization.
+- **Argument-side (`Object[]` → primitive array):** `emitFfiCoerce`'s
+  hardcoded `[Ljava/lang/Object; -> [B` arm generalized to
+  `emitUnboxObjectArray(ctx, insns, elemTy)` for any primitive array
+  descriptor (`jvm/codegen/04_calls.l`). Byte and Short unboxing keeps the
+  pre-existing `Number.intValue()` + narrowing-conversion tolerance (an int
+  literal in a `List[Byte]`/`List[Short]` boxes as `Integer`, not
+  `Byte`/`Short`); the other 6 types checkcast to their exact wrapper and
+  call the matching `LUnboxX`.
+- **Overload scoring:** `jvm/auto_ffi.l`'s `scoreParamMatch` had a
+  byte-only `argDesc == "[Ljava/lang/Object;" and paramDesc == "[B"` arm
+  gating which overloads even get *considered* a match — generalized via a
+  new `isPrimitiveArrayDesc` helper, or the codegen fix above would be dead
+  code for any constructor/method overload whose primitive-array parameter
+  isn't `byte[]` (verified: `String(char[])`'s constructor was not even
+  found as a candidate before this fix).
+
+**Verification.** `auto_ffi_jvm_self_test.l` gained 3 new cases using a real
+static JDK method (`Character.toChars(int): char[]`) — a non-byte element
+type never previously exercised on either return path: a tail-expression
+return, an explicit `return`, and a `slice[Char]` literal argument unboxed
+into `String(char[])`'s constructor (round-tripping both directions
+end-to-end). All pass on `--target jvm`. A regression sweep of 8 other JVM
+self-tests touching arrays/slices/calls (`hash_jvm_self_test.l`,
+`file_jvm_self_test.l`, `process_capture_jvm_self_test.l`,
+`slice_ops_self_test.l`, `extern_param_jvm_self_test.l`,
+`extern_loop_jvm_self_test.l`, `string_methods_jvm_self_test.l`,
+`closure_jvm_self_test.l`, `generic_jvm_self_test.l`) shows no regressions.
+
+**Known adjacent gap, not fixed here:** `verifyExternTargetJvm` (the
+`@externTarget` signature verifier, F0015-J) only checks argument
+descriptors against real JDK metadata, never the return descriptor — a
+hand-written `@externTarget` declaration with a mismatched *return* type
+still compiles clean. Pre-existing, orthogonal to this entry (which fixes
+codegen's ability to *produce* a correct slice-typed return once the
+declared signature is trusted, not the verifier's ability to *check* that
+signature); left as a follow-up.
+
+**Review hardening.** The `scoreParamMatch` generalization above scores
+*any* of the 8 primitive array descriptors equally against an erased
+`slice[T]` argument — code review correctly flagged that this makes JDK
+overload families differing only by primitive element type (`String(char[])`
+vs `String(byte[])`; dozens of `java.util.Arrays.hashCode`/`sort`/`equals`/…
+families, each with one overload per primitive type) tie at the same score,
+with `findBestMethod`/`findBestConstructor`'s strict first-wins tie-break
+silently resolving to whichever overload the parsed class metadata happens
+to list first — not necessarily the caller's intent. Confirmed real Lyric
+element-type information is not recoverable at that point: `slice[T]`
+erases structurally to `Object[]` in `typeExprToJvm` (`01_types.l`) well
+before call lowering, and the type checker's unerased `TySlice(element)`
+data is never threaded into codegen (only its diagnostics are read).
+Added `checkPrimitiveArraySliceAmbiguity` (`jvm/auto_ffi.l`) to
+`findBestMethod`/`findBestConstructor`/`findBestInstanceMethod`: when 2+
+candidates tie at the winning score and the tie is caused by a `slice[T]`
+argument matching 2+ *different* primitive array parameter types, refuse
+with a compile-time diagnostic rather than guess. Verified manually (this
+is a compile-time panic inside the compiler process itself, not a runtime
+`Bug`, so it cannot be expressed as a `@test_module` `assertPanics`
+assertion) and via a new CI negative-test step
+(`Ambiguous primitive-array overload fails loud on JVM`) that builds a
+`String(char[])`-vs-`String(byte[])` repro and asserts the build fails with
+the diagnostic. The PR's own `String.new(slice[Char])` test was changed to
+`String.copyValueOf(slice[Char])` (a static method with only one arity-1
+overload, so genuinely unambiguous) once the ambiguity check correctly
+started rejecting the constructor form. Also applied the review's
+SUGGESTION finding: `emitFfiCoerce`'s new array-descriptor branch now
+reuses `descStrToJvmType` + a `JArray` match instead of manually stripping
+the leading `[` via substring.
+
+**Related:** `docs/44` M-10 (the original byte-only interop this
+generalizes), `docs/42` (metadata-based auto-FFI resolution this scoring
+fix extends).
+
+---
+## D-progress-624 — Self-hosted MSIL backend: fixed #5361 (enum + closure lowering crash), #5363 (cross-package closure map collision), and #5364 (match-bound `.indexOf` payload mistyped), each with new regression self-test coverage; #5362 (bare function reference as a delegate value) investigated but not fixed — an attempted compile-time diagnostic false-positived on legitimate monomorphized code and was reverted before merge; #5359/#5360 confirmed correctly scoped as follow-ups; new bug #5366 found and filed while verifying #5363
+
+Root-caused and fixed three of the four self-hosted MSIL compiler bugs
+D124 found and worked around (#5361–#5364), converted the fourth into a
+clear compile-time diagnostic instead of shipping a runtime landmine,
+and confirmed the two scope-boundary follow-ups (#5359, #5360) remain
+correctly documented as blocked rather than silently inert.
+
+- **#5361 (payload-free `enum` + closure in the same compile unit
+  crashes closure lowering) — fixed.** `lowerMEnum`
+  (`lyric-compiler/msil/lowering.l`) was the *only* type-lowering
+  function that never called `recordUserTypeDefRow` after `addTypeDef`
+  — every other lowering path (record, union, distinct type, interface,
+  opaque) does. `recordUserTypeDefRow` populates the positional
+  `ctx.typeDefRowFqns` list that `findMethodDefRowOfType` /
+  `findFieldDefRowOfType`'s `row - 2` reverse-lookup fallback depends on
+  to resolve a forward-referenced TypeDef (e.g. a closure class drained
+  after the enum's package) before its real row exists in the table.
+  Omitting the call desynced that list for every type lowered after an
+  enum, so the fallback either read the wrong FQN or fell out of bounds
+  — surfacing as `MNewobjByName`/`MStfldByName` "could not resolve"
+  panics. Fixed by adding the missing call; verified with the issue's
+  own repro (payload-free `enum` + closure literal, single package).
+- **#5363 (closures across 2+ packages corrupt/crash) — the described
+  root cause is fixed.** `cctx.lambdaTicker` (`codegen.l`) resets to 0
+  at the start of every package's `codegenMPackage` call, so two
+  different packages' first capturing lambda both produce
+  `lname = "__lambda_0"`. Five per-lambda maps
+  (`lambdaCaptureNames`/`Types`/`Cells`, `lambdaClosureClasses`,
+  `lambdaParamTypes`) were keyed by this bare, non-package-qualified
+  name — mirroring a collision `lambdaExternDelegateParamTypes` had
+  already been fixed for in #5309, but the fix wasn't applied to these
+  five. A later package's own (possibly non-capturing) `__lambda_0`
+  read stale capture metadata left behind by an earlier package's
+  `__lambda_0`, corrupting its MethodDef signature with a bogus leading
+  closure-class parameter. Fixed by qualifying every read/write site
+  with `pkgName + "."` (mirroring the #5309 fix exactly); verified via
+  compiler-internal instrumentation that both packages' lambda
+  metadata now resolves independently, and via a 2-package repro that
+  the previously-wrong `hasCaps`/signature is now correct.
+  **Not fully fixed end-to-end**: verifying against the issue's own
+  `r1 + r2` repro surfaced a second, pre-existing, unrelated bug (see
+  #5366 below) that also breaks the repro's final arithmetic step —
+  confirmed via a from-scratch `main`-commit rebuild that this second
+  bug predates this session and is not a regression from the fix above.
+- **#5362 (bare named function reference used as a delegate value
+  crashes with `NullReferenceException`) — investigated, not fixed;
+  an attempted compile-time diagnostic was reverted before merge.**
+  A full fix (desugaring a bare function reference into an equivalent
+  forwarding closure at every call site, or teaching the uniform boxed
+  `Func` ABI to bridge a real typed BCL method signature) is
+  substantially larger than this slice — deferred. A first attempt
+  added a `codegen.l` check (`lowerExprMsil`'s `EPath` fallback — the
+  final arm reached only when a name resolves to no local/capture/
+  const/enum-case/union-case-ctor/static-val) that raised a new F0027
+  diagnostic whenever the unresolved name matched a known top-level
+  function, on the theory that this fallback is only ever reached by
+  exactly the buggy pattern. **That theory was wrong and the check was
+  reverted**: CI's `build`/`build-and-test` jobs caught it
+  false-positiving on `examples/product-catalog`'s
+  `map(rows, rowToProduct)` — a bare function reference passed to a
+  generic higher-order function that `Lyric.Mono` monomorphizes/inlines
+  against the concrete function at that specific call site, never
+  constructing a real `Func` delegate at all, so no bug is present
+  there. The `EPath` fallback reached by *every* unresolved bare
+  function-name reference doesn't distinguish "a delegate must
+  actually be materialised here" (buggy) from "this call site is
+  monomorphized away" (safe) — a correct fix needs that distinction,
+  not a blanket check. Left as `ldnull`/`MObject` (the pre-existing
+  behavior) pending a properly-scoped fix; #5362 remains open.
+- **#5364 (match-arm-bound variable used directly as a call argument
+  crashes with `InvalidProgramException`) — fixed.** Root cause
+  (found by a delegated investigation that built and IL-disassembled
+  four variants): `.indexOf`/`.lastIndexOf` **method-call syntax**
+  is special-cased in `lowerMethodCallMsil` to call the raw BCL
+  `String.IndexOf`/`LastIndexOf` (`-1`-sentinel `Int`), while the mode
+  checker resolves the same call against `Std.String.indexOf`'s
+  `Option[Int]` signature — letting `match str.indexOf(x) { case
+  Some/None }` type-check against a scrutinee that is physically a raw,
+  never-boxed `Int`. `lowerPatternBindMsil`'s `PConstructor` arm
+  (`codegen.l`) computes the case class from `scrutTy`; when `scrutTy`
+  is a bare value type (not a class), it falls to a legacy "erased
+  `MObject` scrutinee (e.g. from `mapGet`)" path that **hardcoded** the
+  bound variable's slot type to `MObject` regardless of `scrutTy`,
+  even though the physical value was an unboxed `int32`. `stloc`/`ldloc`
+  tolerate the mismatch, but a later `callvirt` argument slot (e.g.
+  passing the bound variable into `.substring(...)`) does not — the
+  JIT rejects it outright. Fixed by using `scrutTy` (not a hardcoded
+  `MObject`) for the fallback binding's slot type — a no-op for the
+  genuine `MObject`-scrutinee case (`scrutTy` is already `MObject`
+  there), correct for the raw-value-sentinel case. Also hardened
+  `"substring"`'s three call-arg-count branches to `coerceCallArgMsil`
+  their `Int` arguments as defense in depth, matching the general
+  call-argument-lowering paths elsewhere in this file that already do
+  this. Verified with the issue's own repro; `closure_correctness`,
+  `closure_zero_overhead`, `bitwise`, `aspect_weave`, `async_spawn`,
+  `block_shadow`, `msil_project_bridge`, `auto_ffi`, `typechecker`,
+  `parser`, `modechecker`, `mono`, `result_generic_specialization`,
+  and `stubbable` self-tests all still pass (no regressions from any of
+  the three fixes landed in this entry).
+- **New regression coverage added** (closing the review gap this PR's
+  own `claude-review` pass flagged, #5368): a new
+  `lyric-compiler/lyric/enum_closure_pattern_bind_self_test.l`
+  (`@test_module`, native `lyric test`) pins #5361 (payload-free enum
+  co-compiled with a closure) and #5364 (`.indexOf`/`.lastIndexOf`
+  match-bound variable used directly as a `substring` call argument,
+  both single- and multi-char-offset shapes); a new case in
+  `lyric-compiler/lyric/msil_project_bridge_self_test.l` ("two packages
+  each defining their own lambda index 0 do not corrupt each other's
+  capture metadata") pins #5363 using the multi-package
+  `compileProjectToMsil` bridge harness already used by that file's
+  other cross-package regression tests.
+- **#5359 (`Web.addWorker` registered but never invoked) and #5360
+  (live OpenAPI/Swagger serving not implemented) — confirmed correctly
+  scoped, no code change needed beyond one stale doc line.** Both are
+  genuinely blocked on larger prerequisite work D124 already identified
+  (real MSIL structured concurrency, or a design for live spec
+  serving) and are already documented in `lyric-web`'s source/README as
+  "registered, not yet invoked" / "not implemented, tracked in #5360" —
+  matching the project's no-silently-dead-config standard. Fixed one
+  remaining stale claim: `lyric-web/src/openapi.l`'s module doc still
+  said code-first specs could be "served live via `Web.start(router)`
+  with swagger enabled," which is not true; corrected to point at
+  #5360.
+- **New issue filed: #5366** — verifying #5363 end-to-end surfaced a
+  second, unrelated, pre-existing bug: a function/closure value bound
+  without a *literal* `(T) -> U` type annotation (i.e. inferred, or
+  annotated via a type alias like `Handler`) never gets its return type
+  registered in `fctx.funcValRetTypes`, so invoking it leaves a boxed
+  `object` on the stack that arithmetic on the result silently
+  corrupts (no exception). Confirmed pre-existing via a from-scratch
+  rebuild of `main` before this session's changes. Root-caused to a
+  specific `codegen.l` gap (`LBLet`/`LBVar`'s `funcValRetTypes`
+  registration only matches a literal `TFunction` `TypeExpr`, never an
+  alias reference or an inferred binding) with a proposed fix sketch;
+  not fixed in this entry — a properly-scoped follow-up, not a
+  bootstrap-grade patch, per this repo's production-readiness standard.
+
+**Related:** D124 (the `lyric-web` PR that found and worked around all
+six issues this entry addresses), #5309 (the earlier, narrower fix to
+`lambdaExternDelegateParamTypes` that #5363's fix generalizes to the
+remaining four per-lambda maps), #1877 (uniform boxed `Func` ABI both
+#5362 and #5366 live in), #3196 (the earlier enum-FieldDef-row-shift bug
+in the same family as #5361, though a different specific gap).
+
+---
+
+## D125 — Decommission Legacy F# Bootstrap & Fix JVM dblToSingle Crash
 
 **Date:** 2026-07-08
 **Status:** ACCEPTED

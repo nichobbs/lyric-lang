@@ -12,6 +12,8 @@ package Rbac.Api
 
 import Std.Core
 import Std.Collections
+import Std.Json
+import Std.Parse
 import Rbac.Policy
 import Rbac.Store
 import Rbac.Enforcement
@@ -198,14 +200,181 @@ pub func handleCheck(@body req: in CheckRequest): Result[String, ApiError] {
   }
 }
 
+// ─── Web.Request adapters ───────────────────────────────────────────────────────
+// See Ledger.Api for the adapter rationale (aspect-guarded handlers keep their
+// original parameter list; each adapter does the request-shape plumbing).
+func authTokenFrom(req: in Web.Request): String {
+  match Web.header(req, "authorization") {
+    case Some(v) -> if v.startsWith("Bearer ") { v.substring(7) } else { v }
+    case None -> ""
+  }
+}
+
+func idPathParam(req: in Web.Request): Result[Long, ApiError] {
+  match Web.pathParam(req, "id") {
+    case None -> Err(Web.badRequest("missing path parameter: id"))
+    case Some(raw) -> match parseOptLong(raw) { case Some(n) -> Ok(n); case None -> Err(Web.badRequest("id must be an integer: " + raw)) }
+  }
+}
+
+func toResponse(result: in Result[String, ApiError]): Web.Response {
+  match result {
+    case Ok(body) -> Web.json(200, body)
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func parseCreateUserRequest(body: in String): Result[CreateUserRequest, ApiError] {
+  return try {
+    val doc = parseJson(body)
+    val root = rootElement(doc)
+    val req = CreateUserRequest(username = getString(getProperty(root, "username")))
+    disposeJson(doc)
+    Ok(req)
+  } catch Bug as e {
+    Err(Web.badRequest("malformed request body: " + e.message))
+  }
+}
+
+func parseGrantRoleRequest(body: in String): Result[GrantRoleRequest, ApiError] {
+  return try {
+    val doc = parseJson(body)
+    val root = rootElement(doc)
+    val req = GrantRoleRequest(
+      role = getString(getProperty(root, "role")),
+      grantorId = getInt64(getProperty(root, "grantorId"))
+    )
+    disposeJson(doc)
+    Ok(req)
+  } catch Bug as e {
+    Err(Web.badRequest("malformed request body: " + e.message))
+  }
+}
+
+func parseCheckRequest(body: in String): Result[CheckRequest, ApiError] {
+  return try {
+    val doc = parseJson(body)
+    val root = rootElement(doc)
+    val req = CheckRequest(
+      userId = getInt64(getProperty(root, "userId")),
+      permission = getString(getProperty(root, "permission"))
+    )
+    disposeJson(doc)
+    Ok(req)
+  } catch Bug as e {
+    Err(Web.badRequest("malformed request body: " + e.message))
+  }
+}
+
+pub func adaptCreateUser(req: in Web.Request): Web.Response {
+  match parseCreateUserRequest(req.body) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(body) -> toResponse(handleCreateUser(body, authTokenFrom(req)))
+  }
+}
+
+pub func adaptGetUser(req: in Web.Request): Web.Response {
+  match idPathParam(req) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(id) -> toResponse(handleGetUser(id))
+  }
+}
+
+pub func adaptGetUserRoles(req: in Web.Request): Web.Response {
+  match idPathParam(req) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(id) -> toResponse(handleGetUserRoles(id))
+  }
+}
+
+pub func adaptGrantRole(req: in Web.Request): Web.Response {
+  match idPathParam(req) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(id) -> match parseGrantRoleRequest(req.body) { case Err(e) -> Web.errorResponse(e); case Ok(body) -> toResponse(handleGrantRole(id, body, authTokenFrom(req))) }
+  }
+}
+
+pub func adaptRevokeRole(req: in Web.Request): Web.Response {
+  match idPathParam(req) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(id) -> match Web.pathParam(req, "role") { case None -> Web.errorResponse(Web.badRequest("missing path parameter: role")); case Some(role) -> toResponse(handleRevokeRole(id, role, authTokenFrom(req))) }
+  }
+}
+
+pub func adaptCheck(req: in Web.Request): Web.Response {
+  match parseCheckRequest(req.body) {
+    case Err(e) -> Web.errorResponse(e)
+    case Ok(body) -> toResponse(handleCheck(body))
+  }
+}
+
+// ─── Route handlers ───────────────────────────────────────────────────────────
+// Web.Handler is an interface, not a stored closure: invoking a closure
+// defined in one package from another package that also defines its own
+// closures is unreliable in the current self-hosted MSIL backend (issue
+// #5363), so each adapter above is registered via a small record wrapper.
+record CreateUserHandler {
+}
+
+impl Web.Handler for CreateUserHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptCreateUser(req)
+  }
+}
+
+record GetUserHandler {
+}
+
+impl Web.Handler for GetUserHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptGetUser(req)
+  }
+}
+
+record GetUserRolesHandler {
+}
+
+impl Web.Handler for GetUserRolesHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptGetUserRoles(req)
+  }
+}
+
+record GrantRoleHandler {
+}
+
+impl Web.Handler for GrantRoleHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptGrantRole(req)
+  }
+}
+
+record RevokeRoleHandler {
+}
+
+impl Web.Handler for RevokeRoleHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptRevokeRole(req)
+  }
+}
+
+record CheckHandler {
+}
+
+impl Web.Handler for CheckHandler {
+  func handle(req: in Web.Request): Web.Response {
+    adaptCheck(req)
+  }
+}
+
 // ─── Route table ──────────────────────────────────────────────────────────────
 pub func routes(): Web.Router {
   val r = Web.create()
-  val r = Web.addPost(r, "/users", "Rbac.Api.handleCreateUser")
-  val r = Web.addGet(r, "/users/{id}", "Rbac.Api.handleGetUser")
-  val r = Web.addGet(r, "/users/{id}/roles", "Rbac.Api.handleGetUserRoles")
-  val r = Web.addPost(r, "/users/{id}/roles", "Rbac.Api.handleGrantRole")
-  val r = Web.addDelete(r, "/users/{id}/roles/{role}", "Rbac.Api.handleRevokeRole")
-  val r = Web.addPost(r, "/check", "Rbac.Api.handleCheck")
+  val r = Web.addPost(r, "/users", CreateUserHandler())
+  val r = Web.addGet(r, "/users/{id}", GetUserHandler())
+  val r = Web.addGet(r, "/users/{id}/roles", GetUserRolesHandler())
+  val r = Web.addPost(r, "/users/{id}/roles", GrantRoleHandler())
+  val r = Web.addDelete(r, "/users/{id}/roles/{role}", RevokeRoleHandler())
+  val r = Web.addPost(r, "/check", CheckHandler())
   return r
 }

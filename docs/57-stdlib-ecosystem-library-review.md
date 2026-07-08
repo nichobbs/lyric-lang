@@ -188,17 +188,40 @@ affected by this constraint — `.new(args)` is safe to use there today.
   Hangfire, which has no JVM port); genuine FFI, not a stub. `jvm` has
   *more* real backend coverage than `dotnet` here, the opposite of the
   usual pattern in this ecosystem.
-- **lyric-search**: neither backend is "stubbed pending bindings." Real
-  `extern package` bindings for both Elasticsearch and Meilisearch exist
-  in `Search.Kernel.Net` *and* `Search.Kernel.Jvm`. The actual gap is
-  that `search.l`'s public functions (`searchConnectElasticsearch`,
-  `searchConnectMeilisearch`, `searchIndex`, `searchQuery`, etc.,
-  `search.l:52-92`) never import or call either kernel — they're
-  permanently hardcoded to `Err(...)` regardless of feature flags. This
-  is a wiring gap, not a missing-bindings gap, and a much smaller fix
-  than the storage/mq backends above — tracked as **issue #5067**. The
-  whole module is `@experimental`, which is the right marker given the
-  state.
+- **lyric-search** (issue #5067, revisited): `search.l`'s public functions
+  now genuinely import and dispatch into `Search.Kernel.Net` /
+  `Search.Kernel.Jvm` (the wiring gap this section originally described is
+  fixed — `searchConnectElasticsearch`, `searchIndex`, `searchQuery`, etc.
+  are no longer permanently hardcoded to `Err(...)`). But wiring the call
+  through surfaced a **deeper, compiler-level defect**: both kernels bind
+  their provider clients via bare `extern package <Dotted.Path> { pub func
+  ... }` blocks with no `extern type`/`@externTarget` binding behind them,
+  and on the current self-hosted compiler that mechanism does not resolve
+  to a real FFI call on *either* target — any call through it compiles but
+  throws an unhandled runtime exception ("unsupported method ... no
+  matching user method, extern binding, or built-in intrinsic" on MSIL; an
+  analogous JVM auto-FFI resolution failure), confirmed with both a
+  minimal isolated repro and this package's own unmodified kernel. `search.l`
+  now catches that failure and surfaces a typed `Err` instead of crashing,
+  but no Elasticsearch/Meilisearch connection can currently succeed on
+  either target. This same bare-`extern package` pattern (not confirmed
+  working end-to-end) also appears in `lyric-mail` (SES/SendGrid JVM),
+  `lyric-db`, `lyric-i18n`, `lyric-lambda`, `lyric-jobs` (JVM —
+  **including** the `org.quartz.Scheduler` binding this document's
+  original text above called "genuine FFI, not a stub"; that claim should
+  be re-verified against this finding, not taken at face value), `lyric-ws`
+  (JVM), `lyric-feature-flags`, `lyric-web` (JVM), `lyric-grpc`,
+  `lyric-otel`, `lyric-aws-secrets`, `lyric-auth` (JVM), `lyric-aws-xray`,
+  and `lyric-session` (JVM, `redis` feature) — none independently verified
+  as part of this pass. `Std.Json`'s JVM kernel was already migrated off
+  this exact pattern (D-progress-555) after discovering it produced
+  `NoClassDefFoundError`/`VerifyError` at runtime; that migration is the
+  template for the real fix (either implement `extern package` codegen in
+  both self-hosted backends, or port each affected kernel to `extern type`
+  + `@externTarget`, as `lyric-mail`'s and `lyric-session`'s `.NET` kernels
+  already do). See `lyric-search/README.md` "Platform parity" for the full
+  writeup and reproduction steps. The whole module remains `@experimental`,
+  which is still the right marker.
 
 **Recommendation:** these backend gaps are individually reasonable
 (each is honestly stubbed, not silently broken), but CLAUDE.md's
@@ -371,10 +394,14 @@ several of these are core, not edge-case, functionality:
   exhausted locale-fallback chain (request locale absent, primary
   fallback absent, secondary fallback absent).
 - **lyric-web / lyric-ws**: CORS, rate-limiting, and aspect weaving are
-  tested; routing/handler dispatch and WebSocket connection lifecycle are
-  not (this converges with §3's note that HTTP kernel dispatch itself is
-  a pending compiler/runtime milestone, so some of this is intentionally
-  blocked, not neglected).
+  tested; **update (see D124):** `lyric-web` routing/handler dispatch,
+  static file serving, and the middleware pipeline are now implemented
+  (`Web.dispatch`, built on `Std.HttpServer`) and covered by
+  `lyric-web/tests/dispatch_tests.l` — the "pending compiler/runtime
+  milestone" framing below no longer applies to `lyric-web`; it was never
+  a compiler gap, `Web.serve()` simply never matched requests against
+  registered routes (D124's root cause). WebSocket connection lifecycle
+  (`lyric-ws`) is untouched by D124 and remains untested.
 
 ### 5.3 `lyric-testing` mock coverage vs. the interfaces it should cover
 

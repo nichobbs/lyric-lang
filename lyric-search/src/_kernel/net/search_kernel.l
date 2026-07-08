@@ -17,6 +17,7 @@
 //! and deserialises at the boundary; the kernel forwards to the .NET SDK.
 //!
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+@cfg(feature = "dotnet")
 package Search.Kernel.Net
 
 import Std.Core

@@ -49,6 +49,7 @@ tools/
       Lyric.Verifier.dll
       Mono.Cecil.dll
       System.Reflection.MetadataLoadContext.dll
+      lyric-resolver.jar   # Maven resolver for `--target jvm` [maven] tables (docs/44 M-7)
 lib/
   Lyric.Stdlib.dll         # pre-compiled stdlib bundle (dotnet target)
   Lyric.Stdlib.Jvm.jar     # pre-compiled stdlib bundle (JVM target)
@@ -87,9 +88,11 @@ Platform-specific release assets:
 | `lyric-osx-arm64.tar.gz` | `osx-arm64` |
 | `lyric-win-x64.zip` | `win-x64` |
 
-Each archive contains the same `lib/` and `stdlib/` layout as the NuGet tool.
-The archive root contains a `lyric` (or `lyric.exe`) native binary — no
-`dotnet` command needed.
+Each archive contains the same `lib/` and `stdlib/` layout as the NuGet tool,
+plus `lyric-resolver.jar` beside the binary (docs/44 M-7) so `--target jvm`
+`[maven]`-table resolution works with no extra install step.  The archive
+root contains a `lyric` (or `lyric.exe`) native binary — no `dotnet` command
+needed.
 
 ### 2.3 Future: self-hosted binary (no .NET dependency)
 

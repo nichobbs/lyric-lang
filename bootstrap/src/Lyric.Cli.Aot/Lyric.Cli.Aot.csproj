@@ -28,6 +28,15 @@
          "built from a self-emit" actually linked the stale `.bootstrap/stage1`
          contents — masking self-host regressions. -->
     <StageDir Condition="'$(StageDir)' == ''">$(MSBuildThisFileDirectory)../../../.bootstrap/stage1</StageDir>
+    <!-- Path to lyric-resolver.jar (docs/44-jvm-production-readiness-plan.md
+         finding M-7), built by `make maven-resolver` from resolver/pom.xml.
+         Overridable via -p:ResolverJarPath=/abs/path; defaults to the path
+         that target writes to.  Only consumed by `dotnet pack` below (the
+         standalone AOT publish bundles the jar separately, via
+         .github/workflows/publish.yml's build-standalone job) and only if
+         the file exists, so a plain `dotnet build`/`dotnet publish` without
+         a pre-built jar is unaffected. -->
+    <ResolverJarPath Condition="'$(ResolverJarPath)' == ''">$(MSBuildThisFileDirectory)../../../resolver/target/lyric-resolver.jar</ResolverJarPath>
   </PropertyGroup>
 
   <!-- Stage-1 DLL references.  The wildcard pulls in every artefact
@@ -49,6 +58,18 @@
 
   <ItemGroup>
     <PackageReference Include="System.Text.Json" Version="10.0.0" />
+  </ItemGroup>
+
+  <!-- Bundle lyric-resolver.jar into the packed NuGet global tool, landing
+       beside lyric.dll in tools/<tfm>/any/ — the exact directory a .NET tool
+       shim execs into, so Environment.appBaseDirectory() (cli_restore.l's
+       search location 2) finds it with zero manual steps for `dotnet tool
+       install lyric` users too, matching the standalone-archive channel.
+       Pack="true" items are only honoured by `dotnet pack`, not
+       `dotnet build`/`dotnet publish`, so this has no effect on the AOT
+       binary build. -->
+  <ItemGroup Condition="Exists('$(ResolverJarPath)')">
+    <None Include="$(ResolverJarPath)" Pack="true" PackagePath="tools/$(TargetFramework)/any/lyric-resolver.jar" />
   </ItemGroup>
 
   <!-- Post-build: copy all Lyric.*.dll files from StageDir to the output directory

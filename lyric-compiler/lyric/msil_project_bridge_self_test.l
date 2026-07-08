@@ -268,6 +268,49 @@ test "cross-package closure does not corrupt later tokens or the entry point" {
   assertEqual(Str.trim(result.stdout), "33,101", "cross_package_closure_entry_point: stdout matches expected")
 }
 
+// #5363: `cctx.lambdaTicker` resets to 0 at the start of every package, so
+// two DIFFERENT packages' first capturing lambda both produce
+// `lname = "__lambda_0"`. Five per-lambda maps in `Msil.Codegen`
+// (`lambdaCaptureNames`/`Types`/`Cells`, `lambdaClosureClasses`,
+// `lambdaParamTypes`) were keyed by this bare name, so a later package's own
+// (possibly non-capturing) `__lambda_0` picked up an EARLIER package's stale
+// capture metadata, corrupting its MethodDef signature with a bogus leading
+// closure-class parameter. Pins: package A's capturing closure and package
+// B's own non-capturing closure — both landing on lambda index 0 in their
+// respective packages — each resolve their own (correct) capture shape.
+test "two packages each defining their own lambda index 0 do not corrupt each other's capture metadata" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XPkgLambda0.A",
+      "package XPkgLambda0.A\n" + "import Std.Core\n" + "alias Handler = (Int) -> Int\n" + "\n" +
+        "pub func adder(n: in Int): Handler {\n" +
+        "  return { x: Int -> x + n }\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XPkgLambda0.B",
+      "package XPkgLambda0.B\n" + "import Std.Core\n" + "import XPkgLambda0.A\n" + "\n" +
+        "func triple(x: in Int): Int { x * 3 }\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val f = XPkgLambda0.A.adder(5)\n" +
+        "  val g: XPkgLambda0.A.Handler = { y: Int -> triple(y) }\n" +
+        "  println(toString(f(10)) + \",\" + toString(g(10)))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xpkglambda0", packages, "XPkgLambda0")
+  assertEqualInt(result.exitCode, 0, "cross_package_lambda_index_0: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "15,30",
+    "cross_package_lambda_index_0: both packages' index-0 closures resolve their own capture shape"
+  )
+}
+
 // #5177 (second root cause, found after the closure fix above still didn't
 // resolve the reporter's real project): an `async func` that `await`s an
 // (unqualified, imported) call to a function declared in a LATER package —
