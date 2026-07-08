@@ -320,6 +320,68 @@ jobs:
             bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}
           retention-days: 1
 
+  # Stage-2 (self-hosted rebuild) toolchain, built once and shared with any
+  # downstream job step that needs it.  Most compiler-internal codegen fixes
+  # (e.g. a `@externTarget` signature-encoding fix inside the compiler's own
+  # `_kernel/kernel.l` files) only take effect once the compiler recompiles
+  # *itself* with the fix already applied — stage-1 is built BY the external,
+  # published stage-0 seed release, which necessarily predates any fix landing
+  # in this PR, so stage-1 cannot exercise such a fix even though the source
+  # is correct (D125 follow-up, System.Single `bufMsilType` gap). Runs
+  # independently in parallel with the other test jobs; only the handful of
+  # `compiler-self-tests-jvm` steps that actually need it wait on this job.
+  build-stage2:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520  # v5.4.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('bootstrap/**/*.fsproj', 'bootstrap/**/*.csproj', 'bootstrap/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Bootstrap stage 2 (download stage-0 release → self-hosted stage 1 → self-hosted stage 2)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/bootstrap.sh --stage 2
+
+      - name: Verify stage-2 toolchain runs
+        run: |
+          set -euo pipefail
+          if [ ! -x .bootstrap/stage2/bin/lyric ]; then
+            echo "::error::stage 2 binary missing after bootstrap.sh --stage 2"
+            exit 1
+          fi
+          LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib" .bootstrap/stage2/bin/lyric --version
+
+      - name: Upload stage-2 artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: stage2-artifacts
+          path: .bootstrap/stage2
+          retention-days: 1
+
   # Self-hosted-emitter IL-validity gate (#3943).  Required by `build-and-test`.
   # Emits the whole Lyric.Cli closure with the self-hosted emitter and runs
   # `ilverify` over every DLL, catching self-hosted-emitter IL bugs the mint
@@ -3189,7 +3251,7 @@ jobs:
 
   compiler-self-tests-jvm:
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [build, build-stage2]
     permissions:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
@@ -3213,6 +3275,18 @@ jobs:
           name: build-artifacts
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+      # Stage-2 binary: needed only by the handful of steps below that
+      # exercise a compiler-internal `@externTarget` signature-encoding fix
+      # (System.Single `bufMsilType`, D125 follow-up) — such a fix only takes
+      # effect once the compiler has recompiled itself with the fix already
+      # applied, which stage-1 (built by the external stage-0 seed) cannot do.
+      - name: Download stage-2 artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: stage2-artifacts
+          path: .bootstrap/stage2
+      - name: Restore stage-2 executable permissions
+        run: chmod +x .bootstrap/stage2/bin/lyric
 
       - name: Bitwise self-test on JVM (native lyric test --target jvm)
         background: true
@@ -3471,16 +3545,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping pattern-lowering JVM self-test"
+          if [ ! -x .bootstrap/stage2/bin/lyric ]; then
+            echo "::error::stage 2 binary missing; skipping pattern-lowering JVM self-test"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping pattern-lowering JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/pattern_lowering_self_test.l
+          export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
+          .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/lyric/pattern_lowering_self_test.l
 
       # Auto-FFI metadata-resolution self-test — exercises the self-hosted
       # MSIL emitter resolving `ExternTypeName.method(args)` calls against
@@ -3584,16 +3654,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping silent-miscompile guard JVM self-test"
+          if [ ! -x .bootstrap/stage2/bin/lyric ]; then
+            echo "::error::stage 2 binary missing; skipping silent-miscompile guard JVM self-test"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping silent-miscompile guard JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l
+          export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
+          .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l
       # out/inout parameter parity (docs/44 m-3, #1763, follow-up to #1761) —
       # exercises the JVM holder-array lowering for free-function `out`/`inout`
       # parameters: the caller wraps each holder argument in a single-element
@@ -3654,16 +3720,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping J3 lowering JVM self-test"
+          if [ ! -x .bootstrap/stage2/bin/lyric ]; then
+            echo "::error::stage 2 binary missing; skipping J3 lowering JVM self-test"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping J3 lowering JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/j3_lowering_self_test.l
+          export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
+          .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/jvm/j3_lowering_self_test.l
       # `defer` self-test on JVM (J4, epic #2663 / #2667, #4878).  The value-
       # position, trailing/consecutive, and panic-unwind `defer` forms all
       # produced invalid bytecode on the JVM (VerifyError / "Illegal exception
@@ -3958,16 +4020,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping NaN-comparison JVM self-test"
+          if [ ! -x .bootstrap/stage2/bin/lyric ]; then
+            echo "::error::stage 2 binary missing; skipping NaN-comparison JVM self-test"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping NaN-comparison JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/nan_compare_jvm_self_test.l
+          export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
+          .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/jvm/nan_compare_jvm_self_test.l
       # Extern-handle-across-a-loop self-test (#3307) — pins StackMapTable
       # local-variable typing for `JRef`/extern locals at basic-block
       # boundaries: an `extern type` value driven through a `while`/`if` (loop
@@ -4380,12 +4438,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping resilience JVM suite"
+          if [ ! -x .bootstrap/stage2/bin/lyric ]; then
+            echo "::error::stage 2 binary missing; skipping resilience JVM suite"
             exit 1
           fi
-          "$lyric_bin" test --manifest lyric-resilience/lyric.toml --target jvm --no-default-features --features jvm
+          export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
+          .bootstrap/stage2/bin/lyric test --manifest lyric-resilience/lyric.toml --target jvm --no-default-features --features jvm
       # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
       # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
       # views, pure-Lyric tryGetValue) AND the post-mono signature
@@ -6375,7 +6433,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required]
+    needs: [build, build-stage2, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required]
     if: always()
     permissions:
       contents: read

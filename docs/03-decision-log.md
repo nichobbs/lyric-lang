@@ -11966,6 +11966,24 @@ in the same family as #5361, though a different specific gap).
 
 ---
 
+## D126 — D125's `System.Single` fix was incomplete (`@externTarget` signature encoding); `compiler-self-tests-jvm` now tests stage-2
+
+**Date:** 2026-07-08
+**Status:** ACCEPTED
+
+**Context & Problem.** D125's `argTyToSig` fix (`lyric-compiler/msil/codegen.l`) maps `System.Single` to the primitive `ELEMENT_TYPE_R4` signature byte, but `argTyToSig` is used only by the auto-FFI metadata-resolution path. Explicit `@externTarget` bindings — the form `Jvm.Kernel.Program.dblToSingle` itself uses (`@externTarget("System.Convert.ToSingle")`) — build their MemberRef signature through a separate function, `bufFfiType`/`bufMsilType` (`lyric-compiler/msil/lowering.l`), whose `MValueTypeRef` case unconditionally emitted `ELEMENT_TYPE_VALUETYPE` + a TypeRef token with no `System.Single` special case. Both `Jvm.Kernel.Program.dblToSingle`'s own declared return type (`Single`) and `Msil.Kernel.Program.dblToSingle`'s (the MSIL-target twin) went through this unpatched path, so the exact `MissingMethodException: System.Single System.Convert.ToSingle(Double)` crash D125 was meant to fix still occurred — surfacing as 5 failing `compiler-self-tests-jvm` steps (Pattern-lowering, Silent-miscompile-guard, J3-lowering, NaN-comparison self-tests, and the lyric-resilience suite) the first time that CI job actually ran to completion on this PR (prior pushes never got that far because an earlier, unrelated `build` job failure short-circuited it).
+
+**Compounding bootstrap-sequencing issue.** `dblToSingle` lives inside the self-hosted compiler's own source (`lyric-compiler/jvm/_kernel/kernel.l` and the MSIL twin), so a fix to the *encoding logic* (`bufMsilType`) only changes `dblToSingle`'s own compiled behavior once a compiler that already has the fix recompiles it. `compiler-self-tests-jvm` (and every other `compiler-self-tests-*` job) builds and tests against **stage-1**, which is compiled by the *externally published* stage-0 seed release (predates this fix by definition) — so the source fix alone cannot turn that stage-1-based CI job green; it only takes effect starting at **stage-2** (the self-hosted rebuild, where the now-fixed stage-1 compiles `dblToSingle` itself). Verified empirically: rebuilding stage-1 fresh (stage-0 = published v0.4.19) with the `bufMsilType` fix applied still crashes identically; rebuilding stage-2 from that stage-1 passes all 5 previously-failing suites cleanly (52 individual test cases total).
+
+**Decision.**
+1. **Fix `bufMsilType`'s `MValueTypeRef` case** (`lyric-compiler/msil/lowering.l`) to special-case `clrFqn == "System.Single"` the same way D125's `argTyToSig` does — emit primitive `ELEMENT_TYPE_R4` (`0x0C`) instead of a named valuetype reference. This is the actual root-cause fix; `argTyToSig`'s special case remains necessary too (it covers the auto-FFI path) but was insufficient alone.
+2. **Add a `build-stage2` CI job** (`.github/workflows/ci.yml`) that runs `bootstrap.sh --stage 2` independently in parallel with the other test jobs and uploads `.bootstrap/stage2` as an artifact. Repoint the 5 affected `compiler-self-tests-jvm` steps (and only those — the ~40 other steps in that job keep using stage-1, unaffected and unnecessary to change) at the stage-2 binary (`.bootstrap/stage2/bin/lyric`, `LYRIC_STDLIB_BIN=.bootstrap/stage2/lib`) instead of stage-1. `build-and-test`'s aggregate gate now also depends on `build-stage2`.
+3. **Scope note**: this does not change what any *other* `compiler-self-tests-*` job tests, and does not attempt to make stage-1 itself pass (that would require cutting a new stage-0 seed release with this fix baked in — a maintainer release action, out of scope here). A future stage-0 seed release built from a commit at or after this one will make stage-1 pass these tests too, at which point the `build-stage2`/stage-2-rerouting machinery could be simplified away if desired, but is not required to be.
+
+**Verification.** `msil_project_bridge_self_test.l` (`--target dotnet`, 31 cases) confirmed no MSIL-target regression from the `bufMsilType` change. All 5 previously-failing JVM suites pass against a freshly-built stage-2 (52 cases total). `examples/rest_service.l` (the earlier `http_server.l` CI-failure fix) re-verified working end-to-end after the rebuild.
+
+---
+
 ## Decisions deferred to v2 or later
 
 
