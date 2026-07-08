@@ -24,7 +24,7 @@
 # BOOTSTRAP vs SELF-HOSTED — which compiler am I running?
 # ─────────────────────────────────────────────────────────────────────────────
 # There are TWO compilers in play.
-# See docs/10-bootstrap-progress.md §"Bootstrap vs self-hosted" for the model.
+# See docs/10-bootstrap-progress.md §"Bootstrap stages — which compiler am I running?" for the model.
 #
 #   1. STAGE 1 (BOOTSTRAP) — the self-hosted compiler sources compiled BY the downloaded
 #      Stage 0 seed. Build it with `make lyric`. Use it for day-to-day development.
@@ -46,6 +46,7 @@ AOT_BIN := bootstrap/src/Lyric.Cli.Aot/bin/$(BUILD_CONFIG)/net10.0/lyric
         native-rt test-native-rt test-native \
         stage2 stage3 run-stage2 \
         ilverify selfhost-check \
+        self-test test-lexer test-parser test-typechecker test-emitter \
         test clean
 
 help: ## Show this help
@@ -173,8 +174,8 @@ selfhost-check: ## Classify a repro: real self-hosted bug vs artifact (FILE=repr
 # AOT `./bin/lyric test` binary, which resolves its `Lyric.*` compiler-package
 # imports by linking the already-built stage-1 bundle DLLs as restored deps —
 # no `LYRIC_LOAD_COMPILER=1` recompile-from-source needed.  Requires a
-# previously-built `./bin/lyric` (`make lyric` or `make mint`); it is NOT
-# rebuilt by these targets, so pair with `make stage1-fast` for the fast loop.
+# previously-built `./bin/lyric` (`make lyric`); it is NOT rebuilt by these
+# targets, so pair with `make stage1-fast` for the fast loop.
 #
 # Usage: make self-test NAME=parser   (runs lyric-compiler/lyric/parser_self_test.l)
 # Valid NAMEs include: lexer parser typechecker modechecker contract_elaborator
@@ -185,7 +186,7 @@ selfhost-check: ## Classify a repro: real self-hosted bug vs artifact (FILE=repr
 # './bin/lyric' requires building it first; test-emitter now depends on the 'lyric' target.
 self-test: ## Run one self-hosted self-test, e.g. `make self-test NAME=parser`
 	@if [ -z "$(NAME)" ]; then echo "usage: make self-test NAME=parser"; exit 2; fi
-	@test -x bin/lyric || { echo "no ./bin/lyric; run 'make lyric' (or 'make mint') first"; exit 2; }
+	@test -x bin/lyric || { echo "no ./bin/lyric; run 'make lyric' first"; exit 2; }
 	./bin/lyric test lyric-compiler/lyric/$(NAME)_self_test.l
 
 test-lexer: ## Run the lexer self-test

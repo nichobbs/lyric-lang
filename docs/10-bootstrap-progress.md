@@ -17,10 +17,10 @@ Most wasted debugging time on this project comes from not knowing **which of the
 |-------|----------|----------|-------------|---------------|------------|
 | **0** | **stage-0 seed** | Downloaded stable self-hosted release binary (`stage0-publish`) | **valid** (stable release seed) | Handled automatically by bootstrap script | Seeds stage-1; never run directly. Shipped as the trusted entry point of the pipeline. |
 | **1** | **stage-1** | The stage-0 seed compiling the compiler `.l` package sources | **valid** (compiled by stable seed) | `make stage1` | Seeds stage-2. Compiles fast because it does not rebuild the stdlib. |
-| **2** | **stage-2** | The stage-1 compiler compiling **itself + the full stdlib** into an isolated toolchain | **runnable** (this is the SHIP toolchain; D124) | `make stage2` or `make lyric` | **The SHIP toolchain.** Release binaries (standalone and NuGet tool) are AOT-linked from stage-2 DLLs. Run things via `make run-stage2 ARGS="..."`. |
+| **2** | **stage-2** | The stage-1 compiler compiling **itself + the full stdlib** into an isolated toolchain | **runnable** (this is the SHIP toolchain; D125) | `make stage2` | **The SHIP toolchain.** Release binaries (standalone and NuGet tool) are AOT-linked from stage-2 DLLs. Run things via `make run-stage2 ARGS="..."`. |
 | **3** | **stage-3** | The stage-2 compiler compiling **itself + the full stdlib** | **identical to stage-2** (fixpoint holds) | `make stage3` | **Fixpoint reproducibility verification.** Stage 3 and Stage 2 must be 100% byte-for-byte identical. |
 
-Key consequence: **a bare `make lyric` builds the stage-2 toolchain**, which is **fully runnable** and achieves byte-for-byte reproducibility at the stage-3 fixpoint (D124).
+Key consequence: **a bare `make lyric` builds the stage-1 bootstrap toolchain** (the fast day-to-day dev loop); **`make stage2` builds the stage-2 self-hosted toolchain**, which is **fully runnable** and achieves byte-for-byte reproducibility at the stage-3 fixpoint (D125).
 The legacy F# mint path has been completely decommissioned and deleted. Use the self-hosted pipeline for all dev and release work.
 
 ### The IL-validity gate
@@ -70,7 +70,7 @@ the runnability gate now exposes.  Run things against the toolchain with
 ### "Is this a real bug?" — one command
 
 ```sh
-make lyric                             # build the stage-2 toolchain once
+make lyric                             # build the stage-1 toolchain once
 make selfhost-check FILE=repro.l       # → scripts/selfhost-check.sh
 ```
 
@@ -25590,8 +25590,8 @@ links the self-hosted DLLs (D-progress-531: 101/101 DLLs byte-for-byte
 reproducible at the stage-3 fixpoint).  The released binary contains code
 emitted exclusively by the self-hosted Lyric compiler.
 
-**Bootstrap seed cutover (stage-0): completed, now downloading by default (D124).**
-The legacy F# bootstrapping/minting mechanism and Cecil-based reference rewriter have been fully decommissioned. The bootstrap seed stage-0 is now permanently downloaded from the latest stable self-hosted release. The underlying JVM `dblToSingle` / `System.Single` signature defect that caused the previous regression was successfully root-caused and resolved in D124 (correcting metadata signature mapping for primitive floating types on the MSIL backend), unblocking and completing the cutover!
+**Bootstrap seed cutover (stage-0): completed, now downloading by default (D125).**
+The legacy F# bootstrapping/minting mechanism and Cecil-based reference rewriter have been fully decommissioned. The bootstrap seed stage-0 is now permanently downloaded from the latest stable self-hosted release. The underlying JVM `dblToSingle` / `System.Single` signature defect that caused the previous regression was successfully root-caused and resolved in D125 (correcting metadata signature mapping for primitive floating types on the MSIL backend), unblocking and completing the cutover!
 
 
 **Two CI safety-net jobs added (D-progress-595, #5094 / #5099) — detection,

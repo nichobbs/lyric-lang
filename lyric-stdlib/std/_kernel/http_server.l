@@ -38,15 +38,21 @@ import Std.Collections
 // Extern types — BCL classes the helpers below reference.
 // =====================================================================
 pub extern type HttpListener = "System.Net.HttpListener"
+
 pub extern type HttpContext = "System.Net.HttpListenerContext"
 
 extern type WebHeaderCollection = "System.Net.WebHeaderCollection"
-extern type HttpListenerPrefixCollection = "System.Net.HttpListenerPrefixCollection"
+
 extern type HttpListenerRequest = "System.Net.HttpListenerRequest"
+
 extern type HttpListenerResponse = "System.Net.HttpListenerResponse"
+
 extern type Stream = "System.IO.Stream"
+
 extern type StreamReader = "System.IO.StreamReader"
+
 extern type Encoding = "System.Text.Encoding"
+
 extern type Uri = "System.Uri"
 
 // =====================================================================
@@ -54,34 +60,12 @@ extern type Uri = "System.Uri"
 // =====================================================================
 // Note: Constructors with arguments are wrapped manually to prevent stage-0
 // seed compiler panics on metadata-based `.new(args)` calls.
-@externTarget("System.Net.HttpListener..ctor")
-func newHttpListener(): HttpListener = ()
-
+//
 // .NET properties are exposed as `get_<Name>` / `set_<Name>` methods
 // on the declaring type; @externTarget binds to method names, not property
 // names, so each property reader/writer must use the prefixed form.  Instance
 // properties also need `@externInstance` so the FFI emitter routes through
 // callvirt instead of treating them as static calls.
-@externInstance
-@externTarget("System.Net.HttpListener.get_Prefixes")
-func listenerPrefixes(l: in HttpListener): HttpListenerPrefixCollection = ()
-
-@externInstance
-@externTarget("System.Net.HttpListenerPrefixCollection.Add")
-func prefixesAdd(p: in HttpListenerPrefixCollection, prefix: in String): Unit = ()
-
-@externInstance
-@externTarget("System.Net.HttpListener.Start")
-func listenerStart(l: in HttpListener): Unit = ()
-
-@externInstance
-@externTarget("System.Net.HttpListener.GetContext")
-func listenerGetContext(l: in HttpListener): HttpContext = ()
-
-@externInstance
-@externTarget("System.Net.HttpListener.Stop")
-func listenerStop(l: in HttpListener): Unit = ()
-
 @externInstance
 @externTarget("System.Net.HttpListenerContext.get_Request")
 func ctxRequest(c: in HttpContext): HttpListenerRequest = ()
@@ -91,16 +75,8 @@ func ctxRequest(c: in HttpContext): HttpListenerRequest = ()
 func ctxResponse(c: in HttpContext): HttpListenerResponse = ()
 
 @externInstance
-@externTarget("System.Net.HttpListenerRequest.get_HttpMethod")
-func requestHttpMethod(req: in HttpListenerRequest): String = ()
-
-@externInstance
 @externTarget("System.Net.HttpListenerRequest.get_Url")
 func requestUrl(req: in HttpListenerRequest): Uri = ()
-
-@externInstance
-@externTarget("System.Uri.get_AbsolutePath")
-func uriAbsolutePath(u: in Uri): String = ()
 
 @externInstance
 @externTarget("System.Uri.get_Query")
@@ -125,19 +101,8 @@ func headersGet(h: in WebHeaderCollection, name: in String): String = ()
 @externTarget("System.Net.HttpListenerResponse.AddHeader")
 func responseAddHeader(resp: in HttpListenerResponse, name: in String, value: in String): Unit = ()
 
-@externInstance
-@externTarget("System.Net.HttpListenerRequest.get_InputStream")
-func requestInputStream(req: in HttpListenerRequest): Stream = ()
-
-@externInstance
-@externTarget("System.Net.HttpListenerRequest.get_ContentEncoding")
-func requestContentEncoding(req: in HttpListenerRequest): Encoding = ()
 @externTarget("System.IO.StreamReader..ctor")
 func newStreamReader(stream: in Stream, encoding: in Encoding): StreamReader = ()
-
-@externInstance
-@externTarget("System.IO.StreamReader.ReadToEnd")
-func readerReadToEnd(r: in StreamReader): String = ()
 
 @externInstance
 @externTarget("System.Net.HttpListenerResponse.set_StatusCode")
@@ -283,16 +248,23 @@ pub func urlDecode(s: in String): String {
 // Internal: shared response writer for both the text and JSON helpers.
 // Sets status + content-type, encodes the body to UTF-8 bytes, writes
 // the full buffer, then closes the output stream and the response.
+//
+// Uses the audited @externTarget wrappers throughout rather than auto-FFI
+// method-call syntax: both `Encoding.GetBytes` and `Stream.Write` have
+// enough overloads that auto-FFI resolution fails at runtime ("unresolved
+// extern instance method... Declare an @externTarget wrapper if a custom
+// binding is intended") — the same pattern `respondBytesWith` below already
+// uses successfully.
 func respondWith(c: in HttpContext, status: in Int, contentType: in String, body: in String): Unit {
-  val resp = c.get_Response()
-  resp.set_StatusCode(status)
-  resp.set_ContentType(contentType)
-  val bytes = Encoding.get_UTF8().GetBytes(body)
-  resp.set_ContentLength64(intToLong(bytes.length))
-  val outStream = resp.get_OutputStream()
-  outStream.Write(bytes, 0, bytes.length)
-  outStream.Close()
-  resp.Close()
+  val resp = ctxResponse(c)
+  setResponseStatus(resp, status)
+  setResponseContentType(resp, contentType)
+  val bytes = encodingGetBytes(utf8(), body)
+  setResponseContentLength(resp, intToLong(bytes.length))
+  val outStream = responseOutputStream(resp)
+  streamWrite(outStream, bytes, 0, bytes.length)
+  streamClose(outStream)
+  responseClose(resp)
 }
 
 /// Reply with a plaintext body; closes the response.

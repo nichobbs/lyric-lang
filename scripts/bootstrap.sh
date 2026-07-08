@@ -97,11 +97,19 @@ ok() { echo "[bootstrap] OK: $*"; }
 # Download and extract self-hosted binary from latest release
 # ---------------------------------------------------------------------------
 try_bootstrap_from_release() {
-  # Check if binary already exists (skip download if it does)
+  # Check if binary already exists (skip download if it does). A cache hit
+  # requires lib/ too — a binary with no lib/ can't locate Lyric.Stdlib at
+  # runtime, so a partial/stale cache from an interrupted extraction must
+  # not short-circuit here; clear it and fall through to a fresh download.
   mkdir -p "$BUILD_DIR/stage0-publish"
-  if [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
+  if { [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; } \
+      && [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
     info "  Using cached stage0-publish binary (skipping download)"
     return 0
+  elif [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
+    info "  Cached stage0-publish binary found but lib/ is missing (stale/partial cache); clearing and re-downloading"
+    rm -rf "${BUILD_DIR:?}/stage0-publish"
+    mkdir -p "$BUILD_DIR/stage0-publish"
   fi
   # Detect platform and architecture for downloading the right binary
   local platform
@@ -335,13 +343,22 @@ stage0() {
 
   # Copy the lib/ directory containing Lyric.Stdlib.dll and other runtime dependencies.
   # The binary resolves these at runtime via findCompiledStdlibDir(<binary>/lib).
+  # A partial/stale stage0-publish (e.g. an interrupted prior extraction) can
+  # have a binary with no lib/; clear it and retry the download once before
+  # giving up, so a stale cache doesn't leave the user stuck.
+  if [[ ! -d "$BUILD_DIR/stage0-publish/lib" ]]; then
+    info "  lib/ directory not found in stage0-publish; clearing cache and retrying download once"
+    rm -rf "${BUILD_DIR:?}/stage0-publish"
+    mkdir -p "$BUILD_DIR/stage0-publish"
+    try_bootstrap_from_release || die "Stage 0: release download failed on retry"
+  fi
   if [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
     mkdir -p "$(dirname "$STAGE0_BIN")/lib"
     cp -r "$BUILD_DIR/stage0-publish/lib/." "$(dirname "$STAGE0_BIN")/lib/" \
       || die "Stage 0: failed to copy lib/ directory from stage0-publish"
     info "  copied lib/ directory with runtime dependencies"
   else
-    die "lib/ directory not found in stage0-publish — stage-0 binary will not be able to locate Lyric.Stdlib"
+    die "lib/ directory not found in stage0-publish after retry — the release archive appears to be missing lib/"
   fi
 
   ok "Stage 0 complete — $STAGE0_BIN"

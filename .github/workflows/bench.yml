@@ -65,9 +65,9 @@ jobs:
             ${{ runner.os }}-nuget-
 
       # Bootstrap.sln and the F# `src/Lyric.Cli` project were deleted once the
-      # self-hosted compiler became the sole toolchain. Download the
-      # stage-1 self-hosted bundle, then build the AOT entry-point project
-      # — the resulting `lyric` binary is what `lyric bench` runs through.
+      # self-hosted compiler became the sole toolchain. Download the stage-0
+      # seed and build stage 1 from source, then build the AOT entry-point
+      # project — the resulting `lyric` binary is what `lyric bench` runs through.
       - name: Bootstrap stage 1 (download stage-0 release → self-hosted packages)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

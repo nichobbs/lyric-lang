@@ -22,7 +22,6 @@ package Msil.Tables
 import Msil.Kernel
 import Std.Core
 import Std.Collections
-import Std.Console as Console
 
 // ── TypeDef attribute flags (ECMA-335 §II.23.1.15) ────────────────────────────
 pub val TDF_PRIVATE: Int = 0x00000000
