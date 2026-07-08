@@ -30082,7 +30082,7 @@ across both targets for 10 code points spanning distinct Unicode
 categories. Verified by `lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l`
 (8 cases), wired into CI.
 
-Found and filed (not fixed, each independent of this migration) 5
+Found and filed (not fixed, each independent of this migration) 6
 pre-existing JVM codegen bugs while verifying end-to-end: #5377
 (`Std.Environment.args()` has no implementation path on JVM), #5378 (a
 `Never`-returning call as a bare tail expression in a differently-typed
@@ -30091,6 +30091,16 @@ call's result on a parameter receiver emits no invoke instruction), #5380
 (a nullary enum case value is corrupted when passed as a function
 argument — a significant, previously-undiscovered general correctness
 bug), #5381 (`List[String]` indexing loses its element type for auto-FFI
-resolution, blocking `Std.Process.run()` end-to-end on JVM).
+resolution, blocking `Std.Process.run()` end-to-end on JVM), #5388 (a
+panic's message is lost when it propagates through a closure invoked via
+a higher-order function parameter).
+
+Review hardening (2 rounds) found and fixed two REQUIRED gaps in the
+initial version: `environment_host.l` was still missing
+`hostAppBaseDirectory`/`hostCurrentDirectory` (same class-load failure
+mode as the original `hostGetCommandLineArgs`/`hostExit` gap), and
+`hostSpawn` never called `ProcessBuilder.inheritIO()`, silently breaking
+the documented stdio-inheritance contract and risking a pipe-buffer
+deadlock.
 
 **Related:** `docs/03-decision-log.md` D-progress-625 (full account).

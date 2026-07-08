@@ -31,11 +31,17 @@ extern type JProcessBuilder = "java.lang.ProcessBuilder"
 
 // Spawn a child process.  `fileName` is the executable path or name;
 // `arguments` is a space-separated, `Std.Process.buildArgString`-formatted
-// argument string.  Backed by `new ProcessBuilder(command).start()`.
+// argument string.  Backed by `new ProcessBuilder(command).inheritIO().start()`.
+// `inheritIO()` is required, not cosmetic: without it `ProcessBuilder`
+// defaults every stream to `Redirect.PIPE`, silently breaking this kernel's
+// documented "child inherits the parent's stdio" contract (matching
+// `_kernel/process_host.l`'s .NET `UseShellExecute = false` behavior) and
+// risking a real deadlock in `hostWait` if a child writes enough
+// stdout/stderr to fill the unread pipe buffer before exiting.
 // Panics (Bug) if the executable cannot be found or the OS rejects the spawn.
 pub func hostSpawn(fileName: in String, arguments: in String): ProcessHandle {
   val cmd = parseArgString(fileName, arguments)
-  JProcessBuilder.new(cmd).start()
+  JProcessBuilder.new(cmd).inheritIO().start()
 }
 
 // Block the calling thread until the process exits.  Backed by

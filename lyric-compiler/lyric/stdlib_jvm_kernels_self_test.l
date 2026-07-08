@@ -65,6 +65,29 @@ test "hostRuntimeDirectory / hostRuntimeIdentifier / hostSetEnvironmentVariable 
   assertTrue(true, "hostSetEnvironmentVariable's no-op stub did not crash")
 }
 
+test "hostAppBaseDirectory is the empty-string stub; hostCurrentDirectory returns a real absolute path" {
+  // hostAppBaseDirectory has no accurate JVM equivalent to .NET's
+  // AppContext.BaseDirectory (see the kernel's doc comment) -- "" per the
+  // established "empty = unavailable" convention, not a plausible-looking
+  // but potentially wrong cwd substitute.
+  assertEqual(hostAppBaseDirectory(), "", "hostAppBaseDirectory is the empty-string stub on JVM")
+  // hostCurrentDirectory IS a genuine, accurate JVM equivalent (user.dir).
+  val cwd = hostCurrentDirectory()
+  assertTrue(cwd.length > 0, "hostCurrentDirectory is non-empty")
+  assertTrue(cwd.startsWith("/"), "hostCurrentDirectory is a real POSIX absolute path")
+}
+
+test "hostGetCommandLineArgs panics (issue #5377) rather than crashing on the old extern package no-op" {
+  // Regression for the JDK-has-no-argv-retrieval gap (issue #5377): this
+  // must fail loud, not the generic "unsupported method" crash the old
+  // extern package no-op produced.  Uses assertPanics (occurrence only),
+  // not assertPanicsWith (message content): a closure-propagated panic's
+  // .message is unreliable on JVM (issue #5388, found while writing this
+  // test), independent of hostGetCommandLineArgs itself -- manually
+  // verified the real panic text separately (see the PR description).
+  assertPanics("hostGetCommandLineArgs panics rather than returning/crashing silently", { -> hostGetCommandLineArgs() })
+}
+
 // ── Std.ProcessHost ──────────────────────────────────────────────────────────
 test "hostSpawn/hostWait/hostExitCode/hostDisposeProc run a real child process" {
   val proc = hostSpawn("/bin/sh", "\"-c\" \"exit 7\"")

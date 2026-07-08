@@ -529,7 +529,7 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   stdout, stderr, stdin delivery, multi-word args, quoting round-trip, exit code
   0/1/42, timeout path), wired in CI.  The `lyric-storage` local-fs JVM kernel
   (#1444/#1840) remains **BLOCKED on M-4** (#2444).
-- **M-19 (DONE, D-progress-624):** `_kernel_jvm/environment_host.l` /
+- **M-19 (DONE, D-progress-625):** `_kernel_jvm/environment_host.l` /
   `process_host.l` / `log_host.l` / `unicode_host.l` migrated off `extern
   package` (a no-op mechanism in both the type checker and both codegens)
   onto plain `extern type` + auto-FFI.  `Std.Environment`, `Std.Process`,

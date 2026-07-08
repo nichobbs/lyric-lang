@@ -31,6 +31,26 @@ import Std.Core
 
 extern type JSystem = "java.lang.System"
 
+// .NET's `System.AppContext.BaseDirectory` (the entry-ASSEMBLY's own
+// directory, for resolving resources packaged alongside the binary) has no
+// direct JVM equivalent without reflecting on a loaded class's
+// `ProtectionDomain`/`CodeSource` -- and unlike the current working
+// directory below, it is NOT interchangeable with `user.dir` (running
+// `java -jar /opt/app/app.jar` from an unrelated `cwd` would silently
+// return the wrong directory).  Returns "" per the "empty = unavailable"
+// convention already used for `hostRuntimeDirectory`/`hostRuntimeIdentifier`
+// rather than a plausible-looking but wrong answer.
+pub func hostAppBaseDirectory(): String {
+  ""
+}
+
+// Current working directory of the process — `pwd` on POSIX.  `user.dir`
+// is a genuine, real JVM equivalent (guaranteed set at JVM startup), unlike
+// `hostAppBaseDirectory` above.
+pub func hostCurrentDirectory(): String {
+  JSystem.getProperty("user.dir")
+}
+
 // The .NET runtime shared-framework directory has no JVM equivalent.
 // Returns "" so that callers following the "empty = unavailable" convention
 // (documented in Std.Environment.runtimeDirectory) behave correctly on JVM.
@@ -52,16 +72,24 @@ pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
 }
 
 // Option seam — the exception-free surface every kernel twin implements
-// (issue #4752).  `System.getenv` returns null for an unset variable;
-// Lyric has no null pattern (issue #4775), so unset is detected via
-// `??` with a NUL-string marker: POSIX and Windows environment blocks
-// are NUL-delimited, so no real value can ever equal "\0".
+// (issue #4752): absent and error both surface as None here, matching
+// `_kernel/environment_host.l`'s `try`/`catch Bug` wrapper exactly (a
+// `SecurityManager`-denied `System.getenv` throws on JVM the same way a
+// permission failure could on .NET).  `System.getenv` returns null for an
+// unset variable; Lyric has no null pattern (issue #4775), so unset is
+// detected via `??` with a NUL-string marker: POSIX and Windows
+// environment blocks are NUL-delimited, so no real value can ever equal
+// "\0".
 pub func hostGetVarOpt(key: in String): Option[String] {
-  val v = JSystem.getenv(key) ?? "\u{0000}"
-  if v == "\u{0000}" {
+  try {
+    val v = JSystem.getenv(key) ?? "\u{0000}"
+    if v == "\u{0000}" {
+      None
+    } else {
+      Some(value = v)
+    }
+  } catch Bug as _ {
     None
-  } else {
-    Some(value = v)
   }
 }
 

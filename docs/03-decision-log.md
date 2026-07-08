@@ -11946,7 +11946,7 @@ remaining four per-lambda maps), #1877 (uniform boxed `Func` ABI both
 #5362 and #5366 live in), #3196 (the earlier enum-FieldDef-row-shift bug
 in the same family as #5361, though a different specific gap).
 
-## D-progress-625 — JVM: 4 stdlib `_kernel_jvm/*.l` files migrated off `extern package` onto `extern type` + auto-FFI, restoring `Std.Environment`/`Std.Process`/`Std.Log`/the self-hosted lexer's Unicode classification on `--target jvm`; 5 pre-existing JVM codegen bugs found and tracked
+## D-progress-625 — JVM: 4 stdlib `_kernel_jvm/*.l` files migrated off `extern package` onto `extern type` + auto-FFI, restoring `Std.Environment`/`Std.Process`/`Std.Log`/the self-hosted lexer's Unicode classification on `--target jvm`; 6 pre-existing JVM codegen bugs found and tracked
 
 **Status:** ACCEPTED (migration); 5 newly-discovered bugs filed and deliberately NOT fixed here (see below)
 
@@ -12068,6 +12068,48 @@ immediately on the `extern package` no-op, before ever reaching these bugs).
 in favor of `extern type`/`import extern`); the reconnaissance report
 classifying the other ~29 `extern package` usages (mostly ASPIRATIONAL-ADAPTER
 or dead code, not simple syntax migrations).
+
+**Review hardening.** Two rounds of review found four real gaps in the
+initial version of this migration:
+
+- **REQUIRED (#5383):** `environment_host.l` was still missing
+  `hostAppBaseDirectory`/`hostCurrentDirectory` — `std/environment.l` calls
+  both unconditionally, so `Std.Environment` still failed to load as a JVM
+  class, the exact failure mode this entry's `hostGetCommandLineArgs`/
+  `hostExit` fix was supposed to close. Fixed: `hostCurrentDirectory` is a
+  genuine, accurate `System.getProperty("user.dir")` call (a real JVM
+  equivalent to "current working directory," unlike `hostAppBaseDirectory`);
+  `hostAppBaseDirectory` has no accurate JVM equivalent to .NET's
+  `AppContext.BaseDirectory` without reflecting on a loaded class's
+  `ProtectionDomain`/`CodeSource` (and is NOT interchangeable with
+  `user.dir` — `java -jar /opt/app/app.jar` run from an unrelated `cwd`
+  would silently return the wrong directory) — returns `""` per the
+  already-established "empty = unavailable" convention rather than a
+  plausible-looking but wrong answer.
+- **REQUIRED (#5384):** `hostSpawn`'s `ProcessBuilder` never called
+  `.inheritIO()`, so it defaulted to `Redirect.PIPE` — silently breaking
+  the documented "child inherits the parent's stdio" contract and risking
+  a real deadlock in `hostWait`'s `waitFor()` once a child filled the
+  unread pipe buffer. Fixed and manually verified (a spawned child's
+  stdout is now visible in the parent's own output).
+- **SUGGESTION (#5385):** `docs/44` M-19 cited `D-progress-624` instead of
+  `D-progress-625` (the rebase-conflict renumbering after this entry
+  collided with a concurrently-landing MSIL entry) — fixed.
+- **SUGGESTION (#5386):** `hostGetVarOpt` dropped the `.NET` kernel's
+  `try`/`catch Bug -> None` wrapper (issue #4752's exception-free-surface
+  contract) — a `System.getenv` failure would panic on JVM instead of
+  degrading gracefully like the .NET target. Fixed to match exactly.
+- **SUGGESTION (#5387):** `hostGetCommandLineArgs`'s deliberate panic path
+  had no test coverage. Added one — which surfaced a SEVENTH pre-existing
+  bug: **#5388**, a panic's `.message` is lost/replaced with a JVM
+  class-name-shaped string when the panic propagates through a closure
+  invoked via a higher-order function parameter (confirmed with
+  `Std.Testing.assertPanicsWith`, which wraps the target call in a `{ ->
+  ... }` closure before invoking it). `assertPanics` (occurrence-only, no
+  message check) is unaffected and was used instead; the real panic text
+  was verified manually with no closure indirection.
+
+**Related:** #5383, #5384, #5385, #5386, #5387, #5388.
 
 ---
 ## Decisions deferred to v2 or later
