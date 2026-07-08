@@ -169,7 +169,7 @@ selfhost-check: ## Classify a repro: real self-hosted bug vs artifact (FILE=repr
 
 # ── Compiler & stdlib test suite ────────────────────────────────────────────
 
-test: ## Run the compiler and standard library test suite
+test: lyric ## Run the compiler and standard library test suite
 	./bin/lyric test --manifest lyric-session/lyric.toml
 
 # ── Native backend (LLVM) ───────────────────────────────────────────────────

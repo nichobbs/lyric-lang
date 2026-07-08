@@ -9042,19 +9042,14 @@ func pickCaseFqnByScrutinee(
     while i < candidates.count {
       match mapGet(cctx.caseParentUnion, candidates[i]) {
         case Some(p) -> {
-          Console.println("--- DEBUG pickCaseFqnByScrutinee: candidate=" + candidates[i] + ", registeredParent=" + p + ", parentFqn=" + parentFqn)
           if p == parentFqn {
             return candidates[i]
           }
         }
-        case None -> {
-          Console.println("--- DEBUG pickCaseFqnByScrutinee: candidate=" + candidates[i] + " has no registered parent")
-        }
+        case None -> ()
       }
       i = i + 1
     }
-  } else {
-    Console.println("--- DEBUG pickCaseFqnByScrutinee: parentFqn is empty for scrutTy key " + msilTypeKey(scrutTy))
   }
   pickCaseFqnByScope(cctx, fctx, candidates)
 }

@@ -25586,17 +25586,9 @@ links the self-hosted DLLs (D-progress-531: 101/101 DLLs byte-for-byte
 reproducible at the stage-3 fixpoint).  The released binary contains code
 emitted exclusively by the self-hosted Lyric compiler.
 
-**Bootstrap seed cutover (stage-0): still minting by default — attempted and
-reverted, see D-progress-594.**  #4387 (above) is about which artifact
-*ships*; it says nothing about how stage-0 (the untrusted seed used to
-bootstrap stage 1) is acquired.  `ci.yml`/`bench.yml` still hard-code
-`LYRIC_BOOTSTRAP_MINT=1` and `publish.yml`'s `mint_stage0` input still
-defaults to `true`.  Issue #3936 tracks flipping this now that the release
-binary's two known corruption bugs are fixed (#3988), but D-progress-594
-found a third, real regression (a v0.4.14-seed-specific miscompile of
-`Jvm.Kernel.dblToSingle`) that only a download-seeded stage 1 running the
-full JVM self-test suite surfaces — #3936 remains open, blocked on #5094
-(the v0.4.14 defect itself is still unlocated).
+**Bootstrap seed cutover (stage-0): completed, now downloading by default (D124).**
+The legacy F# bootstrapping/minting mechanism and Cecil-based reference rewriter have been fully decommissioned. The bootstrap seed stage-0 is now permanently downloaded from the latest stable self-hosted release. The underlying JVM `dblToSingle` / `System.Single` signature defect that caused the previous regression was successfully root-caused and resolved in D124 (correcting metadata signature mapping for primitive floating types on the MSIL backend), unblocking and completing the cutover!
+
 
 **Two CI safety-net jobs added (D-progress-595, #5094 / #5099) — detection,
 not a fix.**  `.github/workflows/seed-candidacy.yml` runs on every
@@ -25745,7 +25737,7 @@ directly in `$STAGE2_BIN_DIR/lyric` — no intermediate copy.
 
 **What still uses `Lyric.Cli.Aot`:** only the stage-1/development build
 (`build_aot_binary()` in `bootstrap.sh`, and `make lyric` / `make aot` /
-`make mint`).  At that point no `lyric` binary exists yet, so we must use
+`make stage1`).  At that point no `lyric` binary exists yet, so we must use
 the C# trampoline.  Once the release binary that carries `--release-from-dll`
 is the seed, `build_aot_binary()` can switch to the pure-Lyric path and
 `Lyric.Cli.Aot` can be deleted (tracked in #4390).
