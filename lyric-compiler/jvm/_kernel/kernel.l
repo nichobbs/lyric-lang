@@ -549,7 +549,7 @@ pub func poolInteger(pool: in Pool, v: in Int): Int {
   poolAdd(pool, key, e)
 }
 
-import extern System.{ Convert, BitConverter, Single }
+import extern System.{ Single }
 
 @externTarget("System.Convert.ToSingle")
 func dblToSingle(v: in Double): Single = ()

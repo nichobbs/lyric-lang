@@ -892,7 +892,6 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   var fi = 0
   while fi < t.fields.count {
     val r = t.fields[fi]
-    Console.println("--- SERIALIZE FIELD idx=" + fi.toString() + " flags=" + r.flags.toString() + " nameIndex=" + r.name.toString())
     w2(buf, r.flags)
     wHeap(buf, r.name, wideStr)
     wHeap(buf, r.signature, wideBlob)

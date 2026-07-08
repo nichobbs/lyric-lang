@@ -156,7 +156,7 @@ pub func bufF8Le(w: in ByteWriter, v: in Double): Unit {
   bufBytes(w, f8GetBytes(v))
 }
 
-import extern System.{ Convert, BitConverter, Single }
+import extern System.{ Single }
 
 @externTarget("System.Convert.ToSingle")
 func dblToSingle(v: in Double): Single = ()

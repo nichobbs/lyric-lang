@@ -25783,7 +25783,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           while fi < decl.members.count {
             match decl.members[fi] {
               case OMField(f) -> {
-                oFields.add(MField(flags = FDA_ASSEMBLY, name = f.name, fieldType = typeExprToMsilCtx(cctx, f.ty, pkgName)))
+                oFields.add(MField(flags = FDA_PRIVATE, name = f.name, fieldType = typeExprToMsilCtx(cctx, f.ty, pkgName)))
                 visMask.add(not hasAnnotationMsil(f.annotations, "hidden"))
                 projMask.add(hasAnnotationMsil(f.annotations, "projectionBoundary"))
               }
