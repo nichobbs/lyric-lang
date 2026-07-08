@@ -18,9 +18,9 @@ package Std.HttpServer
 
 import Std.Core
 
-extern type HttpListener = "lyric.stdlib.jvm.HttpServerHandle"
+pub extern type HttpListener = "lyric.stdlib.jvm.HttpServerHandle"
 
-extern type HttpContext = "lyric.stdlib.jvm.HttpContextHandle"
+pub extern type HttpContext = "lyric.stdlib.jvm.HttpContextHandle"
 
 @externTarget("lyric.stdlib.jvm.HttpServerHost.startListener")
 pub func startListener(prefix: in String): HttpListener = ()

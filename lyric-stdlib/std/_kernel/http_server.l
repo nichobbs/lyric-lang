@@ -37,12 +37,17 @@ import Std.Collections
 // =====================================================================
 // Extern types — BCL classes the helpers below reference.
 // =====================================================================
-import extern System.IO.{Stream, StreamReader}
-import extern System.Net.{HttpListener, HttpListenerContext as HttpContext, HttpListenerRequest, HttpListenerResponse, HttpListenerPrefixCollection}
-import extern System.Text.{Encoding}
-import extern System.{Uri}
+pub extern type HttpListener = "System.Net.HttpListener"
+pub extern type HttpContext = "System.Net.HttpListenerContext"
 
 extern type WebHeaderCollection = "System.Net.WebHeaderCollection"
+extern type HttpListenerPrefixCollection = "System.Net.HttpListenerPrefixCollection"
+extern type HttpListenerRequest = "System.Net.HttpListenerRequest"
+extern type HttpListenerResponse = "System.Net.HttpListenerResponse"
+extern type Stream = "System.IO.Stream"
+extern type StreamReader = "System.IO.StreamReader"
+extern type Encoding = "System.Text.Encoding"
+extern type Uri = "System.Uri"
 
 // =====================================================================
 // Primitive externs (private to this kernel file).
