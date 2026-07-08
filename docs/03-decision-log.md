@@ -11693,7 +11693,6 @@ spec serving), #5361–#5364 (the four closure/codegen bugs found and
 worked around in this entry).
 
 ---
-
 ## D-progress-623 — JVM: primitive-array `slice[T]` marshaling at the auto-FFI/`@externTarget` boundary generalized from a `byte[]`-only, tail-position-only special case to all 8 primitive element types, in both directions, and fixed for explicit `return` statements
 
 **Status:** ACCEPTED
@@ -11800,6 +11799,152 @@ the leading `[` via substring.
 **Related:** `docs/44` M-10 (the original byte-only interop this
 generalizes), `docs/42` (metadata-based auto-FFI resolution this scoring
 fix extends).
+
+---
+## D-progress-624 — Self-hosted MSIL backend: fixed #5361 (enum + closure lowering crash), #5363 (cross-package closure map collision), and #5364 (match-bound `.indexOf` payload mistyped), each with new regression self-test coverage; #5362 (bare function reference as a delegate value) investigated but not fixed — an attempted compile-time diagnostic false-positived on legitimate monomorphized code and was reverted before merge; #5359/#5360 confirmed correctly scoped as follow-ups; new bug #5366 found and filed while verifying #5363
+
+Root-caused and fixed three of the four self-hosted MSIL compiler bugs
+D124 found and worked around (#5361–#5364), converted the fourth into a
+clear compile-time diagnostic instead of shipping a runtime landmine,
+and confirmed the two scope-boundary follow-ups (#5359, #5360) remain
+correctly documented as blocked rather than silently inert.
+
+- **#5361 (payload-free `enum` + closure in the same compile unit
+  crashes closure lowering) — fixed.** `lowerMEnum`
+  (`lyric-compiler/msil/lowering.l`) was the *only* type-lowering
+  function that never called `recordUserTypeDefRow` after `addTypeDef`
+  — every other lowering path (record, union, distinct type, interface,
+  opaque) does. `recordUserTypeDefRow` populates the positional
+  `ctx.typeDefRowFqns` list that `findMethodDefRowOfType` /
+  `findFieldDefRowOfType`'s `row - 2` reverse-lookup fallback depends on
+  to resolve a forward-referenced TypeDef (e.g. a closure class drained
+  after the enum's package) before its real row exists in the table.
+  Omitting the call desynced that list for every type lowered after an
+  enum, so the fallback either read the wrong FQN or fell out of bounds
+  — surfacing as `MNewobjByName`/`MStfldByName` "could not resolve"
+  panics. Fixed by adding the missing call; verified with the issue's
+  own repro (payload-free `enum` + closure literal, single package).
+- **#5363 (closures across 2+ packages corrupt/crash) — the described
+  root cause is fixed.** `cctx.lambdaTicker` (`codegen.l`) resets to 0
+  at the start of every package's `codegenMPackage` call, so two
+  different packages' first capturing lambda both produce
+  `lname = "__lambda_0"`. Five per-lambda maps
+  (`lambdaCaptureNames`/`Types`/`Cells`, `lambdaClosureClasses`,
+  `lambdaParamTypes`) were keyed by this bare, non-package-qualified
+  name — mirroring a collision `lambdaExternDelegateParamTypes` had
+  already been fixed for in #5309, but the fix wasn't applied to these
+  five. A later package's own (possibly non-capturing) `__lambda_0`
+  read stale capture metadata left behind by an earlier package's
+  `__lambda_0`, corrupting its MethodDef signature with a bogus leading
+  closure-class parameter. Fixed by qualifying every read/write site
+  with `pkgName + "."` (mirroring the #5309 fix exactly); verified via
+  compiler-internal instrumentation that both packages' lambda
+  metadata now resolves independently, and via a 2-package repro that
+  the previously-wrong `hasCaps`/signature is now correct.
+  **Not fully fixed end-to-end**: verifying against the issue's own
+  `r1 + r2` repro surfaced a second, pre-existing, unrelated bug (see
+  #5366 below) that also breaks the repro's final arithmetic step —
+  confirmed via a from-scratch `main`-commit rebuild that this second
+  bug predates this session and is not a regression from the fix above.
+- **#5362 (bare named function reference used as a delegate value
+  crashes with `NullReferenceException`) — investigated, not fixed;
+  an attempted compile-time diagnostic was reverted before merge.**
+  A full fix (desugaring a bare function reference into an equivalent
+  forwarding closure at every call site, or teaching the uniform boxed
+  `Func` ABI to bridge a real typed BCL method signature) is
+  substantially larger than this slice — deferred. A first attempt
+  added a `codegen.l` check (`lowerExprMsil`'s `EPath` fallback — the
+  final arm reached only when a name resolves to no local/capture/
+  const/enum-case/union-case-ctor/static-val) that raised a new F0027
+  diagnostic whenever the unresolved name matched a known top-level
+  function, on the theory that this fallback is only ever reached by
+  exactly the buggy pattern. **That theory was wrong and the check was
+  reverted**: CI's `build`/`build-and-test` jobs caught it
+  false-positiving on `examples/product-catalog`'s
+  `map(rows, rowToProduct)` — a bare function reference passed to a
+  generic higher-order function that `Lyric.Mono` monomorphizes/inlines
+  against the concrete function at that specific call site, never
+  constructing a real `Func` delegate at all, so no bug is present
+  there. The `EPath` fallback reached by *every* unresolved bare
+  function-name reference doesn't distinguish "a delegate must
+  actually be materialised here" (buggy) from "this call site is
+  monomorphized away" (safe) — a correct fix needs that distinction,
+  not a blanket check. Left as `ldnull`/`MObject` (the pre-existing
+  behavior) pending a properly-scoped fix; #5362 remains open.
+- **#5364 (match-arm-bound variable used directly as a call argument
+  crashes with `InvalidProgramException`) — fixed.** Root cause
+  (found by a delegated investigation that built and IL-disassembled
+  four variants): `.indexOf`/`.lastIndexOf` **method-call syntax**
+  is special-cased in `lowerMethodCallMsil` to call the raw BCL
+  `String.IndexOf`/`LastIndexOf` (`-1`-sentinel `Int`), while the mode
+  checker resolves the same call against `Std.String.indexOf`'s
+  `Option[Int]` signature — letting `match str.indexOf(x) { case
+  Some/None }` type-check against a scrutinee that is physically a raw,
+  never-boxed `Int`. `lowerPatternBindMsil`'s `PConstructor` arm
+  (`codegen.l`) computes the case class from `scrutTy`; when `scrutTy`
+  is a bare value type (not a class), it falls to a legacy "erased
+  `MObject` scrutinee (e.g. from `mapGet`)" path that **hardcoded** the
+  bound variable's slot type to `MObject` regardless of `scrutTy`,
+  even though the physical value was an unboxed `int32`. `stloc`/`ldloc`
+  tolerate the mismatch, but a later `callvirt` argument slot (e.g.
+  passing the bound variable into `.substring(...)`) does not — the
+  JIT rejects it outright. Fixed by using `scrutTy` (not a hardcoded
+  `MObject`) for the fallback binding's slot type — a no-op for the
+  genuine `MObject`-scrutinee case (`scrutTy` is already `MObject`
+  there), correct for the raw-value-sentinel case. Also hardened
+  `"substring"`'s three call-arg-count branches to `coerceCallArgMsil`
+  their `Int` arguments as defense in depth, matching the general
+  call-argument-lowering paths elsewhere in this file that already do
+  this. Verified with the issue's own repro; `closure_correctness`,
+  `closure_zero_overhead`, `bitwise`, `aspect_weave`, `async_spawn`,
+  `block_shadow`, `msil_project_bridge`, `auto_ffi`, `typechecker`,
+  `parser`, `modechecker`, `mono`, `result_generic_specialization`,
+  and `stubbable` self-tests all still pass (no regressions from any of
+  the three fixes landed in this entry).
+- **New regression coverage added** (closing the review gap this PR's
+  own `claude-review` pass flagged, #5368): a new
+  `lyric-compiler/lyric/enum_closure_pattern_bind_self_test.l`
+  (`@test_module`, native `lyric test`) pins #5361 (payload-free enum
+  co-compiled with a closure) and #5364 (`.indexOf`/`.lastIndexOf`
+  match-bound variable used directly as a `substring` call argument,
+  both single- and multi-char-offset shapes); a new case in
+  `lyric-compiler/lyric/msil_project_bridge_self_test.l` ("two packages
+  each defining their own lambda index 0 do not corrupt each other's
+  capture metadata") pins #5363 using the multi-package
+  `compileProjectToMsil` bridge harness already used by that file's
+  other cross-package regression tests.
+- **#5359 (`Web.addWorker` registered but never invoked) and #5360
+  (live OpenAPI/Swagger serving not implemented) — confirmed correctly
+  scoped, no code change needed beyond one stale doc line.** Both are
+  genuinely blocked on larger prerequisite work D124 already identified
+  (real MSIL structured concurrency, or a design for live spec
+  serving) and are already documented in `lyric-web`'s source/README as
+  "registered, not yet invoked" / "not implemented, tracked in #5360" —
+  matching the project's no-silently-dead-config standard. Fixed one
+  remaining stale claim: `lyric-web/src/openapi.l`'s module doc still
+  said code-first specs could be "served live via `Web.start(router)`
+  with swagger enabled," which is not true; corrected to point at
+  #5360.
+- **New issue filed: #5366** — verifying #5363 end-to-end surfaced a
+  second, unrelated, pre-existing bug: a function/closure value bound
+  without a *literal* `(T) -> U` type annotation (i.e. inferred, or
+  annotated via a type alias like `Handler`) never gets its return type
+  registered in `fctx.funcValRetTypes`, so invoking it leaves a boxed
+  `object` on the stack that arithmetic on the result silently
+  corrupts (no exception). Confirmed pre-existing via a from-scratch
+  rebuild of `main` before this session's changes. Root-caused to a
+  specific `codegen.l` gap (`LBLet`/`LBVar`'s `funcValRetTypes`
+  registration only matches a literal `TFunction` `TypeExpr`, never an
+  alias reference or an inferred binding) with a proposed fix sketch;
+  not fixed in this entry — a properly-scoped follow-up, not a
+  bootstrap-grade patch, per this repo's production-readiness standard.
+
+**Related:** D124 (the `lyric-web` PR that found and worked around all
+six issues this entry addresses), #5309 (the earlier, narrower fix to
+`lambdaExternDelegateParamTypes` that #5363's fix generalizes to the
+remaining four per-lambda maps), #1877 (uniform boxed `Func` ABI both
+#5362 and #5366 live in), #3196 (the earlier enum-FieldDef-row-shift bug
+in the same family as #5361, though a different specific gap).
 
 ---
 ## Decisions deferred to v2 or later

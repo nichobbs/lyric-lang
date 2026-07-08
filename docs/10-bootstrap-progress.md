@@ -30013,3 +30013,51 @@ self-tests touching arrays/slices/calls with no failures.
 
 **Related:** `docs/03-decision-log.md` D-progress-623 (full account), docs/44
 M-10 (the original byte-only interop this generalizes).
+
+---
+
+### D-progress-624 — Self-hosted MSIL backend: three of the four D-progress-622 closure/codegen bugs fixed with new regression coverage; the fourth investigated but left unfixed after a compile-time-diagnostic attempt regressed CI
+
+Fixed #5361 (a missing `recordUserTypeDefRow` call in `lowerMEnum`
+desynced the positional TypeDef-row-to-FQN list every subsequent type
+lowering relied on for forward references) and #5363 (five per-lambda
+maps in `Msil.Codegen` were keyed by a bare lambda name that collides
+across packages because the numbering ticker resets per package —
+qualified all five with the package name, mirroring the earlier #5309
+fix that only covered one of the six affected maps). Fixed #5364 (the
+`.indexOf`/`.lastIndexOf` sentinel-`Int` "Option" pattern-bind fallback
+hardcoded its bound variable's slot type to `MObject` instead of the
+scrutinee's real type, leaving an unboxed `int32` in an object-declared
+local — harmless for `stloc`/`ldloc` but rejected by the JIT at a
+`callvirt` argument slot). New regression coverage:
+`enum_closure_pattern_bind_self_test.l` (#5361, #5364) and a new
+cross-package case in `msil_project_bridge_self_test.l` (#5363).
+
+#5362 (bare named function used as a delegate value) remains
+**unfixed** — the uniform boxed `Func` ABI has no path to bridge a
+real typed BCL method signature without either a call-site desugaring
+pass or ABI work larger than this slice. A first attempt added a
+compile-time `F0027` diagnostic instead, but this repo's own CI
+(`build`/`build-and-test`) caught it false-positiving on
+`examples/product-catalog`'s `map(rows, rowToProduct)` — a bare
+function reference passed to a generic higher-order function that
+`Lyric.Mono` monomorphizes at that call site, never constructing a
+real delegate, so no bug is present there. The diagnostic couldn't
+distinguish that safe case from the genuinely buggy one without more
+work than this slice allows, so it was reverted before merge; #5362
+is left exactly as documented (open, runtime `NullReferenceException`
+on invocation).
+
+#5359/#5360 confirmed still correctly scoped as documented follow-ups
+(one stale doc line in `Web.OpenApi` fixed). Verifying #5363's fix
+end-to-end surfaced a second, unrelated, pre-existing bug (confirmed
+via a from-scratch `main` rebuild predating this session): a
+function/closure value bound without a literal `(T) -> U` annotation
+never gets its return type registered for unboxing, so arithmetic on
+its call result silently corrupts — filed as **#5366**, not fixed here
+(root-caused with a proposed fix sketch; the fix itself needs
+alias-resolution machinery `codegen.l` doesn't currently have).
+
+**Related:** `docs/03-decision-log.md` D-progress-624 (full account),
+D-progress-622 (the entry these four bugs were originally filed
+against), #5309 (the earlier, narrower fix this generalizes).

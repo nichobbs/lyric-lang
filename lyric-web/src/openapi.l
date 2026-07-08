@@ -3,8 +3,9 @@
 //! Two uses:
 //!
 //! 1. Code-first spec builder: populate Spec values in your package and pass
-//!    them to `lyric web spec` via the `Lyric.Web.OpenApi.Spec` export, or
-//!    serve them live via `Web.start(router)` with swagger enabled.
+//!    them to `lyric web spec` via the `Lyric.Web.OpenApi.Spec` export.
+//!    (Live serving at runtime via `Web.start(router)` swagger flags is not
+//!    yet implemented — tracked in issue #5360.)
 //!
 //! 2. Spec-first reference: `lyric generate openapi spec.yaml` uses these types
 //!    internally to represent the parsed spec before generating .l stubs.
