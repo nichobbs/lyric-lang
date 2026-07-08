@@ -12721,6 +12721,256 @@ B′-mode aspect weaver whose JVM codegen gap this entry surfaces but does
 not fix).
 
 ---
+
+## D-progress-631 — `lyric-session`: real Lettuce-backed `Session.Kernel.Jvm` (`extern type` + auto-FFI, replacing the no-op `extern package` forward declaration), plus three newly-discovered self-hosted JVM auto-FFI bugs found and fixed/worked-around while wiring it up
+
+**Status:** ACCEPTED
+
+**Context.** `lyric-session/src/_kernel/jvm/session_kernel.l` declared two
+`extern package` blocks (`lyric.session.RedisStore`, `lyric.session.InMemoryStore`)
+— the confirmed no-op FFI mechanism (D-progress-625/#5324) — and the package was
+never registered in `lyric.toml`'s `[project.packages]`, so it was never even
+compiled. `Session.Kernel.Net` (the `.NET` StackExchange.Redis kernel) *was*
+registered but gated on a bare `redis` feature with no `default` in
+`[features]`, so it was ALSO never compiled by any CI run (`lyric test
+--manifest lyric-session/lyric.toml` runs with no `--features` flag).
+
+**What shipped.**
+
+1. **`[maven]` table** added to `lyric-session/lyric.toml`:
+   `io.lettuce:lettuce-core = "6.8.2.RELEASE"` (latest 6.x; verified via
+   `lyric restore` against the real Maven Central metadata and a `javap`
+   inspection of the downloaded JAR — every Lettuce API used below was
+   checked against real bytecode, not documentation).
+2. **`session_kernel.l` (jvm) rewritten** from the dead `extern package`
+   forward declaration to real `extern type` + JVM auto-FFI bindings against
+   `io.lettuce.core.RedisClient` (static factory `.create(url)`),
+   `io.lettuce.core.api.StatefulRedisConnection` (`.connect()`/`.sync()`),
+   `io.lettuce.core.api.sync.RedisCommands` (`.get`/`.set`/`.setex`/`.del`/
+   `.expire`), and `io.lettuce.core.SetArgs` (`.new()`/`.keepttl()` for the
+   `save()` keep-TTL semantics matching the .NET kernel's
+   `StringSet(..., keepTtl: true)`). The dead `lyric.session.InMemoryStore`
+   block (never called — `session.l`'s `InProcessSessionStore` is already
+   pure Lyric and serves both targets with no kernel boundary) was deleted
+   rather than ported, matching the `lyric-feature-flags` `Flags.Registry`
+   precedent (D-progress-627 on `main`, not yet present on this branch's base).
+3. **`[features]`** changed from the vestigial `redis`/`inmemory` pair (the
+   `inmemory` feature gated nothing real) to `default = ["dotnet"]`,
+   `dotnet = []`, `jvm = []` — matching `lyric-auth`/`lyric-resilience`/
+   `lyric-storage`'s established platform-feature convention.
+   `Session.Kernel.Net`'s package-level gate moved from `feature = "redis"`
+   to `feature = "dotnet"`; `Session.Kernel.Jvm` registered in
+   `[project.packages]` for the first time, gated `feature = "jvm"`.
+   `session.l`'s `NativeSessionStore` record, its `SessionStore` impl, and
+   `connectRedis()` are each duplicated into `@cfg(feature = "dotnet")` /
+   `@cfg(feature = "jvm")` pairs (the `auth.l` dispatch idiom), since the
+   `storeHandle` field's concrete type differs per kernel. The shared JSON
+   wire-format helpers (`jsonEscapeStr`/`serializeSessionJson`/
+   `parseSessionJson`) are left ungated — pure Lyric over `Std.Json`, which
+   already has a JVM kernel twin (`_kernel_jvm/json_host.l`), so they compile
+   identically on both targets.
+4. **Pre-existing `.NET`-kernel bug fixed as a side effect of #3**: making
+   `dotnet` the default feature meant `Session.Kernel.Net` now compiles on
+   every default `lyric test` run for the first time ever, which
+   immediately surfaced `error[T0070]`: every one of its six kernel
+   functions used the `func f(...): T = { try { ... } catch Bug as b { ...
+   } }` expression-body form, and the self-hosted type checker infers
+   `<error>` for a `try`/`catch` block's type specifically in that form
+   (confirmed with an 8-line minimal repro — a block-bodied `func f(...):
+   T { try { ... } catch ... }` with an otherwise-identical body
+   type-checks fine). Converted to block-body form (semantically
+   identical, and the form already used everywhere else in this file and
+   `session.l`) rather than chasing the type-checker bug itself — out of
+   scope for this change, but worth a follow-up issue since it silently
+   made `Session.Kernel.Net` a compile-time no-op since #1777 shipped it.
+5. **Three previously-undiscovered self-hosted JVM compiler bugs**, found
+   because Lettuce's core client types (`StatefulRedisConnection`,
+   `RedisCommands`) are the first case in the ecosystem of an `extern type`
+   bound directly to a JDK/Maven **interface** rather than a concrete class
+   (every existing `_kernel_jvm`/ecosystem kernel binds only concrete BCL
+   classes — `HashMap`, `File`, `MessageDigest`, etc.):
+   - **JVM auto-FFI never supported interface-typed extern types at all.**
+     `jvm/class_reader.l`'s `parseClass` unconditionally `return None`d for
+     any `ACC_INTERFACE` class file, so `loadClass()` on an interface
+     always failed, silently falling through to the legacy
+     `(args...)Object` `invokevirtual` guess — which the JVM verifier
+     rejects for an interface owner ("Found interface X, but class was
+     expected", JVMS §6.5 `invokevirtual`'s "must not be an interface"
+     rule). Fixed at the root: `ClassInfo` gained an `isInterface: Bool`
+     field (from `ACC_INTERFACE`, alongside the pre-existing `isAbstract`
+     from `ACC_ABSTRACT`; enums/annotations are still skipped), and
+     `jvm/codegen/04_calls.l`'s `lowerAutoFfiInstanceCall` emits
+     `LInvokeinterface` instead of `LInvokevirtual` when the resolved
+     owner is an interface — the auto-FFI/extern-type counterpart of the
+     existing `sig.isIface` dispatch fix for in-package `impl` methods
+     (#3687/"m-17b", `docs/44`). Separately, `RedisCommands` itself
+     declares almost none of its own methods (`get`/`set`/`setex`/`del`/
+     `expire` live on sibling interfaces it extends, e.g.
+     `RedisStringCommands`/`RedisKeyCommands`), so `auto_ffi.l`'s
+     `findBestInstanceMethod` — which only walked the single-parent
+     `superName` chain — gained a new recursive `scoreInterfacesRec` walk
+     over `ClassInfo.interfaces` (with a visited-set guard against diamond
+     re-scoring), invoked both for the receiver's own interface list and
+     for each class in the existing superclass walk. The emitted
+     `invokeinterface`'s owner still names the original receiver type
+     (not the interface that actually declared the method) — intentional
+     and correct per JVMS 5.4.3.4's own superinterface-search resolution
+     algorithm, so only the compile-time *lookup* needed the extra walk.
+     Verified with a from-scratch minimal repro (a JDK-free two-interface
+     hierarchy) before touching Lettuce, and the existing
+     `auto_ffi_jvm_self_test.l` (22 cases) / `iface_dispatch_jvm_self_test.l`
+     (3 cases) / `auto_ffi_self_test.l` (14 cases) / `bitwise_self_test.l` /
+     `generic_jvm_self_test.l` / `aspect_weave_self_test.l` self-tests all
+     still pass unchanged after the fix.
+   - **Java varargs methods** (`RedisKeyCommands.del(K...)`, bytecode
+     descriptor `([Ljava/lang/Object;)Ljava/lang/Long;`) have no
+     auto-wrapping at the bytecode level — javac's single-argument-to-array
+     sugar is source-level only. `scoreMethod` correctly rejects a bare
+     scalar argument against the array-typed parameter (no silent
+     mis-resolution), so this needed an application-level fix rather than
+     a compiler one: `session_kernel.l` (jvm) builds an explicit
+     `List[String]` + `.toArray()` for `del`'s single-key call. Documented
+     inline; not a compiler bug.
+   - **Cross-package qualified call inside an `impl` block, whose callee
+     name collides with the enclosing interface's own method name, gets
+     misrouted to intra-impl self-dispatch.** `NativeSessionStore.load()`
+     calling `SessionKernelJvm.load(self.storeHandle, sessionId)` (a
+     package-qualified call to an unrelated 2-arg static function) produced
+     a `VerifyError` ("Bad type on operand stack" — the `self.storeHandle`
+     field, checkcast to `String`, ends up on the stack where the `self`
+     receiver for a recursive `load(sessionId)`-shaped invokevirtual was
+     expected). Reproduced with a minimal two-package, JDK-free repro
+     independent of any Lettuce/Redis code, confirming it as a distinct,
+     general codegen defect — the compiler's own bare-intra-impl-call bug
+     (`m-4`/#1722 in `docs/44`, previously known only for *unqualified*
+     bare calls) apparently also mis-fires for a *qualified* cross-package
+     call when the name happens to match a sibling interface method. Not
+     fixed at the root (would need locating exactly where `Package.func(...)`
+     calls are lowered inside `impl` bodies and untangling the name-priority
+     logic — a different area of the codegen than the interface-dispatch fix
+     above, and higher-risk to patch blind without deeper familiarity).
+     Worked around by renaming the kernel's public functions so they no
+     longer collide with the `SessionStore` interface's method names
+     (`create`/`load`/`save`/`destroy`/`touch` → `kernelCreate`/`kernelLoad`/
+     `kernelSave`/`kernelDestroy`/`kernelTouch` in both `Session.Kernel.Net`
+     and `Session.Kernel.Jvm`, for symmetry, plus `session.l`'s call sites)
+     — a legitimate internal rename (both kernels are internal, documented
+     "only `Session` should import this"), and arguably better practice
+     regardless of the bug. Filed as a follow-up; #1722 is the closest
+     existing tracker but this qualified-call variant is a new symptom.
+   - Also fixed in `session.l` while getting the Redis path to actually run
+     end-to-end against a live server for the first time: `for k in
+     data.entries` (iterating a `Map[String, String]` directly) assumes the
+     Map's erased runtime representation is itself `Iterable`, which holds
+     for the `.NET` kernel's `Dictionary` but not the JVM kernel's raw
+     `java.util.HashMap` (`Class java.util.HashMap does not implement the
+     requested interface java.lang.Iterable` at runtime) — switched to
+     `mapKeys(data.entries)`, matching `_kernel_jvm/collections_host.l`'s
+     documented idiom. And `jsonEscapeStr` returned `Std.Json.encodeString`'s
+     result directly, which is a *complete* quoted JSON string literal on
+     both kernels (`_kernel/json_host.l` and `_kernel_jvm/json_host.l`'s
+     `hostEncodeString` both wrap in `"..."`) — but every call site also
+     added its own surrounding quotes, double-quoting every string field
+     (`"id":""abc""`) and making `parseSessionJson` fail to parse its own
+     output. Both bugs are pre-existing and platform-symmetric (not
+     JVM-only), just never exercised because the Redis-backed store had
+     never been run against a live server on either target before this.
+6. **`tests/session_redis_jvm_tests.l`** — new CRUD integration suite
+   (connectRedis/create/load/get/set/delete/clear/touch/destroy, 13 cases)
+   registered in `[project.tests]`. Not `@cfg`-gated (file-level `@cfg` is
+   not applied to `[project.tests]` sources — `cli_test.l` feeds each test
+   file straight to `TestSynth.synthesize` + `emitProject`, bypassing
+   `Cfg`/`CfgGate` entirely; confirmed with a throwaway always-false
+   `@cfg(feature = "impossible")` test file that still ran), so it
+   transparently exercises whichever backend (`Session.Kernel.Net` or
+   `Session.Kernel.Jvm`) is active for the current build. Every case
+   no-ops when `LYRIC_CONFIG_SESSION_REDISSESSION_URL` is unset, so the
+   default `lyric test` run (no live Redis) stays green — the existing
+   31-test baseline (`SessionFixationTests`/`SessionStoreTests`/
+   `SensitiveUrlTests`) is unaffected either way.
+7. **Verified against a real local Redis 7.0.15 server** (`redis-server`,
+   available in this sandbox): all 13 cases pass on `--target jvm
+   --no-default-features --features jvm` via real Lettuce calls (`lyric
+   restore` resolving the real Maven artifact, `lyric build` producing a
+   real auto-FFI-compiled JAR, then the JAR run manually with `java -cp
+   <jar>:<restored-jars>` — see item 8). All 13 also pass on default
+   `--target dotnet` when no Redis URL is configured (skip path); with a
+   live Redis and the StackExchange.Redis-format URL, 4/13 pass and 9/13
+   hit an unrelated, independently-reproduced pre-existing MSIL bug (item 9).
+8. **Confirmed pre-existing gap (not fixed): `lyric test --target jvm` /
+   `lyric run --target jvm` never wire the `[maven]`-restored classpath at
+   *run* time.** `lyric build --target jvm` correctly reads
+   `target/restore/jvm-classpath.txt` and injects `LYRIC_FFI_JARS` for
+   auto-FFI resolution at *compile* time (`cli_build.l`), but both
+   `cli_test.l` and `cli_run.l` exec the produced JAR as a bare `java -jar`
+   with no `-cp`/`--module-path` for the same restored dependencies, so a
+   Maven-dependent JVM program built and compiled correctly still throws
+   `ClassNotFoundException` at *run* time via either command. `lyric test`
+   was run with `LYRIC_FFI_JARS` manually exported (a documented workaround
+   used by `auto_ffi_jvm_self_test.l`-style self-tests too) to get past
+   *compilation*, and the compiled test JAR was then run directly with
+   `java -cp <jar>:<jvm-classpath.txt entries>` to get past *execution* —
+   this is the only way to exercise a Maven-dependent `lyric test`/`lyric
+   run --target jvm` program end-to-end today. Not specific to
+   `lyric-session`; affects every `[maven]`-declared ecosystem library.
+   `lyric-session/README.md` documents the exact workaround command.
+9. **Confirmed pre-existing, independently-reproduced bug (not fixed,
+   out of scope): MSIL cross-package `System.Nullable\`1[T]` value type
+   fails to load when 3+ packages are bundled via `lyric test`.**
+   `Could not load type 'System.Nullable\`1' ... due to value type
+   mismatch` when `Session.Kernel.Net`'s `create()`/`touch()` (which use
+   `extern type NullableTimeSpan = "System.Nullable\`1[System.TimeSpan]"`)
+   are exercised via the new test file's 3-package bundle
+   (test + `Session` + `Session.Kernel.Net`). Reproduced with a minimal,
+   completely unrelated 3-package/1-test repro (package A declares the
+   `Nullable\`1[TimeSpan]` extern type and two functions using it; package
+   B calls both; a `@test_module` in a third package calls B) — same
+   crash, confirming it is a general `lyric test` multi-package MSIL
+   bundling defect with no dependency on Redis or session code. This is
+   why the .NET-target `SessionRedisJvmTests` (item 5/7) can only get 4/13
+   passing with a live server today, despite `Session.Kernel.Net`'s Redis
+   logic itself being correct (`connectRedis`/`load`/`set`
+   (`SESSION_NOT_FOUND` path)/`destroy` all pass — every failure is
+   specifically a case that reaches `create()` or `touch()`).
+
+10. **Newly-found while running the full `lyric test --manifest
+    lyric-session/lyric.toml --target jvm` suite (not just the new Redis
+    test file) as part of integrating this work: `InProcessSessionStore`
+    — `Session.inMemory()`, entirely unrelated to the Redis kernel work
+    above — is broken on JVM.** `SessionFixationTests` (1/5 fail) and
+    `SessionStoreTests` (8/15 fail) both crash with `class
+    Session.SessionData cannot be cast to class java.lang.Long` the
+    moment a session actually stores data (`create()` alone passes;
+    `set()`/`get()`/`load()` after a real write crash). `--target
+    dotnet` passes both files unchanged. This looks like the same
+    erased-generic-confusion family as #5439/#5442/#5444 (found
+    integrating `lyric-i18n` and `lyric-web` in the same PR) — here a
+    `Map[String, SessionData]` read appears to resolve against an
+    unrelated `Map[String, Long]` instantiation elsewhere in the same
+    JVM bundle. Filed as #5451 (not fixed here — a deep JVM erasure
+    defect, out of scope for a library-level change). `README.md`'s
+    platform-parity table is corrected: the Redis-backed
+    `NativeSessionStore` is genuinely available and verified on JVM;
+    `InProcessSessionStore` is NOT currently usable on JVM.
+
+**Files changed:** `lyric-session/lyric.toml`,
+`lyric-session/src/_kernel/net/session_kernel.l`,
+`lyric-session/src/_kernel/jvm/session_kernel.l`, `lyric-session/src/session.l`,
+`lyric-session/tests/session_redis_jvm_tests.l` (new),
+`lyric-session/README.md`; `lyric-compiler/jvm/class_reader.l`,
+`lyric-compiler/jvm/auto_ffi.l`, `lyric-compiler/jvm/codegen/04_calls.l`.
+
+**Related:** #1722 (m-4, bare intra-impl calls — this entry's item 5's
+qualified-call variant is a new symptom of the same family), #3687/"m-17b"
+(the in-package `impl`-dispatch analog of this entry's interface-auto-FFI
+fix), D-progress-625 (`extern package` no-op precedent), D-progress-627 on
+`main` (`Flags.Registry` in-memory-store deletion precedent, not yet
+present on this branch's base commit), #5439, #5442, #5444, #5451 (the
+erased-generic-confusion family this entry's item 10 adds a fifth
+instance to).
+
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

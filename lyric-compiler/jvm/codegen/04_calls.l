@@ -1444,7 +1444,27 @@ func lowerAutoFfiInstanceCall(
           aj = aj + 1
         }
       }
-      insns.add(LInvokevirtual(owner = ci.binaryName, name = methodName, params = paramJvms, ret = retJvm))
+      // `ci` (or the ancestor interface that actually declared `method`, per
+      // `findBestInstanceMethod`'s interface walk) may itself be an
+      // interface — e.g. `io.lettuce.core.api.sync.RedisCommands`.
+      // `invokevirtual` against an interface-owned method fails JVM
+      // verification ("Found interface X, but class was expected"); the
+      // owning class's `isInterface` flag selects the right instruction,
+      // mirroring the existing `sig.isIface` dispatch for in-package
+      // `impl` methods (#3687 / m-17b).
+      if ci.isInterface {
+        insns.add(
+          LInvokeinterface(
+            owner = ci.binaryName,
+            name = methodName,
+            params = paramJvms,
+            ret = retJvm,
+            argCount = 1 + jvmArgSlotCount(paramJvms)
+          )
+        )
+      } else {
+        insns.add(LInvokevirtual(owner = ci.binaryName, name = methodName, params = paramJvms, ret = retJvm))
+      }
       retJvm
     }
   }

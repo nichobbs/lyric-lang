@@ -744,9 +744,86 @@ func scoreAndGetSuper(
   sci.superName
 }
 
+// True when `needle` already appears in `haystack`.  Used by
+// `scoreInterfacesRec` to guard against re-scoring the same interface twice
+// under diamond inheritance (e.g. two sibling interfaces that both extend a
+// common ancestor) — real-world APIs like Lettuce's `RedisCommands` extend
+// 15+ sibling command interfaces, so without this guard a shared ancestor
+// would otherwise produce duplicate candidates and a false-positive
+// ambiguity warning from `checkPrimitiveArraySliceAmbiguity`.
+func binNameSeen(haystack: in List[String], needle: in String): Bool {
+  var i = 0
+  while i < haystack.count {
+    if haystack[i] == needle {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Recursively score `methodName` against `ifaceBin` and every interface it
+// (transitively) extends.  A class's own `superName` chain only follows
+// single inheritance (JVMS `super_class`); an interface's *extends* list is
+// `ClassInfo.interfaces` instead, and Java interfaces support extending
+// several parents at once, so this needs its own walk rather than reusing
+// `scoreAndGetSuper`'s single-parent loop.  Needed because a method is often
+// declared on a narrower sibling interface rather than the one an extern
+// type is actually bound to — e.g. `io.lettuce.core.api.sync.RedisCommands`
+// (the umbrella interface `Session.Kernel.Jvm`'s `RedisStoreHandle` stores)
+// declares no `get`/`set`/`setex`/`del`/`expire` methods of its own; they
+// live one level down on `RedisStringCommands`/`RedisKeyCommands`.  The
+// *emitted* `invokeinterface` still names the original receiver's interface
+// as the constant-pool owner (see `lowerAutoFfiInstanceCall`) — that is
+// intentional and correct: JVMS 5.4.3.4's interface-method-resolution
+// algorithm itself searches superinterfaces at link time, so only the
+// compile-time *lookup* (finding the descriptor to type-check and encode
+// the call against) needs this extra walk, not the bytecode's owner field.
+func scoreInterfacesRec(
+  autoFfi: in AutoFfiCtx,
+  ifaceBin: in String,
+  methodName: in String,
+  argDescs: in List[String],
+  allMethods: in List[ClassMethod],
+  allScores: in List[Int],
+  visited: in List[String],
+): Unit {
+  if binNameSeen(visited, ifaceBin) {
+    return
+  }
+  visited.add(ifaceBin)
+  loadClass(autoFfi, ifaceBin.replace("/", "."))
+  val idx = findCacheIdx(autoFfi, ifaceBin)
+  if idx < 0 {
+    return
+  }
+  val ici = autoFfi.cacheVals[idx]
+  var j = 0
+  while j < ici.methods.count {
+    val m = ici.methods[j]
+    if m.name == methodName {
+      val s = scoreMethod(autoFfi, m, argDescs, false)
+      if s >= 0 {
+        allMethods.add(m)
+        allScores.add(s)
+      }
+    }
+    j = j + 1
+  }
+  var k = 0
+  while k < ici.interfaces.count {
+    scoreInterfacesRec(autoFfi, ici.interfaces[k], methodName, argDescs, allMethods, allScores, visited)
+    k = k + 1
+  }
+}
+
 /// Find the best-matching instance method in `ci`, walking up the superclass
 /// chain when the method is declared in a superclass (e.g. `length()` on
-/// `StringBuilder` is declared in `AbstractStringBuilder`).
+/// `StringBuilder` is declared in `AbstractStringBuilder`), and recursively
+/// through every (transitively) extended interface — both `ci`'s own
+/// `interfaces` list and each superclass's — since interface method lookup
+/// doesn't follow the single-parent `superName` chain (see
+/// `scoreInterfacesRec`).
 ///
 /// Uses the parallel-list cache to avoid the stage-0 Option[ClassInfo]
 /// match-arm binding bug: each superclass is loaded into the cache via
@@ -760,6 +837,8 @@ pub func findBestInstanceMethod(
 ): Option[ClassMethod] {
   val allMethods: List[ClassMethod] = newList()
   val allScores: List[Int] = newList()
+  val visitedIfaces: List[String] = newList()
+  visitedIfaces.add(ci.binaryName)
 
   // Score the declared class directly (ci is a function parameter — safe).
   var i = 0
@@ -775,12 +854,26 @@ pub func findBestInstanceMethod(
     i = i + 1
   }
 
+  // `ci` may itself be an interface (e.g. `io.lettuce.core.api.sync.
+  // RedisCommands`) whose own class file declares none of the methods
+  // reachable through it — those live on the (possibly several) interfaces
+  // it extends.  Walk `ci.interfaces` transitively before the superclass
+  // chain below (see `scoreInterfacesRec`).
+  var ifI = 0
+  while ifI < ci.interfaces.count {
+    scoreInterfacesRec(autoFfi, ci.interfaces[ifI], methodName, argDescs, allMethods, allScores, visitedIfaces)
+    ifI = ifI + 1
+  }
+
   // Walk the superclass chain.  Each iteration:
   //   1. Calls loadClass to populate the parallel-list cache.
   //   2. Locates the entry by key scan (avoids Option[ClassInfo] binding).
   //   3. Passes cacheVals[idx] directly to scoreAndGetSuper as a function
   //      argument — the known-safe pattern for cross-package record types
   //      under stage-0 (which drops bindings accessed in block bodies).
+  //   4. Also walks that superclass's own directly-implemented interfaces
+  //      transitively (a concrete class can implement interfaces the
+  //      auto-FFI receiver's own declared type never mentions).
   //
   // The walk continues all the way up to (and including) `java/lang/Object`
   // (#2219): `ClassInfo.superName` is "" for Object itself (see
@@ -797,7 +890,13 @@ pub func findBestInstanceMethod(
     val superIdx = findCacheIdx(autoFfi, superBin)
     var nextSuper = ""
     if superIdx >= 0 {
-      nextSuper = scoreAndGetSuper(autoFfi, autoFfi.cacheVals[superIdx], methodName, argDescs, allMethods, allScores)
+      val sci = autoFfi.cacheVals[superIdx]
+      nextSuper = scoreAndGetSuper(autoFfi, sci, methodName, argDescs, allMethods, allScores)
+      var siI = 0
+      while siI < sci.interfaces.count {
+        scoreInterfacesRec(autoFfi, sci.interfaces[siI], methodName, argDescs, allMethods, allScores, visitedIfaces)
+        siI = siI + 1
+      }
     }
     superBin = nextSuper
   }

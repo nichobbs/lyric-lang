@@ -3,7 +3,9 @@
 //! Parses the JVMS §4 class-file format from a List[Int] (bytes 0-255, as
 //! produced by Jvm.Deflate.inflate / Jvm.ZipReader.extractEntry) and returns
 //! the public-method surface of the class: names, JVM descriptors, and
-//! static/instance flags.  Skips non-public classes, interfaces, and enums.
+//! static/instance flags.  Skips enums and annotations; classes and
+//! interfaces are both parsed (`ClassInfo.isInterface` distinguishes them
+//! for `invokeinterface` vs `invokevirtual` call-site selection).
 //!
 //! Constant pool tags handled:
 //!   1  CONSTANT_Utf8       — method names and descriptors
@@ -57,6 +59,17 @@ pub record ClassInfo {
   // Used by `lowerAutoFfiConstructorCall` to emit a compile-time error instead
   // of bytecode that throws `InstantiationError` at runtime (#2215).
   isAbstract: Bool
+  // ACC_INTERFACE (0x0200): true for `interface` declarations (also implies
+  // `isAbstract`).  Used by `lowerAutoFfiInstanceCall` to select
+  // `invokeinterface` over `invokevirtual` — the JVM verifier rejects
+  // `invokevirtual` against an interface-owned method with "Found interface
+  // X, but class was expected" (see the JVMS §5.4.3.3/§6.5.invokevirtual
+  // "must not be an interface" rule; the analogous fix for user-defined
+  // `impl` dispatch landed as #3687 / m-17b, this is the auto-FFI/extern-type
+  // counterpart, found while binding `io.lettuce:lettuce-core`'s
+  // interface-shaped client API — `RedisClient`/`SetArgs` are concrete
+  // classes but `StatefulRedisConnection`/`RedisCommands` are interfaces).
+  isInterface: Bool
 }
 
 // ── Constant pool helpers ─────────────────────────────────────────────────────
@@ -163,10 +176,12 @@ func poolEntryEnd(b: in List[Int], pos: in Int): PoolStep {
 // ACC_ENUM      = 0x4000 = 16384
 // ACC_ANNOTATION= 0x2000 = 8192
 /// Parse a Java class file (bytes as List[Int]) and return its method surface.
-/// Returns None if the class is an interface, an enum, an annotation, or the
-/// data is too short to be a valid class file.  Package-private and abstract
-/// classes are included: they appear in superclass chains (e.g.
-/// `AbstractStringBuilder` is package-private but declares `length()`).
+/// Returns None if the class is an enum, an annotation, or the data is too
+/// short to be a valid class file.  Package-private and abstract classes are
+/// included: they appear in superclass chains (e.g. `AbstractStringBuilder`
+/// is package-private but declares `length()`).  Interfaces are included too
+/// (`ClassInfo.isInterface`) so auto-FFI can resolve calls on interface-typed
+/// extern types.
 pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   if b.count < 8 {
     return None
@@ -214,21 +229,27 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   val superClassNameIdx = getS(classMap, toString(superClassIdx))
   val superName = getSStr(utf8Map, toString(superClassNameIdx))
 
-  // Skip interfaces, enums, and annotations; include public and package-private classes.
-  // ACC_INTERFACE=512: (accessFlags/512) % 2 != 0 means interface
-  if (accessFlags / 512) % 2 != 0 {
-    return None
-  }
+  // Skip enums and annotations; include public and package-private classes
+  // AND interfaces (needed to resolve method calls on interface-typed extern
+  // types, e.g. `io.lettuce.core.api.sync.RedisCommands` — previously
+  // skipped here, which silently routed every interface method call through
+  // the legacy `(Object...)Object` `invokevirtual` guess and crashed the
+  // JVM verifier with "Found interface X, but class was expected").
+  // ACC_INTERFACE=512: (accessFlags/512) % 2 != 0 means interface.
+  val isInterface = (accessFlags / 512) % 2 != 0
   // ACC_ENUM=16384: (accessFlags/16384) % 2 != 0 means enum
   if (accessFlags / 16384) % 2 != 0 {
     return None
   }
-  // ACC_ANNOTATION=8192: (accessFlags/8192) % 2 != 0 means annotation
+  // ACC_ANNOTATION=8192: (accessFlags/8192) % 2 != 0 means annotation.
+  // Annotation types are themselves interfaces (ACC_INTERFACE is always set
+  // too) but aren't a call target the auto-FFI needs to resolve; skip them
+  // as before.
   if (accessFlags / 8192) % 2 != 0 {
     return None
   }
-  // ACC_ABSTRACT=1024: abstract classes are included (they appear in superclass
-  // chains) but callers must not emit `new` for them (#2215).
+  // ACC_ABSTRACT=1024: abstract classes (and all interfaces) are included —
+  // callers must not emit `new` for either (#2215).
   val isAbstract = (accessFlags / 1024) % 2 != 0
 
   // Resolve this class's binary name.
@@ -335,7 +356,8 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
             methods = methods,
             constructors = constructors,
             fields = fields,
-            isAbstract = isAbstract
+            isAbstract = isAbstract,
+            isInterface = isInterface
           )
         )
       }
@@ -371,7 +393,8 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
       methods = methods,
       constructors = constructors,
       fields = fields,
-      isAbstract = isAbstract
+      isAbstract = isAbstract,
+      isInterface = isInterface
     )
   )
 }
