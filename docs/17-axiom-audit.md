@@ -674,7 +674,7 @@ use this module directly in application code.
 The directory `lyric-stdlib/std/_kernel_jvm/` mirrors `_kernel/` for the
 JVM target — each file selects a Java BCL extern surface that the
 `@cfg(feature = "jvm")` predicate routes to when compiling
-`--target jvm`.  21 files currently carry `@axiom(...)` annotations
+`--target jvm`.  20 files currently carry `@axiom(...)` annotations
 covering operations on `java.lang.{String,Math,Character,System}`,
 `java.util.{ArrayList,HashMap,Random,UUID,regex.Pattern}`,
 `java.io.{File,FileInputStream,FileOutputStream,Files}`,
