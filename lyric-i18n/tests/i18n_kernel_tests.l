@@ -1,14 +1,16 @@
-//! tests/i18n_kernel_tests.l — test suite for I18n.Kernel.Net, the
-//! standalone handle-based translation-file kernel (docs/03-decision-log.md
-//! D-progress-627). Exercises loadStore/translate/hasKey/availableLocalesJson
-//! against a real JSON fixture on disk, and parseTranslationsJson directly.
+//! tests/i18n_kernel_tests.l — test suite for I18n.Kernel, the standalone
+//! handle-based translation-file kernel (docs/03-decision-log.md
+//! D-progress-628). A single ungated package, not a net/jvm pair, so this
+//! file exercises both targets identically. Exercises
+//! loadStore/translate/hasKey/availableLocalesJson against a real JSON
+//! fixture on disk, and parseTranslationsJson directly.
 @test_module
 package I18n.I18nKernelTests
 
 import Std.Core
 import Std.Testing
 import Std.File as File
-import I18n.Kernel.Net
+import I18n.Kernel
 
 val fixtureJson: String = "{\"en\":{\"greeting\":\"Hello, {name}!\",\"farewell\":\"Goodbye.\"},\"en-US\":{\"greeting\":\"Hey, {name}!\"},\"fr\":{\"greeting\":\"Bonjour, {name}!\",\"farewell\":\"Au revoir.\"}}"
 

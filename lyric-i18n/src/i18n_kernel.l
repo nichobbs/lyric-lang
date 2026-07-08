@@ -1,4 +1,4 @@
-//! I18n.Kernel.Jvm — translation file loading and JSON parsing for I18n.
+//! I18n.Kernel — translation file loading and JSON parsing for I18n.
 //!
 //! Backed by plain Lyric (`Std.File` + `Std.Json` + `Std.Collections`), not
 //! an extern boundary: reading a text file and parsing/looking up a JSON
@@ -13,6 +13,12 @@
 //! contract as a real, working, standalone alternative entry point for
 //! consumers that want it, mirroring `Flags.Registry`'s "eliminate the
 //! extern boundary entirely" fix (`docs/03-decision-log.md` D-progress-627).
+//!
+//! A single ungated package, not a `_kernel/net/` + `_kernel/jvm/` pair:
+//! this logic has no platform-specific behavior at all, so splitting it
+//! would only produce two hand-synced copies with no compiler check that
+//! they stay identical, and a real risk that only one of the pair is ever
+//! actually exercised by tests (see D-progress-628's follow-up fix).
 //!
 //! Store state is two parallel `Map[Int, ...]` tables (translations,
 //! fallback locale) keyed by handle, rather than a single `Map[Int,
@@ -36,13 +42,13 @@
 //!
 //! `parseTranslationsJson` returns a JSON array of three-element arrays:
 //!   [["en","greeting","Hello, {name}!"],["en","farewell","Goodbye."],...]
-@cfg(feature = "jvm")
-package I18n.Kernel.Jvm
+package I18n.Kernel
 
 import Std.Core
 import Std.Collections
 import Std.Json
 import Std.File as File
+import Std.Errors
 
 record I18nKernelState {
   var translationsByHandle: Map[Int, Map[String, Map[String, String]]]
@@ -115,7 +121,7 @@ func parseTranslationsObject(json: in String): Map[String, Map[String, String]] 
 pub func loadFromPath(path: in String): Result[String, String] {
   match File.readText(path) {
     case Ok(text) -> Ok(value = text)
-    case Err(e) -> Err(error = "Failed to read file: " + path)
+    case Err(e) -> Err(error = "Failed to read file " + path + ": " + IOError.message(e))
   }
 }
 
@@ -174,7 +180,7 @@ pub func loadStore(path: in String, fallbackLocale: in String): Result[Int, Stri
       globalState.nextHandle = handle + 1
       return Ok(value = handle)
     }
-    case Err(e) -> return Err(error = "Failed to read file: " + path)
+    case Err(e) -> return Err(error = "Failed to read file " + path + ": " + IOError.message(e))
   }
 }
 

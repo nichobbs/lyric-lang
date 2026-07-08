@@ -232,6 +232,16 @@ impact there is limited to object enumeration beyond the intended prefix.
 
 ### FINDING-05 — Feature-Flag Remote Poller Does Not Enforce TLS
 
+**Superseded (D-progress-627):** `Flags.connectRemote()` never actually
+existed in `flags.l` — it was aspirational documentation only, quoted
+here as if it were real code. `lyric-feature-flags/src/_kernel/`
+(the second location cited below) was deleted entirely in
+D-progress-627 as confirmed 100% dead code with zero callers. This
+finding is moot against code that no longer exists (and, per
+D-progress-627's investigation, never did). If a real remote-polling
+`FlagStore` is built in the future, its URL scheme validation should
+be revisited against this finding's underlying concern.
+
 **Severity:** HIGH
 **Vulnerability type:** Sensitive Data Exposure / Insufficient Transport Layer Security (OWASP A02:2021)
 **CWE:** CWE-319

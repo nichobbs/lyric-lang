@@ -12156,8 +12156,8 @@ initial version of this migration:
 **Context.** `lyric-feature-flags/src/_kernel/{net,jvm}/flags_kernel.l`
 each declared two `extern package` blocks — the mechanism confirmed
 broken in D-progress-625/#5324: it parses but never resolves to a real
-binding in either the type checker or MSIL/JVM codegen. A triage pass
-(D-progress-626) found two unrelated things bundled behind that one
+binding in either the type checker or MSIL/JVM codegen. An internal
+triage pass found two unrelated things bundled behind that one
 boundary:
 
 1. `Lyric.Flags.Http` / `lyric.flags.HttpClient` — an Int-handle-table
@@ -12244,9 +12244,22 @@ never did — `Flags.Kernel.Jvm` was itself orphaned, referenced by no
 import anywhere in the repo, prior to this entry), so `--target jvm` is
 not part of this library's build.
 
+**Review hardening.** Two SUGGESTION findings pointed at other docs
+that drifted stale once this entry's fix landed:
+
+- **SUGGESTION (#5429):** `docs/57-stdlib-ecosystem-library-review.md`
+  still claimed `FlagGated`/`FlagVariant` aspect weaving had no
+  regression test — fixed to note `FlagGated` is now covered by
+  `flags_aspect_weaving_tests.l`, narrowing the remaining gap to
+  `FlagVariant` (still an unwoven stub).
+- **SUGGESTION (#5430):** `feedback/04-security.md`'s FINDING-05
+  quoted the deleted, never-real `connectRemote()` as if it were live
+  code needing a TLS fix — annotated as superseded/moot, mirroring the
+  `docs/10-bootstrap-progress.md` treatment.
+
 **Related:** D-progress-625, issue #5324 (`extern package` FFI
 resolution mechanism), lyric-lang #411 (`protected type` weaver,
-referenced by the thread-safety caveat).
+referenced by the thread-safety caveat), #5429, #5430.
 
 ---
 
@@ -12325,7 +12338,32 @@ separate bug in `i18n.l`'s own `translateWithLocale`/`localeKey`
 JVM-target codegen, not filed as part of this entry since it long
 predates and is orthogonal to the kernel work.
 
-**Related:** D-progress-625, D-progress-627, issue #5324, #5422, #5423.
+**Review hardening.** A review round found three real gaps in the
+initial version of this entry's work:
+
+- **REQUIRED (#5426):** `loadFromPath`/`loadStore` discarded the bound
+  `IOError` behind a hardcoded generic message, so callers couldn't
+  distinguish "file not found" from "permission denied" from any other
+  host I/O failure. Fixed to embed `IOError.message(e)` in both
+  functions.
+- **REQUIRED (#5427):** this entry's own Context paragraph cited a
+  nonexistent `D-progress-626` (the entry that never landed after the
+  "delete 7 kernels" commit was reverted) — fixed to not cite a
+  decision-log entry number at all.
+- **SUGGESTION (#5428):** `I18n.Kernel.Net`/`I18n.Kernel.Jvm` were
+  byte-identical ~230-line files with no actual platform difference —
+  a maintenance hazard (the #5422/#5423 workarounds above had to be
+  hand-applied twice) that also meant `I18n.Kernel.Jvm` itself was
+  never exercised by any test (`tests/i18n_kernel_tests.l` only
+  imported `.Net`, which has no `@cfg` gate and is what JVM builds
+  compiled too). Consolidated into a single ungated `I18n.Kernel`
+  package (`lyric-i18n/src/i18n_kernel.l`, not under `_kernel/`),
+  matching `Flags.Registry`'s precedent — re-verified all 10 kernel
+  tests pass on both `--target dotnet` and `--target jvm` against the
+  single consolidated package.
+
+**Related:** D-progress-625, D-progress-627, issue #5324, #5422, #5423,
+#5426, #5427, #5428.
 
 ---
 ## Decisions deferred to v2 or later

@@ -15,22 +15,24 @@ JVM backend was rewritten to pure Lyric in D-progress-555), so
 `InProcessTranslationStore`/`fromJson`/`loadFromPath` genuinely work
 identically on both targets today.
 
-`I18n.Kernel.Net`/`I18n.Kernel.Jvm` are a separate, standalone
-handle-based entry point (`loadStore`/`translate`/`hasKey`/
-`availableLocalesJson`/`parseTranslationsJson`) for consumers that want
-that specific contract. They used to be `extern package`-based
-scaffolding — a confirmed no-op FFI mechanism (#5324) — that `i18n.l`
-never actually imported; they're now pure Lyric over `Std.File`/
-`Std.Json`/`Std.Collections`, real and tested on both targets (see
-`tests/i18n_kernel_tests.l`, 10 cases, and `docs/03-decision-log.md`
-D-progress-628).
+`I18n.Kernel` is a separate, standalone handle-based entry point
+(`loadStore`/`translate`/`hasKey`/`availableLocalesJson`/
+`parseTranslationsJson`) for consumers that want that specific
+contract. It used to be a split `I18n.Kernel.Net`/`I18n.Kernel.Jvm`
+pair of `extern package`-based scaffolding — a confirmed no-op FFI
+mechanism (#5324) — that `i18n.l` never actually imported; it's now a
+single, ungated, pure-Lyric package over `Std.File`/`Std.Json`/
+`Std.Collections` (no platform split needed since the logic has no
+platform-specific behavior at all), real and tested on both targets
+(see `tests/i18n_kernel_tests.l`, 10 cases, and
+`docs/03-decision-log.md` D-progress-628).
 
 ## Packages
 
 | Package | Purpose |
 |---|---|
 | `I18n` | Core types, `TranslationStore` interface, in-process and file-backed implementations, and public API |
-| `I18n.Kernel.Net` / `I18n.Kernel.Jvm` | Standalone handle-based translation-file kernel (pure Lyric, no platform-specific code — see Platform parity above) |
+| `I18n.Kernel` | Standalone handle-based translation-file kernel (pure Lyric, no platform-specific code — see Platform parity above) |
 
 ## Quick start
 
