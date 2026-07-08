@@ -4,15 +4,26 @@ Runtime feature flag toggles for safe rollouts, A/B testing, and kill switches.
 
 ## Platform parity
 
-The in-process flag store (`InProcessFlagStore`) and the `Flags.Registry`-backed
-`FlagGated` / `FlagVariant` aspects are pure Lyric — no BCL/JDK extern boundary
-is involved — so they behave identically on `dotnet` and `jvm`.
+The in-process flag store (`InProcessFlagStore`), `Flags.Registry`, and the
+`FlagGated` / `FlagVariant` aspects are pure Lyric — no BCL/JDK extern
+boundary is involved — so their *source* has no platform-specific code.
+However, `--target jvm` verification (done for the first time while
+addressing PR #5414 review finding #5436 — this library's JVM claim had
+never actually been tested) found that most of the `FlagStore` surface is
+currently broken on JVM by pre-existing JVM backend compiler bugs unrelated
+to this library's own logic:
 
-| Feature                     | Status                                             |
-|------------------------------|-----------------------------------------------------|
-| In-process store             | Available (both targets)                           |
-| `FlagGated` aspect           | Available (both targets)                           |
-| Remote (HTTP-polling) store  | Not implemented — see "Remote flag store" below     |
+| Feature                              | `dotnet`  | `jvm`                                                |
+|---------------------------------------|-----------|-------------------------------------------------------|
+| `Flags.Registry` (raw map API)        | Available | Available — verified directly (`registerStringFlag`/`getStringFlag`) |
+| `InProcessFlagStore` / `FlagValue` union (`isEnabled`, `getValue`, `getBool`, `getString`, `getInt`, `listFlags`, `fromEntries`) | Available (33/33 tests pass) | **Broken** — a JVM backend bug misresolves the `FlagValue` union's `value` field accessor to an unrelated stdlib type (`Std.Http.Url`), crashing with `NoClassDefFoundError` on any populated store. Tracked in #5442. |
+| `getFloat` / `FlagValue.FlagFloat`    | Available | **Broken** — any JVM program containing a `Float`-typed value used via construction or `match` crashes the *compiler itself* (`Convert.ToSingle` `MissingMethodException`). Tracked in #5441 (not specific to this library). |
+| `FlagGated` aspect                    | Available (5/5 tests pass) | **Broken** — a pre-existing B′-mode aspect-weaver JVM codegen bug (`__LyricBModeCallContext` `NoSuchMethodError`) affects every aspect-templated library on JVM, not just this one. |
+| Remote (HTTP-polling) store           | Not implemented — see "Remote flag store" below | Not implemented |
+
+In short: **this library's JVM support is not usable today** for anything
+beyond the raw `Flags.Registry` map API. The `dotnet` target is fully
+verified and working (42/42 tests across both test files).
 
 A previous revision of this library declared a remote HTTP-polling client
 (`Flags.connectRemote()` / `NativeFlagStore`) via `extern package`, which

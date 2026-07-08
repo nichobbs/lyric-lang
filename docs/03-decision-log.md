@@ -12257,9 +12257,53 @@ that drifted stale once this entry's fix landed:
   code needing a TLS fix — annotated as superseded/moot, mirroring the
   `docs/10-bootstrap-progress.md` treatment.
 
+A second review round found a REQUIRED regression: a later editing pass
+on this same PR (fixing stale `D-progress-626` citations) rewrote the
+README's platform-parity table to claim "In-process store: Available
+(both targets)" / "`FlagGated` aspect: Available (both targets)" —
+directly contradicting this entry's own Verification section above,
+which explicitly says `--target jvm` was never part of this library's
+build. That claim was never checked against a real JVM run.
+
+- **REQUIRED (#5436):** Actually running
+  `lyric test --manifest lyric-feature-flags/lyric.toml --target jvm`
+  for the first time found the JVM claim is false, and moreover
+  surfaced two previously-unknown JVM backend compiler bugs, neither
+  caused by this library:
+  - **#5441** — any JVM program that constructs or `match`-extracts a
+    `Float`-typed value crashes the *compiler itself*
+    (`System.Convert.ToSingle` `MissingMethodException` inside the
+    self-hosted JVM class-file emitter's constant-pool interning).
+    Blocks `getFloat`/`FlagValue.FlagFloat` entirely.
+  - **#5442** — `FlagValue`'s union case field accessor (`value`) gets
+    miscompiled to reference an entirely unrelated stdlib type
+    (`Std.Http.Url`, which is never imported by this library, directly
+    or transitively) instead of its own accessor, producing a bytecode
+    reference to a class that's never bundled into the jar —
+    `NoClassDefFoundError: Std/Http/Url` at runtime. Breaks every
+    `FlagStore` read path (`isEnabled`, `getValue`, `getBool`,
+    `getString`, `getInt`, `listFlags`, `fromEntries`) on JVM: 19 of 33
+    tests in `flags_tests.l` fail once #5441 is worked around enough to
+    let the package compile at all.
+  - The `FlagGated` aspect additionally hits the already-known,
+    pre-existing B′-mode aspect-weaver JVM bug
+    (`__LyricBModeCallContext` `NoSuchMethodError`, first documented in
+    the `lyric-auth` JVM kernel work) — 5 of 6
+    `flags_aspect_weaving_tests.l` cases fail on JVM; only the one
+    test that calls `Flags.Registry` directly (bypassing the aspect
+    and the `FlagValue` union) passes.
+  - Corrected `README.md`'s platform-parity table to state precisely
+    what works on JVM today (only `Flags.Registry`'s raw map API) and
+    what doesn't (everything else, with issue links), and updated
+    `book/chapters/29-application-libraries.md`'s library-availability
+    matrix from "planned" to "broken (#5441, #5442)" to reflect that
+    JVM has actually been attempted and found non-functional, not
+    merely unattempted.
+
 **Related:** D-progress-625, issue #5324 (`extern package` FFI
 resolution mechanism), lyric-lang #411 (`protected type` weaver,
-referenced by the thread-safety caveat), #5429, #5430.
+referenced by the thread-safety caveat), #5429, #5430, #5436, #5441,
+#5442.
 
 ---
 
