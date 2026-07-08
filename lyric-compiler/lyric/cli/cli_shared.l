@@ -548,11 +548,13 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
         val base = Path.basename(f)
         if Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll") {
           val dest = Path.join(destDir, base)
-          match File.readBytes(f) {
-            case Ok(bs) -> {
-              val _ = File.writeBytes(dest, bs)
+          if dest != outPath {
+            match File.readBytes(f) {
+              case Ok(bs) -> {
+                val _ = File.writeBytes(dest, bs)
+              }
+              case Err(_) -> ()
             }
-            case Err(_) -> ()
           }
         }
       }

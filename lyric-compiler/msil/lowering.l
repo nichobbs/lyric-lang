@@ -4437,6 +4437,9 @@ pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
 // MethodDef row numbers by mirroring this function's emission order exactly.  Any change
 // to the Phase 1 / Phase 2 method sequence here MUST be mirrored there (#3046).
 pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
+  if op.className == "Std.Http.Url" {
+    Console.println("--- DEBUG: lowerMOpaque called for Std.Http.Url, isProjectable=" + (if op.isProjectable { "true" } else { "false" }) + ", isDiscover=" + (if ctx.discovering.count > 0 { "true" } else { "false" }))
+  }
   val sh = ctx.strings
   val bh = ctx.blobs
   val t = ctx.tables
@@ -4873,6 +4876,9 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
       val fSig = buildFieldSigWithCtx(f.fieldType, ctx)
       val bSig = internBlob(bh, "ofield_" + op.className + "_" + f.name, fSig)
       val fRow = addField(t, FieldRow(flags = FDA_ASSEMBLY, name = sF, signature = bSig))
+      if op.className == "Std.Http.Url" {
+        Console.println("--- DEBUG lowerMOpaque field loop: field " + f.name + " added at row " + fRow.toString() + " with flags " + t.fields[fRow - 1].flags.toString())
+      }
       recordPredictedFieldRow(ctx, op.className, f.name, fRow)
       fi = fi + 1
     }

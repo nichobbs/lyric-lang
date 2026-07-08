@@ -9,24 +9,19 @@ what has shipped and what remains open.
 
 ---
 
-## Bootstrap vs self-hosted — which compiler am I running?
+## Bootstrap stages — which compiler am I running?
 
-Most wasted debugging time on this project comes from not knowing **which of
-three compilers** produced a binary or a failure.  They are not
-interchangeable, and a failure under one is not a failure under another.
+Most wasted debugging time on this project comes from not knowing **which of the bootstrap stages** produced a binary or a failure. They are not interchangeable, and a failure under one is not a failure under another.
 
-| # | Compiler | Built by | IL validity | Build command | Use it to… |
-|---|----------|----------|-------------|---------------|-----------|
-| 1 | **mint stage-0** _(retired)_ | `scripts/mint-stage0-fsharp.sh` (rebuilds the historical F# bootstrap from git history) | valid (F# emitter is correct) | `LYRIC_BOOTSTRAP_MINT=1` seeds it automatically (still functional locally — the Makefile target and env-var code path were **not** removed by #4387) | seed stage-1; never run directly. **Historical artefact** — the `seed: mint` workflow input and the mint release path were retired in #4387; this is no longer part of the release pipeline. |
-| 2 | **mint stage-1** _(retired)_ | the mint seed compiling the self-hosted `.l` sources | **valid** (historical artefact) | `make mint` (still functional locally — not removed by #4387, just no longer used for releases) | Was used for day-to-day dev before stage-2 was runnable. **Retired in #4387** — the `seed: mint` release *path* is gone; releases now ship from stage-2 only (row 3). |
-| 3 | **self-hosted stage-2** | the stage-1 true compiler compiling **itself + the full stdlib** into an isolated toolchain (`.bootstrap/stage2/{lib,bin}`) | **runnable — stage-3 byte-reproducibility fixpoint confirmed (101/101 DLLs); D-progress-531** | `make stage2` | **the SHIP toolchain.** Release binaries (standalone and NuGet tool) are AOT-linked from stage-2 DLLs; run things via `make run-stage2 ARGS=…` |
+| Stage | Compiler | Built by | IL validity | Build command | Use it to… |
+|-------|----------|----------|-------------|---------------|------------|
+| **0** | **stage-0 seed** | Downloaded stable self-hosted release binary (`stage0-publish`) | **valid** (stable release seed) | Handled automatically by bootstrap script | Seeds stage-1; never run directly. Shipped as the trusted entry point of the pipeline. |
+| **1** | **stage-1** | The stage-0 seed compiling the compiler `.l` package sources | **valid** (compiled by stable seed) | `make stage1` | Seeds stage-2. Compiles fast because it does not rebuild the stdlib. |
+| **2** | **stage-2** | The stage-1 compiler compiling **itself + the full stdlib** into an isolated toolchain | **runnable** (this is the SHIP toolchain; D124) | `make stage2` or `make lyric` | **The SHIP toolchain.** Release binaries (standalone and NuGet tool) are AOT-linked from stage-2 DLLs. Run things via `make run-stage2 ARGS="..."`. |
+| **3** | **stage-3** | The stage-2 compiler compiling **itself + the full stdlib** | **identical to stage-2** (fixpoint holds) | `make stage3` | **Fixpoint reproducibility verification.** Stage 3 and Stage 2 must be 100% byte-for-byte identical. |
 
-Key consequence: **a bare `make lyric` builds compiler #3 (stage-2)**, which
-is now **fully runnable** (D-progress-531: 101/101 DLLs byte-for-byte
-reproducible at the stage-3 fixpoint; P0040 parser bug fixed in #4020).
-`make stage2` and `make lyric` both produce a working self-hosted toolchain.
-The mint path (#1, #2) was retired in #4387 — `publish.yml` no longer has a
-`seed: mint` input.  Use `make lyric` (stage-2) for all dev and release work.
+Key consequence: **a bare `make lyric` builds the stage-2 toolchain**, which is **fully runnable** and achieves byte-for-byte reproducibility at the stage-3 fixpoint (D124).
+The legacy F# mint path has been completely decommissioned and deleted. Use the self-hosted pipeline for all dev and release work.
 
 ### The IL-validity gate
 

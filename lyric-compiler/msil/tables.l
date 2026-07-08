@@ -22,6 +22,7 @@ package Msil.Tables
 import Msil.Kernel
 import Std.Core
 import Std.Collections
+import Std.Console as Console
 
 // ── TypeDef attribute flags (ECMA-335 §II.23.1.15) ────────────────────────────
 pub val TDF_PRIVATE: Int = 0x00000000
@@ -891,6 +892,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   var fi = 0
   while fi < t.fields.count {
     val r = t.fields[fi]
+    Console.println("--- SERIALIZE FIELD idx=" + fi.toString() + " flags=" + r.flags.toString() + " nameIndex=" + r.name.toString())
     w2(buf, r.flags)
     wHeap(buf, r.name, wideStr)
     wHeap(buf, r.signature, wideBlob)

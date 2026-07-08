@@ -57,7 +57,7 @@
        a shell command for cross-platform compatibility. -->
   <Target Name="CopyStageLibraries" AfterTargets="Build">
     <ItemGroup>
-      <StageDlls Include="$(StageDir)Lyric.*.dll" />
+      <StageDlls Include="$(StageDir)/Lyric.*.dll" />
     </ItemGroup>
     <Copy SourceFiles="@(StageDlls)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" Condition="'@(StageDlls)' != ''" />
   </Target>

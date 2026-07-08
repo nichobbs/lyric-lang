@@ -549,8 +549,7 @@ pub func poolInteger(pool: in Pool, v: in Int): Int {
   poolAdd(pool, key, e)
 }
 
-// BCL externs for float/double bit pattern extraction.
-extern type Single = "System.Single"
+import extern System.{ Convert, BitConverter, Single }
 
 @externTarget("System.Convert.ToSingle")
 func dblToSingle(v: in Double): Single = ()
@@ -559,6 +558,7 @@ func dblToSingle(v: in Double): Single = ()
 func singleToInt32Bits(v: in Single): Int = ()
 
 @externTarget("System.BitConverter.DoubleToInt64Bits")
+@externStatic
 func doubleToInt64Bits(v: in Double): Long = ()
 
 /// Intern a CONSTANT_Float (tag 4).

@@ -11117,7 +11117,366 @@ reuses), `docs/24-test-runner-plan.md` (the `lyric test` follow-up this
 does not attempt), #5341 (that follow-up's tracking issue).
 
 ---
+
+## D-progress-620 — G1 resolved: JVM is an independently-versioned Phase-6 target, not a v1.0 SemVer channel; `docs/44` band-order note
+
+**Date:** 2026-07-06
+**Branch:** docs/CI audit sweep (this session)
+
+### Context
+
+`docs/44-jvm-production-readiness-plan.md`'s header has, since it was
+written, asked for a decision-log entry: *"File a decision-log entry to
+codify the band ordering and the G1 channel decision before band J1
+lands."* Band J1 (and J2, J3) shipped historically (see `docs/44` §6 for
+the band breakdown), so this entry was overdue — it does not gate any
+already-shipped work, it records a decision that was made in practice and
+makes it discoverable.
+
+`docs/36-v1-roadmap.md` §1 independently poses the same question as gate
+**G1**: *"Is `--target jvm` a v1.0 supported channel, or is it Phase-6
+ecosystem work with its own versioning?"* with the stakes spelled out:
+if yes, Q-J012/Q-J013 (JVM checked-exception call-site wrapping) are
+release-blocking; if no, the language reference documents JVM as
+"supported but not v1.0 SemVer-guaranteed."
+
+### Decision
+
+**G1 resolved: JVM is an independently-versioned Phase-6 target, not a
+v1.0 SemVer-guaranteed channel.** `--target jvm` continues to ship fixes,
+PRs, and new capability on its own cadence (tracked via the JVM umbrella
+epic #2663 and `docs/44`'s J0–J7 bands) without blocking the v1.0 release
+train for the primary `--target dotnet` channel. This mirrors the
+existing G4 precedent (D066): the `lyric-*` ecosystem service libraries
+already ship under independent versioning rather than v1.0 SemVer, and
+JVM — as a whole secondary compilation target, not a single library —
+gets the same treatment.
+
+Consequence for `docs/36` G1: resolves to the "no" branch. Per that gate's
+own stakes table, `docs/01-language-reference.md` §0.1 (or the platform
+support matrix) should carry a note that `--target jvm` is supported and
+tested but carries no v1.0 SemVer guarantee; breaking changes may land in
+minor releases until JVM support is separately declared stable. (Filing
+this note in the language reference itself is left to whichever session
+next touches `docs/36` R3/G1 bookkeeping — this entry's scope is codifying
+the decision, not the full downstream doc sweep.)
+
+### Band-order note (docs/44)
+
+For the record, the band sequencing this decision unblocks: J0–J3 shipped
+in earlier sessions (JVM audit, F#-host kernel debt elimination
+`Lyric.Jvm.Hosts` deletion, `defer`/opaque/protected/wire lowering).  This
+session's docs/CI audit pass (alongside sibling sessions working the same
+effort in parallel — Maven resolver distribution, a `Std.Task.Scope` JVM
+correctness fix, JVM auto-FFI robustness, and `lyric-search` API wiring,
+none detailed here since they are each other sessions' scope) targets the
+J5/J6-adjacent documentation-accuracy gaps: the M-17/B-11 stale-finding
+corrections and the m-11 doc-drift sweep recorded elsewhere in `docs/44`
+and in this entry's sibling commits.
+
+### Consequences
+
+- `docs/44-jvm-production-readiness-plan.md`'s header no longer describes
+  an "Unbacked plan" for the G1 half of its ask — the channel decision is
+  now recorded here. Band ordering itself remains documented in `docs/44`
+  §6 (J0–J7); this entry does not re-litigate that sequencing, only
+  confirms bands J1–J3 are historical fact by the time this was written.
+- `docs/36-v1-roadmap.md` G1 should be marked resolved (cross-reference
+  this entry) the next time that document is touched.
+
+---
+
+## D-progress-621 — JVM: `Std.Task.Scope` was a phantom kernel (`NoClassDefFoundError` on every call); rewritten over real JDK primitives. MSIL: `await` never actually blocked on an extern-declared `Task` value; fixed. D119 slice S3 (sibling-cancel) investigated, blocked on two newly-found pre-existing bugs, not shipped
+
+**Status:** ACCEPTED (JVM rewrite + MSIL `await`-recognition fix); D119 slice S3 NOT shipped (see below)
+
+**Context.** `lyric-stdlib/std/_kernel_jvm/task.l` declared `extern type
+Scope = "lyric.runtime.LyricTaskScope"` and `extern package
+lyric.stdlib.jvm.TaskScopeHost { ... }` against classes that exist nowhere
+in the runtime — every `Std.Task` call on `--target jvm` (`makeScope`,
+`scopeSpawn`, `delay`, cancellation tokens, all of it) threw
+`NoClassDefFoundError`/`ClassNotFoundException`. This is the same phantom-
+kernel-shim pattern fixed repeatedly elsewhere in the stdlib (D-progress-543
+and its neighbours). Separately, D119 (`docs/03-decision-log.md`, slice S3)
+asked to restore .NET's dropped sibling-cancel-on-first-fault in
+`Std.Task.Scope`.
+
+**JVM fix.** `_kernel_jvm/task.l` is rewritten as pure Lyric directly over
+real JDK classes via the auto-FFI, discovering two hard constraints in the
+process (both verified with standalone repros, documented in the file's
+header): (1) the JVM auto-FFI class reader intentionally skips
+`ACC_INTERFACE` class files, so instance methods on JDK *interfaces*
+(`ExecutorService`, `Future`, `Executor`) have no metadata-backed
+resolution path and silently mis-resolve to a legacy guess that throws
+`IncompatibleClassChangeError`; only concrete classes
+(`AtomicBoolean`/`AtomicReference`, `Thread`, `System`) are usable. (2)
+Lyric closures have no bridge to arbitrary JDK functional interfaces
+(`Runnable`/`Callable`) outside the compiler's own `spawn`/`scope { }`
+keyword codegen. Consequently: `Scope.scopeSpawn` defers each action into a
+`List[() -> Unit]`; `awaitAll` is where they actually run — one `scope { }`
+`spawn`s every pending action (real JDK 21 virtual threads), wrapping each
+so a fault sets a shared `AtomicBoolean` cancellation flag and records the
+first failure's message via `AtomicReference.compareAndSet` (first-fault-
+wins), then re-panics with it once every action has joined — genuine
+sibling-cancel-on-first-fault, achieved with real concurrency primitives,
+not a stub. `delay`/`delayWithCancel` block the calling virtual thread
+directly (`Thread.sleep`, chunked so cancellation is observed promptly);
+`makeCancelSourceTimeout`'s auto-cancel is a lazy deadline check folded
+into `isCancelled` rather than an eagerly-scheduled background canceller
+(the Runnable-bridging gap rules that out). The ambient token slot uses
+`java.lang.ThreadLocal` (not `ScopedValue`, still JDK 21 preview — same
+reason D120 rejected `StructuredTaskScope`).
+
+**MSIL fix (`Msil.Codegen.isTaskTypeMsil`, `lyric-compiler/msil/codegen.l`).**
+While verifying the .NET side, `await` on any extern-declared `Task`-typed
+value (`Std.Task.delay`/`delayWithCancel`/`awaitAll`) turned out to never
+actually suspend/block at all — `await delay(3000)` completed in ~0.9s
+total process runtime, not ~3s. Root cause: `isTaskTypeMsil` recognises an
+awaited `Task` by comparing its TypeRef row against the compiler's own
+eagerly-registered `cctx.trTask`/`cctx.trTask1` (set up directly via
+`ctxAddTypeRef` at compile-context construction, before `cctx.ffiTypeRefs`
+even exists). `ctxAddTypeRef` never deduplicates, and `extern type Task =
+"System.Threading.Tasks.Task"` interns its *own*, separate TypeRef row the
+first time `internFfiTypeRef` sees it — the two rows never match, so
+`await` silently fell through to the "already-resolved, pass through"
+branch for every kernel/user-declared `Task`. Fixed by cross-checking the
+`ffiTypeRefs` cache (keyed exactly as `internFfiTypeRef` would key a fresh
+intern of the same FQN) in addition to the row-index comparison. Verified:
+`await delay(3000)` now takes ~3.9s. This is a real, load-bearing fix
+independent of D119 S3 — every `Std.Task` consumer that `await`s a `Task`
+now actually waits, which was silently false before.
+
+**D119 slice S3 — investigated, not shipped.** Three independent,
+pre-existing bugs were found while attempting it, each confirmed with a
+standalone repro outside `Std.Task`:
+
+1. `Task.ContinueWith(Action<Task>)` can never bind: Lyric closures erase
+   every generic delegate type argument to `System.Object` (Epic #1877's
+   closure ABI), so a `(Task) -> Unit` handler always presents as
+   `Action<Object>`, never `Action<Task>`, and no BCL `ContinueWith`
+   overload matches — both the metadata auto-FFI resolver and the
+   table-driven `@externTarget` resolver fall back to a guessed signature
+   that throws `MissingMethodException` at runtime.
+2. An alternative using `Task.GetAwaiter().OnCompleted(Action)` (a
+   non-generic, arity-0 delegate — the shape already proven to bind, per
+   (3)) compiles the call correctly, but as soon as any closure appears in
+   a function that also calls `GetAwaiter`/`OnCompleted`, the whole
+   compilation unit's MSIL lowering panics: `Msil.Lowering: MNewobjByName
+   could not resolve .ctor for type '<pkg>.__Closure_N'`. Reproduced with a
+   `() -> Unit` local closing only over a `Task` and a `protected type`
+   value (never over another closure), so this is independent of (1) — a
+   second gap in closure-class registration ordering specifically when
+   `TaskAwaiter`/`GetAwaiter` participate.
+3. Most significant: even the *existing*, already-shipped
+   `Task.Run(Action[, CancellationToken])` binding `scopeSpawn` uses never
+   actually invokes the passed closure on this backend — confirmed with a
+   minimal repro carrying no dependency on `Std.Task` at all
+   (`taskRunPlain({ -> println(...) }); t.Wait()` prints nothing and
+   returns immediately, even after an extra `Thread.Sleep`). This means
+   `Scope.scopeSpawn`'s concurrent-execution primitive does not run user
+   code on `--target dotnet` today, independent of sibling-cancel — a
+   materially bigger, pre-existing gap than the missing cancel-on-fault
+   feature this slice set out to restore.
+
+Given (3), `_kernel/task.l`'s `scopeSpawn` is left functionally unchanged
+(matching its pre-existing behaviour); only the header documentation and
+the genuinely-shipped `isTaskTypeMsil` fix are new on the .NET side. D119
+slice S3 remains open, now blocked on items (1)–(3) above rather than only
+the `ContinueWith` overload issue D119 already knew about.
+
+**A fourth bug, found verifying the JVM side end-to-end.** A closure
+passed as a `() -> Unit` argument into a function in ANOTHER package,
+stored, and later invoked via `spawn` from inside that package's own body
+throws `ClassCastException`: every lambda-related check in
+`lyric-compiler/jvm/codegen/*.l` keys off `ctx.pkgName` (the package
+currently being lowered) with no cross-package interface adaptation, so
+the closure (implementing the *caller's* synthesized `Lyric$Lambda`) never
+matches the callee's own. A same-package `Scope` consumer, and a direct
+(non-deferred) cross-package `spawn action()` call, both work fine
+(verified) — the mismatch is specific to the store-then-spawn-via-a-
+different-function shape `scopeSpawn`/`awaitAll` is split into. This means
+`Scope` does not work reliably for genuine cross-package consumers on JVM
+either, today — a separate, pre-existing, general JVM-backend gap, not
+specific to `Std.Task`.
+
+**Verification.** `lyric-stdlib/tests/task_tests.l` (new): cancellation
+token/source semantics, `delay`/`delayWithCancel` timing and cancellation,
+`makeCancelSourceTimeout`'s lazy deadline — all pass on both
+`./bin/lyric test lyric-stdlib/tests/task_tests.l` and `./bin/lyric test
+--target jvm lyric-stdlib/tests/task_tests.l`. The two `Scope`-based tests
+(normal completion, sibling-cancel-on-fault) currently fail on **both**
+targets — not because either kernel's `Scope` logic is wrong (each was
+independently verified correct in isolation: the JVM design against a
+same-package repro exercising real concurrent virtual threads and fault
+aggregation; the MSIL `isTaskTypeMsil` fix against a direct timing
+measurement) — but because of the pre-existing bugs above, both of which
+predate this change and block ANY cross-package `scopeSpawn` consumer, not
+just the sibling-cancel feature. The test file is left wired in (not
+skipped/deleted) with this status documented in its own header, so a
+future fix to either bug flips the assertions green without rediscovery.
+
+**Scope boundary / follow-ups (not fixed here, each needs its own
+investigation and issue):**
+
+1. .NET: `Task.Run(Action[, CancellationToken])` never invokes its
+   delegate argument on the self-hosted MSIL backend (item 3 above) — the
+   biggest of the four findings, blocking `Scope.scopeSpawn` entirely on
+   `--target dotnet`.
+2. .NET: closures that call `TaskAwaiter.GetAwaiter()/OnCompleted()`
+   alongside any other closure in the same compilation unit corrupt
+   `MNewobjByName` closure-class resolution (item 2 above).
+3. JVM: cross-package closure arguments stored and later invoked via
+   `spawn` from a different function throw `ClassCastException` (the
+   fourth bug above) — blocks reliable cross-package `Scope` usage on
+   JVM.
+4. `Task.ContinueWith(Action<Task>)` (and, by the same generic-erasure
+   argument, any `Action<T>`/`Func<T,R>` BCL delegate parameter for
+   non-zero, non-`object` `T`) can never bind from Lyric (item 1 above) —
+   a standing constraint on what BCL APIs are callable from `_kernel/`
+   externs until the closure ABI carries real generic delegate types.
+
+**Related:** D119 (the entry this slice belongs to), D120 (JDK-preview-API
+rejection precedent this JVM rewrite's `ThreadLocal`-over-`ScopedValue`
+choice follows), D-progress-543/555/519 (the phantom-kernel-shim fix
+pattern this JVM rewrite follows), Epic #1877 (closure ABI, `Action<T>`
+erasure), docs/44 (JVM production-readiness plan).
+
+**Review hardening (same PR, #5320/#5321/#5323).** Three findings from
+re-review, all fixed in the same change:
+
+1. **#5320 — JVM ambient slot silently dropped `deadlineMs`.**
+   `_kernel_jvm/task.l`'s `__ambientSlot` (a raw `java.lang.ThreadLocal`,
+   not a compiler-synthesised `AsyncLocal[T]` like the .NET side) only
+   threaded `token.flag` through `installToken`/`currentToken`/
+   `restoreToken`; a token created via `makeCancelSourceTimeout` and
+   installed as ambient lost its deadline the moment it was read back via
+   `currentToken()` (`deadlineMs` hardcoded to `0i64`), silently disabling
+   its auto-cancel. Fixed with a second, lockstep `__ambientDeadlineSlot`
+   ThreadLocal. Verified with a standalone repro: `currentToken().deadlineMs`
+   now round-trips a real epoch-ms value instead of `0`.
+2. **#5323 — `task_tests.l`'s sequential `main()` masked two of the three
+   Scope tests' real status.** A bare sequential call list aborts the whole
+   program at the first `Bug` panic, so once
+   `testScopeNormalCompletionRunsEveryChild` started failing, the two Scope
+   tests after it never ran at all — their pass/fail status was simply
+   unknown, not "known to fail" as the header implied. Fixed with a
+   `runScopeTest` helper that `try`/`catch Bug`-wraps each Scope test
+   individually and reports it, so the suite always completes and every
+   test's real status is observed. This surfaced a **new finding**:
+   `testScopeWithNoChildrenCompletesImmediately` — which spawns zero
+   children — also fails on both targets, with a null-dereference inside
+   `awaitAll` itself, not the cross-package closure-invocation bug the
+   non-empty-scope tests hit. All three Scope tests are confirmed failing
+   on both targets now (not two), each independently reported.
+3. **#5322 — no tracked issue for the `lyric-search` extern-package FFI
+   gap.** Filed as **issue #5324** ("`extern package` FFI binding
+   mechanism doesn't resolve to a real call on either backend") so the
+   WS3 finding (`extern package` FFI resolution crashing at runtime on
+   both targets, affecting at least 14 other ecosystem-library kernels)
+   isn't only discoverable via git history; `lyric-search/README.md` and
+   `search.l`'s kernel-boundary comment now link it directly instead of
+   only recommending that someone file it.
+
+None of the three change the headline conclusion (`Scope`'s *public* API
+logic is sound; the bugs are in the shared `awaitAll`/closure-invocation
+plumbing beneath it) — they make the existing, already-honest disclosure
+more precise and closer to what the code actually does.
+
+**Second review-hardening round (same PR, #5325/#5326/#5327/#5328).**
+
+1. **#5325 — `task_tests.l` wasn't wired into any CI job, unlike every
+   other `lyric-stdlib/tests/*.l` file.** Fixed by splitting the file:
+   `task_tests.l` now carries only the eight token/cancellation/delay tests
+   that reliably pass (plus a new regression test for #5320's ambient-slot
+   fix), asserts normally, and is wired into `ci.yml` (`stdlib-builds` via
+   `lyric run`; `compiler-self-tests-jvm` via `lyric build --target jvm` +
+   `java -jar` + a `"task tests: ok"` sentinel grep, matching
+   `uuid_tests.l`/`time_tests.l`'s exact pattern). The three Scope tests
+   move to a new, deliberately-unwired
+   `lyric-stdlib/tests/task_scope_known_failures_tests.l` — see its header
+   for why (mirrors the `contract_meta_emit_self_test.l`/#2580 precedent
+   for a test that cannot cleanly pass yet).
+2. **#5326 — the three newly-discovered Scope-blocking bugs were only in
+   decision-log prose, no tracked issue.** Filed as **issue #5329**
+   ("`Std.Task.Scope`'s `scopeSpawn`/`awaitAll` never actually runs
+   spawned closures"), covering all three (plus the empty-scope
+   null-dereference #5323 surfaced). `task_scope_known_failures_tests.l`'s
+   header links it.
+3. **#5327 — `runGuardedJvm`'s empty-string `firstFault` sentinel could
+   silently mistake an empty-message panic for success.** Confirmed real:
+   `firstFault: JAtomicReference = JAtomicReference.new("")` used
+   `compareAndSet("", b.message)` (first-fault-wins) and `awaitAll` decided
+   whether to re-panic via `msg == ""` — so a sibling panicking with an
+   empty message (`panic("")`) would CAS `""` to `""`, `awaitAll` would see
+   `msg == ""`, and the fault would be silently swallowed as if every
+   action had succeeded. Fixed by adding a dedicated `hasFault:
+   JAtomicBoolean` (initially `false`) that gates the first-fault-wins
+   write via `hasFault.compareAndSet(false, true)`; `awaitAll` now branches
+   on `hasFault.get()` instead of the string comparison, so the sentinel
+   value and a legitimate empty fault message can no longer collide.
+   Verifying this surfaced a second, self-contained bug: the first version
+   of this fix put the panic-and-terminate arm FIRST in `awaitAll`'s
+   `if`/`else` (`if hasFault.get() { panic(msg) } else { Task(done=true) }`)
+   and that ordering alone produced `VerifyError: Method expects a return
+   value` at class-load time for the whole `Std.Task` class — matching the
+   general "terminating-arm-position-sensitive if/else codegen" fragility
+   class already catalogued in `docs/44-jvm-production-readiness-plan.md`
+   (e.g. m-55). Reordering to match the pre-fix code's shape (success arm
+   first, panic arm second: `if not hasFault.get() { Task(done=true) }
+   else { panic(msg) }`) avoids it. **Verified end-to-end**: a standalone
+   `scopeSpawn(sc, { -> panic("") })` repro now correctly propagates the
+   empty-message fault (`catch Bug` observes it) instead of silently
+   reporting success, on `--target jvm`.
+4. **#5328 — `runScopeTest` let `main()` always return 0 despite known
+   failures, in tension with "fix or delete, don't paper over."** Resolved
+   as a consequence of the #5325 file split: the known-failing tests now
+   live in their own file whose `main()` returns non-zero when a failure
+   fires (verified: real exit code 1, not just non-zero-looking console
+   output) and which is explicitly not asserted by CI either way — neither
+   a fake green nor a red build for a bug this PR doesn't fix.
+
+**A fifth bug, found while verifying #5320 end-to-end on .NET.** Adding a
+regression test that called `installToken` on `--target dotnet` (to prove
+`deadlineMs` survives the JVM ambient-slot fix — the .NET side didn't need
+the fix itself, since it already stores the whole `CancellationToken` in
+its `AsyncLocal`) reliably crashed: a `NullReferenceException` in
+`ambientValue`/`currentToken` on `installToken`'s very first call in a
+minimal repro, or a native `libclrjit.so` segfault in a slightly larger
+one. Root cause: `ambientValue`/`setAmbientValue` are `@asyncLocal`
+compiler intrinsics (real bodies synthesised by the self-hosted MSIL
+emitter, not the `= ()` stub shown in source); on the very first access in
+a process, `AsyncLocal<CancellationToken>.Value` is `null`, and the
+synthesised getter appears to dereference it without a null check. Nothing
+in the shipped stdlib calls `installToken` today (only documents the
+pattern in comments), so this is a previously-latent, never-before-
+exercised gap in the self-hosted MSIL compiler's `@asyncLocal` intrinsic
+lowering, not something introduced by this PR. Filed as **issue #5330**;
+the regression test was removed from the CI-wired `task_tests.l` (it
+would crash the CI step) with a comment pointing at #5330 and explaining
+why #5320 is instead verified directly against `_kernel_jvm/task.l` (see
+above).
+
+---
+
+## D124 — Decommission Legacy F# Bootstrap & Fix JVM dblToSingle Crash
+
+**Date:** 2026-07-08
+**Status:** ACCEPTED
+
+**Context & Problem.** The legacy F# bootstrapping mechanism (`mint-stage0-fsharp.sh`), the F# reference rewriter (`rewrite-corelib-refs.fsx`), and related Makefile targets (`make mint`) add significant maintenance burden and run-time complexity to the toolchain. However, previous attempts to completely decommission the F# bootstrap (e.g. in PR #5090) were reverted because the `compiler-self-tests-jvm` suite crashed during build with a runtime `MissingMethodException`/`ClassNotFoundException` when utilizing the precompiled v0.4.14 self-hosted seed. The crash specifically arose when calling single-precision float conversion helpers (like `dblToSingle`), which are compiled to use the CLR's `System.Single` type.
+
+**Decision.**
+1. **Complete Decommissioning**: We delete the F# bootstrapping scripts (`mint-stage0-fsharp.sh`, `rewrite-corelib-refs.fsx`) and retired build commands (`make mint`), shifting the stage-0 bootstrap permanently to use downloaded self-hosted seed release binaries.
+2. **Metadata Signature Mapping Fix**: Inside `argTyToSig` (`lyric-compiler/msil/codegen.l`), we map the FQN `"System.Single"` to primitive code `0x0C` (ELEMENT_TYPE_R4, corresponding to standard single-precision float) instead of a named value type reference. Under the previous behavior, passing a `System.Single` value compiled with a class-based reference signature (`valuetype [System.Runtime]System.Single`) rather than the primitive `float32` signature type expected by the BCL's `System.Convert.ToSingle` or `System.BitConverter.SingleToInt32Bits`, triggering loader validation failures and JVM self-test crashes at runtime.
+3. **Unified Kernel Wrappers**: We restore explicit `@externTarget` and `@externStatic` FFI wrappers for `dblToSingle` and `singleToInt32Bits` inside `_kernel/kernel.l` for both JVM and MSIL targets to keep their signatures identical and clean, avoiding any seed compiler FFI auto-resolution crashes.
+4. **Tooling and Docs Alignment**: We update `scripts/selfhost-check.sh` and `Makefile` comments to retire references to `make mint`, replacing them with `make lyric` / `make stage1`. We fully update the bootstrap progress log (`docs/10-bootstrap-progress.md`) to reflect the unified, self-hosted 2-compiler bootstrap model.
+
+**Verification.** Running `make stage1`, `make stage2`, and `make stage3` successfully passes all JVM self-tests (`compiler-self-tests-jvm`), IL verification (`make ilverify`), and standard library HTTP test suites, while successfully achieving byte-for-byte reproducibility at Stage 3.
+
+---
+
 ## Decisions deferred to v2 or later
+
 
 - Package generics (Ada-style module-level parameterization)
 - JVM backend

@@ -134,7 +134,7 @@ selfhosted-compiler: ## Stage self-hosted compiler DLLs under <libdir>/selfhoste
 # against THIS toolchain, pinned via `LYRIC_STDLIB_BIN=.bootstrap/stage2/lib`.
 # Building it is the runnability gate: a self-hosted emitter bug surfaces here
 # as a clean, specific failure rather than as build-system noise.  Requires a
-# stage-1 build first (`make stage1` or `make mint`).
+# stage-1 build first (`make stage1` or `make lyric`).
 stage2: ## Build the isolated self-hosted ship/test toolchain (.bootstrap/stage2)
 	./scripts/bootstrap.sh --stage 2
 	@echo "stage-2 toolchain: .bootstrap/stage2/bin/lyric"
