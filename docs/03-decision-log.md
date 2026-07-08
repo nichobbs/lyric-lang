@@ -11766,6 +11766,37 @@ codegen's ability to *produce* a correct slice-typed return once the
 declared signature is trusted, not the verifier's ability to *check* that
 signature); left as a follow-up.
 
+**Review hardening.** The `scoreParamMatch` generalization above scores
+*any* of the 8 primitive array descriptors equally against an erased
+`slice[T]` argument — code review correctly flagged that this makes JDK
+overload families differing only by primitive element type (`String(char[])`
+vs `String(byte[])`; dozens of `java.util.Arrays.hashCode`/`sort`/`equals`/…
+families, each with one overload per primitive type) tie at the same score,
+with `findBestMethod`/`findBestConstructor`'s strict first-wins tie-break
+silently resolving to whichever overload the parsed class metadata happens
+to list first — not necessarily the caller's intent. Confirmed real Lyric
+element-type information is not recoverable at that point: `slice[T]`
+erases structurally to `Object[]` in `typeExprToJvm` (`01_types.l`) well
+before call lowering, and the type checker's unerased `TySlice(element)`
+data is never threaded into codegen (only its diagnostics are read).
+Added `checkPrimitiveArraySliceAmbiguity` (`jvm/auto_ffi.l`) to
+`findBestMethod`/`findBestConstructor`/`findBestInstanceMethod`: when 2+
+candidates tie at the winning score and the tie is caused by a `slice[T]`
+argument matching 2+ *different* primitive array parameter types, refuse
+with a compile-time diagnostic rather than guess. Verified manually (this
+is a compile-time panic inside the compiler process itself, not a runtime
+`Bug`, so it cannot be expressed as a `@test_module` `assertPanics`
+assertion) and via a new CI negative-test step
+(`Ambiguous primitive-array overload fails loud on JVM`) that builds a
+`String(char[])`-vs-`String(byte[])` repro and asserts the build fails with
+the diagnostic. The PR's own `String.new(slice[Char])` test was changed to
+`String.copyValueOf(slice[Char])` (a static method with only one arity-1
+overload, so genuinely unambiguous) once the ambiguity check correctly
+started rejecting the constructor form. Also applied the review's
+SUGGESTION finding: `emitFfiCoerce`'s new array-descriptor branch now
+reuses `descStrToJvmType` + a `JArray` match instead of manually stripping
+the leading `[` via substring.
+
 **Related:** `docs/44` M-10 (the original byte-only interop this
 generalizes), `docs/42` (metadata-based auto-FFI resolution this scoring
 fix extends).

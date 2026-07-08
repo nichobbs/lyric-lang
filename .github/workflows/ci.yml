@@ -3485,6 +3485,51 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/auto_ffi_jvm_self_test.l
+      # Negative test: an ambiguous primitive-array overload must fail loud,
+      # not silently guess.  A Lyric slice[T] argument erases to Object[]
+      # before the JVM auto-FFI resolver ever sees it, so java.lang.String's
+      # own (char[]) vs (byte[]) constructors tie at equal score for a
+      # slice[Char] argument -- exactly the case checkPrimitiveArraySliceAmbiguity
+      # (jvm/auto_ffi.l) exists to reject at compile time rather than resolve
+      # to whichever overload happens to appear first in the parsed class
+      # metadata.  This is a compile-time panic inside the self-hosted
+      # compiler process itself, not a runtime Bug the compiled program could
+      # catch, so it cannot be expressed as a @test_module assertion --
+      # asserted here as a `lyric build` failure instead.
+      - name: Ambiguous primitive-array overload fails loud on JVM (native lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping ambiguous-overload JVM negative test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping ambiguous-overload JVM negative test"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          neg="$dir/ambig.l"
+          cat > "$neg" <<'LYRIC'
+          package Ambig
+          import Std.Core
+          extern type JString = "java.lang.String"
+          func main(): Int {
+            val letters: slice[Char] = ['h', 'i']
+            val s = JString.new(letters)
+            println(s.toString())
+            0
+          }
+          LYRIC
+          if "$lyric_bin" build --target jvm "$neg" -o "$dir/ambig.jar" > "$dir/ambig.out" 2>&1; then
+            echo "::error::ambiguous slice[Char] overload (String(char[]) vs String(byte[])) compiled — checkPrimitiveArraySliceAmbiguity did not fire"; cat "$dir/ambig.out"; exit 1
+          fi
+          if ! grep -qi "ambiguous overload" "$dir/ambig.out"; then
+            echo "::error::ambiguous slice[Char] overload failed without the expected diagnostic"; cat "$dir/ambig.out"; exit 1
+          fi
+          echo "OK: ambiguous primitive-array overload (String(char[]) vs String(byte[])) for a slice[Char] argument fails loud."
       # Hash self-test on JVM — proves the target-aware kernel source loader
       # (docs/44 J6 M-10) loads `lyric-stdlib/std/_kernel_jvm/hash_host.l` and
       # the JVM SHA-512 host (M-9, java.security.MessageDigest + HexFormat via

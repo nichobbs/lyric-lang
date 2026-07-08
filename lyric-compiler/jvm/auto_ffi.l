@@ -581,6 +581,61 @@ func scoreMethod(ctx: in AutoFfiCtx, method: in ClassMethod, argDescs: in List[S
   total
 }
 
+// True when `desc` is the erased Lyric slice representation used for a
+// `slice[T]` argument (`Object[]`, per `typeExprToJvm`'s `TSlice` erasure in
+// `jvm/codegen/01_types.l`).
+func isErasedSliceDesc(desc: in String): Bool {
+  desc == "[Ljava/lang/Object;"
+}
+
+// Panics with a compile-time diagnostic when 2+ candidates tied at the
+// winning score bind the SAME `slice[T]` argument position to DIFFERENT
+// primitive array parameter types.  `scoreParamMatch`'s generalization (any
+// of the 8 JVM primitive-array descriptors scores equally against an erased
+// `slice[T]` argument) means a JDK overload family differing only by
+// primitive element type — `String(byte[])` vs `String(char[])`,
+// `Arrays.hashCode(int[])` vs `Arrays.hashCode(long[])`, and dozens of
+// similar `java.util.Arrays` families — would otherwise tie and silently
+// resolve to whichever overload happens to appear first in the parsed class
+// metadata, not the caller's actual intent.  A Lyric `slice[T]` erases to
+// `Object[]` before this resolver ever sees it, with no element-type
+// information surviving to disambiguate correctly here, so refusing with a
+// diagnostic is the honest alternative to silently guessing.
+func checkPrimitiveArraySliceAmbiguity(
+  what: in String,
+  argDescs: in List[String],
+  candidates: in List[ClassMethod],
+  scores: in List[Int],
+  bestScore: in Int,
+): Unit {
+  var argIdx = 0
+  while argIdx < argDescs.count {
+    if isErasedSliceDesc(argDescs[argIdx]) {
+      val seenTypes: List[String] = newList()
+      var j = 0
+      while j < candidates.count {
+        if scores[j] == bestScore {
+          val params = parseDescriptorParams(candidates[j].descriptor)
+          if argIdx < params.count {
+            val pd = params[argIdx]
+            if isPrimitiveArrayDesc(pd) and not seenTypes.contains(pd) {
+              seenTypes.add(pd)
+            }
+          }
+        }
+        j = j + 1
+      }
+      if seenTypes.count > 1 {
+        panic(
+          "JVM auto-FFI: ambiguous overload for '" + what +
+            "' — a Lyric slice[T] argument matches more than one primitive array parameter type with equal score, and the erased slice[T] representation carries no element-type information to disambiguate. Use a differently-shaped call, or bind the target member explicitly (e.g. @externTarget), to select an unambiguous overload."
+        )
+      }
+    }
+    argIdx = argIdx + 1
+  }
+}
+
 /// Find the best-matching method in `ci` for the given name and argument
 /// descriptor strings.  Each element of `argDescs` is a JVM type descriptor
 /// produced by `jvmTypeToDescStr` in Jvm.Codegen.
@@ -591,6 +646,8 @@ pub func findBestMethod(
   argDescs: in List[String],
   wantStatic: in Bool,
 ): Option[ClassMethod] {
+  val candidates: List[ClassMethod] = newList()
+  val scores: List[Int] = newList()
   var best: Option[ClassMethod] = None
   var bestScore: Int = -1
   var i = 0
@@ -598,12 +655,19 @@ pub func findBestMethod(
     val m = ci.methods[i]
     if m.name == methodName {
       val s = scoreMethod(ctx, m, argDescs, wantStatic)
-      if s > bestScore {
-        bestScore = s
-        best = Some(value = m)
+      if s >= 0 {
+        candidates.add(m)
+        scores.add(s)
+        if s > bestScore {
+          bestScore = s
+          best = Some(value = m)
+        }
       }
     }
     i = i + 1
+  }
+  if bestScore >= 0 {
+    checkPrimitiveArraySliceAmbiguity(ci.binaryName + "." + methodName, argDescs, candidates, scores, bestScore)
   }
   best
 }
@@ -611,6 +675,8 @@ pub func findBestMethod(
 /// Find the best-matching constructor in `ci` for the given argument descriptor
 /// strings.  Searches the `constructors` list (public `<init>` entries).
 pub func findBestConstructor(ctx: in AutoFfiCtx, ci: in ClassInfo, argDescs: in List[String]): Option[ClassMethod] {
+  val candidates: List[ClassMethod] = newList()
+  val scores: List[Int] = newList()
   var best: Option[ClassMethod] = None
   var bestScore: Int = -1
   var i = 0
@@ -622,11 +688,18 @@ pub func findBestConstructor(ctx: in AutoFfiCtx, ci: in ClassInfo, argDescs: in 
     // initialisation of `bestScore = -1` provides an equivalent implicit guard
     // today, but the explicit form is more robust if the sentinel ever shifts
     // (e.g. scoreMethod returning 0 for no-match in a future refactor) (#2226).
-    if s >= 0 and s > bestScore {
-      bestScore = s
-      best = Some(value = m)
+    if s >= 0 {
+      candidates.add(m)
+      scores.add(s)
+      if s > bestScore {
+        bestScore = s
+        best = Some(value = m)
+      }
     }
     i = i + 1
+  }
+  if bestScore >= 0 {
+    checkPrimitiveArraySliceAmbiguity(ci.binaryName + ".<init>", argDescs, candidates, scores, bestScore)
   }
   best
 }
@@ -739,6 +812,9 @@ pub func findBestInstanceMethod(
       best = Some(value = allMethods[k])
     }
     k = k + 1
+  }
+  if bestScore >= 0 {
+    checkPrimitiveArraySliceAmbiguity(ci.binaryName + "." + methodName, argDescs, allMethods, allScores, bestScore)
   }
   best
 }

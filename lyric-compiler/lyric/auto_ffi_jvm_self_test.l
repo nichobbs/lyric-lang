@@ -278,22 +278,27 @@ func charsOfExplicit(codePoint: in Int): slice[Char] {
 test "Character.toChars(int) char[] tail-expression return coerces to slice[Char]" {
   val cs = charsOfTail(65)
   assertEqualInt(cs.count, 1, "toChars(65) yields one char")
-  // Round-trip back through the argument-side unbox (String(char[])) rather
-  // than indexing + a Char method call, so this test exercises only the
-  // return-side coercion under test, not slice-element method dispatch.
-  val s = JString.new(cs)
-  assertEqual(s.toString(), "A", "toChars(65) round-trips through String(char[]) as \"A\"")
+  // Round-trip back through the argument-side unbox (String.copyValueOf(char[]),
+  // NOT the String(char[]) constructor -- String also declares String(byte[]),
+  // so a slice[Char] argument ties both overloads at equal score and is
+  // correctly rejected as ambiguous by `checkPrimitiveArraySliceAmbiguity`;
+  // copyValueOf has exactly one arity-1 overload, char[], so it is
+  // unambiguous) rather than indexing + a Char method call, so this test
+  // exercises only the return-side coercion under test, not slice-element
+  // method dispatch.
+  val s = JString.copyValueOf(cs)
+  assertEqual(s, "A", "toChars(65) round-trips through String.copyValueOf(char[]) as \"A\"")
 }
 
 test "Character.toChars(int) char[] explicit return coerces to slice[Char]" {
   val cs = charsOfExplicit(66)
   assertEqualInt(cs.count, 1, "toChars(66) yields one char")
-  val s = JString.new(cs)
-  assertEqual(s.toString(), "B", "toChars(66) round-trips through String(char[]) as \"B\"")
+  val s = JString.copyValueOf(cs)
+  assertEqual(s, "B", "toChars(66) round-trips through String.copyValueOf(char[]) as \"B\"")
 }
 
-test "slice[Char] literal argument unboxes to a real JDK char[] — String(char[]) constructor" {
+test "slice[Char] literal argument unboxes to a real JDK char[] — String.copyValueOf(char[])" {
   val letters: slice[Char] = ['h', 'i']
-  val s = JString.new(letters)
-  assertEqual(s.toString(), "hi", "String(char[]) built from a Lyric slice[Char] literal")
+  val s = JString.copyValueOf(letters)
+  assertEqual(s, "hi", "String.copyValueOf(char[]) built from a Lyric slice[Char] literal")
 }

@@ -1224,11 +1224,15 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
   // replaces it with a freshly-built primitive array copy (element-copy
   // loop with per-element unboxing, generalized from the byte-only loop this
   // replaced to all 8 JVM primitive array element types).
-  if fromDesc == "[Ljava/lang/Object;" and toDesc.length > 1 and toDesc[0] == '[' {
-    val elemTy = descStrToJvmType(toDesc.substring(1, toDesc.length - 1))
-    if isJvmPrimitiveElemType(elemTy) {
-      emitUnboxObjectArray(ctx, insns, elemTy)
-      return ()
+  if fromDesc == "[Ljava/lang/Object;" {
+    match descStrToJvmType(toDesc) {
+      case JArray(elemTy) -> {
+        if isJvmPrimitiveElemType(elemTy) {
+          emitUnboxObjectArray(ctx, insns, elemTy)
+          return ()
+        }
+      }
+      case _ -> ()
     }
   }
 }
