@@ -765,6 +765,30 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Enum/closure/pattern-bind self-test (D-progress-623 / #5361, #5364).
+      # Pins two self-hosted MSIL backend bugs: a payload-free `enum`
+      # co-compiled with a closure crashing `Msil.Lowering` (#5361), and a
+      # `match`-arm-bound variable used directly as a call argument crashing
+      # with `InvalidProgramException` (#5364). MSIL-only — dotnet target
+      # only; the JVM backend has an unrelated auto-FFI gap for this shape,
+      # tracked separately. Run via native `lyric test` (imports only
+      # `Std.*`), asserting every runtime value.
+      - name: Enum/closure/pattern-bind self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping enum/closure/pattern-bind self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping enum/closure/pattern-bind self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/enum_closure_pattern_bind_self_test.l
+
       # Aspect-weave end-to-end self-test (#3402).  Runs real woven functions
       # (out-variable `ret = proceed()` advice, the `call.proceed()` library-
       # template spelling, short-circuit advice, `call.shortName`, expression-
