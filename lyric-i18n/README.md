@@ -7,12 +7,18 @@ Internationalization with placeholder substitution and locale fallback.
 | Feature flag | Backend                                              | Status                |
 |--------------|------------------------------------------------------|-----------------------|
 | `dotnet`     | `System.IO` + `Std.Json` for translation file loads  | Available             |
-| `jvm`        | `java.nio.file.Files` + `Std.Json` (Phase 6)         | Planned (Phase 6)     |
+| `jvm`        | `Std.File` + `Std.Json` (both cross-platform)        | Untested on JVM        |
 
-The JVM kernel (`I18n.Kernel.Jvm`) uses the standard JDK file APIs
-and the Lyric stdlib JSON parser; no third-party JVM helpers are
-required, so JVM parity here only waits on the JVM stdlib JAR
-shipping `Std.Json` (see `docs/33-platform-parity-remediation.md`).
+`I18n` never had a real platform-specific kernel: `src/i18n.l` calls
+`Std.File`/`Std.Json` directly, and both of those stdlib modules now
+have working JVM backends (`Std.Json`'s JVM kernel was rewritten to
+pure Lyric in D-progress-555, replacing a phantom-class shim). An
+earlier `I18n.Kernel.Net`/`I18n.Kernel.Jvm` pair existed as `extern
+package`-based scaffolding but was never imported by `i18n.l` and was
+deleted as dead code (see `docs/03-decision-log.md`). This library has
+not yet been built or tested against `--target jvm` in CI, so its
+actual JVM status is unverified rather than a known blocker — running
+its test suite on `--target jvm` is a small, well-scoped follow-up.
 
 ## Packages
 

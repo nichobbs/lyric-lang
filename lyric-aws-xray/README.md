@@ -2,22 +2,31 @@
 
 AWS X-Ray integration for [Lyric](https://github.com/nichobbs/lyric-lang). Provides distributed tracing via X-Ray subsegments and a B-mode aspect template for automatic call instrumentation.
 
-> **Status**: @experimental — the active-tracing aspect compiles and unit tests cover the AWS X-Ray header shape, but the end-to-end pipeline has not been exercised against a live X-Ray segment service in CI. Both `.NET` and JVM targets are supported via feature flags.
+> **Status**: @experimental — the active-tracing aspect compiles and unit tests cover the AWS X-Ray header shape, but the `aws`/`jvm` extern bindings do not actually call the real X-Ray SDK on either target (see Platform parity below), and the end-to-end pipeline has not been exercised against a live X-Ray segment service in CI.
 
 ## Platform parity
 
 | Feature flag | Backend | Status |
 |---|---|---|
-| `aws` | Amazon.XRay.Recorder.Core (.NET) | Available |
-| `jvm` | aws-xray-recorder-sdk-core (Java) | Available |
-| `local` | Local stub (no-op) | Available |
+| `aws` | Amazon.XRay.Recorder.Core (.NET) | **Broken** — the `extern package Amazon.XRay.Recorder { ... }` block in `src/xray.l` is a confirmed no-op FFI mechanism in both the type checker and MSIL codegen (see `docs/03-decision-log.md`); it compiles but never calls the real SDK |
+| `jvm` | aws-xray-recorder-sdk-core (Java) | **Broken** — same `extern package` no-op, JVM side (`extern package com.amazonaws.xray { ... }` in `src/xray.l`) |
+| `local` | Local stub (no-op) | Available — this is a genuine, intentional no-op for local development, not broken by the extern-package bug |
+
+A duplicate, unrelated, never-compiled `AwsXRay.Kernel.Net` package
+(three `_kernel/xray_kernel_{local,jvm,aws}.l` files, not registered
+in `lyric.toml`, never imported by `xray.l`) was deleted as orphaned
+scaffolding — it diverged from the inline `extern package` blocks
+`xray.l` actually uses and added no value. Fixing the real `aws`/`jvm`
+bindings needs a port to `extern type` + auto-FFI (mirroring
+`lyric-stdlib/std/_kernel_jvm/`) plus verification against a live X-Ray
+segment service, which is out of scope for a quick fix — tracked
+separately.
 
 ## Packages
 
 | Package | Description |
 |---|---|
-| `AwsXRay` | Core: subsegment handle, annotation/metadata, `Tracing` aspect template |
-| `AwsXRay.Kernel.Net` | Extern boundary (one per feature) |
+| `AwsXRay` | Core: subsegment handle, annotation/metadata, `Tracing` aspect template, and the `local`/`aws`/`jvm` extern bindings (inline, `@cfg`-gated) |
 
 ## Installation
 

@@ -1026,8 +1026,11 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   JVM kernel boundaries.
 - `lyric-jobs/` — `lyric-jobs` library: background job scheduling
   (`Lyric.Jobs`). Hangfire and Quartz.NET backends — **`InProcessJobScheduler`
-  is real on both targets; Hangfire/Quartz.NET are `NOT_IMPLEMENTED` on
-  `dotnet`, but genuinely implemented via Quartz Scheduler on `jvm`, see
+  is real (pure Lyric, no kernel dependency); Hangfire/Quartz.NET are
+  `NOT_IMPLEMENTED` on `dotnet`. A JVM Quartz binding does not exist —
+  a prior `extern package`-based `Jobs.Kernel.Jvm` was dead code (never
+  registered in `lyric.toml`, never imported, and `extern package` is
+  itself a confirmed no-op FFI mechanism) and was deleted; see
   `lyric-jobs/README.md`**; `JobHandler`/`JobScheduler` interfaces;
   `InProcessJobScheduler` for tests; `Retryable` and `Timed` aspects.
 - `lyric-mail/` — `lyric-mail` library: email sending (`Lyric.Mail`).

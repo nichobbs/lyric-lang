@@ -4,25 +4,29 @@ Background job scheduling with pluggable backends (Hangfire, Quartz.NET).
 
 ## Platform parity
 
-**`InProcessJobScheduler` is production-ready on both targets** (pure
-Lyric, no kernel dependency). Beyond that, the two targets diverge in an
-unusual direction — `jvm` actually has *more* real backend coverage than
-`dotnet` today:
+**`InProcessJobScheduler` is pure Lyric with no kernel dependency**
+(defined directly in `src/jobs.l`), so it compiles wherever `jobs.l`
+itself compiles.
 
 | Feature flag | Backend                     | Status                                                                 |
 |--------------|------------------------------|-------------------------------------------------------------------------|
 | `dotnet`     | `InProcessJobScheduler`      | Available                                                                |
 | `dotnet`     | `hangfire`, `quartz`         | `NOT_IMPLEMENTED` — `connect()` returns an error (`jobs_kernel.l:254,262`, tracked as a Phase 3 follow-up of #733) |
-| `jvm`        | `InProcessJobScheduler`      | Available                                                                |
-| `jvm`        | `hangfire`, `quartz`         | Real `extern package org.quartz.Scheduler` bindings (both features map to Quartz — Hangfire has no JVM port) — genuine implementation, not a stub |
+| `jvm`        | (any)                        | Not built today — `lyric-jobs/lyric.toml` registers no JVM package, no `jvm` feature flag, and no `[maven]` table |
 
-The JVM kernel's Quartz binding is real Lyric FFI source, not a
-placeholder — but the overall `jvm` target still needs the out-of-repo
-Lyric JVM stdlib JAR to produce a runnable artifact end-to-end, so
-"real binding code" and "runnable today" are two different claims. See
-`docs/57-stdlib-ecosystem-library-review.md` §3 (this table corrects
-that document's earlier, inaccurate claim that Quartz/Hangfire were
-stub-only on both targets).
+There is no working JVM Quartz binding today. A `Jobs.Kernel.Jvm` file
+using `extern package org.quartz.Scheduler` previously existed, but it
+was dead code: `lyric.toml`'s `[project.packages]` never registered
+it (only `Jobs.Kernel.Net` is), `jobs.l` never imported it, and
+`extern package` is itself a confirmed no-op FFI mechanism in both the
+type checker and both codegens (see `docs/03-decision-log.md`). It was
+deleted rather than fixed in place — a real JVM Quartz backend needs a
+`[maven]` dependency on `org.quartz-scheduler:quartz`, registration in
+`[project.packages]`, and a rewrite onto the working `extern type` +
+JVM auto-FFI mechanism (mirroring `lyric-stdlib/std/_kernel_jvm/`).
+This corrects the previous version of this README, which claimed the
+Quartz binding was "real Lyric FFI source, not a placeholder" —
+that claim did not hold up under verification.
 
 ## Packages
 

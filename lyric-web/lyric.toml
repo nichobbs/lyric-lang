@@ -47,8 +47,10 @@ output_assembly = "Web.dll"
 "Web.Aspects"     = "src/aspects.l"
 # .NET extern boundary — ASP.NET Core minimal APIs + Kestrel.
 "Web.Kernel.Net"  = "src/_kernel/net/web_kernel.l"
-# JVM extern boundary — Undertow HTTP server (Phase 6; excluded from dotnet build).
-# "Web.Kernel.Jvm"  = "src/_kernel/jvm/web_kernel.l"
+# JVM extern boundary (Undertow HTTP server, Phase 6) does not exist yet — the
+# prior extern-package-based scaffold was deleted as dead code (see
+# docs/03-decision-log.md); a real implementation needs extern type + JVM
+# auto-FFI, following the pattern in lyric-stdlib/std/_kernel_jvm/.
 
 [project.tests]
 "Web.CorsGuardTests"   = "tests/cors_guard_tests.l"

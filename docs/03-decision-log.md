@@ -12148,7 +12148,117 @@ initial version of this migration:
 #5391, #5392, #5393, #5394, #5395.
 
 ---
-## Decisions deferred to v2 or later
+
+## D-progress-626 — Triage of all remaining `extern package` usages (#5324 follow-up): deleted 7 confirmed-dead ecosystem-library kernels
+
+**Status:** ACCEPTED (deletion of dead code); real fixes for `lyric-feature-flags`/`lyric-auth` tracked separately; 6 FIX_LATER libraries filed as tracked issues (see below)
+
+**Context.** #5382 migrated 4 stdlib kernels off `extern package` (a
+confirmed no-op FFI mechanism in both the type checker and both
+codegens — see #5324) and left a reconnaissance finding that ~29
+ecosystem-library usages remained, "mostly ASPIRATIONAL-ADAPTER or dead
+code." A parallel triage pass across all 15 affected ecosystem
+libraries (`lyric-mail`, `lyric-db`, `lyric-i18n`, `lyric-lambda`,
+`lyric-jobs`, `lyric-search`, `lyric-ws`, `lyric-feature-flags`,
+`lyric-web`, `lyric-grpc`, `lyric-otel`, `lyric-aws-secrets`,
+`lyric-auth`, `lyric-aws-xray`, `lyric-session`) independently verified
+each one against its actual callers, test coverage, `lyric.toml`
+package registration, and README claims (not just doc comments) to
+classify each as DELETE (dead scaffolding), FIX_NOW (small, testable
+without a live external service), or FIX_LATER (needs new SDK
+dependencies, a live external service to verify against, or a genuine
+API redesign).
+
+**Deleted as confirmed dead code** (each independently verified: not
+registered in the library's `lyric.toml` `[project.packages]`, OR
+registered but never imported by the library's own public wrapper, and
+in every case zero real callers or test coverage anywhere in the
+repo):
+
+- `lyric-mail/src/_kernel/jvm/mail_kernel.l` (`Mail.Kernel.Jvm`) — not
+  registered in `lyric.toml`; the SMTP/SES/SendGrid host helper JAR it
+  called into never existed; no `[maven]` table declares any of
+  jakarta.mail/AWS-SDK-v2/SendGrid-Java as a dependency.
+- `lyric-i18n/src/_kernel/net/i18n_kernel.l` AND
+  `lyric-i18n/src/_kernel/jvm/i18n_kernel.l` (both `I18n.Kernel.Net`
+  and `I18n.Kernel.Jvm`) — neither registered in `lyric.toml`; `i18n.l`
+  calls `Std.File`/`Std.Json` directly and never imported either
+  kernel package. `Std.Json` already has a real, working pure-Lyric
+  JVM backend (rewritten from a phantom-class shim in D-progress-555),
+  so `I18n` needs no platform-specific kernel at all — its actual JVM
+  status is simply unverified-by-CI, not blocked.
+- `lyric-jobs/src/_kernel/jvm/jobs_kernel.l` (`Jobs.Kernel.Jvm`) — not
+  registered in `lyric.toml` (only `Jobs.Kernel.Net` is); `jobs.l`
+  never imports it; no `[maven]` table exists. This corrects a false
+  claim in `lyric-jobs/README.md` (and a mirrored claim in this
+  repo's root `CLAUDE.md`) that the JVM Quartz binding was "real Lyric
+  FFI source, not a placeholder" — it was dead, uncompiled code.
+- `lyric-ws/src/_kernel/jvm/ws_kernel.l` (`Ws.Kernel.Jvm`) — WAS
+  registered in `lyric.toml` (unlike the others above) but never
+  imported by `ws.l`, which unconditionally imports only
+  `Ws.Kernel.Net`; removed the now-dead registration line too.
+- `lyric-web/src/_kernel/jvm/web_kernel.l` (`Web.Kernel.Jvm`) — already
+  commented out in `lyric.toml`; cleaned up the stale commented
+  registration line.
+- `lyric-session/src/_kernel/jvm/session_kernel.l`
+  (`Session.Kernel.Jvm`) — not registered in `lyric.toml`; its own
+  `InMemoryStore` block's header comment admitted it was "reserved;
+  not currently called from the public Session package."
+- `lyric-aws-xray/src/_kernel/xray_kernel_{local,jvm,aws}.l` (all three
+  declaring an unused `AwsXRay.Kernel.Net` package) — none registered
+  in `lyric.toml`; `xray.l` never imports `AwsXRay.Kernel.Net` at all
+  — it has its OWN separate, inline `extern package` blocks
+  (`@cfg(feature="aws"/"jvm")`) that are the actual (broken) FFI
+  boundary. The three deleted files were an orphaned, diverged
+  duplicate design, not the live code path. `xray.l`'s own inline
+  `aws`/`jvm` extern blocks were NOT deleted — those are a real,
+  `@experimental`, declared-dependency (`[nuget]`/`[maven]` both list
+  the real X-Ray SDKs) feature that needs a proper `extern type` port
+  plus live-service verification; left as a FIX_LATER item, `README.md`
+  updated to stop claiming `Available` for something confirmed broken
+  by the `extern package` no-op.
+
+Every touched library was rebuilt and its test suite rerun on
+`--target dotnet` post-deletion; all pass with zero regressions.
+
+**FIX_NOW libraries (real implementation, not deletion) tracked and
+executed as separate parallel work**: `lyric-feature-flags` (delete a
+dead HTTP-polling extern block, reimplement the stateless
+`Lyric.Flags.Registry` as pure Lyric over `Std.Collections`) and
+`lyric-auth` (port the `.NET` kernel's ~450 lines of already-tested
+pure-Lyric JWT verification logic to JVM, binding only HMAC-SHA256 via
+`extern type` against `javax.crypto.Mac`/`SecretKeySpec` — both
+`java.base`, no new Maven dependency).
+
+**FIX_LATER libraries** (need new NuGet/Maven dependencies, a genuine
+Int-handle-to-object-reference API redesign, and/or a live external
+service to verify against — filed as tracked issues rather than
+attempted here, per the "smaller correct slice" principle):
+`lyric-db` (#5407 — Postgres/SQLite; every operation beyond `connect`
+is today a hardcoded `Err` stub, independent of the extern-package
+bug), `lyric-search` (#5408 — Elasticsearch/Meilisearch, the original
+trigger for #5324), `lyric-grpc` (#5409 — 6 extern package blocks, the
+largest single file in scope), `lyric-otel` (#5410 — OpenTelemetry
+trace/metric export, otel + otlp variants on both targets, with real
+callers already in `examples/`), `lyric-aws-secrets` (#5411 — AWS
+Secrets Manager, needs async-FFI + config-block reflection support
+that doesn't exist yet), `lyric-lambda` (#5412 — AWS Lambda runtime, 4
+kernel variants, needs a JVM deployment-model decision).
+
+**Also found, filed, and documented (not itself a code bug):** running
+any plain `--target jvm` single-file program that calls a
+`Std.Collections` generic constructor (`newMap()`/`newList()`) through
+`lyric build`/`lyric test`/`lyric run` prints spurious `T0020 unknown
+name` diagnostics while still producing correct runtime output —
+reproduced independently of this deletion work with a two-line minimal
+repro, and confirmed absent on `--target dotnet` for the identical
+source. Filed as #5413. This is a false-positive category of the same
+`Jvm.Bridge` advisory-diagnostics
+gap already tracked as #5395 (docs/41 §C1's un-flipped JVM single-file
+type-check path) — noted here since it surfaced while verifying
+`lyric-i18n`'s post-deletion JVM story, not a new independent defect.
+
+**Related:** #5324 (parent issue, updated with this progress).
 
 - Package generics (Ada-style module-level parameterization)
 - JVM backend
