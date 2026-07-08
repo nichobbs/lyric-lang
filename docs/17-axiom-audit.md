@@ -674,7 +674,7 @@ use this module directly in application code.
 The directory `lyric-stdlib/std/_kernel_jvm/` mirrors `_kernel/` for the
 JVM target — each file selects a Java BCL extern surface that the
 `@cfg(feature = "jvm")` predicate routes to when compiling
-`--target jvm`.  21 files currently carry `@axiom(...)` annotations
+`--target jvm`.  20 files currently carry `@axiom(...)` annotations
 covering operations on `java.lang.{String,Math,Character,System}`,
 `java.util.{ArrayList,HashMap,Random,UUID,regex.Pattern}`,
 `java.io.{File,FileInputStream,FileOutputStream,Files}`,
@@ -792,7 +792,6 @@ recorded in the §19 baseline.
 | `Std.FormatHost`         | `format_host.l`              | 1      | 0           |
 | `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
 | `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
-| `Std.LogHost`            | `log_host.l`                 | 1      | 0           |
 | `Std.MathHost`           | `math_host.l`                | 1      | 0           |
 | `Std.ParseHost`          | `parse_host.l`               | 1      | 0           |
 | `Std.PathHost`           | `path_host.l`                | 1      | 0           |
@@ -804,13 +803,13 @@ recorded in the §19 baseline.
 | `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
 | `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
-| **Total**                |                              | **21** | **0**       |
+| **Total**                |                              | **20** | **0**       |
 
 ### Combined total
 
-23 + 22 = **45** stable + **2** provisional = **47** `@axiom`
-annotations covering the entire extern boundary across both
-targets.
+.NET (23 stable + 2 provisional = 25) + JVM (20 stable + 0 provisional =
+20) = **45** `@axiom` annotations covering the entire extern boundary
+across both targets.
 
 Note: the old `std.bcl.*` entries from the M4.3 baseline (11 axioms in 6
 modules) were the conceptual design-doc predecessors of the current
@@ -872,22 +871,21 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |
 | `jvm` | `Std.ConsoleHost` | `console_host.l` | java.lang.System.{out,err,in} and java.io.BufferedReader conform to their documented JVM contracts |
 | `jvm` | `Std.EncodingHost` | `encoding_host.l` | JVM List[Byte].toArray() produces a properly typed byte array; pure-Lyric accumulators are safe on JVM |
-| `jvm` | `Std.EnvironmentHost` | `environment_host.l` | lyric.stdlib.jvm.EnvHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.EnvironmentHost` | `environment_host.l` | java.lang.System operations conform to their documented JVM contracts |
 | `jvm` | `Std.FileHost` | `file_host.l` | java.io.File / FileInputStream / FileOutputStream conform to their documented JVM contracts |
 | `jvm` | `Std.FormatHost` | `format_host.l` | lyric.stdlib.jvm.FormatHost formatting operations conform to their documented JVM contracts |
 | `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-256/SHA-512 semantics and are pure functions of their input bytes |
 | `jvm` | `Std.HttpHost` | `http_host.l` | lyric.stdlib.jvm.HttpClientHost operations conform to their documented JVM / java.net.http contracts |
-| `jvm` | `Std.LogHost` | `log_host.l` | lyric.stdlib.jvm.LogHost writes diagnostic messages via java.util.logging.Logger |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
 | `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |
 | `jvm` | `Std.PathHost` | `path_host.l` | lyric.stdlib.jvm.PathHost operations conform to their documented JVM contracts |
 | `jvm` | `Std.ProcessCaptureHost` | `process_capture_host.l` | java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics |
-| `jvm` | `Std.ProcessHost` | `process_host.l` | lyric.stdlib.jvm.ProcessHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.ProcessHost` | `process_host.l` | java.lang.Process and java.lang.ProcessBuilder conform to their documented JVM contracts |
 | `jvm` | `Std.RandomHost` | `random_host.l` | java.util.Random conforms to its documented JDK contracts |
 | `jvm` | `Std.RegexHost` | `regex_host.l` | lyric.stdlib.jvm.RegexHost operations conform to their documented JVM / java.util.regex contracts |
 | `jvm` | `Std.SecureRandomHost` | `secure_random_host.l` | java.security.SecureRandom conforms to its documented JDK contracts and produces cryptographically strong output |
 | `jvm` | `Std.TimeHost` | `time_host.l` | java.time.* / java.lang.Math.round / java.lang.System.nanoTime / java.lang.Thread.sleep conform to their documented JVM / ISO 8601 contracts |
-| `jvm` | `Std.UnicodeHost` | `unicode_host.l` | lyric.stdlib.jvm.UnicodeHost correctly maps java.lang.Character.getType to the .NET UnicodeCategory convention |
+| `jvm` | `Std.UnicodeHost` | `unicode_host.l` | java.lang.Character.getType conforms to its documented JVM contract; jvmCategoryToNetConvention correctly cross-references it to the .NET UnicodeCategory convention via Unicode General_Category |
 | `jvm` | `Std.UuidHost` | `uuid_host.l` | java.util.UUID conforms to its documented JVM contract |
 
 <!-- END AXIOM BASELINE -->

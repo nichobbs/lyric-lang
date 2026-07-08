@@ -30061,3 +30061,46 @@ alias-resolution machinery `codegen.l` doesn't currently have).
 **Related:** `docs/03-decision-log.md` D-progress-624 (full account),
 D-progress-622 (the entry these four bugs were originally filed
 against), #5309 (the earlier, narrower fix this generalizes).
+
+### D-progress-625 — JVM: 4 stdlib `_kernel_jvm/*.l` files migrated off `extern package` onto `extern type` + auto-FFI, restoring `Std.Environment`/`Std.Process`/`Std.Log`/self-hosted-lexer Unicode classification on `--target jvm`
+
+`environment_host.l`/`process_host.l`/`log_host.l`/`unicode_host.l` all used
+`extern package` — a construct that parses but is a no-op in the type
+checker and both codegens — for real, simple JDK APIs (`System.getenv`/
+`System.exit`, `ProcessBuilder`/`Process`, plain stderr write,
+`Character.getType`). `Std.Environment`, `Std.Process`, and `Std.Log` were
+entirely non-functional on `--target jvm` as a result (two exports,
+`hostGetCommandLineArgs` and `hostDisposeProc`, were also missing from
+their files entirely, independent of the extern mechanism — `Std.Environment`
+failed to even load as a JVM class before this fix). Migrated all four onto
+`extern type` + JVM auto-FFI, matching the pattern already shipped for
+`console_host.l`/`time_host.l`/`collections_host.l`/`file_host.l`. The
+Unicode kernel needed a new 30-entry translation table (Java's
+`Character.getType` category ordinals differ from .NET's
+`UnicodeCategory` this kernel must produce) — verified identical output
+across both targets for 10 code points spanning distinct Unicode
+categories. Verified by `lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l`
+(10 cases), wired into CI.
+
+Found and filed (not fixed, each independent of this migration) 6
+pre-existing JVM codegen bugs while verifying end-to-end: #5377
+(`Std.Environment.args()` has no implementation path on JVM), #5378 (a
+`Never`-returning call as a bare tail expression in a differently-typed
+function produces a `VerifyError`), #5379 (discarding an instance auto-FFI
+call's result on a parameter receiver emits no invoke instruction), #5380
+(a nullary enum case value is corrupted when passed as a function
+argument — a significant, previously-undiscovered general correctness
+bug), #5381 (`List[String]` indexing loses its element type for auto-FFI
+resolution, blocking `Std.Process.run()` end-to-end on JVM), #5388 (a
+panic's message is lost when it propagates through a closure invoked via
+a higher-order function parameter).
+
+Review hardening (2 rounds) found and fixed two REQUIRED gaps in the
+initial version: `environment_host.l` was still missing
+`hostAppBaseDirectory`/`hostCurrentDirectory` (same class-load failure
+mode as the original `hostGetCommandLineArgs`/`hostExit` gap), and
+`hostSpawn` never called `ProcessBuilder.inheritIO()`, silently breaking
+the documented stdio-inheritance contract and risking a pipe-buffer
+deadlock.
+
+**Related:** `docs/03-decision-log.md` D-progress-625 (full account).

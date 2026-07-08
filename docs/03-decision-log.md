@@ -11946,6 +11946,207 @@ remaining four per-lambda maps), #1877 (uniform boxed `Func` ABI both
 #5362 and #5366 live in), #3196 (the earlier enum-FieldDef-row-shift bug
 in the same family as #5361, though a different specific gap).
 
+## D-progress-625 — JVM: 4 stdlib `_kernel_jvm/*.l` files migrated off `extern package` onto `extern type` + auto-FFI, restoring `Std.Environment`/`Std.Process`/`Std.Log`/the self-hosted lexer's Unicode classification on `--target jvm`; 7 pre-existing JVM codegen/bridge bugs found and tracked
+
+**Status:** ACCEPTED (migration); 7 newly-discovered bugs filed and deliberately NOT fixed here (see below)
+
+**Context.** A reconnaissance pass across all 33 `extern package` declarations
+in the repo (prompted by a design discussion on retiring `extern package` in
+favor of `extern type`/`import extern`) found that `environment_host.l`,
+`process_host.l`, `log_host.l`, and `unicode_host.l` in
+`lyric-stdlib/std/_kernel_jvm/` were the highest-priority migration targets:
+unlike the ~29 ecosystem-library `extern package` usages (mostly dead code or
+requiring real hand-written adapter glue, per the reconnaissance report), these
+four are core stdlib, on live call paths, and each maps onto a genuinely real,
+simple JDK API (`System.getenv`/`System.exit`, `ProcessBuilder`/`Process`,
+plain stderr write, `Character.getType`) — `extern package`'s permanent no-op
+status meant `Std.Environment`, `Std.Process`, and `Std.Log` were **entirely
+non-functional on `--target jvm`**, and the self-hosted lexer's Unicode
+identifier classification (`Lyric.Lexer` via `Std.UnicodeHost`) was degraded.
+
+**What shipped.** All four kernels rewritten as pure Lyric over `extern
+type` + JVM auto-FFI, mirroring the pattern already proven in
+`console_host.l`/`time_host.l`/`collections_host.l`/`file_host.l`:
+
+- `environment_host.l`: `hostGetVarOpt` → `System.getenv`; `hostExit` →
+  `System.exit` (works because `Never` erases to `JVoid`, matching
+  `System.exit`'s real `void` return exactly — no "throw after call" trick
+  needed). Also fixed two exports (`hostGetCommandLineArgs`, `hostExit`)
+  that were **missing from the file entirely** — `std/environment.l` called
+  both unconditionally, so `Std.Environment` failed to even *load* as a
+  class on JVM (a `VerifyError` cascading from the malformed/absent method,
+  which poisons the whole class file, not just the missing function) before
+  this fix, independent of the `extern package` no-op. `hostGetCommandLineArgs`
+  has no real implementation (the JDK exposes no process-wide argv retrieval
+  the way .NET does) — panics with a diagnostic instead of the previous
+  crash; real implementation needs new entry-point codegen, filed as #5377.
+- `process_host.l`: `ProcessHandle` is now `extern type ... = "java.lang.Process"`
+  directly (was an indirect `exposed type` re-export through the dead shim).
+  `hostSpawn` reuses `Std.ProcessCaptureHost.parseArgString` (made `pub`)
+  rather than re-implementing the shared `buildArgString` quoting format.
+  Also added `hostDisposeProc` (**also entirely missing** — `std/process.l`
+  called it unconditionally; a genuine no-op on JVM, not a stub, since
+  `java.lang.Process` holds no handle requiring explicit release the way
+  .NET's `Process.Dispose()` does).
+- `log_host.l`: rewritten to match the `.NET` kernel exactly (a plain
+  stderr write via `Std.ConsoleHost`) rather than the originally-envisioned
+  `java.util.logging.Logger` shim, which would have given `Std.Log`
+  independent per-target level-filtering/handler behavior instead of
+  identical cross-platform output.
+- `unicode_host.l`: `Character.getType(int)` returns Java's own category
+  ordinals, numbered differently from .NET's `System.Globalization.
+  UnicodeCategory` (the convention `_kernel/unicode_host.l` and the
+  self-hosted lexer both expect). Added `jvmCategoryToNetConvention`, a
+  30-entry translation table cross-referencing both platforms' constants
+  via the shared underlying Unicode General_Category property. Verified
+  against 10 code points spanning distinct categories (letters, digits,
+  punctuation, symbols, separator) with **identical output on `--target
+  dotnet` and `--target jvm`** for the same source. Also fixed a pre-existing,
+  independently-broken call to a nonexistent `charToInt` function (not
+  `extern package`-related — this line was never going to compile regardless
+  of the extern mechanism) — replaced with the real `Std.Char.toInt` UFCS
+  method (`c.toInt()`).
+
+**Verification.** `lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l` (10
+cases) exercises all four kernels directly (not through `Std.Environment`/
+`Std.Process`/`Std.Log`, for reasons below) on `--target jvm`, wired into CI.
+Manually verified end-to-end: `Std.Environment.getVar`/`runtimeDirectory`/
+`runtimeIdentifier`/`setVar`/`exitCode` (real subprocess exit code
+round-trip, confirmed via a real `java -jar` exit-code check, not just
+"doesn't crash"); real child-process spawn/wait/exit-code via
+`Std.ProcessHost` directly.
+
+**Five pre-existing JVM codegen bugs found while verifying end-to-end,
+deliberately NOT fixed in this entry** — each independent of the `extern
+package` migration itself (confirmed by reproducing each with this
+migration's changes stashed out), each requiring its own investigation:
+
+- **#5377** — `Std.Environment.args()` has no implementation path (the JDK
+  exposes no process-wide argv retrieval; needs new entry-point codegen).
+- **#5378** — a `Never`-returning function's call used as the bare TAIL
+  expression of a differently-typed function (e.g. `func main(): Int {
+  ...; exitCode(42) }`, no trailing value) produces a class-load
+  `VerifyError`. Does not affect the non-tail form (`exitCode(42); 0`),
+  which works correctly — confirmed via a real subprocess exit code.
+- **#5379** — discarding the result of an instance auto-FFI call whose
+  receiver is a function PARAMETER (of an extern type) in non-tail
+  statement position emits no invoke instruction at all (`VerifyError:
+  Operand stack underflow`). Reproduced independently with both
+  `java.lang.StringBuilder` and `java.lang.Process`. Worked around in
+  `process_host.l`'s `hostWait` by making the call the function's sole tail
+  expression instead of a discarded mid-block statement.
+- **#5380** — a nullary enum case value is corrupted when passed as a
+  function argument: `match`ing on it in the callee always resolves to the
+  FIRST-declared case regardless of which case was actually passed.
+  Confirmed independent of `Std.Log` with a minimal `enum`/`match` repro;
+  confirmed JVM-specific (`--target dotnet` produces correct output for the
+  identical source). This is why `Std.Log.info`/`warn`/`error` currently
+  print `[DEBUG]` for every level on JVM — `Std.LogHost.write` itself (this
+  entry's fix) is unaffected and correct when called with an explicit level
+  string, verified directly in the self-test.
+- **#5381** — `Std.Process.buildArgString`'s `args[i].contains(" ")`
+  (`args: List[String]`) fails to bundle on JVM: `List[String]` indexing
+  loses the element's `String` static type for auto-FFI method resolution,
+  resolving the receiver as bare `java.lang.Object`. Blocks
+  `Std.Process.run()`/`runChecked()` end-to-end on JVM even after this
+  entry's kernel fix — `Std.ProcessHost`'s kernel functions work correctly
+  when called directly with an already-formatted argument string (as the
+  self-test does), confirming the kernel itself, not this entry's fix, is
+  unaffected.
+
+Each of these blocks a *public-facing* wrapper (`Std.Environment.args`/
+`exitCode`'s tail form, `Std.Log.info`/`warn`/`error`'s level display,
+`Std.Process.run`) from working end-to-end even though the underlying
+kernel this entry fixed is independently correct — filed separately rather
+than expanding this migration's scope, per the "smaller correct slice"
+principle: each is a distinct, general JVM codegen defect unrelated to
+`extern package`, discovered only because this fix let execution reach far
+enough to expose them (previously every one of these call paths crashed
+immediately on the `extern package` no-op, before ever reaching these bugs).
+
+**Related:** the ongoing `extern package` retirement discussion (deprecate
+in favor of `extern type`/`import extern`); the reconnaissance report
+classifying the other ~29 `extern package` usages (mostly ASPIRATIONAL-ADAPTER
+or dead code, not simple syntax migrations).
+
+**Review hardening.** Two rounds of review found four real gaps in the
+initial version of this migration:
+
+- **REQUIRED (#5383):** `environment_host.l` was still missing
+  `hostAppBaseDirectory`/`hostCurrentDirectory` — `std/environment.l` calls
+  both unconditionally, so `Std.Environment` still failed to load as a JVM
+  class, the exact failure mode this entry's `hostGetCommandLineArgs`/
+  `hostExit` fix was supposed to close. Fixed: `hostCurrentDirectory` is a
+  genuine, accurate `System.getProperty("user.dir")` call (a real JVM
+  equivalent to "current working directory," unlike `hostAppBaseDirectory`);
+  `hostAppBaseDirectory` has no accurate JVM equivalent to .NET's
+  `AppContext.BaseDirectory` without reflecting on a loaded class's
+  `ProtectionDomain`/`CodeSource` (and is NOT interchangeable with
+  `user.dir` — `java -jar /opt/app/app.jar` run from an unrelated `cwd`
+  would silently return the wrong directory) — returns `""` per the
+  already-established "empty = unavailable" convention rather than a
+  plausible-looking but wrong answer.
+- **REQUIRED (#5384):** `hostSpawn`'s `ProcessBuilder` never called
+  `.inheritIO()`, so it defaulted to `Redirect.PIPE` — silently breaking
+  the documented "child inherits the parent's stdio" contract and risking
+  a real deadlock in `hostWait`'s `waitFor()` once a child filled the
+  unread pipe buffer. Fixed and manually verified (a spawned child's
+  stdout is now visible in the parent's own output).
+- **SUGGESTION (#5385):** `docs/44` M-19 cited `D-progress-624` instead of
+  `D-progress-625` (the rebase-conflict renumbering after this entry
+  collided with a concurrently-landing MSIL entry) — fixed.
+- **SUGGESTION (#5386):** `hostGetVarOpt` dropped the `.NET` kernel's
+  `try`/`catch Bug -> None` wrapper (issue #4752's exception-free-surface
+  contract) — a `System.getenv` failure would panic on JVM instead of
+  degrading gracefully like the .NET target. Fixed to match exactly.
+- **SUGGESTION (#5387):** `hostGetCommandLineArgs`'s deliberate panic path
+  had no test coverage. Added one — which surfaced a SIXTH pre-existing
+  bug: **#5388**, a panic's `.message` is lost/replaced with a JVM
+  class-name-shaped string when the panic propagates through a closure
+  invoked via a higher-order function parameter (confirmed with
+  `Std.Testing.assertPanicsWith`, which wraps the target call in a `{ ->
+  ... }` closure before invoking it). `assertPanics` (occurrence-only, no
+  message check) is unaffected and was used instead; the real panic text
+  was verified manually with no closure indirection.
+- **SUGGESTION (#5389):** `stdlib_jvm_kernels_self_test.l` grew from 8 to
+  10 cases (adding the appBaseDirectory/currentDirectory test and the
+  hostGetCommandLineArgs panic test above) but the PR description and 3
+  docs still said "8 cases" — fixed.
+- **SUGGESTION (#5390):** `docs/17-axiom-audit.md`'s prose still said "21
+  files" carry `@axiom(...)` after `Std.LogHost`'s axiom was dropped
+  (§18's summary table already said 20) — fixed.
+- **SUGGESTION (#5391, #5392):** `docs/44`'s M-19 entry listed only the
+  original 5 pre-existing bugs (missing #5388), and this entry called
+  #5388 the "SEVENTH" bug when it's the sixth — both fixed.
+- **REQUIRED (#5393):** `assertPanics("...", { -> hostGetCommandLineArgs() })`
+  in the new self-test does not actually type-check: `hostGetCommandLineArgs`'s
+  *declared* return type is `slice[String]` (its body unconditionally
+  panics, but that's a runtime fact the type checker cannot see from the
+  signature alone), so the closure infers as `() -> slice[String]`, which
+  `argSatisfiesParam` does not accept where `assertPanics` expects
+  `() -> Unit` (only a literal `Never`-returning closure body, e.g. a bare
+  `{ -> panic(...) }`, is special-cased). Confirmed with a standalone
+  repro reproducing the exact `T0043` diagnostic. Fixed by appending
+  `; ()` to the closure body (`{ -> hostGetCommandLineArgs(); () }`),
+  making its own inferred return type genuinely `Unit`; reverified the
+  fixed file passes all 10 cases with `lyric test --target jvm`.
+  Investigating this surfaced a SEVENTH pre-existing bug, filed
+  separately as **#5395**: `Jvm.Bridge`'s single-file path treats
+  type-checker diagnostics as advisory rather than fatal, so the
+  original (broken) form of this test's `T0043` did not actually fail
+  `lyric build --target jvm` (exit 0, JAR produced) even though the
+  identical source correctly fails `--target dotnet` (exit 1). This is
+  the still-open half of `docs/41-self-hosted-compiler-gap-analysis.md`
+  §C1's single-file type-check flip (the MSIL side flipped in
+  D-progress-438; the JVM side did not) — #5395 gives it a concrete
+  tracked number and a live repro.
+- **SUGGESTION (#5394):** this entry's own `**Status:**` line still said
+  "5 newly-discovered bugs" after #5388 brought the count to 6 (now 7,
+  after #5395) — fixed.
+
+**Related:** #5383, #5384, #5385, #5386, #5387, #5388, #5389, #5390,
+#5391, #5392, #5393, #5394, #5395.
+
 ---
 ## Decisions deferred to v2 or later
 

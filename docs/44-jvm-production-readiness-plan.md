@@ -529,10 +529,37 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   stdout, stderr, stdin delivery, multi-word args, quoting round-trip, exit code
   0/1/42, timeout path), wired in CI.  The `lyric-storage` local-fs JVM kernel
   (#1444/#1840) remains **BLOCKED on M-4** (#2444).
-- **Acceptance (MET for M-9/M-10/M-11; storage blocked on M-4/#2444):**
+- **M-19 (DONE, D-progress-625):** `_kernel_jvm/environment_host.l` /
+  `process_host.l` / `log_host.l` / `unicode_host.l` migrated off `extern
+  package` (a no-op mechanism in both the type checker and both codegens)
+  onto plain `extern type` + auto-FFI.  `Std.Environment`, `Std.Process`,
+  and `Std.Log` were **entirely non-functional on `--target jvm`** before
+  this fix; two exports (`hostGetCommandLineArgs`, `hostDisposeProc`) were
+  also missing from their files entirely, independent of the extern
+  mechanism.  `unicode_host.l` needed a new 30-entry Java-category →
+  .NET-`UnicodeCategory` translation table, verified identical across both
+  targets for 10 code points.  Verified by
+  `lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l` (10 cases), wired in
+  CI.  Found and filed (not fixed here) 7 pre-existing, independent JVM
+  codegen/bridge bugs surfaced only because this fix let execution reach
+  far enough to hit them: #5377 (`Std.Environment.args()` unimplementable
+  without new entry-point codegen), #5378 (`Never`-tail-expression
+  `VerifyError`), #5379 (discarded instance-call-on-parameter emits no
+  invoke), #5380 (nullary enum argument value corruption — a significant
+  general correctness bug), #5381 (`List[String]` indexing loses element
+  type for auto-FFI, blocking `Std.Process.run()`), #5388 (a panic's
+  `.message` is lost/replaced when the panic propagates through a
+  closure invoked via a higher-order function parameter), #5395
+  (`Jvm.Bridge`'s single-file path treats type-checker diagnostics as
+  advisory rather than fatal — a genuine `T0043` mismatch compiled to a
+  runnable JAR with exit 0; the still-open JVM half of docs/41 §C1's
+  single-file type-check flip).
+- **Acceptance (MET for M-9/M-10/M-11/M-19; storage blocked on M-4/#2444):**
   `hash_jvm_self_test.l` gates M-9/M-10; `process_capture_jvm_self_test.l`
-  gates M-11 (10 real subprocess assertions on `--target jvm`).  `lyric-storage`
-  kernel waits on JVM `@cfg` erasure (#2444).
+  gates M-11 (10 real subprocess assertions on `--target jvm`);
+  `stdlib_jvm_kernels_self_test.l` gates M-19 (10 cases across all four
+  migrated kernels).  `lyric-storage` kernel waits on JVM `@cfg` erasure
+  (#2444).
 
 ### J7 — Testing, distribution, and the acceptance gate
 - M-14: expand the self-hosted `--target jvm` pipeline suite well beyond the

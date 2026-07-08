@@ -85,12 +85,15 @@ pub func pcResultTimedOut(r: in ProcessCaptureResult): Bool {
 
 // ── Argument-string parser ────────────────────────────────────────────────────
 // Parse the `buildArgString`-formatted `arguments` string (produced by
-// `Std.ProcessCapture.buildArgString`) back into a `List[String]`.
+// `Std.Process.buildArgString` / `Std.ProcessCapture.buildArgString`, the
+// same format both callers share) back into a `List[String]`.
 // The format is a space-separated sequence of `"..."` tokens where interior
 // `"` is escaped as `\"` and interior `\` is escaped as `\\`.
 // The resulting list is prepended with `executable` so
 // `ProcessBuilder` receives a complete command line.
-func parseArgString(executable: in String, argStr: in String): List[String] {
+// `pub` so `Std.ProcessHost` (the non-capturing spawn kernel) can share this
+// parser rather than reimplementing the same quoting convention.
+pub func parseArgString(executable: in String, argStr: in String): List[String] {
   val parsed: List[String] = newList()
   parsed.add(executable)
   var i = 0
