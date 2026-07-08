@@ -30104,24 +30104,3 @@ the documented stdio-inheritance contract and risking a pipe-buffer
 deadlock.
 
 **Related:** `docs/03-decision-log.md` D-progress-625 (full account).
-
-### D-progress-626 — extern package ecosystem triage: 7 dead kernels deleted
-
-A parallel triage across all 15 ecosystem libraries still using the
-confirmed-broken `extern package` FFI mechanism (#5324) classified each
-as DELETE (dead scaffolding), FIX_NOW (small, testable without a live
-service), or FIX_LATER (needs new SDK deps / a live service / a real
-API redesign). Deleted 7 confirmed-dead kernel files across
-`lyric-mail`, `lyric-i18n` (both `.NET` and JVM kernels), `lyric-jobs`,
-`lyric-ws`, `lyric-web`, `lyric-aws-xray` (3 orphaned duplicate files),
-and `lyric-session` — each independently verified as never registered
-in its library's `lyric.toml`, or registered but never imported, with
-zero real callers or test coverage. Corrected false "Available"/"real
-implementation" claims in `lyric-jobs/README.md`, the root `CLAUDE.md`,
-and `lyric-aws-xray/README.md`. `lyric-feature-flags` and `lyric-auth`
-got real FIX_NOW implementations (separate work); `lyric-db`,
-`lyric-search`, `lyric-lambda`, `lyric-grpc`, `lyric-otel`, and
-`lyric-aws-secrets` were filed as tracked FIX_LATER issues.
-
-**Related:** `docs/03-decision-log.md` D-progress-626 (full account),
-issue #5324 (parent, updated).
