@@ -405,8 +405,18 @@ pub func parseDescriptorParams(descriptor: in String): List[String] {
   params
 }
 
+// True when `desc` is one of the 8 JVM primitive array descriptors
+// (`boolean[]`/`char[]`/`float[]`/`double[]`/`byte[]`/`short[]`/`int[]`/
+// `long[]`).  Self-contained (no dependency on `Jvm.Codegen`'s `JvmType`) so
+// `scoreParamMatch` can recognize any primitive array as a valid — if
+// low-priority — target for a Lyric slice argument.
+func isPrimitiveArrayDesc(desc: in String): Bool {
+  desc == "[Z" or desc == "[C" or desc == "[F" or desc == "[D" or desc == "[B" or desc == "[S" or desc == "[I" or
+    desc == "[J"
+}
+
 // Context-free descriptor scoring (numeric widening, exact match, any-ref→Object,
-// byte-slice→byte[]).  Returns -1 for incompatible AND for reference/reference
+// slice→primitive-array).  Returns -1 for incompatible AND for reference/reference
 // pairs — those need the class hierarchy, which `scoreParam` resolves via
 // `isAssignableRef`.  Module-private: external callers must use `scoreParam` (which
 // layers the IS-A check on top), so a bare reference/reference pair here never
@@ -460,12 +470,14 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
   if argDesc == "" and paramDesc.startsWith("L") {
     return 3
   }
-  // Lyric byte slice (`[Ljava/lang/Object;`, the erased slice[Byte]
-  // representation) → JDK primitive `byte[]`.  `emitFfiCoerce` materialises
-  // a real `byte[]` by unboxing each element, so this is a valid (if low-
-  // priority) match.  Enables `_kernel_jvm` hosts to hand byte slices to
-  // JDK APIs such as `java.security.MessageDigest.digest(byte[])`.
-  if argDesc == "[Ljava/lang/Object;" and paramDesc == "[B" {
+  // Lyric slice (`[Ljava/lang/Object;`, the erased slice[T] representation)
+  // → any JDK primitive array.  `emitFfiCoerce` materialises a real
+  // primitive array by unboxing each element (generalized from a
+  // byte[]-only special case), so this is a valid (if low-priority) match
+  // for any of the 8 JVM primitive array element types.  Enables
+  // `_kernel_jvm` hosts to hand slices to JDK APIs such as
+  // `java.security.MessageDigest.digest(byte[])` or `String(char[])`.
+  if argDesc == "[Ljava/lang/Object;" and isPrimitiveArrayDesc(paramDesc) {
     return 2
   }
   // Reference/reference pairs are not classified here: the descriptor strings

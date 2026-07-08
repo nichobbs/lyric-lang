@@ -11693,6 +11693,84 @@ spec serving), #5361–#5364 (the four closure/codegen bugs found and
 worked around in this entry).
 
 ---
+
+## D-progress-623 — JVM: primitive-array `slice[T]` marshaling at the auto-FFI/`@externTarget` boundary generalized from a `byte[]`-only, tail-position-only special case to all 8 primitive element types, in both directions, and fixed for explicit `return` statements
+
+**Status:** ACCEPTED
+
+**Context.** The JVM backend's `slice[T]` is uniformly erased to
+`java.lang.Object[]` regardless of `T` (`jvm/codegen/01_types.l`). Reference
+element types are covariant with `Object[]`, so no conversion is needed, but
+a real JDK primitive array (`int[]`, `char[]`, etc.) is a distinct bytecode
+array type from `Object[]` and cannot be treated as one without an explicit
+per-element box/unbox loop. Before this entry, exactly one such loop existed
+— `byte[]` only — and it only fired for an *implicit tail-expression*
+return; an explicit `return someIntArray` (or any non-byte primitive array
+return, or a `slice[T]` argument passed into a JDK API expecting a primitive
+array) skipped the coercion entirely and either silently mismatched the
+descriptor or crashed at runtime (`VerifyError` / `ClassCastException`
+depending on the call shape). This blocked ecosystem-kernel migrations that
+need to hand a real JDK primitive array (not just `byte[]`) across the
+`slice[T]` boundary — found while scoping a broader `extern package` →
+`extern type`/`import extern` migration, which needs this fixed first for
+any kernel that touches a non-byte primitive array.
+
+**Decision.** Generalized the byte-only loops to all 8 JVM primitive array
+element types (`boolean`/`char`/`float`/`double`/`byte`/`short`/`int`/
+`long`), in both directions:
+
+- **Return-side (primitive array → `Object[]`):** `emitBoxByteArray` →
+  `emitBoxPrimitiveArray(ctx, insns, elemTy)` (`jvm/codegen/06_items.l`),
+  parameterized over element type via `primitiveNewarrayCode`/
+  `primitiveArrayLoadInsn`/`wrapperClassNameFor` (`jvm/codegen/04_calls.l`).
+  Split `emitReturnArrayCoerced` into a `coerceReturnValue` half (the
+  coercion itself) and the trailing `emitReturn` call, so the explicit
+  `return` statement (`05_stmts.l`'s `SReturn`) can call `coerceReturnValue`
+  directly instead of the bare `coerceArgTo` it used before — this is the
+  fix for the explicit-return gap, independent of the element-type
+  generalization.
+- **Argument-side (`Object[]` → primitive array):** `emitFfiCoerce`'s
+  hardcoded `[Ljava/lang/Object; -> [B` arm generalized to
+  `emitUnboxObjectArray(ctx, insns, elemTy)` for any primitive array
+  descriptor (`jvm/codegen/04_calls.l`). Byte and Short unboxing keeps the
+  pre-existing `Number.intValue()` + narrowing-conversion tolerance (an int
+  literal in a `List[Byte]`/`List[Short]` boxes as `Integer`, not
+  `Byte`/`Short`); the other 6 types checkcast to their exact wrapper and
+  call the matching `LUnboxX`.
+- **Overload scoring:** `jvm/auto_ffi.l`'s `scoreParamMatch` had a
+  byte-only `argDesc == "[Ljava/lang/Object;" and paramDesc == "[B"` arm
+  gating which overloads even get *considered* a match — generalized via a
+  new `isPrimitiveArrayDesc` helper, or the codegen fix above would be dead
+  code for any constructor/method overload whose primitive-array parameter
+  isn't `byte[]` (verified: `String(char[])`'s constructor was not even
+  found as a candidate before this fix).
+
+**Verification.** `auto_ffi_jvm_self_test.l` gained 3 new cases using a real
+static JDK method (`Character.toChars(int): char[]`) — a non-byte element
+type never previously exercised on either return path: a tail-expression
+return, an explicit `return`, and a `slice[Char]` literal argument unboxed
+into `String(char[])`'s constructor (round-tripping both directions
+end-to-end). All pass on `--target jvm`. A regression sweep of 8 other JVM
+self-tests touching arrays/slices/calls (`hash_jvm_self_test.l`,
+`file_jvm_self_test.l`, `process_capture_jvm_self_test.l`,
+`slice_ops_self_test.l`, `extern_param_jvm_self_test.l`,
+`extern_loop_jvm_self_test.l`, `string_methods_jvm_self_test.l`,
+`closure_jvm_self_test.l`, `generic_jvm_self_test.l`) shows no regressions.
+
+**Known adjacent gap, not fixed here:** `verifyExternTargetJvm` (the
+`@externTarget` signature verifier, F0015-J) only checks argument
+descriptors against real JDK metadata, never the return descriptor — a
+hand-written `@externTarget` declaration with a mismatched *return* type
+still compiles clean. Pre-existing, orthogonal to this entry (which fixes
+codegen's ability to *produce* a correct slice-typed return once the
+declared signature is trusted, not the verifier's ability to *check* that
+signature); left as a follow-up.
+
+**Related:** `docs/44` M-10 (the original byte-only interop this
+generalizes), `docs/42` (metadata-based auto-FFI resolution this scoring
+fix extends).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
