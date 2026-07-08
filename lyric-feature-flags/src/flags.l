@@ -1,11 +1,13 @@
 //! Flags — feature flag library for Lyric.
-//! Stability: @experimental — the in-process store has tests; the remote
-//! polling store has not been exercised against a live provider in CI.
+//! Stability: @experimental — the in-process store has tests.
 //!
 //! Provides runtime toggles for safe rollouts, A/B testing, and kill switches.
 //! `FlagStore` is the public interface; `InProcessFlagStore` is the bundled
-//! in-process implementation.  For remote stores (LaunchDarkly, Unleash, or a
-//! custom HTTP endpoint), activate the `remote` feature and use `connectRemote()`.
+//! in-process implementation.  There is no remote (HTTP-polling) store yet —
+//! implement `FlagStore` yourself against `Std.Http` for a LaunchDarkly-,
+//! Unleash-, or custom-endpoint-backed store (see docs/03-decision-log.md
+//! D-progress-626 for why the previous `connectRemote()` scaffolding was
+//! removed rather than fixed).
 //!
 //! Usage:
 //!
@@ -21,20 +23,12 @@
 //!   }
 //!   val colour = Flags.getString(store, "theme-colour", "blue")
 //!
-//! Runtime config env vars (LYRIC_CONFIG_REMOTE_*):
-//!   LYRIC_CONFIG_REMOTE_URL              — remote endpoint URL (required for remote)
-//!   LYRIC_CONFIG_REMOTE_APIKEY           — API key (@sensitive, default: "")
-//!   LYRIC_CONFIG_REMOTE_POLLINTERVALMS   — poll interval in ms (default: 30000)
-//!   LYRIC_CONFIG_REMOTE_CONNECTTIMEOUTMS — connect timeout in ms (default: 5000)
-//!   LYRIC_CONFIG_REMOTE_APPKEY           — application key (default: "")
-//!
 //! See docs/03-decision-log.md and lyric-feature-flags/README.md.
 @runtime_checked
 package Flags
 
 import Std.Core
 import Std.Collections
-import Flags.Kernel.Net as FlagsKernel
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 /// An error returned by a flag store operation.
@@ -64,8 +58,8 @@ pub record FlagEntry {
 }
 
 // ─── FlagStore interface ──────────────────────────────────────────────────────
-/// A flag store.  Obtain one with `inProcess()`, `fromEntries()`, or
-/// (with the `remote` feature) `connectRemote()`.
+/// A flag store.  Obtain one with `inProcess()` or `fromEntries()`, or
+/// implement it yourself for a remote-backed store.
 @stable(since = "0.1")
 pub interface FlagStore {
   /// Return true if the named flag is a Bool flag with value true.
@@ -134,8 +128,6 @@ impl FlagStore for InProcessFlagStore {
   }
 }
 
-// ─── NativeFlagStore (remote, feature-gated) ──────────────────────────────────
-// Remote-backed flag store is deferred; available when `remote` feature is active.
 // ─── Factory functions ────────────────────────────────────────────────────────
 /// Create an empty in-process flag store.
 @stable(since = "0.1")

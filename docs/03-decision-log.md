@@ -12260,6 +12260,110 @@ type-check path) — noted here since it surfaced while verifying
 
 **Related:** #5324 (parent issue, updated with this progress).
 
+---
+
+## D-progress-627 — `lyric-feature-flags`: deleted the dead `extern package` HTTP-polling scaffold and rewrote `Flags.Registry` as pure Lyric, closing the FlagGated aspect's silent no-op
+
+**Status:** ACCEPTED
+
+**Context.** `lyric-feature-flags/src/_kernel/{net,jvm}/flags_kernel.l`
+each declared two `extern package` blocks — the mechanism confirmed
+broken in D-progress-625/#5324: it parses but never resolves to a real
+binding in either the type checker or MSIL/JVM codegen. A triage pass
+(D-progress-626) found two unrelated things bundled behind that one
+boundary:
+
+1. `Lyric.Flags.Http` / `lyric.flags.HttpClient` — an Int-handle-table
+   remote HTTP-polling client (`connect`/`isEnabled`/`getValue`/
+   `listFlags`/`refresh`). **100% dead code.** Zero callers anywhere in
+   the repo. The public entry point the README documented,
+   `Flags.connectRemote(): Result[FlagStore, FlagError]`, did not exist
+   in `flags.l`, nor did the `NativeFlagStore` type the README also
+   described. `feedback/04-security.md` FINDING-05 and
+   `docs/10-bootstrap-progress.md`'s "security hardening" note both
+   describe a TLS-enforcement fix (`INSECURE_URL`) for this function —
+   that fix was never actually applied to the code; the function was
+   aspirational the whole time.
+2. `Lyric.Flags.Registry` / `lyric.flags.Registry` — a stateless global
+   name→value map (`checkFlag`/`getStringFlag`/`registerBoolFlag`/
+   `registerStringFlag`). This one IS wired to a real call site:
+   `Flags.Aspects.FlagGated`'s `around(call)` advice calls
+   `FlagsKernel.checkFlag` on every invocation of a matched function.
+   But `FlagGated` itself was never applied anywhere in the repo, so
+   nobody had ever exercised it at runtime — the registry's `extern
+   package` no-op silently always returned `defaultValue`, and no test
+   caught it because no test wove the aspect end-to-end.
+
+**What shipped.**
+
+- Deleted `lyric-feature-flags/src/_kernel/` entirely (both `net/` and
+  `jvm/flags_kernel.l`) — the HTTP client scaffold, its
+  `@cfg(feature = "remote")`-gated re-export wrappers, and the broken
+  `Registry` extern block.
+- Added `lyric-feature-flags/src/flags_registry.l` (`Flags.Registry`):
+  a pure-Lyric registry backed by `Std.Collections.Map[String, Bool]`
+  / `Map[String, String]` fields on a `val`-bound record (the same
+  "mutate through a `val`-bound record's `var` fields" idiom
+  `Cache.inProcess()` / `Cache.Aspects.functionCacheStore` already use
+  — Lyric has no module-level `var`). No extern boundary, no
+  `_kernel/` directory, no target split: modelling "map of flag name
+  to value" needs no BCL/JDK object reference, so the same file now
+  serves `dotnet` and `jvm` identically. Ships the same honest
+  not-thread-safe caveat as `Flags.InProcessFlagStore` and
+  `Cache.InProcessCacheStore` (lyric-lang #411).
+- `Flags.Aspects.FlagGated` now calls `Flags.Registry.checkFlag`
+  directly instead of the dead `Flags.Kernel.Net` alias.
+- `lyric.toml` drops the `Flags.Kernel.Net` package entry and the now-
+  meaningless `remote` feature; adds `Flags.Registry` and a new test
+  target.
+- Removed the remote-store doc scaffolding from `flags.l`'s module
+  header (the `LYRIC_CONFIG_REMOTE_*` env var table, the
+  `connectRemote()` mention, the "NativeFlagStore" placeholder
+  section) and from `lyric-feature-flags/README.md` (the "Remote flag
+  service" section, the `connectRemote()`/`INSECURE_URL` claims in the
+  platform-parity table). The README's platform-parity table now
+  states plainly that no remote store exists rather than claiming one
+  is "Available" or "Planned." `book/chapters/appendix-b-quick-
+  reference.md`'s `lyric-feature-flags` rows are corrected to match
+  (dropped the phantom `connectRemote()`/`INSECURE_URL` note and the
+  never-implemented `enable`/`disable` functions).
+- Added `lyric-feature-flags/tests/flags_aspect_weaving_tests.l`: end-
+  to-end coverage that actually applies `FlagGated` to a handler and
+  invokes it through the weaver — an unregistered flag with
+  `defaultOnMissing = false` short-circuits; `Flags.Registry.
+  registerBoolFlag` flipping the flag to `true`/`false` changes the
+  woven handler's behavior live; `defaultOnMissing = true` proceeds
+  for an absent flag; the aspect's own `enabled = false` master switch
+  bypasses the registry entirely; and a direct
+  `registerStringFlag`/`getStringFlag` round-trip. This is the
+  regression guard that would have caught the original bug — no test
+  in the repo wove `FlagGated` before this change.
+
+**What was NOT done, deliberately.** `extern package` itself was not
+fixed — that is the subject of the ongoing retirement discussion
+referenced in D-progress-625. A real remote-polling `FlagStore` was
+not built; it would need `Std.Http`'s client, a background poll loop,
+and a JSON decoder for the remote payload, none of which existed
+before this entry and none of which this entry adds. Implementing one
+is left to a future, explicitly-scoped task; the README says so
+directly instead of leaving broken scaffolding in its place.
+
+**Verification.** `./bin/lyric test --manifest lyric-feature-flags/lyric.toml`
+on `--target dotnet` (both `Flags.FlagsTests` and the new
+`Flags.FlagsAspectWeavingTests`, all green) confirms the rewritten
+registry and the `FlagGated` weave both work end-to-end; `lyric-feature-
+flags` has no `[project.packages]` entry for a `jvm` kernel today (it
+never did — `Flags.Kernel.Jvm` was itself orphaned, referenced by no
+import anywhere in the repo, prior to this entry), so `--target jvm` is
+not part of this library's build.
+
+**Related:** D-progress-625, D-progress-626, issue #5324 (`extern
+package` FFI resolution mechanism), lyric-lang #411 (`protected type`
+weaver, referenced by the thread-safety caveat).
+
+---
+## Decisions deferred to v2 or later
+
 - Package generics (Ada-style module-level parameterization)
 - JVM backend
 - Self-hosting

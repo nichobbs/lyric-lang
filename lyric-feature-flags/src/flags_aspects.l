@@ -4,9 +4,9 @@
 //!
 //!   FlagGated   — B-mode: short-circuits execution when a named flag is
 //!                 disabled.  Uses the process-global registry maintained by
-//!                 `Flags.Kernel.Net.checkFlag` so that no store reference is
+//!                 `Flags.Registry.checkFlag` so that no store reference is
 //!                 needed in the aspect config.  Register flags in the global
-//!                 registry with `Flags.Kernel.Net.registerBoolFlag` at startup.
+//!                 registry with `Flags.Registry.registerBoolFlag` at startup.
 //!
 //!   FlagVariant — B-mode: proceeds unconditionally; compares the current
 //!                 String value of a named flag against a configured variant
@@ -27,15 +27,16 @@ package Flags.Aspects
 
 import Std.Core
 import Flags
-import Flags.Kernel.Net as FlagsKernel
+import Flags.Registry as FlagsRegistry
 
 // ─── FlagGated ────────────────────────────────────────────────────────────────
 /// Short-circuit execution of the matched function when a named flag is disabled.
 ///
 /// B-mode: the flag name is a scalar config field.  The flag value is read from
-/// the process-global registry via `Flags.Kernel.Net.checkFlag`, which is backed
-/// by `System.Collections.Concurrent`.  Register flags in the global registry at
-/// application startup with `Flags.Kernel.Net.registerBoolFlag(name, value)`.
+/// the process-global registry via `Flags.Registry.checkFlag`, a plain
+/// `Map`-backed store (see `Flags.Registry` for the thread-safety caveat).
+/// Register flags in the global registry at application startup with
+/// `Flags.Registry.registerBoolFlag(name, value)`.
 ///
 /// When the flag is disabled (or absent and `defaultOnMissing = false`) the aspect
 /// returns `Err("feature disabled: " + flagName)` without invoking the handler.
@@ -59,7 +60,7 @@ pub aspect FlagGated {
     if not enabled {
       ret = call.proceed()
     } else {
-      val flagEnabled = FlagsKernel.checkFlag(flagName, defaultOnMissing)
+      val flagEnabled = FlagsRegistry.checkFlag(flagName, defaultOnMissing)
       if flagEnabled {
         ret = call.proceed()
       } else {
