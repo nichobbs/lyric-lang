@@ -3,13 +3,14 @@
 # ilverify-selfhosted.sh — verify the IL emitted by the SELF-HOSTED MSIL
 # emitter is valid (no StackUnexpected / invalid-IL).
 #
-# The mint (F#) build emits valid IL, so its DLLs pass trivially and tell us
-# nothing.  This gate instead emits the whole `Lyric.Cli` compiler closure with
-# the SELF-HOSTED emitter (the AOT binary routes `--target dotnet` through
-# `Msil.Bridge`) and runs `ilverify` over every emitted DLL.  This is the guard
-# the emitter has lacked: self-hosted-emitter IL bugs (e.g. union match-arm type
-# tracking) are invisible to the F# build and only surface in the download-seed
-# AOT release path as `ilc CodeGenerationFailedException` / runtime
+# The legacy F# mint build (now fully decommissioned) emitted valid IL
+# trivially and told us nothing about the self-hosted emitter.  This gate
+# instead emits the whole `Lyric.Cli` compiler closure with the SELF-HOSTED
+# emitter (the AOT binary routes `--target dotnet` through `Msil.Bridge`) and
+# runs `ilverify` over every emitted DLL.  This is the guard the emitter has
+# lacked: self-hosted-emitter IL bugs (e.g. union match-arm type tracking)
+# were invisible to the F# build and only surfaced in the download-seed AOT
+# release path as `ilc CodeGenerationFailedException` / runtime
 # `InvalidProgramException`.  See #3943.
 #
 # Usage:

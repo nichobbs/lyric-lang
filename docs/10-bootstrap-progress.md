@@ -20,7 +20,7 @@ Most wasted debugging time on this project comes from not knowing **which of the
 | **2** | **stage-2** | The stage-1 compiler compiling **itself + the full stdlib** into an isolated toolchain | **runnable** (this is the SHIP toolchain; D125) | `make stage2` | **The SHIP toolchain.** Release binaries (standalone and NuGet tool) are AOT-linked from stage-2 DLLs. Run things via `make run-stage2 ARGS="..."`. |
 | **3** | **stage-3** | The stage-2 compiler compiling **itself + the full stdlib** | **identical to stage-2** (fixpoint holds) | `make stage3` | **Fixpoint reproducibility verification.** Stage 3 and Stage 2 must be 100% byte-for-byte identical. |
 
-Key consequence: **a bare `make lyric` builds the stage-1 bootstrap toolchain** (the fast day-to-day dev loop); **`make stage2` builds the stage-2 self-hosted toolchain**, which is **fully runnable** and achieves byte-for-byte reproducibility at the stage-3 fixpoint (D125).
+Key consequence: **a bare `make lyric` builds the stage-1 bootstrap toolchain** (the fast day-to-day dev loop); **`make stage2` builds the stage-2 self-hosted toolchain**, which is **fully runnable** (D125) and achieves byte-for-byte reproducibility at the stage-3 fixpoint (D-progress-531).
 The legacy F# mint path has been completely decommissioned and deleted. Use the self-hosted pipeline for all dev and release work.
 
 ### The IL-validity gate
