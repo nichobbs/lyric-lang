@@ -67,6 +67,7 @@ import Std.Collections
 import Std.String
 import Std.HttpServer
 import Std.File
+import Web.Kernel.Runtime as HttpKernel
 
 @externTarget("System.IO.Path.GetFullPath")
 func pathGetFullPath(path: in String): String = ()
@@ -824,7 +825,13 @@ func parseQueryPair(pair: in String): Option[QueryPair] {
   }
 }
 
-func parseQueryString(raw: in String): Map[String, String] {
+/// Parse a raw (no leading `?`) query string into a `name -> value` map,
+/// URL-decoding both.  Exposed so a JVM-target kernel can build the same
+/// `Request.queryParams` shape as the dotnet accept loop's `buildRequest`
+/// without duplicating URL-decoding logic (`Web.Kernel.Runtime`'s Undertow
+/// handler calls this directly).
+@stable(since = "0.2")
+pub func parseQueryString(raw: in String): Map[String, String] {
   val result: Map[String, String] = newMap()
   if raw.length == 0 {
     return result
@@ -968,6 +975,15 @@ pub func parseCorsMaxAge(maxAgeStr: in String, defaultValue: in Int): Int {
 }
 
 // ─── Server entry point ───────────────────────────────────────────────────────
+// The four helpers below and the dotnet serve() implementation call
+// Std.HttpServer symbols (requestQuery/requestHeaders/respondBytesWithHeaders)
+// that only the dotnet kernel (`_kernel/http_server.l`) exposes — the JVM
+// kernel (`_kernel_jvm/http_server.l`) is a narrower bootstrap-grade surface
+// (see its header comment), so Web binds `io.undertow` directly on jvm
+// instead (Web.Kernel.Runtime, below).  All five items are therefore
+// dotnet-only; erased for jvm builds by Lyric.Cfg before type-checking, so
+// the absent Std.HttpServer symbols never surface as an unknown-name error.
+@cfg(feature = "dotnet")
 func headerValueOr(rawHeaders: in Map[String, String], name: in String, fallback: in String): String {
   match mapGet(rawHeaders, name) {
     case Some(value) -> return value
@@ -975,6 +991,7 @@ func headerValueOr(rawHeaders: in Map[String, String], name: in String, fallback
   }
 }
 
+@cfg(feature = "dotnet")
 func normalizeHeaders(rawHeaders: in Map[String, String]): Map[String, String] {
   val headers: Map[String, String] = newMap()
   val rawNames = mapKeys(rawHeaders).toArray()
@@ -988,6 +1005,7 @@ func normalizeHeaders(rawHeaders: in Map[String, String]): Map[String, String] {
   return headers
 }
 
+@cfg(feature = "dotnet")
 func buildRequest(ctx: in HttpContext): Request {
   val method = requestMethod(ctx).toUpper()
   val path = requestPath(ctx)
@@ -1005,6 +1023,7 @@ func buildRequest(ctx: in HttpContext): Request {
   )
 }
 
+@cfg(feature = "dotnet")
 func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
   val contentType = if resp.contentType.length == 0 { "text/plain" } else { resp.contentType }
   respondBytesWithHeaders(ctx, resp.status, contentType, resp.bodyBytes, resp.headers)
@@ -1015,7 +1034,11 @@ func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
 /// Prefer `Web.start(router)` unless you need to bind without reading
 /// the environment (e.g. attaching a router built by `Lambda.withRouter`
 /// through a different entry point).
+///
+/// dotnet: a hand-rolled Std.HttpServer (System.Net.HttpListener) accept
+/// loop — single-threaded, synchronous (see README "Known gaps").
 @stable(since = "0.2")
+@cfg(feature = "dotnet")
 pub func serve(router: in Router, host: in String, port: in Int): Unit
   requires: host.length > 0
   requires: port >= 1
@@ -1041,6 +1064,19 @@ pub func serve(router: in Router, host: in String, port: in Int): Unit
       Env.exitCode(1)
     }
   }
+}
+
+/// jvm: delegates entirely to Web.Kernel.Runtime's Undertow-backed server —
+/// see that package for the dispatch model.  Undertow's own XNIO I/O/worker
+/// threads handle concurrent requests, unlike the dotnet accept loop above.
+@stable(since = "0.2")
+@cfg(feature = "jvm")
+pub func serve(router: in Router, host: in String, port: in Int): Unit
+  requires: host.length > 0
+  requires: port >= 1
+  requires: port <= 65535
+{
+  HttpKernel.serve(host, port, router)
 }
 
 /// Start the HTTP server with the given router.

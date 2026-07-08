@@ -30119,3 +30119,49 @@ about match-bound pattern variables losing type precision at a
 subsequent generic/method call site).
 
 **Related:** `docs/03-decision-log.md` D-progress-628.
+
+### D-progress-629 — JVM: fixed `impl <ExternInterface> for Record` resolving against the local package instead of the real JDK FQN; `lyric-web` gets a real Undertow-backed `Web.Kernel.Runtime`, blocked on two newly-found JVM backend bugs
+
+`Web.Kernel.Jvm` (`lyric-web/src/_kernel/jvm/web_kernel.l`) was a
+forward-declaration stub on `extern package` (a confirmed no-op FFI
+mechanism) and was commented out of the manifest entirely. Making it
+real required a Lyric record to implement a real JDK interface
+(`io.undertow.server.HttpHandler`) so Undertow could dispatch into
+Lyric — which surfaced a JVM-only compiler bug:
+`Jvm.Codegen.constraintRefToJvmClass` resolved a single-segment `impl Y
+for X` interface name against the *local package* instead of consulting
+the file's `extern type` table, so the emitted class declared
+`implements <pkg>/JHandler` (a nonexistent class) instead of the real
+JDK interface — confirmed via a from-scratch `java.lang.Runnable` repro
+and fixed by threading `externTypes` into the resolver, mirroring
+`typeExprToJvmExtern`'s existing resolution order.
+
+`Web.Kernel.Net` renamed to `Web.Kernel.Runtime` (both targets, one
+package name resolved to one of two files by feature — the
+`Lambda.Kernel.Runtime` pattern) and rewritten for JVM: binds
+`io.undertow` directly, with a `LyricUndertowHandler` record
+implementing `HttpHandler` via the fix above; the rate limiter is a
+`ConcurrentHashMap` + `ReentrantLock` port of the `dotnet` kernel's
+tumbling-window algorithm. `Web.serve` split into `@cfg(feature =
+"dotnet")` / `@cfg(feature = "jvm")` variants.
+
+**Blocked on two newly-filed JVM backend bugs** (not #1707 — that
+ticket is closed and covers an unrelated nested-generic defect):
+#5443 (a `[project.packages]` multi-file-same-package entry leaks the
+non-selected file's `extern type` binding when both files reuse the
+same local alias name — crashes `Web.RateLimitTests` with an illegal
+.NET-named class reference in the JVM class file) and #5444 (an
+interface-typed element pulled from a `List`/`slice` erases to `Object`
+without a checkcast, crashing method dispatch through auto-FFI —
+blocks `Web.DispatchTests`/`Web.CorsGuardTests`/
+`Web.SecurityAspectWeavingTests` from compiling on JVM at all; likely
+the same root cause as #5439's `slice[Record]` field-access crash, but
+for method dispatch instead of field reads). `lyric-web/tests/
+jvm_server_smoke.l` (new) is a real Undertow round-trip test that
+cannot compile until both land, so it is not wired into CI yet.
+
+Full `lyric-web --target dotnet` suite (4 files, 57 cases) verified
+green after the change (a rename-related regression in
+`rate_limit_tests.l`'s import was caught by this run and fixed).
+
+**Related:** `docs/03-decision-log.md` D-progress-629.

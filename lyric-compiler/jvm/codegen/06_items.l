@@ -402,8 +402,14 @@ pub func holderAwareParamTypes(
   var i = 0
   while i < params.count {
     val p = params[i]
+    // Resolve through `externTypes` on both arms (an earlier fix covered the
+    // return-type side of this gap but left params on the `erase` arm calling
+    // the plain `typeExprToJvmErased`, silently ignoring the `externTypes`
+    // argument this function already takes — an extern-typed impl-method
+    // param resolved to the in-package `<pkg>/<Name>` guess instead of the
+    // real JVM class).
     val elemTy = if erase {
-      typeExprToJvmErased(p.ty, pkgName, typeParams)
+      typeExprToJvmErasedExtern(p.ty, pkgName, typeParams, externTypes)
     } else {
       typeExprToJvmExtern(p.ty, pkgName, externTypes)
     }
@@ -1315,7 +1321,11 @@ func lowerImplMethod(
     case Some(b) -> b
     case None -> panic("lowerImplMethod: impl method has no body — interface-only declaration reached codegen")
   }
-  val retTy = match fn.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
+  // extern-resolving: an `impl <ExternInterface> for X` method returning an
+  // extern-typed value (e.g. `Bool` from a JDK interface method, or another
+  // extern type) must match the real JVM descriptor, not the in-package
+  // `<pkg>/<Name>` guess plain `typeExprToJvm` would produce.
+  val retTy = match fn.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
   val ctxSelf = makeFuncCtxInstance(
     pkgName,
     targetClass,

@@ -12436,6 +12436,163 @@ A second review round found and fixed:
 #5426, #5427, #5428, #5437, #5438, #5439, #5440.
 
 ---
+
+## D-progress-629 — JVM: fixed `impl <ExternInterface> for Record` resolving against the local package instead of the real JDK FQN; `lyric-web` gets a real Undertow-backed `Web.Kernel.Runtime`, blocked end-to-end on two newly-found JVM backend bugs (not #1707 — that ticket is closed and about a different defect)
+
+**Status:** ACCEPTED (compiler fix + kernel implementation); the full
+`lyric-web --target jvm` test suite remains blocked on #5443 and #5444
+below, filed separately, not fixed here.
+
+**Context.** `lyric-web/src/_kernel/jvm/web_kernel.l` (`Web.Kernel.Jvm`)
+was a forward-declaration stub built on `extern package` — a confirmed
+no-op FFI mechanism (D-progress-625, #5324) — and was commented out of
+`lyric-web/lyric.toml`'s `[project.packages]` entirely. Making it real
+required binding `io.undertow` directly via `extern type` + JVM
+auto-FFI, which in turn required a Lyric record to implement a real JDK
+interface (`io.undertow.server.HttpHandler`) so Undertow could dispatch
+back into Lyric-handled requests.
+
+**Compiler bug found and fixed: `impl <ExternInterface> for Record` was
+unreachable from the real JDK caller on `--target jvm` — three separate
+resolution sites, not one.** Verified with a from-scratch repro
+(`extern type JRunnable = "java.lang.Runnable"`; `impl JRunnable for
+MyRunner { func run(): Unit {...} }`) compiled and inspected with
+`javap`: the emitted class declared `implements <pkg>/JRunnable` (a
+same-package class that does not exist) instead of `implements
+java/lang/Runnable`. Root cause: `Jvm.Codegen.constraintRefToJvmClass`
+(`lyric-compiler/jvm/codegen/06_items.l`), which resolves an `impl Y for
+X` block's interface name to a JVM binary class name, never consulted
+the file's `extern type` table for a single-segment name — it always
+guessed `<currentPackage>/<name>`, the same resolution
+`typeExprToJvmExtern` already applies correctly to ordinary type
+positions (#3334). Fixed by threading the file's `externTypes` map into
+`constraintRefToJvmClass` and checking it before the local-package
+fallback. Extending the fix to an `impl` method with an extern-typed
+**parameter or return value** (needed once a self-test exercised
+`java.io.FilenameFilter.accept(File, String): boolean` — not exercised
+by `lyric-web`'s `HttpHandler`, whose single method takes only its own
+declaring interface's argument) surfaced two more instances of the same
+bug class in the same file: `holderAwareParamTypes`'s `erase` branch
+called the plain `typeExprToJvmErased` instead of the extern-aware
+`typeExprToJvmErasedExtern` it already had in scope (an earlier,
+narrower fix had covered the *return*-type side of this exact gap but
+left params on the `erase` arm unfixed), and `lowerImplMethod`'s
+return-type resolution called plain `typeExprToJvm` instead of
+`typeExprToJvmExtern`. Both fixed the same way — route through the
+file's `externTypes` map instead of guessing the local package. Pinned
+by a new regression test, `lyric-compiler/jvm/ffi_iface_impl_jvm_self_test.l`
+(2 cases): `impl JFilenameFilter for AcceptNonEmptyFilter` implementing
+`java.io.FilenameFilter.accept(File, String): boolean` (a real,
+always-available two-parameter JDK interface needing no Maven
+dependency) exercises all three fixes at once — interface-name
+resolution, `File`-typed param resolution, and `Bool`-typed return
+resolution — plus a second `impl` of the same interface in the same
+file to pin that per-impl resolution doesn't collide. Re-verified: the
+emitted class now correctly declares `implements java/lang/Runnable`
+(the standalone `Runnable` repro) and runs under `java`
+(`new Thread(runnable).start(); .join()` completes with exit 0); the
+new self-test passes 2/2 on `--target jvm`. Verified against the full
+self-hosted regression sweep (no dotnet-target self-test regresses):
+`ffi_iface_impl` (5/5), `parser` (94/94), `typechecker` (240/240),
+`modechecker` (62/62), `fmt` (116/116), `weaver` (46/46), plus the
+JVM-specific `iface_dispatch_jvm`, `extern_param_jvm`,
+`self_method_call_jvm`, and `auto_ffi_jvm_self_test` (22/22).
+
+**What shipped for `lyric-web`.**
+
+- `lyric-web/src/_kernel/jvm/web_kernel.l` rewritten from the `extern
+  package` stub to a real `Web.Kernel.Runtime` (JVM) package: `extern
+  type` bindings for `io.undertow.Undertow`/`Undertow$Builder`/
+  `server.HttpHandler`/`server.HttpServerExchange`/`util.HeaderMap`/
+  `util.HttpString`; a `LyricUndertowHandler` record implementing
+  `HttpHandler` via `impl` (the fix above) that reads a full
+  `Web.Request` off the exchange, routes it through the same
+  `Web.dispatch(router, req)` pure core the `dotnet` accept loop uses,
+  and writes the `Web.Response` back; a `serve(host, port, router)`
+  entry point that builds and starts the server then blocks the calling
+  thread on a `CountDownLatch`. The rate limiter is a port of the
+  `dotnet` kernel's tumbling-window algorithm onto
+  `java.util.concurrent.ConcurrentHashMap` + `ReentrantLock`.
+- `Web.Kernel.Net` renamed to `Web.Kernel.Runtime` on both targets
+  (`lyric-web/lyric.toml`'s `[project.packages]` lists both
+  `_kernel/net/web_kernel.l` and `_kernel/jvm/web_kernel.l` under one
+  package name, selected by feature — the `Lambda.Kernel.Runtime`
+  pattern). `Web.serve` split into `@cfg(feature = "dotnet")` /
+  `@cfg(feature = "jvm")` variants; `Web.parseQueryString` made `pub`
+  for the JVM kernel to reuse without duplicating URL-decoding.
+- New `lyric-web/tests/jvm_server_smoke.l`: a real Undertow round-trip
+  test (server + `curl`). Not yet registered in `[project.tests]`
+  pending the two blockers below.
+
+**Two new JVM backend bugs found verifying the JVM test suite end to
+end (neither fixed here, both filed with full repros):**
+
+- **#5443** — the `[project.packages]` array form for a single package
+  built from two alternative files (`_kernel/net/web_kernel.l` /
+  `_kernel/jvm/web_kernel.l`, selected by feature) leaks the
+  non-selected file's `extern type` binding when both files declare the
+  same local alias name for genuinely different host types. Both files
+  declare `extern type ConcurrentDict[K, V]` — the `dotnet` file binds
+  it to `System.Collections.Concurrent.ConcurrentDictionary`2`, the
+  `jvm` file to `java.util.concurrent.ConcurrentHashMap` — and
+  compiling `--target jvm` emits a class file with a dangling reference
+  to the **.NET** type name, crashing with `Illegal class name
+  "System/Collections/Concurrent/ConcurrentDictionary`2/"`. All 5
+  `Web.RateLimitTests` cases fail with this on JVM.
+- **#5444** — calling an interface method (`mw.wrap(req, next)`, `mw:
+  Middleware` pulled from the router's middleware list/slice) crashes
+  JVM compilation: the erased `Object` list element isn't checkcast
+  back to the `Middleware` interface before the call, so codegen falls
+  through to auto-FFI resolution against `java.lang.Object`
+  (`no matching instance or inherited method for
+  'java.lang.Object.wrap(...)'`). Blocks `Web.DispatchTests`,
+  `Web.CorsGuardTests`, and `Web.SecurityAspectWeavingTests` from
+  compiling on `--target jvm` at all. Likely the same root cause as the
+  `slice[Record]` field-access crash filed as #5439 in D-progress-628
+  (erased collection elements never get checked back to their concrete
+  type before use) — #5439 is the field-read variant, this is the
+  method-dispatch variant.
+
+An earlier draft of this integration (from the agent that did the
+initial implementation work) attributed the JVM blocker directly to
+#1707. That specific citation doesn't hold up: #1707's own body
+describes a narrow nested-generic union-case-construction defect
+(`Result[Option[T], E]`), already closed, and the project's own
+precedent (D-progress-575, following up on the same M-5 area) is to
+file a *new* issue for a newly-surfaced symptom rather than reopen
+#1707 wholesale — exactly what #4982 did there. Re-verifying end to end
+here found the real, distinct symptoms are #5443 and #5444 above,
+filed fresh per that precedent rather than citing #1707 as if it
+covered them directly. Note separately: unqualified cross-package
+`Std.*` calls (e.g. `newMap()` called from `Web` without a
+`Std.Collections.` prefix) do print spurious `error[T0020] unknown
+name` diagnostics during `--target jvm` compiles, but — per #5440
+(D-progress-628) — these are cosmetic false positives that do not
+actually block compilation; they were not the cause of the real
+failures documented above.
+
+**Verification.** `./bin/lyric test --manifest lyric-web/lyric.toml`:
+`--target dotnet` passes clean across all 4 test files (`Web.CorsGuardTests`
+16/16, `Web.RateLimitTests` 5/5, `Web.SecurityAspectWeavingTests` 13/13,
+`Web.DispatchTests` 23/23 — a rename-related regression in
+`rate_limit_tests.l`'s import, introduced mid-implementation, was caught
+by this run and fixed before landing). `--target jvm`: `Web.RateLimitTests`
+0/5 (blocked by #5443); `Web.CorsGuardTests`, `Web.SecurityAspectWeavingTests`,
+`Web.DispatchTests` all fail to compile (blocked by #5444).
+`jvm_server_smoke.l` cannot compile until both land, so it stays
+unregistered in `[project.tests]`.
+
+**Formatter note.** `lyric-web/src/_kernel/jvm/web_kernel.l` refuses to
+format: `lyric fmt --write` reports a loss-check failure on an `extern
+type` string literal (`"java.util.Collection"` round-tripping through
+the formatter would append a spurious `` `1 `` arity suffix, changing
+the token content). Left unformatted per the "never hand-format around
+a refusal" policy — a genuine formatter bug, not addressed here.
+
+**Related:** #3334, #5324, #5439, #5440, #5443, #5444,
+D-progress-625, D-progress-628.
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
