@@ -36,16 +36,28 @@ import Lyric.Emitter as Emitter
 /// discovered workspace context (None when not in a workspace).
 ///
 /// `activeFeatures` is the CONSUMER's already-resolved active feature set
-/// (from `resolveManifestFeatures`), forced verbatim (via `noDefaultFeatures
-/// = true`) onto every workspace dependency's own build — a dependency
-/// honors the consumer's `--target`/`--features` selection exactly rather
-/// than falling back to its own `[features].default`.  Before this, a
-/// workspace dep always built with its own default features regardless of
-/// the consumer's `--features`/`--no-default-features` flags: a `--target
-/// jvm --features jvm --no-default-features` consumer build would still
-/// compile a `default = ["dotnet"]` workspace dependency's `@cfg(feature =
-/// "dotnet")` branch into JVM bytecode (and erase its `@cfg(feature =
-/// "jvm")` branch), silently building the wrong platform-specific code path.
+/// (from `resolveManifestFeatures`).  When non-empty, it is forced verbatim
+/// (via `noDefaultFeatures = true`) onto every workspace dependency's own
+/// build — a dependency honors the consumer's `--target`/`--features`
+/// selection exactly rather than falling back to its own
+/// `[features].default`.  Before this, a workspace dep always built with its
+/// own default features regardless of the consumer's
+/// `--features`/`--no-default-features` flags: a `--target jvm --features
+/// jvm --no-default-features` consumer build would still compile a
+/// `default = ["dotnet"]` workspace dependency's `@cfg(feature = "dotnet")`
+/// branch into JVM bytecode (and erase its `@cfg(feature = "jvm")` branch),
+/// silently building the wrong platform-specific code path.
+///
+/// When `activeFeatures` is EMPTY — the consumer's own manifest declares no
+/// `[features]` table at all and no CLI feature flags were given (e.g.
+/// `lyric-testing/lyric.toml`, which has no `[features]` section) — there is
+/// no consumer selection to propagate, so each dependency falls back to
+/// building with its own `[features].default` (`noDefaultFeatures = false`)
+/// exactly as it did before this mechanism existed.  Without this carve-out,
+/// an empty consumer feature set would forcibly erase every dependency's
+/// own defaults instead of merely declining to override them, breaking any
+/// `default = ["dotnet"]` dependency's mandatory kernel selection for a
+/// consumer that never expressed an opinion about targets/features at all.
 pub func buildWorkspaceDeps(
   manifest: in Mf.Manifest,
   mfPath: in String,
@@ -285,19 +297,34 @@ func buildWorkspaceDep(
   buildStack.add(depName)
   Console.println("build: building workspace dep '" + depName + "' (" + depDir + ") ...")
 
+  // Only force the consumer's resolved feature set onto the dependency when
+  // the consumer actually resolved one (its own `[features].default`, or an
+  // explicit `--features`/`--all-features` CLI selection).  When the
+  // consumer's own manifest has no `[features]` table at all and no CLI
+  // feature flags were passed — e.g. `lyric-testing/lyric.toml`, which
+  // declares zero features of its own — `activeFeatures` is legitimately
+  // empty, and forcing `noDefaultFeatures = true` in that case would wipe
+  // out every workspace dependency's own defaults (e.g. `Lyric.Storage`'s
+  // `default = ["dotnet"]`), erasing its `@cfg(feature = "dotnet")` kernel
+  // entirely and leaving its extern bindings unresolved.  Falling
+  // back to the dependency's own defaults here reproduces the pre-fix
+  // behaviour for exactly the case the fix wasn't meant to touch, while
+  // still forcing the exact set through whenever the consumer resolved a
+  // non-empty one (the originally-motivating `--target jvm --features jvm
+  // --no-default-features` scenario this doc comment above describes).
+  val depNoDefaultFeatures = activeFeatures.count > 0
+
   val buildExit = buildProject(
     depToml,
     None,
     // use the manifest's default output location
     target,
     activeFeatures,
-    // force the consumer's exact resolved feature set
-    true,
-    // noDefaultFeatures: activeFeatures already IS the complete set
-    false,
+    depNoDefaultFeatures,
     // no --all-features
     false,
     // allow restore
+    false,
     // packageVersionOverride: always None here, intentionally — a workspace
     // dep built transitively is a standalone artifact resolved from its own
     // lyric.toml (its version comes from [package].version, not from

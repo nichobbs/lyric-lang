@@ -26,18 +26,27 @@
 //!
 //! **Not yet wired into CI as an automated smoke test.**  Two newly-found
 //! JVM backend bugs (neither is #1707 — that ticket is closed and covers a
-//! different, narrower nested-generic-construction defect) block the rest
+//! different, narrower nested-generic-construction defect) blocked the rest
 //! of this library's JVM test suite from compiling at all: #5443 (a
 //! `[project.packages]` multi-file-same-package entry leaking the
 //! non-selected file's `extern type` binding) and #5444 (an interface-typed
 //! `List`/`slice` element erasing to `Object` without a checkcast before a
-//! method call, crashing auto-FFI resolution).  This file, `Web.Kernel.
-//! Runtime`'s Undertow implementation, and the `impl JHttpHandler for
-//! LyricUndertowHandler` interface binding were verified by hand (a
+//! method call, crashing auto-FFI resolution).  #5443's specific instance is
+//! now worked around: `_kernel/jvm/web_kernel.l`'s rate-limiter map alias
+//! was renamed from `ConcurrentDict` to `JvmConcurrentDict` so it no longer
+//! collides with `_kernel/net/web_kernel.l`'s identically-named `.NET`
+//! alias — the general `[project.packages]` alias-collision compiler bug
+//! #5443 describes is still open and still worth a real fix for future
+//! multi-file packages, but this library no longer trips over it.  #5444
+//! remains open and still blocks the rest of the JVM suite (`dispatch_tests.l`
+//! et al. fail with `JVM auto-FFI: no matching instance ... for
+//! 'java.lang.Object.wrap(LWeb/Request;, LWeb/Handler;)'`).  This file,
+//! `Web.Kernel.Runtime`'s Undertow implementation, and the `impl JHttpHandler
+//! for LyricUndertowHandler` interface binding were verified by hand (a
 //! from-scratch `impl <ExternInterface> for Record` repro against
 //! `java.lang.Runnable`, run under `java`, plus `lyric-compiler/jvm/
-//! ffi_iface_impl_jvm_self_test.l`) independent of #5443/#5444.  Once those
-//! land, re-run this file's manual steps above and wire it into `ci.yml`
+//! ffi_iface_impl_jvm_self_test.l`) independent of #5443/#5444.  Once #5444
+//! lands, re-run this file's manual steps above and wire it into `ci.yml`
 //! alongside the existing dotnet `rest_service.l` smoke test.
 package Web.JvmServerSmoke
 

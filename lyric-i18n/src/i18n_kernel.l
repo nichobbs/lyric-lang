@@ -42,6 +42,17 @@
 //!
 //! `parseTranslationsJson` returns a JSON array of three-element arrays:
 //!   [["en","greeting","Hello, {name}!"],["en","farewell","Goodbye."],...]
+//!
+//! WARNING (thread safety): NOT thread-safe.  `globalState`'s
+//! `translationsByHandle`/`fallbackLocaleByHandle`/`nextHandle` fields are
+//! mutated in place by every load/register call with no synchronization;
+//! concurrent calls from multiple threads produce undefined behaviour (lost
+//! updates, torn reads, a `nextHandle` race that hands out the same handle
+//! twice).  Until the `protected type` weaver ships, wrap access in an
+//! external mutex if the process loads or registers translations
+//! concurrently with looking them up.  Mirrors the same caveat on
+//! `Flags.Registry`, `Flags.InProcessFlagStore`, and
+//! `Cache.InProcessCacheStore` (lyric-lang #411).
 package I18n.Kernel
 
 import Std.Core

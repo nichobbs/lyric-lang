@@ -36,6 +36,7 @@ package Web.Kernel.Runtime
 
 import Std.Core
 import Std.Collections
+import Std.Console as Console
 import Web
 
 // ─── Undertow HTTP server ───────────────────────────────────────────────────
@@ -141,13 +142,28 @@ record LyricUndertowHandler {
 }
 
 impl JHttpHandler for LyricUndertowHandler {
+  // The dotnet accept loop (`web.l`'s `serve`) treats an unhandled panic as
+  // fatal — it logs, stops the listener, and exits the process — because
+  // that single-threaded loop cannot make progress past a broken request.
+  // Undertow dispatches each request on its own worker thread, so the same
+  // choice would be wrong here: crashing the process on one bad request
+  // would take down every other request in flight.  Instead, isolate the
+  // failure to this one request — log it loudly (matching the dotnet
+  // loop's "surface failures, don't go silent" intent) and return a 500
+  // rather than letting the panic propagate into Undertow's own per-request
+  // exception handling with no application-level logging at all.
   func handleRequest(exchange: in JHttpServerExchange): Unit {
     // getInputStream()/getOutputStream() require blocking mode; Undertow
     // completes the exchange automatically once this method returns.
     val _ = exchange.startBlocking()
-    val req = buildJvmRequest(exchange)
-    val resp = Web.dispatch(self.router, req)
-    writeJvmResponse(exchange, resp)
+    try {
+      val req = buildJvmRequest(exchange)
+      val resp = Web.dispatch(self.router, req)
+      writeJvmResponse(exchange, resp)
+    } catch Bug as e {
+      Console.error("[lyric-web] request handling failed: " + e.message)
+      writeJvmResponse(exchange, Web.errorResponse(Web.internalError(e.message)))
+    }
   }
 }
 
@@ -174,17 +190,26 @@ pub func serve(host: in String, port: in Int, router: in Web.Router): Unit
 // System.Threading.Monitor.  See that file for the algorithm's documented
 // one-shot-burst tumbling-window semantics and the #778 sliding-window
 // follow-up.
-extern type ConcurrentDict[K, V] = "java.util.concurrent.ConcurrentHashMap"
+//
+// Named `JvmConcurrentDict` rather than the more obvious `ConcurrentDict` to
+// avoid #5443: this file and `_kernel/net/web_kernel.l` are two alternative
+// sources for the SAME package (`[project.packages]` array form, selected by
+// feature), and a same-named `extern type` alias bound to different host
+// types in each file leaks the non-selected file's binding into the compiled
+// unit on `--target jvm`.  #5458 tracks a second, previously-masked bug this
+// rename exposed: JVM auto-FFI cannot resolve `dict.get(key)` from inside
+// this file's own generic `cdTryGetValue[K, V]`/`cdPut[K, V]` helpers.
+extern type JvmConcurrentDict[K, V] = "java.util.concurrent.ConcurrentHashMap"
 
 @externTarget("java.util.concurrent.ConcurrentHashMap.<init>")
-func newConcurrentDict[K, V](): ConcurrentDict[K, V] = ()
+func newConcurrentDict[K, V](): JvmConcurrentDict[K, V] = ()
 
-func cdTryGetValue[K, V](dict: in ConcurrentDict[K, V], key: in K, value: out V): Bool {
+func cdTryGetValue[K, V](dict: in JvmConcurrentDict[K, V], key: in K, value: out V): Bool {
   value = dict.get(key)
   dict.containsKey(key)
 }
 
-func cdPut[K, V](dict: in ConcurrentDict[K, V], key: in K, value: in V): Unit {
+func cdPut[K, V](dict: in JvmConcurrentDict[K, V], key: in K, value: in V): Unit {
   val _ = dict.put(key, value)
 }
 
@@ -204,7 +229,7 @@ record WebRateEntry {
 
 val webRateLock: JLock = newLock()
 
-val webRateLimitMap: ConcurrentDict[String, WebRateEntry] = newConcurrentDict()
+val webRateLimitMap: JvmConcurrentDict[String, WebRateEntry] = newConcurrentDict()
 
 /// Check whether a call from this endpoint is within the rate limit.
 /// Returns true (allow) or false (deny).  State is per-process and

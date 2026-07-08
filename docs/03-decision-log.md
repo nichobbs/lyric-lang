@@ -13450,6 +13450,93 @@ interface-auto-FFI fix adopted here, and `lyric-auth`'s parallel
 jvm` Maven-classpath fix adopted here).
 
 ---
+
+## D-progress-635 — Fixed a CI-breaking regression in D-progress-634's workspace-feature-inheritance fix; worked around #5443 in `lyric-web` with an alias rename, which exposed a new generic auto-FFI gap (#5458)
+
+**Status:** ACCEPTED (compiler regression fix); #5443 worked around in
+`lyric-web` specifically (the general `[project.packages]` compiler bug
+is still open); #5458 newly found and filed, not fixed.
+
+**Context.** Integrating D-progress-634's workspace-dependency
+feature-inheritance fix into this branch's `lyric-testing` ecosystem
+suite broke CI (`ecosystem-security-tests`): `lyric-testing/lyric.toml`
+declares no `[features]` table at all (it has none of its own — every
+dependency it needs is pulled in as a `{ workspace = true }` dep). D-134's
+fix computes the *consumer's* `activeFeatures` and forces it (via
+`noDefaultFeatures = true`) onto every workspace dependency's own build,
+unconditionally. For a consumer with no `[features]` table and no CLI
+`--features` flags, that resolved `activeFeatures` is legitimately empty
+— and forcing an empty set onto `Lyric.Storage` (a workspace dep with
+`default = ["dotnet"]`, whose `dotnet` kernel is mandatory, not optional)
+erased its `@cfg(feature = "dotnet")` kernel branch entirely, leaving
+`hostPathGetFullPath`/`hostMd5`/`hostGetFiles`/etc. as `T0020 unknown
+name` errors during the CI run building `lyric-testing`.
+
+**Fix.** `lyric-compiler/lyric/cli/workspace_builder.l`'s
+`buildWorkspaceDep`: only force `noDefaultFeatures = true` (override the
+dependency's own defaults with the consumer's exact resolved set) when
+the consumer's `activeFeatures` is non-empty — i.e. the consumer actually
+resolved something (its own `[features].default`, or an explicit CLI
+`--features`/`--all-features`/`--no-default-features` selection). When
+`activeFeatures` is empty, `noDefaultFeatures = false` is passed instead,
+so the dependency falls back to its own `[features].default` exactly as
+it did before D-progress-634's fix existed. This preserves the original
+fix's benefit (a `--target jvm --features jvm --no-default-features`
+consumer still forces that selection through to every workspace
+dependency) while restoring the pre-fix behavior for consumers that
+never expressed a features opinion at all.
+
+**Verification.** `./bin/lyric test --manifest lyric-testing/lyric.toml`
+(no CLI feature flags, reproducing the CI invocation exactly): all 5
+workspace deps (`Lyric.Cache`, `Lyric.Mail`, `Lyric.Storage`, `Lyric.Mq`,
+`Lyric.Session`, `Lyric.Flags`) build clean, `Testing.TestingTests` 37/37
+pass (previously: `Lyric.Storage` failed to build with 6 `T0020` errors).
+`./bin/lyric test --manifest lyric-session/lyric.toml --features dotnet`
+(the D-progress-631 scenario the original fix was needed for) still
+passes 4/4 test files, confirming the carve-out doesn't regress the
+explicit-selection case. `cli_workspace_builder_self_test.l` 11/11 green
+(unchanged — the existing `resolveManifestFeatures` cases already covered
+the empty-features-table case at the resolution layer; the gap was
+specifically in how `buildWorkspaceDep` propagated that resolved value
+downward).
+
+**Separately: #5443 investigated per PR review suggestion, worked around
+in `lyric-web`.** #5443 (D-progress-629) is a general
+`[project.packages]` multi-file-same-package alias-collision bug — still
+open, not fixed here. `lyric-web/src/_kernel/jvm/web_kernel.l`'s
+colliding `extern type ConcurrentDict[K, V]` alias (the JVM file's
+`java.util.concurrent.ConcurrentHashMap` binding, which the compiler bug
+let the sibling `.NET` file's identically-named `ConcurrentDictionary`2`
+binding leak over) was renamed to `JvmConcurrentDict[K, V]` — a one-line
+rename that sidesteps the collision entirely, since the bug only bites
+when both files use the *same* local alias name. Verified: compiling
+`lyric-web --target jvm --features jvm --no-default-features` (with
+Undertow's JAR supplied via `LYRIC_FFI_JARS`) no longer produces #5443's
+"Illegal class name" `VerifyError` — `Web.Kernel.Runtime` now correctly
+resolves `JvmConcurrentDict` to the real `ConcurrentHashMap`.
+
+**New bug found while verifying the workaround: #5458.** With the
+correct extern type now reachable, JVM auto-FFI resolution advanced
+further and hit a different, previously-masked failure: `dict.get(key)`
+inside the generic helper `cdTryGetValue[K, V](dict: in
+JvmConcurrentDict[K, V], ...)` fails with `no matching instance or
+inherited method for 'java.lang.Object.get(Ljava/lang/String;)'` — the
+receiver erases to `java.lang.Object` instead of the real extern type
+when the call site is inside a still-generic function body operating on
+a generic extern type. This is a new instance of the erased-generic
+bug family (#5439, #5442, #5444, #5451, #5456), specifically the first
+one inside a generic function over a generic *extern* type rather than a
+stdlib collection or a union/interface value. Filed as #5458 with a
+minimal repro; not fixed here. `lyric-web`'s `Web.RateLimitTests` still
+does not compile on `--target jvm` because of it — `docs/44` m-90 and
+`lyric-web/README.md`'s Known gaps section updated to describe the
+current, more precise state (#5443 worked around, #5444 and #5458 still
+open).
+
+**Related:** #5443, #5444, #5458, D-progress-629, D-progress-631,
+D-progress-634 (the fix being corrected here).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
