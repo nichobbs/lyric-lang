@@ -540,14 +540,16 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   .NET-`UnicodeCategory` translation table, verified identical across both
   targets for 10 code points.  Verified by
   `lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l` (10 cases), wired in
-  CI.  Found and filed (not fixed here) 5 pre-existing, independent JVM
+  CI.  Found and filed (not fixed here) 6 pre-existing, independent JVM
   codegen bugs surfaced only because this fix let execution reach far
   enough to hit them: #5377 (`Std.Environment.args()` unimplementable
   without new entry-point codegen), #5378 (`Never`-tail-expression
   `VerifyError`), #5379 (discarded instance-call-on-parameter emits no
   invoke), #5380 (nullary enum argument value corruption — a significant
   general correctness bug), #5381 (`List[String]` indexing loses element
-  type for auto-FFI, blocking `Std.Process.run()`).
+  type for auto-FFI, blocking `Std.Process.run()`), #5388 (a panic's
+  `.message` is lost/replaced when the panic propagates through a
+  closure invoked via a higher-order function parameter).
 - **Acceptance (MET for M-9/M-10/M-11/M-19; storage blocked on M-4/#2444):**
   `hash_jvm_self_test.l` gates M-9/M-10; `process_capture_jvm_self_test.l`
   gates M-11 (10 real subprocess assertions on `--target jvm`);

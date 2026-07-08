@@ -12100,7 +12100,7 @@ initial version of this migration:
   contract) — a `System.getenv` failure would panic on JVM instead of
   degrading gracefully like the .NET target. Fixed to match exactly.
 - **SUGGESTION (#5387):** `hostGetCommandLineArgs`'s deliberate panic path
-  had no test coverage. Added one — which surfaced a SEVENTH pre-existing
+  had no test coverage. Added one — which surfaced a SIXTH pre-existing
   bug: **#5388**, a panic's `.message` is lost/replaced with a JVM
   class-name-shaped string when the panic propagates through a closure
   invoked via a higher-order function parameter (confirmed with
