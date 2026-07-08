@@ -29993,3 +29993,23 @@ with no crash. `examples/ledger`/`rbac`/`jobqueue` migrate to the
 issues #5359 (`Web.addWorker` still not dispatched — separately
 tracked), #5360 (live OpenAPI/Swagger serving — separately tracked),
 #5361–#5364.
+
+### D-progress-623 — JVM: primitive-array `slice[T]` marshaling generalized from `byte[]`-only to all 8 primitive types, in both directions, and fixed for explicit `return` statements
+
+The JVM backend's only primitive-array ↔ `slice[T]` (`Object[]`-erased)
+coercion loop was `byte[]`-only, and even that only fired for an implicit
+tail-expression return; an explicit `return` on any primitive array skipped
+it entirely, and the overload scorer that decides which JDK method/
+constructor overload even matches a `slice[T]` argument was likewise
+byte-only. Generalized to all 8 JVM primitive element types
+(`boolean`/`char`/`float`/`double`/`byte`/`short`/`int`/`long`) in both
+directions (return-side boxing, argument-side unboxing) and fixed the
+explicit-`return` gap so it gets the same coercion as tail position.
+Verified with a non-byte element (`Character.toChars(int): char[]`) through
+tail-expression return, explicit return, and argument-unbox
+(`String(char[])`'s constructor) — none previously exercised on any
+primitive type other than `byte`. Regression-swept against 8 other JVM
+self-tests touching arrays/slices/calls with no failures.
+
+**Related:** `docs/03-decision-log.md` D-progress-623 (full account), docs/44
+M-10 (the original byte-only interop this generalizes).

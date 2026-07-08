@@ -501,6 +501,17 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   coercion, primitive-array index `baload` / `.length`, receiver stash so the
   coercion loop runs at empty operand stack) and a String `==`/`!=`
   value-comparison fix (was reference equality).
+  **Follow-up:** the byte-array interop above was byte-only and only fired
+  for an implicit tail-expression return — an explicit `return someIntArray`
+  (or any non-byte primitive array) crashed at runtime.  Generalized to all
+  8 JVM primitive array element types (`boolean`/`char`/`float`/`double`/
+  `byte`/`short`/`int`/`long`), in both directions (return-side boxing and
+  argument-side unboxing), and fixed the explicit-`return` gap so it applies
+  the same coercion as tail-position (`jvm/codegen/{04_calls.l,05_stmts.l,
+  06_items.l}`, `jvm/auto_ffi.l`'s `scoreParamMatch`).  Verified by new
+  `Character.toChars(int)` / `String(char[])` cases in
+  `auto_ffi_jvm_self_test.l` covering a non-byte element through tail,
+  explicit-return, and argument-unbox paths.
 - **M-11 (DONE, D-progress-519):** `_kernel_jvm/process_capture_host.l` fully
   rewritten as pure JVM auto-FFI — no F#/Java shim, no `@externTarget`.
   `java.lang.ProcessBuilder(List<String>)` spawns the child (auto-FFI matches

@@ -247,3 +247,58 @@ test "two-param user generic erases to Object, not HashMap — isBare guard Map 
   val result = sb.toString()
   assertTrue(result.length > 0, "Pair[Int,String] accepted as Object by StringBuilder.append")
 }
+
+// ── Primitive-array return/argument coercion, generalized beyond byte[] ───────
+//
+// Before this fix, the JVM backend's raw-primitive-array <-> erased
+// `slice[T]` (`[Ljava/lang/Object;`) marshaling only handled `byte[]`, via a
+// hardcoded loop, and even that byte[] path only fired for an IMPLICIT
+// tail-expression return — an explicit `return` statement on ANY primitive
+// array (including byte[]) skipped the coercion entirely, so the value
+// crossing the function boundary didn't match its declared `[Ljava/lang/
+// Object;` descriptor.  `Character.toChars(int)` (a real static JDK method
+// returning `char[]`) exercises a non-byte element type through both return
+// forms; `String(char[])`'s constructor exercises the mirrored argument-side
+// unbox (a Lyric `slice[Char]` literal, never touched by JDK code, passed
+// into a JDK API expecting a real primitive array).
+extern type JCharacter = "java.lang.Character"
+extern type JString = "java.lang.String"
+
+// Tail-expression (implicit) return of a raw JDK `char[]`.
+func charsOfTail(codePoint: in Int): slice[Char] {
+  JCharacter.toChars(codePoint)
+}
+
+// Explicit `return` of the same raw JDK `char[]` — the path that used to
+// skip the primitive-array-to-slice coercion entirely.
+func charsOfExplicit(codePoint: in Int): slice[Char] {
+  return JCharacter.toChars(codePoint)
+}
+
+test "Character.toChars(int) char[] tail-expression return coerces to slice[Char]" {
+  val cs = charsOfTail(65)
+  assertEqualInt(cs.count, 1, "toChars(65) yields one char")
+  // Round-trip back through the argument-side unbox (String.copyValueOf(char[]),
+  // NOT the String(char[]) constructor -- String also declares String(byte[]),
+  // so a slice[Char] argument ties both overloads at equal score and is
+  // correctly rejected as ambiguous by `checkPrimitiveArraySliceAmbiguity`;
+  // copyValueOf has exactly one arity-1 overload, char[], so it is
+  // unambiguous) rather than indexing + a Char method call, so this test
+  // exercises only the return-side coercion under test, not slice-element
+  // method dispatch.
+  val s = JString.copyValueOf(cs)
+  assertEqual(s, "A", "toChars(65) round-trips through String.copyValueOf(char[]) as \"A\"")
+}
+
+test "Character.toChars(int) char[] explicit return coerces to slice[Char]" {
+  val cs = charsOfExplicit(66)
+  assertEqualInt(cs.count, 1, "toChars(66) yields one char")
+  val s = JString.copyValueOf(cs)
+  assertEqual(s, "B", "toChars(66) round-trips through String.copyValueOf(char[]) as \"B\"")
+}
+
+test "slice[Char] literal argument unboxes to a real JDK char[] — String.copyValueOf(char[])" {
+  val letters: slice[Char] = ['h', 'i']
+  val s = JString.copyValueOf(letters)
+  assertEqual(s, "hi", "String.copyValueOf(char[]) built from a Lyric slice[Char] literal")
+}
