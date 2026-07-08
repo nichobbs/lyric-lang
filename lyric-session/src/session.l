@@ -37,7 +37,7 @@
 //!   LYRIC_CONFIG_SESSION_SESSION_SECURE        — Secure cookie flag (default: true)
 //!   LYRIC_CONFIG_SESSION_SESSION_HTTPONLY      — HttpOnly cookie flag (default: true)
 //!   LYRIC_CONFIG_SESSION_SESSION_SAMESITE      — SameSite policy (default: Lax)
-//!   LYRIC_CONFIG_SESSION_REDISSESSION_URL      — Redis connection URL (redis feature)
+//!   LYRIC_CONFIG_SESSION_REDISSESSION_URL      — Redis connection URL (dotnet/jvm feature)
 //!   LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX — key namespace prefix (default: session:)
 @runtime_checked
 package Session
@@ -50,7 +50,8 @@ import Std.Json
 import Std.Uuid
 import Std.Environment as Env
 import Std.Parse
-import Session.Kernel.Net as SessionKernel
+import Session.Kernel.Net as SessionKernelNet
+import Session.Kernel.Jvm as SessionKernelJvm
 
 // ─── Session identity ─────────────────────────────────────────────────────────
 /// Session identifier: a plain String assigned by the store at creation time.
@@ -128,27 +129,40 @@ pub interface SessionStore {
 /// the same session may result in lost updates.  This is an `@experimental`
 /// limitation; atomic Redis Lua-script operations are tracked as a follow-up.
 @experimental
-@cfg(feature = "redis")
+@cfg(feature = "dotnet")
 pub record NativeSessionStore {
-  storeHandle: SessionKernel.RedisStoreHandle
+  storeHandle: SessionKernelNet.RedisStoreHandle
   // Session TTL in seconds, read from `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS`
   // by `connectRedis()` (default 3600).  Previously `create`/`touch` hardcoded
   // 3600 directly and ignored this env var entirely (#3553).
   ttlSeconds: Int
 }
 
+// JVM twin of the .NET `NativeSessionStore` above: same shape and same
+// `SessionStore` behaviour, but `storeHandle` holds the Lettuce-backed
+// `Session.Kernel.Jvm.RedisStoreHandle` instead of the StackExchange.Redis
+// one.  `dotnet` and `jvm` are mutually exclusive (see lyric.toml), so
+// exactly one of these two `@cfg`-gated `NativeSessionStore` definitions
+// survives erasure for a given build.
 @experimental
-@cfg(feature = "redis")
+@cfg(feature = "jvm")
+pub record NativeSessionStore {
+  storeHandle: SessionKernelJvm.RedisStoreHandle
+  ttlSeconds: Int
+}
+
+@experimental
+@cfg(feature = "dotnet")
 impl SessionStore for NativeSessionStore {
   func create(): Result[String, SessionError] {
-    match SessionKernel.create(self.storeHandle, self.ttlSeconds) {
+    match SessionKernelNet.kernelCreate(self.storeHandle, self.ttlSeconds) {
       case Ok(id) -> Ok(id)
       case Err(err) -> Err(SessionError(message = err, code = "CREATE_FAILED"))
     }
   }
 
   func load(sessionId: in String): Result[Option[SessionData], SessionError] {
-    match SessionKernel.load(self.storeHandle, sessionId) {
+    match SessionKernelNet.kernelLoad(self.storeHandle, sessionId) {
       case Ok(json) -> if json == "" { Ok(None) } else { Ok(Some(value = parseSessionJson(sessionId, json))) }
       case Err(err) -> Err(SessionError(message = err, code = "LOAD_FAILED"))
     }
@@ -156,28 +170,36 @@ impl SessionStore for NativeSessionStore {
 
   func save(data: in SessionData): Result[Unit, SessionError] {
     val json = serializeSessionJson(data)
-    match SessionKernel.save(self.storeHandle, data.id, json) {
+    match SessionKernelNet.kernelSave(self.storeHandle, data.id, json) {
       case Ok(u) -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "SAVE_FAILED"))
     }
   }
 
   func destroy(sessionId: in String): Result[Unit, SessionError] {
-    match SessionKernel.destroy(self.storeHandle, sessionId) {
+    match SessionKernelNet.kernelDestroy(self.storeHandle, sessionId) {
       case Ok(u) -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "DESTROY_FAILED"))
     }
   }
 
   func touch(sessionId: in String): Result[Unit, SessionError] {
-    match SessionKernel.touch(self.storeHandle, sessionId, self.ttlSeconds) {
+    match SessionKernelNet.kernelTouch(self.storeHandle, sessionId, self.ttlSeconds) {
       case Ok(u) -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "TOUCH_FAILED"))
     }
   }
 
   func get(sessionId: in String, key: in String): Result[Option[String], SessionError] {
-    match load(sessionId) {
+    // Explicit `self.` on the intra-impl call below (and throughout this
+    // impl): a bare unqualified call to a sibling method in the same
+    // `impl` block is a known, tracked self-hosted JVM codegen defect
+    // (docs/44 finding m-4, #1722) — it produced a `VerifyError` ("Bad
+    // type on operand stack": the receiver's `NativeSessionStore` slot
+    // gets fed a `String` instead) when first exercised end-to-end here.
+    // `self.<method>(...)` is equally valid Lyric and takes the
+    // already-correct dispatch path.
+    match self.load(sessionId) {
       case Ok(opt) -> match opt { case None -> Ok(None); case Some(data) -> Ok(mapGet(data.entries, key)) }
       case Err(e) -> Err(e)
     }
@@ -190,22 +212,92 @@ impl SessionStore for NativeSessionStore {
     // value can have it elevated when the legitimate user signs in.
     // The caller must obtain a fresh id from `create()` first.  See
     // RFC 6265 §8.4 and lyric-lang #316.
-    match load(sessionId) {
-      case Ok(opt) -> match opt { case None -> Err(SessionError(message = "session not found; call create() to obtain a fresh id before set()", code = "SESSION_NOT_FOUND")); case Some(existing) -> { existing.entries[key] = value; val updated = SessionData(id = existing.id, entries = existing.entries, createdAt = existing.createdAt, lastAccessedAt = nowMs(), expiresAt = existing.expiresAt); save(updated) } }
+    match self.load(sessionId) {
+      case Ok(opt) -> match opt { case None -> Err(SessionError(message = "session not found; call create() to obtain a fresh id before set()", code = "SESSION_NOT_FOUND")); case Some(existing) -> { val existingEntries: Map[String, String] = existing.entries; existingEntries[key] = value; val updated = SessionData(id = existing.id, entries = existing.entries, createdAt = existing.createdAt, lastAccessedAt = nowMs(), expiresAt = existing.expiresAt); self.save(updated) } }
       case Err(e) -> Err(e)
     }
   }
 
   func delete(sessionId: in String, key: in String): Result[Unit, SessionError] {
-    match load(sessionId) {
-      case Ok(opt) -> match opt { case None -> Ok(()); case Some(data) -> { data.entries.remove(key); val updated = SessionData(id = data.id, entries = data.entries, createdAt = data.createdAt, lastAccessedAt = nowMs(), expiresAt = data.expiresAt); save(updated) } }
+    match self.load(sessionId) {
+      case Ok(opt) -> match opt { case None -> Ok(()); case Some(data) -> { val dataEntries: Map[String, String] = data.entries; dataEntries.remove(key); val updated = SessionData(id = data.id, entries = data.entries, createdAt = data.createdAt, lastAccessedAt = nowMs(), expiresAt = data.expiresAt); self.save(updated) } }
       case Err(e) -> Err(e)
     }
   }
 
   func clear(sessionId: in String): Result[Unit, SessionError] {
-    match load(sessionId) {
-      case Ok(opt) -> match opt { case None -> Ok(()); case Some(data) -> { val updated = SessionData(id = data.id, entries = newMap(), createdAt = data.createdAt, lastAccessedAt = nowMs(), expiresAt = data.expiresAt); save(updated) } }
+    match self.load(sessionId) {
+      case Ok(opt) -> match opt { case None -> Ok(()); case Some(data) -> { val updated = SessionData(id = data.id, entries = newMap(), createdAt = data.createdAt, lastAccessedAt = nowMs(), expiresAt = data.expiresAt); self.save(updated) } }
+      case Err(e) -> Err(e)
+    }
+  }
+}
+
+@experimental
+@cfg(feature = "jvm")
+impl SessionStore for NativeSessionStore {
+  func create(): Result[String, SessionError] {
+    match SessionKernelJvm.kernelCreate(self.storeHandle, self.ttlSeconds) {
+      case Ok(id) -> Ok(id)
+      case Err(err) -> Err(SessionError(message = err, code = "CREATE_FAILED"))
+    }
+  }
+
+  func load(sessionId: in String): Result[Option[SessionData], SessionError] {
+    match SessionKernelJvm.kernelLoad(self.storeHandle, sessionId) {
+      case Ok(json) -> if json == "" { Ok(None) } else { Ok(Some(value = parseSessionJson(sessionId, json))) }
+      case Err(err) -> Err(SessionError(message = err, code = "LOAD_FAILED"))
+    }
+  }
+
+  func save(data: in SessionData): Result[Unit, SessionError] {
+    val json = serializeSessionJson(data)
+    match SessionKernelJvm.kernelSave(self.storeHandle, data.id, json) {
+      case Ok(u) -> Ok(u)
+      case Err(err) -> Err(SessionError(message = err, code = "SAVE_FAILED"))
+    }
+  }
+
+  func destroy(sessionId: in String): Result[Unit, SessionError] {
+    match SessionKernelJvm.kernelDestroy(self.storeHandle, sessionId) {
+      case Ok(u) -> Ok(u)
+      case Err(err) -> Err(SessionError(message = err, code = "DESTROY_FAILED"))
+    }
+  }
+
+  func touch(sessionId: in String): Result[Unit, SessionError] {
+    match SessionKernelJvm.kernelTouch(self.storeHandle, sessionId, self.ttlSeconds) {
+      case Ok(u) -> Ok(u)
+      case Err(err) -> Err(SessionError(message = err, code = "TOUCH_FAILED"))
+    }
+  }
+
+  func get(sessionId: in String, key: in String): Result[Option[String], SessionError] {
+    // See the .NET impl's identical `self.`-prefix note above (#1722).
+    match self.load(sessionId) {
+      case Ok(opt) -> match opt { case None -> Ok(None); case Some(data) -> Ok(mapGet(data.entries, key)) }
+      case Err(e) -> Err(e)
+    }
+  }
+
+  func set(sessionId: in String, key: in String, value: in String): Result[Unit, SessionError] {
+    // SECURITY: see the .NET impl's identical comment above (#316).
+    match self.load(sessionId) {
+      case Ok(opt) -> match opt { case None -> Err(SessionError(message = "session not found; call create() to obtain a fresh id before set()", code = "SESSION_NOT_FOUND")); case Some(existing) -> { val existingEntries: Map[String, String] = existing.entries; existingEntries[key] = value; val updated = SessionData(id = existing.id, entries = existing.entries, createdAt = existing.createdAt, lastAccessedAt = nowMs(), expiresAt = existing.expiresAt); self.save(updated) } }
+      case Err(e) -> Err(e)
+    }
+  }
+
+  func delete(sessionId: in String, key: in String): Result[Unit, SessionError] {
+    match self.load(sessionId) {
+      case Ok(opt) -> match opt { case None -> Ok(()); case Some(data) -> { val dataEntries: Map[String, String] = data.entries; dataEntries.remove(key); val updated = SessionData(id = data.id, entries = data.entries, createdAt = data.createdAt, lastAccessedAt = nowMs(), expiresAt = data.expiresAt); self.save(updated) } }
+      case Err(e) -> Err(e)
+    }
+  }
+
+  func clear(sessionId: in String): Result[Unit, SessionError] {
+    match self.load(sessionId) {
+      case Ok(opt) -> match opt { case None -> Ok(()); case Some(data) -> { val updated = SessionData(id = data.id, entries = newMap(), createdAt = data.createdAt, lastAccessedAt = nowMs(), expiresAt = data.expiresAt); self.save(updated) } }
       case Err(e) -> Err(e)
     }
   }
@@ -326,7 +418,17 @@ impl SessionStore for InProcessSessionStore {
           )
         )
       } else {
-        existing.entries[key] = value
+        // Bind through an explicitly-typed local before mutating: the JVM
+        // backend's auto-FFI resolver loses the concrete `Map[String,
+        // String]` field type across a record-field access chained inside
+        // a nested `match`/`if` branch and falls back to a raw
+        // `java.lang.Object` method guess, crashing at codegen time
+        // (pre-existing self-hosted JVM bridge gap, unrelated to Redis;
+        // see docs/03-decision-log.md's D-progress entry for this file).
+        // An explicit `val ...: Map[String, String] = ...` re-binding
+        // keeps the field's type visible to the JVM lowering pass.
+        val existingEntries: Map[String, String] = existing.entries
+        existingEntries[key] = value
         val updated = SessionData(
           id = existing.id,
           entries = existing.entries,
@@ -349,7 +451,9 @@ impl SessionStore for InProcessSessionStore {
         self.sessions.remove(sessionId)
         Ok(())
       } else {
-        data.entries.remove(key)
+        // See the JVM auto-FFI field-type-loss note in `set()` above.
+        val dataEntries: Map[String, String] = data.entries
+        dataEntries.remove(key)
         val updated = SessionData(
           id = data.id,
           entries = data.entries,
@@ -394,7 +498,6 @@ impl SessionStore for InProcessSessionStore {
 // LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD> naming rule (pkg "Session" + block
 // "Session" doubles the segment; RedisSession is a distinct block, so it
 // doesn't).
-
 // Parse `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS`, falling back to
 // `defaultValue` for a malformed, zero, or negative value — Redis's
 // SETEX/EXPIRE require a strictly positive TTL (#4828). Mirrors
@@ -422,7 +525,7 @@ func parseSessionTtlSeconds(ttlStr: in String, defaultValue: in Int): Int {
 /// in `RedisConnectionException`) cannot leak the embedded password
 /// into the caller's error surface (#357 / #477 / #1071).
 @stable(since = "0.1")
-@cfg(feature = "redis")
+@cfg(feature = "dotnet")
 pub func connectRedis(): Result[SessionStore, SessionError] {
   val url = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_REDISSESSION_URL", "")
   if url.length == 0 {
@@ -436,7 +539,31 @@ pub func connectRedis(): Result[SessionStore, SessionError] {
   val keyPrefix = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX", "session:")
   val ttlStr = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS", "3600")
   val ttlSeconds = parseSessionTtlSeconds(ttlStr, 3600)
-  match SessionKernel.connect(url, keyPrefix) {
+  match SessionKernelNet.connect(url, keyPrefix) {
+    case Ok(handle) -> Ok(NativeSessionStore(storeHandle = handle, ttlSeconds = ttlSeconds))
+    case Err(err) -> Err(SessionError(message = maskUrlCredentials(err), code = "CONNECT_FAILED"))
+  }
+}
+
+// JVM twin of the .NET `connectRedis()` above — same config-block env vars,
+// same `MISSING_REDIS_URL`/`CONNECT_FAILED` error surface, backed by
+// `Session.Kernel.Jvm`'s Lettuce connection instead of StackExchange.Redis.
+@stable(since = "0.1")
+@cfg(feature = "jvm")
+pub func connectRedis(): Result[SessionStore, SessionError] {
+  val url = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_REDISSESSION_URL", "")
+  if url.length == 0 {
+    return Err(
+      SessionError(
+        message = "LYRIC_CONFIG_SESSION_REDISSESSION_URL is not set; connectRedis() requires a Redis connection URL",
+        code = "MISSING_REDIS_URL"
+      )
+    )
+  }
+  val keyPrefix = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX", "session:")
+  val ttlStr = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS", "3600")
+  val ttlSeconds = parseSessionTtlSeconds(ttlStr, 3600)
+  match SessionKernelJvm.connect(url, keyPrefix) {
     case Ok(handle) -> Ok(NativeSessionStore(storeHandle = handle, ttlSeconds = ttlSeconds))
     case Err(err) -> Err(SessionError(message = maskUrlCredentials(err), code = "CONNECT_FAILED"))
   }
@@ -599,20 +726,37 @@ func defaultExpiresAt(ttlSeconds: in Long): Long {
   return nowMs() + ttlSeconds * 1000i64
 }
 
-// Escape a string for JSON serialization (handles \, ", and control chars).
-// Only used by the Redis backend.
-@cfg(feature = "redis")
+// Escape a string for JSON serialization (handles \, ", and control chars),
+// returning the escaped content WITHOUT surrounding quotes — every call site
+// below supplies its own `"..."` wrapping (`"\"" + jsonEscapeStr(x) + "\""`).
+// `Std.Json.encodeString` returns a *complete* JSON string literal (quotes
+// included, per both `_kernel/json_host.l` and `_kernel_jvm/json_host.l`'s
+// `hostEncodeString`), so its result is stripped of its outer quote pair
+// here; using it directly previously double-quoted every string field
+// (`"id":""abc""`), corrupting the wire format on both backends — caught
+// once the Redis-backed `NativeSessionStore` was first exercised against a
+// live server (`load()`'s `parseSessionJson` round-trip then failed to
+// parse its own output). Used by both Redis backends (Session.Kernel.Net /
+// Session.Kernel.Jvm); not `@cfg`-gated since the wire format itself has no
+// platform dependency.
 func jsonEscapeStr(s: in String): String {
-  return encodeString(s)
+  val quoted = encodeString(s)
+  return substring(quoted, 1, quoted.length - 2)
 }
 
 // Serialize SessionData to the protocol JSON format consumed by
-// Session.Kernel.Net.save / load when using the Redis store.
-@cfg(feature = "redis")
+// Session.Kernel.Net / Session.Kernel.Jvm's save / load when using the
+// Redis store.
 func serializeSessionJson(data: in SessionData): String {
   var entriesJson = "{"
   var first = true
-  for k in data.entries {
+  // `mapKeys(...)` rather than iterating `data.entries` directly: a bare
+  // `for k in aMap` relies on the Map's erased runtime representation being
+  // `Iterable` itself, which holds for the .NET `Dictionary` kernel but not
+  // the JVM `java.util.HashMap` one (`HashMap` needs `.keySet()` first —
+  // see `_kernel_jvm/collections_host.l`). `mapKeys` returns a plain
+  // `List[K]`, which is iterable on both targets.
+  for k in mapKeys(data.entries) {
     val v = data.entries[k]
     if not first {
       entriesJson = entriesJson + ","
@@ -633,9 +777,9 @@ func serializeSessionJson(data: in SessionData): String {
     "}"
 }
 
-// Deserialize the SessionData protocol format returned by Session.Kernel.Net.load.
+// Deserialize the SessionData protocol format returned by
+// Session.Kernel.Net / Session.Kernel.Jvm's load.
 // Wire format: {"id":"...","createdAt":N,"lastAccessedAt":N,"expiresAt":N,"entries":{...}}
-@cfg(feature = "redis")
 func parseSessionJson(sessionId: in String, json: in String): SessionData {
   val doc = parseJson(json)
   val root = rootElement(doc)

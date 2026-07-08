@@ -4,16 +4,32 @@ Runtime feature flag toggles for safe rollouts, A/B testing, and kill switches.
 
 ## Platform parity
 
-| Feature flag | Backend                                                              | Status                |
-|--------------|----------------------------------------------------------------------|-----------------------|
-| `dotnet`     | `System.Net.Http.HttpClient` + `System.Collections.Concurrent`       | Available             |
-| `jvm`        | `java.net.http.HttpClient` (JDK 11+) + `ConcurrentHashMap`           | Planned (Phase 6)     |
+The in-process flag store (`InProcessFlagStore`), `Flags.Registry`, and the
+`FlagGated` / `FlagVariant` aspects are pure Lyric — no BCL/JDK extern
+boundary is involved — so their *source* has no platform-specific code.
+However, `--target jvm` verification (done for the first time while
+addressing PR #5414 review finding #5436 — this library's JVM claim had
+never actually been tested) found that most of the `FlagStore` surface is
+currently broken on JVM by pre-existing JVM backend compiler bugs unrelated
+to this library's own logic:
 
-The JVM kernel (`Flags.Kernel.Jvm`) declares the HTTP polling client
-against the built-in `java.net.http.HttpClient` plus a
-`lyric.flags.Registry` helper; the JVM helper is supplied by the
-Lyric JVM stdlib JAR (out-of-repo).  Until that JAR ships, only the
-`dotnet` feature produces a runnable artifact.
+| Feature                              | `dotnet`  | `jvm`                                                |
+|---------------------------------------|-----------|-------------------------------------------------------|
+| `Flags.Registry` (raw map API)        | Available | Available — verified directly (`registerStringFlag`/`getStringFlag`) |
+| `InProcessFlagStore` / `FlagValue` union (`isEnabled`, `getValue`, `getBool`, `getString`, `getInt`, `listFlags`, `fromEntries`) | Available (33/33 tests pass) | **Broken** — a JVM backend bug misresolves the `FlagValue` union's `value` field accessor to an unrelated stdlib type (`Std.Http.Url`), crashing with `NoClassDefFoundError` on any populated store. Tracked in #5442. |
+| `getFloat` / `FlagValue.FlagFloat`    | Available | **Broken** — any JVM program containing a `Float`-typed value used via construction or `match` crashes the *compiler itself* (`Convert.ToSingle` `MissingMethodException`). Tracked in #5441 (not specific to this library). |
+| `FlagGated` aspect                    | Available (5/5 tests pass) | **Broken** — a pre-existing B′-mode aspect-weaver JVM codegen bug (`__LyricBModeCallContext` `NoSuchMethodError`) affects every aspect-templated library on JVM, not just this one. |
+| Remote (HTTP-polling) store           | Not implemented — see "Remote flag store" below | Not implemented |
+
+In short: **this library's JVM support is not usable today** for anything
+beyond the raw `Flags.Registry` map API. The `dotnet` target is fully
+verified and working (42/42 tests across both test files).
+
+A previous revision of this library declared a remote HTTP-polling client
+(`Flags.connectRemote()` / `NativeFlagStore`) via `extern package`, which
+never resolves to a real binding on either backend (issue #5324) and had
+zero callers anywhere in the repo. It was removed rather than fixed — see
+`docs/03-decision-log.md` D-progress-627.
 
 ## Packages
 
@@ -21,6 +37,7 @@ Lyric JVM stdlib JAR (out-of-repo).  Until that JAR ships, only the
 |---|---|
 | `Flags` | Core types, `FlagStore` interface, in-process implementation, and public API |
 | `Flags.Aspects` | `FlagGated` and `FlagVariant` aspect templates |
+| `Flags.Registry` | Process-global flag registry consumed by `Flags.Aspects` |
 
 ## Quick start
 
@@ -51,9 +68,9 @@ pub interface FlagStore {
 }
 ```
 
-The v1 implementation is `InProcessFlagStore` (in-memory, single-process, not thread-safe).
-With the `remote` feature active, `Flags.connectRemote()` returns a `NativeFlagStore`
-that polls an HTTP endpoint. Implement `FlagStore` for a custom backing store.
+The v1 implementation is `InProcessFlagStore` (in-memory, single-process, not
+thread-safe). Implement `FlagStore` yourself for a remote-backed store (see
+"Remote flag store" below).
 
 ## In-process store
 
@@ -73,7 +90,6 @@ val store = Flags.inProcess()
 // Factory
 Flags.inProcess(): InProcessFlagStore
 Flags.fromEntries(entries: [FlagEntry]): InProcessFlagStore
-Flags.connectRemote(): Result[FlagStore, FlagError]   // requires feature = "remote"
 
 // FlagEntry construction
 Flags.makeFlag(name: String, enabled: Bool): FlagEntry
@@ -121,33 +137,18 @@ pub record FlagError {
 }
 ```
 
-## Remote flag service (experimental)
+## Remote flag store
 
-Feature-gate the remote flag backend in `lyric.toml`:
+There is no remote (HTTP-polling) `FlagStore` implementation today. A prior
+version of this library scaffolded one (`Flags.connectRemote()`) behind an
+`extern package` boundary that never resolved to a real HTTP client on either
+backend — it was dead, broken code with zero callers, and was removed rather
+than fixed (`docs/03-decision-log.md` D-progress-627).
 
-```toml
-[features]
-remote = []
-```
-
-Then use `Flags.connectRemote()` after setting the config block:
-
-```toml
-[LYRIC_CONFIG_REMOTE]
-URL = "https://flag-service.example.com"
-APIKEY = "..."
-POLLINTERVALMS = "30000"
-```
-
-Runtime config (env prefix `LYRIC_CONFIG_REMOTE_`):
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `URL` | *(required)* | Flag service endpoint |
-| `APIKEY` | `""` | API key for authentication (`@sensitive`) |
-| `POLLINTERVALMS` | `30000` | Poll interval in ms (5000–3600000) |
-| `CONNECTTIMEOUTMS` | `5000` | Connect timeout in ms (1000–30000) |
-| `APPKEY` | `""` | Application identifier |
+Building a real one is possible but out of scope here: it needs `Std.Http`'s
+client, a background poll loop, and a JSON decoder for the remote payload.
+Implement `FlagStore` against those primitives if you need one; there is no
+tracked timeline for a first-party implementation.
 
 ## Aspect templates
 
@@ -155,6 +156,10 @@ Runtime config (env prefix `LYRIC_CONFIG_REMOTE_`):
 
 Short-circuits execution of the matched function when a named flag is disabled.
 Returns `Err("feature disabled: " + flagName)` without invoking the handler.
+The flag value is read from `Flags.Registry`, a process-global, `Map`-backed
+registry (see `Flags.Registry`'s doc comment for the thread-safety caveat) —
+register flags into it at application startup with
+`Flags.Registry.registerBoolFlag(name, value)`.
 
 ```lyric
 import Flags.Aspects
@@ -184,4 +189,4 @@ follow-up stage.
 
 ## Decision log
 
-See `docs/03-decision-log.md` D-progress-261.
+See `docs/03-decision-log.md` D-progress-261 and D-progress-627.

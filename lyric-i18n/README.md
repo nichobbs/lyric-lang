@@ -6,19 +6,40 @@ Internationalization with placeholder substitution and locale fallback.
 
 | Feature flag | Backend                                              | Status                |
 |--------------|------------------------------------------------------|-----------------------|
-| `dotnet`     | `System.IO` + `Std.Json` for translation file loads  | Available             |
-| `jvm`        | `java.nio.file.Files` + `Std.Json` (Phase 6)         | Planned (Phase 6)     |
+| `dotnet`     | `Std.File` + `Std.Json` for translation file loads   | Available             |
+| `jvm`        | `Std.File` + `Std.Json` for translation file loads   | Available, one known gap (below) |
 
-The JVM kernel (`I18n.Kernel.Jvm`) uses the standard JDK file APIs
-and the Lyric stdlib JSON parser; no third-party JVM helpers are
-required, so JVM parity here only waits on the JVM stdlib JAR
-shipping `Std.Json` (see `docs/33-platform-parity-remediation.md`).
+`I18n`'s public API (`src/i18n.l`) needs no platform-specific kernel at
+all: `Std.File`/`Std.Json` are already cross-platform (`Std.Json`'s
+JVM backend was rewritten to pure Lyric in D-progress-555). Verified
+against `tests/i18n_tests.l` on both targets: 25/25 pass on
+`--target dotnet`; 24/25 pass on `--target jvm`, with one genuine
+JVM-only `ClassCastException` in `availableLocales()` tracked in #5439
+(a `slice[Record]`-from-`List.toArray()` erasure gap in the JVM
+backend, not specific to this library). `translate`/`translateWith`/
+`hasKey`/`fromJson`/`loadFromPath` are all confirmed working on JVM.
+`--target jvm` test runs also print benign false-positive "unknown
+name" diagnostics for cross-package `Std.*` calls that resolve and run
+correctly — tracked separately in #5440, does not affect correctness.
+
+`I18n.Kernel` is a separate, standalone handle-based entry point
+(`loadStore`/`translate`/`hasKey`/`availableLocalesJson`/
+`parseTranslationsJson`) for consumers that want that specific
+contract. It used to be a split `I18n.Kernel.Net`/`I18n.Kernel.Jvm`
+pair of `extern package`-based scaffolding — a confirmed no-op FFI
+mechanism (#5324) — that `i18n.l` never actually imported; it's now a
+single, ungated, pure-Lyric package over `Std.File`/`Std.Json`/
+`Std.Collections` (no platform split needed since the logic has no
+platform-specific behavior at all), real and tested on both targets
+(see `tests/i18n_kernel_tests.l`, 10 cases, and
+`docs/03-decision-log.md` D-progress-628).
 
 ## Packages
 
 | Package | Purpose |
 |---|---|
 | `I18n` | Core types, `TranslationStore` interface, in-process and file-backed implementations, and public API |
+| `I18n.Kernel` | Standalone handle-based translation-file kernel (pure Lyric, no platform-specific code — see Platform parity above) |
 
 ## Quick start
 

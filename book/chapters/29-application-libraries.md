@@ -278,12 +278,12 @@ func processWithNewFlow(order: in Order): Unit {
 | lyric-mail | stable | planned | D056 |
 | lyric-storage | stable | planned | D056 |
 | lyric-search | stable | planned | D056 |
-| lyric-i18n | stable | planned | D056 |
-| lyric-feature-flags | stable | planned | D056 |
-| lyric-jobs | stable | planned | D056 |
-| lyric-ws | stable | planned | D057 |
-| lyric-session | stable | planned | D056 |
-| lyric-auth | stable | planned | — |
+| lyric-i18n | stable | stable (1 known JVM-only gap, #5439) | D-progress-628 |
+| lyric-feature-flags | stable | broken (#5441, #5442) | D056 |
+| lyric-jobs | stable | partial (`InProcessJobScheduler` broken, #5456; Quartz backend real) | D-progress-633 |
+| lyric-ws | stable | partial (Undertow WebSocket kernel real; 2 known gaps, #5453/#5454; aspects blocked on B′-mode weaver gap) | D-progress-634 |
+| lyric-session | stable | stable (1 known gap, `InProcessSessionStore`, #5451; Lettuce Redis backend real) | D-progress-631 |
+| lyric-auth | stable | stable (`Auth.Aspects.ValidateKey` is .NET-only pending the B′-mode weaver fix; JWT/API-key verification real) | D-progress-630 |
 | lyric-resilience | stable | planned | — |
 | lyric-validation | stable | planned | — |
 | lyric-testing | stable | — | — |

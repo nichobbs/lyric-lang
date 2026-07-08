@@ -23,6 +23,8 @@ pub record BuildRequest {
   // semver,              e.g. "0.1.0"
   outPath: String
   // destination path,   e.g. "/tmp/out/hello.jar"
+  classpathJars: List[String] = []
+  // absolute Maven/non-JDK JAR paths; see PackageMeta.classpathJars
   // One compiled class file to include in the JAR.
 }
 
@@ -36,7 +38,12 @@ pub record BuiltClass {
 }
 
 pub func writeJarFromClasses(req: in BuildRequest, classes: in List[BuiltClass]): Bool {
-  val meta = PackageMeta(packageName = req.packageName, mainClass = req.mainClass, version = req.version)
+  val meta = PackageMeta(
+    packageName = req.packageName,
+    mainClass = req.mainClass,
+    version = req.version,
+    classpathJars = req.classpathJars
+  )
 
   val mfBytes = stringToUtf8Bytes(makeManifestMf(meta))
 

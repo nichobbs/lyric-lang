@@ -256,7 +256,13 @@ pub func compileToJar(
     mainClassName = acc
   }
 
-  val req = BuildRequest(packageName = packageName, mainClass = mainClassName, version = "0.1.0", outPath = outputPath)
+  val req = BuildRequest(
+    packageName = packageName,
+    mainClass = mainClassName,
+    version = "0.1.0",
+    outPath = outputPath,
+    classpathJars = newList()
+  )
 
   writeJarFromClasses(req, classes)
 }
@@ -1728,6 +1734,19 @@ pub func compileProjectToJarBundledWithFeatures(
     mainClassName = dottedPath(userFile.packageDecl.path)
   }
 
-  val req = BuildRequest(packageName = packageName, mainClass = mainClassName, version = "0.1.0", outPath = outputPath)
+  // `autoFfi.jarPaths` (LYRIC_FFI_JARS, itself injected from a restored
+  // project's `target/restore/jvm-classpath.txt` by `cli_build.l`) is
+  // embedded as a manifest `Class-Path:` so `java -jar` — used by both
+  // `lyric run --target jvm` and `lyric test --target jvm`, neither of
+  // which passes `-cp` — can actually load Maven dependency classes at
+  // runtime instead of throwing NoClassDefFoundError the moment a `[maven]`
+  // dependency (e.g. Quartz) is actually used.
+  val req = BuildRequest(
+    packageName = packageName,
+    mainClass = mainClassName,
+    version = "0.1.0",
+    outPath = outputPath,
+    classpathJars = autoFfi.jarPaths
+  )
   writeJarFromClasses(req, allClasses)
 }

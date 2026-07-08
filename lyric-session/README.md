@@ -4,23 +4,76 @@ Distributed session management with pluggable backends (Redis, in-process).
 
 ## Platform parity
 
-| Feature flag | Backend                                                              | Status                |
-|--------------|----------------------------------------------------------------------|-----------------------|
-| `dotnet`     | StackExchange.Redis + `System.Collections.Concurrent`                | Available             |
-| `jvm`        | Lettuce Redis client + `java.util.concurrent.ConcurrentHashMap`      | Planned (Phase 6)     |
+| Feature flag | Backend                                              | Status    |
+|--------------|-------------------------------------------------------|-----------|
+| `dotnet`     | StackExchange.Redis (`Session.Kernel.Net`)            | Available |
+| `jvm`        | Lettuce (`io.lettuce:lettuce-core`, `Session.Kernel.Jvm`) | Available |
+| `InProcessSessionStore` (both targets) | pure Lyric, no kernel | `dotnet`: Available; `jvm`: **Broken** — see below |
 
-The JVM kernel (`Session.Kernel.Jvm`) declares the Redis bindings
-against `io.lettuce:lettuce-core` plus a `lyric.session.InMemoryStore`
-helper; the JVM helpers are supplied by the Lyric JVM stdlib JAR
-(out-of-repo).  Until that JAR ships, only the `dotnet` feature
-produces a runnable artifact.
+Both kernels bind their respective Redis client directly via `extern
+type` + auto-FFI — no F#/Java host shim, no `extern package` (that
+mechanism never generated a real binding in either the type checker or
+MSIL/JVM codegen). `dotnet` and `jvm` are **mutually exclusive**:
+activating both leaves two definitions of `Session`'s Redis dispatch
+functions in the bundle (ambiguous-symbol build error). Select exactly
+one, matching `--target`:
+
+```sh
+lyric build --manifest lyric-session/lyric.toml --features dotnet
+lyric build --manifest lyric-session/lyric.toml --target jvm --no-default-features --features jvm
+```
+
+Neither feature is a default — unlike `lyric-auth`/`lyric-storage`'s
+NuGet-free `dotnet` default, this library's kernels have a genuine
+mandatory external dependency (StackExchange.Redis / Lettuce), so a
+plain `lyric build`/`lyric test` with no `--features` flag builds only
+the kernel-free `Session` package (safe for use as a workspace
+dependency with no prior `lyric restore`). The `dotnet` feature needs
+`StackExchange.Redis` resolved via `lyric restore` (the `[nuget]` table
+in `lyric.toml`); the `jvm` feature needs `io.lettuce:lettuce-core`
+resolved via `lyric restore` (the `[maven]` table in `lyric.toml`);
+`lyric-resolver.jar`
+must be on `PATH`/beside the `lyric` binary/`$LYRIC_MAVEN_RESOLVER` (see
+`docs/31-maven-linking.md`).
+
+There is no host-backed in-memory store on either target — the earlier
+JVM kernel's `lyric.session.InMemoryStore` `extern package` block was
+dead code (the mechanism is a confirmed no-op) and was removed rather
+than ported. `InProcessSessionStore` below is pure Lyric and does not
+need a kernel at all — but it does not currently work on `--target
+jvm`: any write (`create()` followed by `set()`/`get()`/`load()`)
+crashes with `class Session.SessionData cannot be cast to class
+java.lang.Long`, a JVM backend erased-generics bug tracked in #5451
+(not caused by, or specific to, this library — a `Map[String,
+SessionData]` value read appears to resolve against an unrelated
+`Map[String, Long]` instantiation elsewhere in the JVM bundle). Use the
+Redis-backed `NativeSessionStore` on JVM until #5451 is fixed.
+
+`lyric test --target jvm` now correctly injects the `[maven]`-restored
+classpath (`cli_test.l` runs the compiled test JAR with `java -cp
+<maven-jars>:<jar>` when Maven deps are present, instead of a bare
+`java -jar` that can't see them) — `lyric restore` followed by `lyric
+test --manifest lyric-session/lyric.toml --target jvm --no-default-features
+--features jvm` runs the real Lettuce Redis test suite directly, no
+manual classpath assembly needed. `lyric run --target jvm` for a
+standalone program still execs a plain `java -jar` and needs the
+classpath from `target/restore/jvm-classpath.txt` appended manually if
+it uses `[maven]` deps, e.g.:
+
+```sh
+lyric restore --manifest lyric-session/lyric.toml
+lyric build --manifest lyric-session/lyric.toml --target jvm --no-default-features --features jvm
+CP="lyric-session/bin/Session.dll:$(tr '\n' ':' < lyric-session/target/restore/jvm-classpath.txt)"
+LYRIC_CONFIG_SESSION_REDISSESSION_URL="redis://127.0.0.1:6379" java -cp "$CP" YourMainClass
+```
 
 ## Packages
 
 | Package | Purpose |
 |---|---|
 | `Session` | Core types, `SessionStore` interface, in-process implementation, and public API |
-| `Session.Redis` | Native Redis-backed session store (requires `redis` feature) |
+| `Session.Kernel.Net` | StackExchange.Redis-backed session store (`dotnet` feature) |
+| `Session.Kernel.Jvm` | Lettuce-backed session store (`jvm` feature) |
 
 ## Quick start
 
@@ -69,23 +122,40 @@ pub interface SessionStore {
 ```
 
 The v1 implementation is `InProcessSessionStore` (in-memory, single-process).
-For distributed systems, use `NativeSessionStore` (Redis-backed, requires `redis` feature).
+For distributed systems, use `NativeSessionStore` (Redis-backed, `dotnet` or `jvm` feature).
 
 ## Backends
 
 ### In-memory (`InProcessSessionStore`)
 
-`Session.inMemory()` stores sessions in-memory. Best for single-server development.
+`Session.inMemory()` stores sessions in-memory. Best for single-server
+development. **`--target dotnet` only today** — see "Known gap" above
+(#5451); on `--target jvm`, use `NativeSessionStore` instead.
 
-### Redis (`redis` feature)
+### Redis (`dotnet` / `jvm` feature)
 
-`Session.connectRedis(url)` connects to Redis. Configure via environment:
+`Session.connectRedis()` connects to Redis, reading connection settings from
+the environment (`Session`'s `RedisSession` config block):
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `LYRIC_SESSION_REDIS_URL` | (required) | Redis connection string (redis://...) |
-| `LYRIC_SESSION_REDIS_KEY_PREFIX` | `"session:"` | Prefix for session keys |
-| `LYRIC_SESSION_REDIS_TTL_SECONDS` | `3600` | Session TTL in seconds |
+| `LYRIC_CONFIG_SESSION_REDISSESSION_URL` | (required) | Redis connection string |
+| `LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX` | `"session:"` | Prefix for session keys |
+| `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS` | `3600` | Session TTL in seconds |
+
+**The connection-string format differs by backend** — each kernel passes
+`LYRIC_CONFIG_SESSION_REDISSESSION_URL` straight through to its client
+library's own parser, and the two are not interchangeable:
+
+- `dotnet` (`Session.Kernel.Net`, StackExchange.Redis): the library's
+  native `host:port[,option=value...]` configuration-string syntax, e.g.
+  `127.0.0.1:6379` or `127.0.0.1:6379,password=secret`. **Not** a
+  `redis://` URI — StackExchange.Redis does not parse URI schemes, and
+  passing one produces a confusing "was not possible to connect to the
+  redis server(s)" failure rather than a parse error.
+- `jvm` (`Session.Kernel.Jvm`, Lettuce): a `redis://` (or `rediss://` for
+  TLS) URI, e.g. `redis://127.0.0.1:6379`, per Lettuce's `RedisURI`
+  parser.
 
 Note: `NativeSessionStore` is `@experimental` pending atomic Redis operations.
 

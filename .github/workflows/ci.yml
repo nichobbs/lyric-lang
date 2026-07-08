@@ -4601,7 +4601,16 @@ jobs:
           echo "=== lyric-auth tests ==="
           "$lyric_bin" test --manifest lyric-auth/lyric.toml || overall=$?
           echo "=== lyric-session tests ==="
-          "$lyric_bin" test --manifest lyric-session/lyric.toml || overall=$?
+          # lyric-session's dotnet/jvm features are not default (StackExchange.Redis
+          # is a genuine mandatory NuGet dep for the dotnet kernel, unlike
+          # lyric-auth/lyric-storage's NuGet-free dotnet default) — restore first,
+          # then activate the dotnet feature explicitly so Session.Kernel.Net and
+          # the Redis-dependent test files actually compile and run.
+          if ! "$lyric_bin" restore --manifest lyric-session/lyric.toml; then
+            echo "::error::failed to restore lyric-session NuGet dependencies"
+            overall=1
+          fi
+          "$lyric_bin" test --manifest lyric-session/lyric.toml --features dotnet || overall=$?
           echo "=== lyric-health tests ==="
           "$lyric_bin" test --manifest lyric-health/lyric.toml || overall=$?
           # lyric-cache, lyric-mail, lyric-aws-xray, lyric-feature-flags, and

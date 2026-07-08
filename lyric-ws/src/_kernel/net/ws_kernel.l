@@ -137,6 +137,36 @@ pub func createRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Re
   Ok(handle)
 }
 
+/// The real ASP.NET Core WebSocket upgrade path (HTTP upgrade, Kestrel
+/// binding, connection-lifecycle dispatch) is deferred to #778 — see the
+/// file header.  Matches this ecosystem's established convention for a
+/// documented, not-yet-shipped backend (e.g. `lyric-storage`'s S3/Azure
+/// Blob backends): a clear `NOT_IMPLEMENTED` error, never a silent no-op.
+@stable(since = "0.1")
+pub func startServer(
+  host: in String,
+  port: in Int,
+  path: in String,
+  maxMessageSizeBytes: in Int,
+  onOpen: in (String, String, String, String) -> Unit,
+  onMessage: in (String, String, String) -> Unit,
+  onClose: in (String, Int, String) -> Unit,
+  onError: in (String, String) -> Unit,
+): Result[Int, String]
+  requires: host.length > 0
+  requires: port > 0
+  requires: path.length > 0
+  requires: maxMessageSizeBytes >= 1024
+{
+  Err("NOT_IMPLEMENTED: real ASP.NET Core WebSocket upgrade deferred to #778")
+}
+
+/// See `startServer`.
+@stable(since = "0.1")
+pub func stopServer(registryHandle: in Int): Result[Unit, String] {
+  Err("NOT_IMPLEMENTED: real ASP.NET Core WebSocket upgrade deferred to #778")
+}
+
 @stable(since = "0.1")
 pub func send(
   registryHandle: in Int, connectionId: in String, messageType: in String, data: in String

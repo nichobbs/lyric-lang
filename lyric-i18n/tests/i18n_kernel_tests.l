@@ -1,0 +1,158 @@
+//! tests/i18n_kernel_tests.l — test suite for I18n.Kernel, the standalone
+//! handle-based translation-file kernel (docs/03-decision-log.md
+//! D-progress-628). A single ungated package, not a net/jvm pair, so this
+//! file exercises both targets identically. Exercises
+//! loadStore/translate/hasKey/availableLocalesJson against a real JSON
+//! fixture on disk, and parseTranslationsJson directly.
+@test_module
+package I18n.I18nKernelTests
+
+import Std.Core
+import Std.Testing
+import Std.File as File
+import Std.Environment
+import I18n.Kernel
+
+val fixtureJson: String = "{\"en\":{\"greeting\":\"Hello, {name}!\",\"farewell\":\"Goodbye.\"},\"en-US\":{\"greeting\":\"Hey, {name}!\"},\"fr\":{\"greeting\":\"Bonjour, {name}!\",\"farewell\":\"Au revoir.\"}}"
+
+// Mirrors lyric-stdlib/tests/file_tests.l's scratchDir() convention: scope
+// scratch files under $TMPDIR (never the working tree) and clean up after.
+// Each call site passes its own suffix so concurrent test runs (docs/24
+// Stage 4) never share one fixture path.
+func withFixtureFile(suffix: in String, body: in (String) -> Unit): Unit {
+  val base = Environment.getVarOrDefault("TMPDIR", "/tmp")
+  val path = base + "/lyric_i18n_kernel_test_fixture_" + suffix + ".json"
+  val _ = File.writeText(path, fixtureJson)
+  body(path)
+  val _ = File.deleteFile(path)
+}
+
+test "loadStore loads a real file and returns a usable handle" {
+  withFixtureFile(
+    "load_store",
+    { path ->
+      match loadStore(path, "en") {
+        case Ok(handle) -> assertTrue(handle > 0, "handle is a positive Int")
+        case Err(e) -> panic("loadStore failed: " + e)
+      }
+    }
+  )
+}
+
+test "translate resolves an exact locale match" {
+  withFixtureFile(
+    "exact_match",
+    { path ->
+      match loadStore(path, "en") {
+        case Ok(handle) -> assertEqual(translate(handle, "greeting", "en-US"), "Hey, {name}!", "en-US exact match")
+        case Err(e) -> panic("loadStore failed: " + e)
+      }
+    }
+  )
+}
+
+test "translate falls back to language-only locale" {
+  withFixtureFile(
+    "lang_fallback",
+    { path ->
+      match loadStore(path, "en") {
+        case Ok(handle) -> assertEqual(translate(handle, "greeting", "en-GB"), "Hello, {name}!", "en-GB falls back to en")
+        case Err(e) -> panic("loadStore failed: " + e)
+      }
+    }
+  )
+}
+
+test "translate falls back to the configured fallback locale" {
+  withFixtureFile(
+    "configured_fallback",
+    { path ->
+      match loadStore(path, "fr") {
+        case Ok(handle) -> assertEqual(translate(handle, "farewell", "de"), "Au revoir.", "unknown locale de falls back to fr")
+        case Err(e) -> panic("loadStore failed: " + e)
+      }
+    }
+  )
+}
+
+test "translate returns the key itself when no translation is found anywhere" {
+  withFixtureFile(
+    "missing_key",
+    { path ->
+      match loadStore(path, "en") {
+        case Ok(handle) -> assertEqual(translate(handle, "nonexistent", "en"), "nonexistent", "missing key returns itself")
+        case Err(e) -> panic("loadStore failed: " + e)
+      }
+    }
+  )
+}
+
+test "hasKey is true for a present key and false for an absent one" {
+  withFixtureFile(
+    "has_key",
+    { path ->
+      match loadStore(path, "en") {
+        case Ok(handle) -> {
+          assertTrue(hasKey(handle, "greeting", "en-US"), "greeting exists for en-US")
+          assertTrue(not hasKey(handle, "nonexistent", "en"), "nonexistent key is absent")
+        }
+        case Err(e) -> panic("loadStore failed: " + e)
+      }
+    }
+  )
+}
+
+test "availableLocalesJson lists every registered locale" {
+  withFixtureFile(
+    "available_locales",
+    { path ->
+      match loadStore(path, "en") {
+        case Ok(handle) -> {
+          val locales: String = availableLocalesJson(handle)
+          assertTrue(locales.contains("\"en\""), "contains en")
+          assertTrue(locales.contains("\"en-US\""), "contains en-US")
+          assertTrue(locales.contains("\"fr\""), "contains fr")
+        }
+        case Err(e) -> panic("loadStore failed: " + e)
+      }
+    }
+  )
+}
+
+test "loadStore reports an error for a missing file" {
+  match loadStore("this_file_definitely_does_not_exist.json", "en") {
+    case Ok(_) -> panic("expected an error for a missing file")
+    case Err(_) -> assertTrue(true, "correctly reported an error")
+  }
+}
+
+test "parseTranslationsJson produces a flat array of locale/key/value triples" {
+  val result = parseTranslationsJson(fixtureJson)
+  match result {
+    case Ok(json) -> {
+      // Re-bind before calling .contains(): on JVM, calling a String method
+      // directly on a match-bound value can erase to java.lang.Object and
+      // crash JVM auto-FFI resolution (issue #5423).
+      val jsonStr: String = json
+      assertTrue(jsonStr.contains("\"en\",\"greeting\",\"Hello, {name}!\""), "contains the en greeting triple")
+      assertTrue(jsonStr.contains("\"fr\",\"farewell\",\"Au revoir.\""), "contains the fr farewell triple")
+    }
+    case Err(e) -> panic("parseTranslationsJson failed: " + e)
+  }
+}
+
+test "loadFromPath reads the raw file contents" {
+  withFixtureFile(
+    "load_from_path",
+    { path ->
+      match loadFromPath(path) {
+        case Ok(text) -> {
+          // See issue #5423 (JVM match-bound String auto-FFI erasure).
+          val textStr: String = text
+          assertTrue(textStr.contains("greeting"), "raw file content contains the greeting key")
+        }
+        case Err(e) -> panic("loadFromPath failed: " + e)
+      }
+    }
+  )
+}

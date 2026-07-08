@@ -796,7 +796,7 @@ output_assembly = "myapp.dll"
 | `Session` *(lyric-session)* | Distributed session management | `SessionStore`, `SessionData`, `newSession`, `loadSession`, `get`, `set` |
 | `Validation` *(lyric-validation)* | Input validation | `ValidationError`, `required`, `minLength`, `email`, `url`, `all`, `toResult` |
 | `Ws` *(lyric-ws)* | WebSocket server | `WsHandler`, `WsRegistry`, `WsMessage`, `send`, `broadcast` |
-| `Flags` *(lyric-feature-flags)* | Runtime feature toggles | `FlagStore`, `getBool`, `getString`, `getInt`, `enable`, `disable` |
+| `Flags` *(lyric-feature-flags)* | Runtime feature toggles | `FlagStore`, `isEnabled`, `getBool`, `getString`, `getInt`, `Registry.checkFlag` |
 | `I18n` *(lyric-i18n)* | Internationalisation | `TranslationStore`, `Locale`, `translate`, `translateWith`, `makeLocale` |
 | `Testing` *(lyric-testing)* | Test mocks and assertions | `TestContext`, `assertOk`, `assertErr`, `assertEq`, `MockMailSender` |
 
@@ -823,7 +823,7 @@ String method-syntax (UFCS) ops lower to host `String` methods, no import needed
 | `lyric-testing` | `Testing` | Mock implementations (`MockMailSender`, `MockStorageBucket`, `MockSessionStore`, `MockFlagStore`, …); `TestContext`; assertion helpers | — |
 | `lyric-validation` | `Validation` | Composable input validators returning `[ValidationError]`; string/numeric combinators; `toResult` helper | — |
 | `lyric-ws` | `Ws`, `Ws.Aspects` | WebSocket server (ASP.NET Core/.NET, Undertow/JVM); `WsHandler`/`WsRegistry`; `WsAuth`/`WsRateLimit` aspects. **Note:** `createRegistry()` returns `Err(WS_AUTH_MISCONFIGURED)` when `WsAuthConfig.enabled = true` and `WsAuthConfig.jwtSecret` is empty — set `LYRIC_CONFIG_WS_AUTH_JWTSECRET` or disable auth. | — |
-| `lyric-feature-flags` | `Flags`, `Flags.Aspects` | Runtime feature toggles; in-process/remote stores; `FlagGated` aspect. **Note:** `connectRemote()` returns `Err(INSECURE_URL)` when an API key is configured and `Remote.url` is not `https://` — use a TLS endpoint to prevent credential leakage. | — |
+| `lyric-feature-flags` | `Flags`, `Flags.Aspects`, `Flags.Registry` | Runtime feature toggles; in-process store; `FlagGated`/`FlagVariant` aspects backed by the pure-Lyric `Flags.Registry`. No remote (HTTP-polling) store is implemented. | — |
 | `lyric-i18n` | `I18n` | BCP 47 locale parsing; `TranslationStore`; `{placeholder}` substitution; JSON/file-backed loading | — |
 | `lyric-proto` | `Proto` | Pure-Lyric Protocol Buffer (proto3) wire-format encoder/decoder | — |
 | `lyric-grpc` | `Grpc` | General-purpose gRPC client; raw `slice[Byte]` payloads; compose with lyric-proto | — |

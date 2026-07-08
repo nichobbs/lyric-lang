@@ -2,22 +2,32 @@
 
 Transport-agnostic authentication library for [Lyric](https://github.com/nichobbs/lyric-lang). Ships JWT verification with algorithm pinning, claim extraction, constant-time API key comparison, and role-based access control helpers.
 
-> **Status**: Library source is complete. Both `.NET` and JVM backends are available via `Auth.Kernel.Net` / `Auth.Kernel.Jvm`.
+> **Status**: `Auth` (JWT verification, claim extraction, API-key comparison,
+> role checks) is production-ready on both `.NET` and JVM via
+> `Auth.Kernel.Net` / `Auth.Kernel.Jvm`. `Auth.Aspects.ValidateKey` (the
+> B′-mode API-key aspect template) is verified on `.NET` but currently
+> broken on JVM due to an unrelated, pre-existing self-hosted JVM
+> aspect-weaver codegen bug (see "Platform parity" below) — this is
+> independent of the `Auth.Kernel.Jvm` extern boundary, which is fully
+> verified on both targets.
 
 ## Platform parity
 
 | Feature flag | Backend | Status |
 |---|---|---|
-| `dotnet` | .NET via `Auth.Kernel.Net` | Available |
-| `jvm` | JVM via `Auth.Kernel.Jvm` | Available |
+| `dotnet` | .NET via `Auth.Kernel.Net` | Available — `Auth` and `Auth.Aspects` both verified |
+| `jvm` | JVM via `Auth.Kernel.Jvm` | `Auth` available and verified (HMAC-SHA256 via `javax.crypto.Mac`/`SecretKeySpec`); `Auth.Aspects.ValidateKey` fails at runtime due to a pre-existing B′-mode aspect-weaver JVM codegen bug (`__LyricBModeCallContext` `NoSuchMethodError`), unrelated to this library — present before and independent of the kernel fix, tracked separately |
+
+`jvm` is opt-in (`[features] default = ["dotnet"]` in `lyric.toml`); build
+with `--target jvm --no-default-features --features jvm` to select it.
 
 ## Packages
 
 | Package | Description |
 |---|---|
 | `Auth` | Core: `verifyJwt`, `extractClaim`, `verifyApiKey`, `rolesContain` |
-| `Auth.Kernel.Net` | .NET extern boundary |
-| `Auth.Kernel.Jvm` | JVM extern boundary |
+| `Auth.Kernel.Net` | .NET extern boundary — HMAC-SHA256 via `System.Security.Cryptography.HMACSHA256.HashData` |
+| `Auth.Kernel.Jvm` | JVM extern boundary — HMAC-SHA256 via `javax.crypto.Mac`/`SecretKeySpec` (JVM auto-FFI, no Maven dependency); all other JWT/claim/API-key logic is a pure-Lyric port shared in spirit with `Auth.Kernel.Net` |
 
 ## Installation
 

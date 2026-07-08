@@ -220,7 +220,7 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
   val len = bytes.length
   var i = 0
   while i < len {
-    val b0 = bytes[i]
+    val b0: Byte = bytes[i]
     if b0 < 128u8 {
       // 1-byte sequence: U+0000..U+007F
       result = result + ("" + fromInt(b0.toInt()))
@@ -230,7 +230,7 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
       if i + 1 >= len {
         return None
       }
-      val b1 = bytes[i + 1]
+      val b1: Byte = bytes[i + 1]
       if b1 / 64u8 != 2u8 {
         return None
       }
@@ -247,8 +247,8 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
       if i + 2 >= len {
         return None
       }
-      val b1 = bytes[i + 1]
-      val b2 = bytes[i + 2]
+      val b1: Byte = bytes[i + 1]
+      val b2: Byte = bytes[i + 2]
       if b1 / 64u8 != 2u8 or b2 / 64u8 != 2u8 {
         return None
       }
@@ -268,9 +268,9 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
       if i + 3 >= len {
         return None
       }
-      val b1 = bytes[i + 1]
-      val b2 = bytes[i + 2]
-      val b3 = bytes[i + 3]
+      val b1: Byte = bytes[i + 1]
+      val b2: Byte = bytes[i + 2]
+      val b3: Byte = bytes[i + 3]
       if b1 / 64u8 != 2u8 or b2 / 64u8 != 2u8 or b3 / 64u8 != 2u8 {
         return None
       }

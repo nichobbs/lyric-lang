@@ -38,9 +38,9 @@
 //!     the non-null form.  The F# bootstrap emitter emits `initobj` for
 //!     `default()` on value-type extern types and `newobj` for `..ctor` calls.
 //!
-//! Only active when compiled with `feature = "redis"`.
+//! Only active when compiled with `feature = "dotnet"`.
 @axiom("StackExchange.Redis.ConnectionMultiplexer / IDatabase conform to StackExchange.Redis 2.x documented contracts")
-@cfg(feature = "redis")
+@cfg(feature = "dotnet")
 package Session.Kernel.Net
 
 import Std.Core
@@ -172,45 +172,118 @@ func sessionKey(h: in RedisStoreHandle, sessionId: in String): String {
 @stable(since = "0.1")
 pub func connect(url: in String, keyPrefix: in String): Result[RedisStoreHandle, String]
   requires: url.length > 0
-  = { val nullLog: TextWriter = default(); try { val mux = connectMultiplexer(url, nullLog); val nullState: AnyObj = default(); val db = getDatabase(mux, -1, nullState); Ok(RedisStoreHandle(db = db, keyPrefix = keyPrefix)) } catch Bug as b { Err(b.message) } }
+{
+  val nullLog: TextWriter = default()
+  try {
+    val mux = connectMultiplexer(url, nullLog)
+    val nullState: AnyObj = default()
+    val db = getDatabase(mux, -1, nullState)
+    Ok(RedisStoreHandle(db = db, keyPrefix = keyPrefix))
+  } catch Bug as b {
+    Err(b.message)
+  }
+}
 
 /// Allocate a new empty session.
 /// `ttlSeconds` sets the Redis key TTL; 0 means no expiry.
 /// Returns the new session ID (a UUID string).
 @axiom("IDatabase.StringSet with a freshly generated UUID key; TTL applied when ttlSeconds > 0")
 @stable(since = "0.1")
-pub func create(handle: in RedisStoreHandle, ttlSeconds: in Int): Result[String, String]
+pub func kernelCreate(handle: in RedisStoreHandle, ttlSeconds: in Int): Result[String, String]
   requires: ttlSeconds >= 0
-  = { val sessionId = uuidToString(newUuid()); val key = toRedisKey(sessionKey(handle, sessionId)); val val_ = toRedisValue("{}"); val expiry: NullableTimeSpan = if ttlSeconds > 0 { wrapNullableTs(timeSpanFromSecs(ttlSeconds.toDouble())) } else { default() }; val when_: WhenEnum = default(); try { val _ = strSetCreate(handle.db, key, val_, expiry, when_); Ok(sessionId) } catch Bug as b { Err(b.message) } }
+{
+  val sessionId = uuidToString(newUuid())
+  val key = toRedisKey(sessionKey(handle, sessionId))
+  val val_ = toRedisValue("{}")
+  val expiry: NullableTimeSpan = if ttlSeconds > 0 {
+    wrapNullableTs(timeSpanFromSecs(ttlSeconds.toDouble()))
+  } else {
+    default()
+  }
+  val when_: WhenEnum = default()
+  try {
+    val _ = strSetCreate(handle.db, key, val_, expiry, when_)
+    Ok(sessionId)
+  } catch Bug as b {
+    Err(b.message)
+  }
+}
 
 /// Fetch the serialised JSON for the given session ID.
 /// Returns an empty string if the session does not exist or has expired.
 @axiom("IDatabase.StringGet; empty string on key-miss or expiry")
 @stable(since = "0.1")
-pub func load(handle: in RedisStoreHandle, sessionId: in String): Result[String, String]
+pub func kernelLoad(handle: in RedisStoreHandle, sessionId: in String): Result[String, String]
   requires: sessionId.length > 0
-  = { val key = toRedisKey(sessionKey(handle, sessionId)); val flags: CommandFlagsT = default(); try { val rv = strGet(handle.db, key, flags); if redisValueIsNull(rv) { Ok("") } else { Ok(redisValueToString(rv)) } } catch Bug as b { Err(b.message) } }
+{
+  val key = toRedisKey(sessionKey(handle, sessionId))
+  val flags: CommandFlagsT = default()
+  try {
+    val rv = strGet(handle.db, key, flags)
+    if redisValueIsNull(rv) {
+      Ok("")
+    } else {
+      Ok(redisValueToString(rv))
+    }
+  } catch Bug as b {
+    Err(b.message)
+  }
+}
 
 /// Persist the serialised session JSON, preserving the original TTL.
 @axiom("IDatabase.StringSet with keepTtl=true; null expiry so StackExchange.Redis honours the key's existing TTL")
 @stable(since = "0.1")
-pub func save(handle: in RedisStoreHandle, sessionId: in String, sessionJson: in String): Result[Unit, String]
+pub func kernelSave(handle: in RedisStoreHandle, sessionId: in String, sessionJson: in String): Result[Unit, String]
   requires: sessionId.length > 0
   requires: sessionJson.length > 0
-  = { val key = toRedisKey(sessionKey(handle, sessionId)); val val_ = toRedisValue(sessionJson); val nullExpiry: NullableTimeSpan = default(); val when_: WhenEnum = default(); val flags: CommandFlagsT = default(); try { val _ = strSetKeepTtl(handle.db, key, val_, nullExpiry, true, when_, flags); Ok(()) } catch Bug as b { Err(b.message) } }
+{
+  val key = toRedisKey(sessionKey(handle, sessionId))
+  val val_ = toRedisValue(sessionJson)
+  val nullExpiry: NullableTimeSpan = default()
+  val when_: WhenEnum = default()
+  val flags: CommandFlagsT = default()
+  try {
+    val _ = strSetKeepTtl(handle.db, key, val_, nullExpiry, true, when_, flags)
+    Ok(())
+  } catch Bug as b {
+    Err(b.message)
+  }
+}
 
 /// Permanently delete a session.  No-op if the key is absent.
 @axiom("IDatabase.KeyDelete; silent no-op on missing key")
 @stable(since = "0.1")
-pub func destroy(handle: in RedisStoreHandle, sessionId: in String): Result[Unit, String]
+pub func kernelDestroy(handle: in RedisStoreHandle, sessionId: in String): Result[Unit, String]
   requires: sessionId.length > 0
-  = { val key = toRedisKey(sessionKey(handle, sessionId)); val flags: CommandFlagsT = default(); try { val _ = keyDel(handle.db, key, flags); Ok(()) } catch Bug as b { Err(b.message) } }
+{
+  val key = toRedisKey(sessionKey(handle, sessionId))
+  val flags: CommandFlagsT = default()
+  try {
+    val _ = keyDel(handle.db, key, flags)
+    Ok(())
+  } catch Bug as b {
+    Err(b.message)
+  }
+}
 
 /// Refresh the session's TTL without changing its content.
 /// `ttlSeconds = 0` is a no-op.
 @axiom("IDatabase.KeyExpire; ttlSeconds=0 leaves TTL unchanged")
 @stable(since = "0.1")
-pub func touch(handle: in RedisStoreHandle, sessionId: in String, ttlSeconds: in Int): Result[Unit, String]
+pub func kernelTouch(handle: in RedisStoreHandle, sessionId: in String, ttlSeconds: in Int): Result[Unit, String]
   requires: sessionId.length > 0
   requires: ttlSeconds >= 0
-  = { if ttlSeconds == 0 { return Ok(()) }; val key = toRedisKey(sessionKey(handle, sessionId)); val expiry = wrapNullableTs(timeSpanFromSecs(ttlSeconds.toDouble())); val flags: CommandFlagsT = default(); try { val _ = keyExpire(handle.db, key, expiry, flags); Ok(()) } catch Bug as b { Err(b.message) } }
+{
+  if ttlSeconds == 0 {
+    return Ok(())
+  }
+  val key = toRedisKey(sessionKey(handle, sessionId))
+  val expiry = wrapNullableTs(timeSpanFromSecs(ttlSeconds.toDouble()))
+  val flags: CommandFlagsT = default()
+  try {
+    val _ = keyExpire(handle.db, key, expiry, flags)
+    Ok(())
+  } catch Bug as b {
+    Err(b.message)
+  }
+}

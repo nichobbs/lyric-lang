@@ -190,3 +190,112 @@ test "enqueueWith wrapper: honours explicit maxAttempts/timeoutMs (#3174, #3515)
     }
   }
 }
+
+// ─── NativeJobScheduler (real backend, `quartz` feature) ──────────────────────
+// `test` blocks don't reliably survive `@cfg` erasure through test synthesis
+// (observed to compile into an invalid MSIL program when gated directly on
+// the `test` itself — see lyric-search/tests/search_tests.l), so the feature
+// split lives on plain helper functions instead, one `@cfg` variant per
+// mutually-exclusive backend feature (`inprocess`/`hangfire`/`quartz` — see
+// lyric.toml's `[features]` comment) so exactly one always survives erasure
+// and the bare `test` block below always compiles.
+//
+// This is a genuine, real end-to-end run: `Jobs.connectQuartz()` starts a
+// real `org.quartz.impl.StdScheduler` (JVM) or returns the tracked "not yet
+// implemented" error (dotnet); `Jobs.enqueue` schedules a real Quartz job
+// that a real Quartz thread pool executes; the poll loop below observes the
+// real state transition via `Jobs.status`.
+@cfg(feature = "quartz")
+func pollUntilTerminal(scheduler: in JobScheduler, jobId: in String, maxTries: in Int): Result[JobStatus, String] {
+  var i = 0
+  var last: Result[JobStatus, String] = Err("poll: never queried")
+  while i < maxTries {
+    val current = Jobs.status(scheduler, jobId)
+    last = current
+    match current {
+      case Err(_) -> return current
+      case Ok(JobStatus.Pending) -> ()
+      case Ok(_) -> return current
+    }
+    Jobs.sleepMs(50)
+    i = i + 1
+  }
+  last
+}
+
+// NOTE: this scenario deliberately does not call `Jobs.results()`. Building
+// a `JobResult` (or `JobStatus`) value from a *function argument* position —
+// exactly what `Jobs`'s private `parseResults`/`parseStatus` helpers do
+// (`JobResult(status = parseStatus(statusStr), …)`) — hits a pre-existing,
+// already-tracked general JVM backend bug where a nullary enum case value is
+// corrupted (silently becomes `null`) when passed as a function argument
+// (#5380, filed during the D-progress-625 stdlib kernel migration; verified
+// independently of this kernel with a minimal one-field-record repro).  It
+// is not specific to Quartz, `NativeJobScheduler`, or even `Jobs` — every
+// backend's `results()` is affected on `--target jvm` today.  `status()`
+// (which builds its `JobStatus` via a bare `match` arm, not an argument
+// position) is unaffected and is exercised fully below.
+@cfg(feature = "quartz")
+func quartzE2EScenario(): String {
+  match Jobs.connectQuartz() {
+    case Err(e) -> "connectQuartz failed: " + e
+    case Ok(scheduler) -> {
+      match Jobs.enqueue(scheduler, "quartz-e2e-job", "{}") {
+        case Err(e) -> "enqueue failed: " + e
+        case Ok(jobId) -> {
+          match pollUntilTerminal(scheduler, jobId, 40) {
+            case Err(e) -> "status polling failed: " + e
+            case Ok(JobStatus.Succeeded) -> quartzE2ECancelAndErrorScenario(scheduler)
+            case Ok(other) -> "expected terminal status Succeeded, got " + other.toString()
+          }
+        }
+      }
+    }
+  }
+}
+
+// Second half of the scenario: cancel-before-fire and unknown-ID error paths
+// against the SAME live scheduler the happy path already proved works, so a
+// single `connectQuartz()` call (and its real Quartz thread pool) covers the
+// whole test.
+@cfg(feature = "quartz")
+func quartzE2ECancelAndErrorScenario(scheduler: in NativeJobScheduler): String {
+  match Jobs.enqueue(scheduler, "quartz-cancel-me", "{}") {
+    case Err(e) -> "second enqueue failed: " + e
+    case Ok(jobId2) -> {
+      match Jobs.cancel(scheduler, jobId2) {
+        case Err(e) -> "cancel failed: " + e
+        case Ok(_) -> {
+          match Jobs.status(scheduler, jobId2) {
+            case Err(e) -> "status after cancel failed: " + e
+            case Ok(JobStatus.Cancelled) -> {
+              match Jobs.status(scheduler, "does-not-exist") {
+                case Ok(_) -> "status on an unknown job ID unexpectedly succeeded"
+                case Err(_) -> "OK"
+              }
+            }
+            case Ok(other) -> "expected Cancelled after cancel(), got " + other.toString()
+          }
+        }
+      }
+    }
+  }
+}
+
+@cfg(feature = "hangfire")
+func quartzE2EScenario(): String {
+  "OK"    // Hangfire's real-backend coverage is out of scope for this test; see the quartz variant.
+}
+
+@cfg(feature = "inprocess")
+func quartzE2EScenario(): String {
+  "OK"    // No NativeJobScheduler backend selected in this build; nothing to test here.
+}
+
+test "NativeJobScheduler (quartz feature): real end-to-end schedule, run, poll, cancel, and error paths" {
+  assertEqual(
+    quartzE2EScenario(),
+    "OK",
+    "the quartz-backed scheduler must actually run a job to completion, report Cancelled for a cancelled job, and error on an unknown job ID when the quartz feature is active"
+  )
+}

@@ -12148,6 +12148,1395 @@ initial version of this migration:
 #5391, #5392, #5393, #5394, #5395.
 
 ---
+
+## D-progress-627 — `lyric-feature-flags`: deleted the dead `extern package` HTTP-polling scaffold and rewrote `Flags.Registry` as pure Lyric, closing the FlagGated aspect's silent no-op
+
+**Status:** ACCEPTED
+
+**Context.** `lyric-feature-flags/src/_kernel/{net,jvm}/flags_kernel.l`
+each declared two `extern package` blocks — the mechanism confirmed
+broken in D-progress-625/#5324: it parses but never resolves to a real
+binding in either the type checker or MSIL/JVM codegen. An internal
+triage pass found two unrelated things bundled behind that one
+boundary:
+
+1. `Lyric.Flags.Http` / `lyric.flags.HttpClient` — an Int-handle-table
+   remote HTTP-polling client (`connect`/`isEnabled`/`getValue`/
+   `listFlags`/`refresh`). **100% dead code.** Zero callers anywhere in
+   the repo. The public entry point the README documented,
+   `Flags.connectRemote(): Result[FlagStore, FlagError]`, did not exist
+   in `flags.l`, nor did the `NativeFlagStore` type the README also
+   described. `feedback/04-security.md` FINDING-05 and
+   `docs/10-bootstrap-progress.md`'s "security hardening" note both
+   describe a TLS-enforcement fix (`INSECURE_URL`) for this function —
+   that fix was never actually applied to the code; the function was
+   aspirational the whole time.
+2. `Lyric.Flags.Registry` / `lyric.flags.Registry` — a stateless global
+   name→value map (`checkFlag`/`getStringFlag`/`registerBoolFlag`/
+   `registerStringFlag`). This one IS wired to a real call site:
+   `Flags.Aspects.FlagGated`'s `around(call)` advice calls
+   `FlagsKernel.checkFlag` on every invocation of a matched function.
+   But `FlagGated` itself was never applied anywhere in the repo, so
+   nobody had ever exercised it at runtime — the registry's `extern
+   package` no-op silently always returned `defaultValue`, and no test
+   caught it because no test wove the aspect end-to-end.
+
+**What shipped.**
+
+- Deleted `lyric-feature-flags/src/_kernel/` entirely (both `net/` and
+  `jvm/flags_kernel.l`) — the HTTP client scaffold, its
+  `@cfg(feature = "remote")`-gated re-export wrappers, and the broken
+  `Registry` extern block.
+- Added `lyric-feature-flags/src/flags_registry.l` (`Flags.Registry`):
+  a pure-Lyric registry backed by `Std.Collections.Map[String, Bool]`
+  / `Map[String, String]` fields on a `val`-bound record (the same
+  "mutate through a `val`-bound record's `var` fields" idiom
+  `Cache.inProcess()` / `Cache.Aspects.functionCacheStore` already use
+  — Lyric has no module-level `var`). No extern boundary, no
+  `_kernel/` directory, no target split: modelling "map of flag name
+  to value" needs no BCL/JDK object reference, so the same file now
+  serves `dotnet` and `jvm` identically. Ships the same honest
+  not-thread-safe caveat as `Flags.InProcessFlagStore` and
+  `Cache.InProcessCacheStore` (lyric-lang #411).
+- `Flags.Aspects.FlagGated` now calls `Flags.Registry.checkFlag`
+  directly instead of the dead `Flags.Kernel.Net` alias.
+- `lyric.toml` drops the `Flags.Kernel.Net` package entry and the now-
+  meaningless `remote` feature; adds `Flags.Registry` and a new test
+  target.
+- Removed the remote-store doc scaffolding from `flags.l`'s module
+  header (the `LYRIC_CONFIG_REMOTE_*` env var table, the
+  `connectRemote()` mention, the "NativeFlagStore" placeholder
+  section) and from `lyric-feature-flags/README.md` (the "Remote flag
+  service" section, the `connectRemote()`/`INSECURE_URL` claims in the
+  platform-parity table). The README's platform-parity table now
+  states plainly that no remote store exists rather than claiming one
+  is "Available" or "Planned." `book/chapters/appendix-b-quick-
+  reference.md`'s `lyric-feature-flags` rows are corrected to match
+  (dropped the phantom `connectRemote()`/`INSECURE_URL` note and the
+  never-implemented `enable`/`disable` functions).
+- Added `lyric-feature-flags/tests/flags_aspect_weaving_tests.l`: end-
+  to-end coverage that actually applies `FlagGated` to a handler and
+  invokes it through the weaver — an unregistered flag with
+  `defaultOnMissing = false` short-circuits; `Flags.Registry.
+  registerBoolFlag` flipping the flag to `true`/`false` changes the
+  woven handler's behavior live; `defaultOnMissing = true` proceeds
+  for an absent flag; the aspect's own `enabled = false` master switch
+  bypasses the registry entirely; and a direct
+  `registerStringFlag`/`getStringFlag` round-trip. This is the
+  regression guard that would have caught the original bug — no test
+  in the repo wove `FlagGated` before this change.
+
+**What was NOT done, deliberately.** `extern package` itself was not
+fixed — that is the subject of the ongoing retirement discussion
+referenced in D-progress-625. A real remote-polling `FlagStore` was
+not built; it would need `Std.Http`'s client, a background poll loop,
+and a JSON decoder for the remote payload, none of which existed
+before this entry and none of which this entry adds. Implementing one
+is left to a future, explicitly-scoped task; the README says so
+directly instead of leaving broken scaffolding in its place.
+
+**Verification.** `./bin/lyric test --manifest lyric-feature-flags/lyric.toml`
+on `--target dotnet` (both `Flags.FlagsTests` and the new
+`Flags.FlagsAspectWeavingTests`, all green) confirms the rewritten
+registry and the `FlagGated` weave both work end-to-end; `lyric-feature-
+flags` has no `[project.packages]` entry for a `jvm` kernel today (it
+never did — `Flags.Kernel.Jvm` was itself orphaned, referenced by no
+import anywhere in the repo, prior to this entry), so `--target jvm` is
+not part of this library's build.
+
+**Review hardening.** Two SUGGESTION findings pointed at other docs
+that drifted stale once this entry's fix landed:
+
+- **SUGGESTION (#5429):** `docs/57-stdlib-ecosystem-library-review.md`
+  still claimed `FlagGated`/`FlagVariant` aspect weaving had no
+  regression test — fixed to note `FlagGated` is now covered by
+  `flags_aspect_weaving_tests.l`, narrowing the remaining gap to
+  `FlagVariant` (still an unwoven stub).
+- **SUGGESTION (#5430):** `feedback/04-security.md`'s FINDING-05
+  quoted the deleted, never-real `connectRemote()` as if it were live
+  code needing a TLS fix — annotated as superseded/moot, mirroring the
+  `docs/10-bootstrap-progress.md` treatment.
+
+A second review round found a REQUIRED regression: a later editing pass
+on this same PR (fixing stale `D-progress-626` citations) rewrote the
+README's platform-parity table to claim "In-process store: Available
+(both targets)" / "`FlagGated` aspect: Available (both targets)" —
+directly contradicting this entry's own Verification section above,
+which explicitly says `--target jvm` was never part of this library's
+build. That claim was never checked against a real JVM run.
+
+- **REQUIRED (#5436):** Actually running
+  `lyric test --manifest lyric-feature-flags/lyric.toml --target jvm`
+  for the first time found the JVM claim is false, and moreover
+  surfaced two previously-unknown JVM backend compiler bugs, neither
+  caused by this library:
+  - **#5441** — any JVM program that constructs or `match`-extracts a
+    `Float`-typed value crashes the *compiler itself*
+    (`System.Convert.ToSingle` `MissingMethodException` inside the
+    self-hosted JVM class-file emitter's constant-pool interning).
+    Blocks `getFloat`/`FlagValue.FlagFloat` entirely.
+  - **#5442** — `FlagValue`'s union case field accessor (`value`) gets
+    miscompiled to reference an entirely unrelated stdlib type
+    (`Std.Http.Url`, which is never imported by this library, directly
+    or transitively) instead of its own accessor, producing a bytecode
+    reference to a class that's never bundled into the jar —
+    `NoClassDefFoundError: Std/Http/Url` at runtime. Breaks every
+    `FlagStore` read path (`isEnabled`, `getValue`, `getBool`,
+    `getString`, `getInt`, `listFlags`, `fromEntries`) on JVM: 19 of 33
+    tests in `flags_tests.l` fail once #5441 is worked around enough to
+    let the package compile at all.
+  - The `FlagGated` aspect additionally hits the already-known,
+    pre-existing B′-mode aspect-weaver JVM bug
+    (`__LyricBModeCallContext` `NoSuchMethodError`, first documented in
+    the `lyric-auth` JVM kernel work) — 5 of 6
+    `flags_aspect_weaving_tests.l` cases fail on JVM; only the one
+    test that calls `Flags.Registry` directly (bypassing the aspect
+    and the `FlagValue` union) passes.
+  - Corrected `README.md`'s platform-parity table to state precisely
+    what works on JVM today (only `Flags.Registry`'s raw map API) and
+    what doesn't (everything else, with issue links), and updated
+    `book/chapters/29-application-libraries.md`'s library-availability
+    matrix from "planned" to "broken (#5441, #5442)" to reflect that
+    JVM has actually been attempted and found non-functional, not
+    merely unattempted.
+
+**Related:** D-progress-625, issue #5324 (`extern package` FFI
+resolution mechanism), lyric-lang #411 (`protected type` weaver,
+referenced by the thread-safety caveat), #5429, #5430, #5436, #5441,
+#5442.
+
+---
+
+## D-progress-628 — `lyric-i18n`: rewrote `I18n.Kernel.{Net,Jvm}` as pure Lyric (no extern boundary), registered into the build, both targets real and tested
+
+**Status:** ACCEPTED
+
+**Context.** `lyric-i18n/src/_kernel/{net,jvm}/i18n_kernel.l` each declared
+an `extern package Lyric.I18n.FileLoader` / `lyric.i18n.FileLoader` block
+(loadFromPath/parseTranslationsJson/loadStore/translate/
+availableLocalesJson/hasKey) — the mechanism confirmed broken in
+D-progress-625/#5324. Neither file was even registered in
+`lyric-i18n/lyric.toml`'s `[project.packages]`, and `I18n`'s own public
+package (`src/i18n.l`) never imported either kernel — it reimplements
+the same translation-loading logic directly against `Std.File`/
+`Std.Json`, which already work identically on both targets (`Std.Json`'s
+JVM backend was rewritten to pure Lyric in D-progress-555). Per explicit
+direction to roll forward and fix rather than delete dormant code, both
+kernel files are rewritten as pure Lyric (no extern boundary — reading a
+file and looking up a parsed JSON object needs no BCL/JDK object
+reference) and registered into the build as a real, standalone,
+handle-based alternative entry point.
+
+**What shipped.**
+
+- Both `i18n_kernel.l` files rewritten identically (the same pure-Lyric
+  logic, since neither needs any platform-specific behavior): a
+  module-level `I18nKernelState` record holds two parallel
+  `Map[Int, ...]` tables (translations, fallback locale) keyed by an
+  incrementing handle, following the same "eliminate the extern boundary
+  entirely" idiom as `Flags.Registry` (D-progress-627).
+- Registered `I18n.Kernel.Net` and `I18n.Kernel.Jvm` in
+  `lyric-i18n/lyric.toml`'s `[project.packages]` (neither was compiled
+  as part of the build before this).
+- Added `tests/i18n_kernel_tests.l` (10 cases) exercising `loadStore`/
+  `translate`/`hasKey`/`availableLocalesJson`/`parseTranslationsJson`/
+  `loadFromPath` against a real JSON fixture file on disk — all 10 pass
+  on both `--target dotnet` and `--target jvm`.
+- `i18n.l` itself is unchanged: it already works correctly on both
+  targets without any kernel, so this is a genuinely separate, optional
+  entry point, not a redesign of the primary public API.
+
+**Two new JVM/MSIL compiler bugs found and worked around (not fixed
+here, filed separately):**
+
+- **#5422** — `Std.Collections.mapKeys()` called directly on a
+  `match`-pattern-bound `Map` value throws a runtime cast exception on
+  BOTH `--target dotnet` and `--target jvm` (`Dictionary`/`HashMap`
+  cannot be cast to `IList`/`List`). Reproduces with a two-line minimal
+  repro; does NOT reproduce for a plain `val`-bound (non-`match`) Map,
+  regardless of nesting depth. Worked around by re-binding the
+  match-bound value to an explicitly-typed local before calling
+  `mapKeys` — used three times in the new kernel files, each commented.
+- **#5423** — calling a native `String` method (e.g. `.contains`) on a
+  `String` value bound inside a `match { case Ok(x) -> ... }` arm can
+  crash `--target jvm` compilation entirely: the JVM backend's type
+  tracking loses the value's `String` type inside the arm and falls
+  through to the auto-FFI instance-call resolver, which then fails to
+  find `.contains` on the erased `java.lang.Object`. `--target dotnet`
+  compiles the identical code with no issue. Worked around the same way
+  as #5422 — re-bind to an explicitly-typed local first — used twice in
+  `tests/i18n_kernel_tests.l`, each commented. Possibly the same root
+  cause as #5422 (match-bound pattern types losing precision before a
+  subsequent call).
+
+**Verification.** `./bin/lyric test --manifest lyric-i18n/lyric.toml`
+on both `--target dotnet` and `--target jvm --features jvm`: the
+pre-existing `I18n.I18nTests` (25 cases, `i18n.l`'s own logic,
+unaffected by this change) and the new `I18n.I18nKernelTests` (10
+cases) both pass on `--target dotnet`; on `--target jvm`,
+`I18n.I18nKernelTests` also passes fully (10/10) once the two
+compiler-bug workarounds above were applied. `I18n.I18nTests` has one
+pre-existing, unrelated JVM failure (`I18n.Locale cannot be cast to
+java.lang.String`) in a test this change does not touch — a distinct,
+separate bug in `i18n.l`'s own `availableLocales()` JVM-target codegen
+(a `slice[Record]`-from-`List.toArray()` erasure gap), not caused by
+the kernel work but filed as #5439 in the review-hardening round below
+since it was surfaced by this entry's JVM verification pass and had
+never been filed. A second, cosmetic finding from the same JVM run —
+benign false-positive "unknown name" `T0020` diagnostics for
+cross-package `Std.*` calls that resolve and run correctly — is filed
+as #5440.
+
+**Review hardening.** A review round found three real gaps in the
+initial version of this entry's work:
+
+- **REQUIRED (#5426):** `loadFromPath`/`loadStore` discarded the bound
+  `IOError` behind a hardcoded generic message, so callers couldn't
+  distinguish "file not found" from "permission denied" from any other
+  host I/O failure. Fixed to embed `IOError.message(e)` in both
+  functions.
+- **REQUIRED (#5427):** this entry's own Context paragraph cited a
+  nonexistent `D-progress-626` (the entry that never landed after the
+  "delete 7 kernels" commit was reverted) — fixed to not cite a
+  decision-log entry number at all.
+- **SUGGESTION (#5428):** `I18n.Kernel.Net`/`I18n.Kernel.Jvm` were
+  byte-identical ~230-line files with no actual platform difference —
+  a maintenance hazard (the #5422/#5423 workarounds above had to be
+  hand-applied twice) that also meant `I18n.Kernel.Jvm` itself was
+  never exercised by any test (`tests/i18n_kernel_tests.l` only
+  imported `.Net`, which has no `@cfg` gate and is what JVM builds
+  compiled too). Consolidated into a single ungated `I18n.Kernel`
+  package (`lyric-i18n/src/i18n_kernel.l`, not under `_kernel/`),
+  matching `Flags.Registry`'s precedent — re-verified all 10 kernel
+  tests pass on both `--target dotnet` and `--target jvm` against the
+  single consolidated package.
+
+A second review round found and fixed:
+
+- **SUGGESTION (#5438):** `tests/i18n_kernel_tests.l`'s `withFixtureFile`
+  wrote every test's fixture to one shared hardcoded filename
+  (`lyric_i18n_kernel_test_fixture.json`) — a latent race once parallel
+  test runs ship (docs/24 Stage 4). Fixed by threading a per-call-site
+  suffix through `withFixtureFile` so each of the 10 tests gets its own
+  scratch path.
+- **SUGGESTION (#5437):** `book/chapters/29-application-libraries.md`'s
+  library-availability matrix still listed `lyric-i18n` JVM as
+  "planned". While fixing this, running `i18n_tests.l` on `--target jvm`
+  for the first time (CI only ever builds ecosystem libraries on the
+  default `dotnet` target, never runs `lyric test --target jvm` for
+  them) surfaced the real, previously-unfiled #5439 (JVM
+  `ClassCastException` in `availableLocales()`) and #5440 (cosmetic
+  false-positive JVM diagnostics) noted above. Updated the book row to
+  "stable (1 known JVM-only gap, #5439)" rather than a blanket "stable",
+  corrected the README's platform-parity table and prose to the same
+  precision, and replaced the stale `lyric.toml` comment (which still
+  cited the long-closed #3719) with the real current test status.
+
+**Related:** D-progress-625, D-progress-627, issue #5324, #5422, #5423,
+#5426, #5427, #5428, #5437, #5438, #5439, #5440.
+
+---
+
+## D-progress-629 — JVM: fixed `impl <ExternInterface> for Record` resolving against the local package instead of the real JDK FQN; `lyric-web` gets a real Undertow-backed `Web.Kernel.Runtime`, blocked end-to-end on two newly-found JVM backend bugs (not #1707 — that ticket is closed and about a different defect)
+
+**Status:** ACCEPTED (compiler fix + kernel implementation); the full
+`lyric-web --target jvm` test suite remains blocked on #5443 and #5444
+below, filed separately, not fixed here.
+
+**Context.** `lyric-web/src/_kernel/jvm/web_kernel.l` (`Web.Kernel.Jvm`)
+was a forward-declaration stub built on `extern package` — a confirmed
+no-op FFI mechanism (D-progress-625, #5324) — and was commented out of
+`lyric-web/lyric.toml`'s `[project.packages]` entirely. Making it real
+required binding `io.undertow` directly via `extern type` + JVM
+auto-FFI, which in turn required a Lyric record to implement a real JDK
+interface (`io.undertow.server.HttpHandler`) so Undertow could dispatch
+back into Lyric-handled requests.
+
+**Compiler bug found and fixed: `impl <ExternInterface> for Record` was
+unreachable from the real JDK caller on `--target jvm` — three separate
+resolution sites, not one.** Verified with a from-scratch repro
+(`extern type JRunnable = "java.lang.Runnable"`; `impl JRunnable for
+MyRunner { func run(): Unit {...} }`) compiled and inspected with
+`javap`: the emitted class declared `implements <pkg>/JRunnable` (a
+same-package class that does not exist) instead of `implements
+java/lang/Runnable`. Root cause: `Jvm.Codegen.constraintRefToJvmClass`
+(`lyric-compiler/jvm/codegen/06_items.l`), which resolves an `impl Y for
+X` block's interface name to a JVM binary class name, never consulted
+the file's `extern type` table for a single-segment name — it always
+guessed `<currentPackage>/<name>`, the same resolution
+`typeExprToJvmExtern` already applies correctly to ordinary type
+positions (#3334). Fixed by threading the file's `externTypes` map into
+`constraintRefToJvmClass` and checking it before the local-package
+fallback. Extending the fix to an `impl` method with an extern-typed
+**parameter or return value** (needed once a self-test exercised
+`java.io.FilenameFilter.accept(File, String): boolean` — not exercised
+by `lyric-web`'s `HttpHandler`, whose single method takes only its own
+declaring interface's argument) surfaced two more instances of the same
+bug class in the same file: `holderAwareParamTypes`'s `erase` branch
+called the plain `typeExprToJvmErased` instead of the extern-aware
+`typeExprToJvmErasedExtern` it already had in scope (an earlier,
+narrower fix had covered the *return*-type side of this exact gap but
+left params on the `erase` arm unfixed), and `lowerImplMethod`'s
+return-type resolution called plain `typeExprToJvm` instead of
+`typeExprToJvmExtern`. Both fixed the same way — route through the
+file's `externTypes` map instead of guessing the local package. Pinned
+by a new regression test, `lyric-compiler/jvm/ffi_iface_impl_jvm_self_test.l`
+(2 cases): `impl JFilenameFilter for AcceptNonEmptyFilter` implementing
+`java.io.FilenameFilter.accept(File, String): boolean` (a real,
+always-available two-parameter JDK interface needing no Maven
+dependency) exercises all three fixes at once — interface-name
+resolution, `File`-typed param resolution, and `Bool`-typed return
+resolution — plus a second `impl` of the same interface in the same
+file to pin that per-impl resolution doesn't collide. Re-verified: the
+emitted class now correctly declares `implements java/lang/Runnable`
+(the standalone `Runnable` repro) and runs under `java`
+(`new Thread(runnable).start(); .join()` completes with exit 0); the
+new self-test passes 2/2 on `--target jvm`. Verified against the full
+self-hosted regression sweep (no dotnet-target self-test regresses):
+`ffi_iface_impl` (5/5), `parser` (94/94), `typechecker` (240/240),
+`modechecker` (62/62), `fmt` (116/116), `weaver` (46/46), plus the
+JVM-specific `iface_dispatch_jvm`, `extern_param_jvm`,
+`self_method_call_jvm`, and `auto_ffi_jvm_self_test` (22/22).
+
+**What shipped for `lyric-web`.**
+
+- `lyric-web/src/_kernel/jvm/web_kernel.l` rewritten from the `extern
+  package` stub to a real `Web.Kernel.Runtime` (JVM) package: `extern
+  type` bindings for `io.undertow.Undertow`/`Undertow$Builder`/
+  `server.HttpHandler`/`server.HttpServerExchange`/`util.HeaderMap`/
+  `util.HttpString`; a `LyricUndertowHandler` record implementing
+  `HttpHandler` via `impl` (the fix above) that reads a full
+  `Web.Request` off the exchange, routes it through the same
+  `Web.dispatch(router, req)` pure core the `dotnet` accept loop uses,
+  and writes the `Web.Response` back; a `serve(host, port, router)`
+  entry point that builds and starts the server then blocks the calling
+  thread on a `CountDownLatch`. The rate limiter is a port of the
+  `dotnet` kernel's tumbling-window algorithm onto
+  `java.util.concurrent.ConcurrentHashMap` + `ReentrantLock`.
+- `Web.Kernel.Net` renamed to `Web.Kernel.Runtime` on both targets
+  (`lyric-web/lyric.toml`'s `[project.packages]` lists both
+  `_kernel/net/web_kernel.l` and `_kernel/jvm/web_kernel.l` under one
+  package name, selected by feature — the `Lambda.Kernel.Runtime`
+  pattern). `Web.serve` split into `@cfg(feature = "dotnet")` /
+  `@cfg(feature = "jvm")` variants; `Web.parseQueryString` made `pub`
+  for the JVM kernel to reuse without duplicating URL-decoding.
+- New `lyric-web/tests/jvm_server_smoke.l`: a real Undertow round-trip
+  test (server + `curl`). Not yet registered in `[project.tests]`
+  pending the two blockers below.
+
+**Two new JVM backend bugs found verifying the JVM test suite end to
+end (neither fixed here, both filed with full repros):**
+
+- **#5443** — the `[project.packages]` array form for a single package
+  built from two alternative files (`_kernel/net/web_kernel.l` /
+  `_kernel/jvm/web_kernel.l`, selected by feature) leaks the
+  non-selected file's `extern type` binding when both files declare the
+  same local alias name for genuinely different host types. Both files
+  declare `extern type ConcurrentDict[K, V]` — the `dotnet` file binds
+  it to `System.Collections.Concurrent.ConcurrentDictionary`2`, the
+  `jvm` file to `java.util.concurrent.ConcurrentHashMap` — and
+  compiling `--target jvm` emits a class file with a dangling reference
+  to the **.NET** type name, crashing with `Illegal class name
+  "System/Collections/Concurrent/ConcurrentDictionary`2/"`. All 5
+  `Web.RateLimitTests` cases fail with this on JVM.
+- **#5444** — calling an interface method (`mw.wrap(req, next)`, `mw:
+  Middleware` pulled from the router's middleware list/slice) crashes
+  JVM compilation: the erased `Object` list element isn't checkcast
+  back to the `Middleware` interface before the call, so codegen falls
+  through to auto-FFI resolution against `java.lang.Object`
+  (`no matching instance or inherited method for
+  'java.lang.Object.wrap(...)'`). Blocks `Web.DispatchTests`,
+  `Web.CorsGuardTests`, and `Web.SecurityAspectWeavingTests` from
+  compiling on `--target jvm` at all. Likely the same root cause as the
+  `slice[Record]` field-access crash filed as #5439 in D-progress-628
+  (erased collection elements never get checked back to their concrete
+  type before use) — #5439 is the field-read variant, this is the
+  method-dispatch variant.
+
+An earlier draft of this integration (from the agent that did the
+initial implementation work) attributed the JVM blocker directly to
+#1707. That specific citation doesn't hold up: #1707's own body
+describes a narrow nested-generic union-case-construction defect
+(`Result[Option[T], E]`), already closed, and the project's own
+precedent (D-progress-575, following up on the same M-5 area) is to
+file a *new* issue for a newly-surfaced symptom rather than reopen
+#1707 wholesale — exactly what #4982 did there. Re-verifying end to end
+here found the real, distinct symptoms are #5443 and #5444 above,
+filed fresh per that precedent rather than citing #1707 as if it
+covered them directly. Note separately: unqualified cross-package
+`Std.*` calls (e.g. `newMap()` called from `Web` without a
+`Std.Collections.` prefix) do print spurious `error[T0020] unknown
+name` diagnostics during `--target jvm` compiles, but — per #5440
+(D-progress-628) — these are cosmetic false positives that do not
+actually block compilation; they were not the cause of the real
+failures documented above.
+
+**Verification.** `./bin/lyric test --manifest lyric-web/lyric.toml`:
+`--target dotnet` passes clean across all 4 test files (`Web.CorsGuardTests`
+16/16, `Web.RateLimitTests` 5/5, `Web.SecurityAspectWeavingTests` 13/13,
+`Web.DispatchTests` 23/23 — a rename-related regression in
+`rate_limit_tests.l`'s import, introduced mid-implementation, was caught
+by this run and fixed before landing). `--target jvm`: `Web.RateLimitTests`
+0/5 (blocked by #5443); `Web.CorsGuardTests`, `Web.SecurityAspectWeavingTests`,
+`Web.DispatchTests` all fail to compile (blocked by #5444).
+`jvm_server_smoke.l` cannot compile until both land, so it stays
+unregistered in `[project.tests]`.
+
+**Formatter note.** `lyric-web/src/_kernel/jvm/web_kernel.l` refuses to
+format: `lyric fmt --write` reports a loss-check failure on an `extern
+type` string literal (`"java.util.Collection"` round-tripping through
+the formatter would append a spurious `` `1 `` arity suffix, changing
+the token content). Left unformatted per the "never hand-format around
+a refusal" policy — a genuine formatter bug, not addressed here.
+
+**Related:** #3334, #5324, #5439, #5440, #5443, #5444,
+D-progress-625, D-progress-628.
+
+---
+## D-progress-630 — lyric-auth: real JVM JWT/API-key kernel (`javax.crypto.Mac`), replacing dead `extern package` (#5324)
+
+**Context.** `lyric-auth/src/_kernel/jvm/auth_kernel.l` declared two
+`extern package` blocks (`io.jsonwebtoken` for `verifyJwt`/`extractClaim`,
+`java.security` for `verifyApiKey`). `extern package` is a confirmed no-op
+in both the type checker and the MSIL/JVM codegens — it parses but
+generates no real binding — so the JVM kernel was dead code: it could
+never have verified a real JWT or compared a real API key at runtime, and
+was already opt-in and CI-invisible (`lyric-auth/lyric.toml`
+`[features] default = ["dotnet"]`). No Maven dependency for JJWT had ever
+actually been wired either — the `io.jsonwebtoken` extern was purely
+aspirational.
+
+**Decision.** Do not bind the full JJWT fluent builder chain (a new Maven
+dependency for no real benefit, and a multi-call object-lifecycle pattern
+that doesn't fit `Auth.Kernel.Net`'s proven approach). Instead: port
+`Auth.Kernel.Net`'s ~450 lines of pure-Lyric, platform-independent JWT
+logic (base64url decode, JSON claim scanning with `aud` duplicate-key
+detection, `parseLong` with overflow guards, the RFC 8725 §3.1 algorithm
+allow-list, `exp`/`nbf` validation with clock-skew tolerance,
+`fixedTimeEqualBytes`) verbatim into the JVM kernel, and bind exactly ONE
+real native primitive via `extern type` + JVM auto-FFI: HMAC-SHA256 using
+`javax.crypto.Mac`/`javax.crypto.spec.SecretKeySpec` (both in `java.base`,
+no Maven dependency) — `SecretKeySpec.new(key, "HmacSHA256")` builds the
+key material, `Mac.getInstance("HmacSHA256")` selects the algorithm,
+`.init(keySpec)` binds it, `.doFinal(message)` computes the MAC. This is
+the same `_kernel_jvm` idiom already proven by `Std.HashHost`
+(`MessageDigest.getInstance(...).digest(...)`) and `Storage.Kernel.Jvm`.
+`verifyApiKey` needed no extern binding at all — `fixedTimeEqualBytes` is
+pure Lyric and ported unchanged. This collapses the JVM kernel from "two
+broken `extern package` blocks with zero real dependency" to "one small
+`extern type` HMAC-SHA256 primitive + a straight port of already-tested
+pure-Lyric logic."
+
+**Two additional pre-existing bugs blocked verification and were fixed
+alongside (both narrowly scoped, both required to actually exercise the
+new kernel on `--target jvm` rather than ship it untested):**
+
+1. **`lyric-stdlib/std/encoding.l`'s `tryDecodeUtf8`** indexed a
+   `slice[Byte]` into an unannotated `val b0 = bytes[i]` before calling
+   `.toInt()`. On `--target jvm`, an un-annotated slice-index expression
+   used as a numeric-intrinsic receiver loses its `Byte` element type
+   before the `.toInt()`/`.toLong()`/etc. intrinsic check runs, so it fell
+   through to JVM auto-FFI against `java.lang.Object` (which has no
+   `toInt()` method), crashing `Jvm.Codegen` with an unhandled
+   `System.Exception` for ANY program that imports `Std.Encoding` and
+   compiles for JVM — a pre-existing, general stdlib/JVM-backend gap,
+   reproduced independently of lyric-auth with a 9-line repro. Fixed by
+   annotating the four `b0`/`b1`/`b2`/`b3` locals in `tryDecodeUtf8` as
+   `Byte` explicitly (`val b0: Byte = bytes[i]`) — a type-annotation-only
+   change, no behavior change, confirmed by both `lyric-auth` test suites
+   passing unchanged on `--target dotnet` before and after.
+2. **Generic `Option`/`Result` payload erasure for `slice[T]` on JVM.**
+   D-progress-554 taught the JVM match-lowering to unbox PRIMITIVE scalar
+   payloads (Int/Long/Double/Float/Boolean) bound from a generic
+   `Option`/`Result` case, but explicitly left reference/array payloads
+   boxed as `java.lang.Object` (documented in that entry as "stays
+   boxed — pre-fix behaviour"). A `slice[Byte]` value extracted from
+   `Std.Encoding.tryDecodeBase64`'s `Option[slice[Byte]]` result and then
+   forwarded to ANY function expecting a concrete `slice[Byte]`
+   parameter — including `Std.Encoding.tryDecodeUtf8` itself — fails JVM
+   bytecode verification (`VerifyError: ... not assignable to
+   '[Ljava/lang/Object;'`), reproduced with a 9-line repro fully
+   independent of lyric-auth and of `tryDecodeBase64` specifically (a
+   bare `Option[slice[Byte]]`-returning function has the same failure).
+   This is a genuine, general self-hosted JVM backend limitation, not
+   fixed here (out of scope — it needs the same `checkcast`-insertion
+   treatment D-progress-554 gave primitives, generalized to array types,
+   in `Jvm.Codegen`'s match-arm binding). Worked around locally: the JVM
+   kernel implements its own base64url decoder
+   (`tryFromBase64Url(seg, result: out slice[Byte]): Bool`,
+   validation ported from `Std.Encoding.tryDecodeBase64`, byte
+   accumulation from `Std.EncodingHost.hostFromBase64`) that returns via
+   `Bool` + `out slice[Byte]` instead of `Option[slice[Byte]]` — writing
+   through an `out` parameter assigns the concretely-typed local directly
+   from a `List[Byte].toArray()` result, never through an
+   `Option[slice[Byte]]` intermediate, which keeps the JVM backend's type
+   inference intact (the same `List` + `newList` + `.toArray()`
+   construction already proven by `Std.HashHost`/`Std.EncodingHost`).
+   `Auth.jwtAlg` in `auth.l` (pre-existing, non-`@cfg`-gated
+   belt-and-suspenders algorithm extraction, unrelated to the kernel
+   rewrite) had the identical shape and was hitting the identical
+   `VerifyError`; it is now `@cfg`-split into a `dotnet` branch (unchanged
+   original body) and a `jvm` branch that calls the kernel's
+   (now-`pub`) `tryFromBase64Url`.
+
+**Alias-rewriter collision avoided defensively.** The JVM kernel's public
+functions are named `verifyJwtImpl`/`extractClaimImpl`/`verifyApiKeyImpl`
+(not `verifyJwt`/`extractClaim`/`verifyApiKey`), matching
+`Auth.Kernel.Net`'s existing naming and its documented rationale
+(`Lyric.AliasRewriter` is scope-blind: `AuthKernelJvm.extractClaim(...)`
+rewrites to bare `extractClaim(...)`, which would otherwise resolve to
+`Auth.extractClaim`'s own recursive call rather than the kernel — #1127,
+#1094). The former (dead, `extern package`-only) kernel used
+non-`Impl`-suffixed names that were never actually exercised at runtime;
+`auth.l`'s two `@cfg(feature = "jvm")` call sites were updated to match.
+
+**Verification.** HMAC-SHA256 is deterministic and byte-identical across
+platforms, so `lyric-auth/tests/auth_security_tests.l`'s existing 32 test
+cases (algorithm pinning, duplicate-alg/duplicate-aud attacks, exp/nbf
+overflow, clock-skew, JSON escape decoding) — written once, shared
+unconditionally across both `@cfg`-gated `Auth.verifyJwt` overloads — now
+pass identically on both targets:
+
+```
+./bin/lyric test --manifest lyric-auth/lyric.toml
+  # dotnet (default features): 2 passed, 0 failed (32 + 4 tests)
+./bin/lyric test --manifest lyric-auth/lyric.toml --target jvm --no-default-features --features jvm
+  # Auth.AuthSecurityTests: 32/32 pass (was: build crash / dead extern)
+```
+
+`Auth.AuthAspectWeavingTests` (4 tests, `Auth.Aspects.ValidateKey`) passes
+on `dotnet` but fails on `jvm` with a `NoSuchMethodError`-shaped
+`__LyricBModeCallContext` runtime crash. Confirmed via the FIRST (pre-fix)
+JVM test run's raw output that this exact failure signature was already
+present before any change in this entry — it is the self-hosted JVM
+backend's B′-mode aspect-weaver codegen (D114/D115), a subsystem entirely
+independent of `Auth.Kernel.Jvm`/`Auth.jwtAlg`, and out of scope here.
+`lyric-auth/README.md`'s platform-parity table is corrected accordingly:
+`Auth` is genuinely available and verified on both targets;
+`Auth.Aspects.ValidateKey` is `.NET`-only pending that separate fix.
+
+**Related:** #5324, D-progress-554 (the primitive-only unboxing this
+entry's workaround routes around for `slice[Byte]`), D114/D115 (the
+B′-mode aspect weaver whose JVM codegen gap this entry surfaces but does
+not fix).
+
+---
+
+## D-progress-631 — `lyric-session`: real Lettuce-backed `Session.Kernel.Jvm` (`extern type` + auto-FFI, replacing the no-op `extern package` forward declaration), plus three newly-discovered self-hosted JVM auto-FFI bugs found and fixed/worked-around while wiring it up
+
+**Status:** ACCEPTED
+
+**Context.** `lyric-session/src/_kernel/jvm/session_kernel.l` declared two
+`extern package` blocks (`lyric.session.RedisStore`, `lyric.session.InMemoryStore`)
+— the confirmed no-op FFI mechanism (D-progress-625/#5324) — and the package was
+never registered in `lyric.toml`'s `[project.packages]`, so it was never even
+compiled. `Session.Kernel.Net` (the `.NET` StackExchange.Redis kernel) *was*
+registered but gated on a bare `redis` feature with no `default` in
+`[features]`, so it was ALSO never compiled by any CI run (`lyric test
+--manifest lyric-session/lyric.toml` runs with no `--features` flag).
+
+**What shipped.**
+
+1. **`[maven]` table** added to `lyric-session/lyric.toml`:
+   `io.lettuce:lettuce-core = "6.8.2.RELEASE"` (latest 6.x; verified via
+   `lyric restore` against the real Maven Central metadata and a `javap`
+   inspection of the downloaded JAR — every Lettuce API used below was
+   checked against real bytecode, not documentation).
+2. **`session_kernel.l` (jvm) rewritten** from the dead `extern package`
+   forward declaration to real `extern type` + JVM auto-FFI bindings against
+   `io.lettuce.core.RedisClient` (static factory `.create(url)`),
+   `io.lettuce.core.api.StatefulRedisConnection` (`.connect()`/`.sync()`),
+   `io.lettuce.core.api.sync.RedisCommands` (`.get`/`.set`/`.setex`/`.del`/
+   `.expire`), and `io.lettuce.core.SetArgs` (`.new()`/`.keepttl()` for the
+   `save()` keep-TTL semantics matching the .NET kernel's
+   `StringSet(..., keepTtl: true)`). The dead `lyric.session.InMemoryStore`
+   block (never called — `session.l`'s `InProcessSessionStore` is already
+   pure Lyric and serves both targets with no kernel boundary) was deleted
+   rather than ported, matching the `lyric-feature-flags` `Flags.Registry`
+   precedent (D-progress-627 on `main`, not yet present on this branch's base).
+3. **`[features]`** changed from the vestigial `redis`/`inmemory` pair (the
+   `inmemory` feature gated nothing real) to `dotnet = []`, `jvm = []`,
+   **no default feature**. An initial version of this change set
+   `default = ["dotnet"]`, matching `lyric-auth`/`lyric-resilience`/
+   `lyric-storage`'s platform-feature convention on the surface — but
+   unlike those libraries' `dotnet` default (needs no external package:
+   pure Lyric + BCL), this library's `dotnet` kernel has a genuine
+   mandatory NuGet dependency (`StackExchange.Redis`). Defaulting it on
+   broke CI: `ecosystem-security-tests` (building `lyric-testing` ->
+   `lyric-mq` -> `lyric-session` as a workspace dependency, which does
+   not restore NuGet for transitive deps) and `stdlib-builds` (the
+   tier-1 ecosystem-library build loop, plain `lyric build --manifest
+   lyric-session/lyric.toml`, no restore) both crashed with `FFI extern
+   'StackExchange.Redis.ConnectionMultiplexer.Connect' ... cannot be
+   resolved to any indexed reference assembly`, since neither path had
+   run `lyric restore` first. Caught by CI on this same PR before merge;
+   fixed by removing the default so a bare `lyric build`/`lyric test`
+   (no explicit `--features`) only ever compiles the kernel-free
+   `Session` package — safe for any workspace-dependent consumer with no
+   prior restore — and updating `.github/workflows/ci.yml`'s dedicated
+   `lyric-session` test step to `lyric restore` then
+   `lyric test --features dotnet` explicitly, matching how the `jvm`
+   feature was already invoked (`--target jvm --no-default-features
+   --features jvm`). `Session.Kernel.Net`'s package-level gate moved
+   from `feature = "redis"` to `feature = "dotnet"`; `Session.Kernel.Jvm`
+   registered in `[project.packages]` for the first time, gated
+   `feature = "jvm"`.
+   `session.l`'s `NativeSessionStore` record, its `SessionStore` impl, and
+   `connectRedis()` are each duplicated into `@cfg(feature = "dotnet")` /
+   `@cfg(feature = "jvm")` pairs (the `auth.l` dispatch idiom), since the
+   `storeHandle` field's concrete type differs per kernel. The shared JSON
+   wire-format helpers (`jsonEscapeStr`/`serializeSessionJson`/
+   `parseSessionJson`) are left ungated — pure Lyric over `Std.Json`, which
+   already has a JVM kernel twin (`_kernel_jvm/json_host.l`), so they compile
+   identically on both targets.
+4. **Pre-existing `.NET`-kernel bug fixed as a side effect of #3**: making
+   `dotnet` the default feature meant `Session.Kernel.Net` now compiles on
+   every default `lyric test` run for the first time ever, which
+   immediately surfaced `error[T0070]`: every one of its six kernel
+   functions used the `func f(...): T = { try { ... } catch Bug as b { ...
+   } }` expression-body form, and the self-hosted type checker infers
+   `<error>` for a `try`/`catch` block's type specifically in that form
+   (confirmed with an 8-line minimal repro — a block-bodied `func f(...):
+   T { try { ... } catch ... }` with an otherwise-identical body
+   type-checks fine). Converted to block-body form (semantically
+   identical, and the form already used everywhere else in this file and
+   `session.l`) rather than chasing the type-checker bug itself — out of
+   scope for this change, but worth a follow-up issue since it silently
+   made `Session.Kernel.Net` a compile-time no-op since #1777 shipped it.
+5. **Three previously-undiscovered self-hosted JVM compiler bugs**, found
+   because Lettuce's core client types (`StatefulRedisConnection`,
+   `RedisCommands`) are the first case in the ecosystem of an `extern type`
+   bound directly to a JDK/Maven **interface** rather than a concrete class
+   (every existing `_kernel_jvm`/ecosystem kernel binds only concrete BCL
+   classes — `HashMap`, `File`, `MessageDigest`, etc.):
+   - **JVM auto-FFI never supported interface-typed extern types at all.**
+     `jvm/class_reader.l`'s `parseClass` unconditionally `return None`d for
+     any `ACC_INTERFACE` class file, so `loadClass()` on an interface
+     always failed, silently falling through to the legacy
+     `(args...)Object` `invokevirtual` guess — which the JVM verifier
+     rejects for an interface owner ("Found interface X, but class was
+     expected", JVMS §6.5 `invokevirtual`'s "must not be an interface"
+     rule). Fixed at the root: `ClassInfo` gained an `isInterface: Bool`
+     field (from `ACC_INTERFACE`, alongside the pre-existing `isAbstract`
+     from `ACC_ABSTRACT`; enums/annotations are still skipped), and
+     `jvm/codegen/04_calls.l`'s `lowerAutoFfiInstanceCall` emits
+     `LInvokeinterface` instead of `LInvokevirtual` when the resolved
+     owner is an interface — the auto-FFI/extern-type counterpart of the
+     existing `sig.isIface` dispatch fix for in-package `impl` methods
+     (#3687/"m-17b", `docs/44`). Separately, `RedisCommands` itself
+     declares almost none of its own methods (`get`/`set`/`setex`/`del`/
+     `expire` live on sibling interfaces it extends, e.g.
+     `RedisStringCommands`/`RedisKeyCommands`), so `auto_ffi.l`'s
+     `findBestInstanceMethod` — which only walked the single-parent
+     `superName` chain — gained a new recursive `scoreInterfacesRec` walk
+     over `ClassInfo.interfaces` (with a visited-set guard against diamond
+     re-scoring), invoked both for the receiver's own interface list and
+     for each class in the existing superclass walk. The emitted
+     `invokeinterface`'s owner still names the original receiver type
+     (not the interface that actually declared the method) — intentional
+     and correct per JVMS 5.4.3.4's own superinterface-search resolution
+     algorithm, so only the compile-time *lookup* needed the extra walk.
+     Verified with a from-scratch minimal repro (a JDK-free two-interface
+     hierarchy) before touching Lettuce, and the existing
+     `auto_ffi_jvm_self_test.l` (22 cases) / `iface_dispatch_jvm_self_test.l`
+     (3 cases) / `auto_ffi_self_test.l` (14 cases) / `bitwise_self_test.l` /
+     `generic_jvm_self_test.l` / `aspect_weave_self_test.l` self-tests all
+     still pass unchanged after the fix.
+   - **Java varargs methods** (`RedisKeyCommands.del(K...)`, bytecode
+     descriptor `([Ljava/lang/Object;)Ljava/lang/Long;`) have no
+     auto-wrapping at the bytecode level — javac's single-argument-to-array
+     sugar is source-level only. `scoreMethod` correctly rejects a bare
+     scalar argument against the array-typed parameter (no silent
+     mis-resolution), so this needed an application-level fix rather than
+     a compiler one: `session_kernel.l` (jvm) builds an explicit
+     `List[String]` + `.toArray()` for `del`'s single-key call. Documented
+     inline; not a compiler bug.
+   - **Cross-package qualified call inside an `impl` block, whose callee
+     name collides with the enclosing interface's own method name, gets
+     misrouted to intra-impl self-dispatch.** `NativeSessionStore.load()`
+     calling `SessionKernelJvm.load(self.storeHandle, sessionId)` (a
+     package-qualified call to an unrelated 2-arg static function) produced
+     a `VerifyError` ("Bad type on operand stack" — the `self.storeHandle`
+     field, checkcast to `String`, ends up on the stack where the `self`
+     receiver for a recursive `load(sessionId)`-shaped invokevirtual was
+     expected). Reproduced with a minimal two-package, JDK-free repro
+     independent of any Lettuce/Redis code, confirming it as a distinct,
+     general codegen defect — the compiler's own bare-intra-impl-call bug
+     (`m-4`/#1722 in `docs/44`, previously known only for *unqualified*
+     bare calls) apparently also mis-fires for a *qualified* cross-package
+     call when the name happens to match a sibling interface method. Not
+     fixed at the root (would need locating exactly where `Package.func(...)`
+     calls are lowered inside `impl` bodies and untangling the name-priority
+     logic — a different area of the codegen than the interface-dispatch fix
+     above, and higher-risk to patch blind without deeper familiarity).
+     Worked around by renaming the kernel's public functions so they no
+     longer collide with the `SessionStore` interface's method names
+     (`create`/`load`/`save`/`destroy`/`touch` → `kernelCreate`/`kernelLoad`/
+     `kernelSave`/`kernelDestroy`/`kernelTouch` in both `Session.Kernel.Net`
+     and `Session.Kernel.Jvm`, for symmetry, plus `session.l`'s call sites)
+     — a legitimate internal rename (both kernels are internal, documented
+     "only `Session` should import this"), and arguably better practice
+     regardless of the bug. Filed as a follow-up; #1722 is the closest
+     existing tracker but this qualified-call variant is a new symptom.
+   - Also fixed in `session.l` while getting the Redis path to actually run
+     end-to-end against a live server for the first time: `for k in
+     data.entries` (iterating a `Map[String, String]` directly) assumes the
+     Map's erased runtime representation is itself `Iterable`, which holds
+     for the `.NET` kernel's `Dictionary` but not the JVM kernel's raw
+     `java.util.HashMap` (`Class java.util.HashMap does not implement the
+     requested interface java.lang.Iterable` at runtime) — switched to
+     `mapKeys(data.entries)`, matching `_kernel_jvm/collections_host.l`'s
+     documented idiom. And `jsonEscapeStr` returned `Std.Json.encodeString`'s
+     result directly, which is a *complete* quoted JSON string literal on
+     both kernels (`_kernel/json_host.l` and `_kernel_jvm/json_host.l`'s
+     `hostEncodeString` both wrap in `"..."`) — but every call site also
+     added its own surrounding quotes, double-quoting every string field
+     (`"id":""abc""`) and making `parseSessionJson` fail to parse its own
+     output. Both bugs are pre-existing and platform-symmetric (not
+     JVM-only), just never exercised because the Redis-backed store had
+     never been run against a live server on either target before this.
+6. **`tests/session_redis_jvm_tests.l`** — new CRUD integration suite
+   (connectRedis/create/load/get/set/delete/clear/touch/destroy, 13 cases)
+   registered in `[project.tests]`. Not `@cfg`-gated (file-level `@cfg` is
+   not applied to `[project.tests]` sources — `cli_test.l` feeds each test
+   file straight to `TestSynth.synthesize` + `emitProject`, bypassing
+   `Cfg`/`CfgGate` entirely; confirmed with a throwaway always-false
+   `@cfg(feature = "impossible")` test file that still ran), so it
+   transparently exercises whichever backend (`Session.Kernel.Net` or
+   `Session.Kernel.Jvm`) is active for the current build. Every case
+   no-ops when `LYRIC_CONFIG_SESSION_REDISSESSION_URL` is unset, so the
+   default `lyric test` run (no live Redis) stays green — the existing
+   31-test baseline (`SessionFixationTests`/`SessionStoreTests`/
+   `SensitiveUrlTests`) is unaffected either way.
+7. **Verified against a real local Redis 7.0.15 server** (`redis-server`,
+   available in this sandbox): all 13 cases pass on `--target jvm
+   --no-default-features --features jvm` via real Lettuce calls (`lyric
+   restore` resolving the real Maven artifact, then `lyric test` directly
+   — see item 8 for the classpath-injection fix that made this possible
+   without a manual `java -cp` step). All 13 also pass on `--target
+   dotnet --features dotnet` when no Redis URL is configured (skip path);
+   with a live Redis and the StackExchange.Redis-format URL, 4/13 pass
+   and 9/13 hit an unrelated, independently-reproduced pre-existing MSIL
+   bug (item 9).
+8. **Originally found as a pre-existing gap (`lyric test --target jvm`
+   never wired the `[maven]`-restored classpath at *run* time) and fixed
+   in the same PR by `lyric-aws-xray`'s integration.** `lyric build
+   --target jvm` correctly read `target/restore/jvm-classpath.txt` and
+   injected `LYRIC_FFI_JARS` for auto-FFI resolution at *compile* time
+   (`cli_build.l`), but `cli_test.l` exec'd the produced JAR as a bare
+   `java -jar` with no `-cp`/`--module-path` for the same restored
+   dependencies, so a Maven-dependent JVM test JAR, correctly compiled,
+   still threw `ClassNotFoundException` at *run* time. Originally worked
+   around here (in this entry's initial version) by manually exporting
+   `LYRIC_FFI_JARS` and running the compiled test JAR directly via `java
+   -cp` — now fixed at the root by `cli_test.l`'s
+   `injectMavenClasspathForJvm`/`java -cp <maven-jars>:<jar> <MainClass>`
+   change (see the `lyric-aws-xray` decision-log entry, integrated into
+   this same PR), re-verified here:
+   `lyric-session/tests/session_redis_jvm_tests.l`'s 13 cases now pass via
+   a direct `lyric test --manifest lyric-session/lyric.toml --target jvm
+   --no-default-features --features jvm` with no manual classpath
+   assembly. Not specific to `lyric-session`; the fix benefits every
+   `[maven]`-declared ecosystem library's `lyric test --target jvm`.
+9. **Confirmed pre-existing, independently-reproduced bug (not fixed,
+   out of scope): MSIL cross-package `System.Nullable\`1[T]` value type
+   fails to load when 3+ packages are bundled via `lyric test`.**
+   `Could not load type 'System.Nullable\`1' ... due to value type
+   mismatch` when `Session.Kernel.Net`'s `create()`/`touch()` (which use
+   `extern type NullableTimeSpan = "System.Nullable\`1[System.TimeSpan]"`)
+   are exercised via the new test file's 3-package bundle
+   (test + `Session` + `Session.Kernel.Net`). Reproduced with a minimal,
+   completely unrelated 3-package/1-test repro (package A declares the
+   `Nullable\`1[TimeSpan]` extern type and two functions using it; package
+   B calls both; a `@test_module` in a third package calls B) — same
+   crash, confirming it is a general `lyric test` multi-package MSIL
+   bundling defect with no dependency on Redis or session code. This is
+   why the .NET-target `SessionRedisJvmTests` (item 5/7) can only get 4/13
+   passing with a live server today, despite `Session.Kernel.Net`'s Redis
+   logic itself being correct (`connectRedis`/`load`/`set`
+   (`SESSION_NOT_FOUND` path)/`destroy` all pass — every failure is
+   specifically a case that reaches `create()` or `touch()`).
+
+10. **Newly-found while running the full `lyric test --manifest
+    lyric-session/lyric.toml --target jvm` suite (not just the new Redis
+    test file) as part of integrating this work: `InProcessSessionStore`
+    — `Session.inMemory()`, entirely unrelated to the Redis kernel work
+    above — is broken on JVM.** `SessionFixationTests` (1/5 fail) and
+    `SessionStoreTests` (8/15 fail) both crash with `class
+    Session.SessionData cannot be cast to class java.lang.Long` the
+    moment a session actually stores data (`create()` alone passes;
+    `set()`/`get()`/`load()` after a real write crash). `--target
+    dotnet` passes both files unchanged. This looks like the same
+    erased-generic-confusion family as #5439/#5442/#5444 (found
+    integrating `lyric-i18n` and `lyric-web` in the same PR) — here a
+    `Map[String, SessionData]` read appears to resolve against an
+    unrelated `Map[String, Long]` instantiation elsewhere in the same
+    JVM bundle. Filed as #5451 (not fixed here — a deep JVM erasure
+    defect, out of scope for a library-level change). `README.md`'s
+    platform-parity table is corrected: the Redis-backed
+    `NativeSessionStore` is genuinely available and verified on JVM;
+    `InProcessSessionStore` is NOT currently usable on JVM.
+
+**Files changed:** `lyric-session/lyric.toml`,
+`lyric-session/src/_kernel/net/session_kernel.l`,
+`lyric-session/src/_kernel/jvm/session_kernel.l`, `lyric-session/src/session.l`,
+`lyric-session/tests/session_redis_jvm_tests.l` (new),
+`lyric-session/README.md`; `lyric-compiler/jvm/class_reader.l`,
+`lyric-compiler/jvm/auto_ffi.l`, `lyric-compiler/jvm/codegen/04_calls.l`.
+
+**Related:** #1722 (m-4, bare intra-impl calls — this entry's item 5's
+qualified-call variant is a new symptom of the same family), #3687/"m-17b"
+(the in-package `impl`-dispatch analog of this entry's interface-auto-FFI
+fix), D-progress-625 (`extern package` no-op precedent), D-progress-627 on
+`main` (`Flags.Registry` in-memory-store deletion precedent, not yet
+present on this branch's base commit), #5439, #5442, #5444, #5451 (the
+erased-generic-confusion family this entry's item 10 adds a fifth
+instance to).
+
+
+---
+## D-progress-632 — `lyric-aws-xray`: `aws`/`jvm` migrated off `extern package` onto `extern type` + auto-FFI against the real AWS X-Ray SDKs; JVM auto-FFI interface dispatch (adopted from D-progress-631), `lyric test --target jvm` Maven classpath, and a wrong NuGet package ID fixed as prerequisites; 2 new pre-existing MSIL auto-FFI gaps found and documented (1 filed as #5452, its `lyric-session` risk checked and ruled out), JVM `Tracing` aspect blocked on a pre-existing weaver bug (not fixed here)
+
+**Status:** ACCEPTED (bindings shipped and verified on all 3 features); 2 newly-discovered MSIL gaps and 1 pre-existing JVM weaver gap deliberately NOT fixed here (see below)
+
+**Context.** `lyric-aws-xray/src/xray.l`'s `aws` (.NET) and `jvm` feature
+blocks were each a hand-written `extern package` — a confirmed permanent
+no-op in both the type checker and both codegens (`docs/03` recent
+`extern package` entries; issue #5324) — so both features compiled but
+`currentSubsegment`/`annotate`/`metadata`/the `Tracing` aspect silently did
+nothing at runtime on either target. Only `local` (an intentional no-op) was
+real. A separate `src/_kernel/xray_kernel_{local,jvm,aws}.l` trio was
+orphaned dead code (never registered in `lyric.toml`, never imported) and is
+left in place per the "don't delete, roll forward" policy — it was not
+touched.
+
+**What shipped in `xray.l`.**
+
+- **`SubsegmentHandle`** is now three separate `@cfg`-gated declarations
+  (only one survives erasure per build) instead of one shared zero-field
+  opaque record: `local` keeps the opaque no-op record; `aws` aliases
+  directly to `Amazon.XRay.Recorder.Core.Internal.Entities.Entity` (the
+  `.Internal` namespace segment is real, confirmed via `System.Reflection`
+  against the actual NuGet package — the type itself is public); `jvm`
+  aliases directly to `com.amazonaws.xray.entities.Entity` (the interface,
+  not the narrower `Subsegment`, because `putAnnotation`/`putMetadata` are
+  declared on `Entity` itself and every real producer — `beginSubsegment`,
+  `getCurrentSubsegment`, `DummySubsegment` — is a `Subsegment`, which
+  extends `Entity`, a safe upcast). This mirrors the `Std.ProcessHost
+  .ProcessHandle = "java.lang.Process"` no-wrapper-record precedent
+  (D-progress-625's `process_host.l`).
+- **`aws`:** `AWSXRayRecorder.Instance` (static property) plus
+  `BeginSubsegment`/`EndSubsegment`/`AddAnnotation`/`AddMetadata`/
+  `GetEntity`/`IsEntityPresent` (all instance) as `@externTarget` wrappers.
+  The .NET SDK is ambient/thread-local (unlike Java): these calls act on the
+  recorder's *current* entity, not an explicit handle — the `handle`
+  parameters `annotate`/`metadata`/`endSubsegment` accept are unused on this
+  backend, which is correct because `beginSubsegment`/`endSubsegment` pairs
+  always run on the same call stack. `AWSXRayRecorder.GetEntity()` is the
+  one call that throws (not log-and-continue) when no segment/subsegment is
+  active — verified directly by invoking the real SDK via
+  `System.Reflection` outside this compiler entirely — so `awsSafeEntity`
+  guards it with `IsEntityPresent()` first and falls back to `default()` (a
+  null `Entity`), which is safe specifically because nothing on this
+  backend ever dereferences the handle value.
+- **`jvm`:** `AWSXRay.getGlobalRecorder()` (static) plus
+  `AWSXRayRecorder.beginSubsegment`/`endSubsegment` and
+  `Entity.putAnnotation`/`putMetadata` as bare auto-FFI dot-calls (the
+  Java SDK returns the real subsegment object from `beginSubsegment`, so
+  `annotate`/`metadata` call directly on the handle rather than through the
+  recorder). `getCurrentSubsegment()`'s nullable return falls back to a real
+  SDK `DummySubsegment` (constructed via `.new(recorder)`) on `null`,
+  mirroring the Java SDK's own designed-for-this-purpose no-op entity type.
+- **New public API:** `AwsXRay.beginSubsegment(name): SubsegmentHandle` /
+  `AwsXRay.endSubsegment(handle): Unit`, exposing the same manual lifecycle
+  the `Tracing` aspect's `around` advice already ran internally. Added
+  because `tests/xray_tests.l` needed a way to exercise the real begin →
+  annotate/metadata → end sequence without depending on the aspect weaver
+  (see the JVM weaver gap below), and because it is a genuinely useful
+  capability this library previously had no public entry point for.
+
+**Three prerequisite fixes, all required to get `xray.l` compiling and
+running for real (none aws-xray-specific — each is a general compiler/CLI
+gap that happened to block this task first):**
+
+1. **JVM auto-FFI never resolved interface types at all** (not
+   `jvm`-instance-dispatch-specific — a class-file-parsing gap).
+   `Jvm.ClassReader.parseClass` unconditionally returned `None` for any
+   `ACC_INTERFACE` class file (`lyric-compiler/jvm/class_reader.l`), so an
+   `extern type` naming a Java interface (`com.amazonaws.xray.entities
+   .Entity`) failed to load at all — independently discovered here at
+   essentially the same time as `lyric-session`'s Lettuce Redis kernel
+   work hit the identical gap (`io.lettuce.core.api.sync.RedisCommands`,
+   also interface-typed). The version that landed is `lyric-session`'s
+   (D-progress-631): it adds the same `ClassInfo.isInterface` field and
+   `invokeinterface`-vs-`invokevirtual` selection this entry's own draft
+   fix did, plus a superset this entry's narrower fix didn't need —
+   `Jvm.AutoFfi.findBestInstanceMethod`'s recursive superinterface walk
+   (`scoreInterfacesRec`), required because Lettuce's `RedisCommands`
+   declares almost none of its own methods (they live on sibling
+   interfaces it extends), unlike X-Ray's `Entity`/`Subsegment` which
+   declare `putAnnotation`/`putMetadata` directly. Verified with no
+   regressions against the adopted fix: the full `auto_ffi_jvm_self_test.l`
+   (22 cases), `iface_dispatch_jvm_self_test.l` (3 cases),
+   `bitwise_self_test.l`, and `aspect_weave_self_test.l` on `--target jvm`
+   all still pass, and `xray_tests.l`'s 4 cases pass on `--features jvm`
+   against the real X-Ray Java SDK.
+2. **`lyric test --target jvm` never resolved `[maven]` dependencies at
+   all** for manifest (multi-package) test suites — `cli_build.l`'s
+   `injectMavenClasspathForJvm` (compile-time `LYRIC_FFI_JARS` injection)
+   was never called from `cli_test.l`'s `cmdTestManifest`, and even with
+   `LYRIC_FFI_JARS` set manually the compiled JAR was run as `java -jar
+   <jar>` unconditionally — Maven-resolved third-party classes are never
+   copied into the bundled JAR (`module-path.txt`, written by `cli_build.l`
+   for exactly this reason, documents the same constraint for `lyric
+   build`), so `-jar` alone can never find them regardless of compile-time
+   resolution. Fixed: `cmdTestManifest` now calls
+   `injectMavenClasspathForJvm` before compiling (restored via `defer`),
+   and runs with `java -cp "<mavenClasspath>:<jar>" <MainClass>` instead of
+   `-jar` when a non-empty Maven classpath was resolved (`<MainClass>` is
+   the manifest's `[project.tests]` key, matching `Jvm.Bridge`'s Main-Class
+   derivation from the dotted package declaration). Verified: 34/34 on
+   `lyric-storage` (`--target jvm`, no `[maven]` — confirms the `-jar`
+   fallback path is unaffected) and 11/11 on `lyric-session` (`--target
+   dotnet` — confirms the dotnet path is untouched).
+3. **`lyric-aws-xray/lyric.toml`'s `[nuget]` entry named the wrong package
+   ID.** `"Amazon.XRay.Recorder.Core"` is the .NET *namespace*, not the
+   NuGet package ID (`AWSXRayRecorder.Core`) — confirmed via the live
+   NuGet.org search API (`amazon.xray.recorder.core` 404s;
+   `awsxrayrecorder.core` is the real package, version 2.14.0 exists).
+   `lyric restore` silently reported `NU1101` for the wrong name; nothing
+   in the existing test suite exercised a real restore, so this had never
+   been caught. Fixed the manifest entry.
+
+**Two newly-discovered MSIL auto-FFI gaps, deliberately NOT fixed here**
+(both are general `Msil.Codegen`/`Msil.Ffi` limitations well outside this
+task's scope; worked around in `xray.l` itself, documented inline there):
+
+- **A Lyric `extern type` alias for a closed-generic value type (e.g.
+  `"System.Nullable\`1[System.DateTime]"`) has no flat TypeRef identity and
+  silently erases to `object`** in `typeExprToMsilCtx`, producing a
+  MemberRef that doesn't bind to the real `Nullable<T>`-typed BCL parameter
+  (`MissingMethodException` at runtime, not a build-time diagnostic).
+  Metadata-resolved `Nullable<T>` params/returns built from a real BCL
+  signature during `@externTarget`'s trailing-optional-parameter auto-fill
+  do *not* have this problem (they route through `resolvedSigToMsil`,
+  which correctly builds `MValueTypeGenericInst`) — `xray.l` avoids the bug
+  entirely by never declaring a `Nullable<T>` extern type itself, leaving
+  every `DateTime?` parameter unsupplied for the compiler to auto-fill.
+- **Neither the `@externTarget` metadata resolver
+  (`Mdr.resolveExternMethodScored`/`resolveExternMethodScoredIn`) nor the
+  bare-dot-call auto-FFI resolver (`Mdr.resolveExtern`/`resolveOverloadIn`)
+  walks a BCL type's superclass chain.** A member inherited from a base
+  class (not literally declared on the exact TypeDef the `@externTarget`
+  names) with a non-trivial parameter list — anything beyond zero
+  parameters, where there is nothing for a wrong fallback encoding to get
+  wrong — silently falls back to the Lyric-declared (possibly wrong: e.g.
+  `string` where the BCL takes `object`) signature instead of failing
+  loudly, producing a `MissingMethodException` at runtime rather than a
+  build-time diagnostic. Confirmed with `AWSXRayRecorder.AddAnnotation`/
+  `AddMetadata` (declared on the base class `AWSXRayRecorderImpl`, not on
+  `AWSXRayRecorder`): resolution only succeeded once the `@externTarget`
+  target string named `AWSXRayRecorderImpl` directly.  `GetEntity`/
+  `IsEntityPresent` (same base-class situation, zero parameters) worked
+  regardless, which is what makes this gap easy to miss. Filed as #5452.
+  This raised a suspected risk for `lyric-session/src/_kernel/net
+  /session_kernel.l`, integrated into this same PR (D-progress-631):
+  `getDatabase`/`strSetCreate`/`strSetKeepTtl`/`strGet`/`keyDel`/
+  `keyExpire`/`redisValueIsNull`/`redisValueToString` are ALL declared
+  without `@externStatic`/`@externInstance` against `StackExchange.Redis`
+  interface members (`IDatabase`/`RedisValue`) with multi-parameter
+  signatures — the same shape that silently mis-emitted here. **Checked
+  directly against a real local Redis server** (`redis-server`,
+  `LYRIC_CONFIG_SESSION_REDISSESSION_URL="redis://127.0.0.1:6379,
+  abortConnect=false"`, `--features dotnet`): `connectRedis()`,
+  `load()` for an unknown id, `set()` on an unknown id, and `destroy()`
+  on an absent id all completed real `IDatabase`/`RedisValue` round
+  trips with no `MissingMethodException` — the risk did not materialize
+  for this specific interface (`getDatabase`/`strGet`/`keyDel` etc. must
+  each be declared directly on `IDatabase` itself, not inherited from a
+  base type, unlike `AWSXRayRecorderImpl`). The remaining 9/13 cases
+  failed on the already-known, unrelated `System.Nullable\`1` bug
+  (D-progress-631 item 9), exactly as that entry documents. No follow-up
+  needed for `lyric-session` specifically; #5452 remains open as the
+  general `Msil.Ffi` gap for any future `@externTarget` binding an
+  inherited BCL member with a non-trivial signature.
+
+**One pre-existing JVM weaver gap, deliberately NOT fixed here:**
+`AwsXRay.Tracing` is a `pub aspect` without `@inline_template`, so any
+cross-package `aspect X from AwsXRay.Tracing { ... }` instantiation is
+B'-mode (docs/55). B'-mode's JVM call-context codegen throws
+`NoSuchMethodError` on the synthesised `__LyricBModeCallContext` at runtime
+— reproduced with a minimal single-matched-function case, confirmed absent
+on `--target dotnet` (MSIL handles the identical cross-package B'-mode
+shape correctly) and confirmed pre-existing:
+`aspect_weave_self_test.l` — the only existing runtime coverage for
+B'-mode aspect weaving on JVM — exercises only same-package, non-`from`
+aspects, and its own header note already flags "the multi-file scenario
+where a consumer package imports a library template" as untested (tracked
+separately as #3498 per docs/26's changelog). `tests/xray_tests.l` works
+around this by testing the real `beginSubsegment`/`annotate`/`metadata`/
+`endSubsegment` SDK calls directly instead of through the aspect — the
+`Tracing` aspect itself is unaffected on `local`/`aws` and works correctly
+there; only cross-package instantiation on `--target jvm` is blocked.
+README's platform-parity table documents this precisely.
+
+**Verified:** `lyric-aws-xray`'s full `tests/xray_tests.l` suite (4 cases)
+passes on all three features: `--features local` (default target),
+`--features aws --target dotnet`, and `--features jvm --target jvm` (via
+`lyric restore` + `make maven-resolver` + `LYRIC_MAVEN_RESOLVER`). All four
+cases exercise the real SDK: package import, `currentSubsegment`/
+`annotate`/`metadata` with no active context (the `awsSafeEntity`/
+`DummySubsegment` fallback paths), and the full `beginSubsegment` →
+`currentSubsegment`/`annotate`/`metadata` → `endSubsegment` lifecycle on
+both the happy path and the error-annotation path. `lyric fmt --write` run
+on every changed `.l` file.
+
+**Related:** #5452 (the `@externInstance`-required MSIL gap this entry
+found), #3498 (pre-existing JVM B'-mode cross-package weaver gap,
+already tracked), #5324 (`extern package` no-op), D-progress-631
+(`lyric-session`'s Lettuce kernel — the JVM interface auto-FFI fix that
+landed, and the `Session.Kernel.Net` risk this entry raised and
+verified against).
+
+---
+
+## D-progress-633 — `lyric-jobs`: real Quartz JVM kernel; `Class-Path:` manifest embedding for `lyric run`/`lyric test --target jvm`; `List[T].removeAt` JVM support; two new record-constructor/erased-generics JVM bugs found
+
+**Status:** ACCEPTED (`Jobs.Kernel.Jvm` + 3 compiler fixes); 2 newly-found
+JVM backend bugs deliberately NOT fixed here (see below).
+
+**Context.** `Jobs.Kernel.Jvm`'s Quartz binding predated this PR as dead
+scaffolding: an `extern package`-based forward declaration (confirmed
+permanent no-op, D-progress-625/#5324), never registered as a real
+working backend. `InProcessJobScheduler` (pure Lyric, no kernel) was the
+only genuinely functional scheduler.
+
+**What shipped.**
+
+- `lyric-jobs/src/_kernel/jvm/jobs_kernel.l`: real `org.quartz-scheduler
+  :quartz`/`quartz-jobs` bindings via `extern type` + JVM auto-FFI —
+  `SchedulerFactory`/`Scheduler`/`JobDetail`/`Trigger`/`CronTrigger`
+  wired to schedule, run, poll, cancel, and report errors for real jobs
+  executed on Quartz's own thread pool. Bound to Quartz's public
+  `org.quartz.impl.StdScheduler` facade class rather than the
+  `Scheduler` interface it implements (a deliberate workaround for the
+  interface-auto-FFI gap — see below — that predates and is independent
+  of that gap's actual fix; both now work, and the facade binding was
+  left as-is rather than switched).
+- **Two new JVM backend bugs found, one fixed, one filed:**
+  - **Fixed directly** (`lyric-compiler/jvm/codegen/04_calls.l`):
+    `List[T].removeAt(index: Int): Unit` had no JDK translation at all
+    — Lyric's `List` maps to `java.util.ArrayList`, whose index-based
+    removal is `remove(int)`, but `ArrayList` also overloads
+    `remove(Object)` for value-based removal, so the emitted call must
+    force the argument through as a raw (unboxed) `int` to select the
+    correct overload rather than autoboxing into the wrong one. First
+    hit by `InProcessJobScheduler.cancel`'s `self.queue.removeAt(i)` —
+    blocked compiling `Jobs` for JVM at all before this fix.
+  - **Filed as #5457, not fixed** (general record-constructor codegen
+    gap): a `var …: Bool` field declared immediately adjacent to a
+    `Long` field, or a defaulted field (`= default()`) ahead of a
+    `Long`/trailing-reference field, miscompiles the record constructor
+    (`VerifyError: Bad type on operand stack` — a local-slot width bug,
+    reproduced independently of `lyric-jobs` in a minimal record with
+    the same field shape). Worked around in `JobRecord` by field
+    reordering (both `Long` fields declared before the `Bool` field)
+    and supplying every field explicitly at every construction site (no
+    `= default()` anywhere).
+  - The interface-auto-FFI gap this kernel's `StdScheduler`-facade
+    workaround predates (`ClassInfo`/`ACC_INTERFACE` skipped entirely,
+    causing `invokevirtual`-against-interface `VerifyError`s) was
+    independently found and fixed by `lyric-session`'s Lettuce Redis
+    kernel work in this same PR (D-progress-631) — not re-fixed here.
+- **`Class-Path:` JAR manifest embedding**
+  (`lyric-compiler/jvm/{bridge,driver,manifest}.l`): `PackageMeta`
+  gained a `classpathJars: List[String]` field (populated from
+  `autoFfi.jarPaths`, itself `LYRIC_FFI_JARS` — a restored project's
+  `target/restore/jvm-classpath.txt`), embedded as a JAR manifest
+  `Class-Path:` attribute (wrapped to the JAR spec's 72-byte
+  continuation-line limit) whenever a package has Maven dependencies.
+  Fixes `lyric run --target jvm` (which execs a bare `java -jar` and,
+  before this, could never see `[maven]`-restored classes at runtime —
+  a gap `lyric-session`'s D-progress-631 entry documented as still open
+  for `lyric run` specifically after its own `lyric test`-only fix) and
+  complements `cli_test.l`'s independently-landed `java -cp` injection
+  for `lyric test --target jvm` (D-progress-632). **A bug in this
+  change's own line-wrapping logic** (`wrapManifestLine`'s continuation
+  branch called `remaining.substring(limit, remaining.length)` — passing
+  the *original* remaining length as the substring's `count` parameter
+  instead of `remaining.length - limit`, always requesting more
+  characters than actually remained) crashed `System.String.Substring`
+  with `ArgumentOutOfRangeException` for any classpath long enough to
+  need wrapping (7+ Maven JARs, first hit integrating `lyric-ws`'s
+  Undertow + transitive dependency set into this same PR). Fixed as part
+  of this integration; the `removeAt` fix's own shorter classpath (2
+  Quartz JARs) never exercised the wrapping branch, so this was a
+  latent bug in the originally-landed code, not a new regression.
+
+**Verification.** `./bin/lyric test --manifest lyric-jobs/lyric.toml`:
+`--target dotnet` (default features) 17/17 pass, no regression.
+`--target jvm --no-default-features --features jvm,inprocess`: 10/17
+pass — the real Quartz end-to-end case (schedule/run/poll/cancel/error)
+passes cleanly; the 7 failures are `InProcessJobScheduler`/`JobResult`
+cases hitting a newly-found, separate erased-generics bug (`List[JobSpec]`
+confused with an unrelated `Integer`-typed value elsewhere in the JVM
+bundle — filed as #5456, same family as #5439/#5442/#5444/#5451, not
+caused by or specific to the Quartz kernel work above).
+`lyric-jobs/README.md`'s platform-parity table corrected: `dotnet`
+`InProcessJobScheduler` remains Available; `jvm` `InProcessJobScheduler`
+is now honestly marked Broken (#5456) rather than the prior blanket
+Available claim.
+
+**Related:** #5324, #5456, #5457, D-progress-631 (the interface-auto-FFI
+fix this kernel's workaround predates), D-progress-632 (`lyric test
+--target jvm` Maven classpath — the `cli_test.l` half of the same
+run-time classpath problem this entry's `Class-Path:` manifest work
+complements).
+
+---
+
+## D-progress-634 — `lyric-ws`: real Undertow JVM WebSocket kernel; workspace dependencies now inherit the consumer's `--features`/`--target` selection (general compiler fix); three more JVM backend gaps found and precisely diagnosed, not fixed
+
+**Status:** ACCEPTED (`Ws.Kernel.Jvm` + compiler fixes); 3 newly-discovered
+JVM backend bugs filed via this entry and deliberately NOT fixed here —
+each precisely diagnosed and worked around in the file/comment nearest
+its symptom.
+
+**Context.** `lyric-ws/src/_kernel/jvm/ws_kernel.l` declared `extern
+package` FFI blocks (a confirmed no-op mechanism) for a fake Int-handle
+Undertow WebSocket server; `Ws.Kernel.Jvm` was registered in
+`lyric-ws/lyric.toml`'s `[project.packages]` (so it compiled) but
+`ws.l` never imported it, so the JVM feature was unreachable. No
+`[maven]` table existed for `io.undertow:undertow-core`.
+
+**What shipped.**
+
+- `lyric-ws/lyric.toml`: added a `[maven]` table for
+  `io.undertow:undertow-core` (same version as `lyric-web`'s Undertow
+  HTTP kernel, `2.3.13.Final`).
+- `lyric-ws/src/_kernel/jvm/ws_kernel.l`: full rewrite off `extern
+  package` onto `extern type` + auto-FFI against real
+  `io.undertow.*`/`org.xnio.*`/JDK classes. `WebSocketConnectionCallback`
+  and the receive/close listeners (`org.xnio.ChannelListener`) are real
+  Lyric records implementing the real JDK interfaces via `impl
+  <ExternInterface> for Record`. `startServer`/`stopServer` start and
+  stop a genuine `io.undertow.Undertow` server upgrading a configurable
+  path to WebSocket; `send`/`broadcast`/`close` dispatch real frames via
+  `io.undertow.websockets.core.WebSockets`'s blocking send methods;
+  `connectionCount`/`isConnected` query a real per-registry
+  `ConcurrentHashMap<String, WebSocketChannel>`. Documented, non-silent
+  gaps: fragmented (multi-frame) messages are drained but not
+  reassembled; ping-interval keepalives are not scheduled; text decoding
+  is lenient UTF-8 (see #5453 below).
+- `lyric-ws/src/ws.l`: added a `kernelXxx` `@cfg(feature =
+  "dotnet"/"jvm")`-paired dispatch layer (mirrors `Auth`'s
+  `Auth.Kernel.Net`/`Auth.Kernel.Jvm` split) so every existing kernel
+  call site now selects the right backend; added new public API
+  `startServer`/`startServerWithConfig`/`stopServer` (the library
+  previously had no way to actually bind a `WsHandler` to a running
+  server on either target). `Ws.Kernel.Net` grew matching
+  `startServer`/`stopServer` stubs returning `Err(code =
+  "NOT_IMPLEMENTED")` — the real ASP.NET Core WebSocket upgrade path
+  stays deferred to #778, now with the same public surface on both
+  targets.
+- **`impl <ExternInterface> for Record` JVM support** (three
+  compiler bugs in `constraintRefToJvmClass`/`holderAwareParamTypes`/
+  `lowerImplMethod`) — independently discovered here at essentially the
+  same time as `lyric-session`'s Lettuce Redis kernel work
+  (D-progress-631) hit the identical class of gap. The version that
+  landed is `lyric-session`'s: the same `ClassInfo.isInterface`
+  field and `invokeinterface`-vs-`invokevirtual` selection this entry's
+  own draft fix also had, plus a superset this entry's narrower fix
+  didn't need (recursive superinterface walk, required for Lettuce's
+  deeper interface hierarchy but not for Undertow's flatter one).
+  Verified against the adopted fix: `ffi_iface_impl_jvm_self_test.l`
+  (2/2), `auto_ffi_jvm_self_test.l` (22/22), and `lyric-ws`'s own
+  `impl JHttpHandler`-shaped Undertow bindings all compile and dispatch
+  correctly on `--target jvm`.
+- **Workspace dependencies now inherit the consumer's resolved feature
+  set** (`lyric-compiler/lyric/cli/{workspace_builder,cli_build}.l`,
+  `cli_workspace_builder_self_test.l`): `{ workspace = true }`
+  dependencies always built with their *own* manifest's default
+  features, never the consumer's `--features`/`--no-default-features`
+  selection — `buildWorkspaceDep`'s recursive `buildProject` call
+  hardcoded `newList()` (no CLI features) and `false` (use defaults). A
+  `--target jvm --features jvm --no-default-features` consumer build of
+  `lyric-ws` therefore built its `Lyric.Auth` workspace dependency with
+  `default = ["dotnet"]` active — compiling `Auth`'s `@cfg(feature =
+  "dotnet")` branches into JVM bytecode and erasing the `@cfg(feature =
+  "jvm")` ones, so `lyric-auth` (a `lyric-ws` dependency) could never
+  actually build for JVM. Fixed by threading the consumer's
+  already-resolved `activeFeatures` through `resolveManifestDependencies`
+  -> `buildWorkspaceDeps` -> `buildWorkspaceDep`, forcing it verbatim
+  (`noDefaultFeatures = true`) onto every workspace dependency's build.
+  Confirmed both via `lyric-ws --target jvm --features jvm` and a
+  minimal two-package isolated repro before landing. General compiler
+  fix, not specific to `lyric-ws`/`lyric-auth` — benefits any workspace
+  dependency whose behavior varies by feature.
+- `cli_test.l`'s Maven-classpath-for-`lyric test` injection (needed to
+  actually run the new `Ws.Kernel.Jvm`-exercising test suite on
+  `--target jvm`) was independently discovered here too, at essentially
+  the same time as `lyric-aws-xray`'s integration (D-progress-632). The
+  version that landed is `lyric-aws-xray`'s (already integrated into
+  this PR); this entry's own near-identical draft (differing only in
+  classpath-vs-jar ordering) was not re-applied.
+
+**Three newly-found, precisely-diagnosed JVM backend gaps, deliberately
+NOT fixed here (each general, not `lyric-ws`-specific — filed with full
+repros):**
+
+- **#5453** — `Std.Encoding`'s pure-Lyric byte-indexing helpers
+  (`tryDecodeUtf8`, `encodeBase64`, `tryDecodeBase64`, `encodeHex`,
+  `tryDecodeHex`) fail to compile on `--target jvm` at all: indexing a
+  `slice[Byte]` yields the JVM-erased `Object` element type, so a
+  subsequent `.toInt()` on the element fails to resolve. Systemic —
+  breaks `Std.Encoding` entirely on JVM. Both `lyric-ws` and
+  `lyric-auth` (see D-progress-631's `decodeBase64Utf8`-style
+  workaround, independently arrived at here too for `Ws.Kernel.Jvm`)
+  route around it with direct `java.util.Base64`/`java.lang.String
+  (byte[], String)` calls, accepting a lenient-UTF-8 trade-off.
+- **#5454** — a `val x: slice[Byte] = <externCall returning byte[]>`
+  local declared directly inside a loop body (or, less reliably, in
+  some larger straight-line functions) triggers a JVM `VerifyError`
+  ("[B is not assignable to [Ljava/lang/Object;") — a stack-map-merge
+  conflict between the concrete `[B` an extern call actually returns
+  and the generic `Object[]` slice ABI a different code path expects
+  for the same declared type. `Ws.Kernel.Jvm`'s own frame-reading
+  functions were written defensively (the `slice[Byte]` local lives in
+  its own non-looping function) and never hit this;
+  `ws_jvm_e2e_test.l`'s `pollForTextFrame` needed the same treatment
+  plus inlining the local away entirely to avoid it.
+- **#5455** — cross-package `impl` of a *native* (non-extern) Lyric
+  interface, where an interface method's reference-typed parameter or
+  return is a record/union declared in a *third* package, emits a wrong
+  class reference (`NoClassDefFoundError` at runtime). Confirmed
+  specific to `impl`-method signatures (`Ws.WsTests`'s ordinary
+  cross-package union *matching* works fine on JVM). Needs a
+  cross-package type-declaration lookup threaded through the JVM
+  codegen's type resolution, comparable in shape to `externTypes` but
+  covering every bundled package's own declarations — a real feature,
+  not a small fix. `tests/ws_jvm_e2e_test.l` is written, real, and
+  documents this fully in its header; deliberately not registered in
+  `[project.tests]` until the gap is fixed.
+
+**Verification.** `lyric-ws`'s registered `[project.tests]` suite
+(`Ws.WsTests`, `Ws.WsSecurityAspectWeavingTests`) is 12/12 green on
+`--target dotnet` (no regression). On `--target jvm --features jvm`
+(never previously reachable, since `Ws.Kernel.Jvm` was unregistered from
+`ws.l`'s imports): `Ws.WsTests` is 4/6 (the 2 failures are a
+pre-existing, separately-tracked nullary-union-case JVM matching gap,
+`WsCloseCode.GoingAway`/`ProtocolError`, unrelated to this work and not
+investigated further here); `Ws.WsSecurityAspectWeavingTests` is 0/6
+(the pre-existing B′-mode aspect-weaver JVM codegen gap already seen in
+`lyric-auth`/`lyric-web`/`lyric-feature-flags` this same PR —
+`__LyricBModeCallContext` not found at runtime — exercising
+`Ws.Aspects`, not `Ws.Kernel.Jvm`; also not investigated further here).
+Both are newly-*exposed* by making the JVM feature reachable for the
+first time, not regressions introduced by this change.
+`ffi_iface_impl_jvm_self_test.l` (the adopted compiler fix's own
+regression test) is 2/2 green on `--target jvm`.
+
+**Formatting note:** `lyric-ws/src/ws.l` could not be run through
+`lyric fmt --write` — it refuses with "formatting would change the
+code-token sequence" for this file's `{ (a: T, b: T) -> ... }`
+multi-parameter, block-bodied lambda literals (the language reference's
+`LambdaExpr` grammar form; no other `.l` file in the repo uses this
+exact shape). Left unformatted per the "never hand-format around a
+refusal" policy; the formatter bug itself was not investigated.
+
+**Related:** #5453, #5454, #5455, #5324, D-progress-631 (the JVM
+interface-auto-FFI fix adopted here, and `lyric-auth`'s parallel
+`Std.Encoding` workaround), D-progress-632 (the `lyric test --target
+jvm` Maven-classpath fix adopted here).
+
+---
+
+## D-progress-635 — Fixed a CI-breaking regression in D-progress-634's workspace-feature-inheritance fix; worked around #5443 in `lyric-web` with an alias rename, which exposed a new generic auto-FFI gap (#5458)
+
+**Status:** ACCEPTED (compiler regression fix); #5443 worked around in
+`lyric-web` specifically (the general `[project.packages]` compiler bug
+is still open); #5458 newly found and filed, not fixed.
+
+**Context.** Integrating D-progress-634's workspace-dependency
+feature-inheritance fix into this branch's `lyric-testing` ecosystem
+suite broke CI (`ecosystem-security-tests`): `lyric-testing/lyric.toml`
+declares no `[features]` table at all (it has none of its own — every
+dependency it needs is pulled in as a `{ workspace = true }` dep). D-134's
+fix computes the *consumer's* `activeFeatures` and forces it (via
+`noDefaultFeatures = true`) onto every workspace dependency's own build,
+unconditionally. For a consumer with no `[features]` table and no CLI
+`--features` flags, that resolved `activeFeatures` is legitimately empty
+— and forcing an empty set onto `Lyric.Storage` (a workspace dep with
+`default = ["dotnet"]`, whose `dotnet` kernel is mandatory, not optional)
+erased its `@cfg(feature = "dotnet")` kernel branch entirely, leaving
+`hostPathGetFullPath`/`hostMd5`/`hostGetFiles`/etc. as `T0020 unknown
+name` errors during the CI run building `lyric-testing`.
+
+**Fix.** `lyric-compiler/lyric/cli/workspace_builder.l`'s
+`buildWorkspaceDep`: only force `noDefaultFeatures = true` (override the
+dependency's own defaults with the consumer's exact resolved set) when
+the consumer's `activeFeatures` is non-empty — i.e. the consumer actually
+resolved something (its own `[features].default`, or an explicit CLI
+`--features`/`--all-features`/`--no-default-features` selection). When
+`activeFeatures` is empty, `noDefaultFeatures = false` is passed instead,
+so the dependency falls back to its own `[features].default` exactly as
+it did before D-progress-634's fix existed. This preserves the original
+fix's benefit (a `--target jvm --features jvm --no-default-features`
+consumer still forces that selection through to every workspace
+dependency) while restoring the pre-fix behavior for consumers that
+never expressed a features opinion at all.
+
+**Verification.** `./bin/lyric test --manifest lyric-testing/lyric.toml`
+(no CLI feature flags, reproducing the CI invocation exactly): all 5
+workspace deps (`Lyric.Cache`, `Lyric.Mail`, `Lyric.Storage`, `Lyric.Mq`,
+`Lyric.Session`, `Lyric.Flags`) build clean, `Testing.TestingTests` 37/37
+pass (previously: `Lyric.Storage` failed to build with 6 `T0020` errors).
+`./bin/lyric test --manifest lyric-session/lyric.toml --features dotnet`
+(the D-progress-631 scenario the original fix was needed for) still
+passes 4/4 test files, confirming the carve-out doesn't regress the
+explicit-selection case. `cli_workspace_builder_self_test.l` 11/11 green
+(unchanged — the existing `resolveManifestFeatures` cases already covered
+the empty-features-table case at the resolution layer; the gap was
+specifically in how `buildWorkspaceDep` propagated that resolved value
+downward).
+
+**Separately: #5443 investigated per PR review suggestion, worked around
+in `lyric-web`.** #5443 (D-progress-629) is a general
+`[project.packages]` multi-file-same-package alias-collision bug — still
+open, not fixed here. `lyric-web/src/_kernel/jvm/web_kernel.l`'s
+colliding `extern type ConcurrentDict[K, V]` alias (the JVM file's
+`java.util.concurrent.ConcurrentHashMap` binding, which the compiler bug
+let the sibling `.NET` file's identically-named `ConcurrentDictionary`2`
+binding leak over) was renamed to `JvmConcurrentDict[K, V]` — a one-line
+rename that sidesteps the collision entirely, since the bug only bites
+when both files use the *same* local alias name. Verified: compiling
+`lyric-web --target jvm --features jvm --no-default-features` (with
+Undertow's JAR supplied via `LYRIC_FFI_JARS`) no longer produces #5443's
+"Illegal class name" `VerifyError` — `Web.Kernel.Runtime` now correctly
+resolves `JvmConcurrentDict` to the real `ConcurrentHashMap`.
+
+**New bug found while verifying the workaround: #5458.** With the
+correct extern type now reachable, JVM auto-FFI resolution advanced
+further and hit a different, previously-masked failure: `dict.get(key)`
+inside the generic helper `cdTryGetValue[K, V](dict: in
+JvmConcurrentDict[K, V], ...)` fails with `no matching instance or
+inherited method for 'java.lang.Object.get(Ljava/lang/String;)'` — the
+receiver erases to `java.lang.Object` instead of the real extern type
+when the call site is inside a still-generic function body operating on
+a generic extern type. This is a new instance of the erased-generic
+bug family (#5439, #5442, #5444, #5451, #5456), specifically the first
+one inside a generic function over a generic *extern* type rather than a
+stdlib collection or a union/interface value. Filed as #5458 with a
+minimal repro; not fixed here. `lyric-web`'s `Web.RateLimitTests` still
+does not compile on `--target jvm` because of it — `docs/44` m-90 and
+`lyric-web/README.md`'s Known gaps section updated to describe the
+current, more precise state (#5443 worked around, #5444 and #5458 still
+open).
+
+**Related:** #5443, #5444, #5458, D-progress-629, D-progress-631,
+D-progress-634 (the fix being corrected here).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

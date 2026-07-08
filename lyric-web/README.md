@@ -2,7 +2,7 @@
 
 HTTP web service library for [Lyric](https://github.com/nichobbs/lyric-lang). Ships real method/path routing with path parameters, static file serving, a middleware pipeline (CORS built in), OpenAPI 3.1 type vocabulary for spec generation, and aspect templates for authentication and rate limiting.
 
-> **Status**: `@experimental`. Route dispatch, static files, and middleware are implemented and tested (`lyric-web/tests/dispatch_tests.l`) against the `dotnet` target, built on `Std.HttpServer` (`System.Net.HttpListener`). Single-threaded, synchronous accept loop — see [Known gaps](#known-gaps) below.
+> **Status**: `@experimental`. Route dispatch, static files, and middleware are implemented and tested (`lyric-web/tests/dispatch_tests.l`) against the `dotnet` target, built on `Std.HttpServer` (`System.Net.HttpListener`), single-threaded synchronous accept loop. The `jvm` target's `Web.Kernel.Runtime` binds `io.undertow` (Undertow's own multi-threaded XNIO I/O/worker pool, so no single-threaded-loop caveat there), but the test suite does not compile on `--target jvm` today due to newly-discovered JVM backend bugs (#5444, #5458; #5443 is worked around) — see [JVM target](#jvm-target) below.
 
 ## Packages
 
@@ -11,7 +11,7 @@ HTTP web service library for [Lyric](https://github.com/nichobbs/lyric-lang). Sh
 | `Web` | Core: `Router`, `Route`, `Request`, `Response`, `Handler`, `Middleware`, `ApiError`, static file serving, the server entry point |
 | `Web.OpenApi` | OpenAPI 3.1 spec types (`Spec`, `Schema`, `Operation`, …) and spec builder |
 | `Web.Aspects` | Template aspects: `RequiresAuth`, `RequiresRole`, `ApiKey`, `RateLimit`, `HttpCircuitBreaker` |
-| `Web.Kernel.Net` | Rate-limiter extern boundary (`ConcurrentDictionary`-backed tumbling window) |
+| `Web.Kernel.Runtime` | Extern boundary, exactly one file compiled per build: rate limiter on both targets; on `jvm` also the full Undertow HTTP server `Web.serve` delegates to |
 
 ## Installation
 
@@ -315,10 +315,19 @@ Convert to a `Response` with `Web.errorResponse(err)`.
 
 ## Known gaps
 
-- **Single-threaded accept loop.** `Web.serve` handles one request at a time — fine for the examples and moderate traffic, not a high-concurrency production server. Concurrent request handling needs either real MSIL structured concurrency (`spawn` currently lowers to a synchronous no-op on `--target dotnet`) or a hand-rolled thread pool; not yet implemented.
+- **Single-threaded accept loop on `dotnet`.** `Web.serve`'s `dotnet` branch handles one request at a time — fine for the examples and moderate traffic, not a high-concurrency production server. Concurrent request handling needs either real MSIL structured concurrency (`spawn` currently lowers to a synchronous no-op on `--target dotnet`) or a hand-rolled thread pool; not yet implemented. The `jvm` branch does not share this limitation — Undertow's own XNIO I/O/worker threads handle concurrent requests natively.
 - **`Web.addWorker` background timers are registered but not invoked** — tracked in issue #5359.
 - **Live OpenAPI JSON / Swagger UI serving is not implemented** — tracked in issue #5360. Use the build-time `lyric web spec` workflow instead.
-- **JVM target**: `lyric-web` only supports `dotnet` today (`Std.HttpServer`'s JVM kernel doesn't yet expose the query-string/header/byte-body primitives this library needs — see `lyric-stdlib/std/_kernel_jvm/http_server.l`'s header comment). Phase 6.
+- **JVM target's test suite does not compile today**, for reasons entirely outside this library — distinct, newly-discovered JVM backend bugs, none of which is #1707 (that ticket is closed and covers an unrelated nested-generic-construction defect; an earlier draft of this work mischaracterized the blocker as #1707, corrected here after re-verifying end to end):
+  - **#5443** (worked around) — the `[project.packages]` array form for one package built from two alternative files (`_kernel/net/web_kernel.l` / `_kernel/jvm/web_kernel.l`, selected by feature) leaks the non-selected file's `extern type` binding when both files reuse the same local alias name for genuinely different host types, producing a JVM class file with a dangling reference to the **.NET** type name. The general `[project.packages]` compiler bug is still open (a real risk for any future multi-file package reusing an alias name), but this library sidesteps it: the JVM file's alias was renamed from `ConcurrentDict[K, V]` to `JvmConcurrentDict[K, V]` so it no longer collides with the `.NET` file's `ConcurrentDict[K, V]`.
+  - **#5458** (newly found while verifying the #5443 workaround) — with the alias collision worked around, `Web.Kernel.Runtime`'s rate limiter now resolves to the *correct* `java.util.concurrent.ConcurrentHashMap` extern type, which exposed a different, previously-masked bug: JVM auto-FFI cannot resolve a generic extern type's own method call (`dict.get(key)`) from inside a generic function operating on that type (`cdTryGetValue[K, V]`) — the receiver erases to `java.lang.Object` instead of the real extern type, and resolution fails. `Web.RateLimitTests` still does not compile on `--target jvm` because of this.
+  - **#5444** — calling an interface method (`mw.wrap(req, next)`) on a `Middleware` pulled from a `List`/`slice` crashes JVM compilation: the erased `Object` element isn't checkcast back to the interface type before the call, so codegen falls through to auto-FFI resolution against `java.lang.Object` and fails outright. Blocks `Web.DispatchTests`, `Web.CorsGuardTests`, and `Web.SecurityAspectWeavingTests` from compiling on `--target jvm` at all.
+
+  `Web.Kernel.Runtime`'s Undertow implementation (below) is otherwise complete and was independently verified: `impl <ExternInterface> for Record` against a real JDK interface (`java.lang.Runnable`, driven through `java.lang.Thread`) was broken on the JVM backend — the `implements` clause resolved the interface name against the *local package* instead of its declared `extern type` JDK FQN, so the JDK caller could never dispatch into the Lyric impl — and is fixed in `Jvm.Codegen.constraintRefToJvmClass` (plus two sibling fixes for extern-typed `impl`-method parameters and return types), pinned by `lyric-compiler/jvm/ffi_iface_impl_jvm_self_test.l`. See `lyric-web/tests/jvm_server_smoke.l` for the (currently non-compiling, pending #5444/#5458) end-to-end HTTP round-trip test and manual verification steps.
+
+## JVM target
+
+`Web.Kernel.Runtime`'s JVM file (`src/_kernel/jvm/web_kernel.l`) binds `io.undertow` directly: `Undertow.builder().addHttpListener(port, host).setHandler(handler).build()`, where `handler` is a Lyric record (`LyricUndertowHandler`) implementing the real `io.undertow.server.HttpHandler` interface via `impl` (docs/51-ffi-interfaces-proposal.md). Each request is read fully into a `Web.Request` (blocking I/O via `exchange.startBlocking()`), routed through the same `Web.dispatch(router, req)` pure core the `dotnet` accept loop uses, and the `Web.Response` is written back onto the exchange. `Web.serve`'s `jvm` branch (`@cfg(feature = "jvm")`) delegates to it entirely; `Web.serve`'s `dotnet` branch is unaffected and unchanged. See [Known gaps](#known-gaps) above for the current build blockers (#5444, #5458; #5443 is worked around) and how the interface-binding half was verified independently of them.
 
 ## Package layout
 
@@ -331,12 +340,14 @@ lyric-web/
     openapi.l                     Web.OpenApi  (spec types + builder)
     aspects.l                     Web.Aspects  (RequiresAuth, RequiresRole, ApiKey, RateLimit, HttpCircuitBreaker)
     _kernel/
-      net/web_kernel.l            Web.Kernel.Net  (rate-limiter extern boundary)
+      net/web_kernel.l            Web.Kernel.Runtime (dotnet)  (rate-limiter extern boundary)
+      jvm/web_kernel.l            Web.Kernel.Runtime (jvm)  (rate limiter + Undertow HTTP server)
   tests/
     dispatch_tests.l              Web.dispatch: routing, path/query/headers, static files, middleware, CORS
     cors_guard_tests.l            CORS startup-guard validation
-    rate_limit_tests.l            Web.Kernel.Net.checkRateLimit
+    rate_limit_tests.l            Web.Kernel.Runtime.checkRateLimit
     security_aspect_weaving_tests.l  Web.Aspects templates, woven
+    jvm_server_smoke.l            real Undertow HTTP round trip (jvm; blocked on #5444/#5458, see Known gaps)
 ```
 
 ## See also

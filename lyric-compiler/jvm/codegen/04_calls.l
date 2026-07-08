@@ -2935,6 +2935,42 @@ func lowerMethodCall(
     }
   }
 
+  // `xs.removeAt(i)` on a List receiver — including one erased to `Object`
+  // (same erased-receiver leniency as `.toArray()` above).  Lyric's
+  // `List[T].removeAt(index: Int): Unit` (MSIL: `List<object>.RemoveAt(int32)`)
+  // has no same-named JDK counterpart: `java.util.ArrayList` spells
+  // index-based removal `remove(int)` — and critically, `ArrayList` also
+  // overloads `remove(Object)` (value-based removal), so the arg must reach
+  // the call site as a raw (unboxed) `int` to select the index-based overload
+  // rather than autoboxing into the `Object` one.  Emitted before the generic
+  // auto-FFI path, which panics on a missing `removeAt` method (first hit by
+  // `Jobs.InProcessJobScheduler.cancel`'s `self.queue.removeAt(i)`, #5382
+  // follow-up — every other List mutator name happens to already match its
+  // JDK method 1:1 except this one).
+  if memberName == "removeAt" and args.count == 1 {
+    val isListRecv = match recvTy {
+      case JRef(c) -> c == "java/lang/Object" or c == "java/util/ArrayList" or c == "java/util/List"
+      case _ -> false
+    }
+    if isListRecv {
+      insns.add(LCheckcast(className = "java/util/ArrayList"))
+      val idxTy = lowerCallArg(ctx, insns, args[0])
+      coerceArgTo(insns, idxTy, JInt)
+      val raPs: List[JvmType] = newList()
+      raPs.add(JInt)
+      insns.add(
+        LInvokevirtual(
+          owner = "java/util/ArrayList",
+          name = "remove",
+          params = raPs,
+          ret = JRef(className = "java/lang/Object")
+        )
+      )
+      insns.add(LPop)
+      return JVoid
+    }
+  }
+
   // `xs.toArray()` on a List receiver — including one erased to `Object`
   // (a generic `in List[T]` parameter): the Lyric runtime List is always
   // `java/util/ArrayList`, so checkcast + `toArray()[Ljava/lang/Object;`

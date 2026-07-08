@@ -13,27 +13,57 @@ output_assembly = "Session.dll"
 [project.packages]
 "Session"            = "src/session.l"
 "Session.Kernel.Net" = "src/_kernel/net/session_kernel.l"
+"Session.Kernel.Jvm" = "src/_kernel/jvm/session_kernel.l"
 
 # Full session test suite.  Runs via `lyric test --manifest` (#465).
-# - session_fixation_tests.l  — no-auto-create invariant in set() (#316/#436)
-# - session_store_tests.l     — full CRUD surface (create/load/get/set/delete/clear/touch/destroy)
-# - sensitive_url_tests.l     — InProcessSessionStore credential-masking defensive checks (#357/#477).
-#                                Redis-backed `Session.Kernel.Net` URL masking is framework-level
-#                                (`@sensitive` annotation) and requires a live Redis connection;
-#                                integration coverage tracked separately.
+# - session_fixation_tests.l    — no-auto-create invariant in set() (#316/#436)
+# - session_store_tests.l       — full CRUD surface (create/load/get/set/delete/clear/touch/destroy)
+# - sensitive_url_tests.l       — InProcessSessionStore credential-masking defensive checks (#357/#477).
+#                                  Redis-backed URL masking is framework-level (`@sensitive`
+#                                  annotation) and requires a live Redis connection; integration
+#                                  coverage tracked separately.
+# - session_redis_jvm_tests.l   — Lettuce-backed `Session.Kernel.Jvm` CRUD suite (create/load/get/
+#                                  set/delete/clear/touch/destroy) against a live Redis server.
+#                                  `@cfg(feature = "jvm")`-gated; only compiled/run under
+#                                  `--target jvm --features jvm`. Requires `LYRIC_SESSION_REDIS_URL`
+#                                  (or the `LYRIC_CONFIG_SESSION_REDISSESSION_URL` config env var) to
+#                                  point at a reachable Redis instance.
 [project.tests]
 "Session.SessionFixationTests" = "tests/session_fixation_tests.l"
 "Session.SessionStoreTests"    = "tests/session_store_tests.l"
 "Session.SensitiveUrlTests"    = "tests/sensitive_url_tests.l"
+"Session.SessionRedisJvmTests" = "tests/session_redis_jvm_tests.l"
 
+# `dotnet` and `jvm` are MUTUALLY EXCLUSIVE (#1444/#4-progress pattern shared with
+# lyric-storage/lyric-auth/lyric-resilience): activating both leaves two definitions
+# of `Session.Kernel.*`'s Redis-backed dispatch in `session.l` (ambiguous-symbol build
+# error). Neither is a default feature (see above) — select exactly one explicitly:
+#   --features dotnet
+#   --target jvm --no-default-features --features jvm
 [features]
-redis    = []   # Redis-backed sessions (StackExchange.Redis)
-inmemory = []   # In-process sessions (suitable for single-instance deployments)
+# No default target feature: unlike lyric-auth/lyric-storage's `dotnet`
+# default (which needs no external package — pure Lyric + BCL), this
+# library's `dotnet`/`jvm` kernels have a genuine mandatory NuGet/Maven
+# dependency (StackExchange.Redis / Lettuce). Defaulting either one on
+# means every plain `lyric build`/`lyric test` — including a workspace
+# dependent that builds this package transitively with no explicit
+# `--features` override (`buildWorkspaceDep` does not auto-restore) —
+# would try to compile against an unresolved NuGet reference and crash
+# with "cannot be resolved to any indexed reference assembly" (caught by
+# CI's `ecosystem-security-tests` job building `lyric-testing` -> ... ->
+# this package). Select a target explicitly, matching `--target`:
+#   --features dotnet
+#   --target jvm --no-default-features --features jvm
+dotnet = []   # Redis-backed sessions on .NET (StackExchange.Redis) — activates Session.Kernel.Net
+jvm    = []   # Redis-backed sessions on JVM (Lettuce) — activates Session.Kernel.Jvm
 
 [dependencies]
 "Lyric.Cache"  = { workspace = true }
 
 [nuget]
-# feature = "redis" — Redis client for .NET session backing store
+# feature = "dotnet" — Redis client for .NET session backing store
 "StackExchange.Redis" = "2.7.33"
-# feature = "inmemory" — no extra NuGet deps
+
+[maven]
+# feature = "jvm" — Redis client for JVM session backing store
+"io.lettuce:lettuce-core" = "6.8.2.RELEASE"

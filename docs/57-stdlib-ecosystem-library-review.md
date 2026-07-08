@@ -388,8 +388,11 @@ several of these are core, not edge-case, functionality:
   pure-Lyric `EmailMessage`/`Attachment` envelope is); SES/SendGrid are
   placeholder bindings pending Testcontainers infra (`mail_kernel.l:9`,
   tracked #780 follow-up) — already tracked, no new issue needed.
-- **lyric-feature-flags**: `FlagGated`/`FlagVariant` aspect weaving has no
-  regression test (only the underlying flag-store functions are tested).
+- **lyric-feature-flags**: `FlagGated` aspect weaving is now covered by
+  `tests/flags_aspect_weaving_tests.l` (D-progress-627) — it applies
+  `FlagGated` to a real handler and drives it through the weaver
+  end-to-end. `FlagVariant` remains untested (it's still an unwoven
+  stub per `flags_aspects.l`'s own doc comment).
 - **lyric-i18n**: no coverage for `fromJson` parse errors or a fully
   exhausted locale-fallback chain (request locale absent, primary
   fallback absent, secondary fallback absent).

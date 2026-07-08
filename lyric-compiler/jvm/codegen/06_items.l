@@ -402,8 +402,14 @@ pub func holderAwareParamTypes(
   var i = 0
   while i < params.count {
     val p = params[i]
+    // Resolve through `externTypes` on both arms (an earlier fix covered the
+    // return-type side of this gap but left params on the `erase` arm calling
+    // the plain `typeExprToJvmErased`, silently ignoring the `externTypes`
+    // argument this function already takes — an extern-typed impl-method
+    // param resolved to the in-package `<pkg>/<Name>` guess instead of the
+    // real JVM class).
     val elemTy = if erase {
-      typeExprToJvmErased(p.ty, pkgName, typeParams)
+      typeExprToJvmErasedExtern(p.ty, pkgName, typeParams, externTypes)
     } else {
       typeExprToJvmExtern(p.ty, pkgName, externTypes)
     }
@@ -1315,7 +1321,11 @@ func lowerImplMethod(
     case Some(b) -> b
     case None -> panic("lowerImplMethod: impl method has no body — interface-only declaration reached codegen")
   }
-  val retTy = match fn.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
+  // extern-resolving: an `impl <ExternInterface> for X` method returning an
+  // extern-typed value (e.g. `Bool` from a JDK interface method, or another
+  // extern type) must match the real JVM descriptor, not the in-package
+  // `<pkg>/<Name>` guess plain `typeExprToJvm` would produce.
+  val retTy = match fn.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
   val ctxSelf = makeFuncCtxInstance(
     pkgName,
     targetClass,
@@ -2377,10 +2387,23 @@ func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
 }
 
 // Convert a ConstraintRef to a JVM binary class name.
-// Used to resolve `impl Y for X` interface from the AST.
-func constraintRefToJvmClass(cr: in ConstraintRef, pkgName: in String): String {
+// Used to resolve `impl Y for X` interface from the AST.  A single-segment
+// name first checks `externTypes` (populated from the file's `extern type`
+// declarations) so `impl JHandler for MyHandler` with
+// `extern type JHandler = "io.undertow.server.HttpHandler"` resolves to the
+// real JDK interface instead of a same-package `<pkg>/JHandler` guess — the
+// same resolution `typeExprToJvmExtern` already applies to ordinary type
+// positions (#3334).  Without this, the `implements` clause for an extern
+// interface silently pointed at a nonexistent in-package class, so the JDK
+// caller (e.g. Undertow's `Undertow.builder().setHandler(...)`) could never
+// dispatch into the Lyric impl (confirmed via `javap`: emits `implements
+// <pkg>/JRunnable` instead of `implements java/lang/Runnable`).
+func constraintRefToJvmClass(cr: in ConstraintRef, pkgName: in String, externTypes: in Map[String, String]): String {
   if cr.head.segments.count == 1 {
-    pkgName + "/" + cr.head.segments[0]
+    match mapGet(externTypes, cr.head.segments[0]) {
+      case Some(javaFqn) -> javaFqn.replace(".", "/")
+      case None -> pkgName + "/" + cr.head.segments[0]
+    }
   } else {
     segmentsToJvmPath(cr.head.segments)
   }
@@ -3617,7 +3640,7 @@ pub func codegenPackageWithSigsSeeded(
     match file.items[pi].kind {
       case IImpl(decl) -> {
         val targetClass = typeExprToJvmClass(decl.target, pkgName)
-        val ifaceClass = constraintRefToJvmClass(decl.iface, pkgName)
+        val ifaceClass = constraintRefToJvmClass(decl.iface, pkgName, externTypes)
         val implFuncs: List[LFunc] = newList()
         var mi2 = 0
         while mi2 < decl.members.count {

@@ -34,8 +34,35 @@ import Lyric.Emitter as Emitter
 /// dllPaths is a list of "name\tdllPath" strings for all direct AND transitive
 /// deps; buildErrors is True if any direct dep build failed; wsCtxOpt is the
 /// discovered workspace context (None when not in a workspace).
+///
+/// `activeFeatures` is the CONSUMER's already-resolved active feature set
+/// (from `resolveManifestFeatures`).  When non-empty, it is forced verbatim
+/// (via `noDefaultFeatures = true`) onto every workspace dependency's own
+/// build — a dependency honors the consumer's `--target`/`--features`
+/// selection exactly rather than falling back to its own
+/// `[features].default`.  Before this, a workspace dep always built with its
+/// own default features regardless of the consumer's
+/// `--features`/`--no-default-features` flags: a `--target jvm --features
+/// jvm --no-default-features` consumer build would still compile a
+/// `default = ["dotnet"]` workspace dependency's `@cfg(feature = "dotnet")`
+/// branch into JVM bytecode (and erase its `@cfg(feature = "jvm")` branch),
+/// silently building the wrong platform-specific code path.
+///
+/// When `activeFeatures` is EMPTY — the consumer's own manifest declares no
+/// `[features]` table at all and no CLI feature flags were given (e.g.
+/// `lyric-testing/lyric.toml`, which has no `[features]` section) — there is
+/// no consumer selection to propagate, so each dependency falls back to
+/// building with its own `[features].default` (`noDefaultFeatures = false`)
+/// exactly as it did before this mechanism existed.  Without this carve-out,
+/// an empty consumer feature set would forcibly erase every dependency's
+/// own defaults instead of merely declining to override them, breaking any
+/// `default = ["dotnet"]` dependency's mandatory kernel selection for a
+/// consumer that never expressed an opinion about targets/features at all.
 pub func buildWorkspaceDeps(
-  manifest: in Mf.Manifest, mfPath: in String, target: in Emitter.CompileTarget
+  manifest: in Mf.Manifest,
+  mfPath: in String,
+  target: in Emitter.CompileTarget,
+  activeFeatures: in List[String],
 ): (List[String], Bool, Option[Ws.WorkspaceContext]) {
   val result: List[String] = newList()
   var hadError = false
@@ -62,7 +89,7 @@ pub func buildWorkspaceDeps(
         // Resolve the dependency name to its directory within the workspace.
         match Ws.resolveDep(dep.name, wsCtx) {
           case Some(depDir) -> {
-            val buildResult = buildWorkspaceDep(dep.name, depDir, target, versionOpt, buildStack)
+            val buildResult = buildWorkspaceDep(dep.name, depDir, target, activeFeatures, versionOpt, buildStack)
             match buildResult {
               case Ok(dllPath) -> {
                 if not stringListContains(seen, dep.name) {
@@ -203,6 +230,7 @@ func buildWorkspaceDep(
   depName: in String,
   depDir: in String,
   target: in Emitter.CompileTarget,
+  activeFeatures: in List[String],
   versionConstraint: in Option[String],
   buildStack: in List[String],
 ): Result[String, String] {
@@ -269,19 +297,34 @@ func buildWorkspaceDep(
   buildStack.add(depName)
   Console.println("build: building workspace dep '" + depName + "' (" + depDir + ") ...")
 
+  // Only force the consumer's resolved feature set onto the dependency when
+  // the consumer actually resolved one (its own `[features].default`, or an
+  // explicit `--features`/`--all-features` CLI selection).  When the
+  // consumer's own manifest has no `[features]` table at all and no CLI
+  // feature flags were passed — e.g. `lyric-testing/lyric.toml`, which
+  // declares zero features of its own — `activeFeatures` is legitimately
+  // empty, and forcing `noDefaultFeatures = true` in that case would wipe
+  // out every workspace dependency's own defaults (e.g. `Lyric.Storage`'s
+  // `default = ["dotnet"]`), erasing its `@cfg(feature = "dotnet")` kernel
+  // entirely and leaving its extern bindings unresolved.  Falling
+  // back to the dependency's own defaults here reproduces the pre-fix
+  // behaviour for exactly the case the fix wasn't meant to touch, while
+  // still forcing the exact set through whenever the consumer resolved a
+  // non-empty one (the originally-motivating `--target jvm --features jvm
+  // --no-default-features` scenario this doc comment above describes).
+  val depNoDefaultFeatures = activeFeatures.count > 0
+
   val buildExit = buildProject(
     depToml,
     None,
     // use the manifest's default output location
     target,
-    newList(),
-    // no CLI features
-    false,
-    // use defaults
-    false,
+    activeFeatures,
+    depNoDefaultFeatures,
     // no --all-features
     false,
     // allow restore
+    false,
     // packageVersionOverride: always None here, intentionally — a workspace
     // dep built transitively is a standalone artifact resolved from its own
     // lyric.toml (its version comes from [package].version, not from
@@ -444,14 +487,19 @@ pub record ResolvedManifestDeps {
 /// recursively via `buildWorkspaceDeps`), local `path = "..."` deps, and
 /// `[nuget]` assets that are themselves Lyric packages — into the
 /// `restoredDllPaths` / `nugetAssemblyPaths` / `depTemplateSrcs` shape
-/// `Emitter.EmitProjectRequest` expects.  Does NOT resolve feature sets (see
-/// `resolveManifestFeatures`) or `[maven]` classpath injection (see
-/// `injectMavenClasspathForJvm`) — those are independent concerns with
-/// their own callers.  Never triggers a restore: a dependency that isn't
-/// already built is reported via `hadUnbuiltLocalDep` / the printed
-/// message, not fetched.
+/// `Emitter.EmitProjectRequest` expects.  `activeFeatures` (the caller's own
+/// already-resolved feature set) is forced onto every workspace dependency's
+/// build — see `buildWorkspaceDeps`'s doc comment.  Does NOT itself resolve
+/// feature sets (see `resolveManifestFeatures`) or `[maven]` classpath
+/// injection (see `injectMavenClasspathForJvm`) — those are independent
+/// concerns with their own callers.  Never triggers a restore: a dependency
+/// that isn't already built is reported via `hadUnbuiltLocalDep` / the
+/// printed message, not fetched.
 pub func resolveManifestDependencies(
-  manifest: in Manifest, mfPath: in String, target: in Emitter.CompileTarget
+  manifest: in Manifest,
+  mfPath: in String,
+  target: in Emitter.CompileTarget,
+  activeFeatures: in List[String],
 ): ResolvedManifestDeps {
   val mfDir = Path.dirname(mfPath)
   val restoredDlls: List[String] = newList()
@@ -459,7 +507,7 @@ pub func resolveManifestDependencies(
   val seenDeps: List[String] = newList()
   var hadUnbuiltLocalDep = false
 
-  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, target)
+  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, target, activeFeatures)
   if wsHadError {
     return ResolvedManifestDeps(
       restoredDlls = restoredDlls,

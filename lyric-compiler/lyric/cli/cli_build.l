@@ -228,7 +228,7 @@ func emitSingleFileOrProject(
 
   val emptyCliFeatures: List[String] = newList()
   val (activeFeatures, declaredFeatures) = resolveManifestFeatures(lm.mfText, lm.mfPath, emptyCliFeatures, false, false)
-  val resolvedDeps = resolveManifestDependencies(lm.manifest, lm.mfPath, req.target)
+  val resolvedDeps = resolveManifestDependencies(lm.manifest, lm.mfPath, req.target, activeFeatures)
   if resolvedDeps.hadWorkspaceError {
     return failedEmitOutcome(
       sourcePath + ": build failed (workspace dependency declared in " + lm.mfPath + " failed to build; see above)"
@@ -1325,7 +1325,7 @@ func buildProject(
   // workspace-error-vs-unbuilt-local-dep distinction this function preserves
   // verbatim (a workspace failure has always been an immediate `return 1`
   // here; an unbuilt local `path` dep has always been a non-fatal warning).
-  val resolved = resolveManifestDependencies(manifest, mfPath, target)
+  val resolved = resolveManifestDependencies(manifest, mfPath, target, activeFeatures)
   if resolved.hadWorkspaceError {
     return 1
   }

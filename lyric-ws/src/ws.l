@@ -1,8 +1,13 @@
 //! Ws — WebSocket server library for Lyric.
 //! Stability: @experimental — the connection lifecycle compiles and the WsAuth
-//! aspect has tests, but the rate-limiter's burst budget is one-shot (does not
-//! refill; tracked in issue #1178) and the end-to-end loop has not been exercised
-//! against a real WebSocket client in CI.
+//! aspect has tests.  `startServer` is backed by a real running server on
+//! both targets: ASP.NET Core WebSockets is still path-finder-scope bookkeeping
+//! only pending #778 (`Ws.Kernel.Net.startServer` returns `NOT_IMPLEMENTED`),
+//! while Undertow on JVM is a real, tested end-to-end connect/send/receive/
+//! close loop (see `Ws.Kernel.Jvm`'s header for its documented gaps:
+//! fragmented multi-frame messages and automatic ping keepalives).  The
+//! rate-limiter's burst budget is one-shot (does not refill; tracked in
+//! issue #1178).
 //!
 //! Provides the full connection lifecycle for WebSocket servers:
 //! connection context, message types, a handler interface for
@@ -22,9 +27,9 @@
 //!     func onError(ctx: in WsContext, error: in WsError): Unit { ... }
 //!   }
 //!
-//!   // Create a registry and start serving
-//!   match Ws.createRegistry() {
-//!     case Ok(registry) -> ...
+//!   // Start a real server bound to the handler (--target jvm today; see above)
+//!   match Ws.startServer("0.0.0.0", 8080, "/ws", MyHandler()) {
+//!     case Ok(registry) -> ...   // push via Ws.sendText(registry, connId, "hi")
 //!     case Err(e) -> ...
 //!   }
 //!
@@ -42,13 +47,116 @@ package Ws
 
 import Std.Core
 import Std.Collections
-import Ws.Kernel.Net as WsKernel
+import Ws.Kernel.Net as WsKernelNet
+import Ws.Kernel.Jvm as WsKernelJvm
 
-// Kernel boundary: every BCL / JDK interaction goes through `WsKernel`
-// (`Ws.Kernel.Net` on .NET, `Ws.Kernel.Jvm` on JVM).  This file is the
+// Kernel boundary: every BCL / JDK interaction goes through the platform
+// kernel (`Ws.Kernel.Net` on .NET, `Ws.Kernel.Jvm` on JVM), selected per
+// function via the `kernelXxx` `@cfg`-paired wrappers below (mirrors
+// `Auth`'s `Auth.Kernel.Net`/`Auth.Kernel.Jvm` dispatch).  This file is the
 // public surface of the library; it must not declare its own `@axiom`
 // stubs (doing so previously shadowed the kernel boundary and broke
-// the trust-boundary audit — see lyric-lang #739).
+// the trust-boundary audit — see lyric-lang #739).  The kernels only ever
+// exchange primitive types (String/Int) with this file — never `WsHandler`/
+// `WsContext`/`WsMessage` — so neither kernel needs to import `Ws` itself,
+// avoiding an `Ws` <-> `Ws.Kernel.Jvm` import cycle.
+@cfg(feature = "dotnet")
+func kernelCreateRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String] {
+  WsKernelNet.createRegistry(maxMessageSizeBytes, pingIntervalMs)
+}
+
+@cfg(feature = "jvm")
+func kernelCreateRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String] {
+  WsKernelJvm.createRegistry(maxMessageSizeBytes, pingIntervalMs)
+}
+
+@cfg(feature = "dotnet")
+func kernelStartServer(
+  host: in String,
+  port: in Int,
+  path: in String,
+  maxMessageSizeBytes: in Int,
+  onOpen: in (String, String, String, String) -> Unit,
+  onMessage: in (String, String, String) -> Unit,
+  onClose: in (String, Int, String) -> Unit,
+  onError: in (String, String) -> Unit,
+): Result[Int, String] {
+  WsKernelNet.startServer(host, port, path, maxMessageSizeBytes, onOpen, onMessage, onClose, onError)
+}
+
+@cfg(feature = "jvm")
+func kernelStartServer(
+  host: in String,
+  port: in Int,
+  path: in String,
+  maxMessageSizeBytes: in Int,
+  onOpen: in (String, String, String, String) -> Unit,
+  onMessage: in (String, String, String) -> Unit,
+  onClose: in (String, Int, String) -> Unit,
+  onError: in (String, String) -> Unit,
+): Result[Int, String] {
+  WsKernelJvm.startServer(host, port, path, maxMessageSizeBytes, onOpen, onMessage, onClose, onError)
+}
+
+@cfg(feature = "dotnet")
+func kernelStopServer(registryHandle: in Int): Result[Unit, String] {
+  WsKernelNet.stopServer(registryHandle)
+}
+
+@cfg(feature = "jvm")
+func kernelStopServer(registryHandle: in Int): Result[Unit, String] {
+  WsKernelJvm.stopServer(registryHandle)
+}
+
+@cfg(feature = "dotnet")
+func kernelSend(registryHandle: in Int, connectionId: in String, messageType: in String, data: in String): Result[Unit, String] {
+  WsKernelNet.send(registryHandle, connectionId, messageType, data)
+}
+
+@cfg(feature = "jvm")
+func kernelSend(registryHandle: in Int, connectionId: in String, messageType: in String, data: in String): Result[Unit, String] {
+  WsKernelJvm.send(registryHandle, connectionId, messageType, data)
+}
+
+@cfg(feature = "dotnet")
+func kernelBroadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String] {
+  WsKernelNet.broadcast(registryHandle, messageType, data)
+}
+
+@cfg(feature = "jvm")
+func kernelBroadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String] {
+  WsKernelJvm.broadcast(registryHandle, messageType, data)
+}
+
+@cfg(feature = "dotnet")
+func kernelClose(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String] {
+  WsKernelNet.close(registryHandle, connectionId, code, reason)
+}
+
+@cfg(feature = "jvm")
+func kernelClose(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String] {
+  WsKernelJvm.close(registryHandle, connectionId, code, reason)
+}
+
+@cfg(feature = "dotnet")
+func kernelConnectionCount(registryHandle: in Int): Int {
+  WsKernelNet.connectionCount(registryHandle)
+}
+
+@cfg(feature = "jvm")
+func kernelConnectionCount(registryHandle: in Int): Int {
+  WsKernelJvm.connectionCount(registryHandle)
+}
+
+@cfg(feature = "dotnet")
+func kernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
+  WsKernelNet.isConnected(registryHandle, connectionId)
+}
+
+@cfg(feature = "jvm")
+func kernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
+  WsKernelJvm.isConnected(registryHandle, connectionId)
+}
 // ─── Connection identity ──────────────────────────────────────────────────────
 /// Opaque identifier for a single WebSocket connection.
 /// Assigned by the kernel at upgrade time and stable until close.
@@ -154,7 +262,7 @@ impl WsRegistry for NativeRegistry {
     val msgType = messageTypeString(msg)
     val msgData = messageDataString(msg)
     val rh = self.registryHandle
-    match WsKernel.send(rh, connectionId, msgType, msgData) {
+    match kernelSend(rh, connectionId, msgType, msgData) {
       case Ok(u) -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "SEND_FAILED", connectionId = connectionId))
     }
@@ -164,7 +272,7 @@ impl WsRegistry for NativeRegistry {
     val msgType = messageTypeString(msg)
     val msgData = messageDataString(msg)
     val rh = self.registryHandle
-    match WsKernel.broadcast(rh, msgType, msgData) {
+    match kernelBroadcast(rh, msgType, msgData) {
       case Ok(u) -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "BROADCAST_FAILED", connectionId = ""))
     }
@@ -173,7 +281,7 @@ impl WsRegistry for NativeRegistry {
   func close(connectionId: in String, code: in WsCloseCode, reason: in String): Result[Unit, WsError] {
     val codeInt = closeCodeToInt(code)
     val rh = self.registryHandle
-    match WsKernel.close(rh, connectionId, codeInt, reason) {
+    match kernelClose(rh, connectionId, codeInt, reason) {
       case Ok(u) -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "CLOSE_FAILED", connectionId = connectionId))
     }
@@ -181,12 +289,12 @@ impl WsRegistry for NativeRegistry {
 
   func connectionCount(): Int {
     val rh = self.registryHandle
-    return WsKernel.connectionCount(rh)
+    return kernelConnectionCount(rh)
   }
 
   func isConnected(connectionId: in String): Bool {
     val rh = self.registryHandle
-    return WsKernel.isConnected(rh, connectionId)
+    return kernelIsConnected(rh, connectionId)
   }
 }
 
@@ -195,9 +303,72 @@ impl WsRegistry for NativeRegistry {
 /// The registry manages WebSocket connection lifecycle.
 @stable(since = "0.1")
 pub func createRegistry(): Result[NativeRegistry, WsError] {
-  match WsKernel.createRegistry(65536, 30000) {
+  match kernelCreateRegistry(65536, 30000) {
     case Ok(handle) -> Ok(NativeRegistry(registryHandle = handle))
     case Err(err) -> Err(WsError(message = err, code = "REGISTRY_INIT_FAILED", connectionId = ""))
+  }
+}
+
+// ─── Server ───────────────────────────────────────────────────────────────────
+/// Start a real WebSocket server bound to `handler`, listening on
+/// `host:port` and upgrading exactly `path` to WebSocket.  Non-blocking:
+/// returns once the server is listening.  Use the returned registry to push
+/// messages from outside the handler callbacks; call `stopServer` to shut
+/// down.  Uses the default 65536-byte max message size — see
+/// `startServerWithConfig` to override it.
+///
+/// See the module header for per-target status: real end-to-end on
+/// `--target jvm` (Undertow); `Err(WsError(code = "SERVER_START_FAILED"))`
+/// on `--target dotnet` pending #778.
+@stable(since = "0.1")
+pub func startServer(host: in String, port: in Int, path: in String, handler: in WsHandler): Result[NativeRegistry, WsError] {
+  startServerWithConfig(host, port, path, 65536, handler)
+}
+
+/// As `startServer`, with an explicit max message size in bytes.
+@stable(since = "0.1")
+pub func startServerWithConfig(
+  host: in String,
+  port: in Int,
+  path: in String,
+  maxMessageSizeBytes: in Int,
+  handler: in WsHandler,
+): Result[NativeRegistry, WsError] {
+  val onOpenFn = { (connId: String, reqPath: String, reqQuery: String, remoteAddress: String) ->
+    val ctx = WsContext(connectionId = connId, path = reqPath, query = reqQuery, remoteAddress = remoteAddress, headers = newMap())
+    match handler.onOpen(ctx) {
+      case Ok(_) -> ()
+      case Err(e) -> handler.onError(ctx, e)
+    }
+  }
+  val onMessageFn = { (connId: String, msgType: String, data: String) ->
+    val ctx = WsContext(connectionId = connId, path = path, query = "", remoteAddress = "", headers = newMap())
+    val msg = messageFromKernel(msgType, data)
+    match handler.onMessage(ctx, msg) {
+      case Ok(_) -> ()
+      case Err(e) -> handler.onError(ctx, e)
+    }
+  }
+  val onCloseFn = { (connId: String, code: Int, reason: String) ->
+    val ctx = WsContext(connectionId = connId, path = path, query = "", remoteAddress = "", headers = newMap())
+    handler.onClose(ctx, closeCodeFromInt(code))
+  }
+  val onErrorFn = { (connId: String, message: String) ->
+    val ctx = WsContext(connectionId = connId, path = path, query = "", remoteAddress = "", headers = newMap())
+    handler.onError(ctx, WsError(message = message, code = "TRANSPORT_ERROR", connectionId = connId))
+  }
+  match kernelStartServer(host, port, path, maxMessageSizeBytes, onOpenFn, onMessageFn, onCloseFn, onErrorFn) {
+    case Ok(handle) -> Ok(NativeRegistry(registryHandle = handle))
+    case Err(err) -> Err(WsError(message = err, code = "SERVER_START_FAILED", connectionId = ""))
+  }
+}
+
+/// Stop a server started by `startServer`/`startServerWithConfig`.
+@stable(since = "0.1")
+pub func stopServer(registry: in NativeRegistry): Result[Unit, WsError] {
+  match kernelStopServer(registry.registryHandle) {
+    case Ok(u) -> Ok(u)
+    case Err(err) -> Err(WsError(message = err, code = "SERVER_STOP_FAILED", connectionId = ""))
   }
 }
 
@@ -206,7 +377,7 @@ pub func createRegistry(): Result[NativeRegistry, WsError] {
 @stable(since = "0.1")
 pub func sendText(registry: in NativeRegistry, connectionId: in String, text: in String): Result[Unit, WsError] {
   val rh = registry.registryHandle
-  match WsKernel.send(rh, connectionId, "text", text) {
+  match kernelSend(rh, connectionId, "text", text) {
     case Ok(u) -> Ok(u)
     case Err(err) -> Err(WsError(message = err, code = "SEND_FAILED", connectionId = connectionId))
   }
@@ -216,7 +387,7 @@ pub func sendText(registry: in NativeRegistry, connectionId: in String, text: in
 @stable(since = "0.1")
 pub func broadcastText(registry: in NativeRegistry, text: in String): Result[Unit, WsError] {
   val rh = registry.registryHandle
-  match WsKernel.broadcast(rh, "text", text) {
+  match kernelBroadcast(rh, "text", text) {
     case Ok(u) -> Ok(u)
     case Err(err) -> Err(WsError(message = err, code = "BROADCAST_FAILED", connectionId = ""))
   }
@@ -226,7 +397,7 @@ pub func broadcastText(registry: in NativeRegistry, text: in String): Result[Uni
 @stable(since = "0.1")
 pub func closeConnection(registry: in NativeRegistry, connectionId: in String): Result[Unit, WsError] {
   val rh = registry.registryHandle
-  match WsKernel.close(rh, connectionId, 1000, "") {
+  match kernelClose(rh, connectionId, 1000, "") {
     case Ok(u) -> Ok(u)
     case Err(err) -> Err(WsError(message = err, code = "CLOSE_FAILED", connectionId = connectionId))
   }
@@ -236,14 +407,14 @@ pub func closeConnection(registry: in NativeRegistry, connectionId: in String): 
 @stable(since = "0.1")
 pub func connectionCount(registry: in NativeRegistry): Int {
   val rh = registry.registryHandle
-  return WsKernel.connectionCount(rh)
+  return kernelConnectionCount(rh)
 }
 
 /// Return whether the given connection is currently open.
 @stable(since = "0.1")
 pub func isConnected(registry: in NativeRegistry, connectionId: in String): Bool {
   val rh = registry.registryHandle
-  return WsKernel.isConnected(rh, connectionId)
+  return kernelIsConnected(rh, connectionId)
 }
 
 /// Construct a Normal(1000) close code.
@@ -286,5 +457,40 @@ func closeCodeToInt(code: in WsCloseCode): Int {
     case ProtocolError -> 1002
     case PolicyViolation -> 1008
     case InternalError -> 1011
+  }
+}
+
+// Inverse of `messageTypeString`/`messageDataString` — reconstructs a
+// `WsMessage` from the primitive (messageType, data) pair a kernel's
+// `onMessage` callback delivers.
+func messageFromKernel(msgType: in String, data: in String): WsMessage {
+  if msgType == "text" {
+    Text(text = data)
+  } else if msgType == "binary" {
+    Binary(dataBase64 = data)
+  } else if msgType == "ping" {
+    Ping
+  } else if msgType == "pong" {
+    Pong
+  } else {
+    Close(code = 1000, reason = data)
+  }
+}
+
+// Inverse of `closeCodeToInt` for a kernel's `onClose` callback.  Any code
+// outside the four named RFC 6455 constants round-trips through `Normal`
+// (matching `closeCodeToInt`'s own `Normal(c) -> c` passthrough for custom
+// application close codes, e.g. 4000+).
+func closeCodeFromInt(code: in Int): WsCloseCode {
+  if code == 1001 {
+    GoingAway
+  } else if code == 1002 {
+    ProtocolError
+  } else if code == 1008 {
+    PolicyViolation
+  } else if code == 1011 {
+    InternalError
+  } else {
+    Normal(code = code)
   }
 }

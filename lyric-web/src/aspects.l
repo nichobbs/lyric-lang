@@ -50,7 +50,7 @@ import Std.Console
 import Web as WebPkg
 import Auth
 import Resilience
-import Web.Kernel.Net as HttpKernel
+import Web.Kernel.Runtime as HttpKernel
 
 // ─── RequiresAuth ─────────────────────────────────────────────────────────────
 /// Validate a bearer token on every matched handler call.

@@ -2,13 +2,19 @@
 #
 # Ships four packages:
 #   Web                — Router/Request/Response/Middleware, static file
-#                        serving, the HTTP server entry point (built on
-#                        Std.HttpServer), and runtime config blocks.
+#                        serving, the HTTP server entry point, and runtime
+#                        config blocks.  Built on Std.HttpServer on
+#                        `dotnet`; on `jvm`, Web.Kernel.Runtime binds
+#                        io.undertow directly (Std.HttpServer's JVM kernel
+#                        doesn't yet expose the primitives Web needs — see
+#                        that kernel's header comment).
 #   Web.OpenApi        — OpenAPI 3.1 spec type vocabulary and code-first
 #                        spec-builder.
 #   Web.Aspects        — pub aspect templates: RequiresAuth, RequiresRole,
 #                        ApiKey, RateLimit, HttpCircuitBreaker.
-#   Web.Kernel.Net     — rate-limiter extern boundary (ConcurrentDictionary).
+#   Web.Kernel.Runtime — extern boundary: rate limiter on both targets, plus
+#                        the full Undertow HTTP server on `jvm` (exactly one
+#                        file compiled per build, selected by feature).
 #
 # Both development workflows are supported:
 #   Code-first:  annotate handlers with @get / @post / etc., run
@@ -30,7 +36,7 @@ license     = "Apache-2.0"
 default = ["dotnet"]
 # ASP.NET Core / Kestrel HTTP server backend.
 dotnet = []
-# JVM backend (Phase 6 — not yet implemented).
+# Undertow HTTP server backend.
 jvm    = []
 
 [project]
@@ -45,10 +51,16 @@ output_assembly = "Web.dll"
 "Web.OpenApi"     = "src/openapi.l"
 # Pub aspect templates for cross-cutting handler concerns.
 "Web.Aspects"     = "src/aspects.l"
-# .NET extern boundary — ASP.NET Core minimal APIs + Kestrel.
-"Web.Kernel.Net"  = "src/_kernel/net/web_kernel.l"
-# JVM extern boundary — Undertow HTTP server (Phase 6; excluded from dotnet build).
-# "Web.Kernel.Jvm"  = "src/_kernel/jvm/web_kernel.l"
+# Extern boundary — exactly one file is compiled per build (selected by feature):
+#   dotnet → rate limiter only (ConcurrentDictionary); Web.serve runs its own
+#            Std.HttpServer accept loop and never calls into this package.
+#   jvm    → rate limiter (ConcurrentHashMap) *and* the full Undertow HTTP
+#            server; Web.serve's jvm branch delegates entirely to this
+#            package's serve().
+"Web.Kernel.Runtime" = [
+  "src/_kernel/net/web_kernel.l",
+  "src/_kernel/jvm/web_kernel.l",
+]
 
 [project.tests]
 "Web.CorsGuardTests"   = "tests/cors_guard_tests.l"

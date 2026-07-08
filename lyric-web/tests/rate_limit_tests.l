@@ -1,5 +1,5 @@
-//! tests/rate_limit_tests.l — regression tests for the Web.Kernel.Net.checkRateLimit
-//! implementation (#2151).
+//! tests/rate_limit_tests.l — regression tests for the
+//! Web.Kernel.Runtime.checkRateLimit implementation (#2151).
 //!
 //! The `checkRateLimit` function was previously a dead stub returning `false`
 //! (always-deny).  After the PR that wired it to the real sliding-window
@@ -14,7 +14,7 @@ package Web.RateLimitTests
 import Std.Core
 import Std.Testing
 import Std.Time as Time
-import Web.Kernel.Net as HttpKernel
+import Web.Kernel.Runtime as HttpKernel
 
 // ─── checkRateLimit unit tests ───────────────────────────────────────────────
 //

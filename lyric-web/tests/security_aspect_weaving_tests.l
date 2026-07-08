@@ -1,7 +1,7 @@
 //! tests/security_aspect_weaving_tests.l — runtime weaving tests for the
 //! security-critical Web.Aspects templates.
 //!
-//! Unlike rate_limit_tests.l (which tests the Web.Kernel.Net.checkRateLimit
+//! Unlike rate_limit_tests.l (which tests the Web.Kernel.Runtime.checkRateLimit
 //! function directly), this module instantiates a security aspect against a
 //! handler and asserts the *woven* handler actually denies/short-circuits —
 //! the behaviour that protects real endpoints. A weave that silently no-ops
