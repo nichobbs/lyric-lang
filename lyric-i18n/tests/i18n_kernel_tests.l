@@ -10,14 +10,19 @@ package I18n.I18nKernelTests
 import Std.Core
 import Std.Testing
 import Std.File as File
+import Std.Environment
 import I18n.Kernel
 
 val fixtureJson: String = "{\"en\":{\"greeting\":\"Hello, {name}!\",\"farewell\":\"Goodbye.\"},\"en-US\":{\"greeting\":\"Hey, {name}!\"},\"fr\":{\"greeting\":\"Bonjour, {name}!\",\"farewell\":\"Au revoir.\"}}"
 
+// Mirrors lyric-stdlib/tests/file_tests.l's scratchDir() convention: scope
+// scratch files under $TMPDIR (never the working tree) and clean up after.
 func withFixtureFile(body: in (String) -> Unit): Unit {
-  val path = "i18n_kernel_test_fixture.json"
+  val base = Environment.getVarOrDefault("TMPDIR", "/tmp")
+  val path = base + "/lyric_i18n_kernel_test_fixture.json"
   val _ = File.writeText(path, fixtureJson)
   body(path)
+  val _ = File.deleteFile(path)
 }
 
 test "loadStore loads a real file and returns a usable handle" {
