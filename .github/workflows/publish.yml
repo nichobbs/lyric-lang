@@ -222,6 +222,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu binutils-multiarch
 
+      - name: Install Native AOT dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang zlib1g-dev binutils
+
       - name: Install unzip (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
