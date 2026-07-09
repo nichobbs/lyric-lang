@@ -13654,6 +13654,88 @@ generic-instantiation fix to this same function).
 
 ---
 
+## D-progress-637 — `lyric fmt` always canonicalized `extern type` to the quoted string form, so any file using the unquoted dotted-path form (docs/47) failed the loss-checker and could never be formatted at all (#5472)
+
+**Status:** ACCEPTED
+
+**Symptom.** `lyric fmt --write` aborted on any file containing at least one
+unquoted-form `extern type` declaration (`extern type X = Foo.Bar`, as
+opposed to the quoted `extern type X = "Foo.Bar"`), refusing to write the
+whole file — not just that declaration — with:
+
+```
+fmt aborted — formatting would change the code-token sequence (formatter
+bug); file left unchanged:
+  token N changed: `Foo` -> `str:Foo.Bar`
+```
+
+Minimal repro: a file containing only `extern type UnquotedMath =
+System.Math` triggers it. Found while adding a regression test to
+`auto_ffi_self_test.l` for D-progress-636; confirmed pre-existing (present
+on the unmodified file too) and unrelated to that fix.
+
+**Root cause.** `externTypeDoc` (`lyric-compiler/lyric/fmt/fmt_items.l`)
+unconditionally rendered every `extern type` as the quoted form —
+`"extern type " + name + " = \"" + clrName + "\""` — with no check on
+which surface syntax the source actually used. `ExternTypeDecl`
+(`parser_ast.l`) had no field recording this; the parser
+(`parser_items.l`'s `parseExternTypeBody`) discards the distinction once
+it decodes the CLR name into `clrName`, whether it came from a `TString`
+token or a `TIdent`-led dotted `parseModulePath`. `lyric fmt --write` is
+loss-checked (re-parses its own output and refuses to write if the token
+sequence changed from the input), and a bare dotted identifier path is a
+different token sequence than a string literal even though the two forms
+are semantically identical — so every unquoted-form file correctly
+tripped the safety check instead of silently rewriting the declaration's
+syntax.
+
+**Fix.**
+1. Added `clrNameQuoted: Bool` to `ExternTypeDecl`, set by
+   `parseExternTypeBody` based on which token-kind branch matched (`true`
+   for `TString`, `false` for the `TIdent`/`parseModulePath` branch). The
+   three call sites in `typechecker_checker.l` that synthesize an
+   `ExternTypeDecl` for `import extern` symbol-table entries pass `true`
+   unconditionally — `clrNameQuoted` is a formatter-only concern, and an
+   `import extern` statement (not an `extern type` item) is what actually
+   appears in `SourceFile.items` and gets formatted, so these synthetic
+   decls are never rendered by `externTypeDoc` at all.
+2. `externTypeDoc` now branches on `clrNameQuoted`: quoted form unchanged;
+   unquoted form renders the bare dotted path. For a generic unquoted
+   declaration (`extern type CD[K, V] = Foo.Bar`), `clrName` carries a
+   compiler-derived `` `N `` arity suffix (`parseExternTypeBody` appends
+   it for codegen when `generics` is present and the parsed name has no
+   backtick already) that never appeared in the unquoted source — a bare
+   dotted identifier path cannot contain a backtick — so the unquoted
+   render path strips it back off via `clrName.lastIndexOf("\`")` before
+   emitting, reproducing the exact original spelling.
+
+**Verification.** Built the self-hosted compiler from source (using the
+still-available stage-2 binary from D-progress-636's investigation as the
+seed, since `scripts/mint-stage0-fsharp.sh` was removed from `main` by a
+concurrent PR and this sandbox's GitHub API release-listing is blocked —
+this fix's own diff is orthogonal to that removal). Confirmed: (a) the
+minimal quoted-string repro round-trips unchanged; (b) the minimal
+unquoted repro (`extern type UnquotedMath = System.Math`) now formats
+cleanly instead of aborting; (c) the same for the generic-arity unquoted
+case (`extern type UnquotedCD[K, V] = System.Collections.Concurrent.ConcurrentDictionary`),
+with the arity suffix correctly stripped; (d) the real file that surfaced
+the bug, `auto_ffi_self_test.l`, now formats cleanly (only cosmetic
+blank-line normalization in the diff, no token changes). Ran the existing
+`parser_self_test.l` (94/94), `fmt_self_test.l` (116/116),
+`typechecker_self_test.l` (240/240), `auto_ffi_self_test.l` (14/14), and
+`generic_extern_self_test.l` (6/6, including its own unquoted-generic
+runtime case) — all pass, confirming the new AST field doesn't disturb
+parsing, type-checking, or codegen. Added three new `fmt_self_test.l`
+cases (quoted round-trip, unquoted round-trip, unquoted-generic
+arity-suffix stripping) — 119/119 with the fix.
+
+**Related:** #3887/D-progress-636 (found while regression-testing that
+fix), docs/47 (unquoted `extern type` / `import extern` syntax design),
+`generic_extern_self_test.l` (pre-existing runtime coverage for the
+unquoted-generic parsing this fix's formatter path mirrors).
+
+---
+
 ## Decisions deferred to v2 or later
 
 

@@ -1526,8 +1526,17 @@ pub func registerExternalImports(
             }
             // Create a synthetic ExternTypeDecl with no generics (external types
             // are monomorphic from the import perspective; generics are resolved
-            // through auto-FFI metadata lookup).
-            val syntheticDecl = ExternTypeDecl(name = symbolName, generics = None, clrName = externalFqn, span = imp.span)
+            // through auto-FFI metadata lookup).  `clrNameQuoted` is a formatter-
+            // only concern (#5472) and irrelevant here: an `import extern`
+            // statement, not an `extern type` item, is what actually appears in
+            // `SourceFile.items` and gets formatted.
+            val syntheticDecl = ExternTypeDecl(
+              name = symbolName,
+              generics = None,
+              clrName = externalFqn,
+              clrNameQuoted = true,
+              span = imp.span
+            )
             val vis = if imp.isPubUse { Some(value = VisPub(span = imp.span)) } else { None }
             val _ = addSym(tbl, diag, false, "", symbolName, DKExternType(id = tid, decl = syntheticDecl), vis, imp.span)
             j = j + 1
@@ -1542,7 +1551,13 @@ pub func registerExternalImports(
             case None -> freshTypeId(ctr)
           }
           // Create a synthetic ExternTypeDecl.
-          val syntheticDecl = ExternTypeDecl(name = symbolName, generics = None, clrName = externalFqn, span = imp.span)
+          val syntheticDecl = ExternTypeDecl(
+            name = symbolName,
+            generics = None,
+            clrName = externalFqn,
+            clrNameQuoted = true,
+            span = imp.span
+          )
           val vis = if imp.isPubUse { Some(value = VisPub(span = imp.span)) } else { None }
           val _ = addSym(tbl, diag, false, "", symbolName, DKExternType(id = tid, decl = syntheticDecl), vis, imp.span)
         }
@@ -1556,7 +1571,13 @@ pub func registerExternalImports(
             case None -> freshTypeId(ctr)
           }
           // Create a synthetic ExternTypeDecl.
-          val syntheticDecl = ExternTypeDecl(name = symbolName, generics = None, clrName = externalFqn, span = imp.span)
+          val syntheticDecl = ExternTypeDecl(
+            name = symbolName,
+            generics = None,
+            clrName = externalFqn,
+            clrNameQuoted = true,
+            span = imp.span
+          )
           val vis = if imp.isPubUse { Some(value = VisPub(span = imp.span)) } else { None }
           val _ = addSym(tbl, diag, false, "", symbolName, DKExternType(id = tid, decl = syntheticDecl), vis, imp.span)
         }

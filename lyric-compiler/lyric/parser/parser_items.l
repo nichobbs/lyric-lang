@@ -2331,12 +2331,14 @@ func parseExternTypeBody(st: inout ParseState): ExternTypeDecl {
       emitErr(st, "P0273", "expected '=' after extern type name", peekSpan(st))
     }
   }
+  var clrNameQuoted = true
   val clrNameResult = match peekToken(st) {
     case TString(s) -> {
       val tok = advance(st)
       NameAndSpan(name = s, span = tok.span)
     }
     case TIdent(_) -> {
+      clrNameQuoted = false
       val path = parseModulePath(st)
       NameAndSpan(name = modulePathJoin(path.segments), span = path.span)
     }
@@ -2372,6 +2374,7 @@ func parseExternTypeBody(st: inout ParseState): ExternTypeDecl {
     name = ns.name,
     generics = generics,
     clrName = finalClrName,
+    clrNameQuoted = clrNameQuoted,
     span = joinSpans(startTok.span, clrNameResult.span)
   )
 }

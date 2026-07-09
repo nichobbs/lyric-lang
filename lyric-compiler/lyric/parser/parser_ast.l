@@ -671,6 +671,13 @@ pub record ExternTypeDecl {
   name: String
   generics: Option[GenericParams]
   clrName: String
+  // True when the source spelled `clrName` as a quoted string literal
+  // (`extern type X = "Foo.Bar"`), false for the unquoted dotted-path form
+  // (`extern type X = Foo.Bar`, docs/47).  The formatter needs this to
+  // preserve the source's chosen syntax rather than always canonicalizing
+  // to one form (#5472) — `lyric fmt`'s loss-checker rejects an output that
+  // silently rewrites a bare dotted path into a string literal.
+  clrNameQuoted: Bool
   span: Span
 }
 
