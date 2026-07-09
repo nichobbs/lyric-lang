@@ -455,6 +455,12 @@ jobs:
         run: make maven-resolver
 
       - name: Install Native AOT dependencies
+        # clang and zlib1g-dev are required by the ILCompiler linker pass used by
+        # `lyric build --release` (the trampoline-elimination pipeline, #4139).
+        # binutils provides ld.bfd, which release.l's buildLinkerArgsUnix passes
+        # via -fuse-ld=bfd and explicitly checks for on PATH before linking
+        # (release.l:971-977) -- without it the release e2e step fails at the
+        # ld.bfd preflight check instead of building.
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang zlib1g-dev binutils
