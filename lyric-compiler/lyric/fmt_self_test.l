@@ -1409,6 +1409,46 @@ test "extern func without return type round trips" {
   assertTrue(isFormatted(acc, parse(acc)), "extern func no-ret: idempotent")
 }
 
+test "extern type quoted form round trips" {
+  val src = "package Std.ProbeHost\n\nextern type Enc = \"System.Text.Encoding\"\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "extern type quoted: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "extern type Enc = \"System.Text.Encoding\""), "extern type quoted: form preserved")
+  assertTrue(isFormatted(acc, parse(acc)), "extern type quoted: idempotent")
+}
+
+// #5472: the formatter always canonicalized `extern type` to the quoted
+// string form, so a source using the unquoted dotted-path form (docs/47)
+// failed `fmt --write`'s loss-check (a bare identifier path and a string
+// literal are different token sequences) and left the file unformatted.
+test "extern type unquoted dotted-path form round trips" {
+  val src = "package Std.ProbeHost\n\nextern type Enc = System.Text.Encoding\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "extern type unquoted: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "extern type Enc = System.Text.Encoding"), "extern type unquoted: form preserved")
+  assertTrue(not Str.contains(acc, "\"System.Text.Encoding\""), "extern type unquoted: not silently re-quoted")
+  assertTrue(isFormatted(acc, parse(acc)), "extern type unquoted: idempotent")
+}
+
+// The unquoted form combined with generics: the parser appends a
+// compiler-derived `` `N `` arity suffix to `clrName` for codegen (never
+// present in the unquoted source, since a bare dotted path cannot contain
+// a backtick), which the formatter must strip back off when re-rendering
+// the unquoted form rather than emitting the internal suffix verbatim.
+test "extern type unquoted generic form strips the derived arity suffix" {
+  val src = "package Std.ProbeHost\n\nextern type CD[K, V] = System.Collections.Concurrent.ConcurrentDictionary\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "extern type unquoted generic: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "extern type CD[K, V] = System.Collections.Concurrent.ConcurrentDictionary\n"),
+    "extern type unquoted generic: arity suffix not rendered"
+  )
+  assertTrue(isFormatted(acc, parse(acc)), "extern type unquoted generic: idempotent")
+}
+
 test "val binding named result round trips" {
   // #4778: a `val` binding named `result` (a valid binding name outside
   // `ensures:` position) was formatted with its name dropped, producing

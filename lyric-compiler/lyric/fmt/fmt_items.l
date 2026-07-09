@@ -1127,7 +1127,18 @@ func externDoc(item: in Item, ep: in ExternPackageDecl, ctx: inout FmtCtx): List
 }
 
 func externTypeDoc(visStr: in String, et: in ExternTypeDecl): List[String] {
-  singleLineDoc(visStr + "extern type " + et.name + genParamsStr(et.generics) + " = \"" + et.clrName + "\"")
+  if et.clrNameQuoted {
+    singleLineDoc(visStr + "extern type " + et.name + genParamsStr(et.generics) + " = \"" + et.clrName + "\"")
+  } else {
+    // Unquoted dotted-path form (docs/47): `et.clrName` may carry a
+    // compiler-appended `` `N `` generic-arity suffix (parser_items.l's
+    // `parseExternTypeBody`) that never appeared in the source — a bare
+    // dotted identifier path cannot contain a backtick — so strip it back
+    // off to reproduce the original unquoted spelling (#5472).
+    val bt = et.clrName.lastIndexOf("`")
+    val displayName = if bt >= 0 { et.clrName.substring(0, bt) } else { et.clrName }
+    singleLineDoc(visStr + "extern type " + et.name + genParamsStr(et.generics) + " = " + displayName)
+  }
 }
 
 func externFuncDoc(visStr: in String, ef: in ExternFuncDecl): List[String] {
