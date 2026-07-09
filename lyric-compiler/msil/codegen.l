@@ -23656,6 +23656,24 @@ func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilTyp
     }
     case None -> ()
   }
+  // A single-dimension array (`byte[]`, `string[]`) — the return/param type of
+  // BCL methods such as `Encoding.GetBytes(string): byte[]`.  Without this,
+  // `resolvedSigToMsil` returns None for any array-shaped signature, silently
+  // aborting metadata-direct resolution: `emitResolvedInstanceAutoFfi` (pure
+  // auto-FFI instance calls) falls back to the "no matching instance method"
+  // runtime throw stub, and `emitExternTargetBody`'s metadata-scored path
+  // never reaches the `emitIsStatic = not msig.hasThis` correction, leaving an
+  // `@externTarget` wrapper with no explicit `@externInstance` hint emitted as
+  // a static call with the receiver as an extra parameter (MissingMethodException
+  // at runtime, e.g. `Encoding.GetBytes(Encoding, String)` instead of the real
+  // instance `Encoding.GetBytes(String)`).  Mirrors `genericMemberSigToMsil`'s
+  // existing `STSzArray` case.
+  match Mdr.sigSzArrayElem(sig) {
+    case Some(elem) -> {
+      return match resolvedSigToMsil(cctx, elem) { case Some(m) -> Some(value = MArray(elemTy = m)); case None -> None }
+    }
+    case None -> ()
+  }
   // A closed generic instantiation (`Task`1<String>`, `List`1<Int>`) — the
   // return/param type of BCL methods such as `TextReader.ReadToEndAsync()`.
   // Encode it as a real closed GENERICINST so the MemberRef binds to the BCL

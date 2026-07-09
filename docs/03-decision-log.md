@@ -13574,6 +13574,85 @@ D-progress-634 (the fix being corrected here).
 
 ---
 
+## D-progress-636 — MSIL auto-FFI: `resolvedSigToMsil` had no case for array-shaped (`STSzArray`) signatures, so any BCL instance method returning/taking an array (e.g. `Encoding.GetBytes(string): byte[]`) could not be metadata-resolved, silently reopening the exact static-vs-instance mis-emission #3887 claimed to close
+
+**Status:** ACCEPTED
+
+**Symptom.** Reported downstream as a runtime crash attributed to (already-closed)
+issue #3887: `System.MissingMethodException: Method not found: 'Byte[]
+System.Text.Encoding.GetBytes(System.Text.Encoding, System.String)'` — an
+`@externTarget("System.Text.Encoding.GetBytes")` wrapper with no explicit
+`@externInstance`/`@externStatic` hint was emitted as a **static** call with
+the receiver smuggled in as an extra leading parameter, instead of the real
+instance call `Encoding.GetBytes(String)`. Re-investigating #3887 itself
+found both of its tracked items genuinely fixed (verified via a from-source
+mint + self-hosted stage-1/stage-2 bootstrap, including a targeted
+`parseModel`-shaped repro through the real `ilc` Native AOT path — no
+reproduction), so this was new information, not a regression of #3887's fix.
+
+**Root cause.** `resolvedSigToMsil` (`lyric-compiler/msil/codegen.l`) converts
+a metadata-decoded `Mdr.SigType` to the `MsilType` the emitter needs to encode
+a real MemberRef signature. It has explicit cases for by-ref, closed generic
+instantiations, primitives, and named class/value types — but none for
+`STSzArray` (a single-dimension array, e.g. `byte[]`), so it silently
+returned `None` for any array-shaped parameter or return type. Its sibling
+`genericMemberSigToMsil` (used for generic-type members) already had the
+equivalent `STSzArray -> MArray` case; `resolvedSigToMsil` was simply missing
+it. Two independent call sites depend on this conversion succeeding:
+- `emitResolvedInstanceAutoFfi` (pure auto-FFI instance-method-call syntax,
+  `expr.Method(args)` with no `@externTarget` wrapper) returns `None` when the
+  return type can't convert, which its caller treats identically to "no
+  matching overload" — falling back to the "unresolved extern instance
+  method" runtime-throw stub (a safe failure, but still fatal, and NOT the
+  user's crash).
+- `emitExternTargetBody`'s metadata-scored resolution (docs/42, the #3887
+  fix): when `resolvedSigToMsil(cctx, msig.returnType)` returns `None`, the
+  `case None -> ()` arm does nothing at all — critically, it never reaches
+  `emitIsStatic = not msig.hasThis`, the exact correction #3887 added. For a
+  wrapper with no explicit `@externInstance` hint, `emitIsStatic` therefore
+  stays at `resolveExternTarget`'s default (`RHEither -> true`, static) —
+  producing the wrong static-with-receiver-as-param0 MemberRef and a genuine
+  `MissingMethodException` at runtime. This is why the bug surfaces
+  differently depending on whether a hint is present: an explicit
+  `@externInstance` hint (matching every current in-repo caller, e.g.
+  `lyric-stdlib/std/_kernel/encoding_host.l`, `lyric-web/src/web.l`) masks it
+  — `emitIsStatic` is already correct before metadata resolution even runs,
+  so the silent `None` fallback to the Lyric-declared param/return types
+  (which the wrapper always has) produces a working, if metadata-resolution-
+  bypassing, build. Only a hint-less wrapper, or the pure-auto-FFI call-site
+  path (which has no Lyric-declared fallback at all), actually crashes.
+
+**Fix.** Added an `STSzArray` case to `resolvedSigToMsil`, using the existing
+cross-package accessor `Mdr.sigSzArrayElem` (already present, unused by this
+function — added for D105's interface-conformance work) and recursing on the
+element type, mirroring `genericMemberSigToMsil`'s identical case:
+`Mdr.sigSzArrayElem(sig) -> Some(elem) -> MArray(elemTy = resolvedSigToMsil(elem))`.
+`MArray` is already the confirmed lowered static type of `slice[T]`
+(`TSlice(elem) -> MArray(elemTy = ...)`), so this is consistent with every
+other array-consuming code path in the emitter.
+
+**Verification.** Built the self-hosted compiler from source (mint
+stage-0 from F# history, per `scripts/mint-stage0-fsharp.sh`, then stage 1)
+with the fix. Negative control: reverted the fix (`git stash`), rebuilt, and
+reproduced the reported crash **verbatim** — byte-for-byte the same
+`MissingMethodException` message — with an `@externTarget("...GetBytes")`
+wrapper carrying no `@externInstance` hint. Re-applied the fix, rebuilt,
+confirmed: (a) the exact same no-hint wrapper now resolves and runs
+correctly, (b) raw auto-FFI instance-call syntax (`enc.GetBytes(s)`, no
+wrapper at all) now resolves instead of throwing the runtime stub, (c) the
+existing hint-bearing wrapper pattern (matching `encoding_host.l`/`web.l`)
+still works standalone and cross-package (a restored path dependency),
+with no change in behavior. Ran the existing `auto_ffi_self_test.l` suite
+(14/14 pass, no regressions) and extended it with a new test, "auto-FFI
+resolves an instance method with an array-typed return", covering both the
+raw-auto-FFI and hint-less-wrapper shapes (15/15 pass with the fix).
+
+**Related:** #3887 (the metadata-direct resolution this gap was hiding
+inside), docs/42 (extern metadata resolution design), #3943 (the by-ref
+and value-type-receiver fixes to this same function), #4025 (the closed
+generic-instantiation fix to this same function).
+
+---
 ## Decisions deferred to v2 or later
 
 

@@ -33,6 +33,8 @@ extern type Typ = "System.Type"
 
 extern type Obj = "System.Object"
 
+extern type Enc = "System.Text.Encoding"
+
 // Unquoted dotted path declarations
 extern type UnquotedMath = System.Math
 extern type UnquotedPath = System.IO.Path
@@ -199,4 +201,35 @@ test "@externTarget with verified signatures compile and run correctly" {
 test "@externStatic static method with class-typed return" {
   val interned = externStrIntern("hello-intern")
   assertEqual(interned, "hello-intern", "Intern returns interned value")
+}
+
+// Regression for a `resolvedSigToMsil` gap: it had no case for `STSzArray`
+// (array-shaped signatures), so a BCL instance method returning an array —
+// `Encoding.GetBytes(string): byte[]` — could never be metadata-resolved.
+// Two symptoms of the same gap:
+//  (a) raw auto-FFI instance-method-call syntax on an extern-typed receiver
+//      (`enc.GetBytes(s)`, no `@externTarget` wrapper) fell back to the
+//      "no matching instance method found" runtime throw stub;
+//  (b) an `@externTarget` wrapper with no explicit `@externInstance`/
+//      `@externStatic` hint never got its `emitIsStatic` corrected by the
+//      metadata-scored resolution (the return-type conversion silently
+//      failed), so it was emitted as a static call with the receiver as an
+//      extra parameter — a real `System.MissingMethodException` at runtime
+//      (`Encoding.GetBytes(Encoding, String)` instead of the true instance
+//      `Encoding.GetBytes(String)`).
+@externTarget("System.Text.Encoding.get_UTF8")
+func externUtf8Encoding(): Enc = ()
+
+// Deliberately no `@externInstance` hint — this is exactly the shape that
+// used to mis-resolve to a static call.
+@externTarget("System.Text.Encoding.GetBytes")
+func externEncodingGetBytes(e: in Enc, s: in String): slice[Byte] = ()
+
+test "auto-FFI resolves an instance method with an array-typed return" {
+  // (a) raw auto-FFI: call GetBytes directly on the extern-typed receiver.
+  val direct = externUtf8Encoding().GetBytes("hi")
+  assertEqualInt(direct.count, 2, "GetBytes(\"hi\") via raw auto-FFI returns 2 bytes")
+  // (b) @externTarget wrapper with no explicit instance/static hint.
+  val viaWrapper = externEncodingGetBytes(externUtf8Encoding(), "hi")
+  assertEqualInt(viaWrapper.count, 2, "GetBytes(\"hi\") via unhinted @externTarget wrapper returns 2 bytes")
 }
