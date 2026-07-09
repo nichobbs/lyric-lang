@@ -571,7 +571,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-ecosystem:
     runs-on: ubuntu-latest
-    needs: [publish-nuget, create-release]
+    needs: [finalize-release]
     # Skipped when workflow_dispatch is used with publish_ecosystem unchecked.
     # Tag-push releases always publish ecosystem libs (github.event_name !=
     # 'workflow_dispatch' short-circuits the check).  Using github.event_name
@@ -595,10 +595,10 @@ jobs:
 
       # Reuse the self-contained binary build-standalone already published to
       # this release instead of rebuilding the whole compiler (stage 2 + AOT)
-      # from scratch.  build-standalone runs before this job (via publish-nuget),
-      # so the asset exists; `gh release download` works on the still-draft
-      # release with GITHUB_TOKEN.  This publishes the ecosystem libraries with
-      # the exact `lyric` binary being shipped, and skips a multi-minute rebuild.
+      # from scratch.  The release is finalized (non-draft) by finalize-release
+      # before this job runs, so `gh release download` retrieves the published
+      # binary. This publishes the ecosystem libraries with the exact `lyric`
+      # binary being shipped, and skips a multi-minute rebuild.
       - name: Download released lyric binary
         shell: bash
         env:
@@ -921,18 +921,25 @@ jobs:
           gh release delete "v${VERSION}" --yes || true
 
   # ---------------------------------------------------------------------------
-  # Mark the release as ready (non-draft) after all uploads and publishing
-  # are complete.  Runs only if all prior jobs succeeded or were skipped.
+  # Mark the release as ready (non-draft) after compiler and core publishing
+  # succeeds.  Ecosystem library failures do not block finalization — the
+  # compiler release ships independently, and ecosystem libraries can be
+  # published in a follow-up release that uses the newly-shipped compiler.
+  #
+  # Required for finalization:
+  #   - Core: create-release, build-standalone, publish-nuget, publish-vscode
+  #   - Cleanup must succeed if it ran (but it only runs on core failures)
+  # Optional/ignored:
+  #   - Ecosystem: ecosystem publish can fail without blocking the release.
   # ---------------------------------------------------------------------------
   finalize-release:
     runs-on: ubuntu-latest
-    needs: [create-release, build-standalone, publish-nuget, publish-ecosystem, publish-vscode, cleanup-on-failure]
+    needs: [create-release, build-standalone, publish-nuget, publish-vscode, cleanup-on-failure]
     if: >-
       always() &&
       needs.create-release.result == 'success' &&
       (needs.build-standalone.result == 'success' || needs.build-standalone.result == 'skipped') &&
       (needs.publish-nuget.result == 'success' || needs.publish-nuget.result == 'skipped') &&
-      (needs.publish-ecosystem.result == 'success' || needs.publish-ecosystem.result == 'skipped') &&
       (needs.publish-vscode.result == 'success' || needs.publish-vscode.result == 'skipped') &&
       (needs.cleanup-on-failure.result == 'success' || needs.cleanup-on-failure.result == 'skipped')
     steps:
