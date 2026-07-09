@@ -454,6 +454,11 @@ jobs:
       - name: Build Maven resolver jar
         run: make maven-resolver
 
+      - name: Install Native AOT dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang binutils
+
       - name: Restore
         working-directory: bootstrap
         run: dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj
