@@ -202,8 +202,14 @@ pub func extractEntry(data: in slice[Byte], ent: in ZipEntry): List[Int] {
     }
     buf
   } else if ent.method == 8 {
-    // DEFLATE.
-    inflate(data, ent.dataOffset, ent.compressedSize)
+    // DEFLATE.  `dataOffset` is untrusted; bail on an out-of-range start (the
+    // bit reader also clamps its window against `data.length`, so an oversized
+    // `compressedSize` cannot read past the buffer either).
+    if ent.dataOffset < 0 or ent.dataOffset > data.length {
+      newList()
+    } else {
+      inflate(data, ent.dataOffset, ent.compressedSize)
+    }
   } else {
     newList()   // unsupported method
   }

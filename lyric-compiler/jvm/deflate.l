@@ -110,10 +110,19 @@ pub record BitReader {
 
 pub func newBitReader(data: in slice[Byte], startOff: in Int, compressedLen: in Int): BitReader {
   val st: Map[String, Int] = newMap()
-  setS(st, "p", startOff)
+  // Clamp the read window to the actual buffer: `startOff`/`compressedLen` come
+  // from an untrusted ZIP directory, and `refillBits` indexes `data[p]` for any
+  // `p < e`.  Without this clamp a crafted `compressedLen` (or a start past the
+  // end) drives an out-of-bounds read.  A start past the end yields an
+  // immediately-exhausted reader (p == e), and the subtraction avoids the
+  // `start + compressedLen` overflow a near-Int.max size would cause.
+  val start = if startOff < 0 { 0 } else if startOff > data.length { data.length } else { startOff }
+  val remaining = data.length - start
+  val endOff = if compressedLen < 0 or compressedLen > remaining { data.length } else { start + compressedLen }
+  setS(st, "p", start)
   setS(st, "b", 0)
   setS(st, "n", 0)
-  setS(st, "e", startOff + compressedLen)
+  setS(st, "e", endOff)
   BitReader(data = data, state = st)
 }
 
