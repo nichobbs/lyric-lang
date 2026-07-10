@@ -41,7 +41,9 @@
 //!     background executor outside `awaitAll`).  `awaitAll` is where the
 //!     actions actually run: it opens one `scope { }` and `spawn`s each
 //!     pending action (JDK 21 virtual threads under the hood), so
-//!     independently-`scopeSpawn`ed children genuinely run concurrently.
+//!     independently-`scopeSpawn`ed children genuinely run concurrently —
+//!     but only for a same-package consumer; see the KNOWN GAP below for
+//!     the cross-package `ClassCastException` this does NOT cover.
 //!     A caller cannot observe "did this start yet" without `awaitAll`,
 //!     but the documented contract — spawn children, then `await
 //!     awaitAll(scope)` to join them — is unaffected.
@@ -64,11 +66,14 @@
 //!     structural no-op on this target — there is nothing left to track.
 //!     `scopeSpawn` is the concurrency primitive on this target.
 //!   - `makeCancelSourceTimeout`'s auto-cancel is a *lazy* deadline check
-//!     (`now >= deadline`) folded into `isCancelled`/`throwIfCancelled`
-//!     rather than an eagerly-scheduled background canceller — the latter
-//!     would need exactly the Runnable-bridging (2) rules out.  This is
-//!     equivalent for every consumer here, since cancellation is
-//!     cooperative-poll-based throughout this API.
+//!     (`System.nanoTime() - deadline >= 0`, monotonic and wrap-safe —
+//!     not wall-clock `currentTimeMillis()`, which would diverge from
+//!     .NET's real timer under an NTP step or manual clock change, #5348)
+//!     folded into `isCancelled`/`throwIfCancelled` rather than an
+//!     eagerly-scheduled background canceller — the latter would need
+//!     exactly the Runnable-bridging (2) rules out.  This is equivalent
+//!     for every consumer here, since cancellation is cooperative-poll-
+//!     based throughout this API.
 //!   - The ambient token slot uses `java.lang.ThreadLocal` (not
 //!     `ScopedValue`, which is still a JDK 21 preview API — the same
 //!     reason D120 rejected `StructuredTaskScope` for the `scope`/`spawn`
@@ -155,8 +160,21 @@ pub func makeCancelSource(): CancellationTokenSource {
 /// milliseconds.  Implemented as a lazy deadline check folded into
 /// `isCancelled`/`throwIfCancelled` (module header) rather than an
 /// eagerly-scheduled background canceller.
+///
+/// `deadlineMs` (field name kept for API parity with the record's other
+/// constructors) actually stores a `System.nanoTime()`-relative deadline
+/// in nanoseconds, not epoch milliseconds — `System.currentTimeMillis()`
+/// is wall-clock and subject to NTP steps, leap-second smears, and manual
+/// clock changes, which would fire this timeout early or late relative to
+/// .NET's `CancellationTokenSource` timer (#5348).  `System.nanoTime()` is
+/// monotonic and immune to all of that.  On the real target platform
+/// (Linux/OpenJDK), `nanoTime()` is boot-relative and always a large
+/// positive number, so a freshly computed deadline colliding with the
+/// `deadlineMs == 0` "no deadline" sentinel used by `isCancelled` below is
+/// not a practical concern.
 pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource {
-  CancellationTokenSource(flag = JAtomicBoolean.new(false), deadlineMs = JSystem.currentTimeMillis() + intToLong(ms))
+  val deadlineNanos = JSystem.nanoTime() + intToLong(ms) * 1000000i64
+  CancellationTokenSource(flag = JAtomicBoolean.new(false), deadlineMs = deadlineNanos)
 }
 
 /// Project a token from a source.  The token shares the source's
@@ -179,11 +197,20 @@ pub func disposeSource(source: in CancellationTokenSource): Unit {
 
 /// Has cancellation been requested — explicitly, or via an elapsed
 /// `makeCancelSourceTimeout` deadline?
+///
+/// The deadline comparison is written as a subtraction
+/// (`nanoTime() - deadline >= 0`) rather than a direct `>=` against two
+/// independently-read `nanoTime()` values: `System.nanoTime()` is only
+/// guaranteed monotonic and can wrap around `Long` after ~292 years of
+/// continuous uptime.  Subtraction-then-compare is the standard idiom
+/// (matching `System.nanoTime()`'s own Javadoc) because two's-complement
+/// wraparound still yields the correct signed difference across the wrap
+/// boundary, whereas a direct `>=` would not.
 pub func isCancelled(token: in CancellationToken): Bool {
   if token.flag.get() {
     true
   } else if token.deadlineMs > 0i64 {
-    JSystem.currentTimeMillis() >= token.deadlineMs
+    JSystem.nanoTime() - token.deadlineMs >= 0i64
   } else {
     false
   }
