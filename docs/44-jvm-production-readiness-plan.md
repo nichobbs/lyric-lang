@@ -72,11 +72,15 @@ headline problems:
    through `@externTarget` into F# host code (`jvm/_kernel/kernel.l:19,24,28`
    → `bootstrap/src/Lyric.Jvm.Hosts/JvmHosts.fs`) — exactly the pattern
    CLAUDE.md forbids for new boundaries, and an F#-residue parity gap the
-   MSIL path already eliminated (#1492; `docs/41` H12). Automated Maven
+   MSIL path already eliminated (#1492; `docs/41` H12). ~~Automated Maven
    resolution is **non-functional**: the `[maven]` table is parsed only by F#
    `Manifest.fs` (absent from `manifest.l`), and the `resolver/` Java project
    is **orphaned** (no script, F#, Lyric, or CI references it). The only
-   working JVM-dependency mechanism is the manual `LYRIC_FFI_JARS` env var.
+   working JVM-dependency mechanism is the manual `LYRIC_FFI_JARS` env var.~~
+   **Superseded by M-6/M-7 (both DONE):** `manifest.l:assembleMaven` parses the
+   `[maven]` table, and `resolver/` is the **live** Maven resolution path —
+   `cli_restore.l` locates `lyric-resolver.jar` and executes it, and
+   `cli_build.l` injects the resolved classpath via `LYRIC_FFI_JARS`.
 
 6. **No JVM production-readiness epic exists.** Unlike .NET (#1470), JVM work
    lives as scattered "parity with MSIL #N" follow-ups. This plan proposes the
@@ -645,9 +649,11 @@ and J4 (async), and the J2→J4 logical dependency holds — so Track A
   not block the v1.0 release train and continues shipping on its own cadence.
 - **Generics on JVM:** accept erased + `checkcast` for v1 (recommended; matches
   `docs/18`), or invest in specialised helpers / await Valhalla (Q-J001/Q-J003)?
-- **Maven resolver:** revive the orphaned Java `resolver/` (pragmatic, but adds
-  a JVM build dependency), or build a pure-Lyric resolver (aligns with the
-  self-hosting standard, larger effort)?
+- **Maven resolver: RESOLVED (M-7).** The Java `resolver/` was revived — it is
+  the live Maven resolution path (`cli_restore.l` executes `lyric-resolver.jar`,
+  built by `make maven-resolver` and bundled with every distribution). A
+  pure-Lyric resolver (aligning with the self-hosting standard) remains a
+  possible future replacement, not an open blocker.
 
 ---
 
