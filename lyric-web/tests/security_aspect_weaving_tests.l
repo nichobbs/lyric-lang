@@ -118,6 +118,36 @@ test "RequiresRole aspect: a validly-signed token with the required role reaches
   }
 }
 
+// ─── Empty-credential path (regression for the aspect-precondition DoS) ──────
+//
+// These aspects previously carried a `requires: args.<field> != ""` clause,
+// which elaborates into a runtime precondition assert (D118) that PANICKED the
+// server process when a request arrived with a missing/empty Authorization or
+// X-Api-Key header — the single most common unauthenticated request. The fix
+// removed the clause and relies on the aspect body's own empty-case branch,
+// which fails closed with 401. These tests pin that: an empty credential must
+// return a graceful 401 Unauthorized, never crash the process.
+test "ApiKey aspect: an empty key returns 401 without crashing (was a panic)" {
+  match apiKeyGuardedHandler("") {
+    case Ok(_) -> assertTrue(false, "an empty key must be rejected before the handler runs")
+    case Err(e) -> assertEqualInt(e.status, 401, "empty key short-circuits with 401 Unauthorized")
+  }
+}
+
+test "RequiresAuth aspect: an empty token returns 401 without crashing (was a panic)" {
+  match authGuardedHandler("") {
+    case Ok(_) -> assertTrue(false, "an empty token must be rejected before the handler runs")
+    case Err(e) -> assertEqualInt(e.status, 401, "empty token short-circuits with 401 Unauthorized")
+  }
+}
+
+test "RequiresRole aspect: an empty token returns 401 without crashing (was a panic)" {
+  match roleGuardedHandler("") {
+    case Ok(_) -> assertTrue(false, "an empty token must be rejected before the handler runs")
+    case Err(e) -> assertEqualInt(e.status, 401, "empty token short-circuits with 401 Unauthorized")
+  }
+}
+
 // The `enabled` master switch must bypass the guard entirely when false — a
 // regression that dropped the bypass would silently start rejecting traffic on
 // endpoints the operator deliberately left unguarded.

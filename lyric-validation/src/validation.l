@@ -39,6 +39,7 @@
 package Validation
 
 import Std.Core
+import Std.Char
 import Std.Collections as Collections
 import Std.Regex as Regex
 
@@ -110,8 +111,10 @@ pub func exactLength(value: in String, field: in String, length: in Int): slice[
 
 /// Fail when `value` is empty or contains only whitespace characters.
 ///
-/// Whitespace is defined as space (0x20), tab (0x09), carriage return (0x0D),
-/// and newline (0x0A).
+/// Whitespace is Unicode-aware (`Std.Char.isWhiteSpace`): beyond space
+/// (0x20), tab (0x09), carriage return (0x0D), and newline (0x0A), this
+/// also rejects values made up solely of characters such as U+00A0
+/// (no-break space), U+2003 (em space), and U+3000 (ideographic space).
 @stable(since = "0.1")
 pub func notBlank(value: in String, field: in String): slice[ValidationError] {
   if value.length == 0 {
@@ -120,7 +123,7 @@ pub func notBlank(value: in String, field: in String): slice[ValidationError] {
   var i = 0
   while i < value.length {
     val ch: Char = value[i]
-    if ch != ' ' and ch != '\t' and ch != '\r' and ch != '\n' {
+    if not Char.isWhiteSpace(ch) {
       return []
     }
     i = i + 1
@@ -197,7 +200,7 @@ pub func email(value: in String, field: in String): slice[ValidationError] {
   // Reject leading/trailing whitespace.
   val first: Char = value[0]
   val last: Char = value[value.length - 1]
-  if first == ' ' or first == '\t' or last == ' ' or last == '\t' {
+  if Char.isWhiteSpace(first) or Char.isWhiteSpace(last) {
     return badEmail
   }
   // Find the "@" — must appear exactly once.

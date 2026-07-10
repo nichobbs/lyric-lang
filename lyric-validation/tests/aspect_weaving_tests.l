@@ -54,6 +54,41 @@ test "cross-package from: too-long input short-circuits with Err" {
   }
 }
 
+// Regression for the aspect-precondition DoS: ValidateInput previously carried
+// a `requires: args.input != ""` clause that elaborates into a runtime assert
+// (D118), so an empty input string PANICKED the process instead of being
+// validated.  The fix removed the clause; emptiness is governed by minLen
+// (here 3), so an empty input now short-circuits with a graceful Err.
+test "cross-package from: empty input returns Err without crashing (was a panic)" {
+  match guardedEcho("") {
+    case Ok(_) -> assertTrue(false, "empty input must be rejected, not crash the process")
+    case Err(errs) -> assertTrue(errs.length > 0, "empty input short-circuits with a validation error")
+  }
+}
+
+// ── ValidateEmail: empty-email path (same DoS regression) ────────────────────
+aspect EmailGuard from Validation.Aspects.ValidateEmail {
+  matches: name like "emailGuarded*"
+}
+
+pub func emailGuardedEcho(email: in String): Result[String, slice[Validation.ValidationError]] {
+  return Ok("handled:" + email)
+}
+
+test "ValidateEmail from: a valid email proceeds to the handler body" {
+  match emailGuardedEcho("alice@example.com") {
+    case Ok(v) -> assertEqual(v, "handled:alice@example.com", "valid email must reach the handler")
+    case Err(_) -> assertTrue(false, "valid email must not be short-circuited")
+  }
+}
+
+test "ValidateEmail from: an empty email returns Err without crashing (was a panic)" {
+  match emailGuardedEcho("") {
+    case Ok(_) -> assertTrue(false, "empty email must be rejected, not crash the process")
+    case Err(errs) -> assertTrue(errs.length > 0, "empty email short-circuits with a validation error")
+  }
+}
+
 // ── Form 2: same-package unqualified `from LenTemplate` ──────────────────────
 // `enabled` is left to the template default (true), `minLen` is overridden,
 // and `args.input` is read C-mode — all under the bare-config spelling.

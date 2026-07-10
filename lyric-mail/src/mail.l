@@ -306,11 +306,12 @@ pub func connectSendGrid(): Result[MailSender, MailError] {
 // ─── Convenience functions ────────────────────────────────────────────────────
 /// Top-level wrapper for `sender.send(msg)`.
 ///
-/// Guards every CRLF / NUL-bearing field on `msg` before the kernel
-/// path can compose it into MIME headers (CWE-93).  The convenience
-/// wrappers (`sendSimple`, `sendHtml`) carry the same `requires:`
-/// clauses; this guard catches the direct-`send` path that constructed
-/// the `EmailMessage` record by hand.  See lyric-lang #396 / #740.
+/// Guards every CRLF / NUL-bearing field on `msg` (via `validateNoInjection`)
+/// before the kernel path can compose it into MIME headers (CWE-93), and
+/// rejects a recipient-less message.  These are structured-`Err` checks, not
+/// `requires:` clauses — a precondition assert on client-controlled fields
+/// would crash the process (D118).  `sendSimple`/`sendHtml` route through this
+/// same guard.  See lyric-lang #396 / #740.
 @stable(since = "0.1")
 pub func send(sender: in MailSender, msg: in EmailMessage): Result[Unit, MailError] {
   // No `requires: msg.subject.length > 0` / `msg.to.length > 0`: those fields
