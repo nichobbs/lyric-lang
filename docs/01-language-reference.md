@@ -1525,6 +1525,23 @@ diagnostic; when the jmods directory is absent (no JDK found), the auto-FFI
 falls back to the legacy object-typed binding and a `NoClassDefFoundError` at
 class-load time is possible.
 
+**Function-typed parameters (typed delegate binding, D122).** On
+`--target dotnet`, a lambda passed directly to an `@externTarget`
+function's own `TFunction`-typed parameter binds to a real closed
+`System.Func<T1,...,Tn,TReturn>` / `System.Action<T1,...,Tn>` — including
+value-type type arguments (e.g. `CancellationToken`) — instead of the
+uniform boxed `Func<object,...,object>` ABI every other function-typed
+value still uses. Before D122, this shape either silently mismatched or
+crashed at runtime against a real BCL delegate-typed parameter; the fix is
+strictly scoped to an `@externTarget` function's own declared
+`TFunction`-typed parameters (resolved from the function's own AST, no
+type-checker dependency) — it does not change the lambda ABI generally,
+and every other native higher-order-function or lambda call site is
+unaffected. Verified against `System.Net.Http.SocketsHttpHandler`'s
+`ConnectCallback` (`Func<SocketsHttpConnectionContext, CancellationToken,
+ValueTask<Stream>>`). See D122 in `docs/03-decision-log.md` and
+`docs/50-ffi-delegates-proposal.md`.
+
 ### 11.4 Auto-FFI and import extern
 
 External types can be imported directly using the `import extern` syntax. This is the preferred mechanism for interacting with host runtime APIs (such as the .NET BCL or Java JDK) as it unifies package imports and external imports under one cohesive model.
@@ -1657,6 +1674,14 @@ the loop bound, so appended elements past the snapshot length are
 never visited, and removal can shift indices such that an element is
 skipped or an index is revisited (#4790). Don't mutate a `List` you're
 currently iterating over on the native target.
+
+`Map.keys()`/`Map.values()` also diverge on `--target native`: the
+snapshot walks every slot up to the map's capacity (its high-water mark,
+which never shrinks on removal) rather than only its current length, so
+the call is O(capacity), not O(current length) — a map populated with
+many entries and then mostly cleared still pays for its peak capacity on
+every `keys()`/`values()` call (#4795). O(current length) is only
+guaranteed on the managed (.NET/JVM) targets.
 
 ## 12. Standard library
 
@@ -1944,6 +1969,7 @@ A `@bench` function whose signature does not match `func name(): Unit` passes th
 - **Auto-detection**: If no upgrade channel is specified, auto-detects how `lyric` is running. If it runs as a `.NET Global Tool` (path contains `.store`, `dotnet-tools`, or `.dotnet`), it uses the NuGet channel; otherwise, it downloads and executes the zero-dependency POSIX installation script (`install.sh`) from GitHub Releases.
 - **Forced Channels**: `--nuget` / `--dotnet-tool` forces upgrading via `.NET Global Tool` (`dotnet tool update -g lyric`). `--github` forces upgrading via the raw GitHub Releases installer script.
 - **Options**: `--version <version>` upgrades to a specific target semver version. `--dir <dir>` specifies the target installation directory when upgrading via GitHub Releases. `--dry-run` performs a dry-run and prints the commands that would be executed without making any modifications.
+- **Platform scope**: `lyric upgrade` is `.NET`-only by design — it manages the `.NET` AOT CLI binary itself; `--target jvm` compiles user programs to JVM bytecode rather than producing a separate CLI binary, so there is no JVM counterpart to upgrade.
 
 `lyric deps [--manifest <lyric.toml>]` prints the resolved dependency list from `lyric.lock` (one line per package: `<name> [<version>]  [<source>]`). Exits 1 if no lock file exists; run `lyric restore` first.
 

@@ -65,6 +65,8 @@ pub func strTrim(s: in String): String
 
 **Unresolvable targets.** On `--target dotnet` an `@externTarget` whose CLR type cannot be resolved to a known reference assembly (anything outside the `System.*` BCL surface and the `Lyric.*` internal host) fails the build with a clear diagnostic naming the unresolvable type, rather than silently mis-binding to `System.Runtime` and throwing `MissingMethodException` at runtime.  On `--target jvm` there is no compile-time class-resolution check; an unresolvable Java class name throws `NoClassDefFoundError` at class-load time.
 
+**Passing a lambda to a delegate-typed parameter.** When an `@externTarget` function itself declares a function-typed (`TFunction`) parameter and you pass a Lyric lambda directly at the call site, `--target dotnet` binds it to a real closed `System.Func<...>`/`System.Action<...>` delegate — matching the BCL API's exact declared type, including value-type type arguments such as `CancellationToken` — rather than the boxed `Func<object,...,object>` shape every other function-typed value in Lyric uses. This is a narrow fix (D122): it only applies to an `@externTarget` function's own declared parameters, not to lambdas in general, so it is safe to rely on when wrapping a BCL API like `SocketsHttpHandler.ConnectCallback` that expects a specific delegate signature.
+
 ## §13.3 The `@axiom` social contract
 
 An `@axiom` block is not just compiler syntax. It is a commitment you record in your code review history.

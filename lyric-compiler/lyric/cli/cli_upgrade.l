@@ -15,6 +15,11 @@ import Std.Hash as Hash
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11i. Upgrade command — self-upgrade Lyric compiler
+//
+// .NET-only by design: this manages the .NET AOT CLI binary itself. The JVM
+// target compiles user programs to JVM bytecode, not a separate CLI binary,
+// so there is no JVM counterpart to upgrade (see docs/01-language-reference.md
+// §13.12).
 // ─────────────────────────────────────────────────────────────────────────────
 pub func cmdUpgrade(argv: in slice[String]): Int {
   var isNuget = false

@@ -90,9 +90,9 @@ Concrete examples surfaced across the sweep:
 | stdlib | `std/_kernel/http_host.l:20-30` | `HttpMethod`, `HttpRequestMessage`, `StringContent`, `HttpClient`, `HttpClientHandler`, `SocketsHttpHandler` |
 | stdlib | `std/_kernel/random_host.l`, `std/_kernel/task.l`, `std/_kernel/process_capture_host.l` | `Random`, `CancellationTokenSource`, `ProcessStartInfo`/`MemoryStream`/`StreamReader` |
 | stdlib | `std/_kernel_jvm/collections_host.l:24-33` | JVM parity (`ArrayList`, `HashMap`) |
-| lyric-web | `src/web.l:65` | `HttpListener` |
-| lyric-web, lyric-ws, lyric-mq, lyric-jobs, lyric-resilience | `_kernel/net/*_kernel.l` | `ConcurrentDictionary`/`ConcurrentQueue` wrappers (5+ occurrences each in mq/jobs kernels) |
-| lyric-mail | `src/_kernel/net/mail_kernel.l:41-135` | `SmtpClient`, `NetworkCredential`, `MailMessage`, `MailAddress`, `MemoryStream`, `Attachment` (9 total) |
+| lyric-web | `src/web.l:65` | **Done** (PR #5270, #5272) — `HttpListener` and 25+ other wrapper functions (`HttpListenerContext`, `HttpListenerResponse`, `Stream`, `Encoding`, …) migrated to `import extern`/`.new()`. |
+| lyric-ws, lyric-mq, lyric-jobs, lyric-resilience | `_kernel/net/*_kernel.l` | `ConcurrentDictionary`/`ConcurrentQueue` wrappers (5+ occurrences each in mq/jobs kernels) — still open |
+| lyric-mail | `src/_kernel/net/mail_kernel.l:41-135` | **Done** (PR #5270, #5272) — `SmtpClient`, `NetworkCredential`, `MailMessage`, `MailAddress`, `MailAddressCollection`, `AttachmentCollection` migrated to `import extern` in `mail.l`. `MemoryStream`/`Attachment` constructor wrappers intentionally kept (no `.new()` benefit for these two call sites). |
 
 `import extern` grouping candidates (files with 3+ scattered single-line
 `extern type` declarations that would read more clearly grouped by
@@ -476,10 +476,16 @@ blocks closing this section and rollout item 7 below.
    by the final bootstrapped compiler, not part of the bootstrap closure
    — now uses `HttpListener.new()` directly. All 34 `lyric-web` tests
    pass unchanged. `collections_host.l` and the rest of the stdlib/
-   compiler backlog remain blocked on #5167; the ecosystem-library half
-   of §2's backlog (`lyric-mail`, `lyric-ws`/`lyric-mq`/`lyric-jobs`/
-   `lyric-resilience`'s `_kernel/net/*_kernel.l`, etc.) is unaffected and
-   open for the same treatment.
+   compiler backlog remain blocked on #5167. **Update (PR #5270,
+   #5272):** the ecosystem-library half of this backlog is now **done**
+   for `lyric-mail` (all `mail_kernel.l` types migrated to `import
+   extern` except the intentionally-kept `MemoryStream`/`Attachment`
+   constructor wrappers) and `lyric-web` (25+ additional wrapper
+   functions removed beyond the original `HttpListener.new()` slice,
+   covering `HttpListenerContext`, `HttpListenerResponse`, `Stream`,
+   `Encoding`, etc.). `lyric-ws`/`lyric-mq`/`lyric-jobs`/
+   `lyric-resilience`'s `_kernel/net/*_kernel.l` remain open for the
+   same treatment.
 3. ~~Close the stdlib I/O test gap: `file_tests.l`, `directory_tests.l`,
    `http_tests.l` (§5.1) — highest leverage since every ecosystem library
    built on top inherits the coverage.~~ **Done** — see §5.1's update.
@@ -614,7 +620,10 @@ whatever attempt 1's capture pattern tripped over.
 **Verification note:** this sandbox cannot build stage 0 (`scripts/mint-stage0-fsharp.sh`
 fails — no GitHub API access for the release download, the same
 constraint `docs/03-decision-log.md` D-progress-543 documents for a
-different symptom), so neither fix attempt could be locally compiled and
+different symptom) [historical: `scripts/mint-stage0-fsharp.sh` and
+`LYRIC_BOOTSTRAP_MINT` were decommissioned by D125/D126 — stage 0 is now a
+downloaded self-hosted seed release; the "no GitHub API access" constraint
+now applies to that download instead], so neither fix attempt could be locally compiled and
 run before pushing. CI — which *can* build stage 0 — is the actual
 verification for this fix, and attempt 1's runtime crash is direct proof
 that "it compiles" is not sufficient evidence of correctness in this
@@ -628,7 +637,8 @@ tracked as issue #5049 to investigate whether it indicates a genuine
 self-hosted MSIL codegen gap for this control-flow shape. A follow-up
 session, working from a sandbox that *could* build stage 0 from source
 (via `git fetch --unshallow` + `scripts/mint-stage0-fsharp.sh`, unlike this
-sandbox), restored attempt 1's code verbatim into `parseImportDecl`,
+sandbox) [historical: this script no longer exists — D125/D126 replaced it
+with a downloaded self-hosted seed release for stage 0], restored attempt 1's code verbatim into `parseImportDecl`,
 rebuilt the self-hosted toolchain from it, and ran the rebuilt compiler
 against both a synthetic selector-group import and this exact file
 (`import_extern_self_test.l`) — across six escalating-fidelity attempts,

@@ -411,7 +411,10 @@ should precede feature-completion work, because they stop *silent* wrongness.
 - **Phase 5 (D-progress-444/445, D092):** `yield`-bearing `async func`
   synthesised as eager-producer `IAsyncEnumerable<object>` class;
   `emitCollectionForMsil` uses async-enumerator protocol with element-type
-  unboxing.
+  unboxing. **Update (D119, 2026-07-05):** this "eager-producer" description
+  is stale — `synthesizeGeneratorMsil` now emits a *lazy* `TaskCompletionSource`
+  state machine (one value per pull), and `await`+`yield` in the same body
+  works on MSIL. See the C5 row above, D119, and `docs/09` §14.6.
 
 Verified by `async_sm_self_test.l` (29 tests), `async_extern_self_test.l` (4
 tests), `async_generator_self_test.l` (8 tests).
@@ -557,7 +560,9 @@ The authoritative tactical task list is `docs/12-todo-plan.md`._
   #2070 shipped (D085–D092): extern async unwrapping (Phase A), `IAsyncStateMachine`
   synthesis with multi-await, promoted locals, and stack-spill (Phases B.0–B.3),
   `ESpawn` (Phase 4), and eager-producer `IAsyncEnumerable<object>` generator
-  synthesis (Phase 5, D-progress-444/445, D092).  Verified by
+  synthesis (Phase 5, D-progress-444/445, D092). **Update (D119, 2026-07-05):**
+  "eager-producer" is stale — generator synthesis is now a *lazy*
+  `TaskCompletionSource` state machine; see the C5 row above.  Verified by
   `async_sm_self_test.l` (29), `async_extern_self_test.l` (4),
   `async_generator_self_test.l` (8).  Open correctness bugs tracked separately:
   #2725 (await-in-try).  Dynamic maxStack computation shipped (#3085).  JVM generator parity: #2469.
@@ -614,7 +619,12 @@ The bootstrap currently mints a clean stage-0 from the F#-emitter git history
 (`LYRIC_BOOTSTRAP_MINT=1`) and **reuses that F#-emitted CLI closure** instead of
 letting the self-hosted MSIL emitter re-emit a working copy of itself
 (`scripts/bootstrap.sh::stage1_cli_bundle`).  Removing that reuse — true
-self-reproduction — is still blocked.  This section records the exact,
+self-reproduction — is still blocked.  [Historical as of 2026-06-19: D125/D126
+(docs/03-decision-log.md, 2026-07-08) decommissioned the F# bootstrap and
+`LYRIC_BOOTSTRAP_MINT` entirely — stage 0 is now sourced from a downloaded
+self-hosted seed release, not a minted F# closure. The self-reproduction gap
+this section maps is analyzed against the retired mechanism; re-verify against
+the download-seed model before acting on it.] This section records the exact,
 source-verified blockers found while driving the self-emitted compiler against
 the example corpus, so a focused effort can act on a map rather than
 re-discover them.
@@ -837,7 +847,12 @@ patching.
 
 These fixes **cannot land incrementally**.  CI builds via
 `bootstrap.sh --stage 1` with `LYRIC_BOOTSTRAP_MINT=1`, which reuses the
-F#-emitted (no-suffix) CLI closure *and* its no-suffix stdlib.  The AOT binary
+F#-emitted (no-suffix) CLI closure *and* its no-suffix stdlib.  [Historical as
+of 2026-06-19: D125/D126 (docs/03-decision-log.md, 2026-07-08) decommissioned
+the F# bootstrap and `LYRIC_BOOTSTRAP_MINT` entirely, replacing stage 0 with a
+downloaded self-hosted seed release. The atomicity argument below was made
+against the F#-reuse mechanism and should be re-checked against the
+download-seed bootstrap before being relied on.]  The AOT binary
 runs this (self-hosted) codegen, so with the suffix fixes its corpus builds emit
 suffix consumers that link the reused no-suffix stdlib → mismatch → CI red.
 Consistency requires the bootstrap to **drop the F# reuse and self-build the
