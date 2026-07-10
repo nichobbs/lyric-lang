@@ -68,6 +68,7 @@ pub record CodegenCtx {
   tokWriteLineLong: Int  // Console.WriteLine(int64)
   tokWriteLineDbl: Int  // Console.WriteLine(double)
   tokWriteLineBool: Int  // Console.WriteLine(bool)
+  tokWriteLineChar: Int  // Console.WriteLine(char)
   tokWriteStr: Int  // Console.Write(string)
   tokConcat2: Int  // String.Concat(string,string)
   tokConcat3: Int  // String.Concat(string,string,string)
@@ -677,12 +678,20 @@ pub func newCodegenCtx(
   val tokWLBool = 0x0A000000 +
     ctxAddMemberRef(lctx, trConsole, "WriteLine", "wl_bool", buildStaticMethodSig(wlBoolPs, MVoid))
 
-  // 6. Console.Write(string): void  → 0x0A000006
+  // 6. Console.WriteLine(char): void  → 0x0A000006 — `println('A')` must print
+  // the glyph like the JVM backend does, not the char's integer code
+  // (docs/59 §3 F5).
+  val wlCharPs: List[MsilType] = newList()
+  wlCharPs.add(MChar)
+  val tokWLChar = 0x0A000000 +
+    ctxAddMemberRef(lctx, trConsole, "WriteLine", "wl_char", buildStaticMethodSig(wlCharPs, MVoid))
+
+  // 7. Console.Write(string): void  → 0x0A000007
   val wStrPs: List[MsilType] = newList()
   wStrPs.add(MString)
   val tokWStr = 0x0A000000 + ctxAddMemberRef(lctx, trConsole, "Write", "w_str", buildStaticMethodSig(wStrPs, MVoid))
 
-  // 7. String.Concat(string,string): string  → 0x0A000007
+  // 8. String.Concat(string,string): string  → 0x0A000008
   val concat2Ps: List[MsilType] = newList()
   concat2Ps.add(MString)
   concat2Ps.add(MString)
@@ -1643,6 +1652,7 @@ pub func newCodegenCtx(
     tokWriteLineLong = tokWLLong,
     tokWriteLineDbl = tokWLDbl,
     tokWriteLineBool = tokWLBool,
+    tokWriteLineChar = tokWLChar,
     tokWriteStr = tokWStr,
     tokConcat2 = tokConcat2,
     tokConcat3 = tokConcat3,
@@ -10633,7 +10643,9 @@ func lowerBuiltinOrStaticCallMsil(
         case MLong -> insns.add(MCall(methodToken = cctx.tokWriteLineLong))
         case MDouble -> insns.add(MCall(methodToken = cctx.tokWriteLineDbl))
         case MBool -> insns.add(MCall(methodToken = cctx.tokWriteLineBool))
-        case MChar -> insns.add(MCall(methodToken = cctx.tokWriteLineInt))
+        // Console.WriteLine(char) prints the glyph (JVM parity, docs/59 §3 F5);
+        // the WriteLine(int32) overload printed the char's integer code.
+        case MChar -> insns.add(MCall(methodToken = cctx.tokWriteLineChar))
         case MVoid -> {
           val emptyTok = ctxInternUs(cctx.lctx, "")
           insns.add(MLdStr(token = emptyTok))

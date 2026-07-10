@@ -158,6 +158,31 @@ test "two independent packages bundle" {
   assertEqual(Str.trim(result.stdout), "7", "two_independent_packages_bundle: stdout matches expected")
 }
 
+// `println(char)` must print the glyph via Console.WriteLine(char) — JVM
+// parity (docs/59 §3 F5).  It used to route through the WriteLine(int32)
+// token, printing the char's integer code (65 for 'A') while interpolation
+// (`"${c}"` boxes the Char and ToStrings it) printed the glyph — internally
+// inconsistent; the third line pins that both surfaces now agree.
+test "println of a Char prints the glyph, not the integer code" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "CharPrint.App",
+      "package CharPrint.App\n" + "\n" + "func main(): Unit {\n" + "  println('A')\n" + "  val c: Char = 'z'\n" +
+        "  println(c)\n" +
+        "  println(\"<\${c}>\")\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("charprint", packages, "CharPrint")
+  assertEqualInt(result.exitCode, 0, "char_println_glyph: exit 0 (stderr=" + result.stderr + ")")
+  val lines = Str.split(Str.trim(result.stdout), "\n")
+  assertEqualInt(lines.count, 3, "char_println_glyph: three output lines")
+  assertEqual(lines[0], "A", "char_println_glyph: println('A') prints A")
+  assertEqual(lines[1], "z", "char_println_glyph: println(c) prints z")
+  assertEqual(lines[2], "<z>", "char_println_glyph: interpolation agrees with println(char)")
+}
+
 // First package contributes a record + func, the second is a plain
 // `main`-bearing program.  Pins that pkg B's func tokens land at the
 // correct MethodDef row after pkg A's record ctor row.
