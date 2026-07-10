@@ -619,12 +619,13 @@ The bootstrap currently mints a clean stage-0 from the F#-emitter git history
 (`LYRIC_BOOTSTRAP_MINT=1`) and **reuses that F#-emitted CLI closure** instead of
 letting the self-hosted MSIL emitter re-emit a working copy of itself
 (`scripts/bootstrap.sh::stage1_cli_bundle`).  Removing that reuse — true
-self-reproduction — is still blocked.  [Historical as of 2026-06-19: D125/D126
-(docs/03-decision-log.md, 2026-07-08) decommissioned the F# bootstrap and
-`LYRIC_BOOTSTRAP_MINT` entirely — stage 0 is now sourced from a downloaded
-self-hosted seed release, not a minted F# closure. The self-reproduction gap
-this section maps is analyzed against the retired mechanism; re-verify against
-the download-seed model before acting on it.] This section records the exact,
+self-reproduction — is still blocked.  [Historical note, added 2026-07-10:
+this section was written 2026-06-19 and describes a mechanism that has since
+been retired — D125/D126 (docs/03-decision-log.md, 2026-07-08) decommissioned
+the F# bootstrap and `LYRIC_BOOTSTRAP_MINT` entirely, and stage 0 is now
+sourced from a downloaded self-hosted seed release, not a minted F# closure.
+The self-reproduction gap this section maps is analyzed against the retired
+mechanism; re-verify against the download-seed model before acting on it.] This section records the exact,
 source-verified blockers found while driving the self-emitted compiler against
 the example corpus, so a focused effort can act on a map rather than
 re-discover them.
@@ -847,12 +848,13 @@ patching.
 
 These fixes **cannot land incrementally**.  CI builds via
 `bootstrap.sh --stage 1` with `LYRIC_BOOTSTRAP_MINT=1`, which reuses the
-F#-emitted (no-suffix) CLI closure *and* its no-suffix stdlib.  [Historical as
-of 2026-06-19: D125/D126 (docs/03-decision-log.md, 2026-07-08) decommissioned
-the F# bootstrap and `LYRIC_BOOTSTRAP_MINT` entirely, replacing stage 0 with a
-downloaded self-hosted seed release. The atomicity argument below was made
-against the F#-reuse mechanism and should be re-checked against the
-download-seed bootstrap before being relied on.]  The AOT binary
+F#-emitted (no-suffix) CLI closure *and* its no-suffix stdlib.  [Historical
+note, added 2026-07-10: this subsection predates D125/D126
+(docs/03-decision-log.md, 2026-07-08), which decommissioned the F# bootstrap
+and `LYRIC_BOOTSTRAP_MINT` entirely, replacing stage 0 with a downloaded
+self-hosted seed release. The atomicity argument below was made against the
+F#-reuse mechanism and should be re-checked against the download-seed
+bootstrap before being relied on.]  The AOT binary
 runs this (self-hosted) codegen, so with the suffix fixes its corpus builds emit
 suffix consumers that link the reused no-suffix stdlib → mismatch → CI red.
 Consistency requires the bootstrap to **drop the F# reuse and self-build the
