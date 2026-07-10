@@ -114,7 +114,7 @@ test "inflate on garbage (reserved block type) terminates, bounded" {
   v.add(255)
   // First bit -> bfinal=1; next two bits -> btype=3 (reserved) -> done.
   val res = inflate(toSlice(v), 0, 4)
-  assertTrue(res.count < 1024, "bounded output on reserved-type garbage")
+  assertEqualInt(res.count, 0, "reserved-type garbage emits nothing and stops")
 }
 
 test "inflate on a truncated fixed-Huffman block terminates instead of hanging" {
@@ -122,10 +122,11 @@ test "inflate on a truncated fixed-Huffman block terminates instead of hanging" 
   v.add(2)   // 0b010: bfinal=0, btype=01 (fixed) — opens a block, then runs out
   // Without EOF (-1) signalling the decoder drained the buffer and matched a
   // phantom literal forever; the fix stops at the first -1 from readBit.  The
-  // test COMPLETING at all proves no infinite loop; the count stays far below
-  // the 64 Mi output cap.
+  // 5 leftover bits after the block header are too few for any fixed-Huffman
+  // code (min length 7), so no symbol decodes: exactly 0 bytes out.  The test
+  // COMPLETING at all also proves no infinite loop.
   val res = inflate(toSlice(v), 0, 1)
-  assertTrue(res.count < 1024, "truncated fixed block terminates with bounded output")
+  assertEqualInt(res.count, 0, "truncated fixed block decodes nothing and terminates")
 }
 
 test "inflate rejects a back-reference pointing before the output start" {
@@ -168,9 +169,14 @@ test "readZipEntries with no EOCD signature returns no entries" {
 }
 
 test "readZipEntries with a cdSize larger than the file fails closed (#5486)" {
-  // A 22-byte EOCD whose central-directory size (0xFFFFFFFF, saturated to
-  // Int.maxValue) drives cdStart = eocd - cdSize negative.  The guard bails
-  // before any offset arithmetic could overflow a checked Int and panic.
+  // A 22-byte EOCD whose central-directory size is 0xFFFFFFFF.  rdU32Le sees the
+  // top byte 0xFF >= 128 and returns Int.maxValue from its saturation branch
+  // rather than computing `low + b3 * 16777216`, which would overflow the
+  // checked Int multiply and panic (#5486).  The saturated size then drives
+  // cdStart = eocd - cdSize negative, so the walk bails before any further
+  // offset arithmetic.  The field is written as raw bytes, not putU32: putU32
+  // cannot carry a value past Int32, and encoding a top byte >= 128 is exactly
+  // what makes rdU32Le take the branch under test.
   val v: List[Int] = newList()
   v.add(80)
   v.add(75)
@@ -180,10 +186,13 @@ test "readZipEntries with a cdSize larger than the file fails closed (#5486)" {
   putU16(v, 0)      // disk with central directory
   putU16(v, 1)      // entries on this disk
   putU16(v, 1)      // total entries
-  putU32(v, 4294967295)  // cdSize = 0xFFFFFFFF -> saturates, cdStart < 0
+  v.add(255)
+  v.add(255)
+  v.add(255)
+  v.add(255)        // cdSize = 0xFFFFFFFF -> rdU32Le saturates -> cdStart < 0
   putU32(v, 0)      // cd offset
   putU16(v, 0)      // comment length
-  assertEqualInt(readZipEntries(toSlice(v)).count, 0, "impossible cdSize -> no entries")
+  assertEqualInt(readZipEntries(toSlice(v)).count, 0, "saturated cdSize -> no entries, no panic")
 }
 
 test "readZipEntries rejects an out-of-range local-header offset (dataOffset -1)" {
