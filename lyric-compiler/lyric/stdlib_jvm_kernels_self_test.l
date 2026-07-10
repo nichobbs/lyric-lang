@@ -27,6 +27,16 @@
 //! (tracked as issue #5377) -- both are manually verified in the PR
 //! description instead.
 //!
+//! Also covers the docs/59 F-1a/F-1b/F-1c phantom-kernel remediation wave:
+//! `format_host.l` (rewritten off the phantom `lyric.stdlib.jvm.FormatHost`
+//! onto BigDecimal/Integer/Locale), `path_host.l` (pure Lyric, System.IO.Path
+//! semantics), `regex_host.l` (Pattern/Matcher via auto-FFI), and the
+//! `math_host.l` intToLong/longToInt additions.  These cases go through the
+//! PUBLIC modules (`Std.Format` / `Std.Path` / `Std.Regex` / `Std.Math`) —
+//! the modules that were non-functional on this target — and every expected
+//! literal below was captured from a `--target dotnet` run of the same
+//! expression, so the assertions double as cross-target parity checks.
+//!
 //! Run via `lyric test --target jvm` so the self-hosted Jvm.Bridge pipeline
 //! is exercised end-to-end.
 @test_module
@@ -38,6 +48,22 @@ import Std.EnvironmentHost
 import Std.ProcessHost
 import Std.LogHost
 import Std.UnicodeHost
+import Std.Format as Fmt
+import Std.FormatHost as FmtHost
+import Std.Path as Path
+import Std.Math as Math
+import Std.JvmExceptionHost
+import Std.Regex as Rx
+// Std.RegexSafe's API is typed in terms of the raw Std.RegexHost handle
+// types (`RxKernel.Regex` / `RxKernel.Match`), so consuming it requires the
+// kernel import too — the `Regex` extern alias must be in this file's extern
+// seed for the Ok-payload binding to checkcast to java.util.regex.Pattern.
+import Std.RegexHost as RxHost
+import Std.RegexSafe as RxSafe
+
+// Concrete unchecked Exception subclass used to exercise the
+// Std.JvmExceptionHost accessors without an FFI boundary crossing.
+extern type JKernelTestException = "java.lang.IllegalStateException"
 
 // ── Std.EnvironmentHost ─────────────────────────────────────────────────────
 test "hostGetVarOpt resolves a real environment variable via System.getenv" {
@@ -150,4 +176,142 @@ test "hostUnicodeCategory matches the .NET UnicodeCategory convention for less c
   assertEqualInt(hostUnicodeCategory('-'), 19, "'-' is DashPunctuation (19)")
   assertEqualInt(hostUnicodeCategory('+'), 25, "'+' is MathSymbol (25)")
   assertEqualInt(hostUnicodeCategory('$'), 26, "'$' is CurrencySymbol (26)")
+}
+
+// ── Std.Format (docs/59 F-1a) ────────────────────────────────────────────────
+//
+// Every expected literal below is the output of the same expression run on
+// `--target dotnet` (System.Int32.ToString / System.Double.ToString with the
+// invariant culture).
+test "Std.Format hex formatting matches the .NET twin" {
+  assertEqual(Fmt.toHexString(255), "ff", "toHexString(255)")
+  assertEqual(Fmt.toHexString(16), "10", "toHexString(16)")
+  assertEqual(Fmt.toHexString(0), "0", "toHexString(0)")
+  assertEqual(Fmt.toHexString(0 - 1), "ffffffff", "toHexString(-1) is two's complement")
+  assertEqual(Fmt.toHexStringUpper(255), "FF", "toHexStringUpper(255)")
+  assertEqual(Fmt.hexPad(255, 4), "00ff", "hexPad(255, 4)")
+  assertEqual(Fmt.hexPadUpper(255, 4), "00FF", "hexPadUpper(255, 4)")
+  assertEqual(Fmt.zeroPad(7, 3), "007", "zeroPad(7, 3)")
+}
+
+test "Std.Format formatFixed matches the .NET invariant fixed-point output" {
+  assertEqual(Fmt.formatFixed(3.14159, 2), "3.14", "formatFixed(3.14159, 2)")
+  assertEqual(Fmt.formatFixed(1.0, 4), "1.0000", "formatFixed(1.0, 4)")
+  assertEqual(Fmt.formatFixed(0.1, 2), "0.10", "formatFixed(0.1, 2)")
+  // Round-half-to-even over the EXACT binary value, like .NET: 0.125 is
+  // exactly representable (half → even → 2), while the 2.675 literal is
+  // 2.67499999… so it rounds DOWN despite looking like a half-up case.
+  assertEqual(Fmt.formatFixed(0.125, 2), "0.12", "formatFixed(0.125, 2) half-to-even")
+  assertEqual(Fmt.formatFixed(2.675, 2), "2.67", "formatFixed(2.675, 2) exact-value rounding")
+  assertEqual(Fmt.formatFixed(0.0 - 1.005, 2), "-1.00", "formatFixed(-1.005, 2)")
+}
+
+test "Std.FormatHost kernel surface parity: D specifier, non-finite and negative-zero doubles" {
+  assertEqual(FmtHost.hostIntToString(42, "D5"), "00042", "hostIntToString(42, D5)")
+  assertEqual(FmtHost.hostIntToString(0 - 42, "D5"), "-00042", "hostIntToString(-42, D5) pads after the sign")
+  assertEqual(FmtHost.hostIntToString(255, "x8"), "000000ff", "hostIntToString(255, x8)")
+  assertEqual(FmtHost.hostIntToString(42, "G"), "42", "hostIntToString(42, G)")
+  val inv = FmtHost.hostInvariantCulture()
+  assertEqual(FmtHost.hostDoubleToString(0.0 / 0.0, "F2", inv), "NaN", "NaN spelling")
+  assertEqual(FmtHost.hostDoubleToString(1.0 / 0.0, "F2", inv), "Infinity", "+inf spelling")
+  assertEqual(FmtHost.hostDoubleToString((0.0 - 1.0) / 0.0, "F2", inv), "-Infinity", "-inf spelling")
+  // .NET preserves the sign of negative zero and of negatives that round to 0.
+  assertEqual(FmtHost.hostDoubleToString((0.0 - 1.0) * 0.0, "F2", inv), "-0.00", "negative zero keeps its sign")
+  assertEqual(FmtHost.hostDoubleToString(0.0 - 0.4, "F0", inv), "-0", "-0.4 rounds to signed zero")
+}
+
+// ── Std.Path (docs/59 F-1c) ──────────────────────────────────────────────────
+//
+// Expected literals captured from a `--target dotnet` run (System.IO.Path on
+// POSIX).
+test "Std.Path join matches System.IO.Path.Combine" {
+  assertEqual(Path.join("/home/user", "projects"), "/home/user/projects", "join absolute base")
+  assertEqual(Path.join("a/", "b"), "a/b", "trailing separator not doubled")
+  assertEqual(Path.join("a", "/b"), "/b", "rooted relative wins")
+  assertEqual(Path.join("", "b"), "b", "empty base")
+  assertEqual(Path.join("a", ""), "a", "empty relative")
+}
+
+test "Std.Path extension/basename match System.IO.Path" {
+  assertEqual(Path.extension("file.txt"), ".txt", "extension(file.txt)")
+  assertEqual(Path.extension("archive.tar.gz"), ".gz", "extension takes the final suffix")
+  assertEqual(Path.extension("README"), "", "no extension")
+  assertEqual(Path.extension("file."), "", "trailing dot is no extension")
+  assertEqual(Path.extension(".gitignore"), ".gitignore", "dotfile is all extension")
+  assertEqual(Path.extension("d.x/file"), "", "dot in directory component ignored")
+  assertEqual(Path.basename("/a/b.txt"), "b.txt", "basename of absolute path")
+  assertEqual(Path.basename("/a/b/"), "", "trailing separator yields empty basename")
+  assertEqual(Path.basename("b.txt"), "b.txt", "bare filename")
+}
+
+test "Std.Path dirname/isAbsolute match System.IO.Path" {
+  assertEqual(Path.dirname("/a/b.txt"), "/a", "dirname of file in directory")
+  assertEqual(Path.dirname("/a/b/"), "/a/b", "trailing separator preserved (no normalization)")
+  assertEqual(Path.dirname("/a//b"), "/a", "doubled separator trimmed from result")
+  assertEqual(Path.dirname("/a"), "/", "parent of top-level entry is the root")
+  assertEqual(Path.dirname("/"), ".", "root maps to . through the public dirname")
+  assertEqual(Path.dirname("a"), ".", "bare filename maps to .")
+  assertEqual(Path.dirname("a/b"), "a", "relative path")
+  assertTrue(Path.isAbsolute("/a"), "isAbsolute(/a)")
+  assertFalse(Path.isAbsolute("a"), "isAbsolute(a)")
+  assertTrue(Path.isRelative(""), "empty path is relative by convention")
+}
+
+// ── Std.Regex (docs/59 F-1c) ─────────────────────────────────────────────────
+test "Std.Regex compile/isMatch/replace work over java.util.regex" {
+  val r = Rx.compile("a+b")
+  assertTrue(Rx.isMatch(r, "xxaab!"), "isMatch finds an interior match")
+  assertFalse(Rx.isMatch(r, "zzz"), "isMatch is false with no match")
+  assertEqual(Rx.replace(r, "xxaab!", "Z"), "xxZ!", "replace substitutes every match")
+  // Timeout parameter is accepted (unenforced on JVM pending #1103).
+  val rt = Rx.compileWithTimeout("b+", 5.0)
+  assertTrue(Rx.isMatch(rt, "abc"), "compileWithTimeout produces a working pattern")
+}
+
+test "Std.Regex Result-shaped API classifies invalid patterns" {
+  match Rx.tryCompile("(unclosed") {
+    case Ok(_) -> panic("tryCompile should reject an unclosed group")
+    case Err(e) -> assertTrue(Rx.errorMessage(e).startsWith("invalid regex pattern"), "syntax error classified as InvalidPattern")
+  }
+  val r = Rx.compile("a+b")
+  match Rx.tryIsMatch(r, "xxaab!") {
+    case Ok(v) -> assertTrue(v, "tryIsMatch Ok(true)")
+    case Err(_) -> panic("tryIsMatch should not fail on a valid match")
+  }
+}
+
+test "Std.RegexSafe tryMatchOne returns a positioned Matcher handle" {
+  match RxSafe.tryCompile("a+b") {
+    case Ok(r) -> {
+      match RxSafe.tryMatchOne(r, "xxaab!") {
+        case Ok(_) -> assertTrue(true, "tryMatchOne resolves hostMatchOne")
+        case Err(_) -> panic("tryMatchOne should succeed on a valid pattern")
+      }
+    }
+    case Err(_) -> panic("tryCompile should accept a valid pattern")
+  }
+}
+
+// ── Std.JvmExceptionHost (docs/59 F-1c) ──────────────────────────────────────
+//
+// `jvmExceptionTypeName` previously routed through a phantom
+// `lyric.runtime.jvm.ExceptionHelper` class; it is now a pure-Lyric
+// getClass().getName() chain.  A concrete Exception subclass instance stands
+// in for a checked exception caught at the FFI boundary (same JVM class
+// hierarchy, no boundary crossing needed for the accessor contract).
+test "jvmExceptionTypeName/-Message read through real JDK calls" {
+  val e = JKernelTestException.new("boom")
+  assertEqual(jvmExceptionTypeName(e), "java.lang.IllegalStateException", "fully-qualified class name")
+  assertEqual(jvmExceptionMessage(e), "boom", "detail message")
+}
+
+// ── Std.Math intToLong/longToInt (docs/59 F-1b) ─────────────────────────────
+test "Std.Math intToLong/longToInt round-trip and panic on overflow" {
+  val widened = Math.intToLong(2000000000)
+  assertEqualInt(Math.longToInt(widened), 2000000000, "round-trip preserves the value")
+  assertEqualInt(Math.longToInt(Math.intToLong(0 - 7)), 0 - 7, "negative round-trip")
+  val overflowing = widened + widened
+  // Matches the .NET twin's System.Convert.ToInt32 OverflowException panic
+  // (java.lang.Math.toIntExact throws ArithmeticException).
+  assertPanics("longToInt panics on a value outside Int range", { -> Math.longToInt(overflowing); () })
 }

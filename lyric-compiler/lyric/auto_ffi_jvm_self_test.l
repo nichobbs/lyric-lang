@@ -403,3 +403,28 @@ test "slice[Double] literal argument unboxes to a real JDK double[] — Arrays.t
   val s = JArrays.toString(nums)
   assertEqual(s, "[1.1, 2.2]", "Arrays.toString(double[]) built from a Lyric slice[Double] literal")
 }
+
+// ── Enum class metadata ──────────────────────────────────────────────────────
+//
+// Before the Jvm.ClassReader fix that stopped skipping ACC_ENUM class files,
+// an enum extern type was unresolvable end-to-end: the constant read
+// (`JRoundingMode.HALF_EVEN`) fell through the static-field path to the
+// "resolves to no local, parameter, …" codegen panic, and enum-typed
+// overloads (`BigDecimal.setScale(int, RoundingMode)`) could not be scored.
+// This is what kept the rewritten `_kernel_jvm/format_host.l` (and any user
+// FFI against JDK enums) from compiling.
+extern type JBigDecimal = "java.math.BigDecimal"
+
+extern type JRoundingMode = "java.math.RoundingMode"
+
+test "enum constant read + enum-typed overload resolve from JDK metadata" {
+  val mode = JRoundingMode.HALF_EVEN
+  val bd = JBigDecimal.new(0.125)
+  val scaled = bd.setScale(2, mode)
+  assertEqual(scaled.toPlainString(), "0.12", "setScale(2, HALF_EVEN) over exact 0.125")
+}
+
+test "enum instance method resolves through the java.lang.Enum superclass walk" {
+  val mode = JRoundingMode.HALF_UP
+  assertEqual(mode.name(), "HALF_UP", "Enum.name() on an enum constant")
+}

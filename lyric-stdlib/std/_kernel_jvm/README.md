@@ -24,14 +24,21 @@ Two routing patterns appear throughout this directory:
    Used when the JVM standard library provides a direct static method
    or static field with semantics matching the Lyric declaration.
 
-2. **Shim class** — `@externTarget("lyric.stdlib.jvm.FooHost.bar")`
-   or `extern package lyric.stdlib.jvm.FooHost { ... }`.  Used when
-   the JVM API differs structurally: throws-on-failure vs Bool+out,
-   `long` vs `Double` parameters, multi-step operations, or absent
-   equivalents (`tau`, `log2`, `truncate`, `tryGetValue`).  The shim
-   classes in `lyric.stdlib.jvm` are the Phase 6 Java-side
-   deliverable; their signatures are determined by the `@externTarget`
-   strings here.
+2. **Pure Lyric over the JVM auto-FFI** — `extern type` aliases for
+   real JDK classes plus ordinary Lyric bodies (instance calls,
+   `.new(args)` constructors, static-field/enum-constant reads).  Used
+   when the JVM API differs structurally from the Lyric declaration:
+   throws-on-failure vs Bool+out, multi-step operations, or absent
+   equivalents (`tau`, `log2`, `truncate`, fixed-point formatting).
+
+A third, historical pattern — shim classes under `lyric.stdlib.jvm.*` —
+was retired: those classes were never built, so every binding against
+them crashed on first call (`NoClassDefFoundError` / `VerifyError`;
+docs/44 m-89, docs/59 F-1c).  The last remaining `lyric.stdlib.jvm.*`
+bindings are `http_host.l` and `http_server.l`, which are still
+non-functional on this target and tracked in #2663 (Std.Http /
+Std.HttpServer JVM implementations over `java.net.http.HttpClient` /
+`com.sun.net.httpserver.HttpServer`).
 
 ## What does NOT live here
 
