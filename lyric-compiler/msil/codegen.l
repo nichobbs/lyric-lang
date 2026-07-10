@@ -6630,13 +6630,40 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // emit a runtime-throw stub (the same pattern the unresolved
               // instance-method dispatch uses, #1041) rather than silently
               // yielding null.
-              match tryExternInstanceGetterMsil(cctx, insns, extInstFqn, memberName) {
+              match tryExternInstanceGetterMsil(cctx, insns, extInstFqn, memberName, false) {
                 case Some(extTy) -> extTy
                 case None -> {
                   val extMsg = "unresolved extern member '" + memberName + "' on '" + extInstFqn + "': no instance property getter get_" +
                     memberName +
                     " found in .NET metadata.  Declare an @externTarget wrapper if a custom binding is intended."
                   insns.add(MLdStr(token = ctxInternUs(cctx.lctx, extMsg)))
+                  insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+                  insns.add(MThrow)
+                  MObject
+                }
+              }
+            }
+            case MValueTypeRef(_, extVtFqn) -> {
+              // Instance property read on an extern STRUCT receiver
+              // (docs/59 §6.4 item 2): `ts.TotalMinutes` resolves
+              // `get_TotalMinutes` from metadata and must be reached through
+              // the receiver's address with a non-virtual `call` (the same
+              // rule as method dispatch above).  Spill the value, push
+              // `ldloca`, resolve; on a miss emit the runtime-throw stub —
+              // a struct has no Lyric-visible fields, so no other member
+              // read is legitimate here.
+              val extVtSlot = allocSlotMsil(fctx, "__vt_prop_recv_" + toString(fctx.slotTicker.count), recvTy)
+              emitStoreSlot(insns, extVtSlot, fctx.paramCount)
+              insns.add(MLdloca(slot = extVtSlot - fctx.paramCount))
+              match tryExternInstanceGetterMsil(cctx, insns, extVtFqn, memberName, true) {
+                case Some(extTy) -> extTy
+                case None -> {
+                  insns.add(MPop)
+                  val extVtMsg = "unresolved extern member '" + memberName + "' on value type '" + extVtFqn +
+                    "': no instance property getter get_" +
+                    memberName +
+                    " found in .NET metadata.  Declare an @externTarget wrapper if a custom binding is intended."
+                  insns.add(MLdStr(token = ctxInternUs(cctx.lctx, extVtMsg)))
                   insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
                   insns.add(MThrow)
                   MObject
@@ -12305,7 +12332,7 @@ func lowerMethodCallMsil(
   // instance methods via `callvirt` against the real CLR method, resolved from
   // metadata.  The receiver is already on the stack.
   match recvTy {
-    case MClassRef(_, fqn) -> match tryInstanceAutoFfiFromMetadata(cctx, fctx, insns, fqn, memberName, args) { case Some(rt) -> { return rt }; case None -> { val msg = "unresolved extern instance method '" + memberName + "' on '" + fqn + "': no matching instance method found in .NET metadata for the given argument " + "types.  Declare an @externTarget wrapper if a custom binding is intended."; insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg))); insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor)); insns.add(MThrow); return MObject } }
+    case MClassRef(_, fqn) -> match tryInstanceAutoFfiFromMetadata(cctx, fctx, insns, fqn, memberName, args, false) { case Some(rt) -> { return rt }; case None -> { val msg = "unresolved extern instance method '" + memberName + "' on '" + fqn + "': no matching instance method found in .NET metadata for the given argument " + "types.  Declare an @externTarget wrapper if a custom binding is intended."; insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg))); insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor)); insns.add(MThrow); return MObject } }
     // An MClassRef receiver is exclusively produced by metadata-resolved
     // auto-FFI, so there is no other legitimate dispatch for it.  An
     // unresolved instance method means no matching instance method exists in
@@ -12315,6 +12342,28 @@ func lowerMethodCallMsil(
     // unresolved-@externTarget path uses (#1041), honouring the language
     // reference's "never silently mis-bound" guarantee while keeping the
     // failure graceful and located at the offending call.
+    case MValueTypeRef(_, vtFqn) -> {
+      // Value-type instance dispatch (docs/59 §6.4 item 2): a struct's
+      // instance member must be reached through the receiver's ADDRESS and a
+      // non-virtual `call` (docs/42 step 4b).  Spill the receiver value to a
+      // typed local and push `ldloca`; on a metadata miss, drop the address
+      // and reload the value so the legacy dispatch below (`.toString()`
+      // intrinsic, user UFCS-style helpers) still sees the plain receiver —
+      // unlike MClassRef, an extern-struct-typed value can flow through
+      // ordinary declared Lyric code, so a miss is not necessarily an error.
+      val vtRecvSlot = allocSlotMsil(fctx, "__vt_recv_" + toString(fctx.slotTicker.count), recvTy)
+      emitStoreSlot(insns, vtRecvSlot, fctx.paramCount)
+      insns.add(MLdloca(slot = vtRecvSlot - fctx.paramCount))
+      match tryInstanceAutoFfiFromMetadata(cctx, fctx, insns, vtFqn, memberName, args, true) {
+        case Some(rt) -> {
+          return rt
+        }
+        case None -> {
+          insns.add(MPop)
+          emitLoadSlot(insns, vtRecvSlot, fctx.paramCount)
+        }
+      }
+    }
     case _ -> {
     }
   }
@@ -24250,8 +24299,12 @@ func emitResolvedAutoFfi(
 // receiver is already on the stack (lowered by the caller).  Builds an instance
 // (HASTHIS) MethodSig and emits `callvirt` against the real CLR method —
 // callvirt is valid for both virtual and non-virtual instance methods on a
-// reference receiver and performs the null check.  `argBufs` carry each
-// argument's already-lowered IL; `argTys` their MsilTypes.
+// reference receiver and performs the null check.  When `valueTypeRecv` is
+// true the receiver on the stack is the ADDRESS of a value-type local
+// (`ldloca`) and the call must be a non-virtual `call` — `callvirt` against a
+// managed pointer to a struct is invalid IL (CallVirtOnValueType), the same
+// rule `emitExternTargetBody` applies via `isValueTypeReceiverMsil`.
+// `argBufs` carry each argument's already-lowered IL; `argTys` their MsilTypes.
 func emitResolvedInstanceAutoFfi(
   cctx: in CodegenCtx,
   insns: in List[MInsn],
@@ -24261,6 +24314,7 @@ func emitResolvedInstanceAutoFfi(
   argBufs: in List[List[MInsn]],
   argTys: in List[MsilType],
   m: in Mdr.ResolvedMethod,
+  valueTypeRecv: in Bool,
 ): Option[MsilType] {
   val paramMsil: List[MsilType] = newList()
   val coercions: List[List[MInsn]] = newList()
@@ -24296,14 +24350,18 @@ func emitResolvedInstanceAutoFfi(
       sigKey = sigKey + "_r" + sigTypeKeyFrag(m.returnType)
       val mrRow = ctxAddMemberRef(cctx.lctx, tRef, methodName, sigKey, sig)
       val tok = 0x0A000000 + mrRow
-      // Receiver is already on the stack; push args (with coercions) then callvirt.
+      // Receiver is already on the stack; push args (with coercions) then call.
       var bi = 0
       while bi < argBufs.count {
         appendInsnsMsil(insns, argBufs[bi])
         appendInsnsMsil(insns, coercions[bi])
         bi = bi + 1
       }
-      insns.add(MCallvirt(methodToken = tok))
+      if valueTypeRecv {
+        insns.add(MCall(methodToken = tok))
+      } else {
+        insns.add(MCallvirt(methodToken = tok))
+      }
       Some(value = retMsil)
     }
   }
@@ -24432,10 +24490,15 @@ func tryExternStaticMemberReadMsil(
 }
 
 // Resolve and emit an INSTANCE property getter (`get_<Member>`) on an extern
-// class-ref receiver already on the stack.  None when no instance getter of
-// that name exists (or its shape can't be expressed).
+// receiver already on the stack — a class reference, or (when `valueTypeRecv`)
+// the address of a value-type local.  None when no instance getter of that
+// name exists (or its shape can't be expressed).
 func tryExternInstanceGetterMsil(
-  cctx: in CodegenCtx, insns: in List[MInsn], clrFqn: in String, memberName: in String
+  cctx: in CodegenCtx,
+  insns: in List[MInsn],
+  clrFqn: in String,
+  memberName: in String,
+  valueTypeRecv: in Bool,
 ): Option[MsilType] {
   ensureMetadataIndex(cctx)
   val noArgs: List[Mdr.SigType] = newList()
@@ -24447,7 +24510,17 @@ func tryExternInstanceGetterMsil(
       } else {
         val emptyBufs: List[List[MInsn]] = newList()
         val emptyTys: List[MsilType] = newList()
-        emitResolvedInstanceAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig)
+        emitResolvedInstanceAutoFfi(
+          cctx,
+          insns,
+          gp.assemblyName,
+          clrFqn,
+          "get_" + memberName,
+          emptyBufs,
+          emptyTys,
+          gp.sig,
+          valueTypeRecv
+        )
       }
     }
   }
@@ -24701,7 +24774,7 @@ func emitExternInstancePropertySetMsil(
           val emptyBufs: List[List[MInsn]] = newList()
           val emptyTys: List[MsilType] = newList()
           var propTyV: MsilType = MVoid
-          match emitResolvedInstanceAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
+          match emitResolvedInstanceAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig, false) {
             case Some(t) -> {
               propTyV = t
             }
@@ -24722,10 +24795,11 @@ func emitExternInstancePropertySetMsil(
 }
 
 // Try to resolve and emit a metadata-resolved instance call on an extern
-// class-ref receiver `expr.method(args)`.  The receiver is already on the
-// stack.  Returns the result MsilType on success, or None to fall back (the
-// stack is left holding just the receiver — args are buffered, not emitted —
-// so the caller's legacy dispatch stays correct).
+// receiver `expr.method(args)` — a class reference or, when `valueTypeRecv`,
+// the address of a value-type local (see `emitResolvedInstanceAutoFfi`).  The
+// receiver is already on the stack.  Returns the result MsilType on success,
+// or None to fall back (the stack is left holding just the receiver — args
+// are buffered, not emitted — so the caller's legacy dispatch stays correct).
 func tryInstanceAutoFfiFromMetadata(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -24733,6 +24807,7 @@ func tryInstanceAutoFfiFromMetadata(
   fqn: in String,
   memberName: in String,
   args: in List[CallArg],
+  valueTypeRecv: in Bool,
 ): Option[MsilType] {
   ensureMetadataIndex(cctx)
   val argBufs: List[List[MInsn]] = newList()
@@ -24762,7 +24837,7 @@ func tryInstanceAutoFfiFromMetadata(
     match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, fqn, memberName, argSigs) {
       case None -> {
       }
-      case Some(re) -> if not re.sig.isStatic { direct = emitResolvedInstanceAutoFfi(cctx, insns, re.assemblyName, fqn, memberName, argBufs, argTys, re.sig) }
+      case Some(re) -> if not re.sig.isStatic { direct = emitResolvedInstanceAutoFfi(cctx, insns, re.assemblyName, fqn, memberName, argBufs, argTys, re.sig, valueTypeRecv) }
     }
     // A receiver-based call needs an instance method; a resolved static
     // means the name only exists as a static — fall back rather than
@@ -24773,7 +24848,7 @@ func tryInstanceAutoFfiFromMetadata(
         // Property getter probe (docs/59 §6): a zero-arg call `x.Prop()` on
         // a CLR property has no method named `Prop` — only `get_Prop`.
         if args.count == 0 {
-          tryExternInstanceGetterMsil(cctx, insns, fqn, memberName)
+          tryExternInstanceGetterMsil(cctx, insns, fqn, memberName, valueTypeRecv)
         } else {
           None
         }
