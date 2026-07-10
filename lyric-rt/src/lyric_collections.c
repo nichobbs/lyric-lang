@@ -270,7 +270,15 @@ static int64_t map_find(LyricMap* m, int64_t key) {
 
 void lyric_map_set(LyricMap* map, int64_t key, int64_t val) {
     if (map->cap == 0 || (map->used + 1) * 4 >= map->cap * 3) {
-        map_rehash(map, map->cap == 0 ? 16 : map->cap * 2);
+        /* `used` counts occupied + tombstone slots, so a long-lived map under
+         * steady set/remove churn of distinct keys accumulates tombstones and
+         * would double capacity forever even while the LIVE size (`len`) stays
+         * small.  Grow (cap*2) only when the live entries actually hit the load
+         * threshold; otherwise rehash in place (same cap) to purge tombstones,
+         * which resets `used` to `len`. */
+        int64_t newCap = map->cap == 0 ? 16
+                       : ((map->len + 1) * 4 >= map->cap * 3 ? map->cap * 2 : map->cap);
+        map_rehash(map, newCap);
     }
     int64_t i = map_find(map, key);
     LyricMapSlot* s = &map->slots[i];

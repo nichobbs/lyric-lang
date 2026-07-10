@@ -221,6 +221,34 @@ static void test_map_int_keys(void) {
     lyric_release(m);
 }
 
+/* Steady set/remove churn of distinct keys keeps the live size small but
+ * accumulates tombstones.  The resize path now rehashes in place to purge
+ * tombstones instead of doubling capacity forever; this exercises that path
+ * and asserts the map stays correct across many churn cycles. */
+static void test_map_tombstone_churn(void) {
+    LyricMap* m = lyric_map_new(0, 0);
+    /* Seed ~64 live entries. */
+    for (int64_t i = 0; i < 64; i++) lyric_map_set(m, i, i);
+    CHECK(lyric_map_len(m) == 64);
+    /* Remove the oldest key and add a fresh distinct key, 20000 times.  The
+     * live size stays 64 throughout; without the in-place-rehash fix this
+     * churn would ratchet capacity up unboundedly. */
+    for (int64_t step = 0; step < 20000; step++) {
+        int64_t removed = step;
+        int64_t added = 64 + step;
+        CHECK(lyric_map_remove(m, removed));
+        lyric_map_set(m, added, added * 2);
+        CHECK(lyric_map_len(m) == 64);
+    }
+    /* The most-recent 64 keys are present with correct values; older ones gone. */
+    int64_t v = 0;
+    CHECK(lyric_map_get(m, 64 + 19999, &v) && v == (64 + 19999) * 2);
+    CHECK(!lyric_map_get(m, 0, &v));
+    CHECK(!lyric_map_get(m, 63, &v));
+    CHECK(lyric_map_len(m) == 64);
+    lyric_release(m);
+}
+
 static void test_list_copy(void) {
     /* Ref elements: the copy retains; releasing the source leaves the
      * copy's elements alive. */
@@ -1446,6 +1474,7 @@ int main(void) {
     test_list_scalars();
     test_list_refs();
     test_map_int_keys();
+    test_map_tombstone_churn();
     test_map_string_keys();
     test_list_copy();
     test_read_bytes();
