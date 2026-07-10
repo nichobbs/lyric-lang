@@ -24230,21 +24230,16 @@ func emitResolvedAutoFfi(
   if not ok {
     return None
   }
-  // Constructor shorthand: detect and reject value-type constructors.
-  // Value types (System.DateTime, System.Guid, etc.) have different construction
-  // semantics than reference types (initobj vs. newobj); proper support is tracked
-  // as Q48-004. For now, fall back to legacy path to provide a clear error message.
-  if isConstructor {
-    val isVtype = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn)
-    if isVtype {
-      return None
-    }
-  }
   // Constructor shorthand (.new) returns the constructed type, not the void
-  // signature from the .ctor metadata.
-  // Q48-004: valueType always false until metadata inference is implemented.
+  // signature from the .ctor metadata.  A value-type target (Q48-004:
+  // System.Guid, System.TimeSpan, …) is constructed with the same `newobj`
+  // as a reference type — ECMA-335 III.4.21 defines `newobj` on a value type
+  // as "allocate an uninitialized instance, call the ctor on its address,
+  // push the resulting VALUE" — so only the result's encoding differs
+  // (VALUETYPE + TypeRef via `MValueTypeRef`, matching what the metadata
+  // vtype index says about the target).
   val resultType = if isConstructor {
-    resolvedSigToMsil(cctx, Mdr.STNamed(fqn = clrFqn, valueType = false))
+    resolvedSigToMsil(cctx, Mdr.STNamed(fqn = clrFqn, valueType = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn)))
   } else {
     resolvedSigToMsil(cctx, m.returnType)
   }
@@ -24982,27 +24977,34 @@ func emitAutoFfiCallMsil(
     case None -> {
     }
   }
-  // Constructor shorthand (.new()) on a value type: `emitResolvedAutoFfi`
-  // (called by `tryAutoFfiFromMetadata` above) deliberately returns None for
-  // value-type constructors (Q48-004 — value types need `initobj`, not
-  // `newobj`, and are not yet supported).  Without this check, a zero-arg
-  // `.new()` would fall through to the generic static "()-shape" guess below
-  // and register a bogus static MemberRef literally named "new" against the
-  // value type — not a real member, so it fails at MSIL load time with no
-  // indication of the real problem (#3777).  Multi-arg calls already panic
-  // via the `args.count > 0` guard further down, but with a message that
-  // doesn't name the actual (value-type) cause; catching both shapes here
-  // gives one specific, actionable diagnostic instead.
+  // Constructor shorthand (.new()) on a value type that metadata resolution
+  // did not bind (Q48-004 shipped — arg-bearing struct ctors resolve above).
+  // A ZERO-ARG `.new()` is the type's zero-initialised default: most BCL
+  // structs declare no parameterless `.ctor` row at all (C#'s `new Guid()`
+  // is `initobj`, not a ctor call), so emit `ldloca`+`initobj`+`ldloc` —
+  // the same idiom `emitExternOptionalDefault` uses.  An ARG-BEARING call
+  // that resolved nothing is a real signature mismatch: without this check
+  // it would fall through to the generic static "()-shape" guess below and
+  // register a bogus static MemberRef literally named "new" against the
+  // value type — not a real member, failing at MSIL load time with no
+  // indication of the real problem (#3777).
   if methodName == "new" and Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn) {
+    if args.count == 0 {
+      val vtNewRefRow = internFfiTypeRefNested(cctx, clrFqn)
+      val vtNewTy = MValueTypeRef(typeRefCode = tdrTypeRef(vtNewRefRow), clrFqn = clrFqn)
+      val vtNewSlot = allocSlotMsil(fctx, "__vt_new_" + toString(fctx.slotTicker.count), vtNewTy)
+      insns.add(MLdloca(slot = vtNewSlot - fctx.paramCount))
+      insns.add(MInitobj(typeToken = 0x01000000 + vtNewRefRow))
+      emitLoadSlot(insns, vtNewSlot, fctx.paramCount)
+      return vtNewTy
+    }
     panic(
-      "Msil.Codegen: '" + clrFqn + ".new(...)' targets a value type (struct); " +
-        "constructor shorthand (.new()) is only supported for reference types " +
-        "today (Q48-004).  Declare an @externTarget wrapper function instead — " +
-        "e.g. `@externTarget(\"" +
+      "Msil.Codegen: '" + clrFqn + ".new(...)' does not match any constructor " +
+        "of that value type in .NET reference-assembly metadata for the given " +
+        "argument types; check the argument types against the BCL overloads.  " +
+        "Declare an @externTarget wrapper (`@externTarget(\"" +
         clrFqn +
-        "..ctor\") @externStatic func ...`, " +
-        "or, if the type's default value is sufficient, rely on its " +
-        "zero-initialised default rather than calling .new()."
+        "..ctor\") @externStatic func ...`) if a custom binding is intended."
     )
   }
   // Reject an extern-type CLR name the FFI cascade can't resolve to a known
