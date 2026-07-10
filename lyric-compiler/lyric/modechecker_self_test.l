@@ -232,6 +232,39 @@ test "trailing spawn in a non-value try body is V0014" {
   assertTrue(hasDiagCode(result, "V0014"), "trailing spawn in non-value try body: V0014")
 }
 
+// #5164: EMatch arms share the same walkExprOrBlockForSpawn(ctx, valuePos,
+// arms[i].body) call as EIf branches — mirror the if-branch tests above for
+// a match arm.
+test "spawn in a non-trailing match arm is V0014" {
+  val src = "package P\nasync func f(): Unit {\n  match 1 {\n    case _ -> spawn g()\n  }\n  val done = 1\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "spawn in non-trailing match arm: V0014")
+}
+
+test "spawn in a value-position match arm is not V0014" {
+  val src = "package P\nasync func f(): Int {\n  match 1 {\n    case _ -> spawn g()\n  }\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "spawn in value-position match arm: no V0014")
+}
+
+// #5164: `finally_` is always walked with valuePos = false, regardless of
+// whether the enclosing try/catch is itself in value position.
+test "trailing spawn in a finally block is V0014" {
+  val src = "package P\nasync func f(): Int {\n  try {\n    1\n  } finally {\n    spawn g()\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0014"), "trailing spawn in finally block: V0014")
+}
+
+// #5164: SAssign walks its RHS with valuePos = true, matching the val/var
+// binding-initialiser rule — reassigning an existing var to a spawn's
+// handle consumes it, a distinct code path from the LBVar declaration-
+// initialiser case already covered by "spawn bound and awaited is not V0014".
+test "plain assignment of spawn to an existing var is not V0014" {
+  val src = "package P\nasync func f(): Int {\n  var x = spawn g()\n  x = spawn g()\n  await x\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0014"), "x = spawn g() (SAssign): no V0014")
+}
+
 test "discarded spawn in an aspect around body is V0014" {
   // #5158: aspect `around` advice is spliced into real functions during weaving
   // (after mode checking), so a fire-and-forget spawn there must be caught here.

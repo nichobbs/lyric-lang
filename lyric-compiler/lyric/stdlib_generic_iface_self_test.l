@@ -209,3 +209,46 @@ test "match Result[Option[Shape],String] Err arm reached" {
   val got = match r { case Ok(_) -> 1; case Err(msg) -> if msg == "fail" { 0 } else { 2 } }
   assertEqualInt(got, 0, "nested: Err('fail') reaches Err arm")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// User-defined generic interface (#5054, #5044): `registerIfaceSig` must erase
+// the interface's OWN type parameter consistently at both PARAM and RETURN
+// positions — including when the param/return references it indirectly
+// through another generic (`Option[List[T]]`), not just a bare `TRef`.
+// ─────────────────────────────────────────────────────────────────────────────
+pub interface Box[T] {
+  func echo(x: in T): T
+  func wrapped(x: in T): Option[List[T]]
+}
+
+pub record StrBox {
+  tag: String
+}
+
+impl Box[String] for StrBox {
+  func echo(x: in String): String {
+    return x + self.tag
+  }
+  func wrapped(x: in String): Option[List[String]] {
+    val l: List[String] = newList()
+    l.add(x)
+    Some(l)
+  }
+}
+
+func makeBox(): Box[String] {
+  val b: StrBox = StrBox(tag = "!")
+  return b
+}
+
+test "generic interface method param erases interface's own type param correctly (#5054)" {
+  val b = makeBox()
+  val got = b.echo("hi")
+  assertEqual(got, "hi!", "Box[String].echo(\"hi\") == \"hi!\" via interface dispatch")
+}
+
+test "generic interface method returning nested-generic Option[List[T]] resolves correctly (#5044)" {
+  val b = makeBox()
+  val got = match b.wrapped("yo") { case Some(l) -> l[0]; case None -> "none" }
+  assertEqual(got, "yo", "Box[String].wrapped(\"yo\") unwraps to \"yo\" via nested generic Option[List[T]]")
+}

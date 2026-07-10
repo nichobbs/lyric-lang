@@ -78,7 +78,6 @@ func makeFuncCtx(
     hoistedVarNames = newList(),
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
-    captureCellNames = newList(),
     varGenericArgs = newMap(),
     wireClassName = "",
     wireBindingTypes = newMap(),
@@ -123,7 +122,6 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     hoistedVarNames = ctx.hoistedVarNames,
     hoistedCellSlot = ctx.hoistedCellSlot,
     hoistedCellType = ctx.hoistedCellType,
-    captureCellNames = ctx.captureCellNames,
     varGenericArgs = ctx.varGenericArgs,
     wireClassName = wireClassName,
     wireBindingTypes = wireBindingTypes,
@@ -186,7 +184,6 @@ func makeFuncCtxForGenerator(
     hoistedVarNames = newList(),
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
-    captureCellNames = newList(),
     varGenericArgs = newMap(),
     wireClassName = "",
     wireBindingTypes = newMap(),
@@ -251,7 +248,6 @@ func makeFuncCtxInstance(
     hoistedVarNames = newList(),
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
-    captureCellNames = newList(),
     varGenericArgs = newMap(),
     wireClassName = "",
     wireBindingTypes = newMap(),
@@ -1227,7 +1223,7 @@ func lowerProtectedMethod(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
 ): LFunc {
-  val retTy = match retOpt { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
+  val retTy = match retOpt { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
   // Lambdas inside a protected-type entry/helper register their synthesised
   // closure inner class into the package-shared accumulator (#2864), so an
   // `ELambda` here emits `<pkg>$Lambda$<n>` into the package output and works
@@ -2274,15 +2270,15 @@ func lowerGeneratorBody(
   // JVM target (the holder array is captured into a generator field, and the
   // write-back point is undefined across suspension) — reject rather than
   // silently pass by value (#1763).
-  var _gpi = 0
-  while _gpi < decl.params.count {
-    if isHolderMode(decl.params[_gpi].mode) {
+  var gpi = 0
+  while gpi < decl.params.count {
+    if isHolderMode(decl.params[gpi].mode) {
       panic(
-        "Jvm.Codegen: `out`/`inout` parameter '" + decl.params[_gpi].name + "' on async generator " + genClass +
+        "Jvm.Codegen: `out`/`inout` parameter '" + decl.params[gpi].name + "' on async generator " + genClass +
           " is not supported on the JVM target (#1763); use a return value instead."
       )
     }
-    _gpi = _gpi + 1
+    gpi = gpi + 1
   }
   // Preamble: load each param from this.<field> into a local slot.
   var pi = 0
@@ -2955,8 +2951,7 @@ func registerIfaceSig(
   externTypes: in Map[String, String],
   typeParams: in List[String],
 ): Unit {
-  val noTps: List[String] = newList()
-  val ps = holderAwareParamTypes(params, owner, true, noTps, externTypes)
+  val ps = holderAwareParamTypes(params, owner, true, typeParams, externTypes)
   val ret = match retOpt { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
   val pNames: List[String] = newList()
   val pDefs: List[Option[Expr]] = newList()

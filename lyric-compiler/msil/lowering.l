@@ -2296,7 +2296,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       // Find (or build) a no-arg .ctor MemberRef for the SM class.
       // The SM TypeDef is in-bundle, so resolve to a MethodDef token directly.
       val tdRow = findTypeDefRowByName(ctx, className)
-      val ctorRow = findMethodDefRowOfType(ctx, tdRow, ".ctor")
+      val ctorRow = findMethodDefRowOfType(ctx, tdRow, ".ctor", 0)
       if ctorRow > 0 {
         emitNewobj(mb, 0x06000000 + ctorRow)
       } else {
@@ -2305,7 +2305,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     }
     case MCallByName(className, methodName) -> {
       val tdRow = findTypeDefRowByName(ctx, className)
-      val mdRow = findMethodDefRowOfType(ctx, tdRow, methodName)
+      val mdRow = findMethodDefRowOfType(ctx, tdRow, methodName, 0)
       if mdRow > 0 {
         emitCall(mb, 0x06000000 + mdRow)
       } else {
@@ -2687,7 +2687,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   } else if r.baseClass.length > 0 and r.baseClass != "System.Object" {
     val recBaseTypeRow2 = findTypeDefRowByName(ctx, r.baseClass)
     if recBaseTypeRow2 > 0 {
-      val recBaseCtorRow2 = findMethodDefRowOfType(ctx, recBaseTypeRow2, ".ctor")
+      val recBaseCtorRow2 = findMethodDefRowOfType(ctx, recBaseTypeRow2, ".ctor", 0)
       if recBaseCtorRow2 > 0 {
         0x06000000 + recBaseCtorRow2
       } else {
@@ -2726,7 +2726,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
         paramList = firstPrm2
       )
     )
-    recordPredictedMethodRow(ctx, r.className, ".ctor", mRow)
+    recordPredictedMethodRow(ctx, r.className, ".ctor", 0, mRow)
   } else {
     // Field-parameterised constructor: .ctor(field1, field2, ...)
     val ctorParams: List[MsilType] = newList()
@@ -2782,7 +2782,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
         paramList = firstParam
       )
     )
-    recordPredictedMethodRow(ctx, r.className, ".ctor", mRow)
+    recordPredictedMethodRow(ctx, r.className, ".ctor", r.fields.count, mRow)
   }
 
   // Emit explicit instance methods — TypeDef and FieldDefs are already registered
@@ -2811,7 +2811,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
         paramList = fp
       )
     )
-    recordPredictedMethodRow(ctx, r.className, m.name, mRow)
+    recordPredictedMethodRow(ctx, r.className, m.name, m.params.count, mRow)
     mi = mi + 1
   }
   selfTypeDefRow
@@ -2858,7 +2858,7 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
   val baseCtorTok = if r.baseClass.length > 0 and r.baseClass != "System.Object" {
     val baseTypeRow = findTypeDefRowByName(ctx, r.baseClass)
     if baseTypeRow > 0 {
-      val baseCtorRow = findMethodDefRowOfType(ctx, baseTypeRow, ".ctor")
+      val baseCtorRow = findMethodDefRowOfType(ctx, baseTypeRow, ".ctor", 0)
       if baseCtorRow > 0 {
         0x06000000 + baseCtorRow
       } else {
@@ -2894,7 +2894,7 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
       paramList = fpCtor
     )
   )
-  recordPredictedMethodRow(ctx, r.className, ".ctor", mRow)
+  recordPredictedMethodRow(ctx, r.className, ".ctor", 0, mRow)
 
   // Emit .cctor() — creates the singleton Instance.
   // .ctor MethodDef token = 0x06000000 + firstMethod (already emitted above).
@@ -2923,7 +2923,7 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
       paramList = fpCctor
     )
   )
-  recordPredictedMethodRow(ctx, r.className, ".cctor", mRow2)
+  recordPredictedMethodRow(ctx, r.className, ".cctor", 0, mRow2)
 
   // TypeDef row — sealed class extending the union base class (or Object as
   // fallback when the base is not a local TypeDef, e.g. for cross-package use).
@@ -3005,7 +3005,7 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
       t,
       MethodDefRow(rva = mRva, implFlags = 0, flags = m.flags, name = sN, signature = bSig, paramList = fp)
     )
-    recordPredictedMethodRow(ctx, baseClassFqn, m.name, mRow)
+    recordPredictedMethodRow(ctx, baseClassFqn, m.name, m.params.count, mRow)
     mi = mi + 1
   }
 
@@ -3037,7 +3037,7 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
       paramList = fpBaseCtor
     )
   )
-  recordPredictedMethodRow(ctx, baseClassFqn, ".ctor", mRow2)
+  recordPredictedMethodRow(ctx, baseClassFqn, ".ctor", 0, mRow2)
 
   // Abstract base TypeDef
   val baseRow = addTypeDef(
@@ -3113,6 +3113,7 @@ func addSynthMethodDef(
   name: in String,
   sigBlob: in Int,
   flags: in Int,
+  paramCount: in Int,
 ): Unit {
   ctx.bodies.add(mb)
   val rvas = methodBodyRvas(ctx.bodies)
@@ -3130,7 +3131,7 @@ func addSynthMethodDef(
       paramList = fp
     )
   )
-  recordPredictedMethodRow(ctx, classFqn, name, mRow)
+  recordPredictedMethodRow(ctx, classFqn, name, paramCount, mRow)
 }
 
 // Emit the range bounds test for a distinct type into `mb`, branching to
@@ -3243,7 +3244,8 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
     mbCtor,
     ".ctor",
     bCtorSig,
-    MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME
+    MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+    singleParam.count
   )
   val ctorTok = 0x06000000 + firstMethod
 
@@ -3278,7 +3280,7 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
       emitRet(mbFrom)
     }
   }
-  addSynthMethodDef(ctx, d.className, mbFrom, "from", bFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG)
+  addSynthMethodDef(ctx, d.className, mbFrom, "from", bFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG, singleParam.count)
 
   // ── Method 2: static tryFrom(x): Result[Self, String] (Result imported only) ──
   if hasTryFrom {
@@ -3339,7 +3341,7 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
         emitRet(mbTry)
       }
     }
-    addSynthMethodDef(ctx, d.className, mbTry, "tryFrom", bTryFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG)
+    addSynthMethodDef(ctx, d.className, mbTry, "tryFrom", bTryFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG, singleParam.count)
   }
 
   // ── Method 3: instance toX(): Underlying ──
@@ -3353,7 +3355,7 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
       emitLdfld(mbConv, valueFieldTok)
       emitRet(mbConv)
     }
-    addSynthMethodDef(ctx, d.className, mbConv, convName, bConvSig, MDA_PUBLIC + MDA_HIDE_BY_SIG)
+    addSynthMethodDef(ctx, d.className, mbConv, convName, bConvSig, MDA_PUBLIC + MDA_HIDE_BY_SIG, 0)
   }
 
   val typeRow = addTypeDef(
@@ -3480,7 +3482,7 @@ pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
       paramList = firstParam
     )
   )
-  recordPredictedMethodRow(ctx, r.className, ".ctor", mRow)
+  recordPredictedMethodRow(ctx, r.className, ".ctor", 1, mRow)
 
   val typeRow = addTypeDef(
     t,
@@ -3659,7 +3661,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
             paramList = fp
           )
         )
-        recordPredictedMethodRow(ctx, iface.className, m.name, mRow)
+        recordPredictedMethodRow(ctx, iface.className, m.name, m.params.count, mRow)
       }
       case MIDim(dm) -> {
         val dmRva = dimRvas[dimBodyIdx[mi]]
@@ -3679,7 +3681,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
             paramList = fpDm
           )
         )
-        recordPredictedMethodRow(ctx, iface.className, dm.name, dmRow)
+        recordPredictedMethodRow(ctx, iface.className, dm.name, dm.params.count, dmRow)
       }
     }
     mi = mi + 1
@@ -3884,23 +3886,32 @@ pub func recordUserTypeDefRow(ctx: in LoweringCtx, namespace: in String, simpleN
 // KNOWN LIMITATION (#3891): keyed by `classFqn + "::" + methodName` only — no
 // arity or signature component.  MSIL allows overloaded methods with the same
 // name but different signatures (e.g. two `from`/`tryFrom` overloads on the
-// same record).  Because of the `containsKey` guard below, only the FIRST
-// registration for a given name is retained; a second same-name overload's
-// row is silently dropped, and any later lookup (`findMethodDefRowOfType`'s
-// predicted-row fallback, `MLdftnByName`) that hits the dropped overload
-// resolves to the WRONG MethodDef row instead.  `findMethodDefRowOfType`'s
-// primary table-scan path has the same name-only-match limitation, so fixing
-// only this map would not fully close the gap.  Not currently known to fire
-// in practice (no exercised caller registers two same-name methods on the
-// same class before the second is looked up), but a proper fix needs an
-// arity or signature-blob component threaded through both the ~10 call sites
-// that write here and the call sites of `findMethodDefRowOfType` that read
-// it — deferred pending verification against a real overloaded-method build.
-pub func recordPredictedMethodRow(ctx: in LoweringCtx, classFqn: in String, methodName: in String, row: in Int): Unit {
+// same record).  Registers under BOTH the bare `classFqn::methodName` key
+// (first-wins, as before — kept for callers that don't track arity) and an
+// arity-qualified `classFqn::methodName/paramCount` key (also first-wins,
+// but scoped to a single overload) so a same-name overload no longer
+// silently drops: a caller that supplies `paramCount` to
+// `findMethodDefRowOfType` resolves the right row instead of whichever
+// overload happened to register first (#3891).  `findMethodDefRowOfType`'s
+// primary table-scan path still matches by name only (unrelated to this
+// map) — that limitation is unchanged; only the predicted-row fallback the
+// map backs is fixed here.
+pub func recordPredictedMethodRow(
+  ctx: in LoweringCtx,
+  classFqn: in String,
+  methodName: in String,
+  paramCount: in Int,
+  row: in Int,
+): Unit {
   val key = classFqn + "::" + methodName
   if not ctx.predictedMethodRows.containsKey(key) {
     ctx.predictedMethodRows.add(key, row)
     ctx.predictedMethodRowKeys.add(key)
+  }
+  val arityKey = key + "/" + toString(paramCount)
+  if not ctx.predictedMethodRows.containsKey(arityKey) {
+    ctx.predictedMethodRows.add(arityKey, row)
+    ctx.predictedMethodRowKeys.add(arityKey)
   }
 }
 
@@ -4326,7 +4337,14 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
 // name.  The methods owned by a TypeDef are the contiguous range
 // [td.methodList, nextTd.methodList) in the MethodDef table — the last
 // TypeDef owns through the end of the table.  Returns 0 if not found.
-pub func findMethodDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int, methodName: in String): Int {
+//
+// `paramCount`, when >= 0, narrows the `predictedMethodRows` fallback (the
+// in-table scan above stays name-only — see `recordPredictedMethodRow`'s
+// doc comment) to the arity-qualified key so a same-name overload resolves
+// to the right row instead of whichever registered first (#3891).  Pass -1
+// when the caller doesn't track arity to keep the pre-#3891 name-only
+// fallback behavior.
+pub func findMethodDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int, methodName: in String, paramCount: in Int): Int {
   val t = ctx.tables
   if typeDefRow < 1 {
     return 0
@@ -4351,6 +4369,14 @@ pub func findMethodDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int, methodN
   }
   if fqn.length > 0 {
     val key = fqn + "::" + methodName
+    if paramCount >= 0 {
+      match mapGet(ctx.predictedMethodRows, key + "/" + toString(paramCount)) {
+        case Some(row) -> {
+          return row
+        }
+        case None -> ()
+      }
+    }
     match mapGet(ctx.predictedMethodRows, key) {
       case Some(row) -> {
         return row
@@ -4447,7 +4473,7 @@ pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
     while si < d.slots.count {
       val slot = d.slots[si]
       if slot.ifaceMethodToken > 0 {
-        val implRow = findMethodDefRowOfType(ctx, targetRow, slot.implMethodName)
+        val implRow = findMethodDefRowOfType(ctx, targetRow, slot.implMethodName, -1)
         if implRow > 0 {
           addMethodImpl(
             t,
@@ -5102,7 +5128,7 @@ pub func lowerMFuncsToHostClass(
         paramList = fpc
       )
     )
-    recordPredictedMethodRow(ctx, joinTypeFqn(hostClass, "Program"), ".cctor", cctorRow)
+    recordPredictedMethodRow(ctx, joinTypeFqn(hostClass, "Program"), ".cctor", 0, cctorRow)
   }
 
   // Emit static methods.
@@ -5123,7 +5149,7 @@ pub func lowerMFuncsToHostClass(
       t,
       MethodDefRow(rva = fRva, implFlags = 0, flags = f.flags, name = sN, signature = bSig, paramList = fp)
     )
-    recordPredictedMethodRow(ctx, joinTypeFqn(hostClass, "Program"), f.name, mRow)
+    recordPredictedMethodRow(ctx, joinTypeFqn(hostClass, "Program"), f.name, f.params.count, mRow)
     fi = fi + 1
   }
 
@@ -5367,7 +5393,7 @@ func lowerMConfig(
         paramList = fpc
       )
     )
-    recordPredictedMethodRow(ctx, joinTypeFqn(ns, typeName), ".cctor", mRow)
+    recordPredictedMethodRow(ctx, joinTypeFqn(ns, typeName), ".cctor", 0, mRow)
   }
 
   val sName = internString(sh, typeName)

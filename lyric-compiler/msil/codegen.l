@@ -3652,7 +3652,15 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 func inferUntypedStaticValMsilType(e: in Expr): MsilType {
   match e.kind {
     case EParen(inner) -> inferUntypedStaticValMsilType(inner)
-    case ELiteral(lit) -> match lit { case LString(_) -> MString; case LTripleString(_) -> MString; case LRawString(_) -> MString; case LFloat(_, _, _) -> MDouble; case LInt(v, suffix, _) -> match suffix { case I64 | U64 -> MLong; case _ -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MLong } }; case LBool(_) -> MBool; case LChar(_) -> MChar; case LUnit -> MVoid }
+    // LBool/LChar/LUnit are unreachable here in practice: the caller only
+    // reaches this function when isLiteralI4ExprMsilWithEnv(decl.init, ...)
+    // returned false, and that function unconditionally returns true for
+    // LBool(_)/LChar(_)/LUnit regardless of value (#5302). Kept for
+    // structural parity with lowerExprMsil's ELiteral match; LUnit mirrors
+    // lowerExprMsil's LUnit arm (MObject/MLdNull — Unit-as-a-value has no
+    // distinct runtime representation) so the dead arm stays correct if it
+    // ever becomes live.
+    case ELiteral(lit) -> match lit { case LString(_) -> MString; case LTripleString(_) -> MString; case LRawString(_) -> MString; case LFloat(_, _, _) -> MDouble; case LInt(v, suffix, _) -> match suffix { case I64 | U64 -> MLong; case _ -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MLong } }; case LBool(_) -> MBool; case LChar(_) -> MChar; case LUnit -> MObject }
     case EInterpolated(_) -> MString
     // `-40` parses as EPrefix(PreNeg, ELiteral(LInt(40, ...))) (#5300): mirror
     // lowerExprMsil's EPrefix arm, which derives the type from the operand
@@ -4653,7 +4661,12 @@ func tryQualifiedEnumOrdinalMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in
 // Returns the qualified key to look up in `staticValTokens`, or "" if
 // `expr` isn't such a reference.  A receiver whose first segment names a
 // local is left to the normal `EMember` arm, mirroring
-// `tryQualifiedEnumOrdinalMsil`.
+// `tryQualifiedEnumOrdinalMsil`.  Checks `slots` / `hoistedCellSlot` /
+// `captureNameToIndex` together (like the union-case-qualifier check at
+// ~line 6364) so a closure-captured local — read from inside a lambda body,
+// where it lives in `captureNameToIndex`/`hoistedCellSlot` rather than the
+// lambda's fresh per-call `slots` — is still recognized as a local instead
+// of being flattened into a bogus cross-package static-val key (#5274).
 func tryQualifiedStaticValNameMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr): String {
   match expr.kind {
     case EMember(_, _) -> {
@@ -4661,7 +4674,7 @@ func tryQualifiedStaticValNameMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: 
       if segs.count < 2 {
         return ""
       }
-      if fctx.slots.containsKey(segs[0]) {
+      if fctx.slots.containsKey(segs[0]) or fctx.hoistedCellSlot.containsKey(segs[0]) or fctx.captureNameToIndex.containsKey(segs[0]) {
         return ""
       }
       val qualifiedName = joinSegsMsil(segs, ".")
@@ -6840,11 +6853,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       }
     }
 
-    // ── Yield: collect-all model (R6) ────────────────────────────────────────
-    // Each `yield e` appends e to the per-function List<object> collector that
-    // was allocated at function entry by lowerFuncMsil when it detected the
-    // @async_generator annotation.  Returns MVoid so the statement wrapper pops
-    // nothing (void instructions push nothing).
+    // ── Yield ──────────────────────────────────────────────────────────────
+    // `@async_generator` functions (fctx.lazyGenCtx set) use the lazy
+    // TaskCompletionSource-based suspend protocol (D119): each `yield e`
+    // stashes e in `__current`, records the resume state, and completes the
+    // TCS so the caller's `await` unblocks — the generator body doesn't run
+    // ahead of consumption. Plain (non-async) generators (fctx.yieldSlots
+    // set) still use the simpler collect-all model: each `yield e` appends e
+    // to a per-function List<object> collector allocated at function entry.
+    // Returns MVoid so the statement wrapper pops nothing (void instructions
+    // push nothing).
     case EYield(inner) -> {
       if fctx.lazyGenCtx.count > 0 {
         val lgctx = fctx.lazyGenCtx[0]
@@ -7183,7 +7201,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       if lparams.count > 0 {
         val lpRefs: List[String] = newList()
         collectRefNamesBlock(lbody, lpRefs)
-        // Package-qualified (#5363): mirrors the write site's `qualifiedPredNameEarly`.
+        // Package-qualified (#5363): mirrors the write site's `qualifiedPredName`.
         val propagated = match mapGet(cctx.lambdaParamTypes, fctx.pkgName + ".__lambda_" + toString(cctx.lambdaTicker.count)) {
           case Some(ts) -> ts
           case None -> newList()
@@ -8055,7 +8073,7 @@ func lowerIfExprMsil(
         // nextYieldIndex` — see `rollbackFuncCtxSlotsSinceMsil`'s doc comment.
         // A `then` branch containing `await`/`yield` that also erases to a
         // bare collection/Option is an unaudited pre-existing risk this fix
-        // does not address.
+        // does not address. (#4813)
         //
         // `else` was already lowered (above, against the stale `thenTy`
         // hint) by the time we get here, so its slot allocations sit ABOVE
@@ -11480,11 +11498,12 @@ func lowerBuiltinOrStaticCallMsil(
                             val predName = "__lambda_" + toString(cctx.lambdaTicker.count)
                             // Package-qualified (#5363/#5309): `lambdaTicker` resets to 0
                             // per package, so a bare `predName` can alias two different
-                            // packages' lambdas.  See `qualifiedPredName` below — hoisted
-                            // here so `lambdaParamTypes` uses the same qualified key.
-                            val qualifiedPredNameEarly = fctx.pkgName + "." + predName
-                            if inner.count > 0 and not cctx.lambdaParamTypes.containsKey(qualifiedPredNameEarly) {
-                              cctx.lambdaParamTypes.add(qualifiedPredNameEarly, inner)
+                            // packages' lambdas.  Shared by the `lambdaParamTypes` write
+                            // just below and the `lambdaExternDelegateParamTypes` /
+                            // `lambdaExternDelegateRetType` writes further down (#5376).
+                            val qualifiedPredName = fctx.pkgName + "." + predName
+                            if inner.count > 0 and not cctx.lambdaParamTypes.containsKey(qualifiedPredName) {
+                              cctx.lambdaParamTypes.add(qualifiedPredName, inner)
                             }
                             // FFI delegate-bridging trigger (Epic #1877/#3923 FFI-boundary
                             // slice): only when this parameter belongs to an `@externTarget`
@@ -11508,7 +11527,6 @@ func lowerBuiltinOrStaticCallMsil(
                             // real signature won't match another package's colliding
                             // "__lambda_0" — surfaced by #Std.HttpHost's ConnectCallback
                             // lambda in the full stdlib bundle).
-                            val qualifiedPredName = fctx.pkgName + "." + predName
                             if isDelegateTarget and not cctx.lambdaExternDelegateParamTypes.containsKey(qualifiedPredName) {
                               cctx.lambdaExternDelegateParamTypes.add(qualifiedPredName, inner)
                               val fnRet = match mapGet(cctx.funcParamFnRetType, fnInnerKey) { case Some(rt) -> rt; case None -> MVoid }
@@ -12176,16 +12194,16 @@ func lowerMethodCallMsil(
     // when the CLR verifier rejects the resulting stack shape (#4651).
     // Postfix `w.unwrap()` is unaffected — its receiver is a real local, so
     // it never reaches this qualified-receiver dispatch at all.
+    // `samePkgFqn` deliberately keeps the trailing method segment (it is
+    // `pkgName + "." + callFqn`, and `callFqn` already ends with
+    // `memberName`): `lowerBuiltinOrStaticCallMsil`'s override/funcTokens
+    // lookups (see `hasQualifiedFuncOverrideMsil`) join every `path.segments`
+    // entry and match against the full `<pkg>.<Type>.<method>` funcTokens
+    // key, ignoring the separately-passed `memberName` — so the path must
+    // carry the method segment itself, unlike a plain type path (#4896).
     val samePkgFqn = fctx.pkgName + "." + callFqn
     if cctx.funcTokens.containsKey(samePkgFqn + "/" + toString(args.count)) or cctx.funcTokens.containsKey(samePkgFqn) {
-      val samePkgSegs = split(samePkgFqn, ".")
-      val samePkgPathSegs: List[String] = newList()
-      var spi = 0
-      while spi < samePkgSegs.length {
-        samePkgPathSegs.add(samePkgSegs[spi])
-        spi = spi + 1
-      }
-      val samePkgPath = ModulePath(segments = samePkgPathSegs, span = recv.span)
+      val samePkgPath = ModulePath(segments = split(samePkgFqn, "."), span = recv.span)
       return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, samePkgPath, args)
     }
     // Type-associated function call through an imported type (D037):
@@ -13149,9 +13167,10 @@ func emitCollectionForMsil(
       insns.add(MLabel(id = afterL2))
       // Call DisposeAsync on the enumerator when loop exits (either exhausted or
       // via break) to satisfy the IAsyncEnumerator<T> consumption protocol.
-      // Currently a no-op (returns default(ValueTask)) for the eager-producer
-      // generator, but required for correctness once lazy/cancellable generators
-      // land.  Discard the returned ValueTask (the loop result is not async here).
+      // Currently a no-op (returns default(ValueTask)) — the lazy TCS-based
+      // generator's DisposeAsync stub (D119) doesn't implement real
+      // cancellation/cleanup yet.  Discard the returned ValueTask (the loop
+      // result is not async here).
       val dispAsyncVtTy = MValueTypeRef(
         typeRefCode = tdrTypeRef(cctx.trValueTask),
         clrFqn = "System.Threading.Tasks.ValueTask"
@@ -14638,62 +14657,6 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
-// Build a newobj token for System.Func`(nparams+1)<object,...,object,TResult>::.ctor(object, nativeint)
-// with object-based parameter types but actual return type.
-// Phase 1 limitation: delegate must remain object-based for HOF parameter type compatibility,
-// even when HOF type propagation provides concrete parameter types (those are deferred to Phase 2).
-// The return type uses actual type to match the lambda method signature.
-func buildFuncNCtorTokWithTypes(
-  cctx: in CodegenCtx,
-  nparams: in Int,
-  paramTypes: in List[MsilType],
-  retType: in MsilType,
-): Int {
-  // If we have fewer actual types than expected params, fall back to the object-based version
-  if paramTypes.count < nparams {
-    return buildFuncNCtorTok(cctx, nparams)
-  }
-  val trN = internFuncTypeRef(cctx, nparams)
-  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
-  val codedIdx = (trN * 4) + 1
-  val actualArgs: List[MsilType] = newList()
-  var ai = 0
-  while ai < nparams {
-    // Use object-based parameters for HOF delegate compatibility.
-    // Propagated types influence the lambda method signature but not the delegate type.
-    // The delegate must match the HOF parameter type, which is object-based at the MSIL level.
-    actualArgs.add(MObject)
-    ai = ai + 1
-  }
-  actualArgs.add(retType)
-  val gblob = buildGenericInstBlob(codedIdx, actualArgs)
-  // FIXED #4060/#4088: Cache key must include both parameter types and return type to avoid collision.
-  // Two lambdas with same param count but different types or returns must be distinct:
-  // e.g. {x: Int -> x} (Func<Int,Int>) vs {x: Int -> x > 0} (Func<Int,Bool>).
-  var typeKeySuffix = ""
-  var ti = 0
-  while ti < paramTypes.count and ti < nparams {
-    typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(paramTypes[ti])
-    ti = ti + 1
-  }
-  typeKeySuffix = typeKeySuffix + "_" + msilTypeKeyStr(retType)
-  val specKey = "FuncSpec_typed_" + toString(nparams) + typeKeySuffix
-  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
-  val ctorPs: List[MsilType] = newList()
-  ctorPs.add(MObject)
-  ctorPs.add(MNativeInt)
-  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
-  // FIXED #4066: MemberRef cache key must also include type suffix to avoid collision
-  val mrRow = ctxAddMemberRefForTypeSpec(
-    cctx.lctx,
-    tsRow,
-    ".ctor",
-    "func_ctor_typed_" + toString(nparams) + typeKeySuffix,
-    ctorSig
-  )
-  0x0A000000 + mrRow
-}
-
 // Build a callvirt token for System.Func`(nparams+1)<object,...,object>::Invoke(object,...): object.
 // Params are type vars 0..nparams-1; the return type is the last type var (nparams).
 func buildFuncNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
@@ -14713,7 +14676,6 @@ func buildFuncNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
 // Helper: build cache key suffix and argument list for a typed Func generic instantiation.
 // Returns tuple of (typeKeySuffix, actualArgs) for use by typed delegate operations.
 // Returns the TypeSpec row index for use in castclass / newobj instructions.
-// Shared cache key logic with buildFuncNCtorTokWithTypes to ensure consistency.
 // (#1877 Phase 3 — Strongly-typed invoke ABI)
 // Shared by buildFuncNTypedTypeSpec / buildFuncNInvokeTokWithTypes: the
 // `_`-joined cache-key suffix identifying a closed `Func<T1,...,Tn,TReturn>`
@@ -19829,7 +19791,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // the physical method signature (Epic #1877/#3923 FFI-boundary slice — see
   // CodegenCtx.funcParamIsExternTargetDelegate's doc comment). Empty for every
   // other lambda, which falls through to the unchanged object-based behavior.
-  val lambdaExternParamTys = match mapGet(cctx.lambdaExternDelegateParamTypes, pkgName + "." + decl.name) {
+  val lambdaExternParamTys = match mapGet(cctx.lambdaExternDelegateParamTypes, qualifiedLambdaName) {
     case Some(ts) -> ts
     case None -> newList()
   }

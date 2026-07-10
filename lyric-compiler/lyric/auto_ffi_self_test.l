@@ -225,6 +225,27 @@ func externUtf8Encoding(): Enc = ()
 @externTarget("System.Text.Encoding.GetBytes")
 func externEncodingGetBytes(e: in Enc, s: in String): slice[Byte] = ()
 
+// #3714: `readNestedClass` and the nested-type `+`-separator path in
+// `findTypeDefByFqn` (lyric-compiler/msil/metadata_reader.l) have no test
+// coverage. `System.Environment+SpecialFolder` is a nested enum: an AOT-safe,
+// dependency-free BCL type that exercises the NestedClass table lookup end to
+// end — the enum member field access below (`ApplicationData`) and the
+// static method call taking it both require the metadata reader to locate
+// the nested TypeDef, not merely parse the declaration string.
+extern type SpecialFolder = "System.Environment+SpecialFolder"
+
+@externTarget("System.Environment+SpecialFolder.ApplicationData")
+func specialFolderApplicationData(): SpecialFolder = ()
+
+@externTarget("System.Environment.GetFolderPath")
+@externStatic
+func externGetFolderPath(folder: in SpecialFolder): String = ()
+
+test "auto-FFI resolves a nested BCL type via the `+` separator (#3714)" {
+  val path = externGetFolderPath(specialFolderApplicationData())
+  assertTrue(path.length >= 0, "GetFolderPath(SpecialFolder.ApplicationData) resolves through the nested TypeDef")
+}
+
 test "auto-FFI resolves an instance method with an array-typed return" {
   // (a) raw auto-FFI: call GetBytes directly on the extern-typed receiver.
   val direct = externUtf8Encoding().GetBytes("hi")

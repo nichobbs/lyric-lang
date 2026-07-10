@@ -412,7 +412,13 @@ pub func stdlibSourcesFromCompiledBundle(): List[String] {
   val dllPath = Path.join(dir, "Lyric.Stdlib.dll")
   val noPreamble: List[Meta.ContractDecl] = newList()
   match RP.loadRestoredPackage(dllPath) {
-    case Err(_) -> sources
+    case Err(e) -> {
+      Console.error(
+        "warning: could not load stdlib contract metadata from '" + dllPath + "': " + RP.errorMessage(e) +
+          "; Std.* types may fail to resolve"
+      )
+      sources
+    }
     case Ok(arts) -> {
       var i = 0
       while i < arts.count {

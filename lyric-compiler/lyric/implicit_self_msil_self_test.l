@@ -81,6 +81,21 @@ exposed record Money {
   }
 }
 
+// 6. In-body method carrying requires:/ensures: contracts (#4966). The
+// contract elaborator lowers `RMFunc` members into runtime asserts before
+// the MSIL emitter sees the AST; this pins that the `self` receiver is
+// correctly threaded into the result binding for `ensures:` on an implicit-
+// self in-body method.
+record Deposit {
+  balance: Int
+  func add(x: in Int): Int
+    requires: x > 0
+    ensures: result > self.balance
+  {
+    return self.balance + x
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -128,4 +143,9 @@ test "exposed record: implicit self zero-arg method" {
 test "exposed record: implicit self method with argument" {
   val m = Money(cents = 1050)
   assertEqualInt(m.plus(25), 1075, "Money(1050).plus(25) == 1075")
+}
+
+test "implicit self: in-body method with requires/ensures contracts, passing call" {
+  val d = Deposit(balance = 100)
+  assertEqualInt(d.add(50), 150, "Deposit(100).add(50) == 150, satisfying requires: x > 0 / ensures: result > self.balance")
 }

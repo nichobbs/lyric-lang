@@ -271,7 +271,7 @@ func cmdPublish(argv: in slice[String]): Int {
       }
     }
   }
-  val restoreExit = runRestoreWithRetry(restoreArgs)
+  val restoreExit = runRestoreWithRetry(restoreArgs, "publish")
   if restoreExit != 0 {
     return restoreExit
   }
@@ -381,64 +381,6 @@ func cmdPublish(argv: in slice[String]): Int {
 
   Console.println("publish: pushed " + pkg.name + " " + effectiveVersion + " to " + pushRegistry)
   0
-}
-
-// Run `dotnet restore` for the temp publish csproj, retrying on NU1102.
-//
-// A Lyric package dependency declared in this manifest (e.g. a sibling
-// ecosystem library published moments earlier in the same release run) can
-// still 404 with NU1102 for a while after its own `dotnet nuget push`
-// returned success -- NuGet.org's restore-side registration/validation
-// pipeline lags behind the push, not just its full-text search index.
-//
-// A first cut of this retry (30s/60s/90s, 4 attempts, ~180s total) was
-// observed in production still failing NU1102 on the final attempt for six
-// ecosystem libraries at once (a whole release tier pushes its packages in
-// a tight burst, which appears to make the lag worse) -- 180s falls short
-// of NuGet.org's real worst-case propagation window, it isn't just close.
-// Escalate for the first 4 attempts, then hold at a 120s plateau for the
-// rest: 8 attempts total, ~660s (11 min) of backoff before giving up. Any
-// restore failure that ISN'T NU1102 still fails immediately.
-func runRestoreWithRetry(restoreArgs: in List[String]): Int {
-  val maxAttempts = 8
-  var attempt = 1
-  while attempt <= maxAttempts {
-    val captureResult = try {
-      ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 300000)
-    } catch Bug as b {
-      CaptureResult(stdout = "", stderr = b.message, exitCode = -1, timedOut = false)
-    }
-    if not Str.isEmpty(captureResult.stdout) {
-      Console.print(captureResult.stdout)
-    }
-    if not Str.isEmpty(captureResult.stderr) {
-      Console.error(captureResult.stderr)
-    }
-    if captureResult.timedOut {
-      printErr("publish: dotnet restore timed out after 300 seconds")
-      return 1
-    }
-    if captureResult.exitCode == -1 {
-      printErr("publish: dotnet restore failed to start (is dotnet on PATH?)")
-      return 1
-    }
-    if captureResult.exitCode == 0 {
-      return 0
-    }
-    val isIndexingLag = captureResult.stdout.contains("NU1102") or captureResult.stderr.contains("NU1102")
-    if not isIndexingLag or attempt == maxAttempts {
-      return captureResult.exitCode
-    }
-    val backoffMs = if attempt <= 4 { attempt * 30000 } else { 120000 }
-    printErr(
-      "publish: NU1102 (NuGet indexing delay) on attempt " + toString(attempt) + "; retrying in " +
-        toString(backoffMs / 1000) +
-        "s"
-    )
-    Time.sleepMillis(backoffMs)
-    attempt += 1
-  }
-  1
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

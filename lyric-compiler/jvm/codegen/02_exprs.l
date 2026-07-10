@@ -2962,9 +2962,6 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     val cap = captures[cj]
     // Check if this capture is a hoisted cell
     val isHoistedCell = match mapGet(ctx.hoistedCellType, cap.captureName) { case Some(_) -> true; case None -> false }
-    if isHoistedCell {
-      bodyCtx.captureCellNames.add(cap.captureName)
-    }
     val cslot = allocSlot(bodyCtx, cap.captureName, cap.captureType)
     bodyInsns.add(LAload(slot = 0))
     bodyInsns.add(LGetfield(owner = closureClass, name = cap.captureName, t = cap.captureType))
@@ -3286,9 +3283,6 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
   while cj < captures.count {
     val cap = captures[cj]
     val isHoistedCell = match mapGet(ctx.hoistedCellType, cap.captureName) { case Some(_) -> true; case None -> false }
-    if isHoistedCell {
-      bodyCtx.captureCellNames.add(cap.captureName)
-    }
     val cslot = allocSlot(bodyCtx, cap.captureName, cap.captureType)
     bodyInsns.add(LAload(slot = 0))
     bodyInsns.add(LGetfield(owner = closureClass, name = cap.captureName, t = cap.captureType))

@@ -159,17 +159,63 @@ pub func returnTypeGenericArgsFiltered(retOpt: in Option[TypeExpr], typeParams: 
   }
   var i = 0
   while i < raw.count {
-    match raw[i].kind {
-      case TRef(path) -> {
-        if path.segments.count == 1 and listContainsStr(typeParams, path.segments[0]) {
-          return newList()
-        }
-      }
-      case _ -> ()
+    if containsTypeParam(raw[i], typeParams) {
+      return newList()
     }
     i = i + 1
   }
   raw
+}
+
+// Recursive tree-walk companion to `returnTypeGenericArgsFiltered`'s bail
+// guard: a bare `TRef` at the top level isn't the only shape a function's own
+// type parameter can hide behind — `Option[List[T]]` nests `T` inside a
+// `TGenericApp` arg. Walks every `TypeExprKind` that can carry a nested
+// `TypeExpr` so the guard is exhaustive, not just direct-`TRef`.
+func containsTypeParam(te: in TypeExpr, typeParams: in List[String]): Bool {
+  match te.kind {
+    case TRef(path) -> path.segments.count == 1 and listContainsStr(typeParams, path.segments[0])
+    case TGenericApp(_, args) -> {
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(ty) -> {
+            if containsTypeParam(ty, typeParams) {
+              return true
+            }
+          }
+          case TAValue(_) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TArray(_, element) -> containsTypeParam(element, typeParams)
+    case TSlice(element) -> containsTypeParam(element, typeParams)
+    case TTuple(types) -> {
+      var i = 0
+      while i < types.count {
+        if containsTypeParam(types[i], typeParams) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TNullable(inner) -> containsTypeParam(inner, typeParams)
+    case TFunction(parameters, retTy) -> {
+      var i = 0
+      while i < parameters.count {
+        if containsTypeParam(parameters[i], typeParams) {
+          return true
+        }
+        i = i + 1
+      }
+      containsTypeParam(retTy, typeParams)
+    }
+    case TParen(inner) -> containsTypeParam(inner, typeParams)
+    case _ -> false
+  }
 }
 
 // True for the bare Lyric primitive-type keywords, whose JVM mapping is
@@ -394,11 +440,6 @@ pub record FuncCtx {
   hoistedVarNames: List[String]
   hoistedCellSlot: Map[String, Int]
   hoistedCellType: Map[String, JvmType]
-  // Inside a lifted `__lambda_*`: capture names whose `__caps[i]` slot holds a
-  // by-reference cell (a hoisted `var`) rather than a by-value boxed copy.
-  // Reads emit `__caps[i]` then `aaload` + unbox; writes emit `__caps[i]` then
-  // `aastore`.
-  captureCellNames: List[String]
   // Local name → the generic instantiation args of the expression it was bound
   // to (`let r = getInt(x)` records `r → [Int, String]`).  Lets a `match r { … }`
   // over a variable-bound scrutinee recover the same instantiation the direct

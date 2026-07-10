@@ -515,6 +515,56 @@ test "cross-package union parenless nullary case" {
   )
 }
 
+// #4004: cross-package nullary-case resolution for an in-bundle GENERIC union
+// (docs/43, #2362). `inbundle_generics_self_test.l` covers a same-assembly
+// generic union's nullary case (`Maybe[Int]` `Nothing`, no singleton — every
+// construction is a fresh `newobj` against the arity-suffixed case TypeSpec,
+// Q-GEN-001); this pins the cross-package half — pkg A defines the generic
+// union, pkg B constructs and matches its nullary case against a TypeRef (not
+// a same-assembly TypeDef) `MemberRef`, exercising the arity-suffixed-name
+// resolution this issue's fix targets across an assembly boundary.
+test "cross-package generic union nullary case constructs and matches" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XPkgGenNullary.Lib",
+      "package XPkgGenNullary.Lib\n" + "\n" + "pub union Maybe[T] {\n" + "  case Just(value: T)\n" +
+        "  case Nothing\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XPkgGenNullary.App",
+      "package XPkgGenNullary.App\n" + "import XPkgGenNullary.Lib\n" + "\n" +
+        "func unwrapOr(m: in Maybe[Int], dflt: in Int): Int {\n" +
+        "  match m {\n" +
+        "    case Just(v) -> v\n" +
+        "    case Nothing -> dflt\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val n: Maybe[Int] = Nothing\n" +
+        "  val j: Maybe[Int] = Just(value = 7)\n" +
+        "  println(unwrapOr(n, 99))\n" +
+        "  println(unwrapOr(j, 99))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xpkg-gen-nullary", packages, "XPkgGenNullary")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "cross_package_generic_union_nullary_case: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "99\n7",
+    "cross_package_generic_union_nullary_case: Nothing falls back to default, Just(7) unwraps to 7"
+  )
+}
+
 // Pkg A exports a non-constant `pub val` (computed in its `.cctor`, so it is
 // emitted as a real static field rather than const-inlined into the consumer).
 // Pkg B reads the val from `main`, forcing a cross-type `ldsfld` against pkg A's

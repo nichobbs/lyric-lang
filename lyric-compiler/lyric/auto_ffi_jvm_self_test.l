@@ -324,3 +324,72 @@ test "slice[Char] literal argument unboxes to a real JDK char[] — String.copyV
   val s = JString.copyValueOf(letters)
   assertEqual(s, "hi", "String.copyValueOf(char[]) built from a Lyric slice[Char] literal")
 }
+
+// #5373: extend the primitive-array coverage above (char[]/byte[] only)
+// to two more of PR #5370's generalized 8 primitive element types: int[]
+// and double[]. `Arrays.copyOf` exercises the return-side box (a real JDK
+// method producing a raw primitive array, both tail-expression and explicit
+// `return` forms); `Arrays.toString` exercises the argument-side unbox for
+// both a returned array and a bare Lyric slice literal never touched by JDK
+// code.
+extern type JArrays = "java.util.Arrays"
+
+func copyOfIntsTail(src: in slice[Int], newLen: in Int): slice[Int] {
+  JArrays.copyOf(src, newLen)
+}
+
+func copyOfIntsExplicit(src: in slice[Int], newLen: in Int): slice[Int] {
+  return JArrays.copyOf(src, newLen)
+}
+
+test "Arrays.copyOf(int[],int) tail-expression return coerces to slice[Int]" {
+  val src: slice[Int] = [1, 2, 3]
+  val copied = copyOfIntsTail(src, 5)
+  assertEqualInt(copied.count, 5, "copyOf(int[],5) grows to newLen")
+  val s = JArrays.toString(copied)
+  assertEqual(s, "[1, 2, 3, 0, 0]", "copyOf pads with zero, round-trips through Arrays.toString(int[])")
+}
+
+test "Arrays.copyOf(int[],int) explicit return coerces to slice[Int]" {
+  val src: slice[Int] = [4, 5]
+  val copied = copyOfIntsExplicit(src, 2)
+  assertEqualInt(copied.count, 2, "copyOf(int[],2) same length")
+  val s = JArrays.toString(copied)
+  assertEqual(s, "[4, 5]", "copyOf(int[],2) round-trips through Arrays.toString(int[])")
+}
+
+test "slice[Int] literal argument unboxes to a real JDK int[] — Arrays.toString(int[])" {
+  val nums: slice[Int] = [7, 8, 9]
+  val s = JArrays.toString(nums)
+  assertEqual(s, "[7, 8, 9]", "Arrays.toString(int[]) built from a Lyric slice[Int] literal")
+}
+
+func copyOfDoublesTail(src: in slice[Double], newLen: in Int): slice[Double] {
+  JArrays.copyOf(src, newLen)
+}
+
+func copyOfDoublesExplicit(src: in slice[Double], newLen: in Int): slice[Double] {
+  return JArrays.copyOf(src, newLen)
+}
+
+test "Arrays.copyOf(double[],int) tail-expression return coerces to slice[Double]" {
+  val src: slice[Double] = [1.5, 2.5]
+  val copied = copyOfDoublesTail(src, 3)
+  assertEqualInt(copied.count, 3, "copyOf(double[],3) grows to newLen")
+  val s = JArrays.toString(copied)
+  assertEqual(s, "[1.5, 2.5, 0.0]", "copyOf pads with 0.0, round-trips through Arrays.toString(double[])")
+}
+
+test "Arrays.copyOf(double[],int) explicit return coerces to slice[Double]" {
+  val src: slice[Double] = [3.5]
+  val copied = copyOfDoublesExplicit(src, 1)
+  assertEqualInt(copied.count, 1, "copyOf(double[],1) same length")
+  val s = JArrays.toString(copied)
+  assertEqual(s, "[3.5]", "copyOf(double[],1) round-trips through Arrays.toString(double[])")
+}
+
+test "slice[Double] literal argument unboxes to a real JDK double[] — Arrays.toString(double[])" {
+  val nums: slice[Double] = [1.1, 2.2]
+  val s = JArrays.toString(nums)
+  assertEqual(s, "[1.1, 2.2]", "Arrays.toString(double[]) built from a Lyric slice[Double] literal")
+}
