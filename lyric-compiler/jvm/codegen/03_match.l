@@ -711,7 +711,20 @@ func lowerPatternTest(
       insns.add(LLabel(name = succeedL))
     }
     case PConstRef(constName) -> {
-      match mapGet(ctx.moduleVals, constName) {
+      // The const may live in THIS package (`moduleVals`) or an imported one
+      // (the cross-package `val:` registry keys, import-aware — see
+      // `collectFileSigsSeeded`); the `getstatic` owner follows accordingly.
+      val ownVty: Option[JvmType] = mapGet(ctx.moduleVals, constName)
+      val importedSig: Option[JvmFuncSig] = match ownVty {
+        case Some(_) -> None
+        case None -> mapGet(ctx.funcSigs, "val:" + constName)
+      }
+      val constOwner = match importedSig { case Some(s) -> s.owner; case None -> ctx.pkgName }
+      val vtyOpt: Option[JvmType] = match ownVty {
+        case Some(t) -> Some(value = t)
+        case None -> match importedSig { case Some(s) -> Some(value = s.ret); case None -> None }
+      }
+      match vtyOpt {
         case Some(vty) -> {
           val scrutIsRef = isRefJvm(scrutTy)
           match vty {
@@ -721,7 +734,7 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Long"))
                 insns.add(LUnboxLong)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               insns.add(LLcmp)
               insns.add(LIfne(label = failLabel))
             }
@@ -731,7 +744,7 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Double"))
                 insns.add(LUnboxDouble)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               insns.add(LDcmpl)
               insns.add(LIfne(label = failLabel))
             }
@@ -741,14 +754,14 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Float"))
                 insns.add(LUnboxFloat)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               insns.add(LFcmpl)
               insns.add(LIfne(label = failLabel))
             }
             case JRef(refClassName) -> {
               emitLoad(insns, scrutSlot, scrutTy)
               insns.add(LCheckcast(className = refClassName))
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               val eqPs: List[JvmType] = newList()
               eqPs.add(JRef(className = "java/lang/Object"))
               insns.add(LInvokevirtual(owner = refClassName, name = "equals", params = eqPs, ret = JBoolean))
@@ -760,7 +773,7 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Boolean"))
                 insns.add(LUnboxBool)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               insns.add(LIfIcmpne(label = failLabel))
             }
             case JChar -> {
@@ -769,7 +782,22 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Character"))
                 insns.add(LUnboxChar)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
+              insns.add(LIfIcmpne(label = failLabel))
+            }
+            case JByte -> {
+              // Both sides mask to the canonical unsigned form: the scrutinee
+              // may be a boxed payload (unbox via Number, tolerating Integer
+              // boxes), and a `getstatic` of a byte field sign-extends (see
+              // maskByteUnsigned in 04_calls.l).
+              emitLoad(insns, scrutSlot, scrutTy)
+              if scrutIsRef {
+                insns.add(LCheckcast(className = "java/lang/Number"))
+                insns.add(LInvokevirtual(owner = "java/lang/Number", name = "intValue", params = newList(), ret = JInt))
+              }
+              maskByteUnsigned(insns)
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
+              maskByteUnsigned(insns)
               insns.add(LIfIcmpne(label = failLabel))
             }
             case _ -> {
@@ -778,7 +806,7 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Integer"))
                 insns.add(LUnboxInt)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               insns.add(LIfIcmpne(label = failLabel))
             }
           }

@@ -96,7 +96,7 @@ impl KV for KVImpl {
   }
   func del(s: in Store, k: in String): Result[Unit, String] {
     val _ = s.entries.remove(k)
-    Ok(unit)
+    Ok(())
   }
 }
 

@@ -2720,10 +2720,97 @@ pub func collectFileSigsSeeded(
           mi = mi + 1
         }
       }
+      case IVal(decl) -> {
+        // Register module-level `val`s in the cross-package registry so a
+        // consumer package's bare reference emits `getstatic <owner>.<name>`
+        // instead of the silent `aconst_null` fallback (docs/59 §4.4 — the
+        // store side already panics since m-23, the load side was silent).
+        // Registered under `val:`-prefixed keys (same idiom as the `field:`
+        // opaque-field keys): the bare `val:<name>` key is import-aware — the
+        // bridge's `importAwareRegistry` re-points `<owner>/<bare>` keys per
+        // file — and `<owner>/val:<name>` is the qualified form.  Only vals
+        // whose emitted static-field type is knowable WITHOUT lowering the
+        // initialiser are registered (an explicit annotation, or a literal
+        // init): for the rest, `prelowerModuleVals` derives the field type
+        // from the lowered initialiser in the DECLARING package's context, so
+        // a registry guess here would mis-descriptor the cross-package
+        // `getstatic` (NoSuchFieldError at run time).  Unregistered vals fail
+        // loud at the read site with a pointer to add an annotation.
+        match decl.pattern.kind {
+          case PBinding(vname, _) -> {
+            match moduleValRegistryType(decl, owner, externTypes) {
+              case Some(vty) -> {
+                val vsig = JvmFuncSig(
+                  owner = owner,
+                  params = newList(),
+                  ret = vty,
+                  paramNames = newList(),
+                  paramDefaults = newList(),
+                  paramModes = newList(),
+                  isIface = false,
+                  retGenericArgs = newList()
+                )
+                val vqkey = owner + "/val:" + vname
+                if not into.containsKey(vqkey) {
+                  into.add(vqkey, vsig)
+                }
+                val vbkey = "val:" + vname
+                if not into.containsKey(vbkey) {
+                  into.add(vbkey, vsig)
+                }
+              }
+              case None -> ()
+            }
+          }
+          case _ -> ()
+        }
+      }
       case _ -> {
       }
     }
     i = i + 1
+  }
+}
+
+// The exact JVM static-field type a module-level `val` will be emitted with,
+// when that is derivable without lowering the initialiser: the resolved
+// explicit annotation, or a literal init's type (mirroring both the literal
+// arm of `inferValType` and the width rule literal lowering applies).  `None`
+// for an unannotated non-literal init — its field type only exists after
+// `prelowerModuleVals` lowers the initialiser, so it cannot be promised to
+// other packages.
+func moduleValRegistryType(decl: in ValDecl, owner: in String, externTypes: in Map[String, String]): Option[JvmType] {
+  match decl.ty {
+    case Some(te) -> Some(value = typeExprToJvmExtern(te, owner, externTypes))
+    case None -> {
+      match decl.init.kind {
+        case ELiteral(lit) -> {
+          match lit {
+            case LInt(v, suffix, _) -> {
+              match suffix {
+                case I64 -> Some(value = JLong)
+                case U64 -> Some(value = JLong)
+                case _ -> {
+                  if v >= -2147483648i64 and v <= 2147483647i64 {
+                    Some(value = JInt)
+                  } else {
+                    Some(value = JLong)
+                  }
+                }
+              }
+            }
+            case LFloat(_, fsuffix, _) -> match fsuffix { case F32 -> Some(value = JFloat); case _ -> Some(value = JDouble) }
+            case LBool(_) -> Some(value = JBoolean)
+            case LString(_) -> Some(value = JRef(className = "java/lang/String"))
+            case LTripleString(_) -> Some(value = JRef(className = "java/lang/String"))
+            case LRawString(_) -> Some(value = JRef(className = "java/lang/String"))
+            case LChar(_) -> Some(value = JChar)
+            case LUnit -> None
+          }
+        }
+        case _ -> None
+      }
+    }
   }
 }
 

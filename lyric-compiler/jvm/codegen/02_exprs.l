@@ -351,12 +351,44 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                       match mapGet(ctx.moduleVals, name) {
                         case Some(vty) -> {
                           insns.add(LGetstatic(owner = ctx.pkgName, name = name, t = vty))
+                          match vty {
+                            case JByte -> maskByteUnsigned(insns)
+                            case _ -> ()
+                          }
                           vty
                         }
                         case None -> {
-                          // Package-qualified or genuinely unknown reference: null fallback.
-                          insns.add(LAconstNull)
-                          JRef(className = "java/lang/Object")
+                          // An IMPORTED package's module-level `val` resolves
+                          // through the cross-package registry's `val:` keys
+                          // (import-aware, see `collectFileSigsSeeded`) to a
+                          // `getstatic` on its declaring package's host class
+                          // — `moduleVals` covers only the file being lowered
+                          // and the old read hardcoded `owner = ctx.pkgName`
+                          // (docs/59 §4.4).
+                          match mapGet(ctx.funcSigs, "val:" + name) {
+                            case Some(vsig) -> {
+                              insns.add(LGetstatic(owner = vsig.owner, name = name, t = vsig.ret))
+                              match vsig.ret {
+                                case JByte -> maskByteUnsigned(insns)
+                                case _ -> ()
+                              }
+                              vsig.ret
+                            }
+                            case None -> {
+                              // A genuinely unresolvable reference previously
+                              // lowered to `aconst_null` — a silent wrong value
+                              // in every downstream use (docs/59 §4.4).  Fail
+                              // loud at compile time instead (the m-23
+                              // precedent for the store side).
+                              val pos = path.span.startPos
+                              panic(
+                                "Jvm.Codegen: " + toString(pos.line) + ":" + toString(pos.column) + ": reference '" + name +
+                                  "' resolves to no local, parameter, receiver field, wire binding, union case, or module-level val. " +
+                                  "If this names an imported package's `pub val` with a non-literal initialiser and no type annotation, " +
+                                  "add an explicit type annotation to that val so its cross-package field type is known."
+                              )
+                            }
+                          }
                         }
                       }
                     }
@@ -968,12 +1000,33 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                         insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricCount", params = lcPs, ret = JInt))
                         JInt
                       } else {
-                        JRef(className = "java/lang/Object")
+                        // The RECEIVER itself used to become the "field value"
+                        // here — the exact silent-wrong-value shape the `.count`
+                        // comment above records having caused once (docs/59
+                        // §4.4).  Fail loud at compile time instead.
+                        val posEm = recv.span.startPos
+                        panic(
+                          "Jvm.Codegen: " + toString(posEm.line) + ":" + toString(posEm.column) + ": member '" + memberName +
+                            "' cannot be resolved on an erased (statically Object) receiver — the receiver's concrete type " +
+                            "is unknown at this site, so the read would silently yield the receiver itself. " +
+                            "Bind the value with an explicit type, or match on the concrete constructor first."
+                        )
                       }
                     }
                   }
                 } else {
-                  JRef(className = "java/lang/Object")
+                  // A precisely-known receiver class with no such registered
+                  // field: returning the receiver as the "field value" (the old
+                  // fallback) silently miscompiles — e.g. any instance-field
+                  // read on an extern JDK object (JVM auto-FFI resolves only
+                  // static fields).  Fail loud at compile time (docs/59 §4.4).
+                  val posEm2 = recv.span.startPos
+                  panic(
+                    "Jvm.Codegen: " + toString(posEm2.line) + ":" + toString(posEm2.column) + ": receiver of type '" + cls +
+                      "' has no known field or member '" +
+                      memberName +
+                      "'"
+                  )
                 }
               }
             }
@@ -991,12 +1044,25 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             insns.add(LArraylength)
             JInt
           } else {
-            JVoid
+            // The old fallback reported JVoid while leaving the receiver on
+            // the stack — an operand-stack imbalance that either fails
+            // verification or silently corrupts the enclosing expression
+            // (docs/59 §4.4).  Fail loud at compile time.
+            val posArr = recv.span.startPos
+            panic(
+              "Jvm.Codegen: " + toString(posArr.line) + ":" + toString(posArr.column) + ": member '" + memberName +
+                "' is not defined on an array/slice receiver (only `.length`/`.count`)"
+            )
           }
         }
         case _ -> {
-          // Primitive member access is not meaningful; return void.
-          JVoid
+          // Member access on a primitive receiver has no lowering; the old
+          // JVoid fallback silently produced no value (docs/59 §4.4).
+          val posPrim = recv.span.startPos
+          panic(
+            "Jvm.Codegen: " + toString(posPrim.line) + ":" + toString(posPrim.column) + ": member '" + memberName +
+              "' cannot be read from a primitive-typed receiver"
+          )
         }
       }
     }

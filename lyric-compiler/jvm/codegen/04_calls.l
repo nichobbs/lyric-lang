@@ -3180,7 +3180,15 @@ func lowerMethodCall(
       JRef(className = "java/lang/Object")
     }
     case _ -> {
-      JRef(className = "java/lang/Object")
+      // The old fallback emitted NO instruction while reporting an Object
+      // result — receiver and args were already lowered onto the stack, so
+      // the enclosing expression was silently corrupted (docs/59 §4.4).
+      // Fail loud at compile time.
+      val posMc = recv.span.startPos
+      panic(
+        "Jvm.Codegen: " + toString(posMc.line) + ":" + toString(posMc.column) + ": method '" + memberName +
+          "' cannot be called on a primitive-typed receiver"
+      )
     }
   }
 }
