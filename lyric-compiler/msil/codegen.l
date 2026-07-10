@@ -8813,6 +8813,15 @@ func lowerMatchExprMsil(
     val arm = arms[i]
     val nextArmL = freshLabelMsil(fctx)
     val armInsns: List[MInsn] = newList()
+    // A match arm is a lexical scope of its own (#5191 follow-up): its pattern
+    // bindings shadow enclosing bindings like a nested block's `val`s, but
+    // `lowerPatternBindMsil` allocates slots directly — without a scope bracket
+    // a same-named outer binding's slot was reused (payload clobbered the outer
+    // value) and the name→slot remap leaked past the arm.  Bracket test, bind,
+    // guard, and body, so shadows get fresh slots and the outer mapping is
+    // restored per arm.  `POr` alternatives re-bind the same names INSIDE this
+    // one scope, so they intentionally share slots.
+    val armScope = enterBlockScopeMsil(fctx)
     lowerPatternTestMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy, nextArmL)
     lowerPatternBindMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy)
     match arm.guard {
@@ -8867,6 +8876,7 @@ func lowerMatchExprMsil(
         }
       }
     }
+    exitBlockScopeMsil(fctx, armScope)
     armBuffers.add(armInsns)
     armTys.add(armTy)
     armNextLs.add(nextArmL)
@@ -12867,7 +12877,12 @@ func emitCountingForMsil(
     insns.add(MClt)  // i < hi ?
     insns.add(MBrFalse(label = afterL))  // exit once i is no longer below hi
   }
-  // Bind the loop pattern from the current counter value.
+  // Bind the loop pattern from the current counter value.  The loop variable is
+  // a per-loop lexical binding (#5191 follow-up): a `for i in …` shadowing a
+  // still-live outer `i` must get a fresh slot, and the outer name→slot mapping
+  // must be restored when the loop ends — pattern binds bypass
+  // `lowerBlockMsil`'s bracket (which only covers the body block).
+  val loopScope = enterBlockScopeMsil(fctx)
   bindForPatternMsil(cctx, fctx, insns, pat, iSlot, loTy)
 
   fctx.loopBreak.add(afterL)
@@ -12877,6 +12892,7 @@ func emitCountingForMsil(
   fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
   fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
   fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+  exitBlockScopeMsil(fctx, loopScope)
 
   // increment (continue target): i := i + 1
   insns.add(MLabel(id = contL))
@@ -13049,6 +13065,9 @@ func emitCollectionForMsil(
       castObjectToMsil(cctx, insns, iaeElemTy)
       val elemSlot2 = allocSlotMsil(fctx, "__iae_elem_" + toString(fctx.slotTicker.count), iaeElemTy)
       emitStoreSlot(insns, elemSlot2, fctx.paramCount)
+      // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
+      // (#5191 follow-up).
+      val iaeLoopScope = enterBlockScopeMsil(fctx)
       bindForPatternMsil(cctx, fctx, insns, pat, elemSlot2, iaeElemTy)
 
       fctx.loopBreak.add(afterL2)
@@ -13058,6 +13077,7 @@ func emitCollectionForMsil(
       fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+      exitBlockScopeMsil(fctx, iaeLoopScope)
 
       insns.add(MLabel(id = contL2))
       insns.add(MBr(label = loopL2))
@@ -13139,6 +13159,9 @@ func emitCollectionForMsil(
       castObjectToMsil(cctx, insns, eeElemTy)
       val eeElemSlot = allocSlotMsil(fctx, "__ee_elem_" + toString(fctx.slotTicker.count), eeElemTy)
       emitStoreSlot(insns, eeElemSlot, fctx.paramCount)
+      // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
+      // (#5191 follow-up).
+      val eeLoopScope = enterBlockScopeMsil(fctx)
       bindForPatternMsil(cctx, fctx, insns, pat, eeElemSlot, eeElemTy)
 
       fctx.loopBreak.add(eeAfterL)
@@ -13148,6 +13171,7 @@ func emitCollectionForMsil(
       fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+      exitBlockScopeMsil(fctx, eeLoopScope)
 
       insns.add(MLabel(id = eeContL))
       insns.add(MBr(label = eeLoopL))
@@ -13258,6 +13282,9 @@ func emitCollectionForMsil(
       }
       val elemSlot = allocSlotMsil(fctx, "__for_elem_" + toString(fctx.slotTicker.count), forElemTy)
       emitStoreSlot(insns, elemSlot, fctx.paramCount)
+      // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
+      // (#5191 follow-up).
+      val listLoopScope = enterBlockScopeMsil(fctx)
       bindForPatternMsil(cctx, fctx, insns, pat, elemSlot, forElemTy)
 
       fctx.loopBreak.add(afterL)
@@ -13267,6 +13294,7 @@ func emitCollectionForMsil(
       fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+      exitBlockScopeMsil(fctx, listLoopScope)
 
       insns.add(MLabel(id = contL))
       emitLoadSlot(insns, iSlot, fctx.paramCount)

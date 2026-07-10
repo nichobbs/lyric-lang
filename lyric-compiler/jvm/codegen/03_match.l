@@ -166,6 +166,20 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
   while i < arms.count {
     val arm = arms[i]
     val nextArmL = freshLabel(ctx)
+    // A match arm is a lexical scope of its own (#5191 follow-up): its pattern
+    // bindings (`case Some(v) ->`) shadow enclosing bindings exactly like a
+    // nested block's `val`s, but `lowerPatternBind` allocates slots directly, so
+    // without a scope bracket a same-named-same-frame-type outer binding's slot
+    // was REUSED (payload clobbered the outer value) and, even with a fresh
+    // slot, the name→slot remap leaked past the arm until the enclosing block
+    // exit.  Bracket the whole arm — test, bind, guard, and body — so shadows
+    // get fresh slots and the outer mapping is restored per arm.  The result
+    // local allocated inside the first arm's scope is safe: `rslot` carries the
+    // raw slot index, and later arms / the join address it by index, never by
+    // name.  `POr` alternatives re-bind the same names INSIDE this one scope,
+    // so they intentionally share slots (any alternative populates the locals
+    // the body reads).
+    val armScope = enterBlockScope(ctx)
     // Emit pattern test.
     lowerPatternTest(ctx, insns, arm.pattern, scrutSlot, scrutTy, nextArmL)
     // Bind pattern variables.
@@ -226,6 +240,7 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
       insns.add(LGoto(label = afterL))
       anyArmFellThrough = true
     }
+    exitBlockScope(ctx, armScope)
     insns.add(LLabel(name = nextArmL))
     i = i + 1
   }

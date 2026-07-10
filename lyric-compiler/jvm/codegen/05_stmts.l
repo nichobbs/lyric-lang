@@ -719,6 +719,11 @@ func emitCountingForJvm(
       }
     }
   }
+  // The loop variable is a per-loop lexical binding (#5191 follow-up): a
+  // `for i in …` shadowing a still-live outer `i` must get a fresh slot, and
+  // the outer name→slot mapping must be restored when the loop ends — pattern
+  // binds bypass `lowerBlock`'s bracket (which only covers the body block).
+  val loopScope = enterBlockScope(ctx)
   lowerPatternBind(ctx, insns, pat, iSlot, loTy, newList())
 
   ctx.loopBreak.add(endL)
@@ -728,6 +733,7 @@ func emitCountingForJvm(
   ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
   ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
   ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+  exitBlockScope(ctx, loopScope)
 
   insns.add(LLabel(name = contL))
   emitLoad(insns, iSlot, loTy)
@@ -1022,6 +1028,9 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               emitArrayLoad(insns, elemArr)
               val elemSlotA = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemArr)
               emitStore(insns, elemSlotA, elemArr)
+              // Loop-variable bind is a per-loop lexical scope — see
+              // `emitCountingForJvm` (#5191 follow-up).
+              val forScopeA = enterBlockScope(ctx)
               lowerPatternBind(ctx, insns, pat, elemSlotA, elemArr, newList())
               // #2854: `continue` targets the index-increment point (`contLA`), not
               // the loop top, so the loop variable still advances; `break` targets
@@ -1034,6 +1043,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
               ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
               ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+              exitBlockScope(ctx, forScopeA)
               insns.add(LLabel(name = contLA))
               emitLoad(insns, iSlot, JInt)
               insns.add(LIconst(v = 1))
@@ -1087,6 +1097,9 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               val elemTyB = JRef(className = "java/lang/Object")
               val elemSlotB = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyB)
               emitStore(insns, elemSlotB, elemTyB)
+              // Loop-variable bind is a per-loop lexical scope — see
+              // `emitCountingForJvm` (#5191 follow-up).
+              val forScopeB = enterBlockScope(ctx)
               lowerPatternBind(ctx, insns, pat, elemSlotB, elemTyB, newList())
               // #2854: `continue` targets the loop top (`loopLB`, which re-checks
               // hasNext()); `break` targets `endLB`.  `loopDeferDepth` captures the
@@ -1098,6 +1111,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
               ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
               ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+              exitBlockScope(ctx, forScopeB)
               insns.add(LGoto(label = loopLB))
               insns.add(LLabel(name = endLB))
             }
