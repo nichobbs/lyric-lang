@@ -169,6 +169,31 @@ func xParseHexDigit(c: in Char): Int {
   }
 }
 
+// Emit the string for a Unicode scalar value parsed from a numeric character
+// reference.  BMP code points (<= U+FFFF) go through `Char.fromInt` directly;
+// astral code points are emitted as a UTF-16 surrogate pair (matching how
+// Std.Encoding reconstructs 4-byte UTF-8).  Code points outside the Unicode
+// range or in the surrogate range are rejected with an XmlError so the parser
+// stays total — routing them through `Char.fromInt` would trip its
+// `requires: n <= 65535` contract (`Std.Char` is @runtime_checked) and panic.
+func xEmitCodePoint(cp: in Int, pos: in Int): Result[String, XmlError] {
+  if cp < 0 or cp > 1114111 or (cp >= 55296 and cp <= 57343) {
+    return Err(error = UnexpectedChar(pos = pos, expected = "valid Unicode code point in numeric entity"))
+  }
+  if cp <= 65535 {
+    // Fully-qualified `Std.Char.fromInt`, not bare `fromInt`: this file imports
+    // both Std.String and Std.Char, which each export a `fromInt(Int)` (String
+    // returns the decimal text, Char returns the code point).  Inside a `"" +
+    // …` concat the Char return-type hint is lost, so a bare call resolves by
+    // import order to Std.String.fromInt in the bundle build — turning `&#65;`
+    // into "65" instead of "A".  Qualifying pins the correct target (#4424).
+    Ok(value = "" + Std.Char.fromInt(cp))
+  } else {
+    val c = cp - 65536
+    Ok(value = ("" + Std.Char.fromInt(55296 + c / 1024)) + ("" + Std.Char.fromInt(56320 + c % 1024)))
+  }
+}
+
 // Parse an entity reference starting just after '&'.
 // Consumes through the closing ';'.
 func xParseEntity(st: inout XmlState): Result[String, XmlError] {
@@ -191,6 +216,12 @@ func xParseEntity(st: inout XmlState): Result[String, XmlError] {
         val d = xParseHexDigit(st.src[st.pos])
         if d >= 0 {
           value = value * 16 + d
+          // Clamp above the max Unicode code point so a long entity cannot
+          // overflow Int and wrap back into the valid range; xEmitCodePoint
+          // rejects the clamped sentinel below.
+          if value > 1114111 {
+            value = 1114112
+          }
           st.pos = st.pos + 1
           digits += 1
         } else {
@@ -203,7 +234,7 @@ func xParseEntity(st: inout XmlState): Result[String, XmlError] {
       if not xEat(st, ';') {
         return Err(error = UnexpectedChar(pos = st.pos, expected = "';' to close entity"))
       }
-      Ok(value = "" + fromInt(value))
+      xEmitCodePoint(value, startPos)
     } else {
       // Decimal: &#NNN;
       var value = 0
@@ -213,6 +244,11 @@ func xParseEntity(st: inout XmlState): Result[String, XmlError] {
         val c = st.src[st.pos]
         if c >= '0' and c <= '9' {
           value = value * 10 + toInt(c) - toInt('0')
+          // Clamp above the max Unicode code point to prevent Int overflow
+          // wrapping back into the valid range (see the hex path above).
+          if value > 1114111 {
+            value = 1114112
+          }
           st.pos = st.pos + 1
           digits += 1
         } else {
@@ -225,7 +261,7 @@ func xParseEntity(st: inout XmlState): Result[String, XmlError] {
       if not xEat(st, ';') {
         return Err(error = UnexpectedChar(pos = st.pos, expected = "';' to close entity"))
       }
-      Ok(value = "" + fromInt(value))
+      xEmitCodePoint(value, startPos)
     }
   } else {
     // Named entity: &name;
@@ -244,13 +280,18 @@ func xParseEntity(st: inout XmlState): Result[String, XmlError] {
   }
 }
 
-// Collect text until stopChar or '<', decoding entity references.
-func xCollectText(st: inout XmlState, stopChar: in Option[Char]): Result[String, XmlError] {
+// Collect text until the stop character (when `hasStop`) or '<', decoding
+// entity references.  `hasStop`/`stopCh` are passed as a Bool + Char pair
+// rather than an `Option[Char]`: matching on `Option[Char]` mis-compiles in
+// the stdlib bundle build (the compiler emits a "match not exhaustive" stub
+// for the `Option`1<Char>` instantiation), which broke every parseXml call on
+// text content.  A plain Bool + Char sidesteps the generic-instantiation path.
+func xCollectText(st: inout XmlState, hasStop: in Bool, stopCh: in Char): Result[String, XmlError] {
   var result = ""
   var scanning = true
   while scanning and st.pos < st.src.length {
     val c = st.src[st.pos]
-    val isStop = if c == '<' { true } else { match stopChar { case Some(sc) -> c == sc; case None -> false } }
+    val isStop = if c == '<' { true } else { hasStop and c == stopCh }
     if isStop {
       scanning = false
     } else if c == '&' {
@@ -282,7 +323,7 @@ func xParseAttrValue(st: inout XmlState): Result[String, XmlError] {
     return Err(error = UnexpectedChar(pos = st.pos, expected = "quote to start attribute value"))
   }
   st.pos = st.pos + 1
-  match xCollectText(st, Some(value = quote)) {
+  match xCollectText(st, true, quote) {
     case Err(e) -> Err(error = e)
     case Ok(v) -> {
       if not xEat(st, quote) {
@@ -541,7 +582,7 @@ func xParseContent(st: inout XmlState, expectedTag: in String, depth: in Int): R
       }
     } else {
       // Text content
-      match xCollectText(st, None) {
+      match xCollectText(st, false, '\u{0000}') {
         case Err(e) -> {
           ok = false
           err = e

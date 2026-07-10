@@ -132,6 +132,9 @@ int32_t   lyric_map_get(LyricMap* map, int64_t key, int64_t* out_val);
 int32_t   lyric_map_contains(LyricMap* map, int64_t key);
 int32_t   lyric_map_remove(LyricMap* map, int64_t key);
 int64_t   lyric_map_len(LyricMap* map);
+/* Allocated slot capacity (power of two, 0 when empty).  For tests
+ * asserting the tombstone-churn resize keeps capacity bounded. */
+int64_t   lyric_map_cap(LyricMap* map);
 /* Fresh rc=1 snapshot lists of the occupied keys / values (entries
  * retained by the list when ref-typed).  O(capacity), not O(len):
  * each walks every bucket of the open-addressing table, occupied or

@@ -311,7 +311,16 @@ func resolveLocalPath(bucket: in LocalBucket, key: in String): Result[String, St
   // root-relative and carries no separator at all.
   val sep = if Str.contains(bucket.bucketDir, "\\") { "\\" } else { "/" }
   val joined = bucket.bucketDir + sep + key
-  val canon = hostPathGetFullPath(joined)
+  // Canonicalisation can throw for a key that is `isSafeKey`-clean but still
+  // illegal for the host path API (e.g. a colon on Windows, or an
+  // over-long path).  Catch it and surface a clean Err, matching every other
+  // host-boundary call in this file — an uncaught Bug here propagates out of
+  // the StorageBucket method and can terminate a lyric-web server process.
+  val canon = try {
+    hostPathGetFullPath(joined)
+  } catch Bug as b {
+    return Err(StorageError(message = "invalid key '" + key + "': " + b.message, code = "INVALID_KEY"))
+  }
   val bucketTrm = if Str.endsWith(bucket.bucketDir, sep) { bucket.bucketDir } else { bucket.bucketDir + sep }
   if canon != bucket.bucketDir and not Str.startsWith(canon, bucketTrm) {
     return Err(StorageError(message = "resolved key path escapes bucket directory", code = "INVALID_KEY"))
@@ -900,7 +909,11 @@ pub func connectLocal(basePath: in String, bucketName: in String): Result[Storag
     case Ok(_) -> ()
   }
   val joined = basePath + "/" + bucketName
-  val bucketDir = hostPathGetFullPath(joined)
+  val bucketDir = try {
+    hostPathGetFullPath(joined)
+  } catch Bug as b {
+    return Err(StorageError(message = "invalid basePath/bucketName: " + b.message, code = "INVALID_ARGUMENT"))
+  }
   match createDirIfMissing(bucketDir) {
     case Err(e) -> return Err(e)
     case Ok(_) -> {

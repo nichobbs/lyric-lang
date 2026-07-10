@@ -839,3 +839,20 @@ test "error message formatting" {
 test "unknown section ignored" {
   testUnknownSectionIgnored()
 }
+
+test "integer value overflow rejected, not panicked" {
+  // Pins the #5479/#5491 guard in parseValue: an integer literal >= 2^31 in
+  // a (dependency's, untrusted) manifest used to overflow the checked-Int
+  // accumulator and panic the process, bypassing the Result[..., ManifestError]
+  // contract.  It must now surface a clean ParseError instead.
+  val e = parseErr("[package]\nname = \"x\"\nversion = \"1.0\"\nbogus = 9999999999\n")
+  assertTrue(isParseError(e), "overflowing integer literal yields a ParseError")
+  assertTrue(manifestErrorText(e).contains("out of range"), "error names the out-of-range condition")
+}
+
+test "largest in-range integer value accepted" {
+  // The exact Int32 max (2147483647) must parse cleanly — the guard rejects
+  // only values that would exceed it, so this is the boundary that must pass.
+  val m = parseOk("[package]\nname = \"x\"\nversion = \"1.0\"\nmaxint = 2147483647\n")
+  assertEqual(m.packageSection.name, "x", "in-range integer value does not disturb parsing")
+}

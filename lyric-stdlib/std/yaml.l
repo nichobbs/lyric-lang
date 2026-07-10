@@ -90,6 +90,22 @@ func yPeekAt(st: in YamlState, offset: in Int): Option[Char] {
   }
 }
 
+// True when the character `offset` positions ahead is an ASCII digit.
+// Reads the character by direct bounds-checked index rather than matching
+// `yPeekAt`'s `Option[Char]`: the rest of this scanner uses the same
+// `st.src[i]`-under-a-length-guard idiom, and a `match` over `Option[Char]`
+// hits the generic-Option stdlib-bundle mis-compile this PR's XML fix
+// (D-progress-638) was reworked to avoid.
+func yIsDigitAt(st: in YamlState, offset: in Int): Bool {
+  val i = st.pos + offset
+  if i >= 0 and i < st.src.length {
+    val ch = st.src[i]
+    ch >= '0' and ch <= '9'
+  } else {
+    false
+  }
+}
+
 func yEat(st: inout YamlState, c: in Char): Bool {
   if st.pos < st.src.length and st.src[st.pos] == c {
     st.pos = st.pos + 1
@@ -320,19 +336,12 @@ func yInterpretScalar(raw: in String): YamlValue {
       di += 1
     }
     if allDigits and t.length > start {
-      // Parse as Long
-      var value = 0i64
-      var neg = t[0] == '-'
-      var ii = start
-      while ii < t.length {
-        val d = toInt(t[ii]) - toInt('0')
-        value = value * 10i64 + d.toLong()
-        ii += 1
-      }
-      if neg {
-        YInt(value = 0i64 - value)
-      } else {
-        YInt(value = value)
+      // Delegate to the overflow-checked parseOptLong rather than a raw
+      // accumulator; an integer literal beyond Int64 range is preserved as a
+      // float (magnitude kept) instead of silently wrapping to a wrong value.
+      match parseOptLong(t) {
+        case Some(n) -> YInt(value = n)
+        case None -> match parseOptDouble(t) { case Some(f) -> YFloat(value = f); case None -> YString(value = t) }
       }
     } else {
       match parseOptDouble(t) {
@@ -380,19 +389,11 @@ func yParseNumber(st: inout YamlState): Result[YamlValue, YamlError] {
       case None -> Err(error = InvalidNumber(pos = startPos, raw = raw))
     }
   } else {
-    // Parse integer
-    var neg = raw[0] == '-'
-    var ii = if neg { 1 } else { 0 }
-    var value = 0i64
-    while ii < raw.length {
-      val d = toInt(raw[ii]) - toInt('0')
-      value = value * 10i64 + d.toLong()
-      ii += 1
-    }
-    if neg {
-      Ok(value = YInt(value = 0i64 - value))
-    } else {
-      Ok(value = YInt(value = value))
+    // Delegate to the overflow-checked parseOptLong; an integer literal beyond
+    // Int64 range is preserved as a float rather than silently wrapping.
+    match parseOptLong(raw) {
+      case Some(n) -> Ok(value = YInt(value = n))
+      case None -> match parseOptDouble(raw) { case Some(f) -> Ok(value = YFloat(value = f)); case None -> Err(error = InvalidNumber(pos = startPos, raw = raw)) }
     }
   }
 }
@@ -580,10 +581,15 @@ func yParseValue(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErro
   } else if c == 'f' and yStartsWith(st, "false") {
     st.pos = st.pos + 5
     Ok(value = YBool(value = false))
-  } else if (c >= '0' and c <= '9') or c == '-' {
+  } else if (c >= '0' and c <= '9') or (c == '-' and yIsDigitAt(st, 1)) {
+    // A leading '-' is only a number when a digit follows.  In YAML a value
+    // like `-abc` (or a bare `-`) is a plain scalar, not a malformed number;
+    // routing every '-' to yParseNumber wrongly rejected such scalars.  In
+    // JSON mode a '-' not followed by a digit falls through to the final Err
+    // below (invalid JSON), preserving strict behaviour.
     yParseNumber(st)
   } else if not st.isJson {
-    // YAML unquoted scalar
+    // YAML unquoted scalar (includes values that start with '-' but aren't numbers)
     val scalarStart = st.pos
     var scanning = true
     while scanning and st.pos < st.src.length {

@@ -25,6 +25,12 @@ output_assembly = "Storage.dll"
 #                     ETag-from-sidecar #1011).
 [project.tests]
 "Storage.StorageTests" = "tests/storage_tests.l"
+# No aspect-weaving test module here: lyric-storage's suite also runs under
+# `--target jvm` in CI, and B'-mode aspect weaving with a `call` context is a
+# known JVM backend gap (the `__LyricBModeCallContext` record traps at runtime).
+# ValidateKey's empty-key DoS fix (removed `requires: args.key != ""`) is covered
+# by the aspect body plus `isSafeKey("")` rejection in storage_tests.l, which run
+# on both targets. Add a weaving test once JVM B'-mode weaving is supported.
 
 # `s3` / `azureblob` feature flags + their NuGet entries were removed
 # alongside the F# host shim deletion in this PR (#1439): every `@cfg`-

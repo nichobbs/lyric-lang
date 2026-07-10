@@ -367,3 +367,94 @@ test "Mail.send accepts an attachment with a clean filename" {
     case Err(e) -> assertTrue(false, "expected Ok but got Err: " + e.message)
   }
 }
+
+// Subject and From were previously guarded by `requires:` clauses, so a
+// CRLF-bearing subject/address panicked the process instead of returning Err.
+// These tests pin the fail-closed-with-Err behaviour on those fields.
+test "Mail.send rejects a subject containing a CR/LF (no panic, returns Err)" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Hello\r\nBcc: victim@evil.com",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "HEADER_INJECTION", "injected subject: code is HEADER_INJECTION")
+      assertEqualInt(sender.callCount, 0, "injected subject: sender.send never called")
+    }
+    case Ok(_) -> assertTrue(false, "injected subject: expected Err but got Ok")
+  }
+}
+
+test "Mail.send rejects a From address containing a CR/LF (no panic, returns Err)" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com\r\nX-Evil: 1", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Clean",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "HEADER_INJECTION", "injected from: code is HEADER_INJECTION")
+      assertEqualInt(sender.callCount, 0, "injected from: sender.send never called")
+    }
+    case Ok(_) -> assertTrue(false, "injected from: expected Err but got Ok")
+  }
+}
+
+// Length preconditions were removed from the public API because a `requires:`
+// on client-controllable fields crashes the process (D118).  Emptiness is now
+// handled gracefully: no recipients -> Err; an empty subject is a valid email.
+test "Mail.send with no recipients returns Err (no panic)" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [],
+    cc = [],
+    bcc = [],
+    subject = "Subject",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "NO_RECIPIENTS", "empty recipients: code is NO_RECIPIENTS")
+      assertEqualInt(sender.callCount, 0, "empty recipients: sender.send never called")
+    }
+    case Ok(_) -> assertTrue(false, "empty recipients: expected Err but got Ok")
+  }
+}
+
+test "Mail.send with an empty subject succeeds (empty subject is valid)" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Ok(_) -> assertEqualInt(sender.callCount, 1, "empty subject: sender.send called once")
+    case Err(e) -> assertTrue(false, "empty subject should be valid, got Err: " + e.message)
+  }
+}

@@ -395,6 +395,15 @@ test "allowAll: resource is exact api/stage wildcard ARN" {
   )
 }
 
+test "allowAll: malformed methodArn without '/' fails closed instead of panicking" {
+  val methodArn = "not-a-valid-arn"
+  val resp = Lambda.Authorizer.allowAll("user-42", methodArn)
+  match resp.policyDocument.statement[0].effect {
+    case IamEffect.Deny -> ()
+    case _ -> assertTrue(false, "malformed methodArn must deny, not panic")
+  }
+}
+
 test "withContext: attaches context map to response" {
   val arn = "arn:aws:execute-api:us-east-1:123:abc/prod/GET/me"
   val base = Lambda.Authorizer.allow("u-1", arn)

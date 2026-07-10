@@ -46,10 +46,68 @@ pub func isLetterOrDigit(c: in Char): Bool {
 }
 
 /// True for any Unicode whitespace character (space, tab, newline, …).
+///
+/// Implemented in pure Lyric over the canonical Unicode `White_Space`
+/// code-point set (identical to .NET's `Char.IsWhiteSpace`) rather than
+/// delegating to a host predicate.  `java.lang.Character.isWhitespace`
+/// EXCLUDES the non-breaking spaces U+00A0 / U+2007 / U+202F, so binding to
+/// the two platform externs made this function return divergent results on
+/// the .NET and JVM backends for the same input — a silent cross-platform
+/// correctness bug (surfaced via `lyric-validation`, #5501).  A pure-Lyric
+/// set makes the result identical on every target.
 @pure
 @stable(since = "1.0")
 pub func isWhiteSpace(c: in Char): Bool {
-  Host.hostIsWhiteSpace(c)
+  val cp = toInt(c)
+  // Statement form with early returns rather than one large expression-position
+  // `or`-chain: the JVM backend mis-verifies a long short-circuit chain in
+  // return position ("Method expects a return value"), so the robust idiom
+  // keeps this correct on both targets.
+  if cp >= 0x09 and cp <= 0x0D {
+    // HT, LF, VT, FF, CR
+    return true
+  }
+  if cp == 0x20 {
+    // SPACE
+    return true
+  }
+  if cp == 0x85 {
+    // NEL (next line)
+    return true
+  }
+  if cp == 0xA0 {
+    // NO-BREAK SPACE
+    return true
+  }
+  if cp == 0x1680 {
+    // OGHAM SPACE MARK
+    return true
+  }
+  if cp >= 0x2000 and cp <= 0x200A {
+    // EN QUAD … HAIR SPACE (incl. U+2007 FIGURE SPACE)
+    return true
+  }
+  if cp == 0x2028 {
+    // LINE SEPARATOR
+    return true
+  }
+  if cp == 0x2029 {
+    // PARAGRAPH SEPARATOR
+    return true
+  }
+  if cp == 0x202F {
+    // NARROW NO-BREAK SPACE
+    return true
+  }
+  if cp == 0x205F {
+    // MEDIUM MATHEMATICAL SPACE
+    return true
+  }
+  if cp == 0x3000 {
+    // IDEOGRAPHIC SPACE
+    return true
+  }
+  return false
 }
 
 /// True for Unicode uppercase letters (category Lu).

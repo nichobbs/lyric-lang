@@ -161,27 +161,45 @@ Note: `NativeSessionStore` is `@experimental` pending atomic Redis operations.
 
 ## Session configuration
 
-Configure sessions via `SessionConfig` in a `config` block:
+Session lifetime and cookie settings are read from the environment via
+`Session.sessionConfigFromEnv()`, which returns a plain `SessionConfig`
+record (not a `config` block — this library reads its env vars directly,
+the same way `connectRedis()` does):
 
 ```lyric
-config SessionConfig {
-  ttlSeconds: Int = 3600
-  cookieName: String = "_session"
-  secure: Bool = true
-  httpOnly: Bool = true
-  sameSite: String = "Strict"
+pub record SessionConfig {
+  cookieName: String   // default: "LYRIC_SESSION"
+  secure: Bool          // default: true
+  httpOnly: Bool        // default: true
+  sameSite: String      // default: "Lax"
+  ttlSeconds: Int       // default: 3600
 }
 ```
 
-Config fields:
+| Env var | Default | Meaning |
+|---|---|---|
+| `LYRIC_CONFIG_SESSION_SESSION_COOKIENAME` | `"LYRIC_SESSION"` | HTTP cookie name |
+| `LYRIC_CONFIG_SESSION_SESSION_SECURE` | `true` | Set the `Secure` cookie flag (HTTPS only) |
+| `LYRIC_CONFIG_SESSION_SESSION_HTTPONLY` | `true` | Set the `HttpOnly` cookie flag (no JS access) |
+| `LYRIC_CONFIG_SESSION_SESSION_SAMESITE` | `"Lax"` | `SameSite` attribute value: `Strict` / `Lax` / `None` |
+| `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS` | `3600` | Session expiry time in seconds |
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `ttlSeconds` | `Int` | `3600` | Session expiry time in seconds |
-| `cookieName` | `String` | `"_session"` | HTTP cookie name |
-| `secure` | `Bool` | `true` | Set Secure cookie flag (HTTPS only) |
-| `httpOnly` | `Bool` | `true` | Set HttpOnly cookie flag (no JS access) |
-| `sameSite` | `String` | `"Strict"` | SameSite policy: Strict / Lax / None |
+Malformed or absent values fall back to the defaults above (fail-soft,
+matching `connectRedis()`'s TTL parsing).
+
+Use `Session.cookieHeader(sessionId, cfg)` to build the `Set-Cookie`
+header *value* for a session id:
+
+```lyric
+val cfg = Session.sessionConfigFromEnv()
+val setCookie = Session.cookieHeader(sessionId, cfg)
+// "LYRIC_SESSION=<sessionId>; Path=/; HttpOnly; Secure; SameSite=Lax"
+```
+
+`cookieHeader` is pure — it builds the header value only. Attach the
+returned string as the `Set-Cookie` header on your HTTP framework's
+response object (e.g. `lyric-web`'s `Response`); this library does not
+write the response header for you.
 
 ## API reference
 
@@ -197,6 +215,8 @@ Session.get(store, sessionId, key)                 // Option[String]
 Session.set(store, sessionId, key, value)          // Unit
 Session.delete(store, sessionId, key)              // Unit
 Session.clear(store, sessionId)                    // Unit
+Session.sessionConfigFromEnv()                     // SessionConfig
+Session.cookieHeader(sessionId, cfg)               // String (Set-Cookie value)
 ```
 
 ## Security
@@ -219,9 +239,15 @@ privilege-elevation event to rotate the id.
 
 ### Secure cookie defaults
 
-`SessionConfig` defaults `secure = true`, `httpOnly = true`,
-`sameSite = "Lax"`.  These protect the session cookie against XSS
-theft and CSRF by default without operator action.
+`sessionConfigFromEnv()` defaults `secure = true`, `httpOnly = true`,
+`sameSite = "Lax"`.  `Session.cookieHeader()` writes these flags into
+the returned `Set-Cookie` value, so a caller that uses
+`sessionConfigFromEnv()`'s defaults and calls `cookieHeader()` gets a
+cookie that resists XSS theft (`HttpOnly`) and cross-site request
+forgery (`SameSite`) without further action — but only once it
+actually calls `cookieHeader()` and attaches the result to its HTTP
+response; this library does not wire the header into any HTTP
+framework's response automatically.
 
 ## Decision log
 

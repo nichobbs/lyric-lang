@@ -144,6 +144,28 @@ test "ItemCache aspect: repeating the same cacheKey reuses the cached value" {
   assertEqualInt(itemCacheCalls.count, 1, "the handler body ran only once for the repeated key")
 }
 
+// ItemCache previously carried a `requires: args.cacheKey != ""` clause, which
+// elaborates into a runtime precondition assert (D118) that PANICKED the process
+// on an empty (caller-/client-supplied) cache key — the same DoS class fixed for
+// `lyric-web`. The fix removed the clause and the body now passes empty-key calls
+// straight through to the handler without caching (an empty key is degenerate for
+// keying and would otherwise collide on one process-wide entry). This test pins
+// that: an empty cacheKey never crashes and is never cached.
+test "ItemCache aspect: an empty cacheKey does not crash and is not cached (was a panic)" {
+  itemCacheCalls.count = 0
+  val first = itemCachedHandler("")
+  val second = itemCachedHandler("")
+  match first {
+    case Ok(v) -> assertEqual(v, "-1", "empty-key call runs the handler without crashing")
+    case Err(_) -> assertTrue(false, "handler must return Ok")
+  }
+  match second {
+    case Ok(v) -> assertEqual(v, "-2", "a second empty-key call runs the handler again (empty keys are not cached)")
+    case Err(_) -> assertTrue(false, "handler must return Ok")
+  }
+  assertEqualInt(itemCacheCalls.count, 2, "empty cacheKey is passed through, so both calls ran")
+}
+
 // The `enabled` master switch must bypass the cache entirely, mirroring
 // FunctionCache's `fnUncachedHandler` coverage above.
 aspect ItemCacheDisabled from Cache.Aspects.ItemCache {

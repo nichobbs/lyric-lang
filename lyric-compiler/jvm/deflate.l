@@ -110,10 +110,19 @@ pub record BitReader {
 
 pub func newBitReader(data: in slice[Byte], startOff: in Int, compressedLen: in Int): BitReader {
   val st: Map[String, Int] = newMap()
-  setS(st, "p", startOff)
+  // Clamp the read window to the actual buffer: `startOff`/`compressedLen` come
+  // from an untrusted ZIP directory, and `refillBits` indexes `data[p]` for any
+  // `p < e`.  Without this clamp a crafted `compressedLen` (or a start past the
+  // end) drives an out-of-bounds read.  A start past the end yields an
+  // immediately-exhausted reader (p == e), and the subtraction avoids the
+  // `start + compressedLen` overflow a near-Int.max size would cause.
+  val start = if startOff < 0 { 0 } else if startOff > data.length { data.length } else { startOff }
+  val remaining = data.length - start
+  val endOff = if compressedLen < 0 or compressedLen > remaining { data.length } else { start + compressedLen }
+  setS(st, "p", start)
   setS(st, "b", 0)
   setS(st, "n", 0)
-  setS(st, "e", startOff + compressedLen)
+  setS(st, "e", endOff)
   BitReader(data = data, state = st)
 }
 
@@ -129,10 +138,17 @@ func refillBits(br: in BitReader): Unit {
   }
 }
 
-// Read one bit (0 or 1) from the stream, LSB first.
+// Read one bit (0 or 1) from the stream, LSB first, or -1 when the input is
+// exhausted.  Signalling EOF is essential: without it a truncated or malformed
+// DEFLATE stream drained the bit buffer and then returned phantom 0-bits
+// forever, so huffDecode kept matching a literal and the decoder looped
+// indefinitely on attacker-controlled input.
 pub func readBit(br: in BitReader): Int {
-  if getS(br.state, "n") == 0 {
+  if getS(br.state, "n") <= 0 {
     refillBits(br)
+  }
+  if getS(br.state, "n") <= 0 {
+    return -1
   }
   val b = getS(br.state, "b")
   val bit = b % 2
@@ -142,12 +158,17 @@ pub func readBit(br: in BitReader): Int {
   bit
 }
 
-// Read `count` bits, returning them as an integer (bit 0 = first bit read).
+// Read `count` bits, returning them as an integer (bit 0 = first bit read), or
+// -1 when the input is exhausted mid-read.
 pub func readBits(br: in BitReader, count: in Int): Int {
   var result = 0
   var i = 0
   while i < count {
-    result = result + readBit(br) * pow2(i)
+    val bit = readBit(br)
+    if bit < 0 {
+      return -1
+    }
+    result = result + bit * pow2(i)
     i = i + 1
   }
   result
@@ -270,7 +291,11 @@ pub func huffDecode(table: in HuffTable, br: in BitReader): Int {
   var code = 0
   var l = 1
   while l <= table.maxLen {
-    code = code * 2 + readBit(br)
+    val bit = readBit(br)
+    if bit < 0 {
+      return -1
+    }
+    code = code * 2 + bit
     val k = toString(l)
     val fc = getS(table.firstCode, k)
     val ct = getS(table.count, k)
@@ -526,7 +551,11 @@ func distBase(code: in Int): Int {
 // Decode a Huffman-compressed literal/length/distance stream, appending to `buf`.
 func decodeBlock(br: in BitReader, litlenTab: in HuffTable, distTab: in HuffTable, buf: in List[Int]): Unit {
   var done = false
-  while not done {
+  // Cap total output to bound a decompression bomb (a .class entry is at most a
+  // few MB; 64 Mi symbols is far above any legitimate size).  Exiting the loop
+  // on the cap yields a truncated result, which the class reader then rejects
+  // as malformed rather than exhausting memory.
+  while not done and buf.count <= 67108864 {
     val sym = huffDecode(litlenTab, br)
     if sym < 0 {
       done = true
@@ -536,19 +565,27 @@ func decodeBlock(br: in BitReader, litlenTab: in HuffTable, distTab: in HuffTabl
       done = true
     } else {
       val extraLen = lengthExtraBits(sym)
-      val length = lengthBase(sym) + readBits(br, extraLen)
+      val lenExtra = readBits(br, extraLen)
       val distSym = huffDecode(distTab, br)
-      if distSym < 0 {
+      if lenExtra < 0 or distSym < 0 {
         done = true
       } else {
+        val length = lengthBase(sym) + lenExtra
         val extraDist = distExtraBits(distSym)
-        val distance = distBase(distSym) + readBits(br, extraDist)
+        val distExtra = readBits(br, extraDist)
+        val distance = distBase(distSym) + distExtra
         val startPos = buf.count - distance
-        var ci = 0
-        // Copy overlapping correctly: read buf[startPos+ci] which grows with appends.
-        while ci < length {
-          buf.add(buf[startPos + ci])
-          ci = ci + 1
+        // Reject a back-reference whose distance points before the start of the
+        // output produced so far: `startPos < 0` would index out of bounds.
+        if distExtra < 0 or distance <= 0 or startPos < 0 {
+          done = true
+        } else {
+          var ci = 0
+          // Copy overlapping correctly: read buf[startPos+ci] which grows with appends.
+          while ci < length {
+            buf.add(buf[startPos + ci])
+            ci = ci + 1
+          }
         }
       }
     }
@@ -709,16 +746,21 @@ pub func inflate(data: in slice[Byte], startOff: in Int, compressedLen: in Int):
   var done = false
   while not done {
     val bfinal = readBit(br)
-    val btype = readBits(br, 2)
-    if btype == 0 {
-      inflateStored(br, buf)
-    } else if btype == 1 {
-      inflateFixed(br, buf)
-    } else if btype == 2 {
-      inflateDynamic(br, buf)
-    }
-    if bfinal == 1 or btype == 3 {
+    if bfinal < 0 {
+      // Input exhausted before a final block — stop rather than spin.
       done = true
+    } else {
+      val btype = readBits(br, 2)
+      if btype == 0 {
+        inflateStored(br, buf)
+      } else if btype == 1 {
+        inflateFixed(br, buf)
+      } else if btype == 2 {
+        inflateDynamic(br, buf)
+      }
+      if bfinal == 1 or btype == 3 or btype < 0 {
+        done = true
+      }
     }
   }
   buf

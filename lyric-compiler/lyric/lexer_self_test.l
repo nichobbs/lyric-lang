@@ -252,6 +252,31 @@ test "float literals" {
   assertEqualInt(diagCount(r), 0, "float: no diagnostics")
 }
 
+test "float literal is correctly rounded" {
+  // Pins the #5487/#5491 fix: parseDoubleLiteral delegates to the
+  // correctly-rounded host parser (Double.Parse/InvariantCulture) instead
+  // of the old left-to-right `value + digit*fracMul` accumulation, which
+  // rounded `0.3` to 0.30000000000000004.  The nearest double to the
+  // decimal 0.3 is strictly less than 0.1 + 0.2 (which rounds up), so the
+  // two must NOT be bit-equal — that inequality is the correctness witness.
+  val r = lex("0.3")
+  assertEqual(tokenKindAt(r, 0), "float", "0.3 kind")
+  assertFalse(floatValueAt(r, 0) == 0.1 + 0.2, "0.3 must be correctly rounded, not 0.1+0.2")
+  assertTrue(floatValueAt(r, 0) > 0.29999999 and floatValueAt(r, 0) < 0.30000001, "0.3 within tight epsilon")
+  assertEqualInt(diagCount(r), 0, "0.3: no diagnostics")
+}
+
+test "float literal with huge exponent is Infinity, not a hang" {
+  // Pins the #5487/#5491 fix: an out-of-range exponent used to spin the
+  // decimal-scaling loop ~10^9 times and hang the compiler.  The host
+  // parser returns +Infinity instantly.  If this test returns at all, the
+  // no-hang property holds; the value check confirms the Infinity result.
+  val r = lex("1e999999999")
+  assertEqual(tokenKindAt(r, 0), "float", "1e999999999 kind")
+  assertTrue(floatValueAt(r, 0) > 1.0e308, "1e999999999 overflows to +Infinity")
+  assertEqualInt(diagCount(r), 0, "1e999999999: no diagnostics")
+}
+
 test "string literal" {
   val r = lex("\"hello\"")
   assertEqual(tokenKindAt(r, 0), "string", "string: kind")

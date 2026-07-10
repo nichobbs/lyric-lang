@@ -222,6 +222,10 @@ pub func allow(principalId: in String, methodArn: in String): AuthorizerResponse
 /// Allow the caller to invoke all methods on the same API stage.
 /// Derives the wildcard resource from methodArn by replacing the
 /// method + resource suffix with "/*".
+///
+/// Falls back to `deny` when methodArn doesn't have at least two
+/// slash-separated segments (i.e. isn't shaped like
+/// `arnBase/stage/method/resource`), rather than indexing out of bounds.
 @stable(since = "0.1")
 pub func allowAll(principalId: in String, methodArn: in String): AuthorizerResponse
   requires: principalId.length > 0
@@ -230,6 +234,11 @@ pub func allowAll(principalId: in String, methodArn: in String): AuthorizerRespo
   // Derive the stage wildcard from the method ARN by keeping only
   // the first two slash-separated segments (arnBase/stage) and appending "/*".
   val parts = split(methodArn, "/")
+  if parts.length < 2 {
+    // methodArn is malformed (no arnBase/stage to derive a wildcard from);
+    // fail closed instead of granting access based on a guess.
+    return deny(principalId, methodArn)
+  }
   val stageBase = parts[0] + "/" + parts[1] + "/*"
   return AuthorizerResponse(
     principalId = principalId,

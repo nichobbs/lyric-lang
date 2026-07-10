@@ -43,6 +43,7 @@ import Std.Collections
 import Std.String as Str
 import Std.UnicodeHost
 import Std.CharHost as CharHost
+import Std.Parse
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Position and Span — mirror compiler/src/Lyric.Lexer/Span.fs.
@@ -1330,27 +1331,6 @@ func intToLong(n: in Int): Long {
   acc
 }
 
-@pure
-func intToDouble(n: in Int): Double {
-  // Same shape as `intToLong`; only ever called with single-digit
-  // values from `digitValue` so the iteration count is at most 9.
-  var acc: Double = 0.0
-  if n >= 0 {
-    var i = 0
-    while i < n {
-      acc = acc + 1.0
-      i = i + 1
-    }
-  } else {
-    var i = 0
-    while i > n {
-      acc = acc - 1.0
-      i = i - 1
-    }
-  }
-  acc
-}
-
 /// Predicate companion to `parseDigits`: true iff `(body, base)`
 /// is the special case `9223372036854775808` in decimal — the
 /// absolute value of `Long.MinValue`.  Used by the decimal lex path
@@ -1473,9 +1453,7 @@ func parseDoubleLiteral(body: in String): Option[Double] {
     i = i + 1
   }
   // Fractional part.
-  var hasFrac = false
   if i < body.length and body[i] == '.' {
-    hasFrac = true
     i = i + 1
     var fracDigits = false
     while i < body.length and isDigitChar(body[i]) {
@@ -1488,9 +1466,7 @@ func parseDoubleLiteral(body: in String): Option[Double] {
     }
   }
   // Exponent.
-  var hasExp = false
   if i < body.length and (body[i] == 'e' or body[i] == 'E') {
-    hasExp = true
     i = i + 1
     if i < body.length and (body[i] == '+' or body[i] == '-') {
       i = i + 1
@@ -1510,48 +1486,15 @@ func parseDoubleLiteral(body: in String): Option[Double] {
   if i != body.length {
     return None
   }
-  // Build value left-to-right.
-  var idx = 0
-  var intPart: Double = 0.0
-  while idx < body.length and isDigitChar(body[idx]) {
-    intPart = intPart * 10.0 + intToDouble(digitValue(body[idx]))
-    idx = idx + 1
-  }
-  var value: Double = intPart
-  if hasFrac {
-    idx = idx + 1   // skip '.'
-    var fracMul: Double = 0.1
-    while idx < body.length and isDigitChar(body[idx]) {
-      value = value + intToDouble(digitValue(body[idx])) * fracMul
-      fracMul = fracMul / 10.0
-      idx = idx + 1
-    }
-  }
-  if hasExp {
-    idx = idx + 1   // skip 'e'/'E'
-    var expSign = 1
-    if idx < body.length and (body[idx] == '+' or body[idx] == '-') {
-      if body[idx] == '-' {
-        expSign = -1
-      }
-      idx = idx + 1
-    }
-    var expVal = 0
-    while idx < body.length and isDigitChar(body[idx]) {
-      expVal = expVal * 10 + digitValue(body[idx])
-      idx = idx + 1
-    }
-    var k = 0
-    while k < expVal {
-      if expSign > 0 {
-        value = value * 10.0
-      } else {
-        value = value / 10.0
-      }
-      k = k + 1
-    }
-  }
-  Some(value = value)
+  // The shape is validated above; delegate the decimal->double conversion to
+  // the overflow-safe, correctly-rounded host parser (Double.Parse with
+  // InvariantCulture), matching the bootstrap lexer.  The previous hand-rolled
+  // left-to-right accumulation (`value + digit*fracMul`, repeated `*10.0`) was
+  // NOT correctly rounded — `0.3` compiled to 0.30000000000000004, and a large
+  // exponent (`1e999999999`) spun the scaling loop ~10^9 times, hanging the
+  // compiler.  parseOptDouble is correctly rounded and returns Infinity for an
+  // out-of-range exponent instantly.
+  parseOptDouble(body)
 }
 
 func lexDecimalNumber(state: inout LexerState): Unit {

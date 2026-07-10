@@ -13736,6 +13736,248 @@ unquoted-generic parsing this fix's formatter path mirrors).
 
 ---
 
+## D-progress-638 — code-review sweep: correctly-rounded float literals, aspect-precondition DoS, `Std.Xml`/`Std.Yaml` numeric bugs, and ecosystem hardening
+
+**Status:** ACCEPTED
+
+A cross-cutting review of the compiler, stdlib, and ecosystem libraries fixed
+a batch of confirmed correctness and security defects. Each fix was validated
+end-to-end against a rebuilt `./bin/lyric` and/or the affected library's test
+suite.
+
+- **Compiler — float literals were not correctly rounded (and could hang the
+  compiler).** `Lyric.Lexer.parseDoubleLiteral` hand-rolled the decimal→double
+  conversion (`value + digit*fracMul`, repeated `*10.0`), which is not the
+  IEEE-754 nearest double: `0.3` compiled to `0.30000000000000004` and
+  `0.3 == 0.1 + 0.2` evaluated to `true`. A large exponent (`1e999999999`)
+  spun the scaling loop ~10⁹ times, hanging `lyric build`/`fmt`. The value
+  computation now delegates to `Std.Parse.parseOptDouble` (host
+  `Double.Parse`, InvariantCulture) after the existing shape validation —
+  correctly rounded, and `Infinity` for an out-of-range exponent instantly.
+
+- **`lyric-web`/`lyric-validation` — aspect `requires:` on client-controlled
+  input was an unauthenticated DoS.** `RequiresAuth`/`RequiresRole`/`ApiKey`
+  (and `ValidateInput`/`ValidateEmail`) declared `requires: args.<field> != ""`.
+  Per D118 that elaborates into a runtime precondition assert prepended to the
+  woven body, so a request with a missing Authorization/X-Api-Key header (or an
+  empty input) raised `PreconditionViolated` *before* the aspect's own graceful
+  empty-case branch ran — crashing the whole dotnet server (`Env.exitCode(1)`)
+  or returning a leaky 500 on JVM. The clauses were removed; the empty case is
+  handled in the body and fails closed, matching `Auth.Aspects.ValidateKey`.
+
+- **`lyric-storage` — one crafted key could crash the server.**
+  `resolveLocalPath`/`connectLocal` called `Path.GetFullPath` unguarded, unlike
+  every other host call in the file; an `isSafeKey`-clean key that is still
+  illegal for the host path API (e.g. a colon on Windows, an over-long path)
+  threw an uncaught `Bug` that propagated out of the `StorageBucket` method and
+  terminated the web server. Wrapped in `try/catch → Err(INVALID_KEY)`.
+
+- **`Std.Xml` — parser crashed on all text content and panicked on astral
+  entities.** `xCollectText` took an `Option[Char]` stop parameter; matching on
+  `Option[Char]` mis-compiles in the stdlib bundle build (a `match not
+  exhaustive` throwing stub for `Option`1<Char>`), so `parseXml` threw on any
+  element with text. Reworked to a `Bool + Char` pair. Numeric character
+  references above U+FFFF were routed through `Char.fromInt` (contract
+  `n <= 65535`, `@runtime_checked`) and panicked; they now emit a UTF-16
+  surrogate pair via `xEmitCodePoint`, with out-of-range/overflow values
+  rejected as a clean `XmlError`. Regression tests added.
+
+- **`Std.Yaml`/JSON — integer literals beyond Int64 silently wrapped.**
+  `yParseNumber`/`yInterpretScalar` hand-rolled `value*10 + d` with no overflow
+  check, so `12345678901234567890` parsed to a negative `YInt`. They now
+  delegate to the overflow-checked `parseOptLong`, falling back to `YFloat`
+  (magnitude preserved) on overflow.
+
+- **`lyric-docker` — multiplexed-log frame size overflowed Int.** The unsigned
+  32-bit big-endian size was accumulated in a signed `Int`; a frame with the
+  top size bit set wrapped negative, defeating the bounds check and driving the
+  index negative (OOB crash) on adversarial/corrupt daemon output. Now computed
+  in `Long` and bounds-checked before narrowing.
+
+- **`lyric-mail` — header-injection guard was incomplete on the direct
+  `MailSender.send` path.** `Mail.send` ran the full CRLF/NUL guard, but the
+  public interface method only re-checked attachments. Extracted a shared
+  `validateNoInjection(msg)` helper (subject, from, to/cc/bcc, replyTo,
+  attachments) and call it at the top of `NativeSender.send`.
+
+- **`lyric-web` — CORS reflected `Origin` without `Vary: Origin`.** A shared/CDN
+  cache keyed on URL could serve one origin's response to another. Added
+  `Vary: Origin` to both the preflight and actual-response paths.
+
+- **`lyric-resilience` — backoff could return a negative delay.** With an
+  atypical config, `delay * backoffFactor` overflowed Int and wrapped negative,
+  slipping past the cap and violating `sleepMs`'s `requires: ms >= 0`. The
+  multiply now happens in `Long`, and a factor `< 1` is clamped to `1`.
+
+**Known follow-ups surfaced.** The JVM auto-FFI **DEFLATE/ZIP/manifest
+readers** and the **monomorphizer value-generic name key** are now fixed in the
+follow-up round (D-progress-639). Two items remain out of scope for a code
+review because they need a codegen or native-ABI change: the stdlib **bundle
+build mis-compiles `Char`/Unicode handling** (`Option`1<Char>` match stub;
+`fromInt`/`\uXXXX` mis-emission) so the shipped bundle `Lyric.Stdlib.dll` has
+broken `Std.Xml` text parsing and `lyric-docker` JSON escapes even while CI's
+per-package build stays green; and the native runtime **weak-reference upgrade
+is a use-after-free** (`LyricObjectHeader` has no weak count).
+
+---
+
+## D-progress-639 — code-review follow-up: bound untrusted input in the JVM auto-FFI readers + the mail public-API DoS, and make the monomorphizer value key injective
+
+**Status:** ACCEPTED
+
+Follow-up to D-progress-638, fixing the tractable items it deferred plus the
+one REQUIRED finding the review workflow raised on the D-progress-638 PR.
+Each fix was validated against a rebuilt `./bin/lyric`.
+
+- **JVM auto-FFI DEFLATE decoder looped forever on truncated/malformed input.**
+  `Jvm.Deflate.readBit` drained the bit buffer and then returned phantom
+  0-bits indefinitely, so `huffDecode` kept matching a literal and `inflate`
+  never terminated on attacker-controlled bytes (`java.base.jmod` and every
+  `LYRIC_FFI_JARS` entry feed this). `readBit`/`readBits` now return `-1` at
+  EOF, `huffDecode`/`decodeBlock`/`inflate` fail closed on it, back-references
+  whose distance points before the output start are rejected, and a 64 Mi
+  output cap bounds a decompression bomb. Verified: real jmod `.class`
+  decoding still passes (`auto_ffi_jvm_self_test.l` 22/22) and a truncated
+  stream now returns instead of hanging.
+
+- **JVM auto-FFI ZIP reader indexed unchecked offsets from the archive.**
+  `Jvm.ZipReader` used `cdSize`/`cdOffset`/`nameLen`/`uncompressedSize`/local-
+  header offsets straight from the untrusted central directory. A malformed
+  archive could drive negative or past-end `data[...]` reads. Added bounds
+  validation (`cdStart`, `cp`, `lhFile >= 0`, name-field end, STORED copy
+  bound) and made `rdU32Le` saturate to `Int.maxValue` instead of overflowing
+  the checked multiply on a ≥2³¹ size field.
+
+- **`Lyric.Manifest` integer parsing overflowed the checked Int.** A bare
+  integer ≥2³¹ in a `lyric.toml` value position panicked instead of returning
+  `ManifestError.ParseError` (a dependency's manifest is untrusted during
+  resolution). Added a per-digit overflow guard.
+
+- **Monomorphizer value-generic name key collided.** `valueExprKey` mapped
+  every string of a given length (and every float) to the same key, so a
+  second distinct value reused the first's specialisation via `seenSpecs` —
+  baking the wrong constant into the emitted IL. The key now encodes the full
+  string content (length + code points) and the float's raw literal text.
+  (`mono_self_test.l` 21/21, `manifest_self_test.l` 42/42.)
+
+- **`lyric-mail` public API still panicked on client-controlled
+  header-injection input** (review finding #5478 on the D-progress-638 PR —
+  the same DoS class fixed for the aspects and storage). `Mail.send` /
+  `sendSimple` / `sendHtml` / `makeAddress` / `makeAddressWithName` /
+  `makeAttachment` carried `requires: not containsHeaderInjection(...)` over
+  attacker-controllable fields, which elaborates into a runtime assert that
+  crashes the process on a CRLF-bearing subject/address. Enforcement moved to
+  the single send boundary (`validateNoInjection`, already run in
+  `NativeSender.send` and now in `Mail.send`) returning a structured `Err`;
+  the constructors no longer validate (a CRLF value is harmless until sent).
+  Added subject/from injection regression tests (`mail_tests.l` 31/31).
+
+---
+
+## D-progress-640 — code-review round 2: the bundle `Std.Xml` numeric-entity mis-compile was a `fromInt` name collision (fixed in source), plus YAML `-` scalars, aspect empty-input tests, and Unicode-whitespace / ARN-bounds fixes
+
+**Status:** ACCEPTED
+
+A second pass over the review backlog. The headline item — D-progress-638's
+"stdlib bundle build mis-compiles `Char`/Unicode handling" — was root-caused to
+a **function-name collision**, not a deep codegen defect, and fixed in source.
+
+- **`Std.Xml` numeric character references decoded to integers in the bundle
+  build** (`<a>&#65;</a>` → `"65"`, astral entities → the surrogate code units
+  as decimal text). Root cause: `Std.String.fromInt(Int): String` and
+  `Std.Char.fromInt(Int): Char` share a name/arity, and `xml.l` imports both
+  (String first). Inside `xEmitCodePoint`'s `"" + fromInt(cp)` concat the `Char`
+  return-type hint is lost, so the emitter's bare-call resolver falls back to
+  import-order-first-wins and picks `Std.String.fromInt` — but only in the
+  multi-package **bundle** build, where `preSeedBundleAsyncRetTypesMsil` surfaces
+  every package's FQN as a candidate (a no-op for single-package/per-package
+  builds, which is why CI stayed green). Fixed by fully qualifying the three
+  calls to `Std.Char.fromInt` (the same safe spelling `lyric-docker` already
+  uses); no emitter change. A repo-wide scan confirms no other bare `fromInt` in
+  concat context remains. The general "emitter re-guesses the call target by
+  import order instead of using the type-checker's resolved FQN" hazard is
+  tracked as #4424. (The D-progress-638 claim that `lyric-docker` JSON escapes
+  were also broken was incorrect — `docker.l` already qualifies `Std.Char.fromInt`.)
+
+- **`Std.Yaml` rejected a value starting with `-` that is not a number**
+  (`key: -abc`). The inline `yParseValue` dispatch routed every `-`-leading
+  value to `yParseNumber`; it now only does so when a digit follows (matching
+  the block-level guard), so `-abc` parses as the scalar `"-abc"` while `-42`
+  still parses as an int. In JSON mode a `-` not followed by a digit remains an
+  error. Regression tests added for the scalar and the Int64-overflow→YFloat path.
+
+- **Aspect-precondition-DoS regression tests** (review #5483, REQUIRED): added
+  empty-credential tests for `ApiKey`/`RequiresAuth`/`RequiresRole` (all return a
+  graceful 401, previously a process-crashing assert) and empty-input/email tests
+  for `ValidateInput`/`ValidateEmail`.
+
+- **`lyric-validation` `notBlank`/`email`** now use the Unicode-aware
+  `Char.isWhiteSpace` instead of an ASCII-only set (an all-NBSP/ideographic-space
+  value is correctly blank). **`lyric-lambda` `Authorizer.allowAll`** guards a
+  `methodArn` with no `/` (was an out-of-bounds `parts[1]` panic), failing closed
+  via `deny()`. Both with regression tests.
+
+- Additional regression tests for the D-progress-638/639 fixes flagged by review
+  #5479: docker frame-size overflow, CORS `Vary: Origin` on both response paths,
+  and resilience backoff overflow/factor-clamp.
+
+**Note:** a *separate*, pre-existing bundle-only codegen defect remains — generic
+`isNone[Option[String]]` mis-compiles in the bundle build (surfaces when
+`xml_tests.l`/`yaml_tests.l` are run via `lyric run`, which CI deliberately
+avoids by compiling those tests fully from source). It is unrelated to the
+`fromInt` collision and needs a generic-instantiation codegen fix, not a source
+change; tracked alongside #4424. The native runtime weak-reference use-after-free
+(D-progress-638) also remains open — now tracked as issue #5504 (a structural
+`LyricObjectHeader`-lacks-a-weak-count claim, distinct from the release-timing
+question in #4777), so it is a linked ticket rather than decision-log prose only.
+
+---
+
+## D-progress-641 — code-review round 3: complete the aspect-precondition-DoS sweep (grpc/storage/cache/mq), unify `Std.Char.isWhiteSpace` across targets, and de-`Option[Char]` the new YAML helper
+
+Round-3 review of PR #5477 raised four REQUIRED findings; all fixed here:
+
+- **Aspect-precondition DoS, remaining libraries (#5493, #5494).** The
+  `requires: args.<field> != ""` unauthenticated-DoS pattern fixed for
+  `lyric-web`/`lyric-validation` in D-progress-638 still existed in
+  `lyric-grpc` (`RequiresGrpcAuth`/`RequiresGrpcRole`, `args.authToken`),
+  `lyric-storage` (`ValidateKey`, `args.key`), `lyric-cache` (`ItemCache`,
+  `args.cacheKey`), and `lyric-mq` (`Idempotent`/`DeadLetter`,
+  `args.message.id`). Each clause (D118 elaborates it to a runtime assert)
+  panics the server on empty client-controlled input. Removed every clause;
+  each `around` body now fails closed gracefully — grpc returns
+  `16 UNAUTHENTICATED`, storage returns `Err(INVALID_KEY)`, and
+  cache/mq pass empty-key/empty-id calls straight through (an empty key is
+  degenerate for caching/dedup and would otherwise collide on one shared
+  entry).
+- **YAML `Option[Char]` bundle hazard (#5495).** The `yIsDigitAt` helper
+  added in D-progress-638 (for the `-abc` scalar fix) matched over
+  `yPeekAt`'s `Option[Char]` — the exact generic-`Option`-in-bundle
+  instantiation the same round reworked `xCollectText` to avoid. Rewrote it
+  to the scanner's direct bounds-checked `st.src[i]` idiom, so it carries no
+  `Option[Char]` match.
+- **`Std.Char.isWhiteSpace` cross-platform divergence (#5501).** It bound to
+  `System.Char.IsWhiteSpace` on .NET and `java.lang.Character.isWhitespace`
+  on JVM, which disagree on the non-breaking spaces U+00A0 / U+2007 / U+202F
+  (Java excludes them) — so the same input classified differently per target,
+  undetected because the whitespace tests run only on dotnet in CI. Replaced
+  with a pure-Lyric canonical Unicode `White_Space` test (matching .NET),
+  removed the now-dead `hostIsWhiteSpace` externs from both kernels, and
+  pinned the divergent code points in `char_tests.l`. Written in early-return
+  statement form because the JVM backend mis-verifies a long
+  expression-position short-circuit `or`-chain ("Method expects a return
+  value") — a separate JVM codegen gap, worked around here rather than
+  depended on.
+
+Non-blocking SUGGESTIONs also addressed: dead `hasFrac`/`hasExp` locals
+removed from `lexer.l`'s `parseDoubleLiteral` (#5496); `Session.cookieHeader`
+now forces `Secure` when `SameSite=None` so the cookie isn't silently dropped
+by browsers (#5498); and the `lyric-rt` tombstone-churn test now asserts the
+bounded-capacity property it targets via a new `lyric_map_cap` accessor
+(#5500).
+
+---
+
 ## Decisions deferred to v2 or later
 
 

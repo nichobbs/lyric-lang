@@ -157,6 +157,20 @@ test "notBlank: string with leading whitespace but non-whitespace content passes
   assertTrue(Validation.isValid(errs), "string with interior content must pass notBlank")
 }
 
+test "notBlank: all-NBSP string returns error" {
+  // Three U+00A0 (NO-BREAK SPACE) characters — `fmt` normalizes the
+  // `\u{00A0}` escape to the literal character.
+  val errs = Validation.notBlank("   ", "title")
+  assertTrue(not Validation.isValid(errs), "no-break-space-only string must fail notBlank")
+}
+
+test "notBlank: all-ideographic-space string returns error" {
+  // Two U+3000 (IDEOGRAPHIC SPACE) characters — `fmt` normalizes the
+  // `\u{3000}` escape to the literal character.
+  val errs = Validation.notBlank("　　", "title")
+  assertTrue(not Validation.isValid(errs), "ideographic-space-only string must fail notBlank")
+}
+
 // ─── oneOf ────────────────────────────────────────────────────────────────────
 test "oneOf: value in allowed list returns no errors" {
   val errs = Validation.oneOf("admin", "role", ["admin", "editor", "viewer"])

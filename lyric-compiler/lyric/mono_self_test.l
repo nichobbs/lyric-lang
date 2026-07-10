@@ -98,6 +98,30 @@ func litIntExpr(value: in Long): Expr {
   Expr(kind = ELiteral(lit = LInt(value = value, suffix = NoIntSuffix, raw = "")), span = syntheticSpan())
 }
 
+func litStringExpr(text: in String): Expr {
+  Expr(kind = ELiteral(lit = LString(text = text)), span = syntheticSpan())
+}
+
+func litFloatExpr(raw: in String): Expr {
+  Expr(kind = ELiteral(lit = LFloat(value = 0.0, suffix = NoFloatSuffix, raw = raw)), span = syntheticSpan())
+}
+
+// Count the items in `file` whose function name starts with `prefix`.  Used to
+// assert that two distinct value-generic args produced two distinct
+// specialisations rather than colliding onto one (the #5502 regression).
+func countFuncsWithPrefix(file: in SourceFile, prefix: in String): Int {
+  var n = 0
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> if decl.name.startsWith(prefix) { n = n + 1 }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  n
+}
+
 func typeRefExpr(name: in String): TypeExpr {
   val segs: List[String] = newList()
   segs.add(name)
@@ -228,6 +252,58 @@ test "value generic distinct specs" {
   val res = monoFile(patched)
   assertTrue(hasFunc(res.file, "ones__V3"), "ones__V3 emitted")
   assertTrue(hasFunc(res.file, "ones__V5"), "ones__V5 emitted")
+}
+
+// #5502 regression: two DISTINCT, equal-length String value-args must produce
+// two distinct specialisations.  The pre-fix key `"s" + length` collided any
+// two equal-length strings, so the second value reused the first's spec via
+// `seenSpecs` — baking the wrong string constant into the emitted IL.
+test "value generic distinct string specs (no key collision)" {
+  val src = "package P\n" + "func tag[S: Str](): Int { 0 }\n" + "func caller(): Int { 0 }\n"
+  val pr = parse(src)
+
+  // "ab" and "cd" are both length 2 — the exact collision the old key hit.
+  val targsAb: List[TypeArg] = newList()
+  targsAb.add(TAValue(expr = litStringExpr("ab")))
+  val targsCd: List[TypeArg] = newList()
+  targsCd.add(TAValue(expr = litStringExpr("cd")))
+  val callAb = synthTypeAppCall("tag", targsAb, newList())
+  val callCd = synthTypeAppCall("tag", targsCd, newList())
+  val sum = Expr(kind = EBinop(op = BAdd, lhs = callAb, rhs = callCd), span = syntheticSpan())
+  val patched = replaceCallerBody(pr.file, "caller", sum)
+
+  val res = monoFile(patched)
+  assertEqualInt(
+    countFuncsWithPrefix(res.file, "tag__"),
+    2,
+    "two equal-length string args must yield two distinct specialisations, not one collided spec"
+  )
+  assertTrue(not hasFunc(res.file, "tag"), "generic tag removed from output")
+}
+
+// #5502 regression: two DISTINCT Float value-args must produce two distinct
+// specialisations.  The pre-fix key was the constant `"f"` for every float
+// literal, so all float-valued generics collided onto one spec.
+test "value generic distinct float specs (no key collision)" {
+  val src = "package P\n" + "func scale[F: Real](): Int { 0 }\n" + "func caller(): Int { 0 }\n"
+  val pr = parse(src)
+
+  val targs15: List[TypeArg] = newList()
+  targs15.add(TAValue(expr = litFloatExpr("1.5")))
+  val targs25: List[TypeArg] = newList()
+  targs25.add(TAValue(expr = litFloatExpr("2.5")))
+  val call15 = synthTypeAppCall("scale", targs15, newList())
+  val call25 = synthTypeAppCall("scale", targs25, newList())
+  val sum = Expr(kind = EBinop(op = BAdd, lhs = call15, rhs = call25), span = syntheticSpan())
+  val patched = replaceCallerBody(pr.file, "caller", sum)
+
+  val res = monoFile(patched)
+  assertEqualInt(
+    countFuncsWithPrefix(res.file, "scale__"),
+    2,
+    "two distinct float args must yield two distinct specialisations, not one collided spec"
+  )
+  assertTrue(not hasFunc(res.file, "scale"), "generic scale removed from output")
 }
 
 // The substituted body of a value-generic specialisation no longer

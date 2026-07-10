@@ -91,6 +91,29 @@ func testNumericEntities(): Unit {
   }
 }
 
+// Astral-plane (> U+FFFF) numeric references must decode to a UTF-16 surrogate
+// pair, not panic through Std.Char.fromInt's `n <= 65535` contract.
+func testAstralNumericEntities(): Unit {
+  // U+1F600 GRINNING FACE, decimal and hex forms.
+  match parseXml("<e>&#128512;</e>") {
+    case Err(e) -> assertTrue(false, "astral decimal entity: " + XmlError.message(e))
+    case Ok(doc) -> assertTrue(textContent(documentRoot(doc)) == "😀", "astral decimal entity")
+  }
+  match parseXml("<e>&#x1F600;</e>") {
+    case Err(e) -> assertTrue(false, "astral hex entity: " + XmlError.message(e))
+    case Ok(doc) -> assertTrue(textContent(documentRoot(doc)) == "😀", "astral hex entity")
+  }
+  // Out-of-range and Int-overflowing references fail closed with an Err, not a panic.
+  match parseXml("<e>&#x110000;</e>") {
+    case Err(_) -> assertTrue(true, "out-of-range entity rejected")
+    case Ok(_) -> assertTrue(false, "out-of-range entity should be rejected")
+  }
+  match parseXml("<e>&#x100000041;</e>") {
+    case Err(_) -> assertTrue(true, "overflowing entity rejected")
+    case Ok(_) -> assertTrue(false, "overflowing entity should be rejected")
+  }
+}
+
 func testEntityInAttr(): Unit {
   match parseXml("<e val=\"a&amp;b\"/>") {
     case Err(e) -> assertTrue(false, "entity in attr: " + XmlError.message(e))
@@ -258,6 +281,7 @@ func main(): Unit {
   testDeepNesting()
   testEntityRefs()
   testNumericEntities()
+  testAstralNumericEntities()
   testEntityInAttr()
   testComment()
   testCData()

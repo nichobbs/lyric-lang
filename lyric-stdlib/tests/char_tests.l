@@ -38,6 +38,22 @@ func testIsWhiteSpace(): Unit {
   assertTrue(isWhiteSpace('\n'), "newline is whitespace")
   assertTrue(not isWhiteSpace('a'), "a is not whitespace")
   assertTrue(not isWhiteSpace('0'), "0 is not whitespace")
+  // C0 control boundary (VT, FF, CR are whitespace).
+  assertTrue(isWhiteSpace('\u{000b}'), "vertical tab is whitespace")
+  assertTrue(isWhiteSpace('\u{000c}'), "form feed is whitespace")
+  assertTrue(isWhiteSpace('\r'), "CR is whitespace")
+  // The non-breaking spaces: .NET's Char.IsWhiteSpace includes these but
+  // java.lang.Character.isWhitespace does NOT.  isWhiteSpace is now a pure
+  // Lyric canonical White_Space test, so it must report true on every target
+  // (#5501 — the fix's cross-platform correctness witness).
+  assertTrue(isWhiteSpace('\u{00a0}'), "no-break space (U+00A0) is whitespace")
+  assertTrue(isWhiteSpace('\u{2007}'), "figure space (U+2007) is whitespace")
+  assertTrue(isWhiteSpace('\u{202f}'), "narrow no-break space (U+202F) is whitespace")
+  // Other higher-plane White_Space members.
+  assertTrue(isWhiteSpace('\u{2003}'), "em space (U+2003) is whitespace")
+  assertTrue(isWhiteSpace('\u{3000}'), "ideographic space (U+3000) is whitespace")
+  // A near-miss that must NOT be whitespace (zero-width space is not White_Space).
+  assertTrue(not isWhiteSpace('\u{200b}'), "zero-width space (U+200B) is not whitespace")
 }
 
 func testIsUpperLower(): Unit {

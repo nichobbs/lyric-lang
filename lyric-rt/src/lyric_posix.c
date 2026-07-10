@@ -146,7 +146,14 @@ int32_t lyric_secure_random(uint8_t* buf, int64_t n) {
     int64_t off = 0;
     while (off < n) {
         ssize_t got = getrandom(buf + off, (size_t)(n - off), 0);
-        if (got < 0) return -1;
+        if (got < 0) {
+            /* getrandom can be interrupted by a signal before drawing any
+             * bytes; that is retryable, not an entropy failure.  Treating
+             * EINTR as fatal made a stray signal during UUID generation
+             * abort the whole process (lyric_uuid_v4 panics on -1). */
+            if (errno == EINTR) continue;
+            return -1;
+        }
         off += got;
     }
     return 0;
