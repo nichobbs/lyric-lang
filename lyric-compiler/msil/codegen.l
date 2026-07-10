@@ -71,7 +71,6 @@ pub record CodegenCtx {
   tokWriteLineChar: Int  // Console.WriteLine(char)
   tokWriteStr: Int  // Console.Write(string)
   tokConcat2: Int  // String.Concat(string,string)
-  tokConcat3: Int  // String.Concat(string,string,string)
   tokExceptionCtor: Int  // Exception..ctor(string) — one-arg ctor (callers emit ldstr+newobj+throw and rely on this arity)
   tokInvalidOpExceptionCtor: Int  // InvalidOperationException..ctor(string) — for internal invariant violations only
   tokStringFormat1: Int  // String.Format(string,object)
@@ -697,14 +696,6 @@ pub func newCodegenCtx(
   concat2Ps.add(MString)
   val tokConcat2 = 0x0A000000 +
     ctxAddMemberRef(lctx, trString, "Concat", "concat2", buildStaticMethodSig(concat2Ps, MString))
-
-  // 8. String.Concat(string,string,string): string  → 0x0A000008
-  val concat3Ps: List[MsilType] = newList()
-  concat3Ps.add(MString)
-  concat3Ps.add(MString)
-  concat3Ps.add(MString)
-  val tokConcat3 = 0x0A000000 +
-    ctxAddMemberRef(lctx, trString, "Concat", "concat3", buildStaticMethodSig(concat3Ps, MString))
 
   // 9. Exception..ctor(string): void  instance HASTHIS  → 0x0A000009
   val excCtorPs: List[MsilType] = newList()
@@ -1655,7 +1646,6 @@ pub func newCodegenCtx(
     tokWriteLineChar = tokWLChar,
     tokWriteStr = tokWStr,
     tokConcat2 = tokConcat2,
-    tokConcat3 = tokConcat3,
     tokExceptionCtor = tokExcCtor,
     tokInvalidOpExceptionCtor = tokInvalidOpExcCtor,
     tokStringFormat1 = tokFmt1,
@@ -4713,13 +4703,6 @@ func sliceElemMsilCtx(cctx: in CodegenCtx, elem: in TypeExpr, pkgName: in String
   }
 }
 
-func sliceElemMsil(elem: in TypeExpr, pkgName: in String): MsilType {
-  match elem.kind {
-    case TRef(path) -> if lastSegmentMsil(path) == "Byte" { MByte } else { typeExprToMsil(elem, pkgName) }
-    case _ -> typeExprToMsil(elem, pkgName)
-  }
-}
-
 // Like `sliceElemMsilCtx` but for use inside generic-function BODY lowering.
 // Erases a generic type variable to MObject (via typeExprToMsilGenBody) while
 // preserving the `Byte → MByte` mapping so `List[Byte]` in a generic function
@@ -4799,25 +4782,6 @@ func internFfiTypeRefNested(cctx: in CodegenCtx, clrFqn: in String): Int {
       row
     }
   }
-}
-
-// `Unit` / `Never` as a generic type ARGUMENT lower to `System.ValueTuple`,
-// not `void`.  The F# emitter (`TypeMap.fs`: `PtUnit`/`PtNever -> ValueTuple`
-// at value position, `-> Void` only at the method-return slot) follows the
-// same split: `void` is not a legal generic instantiation argument, so a
-// cross-package `Result[Unit, E]` / `Option[Unit]` reference must encode
-// `Result<[corelib]System.ValueTuple, E>` to byte-match the F#-built producer
-// (`[corelib]` = whichever core assembly is in use; on .NET Core / .NET 5+ this
-// is `System.Runtime`, not `mscorlib` — the code calls `assemblyForTypeMsil` so
-// the correct name is resolved dynamically at emit time; #2893)
-// (a self-hosted `Unit` arg otherwise degraded to `object`/`void` and failed
-// to bind with MissingMethodException).  `System.ValueTuple` is the empty
-// (non-generic) struct, so it serialises as VALUETYPE + TypeRef exactly like
-// any other BCL value-type generic argument (the #1602 Guid-in-Option path).
-func valueTupleMsilCtx(cctx: in CodegenCtx): MsilType {
-  val asm = assemblyForTypeMsil(cctx, "System.ValueTuple")
-  val refRow = internFfiTypeRef(cctx, asm, "System", "ValueTuple")
-  MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = "System.ValueTuple")
 }
 
 // type references via the codegen context (#1183 codegen port).
@@ -4927,16 +4891,16 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
             // MissingMethodException at the call site.  Mirrors the
             // `slice[Byte]` special case (`sliceElemMsilCtx`).
             val elemTy = sliceElemMsilCtx(cctx, elemTe, pkgName)
-            // A reference or concrete-collection/array element gets a closed
-            // generic `List`1<elem>` — construction, operation tokens, and
-            // signatures all match the instantiation and bind against any consumer.
-            // Value elements keep the legacy `List<object>` (read-narrow `MListOf`,
-            // unboxed on `get_Item`) because their unboxed stores need the concrete
-            // token machinery that is handled in the concrete (Stage B) path.
+            // A reference, value-primitive, or concrete-collection/array
+            // element gets a closed generic `List`1<elem>` — construction,
+            // operation tokens, and signatures all match the instantiation and
+            // bind against any consumer (`collElemConcrete` includes the value
+            // primitives, stored unboxed).  The residue — extern value-type
+            // structs (`MValueTypeRef`), tuples, and erased generics — stays
+            // the legacy `List<object>`-as-`MObject`; concretising those is
+            // tracked as docs/59 §3 F10.
             if collElemConcrete(elemTy) {
               MConcreteList(elemTy = elemTy)
-            } else if isValueType(elemTy) {
-              MListOf(elemTy = elemTy)
             } else {
               MObject
             }
@@ -5090,61 +5054,6 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
     // a type-checker concern, not a representation concern.
     case TRefined(underlying, _) -> typeExprToMsilCtx(cctx, TypeExpr(kind = TRef(path = underlying), span = te.span), pkgName)
     case TParen(inner) -> typeExprToMsilCtx(cctx, inner, pkgName)
-    case TSelf -> MObject
-    case TError -> MObject
-  }
-}
-
-// Legacy entry point (kept for callers that don't yet thread `cctx`).
-// Identical to `typeExprToMsilCtx` except `TRef` resolution always uses
-// `pkgName + "." + seg` for non-primitives.  Migrate call sites to the
-// ctx-aware variant when cross-package type references matter.
-pub func typeExprToMsil(te: in TypeExpr, pkgName: in String): MsilType {
-  match te.kind {
-    case TUnit -> MVoid
-    case TNever -> MVoid
-    case TRef(path) -> {
-      val seg = lastSegmentMsil(path)
-      if seg == "Int" {
-        MInt
-      } else if seg == "Long" {
-        MLong
-      } else if seg == "Double" {
-        MDouble
-      } else if seg == "Float" {
-        MDouble
-      } else if seg == "Bool" {
-        MBool
-      } else if seg == "String" {
-        MString
-      } else if seg == "Char" {
-        MChar
-      } else if seg == "Byte" {
-        MInt
-      } else if seg == "Unit" {
-        MVoid
-      } else if seg == "Object" {
-        MObject
-      } else {
-        MClass(className = pkgName + "." + seg)
-      }
-    }
-    case TSlice(elem) -> MArray(elemTy = sliceElemMsil(elem, pkgName))
-    case TGenericApp(_, _) -> MObject
-    case TNullable(_) -> MObject
-    case TTuple(tupTypes) -> {
-      val tupElems: List[MsilType] = newList()
-      var tti = 0
-      while tti < tupTypes.count {
-        tupElems.add(typeExprToMsil(tupTypes[tti], pkgName))
-        tti = tti + 1
-      }
-      MTuple(elems = tupElems)
-    }
-    case TFunction(_, _) -> MObject
-    case TArray(_, _) -> MObject
-    case TRefined(_, _) -> MInt
-    case TParen(inner) -> typeExprToMsil(inner, pkgName)
     case TSelf -> MObject
     case TError -> MObject
   }
@@ -12360,7 +12269,7 @@ func lowerMethodCallMsil(
                 }
               }
               // The method signature declares each parameter's concrete type
-              // (`typeExprToMsil`).  Box a value-type argument ONLY when the
+              // (`typeExprToMsilCtx`).  Box a value-type argument ONLY when the
               // parameter is a reference/object type — boxing it for a value-type
               // parameter passed `object` where `bool`/`int32` was expected, which
               // is invalid IL (#1784).  A missing registry entry falls back to the
@@ -20026,7 +19935,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
       // its real TypeRef), matching the F# emitter, this function's own body
       // slot type (`typeExprToMsilCtx` at the param-slot registration above),
       // and the cross-package call REFERENCE (`registerRestoredFunc` /
-      // `registerStdlibFunc`, both `…WithCtx`).  The context-free
+      // `registerStdlibFunc`, both `…WithCtx`).  The since-removed context-free
       // `typeExprToMsil` erased a reference-typed param to `object`, so a
       // self-hosted-built function with such a param did not bind from another
       // assembly (MissingMethodException).  Generic functions stay on the
@@ -20062,15 +19971,16 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
 //      by name-matching.  See msil_self_test_m11.l for validation.
 //
 // The `MFunc.params` list excludes `this`; the signature builder
-// (`buildInstanceMethodSig`) prepends the HASTHIS bit.
+// (`buildInstanceMethodSigWithCtx` in `lowerMRecord`) prepends the HASTHIS bit.
 pub func lowerImplMethodMsil(
   cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String, targetTypeName: in String
 ): MFunc {
-  // The method SIGNATURE keeps the legacy erased return type (generic / class
-  // returns lower to `object`) so the emitted MethodDef matches the interface
-  // slot and every existing cross-assembly consumer reference.
+  // The method SIGNATURE resolves ctx-aware, matching the interface slot
+  // (`lowerMInterface` also encodes with `buildInstanceMethodSigWithCtx`) and
+  // the restored-consumer MemberRef (`registerRestoredIfaceMethod` /
+  // `registerRestoredRecordMethod`, both ctx-aware).
   val retTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
-  // …but `declaredRetTy` (used purely for union-case construction inference,
+  // `declaredRetTy` (used purely for union-case construction inference,
   // not the signature) resolves CTX-AWARE so a generic return like
   // `Result[String, E]` carries its full `MGenericInst` with concrete type
   // args.  The body's `return Ok(x)` infers the case-class type arguments from
@@ -20098,8 +20008,7 @@ pub func lowerImplMethodMsil(
     // `List<int32>` instance at run time, so the body's `log.add(99)` must emit
     // `List<int32>::Add(int32)`, not the legacy `List<object>::Add(object)` —
     // the latter, called on a `List<int32>`, corrupts memory (different backing
-    // layout) and segfaults.  The method SIGNATURE still uses the erased
-    // `typeExprToMsil` below so the MethodDef matches the interface slot.
+    // layout) and segfaults.
     val paramTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
     val slot = fctx.slotTicker.count  // 1, 2, …
     fctx.slots.add(p.name, slot)
@@ -20383,8 +20292,8 @@ func genericIndexOf(generics: in List[String], name: in String): Int {
 
 // Generics-aware field/parameter type lowering (#2362).  A bare type reference
 // whose last segment is one of the enclosing type's parameters lowers to
-// ELEMENT_TYPE_VAR (`MTypeVar(index)`); everything else delegates to the legacy
-// `typeExprToMsil`.  Used for the fields of an in-bundle generic record/union so
+// ELEMENT_TYPE_VAR (`MTypeVar(index)`); everything else delegates to
+// `typeExprToMsilCtx`.  Used for the fields of an in-bundle generic record/union so
 // `value: T` encodes `FIELD VAR(0)` (`06 13 00`), byte-matching the F# emitter.
 func typeExprToMsilG(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
   match te.kind {

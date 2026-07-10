@@ -12,20 +12,16 @@
 //!   lowerMRecord      — lowers an MRecord into a LoweringCtx (adds TypeDef/Field/MethodDef rows).
 //!   lowerMPackage     — lowers an MPackage to a complete PE byte list.
 //!
-//! Phase R5 coverage (bootstrap-grade, matching jvm/lowering.l Phase R4):
-//!   Primitive types: Int(I4), Long(I8), Double(R8), Bool(Boolean), String, Unit(Void), Char.
-//!   Records with primitive or record-typed fields.
-//!   Top-level static functions.
-//!   Sealed union types (abstract base + derived case classes).
-//!   Distinct types and range types (thin newtype wrappers).
-//!   Arithmetic, comparison, boolean ops, string ops.
-//!   Control flow: if/else, while, match (literal + binding patterns).
-//!   Return, function call (static), constructor call (newobj), field access.
-//!
-//! Not covered in Phase R5 (deferred to R6):
-//!   Generics, async, protected types, wire blocks, aspects, FFI (@extern).
-//!   Cross-package references beyond the stdlib primitives.
-//!   Exception handling (try/catch/finally).
+//! Coverage: the full production surface of the self-hosted MSIL backend —
+//! primitives (Int/Long/Double/Bool/String/Unit/Char/Byte), records, unions
+//! (including in-bundle generics via GenericParam/VAR/TypeSpec, docs/43),
+//! enums, distinct/range types, interfaces (abstract + DIM), impl blocks,
+//! opaque types, closures (strongly-typed environment classes, docs/53),
+//! async state machines, generators, protected types, wire blocks, woven
+//! aspects, FFI (@externTarget + metadata-based auto-FFI, docs/42),
+//! cross-package/restored references, and exception handling
+//! (try/catch/finally via EH clauses).  The historical Phase R5 header that
+//! listed generics/async/aspects/FFI as "not covered" predated all of that.
 package Msil.Lowering
 
 import Msil.Kernel
