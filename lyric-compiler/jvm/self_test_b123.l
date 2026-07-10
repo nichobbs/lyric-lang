@@ -18,6 +18,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build UserId distinct type with derives ───────────────────────────────────
 func makeUserIdBytes(pool: in Pool): List[Byte] {

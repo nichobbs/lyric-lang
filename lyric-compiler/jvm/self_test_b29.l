@@ -17,6 +17,7 @@ import Std.File
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeTypeCheckClassBytes(): List[Byte] {
   val pool = poolNew()

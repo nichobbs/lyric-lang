@@ -20,6 +20,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Manifest
 import Jvm.Zip
+import Jvm.Kernel
 
 func makeHelloClassBytes(): List[Byte] {
   val pool = poolNew()

@@ -19,6 +19,7 @@ import Std.File
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeByteArraysBytes(): List[Byte] {
   val pool = poolNew()

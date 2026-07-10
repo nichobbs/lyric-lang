@@ -13,6 +13,7 @@ import Std.File
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeDoubleMathClassBytes(): List[Byte] {
   val pool = poolNew()

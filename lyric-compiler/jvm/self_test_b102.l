@@ -25,6 +25,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeGradeStrMethod(): LFunc {
   // gradeStr(int score): String  — score in 0..4

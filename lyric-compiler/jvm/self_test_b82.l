@@ -21,6 +21,7 @@ import Std.File
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeTryCatchBytes(): List[Byte] {
   val pool = poolNew()

@@ -17,6 +17,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build Temperature (projectable) + TemperatureView ────────────────────────
 func makeTemperatureClasses(pool: in Pool): List[BuiltClass] {

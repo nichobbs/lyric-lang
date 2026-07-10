@@ -20,6 +20,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build Shape sealed union ──────────────────────────────────────────────────
 func makeShapeClasses(pool: in Pool): List[BuiltClass] {

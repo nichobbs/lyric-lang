@@ -21,6 +21,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build ResultWrapper union (abstract base + Ok/Err case classes) ───────────
 func makeResultWrapperBytes(): List[List[Byte]] {

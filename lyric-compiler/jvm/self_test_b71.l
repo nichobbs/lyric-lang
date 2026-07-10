@@ -21,6 +21,7 @@ import Std.File
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeTreeDemoBytes(): List[Byte] {
   val pool = poolNew()

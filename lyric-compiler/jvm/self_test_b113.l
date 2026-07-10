@@ -15,6 +15,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build Helper class with addAndReturn(int a, int[] result): void ───────────
 func makeHelperBytes(pool: in Pool): List[Byte] {

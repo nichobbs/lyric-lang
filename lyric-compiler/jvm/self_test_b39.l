@@ -24,6 +24,7 @@ import Std.File
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeConverterClassBytes(): List[Byte] {
   val pool = poolNew()

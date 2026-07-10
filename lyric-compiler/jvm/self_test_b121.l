@@ -17,6 +17,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build Divider class with safeDivide (with contract) ───────────────────────
 func makeDividerBytes(pool: in Pool): List[Byte] {

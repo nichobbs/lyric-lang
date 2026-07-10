@@ -21,6 +21,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeJoinMethod(): LFunc {
   // join(String[] arr, String sep): String

@@ -21,6 +21,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build Shape union (abstract base + three case classes) ───────────────────
 func makeShapeBytes(): List[List[Byte]] {

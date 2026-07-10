@@ -16,6 +16,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build ResultHolder class with static String fields ────────────────────────
 func makeHolderBytes(pool: in Pool): List[Byte] {

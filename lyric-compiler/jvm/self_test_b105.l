@@ -24,6 +24,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build IntOp class (V49) ───────────────────────────────────────────────────
 func makeIntNameMethod(pool: in Pool): MethodInfo {

@@ -14,6 +14,7 @@ import Std.Collections
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
+import Jvm.Kernel
 
 // ── Adder.class ───────────────────────────────────────────────────────────────
 // public class Adder {
@@ -28,10 +29,15 @@ func makeAdderBytes(): List[Byte] {
   addInsns.add(LIadd)
   addInsns.add(LIreturn)
 
+  // Since the strongly-typed lambda ABI (D113), a bare `{ ... }` in a named-arg
+  // position parses as a zero-arg lambda, so the param list is built in a local.
+  val addParams: List[JvmType] = newList()
+  addParams.add(JInt)
+  addParams.add(JInt)
   val addFunc = LFunc(
     flags = ACC_PUBLIC + ACC_STATIC,
     name = "add",
-    params = { val ps: List[JvmType] = newList(); ps.add(JInt); ps.add(JInt); ps },
+    params = addParams,
     ret = JInt,
     insns = addInsns,
     maxStack = 2,

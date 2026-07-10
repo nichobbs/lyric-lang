@@ -17,6 +17,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build nat-tag classes ─────────────────────────────────────────────────────
 func makeNatTagBytes(className: in String, value: in Long, pool: in Pool): List[Byte] {
