@@ -30,6 +30,7 @@ void lyric_list_dtor(void* obj) {
 LyricList* lyric_list_new(int32_t elems_are_refs) {
     LyricList* l = (LyricList*)lyric_alloc(sizeof(LyricList));
     atomic_store_explicit(&l->rc, 1, memory_order_relaxed);
+    atomic_store_explicit(&l->weak, 1, memory_order_relaxed);
     l->dtor = lyric_list_dtor;
     l->data = 0;
     l->len = 0;
@@ -181,6 +182,7 @@ typedef struct {
 
 struct LyricMap {
     _Atomic int32_t rc;
+    _Atomic int32_t weak;
     void (*dtor)(void*);
     LyricMapSlot*   slots;
     int64_t         cap;   /* power of two */
@@ -220,6 +222,7 @@ void lyric_map_dtor(void* obj) {
 LyricMap* lyric_map_new(int32_t keys_are_strings, int32_t vals_are_refs) {
     LyricMap* m = (LyricMap*)lyric_alloc(sizeof(LyricMap));
     atomic_store_explicit(&m->rc, 1, memory_order_relaxed);
+    atomic_store_explicit(&m->weak, 1, memory_order_relaxed);
     m->dtor = lyric_map_dtor;
     m->slots = 0;
     m->cap = 0;

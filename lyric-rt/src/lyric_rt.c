@@ -48,7 +48,12 @@ void lyric_release(void* obj) {
          * refs) is visible to the destructor. */
         atomic_thread_fence(memory_order_acquire);
         if (h->dtor) h->dtor(obj);
-        free(obj);
+        /* Strong count hit zero: the destructor has run and the payload is
+         * dead, but a NativeWeak may still be observing the header.  Drop the
+         * implicit weak count rather than freeing here; lyric_weak_release
+         * performs the free once the last weak reference is also gone (which,
+         * absent any live NativeWeak, is right now). */
+        lyric_weak_release(obj);
     }
 }
 
