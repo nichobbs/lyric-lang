@@ -104,14 +104,18 @@ async func clientSendAsync(client: in HttpClientHandle, request: in HttpRequestM
 
 @externTarget("System.Net.Http.HttpClient.SendAsync")
 async func clientSendAsyncCancel(
-  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
+  client: in HttpClientHandle,
+  request: in HttpRequestMessage,
+  token: in CancellationToken,
 ): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.GetAsync")
 async func clientGetAsync(client: in HttpClientHandle, url: in String): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.GetAsync")
-async func clientGetAsyncCancel(client: in HttpClientHandle, url: in String, token: in CancellationToken): HttpResponseMessage = ()
+async func clientGetAsyncCancel(
+  client: in HttpClientHandle, url: in String, token: in CancellationToken
+): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.PostAsync")
 async func clientPostAsync(client: in HttpClientHandle, url: in String, content: in StringContent): HttpResponseMessage = ()
@@ -172,59 +176,8 @@ pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in Stri
   request
 }
 
-pub async func hostSend(client: in HttpClientHandle, request: in HttpRequestMessage): HttpResponseMessage {
-  await clientSendAsync(client, request)
-}
-
-pub async func hostGet(client: in HttpClientHandle, url: in String): HttpResponseMessage {
-  await clientGetAsync(client, url)
-}
-
-pub async func hostPostString(
-  client: in HttpClientHandle, url: in String, body: in String, contentType: in String
-): HttpResponseMessage {
-  await clientPostAsync(client, url, newStringContent(body, utf8(), contentType))
-}
-
 pub func hostStatusCode(response: in HttpResponseMessage): Int {
   responseStatusInt(response)
-}
-
-pub async func hostReadBodyText(response: in HttpResponseMessage): String {
-  await contentReadAsString(responseContent(response))
-}
-
-pub async func hostReadBodyBytes(response: in HttpResponseMessage): slice[Byte] {
-  await contentReadAsBytes(responseContent(response))
-}
-
-// ---------------------------------------------------------------------------
-// Phase C cancellation-aware overloads (D-progress-070).
-// ---------------------------------------------------------------------------
-pub async func hostSendWithCancel(
-  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
-): HttpResponseMessage {
-  await clientSendAsyncCancel(client, request, token)
-}
-
-pub async func hostGetWithCancel(
-  client: in HttpClientHandle, url: in String, token: in CancellationToken
-): HttpResponseMessage {
-  await clientGetAsyncCancel(client, url, token)
-}
-
-pub async func hostPostStringWithCancel(
-  client: in HttpClientHandle,
-  url: in String,
-  body: in String,
-  contentType: in String,
-  token: in CancellationToken,
-): HttpResponseMessage {
-  await clientPostAsyncCancel(client, url, newStringContent(body, utf8(), contentType), token)
-}
-
-pub async func hostReadBodyTextWithCancel(response: in HttpResponseMessage, token: in CancellationToken): String {
-  await contentReadAsStringCancel(responseContent(response), token)
 }
 
 pub func hostClientWithRedirects(maxRedirects: in Int): HttpClientHandle {
@@ -320,7 +273,9 @@ pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): 
 // SM resume labels, and the `try` block compiles as ordinary (non-SM) IL
 // — no label ever lands inside a CLR protected region.
 // ---------------------------------------------------------------------------
-pub async func hostSendSafe(client: in HttpClientHandle, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
+pub async func hostSendSafe(
+  client: in HttpClientHandle, request: in HttpRequestMessage
+): Result[HttpResponseMessage, String] {
   return try {
     Ok(value = await clientSendAsync(client, request))
   } catch Bug as b {
@@ -363,7 +318,9 @@ pub async func hostReadBodyBytesSafe(response: in HttpResponseMessage): Result[s
 }
 
 pub async func hostSendWithCancelSafe(
-  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
+  client: in HttpClientHandle,
+  request: in HttpRequestMessage,
+  token: in CancellationToken,
 ): Result[HttpResponseMessage, String] {
   return try {
     Ok(value = await clientSendAsyncCancel(client, request, token))

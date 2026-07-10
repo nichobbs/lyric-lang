@@ -18,7 +18,7 @@
 //! ASP.NET Core minimal APIs).  `lyric-web` (`Web.start`) builds its
 //! router, middleware pipeline, and static file serving on top of
 //! this kernel — see `requestQuery`, `requestHeaders`, `urlDecode`,
-//! `respondBytes`, and `respondBytesWithHeaders` below.
+//! and `respondBytesWithHeaders` below.
 //!
 //! G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
 //! the F# `Lyric.Stdlib.HttpServerHost` shim retires entirely.
@@ -309,12 +309,6 @@ func respondBytesWith(
   streamWrite(outStream, body, 0, body.length)
   streamClose(outStream)
   responseClose(resp)
-}
-
-/// Reply with a raw byte body (e.g. a static file, an image, a binary
-/// download); closes the response.
-pub func respondBytes(c: in HttpContext, status: in Int, contentType: in String, body: in slice[Byte]): Unit {
-  respondBytesWith(c, status, contentType, body, newMap())
 }
 
 /// Reply with a raw byte body plus extra response headers; closes the
