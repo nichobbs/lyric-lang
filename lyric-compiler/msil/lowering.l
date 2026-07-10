@@ -216,7 +216,10 @@ func emitLdindForType(mb: in MethodBody, ty: in MsilType): Unit {
     case MDouble -> emitLdind_R8(mb)
     case MBool -> emitLdind_I1(mb)
     case MChar -> emitLdind_U2(mb)
-    case MByte -> emitLdind_I1(mb)
+    // Byte is unsigned (0..255): `ldind.i1` sign-extends, turning 0xFF into
+    // -1.  Zero-extend with `ldind.u1`, matching `ldelem.u1` for slice[Byte]
+    // elements and `conv.u1` for `.toByte()` (docs/59 §3 F4).
+    case MByte -> emitLdind_U1(mb)
     case _ -> emitLdind_Ref(mb)
   }
 }
