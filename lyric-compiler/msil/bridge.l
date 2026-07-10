@@ -174,9 +174,24 @@ pub func compileToMsilWithVersion(
   // predicates like `isOk(bucket.exists(...))` to specialise instead of
   // staying type-erased (#3813).
   val stdlibGenFuncs = collectStdlibGenericFuncs(stdlibPkgs)
+  // Non-generic stdlib pub funcs feed inference only (never specialised) so
+  // a generic call whose type argument flows through a stdlib return —
+  // `unwrapOr(parseUuidOpt(s), nilUuid())` — can specialise (#5196).
+  val stdlibNonGenFuncs = collectStdlibNonGenericFuncs(stdlibPkgs)
+  val allMonoFuncs: List[FunctionDecl] = newList()
+  var smgi = 0
+  while smgi < stdlibGenFuncs.count {
+    allMonoFuncs.add(stdlibGenFuncs[smgi])
+    smgi = smgi + 1
+  }
+  var smni = 0
+  while smni < stdlibNonGenFuncs.count {
+    allMonoFuncs.add(stdlibNonGenFuncs[smni])
+    smni = smni + 1
+  }
   val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
   val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
-  val monoRes = monoFileWithImportsAndTypeDecls(derived, stdlibGenFuncs, stdlibIfaces, stdlibRecs)
+  val monoRes = monoFileWithImportsAndTypeDecls(derived, allMonoFuncs, stdlibIfaces, stdlibRecs)
   if reportAndAbort(monoRes.diagnostics) {
     return false
   }
@@ -570,6 +585,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // never matches the concrete value, so the match falls off and the
   // scrutinee leaks back as the `Bool` result — #3705).
   val inBundleNonGenFuncs = collectInBundleNonGenericFuncs(parsedPkgs)
+  // Non-generic stdlib pub funcs: inference-only, same rationale as the
+  // in-bundle set below — lets a generic call whose type argument flows
+  // through a stdlib return (`unwrapOr(parseUuidOpt(s), nilUuid())`)
+  // specialise instead of hitting the unresolved-call fallback (#5196).
+  val stdlibNonGenFuncs = collectStdlibNonGenericFuncs(stdlibPkgs)
   // Restored-dependency generic pub funcs: cross-DLL generic calls specialise
   // into the consumer bundle rather than erasing return type to `object` (#1498).
   val restoredGenFuncs = collectRestoredGenericFuncs(restoredArtifacts)
@@ -593,6 +613,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   while agfm < inBundleNonGenFuncs.count {
     allImportedGenFuncs.add(inBundleNonGenFuncs[agfm])
     agfm = agfm + 1
+  }
+  var agfn = 0
+  while agfn < stdlibNonGenFuncs.count {
+    allImportedGenFuncs.add(stdlibNonGenFuncs[agfn])
+    agfn = agfn + 1
   }
   // Interface decls (in-bundle + stdlib + restored), fed to the monomorphizer
   // for method-call return inference on interface-typed receivers (#3813).
@@ -1470,6 +1495,49 @@ func collectInBundleNonGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[Fu
           }
         }
         case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  nonGenFuncs
+}
+
+// Counterpart of `collectInBundleNonGenericFuncs` for stdlib packages:
+// non-generic block-bodied stdlib `pub func`s, fed to the monomorphizer
+// purely so it can resolve stdlib call return types during inference.
+// Without these, a generic call whose type argument only flows through a
+// stdlib function's return — e.g. `unwrapOr(parseUuidOpt(s), nilUuid())`,
+// where T = Uuid is visible only via `parseUuidOpt` / `nilUuid`'s declared
+// returns — cannot specialise; the un-specialised call then hits the
+// unresolved-call fallback (stdlib generics are skipped by
+// `registerStdlibFunc`), which lowers the arguments and emits NO call —
+// a silent miscompile plus unbalanced-stack InvalidProgramException
+// (#5196).  Because they are non-generic they only land in the
+// monomorphizer's `funcDecls` map (inference), never in `genDecls` (the
+// specialisation worklist).  Expression-bodied wrappers (`= ()` extern
+// stubs) are excluded, mirroring the in-bundle collector.
+pub func collectStdlibNonGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl] {
+  val nonGenFuncs: List[FunctionDecl] = newList()
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    var ii = 0
+    while ii < pkg.items.count {
+      match pkg.items[ii].kind {
+        case IFunc(decl) -> {
+          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+          val hasBlockBody = match decl.body {
+            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
+            case None -> false
+          }
+          if isPub and not isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) {
+            nonGenFuncs.add(decl)
+          }
+        }
+        case _ -> {
+        }
       }
       ii = ii + 1
     }
