@@ -93,9 +93,13 @@ pub record MailError {
 @stable(since = "0.1")
 pub interface MailSender {
   /// Send a single email message.
+  ///
+  /// No `requires:` clauses: every field of `msg` is client-controllable, and
+  /// a precondition assert on client data crashes the process instead of
+  /// returning `Err` (D118).  Invalid messages (no recipients, injected
+  /// headers) are rejected with a structured `Err` at `Mail.send` /
+  /// `validateNoInjection`.
   func send(msg: in EmailMessage): Result[Unit, MailError]
-    requires: msg.subject.length > 0
-    requires: msg.to.length > 0
 
   /// Release the underlying provider connection.
   func close(): Unit
@@ -308,10 +312,15 @@ pub func connectSendGrid(): Result[MailSender, MailError] {
 /// clauses; this guard catches the direct-`send` path that constructed
 /// the `EmailMessage` record by hand.  See lyric-lang #396 / #740.
 @stable(since = "0.1")
-pub func send(sender: in MailSender, msg: in EmailMessage): Result[Unit, MailError]
-  requires: msg.subject.length > 0
-  requires: msg.to.length > 0
-{
+pub func send(sender: in MailSender, msg: in EmailMessage): Result[Unit, MailError] {
+  // No `requires: msg.subject.length > 0` / `msg.to.length > 0`: those fields
+  // are client-controllable, so a precondition assert crashes the process on
+  // an empty subject/recipient list (the same DoS class as the injection
+  // clauses removed above).  A message with no recipients is rejected here
+  // with a structured Err; an empty subject/body is a valid email.
+  if msg.to.length == 0 {
+    return Err(MailError(message = "message has no recipients", code = "NO_RECIPIENTS"))
+  }
   // Header-injection is enforced here (and again in the MailSender.send
   // implementation) via a structured Err — NOT a `requires:` clause.  Every
   // field of `msg` is client-controllable, so a `requires: not
@@ -332,14 +341,10 @@ pub func send(sender: in MailSender, msg: in EmailMessage): Result[Unit, MailErr
 ///
 /// `to`, `subject`, and `body` must all be non-empty.
 @stable(since = "0.1")
-pub func sendSimple(sender: in MailSender, to: in String, subject: in String, body: in String): Result[Unit, MailError]
-  requires: to.length > 0
-  requires: subject.length > 0
-  requires: body.length > 0
-{
-  // No `requires: not containsHeaderInjection(...)` — see `Mail.send`.  A
-  // CRLF-bearing `to`/`subject` is rejected with a structured Err at the send
-  // boundary (`Mail.send` -> validateNoInjection) rather than panicking here.
+pub func sendSimple(sender: in MailSender, to: in String, subject: in String, body: in String): Result[Unit, MailError] {
+  // No `requires:` on these client-controllable strings — see `Mail.send`.  An
+  // empty/CRLF-bearing `to`/`subject` is rejected with a structured Err at the
+  // send boundary rather than panicking the process here.
   val toAddr = makeAddress(to)
   val msg = buildMessage([toAddr], subject, body, "")
   return send(sender, msg)
@@ -349,12 +354,8 @@ pub func sendSimple(sender: in MailSender, to: in String, subject: in String, bo
 @stable(since = "0.1")
 pub func sendHtml(
   sender: in MailSender, to: in String, subject: in String, htmlBody: in String, textBody: in String
-): Result[Unit, MailError]
-  requires: to.length > 0
-  requires: subject.length > 0
-  requires: htmlBody.length > 0
-{
-  // No injection `requires:` — see `Mail.send`.  Rejected at the send boundary.
+): Result[Unit, MailError] {
+  // No `requires:` on client-controllable strings — see `Mail.send`.
   val toAddr = makeAddress(to)
   val msg = buildMessage([toAddr], subject, textBody, htmlBody)
   return send(sender, msg)
@@ -380,12 +381,10 @@ pub func makeAddressWithName(address: in String, displayName: in String): EmailA
 /// Construct an `Attachment` from a filename, MIME content-type, and base64-
 /// encoded data.
 @stable(since = "0.1")
-pub func makeAttachment(filename: in String, contentType: in String, dataBase64: in String): Attachment
-  requires: filename.length > 0
-  requires: contentType.length > 0
-{
-  // See makeAddress: injection is rejected at send time, not via a panicking
-  // `requires:` on client-controlled input.
+pub func makeAttachment(filename: in String, contentType: in String, dataBase64: in String): Attachment {
+  // No length/injection `requires:` on these client-controllable strings — see
+  // makeAddress.  Constructing the record is harmless; a bad filename/
+  // contentType is rejected when the message is sent (validateNoInjection).
   return Attachment(filename = filename, contentType = contentType, dataBase64 = dataBase64)
 }
 
