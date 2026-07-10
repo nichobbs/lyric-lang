@@ -6,7 +6,6 @@ package Cache.CacheTests
 
 import Std.Core
 import Std.Testing
-import Std.Time
 import Cache
 
 // ─── get / set round-trip ─────────────────────────────────────────────────────
@@ -153,14 +152,19 @@ test "setWithTtl with a positive TTL stores the value (immediately readable)" {
   }
 }
 
+// The two TTL tests below drive `InProcessCacheStore`'s injectable clock
+// (`Cache.inProcessWithClock` / `Cache.ManualClock`, #5157) rather than
+// sleeping past a real TTL: "elapsing" the TTL is a plain field assignment
+// instead of a ~1.1s real wait.
 test "setWithTtl with a 1-second TTL expires once the TTL elapses" {
-  val store = Cache.inProcess()
+  val clock = Cache.manualClock(0i64)
+  val store = Cache.inProcessWithClock(clock)
   Cache.setWithTtl(store, "expiring", "fleeting", 1)
   match Cache.get(store, "expiring") {
     case None -> assertTrue(false, "value must be present immediately after set")
     case Some(v) -> assertEqual(v, "fleeting", "value before expiry")
   }
-  sleepMillis(1100)
+  clock.millis = 1100i64
   match Cache.get(store, "expiring") {
     case None -> ()
     // expired — correct
@@ -169,10 +173,11 @@ test "setWithTtl with a 1-second TTL expires once the TTL elapses" {
 }
 
 test "re-setting a TTL'd key with ttl=0 clears the expiry and makes it permanent" {
-  val store = Cache.inProcess()
+  val clock = Cache.manualClock(0i64)
+  val store = Cache.inProcessWithClock(clock)
   Cache.setWithTtl(store, "reprieved", "temporary", 1)
   Cache.setWithTtl(store, "reprieved", "permanent", 0)
-  sleepMillis(1100)
+  clock.millis = 1100i64
   match Cache.get(store, "reprieved") {
     case None -> assertTrue(false, "re-setting with ttl=0 must clear the earlier expiry")
     case Some(v) -> assertEqual(v, "permanent", "value after the ttl=0 re-set")

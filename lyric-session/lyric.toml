@@ -32,11 +32,12 @@ output_assembly = "Session.dll"
 #                                  cookie defaults (Secure/HttpOnly/SameSite/Path=/) — closes the
 #                                  README-documented-but-unimplemented gap tracked by review finding.
 [project.tests]
-"Session.SessionFixationTests" = "tests/session_fixation_tests.l"
-"Session.SessionStoreTests"    = "tests/session_store_tests.l"
-"Session.SensitiveUrlTests"    = "tests/sensitive_url_tests.l"
-"Session.SessionRedisJvmTests" = "tests/session_redis_jvm_tests.l"
-"Session.SessionCookieTests"   = "tests/session_cookie_tests.l"
+"Session.SessionFixationTests"    = "tests/session_fixation_tests.l"
+"Session.SessionStoreTests"       = "tests/session_store_tests.l"
+"Session.SensitiveUrlTests"       = "tests/sensitive_url_tests.l"
+"Session.SessionRedisJvmTests"    = "tests/session_redis_jvm_tests.l"
+"Session.SessionCookieTests"      = "tests/session_cookie_tests.l"
+"Session.SessionConfigEnvTests"   = "tests/session_config_env_tests.l"
 
 # `dotnet` and `jvm` are MUTUALLY EXCLUSIVE (#1444/#4-progress pattern shared with
 # lyric-storage/lyric-auth/lyric-resilience): activating both leaves two definitions

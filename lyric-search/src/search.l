@@ -41,6 +41,7 @@ import Std.Core
 import Std.Collections
 import Std.Json
 import Std.Iter
+import Std.String
 import Search.Kernel.Net
 import Search.Kernel.Jvm
 
@@ -66,16 +67,38 @@ import Search.Kernel.Jvm
 // than #5067's original finding ("nobody calls the kernel") — the kernel's
 // own extern declarations do not work, independent of this file.  Every
 // wrapper below therefore catches that failure and surfaces it as a typed,
-// honest `Err` instead of an unhandled crash.  This `try`/`catch` is not a
-// permanent design — once `extern package` codegen lands (or the kernels
-// are ported to the working `extern type` + `@externTarget` mechanism, as
-// lyric-mail's and lyric-session's `.NET` kernels already do), these calls
-// will simply start returning real results with no change needed here.
+// honest `Err` instead of an unhandled crash.  `wrapKernelBug` (below)
+// narrows the catch to that specific "unsupported method" signal so an
+// unrelated failure (a kernel `requires:` violation, or once #5324 lands, a
+// genuine connection/auth error) isn't mislabeled as an FFI-codegen gap.
+// This `try`/`catch` is not a permanent design — once `extern package`
+// codegen lands (or the kernels are ported to the working `extern type` +
+// `@externTarget` mechanism, as lyric-mail's and lyric-session's `.NET`
+// kernels already do), these calls will simply start returning real results
+// with no change needed here.
 // See lyric-search/README.md "Platform parity" for the full writeup.
 func searchKernelFfiUnavailable(op: in String, cause: in String): String {
   return "search kernel FFI binding for '" + op +
     "' did not resolve on this target (extern package codegen is not yet implemented in the self-hosted compiler — see lyric-search/README.md \"Platform parity\"): " +
     cause
+}
+
+// Every wrapper below runs its kernel call through `try`/`catch Bug` because
+// today *every* kernel call fails the same way: `extern package` codegen
+// (#5324) doesn't resolve to a real FFI call, so the runtime throws the
+// distinctive "unsupported method '<member>' on the receiver type at this
+// call site (no matching user method, extern binding, or built-in
+// intrinsic)" message on both targets. That message is the one signal this
+// wrapper narrows on — anything else (e.g. a kernel `requires:` precondition
+// violation, or once #5324 lands, a genuine connection/auth failure) is
+// surfaced as-is rather than mislabeled as an FFI-codegen gap. Once #5324
+// ships, this branch stops firing on real calls and can be deleted along
+// with `searchKernelFfiUnavailable`.
+func wrapKernelBug(op: in String, cause: in String): String {
+  if contains(cause, "unsupported method") {
+    return searchKernelFfiUnavailable(op, cause)
+  }
+  return cause
 }
 
 @cfg(feature = "elasticsearch")
@@ -91,7 +114,7 @@ func searchConnectElasticsearch(
   try {
     Search.Kernel.Net.connectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("connectElasticsearch", bug.message))
+    Err(wrapKernelBug("connectElasticsearch", bug.message))
   }
 }
 
@@ -108,7 +131,7 @@ func searchConnectElasticsearch(
   try {
     Search.Kernel.Jvm.connectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("connectElasticsearch", bug.message))
+    Err(wrapKernelBug("connectElasticsearch", bug.message))
   }
 }
 
@@ -118,7 +141,7 @@ func searchConnectMeilisearch(url: in String, apiKey: in String, connectTimeoutM
   try {
     Search.Kernel.Net.connectMeilisearch(url, apiKey, connectTimeoutMs)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("connectMeilisearch", bug.message))
+    Err(wrapKernelBug("connectMeilisearch", bug.message))
   }
 }
 
@@ -128,7 +151,7 @@ func searchConnectMeilisearch(url: in String, apiKey: in String, connectTimeoutM
   try {
     Search.Kernel.Jvm.connectMeilisearch(url, apiKey, connectTimeoutMs)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("connectMeilisearch", bug.message))
+    Err(wrapKernelBug("connectMeilisearch", bug.message))
   }
 }
 
@@ -137,7 +160,7 @@ func searchIndex(clientHandle: in Int, docJson: in String): Result[String, Strin
   try {
     Search.Kernel.Net.index(clientHandle, docJson)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("index", bug.message))
+    Err(wrapKernelBug("index", bug.message))
   }
 }
 
@@ -146,7 +169,7 @@ func searchIndex(clientHandle: in Int, docJson: in String): Result[String, Strin
   try {
     Search.Kernel.Jvm.index(clientHandle, docJson)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("index", bug.message))
+    Err(wrapKernelBug("index", bug.message))
   }
 }
 
@@ -155,7 +178,7 @@ func searchIndexBatch(clientHandle: in Int, docsJson: in String): Result[String,
   try {
     Search.Kernel.Net.indexBatch(clientHandle, docsJson)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("indexBatch", bug.message))
+    Err(wrapKernelBug("indexBatch", bug.message))
   }
 }
 
@@ -164,7 +187,7 @@ func searchIndexBatch(clientHandle: in Int, docsJson: in String): Result[String,
   try {
     Search.Kernel.Jvm.indexBatch(clientHandle, docsJson)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("indexBatch", bug.message))
+    Err(wrapKernelBug("indexBatch", bug.message))
   }
 }
 
@@ -173,7 +196,7 @@ func searchQuery(clientHandle: in Int, queryJson: in String): Result[String, Str
   try {
     Search.Kernel.Net.search(clientHandle, queryJson)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("search", bug.message))
+    Err(wrapKernelBug("search", bug.message))
   }
 }
 
@@ -182,7 +205,7 @@ func searchQuery(clientHandle: in Int, queryJson: in String): Result[String, Str
   try {
     Search.Kernel.Jvm.search(clientHandle, queryJson)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("search", bug.message))
+    Err(wrapKernelBug("search", bug.message))
   }
 }
 
@@ -193,7 +216,7 @@ func searchSuggest(
   try {
     Search.Kernel.Net.suggest(clientHandle, index, text, field, size)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("suggest", bug.message))
+    Err(wrapKernelBug("suggest", bug.message))
   }
 }
 
@@ -204,7 +227,7 @@ func searchSuggest(
   try {
     Search.Kernel.Jvm.suggest(clientHandle, index, text, field, size)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("suggest", bug.message))
+    Err(wrapKernelBug("suggest", bug.message))
   }
 }
 
@@ -213,7 +236,7 @@ func searchDelete(clientHandle: in Int, index: in String, id: in String): Result
   try {
     Search.Kernel.Net.delete(clientHandle, index, id)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("delete", bug.message))
+    Err(wrapKernelBug("delete", bug.message))
   }
 }
 
@@ -222,7 +245,7 @@ func searchDelete(clientHandle: in Int, index: in String, id: in String): Result
   try {
     Search.Kernel.Jvm.delete(clientHandle, index, id)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("delete", bug.message))
+    Err(wrapKernelBug("delete", bug.message))
   }
 }
 
@@ -231,7 +254,7 @@ func searchDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, Str
   try {
     Search.Kernel.Net.deleteIndex(clientHandle, index)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("deleteIndex", bug.message))
+    Err(wrapKernelBug("deleteIndex", bug.message))
   }
 }
 
@@ -240,7 +263,7 @@ func searchDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, Str
   try {
     Search.Kernel.Jvm.deleteIndex(clientHandle, index)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("deleteIndex", bug.message))
+    Err(wrapKernelBug("deleteIndex", bug.message))
   }
 }
 
@@ -249,7 +272,7 @@ func searchExists(clientHandle: in Int, index: in String, id: in String): Result
   try {
     Search.Kernel.Net.exists(clientHandle, index, id)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("exists", bug.message))
+    Err(wrapKernelBug("exists", bug.message))
   }
 }
 
@@ -258,7 +281,7 @@ func searchExists(clientHandle: in Int, index: in String, id: in String): Result
   try {
     Search.Kernel.Jvm.exists(clientHandle, index, id)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("exists", bug.message))
+    Err(wrapKernelBug("exists", bug.message))
   }
 }
 
@@ -267,7 +290,7 @@ func searchCreateIndex(clientHandle: in Int, index: in String, mappingJson: in S
   try {
     Search.Kernel.Net.createIndex(clientHandle, index, mappingJson)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("createIndex", bug.message))
+    Err(wrapKernelBug("createIndex", bug.message))
   }
 }
 
@@ -276,7 +299,7 @@ func searchCreateIndex(clientHandle: in Int, index: in String, mappingJson: in S
   try {
     Search.Kernel.Jvm.createIndex(clientHandle, index, mappingJson)
   } catch Bug as bug {
-    Err(searchKernelFfiUnavailable("createIndex", bug.message))
+    Err(wrapKernelBug("createIndex", bug.message))
   }
 }
 
