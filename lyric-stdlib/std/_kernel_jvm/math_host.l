@@ -146,6 +146,21 @@ pub func hostSignDouble(n: in Double): Int {
 @externTarget("java.lang.Double.isNaN")
 pub func hostIsNaN(x: in Double): Bool = ()
 
+// =====================================================================
+// Integer type widening / narrowing.  Mirrors the .NET twin's
+// System.Convert externs (math_host.l).  Widening is the exact `i2l`
+// intrinsic; narrowing routes through java.lang.Math.toIntExact, which
+// throws ArithmeticException on overflow — the same panic-on-overflow
+// contract as System.Convert.ToInt32 (the `l2i` `.toInt()` intrinsic
+// would silently truncate instead).
+// =====================================================================
+pub func hostIntToLong(n: in Int): Long {
+  n.toLong()
+}
+
+@externTarget("java.lang.Math.toIntExact")
+pub func hostLongToInt(n: in Long): Int = ()
+
 // Java spells this isInfinite, not isInfinity.
 @externTarget("java.lang.Double.isInfinite")
 pub func hostIsInfinity(x: in Double): Bool = ()
