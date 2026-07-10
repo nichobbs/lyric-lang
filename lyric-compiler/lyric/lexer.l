@@ -1453,9 +1453,7 @@ func parseDoubleLiteral(body: in String): Option[Double] {
     i = i + 1
   }
   // Fractional part.
-  var hasFrac = false
   if i < body.length and body[i] == '.' {
-    hasFrac = true
     i = i + 1
     var fracDigits = false
     while i < body.length and isDigitChar(body[i]) {
@@ -1468,9 +1466,7 @@ func parseDoubleLiteral(body: in String): Option[Double] {
     }
   }
   // Exponent.
-  var hasExp = false
   if i < body.length and (body[i] == 'e' or body[i] == 'E') {
-    hasExp = true
     i = i + 1
     if i < body.length and (body[i] == '+' or body[i] == '-') {
       i = i + 1

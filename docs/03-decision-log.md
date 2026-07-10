@@ -13931,6 +13931,51 @@ change; tracked alongside #4424. The native runtime weak-reference use-after-fre
 
 ---
 
+## D-progress-641 — code-review round 3: complete the aspect-precondition-DoS sweep (grpc/storage/cache/mq), unify `Std.Char.isWhiteSpace` across targets, and de-`Option[Char]` the new YAML helper
+
+Round-3 review of PR #5477 raised four REQUIRED findings; all fixed here:
+
+- **Aspect-precondition DoS, remaining libraries (#5493, #5494).** The
+  `requires: args.<field> != ""` unauthenticated-DoS pattern fixed for
+  `lyric-web`/`lyric-validation` in D-progress-638 still existed in
+  `lyric-grpc` (`RequiresGrpcAuth`/`RequiresGrpcRole`, `args.authToken`),
+  `lyric-storage` (`ValidateKey`, `args.key`), `lyric-cache` (`ItemCache`,
+  `args.cacheKey`), and `lyric-mq` (`Idempotent`/`DeadLetter`,
+  `args.message.id`). Each clause (D118 elaborates it to a runtime assert)
+  panics the server on empty client-controlled input. Removed every clause;
+  each `around` body now fails closed gracefully — grpc returns
+  `16 UNAUTHENTICATED`, storage returns `Err(INVALID_KEY)`, and
+  cache/mq pass empty-key/empty-id calls straight through (an empty key is
+  degenerate for caching/dedup and would otherwise collide on one shared
+  entry).
+- **YAML `Option[Char]` bundle hazard (#5495).** The `yIsDigitAt` helper
+  added in D-progress-638 (for the `-abc` scalar fix) matched over
+  `yPeekAt`'s `Option[Char]` — the exact generic-`Option`-in-bundle
+  instantiation the same round reworked `xCollectText` to avoid. Rewrote it
+  to the scanner's direct bounds-checked `st.src[i]` idiom, so it carries no
+  `Option[Char]` match.
+- **`Std.Char.isWhiteSpace` cross-platform divergence (#5501).** It bound to
+  `System.Char.IsWhiteSpace` on .NET and `java.lang.Character.isWhitespace`
+  on JVM, which disagree on the non-breaking spaces U+00A0 / U+2007 / U+202F
+  (Java excludes them) — so the same input classified differently per target,
+  undetected because the whitespace tests run only on dotnet in CI. Replaced
+  with a pure-Lyric canonical Unicode `White_Space` test (matching .NET),
+  removed the now-dead `hostIsWhiteSpace` externs from both kernels, and
+  pinned the divergent code points in `char_tests.l`. Written in early-return
+  statement form because the JVM backend mis-verifies a long
+  expression-position short-circuit `or`-chain ("Method expects a return
+  value") — a separate JVM codegen gap, worked around here rather than
+  depended on.
+
+Non-blocking SUGGESTIONs also addressed: dead `hasFrac`/`hasExp` locals
+removed from `lexer.l`'s `parseDoubleLiteral` (#5496); `Session.cookieHeader`
+now forces `Secure` when `SameSite=None` so the cookie isn't silently dropped
+by browsers (#5498); and the `lyric-rt` tombstone-churn test now asserts the
+bounded-capacity property it targets via a new `lyric_map_cap` accessor
+(#5500).
+
+---
+
 ## Decisions deferred to v2 or later
 
 

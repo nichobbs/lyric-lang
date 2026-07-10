@@ -88,11 +88,17 @@ pub aspect ValidateKey {
     enabled: Bool = true
     allowDots: Bool = false
   }
-  requires: args.key != ""
+  // No `requires: args.key != ""`: `key` is client-controlled (e.g. an
+  // upload path), so a `requires:` clause (D118 elaborates it into a runtime
+  // precondition assert) would panic the whole server on an empty key — a
+  // remotely-triggerable DoS.  The `around` body fails closed on the empty
+  // case with a graceful `Err(INVALID_KEY)` instead.
   // handler must declare a key: String parameter
   around(call) -> ret where TArgs has { key: String } {
     if not enabled {
       ret = call.proceed()
+    } else if args.key == "" {
+      ret = Err(StorageError(message = "storage key must not be empty", code = "INVALID_KEY"))
     } else {
       val reason = traversalReason(args.key)
       if reason != "" {

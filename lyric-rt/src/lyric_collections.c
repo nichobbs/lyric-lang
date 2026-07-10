@@ -328,6 +328,13 @@ int64_t lyric_map_len(LyricMap* map) {
     return map->len;
 }
 
+/* Allocated slot capacity (power of two, or 0 when never populated).
+ * Exposed for tests that assert the tombstone-churn resize path keeps
+ * capacity bounded rather than ratcheting it up unboundedly. */
+int64_t lyric_map_cap(LyricMap* map) {
+    return map->cap;
+}
+
 /* Key/value snapshots for iteration (Std.Collections mapKeys/mapValues
  * and the dictGetKeys/dictGetValues surface).  Fresh rc=1 lists; the
  * list retains ref-typed entries itself (elems_are_refs from the map's

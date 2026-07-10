@@ -29,9 +29,9 @@ pub func hostIsDigit(c: in Char): Bool = ()
 @externTarget("System.Char.IsLetterOrDigit")
 pub func hostIsLetterOrDigit(c: in Char): Bool = ()
 
-@externTarget("System.Char.IsWhiteSpace")
-pub func hostIsWhiteSpace(c: in Char): Bool = ()
-
+// `hostIsWhiteSpace` was removed: `Std.Char.isWhiteSpace` is now a pure-Lyric
+// canonical Unicode White_Space test (see char.l), because the .NET and JVM
+// host predicates disagreed on U+00A0 / U+2007 / U+202F (#5501).
 @externTarget("System.Char.IsUpper")
 pub func hostIsUpper(c: in Char): Bool = ()
 

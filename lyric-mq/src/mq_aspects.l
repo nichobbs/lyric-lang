@@ -70,10 +70,17 @@ pub aspect Idempotent {
     cacheKeyPrefix: String = "mq:idem:"
     ttlSeconds: Int = 3600
   }
-  requires: args.message.id != ""
+  // No `requires: args.message.id != ""`: a message id arrives from the broker
+  // / external producers, so a `requires:` clause (D118 elaborates it into a
+  // runtime precondition assert) would let a single empty-id message crash the
+  // consumer — a DoS.  An empty id is also degenerate for dedup (every empty-id
+  // message would collide on one idempotency key and be silently dropped as a
+  // "duplicate"), so the body processes such messages without dedup instead.
   // handler must declare a message: Message parameter
   around(call) -> ret where TArgs has { message: Message } {
     if not enabled {
+      ret = call.proceed()
+    } else if args.message.id == "" {
       ret = call.proceed()
     } else {
       val key = cacheKeyPrefix + args.message.id
@@ -129,7 +136,11 @@ pub aspect DeadLetter {
     enabled: Bool = true
     maxDeliveries: Int = 3
   }
-  requires: args.message.id != ""
+  // No `requires: args.message.id != ""`: the message arrives from the broker
+  // / external producers, so a `requires:` clause (D118 elaborates it into a
+  // runtime precondition assert) would let a single empty-id message crash the
+  // consumer — a DoS.  The body only uses the id to nack after max deliveries,
+  // which tolerates an empty id, so no early rejection is needed.
   // handler must declare a message: Message parameter
   // handler must declare a consumer: QueueConsumer parameter (shape checked by A0047)
   around(call) -> ret where TArgs has { message: Message, consumer: QueueConsumer } {

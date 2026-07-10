@@ -20,9 +20,10 @@
 //!                   the Std.IO precedent).
 //!
 //! Java spells several method names differently from .NET:
-//!   isWhitespace (not isWhiteSpace), isUpperCase (not isUpper),
-//!   isLowerCase (not isLower), isISOControl (not isControl),
-//!   toUpperCase / toLowerCase.
+//!   isUpperCase (not isUpper), isLowerCase (not isLower),
+//!   isISOControl (not isControl), toUpperCase / toLowerCase.
+//!   (isWhitespace/IsWhiteSpace is no longer bridged here — the two disagree
+//!    on the non-breaking spaces, so Std.Char.isWhiteSpace is pure Lyric now.)
 //!
 //! Internal: only Std.Char should import this.
 @axiom("java.lang.Character character operations conform to their documented JVM contracts")
@@ -40,10 +41,10 @@ pub func hostIsDigit(c: in Char): Bool = ()
 @externTarget("java.lang.Character.isLetterOrDigit")
 pub func hostIsLetterOrDigit(c: in Char): Bool = ()
 
-// Java spells this isWhitespace, not isWhiteSpace.
-@externTarget("java.lang.Character.isWhitespace")
-pub func hostIsWhiteSpace(c: in Char): Bool = ()
-
+// `hostIsWhiteSpace` was removed: `Std.Char.isWhiteSpace` is now a pure-Lyric
+// canonical Unicode White_Space test (see char.l).  java.lang.Character.
+// isWhitespace EXCLUDES U+00A0 / U+2007 / U+202F, so binding to it diverged
+// from the .NET backend for the same input (#5501).
 // Java spells this isUpperCase, not isUpper.
 @externTarget("java.lang.Character.isUpperCase")
 pub func hostIsUpper(c: in Char): Bool = ()

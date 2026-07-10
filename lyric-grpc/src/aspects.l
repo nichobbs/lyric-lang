@@ -84,7 +84,11 @@ pub aspect RequiresGrpcAuth {
     audience: String = ""
     allowedAlgorithms: String = "HS256"
   }
-  requires: args.authToken != ""
+  // No `requires: args.authToken != ""`: `authToken` is client-controlled
+  // metadata, so a `requires:` clause (D118 elaborates it into a runtime
+  // precondition assert) would panic the whole server on a missing/empty
+  // Authorization header — an unauthenticated DoS.  The `around` body below
+  // already fails closed on the empty case with a graceful 16 UNAUTHENTICATED.
   around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
@@ -137,7 +141,11 @@ pub aspect RequiresGrpcRole {
     allowedRoles: String
     allowedAlgorithms: String = "HS256"
   }
-  requires: args.authToken != ""
+  // No `requires: args.authToken != ""`: `authToken` is client-controlled
+  // metadata, so a `requires:` clause (D118 elaborates it into a runtime
+  // precondition assert) would panic the whole server on a missing/empty
+  // Authorization header — an unauthenticated DoS.  The `around` body below
+  // already fails closed on the empty case with a graceful 16 UNAUTHENTICATED.
   around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()

@@ -246,6 +246,13 @@ static void test_map_tombstone_churn(void) {
     CHECK(!lyric_map_get(m, 0, &v));
     CHECK(!lyric_map_get(m, 63, &v));
     CHECK(lyric_map_len(m) == 64);
+    /* The property under test: 64 live entries need only ~128-slot capacity;
+     * the in-place-rehash fix must keep capacity bounded across 20000 churn
+     * cycles.  Without it, each set past the load-factor threshold would
+     * double capacity (tombstones counted as `used`), ratcheting cap into the
+     * hundreds of thousands.  A generous 4096 ceiling still fails hard on that
+     * regression while leaving headroom for the legitimate ~128-256 range. */
+    CHECK(lyric_map_cap(m) <= 4096);
     lyric_release(m);
 }
 

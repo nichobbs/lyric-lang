@@ -595,14 +595,20 @@ func sanitizeCookieToken(s: in String): String {
 @pure
 @stable(since = "0.1")
 pub func cookieHeader(sessionId: in String, cfg: in SessionConfig): String {
+  val sameSite = sanitizeCookieToken(cfg.sameSite)
   var header = sanitizeCookieToken(cfg.cookieName) + "=" + sanitizeCookieToken(sessionId) + "; Path=/"
   if cfg.httpOnly {
     header = header + "; HttpOnly"
   }
-  if cfg.secure {
+  // A `SameSite=None` cookie is silently ignored by browsers unless `Secure`
+  // is also present (RFC 6265bis §5.4.7 / the 2020 SameSite=None-requires-Secure
+  // rule).  Force `Secure` for `None` so the session cookie isn't dropped even
+  // if the operator left `secure = false` — a misconfiguration that would
+  // otherwise break sessions entirely rather than degrade safely.
+  if cfg.secure or sameSite == "None" {
     header = header + "; Secure"
   }
-  header = header + "; SameSite=" + sanitizeCookieToken(cfg.sameSite)
+  header = header + "; SameSite=" + sameSite
   return header
 }
 

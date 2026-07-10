@@ -41,13 +41,28 @@ test "cookieHeader omits HttpOnly and Secure when disabled in config" {
     cookieName = "LYRIC_SESSION",
     secure = false,
     httpOnly = false,
-    sameSite = "None",
+    sameSite = "Lax",
     ttlSeconds = 3600
   )
   val header = Session.cookieHeader("xyz", cfg)
   assertFalse(header.contains("HttpOnly"), "HttpOnly must not appear when httpOnly = false")
-  assertFalse(header.contains("Secure"), "Secure must not appear when secure = false")
-  assertTrue(header.contains("SameSite=None"), "SameSite is always present regardless of secure/httpOnly")
+  assertFalse(header.contains("Secure"), "Secure must not appear when secure = false (non-None SameSite)")
+  assertTrue(header.contains("SameSite=Lax"), "SameSite is always present regardless of secure/httpOnly")
+}
+
+test "cookieHeader forces Secure when SameSite=None even if secure = false" {
+  // A SameSite=None cookie without Secure is silently dropped by browsers;
+  // cookieHeader must emit Secure regardless of the (mis)configured flag.
+  val cfg = Session.SessionConfig(
+    cookieName = "LYRIC_SESSION",
+    secure = false,
+    httpOnly = false,
+    sameSite = "None",
+    ttlSeconds = 3600
+  )
+  val header = Session.cookieHeader("xyz", cfg)
+  assertTrue(header.contains("; Secure"), "SameSite=None must force Secure even when secure = false")
+  assertTrue(header.contains("SameSite=None"), "SameSite=None carried through")
 }
 
 test "cookieHeader always includes Path=/" {

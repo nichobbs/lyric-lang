@@ -91,10 +91,18 @@ func yPeekAt(st: in YamlState, offset: in Int): Option[Char] {
 }
 
 // True when the character `offset` positions ahead is an ASCII digit.
+// Reads the character by direct bounds-checked index rather than matching
+// `yPeekAt`'s `Option[Char]`: the rest of this scanner uses the same
+// `st.src[i]`-under-a-length-guard idiom, and a `match` over `Option[Char]`
+// hits the generic-Option stdlib-bundle mis-compile this PR's XML fix
+// (D-progress-638) was reworked to avoid.
 func yIsDigitAt(st: in YamlState, offset: in Int): Bool {
-  match yPeekAt(st, offset) {
-    case Some(ch) -> ch >= '0' and ch <= '9'
-    case None -> false
+  val i = st.pos + offset
+  if i >= 0 and i < st.src.length {
+    val ch = st.src[i]
+    ch >= '0' and ch <= '9'
+  } else {
+    false
   }
 }
 

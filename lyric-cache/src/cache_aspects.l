@@ -97,10 +97,10 @@ val functionCacheStore: CacheStore = Cache.inProcess()
 /// Row-constrained B'-mode (docs/56 / D115): reads `args.cacheKey` via a
 /// `where TArgs has { cacheKey: String }` row clause.  The handler must
 /// declare a `cacheKey: String` parameter; the weaver reports A0047 if it
-/// is absent or mistyped.  A `requires: args.cacheKey != ""` contract
-/// (elaborated to a runtime assert in this `@runtime_checked` module, per
-/// `Storage.Aspects.ValidateKey`'s precedent) rejects an empty `cacheKey`
-/// before the handler runs.
+/// is absent or mistyped.  An empty `cacheKey` is passed straight through to
+/// the handler without caching (it is not asserted against — a `requires:`
+/// on client-supplied input would elaborate to a process-crashing runtime
+/// assert, and an empty key is degenerate for caching anyway).
 ///
 /// The handler's return type must be `Result[String, E]` for this aspect to
 /// compose correctly, for the same reason as FunctionCache above.
@@ -130,10 +130,17 @@ pub aspect ItemCache {
     ttlSeconds: Int = 300
     keyPrefix: String = ""
   }
-  requires: args.cacheKey != ""
+  // No `requires: args.cacheKey != ""`: `cacheKey` is caller-/client-supplied,
+  // so a `requires:` clause (D118 elaborates it into a runtime precondition
+  // assert) would panic on an empty key — a potential DoS.  An empty key is
+  // also degenerate for caching (every empty-key call would collide on one
+  // process-wide entry), so the body passes such calls straight through to the
+  // handler without caching instead of asserting.
   // handler must declare a cacheKey: String parameter
   around(call) -> ret where TArgs has { cacheKey: String } {
     if not enabled {
+      ret = call.proceed()
+    } else if args.cacheKey == "" {
       ret = call.proceed()
     } else {
       val key = call.qualifiedName + ":" + keyPrefix + args.cacheKey
