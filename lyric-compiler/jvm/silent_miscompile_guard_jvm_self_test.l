@@ -244,3 +244,73 @@ test "Byte widening above 127 stays unsigned (#4855)" {
   assertEqualLong(h.b.toLong(), 255i64, "field Byte 255 -> Long 255, not -1")
   assertTrue(h.b.toDouble() == 255.0, "field Byte 255 -> Double 255.0, not -1.0")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. Compound assignment on String / Float / Byte / erased locals and hoisted
+//    cells (docs/59 §4.2).  The local-variable and hoisted-cell compound paths
+//    only special-cased JLong/JDouble and fell to integer opcodes, so
+//    `f += 0.5f` and `s += "x"` produced VerifyError at class load, and an
+//    erased-Object match payload reached `iadd`/`ladd` still boxed.  All
+//    paths now route through `emitCompoundCombineJvm`.
+// ─────────────────────────────────────────────────────────────────────────────
+test "String compound append on a local" {
+  var s = "a"
+  s += "b"
+  s += "c"
+  assertEqual(s, "abc", "s += builds the concatenation")
+}
+
+test "Float compound assignment on a local" {
+  var f: Float = 1.0f32
+  f += 0.5f32
+  assertTrue(f == 1.5f32, "f += 0.5f")
+  f -= 0.25f32
+  assertTrue(f == 1.25f32, "f -= 0.25f")
+  f *= 2.0f32
+  assertTrue(f == 2.5f32, "f *= 2.0f")
+  f /= 2.0f32
+  assertTrue(f == 1.25f32, "f /= 2.0f")
+}
+
+test "Byte compound assignment wraps unsigned on a local" {
+  var b: Byte = 200.toByte()
+  b += 100.toByte()
+  // 300 wraps to 44 (unsigned 8-bit), matching MSIL conv.u1.
+  assertEqualInt(b.toInt(), 44, "200 += 100 wraps to 44")
+  var m: Byte = 200.toByte()
+  m *= 2.toByte()
+  assertEqualInt(m.toInt(), 144, "200 *= 2 wraps to 144")
+}
+
+test "compound assignment coerces an erased match payload" {
+  // The scrutinee's generic instantiation is unrecoverable here (a direct
+  // constructor init records no generic args), so the payload binds as a
+  // boxed Object — the compound RHS must unbox it like the plain `=` arm does.
+  val o: Option[Long] = Some(value = 5i64)
+  var total: Long = 100i64
+  match o {
+    case Some(n) -> {
+      total += n
+    }
+    case None -> ()
+  }
+  assertEqualLong(total, 105i64, "total += erased payload")
+}
+
+test "compound assignment on hoisted (captured) vars of each shape" {
+  var hf: Float = 1.0f32
+  var hs = "x"
+  var hl: Long = 10i64
+  var hi = 3
+  var hb: Byte = 200.toByte()
+  val bump = { -> hf += 0.5f32; hs += "y"; hl += 2i64; hi += 4; hb *= 2.toByte() }
+  bump()
+  assertTrue(hf == 1.5f32, "hoisted Float +=")
+  assertEqual(hs, "xy", "hoisted String +=")
+  assertEqualLong(hl, 12i64, "hoisted Long +=")
+  assertEqualInt(hi, 7, "hoisted Int +=")
+  assertEqualInt(hb.toInt(), 144, "hoisted Byte *= wraps unsigned")
+  bump()
+  assertTrue(hf == 2.0f32, "hoisted Float += (second call)")
+  assertEqual(hs, "xyy", "hoisted String += (second call)")
+}
