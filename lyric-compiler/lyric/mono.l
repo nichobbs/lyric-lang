@@ -44,11 +44,15 @@
 //!     of `Lyric.RestoredPackages` is what unlocks consuming non-trivial
 //!     stdlib generics across the boundary.
 //!   • Constraint validation — best-effort: when a `where T: Marker` bound
-//!     is declared and `T` substitutes to a primitive, the well-known
-//!     marker set (`Equals`, `Hash`, `Show`, `Ord`, `Compare`) is checked
-//!     and a `M0001` diagnostic is emitted on confirmed mismatch.  Unknown
-//!     concrete types accept silently (best-effort) since cross-package
-//!     trait dispatch information is not yet plumbed through.
+//!     is declared and `T` substitutes to a primitive, the marker
+//!     vocabulary shared with the type checker (`Add`, `Sub`, `Mul`,
+//!     `Div`, `Mod`, `Compare`, `Hash`, `Equals`, `Default` — see
+//!     `isKnownDeriveMarker` in `typechecker_checker.l`) is checked
+//!     against the primitive's capabilities and an `M0001` diagnostic is
+//!     emitted on confirmed mismatch (e.g. `String` against `Div`).
+//!     Non-primitive concrete types accept silently — the type checker's
+//!     `checkBoundsSatisfied` (T0108) owns `@derive`-list and interface
+//!     satisfaction, which need the symbol table.
 //!
 //! Limitations (still Phase 5 bootstrap grade):
 //!   • Type inference covers literals, explicitly-annotated variables,
@@ -87,14 +91,22 @@ pub record MonoResult {
   /// Maps generic function names to the last-seen specialised name (for
   /// downstream diagnostics; not needed for correctness).
   rewrites: Map[String, String]
-  /// Monomorphisation diagnostics — populated when the pass detects a
-  /// where-bound violation (`M0001`: a concrete type argument fails its
-  /// declared `where T: Marker` constraint).  Other failure modes (e.g.
-  /// inference gaps from #349) silently fall back to leaving generic
-  /// call sites unspecialised so the type checker's existing diagnostics
-  /// surface them — that's the conservative behaviour by design.  The
-  /// bridges route this list through `reportAndAbort` so M0001s abort
-  /// codegen the same way parse/type-check/mode-check diagnostics do.
+  /// Monomorphisation diagnostics:
+  ///   • `M0001` — a concrete type argument fails its declared
+  ///     `where T: Marker` constraint.
+  ///   • `M0002` — a call site targeting a same-package generic could not
+  ///     be rewritten to a specialisation; the generic's declaration is
+  ///     erased from the output, so the surviving call would be a dangling
+  ///     reference at codegen (a silent runtime crash before this
+  ///     diagnostic existed — docs/59 §5.2 B2).
+  ///   • `M0003` — the specialisation worklist exhausted its budget
+  ///     (unbounded recursive instantiation), formerly a compiler panic.
+  /// Inference gaps on calls to IMPORTED generics still fall back
+  /// silently to the un-specialised call (the emitter handles those via
+  /// real CLR generics / the native instantiation registry) — that's the
+  /// conservative behaviour by design.  The bridges route this list
+  /// through `reportAndAbort` so M-errors abort codegen the same way
+  /// parse/type-check/mode-check diagnostics do.
   diagnostics: List[Diagnostic]
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Internal state
@@ -130,6 +142,13 @@ record MonoState {
   /// interface-typed value, after substituting the interface's generic
   /// parameters with the receiver's concrete type arguments (#3813).
   ifaceDecls: Map[String, InterfaceDecl]
+  /// Simple names of top-level generic functions declared in THIS file
+  /// that Phase 2 will drop from the output (neither `@externTarget`-kept
+  /// nor `@axiom`).  A call site still referencing one of these after the
+  /// rewrite failed to specialise would reference a function that no
+  /// longer exists at codegen; `M0002` fires instead of the former silent
+  /// dangling-reference miscompile (docs/59 §5.2 B2).
+  droppedLocalGenerics: Map[String, Bool]
   seenSpecs: Map[String, Bool]
   allSpecs: List[SpecRequest]
   diags: List[Diagnostic]
@@ -140,12 +159,14 @@ func newMonoState(
   funcDecls: in Map[String, FunctionDecl],
   recordDecls: in Map[String, RecordDecl],
   ifaceDecls: in Map[String, InterfaceDecl],
+  droppedLocalGenerics: in Map[String, Bool],
 ): MonoState {
   MonoState(
     genDecls = genDecls,
     funcDecls = funcDecls,
     recordDecls = recordDecls,
     ifaceDecls = ifaceDecls,
+    droppedLocalGenerics = droppedLocalGenerics,
     seenSpecs = newMap(),
     allSpecs = newList(),
     diags = newList()
@@ -1881,12 +1902,18 @@ func specializeFunc(
 // §11b. Constraint validation
 // ─────────────────────────────────────────────────────────────────────────────
 // Validate that the type substitution satisfies the function's declared
-// `where T: …` bounds.  This is a best-effort spot check: well-known
-// derive markers (Equals, Hash, Show, Ord, Compare) are validated against
-// the primitive set the BCL satisfies automatically; everything else
-// (user-defined markers, opaque types, interfaces) accepts silently
-// because cross-package symbol resolution lives in Band 6.  Confirmed
-// mismatches produce an `M0001` error diagnostic at the call site span.
+// `where T: …` bounds.  This is a best-effort spot check: when the bound
+// names a well-known derive marker (the same closed vocabulary the type
+// checker's `isKnownDeriveMarker` validates with T0051) and the type
+// argument is a primitive, the primitive's capability set decides —
+// every primitive carries Equals/Hash/Compare/Default, only numerics
+// carry Sub/Mul/Div/Mod, and Add additionally holds for String
+// (concatenation).  Everything else (user types, opaque types,
+// interfaces, generic instantiations) accepts silently: mono operates on
+// pre-resolution syntax and cannot see `@derive(...)` lists or impls —
+// the type checker's `checkBoundsSatisfied` (T0108) owns that half.
+// Confirmed mismatches produce an `M0001` error diagnostic at the call
+// site span.
 func validateWhereBounds(
   decl: in FunctionDecl,
   subst: in Map[String, TypeExpr],
@@ -1932,24 +1959,31 @@ func validateWhereBounds(
   }
 }
 
+// Mirror of the type checker's `isKnownDeriveMarker`
+// (`typechecker_checker.l`) — the single marker vocabulary T0051
+// validates `where` bounds against.  A constraint name outside this set
+// is either a user interface (accepted silently here; T0108 owns it) or
+// was already rejected at the declaration.
 func isKnownMarker(name: in String): Bool {
-  name == "Equals" or name == "Hash" or name == "Show" or name == "Ord" or name == "Compare"
+  name == "Add" or name == "Sub" or name == "Mul" or name == "Div" or name == "Mod" or name == "Compare" or
+    name == "Hash" or
+    name == "Equals" or
+    name == "Default"
 }
 
-// Primitive types satisfy every well-known derive marker (the BCL
-// pairs them with reflection-driven equality / hashing / formatting
-// already).  Any other concrete type passes silently — without a
-// resolver we can't tell whether a user-defined type carries the
-// corresponding `@derive(X)` annotation.  Reference types do NOT
-// blanket-pass: callers depending on a marker the type doesn't supply
-// will already fail at codegen.
+// A concrete type argument satisfies a well-known derive marker unless
+// the mismatch can be ruled out syntactically: primitives carry a fixed
+// capability set (see `primitiveSatisfiesMarker`).  Any non-primitive
+// concrete type passes silently — without a resolver we can't tell
+// whether a user-defined type carries the corresponding `@derive(X)`
+// annotation; the type checker's T0108 covers that case.
 func satisfiesMarker(te: in TypeExpr, marker: in String): Bool {
   match te.kind {
     case TRef(path) -> {
       if path.segments.count == 1 {
         val nm = path.segments[0]
         if isPrimitiveName(nm) {
-          true
+          primitiveSatisfiesMarker(nm, marker)
         } else {
           // Unknown user type: accept silently (best-effort).
           true
@@ -1959,21 +1993,86 @@ func satisfiesMarker(te: in TypeExpr, marker: in String): Bool {
         true
       }
     }
-    case TGenericApp(_, _) -> true
-    case TTuple(_) -> true
+    case TParen(inner) -> satisfiesMarker(inner, marker)
     case _ -> true
   }
 }
 
-func isPrimitiveName(name: in String): Bool {
+// Which well-known markers a primitive satisfies: equality, hashing,
+// ordering, and defaults hold for every primitive; the arithmetic
+// markers only for numerics — with `Add` extended to `String`, whose
+// `+` is concatenation.  `marker` is already `isKnownMarker`-filtered,
+// so the fall-through covers exactly Sub / Mul / Div / Mod.
+func primitiveSatisfiesMarker(name: in String, marker: in String): Bool {
+  if marker == "Equals" or marker == "Hash" or marker == "Compare" or marker == "Default" {
+    return true
+  }
+  if marker == "Add" {
+    return isNumericPrimitiveName(name) or name == "String"
+  }
+  isNumericPrimitiveName(name)
+}
+
+func isNumericPrimitiveName(name: in String): Bool {
   name == "Int" or name == "Long" or name == "Short" or name == "Byte" or name == "UInt" or name == "ULong" or
     name == "UShort" or
     name == "UByte" or
     name == "Float" or
-    name == "Double" or
-    name == "Bool" or
-    name == "Char" or
-    name == "String"
+    name == "Double"
+}
+
+func isPrimitiveName(name: in String): Bool {
+  isNumericPrimitiveName(name) or name == "Bool" or name == "Char" or name == "String"
+}
+
+// Emit `M0002` when a call site targeting a same-package generic function
+// could not be rewritten to a specialisation.  Phase 2 erases the generic's
+// declaration from the output, so leaving the call site referencing the
+// generic name would hand codegen a dangling reference that lowers to a
+// broken fallback call (a runtime crash on both managed targets) instead
+// of a compile-time error (docs/59 §5.2 B2).  Only single-segment call
+// sites are diagnosed: a qualified `Pkg.f(...)` may legitimately target a
+// same-named function in another package (#3627), and a name shadowed by
+// a typed local binding in `env` is a lambda/function-value call, not a
+// call to the generic.
+func noteUnspecialisableLocalCall(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  fname: in String,
+  reason: in String,
+  callSpan: in Span,
+): Unit {
+  if not state.droppedLocalGenerics.containsKey(fname) {
+    return
+  }
+  if env.containsKey(fname) {
+    return
+  }
+  state.diags.add(
+    errorDiagnostic(
+      "M0002",
+      "call to generic function '" + fname + "' could not be monomorphised: " + reason +
+        "; the generic declaration is erased after monomorphisation, so this call would not resolve at code generation — make the argument types inferable (e.g. bind the arguments to explicitly-typed locals) or wrap the call in a non-generic helper with annotated parameters",
+      callSpan
+    )
+  )
+}
+
+// The subset of `typeParams` that `subst` failed to bind, rendered as a
+// quoted comma-separated list for the M0002 message.
+func unresolvedTypeParamList(typeParams: in List[String], subst: in Map[String, TypeExpr]): String {
+  var acc = ""
+  var i = 0
+  while i < typeParams.count {
+    if not subst.containsKey(typeParams[i]) {
+      if acc.length > 0 {
+        acc = acc + ", "
+      }
+      acc = acc + "'" + typeParams[i] + "'"
+    }
+    i = i + 1
+  }
+  acc
 }
 
 func renderTypeExpr(te: in TypeExpr): String {
@@ -2124,6 +2223,21 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                         val newFn = singleSegPathExpr(name, fn.span)
                         return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
                       }
+                      noteUnspecialisableLocalCall(
+                        state,
+                        env,
+                        fname,
+                        "the explicit type arguments do not bind every generic parameter",
+                        fn.span
+                      )
+                    } else {
+                      noteUnspecialisableLocalCall(
+                        state,
+                        env,
+                        fname,
+                        "expected " + toString(allParams.count) + " explicit type argument(s), got " + toString(targs.count),
+                        fn.span
+                      )
                     }
                     Expr(kind = ECall(fn = fn, args = newArgs), span = s)
                   }
@@ -2175,6 +2289,30 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                     }
                     val newFn = singleSegPathExpr(name, fn.span)
                     return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
+                  }
+                  noteUnspecialisableLocalCall(
+                    state,
+                    env,
+                    fname,
+                    "could not infer type argument(s) " + unresolvedTypeParamList(typeParams, subst) + " from the call's arguments",
+                    fn.span
+                  )
+                } else {
+                  // The arity guard above deliberately skips calls with MORE
+                  // args than the generic has params (they target an unrelated
+                  // same-named function, #3677) — those stay silent.  A call
+                  // with compatible arity to a value-generic function has no
+                  // surface syntax for the explicit type application it needs,
+                  // so it can never specialise: diagnose instead of leaving
+                  // the dangling reference.
+                  if valueParams.count > 0 and args.count <= baseDecl.params.count {
+                    noteUnspecialisableLocalCall(
+                      state,
+                      env,
+                      fname,
+                      "value-generic parameters require an explicit type application, which this call site does not carry",
+                      fn.span
+                    )
                   }
                 }
                 Expr(kind = ECall(fn = fn, args = newArgs), span = s)
@@ -2661,6 +2799,12 @@ pub func monoFileWithImportsAndTypeDecls(
   val recordDecls: Map[String, RecordDecl] = newMap()
   // #3813: interface decls keyed by simple name, for method-return inference.
   val ifaceDecls: Map[String, InterfaceDecl] = newMap()
+  // Same-file generic functions that Phase 2 will erase from the output —
+  // an unrewritten call site to one of these is a dangling reference and
+  // must raise M0002 (docs/59 §5.2 B2).  `@externTarget`-kept generics
+  // survive Phase 2 and `@axiom` generics are proof-only, so neither is
+  // eligible.
+  val droppedLocalGenerics: Map[String, Bool] = newMap()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -2672,6 +2816,11 @@ pub func monoFileWithImportsAndTypeDecls(
           case Some(_) -> {
             if not genDecls.containsKey(decl.name) {
               genDecls.add(decl.name, decl)
+            }
+            if not annsHaveAxiomMono(decl.annotations) and not annsKeepGenericExternMono(decl.annotations) {
+              if not droppedLocalGenerics.containsKey(decl.name) {
+                droppedLocalGenerics.add(decl.name, true)
+              }
             }
           }
           case None -> ()
@@ -2759,7 +2908,7 @@ pub func monoFileWithImportsAndTypeDecls(
     return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags)
   }
 
-  val state = newMonoState(genDecls, funcDecls, recordDecls, ifaceDecls)
+  val state = newMonoState(genDecls, funcDecls, recordDecls, ifaceDecls, droppedLocalGenerics)
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────
   val rewrittenItems: List[Item] = newList()
@@ -2898,22 +3047,30 @@ pub func monoFileWithImportsAndTypeDecls(
   //
   // Recursion budget (#349): cap the worklist size so a pathological
   // nested-generic recursion (`f[T] = … g[List[T]] …` that always
-  // adds a deeper specialisation) terminates with a clear error
-  // instead of OOM'ing the compiler.  10_000 specialisations is well
-  // beyond any reasonable program; real codebases land in the low
-  // hundreds.
+  // adds a deeper specialisation) terminates with a clear M0003 error
+  // (formerly a compiler panic) instead of OOM'ing the compiler.
+  // 10_000 specialisations is well beyond any reasonable program; real
+  // codebases land in the low hundreds.
   val finalSpecDecls: List[FunctionDecl] = newList()
   val specBudget = 10000
 
   var wi = 0
   while wi < state.allSpecs.count {
     if wi >= specBudget {
-      panic(
-        "Lyric.Mono: specialisation budget exhausted (" + toString(specBudget) +
-          " specs).  Most likely a generic function recurses with an unbounded " +
-          "type-argument shape (e.g. `f[T] = … f[List[T]] …`).  Refactor to " +
-          "stop instantiating with strictly larger types."
+      val overReq = state.allSpecs[wi]
+      state.diags.add(
+        errorDiagnostic(
+          "M0003",
+          "monomorphisation budget exhausted (" + toString(specBudget) +
+            " specialisations) while expanding generic function '" +
+            extractBaseName(overReq.specName) +
+            "' — a generic most likely recurses with an unbounded type-argument shape (e.g. `f[T]` instantiating `f[List[T]]`); refactor the recursion to stop instantiating with strictly larger types",
+          overReq.callSpan
+        )
       )
+      // Stop expanding; the error diagnostic aborts the build in every
+      // bridge, so the truncated specialisation list is never emitted.
+      break
     }
     val req = state.allSpecs[wi]
     // The baseDecl already has type-var and value-var substitution applied
