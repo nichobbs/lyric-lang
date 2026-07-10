@@ -176,12 +176,14 @@ func poolEntryEnd(b: in List[Int], pos: in Int): PoolStep {
 // ACC_ENUM      = 0x4000 = 16384
 // ACC_ANNOTATION= 0x2000 = 8192
 /// Parse a Java class file (bytes as List[Int]) and return its method surface.
-/// Returns None if the class is an enum, an annotation, or the data is too
-/// short to be a valid class file.  Package-private and abstract classes are
-/// included: they appear in superclass chains (e.g. `AbstractStringBuilder`
-/// is package-private but declares `length()`).  Interfaces are included too
+/// Returns None if the class is an annotation, or the data is too short to be
+/// a valid class file.  Package-private and abstract classes are included:
+/// they appear in superclass chains (e.g. `AbstractStringBuilder` is
+/// package-private but declares `length()`).  Interfaces are included too
 /// (`ClassInfo.isInterface`) so auto-FFI can resolve calls on interface-typed
-/// extern types.
+/// extern types.  Enums are included so auto-FFI can resolve enum-constant
+/// static-field reads (`RoundingMode.HALF_EVEN`) and enum-typed method
+/// arguments (`BigDecimal.setScale(int, RoundingMode)`).
 pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   if b.count < 8 {
     return None
@@ -229,18 +231,18 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   val superClassNameIdx = getS(classMap, toString(superClassIdx))
   val superName = getSStr(utf8Map, toString(superClassNameIdx))
 
-  // Skip enums and annotations; include public and package-private classes
-  // AND interfaces (needed to resolve method calls on interface-typed extern
+  // Skip annotations; include public and package-private classes,
+  // interfaces (needed to resolve method calls on interface-typed extern
   // types, e.g. `io.lettuce.core.api.sync.RedisCommands` — previously
   // skipped here, which silently routed every interface method call through
   // the legacy `(Object...)Object` `invokevirtual` guess and crashed the
-  // JVM verifier with "Found interface X, but class was expected").
+  // JVM verifier with "Found interface X, but class was expected"), AND
+  // enums (previously skipped, which made every enum-constant read
+  // (`RoundingMode.HALF_EVEN`) and enum-typed overload unresolvable —
+  // an enum class file is an ordinary class whose constants are public
+  // static final fields, so nothing further is needed to support it).
   // ACC_INTERFACE=512: (accessFlags/512) % 2 != 0 means interface.
   val isInterface = (accessFlags / 512) % 2 != 0
-  // ACC_ENUM=16384: (accessFlags/16384) % 2 != 0 means enum
-  if (accessFlags / 16384) % 2 != 0 {
-    return None
-  }
   // ACC_ANNOTATION=8192: (accessFlags/8192) % 2 != 0 means annotation.
   // Annotation types are themselves interfaces (ACC_INTERFACE is always set
   // too) but aren't a call target the auto-FFI needs to resolve; skip them
