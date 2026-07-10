@@ -118,3 +118,31 @@ test "plain distinct type constructs and projects" {
   assertEqualInt(UserId.from(42).toInt(), 42, "UserId.from(42).toInt()")
   assertEqualInt(UserId.from(0).toInt(), 0, "UserId.from(0).toInt()")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inline refined types (docs/59 §3 F2): an inline `T range lo ..= hi`
+// annotation must be represented as its UNDERLYING type — the emitter used to
+// hard-wire every inline refinement to Int, truncating Long and Double bases.
+// ─────────────────────────────────────────────────────────────────────────────
+func addBig(a: in Long, b: in Long): Long {
+  val total: Long range 0 ..= 10000000000 = a + b
+  total
+}
+
+test "inline Long range binding preserves values beyond Int32.Max" {
+  assertEqualLong(
+    addBig(3000000000i64, 2000000000i64),
+    5000000000i64,
+    "inline Long-range local must keep the full 64-bit value"
+  )
+}
+
+func halveRatio(x: in Double): Double {
+  val r: Double range 0.0 ..= 1.0 = x / 2.0
+  r
+}
+
+test "inline Double range binding preserves the floating-point value" {
+  val h = halveRatio(0.5)
+  assertTrue(h > 0.2499 and h < 0.2501, "inline Double-range local must stay a Double (0.25)")
+}

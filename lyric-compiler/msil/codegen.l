@@ -5072,7 +5072,13 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
       }
     }
     case TArray(_, _) -> MObject
-    case TRefined(_, _) -> MInt
+    // Inline refined type (`Long range 0 ..= n`): the runtime representation
+    // is the refinement's UNDERLYING type — hard-wiring MInt truncated Long /
+    // Double bases (docs/59 §3 F2).  Named range subtypes already resolve
+    // their base the same way (`mkDistinctTypeIR` lowers `decl.underlying`
+    // into MRangeType/MDistinctType `inner`); the range bounds themselves are
+    // a type-checker concern, not a representation concern.
+    case TRefined(underlying, _) -> typeExprToMsilCtx(cctx, TypeExpr(kind = TRef(path = underlying), span = te.span), pkgName)
     case TParen(inner) -> typeExprToMsilCtx(cctx, inner, pkgName)
     case TSelf -> MObject
     case TError -> MObject
