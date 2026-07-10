@@ -237,6 +237,9 @@ pub func backoffDelay(
   maxDelayMs: in Int,
   jitterFraction: in Float,
 ): Int {
+  // Clamp the factor to at least 1: a factor of 0 (or negative) would collapse
+  // the delay to 0 and busy-retry; 1 degrades gracefully to a constant delay.
+  val factor = if backoffFactor < 1 { 1 } else { backoffFactor }
   var delay: Int = initialDelayMs
   var i: Int = 0
   while i < attempt {
@@ -244,8 +247,11 @@ pub func backoffDelay(
       delay = maxDelayMs
       i = attempt
     } else {
-      val next = delay * backoffFactor
-      delay = if next > maxDelayMs then maxDelayMs else next
+      // Multiply in Long so `delay * factor` cannot overflow Int and wrap to a
+      // negative value (which would slip past the cap check and eventually be
+      // returned as a negative delay, violating sleepMs's `requires: ms >= 0`).
+      val next: Long = delay.toLong() * factor.toLong()
+      delay = if next > maxDelayMs.toLong() then maxDelayMs else next.toInt()
       i = i + 1
     }
   }

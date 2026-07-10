@@ -60,8 +60,13 @@ pub aspect ValidateInput {
     minLen: Int = 0
     maxLen: Int = 65536
   }
-  requires: args.input != ""
-  // handler must declare an input: String parameter
+  // NOTE: no `requires: args.input != ""`.  `input` is client-controlled data,
+  // and a `requires:` clause elaborates into a runtime precondition assert
+  // (D118) that panics on empty input instead of returning a validation error —
+  // in a web handler that crashes the server.  Emptiness is governed by the
+  // configurable `minLen` (default 0 = empty allowed, as documented); set
+  // minLen = 1 to reject empty input with a graceful ValidationError.
+  // handler must declare an input: String parameter.
   // The handler's return type must be Result[T, [ValidationError]] for the
   // short-circuit Err path to type-check correctly at the call site.
   around(call) -> ret where TArgs has { input: String } {
@@ -99,8 +104,11 @@ pub aspect ValidateEmail {
   config {
     enabled: Bool = true
   }
-  requires: args.email != ""
-  // handler must declare an email: String parameter
+  // NOTE: no `requires: args.email != ""` — see the ValidateInput note above.
+  // Validation.email("") already returns a graceful "invalid email" error, so
+  // the empty case fails closed without a precondition assert (which would
+  // crash the server on client-controlled input).
+  // handler must declare an email: String parameter.
   // The handler's return type must be Result[T, [ValidationError]] for the
   // short-circuit Err path to type-check correctly at the call site.
   around(call) -> ret where TArgs has { email: String } {

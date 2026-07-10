@@ -45,8 +45,8 @@ import Std.Collections
 import Std.String
 import Std.Environment as Env
 import Mail.Kernel.Net as MailKernel
-import extern System.Net.{ NetworkCredential }
-import extern System.Net.Mail.{ SmtpClient, MailMessage, MailAddress, MailAddressCollection, Attachment as BclAttachment, AttachmentCollection }
+import extern System.Net.{NetworkCredential}
+import extern System.Net.Mail.{SmtpClient, MailMessage, MailAddress, MailAddressCollection, Attachment as BclAttachment, AttachmentCollection}
 
 // ─── Address and attachment types ────────────────────────────────────────────
 /// An email address with an optional display name.
@@ -153,20 +153,13 @@ impl MailSender for NativeSender {
   func send(msg: in EmailMessage): Result[Unit, MailError] {
     // Defense-in-depth (#3181): the Mail.send wrapper runs the full
     // header-injection guard, but the MailSender interface is callable
-    // directly, so attachment metadata is re-checked here before any
-    // BCL header is constructed.
-    var gi = 0
-    while gi < msg.attachments.length {
-      if containsHeaderInjection(msg.attachments[gi].filename) or containsHeaderInjection(msg.attachments[gi].contentType) {
-        return Err(
-          MailError(
-            message = "attachments[" + ("" + gi) +
-              "] filename/contentType contains CR/LF/NUL — header injection rejected",
-            code = "HEADER_INJECTION"
-          )
-        )
-      }
-      gi = gi + 1
+    // directly, so re-run the FULL guard here (subject, from, to/cc/bcc,
+    // replyTo, and attachments) before any BCL header is constructed —
+    // not just the attachment metadata, which left subject/recipients
+    // unguarded on the direct-send path.
+    match validateNoInjection(msg) {
+      case Some(e) -> return Err(e)
+      case None -> ()
     }
     try {
       val mailMsg = MailMessage.new()
@@ -479,4 +472,79 @@ func containsHeaderInjection(s: in String): Bool {
     i = i + 1
   }
   return false
+}
+
+// Full CRLF/NUL header-injection guard over every field of an EmailMessage
+// (CWE-93).  Returns Some(MailError) for the first offending field, None when
+// the message is clean.  Callable from any `MailSender.send` implementation so
+// the guarantee holds regardless of whether the caller went through the
+// `Mail.send` wrapper or invoked the interface method directly (#3181).
+func validateNoInjection(msg: in EmailMessage): Option[MailError] {
+  if containsHeaderInjection(msg.subject) {
+    return Some(
+      value = MailError(
+        message = "subject contains CR/LF/NUL — header injection rejected",
+        code = "HEADER_INJECTION"
+      )
+    )
+  }
+  if containsHeaderInjection(msg.from.address) or containsHeaderInjection(msg.from.displayName) {
+    return Some(
+      value = MailError(message = "from contains CR/LF/NUL — header injection rejected", code = "HEADER_INJECTION")
+    )
+  }
+  var i = 0
+  while i < msg.to.length {
+    if containsHeaderInjection(msg.to[i].address) or containsHeaderInjection(msg.to[i].displayName) {
+      return Some(
+        value = MailError(
+          message = "to[" + ("" + i) + "] contains CR/LF/NUL — header injection rejected",
+          code = "HEADER_INJECTION"
+        )
+      )
+    }
+    i = i + 1
+  }
+  var ci = 0
+  while ci < msg.cc.length {
+    if containsHeaderInjection(msg.cc[ci].address) or containsHeaderInjection(msg.cc[ci].displayName) {
+      return Some(
+        value = MailError(
+          message = "cc[" + ("" + ci) + "] contains CR/LF/NUL — header injection rejected",
+          code = "HEADER_INJECTION"
+        )
+      )
+    }
+    ci = ci + 1
+  }
+  var bi = 0
+  while bi < msg.bcc.length {
+    if containsHeaderInjection(msg.bcc[bi].address) or containsHeaderInjection(msg.bcc[bi].displayName) {
+      return Some(
+        value = MailError(
+          message = "bcc[" + ("" + bi) + "] contains CR/LF/NUL — header injection rejected",
+          code = "HEADER_INJECTION"
+        )
+      )
+    }
+    bi = bi + 1
+  }
+  match msg.replyTo {
+    case None -> ()
+    case Some(addr) -> if containsHeaderInjection(addr.address) or containsHeaderInjection(addr.displayName) { return Some(value = MailError(message = "replyTo contains CR/LF/NUL — header injection rejected", code = "HEADER_INJECTION")) }
+  }
+  var ai = 0
+  while ai < msg.attachments.length {
+    if containsHeaderInjection(msg.attachments[ai].filename) or containsHeaderInjection(msg.attachments[ai].contentType) {
+      return Some(
+        value = MailError(
+          message = "attachments[" + ("" + ai) +
+            "] filename/contentType contains CR/LF/NUL — header injection rejected",
+          code = "HEADER_INJECTION"
+        )
+      )
+    }
+    ai = ai + 1
+  }
+  None
 }

@@ -43,6 +43,7 @@ import Std.Collections
 import Std.String as Str
 import Std.UnicodeHost
 import Std.CharHost as CharHost
+import Std.Parse
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Position and Span — mirror compiler/src/Lyric.Lexer/Span.fs.
@@ -1510,48 +1511,15 @@ func parseDoubleLiteral(body: in String): Option[Double] {
   if i != body.length {
     return None
   }
-  // Build value left-to-right.
-  var idx = 0
-  var intPart: Double = 0.0
-  while idx < body.length and isDigitChar(body[idx]) {
-    intPart = intPart * 10.0 + intToDouble(digitValue(body[idx]))
-    idx = idx + 1
-  }
-  var value: Double = intPart
-  if hasFrac {
-    idx = idx + 1   // skip '.'
-    var fracMul: Double = 0.1
-    while idx < body.length and isDigitChar(body[idx]) {
-      value = value + intToDouble(digitValue(body[idx])) * fracMul
-      fracMul = fracMul / 10.0
-      idx = idx + 1
-    }
-  }
-  if hasExp {
-    idx = idx + 1   // skip 'e'/'E'
-    var expSign = 1
-    if idx < body.length and (body[idx] == '+' or body[idx] == '-') {
-      if body[idx] == '-' {
-        expSign = -1
-      }
-      idx = idx + 1
-    }
-    var expVal = 0
-    while idx < body.length and isDigitChar(body[idx]) {
-      expVal = expVal * 10 + digitValue(body[idx])
-      idx = idx + 1
-    }
-    var k = 0
-    while k < expVal {
-      if expSign > 0 {
-        value = value * 10.0
-      } else {
-        value = value / 10.0
-      }
-      k = k + 1
-    }
-  }
-  Some(value = value)
+  // The shape is validated above; delegate the decimal->double conversion to
+  // the overflow-safe, correctly-rounded host parser (Double.Parse with
+  // InvariantCulture), matching the bootstrap lexer.  The previous hand-rolled
+  // left-to-right accumulation (`value + digit*fracMul`, repeated `*10.0`) was
+  // NOT correctly rounded — `0.3` compiled to 0.30000000000000004, and a large
+  // exponent (`1e999999999`) spun the scaling loop ~10^9 times, hanging the
+  // compiler.  parseOptDouble is correctly rounded and returns Infinity for an
+  // out-of-range exponent instantly.
+  parseOptDouble(body)
 }
 
 func lexDecimalNumber(state: inout LexerState): Unit {

@@ -677,13 +677,18 @@ impl Middleware for CorsMiddleware {
     if req.method == "OPTIONS" {
       var resp = noContent()
       resp = withResponseHeader(resp, "Access-Control-Allow-Origin", origin)
+      // `Vary: Origin` so a shared/CDN cache keyed on URL cannot serve a
+      // response computed for one origin to a request from another origin
+      // (reflected-ACAO cache poisoning).
+      resp = withResponseHeader(resp, "Vary", "Origin")
       resp = withResponseHeader(resp, "Access-Control-Allow-Methods", self.allowedMethods)
       resp = withResponseHeader(resp, "Access-Control-Allow-Headers", self.allowedHeaders)
       resp = withResponseHeader(resp, "Access-Control-Max-Age", self.maxAgeSeconds.toString())
       return resp
     }
     val resp = h.handle(req)
-    return withResponseHeader(resp, "Access-Control-Allow-Origin", origin)
+    val withVary = withResponseHeader(resp, "Vary", "Origin")
+    return withResponseHeader(withVary, "Access-Control-Allow-Origin", origin)
   }
 }
 

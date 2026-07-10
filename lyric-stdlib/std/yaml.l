@@ -320,19 +320,12 @@ func yInterpretScalar(raw: in String): YamlValue {
       di += 1
     }
     if allDigits and t.length > start {
-      // Parse as Long
-      var value = 0i64
-      var neg = t[0] == '-'
-      var ii = start
-      while ii < t.length {
-        val d = toInt(t[ii]) - toInt('0')
-        value = value * 10i64 + d.toLong()
-        ii += 1
-      }
-      if neg {
-        YInt(value = 0i64 - value)
-      } else {
-        YInt(value = value)
+      // Delegate to the overflow-checked parseOptLong rather than a raw
+      // accumulator; an integer literal beyond Int64 range is preserved as a
+      // float (magnitude kept) instead of silently wrapping to a wrong value.
+      match parseOptLong(t) {
+        case Some(n) -> YInt(value = n)
+        case None -> match parseOptDouble(t) { case Some(f) -> YFloat(value = f); case None -> YString(value = t) }
       }
     } else {
       match parseOptDouble(t) {
@@ -380,19 +373,11 @@ func yParseNumber(st: inout YamlState): Result[YamlValue, YamlError] {
       case None -> Err(error = InvalidNumber(pos = startPos, raw = raw))
     }
   } else {
-    // Parse integer
-    var neg = raw[0] == '-'
-    var ii = if neg { 1 } else { 0 }
-    var value = 0i64
-    while ii < raw.length {
-      val d = toInt(raw[ii]) - toInt('0')
-      value = value * 10i64 + d.toLong()
-      ii += 1
-    }
-    if neg {
-      Ok(value = YInt(value = 0i64 - value))
-    } else {
-      Ok(value = YInt(value = value))
+    // Delegate to the overflow-checked parseOptLong; an integer literal beyond
+    // Int64 range is preserved as a float rather than silently wrapping.
+    match parseOptLong(raw) {
+      case Some(n) -> Ok(value = YInt(value = n))
+      case None -> match parseOptDouble(raw) { case Some(f) -> Ok(value = YFloat(value = f)); case None -> Err(error = InvalidNumber(pos = startPos, raw = raw)) }
     }
   }
 }

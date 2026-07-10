@@ -629,12 +629,15 @@ pub async func waitContainer(client: in DockerClient, containerId: in String): R
         val errorObj = body.substring(errStart, body.length - errStart)
         val message = extractJsonField(errorObj, "Message")
         val details = if message.length > 0 { message } else { body }
-        Err(error = DockerError(statusCode = None, message = "Docker reported an error while waiting for the container", details = details))
+        Err(
+          error = DockerError(
+            statusCode = None,
+            message = "Docker reported an error while waiting for the container",
+            details = details
+          )
+        )
       }
-      case None -> match extractJsonIntField(body, "StatusCode") {
-        case Some(code) -> Ok(value = code)
-        case None -> Err(error = DockerError(statusCode = None, message = "Wait for container returned no StatusCode", details = body))
-      }
+      case None -> match extractJsonIntField(body, "StatusCode") { case Some(code) -> Ok(value = code); case None -> Err(error = DockerError(statusCode = None, message = "Wait for container returned no StatusCode", details = body)) }
     }
     case Err(e) -> Err(error = e)
   }
@@ -672,11 +675,19 @@ pub func demultiplexDockerStream(bytes: in slice[Byte]): Result[String, String] 
     val size_b1 = bytes[i + 6]
     val size_b0 = bytes[i + 7]
 
-    val size = size_b3.toInt() * 16777216 + size_b2.toInt() * 65536 + size_b1.toInt() * 256 + size_b0.toInt()
+    // The frame size is an UNSIGNED 32-bit big-endian field, so a value with
+    // the top bit set (>= 2^31) overflows a signed Int and would wrap to a
+    // negative size — defeating the bounds check below and then driving `i`
+    // negative into an out-of-range index.  Accumulate in Long and validate
+    // against the remaining buffer before narrowing back to Int.
+    val sizeL: Long = size_b3.toInt().toLong() * 16777216i64 + size_b2.toInt().toLong() * 65536i64 +
+      size_b1.toInt().toLong() * 256i64 +
+      size_b0.toInt().toLong()
 
-    if i + 8 + size > len {
+    if sizeL < 0i64 or i.toLong() + 8i64 + sizeL > len.toLong() {
       break
     }
+    val size = sizeL.toInt()
 
     if streamType == 1u8 or streamType == 2u8 {
       var j = 0

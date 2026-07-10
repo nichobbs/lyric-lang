@@ -86,8 +86,13 @@ pub aspect RequiresAuth {
     audience: String = ""
     allowedAlgorithms: String = "HS256"
   }
-  requires: args.authToken != ""
-  // handler must have an authToken parameter
+  // NOTE: do NOT add `requires: args.authToken != ""` here.  `authToken` is
+  // per-request client-controlled input, not a caller contract; a `requires:`
+  // clause elaborates into a runtime precondition assert (D118) that panics on
+  // an empty token BEFORE the graceful branch below runs — turning a missing
+  // Authorization header into an unhandled crash (server process exit on
+  // dotnet).  The empty case is handled below and fails closed.  Matches the
+  // correct pattern in Auth.Aspects.ValidateKey.  See lyric-lang security review.
   around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
@@ -142,7 +147,9 @@ pub aspect RequiresRole {
     allowedRoles: String        // required — no default
     allowedAlgorithms: String = "HS256"
   }
-  requires: args.authToken != ""
+  // NOTE: no `requires: args.authToken != ""` — see the RequiresAuth note above.
+  // A precondition assert on client-controlled input crashes the server on an
+  // empty token; the empty case is handled below and fails closed.
   around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
@@ -197,8 +204,9 @@ pub aspect ApiKey {
     @sensitive
     expectedKey: String
   }
-  requires: args.apiKey != ""
-  // required — no default
+  // NOTE: no `requires: args.apiKey != ""` — see the RequiresAuth note above.
+  // A precondition assert on the client-controlled X-Api-Key value crashes the
+  // server when the header is absent; the empty case is handled below.
   around(call) -> ret where TArgs has { apiKey: String } {
     if not enabled {
       ret = call.proceed()
