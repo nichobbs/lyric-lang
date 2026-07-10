@@ -259,7 +259,18 @@ sb.Capacity = 64              // instance property setter (set_Capacity)
 sb.Length                     // property getter via member access
 ```
 
-Resolution is total: if no overload matches your argument types, the call is a compile-time error — it is never silently mis-bound to the wrong method. When a binding genuinely cannot be expressed this way (a method needing narrowing, a `float` parameter, or an instance method on a *value-type* receiver), fall back to an `@externTarget` wrapper as in §13.4.
+**Value types.** Instance methods and property getters on an extern struct value (`TimeSpan`, `Guid`, `DateTime`, …) dispatch directly — the compiler spills the receiver and calls through its address — and `.new(args)` constructs value types too (a zero-arg `.new()` on a struct with no parameterless constructor yields the zero-initialised default, like C#'s `new Guid()`):
+
+```lyric
+import extern System.{ TimeSpan, Guid }
+
+val ts = TimeSpan.FromMinutes(90.0)   // value-type static factory
+ts.TotalHours                         // instance property on a struct receiver -> 1.5
+val g = Guid.new()                    // zero-initialised default
+g == Guid.new()                       // struct equality boxes correctly -> true
+```
+
+Resolution is total: if no overload matches your argument types, the call is a compile-time error — it is never silently mis-bound to the wrong method. When a binding genuinely cannot be expressed this way (a method needing narrowing, a `float` parameter, an `out`/`ref` parameter, or an `inout` struct receiver), fall back to an `@externTarget` wrapper as in §13.4.
 
 Because `import extern` and `extern type` resolve against real metadata, they carry no `@axiom` block: the signature is read from the assembly, not asserted by you. The trust boundary is narrower — you are trusting the BCL's documented behaviour of the method you named, not a hand-written signature that could drift from it.
 ::: note

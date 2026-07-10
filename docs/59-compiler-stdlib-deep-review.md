@@ -45,7 +45,33 @@ logic; optimisations; non-idiomatic usage; stdlib API-surface consolidation;
 > fallback diagnostics (incl. the `MLdfldGeneric` silent skip), JVM
 > `invokeinterface` dispatch, JVM cross-package `pub val` resolution +
 > fallback panics, `println(char)` parity, and the §3.5 dead-code removals.
-> H5, H7, H8, H9 (remaining capabilities), and H10 remain open.
+> H5, H7, H9 (remaining capabilities), and H10 remain open; H8 is fixed
+> (the numbered corpus is CI-gated).
+>
+> **Wave 2 (2026-07-10, D-progress-640/641/642):** H5 is now **mostly fixed**
+> — `Std.Format`, `Std.Path`, `Std.Regex`, `Std.Math` and the exception
+> helper have real JVM kernels (`_kernel_jvm/http_host.l` and
+> `http_server.l` remain the only phantom bindings, tracked in #2663); two
+> compiler prerequisites landed en route (the auto-FFI class reader skipped
+> `ACC_ENUM` class files; opaque-type fields ignored extern-alias seeds).
+> §6.4 item 2 **shipped** (value-type instance receivers, value-type
+> `.new()` / Q48-004, extern-struct boxing per §3.2 F6 — `inout` struct
+> receivers and value-type property *set* remain); #5196's second half
+> (mono never received stdlib non-generic signatures; the unresolved-call
+> fallback silently emits no call) is fixed. §5.2 B2/B3/B5 shipped (real
+> where-bound check + M0001, M0002 dangling-dropped-generic diagnostic —
+> the pre-fix behavior was a proven identity-pass-through silent
+> miscompile — and M0003 budget diagnostic). §5.4 corrections: the JVM
+> *user* single-file path already fed type decls and already cfg-erased
+> (only legacy `compileToJar` had the holes — both fixed); native's
+> "every stdlib generic stays erased" claim was wrong (native instantiates
+> whole-bundle at lowering; its mono now gets iface/record decls);
+> `injectWeaveImports` asymmetry is intentional and now documented (probe
+> evidence: `call.elapsed` aspects work without `import Std.Time` on both
+> targets). §9.3's dead protocol bridges and §7.5's dead .NET kernel
+> surface are deleted; `Std.Collections.listContains` shipped (§9.4 root
+> cause); one §9.4 correction — `jvm/fuzzer.l` is *alive* (self_test_b8
+> is CI-wired since #5515).
 
 ---
 
