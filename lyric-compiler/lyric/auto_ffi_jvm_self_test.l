@@ -35,14 +35,15 @@ extern type JArrayList = "java.util.ArrayList"
 
 // Unquoted dotted path declarations
 extern type UnquotedJMath = java.lang.Math
+
 extern type UnquotedJInteger = java.lang.Integer
+
 extern type UnquotedMapEntry = java.util.Map.Entry
 
 test "UnquotedJMath and UnquotedJInteger resolve and compile correctly" {
   assertEqualInt(UnquotedJMath.max(20, 50), 50, "UnquotedJMath.max(20,50)")
   assertEqualInt(UnquotedJInteger.sum(5, 6), 11, "UnquotedJInteger.sum(5,6)")
 }
-
 
 // ── Math int overloads ────────────────────────────────────────────────────────
 test "Math.max(int, int) returns larger value" {
@@ -173,6 +174,27 @@ test "getClass() resolves through the superclass chain to java.lang.Object (#221
   assertEqual(name, "java.util.ArrayList", "ArrayList.getClass().getName() == \"java.util.ArrayList\"")
 }
 
+// ── Interface-typed receivers dispatch via invokeinterface (docs/59 §4) ──────
+//
+// `Collections.emptyList()` / `singletonList(Object)` are static methods on a
+// CLASS whose declared return type is the INTERFACE `java.util.List`, so the
+// receiver's static type at the chained instance call is an interface.
+// `ClassInfo.isInterface` is parsed from the JDK metadata; before this fix it
+// was never consulted and instance auto-FFI unconditionally emitted
+// `invokevirtual java/util/List.size()` — an IncompatibleClassChangeError at
+// run time.  The fix selects `invokeinterface` (with its count operand) when
+// the resolved owner is an interface.
+extern type JCollections = "java.util.Collections"
+
+test "instance calls through a JDK interface-typed receiver use invokeinterface" {
+  val empty = JCollections.emptyList()
+  assertEqualInt(empty.size(), 0, "emptyList().size() == 0")
+  assertTrue(empty.isEmpty(), "emptyList().isEmpty()")
+  val one = JCollections.singletonList("x")
+  assertEqualInt(one.size(), 1, "singletonList(\"x\").size() == 1")
+  assertTrue(not one.isEmpty(), "singletonList(\"x\") is not empty")
+}
+
 // Phase 5 (F0015-J): @externTarget with metadata-verified signature.
 // The function names follow the Maven TypeName_methodName convention so
 // isStaticExternByName returns true, matching the emitted invokestatic.
@@ -218,7 +240,6 @@ test "@externTarget with verified JVM signatures compile and run correctly" {
 // > 1` from being mis-mapped to ArrayList — cannot be tested in a single-file
 // `@test_module` because all user types in one file share a single package
 // (head.segments.count == 1 for every locally-defined type).  Tracked in #3455.
-
 record Container[T] {
   item: T
 }
@@ -262,6 +283,7 @@ test "two-param user generic erases to Object, not HashMap — isBare guard Map 
 // unbox (a Lyric `slice[Char]` literal, never touched by JDK code, passed
 // into a JDK API expecting a real primitive array).
 extern type JCharacter = "java.lang.Character"
+
 extern type JString = "java.lang.String"
 
 // Tail-expression (implicit) return of a raw JDK `char[]`.

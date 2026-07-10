@@ -1450,7 +1450,31 @@ func lowerAutoFfiInstanceCall(
           aj = aj + 1
         }
       }
-      insns.add(LInvokevirtual(owner = ci.binaryName, name = methodName, params = paramJvms, ret = retJvm))
+      if ci.isInterface {
+        // The receiver's static type is a JDK INTERFACE (`java.util.List`,
+        // `java.lang.CharSequence`, …): dispatch via `invokeinterface` with
+        // its count operand — `invokevirtual` against an interface owner
+        // fails at class load (IncompatibleClassChangeError / VerifyError).
+        // `ClassInfo.isInterface` was parsed for exactly this but never
+        // consulted here (docs/59 §4).
+        insns.add(
+          LInvokeinterface(
+            owner = ci.binaryName,
+            name = methodName,
+            params = paramJvms,
+            ret = retJvm,
+            argCount = 1 + jvmArgSlotCount(paramJvms)
+          )
+        )
+      } else {
+        insns.add(LInvokevirtual(owner = ci.binaryName, name = methodName, params = paramJvms, ret = retJvm))
+      }
+      // A byte-returning JDK method yields the signed byte; mask to the
+      // canonical unsigned form (see maskByteUnsigned).
+      match retJvm {
+        case JByte -> maskByteUnsigned(insns)
+        case _ -> ()
+      }
       retJvm
     }
   }
