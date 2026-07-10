@@ -4867,6 +4867,12 @@ jobs:
           "$lyric_bin" test --manifest lyric-feature-flags/lyric.toml || overall=$?
           echo "=== lyric-validation tests ==="
           "$lyric_bin" test --manifest lyric-validation/lyric.toml || overall=$?
+          # lyric-storage also runs under --target jvm above, but that run only
+          # exercises the @cfg(feature = "jvm") stand-in of the ValidateKey
+          # weaving test. Run the default (dotnet) manifest here so the REAL
+          # woven @cfg(feature = "dotnet") around(call) aspect is exercised too.
+          echo "=== lyric-storage tests (dotnet) ==="
+          "$lyric_bin" test --manifest lyric-storage/lyric.toml || overall=$?
           echo "=== lyric-proto tests ==="
           "$lyric_bin" test --manifest lyric-proto/lyric.toml || overall=$?
           # lyric-otel — OTel type vocabulary tests; no path deps (the OTLP
