@@ -28,11 +28,15 @@ output_assembly = "Session.dll"
 #                                  `--target jvm --features jvm`. Requires `LYRIC_SESSION_REDIS_URL`
 #                                  (or the `LYRIC_CONFIG_SESSION_REDISSESSION_URL` config env var) to
 #                                  point at a reachable Redis instance.
+# - session_cookie_tests.l      — SessionConfig / sessionConfigFromEnv() / cookieHeader() secure
+#                                  cookie defaults (Secure/HttpOnly/SameSite/Path=/) — closes the
+#                                  README-documented-but-unimplemented gap tracked by review finding.
 [project.tests]
 "Session.SessionFixationTests" = "tests/session_fixation_tests.l"
 "Session.SessionStoreTests"    = "tests/session_store_tests.l"
 "Session.SensitiveUrlTests"    = "tests/sensitive_url_tests.l"
 "Session.SessionRedisJvmTests" = "tests/session_redis_jvm_tests.l"
+"Session.SessionCookieTests"   = "tests/session_cookie_tests.l"
 
 # `dotnet` and `jvm` are MUTUALLY EXCLUSIVE (#1444/#4-progress pattern shared with
 # lyric-storage/lyric-auth/lyric-resilience): activating both leaves two definitions

@@ -510,6 +510,74 @@ func parseSessionTtlSeconds(ttlStr: in String, defaultValue: in Int): Int {
   }
 }
 
+// Parse a Bool-valued config env var, falling back to `defaultValue` for a
+// malformed or absent value.  Mirrors `parseSessionTtlSeconds`'s fail-soft
+// parsing idiom.  Not `pub` — only used internally by `sessionConfigFromEnv()`.
+func parseSessionBool(boolStr: in String, defaultValue: in Bool): Bool {
+  match tryParseBool(boolStr) {
+    case Ok(b) -> b
+    case Err(_) -> defaultValue
+  }
+}
+
+// ─── Cookie configuration ──────────────────────────────────────────────────────
+/// Cookie and lifetime settings for session cookies, read via
+/// `sessionConfigFromEnv()` from the `LYRIC_CONFIG_SESSION_SESSION_*` env vars
+/// documented in the module header.  Defaults are secure-by-default:
+/// `secure = true`, `httpOnly = true`, `sameSite = "Lax"`.  These defaults only
+/// take effect once a caller passes the resulting config through
+/// `cookieHeader()` and attaches the returned value to its own HTTP response —
+/// this library builds the header value but does not write it anywhere.
+@stable(since = "0.1")
+pub record SessionConfig {
+  cookieName: String
+  secure: Bool
+  httpOnly: Bool
+  sameSite: String
+  ttlSeconds: Int
+}
+
+/// Read `SessionConfig` from the environment, falling back to the secure
+/// defaults documented on `SessionConfig` for any malformed or absent value.
+/// Does not validate `sameSite` against the `Strict` / `Lax` / `None` enum —
+/// `cookieHeader()` writes whatever string is configured verbatim.
+@stable(since = "0.1")
+pub func sessionConfigFromEnv(): SessionConfig {
+  val cookieName = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_SESSION_COOKIENAME", "LYRIC_SESSION")
+  val secureStr = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_SESSION_SECURE", "true")
+  val httpOnlyStr = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_SESSION_HTTPONLY", "true")
+  val sameSite = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_SESSION_SAMESITE", "Lax")
+  val ttlStr = Env.getVarOrDefault("LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS", "3600")
+  return SessionConfig(
+    cookieName = cookieName,
+    secure = parseSessionBool(secureStr, true),
+    httpOnly = parseSessionBool(httpOnlyStr, true),
+    sameSite = sameSite,
+    ttlSeconds = parseSessionTtlSeconds(ttlStr, 3600)
+  )
+}
+
+/// Build the value of a `Set-Cookie` response header for `sessionId` under
+/// `cfg`: `<cookieName>=<sessionId>; Path=/[; HttpOnly][; Secure]; SameSite=<sameSite>`.
+/// Pure — no I/O and no `Set-Cookie: ` header-name prefix; callers attach this
+/// string to their own HTTP response type.  This is the function that makes
+/// the "secure cookie defaults" claim in the module header and README real:
+/// called with `sessionConfigFromEnv()`'s result, the emitted header carries
+/// `HttpOnly` and `Secure` without any operator action.
+@pure
+@stable(since = "0.1")
+pub func cookieHeader(sessionId: in String, cfg: in SessionConfig): String {
+  var header = cfg.cookieName + "=" + sessionId + "; Path=/"
+  if cfg.httpOnly {
+    header = header + "; HttpOnly"
+  }
+  if cfg.secure {
+    header = header + "; Secure"
+  }
+  header = header + "; SameSite=" + cfg.sameSite
+  return header
+}
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
 /// Connect to Redis and return a distributed session store.
 /// Reads connection settings from the RedisSession config block:
