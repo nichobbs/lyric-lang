@@ -340,7 +340,9 @@ pub func send(sender: in MailSender, msg: in EmailMessage): Result[Unit, MailErr
 /// Send a plain-text email to a single recipient using Sender config for the
 /// From address.
 ///
-/// `to`, `subject`, and `body` must all be non-empty.
+/// A CRLF/NUL-bearing `to`/`subject` is rejected at the send boundary with a
+/// structured `Err` (not a `requires:` clause, which would crash on client
+/// input); an empty subject/body is a valid email.
 @stable(since = "0.1")
 pub func sendSimple(sender: in MailSender, to: in String, subject: in String, body: in String): Result[Unit, MailError] {
   // No `requires:` on these client-controllable strings — see `Mail.send`.  An

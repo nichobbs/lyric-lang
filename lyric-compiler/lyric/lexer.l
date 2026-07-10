@@ -1331,27 +1331,6 @@ func intToLong(n: in Int): Long {
   acc
 }
 
-@pure
-func intToDouble(n: in Int): Double {
-  // Same shape as `intToLong`; only ever called with single-digit
-  // values from `digitValue` so the iteration count is at most 9.
-  var acc: Double = 0.0
-  if n >= 0 {
-    var i = 0
-    while i < n {
-      acc = acc + 1.0
-      i = i + 1
-    }
-  } else {
-    var i = 0
-    while i > n {
-      acc = acc - 1.0
-      i = i - 1
-    }
-  }
-  acc
-}
-
 /// Predicate companion to `parseDigits`: true iff `(body, base)`
 /// is the special case `9223372036854775808` in decimal — the
 /// absolute value of `Long.MinValue`.  Used by the decimal lex path
