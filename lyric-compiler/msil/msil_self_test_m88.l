@@ -133,3 +133,38 @@ test "break inside an extern-enumerable for-loop (dictGetKeys) exits early" {
   assertEqualInt(count, 2, "loop stops after the second key regardless of enumeration order")
 }
 
+// Regression coverage for #5401 (PR #5354/D125/D126): `System.Single`
+// signature encoding was broken on BOTH of the two independent paths that
+// build a MemberRef signature.
+//
+//  - `argTyToSig` (this file, codegen.l) feeds the pure auto-FFI path (a
+//    call directly on an `extern type`, no `@externTarget` wrapper) — it
+//    used to emit a named valuetype ref for `System.Single` instead of the
+//    primitive `ELEMENT_TYPE_R4`, breaking overload scoring against real
+//    BCL metadata.
+//  - `bufMsilType` (lowering.l) feeds the explicit `@externTarget` wrapper
+//    path — D126 found `argTyToSig`'s fix alone insufficient: this was the
+//    actual root cause of the `dblToSingle`/`Convert.ToSingle`
+//    `MissingMethodException` that broke the F#-bootstrap decommission
+//    (`compiler-self-tests-jvm`), because `dblToSingle`-style kernel
+//    wrappers go through `@externTarget`, not raw auto-FFI.
+//
+// `System.MathF` has exactly one (unambiguous) `Sqrt(float): float`
+// overload, so both cases below pin the signature fix directly rather than
+// depending on overload-scoring behavior.
+extern type MathFHost = "System.MathF"
+
+@externTarget("System.MathF.Sqrt")
+@externStatic
+func externSqrtFloat(x: in Float): Float = ()
+
+test "#5401: System.Single argument/return round-trips through the auto-FFI argTyToSig path" {
+  val r = MathFHost.Sqrt(9.0f32)
+  assertTrue(r > 2.99f32 and r < 3.01f32, "MathF.Sqrt(9.0f32) ~= 3.0 via raw auto-FFI (argTyToSig)")
+}
+
+test "#5401: System.Single argument/return round-trips through the @externTarget bufMsilType path" {
+  val r = externSqrtFloat(16.0f32)
+  assertTrue(r > 3.99f32 and r < 4.01f32, "MathF.Sqrt(16.0f32) ~= 4.0 via @externTarget wrapper (bufMsilType)")
+}
+
