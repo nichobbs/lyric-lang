@@ -244,6 +244,19 @@ TimeSpan.Compare(TimeSpan.FromMinutes(5.0), TimeSpan.FromMinutes(3.0))   //  -> 
 sb.ToString()                 //  ->  "Hello, world!"
 ```
 
+**Properties, static fields, and constants.** Plain member access on an extern name or extern-typed value resolves CLR properties (the compiler probes the real `get_`/`set_` accessor methods), static fields (`ldsfld` with the field's true type), and literal constants — which are inlined from metadata at their exact bit pattern:
+
+```lyric
+import extern System.{ Math }
+import extern System.Text.{ StringBuilder }
+
+Math.PI                       // literal R8 constant, inlined at compile time
+val sb = StringBuilder.new(8)
+sb.Capacity                   // instance property getter (get_Capacity)
+sb.Capacity = 64              // instance property setter (set_Capacity)
+sb.Length                     // property getter via member access
+```
+
 Resolution is total: if no overload matches your argument types, the call is a compile-time error — it is never silently mis-bound to the wrong method. When a binding genuinely cannot be expressed this way (a method needing narrowing, a `float` parameter, or an instance method on a *value-type* receiver), fall back to an `@externTarget` wrapper as in §13.4.
 
 Because `import extern` and `extern type` resolve against real metadata, they carry no `@axiom` block: the signature is read from the assembly, not asserted by you. The trust boundary is narrower — you are trusting the BCL's documented behaviour of the method you named, not a hand-written signature that could drift from it.
