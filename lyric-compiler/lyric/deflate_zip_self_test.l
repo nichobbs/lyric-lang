@@ -168,15 +168,9 @@ test "readZipEntries with no EOCD signature returns no entries" {
   assertEqualInt(readZipEntries(toSlice(v)).count, 0, "no EOCD sig -> no entries")
 }
 
-test "readZipEntries with a cdSize larger than the file fails closed (#5486)" {
-  // A 22-byte EOCD whose central-directory size is 0xFFFFFFFF.  rdU32Le sees the
-  // top byte 0xFF >= 128 and returns Int.maxValue from its saturation branch
-  // rather than computing `low + b3 * 16777216`, which would overflow the
-  // checked Int multiply and panic (#5486).  The saturated size then drives
-  // cdStart = eocd - cdSize negative, so the walk bails before any further
-  // offset arithmetic.  The field is written as raw bytes, not putU32: putU32
-  // cannot carry a value past Int32, and encoding a top byte >= 128 is exactly
-  // what makes rdU32Le take the branch under test.
+// A 22-byte EOCD whose central-directory-size field carries the four given
+// bytes (little-endian).  Everything else is a minimal valid EOCD at offset 0.
+func eocdWithCdSizeBytes(b0: in Int, b1: in Int, b2: in Int, b3: in Int): slice[Byte] {
   val v: List[Int] = newList()
   v.add(80)
   v.add(75)
@@ -186,13 +180,38 @@ test "readZipEntries with a cdSize larger than the file fails closed (#5486)" {
   putU16(v, 0)      // disk with central directory
   putU16(v, 1)      // entries on this disk
   putU16(v, 1)      // total entries
-  v.add(255)
-  v.add(255)
-  v.add(255)
-  v.add(255)        // cdSize = 0xFFFFFFFF -> rdU32Le saturates -> cdStart < 0
+  v.add(b0)
+  v.add(b1)
+  v.add(b2)
+  v.add(b3)         // cdSize (little-endian)
   putU32(v, 0)      // cd offset
   putU16(v, 0)      // comment length
-  assertEqualInt(readZipEntries(toSlice(v)).count, 0, "saturated cdSize -> no entries, no panic")
+  toSlice(v)
+}
+
+test "readZipEntries with a cdSize larger than the file fails closed (#5486)" {
+  // rdU32Le reads the cdSize field; when the top byte (b3) is >= 128 the full
+  // u32 exceeds Int32.maxValue, so `low + b3 * 16777216` would overflow the
+  // checked Int multiply and panic.  The #5486 guard returns Int.maxValue from
+  // a saturation branch instead, and the saturated size drives
+  // cdStart = eocd - cdSize negative so the walk bails cleanly.  The clean,
+  // panic-free empty return is what only the saturation branch produces — a
+  // pre-#5486 build crashes on this exact input.  The bytes are written raw,
+  // not via putU32, because putU32 cannot carry a value past Int32 and a top
+  // byte >= 128 is precisely what makes rdU32Le take the branch under test.
+  //
+  // 0xFFFFFFFF (b3 = 255) and 0x80000000 (b3 = 128, the smallest saturating
+  // value) both exercise the branch, at the top and the boundary respectively.
+  assertEqualInt(
+    readZipEntries(eocdWithCdSizeBytes(255, 255, 255, 255)).count,
+    0,
+    "cdSize 0xFFFFFFFF saturates -> no entries, no panic"
+  )
+  assertEqualInt(
+    readZipEntries(eocdWithCdSizeBytes(0, 0, 0, 128)).count,
+    0,
+    "cdSize 0x80000000 (b3 == 128 boundary) saturates -> no entries, no panic"
+  )
 }
 
 test "readZipEntries rejects an out-of-range local-header offset (dataOffset -1)" {
