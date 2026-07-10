@@ -557,6 +557,28 @@ pub func sessionConfigFromEnv(): SessionConfig {
   )
 }
 
+// Strip CR, LF, NUL, and `;` from a value spliced into a `Set-Cookie` header.
+// `sessionId`, `cookieName`, and `sameSite` all reach `cookieHeader` from
+// callers that may echo request-controlled data (a fixation-attempt cookie
+// value, a config-driven name); a raw `\r\n` would let an attacker inject
+// extra response headers (HTTP response splitting), and a stray `;` would
+// forge a cookie attribute.  RFC 6265 §4.1.1 forbids all four in a
+// cookie-value / attribute token, so removing them is loss-free for any
+// well-formed input.  `@pure`: pure-text rewriting, no I/O.
+@pure
+func sanitizeCookieToken(s: in String): String {
+  var acc = ""
+  var i = 0
+  while i < s.length {
+    val c = s[i]
+    if c != '\r' and c != '\n' and c != '\u{0000}' and c != ';' {
+      acc = acc + ("" + c)
+    }
+    i = i + 1
+  }
+  return acc
+}
+
 /// Build the value of a `Set-Cookie` response header for `sessionId` under
 /// `cfg`: `<cookieName>=<sessionId>; Path=/[; HttpOnly][; Secure]; SameSite=<sameSite>`.
 /// Pure — no I/O and no `Set-Cookie: ` header-name prefix; callers attach this
@@ -564,17 +586,23 @@ pub func sessionConfigFromEnv(): SessionConfig {
 /// the "secure cookie defaults" claim in the module header and README real:
 /// called with `sessionConfigFromEnv()`'s result, the emitted header carries
 /// `HttpOnly` and `Secure` without any operator action.
+///
+/// `cookieName`, `sessionId`, and `sameSite` are routed through
+/// `sanitizeCookieToken`, which strips CR / LF / NUL / `;` — this closes an
+/// HTTP-response-splitting / cookie-attribute-injection vector if a caller
+/// splices request-controlled data (e.g. a fixation-attempt cookie value)
+/// into any of the three.
 @pure
 @stable(since = "0.1")
 pub func cookieHeader(sessionId: in String, cfg: in SessionConfig): String {
-  var header = cfg.cookieName + "=" + sessionId + "; Path=/"
+  var header = sanitizeCookieToken(cfg.cookieName) + "=" + sanitizeCookieToken(sessionId) + "; Path=/"
   if cfg.httpOnly {
     header = header + "; HttpOnly"
   }
   if cfg.secure {
     header = header + "; Secure"
   }
-  header = header + "; SameSite=" + cfg.sameSite
+  header = header + "; SameSite=" + sanitizeCookieToken(cfg.sameSite)
   return header
 }
 

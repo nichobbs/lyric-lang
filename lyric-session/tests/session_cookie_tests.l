@@ -74,3 +74,53 @@ test "sessionConfigFromEnv result round-trips through cookieHeader with secure d
   assertTrue(header.contains("Secure"), "env-sourced config still yields Secure by default")
   assertTrue(header.contains("SameSite=Lax"), "env-sourced config still yields SameSite=Lax by default")
 }
+
+test "cookieHeader strips CRLF injection from a request-controlled sessionId" {
+  // A fixation-attempt cookie value carrying CRLF must not be able to inject
+  // extra response headers (HTTP response splitting) or forge attributes.
+  val cfg = Session.SessionConfig(
+    cookieName = "LYRIC_SESSION",
+    secure = true,
+    httpOnly = true,
+    sameSite = "Lax",
+    ttlSeconds = 3600
+  )
+  val header = Session.cookieHeader("abc\r\nSet-Cookie: evil=1", cfg)
+  assertFalse(header.contains("\r"), "CR must be stripped from the sessionId")
+  assertFalse(header.contains("\n"), "LF must be stripped from the sessionId")
+  assertEqual(
+    header,
+    "LYRIC_SESSION=abcSet-Cookie: evil=1; Path=/; HttpOnly; Secure; SameSite=Lax",
+    "injected CRLF removed, header otherwise intact"
+  )
+}
+
+test "cookieHeader strips a forged `;` attribute from the sessionId" {
+  val cfg = Session.SessionConfig(
+    cookieName = "LYRIC_SESSION",
+    secure = true,
+    httpOnly = true,
+    sameSite = "Lax",
+    ttlSeconds = 3600
+  )
+  val header = Session.cookieHeader("id; Domain=evil.example", cfg)
+  assertEqual(
+    header,
+    "LYRIC_SESSION=id Domain=evil.example; Path=/; HttpOnly; Secure; SameSite=Lax",
+    "the injected `;` is removed so it cannot forge a cookie attribute"
+  )
+}
+
+test "cookieHeader sanitizes an injected cookieName and sameSite too" {
+  val cfg = Session.SessionConfig(
+    cookieName = "NAME\r\ninjected",
+    secure = false,
+    httpOnly = false,
+    sameSite = "Lax\r\nX-Evil: 1",
+    ttlSeconds = 3600
+  )
+  val header = Session.cookieHeader("sid", cfg)
+  assertFalse(header.contains("\r"), "CR stripped from cookieName and sameSite")
+  assertFalse(header.contains("\n"), "LF stripped from cookieName and sameSite")
+  assertEqual(header, "NAMEinjected=sid; Path=/; SameSite=LaxX-Evil: 1", "both fields sanitized")
+}
