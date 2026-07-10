@@ -13809,18 +13809,68 @@ suite.
   slipping past the cap and violating `sleepMs`'s `requires: ms >= 0`. The
   multiply now happens in `Long`, and a factor `< 1` is clamped to `1`.
 
-**Known follow-ups surfaced but not fixed here** (each needs a
-compiler-codegen or native-ABI change out of scope for this sweep): the
-stdlib **bundle build mis-compiles `Char`/Unicode handling** (`Option`1<Char>`
-match stub; `fromInt`/`\uXXXX` mis-emission) so the shipped bundle
-`Lyric.Stdlib.dll` has broken `Std.Xml` text parsing and `lyric-docker` JSON
-escapes even while CI's per-package build stays green; the native runtime
-**weak-reference upgrade is a use-after-free** (`LyricObjectHeader` has no weak
-count); the JVM auto-FFI **DEFLATE/ZIP/manifest readers** don't bound
-untrusted input (infinite loop on a truncated stream, unchecked
-back-reference/offset, Int-overflow on ≥2³¹ size fields); and the
-**monomorphizer's value-generic name key** collides for distinct strings of
-equal length and for all floats.
+**Known follow-ups surfaced.** The JVM auto-FFI **DEFLATE/ZIP/manifest
+readers** and the **monomorphizer value-generic name key** are now fixed in the
+follow-up round (D-progress-639). Two items remain out of scope for a code
+review because they need a codegen or native-ABI change: the stdlib **bundle
+build mis-compiles `Char`/Unicode handling** (`Option`1<Char>` match stub;
+`fromInt`/`\uXXXX` mis-emission) so the shipped bundle `Lyric.Stdlib.dll` has
+broken `Std.Xml` text parsing and `lyric-docker` JSON escapes even while CI's
+per-package build stays green; and the native runtime **weak-reference upgrade
+is a use-after-free** (`LyricObjectHeader` has no weak count).
+
+---
+
+## D-progress-639 — code-review follow-up: bound untrusted input in the JVM auto-FFI readers + the mail public-API DoS, and make the monomorphizer value key injective
+
+**Status:** ACCEPTED
+
+Follow-up to D-progress-638, fixing the tractable items it deferred plus the
+one REQUIRED finding the review workflow raised on the D-progress-638 PR.
+Each fix was validated against a rebuilt `./bin/lyric`.
+
+- **JVM auto-FFI DEFLATE decoder looped forever on truncated/malformed input.**
+  `Jvm.Deflate.readBit` drained the bit buffer and then returned phantom
+  0-bits indefinitely, so `huffDecode` kept matching a literal and `inflate`
+  never terminated on attacker-controlled bytes (`java.base.jmod` and every
+  `LYRIC_FFI_JARS` entry feed this). `readBit`/`readBits` now return `-1` at
+  EOF, `huffDecode`/`decodeBlock`/`inflate` fail closed on it, back-references
+  whose distance points before the output start are rejected, and a 64 Mi
+  output cap bounds a decompression bomb. Verified: real jmod `.class`
+  decoding still passes (`auto_ffi_jvm_self_test.l` 22/22) and a truncated
+  stream now returns instead of hanging.
+
+- **JVM auto-FFI ZIP reader indexed unchecked offsets from the archive.**
+  `Jvm.ZipReader` used `cdSize`/`cdOffset`/`nameLen`/`uncompressedSize`/local-
+  header offsets straight from the untrusted central directory. A malformed
+  archive could drive negative or past-end `data[...]` reads. Added bounds
+  validation (`cdStart`, `cp`, `lhFile >= 0`, name-field end, STORED copy
+  bound) and made `rdU32Le` saturate to `Int.maxValue` instead of overflowing
+  the checked multiply on a ≥2³¹ size field.
+
+- **`Lyric.Manifest` integer parsing overflowed the checked Int.** A bare
+  integer ≥2³¹ in a `lyric.toml` value position panicked instead of returning
+  `ManifestError.ParseError` (a dependency's manifest is untrusted during
+  resolution). Added a per-digit overflow guard.
+
+- **Monomorphizer value-generic name key collided.** `valueExprKey` mapped
+  every string of a given length (and every float) to the same key, so a
+  second distinct value reused the first's specialisation via `seenSpecs` —
+  baking the wrong constant into the emitted IL. The key now encodes the full
+  string content (length + code points) and the float's raw literal text.
+  (`mono_self_test.l` 21/21, `manifest_self_test.l` 42/42.)
+
+- **`lyric-mail` public API still panicked on client-controlled
+  header-injection input** (review finding #5478 on the D-progress-638 PR —
+  the same DoS class fixed for the aspects and storage). `Mail.send` /
+  `sendSimple` / `sendHtml` / `makeAddress` / `makeAddressWithName` /
+  `makeAttachment` carried `requires: not containsHeaderInjection(...)` over
+  attacker-controllable fields, which elaborates into a runtime assert that
+  crashes the process on a CRLF-bearing subject/address. Enforcement moved to
+  the single send boundary (`validateNoInjection`, already run in
+  `NativeSender.send` and now in `Mail.send`) returning a structured `Err`;
+  the constructors no longer validate (a CRLF value is harmless until sent).
+  Added subject/from injection regression tests (`mail_tests.l` 31/31).
 
 ---
 

@@ -71,6 +71,7 @@ package Lyric.Mono
 import Std.Core
 import Std.Collections
 import Std.String as Str
+import Std.Char as Ch
 import Lyric.Lexer
 import Lyric.Parser
 
@@ -348,10 +349,10 @@ func valueExprKey(e: in Expr): String {
         case LInt(value, _, _) -> longLitKey(value)
         case LBool(b) -> if b { "true" } else { "false" }
         case LChar(cp) -> "c" + toString(cp)
-        case LString(s) -> "s" + toString(s.length)
-        case LTripleString(s) -> "s" + toString(s.length)
-        case LRawString(s) -> "s" + toString(s.length)
-        case LFloat(_, _, _) -> "f"
+        case LString(s) -> stringLitKey(s)
+        case LTripleString(s) -> stringLitKey(s)
+        case LRawString(s) -> stringLitKey(s)
+        case LFloat(_, _, raw) -> floatLitKey(raw)
         case LUnit -> "u"
       }
     }
@@ -359,6 +360,30 @@ func valueExprKey(e: in Expr): String {
     case EParen(inner) -> valueExprKey(inner)
     case _ -> "x"
   }
+}
+
+// Injective key for a string-valued generic argument.  The prior `"s" +
+// length` collided for any two equal-length strings (and across the
+// triple/raw variants), so the second distinct value reused the first's
+// specialisation via `seenSpecs` — baking the wrong constant into the
+// emitted IL.  Encode the length plus every code point so distinct strings
+// always produce distinct, identifier-safe keys.
+func stringLitKey(s: in String): String {
+  var acc = "s" + toString(s.length)
+  var i = 0
+  while i < s.length {
+    acc = acc + "_" + toString(Ch.toInt(s[i]))
+    i = i + 1
+  }
+  acc
+}
+
+// Injective key for a float-valued generic argument.  The prior `"f"`
+// collided for every float literal.  Use the literal's raw source text with
+// the non-identifier characters remapped (`.`->d, `-`->n, `+`->p) so distinct
+// literals stay distinct.
+func floatLitKey(raw: in String): String {
+  "f" + Str.replace(Str.replace(Str.replace(raw, ".", "d"), "-", "n"), "+", "p")
 }
 
 // Render a Long with a leading 'n' for negatives so the mangled name

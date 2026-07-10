@@ -367,3 +367,50 @@ test "Mail.send accepts an attachment with a clean filename" {
     case Err(e) -> assertTrue(false, "expected Ok but got Err: " + e.message)
   }
 }
+
+// Subject and From were previously guarded by `requires:` clauses, so a
+// CRLF-bearing subject/address panicked the process instead of returning Err.
+// These tests pin the fail-closed-with-Err behaviour on those fields.
+test "Mail.send rejects a subject containing a CR/LF (no panic, returns Err)" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Hello\r\nBcc: victim@evil.com",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "HEADER_INJECTION", "injected subject: code is HEADER_INJECTION")
+      assertEqualInt(sender.callCount, 0, "injected subject: sender.send never called")
+    }
+    case Ok(_) -> assertTrue(false, "injected subject: expected Err but got Ok")
+  }
+}
+
+test "Mail.send rejects a From address containing a CR/LF (no panic, returns Err)" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com\r\nX-Evil: 1", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Clean",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "HEADER_INJECTION", "injected from: code is HEADER_INJECTION")
+      assertEqualInt(sender.callCount, 0, "injected from: sender.send never called")
+    }
+    case Ok(_) -> assertTrue(false, "injected from: expected Err but got Ok")
+  }
+}

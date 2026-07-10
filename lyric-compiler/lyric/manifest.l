@@ -600,7 +600,22 @@ func parseValue(c: inout Cursor, filePath: in String): Result[Value, ManifestErr
   } else if ch >= '0' and ch <= '9' {
     var n = 0
     while not isAtEnd(c) and peek(c) >= '0' and peek(c) <= '9' {
-      n = n * 10 + (toInt(peek(c)) - toInt('0'))
+      val digit = toInt(peek(c)) - toInt('0')
+      // Guard the accumulator: an integer literal >= 2^31 in a manifest value
+      // position would overflow the checked Int and panic, bypassing the
+      // Result[..., ManifestError] contract (a dependency's lyric.toml is
+      // untrusted input during resolution).  Surface a clean ParseError instead.
+      if n > (2147483647 - digit) / 10 {
+        return Err(
+          error = ParseError(
+            filePath = filePath,
+            line = c.line,
+            column = c.col,
+            message = "integer literal out of range (max 2147483647)"
+          )
+        )
+      }
+      n = n * 10 + digit
       skipOne(c)
     }
     Ok(value = VInt(n = n))
@@ -1159,12 +1174,9 @@ func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], Manife
 // typo surfaces as a clear Lyric diagnostic instead of a cryptic clang/ld
 // error (#4865).
 func invalidLibName(name: in String): Bool {
-  name.length == 0
-    or Str.startsWith(name, "-")
-    or Str.contains(name, " ")
-    or Str.contains(name, "\t")
-    or Str.contains(name, "\n")
-    or Str.contains(name, "\r")
+  name.length == 0 or Str.startsWith(name, "-") or Str.contains(name, " ") or Str.contains(name, "\t") or
+    Str.contains(name, "\n") or
+    Str.contains(name, "\r")
 }
 
 /// `[native]` (N6.4): `triple` (LLVM target triple, default host),
@@ -1198,7 +1210,9 @@ func assembleNative(entries: in List[Entry]): Result[Option[NativeConfig], Manif
         error = InvalidField(
           section = "native",
           field = "extra_libs",
-          message = "library name must be a non-empty, whitespace-free bare name (not a \"-l\" flag), got \"" + libs[li] + "\""
+          message = "library name must be a non-empty, whitespace-free bare name (not a \"-l\" flag), got \"" +
+            libs[li] +
+            "\""
         )
       )
     }

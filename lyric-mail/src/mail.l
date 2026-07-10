@@ -311,68 +311,18 @@ pub func connectSendGrid(): Result[MailSender, MailError] {
 pub func send(sender: in MailSender, msg: in EmailMessage): Result[Unit, MailError]
   requires: msg.subject.length > 0
   requires: msg.to.length > 0
-  requires: not containsHeaderInjection(msg.subject)
-  requires: not containsHeaderInjection(msg.from.address)
-  requires: not containsHeaderInjection(msg.from.displayName)
 {
-  // Recipient addresses and attachment metadata can also carry CRLF;
-  // since they're collections the contract clauses above can't pin
-  // them, so check at the call boundary and produce a structured Err
-  // for the caller.
-  var i = 0
-  while i < msg.to.length {
-    if containsHeaderInjection(msg.to[i].address) or containsHeaderInjection(msg.to[i].displayName) {
-      return Err(
-        MailError(
-          message = "to[" + ("" + i) + "] contains CR/LF/NUL — header injection rejected",
-          code = "HEADER_INJECTION"
-        )
-      )
-    }
-    i = i + 1
-  }
-  var ci = 0
-  while ci < msg.cc.length {
-    if containsHeaderInjection(msg.cc[ci].address) or containsHeaderInjection(msg.cc[ci].displayName) {
-      return Err(
-        MailError(
-          message = "cc[" + ("" + ci) + "] contains CR/LF/NUL — header injection rejected",
-          code = "HEADER_INJECTION"
-        )
-      )
-    }
-    ci = ci + 1
-  }
-  var bi = 0
-  while bi < msg.bcc.length {
-    if containsHeaderInjection(msg.bcc[bi].address) or containsHeaderInjection(msg.bcc[bi].displayName) {
-      return Err(
-        MailError(
-          message = "bcc[" + ("" + bi) + "] contains CR/LF/NUL — header injection rejected",
-          code = "HEADER_INJECTION"
-        )
-      )
-    }
-    bi = bi + 1
-  }
-  // replyTo is optional — guard it when present.  Without this the
-  // MailKit / SendGrid kernels can still smuggle a Reply-To header.
-  match msg.replyTo {
+  // Header-injection is enforced here (and again in the MailSender.send
+  // implementation) via a structured Err — NOT a `requires:` clause.  Every
+  // field of `msg` is client-controllable, so a `requires: not
+  // containsHeaderInjection(...)` would elaborate into a runtime precondition
+  // assert (D118) that panics the process on a CRLF-bearing subject/address
+  // instead of returning `Err` — the same DoS class fixed for the web/auth
+  // aspects and lyric-storage.  `validateNoInjection` covers subject, from,
+  // to/cc/bcc, replyTo, and attachments in one pass.
+  match validateNoInjection(msg) {
+    case Some(e) -> return Err(e)
     case None -> ()
-    case Some(addr) -> if containsHeaderInjection(addr.address) or containsHeaderInjection(addr.displayName) { return Err(MailError(message = "replyTo contains CR/LF/NUL — header injection rejected", code = "HEADER_INJECTION")) }
-  }
-  var ai = 0
-  while ai < msg.attachments.length {
-    if containsHeaderInjection(msg.attachments[ai].filename) or containsHeaderInjection(msg.attachments[ai].contentType) {
-      return Err(
-        MailError(
-          message = "attachments[" + ("" + ai) +
-            "] filename/contentType contains CR/LF/NUL — header injection rejected",
-          code = "HEADER_INJECTION"
-        )
-      )
-    }
-    ai = ai + 1
   }
   return sender.send(msg)
 }
@@ -386,12 +336,13 @@ pub func sendSimple(sender: in MailSender, to: in String, subject: in String, bo
   requires: to.length > 0
   requires: subject.length > 0
   requires: body.length > 0
-  requires: not containsHeaderInjection(subject)
-  requires: not containsHeaderInjection(to)
 {
+  // No `requires: not containsHeaderInjection(...)` — see `Mail.send`.  A
+  // CRLF-bearing `to`/`subject` is rejected with a structured Err at the send
+  // boundary (`Mail.send` -> validateNoInjection) rather than panicking here.
   val toAddr = makeAddress(to)
   val msg = buildMessage([toAddr], subject, body, "")
-  return sender.send(msg)
+  return send(sender, msg)
 }
 
 /// Send an HTML email (with a plain-text fallback) to a single recipient.
@@ -402,28 +353,27 @@ pub func sendHtml(
   requires: to.length > 0
   requires: subject.length > 0
   requires: htmlBody.length > 0
-  requires: not containsHeaderInjection(subject)
-  requires: not containsHeaderInjection(to)
 {
+  // No injection `requires:` — see `Mail.send`.  Rejected at the send boundary.
   val toAddr = makeAddress(to)
   val msg = buildMessage([toAddr], subject, textBody, htmlBody)
-  return sender.send(msg)
+  return send(sender, msg)
 }
 
 /// Construct an `EmailAddress` from a bare address string (no display name).
 @stable(since = "0.1")
-pub func makeAddress(address: in String): EmailAddress
-  requires: not containsHeaderInjection(address)
-{
+pub func makeAddress(address: in String): EmailAddress {
+  // Constructing an address with a CRLF payload is harmless; it is rejected
+  // when the message is sent (validateNoInjection).  A `requires:` here would
+  // panic on client-controlled input instead.
   return EmailAddress(address = address, displayName = "")
 }
 
 /// Construct an `EmailAddress` with both an address and a display name.
 @stable(since = "0.1")
-pub func makeAddressWithName(address: in String, displayName: in String): EmailAddress
-  requires: not containsHeaderInjection(address)
-  requires: not containsHeaderInjection(displayName)
-{
+pub func makeAddressWithName(address: in String, displayName: in String): EmailAddress {
+  // See makeAddress: injection is rejected at send time, not via a panicking
+  // `requires:` on client-controlled input.
   return EmailAddress(address = address, displayName = displayName)
 }
 
@@ -433,9 +383,9 @@ pub func makeAddressWithName(address: in String, displayName: in String): EmailA
 pub func makeAttachment(filename: in String, contentType: in String, dataBase64: in String): Attachment
   requires: filename.length > 0
   requires: contentType.length > 0
-  requires: not containsHeaderInjection(filename)
-  requires: not containsHeaderInjection(contentType)
 {
+  // See makeAddress: injection is rejected at send time, not via a panicking
+  // `requires:` on client-controlled input.
   return Attachment(filename = filename, contentType = contentType, dataBase64 = dataBase64)
 }
 

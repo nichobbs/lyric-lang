@@ -36,7 +36,17 @@ func rdU16Le(b: in slice[Byte], o: in Int): Int {
 }
 
 func rdU32Le(b: in slice[Byte], o: in Int): Int {
-  rdU8(b, o) + rdU8(b, o + 1) * 256 + rdU8(b, o + 2) * 65536 + rdU8(b, o + 3) * 16777216
+  val b3 = rdU8(b, o + 3)
+  val low = rdU8(b, o) + rdU8(b, o + 1) * 256 + rdU8(b, o + 2) * 65536
+  // A full unsigned u32 with the top byte >= 128 exceeds Int32.MaxValue and
+  // would overflow the checked multiply (panic on a malformed archive).
+  // Saturate to Int.maxValue: any such size/offset is far beyond a real
+  // archive, so callers' `<= n` bounds checks reject it.
+  if b3 >= 128 {
+    2147483647
+  } else {
+    low + b3 * 16777216
+  }
 }
 
 // ── ZIP entry descriptor ──────────────────────────────────────────────────────
@@ -111,12 +121,17 @@ pub func readZipEntries(data: in slice[Byte]): List[ZipEntry] {
   val cdOffsetZip = rdU32Le(data, eocd + 16)
   val cdStart = eocd - cdSize           // central directory file offset
   val baseShift = cdStart - cdOffsetZip   // file offset of ZIP "offset 0"
+  // A malformed EOCD (cdSize larger than the file) yields a negative or
+  // out-of-range central-directory start; bail rather than index out of bounds.
+  if cdStart < 0 or cdStart > n {
+    return entries
+  }
 
   val cdEntrySig = 0x02014B50
   val lfhSig = 0x04034B50
   var cp = cdStart
   var count = 0
-  while count < totalEntries and cp + 46 <= n {
+  while count < totalEntries and cp >= 0 and cp + 46 <= n {
     if rdU32Le(data, cp) != cdEntrySig {
       return entries
     }
@@ -132,12 +147,16 @@ pub func readZipEntries(data: in slice[Byte]): List[ZipEntry] {
     val extraLen = rdU16Le(data, cp + 30)
     val commentLen = rdU16Le(data, cp + 32)
     val lhOffset = rdU32Le(data, cp + 42)
+    // Reject a name field that runs past the end of the buffer.
+    if cp + 46 + nameLen > n {
+      return entries
+    }
     val name = bytesToString(data, cp + 46, nameLen)
 
     // Resolve the compressed-data offset from the local file header.
     val lhFile = baseShift + lhOffset
     var dataOffset = lhFile + 30
-    if lhFile + 30 <= n and rdU32Le(data, lhFile) == lfhSig {
+    if lhFile >= 0 and lhFile + 30 <= n and rdU32Le(data, lhFile) == lfhSig {
       val lhNameLen = rdU16Le(data, lhFile + 26)
       val lhExtraLen = rdU16Le(data, lhFile + 28)
       dataOffset = lhFile + 30 + lhNameLen + lhExtraLen
@@ -172,10 +191,12 @@ pub func extractEntry(data: in slice[Byte], ent: in ZipEntry): List[Int] {
   }
 
   if ent.method == 0 {
-    // STORED: copy bytes directly.
+    // STORED: copy bytes directly.  Bound the copy against the actual buffer
+    // length — `uncompressedSize` and `dataOffset` come from the untrusted
+    // archive and a malformed pair would otherwise index out of bounds.
     val buf: List[Int] = newList()
     var i = 0
-    while i < ent.uncompressedSize {
+    while i < ent.uncompressedSize and ent.dataOffset >= 0 and ent.dataOffset + i < data.length {
       buf.add(rdU8(data, ent.dataOffset + i))
       i = i + 1
     }
