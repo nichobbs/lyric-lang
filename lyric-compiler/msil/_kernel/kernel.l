@@ -174,6 +174,24 @@ pub func bufF4Le(w: in ByteWriter, v: in Double): Unit {
   bufU4(w, singleToInt32Bits(dblToSingle(v)))
 }
 
+// Reinterpret a 64-bit IEEE 754 binary64 bit pattern as a Double.  The inverse
+// of `f8GetBytes`; used to inline R8 literal constants decoded from the
+// Constant table (`Msil.MetadataReader.ECVR8Bits`) into `ldc.r8` operands.
+@externTarget("System.BitConverter.Int64BitsToDouble")
+pub func int64BitsToDouble(bits: in Long): Double = ()
+
+// Reinterpret a 32-bit IEEE 754 binary32 bit pattern as a Double (via Single).
+// `Single` flows only between the two BCL calls, mirroring `bufF4Le` above.
+@externTarget("System.BitConverter.Int32BitsToSingle")
+func int32BitsToSingle(bits: in Int): Single = ()
+
+@externTarget("System.Convert.ToDouble")
+func singleToDouble(v: in Single): Double = ()
+
+pub func int32BitsToDouble(bits: in Int): Double {
+  singleToDouble(int32BitsToSingle(bits))
+}
+
 pub func bufZero(w: in ByteWriter, n: in Int): Unit {
   var i = 0
   while i < n {

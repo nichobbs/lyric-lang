@@ -6353,7 +6353,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         case EPath(recvPath) -> {
           if recvPath.segments.count == 1 {
             val qualifier = recvPath.segments[0]
-            if not fctx.slots.containsKey(qualifier) and not fctx.hoistedCellSlot.containsKey(qualifier) and not fctx.captureNameToIndex.containsKey(qualifier) {
+            // An extern-type qualifier can never name a Lyric union: without
+            // this exclusion, `RegexOptions.None` (an extern enum constant)
+            // is hijacked by the single-candidate fast path in
+            // `pickCaseFqnByQualifier` and mis-binds to `Std.Core.Option_None`
+            // whenever Std.Core is imported.
+            if not fctx.slots.containsKey(qualifier) and not fctx.hoistedCellSlot.containsKey(qualifier) and not fctx.captureNameToIndex.containsKey(qualifier) and not cctx.externTypeNames.containsKey(qualifier) {
               match mapGet(cctx.unionCaseCtorByName, memberName) {
                 case Some(nmCands) -> {
                   val nmPicked = pickCaseFqnByQualifier(cctx, fctx, nmCands, qualifier)
@@ -6404,6 +6409,32 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case None -> MObject
           }
         } else {
+          // Extern static member access (docs/59 §6): `Alias.Member` where
+          // `Alias` names an extern CLR type resolves a static property
+          // getter, a literal constant, or a static field from metadata.
+          // The type name is not a value, so this must run before the
+          // receiver is lowered; guarded on the name not being shadowed by
+          // a local binding.
+          match recv.kind {
+            case EPath(extPath) -> {
+              if extPath.segments.count == 1 {
+                val extQual = extPath.segments[0]
+                if not fctx.slots.containsKey(extQual) and not fctx.hoistedCellSlot.containsKey(extQual) and not fctx.captureNameToIndex.containsKey(extQual) {
+                  match mapGet(cctx.externTypeNames, extQual) {
+                    case Some(extFqn) -> {
+                      match tryExternStaticMemberReadMsil(cctx, insns, extFqn, memberName) {
+                        case Some(extTy) -> return extTy
+                        case None -> panic("Msil.Codegen: extern member access '" + extFqn + "." + memberName + "' does not resolve to a static property getter (get_" + memberName + "), a literal constant, or a static field in .NET reference-assembly " + "metadata.  Instance members need a receiver value; methods need a call.  " + "Declare an @externTarget wrapper if a custom binding is intended.")
+                      }
+                    }
+                    case None -> ()
+                  }
+                }
+              }
+            }
+            case _ -> {
+            }
+          }
           val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
           match recvTy {
             case MClass(cls) -> {
@@ -6594,6 +6625,27 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               } else {
                 insns.add(MPop)
                 MObject
+              }
+            }
+            case MClassRef(_, extInstFqn) -> {
+              // Instance property read on an extern receiver (docs/59 §6):
+              // `x.Prop` resolves `get_Prop` from metadata.  An MClassRef
+              // value is exclusively produced by metadata-resolved auto-FFI,
+              // so an unresolved member has no other legitimate meaning —
+              // emit a runtime-throw stub (the same pattern the unresolved
+              // instance-method dispatch uses, #1041) rather than silently
+              // yielding null.
+              match tryExternInstanceGetterMsil(cctx, insns, extInstFqn, memberName) {
+                case Some(extTy) -> extTy
+                case None -> {
+                  val extMsg = "unresolved extern member '" + memberName + "' on '" + extInstFqn + "': no instance property getter get_" +
+                    memberName +
+                    " found in .NET metadata.  Declare an @externTarget wrapper if a custom binding is intended."
+                  insns.add(MLdStr(token = ctxInternUs(cctx.lctx, extMsg)))
+                  insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+                  insns.add(MThrow)
+                  MObject
+                }
               }
             }
             case _ -> {
@@ -8516,6 +8568,29 @@ func lowerAssignExprMsil(
       }
     }
     case EMember(recv, memberName) -> {
+      // Extern static property assignment (docs/59 §6): `Alias.Prop = v`
+      // where `Alias` names an extern CLR type resolves `set_Prop` from
+      // metadata.  Checked before the receiver is lowered — the type name is
+      // not a value — and guarded on the name not being shadowed by a local
+      // binding.
+      match recv.kind {
+        case EPath(extPath) -> {
+          if extPath.segments.count == 1 {
+            val extQual = extPath.segments[0]
+            if not fctx.slots.containsKey(extQual) and not fctx.hoistedCellSlot.containsKey(extQual) and not fctx.captureNameToIndex.containsKey(extQual) {
+              match mapGet(cctx.externTypeNames, extQual) {
+                case Some(extFqn) -> {
+                  emitExternStaticPropertySetMsil(cctx, fctx, insns, extFqn, memberName, op, value)
+                  return MVoid
+                }
+                case None -> ()
+              }
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
       // Field assignment: recv.field op= value.  The receiver is lowered first
       // (leaving the instance on the stack); the value is lowered inside each
       // branch so a compound op can read the current field via `dup; ldfld`
@@ -8555,6 +8630,12 @@ func lowerAssignExprMsil(
               insns.add(MPop)
             }
           }
+        }
+        case MClassRef(_, extInstFqn) -> {
+          // Extern instance property assignment (docs/59 §6): `x.Prop = v`
+          // on an extern class-ref receiver resolves `set_Prop` from
+          // metadata.  The receiver is already on the stack.
+          emitExternInstancePropertySetMsil(cctx, fctx, insns, extInstFqn, memberName, op, value)
         }
         case _ -> {
           lowerExprMsil(cctx, fctx, insns, value)
@@ -15524,6 +15605,72 @@ func emitExternOptionalDefault(
   }
 }
 
+// Inline a literal constant for an `@externTarget("Type.Field")` wrapper,
+// adapting the decoded Constant-table value to the wrapper's DECLARED return
+// type: the wrapper's MethodDef return signature is authoritative, so the
+// pushed value's stack type must match it or the body is invalid IL.  A
+// literal field has no storage — `ldsfld` on one faults at run time with
+// MissingFieldException (`Math.PI` did exactly that before this existed:
+// only Int32-family constants were decoded, and R8 constants fell through to
+// the static-field `ldsfld` branch) — so a shape mismatch is a build-time
+// panic, never a fall-through.
+func emitExternTargetConstMsil(
+  insns: in List[MInsn],
+  cv: in Mdr.ExternConstValue,
+  retTy: in MsilType,
+  target: in String,
+  declName: in String,
+): Unit {
+  val retIsDouble = match retTy { case MDouble -> true; case _ -> false }
+  val retIsLong = match retTy { case MLong -> true; case _ -> false }
+  match cv {
+    case Mdr.ECVInt(v) -> {
+      if retIsDouble {
+        insns.add(MLdcR8(v = v.toDouble()))
+      } else if retIsLong {
+        insns.add(MLdcI8(v = v.toLong()))
+      } else {
+        insns.add(MLdcI4(v = v))
+      }
+    }
+    case Mdr.ECVLong(v) -> {
+      if retIsDouble {
+        insns.add(MLdcR8(v = v.toDouble()))
+      } else if retIsLong {
+        insns.add(MLdcI8(v = v))
+      } else {
+        panic(
+          "F0015: @externTarget '" + target + "' on '" + declName +
+            "' names a 64-bit integer literal constant but declares a non-Long return type; " +
+            "declare the wrapper's return as Long."
+        )
+      }
+    }
+    case Mdr.ECVR4Bits(bits) -> {
+      if retIsDouble {
+        insns.add(MLdcR8(v = int32BitsToDouble(bits)))
+      } else {
+        panic(
+          "F0015: @externTarget '" + target + "' on '" + declName +
+            "' names a floating-point literal constant but declares a non-Double return type; " +
+            "declare the wrapper's return as Double."
+        )
+      }
+    }
+    case Mdr.ECVR8Bits(bits) -> {
+      if retIsDouble {
+        insns.add(MLdcR8(v = int64BitsToDouble(bits)))
+      } else {
+        panic(
+          "F0015: @externTarget '" + target + "' on '" + declName +
+            "' names a floating-point literal constant but declares a non-Double return type; " +
+            "declare the wrapper's return as Double."
+        )
+      }
+    }
+  }
+}
+
 func emitExternTargetBody(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -15791,9 +15938,9 @@ func emitExternTargetBody(
         if not isVoidFieldRet {
           match mapGet(cctx.metadataPathIndex, asmName) {
             case Some(asmPath) -> {
-              match Mdr.getLiteralFieldInt32(asmPath, resolvedFqn, r.memberName) {
-                case Some(litVal) -> {
-                  insns.add(MLdcI4(v = litVal))
+              match Mdr.getLiteralFieldConst(asmPath, resolvedFqn, r.memberName) {
+                case Some(litCv) -> {
+                  emitExternTargetConstMsil(insns, litCv, ffiRetTy, target, decl.name)
                   insns.add(MRet)
                   return true
                 }
@@ -24152,6 +24299,418 @@ func emitResolvedInstanceAutoFfi(
   }
 }
 
+// Intern the TypeRef row for an extern CLR type, routing nested types
+// (`Enclosing+Nested`) through the nested builder so the ResolutionScope is
+// the enclosing type (#3943).
+func internExternTypeRefMsil(cctx: in CodegenCtx, asmName: in String, clrFqn: in String): Int {
+  if contains(clrFqn, "+") {
+    internFfiTypeRefNested(cctx, clrFqn)
+  } else {
+    val sp = splitTypeFqn(clrFqn)
+    internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
+  }
+}
+
+// Inline a decoded literal constant at an auto-FFI member-access site:
+// `ldc.i4` / `ldc.i8` / `ldc.r8`.  A constant declared by an enum type is
+// typed as the enum value type (an i4/i8 underneath, which is how enums pass
+// unboxed) so it scores exactly against enum-typed BCL parameters; every
+// other constant takes its natural primitive type.
+func emitExternConstMsil(
+  cctx: in CodegenCtx,
+  insns: in List[MInsn],
+  asmPath: in String,
+  clrFqn: in String,
+  cv: in Mdr.ExternConstValue,
+): MsilType {
+  match cv {
+    case Mdr.ECVInt(v) -> {
+      insns.add(MLdcI4(v = v))
+      if Mdr.isEnumType(asmPath, clrFqn) {
+        match internValueTypeRef(cctx, clrFqn) {
+          case Some(et) -> et
+          case None -> MInt
+        }
+      } else {
+        MInt
+      }
+    }
+    case Mdr.ECVLong(v) -> {
+      insns.add(MLdcI8(v = v))
+      if Mdr.isEnumType(asmPath, clrFqn) {
+        match internValueTypeRef(cctx, clrFqn) {
+          case Some(et) -> et
+          case None -> MLong
+        }
+      } else {
+        MLong
+      }
+    }
+    case Mdr.ECVR4Bits(bits) -> {
+      insns.add(MLdcR8(v = int32BitsToDouble(bits)))
+      MDouble
+    }
+    case Mdr.ECVR8Bits(bits) -> {
+      insns.add(MLdcR8(v = int64BitsToDouble(bits)))
+      MDouble
+    }
+  }
+}
+
+// Resolve and emit a STATIC member read on an extern type name
+// (`Alias.Member` without call parens, or the zero-arg call form routed here
+// by `tryAutoFfiFromMetadata`'s getter probe): a static property getter
+// (`get_<Member>`), a literal constant inlined from the Constant table, or a
+// genuine (non-literal) static field read via `ldsfld` — the same three
+// shapes `emitExternTargetBody` resolves for `@externTarget`, ported to the
+// auto-FFI call-site path (docs/59 §6).  Returns None when the member matches
+// none of the three; the caller decides how loud to fail.
+func tryExternStaticMemberReadMsil(
+  cctx: in CodegenCtx, insns: in List[MInsn], clrFqn: in String, memberName: in String
+): Option[MsilType] {
+  ensureMetadataIndex(cctx)
+  val noArgs: List[Mdr.SigType] = newList()
+  match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, "get_" + memberName, noArgs) {
+    case Some(gp) -> {
+      if gp.sig.isStatic {
+        val emptyBufs: List[List[MInsn]] = newList()
+        val emptyTys: List[MsilType] = newList()
+        match emitResolvedAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + memberName, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
+          case Some(rt) -> return Some(value = rt)
+          case None -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  // Constants and fields need the declaring assembly's on-disk path.
+  var asmPathV = ""
+  match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
+    case Some(asmName) -> match mapGet(cctx.metadataPathIndex, asmName) { case Some(p) -> { asmPathV = p }; case None -> () }
+    case None -> ()
+  }
+  if asmPathV.length == 0 {
+    return None
+  }
+  match Mdr.getLiteralFieldConst(asmPathV, clrFqn, memberName) {
+    case Some(cv) -> return Some(value = emitExternConstMsil(cctx, insns, asmPathV, clrFqn, cv))
+    case None -> ()
+  }
+  match Mdr.findFieldExtern(asmPathV, clrFqn, memberName) {
+    case Some(fi) -> {
+      // A literal field has no storage — `ldsfld` on it faults at run time
+      // with MissingFieldException, so only genuine static fields take this
+      // branch (a literal that the const decoder above could not express,
+      // e.g. a string constant, deliberately falls through to None).
+      if fi.isStatic and not fi.isLiteral {
+        match resolvedSigToMsil(cctx, fi.fieldType) {
+          case Some(fty) -> {
+            val asmName = assemblyForTypeMsil(cctx, clrFqn)
+            val tRefRow = internExternTypeRefMsil(cctx, asmName, clrFqn)
+            val fldSig = buildFieldSigWithCtx(fty, cctx.lctx)
+            val frRow = ctxAddMemberRef(cctx.lctx, tRefRow, memberName, "autoffi_fld_" + clrFqn + "." + memberName, fldSig)
+            insns.add(MLdsfld(fieldToken = 0x0A000000 + frRow))
+            return Some(value = fty)
+          }
+          case None -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  None
+}
+
+// Resolve and emit an INSTANCE property getter (`get_<Member>`) on an extern
+// class-ref receiver already on the stack.  None when no instance getter of
+// that name exists (or its shape can't be expressed).
+func tryExternInstanceGetterMsil(
+  cctx: in CodegenCtx, insns: in List[MInsn], clrFqn: in String, memberName: in String
+): Option[MsilType] {
+  ensureMetadataIndex(cctx)
+  val noArgs: List[Mdr.SigType] = newList()
+  match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, "get_" + memberName, noArgs) {
+    case None -> None
+    case Some(gp) -> {
+      if gp.sig.isStatic {
+        None
+      } else {
+        val emptyBufs: List[List[MInsn]] = newList()
+        val emptyTys: List[MsilType] = newList()
+        emitResolvedInstanceAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig)
+      }
+    }
+  }
+}
+
+// Adapt an assigned value to a property setter's parameter: the standard
+// `argCoercionInsns` shapes (exact / widening conv / box-to-object), plus a
+// `castclass` fallback for a reference-typed value flowing into a
+// differently-named reference parameter (the upcast case, e.g. a
+// StringContent value assigned to an HttpContent-typed property; the
+// castclass narrows the stack type so the IL verifies, and a genuinely wrong
+// runtime type fails with a clear InvalidCastException).
+func externSetterCoercion(
+  cctx: in CodegenCtx, valueTy: in MsilType, paramSig: in Mdr.SigType, paramMsil: in MsilType
+): Option[List[MInsn]] {
+  match argCoercionInsns(cctx, valueTy, paramSig) {
+    case Some(c) -> Some(value = c)
+    case None -> {
+      val paramIsRef = match paramMsil { case MClassRef(_, _) -> true; case _ -> false }
+      val valueIsRef = match valueTy {
+        case MObject -> true
+        case MClass(_) -> true
+        case MClassRef(_, _) -> true
+        case MString -> true
+        case MGenericInst(_, _, _) -> true
+        case MGenericInstByName(_, _) -> true
+        case MConcreteList(_) -> true
+        case MConcreteMap(_, _) -> true
+        case MArray(_) -> true
+        case _ -> false
+      }
+      if paramIsRef and valueIsRef {
+        val acc: List[MInsn] = newList()
+        acc.add(MCastclassByName(className = externRefFqn(paramMsil)))
+        Some(value = acc)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+// Resolve `set_<Member>`: prefer scoring against the property's own type
+// (from the getter — a property has exactly one setter, and this keeps
+// widening/upcast handling in the coercion step rather than overload
+// scoring), falling back to the assigned value's own type when the property
+// has no getter (write-only) or the property-typed probe misses.
+func resolveExternSetterMsil(
+  cctx: in CodegenCtx,
+  clrFqn: in String,
+  memberName: in String,
+  getterOpt: in Option[Mdr.ResolvedExtern],
+  valueTy: in MsilType,
+): Option[Mdr.ResolvedExtern] {
+  match getterOpt {
+    case Some(gp) -> {
+      val propArg: List[Mdr.SigType] = newList()
+      propArg.add(gp.sig.returnType)
+      match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, "set_" + memberName, propArg) {
+        case Some(sp2) -> return Some(value = sp2)
+        case None -> ()
+      }
+    }
+    case None -> ()
+  }
+  match argTyToSig(valueTy) {
+    case Some(vs) -> {
+      val vArg: List[Mdr.SigType] = newList()
+      vArg.add(vs)
+      Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, "set_" + memberName, vArg)
+    }
+    case None -> None
+  }
+}
+
+// Build-time diagnostic for an unresolvable extern property assignment.
+func panicExternSetterUnresolved(
+  clrFqn: in String, memberName: in String, getterOpt: in Option[Mdr.ResolvedExtern]
+): Unit {
+  match getterOpt {
+    case Some(_) -> panic("Msil.Codegen: property '" + clrFqn + "." + memberName + "' has a getter but no accessible setter (set_" + memberName + ") in reference-assembly metadata; it cannot be assigned.")
+    case None -> panic("Msil.Codegen: '" + clrFqn + "." + memberName + "' does not resolve to a property setter (set_" + memberName + ") in reference-assembly metadata; check the member name.  Declare an " + "@externTarget wrapper if a custom binding is intended.")
+  }
+}
+
+// Emit the value (already lowered into `valueInsns`, or already on the stack
+// when `valueInsns` is empty), the coercion adapting it to the setter's
+// parameter, and the setter call itself.  Staticness comes from the resolved
+// setter's metadata.  Panics on shapes the emitter cannot express — metadata
+// is authoritative here, so the failure can never be a legitimate late-bound
+// case.
+func emitExternSetterCallMsil(
+  cctx: in CodegenCtx,
+  insns: in List[MInsn],
+  setter: in Mdr.ResolvedExtern,
+  clrFqn: in String,
+  memberName: in String,
+  valueInsns: in List[MInsn],
+  valueTy: in MsilType,
+): Unit {
+  if setter.sig.paramTypes.count != 1 {
+    panic(
+      "Msil.Codegen: 'set_" + memberName + "' on '" + clrFqn +
+        "' does not take exactly one parameter; cannot emit a property assignment."
+    )
+  }
+  val paramSig = setter.sig.paramTypes[0]
+  var paramMsilV: MsilType = MObject
+  match resolvedSigToMsil(cctx, paramSig) {
+    case Some(pm) -> {
+      paramMsilV = pm
+    }
+    case None -> panic("Msil.Codegen: the parameter type of 'set_" + memberName + "' on '" + clrFqn + "' cannot be expressed by the auto-FFI emitter; declare an @externTarget wrapper instead.")
+  }
+  var coercionV: List[MInsn] = newList()
+  match externSetterCoercion(cctx, valueTy, paramSig, paramMsilV) {
+    case Some(c) -> {
+      coercionV = c
+    }
+    case None -> panic("Msil.Codegen: cannot adapt a value of the assigned type to '" + clrFqn + ".set_" + memberName + "''s parameter type; declare an @externTarget wrapper instead.")
+  }
+  appendInsnsMsil(insns, valueInsns)
+  appendInsnsMsil(insns, coercionV)
+  val tRefRow = internExternTypeRefMsil(cctx, setter.assemblyName, clrFqn)
+  val ps: List[MsilType] = newList()
+  ps.add(paramMsilV)
+  val sig = if setter.sig.isStatic { buildStaticMethodSig(ps, MVoid) } else { buildInstanceMethodSig(ps, MVoid) }
+  val sigKey = "autoffi_set_" + (if setter.sig.isStatic { "s_" } else { "i_" }) + clrFqn + "." + memberName + "_" +
+    msilTypeKeyStr(paramMsilV)
+  val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, "set_" + memberName, sigKey, sig)
+  if setter.sig.isStatic {
+    insns.add(MCall(methodToken = 0x0A000000 + mrRow))
+  } else {
+    insns.add(MCallvirt(methodToken = 0x0A000000 + mrRow))
+  }
+}
+
+// Emit `Alias.Prop op= value` — a STATIC extern property assignment.  For a
+// plain `=` the value is lowered and adapted to the resolved `set_<Prop>`;
+// compound ops read the current value through the static getter first, then
+// combine and store.
+func emitExternStaticPropertySetMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  clrFqn: in String,
+  memberName: in String,
+  op: in AssignOp,
+  value: in Expr,
+): Unit {
+  ensureMetadataIndex(cctx)
+  val noArgs: List[Mdr.SigType] = newList()
+  var getterOpt: Option[Mdr.ResolvedExtern] = None
+  match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, "get_" + memberName, noArgs) {
+    case Some(gp) -> {
+      if gp.sig.isStatic {
+        getterOpt = Some(value = gp)
+      }
+    }
+    case None -> ()
+  }
+  match op {
+    case AssEq -> {
+      val vbuf: List[MInsn] = newList()
+      val vTy = lowerExprMsil(cctx, fctx, vbuf, value)
+      match resolveExternSetterMsil(cctx, clrFqn, memberName, getterOpt, vTy) {
+        case None -> panicExternSetterUnresolved(clrFqn, memberName, getterOpt)
+        case Some(sp2) -> {
+          if not sp2.sig.isStatic {
+            panic(
+              "Msil.Codegen: '" + clrFqn + "." + memberName +
+                "' is an instance property — assign through a receiver value, not the type name."
+            )
+          }
+          emitExternSetterCallMsil(cctx, insns, sp2, clrFqn, memberName, vbuf, vTy)
+        }
+      }
+    }
+    case _ -> {
+      match getterOpt {
+        case None -> panic("Msil.Codegen: compound assignment to '" + clrFqn + "." + memberName + "' needs a readable static property (no static get_" + memberName + " in metadata).")
+        case Some(gp) -> {
+          val emptyBufs: List[List[MInsn]] = newList()
+          val emptyTys: List[MsilType] = newList()
+          var propTyV: MsilType = MVoid
+          match emitResolvedAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + memberName, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
+            case Some(t) -> {
+              propTyV = t
+            }
+            case None -> panic("Msil.Codegen: cannot express the type of property '" + clrFqn + "." + memberName + "' for a compound assignment; declare an @externTarget wrapper instead.")
+          }
+          emitCompoundCombineMsil(cctx, fctx, insns, op, propTyV, value)
+          match resolveExternSetterMsil(cctx, clrFqn, memberName, getterOpt, propTyV) {
+            case None -> panicExternSetterUnresolved(clrFqn, memberName, getterOpt)
+            case Some(sp2) -> {
+              val noVal: List[MInsn] = newList()
+              emitExternSetterCallMsil(cctx, insns, sp2, clrFqn, memberName, noVal, propTyV)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Emit `recv.Prop op= value` for an extern class-ref receiver ALREADY on the
+// stack, resolving `set_<Prop>` (and, for compound ops, `get_<Prop>`) from
+// metadata.
+func emitExternInstancePropertySetMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  clrFqn: in String,
+  memberName: in String,
+  op: in AssignOp,
+  value: in Expr,
+): Unit {
+  ensureMetadataIndex(cctx)
+  val noArgs: List[Mdr.SigType] = newList()
+  var getterOpt: Option[Mdr.ResolvedExtern] = None
+  match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, "get_" + memberName, noArgs) {
+    case Some(gp) -> {
+      if not gp.sig.isStatic {
+        getterOpt = Some(value = gp)
+      }
+    }
+    case None -> ()
+  }
+  match op {
+    case AssEq -> {
+      val vbuf: List[MInsn] = newList()
+      val vTy = lowerExprMsil(cctx, fctx, vbuf, value)
+      match resolveExternSetterMsil(cctx, clrFqn, memberName, getterOpt, vTy) {
+        case None -> panicExternSetterUnresolved(clrFqn, memberName, getterOpt)
+        case Some(sp2) -> {
+          if sp2.sig.isStatic {
+            panic(
+              "Msil.Codegen: 'set_" + memberName + "' on '" + clrFqn +
+                "' is static — assign through the type name, not a receiver value."
+            )
+          }
+          emitExternSetterCallMsil(cctx, insns, sp2, clrFqn, memberName, vbuf, vTy)
+        }
+      }
+    }
+    case _ -> {
+      match getterOpt {
+        case None -> panic("Msil.Codegen: compound assignment to extern property '" + memberName + "' on '" + clrFqn + "' needs a readable instance property (no instance get_" + memberName + " in metadata).")
+        case Some(gp) -> {
+          insns.add(MDup)
+          val emptyBufs: List[List[MInsn]] = newList()
+          val emptyTys: List[MsilType] = newList()
+          var propTyV: MsilType = MVoid
+          match emitResolvedInstanceAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
+            case Some(t) -> {
+              propTyV = t
+            }
+            case None -> panic("Msil.Codegen: cannot express the type of property '" + clrFqn + "." + memberName + "' for a compound assignment; declare an @externTarget wrapper instead.")
+          }
+          emitCompoundCombineMsil(cctx, fctx, insns, op, propTyV, value)
+          match resolveExternSetterMsil(cctx, clrFqn, memberName, getterOpt, propTyV) {
+            case None -> panicExternSetterUnresolved(clrFqn, memberName, getterOpt)
+            case Some(sp2) -> {
+              val noVal: List[MInsn] = newList()
+              emitExternSetterCallMsil(cctx, insns, sp2, clrFqn, memberName, noVal, propTyV)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 // Try to resolve and emit a metadata-resolved instance call on an extern
 // class-ref receiver `expr.method(args)`.  The receiver is already on the
 // stack.  Returns the result MsilType on success, or None to fall back (the
@@ -24189,13 +24748,27 @@ func tryInstanceAutoFfiFromMetadata(
   if bad {
     None
   } else {
+    var direct: Option[MsilType] = None
     match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, fqn, memberName, argSigs) {
-      case None -> None
-      case Some(re) -> if re.sig.isStatic { None } else { emitResolvedInstanceAutoFfi(cctx, insns, re.assemblyName, fqn, memberName, argBufs, argTys, re.sig) }
+      case None -> {
+      }
+      case Some(re) -> if not re.sig.isStatic { direct = emitResolvedInstanceAutoFfi(cctx, insns, re.assemblyName, fqn, memberName, argBufs, argTys, re.sig) }
     }
     // A receiver-based call needs an instance method; a resolved static
     // means the name only exists as a static — fall back rather than
     // emit a callvirt against a static (which would be malformed).
+    match direct {
+      case Some(rt) -> Some(value = rt)
+      case None -> {
+        // Property getter probe (docs/59 §6): a zero-arg call `x.Prop()` on
+        // a CLR property has no method named `Prop` — only `get_Prop`.
+        if args.count == 0 {
+          tryExternInstanceGetterMsil(cctx, insns, fqn, memberName)
+        } else {
+          None
+        }
+      }
+    }
   }
 }
 
@@ -24265,6 +24838,25 @@ func tryAutoFfiFromMetadata(
     val resolveMethodName = if methodName == "new" { ".ctor" } else { methodName }
     match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, resolveMethodName, argSigs) {
       case None -> {
+        // Property getter probe: a zero-arg call `Alias.Prop()` on a static
+        // CLR property has no method named `Prop` in metadata — only
+        // `get_Prop` (docs/59 §6; mirrors emitExternTargetBody's probe at
+        // its property-access step).  Nothing was speculatively lowered for
+        // a zero-arg call, so no rollback is needed on success.
+        if args.count == 0 and methodName != "new" {
+          val noArgsP: List[Mdr.SigType] = newList()
+          match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, "get_" + methodName, noArgsP) {
+            case Some(gp) -> {
+              if gp.sig.isStatic {
+                match emitResolvedAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + methodName, "get_" + methodName, argBufs, argTys, gp.sig) {
+                  case Some(rt) -> return Some(value = rt)
+                  case None -> ()
+                }
+              }
+            }
+            case None -> ()
+          }
+        }
         // Metadata resolved nothing — still roll back to keep counters clean.
         while fctx.slotTicker.count > snapSlot {
           fctx.slotTicker.removeAt(fctx.slotTicker.count - 1)
