@@ -352,6 +352,32 @@ test "dispatch: CORS middleware does not add headers for a disallowed origin" {
   assertEqualInt(resp.status, 200, "the request itself still reaches the handler")
 }
 
+// The reflected `Access-Control-Allow-Origin` must be paired with `Vary:
+// Origin` so a shared/CDN cache keyed on URL can't serve one origin's response
+// to another origin (cache poisoning).  Assert it on both the actual-response
+// and the OPTIONS-preflight paths.
+test "dispatch: CORS middleware sets Vary: Origin on the actual response" {
+  var router = Web.create()
+  router = Web.addGet(router, "/api", TextHandler(status = 200, body = "ok"))
+  router = Web.withMiddleware(router, Web.corsMiddleware("https://example.com", "GET,POST", "Content-Type", 600))
+  val resp = Web.dispatch(router, requestWithHeader("GET", "/api", "Origin", "https://example.com"))
+  match mapGet(resp.headers, "Vary") {
+    case Some(v) -> assertEqual(v, "Origin", "Vary must be Origin")
+    case None -> assertTrue(false, "Vary: Origin must be present alongside a reflected ACAO")
+  }
+}
+
+test "dispatch: CORS middleware sets Vary: Origin on the OPTIONS preflight" {
+  var router = Web.create()
+  router = Web.addGet(router, "/api", TextHandler(status = 200, body = "x"))
+  router = Web.withMiddleware(router, Web.corsMiddleware("https://example.com", "GET,POST", "Content-Type", 600))
+  val resp = Web.dispatch(router, requestWithHeader("OPTIONS", "/api", "Origin", "https://example.com"))
+  match mapGet(resp.headers, "Vary") {
+    case Some(v) -> assertEqual(v, "Origin", "preflight Vary must be Origin")
+    case None -> assertTrue(false, "Vary: Origin must be present on the preflight response")
+  }
+}
+
 test "dispatch: CORS middleware answers an OPTIONS preflight without reaching the handler" {
   var router = Web.create()
   router = Web.addGet(router, "/api", TextHandler(status = 200, body = "should not run"))

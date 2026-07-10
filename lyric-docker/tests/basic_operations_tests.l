@@ -121,6 +121,22 @@ test "demultiplex incomplete payload is stopped safely" {
   assertEqual(result, "", "Incomplete payload results in empty string")
 }
 
+// Regression: a frame whose 4-byte big-endian size has the top bit set
+// (>= 2^31) used to overflow the signed Int size accumulator and wrap
+// negative, defeating the bounds check and driving the index negative (OOB
+// crash). The size is now computed in Long and bounds-checked, so the frame is
+// safely skipped rather than crashing on adversarial daemon output.
+test "demultiplex oversized frame size does not overflow / crash" {
+  // stdout (1), size bytes = FF 00 00 41 (top bit set => ~4.28 billion),
+  // followed by two payload bytes. The old code wrapped this to a negative
+  // size and then indexed out of bounds.
+  val bytes: slice[Byte] = [1u8, 0u8, 0u8, 0u8, 255u8, 0u8, 0u8, 65u8, 104u8, 105u8]
+  val streamResult = Lyric.Docker.demultiplexDockerStream(bytes)
+  assertTrue(isOk(streamResult), "oversized frame must not crash the demuxer")
+  val result = unwrapResultOr(streamResult, "none")
+  assertEqual(result, "", "an out-of-range frame size is skipped, yielding no output")
+}
+
 // ─── Container ID Validation Tests ─────────────────────────────────────────
 test "isValidContainerId rejects empty string" {
   assertFalse(Lyric.Docker.isValidContainerId(""), "Empty string is invalid")
@@ -159,7 +175,6 @@ test "isValidContainerId accepts a valid 64-char lowercase hex ID" {
 // jsonEscapeValue/jsonUnescapeValue are private; exercised indirectly through
 // createContainerBody (escape direction) and extractJsonField (decode
 // direction), the same public entry points createContainer uses (#4535).
-
 test "createContainerBody escapes a control character as a 4-digit unicode escape" {
   // 0x01 (SOH) is not one of the named escapes (quote, backslash, newline,
   // carriage return, tab, backspace, form feed), so it must fall through
@@ -196,7 +211,7 @@ test "extractJsonField decodes a \\uXXXX escape for a control character" {
 test "extractJsonField decodes a \\uXXXX escape for a non-ASCII character" {
   val body = "{\"Id\":\"caf\\u00e9\"}"
   val extracted = Lyric.Docker.extractJsonField(body, "Id")
-  assertEqual(extracted, "caf\u{00e9}", "\\u00e9 decodes back to the Unicode character e-acute")
+  assertEqual(extracted, "café", "\\u00e9 decodes back to the Unicode character e-acute")
 }
 
 test "extractJsonField returns empty string when the field is absent" {
@@ -208,7 +223,6 @@ test "extractJsonField returns empty string when the field is absent" {
 // ─── Integer field extraction Tests ─────────────────────────────────────────
 // extractJsonIntField backs waitContainer's StatusCode parsing (#4535-style
 // public-for-testing rationale — no live Docker daemon needed).
-
 test "extractJsonIntField extracts a zero StatusCode from a clean wait response" {
   val body = "{\"StatusCode\":0,\"Error\":null}"
   val extracted = Lyric.Docker.extractJsonIntField(body, "StatusCode")
@@ -270,7 +284,6 @@ test "extractJsonIntField tolerates a tab and newline after the colon" {
 // jsonFieldIsObject backs waitContainer's daemon-error detection: Docker's
 // /wait response is {"StatusCode":int,"Error":{"Message":string}|null}, and
 // a non-null Error is a daemon-level failure distinct from the exit code.
-
 test "jsonFieldIsObject is false when the field is a null literal" {
   val body = "{\"StatusCode\":0,\"Error\":null}"
   assertFalse(Lyric.Docker.jsonFieldIsObject(body, "Error"), "null is not an object")
