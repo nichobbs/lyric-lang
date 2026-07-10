@@ -458,3 +458,43 @@ test "Mail.send with an empty subject succeeds (empty subject is valid)" {
     case Err(e) -> assertTrue(false, "empty subject should be valid, got Err: " + e.message)
   }
 }
+
+// ─── Mail.validateNoInjection is pub and reusable by out-of-tree senders (#5499) ─
+// The header-injection guard is exported so any MailSender implementation can
+// enforce the interface's safety contract directly, not only through the
+// Mail.send wrapper. These tests call it as an external implementer would.
+test "Mail.validateNoInjection flags a CRLF-injected subject with Some(HEADER_INJECTION)" {
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Hi\r\nBcc: victim@example.com",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.validateNoInjection(msg) {
+    case Some(e) -> assertEqual(e.code, "HEADER_INJECTION", "injected subject is flagged")
+    case None -> assertTrue(false, "an injected subject must be flagged by validateNoInjection")
+  }
+}
+
+test "Mail.validateNoInjection returns None for a clean message" {
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = "Sender"),
+    to = [EmailAddress(address = "r@example.com", displayName = "Recv")],
+    cc = [],
+    bcc = [],
+    subject = "Quarterly report",
+    textBody = "See attached.",
+    htmlBody = "<p>See attached.</p>",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.validateNoInjection(msg) {
+    case Some(e) -> assertTrue(false, "a clean message must not be flagged: " + e.message)
+    case None -> assertTrue(true, "clean message passes")
+  }
+}

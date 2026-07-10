@@ -18,6 +18,15 @@ package Jvm.Deflate
 import Std.Core
 import Std.Collections
 
+// Total-output cap (in decompressed bytes) that bounds a decompression bomb
+// when inflating untrusted `.class` data from `java.base.jmod` or a
+// `LYRIC_FFI_JARS` entry at compile time.  A real `.class` entry is at most a
+// few MB; 64 MiB is far above any legitimate size.  Every block decoder checks
+// the shared output `buf` against this so STORED, fixed-, and dynamic-Huffman
+// blocks are bounded uniformly — a truncated result is then rejected by the
+// class reader as malformed rather than exhausting memory.
+val OUTPUT_CAP: Int = 67108864
+
 // ── Mutable-map helpers ───────────────────────────────────────────────────────
 func getS(m: in Map[String, Int], k: in String): Int {
   match mapGet(m, k) {
@@ -551,11 +560,8 @@ func distBase(code: in Int): Int {
 // Decode a Huffman-compressed literal/length/distance stream, appending to `buf`.
 func decodeBlock(br: in BitReader, litlenTab: in HuffTable, distTab: in HuffTable, buf: in List[Int]): Unit {
   var done = false
-  // Cap total output to bound a decompression bomb (a .class entry is at most a
-  // few MB; 64 Mi symbols is far above any legitimate size).  Exiting the loop
-  // on the cap yields a truncated result, which the class reader then rejects
-  // as malformed rather than exhausting memory.
-  while not done and buf.count <= 67108864 {
+  // Cap total output to bound a decompression bomb (see OUTPUT_CAP).
+  while not done and buf.count <= OUTPUT_CAP {
     val sym = huffDecode(litlenTab, br)
     if sym < 0 {
       done = true
@@ -599,7 +605,12 @@ func inflateStored(br: in BitReader, buf: in List[Int]): Unit {
   val nlen = readRawU16Le(br)
   // one's complement of len; not validated
   var i = 0
-  while i < len {
+  // Bound the copy against OUTPUT_CAP too: `len` is only a u16 (<= 65535) per
+  // block, but STORED output shares `buf` across every block in the stream, so
+  // a stream of many STORED blocks could otherwise grow `buf` without limit
+  // (each output byte is a boxed List[Int] element).  Stopping on the cap
+  // yields a truncated result the class reader rejects as malformed.
+  while i < len and buf.count <= OUTPUT_CAP {
     buf.add(readRawByte(br))
     i = i + 1
   }
@@ -744,7 +755,11 @@ pub func inflate(data: in slice[Byte], startOff: in Int, compressedLen: in Int):
   val buf: List[Int] = newList()
   val br = newBitReader(data, startOff, compressedLen)
   var done = false
-  while not done {
+  // OUTPUT_CAP on the dispatch loop bounds total output across ALL block types
+  // uniformly (STORED, fixed-, dynamic-Huffman) — the per-block decoders check
+  // it too, but this stops the outer loop from re-entering another block once
+  // the cap is reached on adversarial input.
+  while not done and buf.count <= OUTPUT_CAP {
     val bfinal = readBit(br)
     if bfinal < 0 {
       // Input exhausted before a final block — stop rather than spin.

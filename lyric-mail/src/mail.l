@@ -99,6 +99,14 @@ pub interface MailSender {
   /// returning `Err` (D118).  Invalid messages (no recipients, injected
   /// headers) are rejected with a structured `Err` at `Mail.send` /
   /// `validateNoInjection`.
+  ///
+  /// **Implementation contract (#5499):** every `MailSender.send` implementation
+  /// MUST call `Mail.validateNoInjection(msg)` (now `pub`) and return its
+  /// `MailError` before any transport dispatch — the header-injection guard is
+  /// part of this interface's safety contract, not merely a convenience in
+  /// `Mail.send`. The in-tree `NativeSender` does this; out-of-tree senders are
+  /// responsible for the same, since Lyric interfaces cannot enforce a shared
+  /// body without a client-crashing `requires:`.
   func send(msg: in EmailMessage): Result[Unit, MailError]
 
   /// Release the underlying provider connection.
@@ -432,12 +440,20 @@ func containsHeaderInjection(s: in String): Bool {
   return false
 }
 
-// Full CRLF/NUL header-injection guard over every field of an EmailMessage
-// (CWE-93).  Returns Some(MailError) for the first offending field, None when
-// the message is clean.  Callable from any `MailSender.send` implementation so
-// the guarantee holds regardless of whether the caller went through the
-// `Mail.send` wrapper or invoked the interface method directly (#3181).
-func validateNoInjection(msg: in EmailMessage): Option[MailError] {
+/// Full CRLF/NUL header-injection guard over every field of an `EmailMessage`
+/// (CWE-93).  Returns `Some(MailError)` for the first offending field, `None`
+/// when the message is clean.
+///
+/// `pub` so that any out-of-tree `MailSender` implementation can enforce the
+/// same guarantee the in-tree `NativeSender` does — the `MailSender.send`
+/// contract requires every implementation to call this before dispatch, so the
+/// injection guard holds regardless of whether a caller went through the
+/// `Mail.send` wrapper or invoked an implementation's `send` directly (#3181 /
+/// #5499).  Kept a free function returning `Option[MailError]` (not an
+/// interface `requires:`) because a precondition assert on client-controlled
+/// message fields would crash the process instead of returning `Err` (D118).
+@stable(since = "0.1")
+pub func validateNoInjection(msg: in EmailMessage): Option[MailError] {
   if containsHeaderInjection(msg.subject) {
     return Some(
       value = MailError(
