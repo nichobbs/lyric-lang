@@ -1,14 +1,13 @@
-// tests/storage_tests.l — Storage package end-to-end tests.
-//
-// Covers the production-quality local-filesystem backend's public
-// surface and the key-safety primitives.  The full match/field-access
-// suite is tracked in #1140 — the self-hosted emitter currently widens
-// imported records and Result generic type args to `Object` under
-// `emitProject`, so cross-package idiomatic patterns (e.g.
-// `case Err(e) -> e.code`) fail.  Once #1140 lands, these tests grow
-// to cover the wire-type surface, metadata round-trip with `userMeta`,
-// pagination cursor inspection, etc.
-
+//! tests/storage_tests.l — Storage package end-to-end tests.
+//!
+//! Covers the production-quality local-filesystem backend's public
+//! surface and the key-safety primitives.  The full match/field-access
+//! suite is tracked in #1140 — the self-hosted emitter currently widens
+//! imported records and Result generic type args to `Object` under
+//! `emitProject`, so cross-package idiomatic patterns (e.g.
+//! `case Err(e) -> e.code`) fail.  Once #1140 lands, these tests grow
+//! to cover the wire-type surface, metadata round-trip with `userMeta`,
+//! pagination cursor inspection, etc.
 @test_module
 package Storage.StorageTests
 
@@ -19,13 +18,12 @@ import Std.Uuid as Uuid
 import Storage
 
 // ─── Key safety primitives ───────────────────────────────────────────────────
-
 test "isSafeKey accepts ordinary keys" {
   assertTrue(isSafeKey("uploads/photo.jpg"), "ordinary key")
-  assertTrue(isSafeKey("a"),                  "single char key")
+  assertTrue(isSafeKey("a"), "single char key")
   assertTrue(isSafeKey("nested/dir/file.txt"), "nested key")
-  assertTrue(isSafeKey("version..2.0"),       "dot-dot inside a segment is fine")
-  assertTrue(isSafeKey("my..file.txt"),       "filename embedding .. is fine")
+  assertTrue(isSafeKey("version..2.0"), "dot-dot inside a segment is fine")
+  assertTrue(isSafeKey("my..file.txt"), "filename embedding .. is fine")
 }
 
 test "isSafeKey rejects empty key" {
@@ -37,15 +35,15 @@ test "isSafeKey rejects leading slash (absolute path)" {
 }
 
 test "isSafeKey rejects raw .. segment" {
-  assertTrue(not isSafeKey("../etc/passwd"),     "leading ..")
-  assertTrue(not isSafeKey("uploads/../etc"),    "interior ..")
-  assertTrue(not isSafeKey(".."),                "lone ..")
-  assertTrue(not isSafeKey("a/.."),              "trailing ..")
+  assertTrue(not isSafeKey("../etc/passwd"), "leading ..")
+  assertTrue(not isSafeKey("uploads/../etc"), "interior ..")
+  assertTrue(not isSafeKey(".."), "lone ..")
+  assertTrue(not isSafeKey("a/.."), "trailing ..")
 }
 
 test "isSafeKey rejects percent-encoded .. (single)" {
-  assertTrue(not isSafeKey("%2e%2e/etc/passwd"),  "lowercase percent")
-  assertTrue(not isSafeKey("%2E%2E/etc/passwd"),  "uppercase percent")
+  assertTrue(not isSafeKey("%2e%2e/etc/passwd"), "lowercase percent")
+  assertTrue(not isSafeKey("%2E%2E/etc/passwd"), "uppercase percent")
 }
 
 test "isSafeKey rejects mixed-case percent traversal" {
@@ -53,10 +51,8 @@ test "isSafeKey rejects mixed-case percent traversal" {
 }
 
 test "isSafeKey rejects double-encoded percent payloads" {
-  assertTrue(not isSafeKey("%252e%252e/etc/passwd"),
-             "double-encoded %25 lowercase")
-  assertTrue(not isSafeKey("%252E%252E/etc/passwd"),
-             "double-encoded %25 uppercase")
+  assertTrue(not isSafeKey("%252e%252e/etc/passwd"), "double-encoded %25 lowercase")
+  assertTrue(not isSafeKey("%252E%252E/etc/passwd"), "double-encoded %25 uppercase")
 }
 
 test "isSafeKey rejects backslash traversal" {
@@ -69,26 +65,26 @@ test "isSafeKey rejects null bytes" {
 
 test "normalisedStorageKey decodes target characters only" {
   assertEqual(normalisedStorageKey("%2e%2e/etc"), "../etc", "decode dot")
-  assertEqual(normalisedStorageKey("%2F/path"),   "//path", "decode slash")
-  assertEqual(normalisedStorageKey("a\\b"),       "a/b",    "fold backslash")
+  assertEqual(normalisedStorageKey("%2F/path"), "//path", "decode slash")
+  assertEqual(normalisedStorageKey("a\\b"), "a/b", "fold backslash")
 }
 
 test "storageKeyHasDotDot segment-aware" {
-  assertTrue(storageKeyHasDotDot("../etc"),      "leading ..")
-  assertTrue(storageKeyHasDotDot("a/../b"),      "interior ..")
+  assertTrue(storageKeyHasDotDot("../etc"), "leading ..")
+  assertTrue(storageKeyHasDotDot("a/../b"), "interior ..")
   assertTrue(not storageKeyHasDotDot("version..2"), "embedded .. is not a segment")
-  assertTrue(not storageKeyHasDotDot("my..file"),   "filename .. is not a segment")
-  assertTrue(not storageKeyHasDotDot("a/b/c"),      "no .. anywhere")
+  assertTrue(not storageKeyHasDotDot("my..file"), "filename .. is not a segment")
+  assertTrue(not storageKeyHasDotDot("a/b/c"), "no .. anywhere")
 }
 
 test "isSafePrefix admits empty prefix" {
-  assertTrue(isSafePrefix(""),         "empty prefix is list-all")
+  assertTrue(isSafePrefix(""), "empty prefix is list-all")
   assertTrue(isSafePrefix("uploads/"), "ordinary prefix")
 }
 
 test "isSafePrefix rejects traversal" {
-  assertTrue(not isSafePrefix("../etc"),               "leading ..")
-  assertTrue(not isSafePrefix("%252e%252e/etc"),       "double-encoded")
+  assertTrue(not isSafePrefix("../etc"), "leading ..")
+  assertTrue(not isSafePrefix("%252e%252e/etc"), "double-encoded")
 }
 
 // ─── connectLocal Result-only checks ─────────────────────────────────────────
@@ -97,41 +93,46 @@ test "isSafePrefix rejects traversal" {
 // surface without exercising any subsequent bucket method (which would
 // route through the imported `StorageBucket` interface that the
 // emitter currently widens to `Object` cross-package — see #1140).
-
 test "connectLocal rejects empty basePath" {
   assertTrue(isErr(connectLocal("", "bucket")), "must reject empty basePath")
 }
 
 test "connectLocal rejects empty bucketName" {
-  assertTrue(isErr(connectLocal("/tmp/lyric-storage-tests", "")),
-             "must reject empty bucketName")
+  assertTrue(isErr(connectLocal("/tmp/lyric-storage-tests", "")), "must reject empty bucketName")
 }
 
 test "connectLocal succeeds for a fresh basePath" {
-  val basePath   = "/tmp/lyric-storage-tests"
+  val basePath = "/tmp/lyric-storage-tests"
   val bucketName = "fresh-" + Uuid.uuidToString(Uuid.newUuid())
-  assertTrue(isOk(connectLocal(basePath, bucketName)),
-             "connectLocal must succeed for fresh bucket")
+  assertTrue(isOk(connectLocal(basePath, bucketName)), "connectLocal must succeed for fresh bucket")
+}
+
+// #5479: a NUL byte in the path makes Path.GetFullPath throw; the try/catch in
+// connectLocal must surface a structured Err(INVALID_ARGUMENT) rather than
+// letting the exception escape and crash the caller. `bucketName` is not
+// isSafeKey-checked, so a NUL there reaches GetFullPath (unlike a storage key,
+// which isSafeKey rejects before resolveLocalPath's twin catch is ever hit).
+test "connectLocal returns Err(INVALID_ARGUMENT) when GetFullPath rejects a NUL bucketName" {
+  match connectLocal("/tmp/lyric-storage-tests", "bucket\u{0000}evil") {
+    case Ok(_) -> assertTrue(false, "a NUL-bearing bucketName must not succeed")
+    case Err(e) -> assertEqual(e.code, "INVALID_ARGUMENT", "GetFullPath failure yields a structured Err, not a crash")
+  }
 }
 
 test "connectS3 rejects empty region" {
-  assertTrue(isErr(connectS3("", "bucket", "k", "s", "")),
-             "must reject empty region")
+  assertTrue(isErr(connectS3("", "bucket", "k", "s", "")), "must reject empty region")
 }
 
 test "connectS3 rejects empty bucket name" {
-  assertTrue(isErr(connectS3("us-east-1", "", "k", "s", "")),
-             "must reject empty bucket name")
+  assertTrue(isErr(connectS3("us-east-1", "", "k", "s", "")), "must reject empty bucket name")
 }
 
 test "connectAzureBlob rejects empty connection string" {
-  assertTrue(isErr(connectAzureBlob("", "container")),
-             "must reject empty connection string")
+  assertTrue(isErr(connectAzureBlob("", "container")), "must reject empty connection string")
 }
 
 test "connectAzureBlob rejects empty container name" {
-  assertTrue(isErr(connectAzureBlob("DefaultEndpointsProtocol=https;...", "")),
-             "must reject empty container name")
+  assertTrue(isErr(connectAzureBlob("DefaultEndpointsProtocol=https;...", "")), "must reject empty container name")
 }
 
 // ─── LocalBucket data-plane smoke tests ───────────────────────────────────
@@ -146,9 +147,8 @@ test "connectAzureBlob rejects empty container name" {
 // UUID so they're independent and reentrant.  No file-system cleanup
 // is performed (the OS handles `/tmp` eventually) — the tests assume
 // `/tmp/lyric-storage-tests` is writable.
-
 func freshBucket(): Result[StorageBucket, StorageError] {
-  val basePath   = "/tmp/lyric-storage-tests"
+  val basePath = "/tmp/lyric-storage-tests"
   val bucketName = "smoke-" + Uuid.uuidToString(Uuid.newUuid())
   connectLocal(basePath, bucketName)
 }
@@ -158,10 +158,8 @@ test "put round-trips through get" {
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
   val payload = "aGVsbG8="  // "hello" in base64
-  assertTrue(isOk(put(bucket, "smoke/hello.txt", payload, "text/plain")),
-             "put must succeed")
-  assertTrue(isOk(get(bucket, "smoke/hello.txt")),
-             "get must succeed for previously-put key")
+  assertTrue(isOk(put(bucket, "smoke/hello.txt", payload, "text/plain")), "put must succeed")
+  assertTrue(isOk(get(bucket, "smoke/hello.txt")), "get must succeed for previously-put key")
 }
 
 test "exists returns Ok(false) for absent key" {
@@ -169,49 +167,40 @@ test "exists returns Ok(false) for absent key" {
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
   // (using method-call form to avoid `exists` soft-keyword parser ambiguity; see #4674)
-  assertTrue(isOk(bucket.exists("never-put.txt")),
-             "exists call must succeed regardless of presence")
+  assertTrue(isOk(bucket.exists("never-put.txt")), "exists call must succeed regardless of presence")
 }
 
 test "exists returns Ok after put" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(put(bucket, "exists/probe.bin", "AAA=", "application/octet-stream")),
-             "put must succeed")
+  assertTrue(isOk(put(bucket, "exists/probe.bin", "AAA=", "application/octet-stream")), "put must succeed")
   // (using method-call form to avoid `exists` soft-keyword parser ambiguity; see #4674)
-  assertTrue(isOk(bucket.exists("exists/probe.bin")),
-             "exists must succeed after put")
+  assertTrue(isOk(bucket.exists("exists/probe.bin")), "exists must succeed after put")
 }
 
 test "delete returns Ok for previously-put key" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(put(bucket, "delete/me.bin", "AAA=", "application/octet-stream")),
-             "put must succeed")
-  assertTrue(isOk(delete(bucket, "delete/me.bin")),
-             "delete must succeed for known key")
+  assertTrue(isOk(put(bucket, "delete/me.bin", "AAA=", "application/octet-stream")), "put must succeed")
+  assertTrue(isOk(delete(bucket, "delete/me.bin")), "delete must succeed for known key")
 }
 
 test "list returns Ok on an empty bucket" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(list(bucket, "")),
-             "list on empty bucket must succeed")
+  assertTrue(isOk(list(bucket, "")), "list on empty bucket must succeed")
 }
 
 test "list returns Ok after multiple puts" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(put(bucket, "list/a.txt", "QQ==", "text/plain")),
-             "put a must succeed")
-  assertTrue(isOk(put(bucket, "list/b.txt", "Qg==", "text/plain")),
-             "put b must succeed")
-  assertTrue(isOk(list(bucket, "list/")),
-             "list with prefix must succeed after puts")
+  assertTrue(isOk(put(bucket, "list/a.txt", "QQ==", "text/plain")), "put a must succeed")
+  assertTrue(isOk(put(bucket, "list/b.txt", "Qg==", "text/plain")), "put b must succeed")
+  assertTrue(isOk(list(bucket, "list/")), "list with prefix must succeed after puts")
 }
 
 // Pagination cursor smoke test (#1460 / #1012) — exercises the
@@ -226,48 +215,42 @@ test "list paginates with continuation token" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(put(bucket, "pg/a.txt", "QQ==", "text/plain")),
-             "put a must succeed")
-  assertTrue(isOk(put(bucket, "pg/b.txt", "Qg==", "text/plain")),
-             "put b must succeed")
+  assertTrue(isOk(put(bucket, "pg/a.txt", "QQ==", "text/plain")), "put a must succeed")
+  assertTrue(isOk(put(bucket, "pg/b.txt", "Qg==", "text/plain")), "put b must succeed")
 
   // Page 1: maxKeys = 1 against two matching keys → truncated, with
   // a continuation token.
   val page1Res = bucket.list("pg/", "", 1)
   assertTrue(isOk(page1Res), "page 1 list call must succeed")
-  val emptyPage = ListResult(entries = [], nextContinuationToken = None,
-                             isTruncated = false)
+  val emptyPage = ListResult(entries = [], nextContinuationToken = None, isTruncated = false)
   val page1 = unwrapResultOr(page1Res, emptyPage)
-  assertTrue(page1.isTruncated,
-             "page 1 must report isTruncated when total > maxKeys")
-  assertTrue(isSome(page1.nextContinuationToken),
-             "page 1 must populate nextContinuationToken when truncated")
+  assertTrue(page1.isTruncated, "page 1 must report isTruncated when total > maxKeys")
+  assertTrue(isSome(page1.nextContinuationToken), "page 1 must populate nextContinuationToken when truncated")
 
   // Page 2: drive the token from page 1 through to verify it resumes
   // cleanly.  We can't pattern-match the Option payload here under
   // the current emitter (#1140), so unwrap via `unwrapOr`.
   val token = unwrapOr(page1.nextContinuationToken, "")
-  assertTrue(token.length > 0,
-             "unwrapped continuation token must be non-empty")
+  assertTrue(token.length > 0, "unwrapped continuation token must be non-empty")
   val page2Res = bucket.list("pg/", token, 1)
-  assertTrue(isOk(page2Res),
-             "page 2 list call must succeed when handed the cursor")
+  assertTrue(isOk(page2Res), "page 2 list call must succeed when handed the cursor")
 }
 
 test "put rejects unsafe key with path traversal" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isErr(put(bucket, "../escape.txt", "AAA=", "text/plain")),
-             "put must reject `..` traversal at the safety gate")
+  assertTrue(
+    isErr(put(bucket, "../escape.txt", "AAA=", "text/plain")),
+    "put must reject `..` traversal at the safety gate"
+  )
 }
 
 test "get rejects unsafe key with absolute path" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isErr(get(bucket, "/etc/passwd")),
-             "get must reject absolute key at the safety gate")
+  assertTrue(isErr(get(bucket, "/etc/passwd")), "get must reject absolute key at the safety gate")
 }
 
 // ─── .meta.json key rejection (#1911) ────────────────────────────────────────
@@ -277,37 +260,32 @@ test "get rejects unsafe key with absolute path" {
 // operations.  `isSafeKey` is the single source of truth; the four
 // data-plane methods all carry `requires: isSafeKey(key)` so the rejection
 // surfaces as a contract violation.
-
 test "isSafeKey rejects .meta.json-suffixed key" {
-  assertTrue(not isSafeKey("archive.meta.json"),
-             "bare .meta.json key must be rejected")
-  assertTrue(not isSafeKey("uploads/photo.meta.json"),
-             "nested .meta.json key must be rejected")
-  assertTrue(not isSafeKey("a/b/c.meta.json"),
-             "deeply nested .meta.json key must be rejected")
+  assertTrue(not isSafeKey("archive.meta.json"), "bare .meta.json key must be rejected")
+  assertTrue(not isSafeKey("uploads/photo.meta.json"), "nested .meta.json key must be rejected")
+  assertTrue(not isSafeKey("a/b/c.meta.json"), "deeply nested .meta.json key must be rejected")
 }
 
 test "isSafeKey accepts keys that merely contain meta.json" {
-  assertTrue(isSafeKey("meta.json.bak"),
-             "meta.json.bak is not a sidecar suffix")
-  assertTrue(isSafeKey("meta.json"),
-             "bare meta.json (no leading dot on suffix) is safe")
+  assertTrue(isSafeKey("meta.json.bak"), "meta.json.bak is not a sidecar suffix")
+  assertTrue(isSafeKey("meta.json"), "bare meta.json (no leading dot on suffix) is safe")
 }
 
 test "put rejects .meta.json-suffixed key" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isErr(put(bucket, "archive.meta.json", "QQ==", "application/json")),
-             "put must reject .meta.json key at the isSafeKey contract gate")
+  assertTrue(
+    isErr(put(bucket, "archive.meta.json", "QQ==", "application/json")),
+    "put must reject .meta.json key at the isSafeKey contract gate"
+  )
 }
 
 test "get rejects .meta.json-suffixed key" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isErr(get(bucket, "archive.meta.json")),
-             "get must reject .meta.json key at the isSafeKey contract gate")
+  assertTrue(isErr(get(bucket, "archive.meta.json")), "get must reject .meta.json key at the isSafeKey contract gate")
 }
 
 test "exists rejects .meta.json-suffixed key" {
@@ -315,8 +293,10 @@ test "exists rejects .meta.json-suffixed key" {
   assertTrue(isOk(bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
   // Use the method-call form to avoid the `exists` soft-keyword parse ambiguity (#4674).
-  assertTrue(isErr(bucket.exists("archive.meta.json")),
-             "exists must reject .meta.json key at the isSafeKey contract gate")
+  assertTrue(
+    isErr(bucket.exists("archive.meta.json")),
+    "exists must reject .meta.json key at the isSafeKey contract gate"
+  )
 }
 
 // Sentinel bucket used by `unwrapResultOr` fallbacks — never read
@@ -326,7 +306,7 @@ test "exists rejects .meta.json-suffixed key" {
 // freshBucket() output.
 func defaultBucket(): StorageBucket {
   match connectLocal("/tmp/lyric-storage-tests", "__default__") {
-    case Ok(b)  -> b
+    case Ok(b) -> b
     case Err(_) -> panic("defaultBucket: connectLocal failed unexpectedly")
   }
 }

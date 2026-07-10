@@ -14012,6 +14012,34 @@ source-only hardening, consistent with the existing `decodeBlock` cap.
 
 ---
 
+## D-progress-643 — post-merge follow-ups: mock honors the mail-injection contract, and the storage GetFullPath catch path gets a test
+
+Two more non-blocking review SUGGESTIONs from PR #5477/#5506 addressed:
+
+- **#5507 — `MockMailSender` now honors the `MailSender.send` contract.** The
+  test double in `lyric-testing` recorded every message without running the
+  header-injection guard the interface contract (documented in #5499) requires
+  of every implementation. It now calls `Mail.validateNoInjection(msg)` first
+  and returns the `MailError` on a CRLF/NUL-bearing message — so a test that
+  routes injection through the mock observes the same `Err` a real sender would,
+  and the message is not recorded as sent. Two `testing_tests.l` cases pin this.
+- **#5479 (storage half) — `connectLocal`'s GetFullPath `try/catch` now has a
+  regression test.** A NUL byte in `bucketName` (which, unlike a storage key, is
+  not `isSafeKey`-checked) makes `Path.GetFullPath` throw; the test asserts
+  `connectLocal` returns `Err(INVALID_ARGUMENT)` rather than crashing. The
+  sibling `resolveLocalPath` INVALID_KEY catch stays untested because it is only
+  reachable through an `isSafeKey`-passing key, and `isSafeKey` rejects the NUL
+  bytes that would make GetFullPath throw — so on Linux no input reaches that
+  catch (documented, not a gap).
+
+Remaining #5479 item (a `NativeSender.send`-direct injection test) stays covered
+by proxy: `NativeSender.send`'s guard is `Mail.validateNoInjection`, which is now
+`pub` and directly tested (D-progress-642); constructing a `NativeSender` needs a
+live-SMTP-shaped `SmtpClient`, so an end-to-end direct test is not worth the
+fragility.
+
+---
+
 ## Decisions deferred to v2 or later
 
 
