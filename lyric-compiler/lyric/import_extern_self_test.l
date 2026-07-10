@@ -4,7 +4,8 @@ package Lyric.ImportExternSelfTest
 import Std.Core
 import Std.Math as Math
 import Std.Testing
-import extern System.{Math as SystemMath, Int32 as NetInt32, Int64 as NetInt64, String as NetString, Environment as NetEnv}
+import Std.Uuid
+import extern System.{Math as SystemMath, Int32 as NetInt32, Int64 as NetInt64, String as NetString, Environment as NetEnv, TimeSpan, Guid, DateTime}
 import extern System.Text.{Encoding, StringBuilder}
 import extern System.Diagnostics.{Stopwatch}
 import extern System.Text.RegularExpressions.{Regex, RegexOptions}
@@ -91,4 +92,71 @@ test "static property set and get round-trips" {
 test "enum constants resolve and pass to a BCL method" {
   assertTrue(Regex.IsMatch("Hello World", "hello", RegexOptions.IgnoreCase), "IgnoreCase matches")
   assertFalse(Regex.IsMatch("Hello World", "hello", RegexOptions.None), "None does not match")
+}
+
+test "value-type instance methods dispatch through ldloca + call" {
+  val ts = TimeSpan.FromMinutes(5.0)
+  // reference-type (String) return
+  assertEqual(ts.ToString(), "00:05:00", "TimeSpan.ToString()")
+  // value-type return, then a chained instance call on that struct result
+  val neg = ts.Negate()
+  assertEqual(neg.ToString(), "-00:05:00", "Negate() value-type return")
+  // primitive (Int32) return
+  val g = Guid.new("550e8400-e29b-41d4-a716-446655440000")
+  val g2 = Guid.new("550e8400-e29b-41d4-a716-446655440000")
+  assertEqualInt(g.GetHashCode(), g2.GetHashCode(), "GetHashCode() primitive return")
+}
+
+test "value-type instance property gets via member access and call form" {
+  val ts = TimeSpan.FromMinutes(5.0)
+  assertTrue(ts.TotalMinutes > 4.999, "TotalMinutes member form lower bound")
+  assertTrue(ts.TotalMinutes < 5.001, "TotalMinutes member form upper bound")
+  assertTrue(ts.TotalSeconds() > 299.9, "TotalSeconds() call form lower bound")
+  assertTrue(ts.TotalSeconds() < 300.1, "TotalSeconds() call form upper bound")
+  val dt = DateTime.new(2024, 3, 15)
+  assertEqualInt(dt.Day, 15, "Day property on a constructed struct")
+}
+
+test "value-type .new(args) constructs via newobj (Q48-004)" {
+  val ts = TimeSpan.new(1, 2, 3)
+  assertEqual(ts.ToString(), "01:02:03", "TimeSpan.new(int,int,int)")
+  val g = Guid.new("550e8400-e29b-41d4-a716-446655440000")
+  assertEqual(g.ToString(), "550e8400-e29b-41d4-a716-446655440000", "Guid.new(string)")
+  val dt = DateTime.new(2024, 3, 15)
+  val dt2 = dt.AddDays(10.0)
+  assertEqualInt(dt2.Day, 25, "AddDays on a .new()-constructed struct")
+}
+
+test "zero-arg .new() on a value type yields the zero-initialised default" {
+  val z = TimeSpan.new()
+  assertEqual(z.ToString(), "00:00:00", "default TimeSpan")
+  val zg = Guid.new()
+  assertEqual(zg.ToString(), "00000000-0000-0000-0000-000000000000", "default (nil) Guid")
+}
+
+test "extern struct equality boxes both operands for Object.Equals" {
+  val a = Guid.new("550e8400-e29b-41d4-a716-446655440000")
+  val b = Guid.new("550e8400-e29b-41d4-a716-446655440000")
+  val c = Guid.new("00000000-0000-0000-0000-000000000001")
+  assertTrue(a == b, "equal guids compare equal")
+  assertFalse(a == c, "different guids compare unequal")
+  assertTrue(a != c, "!= on different guids")
+  assertFalse(a != b, "!= on equal guids")
+}
+
+test "extern struct interpolation boxes before ToString" {
+  val g = Guid.new("550e8400-e29b-41d4-a716-446655440000")
+  assertEqual("id=${g}", "id=550e8400-e29b-41d4-a716-446655440000", "interpolated struct")
+  val ts = TimeSpan.FromMinutes(5.0)
+  assertEqual("span=${ts}", "span=00:05:00", "interpolated TimeSpan")
+}
+
+test "extern struct flows through uniform-ABI generic calls (#5196)" {
+  val parsed = parseUuidOpt("550e8400-e29b-41d4-a716-446655440000")
+  val u = unwrapOr(parsed, nilUuid())
+  assertEqual(uuidToString(u), "550e8400-e29b-41d4-a716-446655440000", "unwrapOr on Option[Uuid]")
+  assertTrue(isSome(parsed), "isSome on Option[Uuid]")
+  assertTrue(isNone(parseUuidOpt("not-a-uuid")), "isNone on unparseable input")
+  val fallback = unwrapOr(parseUuidOpt("not-a-uuid"), nilUuid())
+  assertEqual(uuidToString(fallback), "00000000-0000-0000-0000-000000000000", "unwrapOr default path")
 }

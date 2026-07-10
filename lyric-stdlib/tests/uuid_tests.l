@@ -4,13 +4,6 @@
 //! produces the canonical hyphenated form, parseUuidOpt round-trips
 //! (all four cross-target formats, D-N-026), and parseUuidOpt returns
 //! None for invalid input.
-//!
-//! Option[Uuid] results are unwrapped with inline `match` rather than
-//! the generic Std.Core helpers (`unwrapOr` / `isSome` / `isNone`):
-//! those miscompile on the MSIL uniform-ABI generic path when the type
-//! argument is an extern value type like System.Guid (#5196 — missing
-//! box/unbox, and a wrong-value return when the Bool flows into an
-//! argument position).  Swap back when #5196 is fixed.
 package Std.Uuid.Tests
 
 import Std.Core
@@ -40,20 +33,20 @@ func testTwoNewUuidsDistinct(): Unit {
 }
 
 // Assert that `parseUuidOpt(input)` yields a value formatting back to
-// `expect` (inline match, not unwrapOr — see the header and #5196).
+// `expect`.  Deliberately routes Option[Uuid] through the generic Std.Core
+// helpers (`isSome` / `unwrapOr`) — the uniform-ABI generic path with an
+// extern value-type argument used to miscompile (#5196), so this doubles as
+// its regression coverage.  `newUuid()` as the unwrapOr default can never
+// accidentally equal `expect`.
 func assertParsesTo(input: in String, expect: in String, label: in String): Unit {
-  match parseUuidOpt(input) {
-    case Some(u) -> assertEqual(uuidToString(u), expect, label)
-    case None -> assertTrue(false, label + " (parse unexpectedly failed)")
-  }
+  val parsed = parseUuidOpt(input)
+  assertTrue(isSome(parsed), label + " (parse succeeds)")
+  assertEqual(uuidToString(unwrapOr(parsed, newUuid())), expect, label)
 }
 
 // Assert that `parseUuidOpt(input)` rejects the input.
 func assertRejects(input: in String, label: in String): Unit {
-  match parseUuidOpt(input) {
-    case Some(_) -> assertTrue(false, label + " (parse unexpectedly succeeded)")
-    case None -> assertTrue(true, label)
-  }
+  assertTrue(isNone(parseUuidOpt(input)), label)
 }
 
 func testParseRoundTrip(): Unit {

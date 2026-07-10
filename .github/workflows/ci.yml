@@ -5031,9 +5031,10 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/log_tests.l
 
-      # Pins the D-N-026 four-format parse contract (and #5196's inline-match
-      # workaround) on the managed target; uuid_tests.l is a plain-main
-      # program, so it runs via `lyric run` rather than `lyric test` (#5200).
+      # Pins the D-N-026 four-format parse contract on the managed target,
+      # including Option[Uuid] flowing through the generic Std.Core helpers
+      # (#5196 regression); uuid_tests.l is a plain-main program, so it runs
+      # via `lyric run` rather than `lyric test` (#5200).
       - name: Std.Uuid test coverage (lyric run)
         working-directory: ${{ github.workspace }}
         run: |
