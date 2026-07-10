@@ -666,6 +666,35 @@ record CorsMiddleware {
   maxAgeSeconds: Int
 }
 
+// True when `vary` (a comma-separated Vary header value) already lists the
+// `Origin` field (case-insensitive), so we don't add it twice.
+func varyContainsOrigin(vary: in String): Bool {
+  val parts = vary.split(",")
+  var i = 0
+  while i < parts.length {
+    if parts[i].trim().toLower() == "origin" {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+// Add "Origin" to the response's `Vary` header, MERGING with any existing value
+// rather than overwriting it — `withResponseHeader` replaces, which would drop
+// a prior middleware's `Vary: Accept-Encoding` and desynchronise caches.
+// Idempotent when Origin is already listed.
+func withVaryOrigin(resp: in Response): Response {
+  val existing = match mapGet(resp.headers, "Vary") { case Some(v) -> v; case None -> "" }
+  if existing.length == 0 {
+    withResponseHeader(resp, "Vary", "Origin")
+  } else if varyContainsOrigin(existing) {
+    resp
+  } else {
+    withResponseHeader(resp, "Vary", existing + ", Origin")
+  }
+}
+
 impl Middleware for CorsMiddleware {
   func wrap(req: in Request, next: Handler): Response {
     val h = next
@@ -680,14 +709,14 @@ impl Middleware for CorsMiddleware {
       // `Vary: Origin` so a shared/CDN cache keyed on URL cannot serve a
       // response computed for one origin to a request from another origin
       // (reflected-ACAO cache poisoning).
-      resp = withResponseHeader(resp, "Vary", "Origin")
+      resp = withVaryOrigin(resp)
       resp = withResponseHeader(resp, "Access-Control-Allow-Methods", self.allowedMethods)
       resp = withResponseHeader(resp, "Access-Control-Allow-Headers", self.allowedHeaders)
       resp = withResponseHeader(resp, "Access-Control-Max-Age", self.maxAgeSeconds.toString())
       return resp
     }
     val resp = h.handle(req)
-    val withVary = withResponseHeader(resp, "Vary", "Origin")
+    val withVary = withVaryOrigin(resp)
     return withResponseHeader(withVary, "Access-Control-Allow-Origin", origin)
   }
 }

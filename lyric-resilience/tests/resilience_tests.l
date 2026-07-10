@@ -125,6 +125,23 @@ test "backoffDelay: delay is capped at maxDelayMs regardless of attempt count" {
   assertEqualInt(Resilience.backoffDelay(100, 2, 20, 5000, 0.0f32), 5000, "high attempt count caps at maxDelayMs")
 }
 
+// Regression: with a large initialDelayMs/maxDelayMs, `delay * backoffFactor`
+// used to overflow Int and wrap negative, slipping past the cap check and
+// eventually returning a negative delay (which violates sleepMs's
+// `requires: ms >= 0`).  The multiply now happens in Long.
+test "backoffDelay: extreme config never overflows to a negative delay" {
+  val d = Resilience.backoffDelay(1000000000, 10, 5, 2000000000, 0.0f32)
+  assertTrue(d >= 0, "delay must never be negative")
+  assertTrue(d <= 2000000000, "delay must never exceed maxDelayMs")
+  assertEqualInt(d, 2000000000, "delay saturates to maxDelayMs, not a wrapped value")
+}
+
+// Regression: a backoffFactor < 1 used to collapse the delay to 0 (busy-retry);
+// it is now clamped to 1 (constant delay).
+test "backoffDelay: zero backoffFactor degrades to a constant delay, not 0" {
+  assertEqualInt(Resilience.backoffDelay(250, 0, 3, 30000, 0.0f32), 250, "factor 0 clamps to 1: constant delay")
+}
+
 test "backoffDelay: jitter stays within the +/-jitterFraction*delay clamped range" {
   var i = 0
   while i < 50 {
