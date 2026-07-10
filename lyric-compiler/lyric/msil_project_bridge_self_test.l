@@ -528,8 +528,7 @@ test "cross-package generic union nullary case constructs and matches" {
   packages.add(
     mkPkg(
       "XPkgGenNullary.Lib",
-      "package XPkgGenNullary.Lib\n" + "\n" + "pub union Maybe[T] {\n" + "  case Just(value: T)\n" +
-        "  case Nothing\n" +
+      "package XPkgGenNullary.Lib\n" + "\n" + "pub union Maybe[T] {\n" + "  case Just(value: T)\n" + "  case Nothing\n" +
         "}\n"
     )
   )
@@ -553,11 +552,7 @@ test "cross-package generic union nullary case constructs and matches" {
     )
   )
   val result = compileAndRun("xpkg-gen-nullary", packages, "XPkgGenNullary")
-  assertEqualInt(
-    result.exitCode,
-    0,
-    "cross_package_generic_union_nullary_case: exit 0 (stderr=" + result.stderr + ")"
-  )
+  assertEqualInt(result.exitCode, 0, "cross_package_generic_union_nullary_case: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(
     Str.trim(result.stdout),
     "99\n7",

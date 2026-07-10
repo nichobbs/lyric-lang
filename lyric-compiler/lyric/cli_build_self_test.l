@@ -494,7 +494,10 @@ test "buildOneNative: a manifest with a genuine [nuget]-resolved third-party DLL
     case Err(e) -> panic("cannot create " + objDir + ": " + IOError.message(e))
   }
 
-  val fixtureRelDllPath = Path.join(Path.join("newtonsoft.json", "13.0.3"), Path.join("lib", Path.join("netstandard2.0", "Newtonsoft.Json.dll")))
+  val fixtureRelDllPath = Path.join(
+    Path.join("newtonsoft.json", "13.0.3"),
+    Path.join("lib", Path.join("netstandard2.0", "Newtonsoft.Json.dll"))
+  )
   val fixtureDllPath = Path.join(pkgsDir, fixtureRelDllPath)
   val fixtureSrcPath = Path.join(pkgsDir, "fixture_lib.l")
   writeFileOrPanic(fixtureSrcPath, "package NugetOnlyFixtureLib\n\npub func noop(): Int {\n  0\n}\n")

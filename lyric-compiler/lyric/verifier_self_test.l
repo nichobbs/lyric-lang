@@ -534,13 +534,18 @@ func testProveRangeBoundUpperOnly(): Unit {
 }
 
 // #4848: a `val` binding annotated with an inline range refinement now
-// carries a range hypothesis into the WP goal (vcgen.l LBVal case). Without
-// it, `result <= 100` is unprovable from `p`'s otherwise-unconstrained Int
-// value — the inline refinement is transparent for type equivalence (docs/01
-// §2.2), so `p`'s initialiser (an arbitrary `Int` parameter) type-checks, and
-// only the range hypothesis makes the ensures clause discharge.
+// carries a range hypothesis into the WP goal (vcgen.l LBVal case). `x` is
+// constrained in-range by `requires:` (an inline refinement is transparent
+// for type equivalence — docs/01 §2.2 — so assigning `x` to `p` inserts no
+// runtime/proof check of its own; the `requires:` is what makes the
+// assignment sound), but WITHOUT `p`'s own range hypothesis flowing into the
+// WP goal, the postcondition `result <= 100` doesn't obviously follow from
+// `p`'s otherwise-unconstrained `Int` slot — the point of this test is that
+// discharge succeeds only because `rangeHypotheses` attaches `p`'s declared
+// bound directly, not by re-deriving it from `x`'s `requires:` through the
+// assignment.
 func testProveValBindingRangeHypothesis(): Unit {
-  val src = "@proof_required\npackage P\nfunc clip(x: in Int): Int {\n  ensures: result >= 0 and result <= 100\n  val p: Int range 0 ..= 100 = x\n  return p\n}\n"
+  val src = "@proof_required\npackage P\nfunc clip(x: in Int): Int\n  requires: x >= 0 and x <= 100\n  ensures: result >= 0 and result <= 100\n{\n  val p: Int range 0 ..= 100 = x\n  return p\n}\n"
   val summary = prove(src)
   match summary.level {
     case VLProofRequired -> {
@@ -568,7 +573,10 @@ func testProveProtectedTypeRangeFieldHypothesis(): Unit {
     }
   }
   assertTrue(not summaryHasErrorDiag(summary), "prot-range-field-hyp: no error diags")
-  assertTrue(not summaryHasFailure(summary), "prot-range-field-hyp: ensures discharges from the field's range hypothesis")
+  assertTrue(
+    not summaryHasFailure(summary),
+    "prot-range-field-hyp: ensures discharges from the field's range hypothesis"
+  )
 }
 
 // #735/#746 sort-name smoke: two same-shape records compile through `qualifiedDatatypeName` without crash.

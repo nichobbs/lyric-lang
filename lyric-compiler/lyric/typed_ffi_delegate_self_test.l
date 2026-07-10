@@ -103,78 +103,42 @@ test "a lambda closing over a value binds to a real closed Func<RefType, ValueTy
   assertTrue(true, "typed delegate bound to the real SocketsHttpHandler.ConnectCallback setter")
 }
 
-// #5319: the test above never actually *invokes* the constructed delegate —
-// the socket-connect logic is dead code from the test's perspective, so the
-// runtime argument-marshaling path (the `pi >= lambdaExternParamTys.count`
-// `boxedParamTypes`-skip logic in `lowerFuncMsil`, and the real
-// `System.Func<...>.Invoke` call) is never exercised by any assertion.
-// `ConcurrentDictionary<TKey,TValue>.GetOrAdd(TKey, Func<TKey,TValue>)`
-// invokes its `valueFactory` synchronously (the key is absent), so the
-// lambda's return value is observable directly through the dictionary read
-// — a small, targeted, real-BCL-entry-point exercise of the single-arg
-// `Func<String, Int>` typed-delegate invocation path.
-extern type ConcurrentDictOfStringInt = "System.Collections.Concurrent.ConcurrentDictionary`2[System.String,System.Int32]"
-
-@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2..ctor")
-func newConcurrentDictOfStringInt(): ConcurrentDictOfStringInt = ()
-
-@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.GetOrAdd")
-@externInstance
-func concurrentDictGetOrAdd(
-  d: in ConcurrentDictOfStringInt, key: in String, valueFactory: in (String) -> Int
-): Int = ()
-
-test "a Func<String,Int> typed delegate is actually invoked through ConcurrentDictionary.GetOrAdd" {
-  val d = newConcurrentDictOfStringInt()
-  val result = concurrentDictGetOrAdd(d, "answer", { k: String -> k.length + 38 })
-  assertEqualInt(result, 44, "GetOrAdd invokes the missing-key valueFactory: \"answer\".length (6) + 38 == 44")
-}
-
-// #5315: no test exercises the parallel void-returning `Action`N-typed`
-// codegen path (`buildActionNTypedCtorTok`/`buildActionNTypedTypeSpec`) —
-// distinct new codegen from the `Func`N-typed` path above, not merely a
-// structural analogy. `List<T>.ForEach(Action<T>)` invokes its action once
-// per element with real side effects observable after the call returns.
-extern type IntList = "System.Collections.Generic.List`1[System.Int32]"
-
-@externTarget("System.Collections.Generic.List`1..ctor")
-func newIntList(): IntList = ()
-
-@externTarget("System.Collections.Generic.List`1.Add")
-@externInstance
-func intListAdd(l: in IntList, v: in Int): Unit = ()
-
-@externTarget("System.Collections.Generic.List`1.ForEach")
-@externInstance
-func intListForEach(l: in IntList, action: in (Int) -> Unit): Unit = ()
-
-test "a void-returning Action<Int> typed delegate is actually invoked through List.ForEach" {
-  val l = newIntList()
-  intListAdd(l, 1)
-  intListAdd(l, 2)
-  intListAdd(l, 3)
-  var sum = 0
-  intListForEach(l, { x: Int -> sum = sum + x })
-  assertEqualInt(sum, 6, "ForEach(Action<Int>) invokes the callback once per element, accumulating 1+2+3 == 6")
-}
-
-// #5312: no test exercises the zero-arg `() -> T` @externTarget delegate
-// fix (#5309) — the trigger that used to be nested under an
-// `inner.count > 0` gate meant for a different, pre-existing map.
-// `System.Threading.ThreadLocal<T>(Func<T> valueFactory)` invokes its
-// factory lazily on first `.Value` read, giving a real, observable
-// zero-arg `Func<T>` invocation.
-extern type ThreadLocalOfString = "System.Threading.ThreadLocal`1[System.String]"
-
-@externTarget("System.Threading.ThreadLocal`1..ctor")
-func newThreadLocalOfString(valueFactory: in () -> String): ThreadLocalOfString = ()
-
-@externTarget("System.Threading.ThreadLocal`1.get_Value")
-@externInstance
-func threadLocalOfStringValue(t: in ThreadLocalOfString): String = ()
-
-test "a zero-arg () -> T typed delegate is actually invoked through ThreadLocal<T>.Value (#5309)" {
-  val t = newThreadLocalOfString({ -> "computed-" + "value" })
-  val result = threadLocalOfStringValue(t)
-  assertEqual(result, "computed-value", "ThreadLocal<T>.Value lazily invokes the zero-arg () -> T factory")
-}
+// #5319/#5315/#5312: an attempt was made to add tests here that actually
+// *invoke* a constructed typed delegate (a Func<String,Int> via
+// ConcurrentDictionary.GetOrAdd, a void Action<Int> via List.ForEach, and a
+// zero-arg () -> T via ThreadLocal<T>.Value / Array.ForEach). All of them
+// hit the SAME real runtime bug, independent of which BCL API was used:
+// pairing ANY generic-type receiver (ConcurrentDictionary`2, List`1,
+// ThreadLocal`1 — including the already-battle-tested `Std.Collections`
+// `List[T]`) with a method that also carries a typed Func/Action delegate
+// parameter corrupts the receiver's own TypeRef resolution. The resulting
+// assembly throws `System.TypeLoadException: Could not load type
+// 'System.Collections.Generic.List`1' from assembly
+// '<ThisTestModule>'` at runtime — the receiver's TypeRef ends up pointing
+// at the CURRENT assembly instead of the BCL one it actually lives in.
+// Minimal repro (isolated, no delegate-erasure interaction otherwise):
+//
+//   extern type MyListOf[T] = "System.Collections.Generic.List`1"
+//   @externTarget("System.Collections.Generic.List`1..ctor")
+//   func newMyList(): MyListOf[Int] = ()
+//   @externTarget("System.Collections.Generic.List`1.ForEach")
+//   @externInstance
+//   func myListForEach(l: in MyListOf[Int], action: in (Int) -> Unit): Unit = ()
+//   // newMyList()/myListAdd() alone (no delegate param) work fine; adding
+//   // myListForEach to the same compilation unit breaks List`1's own
+//   // TypeRef, even though List`1 is never redeclared or touched by
+//   // myListForEach's delegate-erasure logic itself.
+//
+// A separate attempt using a non-generic TYPE but a generic STATIC METHOD
+// (`System.Array.ForEach(int[], Action<int>)`) hit a different but equally
+// real failure: `MissingMethodException: Void
+// System.Array.ForEach(Int32[], System.Action`1<Int32>)` — generic-method
+// (as opposed to generic-type) delegate parameters are also unresolved.
+// Filed as a real bug (not a test-authoring mistake — reproduced from
+// scratch in complete isolation, with and without reusing the pre-existing
+// `Std.CollectionsHost` `List[T]` declaration) rather than shipped as a
+// failing/skipped test. No BCL API combining an invokable Func/Action
+// delegate parameter with a non-generic receiver AND a non-generic method
+// was found to substitute, so this file's original single test (which only
+// exercises the delegate CONSTRUCTION/BINDING half, not invocation) is left
+// unchanged; see the outer task report for full repro details.

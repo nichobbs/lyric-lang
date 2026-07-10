@@ -147,5 +147,9 @@ test "exposed record: implicit self method with argument" {
 
 test "implicit self: in-body method with requires/ensures contracts, passing call" {
   val d = Deposit(balance = 100)
-  assertEqualInt(d.add(50), 150, "Deposit(100).add(50) == 150, satisfying requires: x > 0 / ensures: result > self.balance")
+  assertEqualInt(
+    d.add(50),
+    150,
+    "Deposit(100).add(50) == 150, satisfying requires: x > 0 / ensures: result > self.balance"
+  )
 }

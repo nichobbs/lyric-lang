@@ -18,12 +18,12 @@
 //! flattened to the package's qualified static-val key instead of reading
 //! the captured local's own field.
 //!
-//! This test builds two packages: `Cap5274.Lib` (declares a `pub val NAME`)
-//! and `Cap5274.App` (declares a local named `Lib` — colliding with the
-//! imported package's own name — with a field also named `NAME`, captured
-//! by a closure that reads `Lib.NAME`). Before the fix the closure prints
-//! the package's static val ("pkg-value"); after the fix it prints the
-//! captured local's field ("captured-value").
+//! This test builds two packages: `Cap5274Util` (declares a `pub val NAME`)
+//! and `Cap5274App` (declares a local named `Cap5274Util` — colliding with
+//! the imported package's own name — with a field also named `NAME`,
+//! captured by a closure that reads `Cap5274Util.NAME`). Before the fix the
+//! closure prints the package's static val ("pkg-value"); after the fix it
+//! prints the captured local's field ("captured-value").
 //!
 //! Run in CI via:
 //!   lyric test lyric-compiler/lyric/qualified_static_val_capture_self_test.l
@@ -112,24 +112,74 @@ func compileAndRun(
 // ─── Regression: closure-captured local shadowing a package name is not
 // mistaken for a qualified static val (#5274) ────────────────────────────────
 test "closure-captured local shadowing a package name reads its own field, not the qualified static val" {
+  // Single-segment package name (`Cap5274Util`, no dots) so a same-named
+  // local's flattened `EMember` chain is exactly 2 segments — matching
+  // `tryQualifiedStaticValNameMsil`'s `segs[0]` guard directly, as in the
+  // issue's worked example (`import Util` / `val Util = Box(...)`).
   val packages: List[ProjectPackagePayload] = newList()
-  packages.add(mkPkg("Cap5274.Lib", "package Cap5274.Lib\n" + "\n" + "pub val NAME: String = \"pkg-value\"\n"))
+  packages.add(mkPkg("Cap5274Util", "package Cap5274Util\n" + "\n" + "pub val NAME: String = \"pkg-value\"\n"))
   packages.add(
     mkPkg(
-      "Cap5274.App",
-      "package Cap5274.App\n" + "\n" + "import Cap5274.Lib\n" + "\n" + "record Box { NAME: String }\n" + "\n" +
+      "Cap5274App",
+      "package Cap5274App\n" + "\n" + "import Cap5274Util\n" + "\n" + "record Box { NAME: String }\n" + "\n" +
         "func main(): Unit {\n" +
-        "  val Lib = Box(NAME = \"captured-value\")\n" +
-        "  val getter = { -> Lib.NAME }\n" +
+        "  val Cap5274Util = Box(NAME = \"captured-value\")\n" +
+        "  val getter = { -> Cap5274Util.NAME }\n" +
         "  println(getter())\n" +
         "}\n"
     )
   )
-  val result = compileAndRun("qsvcap", packages, "Cap5274")
+  val result = compileAndRun("qsvcap", packages, "Cap5274App")
   assertEqualInt(result.exitCode, 0, "closure_captured_shadow: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(
     Str.trim(result.stdout),
     "captured-value",
     "closure_captured_shadow: captured local field wins over qualified static val"
+  )
+}
+
+// ─── Diagnostic control: closure capturing a local record's field, no
+// package-name collision. Isolates whether plain closure-over-local-field
+// capture works at all, independent of the shadowing guard. ─────────────────
+test "diagnostic: closure capturing a local record field (no name collision)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Cap5274Plain",
+      "package Cap5274Plain\n" + "\n" + "record Box { NAME: String }\n" + "\n" + "func main(): Unit {\n" +
+        "  val holder = Box(NAME = \"captured-value\")\n" +
+        "  val getter = { -> holder.NAME }\n" +
+        "  println(getter())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("qsvplain", packages, "Cap5274Plain")
+  assertEqualInt(result.exitCode, 0, "diagnostic_plain_closure: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "captured-value", "diagnostic_plain_closure: captured field reads correctly")
+}
+
+// ─── Diagnostic control: SAME single-segment package-name collision as the
+// #5274 test, but with NO closure — a plain direct (non-lambda) field read.
+// Isolates whether the local-shadows-package-name resolution itself works at
+// the top level (outside a closure) for this exact single-segment name shape.
+test "diagnostic: local shadowing single-segment package name, no closure" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("Cap5274UtilB", "package Cap5274UtilB\n" + "\n" + "pub val NAME: String = \"pkg-value\"\n"))
+  packages.add(
+    mkPkg(
+      "Cap5274AppB",
+      "package Cap5274AppB\n" + "\n" + "import Cap5274UtilB\n" + "\n" + "record Box { NAME: String }\n" + "\n" +
+        "func main(): Unit {\n" +
+        "  val Cap5274UtilB = Box(NAME = \"captured-value\")\n" +
+        "  println(Cap5274UtilB.NAME)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("qsvnoclos", packages, "Cap5274AppB")
+  assertEqualInt(result.exitCode, 0, "diagnostic_no_closure_shadow: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "captured-value",
+    "diagnostic_no_closure_shadow: local field wins over qualified static val, no closure involved"
   )
 }

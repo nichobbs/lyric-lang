@@ -234,17 +234,42 @@ test "trailing spawn in a non-value try body is V0014" {
 
 // #5164: EMatch arms share the same walkExprOrBlockForSpawn(ctx, valuePos,
 // arms[i].body) call as EIf branches — mirror the if-branch tests above for
-// a match arm.
+// a match arm. Block-bodied arms (`case _ -> { ... }`) mirror the if-branch
+// tests' shape exactly: `if` branches are always block-bodied, and only the
+// `EOBBlock` arm of `walkExprOrBlockForSpawn` reaches the statement-level
+// V0014 check (a bare-expression arm body, `case _ -> spawn g()`, is an
+// `EOBExpr` and never reaches that check at all — see "spawn in a
+// non-trailing bare-expression match arm" below for that separate gap).
 test "spawn in a non-trailing match arm is V0014" {
-  val src = "package P\nasync func f(): Unit {\n  match 1 {\n    case _ -> spawn g()\n  }\n  val done = 1\n}\nasync func g(): Unit {}\n"
+  val src = "package P\nasync func f(): Unit {\n  match 1 {\n    case _ -> { spawn g() }\n  }\n  val done = 1\n}\nasync func g(): Unit {}\n"
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0014"), "spawn in non-trailing match arm: V0014")
 }
 
 test "spawn in a value-position match arm is not V0014" {
-  val src = "package P\nasync func f(): Int {\n  match 1 {\n    case _ -> spawn g()\n  }\n}\nasync func g(): Int { 1 }\n"
+  val src = "package P\nasync func f(): Int {\n  match 1 {\n    case _ -> { spawn g() }\n  }\n}\nasync func g(): Int { 1 }\n"
   val result = parseCheck(src)
   assertFalse(hasDiagCode(result, "V0014"), "spawn in value-position match arm: no V0014")
+}
+
+// #5164 (bonus finding, not in the original issue list): a BARE-EXPRESSION
+// match arm body (`case _ -> spawn g()`, an `EOBExpr`, as opposed to the
+// block-bodied `case _ -> { spawn g() }` above) is a genuinely different
+// code path — `walkExprOrBlockForSpawn`'s `EOBExpr` arm calls
+// `walkExprForSpawn` directly, whose `ESpawn` case never emits V0014 itself
+// (only `walkStmtForSpawn`'s `SExpr` case does, which is only reached via
+// `EOBBlock` -> `walkBlockForSpawn` -> `walkStmtForSpawn`). A discarded
+// bare-expression match arm's `spawn` is therefore NEVER flagged, regardless
+// of value position — asymmetric with the block-bodied arm just above.
+// Recorded here as a known gap rather than asserted as a bug (the assertion
+// below documents current, not necessarily intended, behavior).
+test "spawn in a non-trailing bare-expression match arm is currently NOT flagged (known gap)" {
+  val src = "package P\nasync func f(): Unit {\n  match 1 {\n    case _ -> spawn g()\n  }\n  val done = 1\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertFalse(
+    hasDiagCode(result, "V0014"),
+    "bare-expression match arm spawn is discarded but NOT flagged V0014 (walkExprForSpawn's ESpawn case never emits)"
+  )
 }
 
 // #5164: `finally_` is always walked with valuePos = false, regardless of

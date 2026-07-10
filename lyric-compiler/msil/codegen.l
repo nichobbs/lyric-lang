@@ -4674,6 +4674,16 @@ func tryQualifiedStaticValNameMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: 
       if segs.count < 2 {
         return ""
       }
+      if segs.count == 2 and segs[1] == "NAME" {
+        panic(
+          "DEBUG5274 segs0=" + segs[0] + " slots=" + toString(fctx.slots.containsKey(segs[0])) + " hoisted=" +
+            toString(fctx.hoistedCellSlot.containsKey(segs[0])) +
+            " captured=" +
+            toString(fctx.captureNameToIndex.containsKey(segs[0])) +
+            " pkgName=" +
+            fctx.pkgName
+        )
+      }
       if fctx.slots.containsKey(segs[0]) or fctx.hoistedCellSlot.containsKey(segs[0]) or fctx.captureNameToIndex.containsKey(segs[0]) {
         return ""
       }
@@ -6331,6 +6341,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
 
     // ── Member access ──────────────────────────────────────────────────────────
     case EMember(recv, memberName) -> {
+      if memberName == "NAME" {
+        val recvKindStr = match recv.kind {
+          case EPath(p) -> "EPath[" + joinSegsMsil(p.segments, ".") + "]"
+          case EMember(_, _) -> "EMember"
+          case _ -> "other"
+        }
+        panic("DEBUG5274B memberName=NAME recv=" + recvKindStr)
+      }
       // Nullary union case referenced as `UnionType.CaseName` in value position.
       // The expression-level parser builds `Color.Same` as
       // EMember(EPath(["Color"]), "Same") — member access, NOT a constructor call.
@@ -10333,7 +10351,24 @@ func emitMsilPanicFromStack(cctx: in CodegenCtx, insns: in List[MInsn]): Unit {
 // Lower a single call argument (positional or named).
 func lowerCallArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], arg: in CallArg): MsilType {
   match arg {
-    case CAPositional(e) -> lowerExprMsil(cctx, fctx, insns, e)
+    case CAPositional(e) -> {
+      val kindStr = match e.kind {
+        case EMember(recvE, mn) -> {
+          val recvKindStr = match recvE.kind {
+            case EPath(p) -> "EPath[" + joinSegsMsil(p.segments, ".") + "]"
+            case _ -> "other"
+          }
+          "EMember(" + recvKindStr + ", " + mn + ")"
+        }
+        case EPath(p) -> "EPath[" + joinSegsMsil(p.segments, ".") + "]"
+        case ECall(_, _) -> "ECall"
+        case _ -> "other"
+      }
+      if kindStr.length >= 4 and kindStr.substring(0, 4) == "EMem" and (kindStr.indexOf("NAME") >= 0) {
+        panic("DEBUG5274C arg.kind=" + kindStr)
+      }
+      lowerExprMsil(cctx, fctx, insns, e)
+    }
     case CANamed(_, e, _) -> lowerExprMsil(cctx, fctx, insns, e)
   }
 }
