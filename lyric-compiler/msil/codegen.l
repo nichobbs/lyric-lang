@@ -27407,9 +27407,12 @@ func registerRestoredImpl(
 // Allocate the MemberRef for one restored record instance method (the concrete
 // implementation of an interface method) and record its token + return type.
 // Mirrors `registerRestoredIfaceMethod` but parents the MemberRef on the
-// record's TypeRef.  The signature uses the producer's erasing resolver
-// (`typeExprToMsil`) so the blob byte-matches the record's MethodDef; the
-// fully-resolved return type is recorded for the call site's `match` (#1602).
+// record's TypeRef.  The signature must use the ctx-aware encoder
+// (`buildInstanceMethodSigWithCtx`) because the producer emits the record's
+// method MethodDef with it (`lowerMRecord`, lowering.l), so a record-typed
+// or concrete-collection param/return is encoded as
+// CLASS/GENERICINST — an erased `object` MemberRef would fail to bind with
+// MissingMethodException at the consumer's callvirt (docs/59 §3 F1).
 func registerRestoredRecordMethod(
   cctx: in CodegenCtx,
   recordFqn: in String,
@@ -27431,13 +27434,12 @@ func registerRestoredRecordMethod(
     spi = spi + 1
   }
   val sigRetType = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
-  val sig = buildInstanceMethodSig(sigParamTypes, sigRetType)
+  val sig = buildInstanceMethodSigWithCtx(sigParamTypes, sigRetType, cctx.lctx)
   val sigKey = "restored_recmethod_" + key
   val memberRow = ctxAddMemberRef(cctx.lctx, recordTypeRefRow, methodName, sigKey, sig)
   cctx.methodTokens.add(key, 0x0A000000 + memberRow)
   if not cctx.methodRetTypes.containsKey(key) {
-    val realRetType = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
-    cctx.methodRetTypes.add(key, realRetType)
+    cctx.methodRetTypes.add(key, sigRetType)
   }
 }
 
@@ -27498,13 +27500,16 @@ func registerRestoredIfaceMethod(
     return
   }
 
-  // The MemberRef signature blob must byte-match the producer DLL's interface
-  // MethodDef signature, or the CLR rejects the `callvirt` with
-  // `MissingMethodException`.  The producer (`codegenMPackage` -> MInterface)
-  // builds that signature with the *legacy* `typeExprToMsil`, which erases
-  // every generic / class / slice type to `object` (it has no codegen context
-  // to allocate TypeRefs).  Use the same erasing resolver here so the two
-  // signatures agree (#1602).
+  // The MemberRef signature blob must resolve against the producer DLL's
+  // interface MethodDef signature, or the CLR rejects the `callvirt` with
+  // `MissingMethodException`.  The producer (`lowerMInterface`, lowering.l)
+  // builds that signature with the ctx-aware `buildInstanceMethodSigWithCtx`
+  // (record params/returns as CLASS + TypeDef, concrete collections as closed
+  // GENERICINST), so this side must be ctx-aware too — the erasing
+  // `buildInstanceMethodSig` degraded those slots to `object` and the callvirt
+  // failed at run time whenever a signature mentioned a user record or a
+  // concrete collection (docs/59 §3 F1).  Mirrors `registerRestoredFunc` /
+  // `registerStdlibFunc`, which already use the ctx-aware builders.
   val sigParamTypes: List[MsilType] = newList()
   var spi = 0
   while spi < params.count {
@@ -27512,17 +27517,15 @@ func registerRestoredIfaceMethod(
     spi = spi + 1
   }
   val sigRetType = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
-  val sig = buildInstanceMethodSig(sigParamTypes, sigRetType)
+  val sig = buildInstanceMethodSigWithCtx(sigParamTypes, sigRetType, cctx.lctx)
   val sigKey = "restored_iface_" + key
   val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, methodName, sigKey, sig)
   cctx.methodTokens.add(key, 0x0A000000 + memberRow)
-  // Record the FULLY-RESOLVED return type (ctx-aware, so `Result[T, E]` keeps
+  // Record the fully-resolved return type (ctx-aware, so `Result[T, E]` keeps
   // its `MGenericInst` identity) for the call site.  This is what the
-  // consumer's `match` on the call result needs to emit correct isinst tests —
-  // distinct from the erased `object` used in the signature blob above.
+  // consumer's `match` on the call result needs to emit correct isinst tests.
   if not cctx.methodRetTypes.containsKey(key) {
-    val realRetType = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
-    cctx.methodRetTypes.add(key, realRetType)
+    cctx.methodRetTypes.add(key, sigRetType)
   }
 }
 
