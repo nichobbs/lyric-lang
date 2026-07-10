@@ -17,6 +17,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build Address exposed record ──────────────────────────────────────────────
 func makeAddressBytes(pool: in Pool): List[Byte] {

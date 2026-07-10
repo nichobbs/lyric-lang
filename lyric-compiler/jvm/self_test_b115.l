@@ -17,6 +17,7 @@ import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
 import Jvm.Reader
+import Jvm.Kernel
 
 // ── Build a class with a LyricSignature attribute ─────────────────────────────
 func makeSignedClassBytes(pool: in Pool): List[Byte] {

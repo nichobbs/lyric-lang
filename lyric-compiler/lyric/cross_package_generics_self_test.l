@@ -15,6 +15,10 @@
 //! `Lyric.Emitter.emitProject`, then builds a CONSUMER that imports the producer
 //! as a restored dep, runs it, and asserts the printed output.
 //!
+//! Also covers the restored interface / record-method signature encoding
+//! (docs/59 §3 F1): a cross-package `callvirt` whose signature mentions a
+//! user record must encode the record concretely, not erased to `object`.
+//!
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1 (required because
 //! the test imports `Lyric.Emitter`, a compiler package):
 //!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/cross_package_generics_self_test.l
@@ -296,4 +300,58 @@ test "cross-package generic union Maybe[String] Just reference payload" {
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "cpgen_maybe_str: exit 0 (stderr=" + captured.stderr + ")")
   assertEqual(Str.trim(captured.stdout), "world", "cpgen_maybe_str: stdout = world")
+}
+
+// Restored INTERFACE / record method with a record-typed signature (docs/59 §3
+// F1): the consumer's MemberRef blob must encode a record param/return
+// concretely (CLASS + TypeRef) to resolve against the producer's MethodDef,
+// which is emitted ctx-aware (`buildInstanceMethodSigWithCtx`).  Before the
+// fix `registerRestoredIfaceMethod` / `registerRestoredRecordMethod` encoded
+// the blob with the erasing `buildInstanceMethodSig` (record -> object), so
+// the callvirt failed at run time with MissingMethodException.  Covers both
+// dispatch paths: a receiver typed as the INTERFACE (via `makeStore(): Store`)
+// and a receiver typed as the CONCRETE RECORD (via `makeMemStore(): MemStore`).
+test "cross-package restored interface method with record param and return" {
+  val tmpDir = freshTempDir("cpgen-iface-rec")
+  val producerSrc = "package CpGen.StoreLib\n" + "\n" + "pub record Entry { name: String; qty: Int }\n" + "\n" +
+    "pub interface Store {\n" +
+    "  func describe(e: in Entry): String\n" +
+    "  func bump(e: in Entry): Entry\n" +
+    "}\n" +
+    "\n" +
+    "pub record MemStore { prefix: String }\n" +
+    "\n" +
+    "impl Store for MemStore {\n" +
+    "  func describe(e: in Entry): String { self.prefix + e.name + \":\" + toString(e.qty) }\n" +
+    "  func bump(e: in Entry): Entry { Entry(name = e.name, qty = e.qty + 1) }\n" +
+    "}\n" +
+    "\n" +
+    "pub func makeStore(): Store { MemStore(prefix = \"S/\") }\n" +
+    "\n" +
+    "pub func makeMemStore(): MemStore { MemStore(prefix = \"M/\") }\n"
+  val producerDll = buildDll(tmpDir, "CpGen.StoreLib", producerSrc, "CpGen.StoreLib")
+  val consumerSrc = "package CpGen.StoreApp\n" + "\n" + "import CpGen.StoreLib\n" + "\n" + "func main(): Unit {\n" +
+    "  val s = makeStore()\n" +
+    "  val e = Entry(name = \"apple\", qty = 2)\n" +
+    "  println(s.describe(e))\n" +
+    "  val e2 = s.bump(e)\n" +
+    "  println(e2.qty)\n" +
+    "  val m = makeMemStore()\n" +
+    "  println(m.describe(e2))\n" +
+    "}\n"
+  val captured = buildAndRunConsumer(
+    tmpDir,
+    "CpGen.StoreApp",
+    consumerSrc,
+    "CpGen.StoreApp",
+    "CpGen.StoreLib",
+    producerDll
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_iface_rec: exit 0 (stderr=" + captured.stderr + ")")
+  val lines = Str.split(Str.trim(captured.stdout), "\n")
+  assertEqualInt(lines.count, 3, "cpgen_iface_rec: three output lines")
+  assertEqual(lines[0], "S/apple:2", "cpgen_iface_rec: interface-dispatch describe(record)")
+  assertEqual(lines[1], "3", "cpgen_iface_rec: record-returning bump(record) round-trips")
+  assertEqual(lines[2], "M/apple:3", "cpgen_iface_rec: concrete-record-dispatch describe(record)")
 }

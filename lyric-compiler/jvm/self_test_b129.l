@@ -23,6 +23,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build Doubles$Gen + Doubles classes via lowerAsyncGenerator ───────────────
 func makeDoublesClasses(pool: in Pool): List[BuiltClass] {

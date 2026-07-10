@@ -23,6 +23,7 @@ import Std.Collections
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
+import Jvm.Kernel
 
 // ── Option union hierarchy ─────────────────────────────────────────────────────
 func makeOptionClasses(pool: in Pool): List[ClassFile] {

@@ -124,6 +124,128 @@ func scopeBodyShadow(): Int {
   t
 }
 
+// 11. Match-arm PATTERN BINDING shadowing an outer binding of the SAME frame
+//     type (Int payload vs Int outer — the slot-REUSE path, docs/59 §4.1): the
+//     helper's declared `Option[Int]` return resolves the payload to a real
+//     Int, so before the fix `allocSlot` reused the outer `v`'s slot and the
+//     payload clobbered it.
+func mkIntOpt(x: in Int): Option[Int] {
+  Some(value = x)
+}
+
+func matchBindShadowSameType(): Int {
+  val v = 7
+  val r = match mkIntOpt(100) { case Some(v) -> v + 1; case None -> 0 }
+  assertEqualInt(r, 101, "arm binding reads the payload")
+  v
+}
+
+// 12. Match-arm pattern binding shadowing an outer binding of a DIFFERENT
+//     frame type (erased-Object payload vs String outer — the remap-LEAK path):
+//     the arm's fresh slot was already taken pre-fix, but the name→slot remap
+//     leaked until the enclosing block exit, so the outer read went to the
+//     arm's slot.
+func matchBindShadowDifferentType(): String {
+  val name = "outer"
+  val o: Option[Int] = Some(value = 5)
+  var seen = 0
+  match o {
+    case Some(name) -> {
+      seen = seen + 1
+    }
+    case None -> ()
+  }
+  assertEqualInt(seen, 1, "arm body ran")
+  name
+}
+
+// 13. Guard expression reads: the guard sees the ARM binding (shadowing the
+//     outer `k`) plus an untouched outer `limit`; after the match the outer
+//     `k` is intact.
+func guardReadsBindingAndOuter(): Int {
+  val k = 3
+  val limit = 5
+  val got = match mkIntOpt(9) { case Some(k) if k > limit -> k; case Some(k) -> 0 - k; case None -> 0 }
+  assertEqualInt(got, 9, "guarded arm selected on the ARM k")
+  k
+}
+
+// 14. Nested match arms re-binding the same name: the inner arm's `p` shadows
+//     the outer arm's `p`; after the inner match the outer arm's binding is
+//     intact, and after both the function-level `p` is intact.
+func nestedMatchArms(): Int {
+  val p = 1
+  var innerSeen = 0
+  var outerAfterInner = 0
+  match mkIntOpt(10) {
+    case Some(p) -> {
+      match mkIntOpt(20) {
+        case Some(p) -> {
+          innerSeen = p
+        }
+        case None -> ()
+      }
+      outerAfterInner = p
+    }
+    case None -> ()
+  }
+  assertEqualInt(innerSeen, 20, "inner arm p")
+  assertEqualInt(outerAfterInner, 10, "outer arm p survives the inner match")
+  p
+}
+
+// 15. Range-`for` loop-variable bind shadowing an outer val (same frame type).
+func forLoopBindShadow(): Int {
+  val i = 42
+  var sum = 0
+  for i in 0 ..< 5 {
+    sum = sum + i
+  }
+  assertEqualInt(sum, 10, "loop summed its own counter")
+  i
+}
+
+// 16. Collection-`for` element bind shadowing an outer val.  Iterates a
+//     `toArray()` slice: on MSIL the element is a typed Int (slot-reuse path
+//     against the outer Int), on the JVM it is an erased Object (remap-leak
+//     path) — one case covers both shapes across targets.  (A bare list
+//     LITERAL iterable is deliberately not used here: MSIL's erased
+//     `List<object>` element arithmetic is a separate pre-existing gap.)
+func forElemBindShadow(): Int {
+  val x = 100
+  val data: List[Int] = newList()
+  data.add(1)
+  data.add(2)
+  data.add(3)
+  var total = 0
+  for x in data.toArray() {
+    total = total + x
+  }
+  assertEqualInt(total, 6, "loop summed its own elements")
+  x
+}
+
+// 17. Or-pattern re-binding inside one arm scope: both alternatives populate
+//     the same arm-local slot, and the outer same-named binding survives.
+func orPatternBindShadow(): Int {
+  val x = 55
+  val r1: Result[Int, Int] = Ok(value = 4)
+  val r2: Result[Int, Int] = Err(error = 9)
+  var sum = 0
+  match r1 {
+    case Ok(x) | Err(x) -> {
+      sum = sum + x
+    }
+  }
+  match r2 {
+    case Ok(x) | Err(x) -> {
+      sum = sum + x
+    }
+  }
+  assertEqualInt(sum, 13, "or-pattern bound from either alternative")
+  x
+}
+
 // 9. Sibling `match`-arm scopes reusing the same binding name; each arm is
 //    independent and both contribute.
 func siblingScopes(): Int {
@@ -183,4 +305,32 @@ test "sibling match-arm scopes each bind independently" {
 
 test "shadow directly in a scope body leaves the outer binding intact" {
   assertEqualInt(scopeBodyShadow(), 7, "scopeBodyShadow")
+}
+
+test "match-arm pattern bind of the same frame type leaves the outer binding intact" {
+  assertEqualInt(matchBindShadowSameType(), 7, "matchBindShadowSameType")
+}
+
+test "match-arm pattern bind of a different frame type leaves the outer binding intact" {
+  assertEqual(matchBindShadowDifferentType(), "outer", "matchBindShadowDifferentType")
+}
+
+test "guard reads the arm binding and the outer binding survives the match" {
+  assertEqualInt(guardReadsBindingAndOuter(), 3, "guardReadsBindingAndOuter")
+}
+
+test "nested match arms shadow independently at each level" {
+  assertEqualInt(nestedMatchArms(), 1, "nestedMatchArms")
+}
+
+test "range-for loop variable shadow leaves the outer binding intact" {
+  assertEqualInt(forLoopBindShadow(), 42, "forLoopBindShadow")
+}
+
+test "collection-for element shadow leaves the outer binding intact" {
+  assertEqualInt(forElemBindShadow(), 100, "forElemBindShadow")
+}
+
+test "or-pattern arm binds shadow and restore the outer binding" {
+  assertEqualInt(orPatternBindShadow(), 55, "orPatternBindShadow")
 }

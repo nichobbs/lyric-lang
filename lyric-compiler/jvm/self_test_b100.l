@@ -22,6 +22,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeSafeDivideMethod(): LFunc {
   // safeDivide(int a, int b): int

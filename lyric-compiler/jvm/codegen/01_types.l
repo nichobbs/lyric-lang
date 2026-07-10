@@ -984,7 +984,12 @@ pub func emitHolderElemLoad(insns: in List[LInsn], elemTy: in JvmType): Unit {
     case JDouble -> insns.add(LDaload)
     case JFloat -> insns.add(LFaload)
     case JBoolean -> insns.add(LBaload)
-    case JByte -> insns.add(LBaload)
+    case JByte -> {
+      // `baload` sign-extends; mask to the canonical unsigned form (see
+      // maskByteUnsigned in 04_calls.l).
+      insns.add(LBaload)
+      maskByteUnsigned(insns)
+    }
     case JChar -> insns.add(LCaload)
     case JShort -> insns.add(LSaload)
     case JInt -> insns.add(LIaload)
@@ -1027,6 +1032,84 @@ pub func ctorClassFor(ctx: in FuncCtx, name: in String): Option[String] {
   match mapGet(ctx.ctors, ctx.pkgName + "::" + name) {
     case Some(cls) -> Some(value = cls)
     case None -> mapGet(ctx.ctors, name)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4c. Declared-enum registry helpers (docs/59 §4.4 enum-case access fix).
+// ─────────────────────────────────────────────────────────────────────────────
+// Declared enums are registered in the cross-package `funcSigs` registry under
+// prefixed keys (the `val:` / `field:` idiom, see `collectFileSigsSeeded`):
+//   enum:<EnumName>.<Case> — type-scoped variant membership (bare key, global
+//                            first-wins — mirrors MSIL's `<EnumType>.<Case>`
+//                            `enumCaseOrdinals` key, #3346)
+//   enumcase:<Case>        — bare variant name (plus the `<owner>/`-qualified
+//                            form, so `importAwareRegistry` re-points it per
+//                            file like any other bare key)
+// The sig's `owner` carries the DECLARING enum's JVM class name.  On the JVM
+// an enum value is the real `public static final` singleton field `lowerEnum`
+// emits, so an expression read lowers to `getstatic` and a pattern test
+// compares identity (`if_acmpne`) against that singleton — where MSIL lowers
+// the same references to `ldc.i4 <ordinal>` (its enums are I4 ordinals).
+// Unwrap a funcSigs lookup to the sig's owner class.  The explicitly-typed
+// parameter anchors the stage-0 inference (see funcSigRetGenericArgs).
+func enumSigOwner(sigOpt: in Option[JvmFuncSig]): Option[String] {
+  match sigOpt {
+    case Some(sig) -> Some(value = sig.owner)
+    case None -> None
+  }
+}
+
+// The declaring enum's JVM class for a type-scoped `<EnumName>.<Case>`
+// reference, when registered.
+pub func enumVariantClass(ctx: in FuncCtx, enumName: in String, caseName: in String): Option[String] {
+  enumSigOwner(mapGet(ctx.funcSigs, "enum:" + enumName + "." + caseName))
+}
+
+// The declaring enum's JVM class for a bare `<Case>` reference, when registered.
+pub func enumCaseClassBare(ctx: in FuncCtx, caseName: in String): Option[String] {
+  enumSigOwner(mapGet(ctx.funcSigs, "enumcase:" + caseName))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4d. Declared slice/List element types (docs/59 §4.3 #5439 class).
+// ─────────────────────────────────────────────────────────────────────────────
+// Record a parameter/local's DECLARED element type when its type is
+// `slice[Elem]` or the bare `List[Elem]`, into `ctx.varGenericArgs` — the same
+// registry a `let r = call()` binding's generic instantiation is recorded in
+// (#4938) and a match-bound generic payload's own args are threaded through
+// (#3613), and the map `EIndex` consults so an indexed element read can
+// `checkcast` the erased `Object` element back to its concrete class.  An
+// element naming one of the enclosing declaration's own type parameters is
+// skipped: it erases to `Object`, so there is nothing concrete to narrow to.
+// `Map` types are NOT recorded — the HashMap indexing arm is value-typed by
+// its own path and a 2-arg entry would never be consulted anyway.
+pub func recordDeclaredElemType(ctx: in FuncCtx, name: in String, ty: in TypeExpr, typeParams: in List[String]): Unit {
+  val elems: List[TypeExpr] = newList()
+  match ty.kind {
+    case TSlice(elem) -> elems.add(elem)
+    case TGenericApp(head, args) -> {
+      if head.segments.count == 1 and lastSegment(head) == "List" and args.count == 1 {
+        match args[0] {
+          case TAType(inner) -> elems.add(inner)
+          case TAValue(_) -> ()
+        }
+      }
+    }
+    case TParen(inner) -> {
+      recordDeclaredElemType(ctx, name, inner, typeParams)
+      return
+    }
+    case _ -> ()
+  }
+  if elems.count == 1 {
+    if typeParamIndexOf(elems[0], typeParams) >= 0 {
+      return
+    }
+    if ctx.varGenericArgs.containsKey(name) {
+      ctx.varGenericArgs.remove(name)
+    }
+    ctx.varGenericArgs.add(name, elems)
   }
 }
 

@@ -16,6 +16,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build Compute class with async doubleOne() ────────────────────────────────
 func makeComputeClasses(pool: in Pool): List[BuiltClass] {

@@ -166,6 +166,20 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
   while i < arms.count {
     val arm = arms[i]
     val nextArmL = freshLabel(ctx)
+    // A match arm is a lexical scope of its own (#5191 follow-up): its pattern
+    // bindings (`case Some(v) ->`) shadow enclosing bindings exactly like a
+    // nested block's `val`s, but `lowerPatternBind` allocates slots directly, so
+    // without a scope bracket a same-named-same-frame-type outer binding's slot
+    // was REUSED (payload clobbered the outer value) and, even with a fresh
+    // slot, the name→slot remap leaked past the arm until the enclosing block
+    // exit.  Bracket the whole arm — test, bind, guard, and body — so shadows
+    // get fresh slots and the outer mapping is restored per arm.  The result
+    // local allocated inside the first arm's scope is safe: `rslot` carries the
+    // raw slot index, and later arms / the join address it by index, never by
+    // name.  `POr` alternatives re-bind the same names INSIDE this one scope,
+    // so they intentionally share slots (any alternative populates the locals
+    // the body reads).
+    val armScope = enterBlockScope(ctx)
     // Emit pattern test.
     lowerPatternTest(ctx, insns, arm.pattern, scrutSlot, scrutTy, nextArmL)
     // Bind pattern variables.
@@ -226,6 +240,7 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
       insns.add(LGoto(label = afterL))
       anyArmFellThrough = true
     }
+    exitBlockScope(ctx, armScope)
     insns.add(LLabel(name = nextArmL))
     i = i + 1
   }
@@ -265,6 +280,28 @@ func jvmSimpleName(cls: in String): String {
     // overload per name and rejects the 2-arg convenience form (T0042).
     case Some(i) -> substring(cls, i + 1, cls.length - i - 1)
     case None -> cls
+  }
+}
+
+// Resolve the enum class to test a `case <Name> ->` pattern against, given the
+// scrutinee's static JVM type (docs/59 §4.4): a scrutinee whose class SIMPLE
+// name is a registered enum carrying variant `<Name>` resolves type-scoped —
+// the registered sig's owner is authoritative even when the static class is an
+// imported enum's in-package guess — while an erased `Object` scrutinee falls
+// back to the bare variant key (mirrors MSIL's unbox-then-ordinal-compare on a
+// boxed scrutinee).  A scrutinee of any OTHER known class (String, a record)
+// is never an enum test, so a variable binding that happens to share a name
+// with some enum's case keeps binding.
+func enumPatternClass(ctx: in FuncCtx, scrutTy: in JvmType, caseName: in String): Option[String] {
+  match scrutTy {
+    case JRef(cls) -> {
+      if cls == "java/lang/Object" {
+        enumCaseClassBare(ctx, caseName)
+      } else {
+        enumVariantClass(ctx, jvmSimpleName(cls), caseName)
+      }
+    }
+    case _ -> None
   }
 }
 
@@ -399,6 +436,10 @@ func extractClassField(
   emitLoad(insns, scrutSlot, scrutTy)
   insns.add(LCheckcast(className = cls))
   insns.add(LGetfield(owner = cls, name = fieldName, t = fty))
+  match fty {
+    case JByte -> maskByteUnsigned(insns)
+    case _ -> ()
+  }
   val fSlot = allocSlot(ctx, "__rfld_" + fieldName + "_" + toString(ctx.slotTicker.count), fty)
   emitStore(insns, fSlot, fty)
   fSlot
@@ -469,7 +510,21 @@ func lowerPatternTest(
                 insns.add(LIfeq(label = failLabel))
               }
             }
-            case None -> ()
+            case None -> {
+              // `case Debug ->` over an enum scrutinee also parses as a
+              // binding; when the name is a registered variant of the
+              // scrutinee's enum, test identity against the variant's
+              // singleton field instead of catch-all binding (docs/59 §4.4 —
+              // mirrors the MSIL enumCaseOrdinals-first PBinding path).
+              match enumPatternClass(ctx, scrutTy, name) {
+                case Some(ecls) -> {
+                  emitLoad(insns, scrutSlot, scrutTy)
+                  insns.add(LGetstatic(owner = ecls, name = name, t = JRef(className = ecls)))
+                  insns.add(LIfAcmpne(label = failLabel))
+                }
+                case None -> ()
+              }
+            }
           }
         }
       }
@@ -613,6 +668,22 @@ func lowerPatternTest(
       }
     }
     case PConstructor(head, _) -> {
+      // `case Direction.North ->` parses as a PConstructor; when the
+      // penultimate segment names a declared enum carrying this case, it is an
+      // enum-variant identity test, not a union-case isinst — deriving
+      // `<scrutClass>$<case>` names a class that does not exist (docs/59 §4.4;
+      // mirrors the MSIL `enumPenult` PConstructor path, #3343).
+      if head.segments.count >= 2 {
+        match enumVariantClass(ctx, head.segments[head.segments.count - 2], lastSegment(head)) {
+          case Some(eqcls) -> {
+            emitLoad(insns, scrutSlot, scrutTy)
+            insns.add(LGetstatic(owner = eqcls, name = lastSegment(head), t = JRef(className = eqcls)))
+            insns.add(LIfAcmpne(label = failLabel))
+            return
+          }
+          case None -> ()
+        }
+      }
       // isinst test against the case class; fail if the scrutinee is not that
       // case.  (Unlike a checkcast this never throws on a non-matching arm.)
       val caseClass = resolveCaseClassJvm(ctx, head, scrutTy)
@@ -692,7 +763,20 @@ func lowerPatternTest(
       insns.add(LLabel(name = succeedL))
     }
     case PConstRef(constName) -> {
-      match mapGet(ctx.moduleVals, constName) {
+      // The const may live in THIS package (`moduleVals`) or an imported one
+      // (the cross-package `val:` registry keys, import-aware — see
+      // `collectFileSigsSeeded`); the `getstatic` owner follows accordingly.
+      val ownVty: Option[JvmType] = mapGet(ctx.moduleVals, constName)
+      val importedSig: Option[JvmFuncSig] = match ownVty {
+        case Some(_) -> None
+        case None -> mapGet(ctx.funcSigs, "val:" + constName)
+      }
+      val constOwner = match importedSig { case Some(s) -> s.owner; case None -> ctx.pkgName }
+      val vtyOpt: Option[JvmType] = match ownVty {
+        case Some(t) -> Some(value = t)
+        case None -> match importedSig { case Some(s) -> Some(value = s.ret); case None -> None }
+      }
+      match vtyOpt {
         case Some(vty) -> {
           val scrutIsRef = isRefJvm(scrutTy)
           match vty {
@@ -702,7 +786,7 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Long"))
                 insns.add(LUnboxLong)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               insns.add(LLcmp)
               insns.add(LIfne(label = failLabel))
             }
@@ -712,7 +796,7 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Double"))
                 insns.add(LUnboxDouble)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               insns.add(LDcmpl)
               insns.add(LIfne(label = failLabel))
             }
@@ -722,14 +806,14 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Float"))
                 insns.add(LUnboxFloat)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               insns.add(LFcmpl)
               insns.add(LIfne(label = failLabel))
             }
             case JRef(refClassName) -> {
               emitLoad(insns, scrutSlot, scrutTy)
               insns.add(LCheckcast(className = refClassName))
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               val eqPs: List[JvmType] = newList()
               eqPs.add(JRef(className = "java/lang/Object"))
               insns.add(LInvokevirtual(owner = refClassName, name = "equals", params = eqPs, ret = JBoolean))
@@ -741,7 +825,7 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Boolean"))
                 insns.add(LUnboxBool)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               insns.add(LIfIcmpne(label = failLabel))
             }
             case JChar -> {
@@ -750,7 +834,22 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Character"))
                 insns.add(LUnboxChar)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
+              insns.add(LIfIcmpne(label = failLabel))
+            }
+            case JByte -> {
+              // Both sides mask to the canonical unsigned form: the scrutinee
+              // may be a boxed payload (unbox via Number, tolerating Integer
+              // boxes), and a `getstatic` of a byte field sign-extends (see
+              // maskByteUnsigned in 04_calls.l).
+              emitLoad(insns, scrutSlot, scrutTy)
+              if scrutIsRef {
+                insns.add(LCheckcast(className = "java/lang/Number"))
+                insns.add(LInvokevirtual(owner = "java/lang/Number", name = "intValue", params = newList(), ret = JInt))
+              }
+              maskByteUnsigned(insns)
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
+              maskByteUnsigned(insns)
               insns.add(LIfIcmpne(label = failLabel))
             }
             case _ -> {
@@ -759,7 +858,7 @@ func lowerPatternTest(
                 insns.add(LCheckcast(className = "java/lang/Integer"))
                 insns.add(LUnboxInt)
               }
-              insns.add(LGetstatic(owner = ctx.pkgName, name = constName, t = vty))
+              insns.add(LGetstatic(owner = constOwner, name = constName, t = vty))
               insns.add(LIfIcmpne(label = failLabel))
             }
           }
@@ -826,13 +925,16 @@ func emitUnboxObjectTo(insns: in List[LInsn], target: in JvmType): JvmType {
       JChar
     }
     case JByte -> {
-      // `byteValue()` yields the SIGNED byte — the canonical in-slot `JByte`
-      // representation this backend uses (an unsigned `Byte` value 200 is held
-      // as -56 and masked to 0..255 only at widening, D-progress-566).  No mask
-      // here: masking would make the bound local diverge from every other
-      // `JByte` and double-mask at `.toInt()`.
+      // `byteValue()` yields the SIGNED byte; mask to the canonical
+      // masked-unsigned in-slot form (docs/59 §4.3 — see `maskByteUnsigned`
+      // in 04_calls.l).  The earlier signed-in-slot convention (D-progress-566)
+      // clashed with `.toByte()`'s masked result: `xs[0] == b` compared
+      // -56 == 200 and `b1 < b2` compared signed where MSIL is unsigned.
+      // The double `& 0xFF` a canonical value then hits at `.toInt()` is a
+      // no-op, not a divergence.
       insns.add(LCheckcast(className = "java/lang/Byte"))
       insns.add(LInvokevirtual(owner = "java/lang/Byte", name = "byteValue", params = newList(), ret = JByte))
+      maskByteUnsigned(insns)
       JByte
     }
     case JRef(cls) -> {
@@ -942,7 +1044,17 @@ func bindCaseField(
       // primitive (`concreteTy`), unbox the boxed value so the binding is a real
       // primitive — otherwise arithmetic on it mis-lowers (`x + y` string-concats
       // or VerifyErrors) (#4877).  Reference / unresolved payloads stay boxed.
-      val boundTy = if isErasedObject(fty) { emitUnboxObjectTo(insns, concreteTy) } else { fty }
+      val boundTy = if isErasedObject(fty) {
+        emitUnboxObjectTo(insns, concreteTy)
+      } else {
+        // `getfield` of a byte field sign-extends; mask to the canonical
+        // unsigned form (see maskByteUnsigned in 04_calls.l).
+        match fty {
+          case JByte -> maskByteUnsigned(insns)
+          case _ -> ()
+        }
+        fty
+      }
       val fSlot = allocSlot(ctx, fname, boundTy)
       emitStore(insns, fSlot, boundTy)
       // If the field's own concrete type is itself a generic application
@@ -982,6 +1094,10 @@ func bindCaseField(
       // the #4877 fix, not a regression.
       emitLoad(insns, castSlot, JRef(className = caseClass))
       insns.add(LGetfield(owner = caseClass, name = realName, t = fty))
+      match fty {
+        case JByte -> maskByteUnsigned(insns)
+        case _ -> ()
+      }
       val tSlot = allocSlot(ctx, "__fld_" + realName + "_" + toString(ctx.slotTicker.count), fty)
       emitStore(insns, tSlot, fty)
       lowerPatternBind(ctx, insns, subPat, tSlot, fty, newList())
@@ -1016,10 +1132,13 @@ func lowerPatternBind(
           lowerPatternBind(ctx, insns, inner, bindSlot, scrutTy, scrutTypeArgs)
         }
         case None -> {
-          // A single-segment `case Foo ->` that names a known union case binds
-          // nothing (mirrors the test side); otherwise it is a variable bind.
+          // A single-segment `case Foo ->` that names a known union case — or a
+          // registered enum variant of the scrutinee's enum (docs/59 §4.4) —
+          // binds nothing (mirrors the test side); otherwise it is a variable
+          // bind.
           val isCase = match ctorClassFor(ctx, name) { case Some(cls) -> jvmClassIsUnionCase(cls); case None -> false }
-          if not isCase {
+          val isEnumCase = match enumPatternClass(ctx, scrutTy, name) { case Some(_) -> true; case None -> false }
+          if not isCase and not isEnumCase {
             emitLoad(insns, scrutSlot, scrutTy)
             val bindSlot = allocSlot(ctx, name, scrutTy)
             emitStore(insns, bindSlot, scrutTy)
@@ -1047,6 +1166,18 @@ func lowerPatternBind(
       }
     }
     case PConstructor(head, fields) -> {
+      // A qualified enum-variant pattern (`case Direction.North ->`) binds
+      // nothing — and must not fall through to the union-case checkcast, whose
+      // derived `<scrutClass>$<case>` class does not exist (docs/59 §4.4).
+      if head.segments.count >= 2 {
+        match enumVariantClass(ctx, head.segments[head.segments.count - 2], lastSegment(head)) {
+          case Some(_) -> {
+            insns.add(LNop)
+            return
+          }
+          case None -> ()
+        }
+      }
       val caseClass = resolveCaseClassJvm(ctx, head, scrutTy)
       if caseClass.length > 0 {
         val castSlot = allocSlot(
@@ -1124,6 +1255,10 @@ func lowerPatternBind(
                 }
                 emitLoad(insns, castSlot, JRef(className = recClass))
                 insns.add(LGetfield(owner = recClass, name = fieldName, t = fty))
+                match fty {
+                  case JByte -> maskByteUnsigned(insns)
+                  case _ -> ()
+                }
                 val fSlot = allocSlot(ctx, fieldName, fty)
                 emitStore(insns, fSlot, fty)
               }

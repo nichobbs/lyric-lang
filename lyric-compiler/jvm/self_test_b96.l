@@ -17,6 +17,7 @@ import Std.Collections
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Reader
+import Jvm.Kernel
 
 func main(): Unit {
   // Build a minimal Hello.class: one static main()V that just returns.

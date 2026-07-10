@@ -15,6 +15,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 func makePointBytes(): List[Byte] {
   val pool = poolNew()

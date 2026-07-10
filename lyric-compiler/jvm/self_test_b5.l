@@ -20,6 +20,7 @@ import Std.Collections
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
+import Jvm.Kernel
 
 // ── max(int a, int b): int ────────────────────────────────────────────────────
 //

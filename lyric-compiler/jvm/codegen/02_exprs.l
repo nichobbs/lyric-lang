@@ -202,6 +202,44 @@ func emitPanicFromStack(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
   insns.add(LAthrow)
 }
 
+// The concrete element class of an indexed bare-name slice/List receiver
+// (docs/59 §4.3, the #5439 class): resolved from the receiver's recorded
+// single-arg `varGenericArgs` entry — a declared `slice[Elem]`/`List[Elem]`
+// parameter or local annotation (`recordDeclaredElemType`), a binding whose
+// initialiser's declared return instantiation was recorded (#4938), or a
+// match-bound generic payload's own args (#3613).  "" when unknown, primitive,
+// or the erased `Object` — the read then keeps its legacy erased result.
+// `EIndex` uses a non-empty result to `checkcast` after the `aaload` /
+// `ArrayList.get`, so a following member read resolves on the real class
+// instead of panicking on a statically-`Object` receiver.
+func indexedElemClassOverride(ctx: in FuncCtx, recv: in Expr): String {
+  match recv.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        val args = optGenericArgs(mapGet(ctx.varGenericArgs, p.segments[0]))
+        if args.count == 1 {
+          match resolveConcreteTypeExpr(ctx, args[0]) {
+            case JRef(cls) -> {
+              if cls == "java/lang/Object" {
+                ""
+              } else {
+                cls
+              }
+            }
+            case _ -> ""
+          }
+        } else {
+          ""
+        }
+      } else {
+        ""
+      }
+    }
+    case EParen(inner) -> indexedElemClassOverride(ctx, inner)
+    case _ -> ""
+  }
+}
+
 // Lower a single expression.  Pushes exactly one value onto the operand
 // stack (or nothing for JVoid).  Returns the JvmType of the pushed value.
 pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmType {
@@ -313,6 +351,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
               insns.add(LAload(slot = 0))
               insns.add(LGetfield(owner = selfCls, name = name, t = fty))
+              match fty {
+                case JByte -> maskByteUnsigned(insns)
+                case _ -> ()
+              }
               fty
             }
             case None -> {
@@ -347,12 +389,56 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                       match mapGet(ctx.moduleVals, name) {
                         case Some(vty) -> {
                           insns.add(LGetstatic(owner = ctx.pkgName, name = name, t = vty))
+                          match vty {
+                            case JByte -> maskByteUnsigned(insns)
+                            case _ -> ()
+                          }
                           vty
                         }
                         case None -> {
-                          // Package-qualified or genuinely unknown reference: null fallback.
-                          insns.add(LAconstNull)
-                          JRef(className = "java/lang/Object")
+                          // An IMPORTED package's module-level `val` resolves
+                          // through the cross-package registry's `val:` keys
+                          // (import-aware, see `collectFileSigsSeeded`) to a
+                          // `getstatic` on its declaring package's host class
+                          // — `moduleVals` covers only the file being lowered
+                          // and the old read hardcoded `owner = ctx.pkgName`
+                          // (docs/59 §4.4).
+                          match mapGet(ctx.funcSigs, "val:" + name) {
+                            case Some(vsig) -> {
+                              insns.add(LGetstatic(owner = vsig.owner, name = name, t = vsig.ret))
+                              match vsig.ret {
+                                case JByte -> maskByteUnsigned(insns)
+                                case _ -> ()
+                              }
+                              vsig.ret
+                            }
+                            case None -> {
+                              // A bare reference to a declared enum's case
+                              // (`log(Debug, …)`) is the variant's singleton
+                              // field — mirrors the MSIL `EPath` ordinal
+                              // resolution (docs/59 §4.4).
+                              match enumCaseClassBare(ctx, name) {
+                                case Some(ecls) -> {
+                                  insns.add(LGetstatic(owner = ecls, name = name, t = JRef(className = ecls)))
+                                  JRef(className = ecls)
+                                }
+                                case None -> {
+                                  // A genuinely unresolvable reference previously
+                                  // lowered to `aconst_null` — a silent wrong value
+                                  // in every downstream use (docs/59 §4.4).  Fail
+                                  // loud at compile time instead (the m-23
+                                  // precedent for the store side).
+                                  val pos = path.span.startPos
+                                  panic(
+                                    "Jvm.Codegen: " + toString(pos.line) + ":" + toString(pos.column) + ": reference '" + name +
+                                      "' resolves to no local, parameter, receiver field, wire binding, union case, or module-level val. " +
+                                      "If this names an imported package's `pub val` with a non-literal initialiser and no type annotation, " +
+                                      "add an explicit type annotation to that val so its cross-package field type is known."
+                                  )
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     }
@@ -817,6 +903,19 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           match lookupSlot(ctx, rn) {
             case Some(_) -> ()
             case None -> {
+              // Enum-case value read (`Direction.North`, docs/59 §4.4): when
+              // the receiver names a declared enum carrying this variant, the
+              // value is the variant's `public static final` singleton field
+              // on the enum class (`lowerEnum`).  Before this, the receiver
+              // fell through to value-lowering of the bare type name, which
+              // resolves to nothing.
+              match enumVariantClass(ctx, rn, memberName) {
+                case Some(ecls) -> {
+                  insns.add(LGetstatic(owner = ecls, name = memberName, t = JRef(className = ecls)))
+                  return JRef(className = ecls)
+                }
+                case None -> ()
+              }
               match mapGet(ctx.externTypes, rn) {
                 case Some(fqnDot) -> {
                   match loadClass(ctx.autoFfi, fqnDot) {
@@ -915,6 +1014,13 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 } else {
                   insns.add(LGetfield(owner = cls, name = memberName, t = fty))
                 }
+                // A byte field read (getfield or byte-returning accessor)
+                // sign-extends; mask to the canonical unsigned form (see
+                // maskByteUnsigned in 04_calls.l).
+                match fty {
+                  case JByte -> maskByteUnsigned(insns)
+                  case _ -> ()
+                }
                 fty
               }
               case None -> {
@@ -934,6 +1040,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                       insns.add(LCheckcast(className = fsig.owner))
                       val fbPs: List[JvmType] = newList()
                       insns.add(LInvokevirtual(owner = fsig.owner, name = "$" + memberName, params = fbPs, ret = fsig.ret))
+                      match fsig.ret {
+                        case JByte -> maskByteUnsigned(insns)
+                        case _ -> ()
+                      }
                       fsig.ret
                     }
                     case None -> {
@@ -953,12 +1063,33 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                         insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricCount", params = lcPs, ret = JInt))
                         JInt
                       } else {
-                        JRef(className = "java/lang/Object")
+                        // The RECEIVER itself used to become the "field value"
+                        // here — the exact silent-wrong-value shape the `.count`
+                        // comment above records having caused once (docs/59
+                        // §4.4).  Fail loud at compile time instead.
+                        val posEm = recv.span.startPos
+                        panic(
+                          "Jvm.Codegen: " + toString(posEm.line) + ":" + toString(posEm.column) + ": member '" + memberName +
+                            "' cannot be resolved on an erased (statically Object) receiver — the receiver's concrete type " +
+                            "is unknown at this site, so the read would silently yield the receiver itself. " +
+                            "Bind the value with an explicit type, or match on the concrete constructor first."
+                        )
                       }
                     }
                   }
                 } else {
-                  JRef(className = "java/lang/Object")
+                  // A precisely-known receiver class with no such registered
+                  // field: returning the receiver as the "field value" (the old
+                  // fallback) silently miscompiles — e.g. any instance-field
+                  // read on an extern JDK object (JVM auto-FFI resolves only
+                  // static fields).  Fail loud at compile time (docs/59 §4.4).
+                  val posEm2 = recv.span.startPos
+                  panic(
+                    "Jvm.Codegen: " + toString(posEm2.line) + ":" + toString(posEm2.column) + ": receiver of type '" + cls +
+                      "' has no known field or member '" +
+                      memberName +
+                      "'"
+                  )
                 }
               }
             }
@@ -976,12 +1107,25 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             insns.add(LArraylength)
             JInt
           } else {
-            JVoid
+            // The old fallback reported JVoid while leaving the receiver on
+            // the stack — an operand-stack imbalance that either fails
+            // verification or silently corrupts the enclosing expression
+            // (docs/59 §4.4).  Fail loud at compile time.
+            val posArr = recv.span.startPos
+            panic(
+              "Jvm.Codegen: " + toString(posArr.line) + ":" + toString(posArr.column) + ": member '" + memberName +
+                "' is not defined on an array/slice receiver (only `.length`/`.count`)"
+            )
           }
         }
         case _ -> {
-          // Primitive member access is not meaningful; return void.
-          JVoid
+          // Member access on a primitive receiver has no lowering; the old
+          // JVoid fallback silently produced no value (docs/59 §4.4).
+          val posPrim = recv.span.startPos
+          panic(
+            "Jvm.Codegen: " + toString(posPrim.line) + ":" + toString(posPrim.column) + ": member '" + memberName +
+              "' cannot be read from a primitive-typed receiver"
+          )
         }
       }
     }
@@ -1200,7 +1344,12 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       lowerExpr(ctx, insns, fn)
     }
     case EIndex(recv, indices) -> {
-      // Array/list/map indexing.
+      // Array/list/map indexing.  When the receiver is a bare name whose
+      // declared/recorded element type is a concrete class, the element read
+      // narrows to it (docs/59 §4.3 #5439 class) — resolved BEFORE the
+      // receiver is lowered so the recorded entry is read against the
+      // receiver's own binding.
+      val elemOverride = indexedElemClassOverride(ctx, recv)
       val recvTy0 = lowerExpr(ctx, insns, recv)
       // A list/map receiver whose static type is imprecise (an erased-`Object`
       // match binding, or an imported type's in-package guess) must be cast
@@ -1230,16 +1379,27 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             // and yield a `JByte`; reference arrays use `aaload`.
             match elem {
               case JByte -> {
+                // `baload` sign-extends; mask to the canonical unsigned form
+                // (see maskByteUnsigned in 04_calls.l).
                 insns.add(LBaload)
+                maskByteUnsigned(insns)
                 JByte
               }
               case JRef(elemCls) -> {
                 // Preserve the element's reference type (e.g. `File.listFiles()`
                 // yields `java.io.File[]` — indexing must report `java/io/File`,
                 // not `Object`, so instance auto-FFI calls on the element
-                // resolve against the real class).
+                // resolve against the real class).  A slice's erased `Object[]`
+                // element narrows to the receiver's recorded concrete element
+                // class (`fields[i]` on a `slice[LogField]` parameter — the
+                // docs/59 §4.3 formatFields shape).
                 insns.add(LAaload)
-                JRef(className = elemCls)
+                if elemCls == "java/lang/Object" and elemOverride != "" {
+                  insns.add(LCheckcast(className = elemOverride))
+                  JRef(className = elemOverride)
+                } else {
+                  JRef(className = elemCls)
+                }
               }
               case _ -> {
                 insns.add(LAaload)
@@ -1267,7 +1427,11 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               emitMapGet(insns)
               JRef(className = "java/lang/Object")
             } else {
-              // List-style indexing via ArrayList.get(int).
+              // List-style indexing via ArrayList.get(int).  The erased
+              // `Object` element narrows to the receiver's recorded concrete
+              // element class when known (docs/59 §4.3 — `pairs[i]` on a
+              // match-bound `List[YamlPair]` payload, or a declared
+              // `List[Elem]` parameter/local).
               lowerExpr(ctx, insns, indices[0])
               val getPs: List[JvmType] = newList()
               getPs.add(JInt)
@@ -1279,7 +1443,12 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   ret = JRef(className = "java/lang/Object")
                 )
               )
-              JRef(className = "java/lang/Object")
+              if elemOverride != "" {
+                insns.add(LCheckcast(className = elemOverride))
+                JRef(className = elemOverride)
+              } else {
+                JRef(className = "java/lang/Object")
+              }
             }
           }
           case _ -> {
@@ -1324,7 +1493,11 @@ func numericPrimTy(ty: in JvmType): JvmType {
     case JDouble -> JDouble
     case JFloat -> JFloat
     case JInt -> JInt
-    case JByte -> JInt
+    // JByte stays JByte so `reconcileCmpOperands` unboxes the ref side of a
+    // ref-vs-Byte compare through `coerceArgTo(_, JByte)` (Number.intValue +
+    // the canonical unsigned mask) — the JInt target's `checkcast Integer`
+    // throws ClassCastException on a boxed `Byte` (`xs[0] == b` on List[Byte]).
+    case JByte -> JByte
     case JChar -> JInt
     case JShort -> JInt
     case JBoolean -> JBoolean
@@ -1355,9 +1528,29 @@ func isIntLikeJvm(ty: in JvmType): Bool {
   }
 }
 
+func isByteJvm(ty: in JvmType): Bool {
+  match ty {
+    case JByte -> true
+    case _ -> false
+  }
+}
+
 func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmType, rhsTy: in JvmType): JvmType {
   val lhsPrim = numericPrimTy(lhsTy)
   val rhsPrim = numericPrimTy(rhsTy)
+  if isByteJvm(lhsTy) and isByteJvm(rhsTy) {
+    // Byte-vs-Byte: re-mask BOTH operands to the canonical unsigned form so
+    // the following signed int compare/arith orders 0..255 values correctly
+    // (`200.toByte() > 100.toByte()` must be true; a producer missed by
+    // canonicalization would otherwise flip it — see maskByteUnsigned in
+    // 04_calls.l).  The lhs is below the rhs, so spill/reload around its mask.
+    val rhsByteSlot = allocSlot(ctx, "__cmp_rhs_" + freshLabel(ctx), JInt)
+    emitStore(insns, rhsByteSlot, JInt)
+    maskByteUnsigned(insns)
+    emitLoad(insns, rhsByteSlot, JInt)
+    maskByteUnsigned(insns)
+    return JInt
+  }
   if isRefJvm(lhsTy) and not (rhsPrim == JVoid) {
     // Unbox lhs (currently below rhs): spill rhs, unbox lhs, reload rhs.
     val rhsSlot = allocSlot(ctx, "__cmp_rhs_" + freshLabel(ctx), rhsTy)
@@ -1992,6 +2185,13 @@ func coerceToStringForConcat(insns: in List[LInsn], ty: in JvmType): Unit {
       )
     }
     case _ -> {
+      // A Byte renders as its unsigned 0..255 value: re-mask before the int
+      // `valueOf` overload so a non-canonical signed byte never prints as a
+      // negative (see maskByteUnsigned in 04_calls.l).
+      match ty {
+        case JByte -> maskByteUnsigned(insns)
+        case _ -> ()
+      }
       // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
       // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
       val voPs: List[JvmType] = newList()

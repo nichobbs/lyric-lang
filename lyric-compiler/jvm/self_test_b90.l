@@ -16,6 +16,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeIntUtilsBytes(): List[Byte] {
   val pool = poolNew()

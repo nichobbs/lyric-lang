@@ -23,6 +23,7 @@ import Std.File
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeCharOpsBytes(): List[Byte] {
   val pool = poolNew()

@@ -25,6 +25,7 @@ import Msil.Assembler
 import Msil.Opcodes
 import Msil.Tables
 import Msil.Heaps
+import Msil.Kernel
 import Std.Core
 import Std.Collections
 import Std.File

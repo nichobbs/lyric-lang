@@ -55,7 +55,7 @@ func escapeLogValue(s: in String): String {
     } else if ch == '"' {
       buf = buf + "\\\""
     } else {
-      buf = buf + s.substring(i, i + 1)
+      buf = buf + s.substring(i, 1)
     }
     i = i + 1
   }

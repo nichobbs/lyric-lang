@@ -17,6 +17,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Fuzzer
+import Jvm.Kernel
 
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b8"

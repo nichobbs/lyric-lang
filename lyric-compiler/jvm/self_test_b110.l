@@ -24,6 +24,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build OpaquePoint class ───────────────────────────────────────────────────
 func makeOpaquePointBytes(): List[Byte] {

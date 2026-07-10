@@ -13734,6 +13734,174 @@ fix), docs/47 (unquoted `extern type` / `import extern` syntax design),
 `generic_extern_self_test.l` (pre-existing runtime coverage for the
 unquoted-generic parsing this fix's formatter path mirrors).
 
+## D-progress-638 — MSIL auto-FFI resolves extern properties, static fields, literal constants, and enum constants; `@externTarget`'s literal-const path was broken at runtime (`Math.PI` → `MissingFieldException`); extern aliases' member access no longer hijacked by nullary union cases
+
+**Status:** ACCEPTED
+
+**Context.** docs/59 §6 quantified property/field/const access as the single
+largest capability gap blocking `@externTarget` retirement (~24% of the 295
+kernel externs): the modern auto-FFI path resolved only literal member names,
+so a CLR property, static field, or constant on an `extern type` alias was
+unreachable without an `@externTarget` wrapper.
+
+**Decision.** Port the capability set that `emitExternTargetBody` already had
+into the auto-FFI call-site path, resolving from ref-pack metadata:
+
+1. **Property getters** — the static path (`tryAutoFfiFromMetadata`) and the
+   instance path (`tryInstanceAutoFfiFromMetadata`) probe `get_<name>` when
+   literal-name resolution misses on a zero-arg call; the `EMember` read arm
+   gained (a) an intercept for un-shadowed `Alias.<member>` receivers
+   registered in `cctx.externTypeNames` (getter → literal const → static
+   field, in that order) and (b) an `MClassRef` receiver arm for instance
+   getters.
+2. **Property setters** — `lowerAssignExprMsil` resolves `Alias.Prop = v` and
+   `x.Prop = v` (including compound `+=`-style forms via getter →
+   `emitCompoundCombineMsil` → setter) by probing `set_<Prop>`; the property
+   type is taken from the getter. The prior behaviour for the instance form
+   was a **silent `pop; pop` miscompile** — the assignment was discarded.
+3. **Static fields / literal consts / enum consts** — `Msil.MetadataReader`
+   gained `ExternConstValue` + `getLiteralFieldConstIn` (generalizing the
+   Int32-only Constant-table decoder to I8/U8/R4/R8 via a pure-Lyric
+   two's-complement `rdI64`), `ExternFieldInfo` + `findFieldExternIn`
+   (FieldSig decode + static/literal flags), and `isEnumTypeIn`. Codegen
+   inlines consts (`ldc.i4`/`ldc.i8`/`ldc.r8`, R8 bits routed through two new
+   audited `Msil.Kernel` BitConverter externs) and emits `ldsfld` with the
+   decoded signature type for genuine static fields; enum constants are typed
+   as their enum `MValueTypeRef` so overload scoring matches enum-typed
+   parameters exactly.
+
+Unresolvable member reads and property assignments on extern receivers are
+now **build-time panics** (metadata is authoritative); unresolved instance
+member reads produce the established runtime-throw stub naming the missing
+accessor. Value-type instance receivers and value-type `.new()` (Q48-004)
+remain the next capability gap and were deliberately not attempted here.
+
+**Two latent bugs fixed en route.**
+- `@externTarget`'s const handling decoded only Int32-family constants and
+  fell through to `ldsfld` for R8 literals — a literal field has no storage,
+  so `Std.Math.pi()/e()/tau()` threw `MissingFieldException` at runtime on
+  the self-hosted backend (verified on the unmodified baseline). The @ET path
+  now routes through the general const decoder (`emitExternTargetConstMsil`);
+  a declared-return-type mismatch is an F0015 build panic.
+- Any member access `X.None` on an extern alias mis-bound to
+  `Std.Core.Option_None` whenever `Std.Core` was imported —
+  `pickCaseFqnByQualifier`'s single-candidate shortcut ignored the qualifier.
+  Extern type names are now excluded from the nullary-union-case check.
+
+**Verification.** `import_extern_self_test.l` extended to 13 cases (literal
+R8/I4/I8 const inlining incl. `Math.PI` via member access and via the @ET
+kernel route, `String.Empty`/`Stopwatch.Frequency` `ldsfld`, static property
+get via member-access and call form, instance property get/set/compound-set,
+static property set round-trip, enum constants passed to a BCL method) — all
+fail on the baseline binary, 13/13 after. `metadata_reader_self_test.l`
+gained 6 `rdI64` cases pinning the `Math.PI` bit pattern (17/17). Regression:
+`auto_ffi` 15/15, `extern_option` 2/2, `ffi_iface_impl` 5/5,
+`generic_extern` 6/6, `typechecker` 240/240.
+
+**Related:** docs/42 §5 status note, docs/59 §6.4 item 1, docs/48, #5167
+(the seed still blocks *stdlib-internal* adoption of arg-bearing `.new()`;
+this entry's capabilities are consumable there via member-access forms).
+
+---
+
+## D-progress-639 — correctness batch from the docs/59 audit: restored-interface signature encoding, match-arm pattern-bind scoping (both backends), JVM compound assignment, canonical masked-unsigned `Byte`, `invokeinterface` dispatch, cross-package `pub val`s on JVM, loud failures for silent-fallback lowering, `out Byte` sign-extension, inline refined-type truncation, `println(char)` parity, `Std.Log` fields panic
+
+**Status:** ACCEPTED
+
+One PR lands the Band-1/Band-2 silent-miscompile fixes from docs/59 §10.
+Each item shipped with a fail-before/pass-after runtime test; the combined
+tree passes the full CI-wired self-test sweep on both targets.
+
+1. **Restored interface/record-method MemberRef signatures (docs/59 H1,
+   BLOCKER).** `registerRestoredIfaceMethod`/`registerRestoredRecordMethod`
+   encoded blobs with the erasing `buildInstanceMethodSig` while producers
+   emit ctx-aware signatures — cross-package `callvirt` on a restored
+   interface/record method mentioning a record or concrete collection threw
+   `MissingMethodException`. Both now use `buildInstanceMethodSigWithCtx`;
+   the stale #1602-era comment is gone.
+2. **Match-arm / for-loop pattern-bind scoping (H2, BLOCKER, both
+   backends).** Pattern binds allocated slots outside the #5191
+   `enterBlockScope`/`exitBlockScope` machinery, so `case Some(v) ->`
+   clobbered (slot reuse) or shadowed-past-the-match (remap leak) an outer
+   `v`. MSIL had the identical hole (verified: outer `v` read `100` on
+   dotnet pre-fix). Every match arm and `for` bind is now scope-bracketed on
+   both backends; `block_shadow_self_test.l` +8 cases, 17/17 both targets.
+3. **JVM compound assignment (H3, BLOCKER).** The local-slot and
+   hoisted-cell compound paths special-cased only `JLong`/`JDouble` and fell
+   to integer opcodes — `f += 0.5f` and `s += "x"` were `VerifyError`s. All
+   seven compound paths now route through one `emitCompoundCombineJvm`
+   (String concatenation included; RHS coerced like plain `=` so erased
+   payloads work; uncombinable targets panic).
+   `silent_miscompile_guard_jvm_self_test.l` +5, 18/18.
+4. **Canonical `Byte` form = masked-unsigned 0..255 (H4, BLOCKER; supersedes
+   the earlier signed-in-slot convention documented in the JVM backend).**
+   `.toByte()` produced masked-unsigned while unbox/`baload` produced
+   sign-extended values, and comparisons never normalized — `xs[0] == b` was
+   false and ordering was signed for values ≥ 128. All producers normalize,
+   both comparison operands re-mask, compound results re-mask (`b *= 2` on
+   200 → 144); `LBoxByte` keeps `i2b` at the boxing boundary
+   (`Byte.valueOf` cache invariant), documented at `maskByteUnsigned`. MSIL
+   twin fix: Byte-declared locals re-narrow with `conv.u1` on plain and
+   compound stores (`FuncCtx.byteSlots`), so both targets agree on wrap.
+   `byte_arithmetic_self_test.l` — which had never compiled and was never
+   CI-wired — repaired, extended with ≥128 cases, wired on both targets
+   (11/11 each).
+5. **JVM auto-FFI interface dispatch.** `ClassInfo.isInterface` was parsed
+   but never consulted; instance calls on JDK-interface-typed receivers
+   emitted `invokevirtual`. Now `invokeinterface` with the correct count.
+   `auto_ffi_jvm_self_test.l` 23/23 (chained `size()`/`isEmpty()` through
+   `java.util.List` receivers).
+6. **JVM silent-fallback lowering → diagnostics; cross-package `pub val`s
+   work.** Unknown path references lowered to `aconst_null`; unknown members
+   returned the receiver as the "field value"; two arms left the operand
+   stack imbalanced. All are now source-located panics. Module-level
+   `pub val`s are registered cross-package (import-aware `val:` keys) when
+   the field type is derivable pre-lowering (explicit annotation or literal
+   initializer) and read via `getstatic <declaringPkg>.<name>`; `PConstRef`
+   const patterns resolve through the same keys. Unannotated non-literal
+   pub vals panic with annotate-guidance. Verified with a two-package
+   manifest build on both targets. Fallout root-fixed:
+   `map_option_self_test.l` used the undefined identifier `unit`, which had
+   leaned on the old null fallback (now `Ok(())`).
+7. **MSIL by-name token-resolution fallbacks (docs/59 §3.3).**
+   `MLdfldGeneric` with an unresolved token emitted *no instruction* (stack
+   imbalance far from cause) — now a panic naming type+field. The
+   `isinst`/`castclass` `System.Object` fallbacks now warn uniformly on
+   stderr (W0003 moved off stdout per the #4703 convention).
+8. **`out`/`inout Byte` sign-extension (MSIL):** `emitLdindForType` used
+   `ldind.i1` — now `ldind.u1`; `outparam_self_test.l` covers a ≥128
+   round-trip.
+9. **Inline refined types (MSIL):** `TRefined` always lowered to `MInt`,
+   truncating `Long`/`Double` bases; now maps through the underlying type.
+   `range_subtype_self_test.l` covers an inline `Long range` binding above
+   Int32.Max.
+10. **`println(char)` parity (MSIL):** printed the integer code (routed to
+    the Int WriteLine token) vs the glyph on JVM; now uses a
+    `Console.WriteLine(char)` MemberRef.
+11. **`Std.Log` structured fields (docs/59 H6, BLOCKER):**
+    `escapeLogValue` passed an end-index where `.substring(start, count)`
+    takes a count, so any `log()` call with a non-empty `fields` slice
+    panicked. Fixed to `substring(i, 1)`; `lyric-stdlib/tests/log_tests.l`
+    added covering the fields path incl. escaped `\n`/`=`/`"` characters.
+12. **Dead code removed (MSIL):** `typeExprToMsil`/`sliceElemMsil` (stale
+    erasing near-copies cited as load-bearing by the H1 comment),
+    `valueTupleMsilCtx`, the unused `tokConcat3` MemberRef row, the
+    unreachable `isValueType` List-mapping branch; the stale `lowering.l`
+    Phase R5 header now reflects implemented scope.
+
+**Known residuals** (tracked for follow-up, not regressions): MSIL hoisted
+byte cells and byte record fields are int32-backed and do not wrap on
+overflow (valid 0..255 values agree across targets); `invokestatic` on JDK
+interface types would need `CONSTANT_InterfaceMethodref`; `catch` exception
+bindings allocate outside the scope machinery (same shape as item 2);
+two pre-existing MSIL miscompiles surfaced during verification (bare
+list-literal `for` iteration binding erased references into arithmetic, and
+closure-call results bound to primitive-annotated locals skipping unbox).
+
+**Related:** docs/59 §3, §4, §8.1, §10 Bands 1–2; D-progress-638.
+
+---
+
 ---
 
 ## D-progress-638 — code-review sweep: correctly-rounded float literals, aspect-precondition DoS, `Std.Xml`/`Std.Yaml` numeric bugs, and ecosystem hardening

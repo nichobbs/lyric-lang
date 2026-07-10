@@ -30153,3 +30153,26 @@ green after the change (a rename-related regression in
 `rate_limit_tests.l`'s import was caught by this run and fixed).
 
 **Related:** `docs/03-decision-log.md` D-progress-629.
+
+## Auto-FFI properties, static fields, and constants (2026-07-10)
+
+The MSIL auto-FFI call-site path now resolves CLR **properties** (getter
+via member access or zero-arg call probing `get_<M>`; setter via
+assignment, including compound forms, probing `set_<M>`), **static
+fields** (`ldsfld` with the decoded FieldSig type), and **literal /
+enum constants** (Constant-table decode generalized from Int32 to
+I8/U8/R4/R8; enum constants typed as their enum value type). This
+closes the top capability gap in docs/59 §6's `@externTarget`
+retirement matrix (~24% of kernel externs). The same change repaired
+the @externTarget literal-const path (`Std.Math.pi()` previously threw
+`MissingFieldException` at runtime on the self-hosted backend) and
+stopped extern-alias member access from mis-binding to nullary union
+cases (`Alias.None` → `Std.Core.Option_None`).
+
+Verified by `import_extern_self_test.l` (13 cases) and
+`metadata_reader_self_test.l` (17 cases, incl. `rdI64` bit-pattern
+pins). Value-type instance receivers and value-type `.new()`
+(Q48-004) are the next gap.
+
+**Related:** `docs/03-decision-log.md` D-progress-638, docs/42 §5
+status note.

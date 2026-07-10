@@ -21,6 +21,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.TestEngine
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build @LyricTest annotation class bytes ───────────────────────────────────
 func makeAnnotationBytes(): List[Byte] {

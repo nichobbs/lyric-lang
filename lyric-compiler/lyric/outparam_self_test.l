@@ -173,3 +173,32 @@ test "3-param mixed-mode (in, out, inout) all positions index correctly" {
   assertEqualInt(b, 6, "out param (pos 1): 3*2 = 6")
   assertEqualInt(c, 13, "inout param (pos 2): 10+3 = 13")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Byte out/inout: Byte is unsigned (0..255), so a value >= 128 must round-trip
+// unchanged through a byref read — a sign-extending `ldind.i1` turns 0xFF into
+// -1 (docs/59 §3 F4; the read path is `emitLdindForType`'s MByte arm).
+// ─────────────────────────────────────────────────────────────────────────────
+func setByteHigh(src: in Int, dst: out Byte): Unit {
+  dst = src.toByte()
+}
+
+test "out Byte write >= 128 round-trips unsigned" {
+  var b: Byte = 0.toByte()
+  setByteHigh(255, b)
+  assertEqualInt(b.toInt(), 255, "out Byte 0xFF must read back as 255, not -1")
+  setByteHigh(200, b)
+  assertEqualInt(b.toInt(), 200, "out Byte 200 must stay in the unsigned range")
+}
+
+func bumpByte(by: in Int, cur: inout Byte): Unit {
+  cur = (cur.toInt() + by).toByte()
+}
+
+test "inout Byte read-modify-write >= 128 stays unsigned" {
+  var b: Byte = 130.toByte()
+  bumpByte(60, b)
+  assertEqualInt(b.toInt(), 190, "inout Byte reads 130 (not -126) then writes 190")
+  bumpByte(65, b)
+  assertEqualInt(b.toInt(), 255, "inout Byte accumulates to 255 without sign wrap")
+}

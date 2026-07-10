@@ -12,20 +12,16 @@
 //!   lowerMRecord      — lowers an MRecord into a LoweringCtx (adds TypeDef/Field/MethodDef rows).
 //!   lowerMPackage     — lowers an MPackage to a complete PE byte list.
 //!
-//! Phase R5 coverage (bootstrap-grade, matching jvm/lowering.l Phase R4):
-//!   Primitive types: Int(I4), Long(I8), Double(R8), Bool(Boolean), String, Unit(Void), Char.
-//!   Records with primitive or record-typed fields.
-//!   Top-level static functions.
-//!   Sealed union types (abstract base + derived case classes).
-//!   Distinct types and range types (thin newtype wrappers).
-//!   Arithmetic, comparison, boolean ops, string ops.
-//!   Control flow: if/else, while, match (literal + binding patterns).
-//!   Return, function call (static), constructor call (newobj), field access.
-//!
-//! Not covered in Phase R5 (deferred to R6):
-//!   Generics, async, protected types, wire blocks, aspects, FFI (@extern).
-//!   Cross-package references beyond the stdlib primitives.
-//!   Exception handling (try/catch/finally).
+//! Coverage: the full production surface of the self-hosted MSIL backend —
+//! primitives (Int/Long/Double/Bool/String/Unit/Char/Byte), records, unions
+//! (including in-bundle generics via GenericParam/VAR/TypeSpec, docs/43),
+//! enums, distinct/range types, interfaces (abstract + DIM), impl blocks,
+//! opaque types, closures (strongly-typed environment classes, docs/53),
+//! async state machines, generators, protected types, wire blocks, woven
+//! aspects, FFI (@externTarget + metadata-based auto-FFI, docs/42),
+//! cross-package/restored references, and exception handling
+//! (try/catch/finally via EH clauses).  The historical Phase R5 header that
+//! listed generics/async/aspects/FFI as "not covered" predated all of that.
 package Msil.Lowering
 
 import Msil.Kernel
@@ -216,7 +212,10 @@ func emitLdindForType(mb: in MethodBody, ty: in MsilType): Unit {
     case MDouble -> emitLdind_R8(mb)
     case MBool -> emitLdind_I1(mb)
     case MChar -> emitLdind_U2(mb)
-    case MByte -> emitLdind_I1(mb)
+    // Byte is unsigned (0..255): `ldind.i1` sign-extends, turning 0xFF into
+    // -1.  Zero-extend with `ldind.u1`, matching `ldelem.u1` for slice[Byte]
+    // elements and `conv.u1` for `.toByte()` (docs/59 §3 F4).
+    case MByte -> emitLdind_U1(mb)
     case _ -> emitLdind_Ref(mb)
   }
 }
@@ -1998,6 +1997,15 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         if refRow > 0 {
           0x01000000 + refRow                   // TypeRef token (foreign assembly)
         } else {
+          // W0003 (stderr, #4703): `castclass System.Object` always succeeds, so
+          // for a well-typed program the fallback only drops the narrowing check
+          // (the value already has the target type at every castclass site) —
+          // warn rather than panic, unlike the `isinst` arms below where the
+          // Object fallback silently changes which match arm runs.
+          Console.error(
+            "W0003: MCastclassByName: could not resolve type '" + name +
+              "' — falling back to System.Object (the narrowing check is dropped; check for a misspelled type name or a missing restored-package registration)"
+          )
           0x01000000 + ctx.trObject             // Last resort: System.Object (no-op cast)
         }
       }
@@ -2013,16 +2021,18 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         if refRow > 0 {
           0x01000000 + refRow                   // TypeRef token (foreign assembly)
         } else {
-          // W0003: type name could not be resolved — falling back to System.Object
-          // makes `isinst` always return non-null (every reference type is an Object),
-          // so any pattern arm guarded by this isinst unconditionally matches.  Likely
-          // cause: cross-bundle union case whose TypeRef was not registered via
-          // registerRestoredArtifactTokens, or a misspelled case name.
-          println(
-            "W0003: MIsinstByName: could not resolve type '" + name +
-              "' — falling back to System.Object (isinst will always succeed; check for a misspelled case name or a missing restored-package registration)"
+          // An `isinst System.Object` fallback always returns non-null (every
+          // reference type is an Object), so any pattern arm guarded by this
+          // isinst would unconditionally match — a silent miscompile that takes
+          // the wrong match arm.  Fail loudly at the cause instead, like the
+          // sibling `MNewobjByName` / `MCallByName` / `MLdfldByName` arms.
+          // Likely cause: cross-bundle union case whose TypeRef was not
+          // registered via registerRestoredArtifactTokens, or a misspelled
+          // case name.
+          panic(
+            "Msil.Lowering: MIsinstByName could not resolve type '" + name +
+              "' — an isinst System.Object fallback would always succeed and silently take the wrong match arm (check for a misspelled case name or a missing restored-package registration)"
           )
-          0x01000000 + ctx.trObject             // Last resort: System.Object
         }
       }
       emitIsinst(mb, tok)
@@ -2058,7 +2068,12 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
           val specRow = ctxAddTypeSpec(ctx, sigKey, blob)
           0x1B000000 + specRow
         } else {
-          0x01000000 + ctx.trObject             // Last resort: System.Object
+          // Same rationale as MIsinstByName: an `isinst System.Object`
+          // fallback always matches, silently taking the wrong match arm.
+          panic(
+            "Msil.Lowering: MIsinstGeneric could not resolve TypeDef/TypeRef for '" + name +
+              "' — an isinst System.Object fallback would always succeed and silently take the wrong match arm (check for a missing restored-package registration)"
+          )
         }
       }
       emitIsinst(mb, tok)
@@ -2090,6 +2105,13 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
           val specRow = ctxAddTypeSpec(ctx, sigKey, blob)
           0x1B000000 + specRow
         } else {
+          // W0003 (stderr, #4703): same rationale as MCastclassByName — the
+          // Object fallback drops the narrowing check but preserves behaviour
+          // for a well-typed program, so warn rather than panic.
+          Console.error(
+            "W0003: MCastclassGeneric: could not resolve TypeDef/TypeRef for '" + name +
+              "' — falling back to System.Object (the narrowing check is dropped; check for a missing restored-package registration)"
+          )
           0x01000000 + ctx.trObject
         }
       }
@@ -2127,12 +2149,17 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
           val mrRow = ctxAddMemberRefForTypeSpec(ctx, tsRow, fieldName, mrKey, fieldSig)
           0x0A000000 + mrRow
         } else {
-          0
+          // Emitting NO instruction here left the receiver on the stack — a
+          // stack imbalance that surfaced as InvalidProgramException far from
+          // the cause.  Fail loudly at the cause instead, like the sibling
+          // `MLdfldByName` arm.
+          panic(
+            "Msil.Lowering: MLdfldGeneric could not resolve TypeDef/TypeRef for '" + baseName + "' (field '" + fieldName +
+              "') — check for a missing restored-package registration"
+          )
         }
       }
-      if tok > 0 {
-        emitLdfld(mb, tok)
-      }
+      emitLdfld(mb, tok)
     }
     case MNewobjGenericCase(typeRefRow, typeArgs, ctorParams) -> {
       // Build a closed GENERICINST TypeSpec and a TypeSpec-parented .ctor

@@ -18,6 +18,7 @@ import Std.Collections
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
+import Jvm.Kernel
 
 // ── B6Counter (protected type) ────────────────────────────────────────────────
 //

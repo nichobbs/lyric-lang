@@ -35,6 +35,18 @@ logic; optimisations; non-idiomatic usage; stdlib API-surface consolidation;
 | H9 | HIGH | FFI | The single biggest gap blocking `@externTarget` retirement is **property access** (~24% of kernel externs), then value-type receivers, async/Task unwrap, and out/ref params; ~50-55% of kernel externs are migratable today but seed-blocked inside the stdlib by #5167 (§6) |
 | H10 | HIGH | middle-end | The checker's resolved output is consumed only as a diagnostic gate; mono and both codegens re-infer types from raw AST, so the project maintains four independent type systems whose disagreements produce most silent miscompiles below (§5) |
 
+> **Remediation status (2026-07-10, D-progress-638/639):** H1, H2 (both
+> backends — MSIL had the same hole), H3, H4 (canonical masked-unsigned
+> `Byte`, both backends), and H6 are **fixed**; the §6.4 item-1 property /
+> static-field / literal-const capability **shipped** for MSIL auto-FFI
+> (D-progress-638), which also fixed the @ET `Math.PI` literal-const runtime
+> break and the `Alias.None` union-case hijack. Also shipped from §10 Bands
+> 1–2: `out Byte` sign-extension, inline `TRefined` truncation, MSIL by-name
+> fallback diagnostics (incl. the `MLdfldGeneric` silent skip), JVM
+> `invokeinterface` dispatch, JVM cross-package `pub val` resolution +
+> fallback panics, `println(char)` parity, and the §3.5 dead-code removals.
+> H5, H7, H8, H9 (remaining capabilities), and H10 remain open.
+
 ---
 
 ## 2. Scope inventory

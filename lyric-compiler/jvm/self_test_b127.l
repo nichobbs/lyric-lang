@@ -20,6 +20,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build Wrapper union (abstract base + Ok/Err case classes) ────────────────
 func makeWrapperBytes(): List[List[Byte]] {

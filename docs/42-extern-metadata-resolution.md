@@ -320,6 +320,21 @@ Each phase is independently shippable and testable via the
 byte arrays** for the parser layers so tests don't depend on the `readBytes`
 runtime gap.
 
+> **Status update (2026-07):** beyond the phases below, the auto-FFI call-site
+> path now also resolves **properties** (getter via member access / zero-arg
+> call probing `get_<M>`; setter via assignment incl. compound forms probing
+> `set_<M>`), **static fields** (`ldsfld` with the decoded FieldSig type), and
+> **literal constants** (Constant-table decode generalized from Int32 to
+> I8/U8/R4/R8 via `ExternConstValue`; enum constants typed as their enum value
+> type). This closes the "property access" row of the docs/59 §6 capability
+> matrix — the single largest `@externTarget`-retirement blocker (~24% of
+> kernel externs). Value-type instance receivers and `.new()` on value types
+> remain the next gap (step 4b / Q48-004). The same change fixed the @ET
+> path's literal-const handling (`Math.PI` previously fell through to a
+> `ldsfld` on a storage-less literal field → `MissingFieldException` at
+> runtime) and excluded extern type names from the nullary-union-case
+> shortcut (`Alias.None` no longer mis-binds to `Std.Core.Option_None`).
+
 - **Phase 1 — byte-read foundation + PE/metadata-root reader. _(SHIPPED.)_**
   `Std.File.readBytesOrPanic(path): slice[Byte]` added over the existing
   `hostReadAllBytes` kernel extern. `Msil.MetadataReader`

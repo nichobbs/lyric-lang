@@ -44,6 +44,7 @@ import Msil.Assembler
 import Msil.Opcodes
 import Msil.Tables
 import Msil.Heaps
+import Msil.Kernel
 import Std.Core
 import Std.Collections
 import Std.File
@@ -125,8 +126,11 @@ func main(): Unit {
   emitLdloc_3(mbMain)          // offset  5: push local[3]  (ldloc.3 = 0x09)
   emitStloc_S(mbMain, 4)       // offset  6: local[4] = 42  (stloc.s 4 = 0x13 0x04)
   emitLdloc_S(mbMain, 4)       // offset  8: push local[4]  (ldloc.s 4 = 0x11 0x04)
-  emitStloc(mbMain, 4)         // offset 10: local[4] = 42  (stloc 4 = 0xFE 0x0E 0x04 0x00)
-  emitLdloc(mbMain, 4)         // offset 14: push local[4]  (ldloc 4 = 0xFE 0x0C 0x04 0x00)
+  // emitStloc/emitLdloc now auto-select the shortest encoding, so slot 4
+  // would come out as stloc.s/ldloc.s; this test exercises the WIDE forms,
+  // so emit the raw wide instructions directly.
+  mbEmit(mbMain, iStloc(4))    // offset 10: local[4] = 42  (stloc 4 = 0xFE 0x0E 0x04 0x00)
+  mbEmit(mbMain, iLdloc(4))    // offset 14: push local[4]  (ldloc 4 = 0xFE 0x0C 0x04 0x00)
   emitCall(mbMain, 0x0A000001)  // offset 18: print 42
   emitRet(mbMain)               // offset 23
 

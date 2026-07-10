@@ -23,6 +23,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 // ── Build package items ───────────────────────────────────────────────────────
 func makePackageClasses(pool: in Pool): List[BuiltClass] {

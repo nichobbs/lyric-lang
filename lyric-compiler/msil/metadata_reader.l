@@ -116,7 +116,11 @@ pub func rdI16(b: in slice[Byte], o: in Int): Int {
   val lo = rdU8(b, o)
   val hi = rdU8(b, o + 1)
   val result = lo + hi * 256
-  if hi >= 128 { result - 65536 } else { result }
+  if hi >= 128 {
+    result - 65536
+  } else {
+    result
+  }
 }
 
 func rdU32(b: in slice[Byte], o: in Int): Int {
@@ -129,6 +133,16 @@ func rdI32(b: in slice[Byte], o: in Int): Int {
   val h = rdU8(b, o + 3)
   val hTerm = if h >= 128 { (h - 256) * 16777216 } else { h * 16777216 }
   rdU8(b, o) + rdU8(b, o + 1) * 256 + rdU8(b, o + 2) * 65536 + hTerm
+}
+
+// 64-bit little-endian two's-complement read.  The unsigned low half plus the
+// signed high half scaled by 2^32 covers every bit pattern without leaving
+// Long range (max: (2^31-1)*2^32 + (2^32-1) = Long.MaxValue), so no bitwise
+// ops are needed — this stays compilable by the bootstrap emitter.
+pub func rdI64(b: in slice[Byte], o: in Int): Long {
+  val lo = rdU8(b, o).toLong() + rdU8(b, o + 1).toLong() * 256i64 + rdU8(b, o + 2).toLong() * 65536i64 +
+    rdU8(b, o + 3).toLong() * 16777216i64
+  rdI32(b, o + 4).toLong() * 4294967296i64 + lo
 }
 
 // True when bit `bit` (0..7) of the unsigned byte value `byteVal` is set.
@@ -1204,7 +1218,8 @@ pub func getLiteralFieldInt32In(
         val blobBytes = blobAt(img, layout, blobIndex)
         match decodeInt32ConstantBlob(typeVal, blobBytes) {
           case Some(v) -> return Some(value = v)
-          case None -> {}
+          case None -> {
+          }
         }
       }
     }
@@ -1237,26 +1252,189 @@ pub func decodeInt32ConstantBlob(typeVal: in Int, blobBytes: in slice[Byte]): Op
   }
 }
 
+// A literal (`const`) field's decoded Constant-table value, discriminated by
+// the ELEMENT_TYPE family the Constant row declares.  Floating constants are
+// carried as raw IEEE 754 bit patterns: this reader stays pure byte code, so
+// the bits-to-Double reinterpretation happens in the emitter (`Msil.Kernel`,
+// which owns the BitConverter extern boundary).
+pub union ExternConstValue {
+  case ECVInt(v: Int)          // BOOLEAN/CHAR/I1/U1/I2/U2/I4/U4, widened to Int
+  case ECVLong(v: Long)        // I8/U8 (two's-complement bit pattern)
+  case ECVR4Bits(bits: Int)    // R4 raw IEEE 754 bit pattern
+  case ECVR8Bits(bits: Long)   // R8 raw IEEE 754 bit pattern
+}
+
+// Retrieve the constant value of ANY numeric literal field declared by
+// `typeFqn`, or None.  Generalises `getLiteralFieldInt32In` beyond the
+// Int32 family: I8/U8 constants (`Long.MaxValue`), and R4/R8 constants
+// (`Math.PI`, `Double.MaxValue`) — the latter mattering because a literal
+// field has no storage, so the historical `ldsfld` fallback for a non-Int32
+// const faults at run time with MissingFieldException (`Math.PI` did exactly
+// that).  String constants (ELEMENT_TYPE_STRING) are deliberately not decoded
+// here: their blob is UTF-16LE and a correct decode needs surrogate-aware
+// string construction; no BCL extern the kernel uses names one.
+pub func getLiteralFieldConstIn(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  typeFqn: in String,
+  fieldName: in String,
+): Option[ExternConstValue] {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return None
+  }
+  val fr = fieldRange(img, layout, th, typeRow)
+  val b = img.bytes
+  var row = fr.start
+  var foundFieldRow = -1
+  while row <= fr.endRow {
+    val o = layout.dataStart[0x04] + (row - 1) * layout.rowSize[0x04]
+    val flags = rdU16(b, o)
+    val nameI = rdIdx(b, o + 2, layout.stringIdx)
+    val nm = stringAt(img, layout, nameI)
+    if nm == fieldName {
+      // FieldAttributes Literal = 0x0040.
+      if (flags / 64) % 2 == 1 {
+        foundFieldRow = row
+      }
+      break
+    }
+    row = row + 1
+  }
+  if foundFieldRow < 0 {
+    return None
+  }
+  val parentIdx = foundFieldRow * 4 // HasConstant Field tag = 0
+  val constCount = rowCountOf(th, 0x0B)
+  var crow = 1
+  val hasConstIdxWidth = codedWidthFor(th, tableIds([0x04, 0x08, 0x17]), 2)
+  while crow <= constCount {
+    val o = layout.dataStart[0x0B] + (crow - 1) * layout.rowSize[0x0B]
+    val pVal = rdIdx(b, o + 2, hasConstIdxWidth)
+    if pVal == parentIdx {
+      val typeVal = b[o].toInt()
+      val blobIndex = rdIdx(b, o + 2 + hasConstIdxWidth, layout.blobIdx)
+      val blobBytes = blobAt(img, layout, blobIndex)
+      if typeVal >= 0x02 and typeVal <= 0x09 {
+        match decodeInt32ConstantBlob(typeVal, blobBytes) {
+          case Some(v) -> return Some(value = ECVInt(v = v))
+          case None -> {
+          }
+        }
+      } else if (typeVal == 0x0A or typeVal == 0x0B) and blobBytes.length >= 8 {
+        return Some(value = ECVLong(v = rdI64(blobBytes, 0)))
+      } else if typeVal == 0x0C and blobBytes.length >= 4 {
+        return Some(value = ECVR4Bits(bits = rdI32(blobBytes, 0)))
+      } else if typeVal == 0x0D and blobBytes.length >= 8 {
+        return Some(value = ECVR8Bits(bits = rdI64(blobBytes, 0)))
+      }
+    }
+    crow = crow + 1
+  }
+  None
+}
+
+// Read-from-disk wrapper over `getLiteralFieldConstIn`.
+pub func getLiteralFieldConst(asmPath: in String, typeFqn: in String, fieldName: in String): Option[ExternConstValue] {
+  match File.readBytes(asmPath) {
+    case Err(_) -> None
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> getLiteralFieldConstIn(img, layout, th, typeFqn, fieldName) } } } }
+  }
+}
+
+// A field's declared attributes plus its decoded, FQN-normalised signature
+// type.  `isLiteral` distinguishes storage-less `const` fields (which must be
+// inlined from the Constant table) from genuine static fields (readable via
+// `ldsfld`).
+pub record ExternFieldInfo {
+  isStatic: Bool
+  isLiteral: Bool
+  fieldType: SigType
+}
+
+// Look up field `fieldName` on `typeFqn` and decode its FieldSig blob
+// (ECMA-335 §II.23.2.4: FIELD(0x06) + CustomMods + Type) to an FQN-normalised
+// `SigType`.  None when the type or field is absent, or the blob is malformed.
+pub func findFieldExternIn(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  typeFqn: in String,
+  fieldName: in String,
+): Option[ExternFieldInfo] {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return None
+  }
+  val fr = fieldRange(img, layout, th, typeRow)
+  val b = img.bytes
+  var row = fr.start
+  while row <= fr.endRow {
+    val o = layout.dataStart[0x04] + (row - 1) * layout.rowSize[0x04]
+    val flags = rdU16(b, o)
+    val nameI = rdIdx(b, o + 2, layout.stringIdx)
+    val nm = stringAt(img, layout, nameI)
+    if nm == fieldName {
+      val sigI = rdIdx(b, o + 2 + layout.stringIdx, layout.blobIdx)
+      val sig = blobAt(img, layout, sigI)
+      if sig.length < 2 or rdU8(sig, 0) != 0x06 {
+        return None
+      }
+      val dt = decodeType(sig, 1)
+      val resolved = resolveSigTypeFqn(img, layout, th, dt.ty)
+      return Some(
+        value = ExternFieldInfo(
+          isStatic = (flags / 16) % 2 == 1,
+          isLiteral = (flags / 64) % 2 == 1,
+          fieldType = resolved
+        )
+      )
+    }
+    row = row + 1
+  }
+  None
+}
+
+// Read-from-disk wrapper over `findFieldExternIn`.
+pub func findFieldExtern(asmPath: in String, typeFqn: in String, fieldName: in String): Option[ExternFieldInfo] {
+  match File.readBytes(asmPath) {
+    case Err(_) -> None
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> findFieldExternIn(img, layout, th, typeFqn, fieldName) } } } }
+  }
+}
+
+// True iff `typeFqn`'s TypeDef Extends field resolves to "System.Enum" — i.e.
+// the type is a CLR enum.  Used to type an inlined enum constant as the enum
+// value type (so it scores exactly against enum-typed BCL parameters) rather
+// than a bare Int.
+pub func isEnumTypeIn(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String): Bool {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return false
+  }
+  val td = readTypeDef(img, layout, typeRow)
+  if td.extendsToken <= 0 {
+    return false
+  }
+  resolveTypeDefOrRefName(img, layout, th, td.extendsToken) == "System.Enum"
+}
+
+// Read-from-disk wrapper over `isEnumTypeIn`.
+pub func isEnumType(asmPath: in String, typeFqn: in String): Bool {
+  match File.readBytes(asmPath) {
+    case Err(_) -> false
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> false; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> false; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> false; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> false; case Ok(layout) -> isEnumTypeIn(img, layout, th, typeFqn) } } } }
+  }
+}
+
 // Read-from-disk wrapper over `getLiteralFieldInt32In`.
 pub func getLiteralFieldInt32(asmPath: in String, typeFqn: in String, fieldName: in String): Option[Int] {
   match File.readBytes(asmPath) {
     case Err(_) -> None
-    case Ok(raw) -> match readPe(raw.toArray()) {
-      case Err(_) -> None
-      case Ok(img) -> match readMetadataRoot(img) {
-        case Err(_) -> None
-        case Ok(root) -> match readTablesHeader(img, root) {
-          case Err(_) -> None
-          case Ok(th) -> match computeLayout(img, root, th) {
-            case Err(_) -> None
-            case Ok(layout) -> getLiteralFieldInt32In(img, layout, th, typeFqn, fieldName)
-          }
-        }
-      }
-    }
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> getLiteralFieldInt32In(img, layout, th, typeFqn, fieldName) } } } }
   }
 }
-
 
 // ── Layer 5: signature-blob decoder ──────────────────────────────────────────
 //
@@ -2119,15 +2297,7 @@ pub func addAssemblyToIndexesAndValueTypes(
           ") — its types will fall back to the default assembly in auto-FFI resolution"
       )
     }
-    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) {
-      case None -> {
-        Console.error(
-          "W0007: addAssemblyToIndexesAndValueTypes: failed to parse '" + asmPath +
-            "' as a .NET assembly — its types will fall back to the default assembly in auto-FFI resolution"
-        )
-      }
-      case Some(ri) -> { scanPublicTypes(ri, nm, typeIndex); scanValueTypes(ri, vtypeSet) }
-    }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> { Console.error("W0007: addAssemblyToIndexesAndValueTypes: failed to parse '" + asmPath + "' as a .NET assembly — its types will fall back to the default assembly in auto-FFI resolution") }; case Some(ri) -> { scanPublicTypes(ri, nm, typeIndex); scanValueTypes(ri, vtypeSet) } }
   }
 }
 
@@ -2621,14 +2791,10 @@ pub func decodeExternMethodSigIn(
   // when both are present) can be ambiguous in a way that matters — a
   // multi-candidate static count is irrelevant when an unambiguous instance
   // match was returned instead, and vice versa (#4792).
-  val takenCount = match instanceMatch {
-    case Some(_) -> instanceMatchCount
-    case None -> staticMatchCount
-  }
+  val takenCount = match instanceMatch { case Some(_) -> instanceMatchCount; case None -> staticMatchCount }
   if takenCount > 1 {
     Console.error(
-      "W0008: decodeExternMethodSigIn: '" + typeFqn + "." + member + "' has " +
-        toString(takenCount) +
+      "W0008: decodeExternMethodSigIn: '" + typeFqn + "." + member + "' has " + toString(takenCount) +
         " overloads matching the declared arity — arity-only selection cannot " +
         "distinguish same-name same-arity BCL overloads (e.g. GetOrAdd(TKey,TValue) vs " +
         "GetOrAdd(TKey,Func)); the first one found in the Method table was used, which " +
@@ -2669,7 +2835,11 @@ pub func scoreSigTypeLenient(arg: in SigType, param: in SigType): Int {
       // reference parameter as an implicit upcast.
       val argIsObject = match arg { case STPrim(b) -> b == 0x1C; case _ -> false }
       val argIsRefNamed = match arg { case STNamed(_, vt) -> not vt; case _ -> false }
-      if argIsObject or argIsRefNamed { 1 } else { 0 - 1 }
+      if argIsObject or argIsRefNamed {
+        1
+      } else {
+        0 - 1
+      }
     } else {
       0 - 1
     }
@@ -3306,12 +3476,14 @@ pub func readAssemblyVersion(asmPath: in String): Option[AssemblyVersion] {
     case Some(ri) -> {
       if ri.th.rowCounts[0x20] > 0 {
         val row = readAssembly(ri.img, ri.layout, 1)
-        Some(value = AssemblyVersion(
-          major = row.majorVersion,
-          minor = row.minorVersion,
-          build = row.buildNumber,
-          revision = row.revisionNumber
-        ))
+        Some(
+          value = AssemblyVersion(
+            major = row.majorVersion,
+            minor = row.minorVersion,
+            build = row.buildNumber,
+            revision = row.revisionNumber
+          )
+        )
       } else {
         None
       }

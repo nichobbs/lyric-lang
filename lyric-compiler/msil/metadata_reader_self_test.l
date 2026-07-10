@@ -137,3 +137,77 @@ test "decodeInt32ConstantBlob: CHAR (0x03) 2-byte blob also stays unsigned" {
     case None -> assertTrue(false, "decode_char_unsigned_expectedSome")
   }
 }
+
+// rdI64 (little-endian signed 64-bit reader): the Constant-table decode for
+// I8/U8 and R8 literal fields is built on it (`getLiteralFieldConstIn`).
+// Constructed byte buffers again — no DLL fixture with a 64-bit literal is
+// needed to pin the two's-complement composition (unsigned low half plus
+// signed high half scaled by 2^32).
+test "rdI64: zero decodes to 0" {
+  val bytes: List[Byte] = newList()
+  var i = 0
+  while i < 8 {
+    bytes.add(0x00u8)
+    i = i + 1
+  }
+  assertEqualLong(rdI64(bytes.toArray(), 0), 0i64, "rdI64_zero")
+}
+
+test "rdI64: all-FF decodes to -1" {
+  val bytes: List[Byte] = newList()
+  var i = 0
+  while i < 8 {
+    bytes.add(0xFFu8)
+    i = i + 1
+  }
+  assertEqualLong(rdI64(bytes.toArray(), 0), -1i64, "rdI64_minusOne")
+}
+
+test "rdI64: max positive (0x7FFFFFFFFFFFFFFF) decodes to Long.MaxValue" {
+  val bytes: List[Byte] = newList()
+  var i = 0
+  while i < 7 {
+    bytes.add(0xFFu8)
+    i = i + 1
+  }
+  bytes.add(0x7Fu8)
+  assertEqualLong(rdI64(bytes.toArray(), 0), 9223372036854775807i64, "rdI64_maxPositive")
+}
+
+test "rdI64: min negative (0x8000000000000000) decodes to Long.MinValue" {
+  val bytes: List[Byte] = newList()
+  var i = 0
+  while i < 7 {
+    bytes.add(0x00u8)
+    i = i + 1
+  }
+  bytes.add(0x80u8)
+  assertEqualLong(rdI64(bytes.toArray(), 0), -9223372036854775807i64 - 1i64, "rdI64_minNegative")
+}
+
+test "rdI64: the IEEE 754 bit pattern of Math.PI decodes intact" {
+  // 0x400921FB54442D18 little-endian — the R8 Constant blob of System.Math.PI.
+  val bytes: List[Byte] = newList()
+  bytes.add(0x18u8)
+  bytes.add(0x2Du8)
+  bytes.add(0x44u8)
+  bytes.add(0x54u8)
+  bytes.add(0xFBu8)
+  bytes.add(0x21u8)
+  bytes.add(0x09u8)
+  bytes.add(0x40u8)
+  assertEqualLong(rdI64(bytes.toArray(), 0), 4614256656552045848i64, "rdI64_piBits")
+}
+
+test "rdI64: reads at a non-zero offset, ignoring surrounding bytes" {
+  val bytes: List[Byte] = newList()
+  bytes.add(0xAAu8)
+  bytes.add(0x2Au8) // 42
+  var i = 0
+  while i < 7 {
+    bytes.add(0x00u8)
+    i = i + 1
+  }
+  bytes.add(0xAAu8)
+  assertEqualLong(rdI64(bytes.toArray(), 1), 42i64, "rdI64_offset")
+}

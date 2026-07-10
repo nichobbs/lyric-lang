@@ -16,6 +16,7 @@ import Std.Collections
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Reader
+import Jvm.Kernel
 
 func makeHelloBytes(): List[Byte] {
   val pool = poolNew()

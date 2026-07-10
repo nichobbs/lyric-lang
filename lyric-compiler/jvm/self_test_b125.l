@@ -24,6 +24,7 @@ import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
+import Jvm.Kernel
 
 func makeFlds(): List[LOpaqueField] {
   val flds: List[LOpaqueField] = newList()
