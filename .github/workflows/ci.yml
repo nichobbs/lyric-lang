@@ -595,6 +595,8 @@ jobs:
           name: build-artifacts
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+      - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
+        run: sudo apt-get update && sudo apt-get install -y z3
 
       # Parallel step execution — `background: true` / `wait-all: true`
       # ---------------------------------------------------------------
@@ -696,6 +698,7 @@ jobs:
             lyric-compiler/lyric/cli_version_self_test.l \
             lyric-compiler/lyric/cli_workspace_builder_self_test.l \
             lyric-compiler/lyric/cli_build_self_test.l \
+            lyric-compiler/lyric/cli_publish_self_test.l \
             lyric-compiler/lyric/verifier_self_test.l \
             lyric-compiler/lyric/closure_correctness_self_test.l \
             lyric-compiler/lyric/slice_append_widening_self_test.l \

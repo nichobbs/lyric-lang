@@ -2938,9 +2938,9 @@ func registerInstanceSigErased(
 // Register one interface member under `<ifaceClass>#<method>` with
 // `isIface = true` (#3687).  Params and return mirror the abstract-method
 // emission in the `IInterface` arm of `codegenPackageWithSigs` exactly —
-// `holderAwareParamTypes(erase = true, no type params)` and a bare
-// `typeExprToJvm` return — so the registered descriptor and the emitted
-// interface method stay in lockstep.
+// `holderAwareParamTypes(erase = true, the interface's own type params)` and
+// an extern-aware return — so the registered descriptor and the emitted
+// interface method stay in lockstep (#5054, #5534).
 func registerIfaceSig(
   into: in Map[String, JvmFuncSig],
   ifClass: in String,
@@ -4096,12 +4096,15 @@ pub func codegenPackageWithSigsSeeded(
         val abstractMethods: List[MethodInfo] = newList()
         val concreteFuncs: List[LFunc] = newList()
         val emptyAttrs: List[Attribute] = newList()
+        // The interface's own generic params must erase here exactly as they
+        // do in registerIfaceSig, or the emitted abstract descriptor and the
+        // registered call-site descriptor diverge (#5534).
+        val ifaceEmitTps = genericParamNames(decl.generics)
         var imi = 0
         while imi < decl.members.count {
           match decl.members[imi] {
             case IMSig(sig) -> {
-              val noTpsIface: List[String] = newList()
-              val params = holderAwareParamTypes(sig.params, pkgName, true, noTpsIface, externTypes)
+              val params = holderAwareParamTypes(sig.params, pkgName, true, ifaceEmitTps, externTypes)
               val ret = match sig.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
               val desc = buildDescriptor(params, ret)
               abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
