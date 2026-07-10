@@ -13978,6 +13978,40 @@ bounded-capacity property it targets via a new `lyric_map_cap` accessor
 
 ---
 
+## D-progress-642 — post-merge follow-ups to PR #5477: STORED decompression-bomb cap and reusable mail injection guard
+
+Non-blocking SUGGESTIONs left open when PR #5477 merged, addressed here:
+
+- **#5497 — DEFLATE decompression-bomb cap now covers STORED blocks.** The 64 MiB
+  output cap previously guarded only `decodeBlock`'s Huffman loop. STORED-block
+  output is input-bounded per block (`len` is a u16) but shares the output `buf`
+  across every block, so a stream of many STORED blocks (trivial to craft in a
+  `LYRIC_FFI_JARS` entry) could still grow `buf` unbounded — and each output byte
+  is a boxed `List[Int]` element. Extracted the magic number to a shared
+  `OUTPUT_CAP` `val` and applied it to `inflateStored`'s copy loop and the outer
+  `inflate` block-dispatch loop, so all three block types are bounded uniformly.
+- **#5499 — `Mail.validateNoInjection` is now `pub` and the contract is explicit.**
+  The CRLF/NUL header-injection guard was module-private, so an out-of-tree
+  `MailSender` implementation could not enforce the same guarantee the in-tree
+  `NativeSender` does (its own comment already claimed it was "callable from any
+  implementation"). Exported it (`@stable`), and documented on the `MailSender.send`
+  interface that every implementation MUST call `Mail.validateNoInjection(msg)`
+  before dispatch — a free-function contract rather than an interface `requires:`,
+  which would elaborate to a client-crashing runtime assert (D118). Two tests in
+  `mail_tests.l` exercise the exported guard (injected subject → `Some`, clean
+  message → `None`).
+
+**Still open, blocked by a compiler gap.** #5489 (dedicated adversarial DEFLATE/ZIP
+regression tests) remains open: a `@test_module` importing `Jvm.Deflate` /
+`Jvm.ZipReader` and calling `inflate` / `readZipEntries` mis-compiles because a
+`slice[Byte]`-typed cross-package call does not resolve through the restored-dep
+linking path (`InvalidProgram` on MSIL, a `(Object[], int, int)` signature guess
+on JVM) — the readers work when compiled from source. That is a separate
+restored-dep codegen gap, not a logic defect; the STORED-cap fix above ships as a
+source-only hardening, consistent with the existing `decodeBlock` cap.
+
+---
+
 ## Decisions deferred to v2 or later
 
 
