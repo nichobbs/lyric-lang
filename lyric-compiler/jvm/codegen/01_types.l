@@ -984,7 +984,12 @@ pub func emitHolderElemLoad(insns: in List[LInsn], elemTy: in JvmType): Unit {
     case JDouble -> insns.add(LDaload)
     case JFloat -> insns.add(LFaload)
     case JBoolean -> insns.add(LBaload)
-    case JByte -> insns.add(LBaload)
+    case JByte -> {
+      // `baload` sign-extends; mask to the canonical unsigned form (see
+      // maskByteUnsigned in 04_calls.l).
+      insns.add(LBaload)
+      maskByteUnsigned(insns)
+    }
     case JChar -> insns.add(LCaload)
     case JShort -> insns.add(LSaload)
     case JInt -> insns.add(LIaload)

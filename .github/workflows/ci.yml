@@ -727,6 +727,27 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
+      # Unsigned Byte semantics (docs/59 §4.3): division/modulo, every
+      # compound-assignment path, and the >= 128 canonicalization cases
+      # (List/slice round-trips, unsigned ordering, wraparound, boxing).
+      # The MSIL half of the MSIL/JVM agreement check — the JVM half runs in
+      # the compiler-self-tests-jvm job.
+      - name: Byte-arithmetic self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping byte-arithmetic self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping byte-arithmetic self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/byte_arithmetic_self_test.l
+
       # Typed FFI delegate bridging (Epic #1877/#3923 FFI-boundary slice):
       # dotnet-only — the feature is MSIL-specific (SocketsHttpHandler is a
       # BCL type; the fix lives entirely in Msil.Codegen), no JVM analog.
@@ -3303,6 +3324,27 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # Byte-arithmetic self-test on JVM — the JVM half of the dotnet-job step
+      # of the same name (docs/59 §4.3).  The canonical in-slot `JByte` form is
+      # masked-unsigned 0..255: these cases pin unsigned division/modulo,
+      # every compound-assignment path, and the >= 128 equality/ordering/
+      # wraparound/boxing behaviour to the same values MSIL produces.
+      - name: Byte-arithmetic self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping byte-arithmetic JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping byte-arithmetic JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/byte_arithmetic_self_test.l
 
       # Slice-ops self-test on JVM (#5244) — the JVM half of the dotnet-job
       # step of the same name.  JVM slices are uniformly `Object[]`

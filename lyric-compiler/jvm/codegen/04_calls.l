@@ -1345,6 +1345,12 @@ func lowerAutoFfiStaticCall(
             j = j + 1
           }
           insns.add(LInvokestatic(owner = ci.binaryName, name = methodName, params = paramJvms, ret = retJvm))
+          // A byte-returning JDK method yields the signed byte; mask to the
+          // canonical unsigned form (see maskByteUnsigned).
+          match retJvm {
+            case JByte -> maskByteUnsigned(insns)
+            case _ -> ()
+          }
           retJvm
         }
       }
@@ -1544,6 +1550,13 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
       if fromRef {
         insns.add(LCheckcast(className = "java/lang/Integer"))
         insns.add(LUnboxInt)
+      } else {
+        // A Byte source widening into an Int slot re-masks so a non-canonical
+        // signed byte never leaks into int arithmetic (see maskByteUnsigned).
+        match fromTy {
+          case JByte -> maskByteUnsigned(insns)
+          case _ -> ()
+        }
       }
     }
     case JLong -> {
@@ -1557,7 +1570,10 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
         // operand-stack underflow at verification.
         match fromTy {
           case JInt -> insns.add(LI2l)
-          case JByte -> insns.add(LI2l)
+          case JByte -> {
+            maskByteUnsigned(insns)
+            insns.add(LI2l)
+          }
           case JChar -> insns.add(LI2l)
           case JShort -> insns.add(LI2l)
           case _ -> ()
@@ -1575,7 +1591,10 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
         match fromTy {
           case JFloat -> insns.add(LF2d)
           case JInt -> insns.add(LI2d)
-          case JByte -> insns.add(LI2d)
+          case JByte -> {
+            maskByteUnsigned(insns)
+            insns.add(LI2d)
+          }
           case JChar -> insns.add(LI2d)
           case JShort -> insns.add(LI2d)
           case JLong -> insns.add(LL2d)
@@ -1593,7 +1612,10 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
         match fromTy {
           case JDouble -> insns.add(LD2f)
           case JInt -> insns.add(LI2f)
-          case JByte -> insns.add(LI2f)
+          case JByte -> {
+            maskByteUnsigned(insns)
+            insns.add(LI2f)
+          }
           case JChar -> insns.add(LI2f)
           case JShort -> insns.add(LI2f)
           case JLong -> insns.add(LL2f)
@@ -1611,11 +1633,22 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
       if fromRef {
         // The boxed value may be Byte OR Integer (an int literal stored into
         // a Byte-typed position boxes as Integer): unbox through
-        // Number.intValue + i2b.
+        // Number.intValue, then mask to the canonical unsigned form — `i2b`
+        // here produced the SIGNED byte, one of the two clashing in-slot
+        // representations docs/59 §4.3 flags (see maskByteUnsigned).
         insns.add(LCheckcast(className = "java/lang/Number"))
         val nbcPs: List[JvmType] = newList()
         insns.add(LInvokevirtual(owner = "java/lang/Number", name = "intValue", params = nbcPs, ret = JInt))
-        insns.add(LI2b)
+        maskByteUnsigned(insns)
+      } else {
+        // An int-like value narrowing into a Byte slot wraps to 0..255 (the
+        // unsigned-wrap semantics MSIL's `conv.u1` applies).
+        match fromTy {
+          case JInt -> maskByteUnsigned(insns)
+          case JChar -> maskByteUnsigned(insns)
+          case JShort -> maskByteUnsigned(insns)
+          case _ -> ()
+        }
       }
     }
     case JChar -> {
@@ -2416,9 +2449,20 @@ func isNumericJvm(ty: in JvmType): Bool {
   }
 }
 
-// Zero-extend a signed JVM `byte` to its unsigned Lyric value (`& 0xFF`): Lyric
-// `Byte` is 0..255 but a JVM `byte` sign-extends on reload (200 -> -56), so every
-// Byte-source widening masks first to match MSIL's `conv.u1` (#4855, cf. #4551).
+// Zero-extend a JVM `byte` to its unsigned Lyric value (`& 0xFF`).
+//
+// CANONICAL `JByte` FORM (docs/59 §4.3): a `JByte`-typed stack value or local
+// slot always holds the MASKED-UNSIGNED int 0..255 — matching MSIL's `conv.u1`
+// semantics and the language's unsigned Byte.  Every producer whose raw JVM
+// result is the SIGNED byte (unboxing, `baload`, `getfield`/`getstatic` of a
+// byte field, an FFI call returning `B`) re-masks with this helper at the
+// boundary; `.toByte()` masks its narrowing directly.  The one place a signed
+// byte is deliberately reconstructed is boxing (`LBoxByte` narrows with `i2b`
+// before `Byte.valueOf` — the wrapper's invariant, not ours); the matching
+// unbox paths mask straight back to canonical.  Consumers (comparisons via
+// `reconcileCmpOperands`, widenings, stringification) also re-mask
+// defensively, so a producer missed by canonicalization degrades to a
+// redundant `& 0xFF`, never to a sign-flipped value.
 func maskByteUnsigned(insns: in List[LInsn]): Unit {
   insns.add(LIconst(v = 255))
   insns.add(LIand)

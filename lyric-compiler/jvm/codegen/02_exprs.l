@@ -313,6 +313,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
               insns.add(LAload(slot = 0))
               insns.add(LGetfield(owner = selfCls, name = name, t = fty))
+              match fty {
+                case JByte -> maskByteUnsigned(insns)
+                case _ -> ()
+              }
               fty
             }
             case None -> {
@@ -915,6 +919,13 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 } else {
                   insns.add(LGetfield(owner = cls, name = memberName, t = fty))
                 }
+                // A byte field read (getfield or byte-returning accessor)
+                // sign-extends; mask to the canonical unsigned form (see
+                // maskByteUnsigned in 04_calls.l).
+                match fty {
+                  case JByte -> maskByteUnsigned(insns)
+                  case _ -> ()
+                }
                 fty
               }
               case None -> {
@@ -934,6 +945,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                       insns.add(LCheckcast(className = fsig.owner))
                       val fbPs: List[JvmType] = newList()
                       insns.add(LInvokevirtual(owner = fsig.owner, name = "$" + memberName, params = fbPs, ret = fsig.ret))
+                      match fsig.ret {
+                        case JByte -> maskByteUnsigned(insns)
+                        case _ -> ()
+                      }
                       fsig.ret
                     }
                     case None -> {
@@ -1230,7 +1245,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             // and yield a `JByte`; reference arrays use `aaload`.
             match elem {
               case JByte -> {
+                // `baload` sign-extends; mask to the canonical unsigned form
+                // (see maskByteUnsigned in 04_calls.l).
                 insns.add(LBaload)
+                maskByteUnsigned(insns)
                 JByte
               }
               case JRef(elemCls) -> {
@@ -1324,7 +1342,11 @@ func numericPrimTy(ty: in JvmType): JvmType {
     case JDouble -> JDouble
     case JFloat -> JFloat
     case JInt -> JInt
-    case JByte -> JInt
+    // JByte stays JByte so `reconcileCmpOperands` unboxes the ref side of a
+    // ref-vs-Byte compare through `coerceArgTo(_, JByte)` (Number.intValue +
+    // the canonical unsigned mask) — the JInt target's `checkcast Integer`
+    // throws ClassCastException on a boxed `Byte` (`xs[0] == b` on List[Byte]).
+    case JByte -> JByte
     case JChar -> JInt
     case JShort -> JInt
     case JBoolean -> JBoolean
@@ -1355,9 +1377,29 @@ func isIntLikeJvm(ty: in JvmType): Bool {
   }
 }
 
+func isByteJvm(ty: in JvmType): Bool {
+  match ty {
+    case JByte -> true
+    case _ -> false
+  }
+}
+
 func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmType, rhsTy: in JvmType): JvmType {
   val lhsPrim = numericPrimTy(lhsTy)
   val rhsPrim = numericPrimTy(rhsTy)
+  if isByteJvm(lhsTy) and isByteJvm(rhsTy) {
+    // Byte-vs-Byte: re-mask BOTH operands to the canonical unsigned form so
+    // the following signed int compare/arith orders 0..255 values correctly
+    // (`200.toByte() > 100.toByte()` must be true; a producer missed by
+    // canonicalization would otherwise flip it — see maskByteUnsigned in
+    // 04_calls.l).  The lhs is below the rhs, so spill/reload around its mask.
+    val rhsByteSlot = allocSlot(ctx, "__cmp_rhs_" + freshLabel(ctx), JInt)
+    emitStore(insns, rhsByteSlot, JInt)
+    maskByteUnsigned(insns)
+    emitLoad(insns, rhsByteSlot, JInt)
+    maskByteUnsigned(insns)
+    return JInt
+  }
   if isRefJvm(lhsTy) and not (rhsPrim == JVoid) {
     // Unbox lhs (currently below rhs): spill rhs, unbox lhs, reload rhs.
     val rhsSlot = allocSlot(ctx, "__cmp_rhs_" + freshLabel(ctx), rhsTy)
@@ -1992,6 +2034,13 @@ func coerceToStringForConcat(insns: in List[LInsn], ty: in JvmType): Unit {
       )
     }
     case _ -> {
+      // A Byte renders as its unsigned 0..255 value: re-mask before the int
+      // `valueOf` overload so a non-canonical signed byte never prints as a
+      // negative (see maskByteUnsigned in 04_calls.l).
+      match ty {
+        case JByte -> maskByteUnsigned(insns)
+        case _ -> ()
+      }
       // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
       // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
       val voPs: List[JvmType] = newList()

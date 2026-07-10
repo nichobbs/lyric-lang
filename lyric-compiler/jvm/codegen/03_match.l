@@ -414,6 +414,10 @@ func extractClassField(
   emitLoad(insns, scrutSlot, scrutTy)
   insns.add(LCheckcast(className = cls))
   insns.add(LGetfield(owner = cls, name = fieldName, t = fty))
+  match fty {
+    case JByte -> maskByteUnsigned(insns)
+    case _ -> ()
+  }
   val fSlot = allocSlot(ctx, "__rfld_" + fieldName + "_" + toString(ctx.slotTicker.count), fty)
   emitStore(insns, fSlot, fty)
   fSlot
@@ -841,13 +845,16 @@ func emitUnboxObjectTo(insns: in List[LInsn], target: in JvmType): JvmType {
       JChar
     }
     case JByte -> {
-      // `byteValue()` yields the SIGNED byte — the canonical in-slot `JByte`
-      // representation this backend uses (an unsigned `Byte` value 200 is held
-      // as -56 and masked to 0..255 only at widening, D-progress-566).  No mask
-      // here: masking would make the bound local diverge from every other
-      // `JByte` and double-mask at `.toInt()`.
+      // `byteValue()` yields the SIGNED byte; mask to the canonical
+      // masked-unsigned in-slot form (docs/59 §4.3 — see `maskByteUnsigned`
+      // in 04_calls.l).  The earlier signed-in-slot convention (D-progress-566)
+      // clashed with `.toByte()`'s masked result: `xs[0] == b` compared
+      // -56 == 200 and `b1 < b2` compared signed where MSIL is unsigned.
+      // The double `& 0xFF` a canonical value then hits at `.toInt()` is a
+      // no-op, not a divergence.
       insns.add(LCheckcast(className = "java/lang/Byte"))
       insns.add(LInvokevirtual(owner = "java/lang/Byte", name = "byteValue", params = newList(), ret = JByte))
+      maskByteUnsigned(insns)
       JByte
     }
     case JRef(cls) -> {
@@ -957,7 +964,17 @@ func bindCaseField(
       // primitive (`concreteTy`), unbox the boxed value so the binding is a real
       // primitive — otherwise arithmetic on it mis-lowers (`x + y` string-concats
       // or VerifyErrors) (#4877).  Reference / unresolved payloads stay boxed.
-      val boundTy = if isErasedObject(fty) { emitUnboxObjectTo(insns, concreteTy) } else { fty }
+      val boundTy = if isErasedObject(fty) {
+        emitUnboxObjectTo(insns, concreteTy)
+      } else {
+        // `getfield` of a byte field sign-extends; mask to the canonical
+        // unsigned form (see maskByteUnsigned in 04_calls.l).
+        match fty {
+          case JByte -> maskByteUnsigned(insns)
+          case _ -> ()
+        }
+        fty
+      }
       val fSlot = allocSlot(ctx, fname, boundTy)
       emitStore(insns, fSlot, boundTy)
       // If the field's own concrete type is itself a generic application
@@ -997,6 +1014,10 @@ func bindCaseField(
       // the #4877 fix, not a regression.
       emitLoad(insns, castSlot, JRef(className = caseClass))
       insns.add(LGetfield(owner = caseClass, name = realName, t = fty))
+      match fty {
+        case JByte -> maskByteUnsigned(insns)
+        case _ -> ()
+      }
       val tSlot = allocSlot(ctx, "__fld_" + realName + "_" + toString(ctx.slotTicker.count), fty)
       emitStore(insns, tSlot, fty)
       lowerPatternBind(ctx, insns, subPat, tSlot, fty, newList())
@@ -1139,6 +1160,10 @@ func lowerPatternBind(
                 }
                 emitLoad(insns, castSlot, JRef(className = recClass))
                 insns.add(LGetfield(owner = recClass, name = fieldName, t = fty))
+                match fty {
+                  case JByte -> maskByteUnsigned(insns)
+                  case _ -> ()
+                }
                 val fSlot = allocSlot(ctx, fieldName, fty)
                 emitStore(insns, fSlot, fty)
               }

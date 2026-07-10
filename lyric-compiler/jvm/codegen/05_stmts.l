@@ -417,7 +417,12 @@ func emitNewarray(insns: in List[LInsn], elem: in JvmType): Unit {
 // [arrayref, index] → [value].  Used by compound index assignment.
 func emitArrayLoad(insns: in List[LInsn], elem: in JvmType): Unit {
   match elem {
-    case JByte -> insns.add(LBaload)
+    case JByte -> {
+      // `baload` sign-extends; mask to the canonical unsigned form (see
+      // maskByteUnsigned in 04_calls.l).
+      insns.add(LBaload)
+      maskByteUnsigned(insns)
+    }
     case JBoolean -> insns.add(LBaload)
     case JChar -> insns.add(LCaload)
     case JShort -> insns.add(LSaload)

@@ -3841,6 +3841,15 @@ pub record FuncCtx {
   // introduced).  A change log rather than a whole-map snapshot — see
   // `BlockScopeMsil`.  Initialised `newList()` at the construction site.
   scopeUndoMsil: List[ScopeUndoMsil]
+  // Slots of locals DECLARED `Byte` (docs/59 §4.3 cross-target parity).  The
+  // MSIL type map erases a bare `Byte` annotation to `MInt` (an int32 local),
+  // so without this the codegen cannot tell a Byte local from an Int local and
+  // a Byte store never re-narrowed: `b += 100` on 200 kept 300 where the JVM's
+  // canonical masked-unsigned form (and `conv.u1` semantics generally) wraps
+  // to 44.  Plain and compound stores to a slot in this map re-narrow with
+  // `conv.u1`.  Keyed by slot index (not name) so shadowing stays precise.
+  // Initialised `newMap()` at the construction site.
+  byteSlots: Map[Int, Bool]
 }
 
 // A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a
@@ -3868,6 +3877,41 @@ pub record ScopeUndoMsil {
 pub record BlockScopeMsil {
   prevBase: Int
   undoMark: Int
+}
+
+// True when the binding annotation is literally `Byte` — see
+// `FuncCtx.byteSlots` (a Byte local's MsilType erases to MInt, so byteness
+// must be recorded from the source annotation).
+func isByteAnnotationMsil(tyOpt: in Option[TypeExpr]): Bool {
+  match tyOpt {
+    case Some(te) -> {
+      match te.kind {
+        case TRef(path) -> lastSegmentMsil(path) == "Byte"
+        case _ -> false
+      }
+    }
+    case None -> false
+  }
+}
+
+// Record (or clear) `slot`'s Byte-declared marker — remove-then-add so a
+// reused slot never keeps a stale marker from an earlier binding.
+func markByteSlotMsil(fctx: in FuncCtx, slot: in Int, isByte: in Bool): Unit {
+  if fctx.byteSlots.containsKey(slot) {
+    fctx.byteSlots.remove(slot)
+  }
+  if isByte {
+    fctx.byteSlots.add(slot, true)
+  }
+}
+
+// Re-narrow the value about to be stored into a Byte-declared local
+// (`conv.u1` — the unsigned 0..255 wrap `.toByte()` applies, and the JVM
+// backend's canonical masked-unsigned form).  No-op for other slots.
+func emitByteSlotNarrowMsil(fctx: in FuncCtx, insns: in List[MInsn], slot: in Int): Unit {
+  if fctx.byteSlots.containsKey(slot) {
+    insns.add(MConvU1)
+  }
 }
 
 // Enter a nested lexical scope.
@@ -4345,6 +4389,14 @@ func emitCompoundCombineMsil(
           case other -> other
         }
         insns.add(concreteArith)
+        // A Byte compound result wraps to the unsigned 0..255 range
+        // (`b += 100` on 200 is 44): re-narrow with conv.u1, the same
+        // truncation `.toByte()` applies.  Identity for div/rem (unsigned
+        // operands keep those results in range already).
+        match curTy {
+          case MByte -> insns.add(MConvU1)
+          case _ -> ()
+        }
       }
       case None -> panic("Msil.Codegen: unhandled compound-assignment op in emitCompoundCombineMsil")
     }
@@ -4378,6 +4430,11 @@ func emitCompoundCombineSlotMsil(
           case other -> other
         }
         insns.add(concreteArith)
+        // Byte compound results wrap unsigned — see emitCompoundCombineMsil.
+        match rTy {
+          case MByte -> insns.add(MConvU1)
+          case _ -> ()
+        }
       }
       case None -> panic("Msil.Codegen: unhandled compound-assignment op in emitCompoundCombineSlotMsil")
     }
@@ -8424,6 +8481,7 @@ func lowerAssignExprMsil(
               lowerExprMsil(cctx, fctx, insns, value)
               popCollExpect(fctx)
               restoreHintTyArgs(fctx, savedH)
+              emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
               if fctx.phaseBCtx.count > 0 {
                 phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, name, slot - fctx.paramCount)
@@ -8433,8 +8491,12 @@ func lowerAssignExprMsil(
               // Compound assignment to a local: load the current value, then
               // apply the operator honouring the slot's static type (String
               // `+=` concatenates rather than emitting a numeric `add`).  #1481.
+              // A Byte-DECLARED local's slot type erases to MInt; pass MByte so
+              // the combine selects unsigned div/rem and re-narrows the result
+              // (see FuncCtx.byteSlots).
+              val combineTy = if fctx.byteSlots.containsKey(slot) { MByte } else { ty }
               emitLoadSlot(insns, slot, fctx.paramCount)
-              emitCompoundCombineMsil(cctx, fctx, insns, op, ty, value)
+              emitCompoundCombineMsil(cctx, fctx, insns, op, combineTy, value)
               emitStoreSlot(insns, slot, fctx.paramCount)
               if fctx.phaseBCtx.count > 0 {
                 phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, name, slot - fctx.paramCount)
@@ -8475,11 +8537,14 @@ func lowerAssignExprMsil(
               pushCollExpect(fctx, ty)
               lowerExprMsil(cctx, fctx, insns, value)
               popCollExpect(fctx)
+              emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
             }
             case _ -> {
+              // Byte-declared `result` local — see the EPath compound arm.
+              val combineTy = if fctx.byteSlots.containsKey(slot) { MByte } else { ty }
               emitLoadSlot(insns, slot, fctx.paramCount)
-              emitCompoundCombineMsil(cctx, fctx, insns, op, ty, value)
+              emitCompoundCombineMsil(cctx, fctx, insns, op, combineTy, value)
               emitStoreSlot(insns, slot, fctx.paramCount)
             }
           }
@@ -13375,6 +13440,8 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           restoreHintTyArgs(fctx, savedAnnoHint)
           val ty = if annoTy != MObject { annoTy } else { initTy }
           val slot = allocSlotMsil(fctx, name, ty)
+          markByteSlotMsil(fctx, slot, isByteAnnotationMsil(tyOpt))
+          emitByteSlotNarrowMsil(fctx, insns, slot)
           emitStoreSlot(insns, slot, fctx.paramCount)
           // Register the declared return type for function-typed locals so an
           // invocation `f()` yields the correct type rather than a bare object.
@@ -13463,6 +13530,8 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 finishHoistedCellMsil(cctx, fctx, insns, name, ty)
               } else {
                 val slot = allocSlotMsil(fctx, name, ty)
+                markByteSlotMsil(fctx, slot, isByteAnnotationMsil(tyOpt))
+                emitByteSlotNarrowMsil(fctx, insns, slot)
                 emitStoreSlot(insns, slot, fctx.paramCount)
                 fctx.mutableLocals.add(name)
                 if fctx.phaseBCtx.count > 0 {
@@ -13748,6 +13817,8 @@ func lowerLocalPatBindMsil(
         }
         case _ -> {
           val slot = allocSlotMsil(fctx, name, ty)
+          markByteSlotMsil(fctx, slot, isByteAnnotationMsil(tyOpt))
+          emitByteSlotNarrowMsil(fctx, insns, slot)
           emitStoreSlot(insns, slot, fctx.paramCount)
           match tyOpt {
             case Some(te) -> {
@@ -14165,7 +14236,8 @@ func makeFuncCtxMsil(
     phaseBCtx = newList(),
     lazyGenCtx = newList(),
     scopeBaseMsil = 0,
-    scopeUndoMsil = newList()
+    scopeUndoMsil = newList(),
+    byteSlots = newMap()
   )
 }
 
