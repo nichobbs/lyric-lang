@@ -120,7 +120,7 @@ test "closure-captured local shadowing a package name reads its own field, not t
       "package Cap5274.App\n" + "\n" + "import Cap5274.Lib\n" + "\n" + "record Box { NAME: String }\n" + "\n" +
         "func main(): Unit {\n" +
         "  val Lib = Box(NAME = \"captured-value\")\n" +
-        "  val getter = || Lib.NAME\n" +
+        "  val getter = { -> Lib.NAME }\n" +
         "  println(getter())\n" +
         "}\n"
     )

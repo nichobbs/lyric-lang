@@ -9798,6 +9798,7 @@ func ifaceVtStructType(ii: in NIfaceInfo): NType {
 /// `{ i32 rc, i8* dtor, i8* obj, vtable* }` (fields 0 and 1 are the shared
 /// ARC header, so only the obj/vtable slots need names here).
 val ifaceBoxObjSlot: Long = 2i64
+
 val ifaceBoxVtblSlot: Long = 3i64
 
 /// The heap-boxed fat-pointer type for an interface value:
@@ -9835,12 +9836,13 @@ func ifaceBoxInfoOfType(ctx: in Ctx, t: in NType): Option[NIfaceInfo] {
 }
 
 /// The record IR name (`Pkg.Record`) if `t` is a record pointer.
-// Invariant: every internal (non-record) IR struct name minted by this
-// file begins with `__` (union payload structs, `__iface.*`/`__ifacevt.*`,
-// `__closure<...>`/`__closureimpl.*`, `__weak<...>`, ...) or is one of the
-// listed sentinels (`LyricString`). Any new internal struct type must keep
-// this prefix, or be added as a sentinel here, or `recordIrNameOfType`
-// will misidentify it as a record.
+///
+/// Invariant: every internal (non-record) IR struct name minted by this
+/// file begins with `__` (union payload structs, `__iface.*`/`__ifacevt.*`,
+/// `__closure<...>`/`__closureimpl.*`, `__weak<...>`, ...) or is one of the
+/// listed sentinels (`LyricString`). Any new internal struct type must keep
+/// this prefix, or be added as a sentinel here, or `recordIrNameOfType`
+/// will misidentify it as a record.
 func recordIrNameOfType(t: in NType): Option[String] {
   match t {
     case NPtr(pointee) -> {
