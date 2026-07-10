@@ -13874,6 +13874,63 @@ Each fix was validated against a rebuilt `./bin/lyric`.
 
 ---
 
+## D-progress-640 — code-review round 2: the bundle `Std.Xml` numeric-entity mis-compile was a `fromInt` name collision (fixed in source), plus YAML `-` scalars, aspect empty-input tests, and Unicode-whitespace / ARN-bounds fixes
+
+**Status:** ACCEPTED
+
+A second pass over the review backlog. The headline item — D-progress-638's
+"stdlib bundle build mis-compiles `Char`/Unicode handling" — was root-caused to
+a **function-name collision**, not a deep codegen defect, and fixed in source.
+
+- **`Std.Xml` numeric character references decoded to integers in the bundle
+  build** (`<a>&#65;</a>` → `"65"`, astral entities → the surrogate code units
+  as decimal text). Root cause: `Std.String.fromInt(Int): String` and
+  `Std.Char.fromInt(Int): Char` share a name/arity, and `xml.l` imports both
+  (String first). Inside `xEmitCodePoint`'s `"" + fromInt(cp)` concat the `Char`
+  return-type hint is lost, so the emitter's bare-call resolver falls back to
+  import-order-first-wins and picks `Std.String.fromInt` — but only in the
+  multi-package **bundle** build, where `preSeedBundleAsyncRetTypesMsil` surfaces
+  every package's FQN as a candidate (a no-op for single-package/per-package
+  builds, which is why CI stayed green). Fixed by fully qualifying the three
+  calls to `Std.Char.fromInt` (the same safe spelling `lyric-docker` already
+  uses); no emitter change. A repo-wide scan confirms no other bare `fromInt` in
+  concat context remains. The general "emitter re-guesses the call target by
+  import order instead of using the type-checker's resolved FQN" hazard is
+  tracked as #4424. (The D-progress-638 claim that `lyric-docker` JSON escapes
+  were also broken was incorrect — `docker.l` already qualifies `Std.Char.fromInt`.)
+
+- **`Std.Yaml` rejected a value starting with `-` that is not a number**
+  (`key: -abc`). The inline `yParseValue` dispatch routed every `-`-leading
+  value to `yParseNumber`; it now only does so when a digit follows (matching
+  the block-level guard), so `-abc` parses as the scalar `"-abc"` while `-42`
+  still parses as an int. In JSON mode a `-` not followed by a digit remains an
+  error. Regression tests added for the scalar and the Int64-overflow→YFloat path.
+
+- **Aspect-precondition-DoS regression tests** (review #5483, REQUIRED): added
+  empty-credential tests for `ApiKey`/`RequiresAuth`/`RequiresRole` (all return a
+  graceful 401, previously a process-crashing assert) and empty-input/email tests
+  for `ValidateInput`/`ValidateEmail`.
+
+- **`lyric-validation` `notBlank`/`email`** now use the Unicode-aware
+  `Char.isWhiteSpace` instead of an ASCII-only set (an all-NBSP/ideographic-space
+  value is correctly blank). **`lyric-lambda` `Authorizer.allowAll`** guards a
+  `methodArn` with no `/` (was an out-of-bounds `parts[1]` panic), failing closed
+  via `deny()`. Both with regression tests.
+
+- Additional regression tests for the D-progress-638/639 fixes flagged by review
+  #5479: docker frame-size overflow, CORS `Vary: Origin` on both response paths,
+  and resilience backoff overflow/factor-clamp.
+
+**Note:** a *separate*, pre-existing bundle-only codegen defect remains — generic
+`isNone[Option[String]]` mis-compiles in the bundle build (surfaces when
+`xml_tests.l`/`yaml_tests.l` are run via `lyric run`, which CI deliberately
+avoids by compiling those tests fully from source). It is unrelated to the
+`fromInt` collision and needs a generic-instantiation codegen fix, not a source
+change; tracked alongside #4424. The native runtime weak-reference use-after-free
+(D-progress-638) also remains open.
+
+---
+
 ## Decisions deferred to v2 or later
 
 

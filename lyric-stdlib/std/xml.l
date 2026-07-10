@@ -181,10 +181,16 @@ func xEmitCodePoint(cp: in Int, pos: in Int): Result[String, XmlError] {
     return Err(error = UnexpectedChar(pos = pos, expected = "valid Unicode code point in numeric entity"))
   }
   if cp <= 65535 {
-    Ok(value = "" + fromInt(cp))
+    // Fully-qualified `Std.Char.fromInt`, not bare `fromInt`: this file imports
+    // both Std.String and Std.Char, which each export a `fromInt(Int)` (String
+    // returns the decimal text, Char returns the code point).  Inside a `"" +
+    // …` concat the Char return-type hint is lost, so a bare call resolves by
+    // import order to Std.String.fromInt in the bundle build — turning `&#65;`
+    // into "65" instead of "A".  Qualifying pins the correct target (#4424).
+    Ok(value = "" + Std.Char.fromInt(cp))
   } else {
     val c = cp - 65536
-    Ok(value = ("" + fromInt(55296 + c / 1024)) + ("" + fromInt(56320 + c % 1024)))
+    Ok(value = ("" + Std.Char.fromInt(55296 + c / 1024)) + ("" + Std.Char.fromInt(56320 + c % 1024)))
   }
 }
 

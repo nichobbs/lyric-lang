@@ -90,6 +90,14 @@ func yPeekAt(st: in YamlState, offset: in Int): Option[Char] {
   }
 }
 
+// True when the character `offset` positions ahead is an ASCII digit.
+func yIsDigitAt(st: in YamlState, offset: in Int): Bool {
+  match yPeekAt(st, offset) {
+    case Some(ch) -> ch >= '0' and ch <= '9'
+    case None -> false
+  }
+}
+
 func yEat(st: inout YamlState, c: in Char): Bool {
   if st.pos < st.src.length and st.src[st.pos] == c {
     st.pos = st.pos + 1
@@ -565,10 +573,15 @@ func yParseValue(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErro
   } else if c == 'f' and yStartsWith(st, "false") {
     st.pos = st.pos + 5
     Ok(value = YBool(value = false))
-  } else if (c >= '0' and c <= '9') or c == '-' {
+  } else if (c >= '0' and c <= '9') or (c == '-' and yIsDigitAt(st, 1)) {
+    // A leading '-' is only a number when a digit follows.  In YAML a value
+    // like `-abc` (or a bare `-`) is a plain scalar, not a malformed number;
+    // routing every '-' to yParseNumber wrongly rejected such scalars.  In
+    // JSON mode a '-' not followed by a digit falls through to the final Err
+    // below (invalid JSON), preserving strict behaviour.
     yParseNumber(st)
   } else if not st.isJson {
-    // YAML unquoted scalar
+    // YAML unquoted scalar (includes values that start with '-' but aren't numbers)
     val scalarStart = st.pos
     var scanning = true
     while scanning and st.pos < st.src.length {

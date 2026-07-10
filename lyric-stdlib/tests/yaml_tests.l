@@ -509,5 +509,46 @@ func main(): Unit {
   testYamlBlockDuplicateKey()
   testYamlDepthGuard()
   testYamlDepthBoundary()
+  testYamlDashScalar()
+  testIntegerOverflowIsFloat()
   println("yaml_tests: ok")
+}
+
+// A YAML value that starts with '-' but is not a number (e.g. `-abc`, or a
+// bare `-`) must parse as a plain scalar, not be routed to the number parser
+// and rejected.
+func testYamlDashScalar(): Unit {
+  match parseYaml("v: -abc") {
+    case Err(e) -> assertTrue(false, "yaml -abc scalar: " + YamlError.message(e))
+    case Ok(v) -> {
+      match getString(v, "v") {
+        case Some(s) -> assertTrue(s == "-abc", "yaml `-abc` parses as the scalar '-abc'")
+        case None -> assertTrue(false, "yaml `-abc`: value is not a string scalar")
+      }
+    }
+  }
+  // A negative number still parses as an int.
+  match parseYaml("v: -42") {
+    case Err(e) -> assertTrue(false, "yaml -42: " + YamlError.message(e))
+    case Ok(v) -> {
+      match getInt(v, "v") {
+        case Some(n) -> assertTrue(n == -42i64, "yaml `-42` still parses as the int -42")
+        case None -> assertTrue(false, "yaml `-42`: value is not an int")
+      }
+    }
+  }
+}
+
+// An integer literal beyond Int64 range must NOT silently wrap to a negative
+// YInt; it is preserved as a YFloat (magnitude kept).
+func testIntegerOverflowIsFloat(): Unit {
+  match parseJson("12345678901234567890") {
+    case Err(e) -> assertTrue(false, "overflow int: " + YamlError.message(e))
+    case Ok(v) -> {
+      match asInt(v) {
+        case Some(_) -> assertTrue(false, "an Int64-overflowing literal must not be a (wrapped) YInt")
+        case None -> match asFloat(v) { case Some(f) -> assertTrue(f > 1.0e19, "overflowing integer is preserved as a large float"); case None -> assertTrue(false, "overflowing integer must be a YFloat") }
+      }
+    }
+  }
 }
