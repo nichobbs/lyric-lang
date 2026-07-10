@@ -445,7 +445,31 @@ static void test_args(void) {
     CHECK(lyric_list_len(got) == 3);
     LyricString* s1 = (LyricString*)(intptr_t)lyric_list_get(got, 1);
     CHECK(memcmp(LYRIC_STRING_DATA(s1), "alpha", 5) == 0);
+
+    /* Cached (#4857): repeated calls hand back the SAME LyricList
+     * (extra-retained), not a fresh allocation each time — and an
+     * outstanding ref from an earlier call stays valid even after
+     * later calls release theirs. */
+    LyricList* got2 = lyric_args_get();
+    CHECK(got2 == got);
+    lyric_release(got2);
+    CHECK(lyric_list_len(got) == 3); /* `got`'s own ref still holds the list alive */
+    LyricString* s1_again = (LyricString*)(intptr_t)lyric_list_get(got, 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(s1_again), "alpha", 5) == 0);
     lyric_release(got);
+
+    /* Re-setting argv invalidates the cache: the next call rebuilds
+     * against the new argv instead of replaying the stale (now freed)
+     * list — checked by content, since the allocator is free to reuse
+     * `got`'s address for the rebuilt list. */
+    char* argv2[] = {(char*)"prog2", (char*)"gamma"};
+    lyric_args_set(2, argv2);
+    LyricList* got3 = lyric_args_get();
+    CHECK(lyric_list_len(got3) == 2);
+    LyricString* s2 = (LyricString*)(intptr_t)lyric_list_get(got3, 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(s2), "gamma", 5) == 0);
+    lyric_release(got3);
+
     lyric_args_set(0, NULL);
 }
 

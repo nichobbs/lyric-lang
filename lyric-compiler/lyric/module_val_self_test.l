@@ -99,6 +99,27 @@ func untypedNegIntPlusTen(): Int {
   untypedNegInt + 10
 }
 
+// ── #5301: dedicated coverage for the other inferUntypedStaticValMsilType
+// branches — LFloat, EInterpolated, and an explicit-i64-suffix LInt — none
+// of which were exercised by untypedGreeting/untypedNegInt above.
+val untypedPi = 3.14
+
+func untypedPiTimesTwo(): Double {
+  untypedPi * 2.0
+}
+
+val untypedMsg = "n=${untypedGreeting.length}"
+
+func untypedMsgLength(): Int {
+  untypedMsg.length
+}
+
+val untypedBig = 5000000000i64
+
+func untypedBigPlusOne(): Long {
+  untypedBig + 1i64
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -155,4 +176,28 @@ test "untyped negative-literal Int val infers Int, not MObject (#5300)" {
 
 test "untyped negative-literal Int val usable in arithmetic via a helper function (#5300)" {
   assertEqualInt(untypedNegIntPlusTen(), -30, "untypedNegIntPlusTen()")
+}
+
+test "untyped float-literal val infers Double, not MObject (#5301)" {
+  assertTrue(untypedPi == 3.14, "untypedPi")
+}
+
+test "untyped float-literal val usable in arithmetic via a helper function (#5301)" {
+  assertTrue(untypedPiTimesTwo() == 6.28, "untypedPiTimesTwo()")
+}
+
+test "untyped interpolated-string val infers String, not MObject (#5301)" {
+  assertEqualInt(untypedMsg.length, 3, "untypedMsg.length (\"n=8\")")
+}
+
+test "untyped interpolated-string val readable from a helper function (#5301)" {
+  assertEqualInt(untypedMsgLength(), 3, "untypedMsgLength()")
+}
+
+test "untyped explicit-i64-suffix val infers Long, not MObject (#5301)" {
+  assertTrue(untypedBig == 5000000000i64, "untypedBig")
+}
+
+test "untyped explicit-i64-suffix val usable in arithmetic via a helper function (#5301)" {
+  assertTrue(untypedBigPlusOne() == 5000000001i64, "untypedBigPlusOne()")
 }

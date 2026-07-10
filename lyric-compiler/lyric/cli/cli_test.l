@@ -1071,10 +1071,8 @@ func cmdTestManifest(
   val nugetPaths = resolveNugetAssets(mfDir)
   warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
   val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
-  var nli = 0
-  while nli < nugetLyricEntries.count {
-    restoredDlls.add(nugetLyricEntries[nli])
-    nli += 1
+  for entry in nugetLyricEntries {
+    restoredDlls.add(entry)
   }
 
   // For a JVM manifest suite, inject the resolved Maven classpath into

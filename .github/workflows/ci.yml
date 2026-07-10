@@ -320,6 +320,32 @@ jobs:
             bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}
           retention-days: 1
 
+  # The bundled Maven resolver (resolver/pom.xml) that `lyric restore
+  # --target jvm` shells out to for `[maven]` dependency resolution
+  # (docs/44-jvm-production-readiness-plan.md finding M-7) was previously
+  # only ever built at publish time (the "Build Maven resolver jar" step in
+  # publish.yml) -- a broken resolver/ change could sit unbuilt through CI
+  # and only surface at release (#5346).  Build it here too so a broken
+  # resolver/ change fails fast on the PR that introduces it.
+  resolver-build:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up Java 21
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520  # v5.4.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build Maven resolver jar
+        run: make maven-resolver
+
   # Stage-2 (self-hosted rebuild) toolchain, built once and shared with any
   # downstream job step that needs it.  Most compiler-internal codegen fixes
   # (e.g. a `@externTarget` signature-encoding fix inside the compiler's own
@@ -569,6 +595,8 @@ jobs:
           name: build-artifacts
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+      - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
+        run: sudo apt-get update && sudo apt-get install -y z3
 
       # Parallel step execution — `background: true` / `wait-all: true`
       # ---------------------------------------------------------------
@@ -670,6 +698,7 @@ jobs:
             lyric-compiler/lyric/cli_version_self_test.l \
             lyric-compiler/lyric/cli_workspace_builder_self_test.l \
             lyric-compiler/lyric/cli_build_self_test.l \
+            lyric-compiler/lyric/cli_publish_self_test.l \
             lyric-compiler/lyric/verifier_self_test.l \
             lyric-compiler/lyric/closure_correctness_self_test.l \
             lyric-compiler/lyric/slice_append_widening_self_test.l \
@@ -1837,7 +1866,7 @@ jobs:
           LYRIC
           out="$("$lyric_bin" run "$pos" 2>&1)" || { echo "::error::function-value HOF program failed to run"; echo "$out"; exit 1; }
           for expect in "a0=42" "tw=10" "aS=hi" "voidcb"; do
-            if ! printf '%s\n' "$out" | grep -qx "$expect"; then
+            if ! grep -qx "$expect" <<< "$out"; then
               echo "::error::expected '$expect' in function-value HOF output"; echo "$out"; exit 1
             fi
           done
@@ -1863,7 +1892,7 @@ jobs:
           LYRIC
           aout="$("$lyric_bin" run "$ann" 2>&1)" || { echo "::error::param-taking HOF program failed to run"; echo "$aout"; exit 1; }
           for expect in "a1=11" "u1=11" "u2=42" "uB=False"; do
-            if ! printf '%s\n' "$aout" | grep -qx "$expect"; then
+            if ! grep -qx "$expect" <<< "$aout"; then
               echo "::error::expected '$expect' in param-taking HOF output"; echo "$aout"; exit 1
             fi
           done
@@ -1924,7 +1953,7 @@ jobs:
           LYRIC
           out="$("$lyric_bin" run "$pos" 2>&1)" || { echo "::error::capturing-closure program failed to run"; echo "$out"; exit 1; }
           for expect in "c1=13" "c2=hi world" "c3=105"; do
-            if ! printf '%s\n' "$out" | grep -qx "$expect"; then
+            if ! grep -qx "$expect" <<< "$out"; then
               echo "::error::expected '$expect' in capturing-closure output"; echo "$out"; exit 1
             fi
           done
@@ -1953,7 +1982,7 @@ jobs:
           LYRIC
           rout="$("$lyric_bin" run "$ref" 2>&1)" || { echo "::error::by-ref capturing closure failed to run"; echo "$rout"; exit 1; }
           for expect in "m1=2" "m2=10"; do
-            if ! printf '%s\n' "$rout" | grep -qx "$expect"; then
+            if ! grep -qx "$expect" <<< "$rout"; then
               echo "::error::expected '$expect' in by-ref capture output"; echo "$rout"; exit 1
             fi
           done
@@ -2877,9 +2906,9 @@ jobs:
           cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$work/"
           out="$(cd "$work" && printf 'alpha\nbeta\n' | dotnet exec console.dll 2>"$work/err.txt")"
           echo "$out"
-          printf '%s\n' "$out" | grep -qx "echo:alpha" || { echo "::error::alpha echo missing"; exit 1; }
-          printf '%s\n' "$out" | grep -qx "echo:beta" || { echo "::error::beta echo missing"; exit 1; }
-          printf '%s\n' "$out" | grep -qx "eof-after:2" || { echo "::error::EOF line count wrong"; exit 1; }
+          grep -qx "echo:alpha" <<< "$out" || { echo "::error::alpha echo missing"; exit 1; }
+          grep -qx "echo:beta" <<< "$out" || { echo "::error::beta echo missing"; exit 1; }
+          grep -qx "eof-after:2" <<< "$out" || { echo "::error::EOF line count wrong"; exit 1; }
           grep -qx "err-line" "$work/err.txt" || { echo "::error::stderr line missing"; exit 1; }
 
   # Release Native AOT end-to-end — `lyric build --release` compiles a
@@ -3098,7 +3127,7 @@ jobs:
                        "timeout_default=true" "access_no_panic=true" \
                        "eport_parsed=false" "erate_parsed=false" "ecap_parsed=false" \
                        "eflag_parsed=false" "ename_parsed=false"; do
-            if ! printf '%s\n' "$out" | grep -qx "$check"; then
+            if ! grep -qx "$check" <<< "$out"; then
               echo "::error::IConfig self-test (defaults run) missing expected line '$check'; full output:"; echo "$out"; exit 1
             fi
           done
@@ -3111,7 +3140,7 @@ jobs:
           for check in "port_default=true" "rate_default=true" "cap_default=true" \
                        "eport_parsed=true" "erate_parsed=true" "ecap_parsed=true" \
                        "eflag_parsed=true" "ename_parsed=true"; do
-            if ! printf '%s\n' "$out_env" | grep -qx "$check"; then
+            if ! grep -qx "$check" <<< "$out_env"; then
               echo "::error::IConfig self-test (env-parse run) missing expected line '$check'; full output:"; echo "$out_env"; exit 1
             fi
           done
@@ -3120,7 +3149,7 @@ jobs:
           if bad_out="$("$lyric_bin" run "$bad_src" 2>&1)"; then
             echo "::error::IConfig negative probe: unsupported Char config field compiled successfully; output:"; echo "$bad_out"; exit 1
           else
-            if ! printf '%s\n' "$bad_out" | grep -q "G0009"; then
+            if ! grep -q "G0009" <<< "$bad_out"; then
               echo "::error::IConfig negative probe: expected G0009 in compile failure output:"; echo "$bad_out"; exit 1
             fi
           fi
@@ -4226,7 +4255,7 @@ jobs:
           out="$("$lyric_bin" run --target jvm "$work/runjvm.l")"
           echo "lyric run --target jvm output:"
           echo "$out"
-          if ! printf '%s\n' "$out" | grep -qx "hello from lyric run --target jvm"; then
+          if ! grep -qx "hello from lyric run --target jvm" <<< "$out"; then
             echo "::error::lyric run --target jvm produced unexpected output"
             exit 1
           fi
@@ -4414,9 +4443,9 @@ jobs:
           "$lyric_bin" build lyric-compiler/jvm/console_roundtrip_jvm_main.l --target jvm -o "$work/console.jar"
           out="$(printf 'alpha\nbeta\n' | java -jar "$work/console.jar" 2>"$work/err.txt")"
           echo "$out"
-          printf '%s\n' "$out" | grep -qx "echo:alpha" || { echo "::error::alpha echo missing"; exit 1; }
-          printf '%s\n' "$out" | grep -qx "echo:beta" || { echo "::error::beta echo missing"; exit 1; }
-          printf '%s\n' "$out" | grep -qx "eof-after:2" || { echo "::error::EOF line count wrong"; exit 1; }
+          grep -qx "echo:alpha" <<< "$out" || { echo "::error::alpha echo missing"; exit 1; }
+          grep -qx "echo:beta" <<< "$out" || { echo "::error::beta echo missing"; exit 1; }
+          grep -qx "eof-after:2" <<< "$out" || { echo "::error::EOF line count wrong"; exit 1; }
           grep -qx "err-line" "$work/err.txt" || { echo "::error::stderr line missing"; exit 1; }
       # Std.Parse end-to-end on JVM (band J6, #4799/#2669) — pins the
       # dot-named-dispatch-before-extern-FFI order, the target-neutral
@@ -4436,7 +4465,7 @@ jobs:
           "$lyric_bin" build lyric-stdlib/tests/parse_tests.l --target jvm -o "$work/parse_tests.jar"
           out="$(java -jar "$work/parse_tests.jar")"
           echo "$out" | tail -3
-          printf '%s\n' "$out" | grep -q "parse: ok" || { echo "::error::Std.Parse JVM suite did not report success"; exit 1; }
+          grep -q "parse: ok" <<< "$out" || { echo "::error::Std.Parse JVM suite did not report success"; exit 1; }
       # Std.Uuid end-to-end on JVM — the JVM leg of the D-N-026 tri-target
       # four-format parse contract (the dotnet leg runs via `lyric run` in
       # the stdlib coverage block; the native leg via llvm_stdlib_self_test).
@@ -4456,7 +4485,7 @@ jobs:
           "$lyric_bin" build lyric-stdlib/tests/uuid_tests.l --target jvm -o "$work/uuid_tests.jar"
           out="$(java -jar "$work/uuid_tests.jar")"
           echo "$out" | tail -3
-          printf '%s\n' "$out" | grep -q "uuid: ok" || { echo "::error::Std.Uuid JVM suite did not report success"; exit 1; }
+          grep -q "uuid: ok" <<< "$out" || { echo "::error::Std.Uuid JVM suite did not report success"; exit 1; }
       # Std.Time end-to-end on JVM — the JVM leg of the D-N-027 calendar
       # contract (the dotnet leg runs via `lyric run` in the stdlib
       # coverage block; the native leg via llvm_stdlib_self_test).
@@ -4474,7 +4503,7 @@ jobs:
           "$lyric_bin" build lyric-stdlib/tests/time_tests.l --target jvm -o "$work/time_tests.jar"
           out="$(java -jar "$work/time_tests.jar")"
           echo "$out" | tail -3
-          printf '%s\n' "$out" | grep -q "time: ok" || { echo "::error::Std.Time JVM suite did not report success"; exit 1; }
+          grep -q "time: ok" <<< "$out" || { echo "::error::Std.Time JVM suite did not report success"; exit 1; }
       # Std.Task cancellation-token/delay coverage on JVM.  Std.Task.Scope
       # structured concurrency is intentionally NOT covered here — see
       # task_scope_known_failures_tests.l's header (issue #5329).
@@ -4492,7 +4521,7 @@ jobs:
           "$lyric_bin" build lyric-stdlib/tests/task_tests.l --target jvm -o "$work/task_tests.jar"
           out="$(java -jar "$work/task_tests.jar")"
           echo "$out" | tail -3
-          printf '%s\n' "$out" | grep -q "task tests: ok" || { echo "::error::Std.Task JVM suite did not report success"; exit 1; }
+          grep -q "task tests: ok" <<< "$out" || { echo "::error::Std.Task JVM suite did not report success"; exit 1; }
       # Std.Task ambient-cancellation-slot regression coverage (#5342):
       # installToken/currentToken/restoreToken/hasAmbient, JVM-only (the
       # .NET twin crashes on its first call today, a separate pre-existing
@@ -4511,7 +4540,7 @@ jobs:
           "$lyric_bin" build lyric-stdlib/tests/task_ambient_jvm_tests.l --target jvm -o "$work/task_ambient_jvm_tests.jar"
           out="$(java -jar "$work/task_ambient_jvm_tests.jar")"
           echo "$out" | tail -3
-          printf '%s\n' "$out" | grep -q "task ambient jvm tests: ok" || { echo "::error::Std.Task ambient-slot JVM suite did not report success"; exit 1; }
+          grep -q "task ambient jvm tests: ok" <<< "$out" || { echo "::error::Std.Task ambient-slot JVM suite did not report success"; exit 1; }
       # lyric-storage suite on JVM (band J6, #1444/#2669) — the first
       # multi-package ecosystem manifest exercised on --target jvm.  Pins the
       # in-process multi-package JVM project build (sibling packages bundled
@@ -4590,10 +4619,10 @@ jobs:
             echo "::error::expected exit code 3 (= argc), got $code"
             exit 1
           fi
-          printf '%s\n' "$out" | grep -qx "argc=3" || { echo "::error::argc line missing"; exit 1; }
-          printf '%s\n' "$out" | grep -qx "arg0=one" || { echo "::error::arg0 line missing"; exit 1; }
-          printf '%s\n' "$out" | grep -qx "arg1=two" || { echo "::error::arg1 line missing"; exit 1; }
-          printf '%s\n' "$out" | grep -qx "arg2=three" || { echo "::error::arg2 line missing"; exit 1; }
+          grep -qx "argc=3" <<< "$out" || { echo "::error::argc line missing"; exit 1; }
+          grep -qx "arg0=one" <<< "$out" || { echo "::error::arg0 line missing"; exit 1; }
+          grep -qx "arg1=two" <<< "$out" || { echo "::error::arg1 line missing"; exit 1; }
+          grep -qx "arg2=three" <<< "$out" || { echo "::error::arg2 line missing"; exit 1; }
 
       - name: Wait for all parallel tests
         wait-all: true
@@ -6227,9 +6256,9 @@ jobs:
       # clang and zlib1g-dev are required by the ILCompiler linker pass used by
       # `lyric build --release` (the trampoline-elimination pipeline, #4139).
       # binutils provides ld.bfd, which release.l's buildLinkerArgsUnix passes
-      # via -fuse-ld=bfd and explicitly checks for on PATH before linking
-      # (release.l:971-977) -- without it the release e2e step fails at the
-      # ld.bfd preflight check instead of building.
+      # via -fuse-ld=bfd; buildReleaseDotnet explicitly checks for ld.bfd on
+      # PATH before linking -- without it the release e2e step fails at that
+      # preflight check instead of building.
       - name: Install clang for Native AOT e2e
         run: sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev binutils
 
@@ -6640,7 +6669,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, build-stage2, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, numbered-backend-self-tests, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required]
+    needs: [build, build-stage2, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, numbered-backend-self-tests, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required, resolver-build]
     if: always()
     permissions:
       contents: read

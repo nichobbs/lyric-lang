@@ -1,7 +1,6 @@
 //! Test constructor shorthand for extern types (.new syntax).
 //! Tests docs/48 implementation: enable `.new(args)` calls on external types,
 //! eliminating `@externTarget` wrapper functions and aligning MSIL with JVM.
-
 @test_module
 package Lyric.ConstructorShorthand
 
@@ -9,6 +8,7 @@ import Std.Core
 import Std.Collections
 import Std.CollectionsHost
 import Std.Testing
+import extern System.{Single}
 
 extern type SBld = "System.Text.StringBuilder"
 
@@ -133,3 +133,48 @@ test "break inside an extern-enumerable for-loop (dictGetKeys) exits early" {
   assertEqualInt(count, 2, "loop stops after the second key regardless of enumeration order")
 }
 
+// Regression coverage for #5401 (PR #5354/D126): `bufMsilType`'s
+// `MValueTypeRef` case (lowering.l) unconditionally emitted
+// `ELEMENT_TYPE_VALUETYPE` + a TypeRef token for `System.Single`, instead of
+// the primitive `ELEMENT_TYPE_R4` real BCL `float`-taking methods actually
+// need. This was the real root cause of the `dblToSingle`/`Convert.ToSingle`
+// `MissingMethodException` that broke the F#-bootstrap decommission
+// (`compiler-self-tests-jvm`) — D125's `argTyToSig` fix alone (the raw
+// auto-FFI path, no `@externTarget` wrapper) was insufficient, because
+// `dblToSingle`-style kernel wrappers go through `@externTarget`, which
+// `bufMsilType` serves, not raw auto-FFI.
+//
+// Note this targets the real BCL `System.Single` (`import extern
+// System.{ Single }`, the exact type `_kernel/kernel.l`'s `dblToSingle`/
+// `singleToInt32Bits` use), NOT Lyric's own `Float` keyword — `Float`
+// currently lowers to `MDouble` in `typeExprToMsilCtx` (codegen.l), a
+// separate, pre-existing width gap unrelated to this fix (a `Float`-typed
+// `@externTarget` param/return always signature-mismatches any real BCL
+// `float`-taking method, correctly rejected by F0015). Per the kernel's own
+// caveat, a `Single` value is chained directly between BCL calls rather than
+// bound to a `val` local. `System.MathF.Sqrt` has exactly one (unambiguous)
+// `Sqrt(float): float` overload, so this pins the signature fix directly
+// rather than depending on overload-scoring behavior.
+//
+// (The raw-auto-FFI `argTyToSig` half of D125/D126 — calling `MathF.Sqrt`
+// directly on an `extern type` with no `@externTarget` wrapper — was also
+// attempted here but hit a separate, pre-existing gap: the self-hosted
+// emitter's raw auto-FFI call path refuses to resolve `System.MathF.Sqrt`
+// with an argument at all, independent of the `Single` fix, printing "the
+// self-hosted emitter cannot resolve without the method's real signature."
+// `System.Math`'s raw auto-FFI calls are already covered end-to-end in
+// `auto_ffi_self_test.l`, so `argTyToSig`'s `System.Single` branch is not
+// re-verified via that path here.)
+@externTarget("System.Convert.ToSingle")
+func toSingleM88(v: in Double): Single = ()
+
+@externTarget("System.Convert.ToDouble")
+func singleToDoubleM88(v: in Single): Double = ()
+
+@externTarget("System.MathF.Sqrt")
+func sqrtSingleM88(v: in Single): Single = ()
+
+test "#5401: System.Single argument/return round-trips through the @externTarget bufMsilType path" {
+  val d = singleToDoubleM88(sqrtSingleM88(toSingleM88(16.0)))
+  assertTrue(d > 3.99 and d < 4.01, "MathF.Sqrt(Single(16.0)) ~= 4.0 via @externTarget wrapper (bufMsilType)")
+}

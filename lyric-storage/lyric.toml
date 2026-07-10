@@ -23,14 +23,21 @@ output_assembly = "Storage.dll"
 #                     (connect / put / get / delete / list / exists /
 #                     presignedUrl, including pagination cursor #1012 and
 #                     ETag-from-sidecar #1011).
+# - storage_aspect_weaving_tests.l — runtime weaving regression test for the
+#                     ValidateKey empty-key DoS fix (#5477, #5505). Exercises
+#                     the real woven `around(call)` advice on `dotnet`; `jvm`
+#                     runs a same-named, `@cfg`-gated stand-in that reproduces
+#                     the identical contract without instantiating the aspect,
+#                     because B'-mode `call`-context weaving is a known,
+#                     pre-existing JVM backend crash (see the file's own
+#                     header) and this suite is a hard-gated CI check on
+#                     `--target jvm` (band J6, #1444/#2669) unlike the sibling
+#                     libraries that carry a target-agnostic version of this
+#                     test. See storage_aspect_weaving_tests.l for the full
+#                     rationale.
 [project.tests]
 "Storage.StorageTests" = "tests/storage_tests.l"
-# No aspect-weaving test module here: lyric-storage's suite also runs under
-# `--target jvm` in CI, and B'-mode aspect weaving with a `call` context is a
-# known JVM backend gap (the `__LyricBModeCallContext` record traps at runtime).
-# ValidateKey's empty-key DoS fix (removed `requires: args.key != ""`) is covered
-# by the aspect body plus `isSafeKey("")` rejection in storage_tests.l, which run
-# on both targets. Add a weaving test once JVM B'-mode weaving is supported.
+"Storage.StorageAspectWeavingTests" = "tests/storage_aspect_weaving_tests.l"
 
 # `s3` / `azureblob` feature flags + their NuGet entries were removed
 # alongside the F# host shim deletion in this PR (#1439): every `@cfg`-

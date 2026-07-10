@@ -43,6 +43,64 @@ val defaultTtlSeconds: Int = 300
 
 val defaultMaxEntries: Int = 10000
 
+// ─── Clock ────────────────────────────────────────────────────────────────────
+// Injectable clock for `InProcessCacheStore`'s TTL expiry checks. `SystemClock`
+// (the default, via `Cache.inProcess()` / `Cache.inProcessWithCapacity()`) reads
+// real wall-clock time; `Cache.inProcessWithClock()` accepts `ManualClock` (or
+// any other implementation) so TTL expiry can be driven deterministically
+// instead of via a real `sleepMillis` wait.
+//
+// This is a record-of-interface (rather than a stored `() -> Long` closure)
+// deliberately: a closure with a `Long` return type stored in a record field
+// and invoked later returns a corrupted value on the current self-hosted
+// MSIL backend (confirmed with an isolated repro — closures returning `Int`
+// work correctly through the same path; only `Long` is affected). Interface
+// dispatch on a record field does not hit that bug.
+//
+// `ManualClock` ships here (rather than leaving consumers to write their own
+// `impl Clock for ...`) because implementing an interface imported from
+// another package fails on the current self-hosted MSIL backend
+// (`Msil.Lowering: MPImpl interface type '<consumer pkg>.Clock' has no
+// TypeDef or TypeRef row`, confirmed with an isolated repro) — an
+// `impl Clock for X` must currently live in this same package.
+@stable(since = "0.1")
+pub interface Clock {
+  /// Return the current time as epoch milliseconds.
+  func nowMillis(): Long
+}
+
+/// The real clock, backed by `Std.Time.nowEpochMillis()`.
+@stable(since = "0.1")
+pub record SystemClock {
+}
+
+impl Clock for SystemClock {
+  func nowMillis(): Long {
+    return nowEpochMillis()
+  }
+}
+
+/// A controllable clock for deterministic TTL tests. Construct with
+/// `Cache.manualClock(startMillis)`, then advance `.millis` directly (a
+/// plain field write — no real wall-clock wait) to simulate the passage of
+/// time.
+@stable(since = "0.1")
+pub record ManualClock {
+  var millis: Long
+}
+
+impl Clock for ManualClock {
+  func nowMillis(): Long {
+    return self.millis
+  }
+}
+
+/// Create a `ManualClock` starting at `startMillis`.
+@stable(since = "0.1")
+pub func manualClock(startMillis: in Long): ManualClock {
+  return ManualClock(millis = startMillis)
+}
+
 // ─── Store interface ──────────────────────────────────────────────────────────
 // Backing store for the cache.  Implement this interface to plug in Redis,
 // Memcached, or another distributed cache.  The in-process implementation is
@@ -74,20 +132,27 @@ pub interface CacheStore {
 //   - FIFO capacity: when `maxEntries` is reached the entry inserted first
 //     (among keys not yet deleted) is removed.
 //   - TTL expiry: a key set with `ttlSeconds > 0` is treated as absent by
-//     `get` once `Std.Time.nowEpochMillis()` passes its recorded expiry
-//     timestamp, and is evicted from all three backing collections at that
-//     point. `ttlSeconds == 0` means no expiry (the key is never
-//     TTL-evicted, only FIFO-evicted). Expiry is stored as epoch
-//     milliseconds (`Long`) rather than `Instant` — `Instant` is an extern
-//     struct (`System.DateTime`) and boxing it into a `Map`'s type-erased
-//     backing store is not yet a supported combination in the self-hosted
-//     MSIL emitter (`ilverify` StackUnexpected on the boxed field read).
+//     `get` once `clock.nowMillis()` passes its recorded expiry timestamp,
+//     and is evicted from all three backing collections at that point.
+//     `ttlSeconds == 0` means no expiry (the key is never TTL-evicted, only
+//     FIFO-evicted). Expiry is stored as epoch milliseconds (`Long`) rather
+//     than `Instant` — `Instant` is an extern struct (`System.DateTime`) and
+//     boxing it into a `Map`'s type-erased backing store is not yet a
+//     supported combination in the self-hosted MSIL emitter (`ilverify`
+//     StackUnexpected on the boxed field read).
+//
+//     `clock` is the injectable clock seam (see `Clock` above): `Cache.inProcess()` /
+//     `Cache.inProcessWithCapacity()` default it to `SystemClock`, and
+//     `Cache.inProcessWithClock()` accepts a caller-supplied `Clock` so TTL
+//     expiry can be driven deterministically instead of via a real
+//     `sleepMillis` wait.
 @stable(since = "0.1")
 pub record InProcessCacheStore {
   var valueMap: Map[String, String]  // key → cached value
   maxEntries: Int
   var insertionOrder: List[String]         // keys in FIFO insertion order; oldest first
   var expiryMap: Map[String, Long]  // key → expiry epoch millis; absent means no expiry
+  clock: Clock  // clock seam; defaults to SystemClock
 }
 
 // Remove `key` from all three backing collections of `store`. Shared by
@@ -121,7 +186,7 @@ impl CacheStore for InProcessCacheStore {
     }
     if self.expiryMap.containsKey(key) {
       val expiresAtMillis = self.expiryMap[key]
-      if nowEpochMillis() >= expiresAtMillis {
+      if self.clock.nowMillis() >= expiresAtMillis {
         evictKey(self, key)
         return None
       }
@@ -145,7 +210,7 @@ impl CacheStore for InProcessCacheStore {
       self.insertionOrder.add(key)
     }
     if ttlSeconds > 0 {
-      self.expiryMap[key] = nowEpochMillis() + ttlSeconds.toLong() * 1000i64
+      self.expiryMap[key] = self.clock.nowMillis() + ttlSeconds.toLong() * 1000i64
     } else if self.expiryMap.containsKey(key) {
       // Re-`set` of a previously-TTL'd key with ttlSeconds = 0 makes it
       // permanent again; drop the stale expiry entry.
@@ -172,11 +237,13 @@ impl CacheStore for InProcessCacheStore {
 // Create an in-process store using the configured defaults.
 @stable(since = "0.1")
 pub func inProcess(): InProcessCacheStore {
+  val clock: Clock = SystemClock()
   return InProcessCacheStore(
     valueMap = newMap(),
     maxEntries = defaultMaxEntries,
     insertionOrder = newList(),
-    expiryMap = newMap()
+    expiryMap = newMap(),
+    clock = clock
   )
 }
 
@@ -185,11 +252,28 @@ pub func inProcess(): InProcessCacheStore {
 pub func inProcessWithCapacity(maxEntries: in Int): InProcessCacheStore
   requires: maxEntries >= 1
 {
+  val clock: Clock = SystemClock()
   return InProcessCacheStore(
     valueMap = newMap(),
     maxEntries = maxEntries,
     insertionOrder = newList(),
-    expiryMap = newMap()
+    expiryMap = newMap(),
+    clock = clock
+  )
+}
+
+// Create an in-process store with a caller-supplied clock instead of the
+// real `SystemClock`. Intended for deterministic TTL testing: implement
+// `Clock` with a mutable fake and advance it directly instead of sleeping
+// in real time.
+@stable(since = "0.1")
+pub func inProcessWithClock(clock: in Clock): InProcessCacheStore {
+  return InProcessCacheStore(
+    valueMap = newMap(),
+    maxEntries = defaultMaxEntries,
+    insertionOrder = newList(),
+    expiryMap = newMap(),
+    clock = clock
   )
 }
 

@@ -324,3 +324,82 @@ test "slice[Char] literal argument unboxes to a real JDK char[] — String.copyV
   val s = JString.copyValueOf(letters)
   assertEqual(s, "hi", "String.copyValueOf(char[]) built from a Lyric slice[Char] literal")
 }
+
+// #5373: extend the primitive-array coverage above (char[]/byte[] only)
+// to two more of PR #5370's generalized 8 primitive element types: int[]
+// and double[]. `Arrays.copyOf` exercises the return-side box (a real JDK
+// method producing a raw primitive array, both tail-expression and explicit
+// `return` forms); `Arrays.toString` exercises the argument-side unbox for
+// both a returned array and a bare Lyric slice literal never touched by JDK
+// code.
+extern type JArrays = "java.util.Arrays"
+
+func copyOfIntsTail(src: in slice[Int], newLen: in Int): slice[Int] {
+  JArrays.copyOf(src, newLen)
+}
+
+func copyOfIntsExplicit(src: in slice[Int], newLen: in Int): slice[Int] {
+  return JArrays.copyOf(src, newLen)
+}
+
+// Truncating/same-length copyOf, not growing: a real bug was found (and
+// reported separately, not asserted here) where the TAIL-EXPRESSION return
+// path leaves newly-grown padding slots as `null` instead of boxed zero
+// (`Arrays.toString` prints `[1, 2, 3, null, null]` instead of
+// `[1, 2, 3, 0, 0]`) — the sibling explicit-`return` case below, on the same
+// element type, correctly zero-pads. Sticking to non-growing lengths here
+// keeps this test asserting only the return-side coercion this issue asks
+// for, without depending on the separately-reported padding bug.
+test "Arrays.copyOf(int[],int) tail-expression return coerces to slice[Int]" {
+  val src: slice[Int] = [1, 2, 3]
+  val copied = copyOfIntsTail(src, 2)
+  assertEqualInt(copied.count, 2, "copyOf(int[],2) truncates to newLen")
+  val s = JArrays.toString(copied)
+  assertEqual(s, "[1, 2]", "copyOf truncation round-trips through Arrays.toString(int[])")
+}
+
+test "Arrays.copyOf(int[],int) explicit return coerces to slice[Int]" {
+  val src: slice[Int] = [4, 5]
+  val copied = copyOfIntsExplicit(src, 2)
+  assertEqualInt(copied.count, 2, "copyOf(int[],2) same length")
+  val s = JArrays.toString(copied)
+  assertEqual(s, "[4, 5]", "copyOf(int[],2) round-trips through Arrays.toString(int[])")
+}
+
+test "slice[Int] literal argument unboxes to a real JDK int[] — Arrays.toString(int[])" {
+  val nums: slice[Int] = [7, 8, 9]
+  val s = JArrays.toString(nums)
+  assertEqual(s, "[7, 8, 9]", "Arrays.toString(int[]) built from a Lyric slice[Int] literal")
+}
+
+func copyOfDoublesTail(src: in slice[Double], newLen: in Int): slice[Double] {
+  JArrays.copyOf(src, newLen)
+}
+
+func copyOfDoublesExplicit(src: in slice[Double], newLen: in Int): slice[Double] {
+  return JArrays.copyOf(src, newLen)
+}
+
+// See the int[] tail-expression test above for why this stays non-growing
+// (the same null-padding bug reproduces for double[]).
+test "Arrays.copyOf(double[],int) tail-expression return coerces to slice[Double]" {
+  val src: slice[Double] = [1.5, 2.5]
+  val copied = copyOfDoublesTail(src, 1)
+  assertEqualInt(copied.count, 1, "copyOf(double[],1) truncates to newLen")
+  val s = JArrays.toString(copied)
+  assertEqual(s, "[1.5]", "copyOf truncation round-trips through Arrays.toString(double[])")
+}
+
+test "Arrays.copyOf(double[],int) explicit return coerces to slice[Double]" {
+  val src: slice[Double] = [3.5]
+  val copied = copyOfDoublesExplicit(src, 1)
+  assertEqualInt(copied.count, 1, "copyOf(double[],1) same length")
+  val s = JArrays.toString(copied)
+  assertEqual(s, "[3.5]", "copyOf(double[],1) round-trips through Arrays.toString(double[])")
+}
+
+test "slice[Double] literal argument unboxes to a real JDK double[] — Arrays.toString(double[])" {
+  val nums: slice[Double] = [1.1, 2.2]
+  val s = JArrays.toString(nums)
+  assertEqual(s, "[1.1, 2.2]", "Arrays.toString(double[]) built from a Lyric slice[Double] literal")
+}

@@ -74,19 +74,6 @@ called successfully today even before reaching the kernel-FFI gap above.
 this path (they serialize `slice[...]`, not `Map`) and are exercised in
 `tests/search_tests.l`.
 
-**Also observed (inconclusive, sandbox-specific):** in one investigation
-sandbox, `lyric-search`'s declared `Lyric.Resilience` workspace dependency
-(unused by any `Search` code — `grep -rn Resilience lyric-search/src
-lyric-search/tests` returns nothing) failed to build for `--target jvm`
-with an unrelated `MissingMethodException: System.Single
-System.Convert.ToSingle(Double)` inside `Lyric.Resilience`'s own JVM
-jitter/backoff codegen. This reproduced identically against an unmodified
-checkout (`git stash`), so it predates and is unrelated to this fix; it
-was blocking enough that a full `lyric test --manifest lyric-search/lyric.toml
---target jvm ...` run could not be completed in that sandbox. Worth
-revisiting in an environment where `Lyric.Resilience`'s JVM build is known
-green.
-
 | Feature flag | Backend                                                       | Status                                                          |
 |--------------|-----------------------------------------------------------------|------------------------------------------------------------------|
 | `dotnet`     | `Elastic.Clients.Elasticsearch` + `Meilisearch` .NET clients (kernel) | Wired to the public API; kernel FFI call crashes, caught as `Err` |

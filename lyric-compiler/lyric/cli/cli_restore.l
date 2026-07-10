@@ -6,7 +6,6 @@ import Std.Console as Console
 import Std.File as File
 import Std.String as Str
 import Std.Path as Path
-import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
 import Std.Hash as Hash
@@ -1112,13 +1111,7 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
     val args: List[String] = newList()
     args.add("restore")
     args.add(tmpCsproj)
-    val dotnetExit = match Process.run("dotnet", args) {
-      case Ok(code) -> code
-      case Err(e) -> {
-        printErr("restore: dotnet restore failed: " + IOError.message(e))
-        return 1
-      }
-    }
+    val dotnetExit = runRestoreWithRetry(args, "restore")
     if dotnetExit != 0 {
       return dotnetExit
     }

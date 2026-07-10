@@ -589,6 +589,10 @@ pub func newAssembler(pool: in Pool): MethodAssembler {
 
 /// Register an exception-table entry to be emitted when the assembler is
 /// assembled.  `catchType` is a CONSTANT_Class pool index (0 = catch-all).
+/// `assembleCode`'s exception-handler path emits no `StackMapTable`, so a
+/// handler registered here is only verifier-safe when the enclosing class
+/// uses a major version < 50 (Java 5); version >= 50 requires
+/// `assembleCodeWithFrames` instead (#3590).
 pub func addExceptionHandler(
   asm: in MethodAssembler,
   startLabel: in String,
@@ -971,6 +975,12 @@ pub func assembleRaw(asm: in MethodAssembler): AssemblyResult {
 /// (automatic max_stack computation) is a B4 extension.
 ///
 /// `maxLocals` must include slot 0 (`this`) for virtual methods.
+///
+/// When `asm.exnHandlers` is non-empty, the emitted `Code` attribute carries
+/// no `StackMapTable` — safe only for a class file major version < 50 (Java
+/// 5). Callers targeting version >= 50 (which requires `StackMapTable` for
+/// any method with branches or exception handlers) must use
+/// `assembleCodeWithFrames` instead (#3590).
 pub func assembleCode(asm: in MethodAssembler, maxStack: in Int, maxLocals: in Int): Attribute {
   val labels = buildLabelMap(asm)
   val code = writerNew()
@@ -1214,7 +1224,13 @@ pub func assembleCodeWithFrames(
   while si < asm.insns.count {
     match asm.insns[si] {
       case Label(nm) -> {
-        if targets.containsKey(nm) {
+        // A label that is BOTH a branch target and an exception-handler entry
+        // must take the handler's full_frame (with `Throwable` on the operand
+        // stack) — the JVM verifier requires exactly one stack element at a
+        // handler entry, and an empty-stack branch-target frame there is a
+        // VerifyError.  Check `handlerLabels` first so it wins over `targets`
+        // (#3591; latent until a normal branch targets a handler label).
+        if handlerLabels.containsKey(nm) {
           match mapGet(ar.labelOffsets, nm) {
             case Some(off) -> {
               val delta = off - prevOff - 1
@@ -1226,14 +1242,15 @@ pub func assembleCodeWithFrames(
                 emitVerifierTypeBc(frameLocals[vi], pool, smBuf)
                 vi = vi + 1
               }
-              writerU2(smBuf, 0)                 // stack = empty
+              writerU2(smBuf, 1)                 // stack has one element: Throwable
+              emitVerifierTypeBc(VObject(className = "java/lang/Throwable"), pool, smBuf)
               smCount = smCount + 1
               prevOff = off
             }
             case None -> ()
           }
         } else {
-          if handlerLabels.containsKey(nm) {
+          if targets.containsKey(nm) {
             match mapGet(ar.labelOffsets, nm) {
               case Some(off) -> {
                 val delta = off - prevOff - 1
@@ -1245,8 +1262,7 @@ pub func assembleCodeWithFrames(
                   emitVerifierTypeBc(frameLocals[vi], pool, smBuf)
                   vi = vi + 1
                 }
-                writerU2(smBuf, 1)               // stack has one element: Throwable
-                emitVerifierTypeBc(VObject(className = "java/lang/Throwable"), pool, smBuf)
+                writerU2(smBuf, 0)               // stack = empty
                 smCount = smCount + 1
                 prevOff = off
               }

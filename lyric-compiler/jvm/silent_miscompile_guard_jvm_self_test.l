@@ -225,10 +225,7 @@ test "forall in a runtime-checked contract lowers to true instead of panicking" 
   assertEqualInt(quantified(41), 42, "function with a forall ensures clause runs")
 }
 
-// Unsigned Byte widening (#4855): a JVM `byte` is signed and sign-extends on
-// field / local / array reload (200 -> -56), so `.toInt()` / `.toLong()` /
-// `.toDouble()` must mask to 0..255 to match the unsigned MSIL result.  A
-// silent miscompile before the fix — no error, just a negative value.
+// Unsigned Byte widening (#4855): JVM byte sign-extends on reload, so toInt/toLong/toDouble must mask to 0..255, or it's a silent miscompile (negative value, no error).
 record ByteHolder {
   b: Byte
 }

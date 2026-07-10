@@ -1247,6 +1247,7 @@ func lowerAutoFfiStaticCall(
   javaFqn: in String,
   methodName: in String,
   args: in List[CallArg],
+  callSpan: in Span,
 ): JvmType {
   // Buffer each arg's lowering so coercions can be inserted per-overload.
   val argBufs: List[List[LInsn]] = newList()
@@ -1301,7 +1302,7 @@ func lowerAutoFfiStaticCall(
     case Some(ci) -> {
       // Intercept "new" pseudo-method: T.new(args) → new + dup + invokespecial <init>.
       if methodName == "new" {
-        return lowerAutoFfiConstructorCall(ctx, insns, ci, args)
+        return lowerAutoFfiConstructorCall(ctx, insns, ci, args, callSpan)
       }
       match findBestMethod(ctx.autoFfi, ci, methodName, argDescs, true) {
         case None -> {
@@ -1488,12 +1489,19 @@ func lowerAutoFfiInstanceCall(
 // `new` for an abstract class would otherwise produce bytecode that throws
 // `InstantiationError` at runtime instead of a clear diagnostic (#2215).
 func lowerAutoFfiConstructorCall(
-  ctx: in FuncCtx, insns: in List[LInsn], ci: in ClassInfo, args: in List[CallArg]
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  ci: in ClassInfo,
+  args: in List[CallArg],
+  callSpan: in Span,
 ): JvmType {
   if ci.isAbstract {
     val fqn = ci.binaryName.replace("/", ".")
+    val pos = callSpan.startPos
     panic(
-      "error[J005]: JVM auto-FFI: cannot construct abstract class '" + fqn +
+      "error[J005]: " + pos.line.toString() + ":" + pos.column.toString() +
+        ": JVM auto-FFI: cannot construct abstract class '" +
+        fqn +
         "' — declare a concrete subclass and instantiate that instead"
     )
   }
@@ -2766,7 +2774,7 @@ func lowerMethodCall(
         case None -> ()
       }
       match mapGet(ctx.externTypes, lastSegment(path)) {
-        case Some(javaFqn) -> return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args)
+        case Some(javaFqn) -> return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args, recv.span)
         case None -> ()
       }
     }

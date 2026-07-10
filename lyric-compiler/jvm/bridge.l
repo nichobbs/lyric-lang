@@ -333,6 +333,18 @@ func isTypeItem(it: in Item): Bool {
   if isType {
     return true
   }
+  // `pub func` free functions (e.g. a helper re-exported from another
+  // package) must reach importing packages, or `addSigsFromItems` never
+  // registers their signature for the imported pass and a cross-package
+  // call fails resolution (T0010/T0043) — the JVM analogue of the MSIL
+  // bridge's `isPubFunc` (#2704).
+  val isPubFunc = match it.kind {
+    case IFunc(decl) -> match decl.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
+    case _ -> false
+  }
+  if isPubFunc {
+    return true
+  }
   // Module-level `pub val`s (e.g. `pub val ACC_PUBLIC: Int = 1` in Jvm.Classfile)
   // must reach importing packages or cross-package references abort with T0020.
   match it.kind {
@@ -913,8 +925,11 @@ func isDeriveFreeName(name: in String): Bool {
 // functions (e.g. `Point.equals`, `Color.show`).  Called after `runMiddleEnd`
 // to patch the registry built from the pre-derive `userFile` (#3139).
 // Only processes new keys (first-wins guard, same as `collectFileSigs`).
-func collectDeriveFreeSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
+func collectDeriveFreeSigs(
+  file: in SourceFile, into: in Map[String, JvmFuncSig], externSeed: in Map[String, String]
+): Unit {
   val owner = pkgJvmOwner(file.packageDecl.path)
+  val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -924,11 +939,11 @@ func collectDeriveFreeSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]
           val paramNames: List[String] = newList()
           var pi = 0
           while pi < decl.params.count {
-            params.add(typeExprToJvm(decl.params[pi].ty, owner))
+            params.add(typeExprToJvmExtern(decl.params[pi].ty, owner, externTypes))
             paramNames.add(decl.params[pi].name)
             pi = pi + 1
           }
-          val ret = match decl.ret { case Some(te) -> typeExprToJvm(te, owner); case None -> JVoid }
+          val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
           // paramDefaults intentionally empty: derive-synthesized free functions have
           // no default values.  Using an empty list avoids the stage-0 bootstrap
           // List[Option[Expr]] miscompile on .add() (#3139).
@@ -1621,7 +1636,7 @@ pub func compileProjectToJarBundledWithFeatures(
       // Use the narrow `collectDeriveFreeSigs` (only `.`-named items) rather
       // than the full `collectFileSigs` to avoid the stage-0 bootstrap
       // List[Option[Expr]] miscompile on paramDefaults.add().
-      collectDeriveFreeSigs(f, registry)
+      collectDeriveFreeSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps))
       // Register aspect-weave-synthesised targets / wrappers (`__aspect_*`)
       // from the post-weave file so the `proceed(args)` call resolves to the
       // real descriptor instead of the `(…)Object` guess (#3402, JVM analogue).
@@ -1692,8 +1707,19 @@ pub func compileProjectToJarBundledWithFeatures(
         case None -> not reachable
       }
     } catch Bug as b {
+      // Diagnostic code registry (J001-J003 are emitted directly in this file;
+      // J004 lives in `codegen/05_stmts.l` (`lowerTryCatchExpr`) and J005 in
+      // `codegen/04_calls.l` (`lowerAutoFfiConstructorCall`) — check both before
+      // reusing the next number (#3322).
       if reachable {
-        Console.error("error[J002]: JVM codegen failed for referenced package '" + pkgName + "': " + b.message)
+        // A codegen panic already carrying its own `error[J00N]:` code (e.g.
+        // J004/J005) is passed through untouched — re-prefixing it with J002
+        // produced nested "error[J002]: error[J004]: ..." output (#3311).
+        if b.message.startsWith("error[J0") {
+          Console.error(b.message)
+        } else {
+          Console.error("error[J002]: JVM codegen failed for referenced package '" + pkgName + "': " + b.message)
+        }
         Console.error(
           "  this package's functions are called by the program, so it must compile; " +
             "the failure above names the symbol or construct the JVM backend could not lower"

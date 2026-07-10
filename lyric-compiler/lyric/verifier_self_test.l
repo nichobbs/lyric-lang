@@ -533,6 +533,52 @@ func testProveRangeBoundUpperOnly(): Unit {
   assertTrue(not summaryHasErrorDiag(summary), "range-upper-only: no error diags")
 }
 
+// #4848: a `val` binding annotated with an inline range refinement now
+// carries a range hypothesis into the WP goal (vcgen.l LBVal case). `x` is
+// constrained in-range by `requires:` (an inline refinement is transparent
+// for type equivalence — docs/01 §2.2 — so assigning `x` to `p` inserts no
+// runtime/proof check of its own; the `requires:` is what makes the
+// assignment sound), but WITHOUT `p`'s own range hypothesis flowing into the
+// WP goal, the postcondition `result <= 100` doesn't obviously follow from
+// `p`'s otherwise-unconstrained `Int` slot — the point of this test is that
+// discharge succeeds only because `rangeHypotheses` attaches `p`'s declared
+// bound directly, not by re-deriving it from `x`'s `requires:` through the
+// assignment.
+func testProveValBindingRangeHypothesis(): Unit {
+  val src = "@proof_required\npackage P\nfunc clip(x: in Int): Int\n  requires: x >= 0 and x <= 100\n  ensures: result >= 0 and result <= 100\n{\n  val p: Int range 0 ..= 100 = x\n  return p\n}\n"
+  val summary = prove(src)
+  match summary.level {
+    case VLProofRequired -> {
+    }
+    case _ -> {
+      assertTrue(false, "val-range-hyp: expected VLProofRequired")
+    }
+  }
+  assertTrue(not summaryHasErrorDiag(summary), "val-range-hyp: no error diags")
+  assertTrue(not summaryHasFailure(summary), "val-range-hyp: ensures discharges using the val's range hypothesis")
+}
+
+// #4848: a protected-type entry with a range-typed field. `goalsForProtectedEntry`
+// now calls `rangeHypothesesForTerm` per field and threads the result through
+// `goalsForFunctionWithExtraHyps`, so an entry's `ensures:` clause referencing
+// the field's bound is provable purely from the field's declared range.
+func testProveProtectedTypeRangeFieldHypothesis(): Unit {
+  val src = "@proof_required\npackage P\nprotected type Meter {\n  var level: Int range 0 ..= 100\n  entry read(): Int requires: true ensures: result >= 0 and result <= 100 {\n    level\n  }\n}\n"
+  val summary = prove(src)
+  match summary.level {
+    case VLProofRequired -> {
+    }
+    case _ -> {
+      assertTrue(false, "prot-range-field-hyp: expected VLProofRequired")
+    }
+  }
+  assertTrue(not summaryHasErrorDiag(summary), "prot-range-field-hyp: no error diags")
+  assertTrue(
+    not summaryHasFailure(summary),
+    "prot-range-field-hyp: ensures discharges from the field's range hypothesis"
+  )
+}
+
 // #735/#746 sort-name smoke: two same-shape records compile through `qualifiedDatatypeName` without crash.
 func testProveSortNamespacing(): Unit {
   val src = "@proof_required\npackage P\nrecord A { x: Int }\nrecord B { x: Int }\nfunc id(a: in A): A { return a }\n"
@@ -833,6 +879,14 @@ test "prove protected func contract violated" {
 
 test "prove range bound upper only" {
   testProveRangeBoundUpperOnly()
+}
+
+test "prove val binding range hypothesis" {
+  testProveValBindingRangeHypothesis()
+}
+
+test "prove protected type range field hypothesis" {
+  testProveProtectedTypeRangeFieldHypothesis()
 }
 
 test "prove sort namespacing" {

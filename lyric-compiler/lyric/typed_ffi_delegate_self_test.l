@@ -102,3 +102,43 @@ test "a lambda closing over a value binds to a real closed Func<RefType, ValueTy
   // BCL property setter at all.
   assertTrue(true, "typed delegate bound to the real SocketsHttpHandler.ConnectCallback setter")
 }
+
+// #5319/#5315/#5312: an attempt was made to add tests here that actually
+// *invoke* a constructed typed delegate (a Func<String,Int> via
+// ConcurrentDictionary.GetOrAdd, a void Action<Int> via List.ForEach, and a
+// zero-arg () -> T via ThreadLocal<T>.Value / Array.ForEach). All of them
+// hit the SAME real runtime bug, independent of which BCL API was used:
+// pairing ANY generic-type receiver (ConcurrentDictionary`2, List`1,
+// ThreadLocal`1 — including the already-battle-tested `Std.Collections`
+// `List[T]`) with a method that also carries a typed Func/Action delegate
+// parameter corrupts the receiver's own TypeRef resolution. The resulting
+// assembly throws `System.TypeLoadException: Could not load type
+// 'System.Collections.Generic.List`1' from assembly
+// '<ThisTestModule>'` at runtime — the receiver's TypeRef ends up pointing
+// at the CURRENT assembly instead of the BCL one it actually lives in.
+// Minimal repro (isolated, no delegate-erasure interaction otherwise):
+//
+//   extern type MyListOf[T] = "System.Collections.Generic.List`1"
+//   @externTarget("System.Collections.Generic.List`1..ctor")
+//   func newMyList(): MyListOf[Int] = ()
+//   @externTarget("System.Collections.Generic.List`1.ForEach")
+//   @externInstance
+//   func myListForEach(l: in MyListOf[Int], action: in (Int) -> Unit): Unit = ()
+//   // newMyList()/myListAdd() alone (no delegate param) work fine; adding
+//   // myListForEach to the same compilation unit breaks List`1's own
+//   // TypeRef, even though List`1 is never redeclared or touched by
+//   // myListForEach's delegate-erasure logic itself.
+//
+// A separate attempt using a non-generic TYPE but a generic STATIC METHOD
+// (`System.Array.ForEach(int[], Action<int>)`) hit a different but equally
+// real failure: `MissingMethodException: Void
+// System.Array.ForEach(Int32[], System.Action`1<Int32>)` — generic-method
+// (as opposed to generic-type) delegate parameters are also unresolved.
+// Filed as a real bug (not a test-authoring mistake — reproduced from
+// scratch in complete isolation, with and without reusing the pre-existing
+// `Std.CollectionsHost` `List[T]` declaration) rather than shipped as a
+// failing/skipped test. No BCL API combining an invokable Func/Action
+// delegate parameter with a non-generic receiver AND a non-generic method
+// was found to substitute, so this file's original single test (which only
+// exercises the delegate CONSTRUCTION/BINDING half, not invocation) is left
+// unchanged; see the outer task report for full repro details.

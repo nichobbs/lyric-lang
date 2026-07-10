@@ -20,28 +20,12 @@ import Std.Core
 // so the externs are always emittable.  SES/SendGrid below carry their own
 // `@cfg` gates because they pull in optional AWS SDK / SendGrid NuGet
 // dependencies.  See #1112.
-// ─── Extern types ─────────────────────────────────────────────────────────────
-@axiom("BCL System.Net.Mail.SmtpClient (SYSLIB0014 advisory: acceptable for Phase-4 SMTP path)")
-pub extern type SmtpClient = "System.Net.Mail.SmtpClient"
-
-@axiom("BCL System.Net.Mail.MailMessage")
-pub extern type MailMessage = "System.Net.Mail.MailMessage"
-
-@axiom("BCL System.Net.Mail.MailAddress")
-pub extern type MailAddress = "System.Net.Mail.MailAddress"
-
-@axiom("BCL System.Net.Mail.MailAddressCollection")
-pub extern type MailAddressCollection = "System.Net.Mail.MailAddressCollection"
-
-@axiom("BCL System.Net.NetworkCredential")
-pub extern type NetworkCredential = "System.Net.NetworkCredential"
-
-
-
+//
+// SmtpClient, MailMessage, MailAddress, MailAddressCollection,
+// NetworkCredential, and AttachmentCollection were removed here: `mail.l`
+// now imports them directly via `import extern System.Net.{...}` /
+// `import extern System.Net.Mail.{...}` (the import-extern migration, #5272).
 // ─── Attachment support ───────────────────────────────────────────────────────
-@axiom("BCL System.Net.Mail.AttachmentCollection")
-pub extern type AttachmentCollection = "System.Net.Mail.AttachmentCollection"
-
 @axiom("BCL System.Net.Mail.Attachment — MIME attachment backed by a MemoryStream")
 pub extern type BclAttachment = "System.Net.Mail.Attachment"
 
@@ -59,8 +43,6 @@ pub func newMemoryStream(buf: in slice[Byte]): MemoryStream = ()
 @axiom("new System.Net.Mail.Attachment(Stream, String, String) — create MIME attachment from stream with filename and content-type")
 @externTarget("System.Net.Mail.Attachment..ctor")
 pub func newBclAttachment(stream: in MemoryStream, name: in String, mediaType: in String): BclAttachment = ()
-
-
 
 // ─── Amazon SES (Phase 4 follow-up of #733) ──────────────────────────────────
 @axiom("Amazon SES backend not yet implemented (#733 follow-up)")

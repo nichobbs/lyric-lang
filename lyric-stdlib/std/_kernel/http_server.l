@@ -59,7 +59,8 @@ extern type Uri = "System.Uri"
 // Primitive externs (private to this kernel file).
 // =====================================================================
 // Note: Constructors with arguments are wrapped manually to prevent stage-0
-// seed compiler panics on metadata-based `.new(args)` calls.
+// seed compiler panics on metadata-based `.new(args)` calls (#5167 tracks
+// migrating these wrappers to `.new(args)` now that the seed supports it).
 //
 // .NET properties are exposed as `get_<Name>` / `set_<Name>` methods
 // on the declaring type; @externTarget binds to method names, not property

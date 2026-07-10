@@ -216,17 +216,19 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
-      - name: Install ARM64 cross-compilation toolchain (Ubuntu)
-        if: matrix.os == 'ubuntu-latest' && matrix.rid == 'linux-arm64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-multiarch
-
       - name: Install Native AOT dependencies (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang zlib1g-dev binutils
+
+      # Package lists were already refreshed by "Install Native AOT
+      # dependencies" above (that step runs on every Ubuntu leg, including
+      # this one) -- a second `apt-get update` here would just repeat it.
+      - name: Install ARM64 cross-compilation toolchain (Ubuntu)
+        if: matrix.os == 'ubuntu-latest' && matrix.rid == 'linux-arm64'
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-multiarch
 
       - name: Install unzip (Windows)
         if: matrix.os == 'windows-latest'
@@ -464,9 +466,9 @@ jobs:
         # clang and zlib1g-dev are required by the ILCompiler linker pass used by
         # `lyric build --release` (the trampoline-elimination pipeline, #4139).
         # binutils provides ld.bfd, which release.l's buildLinkerArgsUnix passes
-        # via -fuse-ld=bfd and explicitly checks for on PATH before linking
-        # (release.l:971-977) -- without it the release e2e step fails at the
-        # ld.bfd preflight check instead of building.
+        # via -fuse-ld=bfd; buildReleaseDotnet explicitly checks for ld.bfd on
+        # PATH before linking -- without it the release e2e step fails at that
+        # preflight check instead of building.
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y clang zlib1g-dev binutils
@@ -588,7 +590,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-ecosystem:
     runs-on: ubuntu-latest
-    needs: [finalize-release]
+    needs: [finalize-release, create-release]
     # Skipped when workflow_dispatch is used with publish_ecosystem unchecked.
     # Tag-push releases always publish ecosystem libs (github.event_name !=
     # 'workflow_dispatch' short-circuits the check).  Using github.event_name

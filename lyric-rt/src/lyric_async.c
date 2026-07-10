@@ -65,7 +65,7 @@ static LyricTask* g_ready_tail = NULL;
 static LyricTask* g_sleepers = NULL; /* singly linked, deadline-ascending */
 static LyricTask* g_current = NULL;  /* task whose frame is executing */
 
-void lyric_task_dtor(void* obj) {
+static void lyric_task_dtor(void* obj) {
     LyricTask* t = (LyricTask*)obj;
     if (t->coro_handle) {
         lyric_coro_destroy(t->coro_handle);
@@ -144,8 +144,13 @@ void lyric_task_complete(LyricTask* t, int64_t result, int32_t result_is_ref) {
     if (t->state == LYRIC_TASK_COMPLETE) {
         lyric_panic_msg("task completed twice (scheduler bug)", "lyric_async.c", __LINE__);
     }
-    int had_sched_ref = t->state == LYRIC_TASK_SLEEPING || t->state == LYRIC_TASK_WAITING ||
-                        t->state == LYRIC_TASK_READY;
+    /* lyric_task_complete only ever runs inside a coroutine body, which
+     * only executes while its task is RUNNING (the ramp, or a resume
+     * that run_one already flipped to RUNNING) or re-registers itself
+     * (SLEEPING/WAITING) before returning — READY means "queued, not yet
+     * resumed," which is not a state a running body can observe itself
+     * in, so it is deliberately excluded here. */
+    int had_sched_ref = t->state == LYRIC_TASK_SLEEPING || t->state == LYRIC_TASK_WAITING;
     t->result = result;
     t->result_is_ref = result_is_ref;
     t->state = LYRIC_TASK_COMPLETE;

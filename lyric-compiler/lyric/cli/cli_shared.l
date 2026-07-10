@@ -83,6 +83,8 @@ import Std.Errors
 import Std.Hash as Hash
 import Std.Json as Json
 import Std.Yaml as Yaml
+import Std.ProcessCapture as ProcessCapture
+import Std.Time as Time
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Workspace as Ws
@@ -108,6 +110,102 @@ func printDiag(d: in Diagnostic): Unit {
     d.code + " " + sev + " [" + toString(d.span.startPos.line) + ":" + toString(d.span.startPos.column) + "]: " +
       d.message
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §1a. NuGet restore retry/backoff (NU1102 indexing lag)
+//
+// A Lyric package dependency declared in a manifest (e.g. a sibling
+// ecosystem library published moments earlier in the same release run) can
+// still 404 with NU1102 for a while after its own `dotnet nuget push`
+// returned success -- NuGet.org's restore-side registration/validation
+// pipeline lags behind the push, not just its full-text search index.
+//
+// A first cut of this retry (30s/60s/90s, 4 attempts, ~180s total) was
+// observed in production still failing NU1102 on the final attempt for six
+// ecosystem libraries at once (a whole release tier pushes its packages in
+// a tight burst, which appears to make the lag worse) -- 180s falls short
+// of NuGet.org's real worst-case propagation window, it isn't just close.
+// Escalate for the first `nu1102EscalationAttempts` attempts, then hold at a
+// plateau for the rest: `nu1102MaxAttempts` attempts total, ~660s (11 min)
+// of backoff before giving up. Any restore failure that ISN'T NU1102 still
+// fails immediately. Shared by `cmdPublish`'s temp-csproj restore and
+// `cmdRestore`'s registry/[nuget] restore.
+// ─────────────────────────────────────────────────────────────────────────────
+pub val nu1102MaxAttempts = 8
+
+pub val nu1102EscalationAttempts = 4
+
+pub val nu1102BaseBackoffMs = 30000
+
+pub val nu1102PlateauBackoffMs = nu1102EscalationAttempts * nu1102BaseBackoffMs
+
+// Backoff duration (ms) before retrying the given (1-based) attempt number:
+// ramps by `nu1102BaseBackoffMs` per attempt through `nu1102EscalationAttempts`,
+// then holds flat at `nu1102PlateauBackoffMs`.
+pub func backoffMsForAttempt(attempt: in Int): Int {
+  if attempt <= nu1102EscalationAttempts {
+    attempt * nu1102BaseBackoffMs
+  } else {
+    nu1102PlateauBackoffMs
+  }
+}
+
+// Pure retry decision for a completed `dotnet restore` attempt: retry only
+// on NU1102 (NuGet indexing lag) failures, never on a timeout, never on
+// success, and never once `nu1102MaxAttempts` has been reached.
+pub func shouldRetryRestore(
+  exitCode: in Int, stdout: in String, stderr: in String, attempt: in Int, timedOut: in Bool
+): Bool {
+  if timedOut or exitCode == 0 or attempt >= nu1102MaxAttempts {
+    false
+  } else {
+    stdout.contains("NU1102") or stderr.contains("NU1102")
+  }
+}
+
+// Run `dotnet restore` for the given args, retrying on NU1102 (NuGet
+// indexing delay) with the escalating-then-plateau backoff above. `label`
+// prefixes log/error output (e.g. "publish" or "restore") to match the
+// caller's command.
+pub func runRestoreWithRetry(restoreArgs: in List[String], label: in String): Int {
+  var attempt = 1
+  while attempt <= nu1102MaxAttempts {
+    val captureResult = try {
+      ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 300000)
+    } catch Bug as b {
+      CaptureResult(stdout = "", stderr = b.message, exitCode = -1, timedOut = false)
+    }
+    if not Str.isEmpty(captureResult.stdout) {
+      Console.print(captureResult.stdout)
+    }
+    if not Str.isEmpty(captureResult.stderr) {
+      Console.error(captureResult.stderr)
+    }
+    if captureResult.timedOut {
+      printErr(label + ": dotnet restore timed out after 300 seconds")
+      return 1
+    }
+    if captureResult.exitCode == -1 {
+      printErr(label + ": dotnet restore failed to start (is dotnet on PATH?)")
+      return 1
+    }
+    if captureResult.exitCode == 0 {
+      return 0
+    }
+    if not shouldRetryRestore(captureResult.exitCode, captureResult.stdout, captureResult.stderr, attempt, captureResult.timedOut) {
+      return captureResult.exitCode
+    }
+    val backoffMs = backoffMsForAttempt(attempt)
+    printErr(
+      label + ": NU1102 (NuGet indexing delay) on attempt " + toString(attempt) + "; retrying in " +
+        toString(backoffMs / 1000) +
+        "s"
+    )
+    Time.sleepMillis(backoffMs)
+    attempt += 1
+  }
+  panic("unreachable: runRestoreWithRetry loop always returns")
 }
 
 // Single source of truth for the help text, grouped by workflow so it stays

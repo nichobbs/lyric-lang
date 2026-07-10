@@ -3987,21 +3987,12 @@ func emitUnionPayloadFieldRead(
     case NPtr(pointee) -> pointee
     case _ -> panic("Lyric.LlvmCodegen: union payload read on a non-pointer value")
   }
-  val payloadPtr = freshTmp(ctx)
-  val pArgs: List[NArg] = newList()
-  pArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  pArgs.add(NArg(ty = NI32, value = NLitInt(v = 4i64, ty = NI32)))
-  insns.add(NGEP(dest = payloadPtr, ty = structTy, ptr = scrutinee.value, indices = pArgs))
+  val objName = match scrutinee.value {
+    case NLocal(n) -> n
+    case _ -> panic("Lyric.LlvmCodegen: union scrutinee must be a local value")
+  }
+  val casePtr = emitCasePayloadPtr(ctx, insns, ui, structTy, objName, caseIdx)
   val caseTy = casePayloadStructType(ui, ui.cases[caseIdx])
-  val casePtr = freshTmp(ctx)
-  insns.add(
-    NBitcast(
-      dest = casePtr,
-      fromTy = NPtr(pointee = NArray(elem = NI64, size = ui.payloadWords)),
-      value = NLocal(name = payloadPtr),
-      toTy = NPtr(pointee = caseTy)
-    )
-  )
   val fieldPtr = freshTmp(ctx)
   val fArgs: List[NArg] = newList()
   fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
@@ -9803,6 +9794,13 @@ func ifaceVtStructType(ii: in NIfaceInfo): NType {
   NStruct(name = ii.vtName, fields = fields)
 }
 
+/// GEP field indices into the interface box struct
+/// `{ i32 rc, i8* dtor, i8* obj, vtable* }` (fields 0 and 1 are the shared
+/// ARC header, so only the obj/vtable slots need names here).
+val ifaceBoxObjSlot: Long = 2i64
+
+val ifaceBoxVtblSlot: Long = 3i64
+
 /// The heap-boxed fat-pointer type for an interface value:
 /// `{ i32 rc, i8* dtor, i8* obj, vtable* }`.
 func ifaceBoxStructType(ii: in NIfaceInfo): NType {
@@ -9838,6 +9836,13 @@ func ifaceBoxInfoOfType(ctx: in Ctx, t: in NType): Option[NIfaceInfo] {
 }
 
 /// The record IR name (`Pkg.Record`) if `t` is a record pointer.
+///
+/// Invariant: every internal (non-record) IR struct name minted by this
+/// file begins with `__` (union payload structs, `__iface.*`/`__ifacevt.*`,
+/// `__closure<...>`/`__closureimpl.*`, `__weak<...>`, ...) or is one of the
+/// listed sentinels (`LyricString`). Any new internal struct type must keep
+/// this prefix, or be added as a sentinel here, or `recordIrNameOfType`
+/// will misidentify it as a record.
 func recordIrNameOfType(t: in NType): Option[String] {
   match t {
     case NPtr(pointee) -> {
@@ -9904,7 +9909,7 @@ func synthIfaceBoxDtor(ctx: in Ctx, ii: in NIfaceInfo): NFunc {
   val objSlot = freshTmp(ctx)
   val idxArgs: List[NArg] = newList()
   idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxObjSlot, ty = NI32)))
   body.add(NGEP(dest = objSlot, ty = structTy, ptr = NLocal(name = "obj"), indices = idxArgs))
   val objVal = freshTmp(ctx)
   body.add(NLoad(dest = objVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = objSlot)))
@@ -10159,14 +10164,14 @@ func buildIfaceBox(ctx: in Ctx, insns: in List[NInsn], v: in NVal, ii: in NIface
   val objSlot = freshTmp(ctx)
   val objArgs: List[NArg] = newList()
   objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  objArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  objArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxObjSlot, ty = NI32)))
   insns.add(NGEP(dest = objSlot, ty = structTy, ptr = NLocal(name = box), indices = objArgs))
   insns.add(NStore(ty = NPtr(pointee = NI8), value = NLocal(name = objI8), ptr = NLocal(name = objSlot)))
   // vtable slot (index 3): point at the impl's constant vtable.
   val vtSlot = freshTmp(ctx)
   val vtArgs: List[NArg] = newList()
   vtArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  vtArgs.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+  vtArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxVtblSlot, ty = NI32)))
   insns.add(NGEP(dest = vtSlot, ty = structTy, ptr = NLocal(name = box), indices = vtArgs))
   insns.add(
     NStore(ty = NPtr(pointee = ifaceVtStructType(ii)), value = NGlobal(name = vtGlobal), ptr = NLocal(name = vtSlot))
@@ -10192,7 +10197,7 @@ func lowerIfaceDispatch(
   val objSlot = freshTmp(ctx)
   val objArgs: List[NArg] = newList()
   objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  objArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  objArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxObjSlot, ty = NI32)))
   insns.add(NGEP(dest = objSlot, ty = structTy, ptr = recv.value, indices = objArgs))
   val objVal = freshTmp(ctx)
   insns.add(NLoad(dest = objVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = objSlot)))
@@ -10200,7 +10205,7 @@ func lowerIfaceDispatch(
   val vtSlotPtr = freshTmp(ctx)
   val vtArgs: List[NArg] = newList()
   vtArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  vtArgs.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+  vtArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxVtblSlot, ty = NI32)))
   insns.add(NGEP(dest = vtSlotPtr, ty = structTy, ptr = recv.value, indices = vtArgs))
   val vtPtrTy = NPtr(pointee = ifaceVtStructType(ii))
   val vtbl = freshTmp(ctx)

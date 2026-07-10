@@ -347,7 +347,6 @@ typedef struct LyricTask {
 
 /* Fresh rc=1 RUNNING task (called in the coroutine prologue). */
 LyricTask* lyric_task_new(void* coro_handle);
-void       lyric_task_dtor(void* obj);
 int32_t    lyric_task_is_complete(LyricTask* t);
 /* Raw result slot; a ref-typed result is a borrow (task keeps its ref). */
 int64_t    lyric_task_result(LyricTask* t);

@@ -421,6 +421,126 @@ test "buildOneNative: a manifest with [maven] entries near a single file compile
   assertTrue(File.fileExists(outPath), "single-file JVM build produces the output JAR")
 }
 
+// #5353: `hasContribution`'s `activeFeatures.count > 0 or declaredFeatures.count
+// > 0` term routes a single-file build through the synthetic project path even
+// when a manifest declares nothing else — no `[dependencies]`, no `[maven]`, no
+// `[nuget]`. Two functions with the same name, each gated by a different
+// feature, only coexist without a duplicate-symbol error if `@cfg` erasure
+// actually ran: with `x` active and `y` inactive, only the `x`-gated `dispatch`
+// should survive, so `run()` resolves and returns 1. If a regression drops the
+// features term from `hasContribution` (or fails to thread activeFeatures into
+// the synthetic `EmitProjectRequest`), erasure never runs, both `dispatch`
+// definitions remain, and the build fails loudly with a duplicate-symbol error
+// instead of silently reverting to un-erased bare-`Emitter.emit` behavior.
+test "buildOneNative: a manifest with only a [features] table near a single file routes through the synthetic path" {
+  val appDir = freshTempDir("app-features-only")
+  defer {
+    cleanup(appDir)
+  }
+  writeManifestOrPanic(
+    Path.join(appDir, "lyric.toml"),
+    "[package]\n" + "name = \"AppSfFeatures\"\n" + "version = \"0.1.0\"\n" + "\n" + "[features]\n" +
+      "default = [\"x\"]\n" +
+      "x = []\n" +
+      "y = []\n"
+  )
+  val looseSrcPath = Path.join(appDir, "loose.l")
+  writeFileOrPanic(
+    looseSrcPath,
+    "package AppSfFeatures.Loose\n\n" + "@cfg(feature = \"x\")\n" + "pub func dispatch(): Int {\n" + "  1\n" + "}\n" +
+      "\n" +
+      "@cfg(feature = \"y\")\n" +
+      "pub func dispatch(): Int {\n" +
+      "  2\n" +
+      "}\n" +
+      "\n" +
+      "pub func run(): Int {\n" +
+      "  dispatch()\n" +
+      "}\n"
+  )
+  val outPath = Path.join(appDir, "loose.dll")
+
+  val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Dotnet, None, "", "")
+  assertEqualInt(
+    exitCode,
+    0,
+    "single-file build with a [features]-only manifest routes through @cfg erasure (no duplicate `dispatch`)"
+  )
+  assertTrue(File.fileExists(outPath), "single-file build produces the output DLL")
+}
+
+// #5352: `hasContribution`'s `resolvedDeps.nugetThirdPartyPaths.count > 0` term
+// is the one remaining independent branch of the OR-chain none of the other
+// cases in this file exercise — every other case uses a `path`/workspace
+// dependency, a `[maven]`-only manifest, or a bare manifest. Fixture mirrors
+// `cli_shared_self_test.l`'s `resolveNugetAssets` happy-path test: a real
+// `obj/project.assets.json` resolving one package-typed runtime DLL, with no
+// `[dependencies]`/`[maven]`/`[features]` in the manifest at all. The "DLL" is
+// a real compiled Lyric assembly (not an empty stub file) because
+// `newCodegenCtx`/`addAssemblyToIndexesAndValueTypes` eagerly parse every
+// `nugetAssemblyPaths` entry as PE metadata during the real compile below.
+test "buildOneNative: a manifest with a genuine [nuget]-resolved third-party DLL near a single file compiles" {
+  val appDir = freshTempDir("app-nuget-only")
+  defer {
+    cleanup(appDir)
+  }
+  val pkgsDir = freshTempDir("app-nuget-only-pkgs")
+  defer {
+    cleanup(pkgsDir)
+  }
+  val objDir = Path.join(appDir, "obj")
+  match File.createDir(objDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + objDir + ": " + IOError.message(e))
+  }
+
+  val fixtureRelDllPath = Path.join(
+    Path.join("newtonsoft.json", "13.0.3"),
+    Path.join("lib", Path.join("netstandard2.0", "Newtonsoft.Json.dll"))
+  )
+  val fixtureDllPath = Path.join(pkgsDir, fixtureRelDllPath)
+  val fixtureSrcPath = Path.join(pkgsDir, "fixture_lib.l")
+  writeFileOrPanic(fixtureSrcPath, "package NugetOnlyFixtureLib\n\npub func noop(): Int {\n  0\n}\n")
+  val fixtureBuildExit = Cli.buildOneNative(fixtureSrcPath, fixtureDllPath, Emitter.Dotnet, None, "", "")
+  assertEqualInt(
+    fixtureBuildExit,
+    0,
+    "fixture third-party DLL stand-in compiles (a real PE so readAssemblyVersion doesn't choke on it)"
+  )
+
+  val assetsJson = "{\n" + "  \"targets\": {\n" + "    \".NETCoreApp,Version=v10.0\": {\n" +
+    "      \"Newtonsoft.Json/13.0.3\": {\n" +
+    "        \"type\": \"package\",\n" +
+    "        \"runtime\": {\n" +
+    "          \"lib/netstandard2.0/Newtonsoft.Json.dll\": {}\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  },\n" +
+    "  \"project\": {\n" +
+    "    \"restore\": {\n" +
+    "      \"packagesPath\": \"" +
+    Str.replace(pkgsDir, "\\", "\\\\") +
+    "\"\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
+  writeFileOrPanic(Path.join(objDir, "project.assets.json"), assetsJson)
+
+  writeManifestOrPanic(
+    Path.join(appDir, "lyric.toml"),
+    "[package]\n" + "name = \"AppSfNugetOnly\"\n" + "version = \"0.1.0\"\n" + "\n" + "[nuget]\n" +
+      "\"Newtonsoft.Json\" = \"13.0.3\"\n"
+  )
+  val looseSrcPath = Path.join(appDir, "loose.l")
+  writeFileOrPanic(looseSrcPath, "package AppSfNugetOnly.Loose\n\npub func run(): Int {\n  1\n}\n")
+  val outPath = Path.join(appDir, "loose.dll")
+
+  val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Dotnet, None, "", "")
+  assertEqualInt(exitCode, 0, "single-file build with a [nuget]-only third-party-resolved manifest compiles cleanly")
+  assertTrue(File.fileExists(outPath), "single-file build produces the output DLL")
+}
+
 test "buildOneNative: a manifest with no dependencies/features near a single file is byte-identical to no manifest" {
   val noManifestDir = freshTempDir("nomanifest")
   defer {

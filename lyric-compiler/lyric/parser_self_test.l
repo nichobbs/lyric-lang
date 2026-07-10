@@ -1299,6 +1299,17 @@ test "lambda: parenthesised expression body does not leak speculative params" {
   assertEqualInt(diagCount(pr), 0, "lambda: `{ (x + y) }` backtracks to a plain block body cleanly")
 }
 
+// #4830: a distinct backtrack path from the one above — an ident list that
+// parses cleanly and is followed by `)`, but with no `->` after it. The
+// speculative param parse succeeds (`(x)` matches ident-list-then-RParen),
+// but the arrow check fails, so the parser resets to before `(` and the
+// body parser must parse `(x)` as a parenthesised expression instead of
+// leaking the speculative single-param list.
+test "lambda: paren-param form without arrow backtracks to expression body" {
+  val pr = parse("package P\nfunc f(): Int {\n  val x = 1\n  val g = { (x) }\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `{ (x) }` backtracks cleanly to a block body")
+}
+
 // #4829: additional parenthesised-param forms not covered above — the
 // zero-param `()` list, and a param with an explicit type annotation.
 test "lambda: empty parenthesised param list parses clean" {
