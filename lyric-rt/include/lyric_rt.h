@@ -6,15 +6,17 @@
  * that abstract POSIX constants and struct layouts that differ between
  * Linux and macOS (native/plan/05-ffi-design.md).
  *
- * Every heap-allocated Lyric value begins with the two-word
- * LyricObjectHeader; header offset is 0 so (void*)obj is the header.
- * Objects whose rc equals INT32_MAX are static (string literals,
- * zero-capture closures) and are never retained, released, or freed.
+ * Every heap-allocated Lyric value begins with the LyricObjectHeader
+ * (rc, weak count, dtor — 16 bytes); header offset is 0 so (void*)obj is
+ * the header.  Objects whose rc equals INT32_MAX are static (string
+ * literals, zero-capture closures) and are never retained, released,
+ * weak-counted, or freed.
  */
 #ifndef LYRIC_RT_H
 #define LYRIC_RT_H
 
 #include <stdatomic.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -24,9 +26,23 @@ extern "C" {
 /* ── Object header ─────────────────────────────────────────────────── */
 
 typedef struct {
-    _Atomic int32_t rc;    /* reference count; INT32_MAX = static sentinel */
+    _Atomic int32_t rc;    /* strong reference count; INT32_MAX = static sentinel */
+    _Atomic int32_t weak;  /* weak-ref count, plus 1 while any strong ref lives;
+                            * occupies the former alignment padding at offset 4,
+                            * so sizeof and every later field offset are unchanged */
     void (*dtor)(void*);   /* destructor; may be NULL; must not free(obj)  */
 } LyricObjectHeader;
+
+/* The whole point of putting `weak` in the alignment padding between `rc` and
+ * `dtor` is that the header stays two words and `dtor` keeps its offset, so the
+ * codegen's `{ i32, ptr, <fields...> }` struct model and every downstream field
+ * offset are unchanged from the pre-weak-count layout (#5504 / #5546).  These
+ * assertions make that ABI contract a compile error to break; they encode the
+ * 64-bit LP64 target the native backend assumes (D-N-008). */
+_Static_assert(sizeof(LyricObjectHeader) == 2 * sizeof(void*),
+               "LyricObjectHeader must stay two words: weak must fit rc's alignment padding");
+_Static_assert(offsetof(LyricObjectHeader, dtor) == sizeof(void*),
+               "dtor must keep its one-word offset; weak must live in rc's padding, not after dtor");
 
 /* ── ARC intrinsics (D-N-011) ──────────────────────────────────────── */
 
@@ -53,6 +69,7 @@ _Noreturn void lyric_panic_msg(const char* msg, const char* file, int32_t line);
 /* UTF-8 bytes follow the struct inline in the same allocation. */
 typedef struct {
     _Atomic int32_t rc;
+    _Atomic int32_t weak;
     void (*dtor)(void*);
     int64_t len;   /* byte count of the UTF-8 data (no terminator)       */
     int64_t cap;   /* allocated data bytes (>= len; may include a NUL)   */
@@ -85,8 +102,29 @@ void        lyric_cstring_free(const char* p);
 
 /* Attempts to atomically increment rc iff it is still > 0.  Returns the
  * object pointer on success (caller now holds a strong ref), NULL when
- * the object is already dead.  Static objects always upgrade. */
+ * the object is already dead.  Static objects always upgrade.
+ *
+ * Safe against a concurrently-releasing strong ref: while any weak
+ * reference is held the header allocation is kept alive by the weak
+ * count (below), so this read of rc never touches freed memory. */
 void* lyric_weak_upgrade(void* raw);
+
+/* Increment the weak-reference count.  Called when a NativeWeak is born or
+ * copied.  No-op on NULL and static objects. */
+void lyric_weak_retain(void* obj);
+
+/* Decrement the weak-reference count; frees the allocation once it reaches
+ * zero.  The strong path (lyric_release) drops the implicit weak count after
+ * running the destructor, so the object is freed by whichever of the last
+ * strong release or the last weak release happens last.  No-op on NULL and
+ * static objects. */
+void lyric_weak_release(void* obj);
+
+/* Initialise the weak count to 1 (the implicit weak held while strong refs
+ * live) at object birth.  Codegen calls this right after storing rc=1 and the
+ * dtor, because the weak field sits in the header's alignment padding, which
+ * the generated LLVM struct type does not name. */
+void lyric_weak_init(void* obj);
 
 /* ── Collections (D-N-012) ─────────────────────────────────────────── */
 
@@ -97,6 +135,7 @@ void* lyric_weak_upgrade(void* raw);
  * widened to 64 bits by the codegen). */
 typedef struct {
     _Atomic int32_t rc;
+    _Atomic int32_t weak;
     void (*dtor)(void*);
     int64_t*        data;  /* 8-byte slots: scalars or pointers */
     int64_t         len;
@@ -335,6 +374,7 @@ LyricList* lyric_args_get(void);
 
 typedef struct LyricTask {
     _Atomic int32_t rc;
+    _Atomic int32_t weak;
     void (*dtor)(void*);
     void* coro_handle;        /* LLVM coro frame; destroyed by the dtor  */
     int32_t state;            /* RUNNING/SLEEPING/WAITING/READY/COMPLETE */

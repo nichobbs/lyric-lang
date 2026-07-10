@@ -79,6 +79,7 @@ static void lyric_task_dtor(void* obj) {
 LyricTask* lyric_task_new(void* coro_handle) {
     LyricTask* t = (LyricTask*)lyric_alloc(sizeof(LyricTask));
     atomic_store_explicit(&t->rc, 1, memory_order_relaxed);
+    atomic_store_explicit(&t->weak, 1, memory_order_relaxed);
     t->dtor = lyric_task_dtor;
     t->coro_handle = coro_handle;
     t->state = LYRIC_TASK_RUNNING;

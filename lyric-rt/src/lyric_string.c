@@ -25,6 +25,7 @@ static LyricString* string_alloc(int64_t len) {
      * lyric_string_to_cstring cheap and debugger-friendly. */
     LyricString* s = (LyricString*)lyric_alloc(sizeof(LyricString) + (uint64_t)len + 1);
     atomic_store_explicit(&s->rc, 1, memory_order_relaxed);
+    atomic_store_explicit(&s->weak, 1, memory_order_relaxed);
     s->dtor = lyric_string_dtor;
     s->len = len;
     s->cap = len + 1;

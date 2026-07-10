@@ -744,13 +744,34 @@ func unionAllocSize(ui: in NUnionInfo): Int {
   structSize(unionBodyFields(ui.payloadWords))
 }
 
-/// ARC-managed values are pointers to named structs (LyricString,
-/// records, unions).  Raw c-strings (`i8*`) and `NativePtr[T]` are not.
+/// A `NativeWeak[T]` value — a pointer to the synthesised empty `__weak<…>`
+/// struct.  Weak values are ARC-tracked like strong refs (registered as
+/// temps, released at scope end, released as record/union fields), but the
+/// retain/release they emit is the weak-count variant (`lyric_weak_retain` /
+/// `lyric_weak_release`), so the object header outlives the last strong ref
+/// while any weak reference is held (issue #5504).
+func isWeakNType(t: in NType): Bool {
+  match t {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(name, _) -> Str.startsWith(name, "__weak<")
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+/// ARC-managed values are pointers to named structs (LyricString, records,
+/// unions, and `NativeWeak[T]`).  Raw c-strings (`i8*`) and `NativePtr[T]`
+/// are not.  Weak values ARE refs (so the ownership machinery counts them);
+/// `emitRetain` / `emitRelease` dispatch to the weak-count runtime helpers
+/// for them.
 func isRefNType(t: in NType): Bool {
   match t {
     case NPtr(pointee) -> {
       match pointee {
-        case NStruct(name, _) -> not Str.startsWith(name, "__weak<")
+        case NStruct(name, _) -> true
         case _ -> false
       }
     }
@@ -777,12 +798,14 @@ func asI8Ptr(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NValue {
 
 func emitRetain(ctx: in Ctx, insns: in List[NInsn], v: in NVal): Unit {
   val p = asI8Ptr(ctx, insns, v)
-  insns.add(NCallVoid(fn = NGlobal(name = "lyric_retain"), args = arg1(NPtr(pointee = NI8), p)))
+  val fn = if isWeakNType(v.ty) { "lyric_weak_retain" } else { "lyric_retain" }
+  insns.add(NCallVoid(fn = NGlobal(name = fn), args = arg1(NPtr(pointee = NI8), p)))
 }
 
 func emitRelease(ctx: in Ctx, insns: in List[NInsn], v: in NVal): Unit {
   val p = asI8Ptr(ctx, insns, v)
-  insns.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(NPtr(pointee = NI8), p)))
+  val fn = if isWeakNType(v.ty) { "lyric_weak_release" } else { "lyric_release" }
+  insns.add(NCallVoid(fn = NGlobal(name = fn), args = arg1(NPtr(pointee = NI8), p)))
 }
 
 // ── Ownership bookkeeping ────────────────────────────────────────────────────
@@ -2635,8 +2658,15 @@ func lowerConstructCall(
       val wty = weakNType(ctx, target.ty)
       val dest = freshTmp(ctx)
       insns.add(NBitcast(dest = dest, fromTy = target.ty, value = target.value, toTy = wty))
-      // Non-owning: no retain, never registered as an owned temp.
-      return NVal(ty = wty, value = NLocal(name = dest))
+      // A weak reference owns one weak count on the target: bump it now
+      // (lyric_weak_retain, via the weak-dispatching emitRetain) and register
+      // the weak value as an owned temp so the ownership machinery drops that
+      // count (lyric_weak_release) at scope end — keeping the object header
+      // alive for as long as any NativeWeak is held (#5504).
+      val weakVal = NVal(ty = wty, value = NLocal(name = dest))
+      emitRetain(ctx, insns, weakVal)
+      registerTemp(ctx, weakVal)
+      return weakVal
     }
     match mapGet(ctx.recordDefs, name) {
       case Some(ri) -> {
@@ -3742,8 +3772,11 @@ func externAdaptArg(ctx: in Ctx, insns: in List[NInsn], declTyExpr: in TypeExpr,
   coerceTo(ctx, insns, v, declTy)
 }
 
-/// `NativeWeak[T]`: a non-owning pointer sharing T's representation
-/// behind a marker struct name (excluded from ARC by `isRefNType`).
+/// `NativeWeak[T]`: shares T's representation behind a marker struct name.
+/// It does not keep the target's payload alive, but it IS weak-counted —
+/// `isRefNType` returns true for the marker so the value is retained/released
+/// through the ordinary ARC machinery, dispatched to `lyric_weak_retain` /
+/// `lyric_weak_release` by `emitRetain` / `emitRelease` (#5504).
 func listHeaderFields(): List[NType] {
   // ─── Collections (N5.8) ──────────────────────────────────────────────────────
   // `List[T]` / `Map[K, V]` lower to the lyric-rt C kernels
@@ -4232,7 +4265,22 @@ func collectionAsI8(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NValue {
   NLocal(name = dest)
 }
 
+// The element/value/result "is a ref" flag handed to the strong-only C
+// container/task kernels (lyric_list_new / lyric_map_new / lyric_task_complete).
+// A `NativeWeak[T]` value IS an ARC ref (isRefNType), but the codegen-emitted
+// retain/release sites are the ONLY place that routes it to the weak-count
+// helpers — the C kernels behind this flag always call the strong
+// lyric_retain/lyric_release.  Flagging a weak element/value/result as a strong
+// ref would strong-retain it (a leak / reintroduced cycle) or strong-release a
+// value only ever weak-retained (a use-after-free — the very class #5504 fixed).
+// So reject a weak type here fail-closed until the kernels are weak-aware
+// (#5545); hold the NativeWeak in a local, a record field, or a var instead.
 func refFlagOf(t: in NType): NValue {
+  if isWeakNType(t) {
+    panic(
+      "Lyric.LlvmCodegen: a NativeWeak[T] cannot be a List/Map element or an async-function result yet — the native List/Map/Task runtime kernels are strong-refcount-only and would mismanage its weak count (#5545). Hold the NativeWeak in a local, a record field, or a var instead."
+    )
+  }
   if isRefNType(t) {
     return NLitInt(v = 1i64, ty = NI32)
   }
@@ -6060,9 +6108,9 @@ func synthClosureDtor(
       body.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = gArgs))
       val fieldVal = freshTmp(ctx)
       body.add(NLoad(dest = fieldVal, ty = capTys[i], ptr = NLocal(name = fieldPtr)))
-      val cast = freshTmp(ctx)
-      body.add(NBitcast(dest = cast, fromTy = capTys[i], value = NLocal(name = fieldVal), toTy = NPtr(pointee = NI8)))
-      body.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(NPtr(pointee = NI8), NLocal(name = cast))))
+      // Weak-dispatching release: a captured `NativeWeak[T]` field drops its
+      // weak count, everything else its strong count (#5504).
+      emitRelease(ctx, body, NVal(ty = capTys[i], value = NLocal(name = fieldVal)))
     }
     i = i + 1
   }
@@ -6382,9 +6430,9 @@ func synthRecordDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
       body.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = idxArgs))
       val fieldVal = freshTmp(ctx)
       body.add(NLoad(dest = fieldVal, ty = ri.fieldTys[i], ptr = NLocal(name = fieldPtr)))
-      val cast = freshTmp(ctx)
-      body.add(NBitcast(dest = cast, fromTy = ri.fieldTys[i], value = NLocal(name = fieldVal), toTy = NPtr(pointee = NI8)))
-      body.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(NPtr(pointee = NI8), NLocal(name = cast))))
+      // Weak-dispatching release: a `NativeWeak[T]` field drops its weak
+      // count, everything else its strong count (#5504).
+      emitRelease(ctx, body, NVal(ty = ri.fieldTys[i], value = NLocal(name = fieldVal)))
     }
     i = i + 1
   }
@@ -6470,16 +6518,9 @@ func synthUnionDtor(ctx: in Ctx, ui: in NUnionInfo): NFunc {
           body.add(NGEP(dest = fieldPtr, ty = caseTy, ptr = NLocal(name = casePtr), indices = fArgs))
           val fieldVal = freshTmp(ctx)
           body.add(NLoad(dest = fieldVal, ty = ui.cases[ci2].fieldTys[fi], ptr = NLocal(name = fieldPtr)))
-          val cast = freshTmp(ctx)
-          body.add(
-            NBitcast(
-              dest = cast,
-              fromTy = ui.cases[ci2].fieldTys[fi],
-              value = NLocal(name = fieldVal),
-              toTy = NPtr(pointee = NI8)
-            )
-          )
-          body.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(NPtr(pointee = NI8), NLocal(name = cast))))
+          // Weak-dispatching release: a `NativeWeak[T]` case field drops its
+          // weak count, everything else its strong count (#5504).
+          emitRelease(ctx, body, NVal(ty = ui.cases[ci2].fieldTys[fi], value = NLocal(name = fieldVal)))
         }
         fi = fi + 1
       }
@@ -6546,6 +6587,11 @@ func emitHeapAlloc(ctx: in Ctx, insns: in List[NInsn], objTy: in NType, size: in
     )
     insns.add(NStore(ty = NPtr(pointee = NI8), value = NLocal(name = cast), ptr = NLocal(name = dtorPtr)))
   }
+  // Seed the weak count to 1 (the implicit weak held while strong refs live).
+  // The weak field sits in the header's alignment padding, which this LLVM
+  // struct type does not name, so it is set through a C helper rather than a
+  // GEP + store (#5504).
+  insns.add(NCallVoid(fn = NGlobal(name = "lyric_weak_init"), args = arg1(NPtr(pointee = NI8), NLocal(name = raw))))
   obj
 }
 
@@ -8314,6 +8360,9 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_string_to_cstring", NPtr(pointee = NI8), sTy))
   decls.add(mkDecl1("lyric_cstring_free", NVoid, NPtr(pointee = NI8)))
   decls.add(mkDecl1("lyric_weak_upgrade", NPtr(pointee = NI8), NPtr(pointee = NI8)))
+  decls.add(mkDecl1("lyric_weak_retain", NVoid, NPtr(pointee = NI8)))
+  decls.add(mkDecl1("lyric_weak_release", NVoid, NPtr(pointee = NI8)))
+  decls.add(mkDecl1("lyric_weak_init", NVoid, NPtr(pointee = NI8)))
   val p8 = NPtr(pointee = NI8)
   decls.add(mkDecl1("lyric_list_new", p8, NI32))
   decls.add(mkDecl2("lyric_list_push", NVoid, p8, NI64))
@@ -9368,9 +9417,9 @@ func synthProtectedDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
       body.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = idxArgs))
       val fieldVal = freshTmp(ctx)
       body.add(NLoad(dest = fieldVal, ty = ri.fieldTys[i], ptr = NLocal(name = fieldPtr)))
-      val cast = freshTmp(ctx)
-      body.add(NBitcast(dest = cast, fromTy = ri.fieldTys[i], value = NLocal(name = fieldVal), toTy = NPtr(pointee = NI8)))
-      body.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(NPtr(pointee = NI8), NLocal(name = cast))))
+      // Weak-dispatching release: a `NativeWeak[T]` field drops its weak
+      // count, everything else its strong count (#5504).
+      emitRelease(ctx, body, NVal(ty = ri.fieldTys[i], value = NLocal(name = fieldVal)))
     }
     i = i + 1
   }

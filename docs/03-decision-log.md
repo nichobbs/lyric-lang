@@ -14098,6 +14098,8 @@ change; tracked alongside #4424. The native runtime weak-reference use-after-fre
 (D-progress-638) also remains open — now tracked as issue #5504 (a structural
 `LyricObjectHeader`-lacks-a-weak-count claim, distinct from the release-timing
 question in #4777), so it is a linked ticket rather than decision-log prose only.
+(**Update 2026-07-10:** #5504 is **resolved** by D-progress-644 / #5539 — the
+two-count header fix.)
 
 ---
 
@@ -14205,6 +14207,49 @@ by proxy: `NativeSender.send`'s guard is `Mail.validateNoInjection`, which is no
 `pub` and directly tested (D-progress-642); constructing a `NativeSender` needs a
 live-SMTP-shaped `SmtpClient`, so an end-to-end direct test is not worth the
 fragility.
+
+---
+
+## D-progress-644 — native NativeWeak use-after-free fixed with a two-count LyricObjectHeader (#5504)
+
+`NativeWeak[T].upgrade()` was a use-after-free (D-progress-638 → issue #5504):
+`LyricObjectHeader` carried no weak count, so `lyric_release` freed the
+allocation the instant the strong `rc` reached 0, and a later `upgrade()` read
+`rc` through a dangling/reused pointer. `NativeWeak[T]` is the native/LLVM
+backend's only ARC cycle-breaking primitive (D-N-005), so this was a live
+memory-safety hole in a shipped type.
+
+**Fix.** The standard two-count (strong + weak) header. A `_Atomic int32_t weak`
+is added to `LyricObjectHeader` (and its `LyricString`/`List`/`Map`/`Task`
+twins); it occupies the existing 4-byte alignment padding between `rc` and
+`dtor`, so `sizeof` and every generated LLVM struct field offset are unchanged
+(the earlier `native/plan/04-arc-design.md` claim that the fix "shifts field
+offsets … out of scope for a source change" was mistaken — corrected there).
+`weak` counts live weak references plus one while any strong ref exists; the
+allocation is freed only when `weak` reaches 0. `lyric_release` runs the
+destructor at strong 0 then defers `free` to the new `lyric_weak_release`;
+`lyric_weak_retain` / `lyric_weak_init` complete the count API and
+`lyric_weak_upgrade` is now safe because a held weak reference keeps the header
+alive.
+
+**Codegen.** This reverses the D-progress-549 decision to keep weak values out
+of ARC: `isRefNType` now returns `true` for a `__weak<…>` pointer, so a
+`NativeWeak` value flows through the ordinary temp/scope/dtor ownership
+machinery; `emitRetain` / `emitRelease` (and the record/union/closure
+field-release destructor sites) dispatch to the weak-count helpers for
+weak-typed values; `emitHeapAlloc` seeds `weak = 1` via `lyric_weak_init`; and
+`NativeWeak(x)` now weak-retains its target and registers the value as an owned
+temp (previously "no retain, no ownership registration").
+
+**Verification.** `lyric-rt/test/lyric_rt_test.c` gains a two-count UAF
+regression + liveness case (pass under ASan); `llvm_heap_self_test.l` gains a
+dead-target-`upgrade`-returns-`None` case and a record-with-`NativeWeak`-field
+case.
+
+**Related:** D-progress-549 (superseded on the ARC-exclusion point),
+D-progress-638/640 (the tracking note, now marked resolved above),
+`native/plan/04-arc-design.md` §NativeWeak (KNOWN UNSOUNDNESS → RESOLVED),
+D-N-005, #5504, #5539.
 
 ---
 

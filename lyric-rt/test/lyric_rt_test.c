@@ -48,12 +48,13 @@ static void test_alloc_retain_release(void) {
     /* rc lifecycle: 1 -> 2 -> 1 -> 0 (dtor fires exactly once). */
     LyricObjectHeader* h = (LyricObjectHeader*)lyric_alloc(sizeof(LyricObjectHeader));
     atomic_store(&h->rc, 1);
+    lyric_weak_init(h);   /* birth sites must seed the implicit weak count */
     h->dtor = counting_dtor;
     dtor_calls = 0;
     lyric_retain(h);
     lyric_release(h);
     CHECK(dtor_calls == 0);
-    lyric_release(h);
+    lyric_release(h);     /* rc -> 0: dtor runs, weak -> 0, allocation freed */
     CHECK(dtor_calls == 1);
 
     /* Static sentinel: neither retain nor release may touch it. */
@@ -169,6 +170,56 @@ static void test_weak(void) {
     CHECK(lyric_weak_upgrade(h) == NULL);
     CHECK(lyric_weak_upgrade(NULL) == NULL);
     free(h);
+}
+
+/* Regression for #5504: a live weak reference must keep the header
+ * allocation alive after the last strong ref is released, so upgrade()
+ * reads a valid (== 0 -> dead) rc instead of freed memory.  Before the
+ * fix the header carried no weak count and lyric_release freed the
+ * allocation the instant rc hit 0, so this upgrade read freed memory
+ * (a heap-use-after-free under ASan). */
+static void test_weak_uaf(void) {
+    LyricObjectHeader* h = (LyricObjectHeader*)lyric_alloc(sizeof(LyricObjectHeader));
+    atomic_store(&h->rc, 1);
+    lyric_weak_init(h);           /* weak = 1 (the implicit strong-side count) */
+    h->dtor = counting_dtor;
+    dtor_calls = 0;
+
+    lyric_weak_retain(h);         /* take a weak reference: weak = 2 */
+
+    /* Drop the last strong ref: the destructor runs and the implicit weak
+     * count is dropped (weak = 1), but the allocation is NOT freed because
+     * the outstanding weak reference still holds weak = 1. */
+    lyric_release(h);
+    CHECK(dtor_calls == 1);
+
+    /* The object is dead (rc == 0) but the header is still allocated, so
+     * upgrade returns NULL by reading a valid rc — not freed memory. */
+    CHECK(lyric_weak_upgrade(h) == NULL);
+
+    /* Dropping the last weak reference frees the allocation now. */
+    lyric_weak_release(h);
+    /* h is dangling past this point; do not dereference it. */
+}
+
+/* A weak reference upgrades to a strong reference while the object is
+ * alive, and the whole two-count teardown runs cleanly. */
+static void test_weak_liveness(void) {
+    LyricObjectHeader* h = (LyricObjectHeader*)lyric_alloc(sizeof(LyricObjectHeader));
+    atomic_store(&h->rc, 1);
+    lyric_weak_init(h);
+    h->dtor = counting_dtor;
+    dtor_calls = 0;
+
+    lyric_weak_retain(h);              /* weak = 2 */
+    void* up = lyric_weak_upgrade(h);  /* alive: rc 1 -> 2 */
+    CHECK(up == h);
+    CHECK(atomic_load(&h->rc) == 2);
+    lyric_release(h);                  /* rc 2 -> 1 */
+    CHECK(dtor_calls == 0);
+    lyric_release(h);                  /* rc 1 -> 0: dtor runs, weak 2 -> 1 */
+    CHECK(dtor_calls == 1);
+    lyric_weak_release(h);             /* weak 1 -> 0: freed */
 }
 
 static void test_list_scalars(void) {
@@ -1502,6 +1553,8 @@ int main(void) {
     test_free();
     test_strings();
     test_weak();
+    test_weak_uaf();
+    test_weak_liveness();
     test_list_scalars();
     test_list_refs();
     test_map_int_keys();

@@ -690,6 +690,123 @@ test "arc: NativeWeak upgrade returns Some while alive" {
   assertEqualInt(r.exitCode, 15, "weak upgrade (ASan)")
 }
 
+test "arc: NativeWeak upgrade after the last strong ref is gone returns None (was a UAF, #5504)" {
+  // makeDangling returns a weak reference to a Node whose only strong ref (the
+  // local `n`) is released when the function returns.  Before #5504 the header
+  // carried no weak count, so lyric_release freed the allocation the instant
+  // rc hit 0 and this upgrade() read freed memory — an ASan heap-use-after-free
+  // (non-zero exit).  With the weak count the header outlives the last strong
+  // ref while `w` is held, so upgrade() reads a valid rc == 0 and returns None.
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "record Node {\n" +
+    "  name: String\n" +
+    "}\n" +
+    "func makeDangling(): NativeWeak[Node] {\n" +
+    "  val n = Node(name = \"gone\")\n" +
+    "  NativeWeak(n)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val w = makeDangling()\n" +
+    "  match w.upgrade() {\n" +
+    "    case Some(_) -> 1\n" +
+    "    case None -> 0\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "dead-target upgrade returns None, no UAF (ASan)")
+}
+
+test "arc: a record holding a NativeWeak field constructs, upgrades, and frees cleanly (#5504)" {
+  // Exercises the weak-field record dtor path: Parent owns a weak count on the
+  // Node through its `child` field.  While `n` is alive the upgrade succeeds
+  // (Some), and at scope end the Parent dtor drops the weak count and the Node
+  // dtor drops the strong count — the two-count teardown must be leak- and
+  // double-free-clean under ASan.
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "record Node {\n" +
+    "  name: String\n" +
+    "}\n" +
+    "record Parent {\n" +
+    "  name: String\n" +
+    "  child: NativeWeak[Node]\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val n = Node(name = \"child\")\n" +
+    "  val p = Parent(name = \"parent\", child = NativeWeak(n))\n" +
+    "  match p.child.upgrade() {\n" +
+    "    case Some(c) -> c.name.length\n" +
+    "    case None -> 0\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 5, "weak-field record upgrades to Some while alive, leak-free (ASan)")
+}
+
+test "arc: reassigning a var NativeWeak releases the old weak and retains the new (#5504)" {
+  // Exercises the overwrite path (ARC Rule 3) for the now-counted weak value: a
+  // `var` weak is rebound to a second target, which must weak-release the first
+  // weak count and weak-retain the second. `stash` also round-trips a weak
+  // through a call (passed in by borrow and returned), exercising both call
+  // boundaries. The second target is alive, so the final upgrade is Some -> 3.
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "record Node {\n" +
+    "  name: String\n" +
+    "}\n" +
+    "func stash(w: in NativeWeak[Node]): NativeWeak[Node] {\n" +
+    "  w\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a = Node(name = \"aa\")\n" +
+    "  val b = Node(name = \"bbb\")\n" +
+    "  var w = stash(NativeWeak(a))\n" +
+    "  w = stash(NativeWeak(b))\n" +
+    "  match w.upgrade() {\n" +
+    "    case Some(n) -> n.name.length\n" +
+    "    case None -> 0\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 3, "var weak reassignment across calls upgrades to the new target, leak-free (ASan)")
+}
+
+test "arc: a NativeWeak in an async-function result is rejected at codegen (#5543)" {
+  // The C List/Map/Task kernels are strong-refcount-only, so a NativeWeak in a
+  // collection or async result would be strong-retained/released — a leak or a
+  // reintroduced UAF. `refFlagOf` rejects it fail-closed (#5545). This drives
+  // codegen directly (a rejected program never reaches clang) and asserts the
+  // Bug carries the tracking-issue reference so the guard can't silently pass.
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "record Node {\n" +
+    "  name: String\n" +
+    "}\n" +
+    "async func f(): NativeWeak[Node] {\n" +
+    "  val n = Node(name = \"x\")\n" +
+    "  NativeWeak(n)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  0\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(pr.diagnostics.count, 0, "the source itself parses")
+  var rejected = false
+  var msg = ""
+  try {
+    val pkg = codegenNativePackage(pr.file, "")
+    val _ = lowerNativePackage(pkg)
+  } catch Bug as b {
+    rejected = true
+    msg = b.message
+  }
+  assertTrue(rejected, "a NativeWeak async result must be rejected at native codegen, not silently miscompiled")
+  // The weak result slot is rejected by the strong-only slot encoder; a weak
+  // List/Map element is rejected earlier by refFlagOf (#5545). Either way the
+  // rejection names the weak marker, so the guard can't vacuously pass.
+  assertTrue(
+    Str.contains(msg, "weak") or Str.contains(msg, "Weak"),
+    "the rejection is due to the NativeWeak type (got: " + msg + ")"
+  )
+}
+
 test "arc: tuples construct, destructure, and release elements" {
   val src = "package T\n" + "func minMax(a: in Int, b: in Int): (Int, Int) {\n" + "  if a < b {\n" + "    (a, b)\n" +
     "  } else {\n" +

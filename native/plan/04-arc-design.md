@@ -290,19 +290,28 @@ Phase 2 will add:
 
 ## Weak references: `NativeWeak[T]`
 
-`NativeWeak[T]` is a non-owning pointer. It stores the raw pointer without
-incrementing RC. The object it points to may be freed while the weak reference
-is held — this is expected behaviour.
+`NativeWeak[T]` is a non-owning pointer: it does not keep the object's *payload*
+alive, but it *does* keep the header *allocation* alive so `upgrade()` can read a
+valid `rc`. `LyricObjectHeader` carries a second count (`weak`) tracking the
+number of live weak references plus one while any strong reference exists; the
+allocation is freed only when `weak` reaches zero. So after the last strong
+release the destructor runs and the payload is dead, but the header survives
+until the last weak reference is dropped — `upgrade()` then observes `rc == 0`
+and returns `None` rather than reading freed memory.
 
-> **KNOWN UNSOUNDNESS (issue #5504).** The `upgrade()` design below is
-> **not yet memory-safe**: `LyricObjectHeader` carries no weak count, so once
-> an object's strong RC reaches 0 the allocation is freed and may be reused,
-> and a subsequent `upgrade()` reads `rc` through a dangling/reused pointer
-> (a use-after-free) rather than observing a zeroed count. The correct fix
-> needs a header-layout change (a separate weak count that keeps the header
-> alive after the last strong release), which shifts the field offsets baked
-> into every generated LLVM struct type — out of scope for a source change.
-> Do not rely on `NativeWeak[T].upgrade()` for safety until #5504 is closed.
+> **RESOLVED (issue #5504).** Earlier revisions of this design left `upgrade()`
+> memory-unsafe: `LyricObjectHeader` had no weak count, so the allocation was
+> freed the instant the strong `rc` reached 0 and a later `upgrade()` read `rc`
+> through a dangling/reused pointer (a use-after-free). The fix adds the
+> `weak` count to the header — it occupies the existing 4-byte alignment
+> padding between `rc` and `dtor`, so `sizeof` and every generated LLVM struct
+> field offset are unchanged (the doc's earlier "shifts field offsets … out of
+> scope" note was mistaken). `lyric_release` now defers `free` to
+> `lyric_weak_release` (the last weak drop), and codegen seeds `weak = 1` at
+> object birth (`lyric_weak_init`) and counts `NativeWeak` values through the
+> ordinary ARC machinery via `lyric_weak_retain` / `lyric_weak_release`.
+> Verified by the two-count regression tests in `lyric-rt/test/lyric_rt_test.c`
+> (under ASan) and the `NativeWeak` cases in `llvm_heap_self_test.l`.
 
 ### `upgrade()` implementation
 
