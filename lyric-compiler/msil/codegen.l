@@ -12203,7 +12203,28 @@ func lowerMethodCallMsil(
     // carry the method segment itself, unlike a plain type path (#4896).
     val samePkgFqn = fctx.pkgName + "." + callFqn
     if cctx.funcTokens.containsKey(samePkgFqn + "/" + toString(args.count)) or cctx.funcTokens.containsKey(samePkgFqn) {
-      val samePkgPath = ModulePath(segments = split(samePkgFqn, "."), span = recv.span)
+      // NOT a plain `ModulePath(segments = split(samePkgFqn, "."), ...)` (#4897
+      // tried that simplification and it silently miscompiled): `split` (see
+      // `Std.String.split`) returns `parts.toArray()` — a real CLR array at
+      // the MSIL level — while `ModulePath.segments` is a `List[String]`.
+      // The type checker's `argSatisfiesParam` treats `slice[T]` as
+      // satisfying a `List[T]` parameter (they're erasure-compatible for
+      // *generic* T), but this is a concrete, non-generic `slice[String]`
+      // assignment, and codegen does not insert an array->List conversion —
+      // constructing `ModulePath` directly from the array crashes at
+      // runtime with `InvalidCastException: String[] -> List<String>` (hit
+      // by `Msil.Codegen.hasQualifiedFuncOverrideMsil`, which reads
+      // `path.segments` as a real `List<String>`). This explicit copy loop
+      // is a required slice[String] -> List[String] conversion — do not
+      // remove it.
+      val samePkgSegs = split(samePkgFqn, ".")
+      val samePkgPathSegs: List[String] = newList()
+      var spi = 0
+      while spi < samePkgSegs.length {
+        samePkgPathSegs.add(samePkgSegs[spi])
+        spi = spi + 1
+      }
+      val samePkgPath = ModulePath(segments = samePkgPathSegs, span = recv.span)
       return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, samePkgPath, args)
     }
     // Type-associated function call through an imported type (D037):
