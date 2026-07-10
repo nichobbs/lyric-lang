@@ -1489,14 +1489,19 @@ func lowerAutoFfiInstanceCall(
 // `new` for an abstract class would otherwise produce bytecode that throws
 // `InstantiationError` at runtime instead of a clear diagnostic (#2215).
 func lowerAutoFfiConstructorCall(
-  ctx: in FuncCtx, insns: in List[LInsn], ci: in ClassInfo, args: in List[CallArg], callSpan: in Span
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  ci: in ClassInfo,
+  args: in List[CallArg],
+  callSpan: in Span,
 ): JvmType {
   if ci.isAbstract {
     val fqn = ci.binaryName.replace("/", ".")
     val pos = callSpan.startPos
     panic(
       "error[J005]: " + pos.line.toString() + ":" + pos.column.toString() +
-        ": JVM auto-FFI: cannot construct abstract class '" + fqn +
+        ": JVM auto-FFI: cannot construct abstract class '" +
+        fqn +
         "' — declare a concrete subclass and instantiate that instead"
     )
   }

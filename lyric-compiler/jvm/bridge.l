@@ -926,9 +926,7 @@ func isDeriveFreeName(name: in String): Bool {
 // to patch the registry built from the pre-derive `userFile` (#3139).
 // Only processes new keys (first-wins guard, same as `collectFileSigs`).
 func collectDeriveFreeSigs(
-  file: in SourceFile,
-  into: in Map[String, JvmFuncSig],
-  externSeed: in Map[String, String],
+  file: in SourceFile, into: in Map[String, JvmFuncSig], externSeed: in Map[String, String]
 ): Unit {
   val owner = pkgJvmOwner(file.packageDecl.path)
   val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)

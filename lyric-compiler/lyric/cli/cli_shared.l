@@ -133,21 +133,30 @@ func printDiag(d: in Diagnostic): Unit {
 // `cmdRestore`'s registry/[nuget] restore.
 // ─────────────────────────────────────────────────────────────────────────────
 pub val nu1102MaxAttempts = 8
+
 pub val nu1102EscalationAttempts = 4
+
 pub val nu1102BaseBackoffMs = 30000
+
 pub val nu1102PlateauBackoffMs = nu1102EscalationAttempts * nu1102BaseBackoffMs
 
 // Backoff duration (ms) before retrying the given (1-based) attempt number:
 // ramps by `nu1102BaseBackoffMs` per attempt through `nu1102EscalationAttempts`,
 // then holds flat at `nu1102PlateauBackoffMs`.
 pub func backoffMsForAttempt(attempt: in Int): Int {
-  if attempt <= nu1102EscalationAttempts { attempt * nu1102BaseBackoffMs } else { nu1102PlateauBackoffMs }
+  if attempt <= nu1102EscalationAttempts {
+    attempt * nu1102BaseBackoffMs
+  } else {
+    nu1102PlateauBackoffMs
+  }
 }
 
 // Pure retry decision for a completed `dotnet restore` attempt: retry only
 // on NU1102 (NuGet indexing lag) failures, never on a timeout, never on
 // success, and never once `nu1102MaxAttempts` has been reached.
-pub func shouldRetryRestore(exitCode: in Int, stdout: in String, stderr: in String, attempt: in Int, timedOut: in Bool): Bool {
+pub func shouldRetryRestore(
+  exitCode: in Int, stdout: in String, stderr: in String, attempt: in Int, timedOut: in Bool
+): Bool {
   if timedOut or exitCode == 0 or attempt >= nu1102MaxAttempts {
     false
   } else {
