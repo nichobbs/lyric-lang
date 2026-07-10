@@ -4265,7 +4265,22 @@ func collectionAsI8(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NValue {
   NLocal(name = dest)
 }
 
+// The element/value/result "is a ref" flag handed to the strong-only C
+// container/task kernels (lyric_list_new / lyric_map_new / lyric_task_complete).
+// A `NativeWeak[T]` value IS an ARC ref (isRefNType), but the codegen-emitted
+// retain/release sites are the ONLY place that routes it to the weak-count
+// helpers — the C kernels behind this flag always call the strong
+// lyric_retain/lyric_release.  Flagging a weak element/value/result as a strong
+// ref would strong-retain it (a leak / reintroduced cycle) or strong-release a
+// value only ever weak-retained (a use-after-free — the very class #5504 fixed).
+// So reject a weak type here fail-closed until the kernels are weak-aware
+// (#5545); hold the NativeWeak in a local, a record field, or a var instead.
 func refFlagOf(t: in NType): NValue {
+  if isWeakNType(t) {
+    panic(
+      "Lyric.LlvmCodegen: a NativeWeak[T] cannot be a List/Map element or an async-function result yet — the native List/Map/Task runtime kernels are strong-refcount-only and would mismanage its weak count (#5545). Hold the NativeWeak in a local, a record field, or a var instead."
+    )
+  }
   if isRefNType(t) {
     return NLitInt(v = 1i64, ty = NI32)
   }
