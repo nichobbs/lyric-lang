@@ -88,6 +88,21 @@ pub func compileToMsilWithVersion(
     return false
   }
 
+  // `@cfg` erasure with an empty active set (plus the `target.dotnet`
+  // pseudo-feature, D-N-013) — the same semantics a manifest build with
+  // no `--features` applies via `compileProjectToMsilWithFeatures`.
+  // Without this, `@cfg(feature = "X")`-gated items compiled
+  // unconditionally on the single-file path while manifest builds erased
+  // them — same source, divergent semantics (docs/59 §5.4).  The
+  // declared set stays empty so the F0013 typo guard is off, matching a
+  // manifest with no `[features]` table.
+  val noCfgFeatures: List[String] = newList()
+  val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(noCfgFeatures, "dotnet"), noCfgFeatures, parseResult.file)
+  if reportAndAbort(cfgRes.diagnostics) {
+    return false
+  }
+  val cfgFile = cfgRes.file
+
   // ── Middle-end (Band 1 + Band 6 of docs/41 §9) ─────────────────────────
   // Run the self-hosted type checker with stdlib imports, mode checker, and
   // contract elaborator before codegen so that source-level diagnostics surface
@@ -130,12 +145,12 @@ pub func compileToMsilWithVersion(
   val weWires: Map[String, CollectedWireTemplate] = newMap()
   val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
   WireExpand.collectWireTemplates(
-    parseResult.file.items,
-    segmentsToString(parseResult.file.packageDecl.path.segments),
+    cfgFile.items,
+    segmentsToString(cfgFile.packageDecl.path.segments),
     weWires,
     weConfigs
   )
-  val weRes = WireExpand.expandFile(parseResult.file, weWires, weConfigs)
+  val weRes = WireExpand.expandFile(cfgFile, weWires, weConfigs)
   if reportAndAbort(weRes.diagnostics) {
     return false
   }
@@ -229,6 +244,17 @@ pub func compileToMsilWithVersion(
   // applied during `lyric build`, not just `lyric prove` (#1327).  Abort
   // on any weave-time error (A0042 / A0043 / A0044) so the user sees the
   // weaver-targeted message rather than a downstream codegen error.
+  //
+  // Unlike the JVM bridges, no pre-typecheck `Weaver.injectWeaveImports`
+  // call is needed on the MSIL paths (docs/59 §5.4 flagged the asymmetry):
+  // the JVM bundler walks `file.imports` to decide which stdlib packages'
+  // bytecode lands in the JAR, so `call.elapsed`'s synthesised
+  // `Std.Time.monotonicNanos` calls need the import present before that
+  // closure walk — whereas `registerStdlibArtifactTokens` above seeds
+  // MemberRef rows for EVERY stdlib `pub func` import-independently, and
+  // `weaveFileWithDiags` itself ensures the import on its output for any
+  // later consumer.  Verified at runtime on both targets with a
+  // `call.elapsed` aspect in a file with no `import Std.Time`.
   val weaveRes = Weaver.weaveFileWithDiags(file)
   if reportAndAbort(weaveRes.diagnostics) {
     return false
