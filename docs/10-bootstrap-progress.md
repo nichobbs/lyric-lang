@@ -26484,9 +26484,16 @@ verified leak-free.
 plan's non-owning cycle-breaking reference (D-N-005):
 
 - **Representation** — the target pointer itself behind a marker
-  struct name (`__weak<T.Node*>`, excluded from ARC by `isRefNType`);
-  a registry maps the marker back to the target type.  `NativeWeak(x)`
-  constructs with no retain and no ownership registration.
+  struct name (`__weak<T.Node*>`); a registry maps the marker back to
+  the target type.
+  (**Superseded 2026-07-10 by D-progress-644 / #5504:** this entry
+  originally shipped `NativeWeak` as *non-owning* — excluded from ARC by
+  `isRefNType`, constructed "with no retain and no ownership
+  registration". That was a use-after-free: `upgrade()` read `rc` through
+  a freed allocation. `isRefNType` now returns `true` for weak pointers,
+  `NativeWeak(x)` weak-retains its target and registers an owned temp, and
+  `LyricObjectHeader` carries a weak count so the header outlives the last
+  strong ref. See D-progress-644.)
 - **`upgrade()`** — calls lyric-rt's CAS loop
   (`lyric_weak_upgrade`, shipped in N0): a successful upgrade's +1
   transfers to an owned temp that the `Some(value)` construction

@@ -742,6 +742,33 @@ test "arc: a record holding a NativeWeak field constructs, upgrades, and frees c
   assertEqualInt(r.exitCode, 5, "weak-field record upgrades to Some while alive, leak-free (ASan)")
 }
 
+test "arc: reassigning a var NativeWeak releases the old weak and retains the new (#5504)" {
+  // Exercises the overwrite path (ARC Rule 3) for the now-counted weak value: a
+  // `var` weak is rebound to a second target, which must weak-release the first
+  // weak count and weak-retain the second. `stash` also round-trips a weak
+  // through a call (passed in by borrow and returned), exercising both call
+  // boundaries. The second target is alive, so the final upgrade is Some -> 3.
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "record Node {\n" +
+    "  name: String\n" +
+    "}\n" +
+    "func stash(w: in NativeWeak[Node]): NativeWeak[Node] {\n" +
+    "  w\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a = Node(name = \"aa\")\n" +
+    "  val b = Node(name = \"bbb\")\n" +
+    "  var w = stash(NativeWeak(a))\n" +
+    "  w = stash(NativeWeak(b))\n" +
+    "  match w.upgrade() {\n" +
+    "    case Some(n) -> n.name.length\n" +
+    "    case None -> 0\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 3, "var weak reassignment across calls upgrades to the new target, leak-free (ASan)")
+}
+
 test "arc: tuples construct, destructure, and release elements" {
   val src = "package T\n" + "func minMax(a: in Int, b: in Int): (Int, Int) {\n" + "  if a < b {\n" + "    (a, b)\n" +
     "  } else {\n" +

@@ -3772,8 +3772,11 @@ func externAdaptArg(ctx: in Ctx, insns: in List[NInsn], declTyExpr: in TypeExpr,
   coerceTo(ctx, insns, v, declTy)
 }
 
-/// `NativeWeak[T]`: a non-owning pointer sharing T's representation
-/// behind a marker struct name (excluded from ARC by `isRefNType`).
+/// `NativeWeak[T]`: shares T's representation behind a marker struct name.
+/// It does not keep the target's payload alive, but it IS weak-counted —
+/// `isRefNType` returns true for the marker so the value is retained/released
+/// through the ordinary ARC machinery, dispatched to `lyric_weak_retain` /
+/// `lyric_weak_release` by `emitRetain` / `emitRelease` (#5504).
 func listHeaderFields(): List[NType] {
   // ─── Collections (N5.8) ──────────────────────────────────────────────────────
   // `List[T]` / `Map[K, V]` lower to the lyric-rt C kernels
