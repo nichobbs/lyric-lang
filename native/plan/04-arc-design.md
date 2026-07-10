@@ -294,6 +294,16 @@ Phase 2 will add:
 incrementing RC. The object it points to may be freed while the weak reference
 is held — this is expected behaviour.
 
+> **KNOWN UNSOUNDNESS (issue #5504).** The `upgrade()` design below is
+> **not yet memory-safe**: `LyricObjectHeader` carries no weak count, so once
+> an object's strong RC reaches 0 the allocation is freed and may be reused,
+> and a subsequent `upgrade()` reads `rc` through a dangling/reused pointer
+> (a use-after-free) rather than observing a zeroed count. The correct fix
+> needs a header-layout change (a separate weak count that keeps the header
+> alive after the last strong release), which shifts the field offsets baked
+> into every generated LLVM struct type — out of scope for a source change.
+> Do not rely on `NativeWeak[T].upgrade()` for safety until #5504 is closed.
+
 ### `upgrade()` implementation
 
 ```lyric

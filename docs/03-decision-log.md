@@ -13927,7 +13927,9 @@ a **function-name collision**, not a deep codegen defect, and fixed in source.
 avoids by compiling those tests fully from source). It is unrelated to the
 `fromInt` collision and needs a generic-instantiation codegen fix, not a source
 change; tracked alongside #4424. The native runtime weak-reference use-after-free
-(D-progress-638) also remains open.
+(D-progress-638) also remains open — now tracked as issue #5504 (a structural
+`LyricObjectHeader`-lacks-a-weak-count claim, distinct from the release-timing
+question in #4777), so it is a linked ticket rather than decision-log prose only.
 
 ---
 
