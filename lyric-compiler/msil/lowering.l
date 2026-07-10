@@ -3280,7 +3280,15 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
       emitRet(mbFrom)
     }
   }
-  addSynthMethodDef(ctx, d.className, mbFrom, "from", bFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG, singleParam.count)
+  addSynthMethodDef(
+    ctx,
+    d.className,
+    mbFrom,
+    "from",
+    bFromSig,
+    MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
+    singleParam.count
+  )
 
   // ── Method 2: static tryFrom(x): Result[Self, String] (Result imported only) ──
   if hasTryFrom {
@@ -3341,7 +3349,15 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
         emitRet(mbTry)
       }
     }
-    addSynthMethodDef(ctx, d.className, mbTry, "tryFrom", bTryFromSig, MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG, singleParam.count)
+    addSynthMethodDef(
+      ctx,
+      d.className,
+      mbTry,
+      "tryFrom",
+      bTryFromSig,
+      MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
+      singleParam.count
+    )
   }
 
   // ── Method 3: instance toX(): Underlying ──
