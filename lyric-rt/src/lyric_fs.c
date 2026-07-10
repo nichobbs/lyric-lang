@@ -338,22 +338,46 @@ int32_t lyric_env_cwd_ok(LyricString** out) {
 
 static int          g_lyric_argc = 0;
 static char**       g_lyric_argv = NULL;
+static LyricList*   g_lyric_args_cached = NULL;
 
+/* In production argv is captured once at process startup and never
+ * mutated afterward, so the lyric_args_get cache below never needs
+ * invalidating. Unit tests call lyric_args_set more than once per
+ * process, though, so drop the cache's own ref here to keep it
+ * honest — any refs already handed out by lyric_args_get stay alive
+ * on their own until their holders release them. */
 void lyric_args_set(int32_t argc, char** argv) {
     g_lyric_argc = argc;
     g_lyric_argv = argv;
+    if (g_lyric_args_cached) {
+        lyric_release(g_lyric_args_cached);
+        g_lyric_args_cached = NULL;
+    }
 }
 
-/* Fresh rc=1 list of the argv strings captured by lyric_args_set
+/* Retained-ref list of the argv strings captured by lyric_args_set
  * (including argv[0], matching the managed GetCommandLineArgs
- * convention).  An empty list when main never called lyric_args_set. */
+ * convention).  An empty list when main never called lyric_args_set.
+ *
+ * Built once and cached for the process lifetime: `args()` returns
+ * `slice[T]`, whose language-level API is non-mutating (§5.2, no
+ * in-place mutation), and argv itself never changes after
+ * lyric_args_set — so every call can safely hand out an extra ref to
+ * the same underlying LyricList instead of rebuilding it.  The cache
+ * holds one permanent ref (never released); each call retains and
+ * returns it, so the caller's eventual lyric_release just drops back
+ * to the cache's own ref. */
 LyricList* lyric_args_get(void) {
-    LyricList* list = lyric_list_new(1);
-    for (int i = 0; i < g_lyric_argc; i++) {
-        LyricString* s = lyric_string_from_literal(
-            (const uint8_t*)g_lyric_argv[i], (int64_t)strlen(g_lyric_argv[i]));
-        lyric_list_push(list, (int64_t)(intptr_t)s);
-        lyric_release(s);
+    if (!g_lyric_args_cached) {
+        LyricList* list = lyric_list_new(1);
+        for (int i = 0; i < g_lyric_argc; i++) {
+            LyricString* s = lyric_string_from_literal(
+                (const uint8_t*)g_lyric_argv[i], (int64_t)strlen(g_lyric_argv[i]));
+            lyric_list_push(list, (int64_t)(intptr_t)s);
+            lyric_release(s);
+        }
+        g_lyric_args_cached = list;
     }
-    return list;
+    lyric_retain(g_lyric_args_cached);
+    return g_lyric_args_cached;
 }
