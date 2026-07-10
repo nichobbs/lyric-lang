@@ -375,18 +375,30 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                               vsig.ret
                             }
                             case None -> {
-                              // A genuinely unresolvable reference previously
-                              // lowered to `aconst_null` — a silent wrong value
-                              // in every downstream use (docs/59 §4.4).  Fail
-                              // loud at compile time instead (the m-23
-                              // precedent for the store side).
-                              val pos = path.span.startPos
-                              panic(
-                                "Jvm.Codegen: " + toString(pos.line) + ":" + toString(pos.column) + ": reference '" + name +
-                                  "' resolves to no local, parameter, receiver field, wire binding, union case, or module-level val. " +
-                                  "If this names an imported package's `pub val` with a non-literal initialiser and no type annotation, " +
-                                  "add an explicit type annotation to that val so its cross-package field type is known."
-                              )
+                              // A bare reference to a declared enum's case
+                              // (`log(Debug, …)`) is the variant's singleton
+                              // field — mirrors the MSIL `EPath` ordinal
+                              // resolution (docs/59 §4.4).
+                              match enumCaseClassBare(ctx, name) {
+                                case Some(ecls) -> {
+                                  insns.add(LGetstatic(owner = ecls, name = name, t = JRef(className = ecls)))
+                                  JRef(className = ecls)
+                                }
+                                case None -> {
+                                  // A genuinely unresolvable reference previously
+                                  // lowered to `aconst_null` — a silent wrong value
+                                  // in every downstream use (docs/59 §4.4).  Fail
+                                  // loud at compile time instead (the m-23
+                                  // precedent for the store side).
+                                  val pos = path.span.startPos
+                                  panic(
+                                    "Jvm.Codegen: " + toString(pos.line) + ":" + toString(pos.column) + ": reference '" + name +
+                                      "' resolves to no local, parameter, receiver field, wire binding, union case, or module-level val. " +
+                                      "If this names an imported package's `pub val` with a non-literal initialiser and no type annotation, " +
+                                      "add an explicit type annotation to that val so its cross-package field type is known."
+                                  )
+                                }
+                              }
                             }
                           }
                         }
@@ -853,6 +865,19 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           match lookupSlot(ctx, rn) {
             case Some(_) -> ()
             case None -> {
+              // Enum-case value read (`Direction.North`, docs/59 §4.4): when
+              // the receiver names a declared enum carrying this variant, the
+              // value is the variant's `public static final` singleton field
+              // on the enum class (`lowerEnum`).  Before this, the receiver
+              // fell through to value-lowering of the bare type name, which
+              // resolves to nothing.
+              match enumVariantClass(ctx, rn, memberName) {
+                case Some(ecls) -> {
+                  insns.add(LGetstatic(owner = ecls, name = memberName, t = JRef(className = ecls)))
+                  return JRef(className = ecls)
+                }
+                case None -> ()
+              }
               match mapGet(ctx.externTypes, rn) {
                 case Some(fqnDot) -> {
                   match loadClass(ctx.autoFfi, fqnDot) {

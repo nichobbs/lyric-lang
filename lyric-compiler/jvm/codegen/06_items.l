@@ -2765,6 +2765,44 @@ pub func collectFileSigsSeeded(
           case _ -> ()
         }
       }
+      case IEnum(decl) -> {
+        // Enum-case value/pattern resolution (docs/59 §4.4): register each
+        // variant under the type-scoped `enum:<Enum>.<Case>` key and the bare
+        // `enumcase:<Case>` key (plus its `<owner>/`-qualified form so the
+        // bridge's import-aware overlay re-points the bare key per file), sig
+        // owner = the declaring enum's JVM class.  Mirrors the MSIL
+        // `registerEnumDeclMsil` ordinal registry; on the JVM a variant is the
+        // `public static final` singleton field `lowerEnum` emits, read via
+        // `getstatic` and pattern-tested by reference identity.
+        val enumCls = owner + "/" + decl.name
+        var eci = 0
+        while eci < decl.cases.count {
+          val ecn = decl.cases[eci].name
+          val esig = JvmFuncSig(
+            owner = enumCls,
+            params = newList(),
+            ret = JRef(className = enumCls),
+            paramNames = newList(),
+            paramDefaults = newList(),
+            paramModes = newList(),
+            isIface = false,
+            retGenericArgs = newList()
+          )
+          val etkey = "enum:" + decl.name + "." + ecn
+          if not into.containsKey(etkey) {
+            into.add(etkey, esig)
+          }
+          val ebkey = "enumcase:" + ecn
+          if not into.containsKey(ebkey) {
+            into.add(ebkey, esig)
+          }
+          val eqkey = owner + "/enumcase:" + ecn
+          if not into.containsKey(eqkey) {
+            into.add(eqkey, esig)
+          }
+          eci = eci + 1
+        }
+      }
       case _ -> {
       }
     }

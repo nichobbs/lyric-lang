@@ -283,6 +283,28 @@ func jvmSimpleName(cls: in String): String {
   }
 }
 
+// Resolve the enum class to test a `case <Name> ->` pattern against, given the
+// scrutinee's static JVM type (docs/59 §4.4): a scrutinee whose class SIMPLE
+// name is a registered enum carrying variant `<Name>` resolves type-scoped —
+// the registered sig's owner is authoritative even when the static class is an
+// imported enum's in-package guess — while an erased `Object` scrutinee falls
+// back to the bare variant key (mirrors MSIL's unbox-then-ordinal-compare on a
+// boxed scrutinee).  A scrutinee of any OTHER known class (String, a record)
+// is never an enum test, so a variable binding that happens to share a name
+// with some enum's case keeps binding.
+func enumPatternClass(ctx: in FuncCtx, scrutTy: in JvmType, caseName: in String): Option[String] {
+  match scrutTy {
+    case JRef(cls) -> {
+      if cls == "java/lang/Object" {
+        enumCaseClassBare(ctx, caseName)
+      } else {
+        enumVariantClass(ctx, jvmSimpleName(cls), caseName)
+      }
+    }
+    case _ -> None
+  }
+}
+
 func resolveCaseClassJvm(ctx: in FuncCtx, head: in ModulePath, scrutTy: in JvmType): String {
   val caseName = lastSegment(head)
   match scrutTy {
@@ -488,7 +510,21 @@ func lowerPatternTest(
                 insns.add(LIfeq(label = failLabel))
               }
             }
-            case None -> ()
+            case None -> {
+              // `case Debug ->` over an enum scrutinee also parses as a
+              // binding; when the name is a registered variant of the
+              // scrutinee's enum, test identity against the variant's
+              // singleton field instead of catch-all binding (docs/59 §4.4 —
+              // mirrors the MSIL enumCaseOrdinals-first PBinding path).
+              match enumPatternClass(ctx, scrutTy, name) {
+                case Some(ecls) -> {
+                  emitLoad(insns, scrutSlot, scrutTy)
+                  insns.add(LGetstatic(owner = ecls, name = name, t = JRef(className = ecls)))
+                  insns.add(LIfAcmpne(label = failLabel))
+                }
+                case None -> ()
+              }
+            }
           }
         }
       }
@@ -632,6 +668,22 @@ func lowerPatternTest(
       }
     }
     case PConstructor(head, _) -> {
+      // `case Direction.North ->` parses as a PConstructor; when the
+      // penultimate segment names a declared enum carrying this case, it is an
+      // enum-variant identity test, not a union-case isinst — deriving
+      // `<scrutClass>$<case>` names a class that does not exist (docs/59 §4.4;
+      // mirrors the MSIL `enumPenult` PConstructor path, #3343).
+      if head.segments.count >= 2 {
+        match enumVariantClass(ctx, head.segments[head.segments.count - 2], lastSegment(head)) {
+          case Some(eqcls) -> {
+            emitLoad(insns, scrutSlot, scrutTy)
+            insns.add(LGetstatic(owner = eqcls, name = lastSegment(head), t = JRef(className = eqcls)))
+            insns.add(LIfAcmpne(label = failLabel))
+            return
+          }
+          case None -> ()
+        }
+      }
       // isinst test against the case class; fail if the scrutinee is not that
       // case.  (Unlike a checkcast this never throws on a non-matching arm.)
       val caseClass = resolveCaseClassJvm(ctx, head, scrutTy)
@@ -1080,10 +1132,13 @@ func lowerPatternBind(
           lowerPatternBind(ctx, insns, inner, bindSlot, scrutTy, scrutTypeArgs)
         }
         case None -> {
-          // A single-segment `case Foo ->` that names a known union case binds
-          // nothing (mirrors the test side); otherwise it is a variable bind.
+          // A single-segment `case Foo ->` that names a known union case — or a
+          // registered enum variant of the scrutinee's enum (docs/59 §4.4) —
+          // binds nothing (mirrors the test side); otherwise it is a variable
+          // bind.
           val isCase = match ctorClassFor(ctx, name) { case Some(cls) -> jvmClassIsUnionCase(cls); case None -> false }
-          if not isCase {
+          val isEnumCase = match enumPatternClass(ctx, scrutTy, name) { case Some(_) -> true; case None -> false }
+          if not isCase and not isEnumCase {
             emitLoad(insns, scrutSlot, scrutTy)
             val bindSlot = allocSlot(ctx, name, scrutTy)
             emitStore(insns, bindSlot, scrutTy)
@@ -1111,6 +1166,18 @@ func lowerPatternBind(
       }
     }
     case PConstructor(head, fields) -> {
+      // A qualified enum-variant pattern (`case Direction.North ->`) binds
+      // nothing — and must not fall through to the union-case checkcast, whose
+      // derived `<scrutClass>$<case>` class does not exist (docs/59 §4.4).
+      if head.segments.count >= 2 {
+        match enumVariantClass(ctx, head.segments[head.segments.count - 2], lastSegment(head)) {
+          case Some(_) -> {
+            insns.add(LNop)
+            return
+          }
+          case None -> ()
+        }
+      }
       val caseClass = resolveCaseClassJvm(ctx, head, scrutTy)
       if caseClass.length > 0 {
         val castSlot = allocSlot(
