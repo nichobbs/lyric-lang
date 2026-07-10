@@ -8,9 +8,9 @@
 //!
 //! ReDoS posture:
 //!   .NET — RegexMatchTimeoutException fires after the configured deadline.
-//!   JVM  — lyric.stdlib.jvm.RegexHost interrupts Matcher.find() on a
-//!           daemon thread after the deadline; throws RuntimeException
-//!           with "time-out" in the message.
+//!   JVM  — no timeout is enforced yet: java.util.regex has no timeout
+//!           mechanism, and the interruptible-CharSequence fix is tracked
+//!           in #1103.  `TimedOut` never fires on this target today.
 //!
 //! Recommended usage for user-controlled patterns: tryCompile + tryIsMatch.
 //! Hard-coded, non-backtracking patterns can use compile + isMatch directly.
