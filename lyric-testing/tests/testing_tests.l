@@ -31,6 +31,22 @@ func makeEmailMsg(): Mail.EmailMessage {
   )
 }
 
+// A message whose subject carries a CRLF header-injection payload — the mock's
+// send guard must reject it with Err(HEADER_INJECTION).
+func makeInjectedEmailMsg(): Mail.EmailMessage {
+  Mail.EmailMessage(
+    from = Mail.makeAddress("test@example.com"),
+    to = [Mail.makeAddress("recipient@example.com")],
+    cc = [],
+    bcc = [],
+    subject = "Hi\r\nBcc: victim@example.com",
+    textBody = "Hello",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+}
+
 func makeMqMsg(id: in String): Mq.Message {
   Mq.Message(id = id, body = "payload", headers = [], deliveryCount = 0)
 }
@@ -85,6 +101,31 @@ test "MockMailSender: sentCount increments after send" {
   val msg = makeEmailMsg()
   ctx.mail.send(msg)
   assertEqualInt(Testing.sentCount(ctx.mail), 1, "count after one send")
+}
+
+// #5507: the mock must honor the MailSender.send contract (#5499) — reject a
+// CRLF-injected message with Err instead of "sending" it — so tests that route
+// injection through the mock behave like a real sender.
+test "MockMailSender: rejects a CRLF-injected subject and does not record it" {
+  val ctx = Testing.newTestContext()
+  match ctx.mail.send(makeInjectedEmailMsg()) {
+    case Ok(_) -> assertTrue(false, "an injected message must be rejected, not sent")
+    case Err(e) -> assertEqual(e.code, "HEADER_INJECTION", "injected message short-circuits with HEADER_INJECTION")
+  }
+  assertEqualInt(Testing.sentCount(ctx.mail), 0, "a rejected message must not be recorded as sent")
+}
+
+test "MockMailSender: a clean message still sends after a rejected one" {
+  val ctx = Testing.newTestContext()
+  // A rejected message must not poison the sender: send an injected message
+  // (rejected, not recorded), then a clean one (recorded) — count reflects only
+  // the clean send.
+  match ctx.mail.send(makeInjectedEmailMsg()) {
+    case Ok(_) -> assertTrue(false, "the injected message must be rejected first")
+    case Err(_) -> ()
+  }
+  ctx.mail.send(makeEmailMsg())
+  assertEqualInt(Testing.sentCount(ctx.mail), 1, "only the clean message is recorded; the rejected one is not")
 }
 
 test "MockMailSender: lastSent returns None when no emails sent" {

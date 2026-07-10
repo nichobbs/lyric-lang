@@ -111,6 +111,15 @@ pub record MockMailSender {
 
 impl Mail.MailSender for MockMailSender {
   func send(msg: in Mail.EmailMessage): Result[Unit, Mail.MailError] {
+    // Honor the MailSender.send contract (#5499 / #5507): every implementation
+    // must reject CRLF/NUL header injection before dispatch. Running the same
+    // guard the in-tree NativeSender uses keeps the mock a faithful stand-in —
+    // a test that sends an injected message through it observes the same Err a
+    // real sender would, and does NOT record the message as "sent".
+    match Mail.validateNoInjection(msg) {
+      case Some(e) -> return Err(e)
+      case None -> ()
+    }
     val toAddr = if msg.to.length == 0 { "" } else { msg.to[0].address }
     val captured = SentEmail(to = toAddr, subject = msg.subject, textBody = msg.textBody, htmlBody = msg.htmlBody)
     self.sentEmails.add(captured)
