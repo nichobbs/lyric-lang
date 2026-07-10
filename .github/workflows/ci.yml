@@ -594,16 +594,18 @@ jobs:
       # draft to ready-for-review by the CI gate workflow, which only fires after
       # every required check passes — confirming the runner honours both properties.
       #
-      # Peak concurrency (#4486, #4841): this job launches ~20 `background: true`
-      # steps before its first `wait-all: true` barrier, each running an in-process
-      # self-hosted compilation (Msil.Bridge / Jvm.Bridge) via `lyric test`.  This
-      # group was previously a single ~36-38-step batch; PR #4810 hit exactly the
+      # Peak concurrency (#4486, #4841): each `background: true` step runs an
+      # in-process self-hosted compilation (Msil.Bridge / Jvm.Bridge) via `lyric
+      # test`.  This group was once a single ~36-38-step batch; PR #4810 hit the
       # failure mode this comment anticipated (concurrent-output/status corruption
       # for unrelated, already-passing steps, reproducible across CI runs) and
-      # split it into two ~18-step batches (this one, then a second below its
-      # barrier) per the sub-batching contingency already documented here. If a
-      # future addition reproduces the same symptom again, split further rather
-      # than reverting to fully sequential steps.
+      # split it into two ~18-step batches.  Even ~18-28-step batches kept
+      # intermittently misreporting a passing step as failed (map_enhancements,
+      # Defer, etc.), so the batches were split further to ~14 steps each — the
+      # empirically reliable cap — via the extra barriers below (and the matching
+      # splits in the dotnet-b, jvm, and crosspackage self-test jobs). If a future
+      # addition pushes a batch back above ~14, split it again rather than
+      # reverting to fully sequential steps.
       - name: Weaver self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -969,6 +971,15 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/slice_array_abi_self_test.l
+
+      # Concurrency cap: this first parallel group had grown to 28 background
+      # steps — well past the ~18 peak this job's header comment documents as
+      # safe — and intermittently misreported an already-passing step as failed
+      # (map_enhancements, etc.). Per that comment's "split further" contingency,
+      # this extra barrier halves the group to ~14 concurrent in-process
+      # compilations before the next batch starts.
+      - name: Wait for parallel tests (batch 1a)
+        wait-all: true
 
       # toArray array-ABI self-test (#2592 conversion half).  Verifies that a
       # concrete `List[T].toArray()` materialises a genuine CLR `T[]` (not the
@@ -1632,6 +1643,12 @@ jobs:
       # through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs it
       # under `java` (Java 21 is configured above).  No new F#; imports only
       # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      # Concurrency cap: this second parallel group was 16 background steps and
+      # also intermittently misreported a passing step as failed (Defer, etc.).
+      # This barrier halves it to ~8 concurrent in-process compilations.
+      - name: Wait for parallel tests (batch 2a)
+        wait-all: true
+
       - name: Match/compound self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -2424,6 +2441,12 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_option_self_test.l
+
+      # Concurrency cap: this parallel group was 23 background steps, past the
+      # ~18 safe peak; halve it to ~12 concurrent in-process compilations with
+      # this barrier to stop the intermittent concurrent-output/status flakes.
+      - name: Wait for parallel tests (batch 1a)
+        wait-all: true
 
       # Propagate self-test — the `?` error-propagation operator (#1475).
       # `EPropagate` was a codegen no-op (`x?` compiled as `x`); the
@@ -3627,6 +3650,15 @@ jobs:
       # the JVM kernel on this target; the test asserts three NIST SHA-512
       # vectors under `java`.  First native JVM self-test that depends on a
       # `_kernel_jvm`-only module.  Imports only `Std.*`.
+      # Concurrency cap (JVM): this job ran all 55 background steps at once —
+      # each compiles in-process via Jvm.Bridge AND spawns a `java` process, the
+      # heaviest self-test shape — which is well past the ~18 peak documented as
+      # safe on the dotnet self-test jobs. Three barriers (here and two below)
+      # split it into ~14-step batches so peak concurrency (and peak JVM memory)
+      # stays bounded, stopping the intermittent concurrent-status flakes.
+      - name: Wait for parallel tests (JVM batch 1)
+        wait-all: true
+
       - name: Hash self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
@@ -3940,6 +3972,9 @@ jobs:
       # an all-arms-return `match`, plus a Unit fall-off and an else-less `if` to
       # prove the implicit-return path still works — all under `java`.  Imports
       # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Wait for parallel tests (JVM batch 2)
+        wait-all: true
+
       - name: Control-flow terminator self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
@@ -4270,6 +4305,9 @@ jobs:
       # parameter via `invokeinterface` (interface members registered in
       # funcSigs with isIface = true) instead of the class-format-invalid
       # `invokevirtual` guess.  Imports only `Std.*`.
+      - name: Wait for parallel tests (JVM batch 3)
+        wait-all: true
+
       - name: Interface-dispatch self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
@@ -5537,6 +5575,14 @@ jobs:
       # producer's concrete signature → `MissingMethodException` at run time.
       # Primitive args (e.g. `Result[Int, String]`) were unaffected, so this was
       # latent.  Guards `registerStdlibFunc`'s ctx-aware encoding.
+      # Concurrency cap: this group of 16 background steps includes several of
+      # the heaviest self-tests in CI (whole-stdlib and whole-compiler
+      # self-host compiles). A 16-step batch is at the edge where the
+      # concurrent-status flakes appear (Defer flaked in a 16-step batch on the
+      # dotnet-a job), so halve it to ~8 with this barrier.
+      - name: Wait for parallel tests (batch 1a)
+        wait-all: true
+
       - name: Cross-package generic-return ref-typed arg (Std.File.readText)
         background: true
         working-directory: ${{ github.workspace }}
