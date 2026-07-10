@@ -16,6 +16,7 @@
 #define LYRIC_RT_H
 
 #include <stdatomic.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -31,6 +32,17 @@ typedef struct {
                             * so sizeof and every later field offset are unchanged */
     void (*dtor)(void*);   /* destructor; may be NULL; must not free(obj)  */
 } LyricObjectHeader;
+
+/* The whole point of putting `weak` in the alignment padding between `rc` and
+ * `dtor` is that the header stays two words and `dtor` keeps its offset, so the
+ * codegen's `{ i32, ptr, <fields...> }` struct model and every downstream field
+ * offset are unchanged from the pre-weak-count layout (#5504 / #5546).  These
+ * assertions make that ABI contract a compile error to break; they encode the
+ * 64-bit LP64 target the native backend assumes (D-N-008). */
+_Static_assert(sizeof(LyricObjectHeader) == 2 * sizeof(void*),
+               "LyricObjectHeader must stay two words: weak must fit rc's alignment padding");
+_Static_assert(offsetof(LyricObjectHeader, dtor) == sizeof(void*),
+               "dtor must keep its one-word offset; weak must live in rc's padding, not after dtor");
 
 /* ── ARC intrinsics (D-N-011) ──────────────────────────────────────── */
 

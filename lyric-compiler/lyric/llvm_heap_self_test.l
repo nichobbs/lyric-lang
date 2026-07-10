@@ -769,6 +769,44 @@ test "arc: reassigning a var NativeWeak releases the old weak and retains the ne
   assertEqualInt(r.exitCode, 3, "var weak reassignment across calls upgrades to the new target, leak-free (ASan)")
 }
 
+test "arc: a NativeWeak in an async-function result is rejected at codegen (#5543)" {
+  // The C List/Map/Task kernels are strong-refcount-only, so a NativeWeak in a
+  // collection or async result would be strong-retained/released — a leak or a
+  // reintroduced UAF. `refFlagOf` rejects it fail-closed (#5545). This drives
+  // codegen directly (a rejected program never reaches clang) and asserts the
+  // Bug carries the tracking-issue reference so the guard can't silently pass.
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "record Node {\n" +
+    "  name: String\n" +
+    "}\n" +
+    "async func f(): NativeWeak[Node] {\n" +
+    "  val n = Node(name = \"x\")\n" +
+    "  NativeWeak(n)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  0\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(pr.diagnostics.count, 0, "the source itself parses")
+  var rejected = false
+  var msg = ""
+  try {
+    val pkg = codegenNativePackage(pr.file, "")
+    val _ = lowerNativePackage(pkg)
+  } catch Bug as b {
+    rejected = true
+    msg = b.message
+  }
+  assertTrue(rejected, "a NativeWeak async result must be rejected at native codegen, not silently miscompiled")
+  // The weak result slot is rejected by the strong-only slot encoder; a weak
+  // List/Map element is rejected earlier by refFlagOf (#5545). Either way the
+  // rejection names the weak marker, so the guard can't vacuously pass.
+  assertTrue(
+    Str.contains(msg, "weak") or Str.contains(msg, "Weak"),
+    "the rejection is due to the NativeWeak type (got: " + msg + ")"
+  )
+}
+
 test "arc: tuples construct, destructure, and release elements" {
   val src = "package T\n" + "func minMax(a: in Int, b: in Int): (Int, Int) {\n" + "  if a < b {\n" + "    (a, b)\n" +
     "  } else {\n" +
