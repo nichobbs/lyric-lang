@@ -714,11 +714,18 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           val initTy = lowerExpr(ctx, insns, init)
           lowerLocalPatBind(ctx, insns, pat, initTy, tyOpt)
           // A simple `val r = <expr>` records `r`'s generic args so a later
-          // `match r` unboxes an erased payload (#4938).
+          // `match r` unboxes an erased payload (#4938).  An explicit
+          // `slice[Elem]`/`List[Elem]` annotation overrides them with the
+          // declared element type, so an indexed element read narrows
+          // (docs/59 §4.3 #5439 class).
           match pat.kind {
             case PBinding(nm, _) -> {
               recordVarGenericArgs(ctx, nm, init)
               recordSpawnResultType(ctx, nm, init)
+              match tyOpt {
+                case Some(te) -> recordDeclaredElemType(ctx, nm, te, newList())
+                case None -> ()
+              }
             }
             case _ -> ()
           }
@@ -736,6 +743,10 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             emitStore(insns, slot, ty)
             recordVarGenericArgs(ctx, name, init)
             recordSpawnResultType(ctx, name, init)
+            match tyOpt {
+              case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
+              case None -> ()
+            }
           }
         }
         case LBVar(name, tyOpt, initOpt) -> {
@@ -781,13 +792,23 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // Record `name`'s generic args so a later `match name` unboxes an
               // erased payload (#4938).  The type checker fixes a `var`'s type
               // across reassignments, so recording at the initialiser is stable.
+              // An explicit `slice[Elem]`/`List[Elem]` annotation overrides them
+              // with the declared element type (docs/59 §4.3 #5439 class).
               recordVarGenericArgs(ctx, name, init)
               recordSpawnResultType(ctx, name, init)
+              match tyOpt {
+                case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
+                case None -> ()
+              }
             }
             case None -> {
               // No initialiser: an annotation is required to know the slot type;
               // default to JInt only as a last resort (matches prior behaviour).
               val ty = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> JInt }
+              match tyOpt {
+                case Some(te2) -> recordDeclaredElemType(ctx, name, te2, newList())
+                case None -> ()
+              }
               if isHoisted {
                 // Create an empty cell for the hoisted var
                 val cellType = JArray(elem = ty)

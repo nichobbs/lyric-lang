@@ -526,6 +526,14 @@ pub func setupInstanceParamSlotsAndHolders(
     emitStore(insns, valueSlot, elemTy)
     hi = hi + 1
   }
+  // Record each parameter's declared slice/List element type so an indexed
+  // element read narrows to its concrete class (docs/59 §4.3 #5439 class);
+  // the receiver type's own generic params are filtered — they erase to Object.
+  var rdi = 0
+  while rdi < params.count {
+    recordDeclaredElemType(ctx, params[rdi].name, params[rdi].ty, typeParams)
+    rdi = rdi + 1
+  }
 }
 
 // Collect names referenced inside any lambda in a block statement.
@@ -751,6 +759,15 @@ pub func lowerFunc(
   // Allocate slots for parameters and set up any `out`/`inout` holder bindings;
   // the holder unwrap-prologue (if any) is emitted into `insns` first (#1763).
   setupStaticParamSlotsAndHolders(ctx, insns, decl.params, pkgName, externTypes)
+  // Record each parameter's declared slice/List element type so an indexed
+  // element read narrows to its concrete class (docs/59 §4.3 #5439 class);
+  // the function's own type parameters are filtered — they erase to Object.
+  val fnElemTps = genericParamNames(decl.generics)
+  var rdi = 0
+  while rdi < decl.params.count {
+    recordDeclaredElemType(ctx, decl.params[rdi].name, decl.params[rdi].ty, fnElemTps)
+    rdi = rdi + 1
+  }
 
   // Lower the body. @externTarget annotation takes priority over any syntactic
   // body form — a conventional `= ()` stub on an extern declaration must route

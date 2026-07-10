@@ -202,6 +202,44 @@ func emitPanicFromStack(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
   insns.add(LAthrow)
 }
 
+// The concrete element class of an indexed bare-name slice/List receiver
+// (docs/59 §4.3, the #5439 class): resolved from the receiver's recorded
+// single-arg `varGenericArgs` entry — a declared `slice[Elem]`/`List[Elem]`
+// parameter or local annotation (`recordDeclaredElemType`), a binding whose
+// initialiser's declared return instantiation was recorded (#4938), or a
+// match-bound generic payload's own args (#3613).  "" when unknown, primitive,
+// or the erased `Object` — the read then keeps its legacy erased result.
+// `EIndex` uses a non-empty result to `checkcast` after the `aaload` /
+// `ArrayList.get`, so a following member read resolves on the real class
+// instead of panicking on a statically-`Object` receiver.
+func indexedElemClassOverride(ctx: in FuncCtx, recv: in Expr): String {
+  match recv.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        val args = optGenericArgs(mapGet(ctx.varGenericArgs, p.segments[0]))
+        if args.count == 1 {
+          match resolveConcreteTypeExpr(ctx, args[0]) {
+            case JRef(cls) -> {
+              if cls == "java/lang/Object" {
+                ""
+              } else {
+                cls
+              }
+            }
+            case _ -> ""
+          }
+        } else {
+          ""
+        }
+      } else {
+        ""
+      }
+    }
+    case EParen(inner) -> indexedElemClassOverride(ctx, inner)
+    case _ -> ""
+  }
+}
+
 // Lower a single expression.  Pushes exactly one value onto the operand
 // stack (or nothing for JVoid).  Returns the JvmType of the pushed value.
 pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmType {
@@ -1306,7 +1344,12 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       lowerExpr(ctx, insns, fn)
     }
     case EIndex(recv, indices) -> {
-      // Array/list/map indexing.
+      // Array/list/map indexing.  When the receiver is a bare name whose
+      // declared/recorded element type is a concrete class, the element read
+      // narrows to it (docs/59 §4.3 #5439 class) — resolved BEFORE the
+      // receiver is lowered so the recorded entry is read against the
+      // receiver's own binding.
+      val elemOverride = indexedElemClassOverride(ctx, recv)
       val recvTy0 = lowerExpr(ctx, insns, recv)
       // A list/map receiver whose static type is imprecise (an erased-`Object`
       // match binding, or an imported type's in-package guess) must be cast
@@ -1346,9 +1389,17 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 // Preserve the element's reference type (e.g. `File.listFiles()`
                 // yields `java.io.File[]` — indexing must report `java/io/File`,
                 // not `Object`, so instance auto-FFI calls on the element
-                // resolve against the real class).
+                // resolve against the real class).  A slice's erased `Object[]`
+                // element narrows to the receiver's recorded concrete element
+                // class (`fields[i]` on a `slice[LogField]` parameter — the
+                // docs/59 §4.3 formatFields shape).
                 insns.add(LAaload)
-                JRef(className = elemCls)
+                if elemCls == "java/lang/Object" and elemOverride != "" {
+                  insns.add(LCheckcast(className = elemOverride))
+                  JRef(className = elemOverride)
+                } else {
+                  JRef(className = elemCls)
+                }
               }
               case _ -> {
                 insns.add(LAaload)
@@ -1376,7 +1427,11 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               emitMapGet(insns)
               JRef(className = "java/lang/Object")
             } else {
-              // List-style indexing via ArrayList.get(int).
+              // List-style indexing via ArrayList.get(int).  The erased
+              // `Object` element narrows to the receiver's recorded concrete
+              // element class when known (docs/59 §4.3 — `pairs[i]` on a
+              // match-bound `List[YamlPair]` payload, or a declared
+              // `List[Elem]` parameter/local).
               lowerExpr(ctx, insns, indices[0])
               val getPs: List[JvmType] = newList()
               getPs.add(JInt)
@@ -1388,7 +1443,12 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   ret = JRef(className = "java/lang/Object")
                 )
               )
-              JRef(className = "java/lang/Object")
+              if elemOverride != "" {
+                insns.add(LCheckcast(className = elemOverride))
+                JRef(className = elemOverride)
+              } else {
+                JRef(className = "java/lang/Object")
+              }
             }
           }
           case _ -> {

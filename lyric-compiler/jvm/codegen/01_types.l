@@ -1071,6 +1071,48 @@ pub func enumCaseClassBare(ctx: in FuncCtx, caseName: in String): Option[String]
   enumSigOwner(mapGet(ctx.funcSigs, "enumcase:" + caseName))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §4d. Declared slice/List element types (docs/59 §4.3 #5439 class).
+// ─────────────────────────────────────────────────────────────────────────────
+// Record a parameter/local's DECLARED element type when its type is
+// `slice[Elem]` or the bare `List[Elem]`, into `ctx.varGenericArgs` — the same
+// registry a `let r = call()` binding's generic instantiation is recorded in
+// (#4938) and a match-bound generic payload's own args are threaded through
+// (#3613), and the map `EIndex` consults so an indexed element read can
+// `checkcast` the erased `Object` element back to its concrete class.  An
+// element naming one of the enclosing declaration's own type parameters is
+// skipped: it erases to `Object`, so there is nothing concrete to narrow to.
+// `Map` types are NOT recorded — the HashMap indexing arm is value-typed by
+// its own path and a 2-arg entry would never be consulted anyway.
+pub func recordDeclaredElemType(ctx: in FuncCtx, name: in String, ty: in TypeExpr, typeParams: in List[String]): Unit {
+  val elems: List[TypeExpr] = newList()
+  match ty.kind {
+    case TSlice(elem) -> elems.add(elem)
+    case TGenericApp(head, args) -> {
+      if head.segments.count == 1 and lastSegment(head) == "List" and args.count == 1 {
+        match args[0] {
+          case TAType(inner) -> elems.add(inner)
+          case TAValue(_) -> ()
+        }
+      }
+    }
+    case TParen(inner) -> {
+      recordDeclaredElemType(ctx, name, inner, typeParams)
+      return
+    }
+    case _ -> ()
+  }
+  if elems.count == 1 {
+    if typeParamIndexOf(elems[0], typeParams) >= 0 {
+      return
+    }
+    if ctx.varGenericArgs.containsKey(name) {
+      ctx.varGenericArgs.remove(name)
+    }
+    ctx.varGenericArgs.add(name, elems)
+  }
+}
+
 pub func emitStoreLocalWriteThrough(ctx: in FuncCtx, insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
   emitStore(insns, slot, ty)
   match mapGet(ctx.holderArraySlot, slot) {

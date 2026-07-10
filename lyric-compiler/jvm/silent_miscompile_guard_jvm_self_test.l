@@ -314,3 +314,58 @@ test "compound assignment on hoisted (captured) vars of each shape" {
   assertTrue(hf == 2.0f32, "hoisted Float += (second call)")
   assertEqual(hs, "xyy", "hoisted String += (second call)")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. Indexed slice/List elements carry their declared concrete type
+//     (docs/59 §4.3, the #5439 class).  `fields[i]` on a `slice[Rec]` /
+//     `List[Rec]` receiver was statically Object, so the member read that
+//     follows either panicked (post-#5439 guard) or silently yielded the
+//     receiver itself — the exact `Std.Log.formatFields` shape that J003-
+//     skipped Std.Log/Std.Yaml from JVM bundles.
+// ─────────────────────────────────────────────────────────────────────────────
+// Same field shape as Std.Log.LogField.
+record KvField {
+  key: String
+  value: String
+}
+
+// The exact formatFields shape: a `slice[Rec]` parameter indexed in a loop
+// with member reads on the bound element.
+func joinSliceFields(fields: in slice[KvField]): String {
+  var text = ""
+  var i = 0
+  while i < fields.length {
+    val f = fields[i]
+    if i > 0 {
+      text = text + " "
+    }
+    text = text + f.key + "=" + f.value
+    i += 1
+  }
+  text
+}
+
+// The `List[Rec]` variant, with a direct `fields[i].key` member read on the
+// indexed expression itself (no intermediate binding).
+func joinListFields(fields: in List[KvField]): String {
+  var text = ""
+  var i = 0
+  while i < fields.count {
+    if i > 0 {
+      text = text + " "
+    }
+    text = text + fields[i].key + "=" + fields[i].value
+    i += 1
+  }
+  text
+}
+
+test "slice[Record] elements read fields through the declared element type" {
+  val joined = joinSliceFields([KvField(key = "a", value = "1"), KvField(key = "b", value = "2")])
+  assertEqual(joined, "a=1 b=2", "formatFields shape over slice[KvField]")
+}
+
+test "List[Record] elements read fields through the declared element type" {
+  val fields: List[KvField] = [KvField(key = "x", value = "9"), KvField(key = "y", value = "8")]
+  assertEqual(joinListFields(fields), "x=9 y=8", "formatFields shape over List[KvField]")
+}
