@@ -5139,6 +5139,16 @@ func isValueType(ty: in MsilType): Bool {
     case MBool -> true
     case MChar -> true
     case MByte -> true
+    // An extern BCL struct (System.Guid / System.TimeSpan / …) is as much a
+    // value type as the six primitives: it must be boxed into every object
+    // context (Object.Equals for `==`, ToString for interpolation, erased
+    // generic-function parameters) and unboxed back out (castObjectToMsil).
+    // Leaving it out silently emitted callvirt/Equals against the raw struct
+    // bits — InvalidProgramException at runtime (docs/59 §3.2 F6, #5196).
+    // `MValueTypeGenericInst` stays excluded: `boxTypeRef` can only name a
+    // TypeRef token, not the closed TypeSpec a generic instantiation's
+    // box/unbox needs, so widening it here would emit a wrong `box object`.
+    case MValueTypeRef(_, _) -> true
     case _ -> false
   }
 }
@@ -7537,7 +7547,16 @@ func lowerBinopMsil(
             insns.add(MCall(methodToken = eqTok))
             MBool
           } else {
-            // Object.Equals(object, object): box rhs if it's a value type.
+            // Object.Equals(object, object): both operands must be boxed
+            // references.  A value-type LHS (an extern struct such as a Guid —
+            // primitives never reach this arm) sits UNDER the rhs on the
+            // stack, so box it by spilling the rhs first (docs/59 §3.2 F6).
+            if isValueType(beqLhsTy) {
+              val beqRSlot = allocSlotMsil(fctx, "__beq_r_" + toString(fctx.slotTicker.count), beqRhsTy)
+              emitStoreSlot(insns, beqRSlot, fctx.paramCount)
+              boxIfNeededMsil(cctx, insns, beqLhsTy)
+              emitLoadSlot(insns, beqRSlot, fctx.paramCount)
+            }
             boxIfNeededMsil(cctx, insns, beqRhsTy)
             insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
             MBool
@@ -7569,6 +7588,14 @@ func lowerBinopMsil(
           if neqTok > 0 {
             insns.add(MCall(methodToken = neqTok))
           } else {
+            // See the BEq arm: a value-type LHS must be boxed under the rhs
+            // before Object.Equals (docs/59 §3.2 F6).
+            if isValueType(bneqLhsTy) {
+              val bneqRSlot = allocSlotMsil(fctx, "__bneq_r_" + toString(fctx.slotTicker.count), bneqRhsTy)
+              emitStoreSlot(insns, bneqRSlot, fctx.paramCount)
+              boxIfNeededMsil(cctx, insns, bneqLhsTy)
+              emitLoadSlot(insns, bneqRSlot, fctx.paramCount)
+            }
             boxIfNeededMsil(cctx, insns, bneqRhsTy)
             insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
           }
@@ -10589,6 +10616,11 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       case MBool -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MBool)))
       case MChar -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MChar)))
       case MByte -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MByte)))
+      // An extern struct parameter (System.Guid, …) needs the boxed `object`
+      // (e.g. the erased return of a uniform-ABI generic such as `unwrapOr`)
+      // unboxed back to the raw struct, exactly like the primitives above
+      // (#5196).
+      case MValueTypeRef(_, _) -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, toTy)))
       case _ -> ()
     }
   } else {
@@ -10614,6 +10646,12 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       case MInt -> match toTy { case MLong -> insns.add(MConvI8); case _ -> () }
       case MByte -> match toTy { case MLong -> insns.add(MConvI8); case _ -> () }
       case MChar -> match toTy { case MLong -> insns.add(MConvI8); case _ -> () }
+      // An extern struct argument flowing into an `object` parameter (the
+      // uniform-ABI erased `T` of a cross-package generic function) must be
+      // boxed; the raw struct bits are not a reference (#5196).  Primitives
+      // never take this path — the monomorphizer specialises their call
+      // sites, and pre-existing behaviour is preserved regardless.
+      case MValueTypeRef(_, _) -> match toTy { case MObject -> boxIfNeededMsil(cctx, insns, fromTy); case _ -> () }
       case _ -> ()
     }
   }
