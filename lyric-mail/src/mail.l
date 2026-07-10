@@ -165,6 +165,12 @@ impl MailSender for NativeSender {
       case Some(e) -> return Err(e)
       case None -> ()
     }
+    // Reject a recipient-less message with a structured Err on the direct-send
+    // path too, rather than letting the BCL surface a generic exception (#5490)
+    // — mirrors the same check in the Mail.send wrapper.
+    if msg.to.length == 0 {
+      return Err(MailError(message = "message has no recipients", code = "NO_RECIPIENTS"))
+    }
     try {
       val mailMsg = MailMessage.new()
       val fromAddr = MailAddress.new(msg.from.address)
