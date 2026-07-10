@@ -27451,6 +27451,17 @@ func registerRestoredRecordMethod(
   if not cctx.methodRetTypes.containsKey(key) {
     cctx.methodRetTypes.add(key, sigRetType)
   }
+  // Also cache the param types/modes the call site needs, exactly as the
+  // local-interface / same-assembly path does.  Without these
+  // `lowerMethodCallMsil`'s per-argument lookup misses for a restored
+  // (cross-assembly) method and falls back to `MObject`, which boxes a
+  // value-type argument (Bool/Int/…) before a `callvirt` whose real MemberRef
+  // signature declares the unboxed primitive — invalid IL the JIT rejects with
+  // InvalidProgramException (the DeadLetter aspect's `consumer.nack(id, false)`
+  // shape, #5503).  Idempotent; safe for the reference-arg-only methods that
+  // previously worked by luck.
+  registerMethodParamTypes(cctx, key, params, packageName)
+  registerMethodParamModes(cctx, key, params)
 }
 
 // Look up a restored type's TypeRef row by its fully-qualified `<pkg>.<Name>`
@@ -27537,6 +27548,16 @@ func registerRestoredIfaceMethod(
   if not cctx.methodRetTypes.containsKey(key) {
     cctx.methodRetTypes.add(key, sigRetType)
   }
+  // Cache the param types/modes the call site needs, exactly as the
+  // local-interface (same-assembly) pre-scan does.  Without these,
+  // `lowerMethodCallMsil`'s per-argument lookup misses for this restored
+  // (cross-assembly) interface method and falls back to `MObject`, which boxes
+  // a value-type argument (Bool/Int/…) before a `callvirt` whose real MemberRef
+  // signature declares the unboxed primitive — invalid IL the JIT rejects with
+  // InvalidProgramException (the DeadLetter aspect's `consumer.nack(id, false)`
+  // shape, #5503).  Idempotent; safe for reference-arg-only methods too.
+  registerMethodParamTypes(cctx, key, params, packageName)
+  registerMethodParamModes(cctx, key, params)
 }
 
 // ── Range-subtype bound folding (#1501) ──────────────────────────────────────
