@@ -39,90 +39,17 @@ import Lyric.Propagate
 import Lyric.Cfg as Cfg
 import Lyric.AliasRewriter as Aliases
 import Lyric.Weaver as Weaver
-import Lyric.DiagnosticUtil as DiagUtil
+import Lyric.WireExpand as WireExpand
 import Lyric.Mono
 import Lyric.Derives
+import Lyric.Pipeline
 import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
 
-func reportAndAbort(diags: in List[Diagnostic]): Bool {
-  DiagUtil.diagReportAndAbort(diags)
-}
-
-func reportDiagnostics(diags: in List[Diagnostic]): Unit {
-  DiagUtil.diagReport(diags)
-}
-
 func dottedPath(path: in ModulePath): String {
-  modulePathJoin(path.segments)
-}
-
-// Every `IInterface` decl in a flat item list — fed to the monomorphizer
-// (#3813) so a method-call return on an interface-typed receiver can be
-// inferred and the enclosing generic call specialised.  Mirrors
-// `Jvm.Bridge.collectInterfaceDeclsFromItems` (the JVM package is not
-// importable from here).
-func collectNativeInterfaceDecls(items: in List[Item]): List[InterfaceDecl] {
-  val ifaces: List[InterfaceDecl] = newList()
-  var i = 0
-  while i < items.count {
-    match items[i].kind {
-      case IInterface(decl) -> ifaces.add(decl)
-      case _ -> ()
-    }
-    i = i + 1
-  }
-  ifaces
-}
-
-// Every record decl (plain + exposed) in a flat item list — fed to the
-// monomorphizer (#3813 follow-up) so `recv.field` projections on values
-// whose record type is declared in an imported package can be inferred.
-func collectNativeRecordDecls(items: in List[Item]): List[RecordDecl] {
-  val recs: List[RecordDecl] = newList()
-  var i = 0
-  while i < items.count {
-    match items[i].kind {
-      case IRecord(decl) -> recs.add(decl)
-      case IExposedRec(decl) -> recs.add(decl)
-      case _ -> ()
-    }
-    i = i + 1
-  }
-  recs
-}
-
-// True for top-level items that must reach packages importing this one
-// (types, pub module vals, and pub funcs) so cross-package names
-// resolve during the advisory typecheck — without the pub funcs every
-// stdlib call in user code prints a spurious T0020 on a successful
-// build.  Extends `Jvm.Bridge.isTypeItem` with the pub-func rule from
-// `Msil.Bridge.collectStdlibPackages`.
-func isTypeItem(it: in Item): Bool {
-  val isType = match it.kind {
-    case IRecord(_) -> true
-    case IExposedRec(_) -> true
-    case IUnion(_) -> true
-    case IEnum(_) -> true
-    case IDistinctType(_) -> true
-    case IInterface(_) -> true
-    case ITypeAlias(_) -> true
-    case IOpaque(_) -> true
-    case IExternType(_) -> true
-    case IProtected(_) -> true
-    case IImpl(_) -> true
-    case _ -> false
-  }
-  if isType {
-    return true
-  }
-  match it.kind {
-    case IVal(_) -> match it.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
-    case IFunc(decl) -> match decl.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
-    case _ -> false
-  }
+  pipeDottedPath(path)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -412,18 +339,26 @@ pub func compileToNativeWithFlags(
   optLevel: in String,
   extraClangFlags: in List[String],
 ): Bool {
-  val parseResult = parse(source)
-  if reportAndAbort(parseResult.diagnostics) {
-    return false
-  }
-
+  // Parse + `@cfg` erasure with the `target.native` pseudo-feature
+  // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
+  // after parse, before anything indexes the items).
   val noFeatures: List[String] = newList()
   val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
-  val cfgRes = Cfg.applyCfgErasure(nativeFeatures, noFeatures, parseResult.file)
-  if reportAndAbort(cfgRes.diagnostics) {
-    return false
+  val cfgFile = match pipeParseAndErase(source, "native", noFeatures, noFeatures) {
+    case Some(f) -> f
+    case None -> return false
   }
-  val userFile0 = Aliases.rewriteFile(cfgRes.file)
+
+  // Pre-typecheck rewrite chain: alias rewrite only.  The native bridge
+  // does not expand docs/58 wire/config templates or synthesise
+  // `@stubbable` stubs yet — the `false` flags make that gap explicit
+  // (docs/59 §9.2 divergence flag) instead of an invisible omission.
+  val noWires: Map[String, CollectedWireTemplate] = newMap()
+  val noConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  val userFile0 = match pipeExpandAndRewrite(cfgFile, noWires, noConfigs, false, false, false) {
+    case Some(f) -> f
+    case None -> return false
+  }
 
   // Parse the stdlib once: type items for the advisory typecheck,
   // whole files (cfg-erased, alias-rewritten) for bundling.
@@ -440,7 +375,7 @@ pub func compileToNativeWithFlags(
     val pkgItems: List[Item] = newList()
     var ii = 0
     while ii < stdFile.items.count {
-      if isTypeItem(stdFile.items[ii]) {
+      if pipeIsCrossPackageItem(stdFile.items[ii]) {
         pkgItems.add(stdFile.items[ii])
       }
       ii = ii + 1
@@ -453,47 +388,29 @@ pub func compileToNativeWithFlags(
     si = si + 1
   }
 
-  // Advisory typecheck (the self-hosted checker lacks full builtin
-  // coverage); the mode check gates.
-  val tcRes = checkWithImportedPackages(userFile0, importedPkgs)
-  reportDiagnostics(tcRes.diagnostics)
-  val mcRes = checkFile(userFile0)
-  if reportAndAbort(mcRes.diagnostics) {
-    return false
-  }
-
-  // Middle end on the user file.
-  val elaborated = elaborateFile(userFile0)
-  val propRes = lowerPropagateFile(elaborated)
-  if reportAndAbort(propRes.diagnostics) {
-    return false
-  }
-  val derived = deriveFile(propRes.file)
-  // Feed the stdlib's interface and record decls to the monomorphizer so
+  // Middle end (`Lyric.Pipeline` owns the order).  The typecheck is
+  // advisory on the native target (the self-hosted checker lacks full
+  // builtin coverage); the mode check, `?`-propagation, mono, and weave
+  // gate.  Mono is fed the stdlib's interface and record decls so
   // method-call returns and field projections on imported types drive
-  // same-package call-site inference (#3813; parity with the MSIL and JVM
-  // bridges — docs/59 §5.4 flagged this path as running bare `monoFile`).
-  // Imported GENERIC decls are deliberately NOT fed: unlike MSIL/JVM
-  // codegen, the native backend performs its own whole-bundle generic
-  // instantiation at lowering time (`Lyric.LlvmCodegen.genericFnDefs`,
-  // N3.1) over the never-mono'd bundled stdlib files, so cross-package
-  // generic calls are not erased on native — copying stdlib generic
-  // bodies into the user package here would only duplicate that work and
-  // risk dangling references to intra-stdlib helpers the function-
-  // granularity reachability walk never registered for the user package.
+  // same-package call-site inference (#3813).  Imported GENERIC decls
+  // are deliberately NOT fed: unlike MSIL/JVM codegen, the native
+  // backend performs its own whole-bundle generic instantiation at
+  // lowering time (`Lyric.LlvmCodegen.genericFnDefs`, N3.1) over the
+  // never-mono'd bundled stdlib files, so cross-package generic calls
+  // are not erased on native — copying stdlib generic bodies into the
+  // user package here would only duplicate that work and risk dangling
+  // references to intra-stdlib helpers the function-granularity
+  // reachability walk never registered for the user package.
   val importedItemsForMono = flattenImportedItems(importedPkgs)
-  val importedIfaceDecls = collectNativeInterfaceDecls(importedItemsForMono)
-  val importedRecordDecls = collectNativeRecordDecls(importedItemsForMono)
   val noImportedGenFuncs: List[FunctionDecl] = newList()
-  val monoRes = monoFileWithImportsAndTypeDecls(derived, noImportedGenFuncs, importedIfaceDecls, importedRecordDecls)
-  if reportAndAbort(monoRes.diagnostics) {
-    return false
+  val noDeriveImports: List[Item] = newList()
+  val noTemplates: Map[String, CollectedTemplate] = newMap()
+  val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = "")
+  val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts) {
+    case Some(f) -> f
+    case None -> return false
   }
-  val weaveRes = Weaver.weaveFileWithDiags(monoRes.file)
-  if reportAndAbort(weaveRes.diagnostics) {
-    return false
-  }
-  val userFile = weaveRes.file
   val userPkg = dottedPath(userFile.packageDecl.path)
 
   // Transitive stdlib import closure, in deterministic worklist order.

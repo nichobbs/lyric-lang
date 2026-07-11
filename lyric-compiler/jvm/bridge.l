@@ -15,31 +15,19 @@ import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.Propagate
-import Lyric.Cfg as Cfg
 import Lyric.AliasRewriter as Aliases
 import Lyric.Weaver as Weaver
 import Lyric.WireExpand as WireExpand
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
 import Lyric.Derives
-import Lyric.Stubbable as Stubbable
+import Lyric.Pipeline
 import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
 import Jvm.Codegen
 import Jvm.Driver
-
-// Diagnostic-printing helpers — thin wrappers over `Lyric.DiagnosticUtil`
-// (#827).  Local names differ from `DiagUtil.diag*` to dodge the
-// bootstrap call-resolver shadowing pitfall (lyric-lang #714).
-func reportAndAbort(diags: in List[Diagnostic]): Bool {
-  DiagUtil.diagReportAndAbort(diags)
-}
-
-func reportDiagnostics(diags: in List[Diagnostic]): Unit {
-  DiagUtil.diagReport(diags)
-}
 
 // Returns Some(typeName) if func main() has a 2-slot return type (Long or Double);
 // None otherwise.  These types require POP2 to discard, but the JVM main wrapper
@@ -94,25 +82,16 @@ func mainReturns2SlotType(file: in SourceFile): Option[String] {
 pub func compileToJar(
   source: in String, outputPath: in String, packageName: in String, stdlibSources: in List[String]
 ): Bool {
-  val parseResult = parse(source)
-  if reportAndAbort(parseResult.diagnostics) {
-    return false
-  }
-
-  // `@cfg` erasure with an empty active set (plus the `target.jvm`
+  // Parse + `@cfg` erasure with an empty active set (plus the `target.jvm`
   // pseudo-feature, D-N-013) — the same semantics a manifest build with no
-  // `--features` applies via `compileProjectToJarBundledWithFeatures`.
-  // Without this, `@cfg(feature = "X")`-gated items compiled
-  // unconditionally on this path while every other build path erased
-  // them — same source, divergent semantics (docs/59 §5.4).  The
-  // declared set stays empty so the F0013 typo guard is off, matching a
-  // manifest with no `[features]` table.
+  // `--features` applies via `compileProjectToJarBundledWithFeatures`
+  // (docs/59 §5.4; the declared set stays empty so the F0013 typo guard is
+  // off, matching a manifest with no `[features]` table).
   val noFeatures: List[String] = newList()
-  val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(noFeatures, "jvm"), noFeatures, parseResult.file)
-  if reportAndAbort(cfgRes.diagnostics) {
-    return false
+  val cfgFile = match pipeParseAndErase(source, "jvm", noFeatures, noFeatures) {
+    case Some(f) -> f
+    case None -> return false
   }
-  val cfgFile = cfgRes.file
 
   // Reject func main(): Long/Double before codegen: the JVM main wrapper emits
   // a single-slot POP to discard the return value, which would corrupt the operand
@@ -149,12 +128,12 @@ pub func compileToJar(
     // rationale: self-hosted `Lyric.Parser` has known gaps vs. the
     // stdlib source files, so promoting these to fatal would break
     // every user build until the parser reaches stdlib parity.
-    reportDiagnostics(stdPr.diagnostics)
+    DiagUtil.diagReport(stdPr.diagnostics)
     val pkgItems: List[Item] = newList()
     var ii = 0
     while ii < stdPr.file.items.count {
       val it = stdPr.file.items[ii]
-      if isTypeItem(it) {
+      if pipeIsCrossPackageItem(it) {
         pkgItems.add(it)
       }
       ii = ii + 1
@@ -170,74 +149,34 @@ pub func compileToJar(
     si = si + 1
   }
 
-  // Synthesise `@stubbable` interface stubs (record + impl) before type-check,
-  // matching the MSIL bridge — keeps `@stubbable` working on both targets.
-  // `injectWeaveImports` ensures `import Std.Time` is present before any
-  // import-driven resolution when an aspect references `call.elapsed`
-  // (#1298) — the weave itself runs later, in `runMiddleEnd`.
-  // Expand docs/58 constructs (config templates, contributes[T], wire
-  // templates) BEFORE the alias rewrite — parity with the MSIL bridge:
-  // an include alias's qualified access (`Core.router`) must be consumed
-  // by the expander, not collapsed by the import-alias rewriter when the
-  // alias name matches an imported package's last segment.
+  // Pre-typecheck rewrite chain (`Lyric.Pipeline` owns the order): docs/58
+  // wire-template expansion, alias rewrite, `@stubbable` synthesis, then
+  // `injectWeaveImports` (JVM-only: ensures `import Std.Time` is present
+  // before any import-driven resolution when an aspect references
+  // `call.elapsed`, #1298 — the weave itself runs inside `pipeMiddleEnd`).
   val weWires: Map[String, CollectedWireTemplate] = newMap()
   val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
   WireExpand.collectWireTemplates(cfgFile.items, dottedPath(cfgFile.packageDecl.path), weWires, weConfigs)
-  val weRes = WireExpand.expandFile(cfgFile, weWires, weConfigs)
-  if reportAndAbort(weRes.diagnostics) {
-    return false
-  }
-  val file0 = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(Aliases.rewriteFile(weRes.file)))
-
-  val tcRes = checkWithImportedPackages(file0, importedPkgs)
-  reportDiagnostics(tcRes.diagnostics)
-  // advisory: type checker lacks builtin coverage
-
-  val mcRes = checkFile(file0)
-  if reportAndAbort(mcRes.diagnostics) {
-    return false
+  val file0 = match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, true) {
+    case Some(f) -> f
+    case None -> return false
   }
 
-  val elaborated = elaborateFile(file0)
-
-  // Lower `?` error-propagation into match-unwrap + early-return (#1475).
-  // Runs after the elaborator so a propagated Err/None short-circuit is not
-  // forced through the success-shaped `ensures:` rewrite — parity with the
-  // MSIL bridge (J2 / docs/44 §5, #2665).
-  val propRes = lowerPropagateFile(elaborated)
-  if reportAndAbort(propRes.diagnostics) {
-    return false
-  }
-
-  // Synthesise @derive / @generate(Json) methods (Band 5 — docs/41 §9 #857).
-  val derived = deriveFile(propRes.file)
-
-  // Monomorphise generic calls (Band 5 — docs/41 §9), feeding the stdlib's
-  // pure-Lyric generic `pub func`s so cross-package generic calls (`mapGet`,
-  // `unwrapOr`, …) specialise into this artifact instead of erasing their
-  // generic return to `object`, plus the imported interface and record
-  // decls so method-call returns and field projections on imported types
-  // drive call-site inference (#3813; parity with the MSIL single-file
-  // path and this bridge's own `runMiddleEnd` — docs/59 §5.4 flagged this
-  // path as the last one still on the decl-less `monoFileWithImports`).
+  // Middle end (typecheck advisory on the JVM target — the self-hosted
+  // checker lacks full builtin coverage; mode check, `?`-propagation,
+  // mono, and weave gate).  Mono is fed the stdlib's pure-Lyric generic
+  // `pub func`s plus the imported interface / record decls (#3813).
+  // This legacy path derives without imported items (`deriveImports`
+  // empty), matching its historical `deriveFile` call.
   val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
   val importedItems = flattenImportedItems(importedPkgs)
-  val importedIfaceDecls = collectInterfaceDeclsFromItems(importedItems)
-  val importedRecordDecls = collectRecordDeclsFromItems(importedItems)
-  val monoRes = monoFileWithImportsAndTypeDecls(derived, stdlibGenFuncs, importedIfaceDecls, importedRecordDecls)
-  if reportAndAbort(monoRes.diagnostics) {
-    return false
+  val noDeriveImports: List[Item] = newList()
+  val noTemplates: Map[String, CollectedTemplate] = newMap()
+  val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = "")
+  val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts) {
+    case Some(f) -> f
+    case None -> return false
   }
-
-  // Aspect weaving (B-3) — after mono, before codegen, matching the MSIL
-  // bridge.  `weaveFileWithDiags` applies the todo/06 features (config
-  // wiring #683, call-context #682, `@inline_template` #681) and surfaces
-  // weave-time diagnostics (A0042 / A0043 / A0044) before codegen runs.
-  val weaveRes = Weaver.weaveFileWithDiags(monoRes.file)
-  if reportAndAbort(weaveRes.diagnostics) {
-    return false
-  }
-  val file = weaveRes.file
 
   val pkg = codegenPackage(file)
   val pool = poolNew()
@@ -307,66 +246,7 @@ pub func compileToJar(
 // ─────────────────────────────────────────────────────────────────────────────
 // Join a ModulePath's segments with "." (the Lyric package-name spelling).
 func dottedPath(path: in ModulePath): String {
-  var acc = ""
-  var i = 0
-  while i < path.segments.count {
-    if i > 0 {
-      acc = acc + "."
-    }
-    acc = acc + path.segments[i]
-    i = i + 1
-  }
-  acc
-}
-
-// True for top-level items that must reach packages importing this one, so
-// cross-package type names and pub-val constants resolve (#2377).
-// Mirrors `collectTypeItemsFromFile` in `lyric-compiler/msil/bridge.l`.
-func isTypeItem(it: in Item): Bool {
-  val isType = match it.kind {
-    case IRecord(_) -> true
-    case IExposedRec(_) -> true
-    case IUnion(_) -> true
-    case IEnum(_) -> true
-    case IDistinctType(_) -> true
-    case IInterface(_) -> true
-    case ITypeAlias(_) -> true
-    case IOpaque(_) -> true
-    // `extern type` declarations (e.g. `extern type Pool = "…"` in Jvm.Kernel)
-    // must reach packages that import the declaring package, so the bare type
-    // name resolves instead of aborting with T0010.
-    case IExternType(_) -> true
-    // `protected type` declarations must likewise propagate across package
-    // boundaries so importing packages can reference the protected type.
-    case IProtected(_) -> true
-    // `impl Iface for T` conformance must cross package boundaries so a consumer
-    // passing the concrete `T` where an `Iface` parameter is expected satisfies
-    // interface subsumption (parallels the MSIL bridge; keyed by `TypeId`,
-    // ignored by `addSigsFromItems`).
-    case IImpl(_) -> true
-    case _ -> false
-  }
-  if isType {
-    return true
-  }
-  // `pub func` free functions (e.g. a helper re-exported from another
-  // package) must reach importing packages, or `addSigsFromItems` never
-  // registers their signature for the imported pass and a cross-package
-  // call fails resolution (T0010/T0043) — the JVM analogue of the MSIL
-  // bridge's `isPubFunc` (#2704).
-  val isPubFunc = match it.kind {
-    case IFunc(decl) -> match decl.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
-    case _ -> false
-  }
-  if isPubFunc {
-    return true
-  }
-  // Module-level `pub val`s (e.g. `pub val ACC_PUBLIC: Int = 1` in Jvm.Classfile)
-  // must reach importing packages or cross-package references abort with T0020.
-  match it.kind {
-    case IVal(_) -> match it.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
-    case _ -> false
-  }
+  pipeDottedPath(path)
 }
 
 // Run the middle-end (type check → mode check → contract elaborate →
@@ -394,42 +274,10 @@ func isTypeItem(it: in Item): Bool {
 // are echoed to stderr.  Bundled stdlib packages pass `false`: their advisory
 // T0020-style noise (the self-hosted checker lacks full builtin coverage)
 // would otherwise leak onto a *successful* build's output.  Real errors still
-// gate via `reportAndAbort` on the mode-check / propagate / mono / weave
-// passes regardless.
-// Collect every `IInterface` decl from a flat item list.  Fed to the
-// monomorphizer (#3813) so a method-call return on an interface-typed
-// receiver can be inferred and the enclosing generic predicate specialised.
-func collectInterfaceDeclsFromItems(items: in List[Item]): List[InterfaceDecl] {
-  val ifaces: List[InterfaceDecl] = newList()
-  var i = 0
-  while i < items.count {
-    match items[i].kind {
-      case IInterface(decl) -> ifaces.add(decl)
-      case _ -> ()
-    }
-    i = i + 1
-  }
-  ifaces
-}
-
-// Collect every record decl (plain + exposed) from a flat item list.  Fed to
-// the monomorphizer (#3813) so a `recv.field` projection on a value whose
-// record type is declared in an imported package can be inferred and the
-// enclosing generic predicate specialised.
-func collectRecordDeclsFromItems(items: in List[Item]): List[RecordDecl] {
-  val recs: List[RecordDecl] = newList()
-  var i = 0
-  while i < items.count {
-    match items[i].kind {
-      case IRecord(decl) -> recs.add(decl)
-      case IExposedRec(decl) -> recs.add(decl)
-      case _ -> ()
-    }
-    i = i + 1
-  }
-  recs
-}
-
+// gate on the mode-check / propagate / mono / weave passes regardless.
+// Thin wrapper over `Lyric.Pipeline.pipeMiddleEnd`, which owns the pass
+// order; this bridge's per-target choices are the derive-with-imports
+// project semantics and the advisory (never fatal) type check.
 func runMiddleEnd(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
@@ -437,104 +285,38 @@ func runMiddleEnd(
   templates: in Map[String, CollectedTemplate],
   reportTcAdvisories: in Bool,
 ): Option[SourceFile] {
-  val tcRes = checkWithImportedPackages(file0, importedPkgs)
-  if reportTcAdvisories {
-    reportDiagnostics(tcRes.diagnostics)
-  }
-  val mcRes = checkFile(file0)
-  if reportAndAbort(mcRes.diagnostics) {
-    return None
-  }
-  val elaborated = elaborateFile(file0)
-
-  // Lower `?` error-propagation (#1475); see the single-file path above.
-  val propRes = lowerPropagateFile(elaborated)
-  if reportAndAbort(propRes.diagnostics) {
-    return None
-  }
-
   val importedItems = flattenImportedItems(importedPkgs)
-  val derived = deriveFileWithImports(propRes.file, importedItems)
-  // Feed interface decls visible to this package so the monomorphizer can
-  // infer method-call return types on interface-typed receivers and
-  // specialise the enclosing generic predicate — parity with the MSIL
-  // bridge (#3813).  `importedItems` already flattens every imported
-  // package's items; same-package interfaces are collected by mono itself.
-  val importedIfaceDecls = collectInterfaceDeclsFromItems(importedItems)
-  val importedRecordDecls = collectRecordDeclsFromItems(importedItems)
-  val monoRes = monoFileWithImportsAndTypeDecls(derived, stdlibGenFuncs, importedIfaceDecls, importedRecordDecls)
-  if reportAndAbort(monoRes.diagnostics) {
-    return None
-  }
-
-  // Aspect weaving (B-3) — after mono, before codegen, matching the MSIL
-  // bridge's per-package weave so the todo/06 features, weave-time
-  // diagnostics (A0042 / A0043 / A0044), and cross-package from-instance
-  // aspect resolution (#3414) apply on the JVM target too.
-  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(monoRes.file, templates)
-  if reportAndAbort(weaveRes.diagnostics) {
-    return None
-  }
-  Some(value = weaveRes.file)
+  val opts = MiddleEndOptions(tcFatal = false, tcReport = reportTcAdvisories, pkgLabel = "")
+  pipeMiddleEnd(
+    file0,
+    importedPkgs,
+    importedItems,
+    stdlibGenFuncs,
+    pipeInterfaceDecls(importedItems),
+    pipeRecordDecls(importedItems),
+    templates,
+    opts
+  )
 }
 
 // Collect every pure-Lyric generic `pub func` from the parsed stdlib source
 // files so the monomorphizer can specialise cross-package generic call sites —
 // e.g. `mapGet(m, "k")` -> a concrete `mapGet__String__String` copy emitted
-// into the bundle — instead of leaving the generic return erased.  Mirrors
-// `Msil.Bridge.collectStdlibGenericFuncs`, but operates directly on the
-// already-parsed `SourceFile`s the JVM bridge holds (the JVM bridge does not
-// depend on the `Msil.*` packages, so the MSIL `StdlibPkg`-shaped helper is
-// replicated here rather than imported).
-//
-// Filtered conservatively to `generic` `pub func`s with a real `{ }` block body
-// and no blocking annotations — `annsBlockSpecializationJvm` rejects
-// `@externTarget` and `@axiom` (whose bodies codegen synthesises / must not run
-// as code).  `mapGet` is excluded: it is a codegen intrinsic whose specialised
-// copy would call the un-lowerable generic kernel extern `tryGetValue`.
+// into the bundle — instead of leaving the generic return erased.  Same
+// filter as `Msil.Bridge.collectStdlibGenericFuncs` (shared in
+// `Lyric.Pipeline.pipeAddGenericFuncs`), operating directly on the
+// already-parsed `SourceFile`s this bridge holds.  No `requirePub` — all
+// stdlib items are implicitly public; `excludeIntrinsics` keeps `mapGet`
+// with its codegen intrinsic.
 func collectStdlibGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl] {
   val genFuncs: List[FunctionDecl] = newList()
   var fi = 0
   while fi < files.count {
     val f = files[fi]
-    val pkgName = dottedPath(f.packageDecl.path)
-    var ii = 0
-    while ii < f.items.count {
-      match f.items[ii].kind {
-        case IFunc(decl) -> {
-          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-          val hasBody = match decl.body { case Some(_) -> true; case None -> false }
-          // Note: no isPub check here (unlike some user-package collectors).
-          // All stdlib items are implicitly public; visibility filtering is not needed.
-          if isGeneric and hasBody and not annsBlockSpecializationJvm(decl.annotations) and not (decl.name == "mapGet" and pkgName == "Std.Collections") {
-            genFuncs.add(decl)
-          }
-        }
-        case _ -> ()
-      }
-      ii = ii + 1
-    }
+    pipeAddGenericFuncs(f.items, dottedPath(f.packageDecl.path), false, true, genFuncs)
     fi = fi + 1
   }
   genFuncs
-}
-
-// True iff the annotation list carries a marker that makes a generic unsuitable
-// for monomorphization-by-copy (`@externTarget` / `@axiom`).  Mirrors
-// `Msil.Bridge.annsBlockSpecialization`.
-func annsBlockSpecializationJvm(anns: in List[Annotation]): Bool {
-  var i = 0
-  while i < anns.count {
-    val segs = anns[i].name.segments
-    if segs.count == 1 {
-      val n = segs[0]
-      if n == "externTarget" or n == "axiom" {
-        return true
-      }
-    }
-    i = i + 1
-  }
-  false
 }
 
 // Extern-type maps of every parsed package, keyed by dotted package name
@@ -1234,15 +1016,10 @@ pub func compileProjectToJarBundledWithFeatures(
   var sawMain = false
   var psi = 0
   while psi < pkgSrcs.count {
-    val pr = parse(pkgSrcs[psi])
-    if reportAndAbort(pr.diagnostics) {
-      return false
+    val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", activeFeatures, declaredFeatures) {
+      case Some(f) -> f
+      case None -> return false
     }
-    val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(activeFeatures, "jvm"), declaredFeatures, pr.file)
-    if reportAndAbort(cfgRes.diagnostics) {
-      return false
-    }
-    val uf = cfgRes.file
     if not sawMain and fileHasTopLevelMain(uf) {
       mainIdx = psi
       sawMain = true
@@ -1274,11 +1051,11 @@ pub func compileProjectToJarBundledWithFeatures(
   }
   var wei = 0
   while wei < userFiles.count {
-    val weRes = WireExpand.expandFile(userFiles[wei], weWires, weConfigs)
-    if reportAndAbort(weRes.diagnostics) {
-      return false
+    val rewritten = match pipeExpandAndRewrite(userFiles[wei], weWires, weConfigs, true, true, true) {
+      case Some(f) -> f
+      case None -> return false
     }
-    userFiles[wei] = Weaver.injectWeaveImports(Stubbable.stubbableRewriteFile(Aliases.rewriteFile(weRes.file)))
+    userFiles[wei] = rewritten
     wei = wei + 1
   }
   val userFile = userFiles[mainIdx]
@@ -1320,7 +1097,7 @@ pub func compileProjectToJarBundledWithFeatures(
     val pkgItems: List[Item] = newList()
     var ii = 0
     while ii < prFile.items.count {
-      if isTypeItem(prFile.items[ii]) {
+      if pipeIsCrossPackageItem(prFile.items[ii]) {
         pkgItems.add(prFile.items[ii])
       }
       ii = ii + 1
@@ -1351,7 +1128,7 @@ pub func compileProjectToJarBundledWithFeatures(
       val sItems: List[Item] = newList()
       var sii = 0
       while sii < sf.items.count {
-        if isTypeItem(sf.items[sii]) {
+        if pipeIsCrossPackageItem(sf.items[sii]) {
           sItems.add(sf.items[sii])
         }
         sii = sii + 1
