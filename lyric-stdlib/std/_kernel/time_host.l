@@ -1,16 +1,21 @@
 //! std/_kernel/time_host.l - host boundary for System.DateTime / System.TimeSpan.
 //!
-//! Holds every `@externTarget` and `extern type` declaration that
-//! `Std.Time` formerly declared inline.  Kernel function names carry a
-//! `host` prefix so they don't collide with the user-facing names in
-//! `Std.Time` when the test inliner merges every stdlib file into one
-//! user package.
+//! Holds every extern declaration that `Std.Time` formerly declared
+//! inline.  Kernel function names carry a `host` prefix so they don't
+//! collide with the user-facing names in `Std.Time` when the test
+//! inliner merges every stdlib file into one user package.
 //!
 //! The extern types (`Instant`, `Duration`, `DateTimeOffset`) keep
 //! their canonical names because they're the user-facing types —
 //! `Std.Time` re-exports them implicitly via the trampoline (the type
 //! aliases are visible package-wide once declared in this file and
 //! `Std.Time` imports it).
+//!
+//! Static members (factories, operators, fields, properties) are
+//! auto-FFI calls on the extern-type aliases; INSTANCE members of
+//! these value types keep their `@externTarget` wrappers — the
+//! auto-FFI path has no value-type receiver dispatch under the
+//! current bootstrap seed.
 //!
 //! Internal: only `Std.Time` should import this; per
 //! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
@@ -29,19 +34,26 @@ extern type Duration = "System.TimeSpan"
 
 extern type DateTimeOffset = "System.DateTimeOffset"
 
+extern type NetStopwatch = "System.Diagnostics.Stopwatch"
+
+extern type NetThread = "System.Threading.Thread"
+
 // =====================================================================
 // Construction.
 // =====================================================================
-@externTarget("System.DateTime.get_UtcNow")
-pub func hostNow(): Instant = ()
+pub func hostNow(): Instant {
+  Instant.UtcNow
+}
 
-@externTarget("System.TimeSpan.Zero")
-pub func hostZeroDuration(): Duration = ()
+pub func hostZeroDuration(): Duration {
+  Duration.Zero
+}
 
 // The out-param bridge to DateTime.TryParse; package-private — only
 // hostParseInstantOpt below calls it (the native backend cannot
 // express out params, so the shared surface routes through the Option
 // seam — D-N-027, same idiom as Std.UuidHost's hostParseCanonicalGuid).
+// stays @externTarget: out params have no auto-FFI call-site surface.
 @externTarget("System.DateTime.TryParse")
 func hostTryParseInstant(s: in String, value: out Instant): Bool = ()
 
@@ -61,32 +73,43 @@ pub func hostParseInstantOpt(s: in String): Option[Instant] {
 // =====================================================================
 // Duration constructors (in fractional units).
 // =====================================================================
-@externTarget("System.TimeSpan.FromMilliseconds")
-pub func hostMillis(n: in Double): Duration = ()
+pub func hostMillis(n: in Double): Duration {
+  Duration.FromMilliseconds(n)
+}
 
-@externTarget("System.TimeSpan.FromSeconds")
-pub func hostSeconds(n: in Double): Duration = ()
+pub func hostSeconds(n: in Double): Duration {
+  Duration.FromSeconds(n)
+}
 
-@externTarget("System.TimeSpan.FromMinutes")
-pub func hostMinutes(n: in Double): Duration = ()
+pub func hostMinutes(n: in Double): Duration {
+  Duration.FromMinutes(n)
+}
 
-@externTarget("System.TimeSpan.FromHours")
-pub func hostHours(n: in Double): Duration = ()
+pub func hostHours(n: in Double): Duration {
+  Duration.FromHours(n)
+}
 
-@externTarget("System.TimeSpan.FromDays")
-pub func hostDays(n: in Double): Duration = ()
+pub func hostDays(n: in Double): Duration {
+  Duration.FromDays(n)
+}
 
 // =====================================================================
-// Duration arithmetic.
+// Duration arithmetic.  DateTime/TimeSpan operators are static
+// op_* methods, spelled as explicit static calls on the aliases.
 // =====================================================================
-@externTarget("System.DateTime.op_Subtraction")
-pub func hostSince(later: in Instant, earlier: in Instant): Duration = ()
+pub func hostSince(later: in Instant, earlier: in Instant): Duration {
+  Instant.op_Subtraction(later, earlier)
+}
 
-@externTarget("System.DateTime.op_Addition")
-pub func hostPlus(t: in Instant, d: in Duration): Instant = ()
+pub func hostPlus(t: in Instant, d: in Duration): Instant {
+  Instant.op_Addition(t, d)
+}
 
 // =====================================================================
 // Inspection.
+// stays @externTarget (both): TotalMilliseconds/TotalSeconds are
+// instance properties of the TimeSpan value type — no auto-FFI
+// value-type receiver dispatch under the current bootstrap seed.
 // =====================================================================
 @externTarget("System.TimeSpan.TotalMilliseconds")
 pub func hostTotalMillis(d: in Duration): Double = ()
@@ -96,6 +119,9 @@ pub func hostTotalSeconds(d: in Duration): Double = ()
 
 // =====================================================================
 // Calendar arithmetic.
+// stays @externTarget (all three): instance methods on the DateTime
+// value type — no auto-FFI value-type receiver dispatch under the
+// current bootstrap seed.
 // =====================================================================
 @externTarget("System.DateTime.AddMonths")
 pub func hostAddMonths(t: in Instant, n: in Int): Instant = ()
@@ -109,38 +135,50 @@ pub func hostAddDays(t: in Instant, n: in Double): Instant = ()
 // =====================================================================
 // Epoch conversions.
 // =====================================================================
-@externTarget("System.DateTimeOffset.FromUnixTimeMilliseconds")
-pub func hostDtoFromEpochMillis(n: in Long): DateTimeOffset = ()
+pub func hostDtoFromEpochMillis(n: in Long): DateTimeOffset {
+  DateTimeOffset.FromUnixTimeMilliseconds(n)
+}
 
-@externTarget("System.DateTimeOffset.FromUnixTimeSeconds")
-pub func hostDtoFromEpochSeconds(n: in Long): DateTimeOffset = ()
+pub func hostDtoFromEpochSeconds(n: in Long): DateTimeOffset {
+  DateTimeOffset.FromUnixTimeSeconds(n)
+}
 
+// stays @externTarget: UtcDateTime is an instance property of the
+// DateTimeOffset value type (no auto-FFI value-type receiver dispatch
+// under the current bootstrap seed).
 @externTarget("System.DateTimeOffset.UtcDateTime")
 pub func hostDtoUtcDateTime(d: in DateTimeOffset): Instant = ()
 
 // =====================================================================
 // Comparison.
 // =====================================================================
-@externTarget("System.DateTime.op_LessThan")
-pub func hostInstantBefore(a: in Instant, b: in Instant): Bool = ()
+pub func hostInstantBefore(a: in Instant, b: in Instant): Bool {
+  Instant.op_LessThan(a, b)
+}
 
-@externTarget("System.DateTime.op_GreaterThan")
-pub func hostInstantAfter(a: in Instant, b: in Instant): Bool = ()
+pub func hostInstantAfter(a: in Instant, b: in Instant): Bool {
+  Instant.op_GreaterThan(a, b)
+}
 
-@externTarget("System.DateTime.op_Equality")
-pub func hostInstantEquals(a: in Instant, b: in Instant): Bool = ()
+pub func hostInstantEquals(a: in Instant, b: in Instant): Bool {
+  Instant.op_Equality(a, b)
+}
 
-@externTarget("System.TimeSpan.op_LessThan")
-pub func hostDurationLess(a: in Duration, b: in Duration): Bool = ()
+pub func hostDurationLess(a: in Duration, b: in Duration): Bool {
+  Duration.op_LessThan(a, b)
+}
 
-@externTarget("System.TimeSpan.op_GreaterThan")
-pub func hostDurationGreater(a: in Duration, b: in Duration): Bool = ()
+pub func hostDurationGreater(a: in Duration, b: in Duration): Bool {
+  Duration.op_GreaterThan(a, b)
+}
 
-@externTarget("System.TimeSpan.op_Addition")
-pub func hostAddDurations(a: in Duration, b: in Duration): Duration = ()
+pub func hostAddDurations(a: in Duration, b: in Duration): Duration {
+  Duration.op_Addition(a, b)
+}
 
-@externTarget("System.TimeSpan.op_Subtraction")
-pub func hostSubDurations(a: in Duration, b: in Duration): Duration = ()
+pub func hostSubDurations(a: in Duration, b: in Duration): Duration {
+  Duration.op_Subtraction(a, b)
+}
 
 // =====================================================================
 // ISO-8601 formatting.
@@ -151,6 +189,9 @@ pub func hostSubDurations(a: in Duration, b: in Duration): Duration = ()
 // precision and breaking the documented parse round-trip.  Fixed as
 // part of D-N-027: format explicitly with the round-trippable "o"
 // specifier.
+// stays @externTarget: ToString(string) is an instance method on the
+// DateTime value type (no auto-FFI value-type receiver dispatch under
+// the current bootstrap seed).
 // =====================================================================
 @externTarget("System.DateTime.ToString")
 func hostInstantToStringFmt(value: in Instant, fmt: in String): String = ()
@@ -163,29 +204,37 @@ pub func hostInstantToString(value: in Instant): String {
 // the clock time shifted to the host timezone; normalize back to UTC
 // so the parse seam returns the same instant `toIsoString` printed
 // regardless of the machine's timezone (D-N-027).
+// stays @externTarget: instance method on the DateTime value type.
 @externTarget("System.DateTime.ToUniversalTime")
 func hostToUniversalTime(t: in Instant): Instant = ()
 
 // ─── Monotonic clock ──────────────────────────────────────────────────────────
-@externTarget("System.Diagnostics.Stopwatch.GetTimestamp")
-pub func hostStopwatchTimestamp(): Long = ()
+pub func hostStopwatchTimestamp(): Long {
+  NetStopwatch.GetTimestamp()
+}
 
-@externTarget("System.Diagnostics.Stopwatch.Frequency")
-pub func hostStopwatchFrequency(): Long = ()
+pub func hostStopwatchFrequency(): Long {
+  NetStopwatch.Frequency
+}
 
 // Consumers: compute nanos in Std.Time.monotonicNanos using these two
 // building blocks so the formula lives in non-axiom Lyric code.
 // ─── Epoch millis — current time as Unix milliseconds ────────────────────────
-@externTarget("System.DateTimeOffset.get_UtcNow")
-pub func hostDtoUtcNow(): DateTimeOffset = ()
+pub func hostDtoUtcNow(): DateTimeOffset {
+  DateTimeOffset.UtcNow
+}
 
+// stays @externTarget: ToUnixTimeMilliseconds is an instance method on
+// the DateTimeOffset value type (no auto-FFI value-type receiver
+// dispatch under the current bootstrap seed).
 @externTarget("System.DateTimeOffset.ToUnixTimeMilliseconds")
 pub func hostDtoToEpochMillis(d: in DateTimeOffset): Long = ()
 
 // ─── Synchronous sleep — block the calling thread for `ms` milliseconds ───────
 // Backs Std.Time.sleepMillis (used by `lyric run/build --watch`'s poll loop).
-@externTarget("System.Threading.Thread.Sleep")
-pub func hostSleepMillis(ms: in Int): Unit = ()
+pub func hostSleepMillis(ms: in Int): Unit {
+  NetThread.Sleep(ms)
+}
 
 // =====================================================================
 // Epoch/monotonic seams — the exception-free clock surface both kernel
