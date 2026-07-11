@@ -598,7 +598,18 @@ jobs:
     # boolean-vs-string type mismatch: the `inputs` context returns a boolean
     # false for unchecked boolean inputs, so `false != 'false'` evaluates to
     # true (wrong) instead of the intended false.
-    if: github.event_name != 'workflow_dispatch' || inputs.publish_ecosystem
+    #
+    # The `!cancelled()` guard plus explicit needs.*.result checks replace the
+    # implicit success() that GitHub prepends to any job `if` lacking a status
+    # function.  success() evaluates over the TRANSITIVE needs chain, and this
+    # job's chain contains cleanup-on-failure (via finalize-release), which is
+    # skipped on every green run — so the implicit success() was always false
+    # and this job skipped unconditionally (actions/runner#2205).
+    if: >-
+      !cancelled() &&
+      needs.finalize-release.result == 'success' &&
+      needs.create-release.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' || inputs.publish_ecosystem)
 
     env:
       NUGET_SIGNING_CERT_BASE64:   ${{ secrets.NUGET_SIGNING_CERT_BASE64 }}
