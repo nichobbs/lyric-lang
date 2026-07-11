@@ -14743,6 +14743,52 @@ lyric-web manifest green.
 
 ---
 
+## D-progress-650 — type checker: unannotated lambda parameters typed from the expected function type (docs/59 A2)
+
+**Status:** ACCEPTED
+
+The second docs/59 Band-4 slice (after D-progress-646's A1/A3). An
+unannotated lambda parameter typed as `TyError` (the universal wildcard)
+even when the enclosing context fully determined it — lambda bodies were
+effectively unchecked, and the checker knew less than the MSIL backend's
+own HOF propagation (the docs/59 H10 disease in miniature).
+
+Expected types now flow into lambda inference at two positions:
+
+1. **Call arguments** — a two-pass scheme: lambda args are first typed
+   leniently (params TyError, diagnostics to a scratch list) so overload
+   selection sees the historical shape; after `findDirectSig` selects a
+   signature, each such lambda is re-checked once into the real
+   diagnostic list with the callee's parameter type as the expectation
+   (named-arg aware; for generic callees the expectation is substituted
+   from sibling arguments' inferred types, mirroring
+   `instantiateReturnType`, with deferred-lambda slots blanked so their
+   placeholders can't poison a binding). Function-typed callee *values*
+   thread their parameter types positionally.
+2. **Annotated bindings** — `SLocal` resolves the declared type first and
+   feeds it to `inferExprExpected`, so
+   `val f: (Int) -> Bool = { x -> x > 0 }` types its param from the
+   declaration.
+
+Zero-new-rejections engineering (the D-progress-646 bar): absent,
+non-function, or arity-mismatched expectations degrade to the historical
+TyError leniency; leftover generic TyVars in partially-inferred
+expectations erase to TyError. Once params are real, body type errors
+surface through the standard diagnostics.
+
+Verified: typechecker suite 259/259 with fail-before/pass-after cases;
+repo-wide triage (compiler + stdlib + lyric-web 25/25 + lyric-validation
+9/9 + all 11 examples + JVM subset) surfaced no false positives; the
+integrated-tree gate ran the lambda-sensitive suites
+(closure_zero_overhead, closure_correctness, hof_type_propagation, mono,
+weaver) green on both targets.
+
+**Related:** docs/59 §5.1 A2, D-progress-646, #5548 (mono's lambda-arg
+inference — the TypeExpr-level sibling, still open), docs/59 A4 (method
+call checking — the next Band-4 slice).
+
+---
+
 ---
 
 ## Decisions deferred to v2 or later
