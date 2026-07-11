@@ -1,53 +1,57 @@
 //! OTLP (OpenTelemetry Protocol) exporter for lyric-otel.
 //!
-//! Configures the OTel SDK to export telemetry to an OTLP endpoint.
-//! Call one or more of configureOtlpTraces / configureOtlpMetrics /
-//! configureOtlpLogs once at application startup, before any spans or metrics
-//! are created.  The existing OTel.startSpan / OTel.endSpan / OTel.incrementCounter
-//! calls continue to work unchanged — the SDK pipeline picks them up and
-//! batches them for export.
+//! Call `configureOtlpTraces`/`configureOtlpMetrics` (or the
+//! `configureOtlp` convenience wrapper) once at application startup, then
+//! call `flushOtlpAsync` periodically (or at least once before process
+//! exit) to POST every span/metric buffered by `OTel.startSpan`/
+//! `OTel.endSpan`/`OTel.incrementCounter`/`OTel.recordHistogram` since
+//! the last flush to the collector as OTLP/HTTP protobuf:
 //!
-//! Exports via gRPC+protobuf (default port 4317) or HTTP+protobuf (port 4318):
+//!   import OTel.Otlp
 //!
-//!   OTel.Otlp.configureOtlp(OtlpExporterConfig {
-//!     endpoint  = "http://collector:4317"
-//!     protocol  = OtlpProtocol.Grpc
-//!     timeoutMs = 10000
-//!     headers   = []
-//!   })
+//!   func main(): Unit {
+//!     val _ = configureOtlp(defaultConfig())
+//!     // ... application code calling OTel.startSpan/endSpan/... ...
+//!     val ok = await flushOtlpAsync(5000)
+//!   }
 //!
-//! Before process exit, call flushOtlp(timeoutMs) to ensure buffered data is
-//! sent.  Unregistered providers are flushed on garbage collection, but an
-//! explicit flush is strongly recommended in Lambda / short-lived contexts.
+//! Transport: OTLP/HTTP with protobuf bodies (`Content-Type:
+//! application/x-protobuf`), built by `OTel.Otlp.Codec` (pure Lyric, on
+//! top of `lyric-proto`) and sent via `_kernel/net/otlp_kernel.l`'s
+//! `netPostProtobuf` — a dedicated `HttpClient`/`ByteArrayContent`
+//! binding, not `Std.Http` (whose public POST/PUT/PATCH surface only
+//! builds UTF-8 `StringContent` bodies and would corrupt arbitrary
+//! protobuf bytes >= 0x80).
 //!
-//! Implementation note: on .NET, the kernel calls
-//!   Sdk.CreateTracerProviderBuilder()
-//!     .AddSource("lyric.otel")
-//!     .AddOtlpExporter(…)
-//!     .Build()
-//! The returned provider is kept alive in a .NET static field for the process
-//! lifetime.  On JVM (Phase 6), the equivalent OTel Java SDK APIs are used.
+//! `OtlpProtocol.Grpc` is declared for API-shape parity with real OTel
+//! SDKs but is **not implemented**: OTLP/gRPC needs HTTP/2 trailers-based
+//! framing, well beyond what this redesign (issue #5410) scoped in.
+//! `configureOtlpTraces`/`configureOtlpMetrics` return `Err` immediately
+//! for `OtlpProtocol.Grpc` rather than silently ignoring it.
+//!
+//! There is no OTLP **logs** exporter: `configureOtlpLogs` always
+//! returns `Err` — see "Known limitations" in README.md.
+//!
+//! `jvm`: every `configureOtlp*` function returns `Err` — OTLP/HTTP
+//! export is dotnet-only today (see `_kernel/jvm/otlp_kernel.l`).
 package OTel.Otlp
 
+import OTel.Types
+import OTel.Otlp.Codec as Codec
 import OTel.Kernel.Net.Otlp as OtelNetOtlp
 import OTel.Kernel.Jvm.Otlp as OtelJvmOtlp
 import Std.Core
+import Std.Collections
 
 // ─── Protocol selection ───────────────────────────────────────────────────────
 /// The OTLP transport protocol.
 pub enum OtlpProtocol {
-  /// gRPC + protobuf (OTLP/gRPC) — default collector port 4317.
+  /// gRPC + protobuf (OTLP/gRPC) — **not implemented**, see module doc.
   case Grpc
-  /// HTTP/1.1 + protobuf (OTLP/HTTP) — default collector port 4318.
-  /// Useful when the runtime environment blocks HTTP/2 or gRPC traffic.
+  /// HTTP/1.1 + protobuf (OTLP/HTTP) — the only implemented transport.
+  /// Default collector port 4318, paths `/v1/traces` and `/v1/metrics`
+  /// appended automatically to the configured `endpoint`.
   case HttpProtobuf
-}
-
-func protocolId(p: OtlpProtocol): Int {
-  match p {
-    case OtlpProtocol.Grpc -> 0
-    case OtlpProtocol.HttpProtobuf -> 1
-  }
 }
 
 // ─── Exporter configuration ───────────────────────────────────────────────────
@@ -66,105 +70,253 @@ pub record OtlpExporterConfig {
   headers: slice[OtlpHeader]
 }
 
-/// A default OTLP config pointing at a local collector on gRPC.
+/// A default OTLP config pointing at a local collector's OTLP/HTTP
+/// endpoint (port 4318 — the OTLP/HTTP default; port 4317 is OTLP/gRPC,
+/// which this library does not implement, see module doc).
+@stable(since = "0.2")
 pub func defaultConfig(): OtlpExporterConfig {
-  OtlpExporterConfig(endpoint = "http://localhost:4317", protocol = OtlpProtocol.Grpc, timeoutMs = 10000, headers = [])
+  OtlpExporterConfig(
+    endpoint = "http://localhost:4318",
+    protocol = OtlpProtocol.HttpProtobuf,
+    timeoutMs = 10000,
+    headers = []
+  )
 }
 
-// ─── Internal serialisation ───────────────────────────────────────────────────
-// Headers are passed to the kernel as a comma-separated "key=value" string,
-// the format the OTel SDK's options.Headers property accepts.
-func headersString(cfg: OtlpExporterConfig): String {
-  var buf = ""
-  var i = 0
-  while i < cfg.headers.length {
-    val h = cfg.headers[i]
-    if i > 0 {
-      buf = buf + ","
-    }
-    buf = buf + h.key + "=" + h.value
-    i = i + 1
+// ─── Configured-signal state ──────────────────────────────────────────────────
+/// Thread-safe holder for the traces/metrics exporter configuration.
+/// Traces and metrics may be configured independently (and with
+/// different endpoints/headers), matching `configureOtlpTraces`/
+/// `configureOtlpMetrics`'s independent signatures.
+pub protected type ExporterConfigState {
+  var tracesConfig: Option[OtlpExporterConfig]
+  var metricsConfig: Option[OtlpExporterConfig]
+  entry setTraces(cfg: in OtlpExporterConfig): Unit {
+    tracesConfig = Some(value = cfg)
   }
-  return buf
+  entry setMetrics(cfg: in OtlpExporterConfig): Unit {
+    metricsConfig = Some(value = cfg)
+  }
+  func traces(): Option[OtlpExporterConfig] {
+    return tracesConfig
+  }
+  func metrics(): Option[OtlpExporterConfig] {
+    return metricsConfig
+  }
+}
+
+func newExporterConfigState(): ExporterConfigState {
+  ExporterConfigState(tracesConfig = None, metricsConfig = None)
+}
+
+val exporterState: ExporterConfigState = newExporterConfigState()
+
+// `netPostProtobuf` (dotnet) is a real transport; `jvmPostProtobuf` (jvm)
+// always returns `Err` (see `_kernel/jvm/otlp_kernel.l`'s module doc).
+// Before #5587/#5594, `configureOtlpTraces`/`configureOtlpMetrics` stored
+// the config and returned `Ok` unconditionally on *both* targets, so a JVM
+// caller believed export was configured — the module doc already claimed
+// "every `configureOtlp*` function returns `Err`" on `jvm`, but the code
+// didn't do that. Gate configuration itself on transport availability so
+// the `jvm` feature fails fast and honestly, instead of silently buffering
+// spans/metrics that can never be exported (and, for histograms, panicking
+// later in `flushOtlpAsync` when `OTel.Otlp.Codec` tries to encode one via
+// `jvmDoubleToInt64Bits` — see that function's doc comment).
+@cfg(feature = "dotnet")
+func otlpTransportImplemented(): Bool {
+  true
+}
+
+@cfg(feature = "jvm")
+func otlpTransportImplemented(): Bool {
+  false
+}
+
+func otlpTransportNotImplementedError(): String {
+  "lyric-otel's JVM OTLP/HTTP transport is not implemented (dotnet-only today); see lyric-otel/README.md and docs/44-jvm-production-readiness-plan.md"
 }
 
 // ─── Signal-specific configure functions ──────────────────────────────────────
-/// Configure the OTel SDK to export traces via OTLP.
-/// Sets up a TracerProvider listening to the "lyric.otel" ActivitySource (on .NET)
-/// with a batching OTLP exporter.
-///
-/// Returns Err if the SDK is already configured for traces, or if the endpoint
-/// is unreachable at setup time (applies only when protocol = Grpc and the SDK
-/// performs a handshake on open).
-@cfg(feature = "dotnet")
+/// Configure OTLP/HTTP trace export.  Returns `Err` for
+/// `OtlpProtocol.Grpc` (not implemented — see module doc) and for the `jvm`
+/// feature (OTLP/HTTP export is dotnet-only today).
+@stable(since = "0.2")
 pub func configureOtlpTraces(cfg: OtlpExporterConfig): Result[Unit, String] {
-  OtelNetOtlp.netConfigureOtlpTraces(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
+  if not otlpTransportImplemented() {
+    return Err(error = otlpTransportNotImplementedError())
+  }
+  match cfg.protocol {
+    case OtlpProtocol.Grpc -> Err(error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)")
+    case OtlpProtocol.HttpProtobuf -> {
+      exporterState.setTraces(cfg)
+      Ok(value = ())
+    }
+  }
 }
 
-@cfg(feature = "jvm")
-pub func configureOtlpTraces(cfg: OtlpExporterConfig): Result[Unit, String] {
-  OtelJvmOtlp.jvmConfigureOtlpTraces(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
-}
-
-/// Configure the OTel SDK to export metrics via OTLP.
-/// Sets up a MeterProvider with a periodic OTLP exporter (default interval: 60 s,
-/// overridable via OTEL_METRIC_EXPORT_INTERVAL environment variable).
-@cfg(feature = "dotnet")
+/// Configure OTLP/HTTP metrics export.  Returns `Err` for
+/// `OtlpProtocol.Grpc` (not implemented — see module doc) and for the `jvm`
+/// feature (OTLP/HTTP export is dotnet-only today).
+@stable(since = "0.2")
 pub func configureOtlpMetrics(cfg: OtlpExporterConfig): Result[Unit, String] {
-  OtelNetOtlp.netConfigureOtlpMetrics(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
+  if not otlpTransportImplemented() {
+    return Err(error = otlpTransportNotImplementedError())
+  }
+  match cfg.protocol {
+    case OtlpProtocol.Grpc -> Err(error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)")
+    case OtlpProtocol.HttpProtobuf -> {
+      exporterState.setMetrics(cfg)
+      Ok(value = ())
+    }
+  }
 }
 
-@cfg(feature = "jvm")
-pub func configureOtlpMetrics(cfg: OtlpExporterConfig): Result[Unit, String] {
-  OtelJvmOtlp.jvmConfigureOtlpMetrics(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
-}
-
-/// Configure the OTel SDK to export logs via OTLP.
-/// Sets up a LoggerProvider that receives log records forwarded from Std.Log.
-@cfg(feature = "dotnet")
+/// OTLP log export is not implemented (traces and metrics only).
+/// Always returns `Err`.
+@stable(since = "0.2")
 pub func configureOtlpLogs(cfg: OtlpExporterConfig): Result[Unit, String] {
-  OtelNetOtlp.netConfigureOtlpLogs(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
+  Err(error = "lyric-otel does not implement OTLP log export (traces and metrics only); see README.md")
 }
 
-@cfg(feature = "jvm")
-pub func configureOtlpLogs(cfg: OtlpExporterConfig): Result[Unit, String] {
-  OtelJvmOtlp.jvmConfigureOtlpLogs(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
+/// Configure traces then metrics with the same config.  Stops at the
+/// first error (logs are not included — `configureOtlpLogs` always
+/// fails, so folding it in here would always mask the traces/metrics
+/// result).
+@stable(since = "0.2")
+pub func configureOtlp(cfg: OtlpExporterConfig): Result[Unit, String] {
+  match configureOtlpTraces(cfg) {
+    case Err(e) -> Err(error = e)
+    case Ok(_) -> configureOtlpMetrics(cfg)
+  }
 }
 
-// ─── Convenience: configure all three signals ─────────────────────────────────
-/// Configure traces, metrics, and logs to export via OTLP with the same config.
+// ─── Transport dispatch ───────────────────────────────────────────────────────
 @cfg(feature = "dotnet")
-pub func configureOtlp(cfg: OtlpExporterConfig): Result[Unit, String] {
-  val r = configureOtlpTraces(cfg)
-  configureOtlpMetrics(cfg)
-  configureOtlpLogs(cfg)
-  return r
+async func postProtobuf(
+  url: String,
+  payload: slice[Byte],
+  headerKeys: slice[String],
+  headerValues: slice[String],
+  timeoutMs: Int,
+): Result[Int, String] {
+  await OtelNetOtlp.netPostProtobuf(url, payload, headerKeys, headerValues, timeoutMs)
 }
 
 @cfg(feature = "jvm")
-pub func configureOtlp(cfg: OtlpExporterConfig): Result[Unit, String] {
-  val r = configureOtlpTraces(cfg)
-  configureOtlpMetrics(cfg)
-  configureOtlpLogs(cfg)
-  return r
+async func postProtobuf(
+  url: String,
+  payload: slice[Byte],
+  headerKeys: slice[String],
+  headerValues: slice[String],
+  timeoutMs: Int,
+): Result[Int, String] {
+  await OtelJvmOtlp.jvmPostProtobuf(url, payload, headerKeys, headerValues, timeoutMs)
+}
+
+func joinUrl(base: in String, path: in String): String {
+  if base.length > 0 and base.substring(base.length - 1, 1) == "/" {
+    base.substring(0, base.length - 1) + path
+  } else {
+    base + path
+  }
+}
+
+func headerKeysOf(headers: in slice[OtlpHeader]): slice[String] {
+  var ks: List[String] = newList()
+  var i = 0
+  while i < headers.length {
+    ks.add(headers[i].key)
+    i = i + 1
+  }
+  ks.toArray()
+}
+
+func headerValuesOf(headers: in slice[OtlpHeader]): slice[String] {
+  var vs: List[String] = newList()
+  var i = 0
+  while i < headers.length {
+    vs.add(headers[i].value)
+    i = i + 1
+  }
+  vs.toArray()
+}
+
+func isSuccessStatus(status: in Int): Bool {
+  status >= 200 and status < 300
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
-/// Force-flush all configured OTLP exporters.
-/// Blocks for up to `timeoutMs` milliseconds waiting for in-flight batches to
-/// be sent.  Returns true if all exporters flushed successfully.
+/// Drain every buffered span (if traces are configured) and snapshot
+/// every counter/histogram (if metrics are configured), encode each as
+/// an OTLP/HTTP protobuf export request, and POST them to the
+/// corresponding `/v1/traces` / `/v1/metrics` path under the configured
+/// endpoint.  Returns `true` only if every configured, non-empty export
+/// completed with a 2xx response — `false` on any transport failure or
+/// non-2xx status.  A signal that was never configured is skipped (not
+/// counted as a failure); an empty buffer for a configured signal is
+/// also skipped (no request sent).
 ///
-/// Call this before process exit in Lambda functions and short-lived containers
-/// to ensure the last batch of telemetry reaches the collector.
-@cfg(feature = "dotnet")
-pub func flushOtlp(timeoutMs: Int): Bool {
-  OtelNetOtlp.netFlushOtlp(timeoutMs)
+/// Spans are only removed from the buffer once their export POST actually
+/// succeeds (a 2xx response) — a transport failure or non-2xx status
+/// leaves them buffered so the next `flushOtlpAsync` call retries them,
+/// instead of silently dropping a batch that was never delivered (#5588).
+/// Counters and histograms are only snapshotted (never removed): OTLP
+/// reports them with `AGGREGATION_TEMPORALITY_CUMULATIVE`, so re-sending
+/// the running total on every flush is correct, not a duplicate.
+///
+/// Call this before process exit (Lambda / short-lived containers) and
+/// periodically otherwise — there is no background flush thread.
+@stable(since = "0.2")
+pub async func flushOtlpAsync(timeoutMs: Int): Bool {
+  var allOk = true
+  match exporterState.traces() {
+    case None -> {
+    }
+    case Some(cfg) -> {
+      val spans = globalSpanBuffer.snapshot()
+      if spans.length > 0 {
+        val payload = Codec.encodeExportTraceServiceRequest(spans)
+        val url = joinUrl(cfg.endpoint, "/v1/traces")
+        match await postProtobuf(url, payload, headerKeysOf(cfg.headers), headerValuesOf(cfg.headers), timeoutMs) {
+          case Err(_) -> {
+            allOk = false
+          }
+          case Ok(status) -> {
+            if isSuccessStatus(status) {
+              globalSpanBuffer.removeExported(spans.length)
+            } else {
+              allOk = false
+            }
+          }
+        }
+      }
+    }
+  }
+  match exporterState.metrics() {
+    case None -> {
+    }
+    case Some(cfg) -> {
+      val counters = globalMetricsBuffer.snapshotCounters().toArray()
+      val histograms = globalMetricsBuffer.snapshotHistograms().toArray()
+      if counters.length > 0 or histograms.length > 0 {
+        val nowNanos = nowUnixNanos()
+        var metricMessages: List[slice[Byte]] = newList()
+        for c in counters {
+          metricMessages.add(Codec.encodeSumMetric(c.name, c.unit, c.total, nowNanos))
+        }
+        for h in histograms {
+          metricMessages.add(Codec.encodeHistogramMetric(h.name, h.unit, h.count, h.sum, nowNanos))
+        }
+        val payload = Codec.encodeExportMetricsServiceRequest(metricMessages)
+        val url = joinUrl(cfg.endpoint, "/v1/metrics")
+        match await postProtobuf(url, payload, headerKeysOf(cfg.headers), headerValuesOf(cfg.headers), timeoutMs) {
+          case Err(_) -> {
+            allOk = false
+          }
+          case Ok(status) -> if not isSuccessStatus(status) { allOk = false }
+        }
+      }
+    }
+  }
+  allOk
 }
-
-@cfg(feature = "jvm")
-pub func flushOtlp(timeoutMs: Int): Bool {
-  OtelJvmOtlp.jvmFlushOtlp(timeoutMs)
-}
-
-// ─── config block ─────────────────────────────────────────────────────────────
-// OtlpDefaults config block (compile-time DI, Phase 5+): endpoint, protocol, timeoutMs.

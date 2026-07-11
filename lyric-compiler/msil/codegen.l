@@ -189,6 +189,18 @@ pub record CodegenCtx {
   // MInt, etc.) rather than always MObject — prevents StackUnexpected / IPE when
   // value-type fields are compared with ceq vs. Object.Equals (#1442).
   fieldMsilTypes: Map[String, MsilType]
+  // Declared return/param MsilTypes of a function-typed record field ("a
+  // `f: (A,...) -> R` field"), keyed "FQClassName/fieldName" — the field
+  // counterpart of `funcValRetTypes`/`funcValParamTypes` (#5511). Consulted by
+  // `recordFieldFuncKeyMsil` so `val fld = h.f` (an INFERRED local binding
+  // from a record-field read, with no literal `(A,...) -> R` annotation of
+  // its own) still registers `fctx.funcValRetTypes`/`funcValParamTypes` for
+  // `fld`, so a later `fld()` unboxes its result instead of leaving a boxed
+  // `object` that only "works" for `.toString()` and corrupts arithmetic
+  // (the general gap tracked in #5366; this targets its record-field-read
+  // manifestation specifically).
+  fieldFuncRetTypes: Map[String, MsilType]
+  fieldFuncParamTypes: Map[String, List[MsilType]]
   funcTokens: Map[String, Int]  // funcName → MethodDef token
   // Existence-only marker set: "pkgName.funcName" for EVERY function declared
   // anywhere in the bundle, pre-seeded bundle-wide (preSeedBundleAsyncRetTypesMsil)
@@ -551,6 +563,14 @@ pub record CodegenCtx {
   // synthesizeGeneratorMsil increment this in source-declaration order so
   // the computed FQN is consistent across the pre-scan and synthesis passes.
   genTicker: List[Int]
+  // Pass 1's predicted generator FieldDef-row count, one entry per generator
+  // in source order (#4259). `synthesizeGeneratorMsil` indexes this by its
+  // own `tick` (= cctx.genTicker.count before incrementing, so both lists
+  // stay in lockstep) and panics if its real `genFields.count` disagrees,
+  // turning any prediction gap in `countGeneratorFieldsMsil` into a loud
+  // build failure instead of a silently-corrupted FieldDef token for every
+  // type declared after the generator.
+  genFieldCountPredictions: List[Int]
   // Non-generic IEnumerable / IEnumerator — used by the MExternEnumerable
   // for-loop protocol to iterate extern types that implement IEnumerable
   // but not IList (e.g. MapKeyCollection[K,V], MapValueCollection[K,V]).
@@ -1689,6 +1709,8 @@ pub func newCodegenCtx(
     ctorDefaultExprs = newMap(),
     fieldVarIndices = newMap(),
     fieldMsilTypes = newMap(),
+    fieldFuncRetTypes = newMap(),
+    fieldFuncParamTypes = newMap(),
     funcTokens = funcToks,
     bundleFuncFqns = newMap(),
     funcRetTypes = newMap(),
@@ -1793,6 +1815,7 @@ pub func newCodegenCtx(
     trCancToken = trCancToken,
     trTcs1 = trTcs1,
     genTicker = newList(),
+    genFieldCountPredictions = newList(),
     trIEnumerable = trIEnumerable,
     trIEnumerator = trIEnumerator,
     tokIEnumerableGetEnumerator = tokIEnumerableGetEnumerator,
@@ -2422,6 +2445,26 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               // return the correct MSIL type rather than falling back to MObject.
               if not cctx.fieldMsilTypes.containsKey(pkgName + "/" + f.name) {
                 cctx.fieldMsilTypes.add(pkgName + "/" + f.name, fty)
+              }
+              // Function-typed field (#5511): record the real return/param
+              // types so a LATER inferred local binding (`val fld = h.f`) can
+              // still register `funcValRetTypes`/`funcValParamTypes` for
+              // `fld` via `recordFieldFuncKeyMsil`, even though the binding
+              // itself carries no literal `(A,...) -> R` annotation.
+              match f.ty.kind {
+                case TFunction(fParamTes, fRetTe) -> {
+                  if not cctx.fieldFuncRetTypes.containsKey(className + "/" + f.name) {
+                    cctx.fieldFuncRetTypes.add(className + "/" + f.name, typeExprToMsilCtx(cctx, fRetTe, pkgName))
+                    val fParamMsilTys: List[MsilType] = newList()
+                    var ffpi = 0
+                    while ffpi < fParamTes.count {
+                      fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[ffpi], pkgName))
+                      ffpi = ffpi + 1
+                    }
+                    cctx.fieldFuncParamTypes.add(className + "/" + f.name, fParamMsilTys)
+                  }
+                }
+                case _ -> ()
               }
               if recGenerics.count > 0 {
                 // For a generic record, EMember reads a field through a closed
@@ -3186,6 +3229,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           // Generator class emits 7 methods: .ctor, MoveNext, SetStateMachine,
           // GetAsyncEnumerator, MoveNextAsync, get_Current, DisposeAsync.
           methodDefRow = methodDefRow + 7
+          // #4259: generator classes ALSO emit FieldDef rows (_state, _tcs,
+          // __current, one __pN per param, one __local_<slot> per hoisted
+          // body local) — see countGeneratorFieldsMsil's lockstep comment.
+          // Record the prediction so synthesizeGeneratorMsil (Pass 2) can
+          // cross-check it against the real hoisted field count.
+          val predictedGenFields = countGeneratorFieldsMsil(decl)
+          fieldDefRow = fieldDefRow + predictedGenFields
+          cctx.genFieldCountPredictions.add(predictedGenFields)
         }
       }
       // IRangeType, IImpl, IConst, IVal: no FieldDef rows in the TypeDef section.
@@ -4343,8 +4394,7 @@ func materializeBoxedElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy
     }
     case _ -> {
       if isValueType(elemTy) {
-        // 0x01000000 = ECMA-335 TypeRef table token prefix; boxTypeRef returns a bare RID.
-        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, elemTy)))
+        insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, elemTy)))
       }
     }
   }
@@ -5139,7 +5189,22 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
 }
 
 // Return true if an MsilType is a value type that must be boxed before
-// calling virtual/interface methods.
+// calling virtual/interface methods, storing into an `object` slot, or
+// crossing the uniform-ABI generic-call boundary (a generic function's
+// erased `object` parameters/return).
+//
+// Includes the extern struct encodings (`MValueTypeRef`, e.g.
+// `System.Guid`/`System.TimeSpan`/`System.DateTime`, and
+// `MValueTypeGenericInst`, e.g. a closed `KeyValuePair<K,V>` instantiation)
+// alongside the primitives (#5196): before this widening, a uniform-ABI
+// generic call (e.g. `unwrapOr[T](Option[T], T): T` instantiated at an
+// extern value-type `T`) never boxed the argument or `unbox.any`'d the
+// result, so the raw struct hit the stack where the erased `object` ABI
+// expected a reference — `System.InvalidProgramException` at JIT time
+// (`uuid_tests.l`'s `unwrapOr(parseUuidOpt(...), nilUuid())`).
+// `isValueTypeReceiverMsil` already included both extern shapes for the
+// receiver/`call`-vs-`callvirt` decision; this brings every other
+// box/unbox decision (this function's ~30 call sites) into agreement.
 func isValueType(ty: in MsilType): Bool {
   match ty {
     case MInt -> true
@@ -5148,16 +5213,17 @@ func isValueType(ty: in MsilType): Bool {
     case MBool -> true
     case MChar -> true
     case MByte -> true
-    // An extern BCL struct (System.Guid / System.TimeSpan / …) is as much a
+    // An extern BCL struct (System.Guid / System.TimeSpan / ...) is as much a
     // value type as the six primitives: it must be boxed into every object
     // context (Object.Equals for `==`, ToString for interpolation, erased
     // generic-function parameters) and unboxed back out (castObjectToMsil).
     // Leaving it out silently emitted callvirt/Equals against the raw struct
-    // bits — InvalidProgramException at runtime (docs/59 §3.2 F6, #5196).
-    // `MValueTypeGenericInst` stays excluded: `boxTypeRef` can only name a
-    // TypeRef token, not the closed TypeSpec a generic instantiation's
-    // box/unbox needs, so widening it here would emit a wrong `box object`.
+    // bits -- InvalidProgramException at runtime (docs/59 SS3.2 F6, #5196).
+    // `MValueTypeGenericInst` is included too: `boxTypeRef` now returns a
+    // fully-tagged token and names the closed TypeSpec (0x1B) for generic
+    // instantiations, so the earlier wrong-`box object` hazard is gone.
     case MValueTypeRef(_, _) -> true
+    case MValueTypeGenericInst(_, _, _) -> true
     case _ -> false
   }
 }
@@ -5273,29 +5339,45 @@ func findImportedFqnWithHint(
   }
 }
 
-// Return the TypeRef row for boxing (or unboxing) a value type.
-// MValueTypeRef encodes an extern BCL value type; its typeRefCode is a
-// TypeDefOrRef coded index (tdrTypeRef(row) = row*4+1), so the raw row is
-// (code-1)/4, which gives the 0x01000000-token the JIT needs for box/unbox.any.
-// MValueTypeRef is only produced by internFfiTypeRef, which always allocates a
-// TypeRef row (never TypeDef or TypeSpec), so the TypeRef-kind formula is safe.
+// Return the FULLY TAGGED metadata token for boxing (or unboxing) a value
+// type — ready to use directly as an `MBox`/`MUnboxAny` `typeToken` (#5196).
+// - Primitives and `MValueTypeRef` (a non-generic extern struct, e.g.
+//   `System.Guid`/`System.TimeSpan`/`System.DateTime`) resolve to a TypeRef
+//   row, tagged 0x01000000. `MValueTypeRef`'s `typeRefCode` is a TypeDefOrRef
+//   coded index (`tdrTypeRef(row) = row*4+1`), so the raw row is (code-1)/4.
+//   `MValueTypeRef` is only produced by `internFfiTypeRef`, which always
+//   allocates a TypeRef row (never TypeDef or TypeSpec), so this formula is
+//   safe.
+// - `MValueTypeGenericInst` (a closed generic extern struct, e.g. a Lyric
+//   `extern type` binding to `KeyValuePair<K,V>`) needs its CLOSED
+//   instantiation — `box`/`unbox.any` against the open generic TypeRef is
+//   rejected by the CLR — so it resolves to a TypeSpec row via
+//   `buildValueTypeGenericInstBlobWithCtx`, tagged 0x1B000000. `ctxAddTypeSpec`
+//   dedups by `sigKey`, so repeated calls for the same closed instantiation
+//   reuse the same row rather than growing the TypeSpec table.
 func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
   match ty {
-    case MInt -> cctx.trInt32
-    case MLong -> cctx.trInt64
-    case MDouble -> cctx.trDouble
-    case MBool -> cctx.trBoolean
-    case MChar -> cctx.trChar
-    case MByte -> cctx.trByte
-    case MValueTypeRef(code, _) -> (code - 1) / 4
-    case _ -> cctx.lctx.trObject
+    case MInt -> 0x01000000 + cctx.trInt32
+    case MLong -> 0x01000000 + cctx.trInt64
+    case MDouble -> 0x01000000 + cctx.trDouble
+    case MBool -> 0x01000000 + cctx.trBoolean
+    case MChar -> 0x01000000 + cctx.trChar
+    case MByte -> 0x01000000 + cctx.trByte
+    case MValueTypeRef(code, _) -> 0x01000000 + (code - 1) / 4
+    case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
+      val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
+      val tsKey = "box_vtgi_" + msilTypeKeyStr(ty)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+      0x1B000000 + tsRow
+    }
+    case _ -> 0x01000000 + cctx.lctx.trObject
   }
 }
 
 // Box a value type on the stack.  Does nothing for reference types.
 func boxIfNeededMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): Unit {
   if isValueType(ty) {
-    insns.add(MBox(typeToken = 0x01000000 + boxTypeRef(cctx, ty)))
+    insns.add(MBox(typeToken = boxTypeRef(cctx, ty)))
   }
 }
 
@@ -5345,7 +5427,7 @@ func canUseTypedArrayLoad(ty: in MsilType): Bool {
 // `Map[String, Int]` must `unbox.any int32` before the `Option_Some<int>` ctor.
 func castObjectToMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): Unit {
   if isValueType(ty) {
-    insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, ty)))
+    insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, ty)))
   } else {
     match ty {
       case MString -> insns.add(MCastclassByName(className = "System.String"))
@@ -7632,7 +7714,7 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = rS - fctx.paramCount))
       }
       if bltRhsTy == MObject and isValueType(bltLhsTy) {
-        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bltLhsTy)))
+        insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bltLhsTy)))
       }
       if bltLhsTy == MObject and isValueType(bltRhsTy) {
         // Lhs arrived as an erased object while rhs is a concrete value type;
@@ -7641,7 +7723,7 @@ func lowerBinopMsil(
         val bltLhsUnboxN = "__blt_lhu_" + toString(fctx.slotTicker.count)
         val bltLhsUnboxS = allocSlotMsil(fctx, bltLhsUnboxN, bltRhsTy)
         insns.add(MStloc(slot = bltLhsUnboxS - fctx.paramCount))
-        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bltRhsTy)))
+        insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bltRhsTy)))
         insns.add(MLdloc(slot = bltLhsUnboxS - fctx.paramCount))
       }
       match bltLhsTy {
@@ -7672,7 +7754,7 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = rS - fctx.paramCount))
       }
       if bgtRhsTy == MObject and isValueType(bgtLhsTy) {
-        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bgtLhsTy)))
+        insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bgtLhsTy)))
       }
       if bgtLhsTy == MObject and isValueType(bgtRhsTy) {
         // Symmetric lhs-unbox: lhs is erased object, rhs is a concrete value type.
@@ -7681,7 +7763,7 @@ func lowerBinopMsil(
         val bgtLhsUnboxN = "__bgt_lhu_" + toString(fctx.slotTicker.count)
         val bgtLhsUnboxS = allocSlotMsil(fctx, bgtLhsUnboxN, bgtRhsTy)
         insns.add(MStloc(slot = bgtLhsUnboxS - fctx.paramCount))
-        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bgtRhsTy)))
+        insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bgtRhsTy)))
         insns.add(MLdloc(slot = bgtLhsUnboxS - fctx.paramCount))
       }
       match bgtLhsTy {
@@ -7712,7 +7794,7 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = rS - fctx.paramCount))
       }
       if blteRhsTy == MObject and isValueType(blteLhsTy) {
-        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, blteLhsTy)))
+        insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, blteLhsTy)))
       }
       if blteLhsTy == MObject and isValueType(blteRhsTy) {
         // Symmetric lhs-unbox: lhs is erased object, rhs is a concrete value type.
@@ -7721,7 +7803,7 @@ func lowerBinopMsil(
         val blteLhsUnboxN = "__blte_lhu_" + toString(fctx.slotTicker.count)
         val blteLhsUnboxS = allocSlotMsil(fctx, blteLhsUnboxN, blteRhsTy)
         insns.add(MStloc(slot = blteLhsUnboxS - fctx.paramCount))
-        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, blteRhsTy)))
+        insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, blteRhsTy)))
         insns.add(MLdloc(slot = blteLhsUnboxS - fctx.paramCount))
       }
       match blteLhsTy {
@@ -7754,7 +7836,7 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = rS - fctx.paramCount))
       }
       if bgteRhsTy == MObject and isValueType(bgteLhsTy) {
-        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bgteLhsTy)))
+        insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bgteLhsTy)))
       }
       if bgteLhsTy == MObject and isValueType(bgteRhsTy) {
         // Symmetric lhs-unbox: lhs is erased object, rhs is a concrete value type.
@@ -7763,7 +7845,7 @@ func lowerBinopMsil(
         val bgteLhsUnboxN = "__bgte_lhu_" + toString(fctx.slotTicker.count)
         val bgteLhsUnboxS = allocSlotMsil(fctx, bgteLhsUnboxN, bgteRhsTy)
         insns.add(MStloc(slot = bgteLhsUnboxS - fctx.paramCount))
-        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bgteRhsTy)))
+        insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bgteRhsTy)))
         insns.add(MLdloc(slot = bgteLhsUnboxS - fctx.paramCount))
       }
       match bgteLhsTy {
@@ -9374,7 +9456,7 @@ func lowerPatternTestMsil(
             case Some(ordv) -> {
               emitLoadSlot(insns, scrutSlot, fctx.paramCount)
               match scrutTy {
-                case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
+                case MObject -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MInt)))
                 case _ -> {
                 }
               }
@@ -9467,9 +9549,9 @@ func lowerPatternTestMsil(
           }
           if scrutBoxed {
             if isLongLit {
-              insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MLong)))
+              insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MLong)))
             } else {
-              insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
+              insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MInt)))
             }
           }
           if isLongLit {
@@ -9482,7 +9564,7 @@ func lowerPatternTestMsil(
         }
         case LBool(value) -> {
           if scrutBoxed {
-            insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MBool)))
+            insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MBool)))
           }
           if value {
             insns.add(MLdcI4(v = 1))
@@ -9507,7 +9589,7 @@ func lowerPatternTestMsil(
           // A `Char` scrutinee is an i4 code point on the stack; compare
           // against the pattern's code point.
           if scrutBoxed {
-            insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MChar)))
+            insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MChar)))
           }
           insns.add(MLdcI4(v = cp))
           insns.add(MCeq)
@@ -9515,7 +9597,7 @@ func lowerPatternTestMsil(
         }
         case LFloat(v, _, _) -> {
           if scrutBoxed {
-            insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MDouble)))
+            insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MDouble)))
           }
           // A `Float` scrutinee is an r8 on the stack; compare with `ceq`
           // against the pattern's value.  Previously this fell to the `_`
@@ -9556,7 +9638,7 @@ func lowerPatternTestMsil(
       match intValOpt {
         case Some(v) -> {
           if scrutBoxed {
-            insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
+            insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MInt)))
           }
           insns.add(MLdcI4(v = v))
           insns.add(MCeq)
@@ -9611,7 +9693,7 @@ func lowerPatternTestMsil(
           case Some(ordv) -> {
             emitLoadSlot(insns, scrutSlot, fctx.paramCount)
             match scrutTy {
-              case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
+              case MObject -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MInt)))
               case _ -> {
               }
             }
@@ -9789,7 +9871,7 @@ func lowerPatternTestMsil(
       val rangeNumTy = match scrutTy { case MObject -> rangeBoundTypeMsil(lo); case _ -> scrutTy }
       emitLoadSlot(insns, scrutSlot, fctx.paramCount)
       match scrutTy {
-        case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, rangeNumTy)))
+        case MObject -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, rangeNumTy)))
         case _ -> ()
       }
       lowerExprMsil(cctx, fctx, insns, lo)
@@ -9797,7 +9879,7 @@ func lowerPatternTestMsil(
       insns.add(MBrTrue(label = failLabel))   // scrut < lo
       emitLoadSlot(insns, scrutSlot, fctx.paramCount)
       match scrutTy {
-        case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, rangeNumTy)))
+        case MObject -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, rangeNumTy)))
         case _ -> ()
       }
       lowerExprMsil(cctx, fctx, insns, hi)
@@ -10609,30 +10691,45 @@ pub func lowerCallMsil(
   }
 }
 
-// Unbox a boxed (`object`) call argument to its declared value-type parameter.
-// Reached when a value of erased static type — e.g. a tuple element pulled from
-// the `List<object>` representation and bound by `PTuple` — is passed to a
-// value-typed parameter (`assertEqualInt(a, …)`); without the `unbox.any` the
-// CLR rejects the program ("invalid program").  A no-op unless the argument is
-// `object` and the parameter is a primitive value type.
+// Coerce a call argument (typed `fromTy`) to its declared parameter type
+// (`toTy`) at a resolved call site. Three directions:
+//   - `object` -> a value type: `unbox.any` (a tuple element pulled from the
+//     `List<object>` representation and bound by `PTuple`, passed to a
+//     value-typed parameter like `assertEqualInt(a, …)`; without the
+//     `unbox.any` the CLR rejects the program).
+//   - a value type -> `object`: `box` (#5196 — an extern-value-typed, e.g.
+//     `System.Guid`-backed, or primitive argument flowing into an erased
+//     generic `object` parameter; without the `box` the raw struct hits the
+//     stack where the uniform ABI expects a reference — `ilverify`
+//     StackUnexpected: found value 'Guid', expected ref 'object').
+//   - neither side `object`: integer-width / concrete-collection coercions
+//     (unchanged from before this function grew the `object` directions).
 func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
   val fromObj = match fromTy { case MObject -> true; case _ -> false }
+  val toObj = match toTy { case MObject -> true; case _ -> false }
   if fromObj {
     match toTy {
-      case MInt -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
-      case MLong -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MLong)))
-      case MDouble -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MDouble)))
-      case MBool -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MBool)))
-      case MChar -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MChar)))
-      case MByte -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MByte)))
-      // An extern struct parameter (System.Guid, …) needs the boxed `object`
+      case MInt -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MInt)))
+      case MLong -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MLong)))
+      case MDouble -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MDouble)))
+      case MBool -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MBool)))
+      case MChar -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MChar)))
+      case MByte -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MByte)))
+      // An extern struct parameter (System.Guid, ...) needs the boxed `object`
       // (e.g. the erased return of a uniform-ABI generic such as `unwrapOr`)
       // unboxed back to the raw struct, exactly like the primitives above
-      // (#5196).
-      case MValueTypeRef(_, _) -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, toTy)))
+      // (#5196). boxTypeRef returns fully-tagged tokens (TypeSpec for
+      // generic instantiations), so no 0x01000000 tag is added here.
+      case MValueTypeRef(_, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
+      case MValueTypeGenericInst(_, _, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
       case _ -> ()
     }
   } else {
+    // NOTE: deliberately NO `toObj` box direction here. The standard
+    // call-argument pipeline already boxes value types heading into an
+    // erased `object` parameter before this coercion runs; adding a box
+    // here double-boxes (box on an already-boxed ref = invalid IL) and
+    // broke every restored-dependency call with an Int/Bool argument.
     // A concrete `List<T>` value being passed to a `slice[T]` (= `T[]`) parameter:
     // emit `ToArray()` so the callee — typically an F#-built stdlib function that
     // declares a genuine CLR `!0[]` parameter — receives a real array rather than
@@ -13530,6 +13627,70 @@ func lowerForMsil(
   }
 }
 
+// #5511: when `expr` is a plain record-field read (`h.f`, receiver a
+// single-segment local/param whose tracked type — `fctx.types` — is a
+// record class) and that class's field was registered as function-typed
+// (`cctx.fieldFuncRetTypes`, populated at record-field registration time),
+// return the "ClassName/fieldName" key so a caller can pull the field's
+// real return/param types and register them for a local bound directly
+// from this read. Returns "" for any other shape (multi-segment/complex
+// receiver, a receiver whose type isn't tracked, or a field that isn't
+// function-typed) — callers guard on a non-empty result.
+func recordFieldFuncKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr): String {
+  match expr.kind {
+    case EMember(recv, fieldName) -> {
+      match recv.kind {
+        case EPath(path) -> {
+          if path.segments.count == 1 {
+            match mapGet(fctx.types, path.segments[0]) {
+              case Some(recvTy) -> {
+                match recvTy {
+                  case MClass(cls) -> {
+                    val key = cls + "/" + fieldName
+                    if cctx.fieldFuncRetTypes.containsKey(key) {
+                      key
+                    } else {
+                      ""
+                    }
+                  }
+                  case _ -> ""
+                }
+              }
+              case None -> ""
+            }
+          } else {
+            ""
+          }
+        }
+        case _ -> ""
+      }
+    }
+    case _ -> ""
+  }
+}
+
+// Register `funcValRetTypes`/`funcValParamTypes` for `name` from a
+// record-field function-type source (#5511), unless `name` is already
+// registered (an explicit literal `(A,...) -> R` annotation on the binding
+// itself always wins — this is strictly a fallback for the inferred case).
+func registerFieldFuncValTypesMsil(cctx: in CodegenCtx, fctx: in FuncCtx, name: in String, init: in Expr): Unit {
+  if not fctx.funcValRetTypes.containsKey(name) {
+    val key = recordFieldFuncKeyMsil(cctx, fctx, init)
+    if key.length > 0 {
+      match mapGet(cctx.fieldFuncRetTypes, key) {
+        case Some(rt) -> {
+          fctx.funcValRetTypes.add(name, rt)
+          match mapGet(cctx.fieldFuncParamTypes, key) {
+            case Some(pts) -> fctx.funcValParamTypes.add(name, pts)
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+}
+
 pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], stmt: in Statement): Unit {
   match stmt.kind {
 
@@ -13565,6 +13726,14 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           restoreHintTyArgs(fctx, savedAnnoHint)
           val effectiveTy = if annoTy != MObject { annoTy } else { initTy }
           lowerLocalPatBindMsil(cctx, fctx, insns, pat, effectiveTy, tyOpt)
+          // #5511 fallback: `val fld = h.f` parses as `LBVal` (not `LBLet`) —
+          // `val` always produces a pattern binding. For the common simple-
+          // name pattern (no destructuring), try the record-field-read
+          // source too, same as the `LBLet`/`LBVar` fallback below.
+          match pat.kind {
+            case PBinding(bindName, None) -> registerFieldFuncValTypesMsil(cctx, fctx, bindName, init)
+            case _ -> ()
+          }
         }
         case LBLet(name, tyOpt, init) -> {
           val annoTy = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MObject }
@@ -13604,6 +13773,10 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             }
             case None -> ()
           }
+          // #5511 fallback: no literal annotation registered a function-value
+          // type above (or `tyOpt` was `None`/non-`TFunction`) — try a
+          // record-field-read source instead (`val fld = h.f`).
+          registerFieldFuncValTypesMsil(cctx, fctx, name, init)
           // Phase B.1 promoted-local: hoist val-binding to SM field so the value
           // survives suspension.  emitPhaseBAwait reloads all registered locals at
           // each resume label.
@@ -13670,6 +13843,8 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 emitByteSlotNarrowMsil(fctx, insns, slot)
                 emitStoreSlot(insns, slot, fctx.paramCount)
                 fctx.mutableLocals.add(name)
+                // #5511 fallback: see the matching LBLet comment above.
+                registerFieldFuncValTypesMsil(cctx, fctx, name, init)
                 if fctx.phaseBCtx.count > 0 {
                   phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, ty, slot - fctx.paramCount)
                 }
@@ -15615,7 +15790,7 @@ func emitGenericExternMember(
           insns.add(MLdloc(slot = marshalTmp[mk]))  // the object the BCL wrote
           val pointee = marshalPointee[mk]
           if isValueType(pointee) {
-            insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, pointee)))
+            insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, pointee)))
           } else {
             match pointee {
               case MClass(cn) -> insns.add(MCastclassByName(className = cn))
@@ -15637,7 +15812,7 @@ func emitGenericExternMember(
       // leaves a reference on the stack (#2972).
       val retIsTypeVar = match memberRet { case MTypeVar(_) -> true; case _ -> false }
       if retIsTypeVar and isValueTypeReceiverMsil(lyricRetTy) {
-        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, lyricRetTy)))
+        insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, lyricRetTy)))
       }
       true
     }
@@ -17925,6 +18100,204 @@ func countSpillsStmt(stmt: in Statement): Int {
   }
 }
 
+// Count the total number of FieldDef rows a generator class will emit for
+// `decl` (#4259).  MUST be kept in lockstep with `synthesizeGeneratorMsil`'s
+// `genFields` construction (~line 19161 below: 3 fixed fields — _state, _tcs,
+// __current — plus one `__pN` field per user param, plus one
+// `__local_<slot>` field per local-variable slot hoisted out of MoveNext,
+// INCLUDING the `__gen_ex` catch-handler local that every generator's
+// unconditional try/catch(Exception) wrapper allocates regardless of body
+// content — verified empirically: a zero-param, zero-local generator with
+// only bare `yield` statements still hoists exactly 1 local, `__gen_ex`).
+//
+// Unlike `countSmFieldsMsil`'s SM path (which promotes locals BY NAME, once
+// per distinct name, into a shared field), generator hoisting is a
+// post-lowering scan of every `MLdloc`/`MStloc` slot index touched anywhere
+// in the lowered `MoveNext` body — so it is OCCURRENCE-based: two sibling
+// `var i` declarations in different branches get two distinct hoisted
+// fields, not one shared field. `countGenLocalsBody` mirrors that by
+// counting every `let`/`var` declaration reachable from the body (no
+// dedup), recursing through the same statement/expression shapes that
+// `lowerBlockMsil`/`lowerExprMsil` recurse through.
+//
+// Known scope boundary (mirrors the equivalent already-accepted gap in
+// `countSmFieldsMsil` / `countPromotedLocalsBlock`, which also does not
+// account for match-arm pattern binds): this does not additionally predict
+// fields for pattern-bound match-arm names, `for`-loop iterator temps, or
+// vars captured by a nested lambda (heap-cell machinery) — none of which
+// any current generator self-test exercises. If a future generator body
+// uses one of those forms, `synthesizeGeneratorMsil`'s post-hoisting
+// consistency check panics loudly rather than silently emitting wrong
+// FieldDef tokens for every type declared after it.
+func countGeneratorFieldsMsil(decl: in FunctionDecl): Int {
+  val base = 3 + 1 + decl.params.count  // +1 = __gen_ex, always hoisted
+  base + countGenLocalsBody(decl.body)
+}
+
+func countGenLocalsBody(bodyOpt: in Option[FunctionBody]): Int {
+  match bodyOpt {
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> countGenLocalsBlock(blk)
+        case FBExpr(e) -> countGenLocalsExpr(e)
+      }
+    }
+    case None -> 0
+  }
+}
+
+func countGenLocalsBlock(blk: in Block): Int {
+  var n = 0
+  var i = 0
+  while i < blk.statements.count {
+    n = n + countGenLocalsStmt(blk.statements[i])
+    i = i + 1
+  }
+  n
+}
+
+func countGenLocalsStmt(stmt: in Statement): Int {
+  match stmt.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBLet(_, _, init) -> 1 + countGenLocalsExpr(init)
+        case LBVar(_, _, initOpt) -> {
+          1 + match initOpt { case Some(init) -> countGenLocalsExpr(init); case None -> 0 }
+        }
+        // A plain `val x = ...` allocates a local slot exactly like `let`/`var`,
+        // and generator synthesis hoists every body slot to a `__local_<slot>`
+        // field by slot index (not binding form).  Omitting this `+ 1`
+        // undercounted `val`-using generators, tripping the field-count
+        // cross-check panic (#5582).
+        case LBVal(_, _, init) -> 1 + countGenLocalsExpr(init)
+      }
+    }
+    case SExpr(e) -> countGenLocalsExpr(e)
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(e) -> countGenLocalsExpr(e)
+        case None -> 0
+      }
+    }
+    case SAssign(_, _, v) -> countGenLocalsExpr(v)
+    case SThrow(e) -> countGenLocalsExpr(e)
+    case SWhile(_, cond, body) -> countGenLocalsExpr(cond) + countGenLocalsBlock(body)
+    case SFor(_, _, iter, body) -> countGenLocalsExpr(iter) + countGenLocalsBlock(body)
+    case SLoop(_, body) -> countGenLocalsBlock(body)
+    case SScope(_, body) -> countGenLocalsBlock(body)
+    case SDefer(body) -> countGenLocalsBlock(body)
+    case STry(body, catches, finally_) -> {
+      var n = countGenLocalsBlock(body)
+      var ci = 0
+      while ci < catches.count {
+        n = n + countGenLocalsBlock(catches[ci].body)
+        ci = ci + 1
+      }
+      n = n + match finally_ { case Some(fb) -> countGenLocalsBlock(fb); case None -> 0 }
+      n
+    }
+    case _ -> 0
+  }
+}
+
+func countGenLocalsExpr(e: in Expr): Int {
+  match e.kind {
+    case EBlock(b) -> countGenLocalsBlock(b)
+    case EUnsafe(b) -> countGenLocalsBlock(b)
+    case EParen(inner) -> countGenLocalsExpr(inner)
+    case EIf(c, t, el, _) -> {
+      var n = countGenLocalsExpr(c)
+      n = n + match t { case EOBBlock(b) -> countGenLocalsBlock(b); case EOBExpr(e2) -> countGenLocalsExpr(e2) }
+      n = n +
+        match el {
+          case Some(eb) -> match eb { case EOBBlock(b) -> countGenLocalsBlock(b); case EOBExpr(e2) -> countGenLocalsExpr(e2) }
+          case None -> 0
+        }
+      n
+    }
+    case EMatch(scr, arms) -> {
+      var n = countGenLocalsExpr(scr)
+      var ami = 0
+      while ami < arms.count {
+        n = n +
+          match arms[ami].body { case EOBBlock(b) -> countGenLocalsBlock(b); case EOBExpr(e2) -> countGenLocalsExpr(e2) }
+        ami = ami + 1
+      }
+      n
+    }
+    case ECall(callee, args) -> {
+      var n = countGenLocalsExpr(callee)
+      var ai = 0
+      while ai < args.count {
+        val argE = match args[ai] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
+        n = n + countGenLocalsExpr(argE)
+        ai = ai + 1
+      }
+      n
+    }
+    case EBinop(_, l, r) -> countGenLocalsExpr(l) + countGenLocalsExpr(r)
+    case EPrefix(_, op) -> countGenLocalsExpr(op)
+    case EMember(recv, _) -> countGenLocalsExpr(recv)
+    case EAwait(inner) -> countGenLocalsExpr(inner)
+    case ESpawn(inner) -> countGenLocalsExpr(inner)
+    case ETry(inner) -> countGenLocalsExpr(inner)
+    case EPropagate(inner) -> countGenLocalsExpr(inner)
+    case EAssign(lhs, _, rhs) -> countGenLocalsExpr(lhs) + countGenLocalsExpr(rhs)
+    case ETuple(elems) -> {
+      var n = 0
+      var ti = 0
+      while ti < elems.count {
+        n = n + countGenLocalsExpr(elems[ti])
+        ti = ti + 1
+      }
+      n
+    }
+    case EList(elems) -> {
+      var n = 0
+      var li = 0
+      while li < elems.count {
+        n = n + countGenLocalsExpr(elems[li])
+        li = li + 1
+      }
+      n
+    }
+    case EIndex(recv, indices) -> {
+      var n = countGenLocalsExpr(recv)
+      var idi = 0
+      while idi < indices.count {
+        n = n + countGenLocalsExpr(indices[idi])
+        idi = idi + 1
+      }
+      n
+    }
+    case EInterpolated(segs) -> {
+      var n = 0
+      var ipi = 0
+      while ipi < segs.count {
+        match segs[ipi] {
+          case ISExpr(ex) -> {
+            n = n + countGenLocalsExpr(ex)
+          }
+          case ISText(_, _) -> ()
+        }
+        ipi = ipi + 1
+      }
+      n
+    }
+    case ETypeApp(inner, _) -> countGenLocalsExpr(inner)
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> countGenLocalsExpr(lo) + countGenLocalsExpr(hi)
+        case RBHalfOpen(lo, hi) -> countGenLocalsExpr(lo) + countGenLocalsExpr(hi)
+        case RBLowerOpen(hi) -> countGenLocalsExpr(hi)
+        case RBUpperOpen(lo) -> countGenLocalsExpr(lo)
+      }
+    }
+    case ELambda(_, _) -> 0
+    case _ -> 0
+  }
+}
+
 // Count the total number of FieldDef rows a Phase-B SM class will emit for
 // `decl`.  Mirrors the field layout of synthesizeAsyncSmPhaseBMsil:
 //   base     = 2 (__state, __builder) + params.count
@@ -19450,6 +19823,29 @@ func synthesizeGeneratorMsil(
     genFields.add(MField(flags = FDA_PUBLIC, name = fname, fieldType = fty))
     hoistFieldNames.add(fname)
     hfScan = hfScan + 1
+  }
+  // #4259: cross-check Pass 1's static prediction (countGeneratorFieldsMsil,
+  // recorded by index `tick` into cctx.genFieldCountPredictions) against the
+  // real hoisted field count just computed above. A mismatch means
+  // countGeneratorFieldsMsil's traversal missed a local-allocating construct
+  // in this body — surface it as a hard build failure rather than silently
+  // emitting wrong FieldDef tokens for every type declared after this
+  // generator (the #4259/#4187 bug class).
+  if tick < cctx.genFieldCountPredictions.count {
+    val predictedGenFields = cctx.genFieldCountPredictions[tick]
+    if predictedGenFields != genFields.count {
+      panic(
+        "synthesizeGeneratorMsil: field-count prediction mismatch for '" + genFqn + "' — " +
+          "Pass 1 (countGeneratorFieldsMsil) predicted " +
+          toString(predictedGenFields) +
+          " FieldDef rows but real synthesis produced " +
+          toString(genFields.count) +
+          ". countGeneratorFieldsMsil's static traversal missed a local-allocating " +
+          "construct in this generator's body (see its doc comment for the known " +
+          "scope boundary) — every FieldDef/MethodDef token predicted for any type " +
+          "declared after this generator would otherwise be silently wrong (#4259)."
+      )
+    }
   }
   // Rebuild instruction list with save/restore inserted at each yield boundary.
   val hoistedInsns: List[MInsn] = newList()
@@ -25250,14 +25646,29 @@ func implTargetNameMsil(decl: in ImplDecl, pkgName: in String): String {
 // (`System.IDisposable`) so `lowerMImpl` finds the right TypeRef row
 // instead of looking for `<pkg>.IDisposable` (D105).  Multi-segment
 // names are returned verbatim — they are either an explicit external FQN
-// or a cross-package native Lyric interface.  Single-segment names that
-// miss the table fall back to the current-package prefix as before.
+// or a cross-package native Lyric interface.
+//
+// A single-segment name that misses `externTypeNames` previously fell back
+// to a bare `pkgName + "." + segs[0]` guess — always qualifying under the
+// CONSUMER's own package, never the package that actually declares the
+// interface. `impl Clock for TestClock` where `Clock` is a `pub interface`
+// imported from another package therefore built an FQN like
+// `TestClock'sPkg.Clock`, which has no TypeDef/TypeRef row, and
+// `lowerMImpl` panicked with "MPImpl interface type '<pkg>.Clock' has no
+// TypeDef or TypeRef row" (#5512). `resolveTypeFqn` is the same scope-tiered
+// lookup (own package, then an imported package, then last-registered) that
+// every other cross-package type-name reference already goes through
+// (record construction, distinct-type factories, …) — this brings `impl`'s
+// interface-name resolution into agreement with the rest of the compiler,
+// keying off `decl.name`'s registration as a type-fqn candidate at
+// `IInterface` registration time (mirrored in `registerTypeFqnCandidate`
+// call at the `IInterface` case of the Pass 1 loop above).
 func implIfaceNameMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String): String {
   val segs = decl.iface.head.segments
   if segs.count == 1 {
     match mapGet(cctx.externTypeNames, segs[0]) {
       case Some(clrFqn) -> clrFqn
-      case None -> pkgName + "." + segs[0]
+      case None -> resolveTypeFqn(cctx, pkgName, segs[0])
     }
   } else {
     joinSegsMsil(segs, ".")

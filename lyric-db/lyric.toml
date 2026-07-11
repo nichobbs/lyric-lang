@@ -16,11 +16,21 @@ output_assembly = "Db.dll"
 "Db.Kernel.Net" = "src/_kernel/net/db_kernel.l"
 
 [project.tests]
-"Db.DbTests" = "tests/db_tests.l"
+"Db.DbTests"                = "tests/db_tests.l"
+"Db.SqliteTests"            = "tests/db_sqlite_tests.l"
+"Db.PostgresConnectTests"   = "tests/db_postgres_connect_tests.l"
+"Db.KernelNetTests"         = "tests/db_kernel_net_tests.l"
 
 [features]
+default  = ["postgres", "sqlite"]    # both drivers compiled in unless overridden
 postgres = []    # enable the Npgsql (PostgreSQL) driver
 sqlite   = []    # enable the Microsoft.Data.Sqlite driver
 
 [dependencies]
 "Std.Logging"   = { workspace = true }
+
+[nuget]
+# feature = "postgres" — Npgsql ADO.NET driver for PostgreSQL
+"Npgsql" = "8.0.3"
+# feature = "sqlite" — Microsoft.Data.Sqlite ADO.NET driver for SQLite
+"Microsoft.Data.Sqlite" = "8.0.3"

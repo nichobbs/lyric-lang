@@ -103,3 +103,6 @@ book/*.html
 
 # lyric-rt native runtime build output
 lyric-rt/build/
+
+# Ephemeral lyric build/check output
+.lyric-check/

@@ -313,6 +313,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/qualified_union_case_self_test.l \
 	lyric-compiler/lyric/quantifier_ident_self_test.l \
 	lyric-compiler/lyric/range_subtype_self_test.l \
+	lyric-compiler/lyric/record_field_closure_self_test.l \
 	lyric-compiler/lyric/record_option_field_self_test.l \
 	lyric-compiler/lyric/release_self_test.l \
 	lyric-compiler/lyric/restored_packages_self_test.l \
@@ -333,6 +334,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
 	lyric-compiler/lyric/typechecker_self_test.l \
 	lyric-compiler/lyric/typed_ffi_delegate_self_test.l \
+	lyric-compiler/lyric/uniform_abi_valuetype_self_test.l \
 	lyric-compiler/lyric/union_case_collision_self_test.l \
 	lyric-compiler/lyric/union_ctor_return_context_self_test.l \
 	lyric-compiler/lyric/union_list_match_self_test.l \

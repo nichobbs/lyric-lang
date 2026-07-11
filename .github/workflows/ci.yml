@@ -3845,6 +3845,22 @@ jobs:
           fi
           export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
           .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l
+      # Erased-element checkcast (JVM, #5055/#5381/#5249/#5439): pins the fix
+      # that narrows an indexed List[T]/slice[T] element back to its
+      # statically-declared type (checkcast for refs, unbox for primitives)
+      # so field access / method dispatch / numeric intrinsics on the element
+      # work instead of collapsing to java/lang/Object.  Imports only `Std.*`.
+      - name: Erased-element checkcast self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -x .bootstrap/stage2/bin/lyric ]; then
+            echo "::error::stage 2 binary missing; skipping erased-element checkcast JVM self-test"
+            exit 1
+          fi
+          export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
+          .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/jvm/erased_element_checkcast_jvm_self_test.l
       # out/inout parameter parity (docs/44 m-3, #1763, follow-up to #1761) —
       # exercises the JVM holder-array lowering for free-function `out`/`inout`
       # parameters: the caller wraps each holder argument in a single-element
@@ -4935,9 +4951,9 @@ jobs:
           "$lyric_bin" test --manifest lyric-storage/lyric.toml || overall=$?
           echo "=== lyric-proto tests ==="
           "$lyric_bin" test --manifest lyric-proto/lyric.toml || overall=$?
-          # lyric-otel — OTel type vocabulary tests; no path deps (the OTLP
-          # kernel's nuget is only pulled by OTel.Kernel.Net, which the type
-          # tests don't import).
+          # lyric-otel — type vocabulary + OTLP codec/transport tests; depends
+          # on Lyric.Proto as a workspace member (built by the workspace
+          # resolution above; keep lyric-proto's own tests before this).
           echo "=== lyric-otel tests ==="
           "$lyric_bin" test --manifest lyric-otel/lyric.toml || overall=$?
           # lyric-logging, lyric-mq, and lyric-grpc went green once the
@@ -4954,9 +4970,31 @@ jobs:
           # files corrected from non-Lyric syntax (qualified union construction /
           # phantom Map API); deps built above.
           echo "=== lyric-db tests ==="
-          "$lyric_bin" test --manifest lyric-db/lyric.toml || overall=$?
-          echo "=== lyric-search tests ==="
+          # lyric-db's dotnet kernel has mandatory NuGet deps (Npgsql +
+          # Microsoft.Data.Sqlite) whose extern ctors resolve from package
+          # metadata at compile time — restore first, like lyric-session.
+          # The SQLite native asset (libe_sqlite3.so) is not deployed by the
+          # bundler yet (#5573), so point the loader at the NuGet cache.
+          if ! "$lyric_bin" restore --manifest lyric-db/lyric.toml; then
+            echo "::error::failed to restore lyric-db NuGet dependencies"
+            overall=1
+          fi
+          # `|| true` on the whole substitution: under `set -e`/`pipefail` a
+          # `find` that hits an unreadable dir, or the SIGPIPE from `head`
+          # closing the pipe early, would otherwise abort the entire step
+          # (#5602).  An empty result just means the loader falls back to its
+          # normal probe path.
+          sqlite_native="$( { find "$HOME/.nuget/packages/sqlitepclraw.lib.e_sqlite3" -path '*linux-x64/native*' -name '*.so' 2>/dev/null || true; } | head -1 | { xargs -r dirname || true; } )"
+          LD_LIBRARY_PATH="${sqlite_native}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            "$lyric_bin" test --manifest lyric-db/lyric.toml || overall=$?
+          echo "=== lyric-search tests (elasticsearch, default) ==="
           "$lyric_bin" test --manifest lyric-search/lyric.toml || overall=$?
+          # Meilisearch backend is a mutually-exclusive alternative feature, so
+          # it gets zero coverage from the default (elasticsearch) run (#5598).
+          # --no-default-features drops elasticsearch so the @cfg-gated probes
+          # don't collide on a duplicate name.
+          echo "=== lyric-search tests (meilisearch) ==="
+          "$lyric_bin" test --manifest lyric-search/lyric.toml --no-default-features --features meilisearch || overall=$?
           # lyric-lambda (dep: lyric-web, built above) — test file corrected from
           # non-Lyric syntax (|> pipe, phantom Map API, qualified union ctor); the
           # library gained LambdaError factory functions + an authorizer split fix.

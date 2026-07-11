@@ -202,41 +202,143 @@ func emitPanicFromStack(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
   insns.add(LAthrow)
 }
 
-// The concrete element class of an indexed bare-name slice/List receiver
-// (docs/59 §4.3, the #5439 class): resolved from the receiver's recorded
-// single-arg `varGenericArgs` entry — a declared `slice[Elem]`/`List[Elem]`
-// parameter or local annotation (`recordDeclaredElemType`), a binding whose
-// initialiser's declared return instantiation was recorded (#4938), or a
-// match-bound generic payload's own args (#3613).  "" when unknown, primitive,
-// or the erased `Object` — the read then keeps its legacy erased result.
-// `EIndex` uses a non-empty result to `checkcast` after the `aaload` /
-// `ArrayList.get`, so a following member read resolves on the real class
-// instead of panicking on a statically-`Object` receiver.
-func indexedElemClassOverride(ctx: in FuncCtx, recv: in Expr): String {
+// The concrete element type of an indexed bare-name slice/List receiver
+// (docs/59 §4.3, the #5439/#5055/#5453 class): resolved from the receiver's
+// recorded single-arg `varGenericArgs` entry — a declared `slice[Elem]`/
+// `List[Elem]` PARAMETER (`recordDeclaredElemType`, called at parameter
+// registration, #5055/#5381), a `val`/`var` LOCAL's explicit
+// `slice[Elem]`/`List[Elem]` annotation (`recordDeclaredElemType`, #5249), a
+// binding whose initialiser's declared return instantiation was recorded
+// (#4938, extended to `slice[Elem]` returns by `returnTypeGenericArgs`'s
+// `TSlice` arm above), or a match-bound generic payload's own args (#3613).
+//
+// Returns `JVoid` as the "no override" sentinel (unknown, or the receiver's
+// element is already the erased `Object` — a real `slice[Unit]`/`List[Unit]`
+// element would also collide with this sentinel, but such a collection is
+// never meaningfully indexed, so the collision is harmless). Any other
+// result — a primitive JVM type (`JByte`, `JInt`, …) or a concrete `JRef` —
+// is a genuine narrowing target: `EIndex` (via `applyIndexedElemOverride`)
+// checkcasts a reference result or unboxes a primitive result after the
+// `aaload` / `ArrayList.get`, so a following member read / numeric intrinsic
+// resolves against the real type instead of panicking on / silently
+// miscompiling against a statically-`Object` receiver.
+//
+// SCOPE BOUNDARY (left for a follow-up, not attempted here): this only
+// resolves a BARE NAME (`EPath`) receiver — a parameter, local, or
+// match-bound name whose own declared/recorded type is visible in `ctx`
+// without any further indirection. A receiver that is itself a field access
+// (`self.mws[self.idx]`, the exact shape `lyric-web`'s `MiddlewareChain`
+// hits in #5444) or any other non-bare-name expression is NOT covered: doing
+// so would need a parallel "declared element type" registry threaded
+// alongside `ctx.caseFields` through every one of `Jvm.Codegen`'s ~30
+// `caseFields`-plumbed construction/lowering entry points (records, union
+// cases, protected types, opaque types, exposed views) — a materially larger
+// change than this bounded fix. `indexedElemTypeOverride` returns `JVoid`
+// (no override) for such receivers, same as before this fix; the call site
+// falls back to the pre-existing erased-`Object` behaviour, unchanged.
+//
+// A same-package INTERFACE (or protected/opaque type) element — `List[Shape]`
+// / `slice[Shape]` where `Shape` is a non-generic interface declared in the
+// SAME file — resolves to the erased `Object` fallback through
+// `resolveConcreteTypeExpr` alone: `ctorClassFor` only tracks CONSTRUCTIBLE
+// names (records/union cases), and `ctx.externTypes` only carries IMPORTED
+// types (`collectFileDeclaredTypeFqns` seeds a declaring package's own
+// interfaces into every IMPORTER's `externTypes`, not its own). `Shape[0]` on
+// a `List[Shape]` element then dispatched through this instance-method call
+// resolution (04_calls.l `lowerMethodCall`) against the erased receiver,
+// which only ever resolves auto-FFI on a real JDK class — `Object` has no
+// `.area()`, so the call panicked instead of emitting `invokeinterface`
+// (the #5444 class). `sameTypeExprElemFallback` adds the missing
+// same-package guess for exactly this gap, deliberately NOT touching the
+// shared `resolveConcreteTypeExpr`'s own conservative Object default (its
+// doc comment explains why it stays conservative for its OTHER,
+// match-payload callers: a stray, un-filtered generic type-parameter name
+// reaching it must never guess a phantom same-package class). Guessing here
+// is safe specifically because BOTH producers into `ctx.varGenericArgs`
+// already filter the declaration's OWN generic type parameters before
+// recording an element type — `recordDeclaredElemType`'s `typeParamIndexOf`
+// guard (01_types.l) and `returnTypeGenericArgsFiltered`'s `containsTypeParam`
+// bail (01_types.l) — so a bare name surviving to here is never an erased
+// `T`, only a genuine nominal type `resolveConcreteTypeExpr`'s narrower
+// `ctorClassFor`/`externTypes` pair doesn't cover.
+func sameTypeExprElemFallback(ctx: in FuncCtx, te: in TypeExpr, resolved: in JvmType): JvmType {
+  match resolved {
+    case JRef(cls) -> {
+      if cls == "java/lang/Object" {
+        match te.kind {
+          case TRef(path) -> {
+            if path.segments.count == 1 {
+              val seg = path.segments[0]
+              if isPrimitiveTypeKeyword(seg) or seg.contains("/") {
+                resolved
+              } else {
+                JRef(className = ctx.pkgName + "/" + seg)
+              }
+            } else {
+              resolved
+            }
+          }
+          case _ -> resolved
+        }
+      } else {
+        resolved
+      }
+    }
+    case _ -> resolved
+  }
+}
+
+func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr): JvmType {
   match recv.kind {
     case EPath(p) -> {
       if p.segments.count == 1 {
         val args = optGenericArgs(mapGet(ctx.varGenericArgs, p.segments[0]))
         if args.count == 1 {
-          match resolveConcreteTypeExpr(ctx, args[0]) {
+          match sameTypeExprElemFallback(ctx, args[0], resolveConcreteTypeExpr(ctx, args[0])) {
             case JRef(cls) -> {
               if cls == "java/lang/Object" {
-                ""
+                JVoid
               } else {
-                cls
+                JRef(className = cls)
               }
             }
-            case _ -> ""
+            // A nested `slice[slice[Elem]]`/`List[List[Elem]]` element resolves
+            // to `JArray`; `coerceArgTo` has no narrowing arm for a boxed
+            // `Object` flowing into an array-typed target (nested slices were
+            // never covered by this override before this fix either), so stay
+            // at the safe "no override" sentinel rather than risk a
+            // `ClassCastException` from a half-handled narrowing.
+            case JArray(_) -> JVoid
+            case JVoid -> JVoid
+            case t -> t
           }
         } else {
-          ""
+          JVoid
         }
       } else {
-        ""
+        JVoid
       }
     }
-    case EParen(inner) -> indexedElemClassOverride(ctx, inner)
-    case _ -> ""
+    case EParen(inner) -> indexedElemTypeOverride(ctx, inner)
+    case _ -> JVoid
+  }
+}
+
+// Apply an `indexedElemTypeOverride` result to a boxed `Object` value already
+// on top of the operand stack (the result of an `aaload` / `ArrayList.get` /
+// `HashMap.get`): `JVoid` (no override) leaves it untouched as erased
+// `Object`; any other type narrows it via `coerceArgTo` — a `checkcast` for a
+// concrete reference type, or a `checkcast` + unbox (+ the canonical
+// masked-unsigned re-mask for `Byte`, matching every other unboxing site in
+// this file) for a primitive.  Returns the resulting (possibly narrowed)
+// JvmType so the caller can propagate it as `EIndex`'s own result type.
+func applyIndexedElemOverride(insns: in List[LInsn], overrideTy: in JvmType): JvmType {
+  match overrideTy {
+    case JVoid -> JRef(className = "java/lang/Object")
+    case _ -> {
+      coerceArgTo(insns, JRef(className = "java/lang/Object"), overrideTy)
+      overrideTy
+    }
   }
 }
 
@@ -1349,7 +1451,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       // narrows to it (docs/59 §4.3 #5439 class) — resolved BEFORE the
       // receiver is lowered so the recorded entry is read against the
       // receiver's own binding.
-      val elemOverride = indexedElemClassOverride(ctx, recv)
+      val elemOverride = indexedElemTypeOverride(ctx, recv)
       val recvTy0 = lowerExpr(ctx, insns, recv)
       // A list/map receiver whose static type is imprecise (an erased-`Object`
       // match binding, or an imported type's in-package guess) must be cast
@@ -1394,9 +1496,8 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 // class (`fields[i]` on a `slice[LogField]` parameter — the
                 // docs/59 §4.3 formatFields shape).
                 insns.add(LAaload)
-                if elemCls == "java/lang/Object" and elemOverride != "" {
-                  insns.add(LCheckcast(className = elemOverride))
-                  JRef(className = elemOverride)
+                if elemCls == "java/lang/Object" {
+                  applyIndexedElemOverride(insns, elemOverride)
                 } else {
                   JRef(className = elemCls)
                 }
@@ -1443,12 +1544,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   ret = JRef(className = "java/lang/Object")
                 )
               )
-              if elemOverride != "" {
-                insns.add(LCheckcast(className = elemOverride))
-                JRef(className = elemOverride)
-              } else {
-                JRef(className = "java/lang/Object")
-              }
+              applyIndexedElemOverride(insns, elemOverride)
             }
           }
           case _ -> {

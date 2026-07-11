@@ -9,20 +9,27 @@
 #     matches: name like "*/service/*"
 #   }
 #
+# Span/metric recording (OTel.*) is pure Lyric and platform-neutral.
+# OTLP/HTTP export (OTel.Otlp) POSTs protobuf built by OTel.Otlp.Codec
+# (on top of lyric-proto) via a dedicated HttpClient/ByteArrayContent
+# kernel — no OTel .NET/Java SDK dependency (issue #5410).
+#
 # See docs/27-aspect-libraries.md and docs/26-aspects.md §18.
 
 [package]
 name        = "Lyric.OTel"
-version     = "0.1.0"
-description = "OpenTelemetry instrumentation aspect templates for Lyric."
+version     = "0.2.0"
+description = "OpenTelemetry instrumentation (OTLP/HTTP export + aspect templates) for Lyric."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
 default = ["dotnet"]
-# Enable the .NET kernel (System.Diagnostics.ActivitySource / Metrics).
+# Enable the .NET OTLP/HTTP transport kernel.
 dotnet = []
-# Enable the JVM kernel (io.opentelemetry.api — Phase 6).
+# JVM feature flag kept for API-shape parity; every JVM code path it
+# gates (`_kernel/jvm/otlp_kernel.l`) always returns Err("not
+# implemented") — see README.md "Platform support".
 jvm    = []
 
 [project]
@@ -31,30 +38,24 @@ output = "single"
 output_assembly = "Lyric.OTel.dll"
 
 [project.packages]
-# Shared platform-neutral types.
+# Shared platform-neutral types + in-process span/metric buffers.
 "OTel.Types"              = "src/types.l"
-# .NET extern boundary for ActivitySource + Metrics (feature-gated).
-"OTel.Kernel.Net"         = "src/_kernel/net/otel_kernel.l"
-# JVM extern boundary for ActivitySource + Metrics (feature-gated, Phase 6).
-"OTel.Kernel.Jvm"         = "src/_kernel/jvm/otel_kernel.l"
-# .NET extern boundary for the OTLP exporter (feature-gated).
+# Pure-Lyric OTLP protobuf encoder (spans + metrics).
+"OTel.Otlp.Codec"         = "src/otlp_codec.l"
+# .NET extern boundary for OTLP/HTTP transport (feature-gated).
 "OTel.Kernel.Net.Otlp"    = "src/_kernel/net/otlp_kernel.l"
-# JVM extern boundary for the OTLP exporter (feature-gated, Phase 6).
+# JVM extern boundary for OTLP/HTTP transport (feature-gated; always Err).
 "OTel.Kernel.Jvm.Otlp"    = "src/_kernel/jvm/otlp_kernel.l"
-# Platform-dispatch wrappers + pub aspect templates.
+# Span/metric recording API + pub aspect templates.
 "OTel"                    = "src/otel.l"
 # OTLP exporter configuration and lifecycle API.
 "OTel.Otlp"               = "src/otlp.l"
 
 [project.tests]
-"OTel.OTelTypesTests" = "tests/otel_types_tests.l"
+"OTel.OTelTypesTests"      = "tests/otel_types_tests.l"
+"OTel.SpanTests"           = "tests/otel_span_tests.l"
+"OTel.OtlpCodecTests"      = "tests/otlp_codec_tests.l"
+"OTel.OtlpTransportTests"  = "tests/otlp_transport_tests.l"
 
-[nuget]
-# OTel API only — used by OTel.Kernel.Net for ActivitySource / Metrics.
-"OpenTelemetry.Api"                              = "1.9.0"
-# Full OTel SDK — required by the OTLP kernel to create TracerProvider /
-# MeterProvider and wire up the batching exporter pipeline.
-"OpenTelemetry"                                  = "1.9.0"
-# OTLP exporter — adds AddOtlpExporter() to the provider builders and pulls
-# in Grpc.Net.Client transitively for the gRPC transport.
-"OpenTelemetry.Exporter.OpenTelemetryProtocol"   = "1.9.0"
+[dependencies]
+"Lyric.Proto" = { workspace = true }

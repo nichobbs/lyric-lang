@@ -117,6 +117,18 @@ pub func typeParamIndexOf(ty: in TypeExpr, tps: in List[String]): Int {
 // (`Result[Int, String]` → `[Int, String]`), else an empty list.  A `TAValue`
 // (const-generic) argument makes the whole result bail to empty so a payload's
 // `paramIdx` never mis-indexes into a value argument (#4877).
+//
+// A `slice[Elem]` return (`TSlice`) is treated the same way, yielding the
+// single-element list `[Elem]` (docs/59 §4.3, #5439 class): a function
+// returning `slice[Locale]` records `Elem = Locale` here exactly as
+// `List[Locale]`'s `TGenericApp` arm already did, so a call-derived binding
+// (`val locs = store.availableLocales()`, no explicit annotation) recovers the
+// element type through the SAME `varGenericArgs`/`retGenericArgs` machinery
+// #4938/#4877 built for match destructuring — `EIndex` then narrows
+// `locs[0]` back to `Locale` instead of the erased `Object` a `slice[T]`'s
+// uniform `Object[]` ABI would otherwise leave it as.  Slices are never
+// matched via constructor patterns, so this addition cannot collide with the
+// `paramIdx`-indexed match-destructure consumers of this same list.
 pub func returnTypeGenericArgs(retOpt: in Option[TypeExpr]): List[TypeExpr] {
   match retOpt {
     case Some(te) -> {
@@ -133,6 +145,11 @@ pub func returnTypeGenericArgs(retOpt: in Option[TypeExpr]): List[TypeExpr] {
             }
             i = i + 1
           }
+          acc
+        }
+        case TSlice(elem) -> {
+          val acc: List[TypeExpr] = newList()
+          acc.add(elem)
           acc
         }
         case _ -> newList()

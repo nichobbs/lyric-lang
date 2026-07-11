@@ -610,3 +610,89 @@ test "perPackageAssemblyName non-Std multi-segment" {
     "perPackageAssemblyName: Msil.Bridge -> Lyric.Msil.Bridge"
   )
 }
+
+// ── #5512: cross-package impl of an imported interface ───────────────────────
+// A consumer package implementing an interface declared in another in-bundle
+// package, referenced UNQUALIFIED (`impl Clock for TestClock`, not
+// `impl A.Clock for TestClock`). Before the fix, `implIfaceNameMsil`'s
+// single-segment fallback always qualified under the CONSUMER's own package
+// (`pkgName + "." + segs[0]`), so this built an FQN like
+// `EmitProjImplXPkg.App.Clock` — which has no TypeDef/TypeRef row — and
+// `lowerMImpl` panicked with "MPImpl interface type '<consumer
+// pkg>.Clock' has no TypeDef or TypeRef row". `implIfaceNameMsil` now
+// resolves the single-segment case via `resolveTypeFqn` (the same
+// scope-tiered own-package/imported-package lookup every other
+// cross-package type-name reference uses), which finds the DEFINING
+// package's registered `Clock` interface instead.
+test "emitProject cross-package impl of an imported interface (unqualified)" {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EmitProjImplXPkg.Lib",
+      "package EmitProjImplXPkg.Lib\n" + "\n" + "pub interface Clock {\n" + "  func nowMillis(): Long\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EmitProjImplXPkg.App",
+      "package EmitProjImplXPkg.App\n" + "\n" + "import EmitProjImplXPkg.Lib\n" + "\n" + "record TestClock {\n" +
+        "  var millis: Long\n" +
+        "}\n" +
+        "\n" +
+        "impl Clock for TestClock {\n" +
+        "  func nowMillis(): Long {\n" +
+        "    return self.millis\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val c = TestClock(millis = 42i64)\n" +
+        "  println(c.nowMillis().toString())\n" +
+        "}\n"
+    )
+  )
+  val result = runEmitProject("emitproj-implxpkg", pkgs, "EmitProjImplXPkg")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "emit_project_cross_package_impl_unqualified: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(Str.trim(result.stdout), "42", "emit_project_cross_package_impl_unqualified: stdout matches expected")
+}
+
+// Qualified form (`impl EmitProjImplXPkg.Lib.Clock for TestClock`) — already
+// worked before the fix (the multi-segment branch returns the joined
+// segments verbatim, which already matched the defining package's
+// registered FQN); kept as a companion regression so both spellings stay
+// covered.
+test "emitProject cross-package impl of an imported interface (qualified)" {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EmitProjImplXPkgQ.Lib",
+      "package EmitProjImplXPkgQ.Lib\n" + "\n" + "pub interface Clock {\n" + "  func nowMillis(): Long\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EmitProjImplXPkgQ.App",
+      "package EmitProjImplXPkgQ.App\n" + "\n" + "import EmitProjImplXPkgQ.Lib\n" + "\n" + "record TestClock {\n" +
+        "  var millis: Long\n" +
+        "}\n" +
+        "\n" +
+        "impl EmitProjImplXPkgQ.Lib.Clock for TestClock {\n" +
+        "  func nowMillis(): Long {\n" +
+        "    return self.millis\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val c = TestClock(millis = 7i64)\n" +
+        "  println(c.nowMillis().toString())\n" +
+        "}\n"
+    )
+  )
+  val result = runEmitProject("emitproj-implxpkgq", pkgs, "EmitProjImplXPkgQ")
+  assertEqualInt(result.exitCode, 0, "emit_project_cross_package_impl_qualified: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "7", "emit_project_cross_package_impl_qualified: stdout matches expected")
+}

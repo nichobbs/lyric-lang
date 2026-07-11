@@ -1,8 +1,9 @@
 # lyric-lambda — AWS Lambda runtime adapter for Lyric.
 #
-# Ships eight packages:
+# Ships nine packages:
 #   Lambda                 — core types (LambdaContext, LambdaError, LambdaApp
-#                            builder) and the serve() entry point.
+#                            builder), the Lambda.Direct handler interfaces,
+#                            and the serve() entry point.
 #   Lambda.ApiGw           — API Gateway v1 / v2 / ALB event types; the
 #                            typed bridge from HTTP events to Web.Router dispatch.
 #   Lambda.Events          — non-HTTP event types: SQS, SNS, S3, EventBridge,
@@ -10,31 +11,49 @@
 #   Lambda.Authorizer      — authorizer event types and response helpers:
 #                            TOKEN / REQUEST (REST API IAM policy) and
 #                            HTTP API (v2) simple isAuthorized response.
-#   Lambda.Direct          — AOT-compatible handler registration via function
-#                            references (for PublishAot=true builds).
+#   Lambda.Direct          — AOT-compatible handler registration via typed
+#                            interfaces (for PublishAot=true builds, and
+#                            currently the only dispatch path that works).
+#   Lambda.Dispatch        — event-source detection, JSON marshalling, and
+#                            the aws/local transport loops (pure Lyric,
+#                            no FFI) shared by Lambda.Kernel.Runtime's aws
+#                            and local feature variants.
 #   Lambda.Stream          — response streaming: StreamWriter type and helpers
 #                            for Lambda Function URL / HTTP API streaming.
+#                            Not implemented (no working transport).
 #   Lambda.Aspects         — pub aspect templates: EventLogging, DeadlineGuard.
 #   Lambda.Kernel.Runtime  — extern boundary to the Lambda runtime loop.
 #                            Exactly one file is compiled per build:
-#                              aws   feature → Amazon.Lambda.RuntimeSupport (.NET)
-#                              local feature → lightweight local test HTTP server
-#                              jvm   feature → AWS Java managed runtime handler
+#                              aws   feature → Lambda.Dispatch's HTTP long-polling
+#                                              loop against $AWS_LAMBDA_RUNTIME_API
+#                              local feature → Lambda.Dispatch's Std.HttpServer
+#                                              test-server transport
+#                              jvm   feature → not implemented (needs a
+#                                              deployment-model decision)
 #
 # Feature flags:
 #   aws, local, jvm  — runtime target (exactly one should be active per build).
 #   web              — enables Lambda.withRouter() for lyric-web Router integration.
 #                      Consumers must also declare Lyric.Web in their [dependencies].
+#                      Not implemented (Lambda.Kernel.Net needs a feasibility spike).
 #
 # Composition modes (may be combined in the same LambdaApp):
 #   1. lyric-web router reuse — attach a Web.Router with Lambda.withRouter().
+#      Not implemented — see Lambda.Kernel.WebBridge.
 #   2. Streaming HTTP handler — Lambda.withStreamingHandler(handlerName).
+#      Not implemented — see Lambda.Stream.
 #   3. Custom event handlers — onSqs / onSns / onS3 / onEventBridge /
-#      onDynamoDb / onKinesis / onRaw (string-based, non-AOT).
+#      onDynamoDb / onKinesis / onRaw (string-based). Registration succeeds
+#      but dispatch never resolves these (D099 rejects the reflection design
+#      this implied) — use Lambda.Direct instead.
 #   4. Authorizer handlers — onTokenAuthorizer / onRequestAuthorizer / onHttpAuthorizer.
-#   5. AOT-safe direct handlers — Lambda.withDirect(Lambda.Direct.*Handler(fn)).
+#      Same caveat as #3 — use Lambda.Direct.*AuthorizerHandler instead.
+#   5. Lambda.Direct handlers — Lambda.withDirect(Lambda.Direct.*Handler(impl)).
+#      The only dispatch path that actually invokes a handler today; aws:sqs,
+#      raw, and all three authorizer types are wired, the rest fail closed
+#      with InternalError (see Lambda.Dispatch's header comment).
 #
-# See docs/35-lambda-library.md and decision logs D062, D063, D064.
+# See docs/35-lambda-library.md and decision logs D062, D063, D064, D099.
 
 [package]
 name        = "Lyric.Lambda"
@@ -44,7 +63,7 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
-# .NET production: Amazon.Lambda.RuntimeSupport custom runtime loop.
+# .NET production: HTTP long-polling custom runtime loop (Lambda.Dispatch).
 aws   = []
 # Local development: lightweight HTTP test server (no AWS credentials needed).
 local = []
@@ -74,10 +93,13 @@ output_assembly = "Lambda.dll"
 "Lambda.Stream"        = "src/stream.l"
 # Pub aspect templates for cross-cutting Lambda handler concerns.
 "Lambda.Aspects"       = "src/lambda_aspects.l"
+# Event-source detection, JSON marshalling, and the aws/local transport
+# loops shared by both Lambda.Kernel.Runtime feature variants.
+"Lambda.Dispatch"      = "src/dispatch.l"
 # Extern boundary — exactly one file is compiled per build (selected by feature):
-#   aws   → .NET custom runtime loop (Amazon.Lambda.RuntimeSupport)
-#   local → lightweight local test HTTP server
-#   jvm   → JVM managed runtime handler (aws-lambda-java-core)
+#   aws   → thin wrapper over Lambda.Dispatch's HTTP long-polling loop
+#   local → thin wrapper over Lambda.Dispatch's Std.HttpServer test server
+#   jvm   → not implemented (needs a deployment-model decision)
 "Lambda.Kernel.Runtime" = [
   "src/_kernel/lambda_kernel_aws.l",
   "src/_kernel/lambda_kernel_local.l",
@@ -89,15 +111,15 @@ output_assembly = "Lambda.dll"
 
 [project.tests]
 "Lambda.LambdaTests" = "tests/lambda_tests.l"
+"Lambda.DispatchTests" = "tests/lambda_dispatch_tests.l"
 
 [dependencies]
 "Lyric.Web"    = { workspace = true }
 
-[nuget]
-# Production .NET runtime support — included when feature = "aws".
-"Amazon.Lambda.RuntimeSupport" = { version = "1.10.0", features = ["aws"] }
-# JSON serialization for Lambda event payloads (.NET).
-"Amazon.Lambda.Serialization.SystemTextJson" = { version = "2.4.4", features = ["aws"] }
+# No [nuget] table: the aws feature previously declared Amazon.Lambda.RuntimeSupport
+# / Amazon.Lambda.Serialization.SystemTextJson for an extern package that was never
+# implemented. Lambda.Dispatch's HTTP long-polling loop needs no NuGet dependency —
+# it is pure Lyric over the already-real Std.Http client.
 
 [maven]
 # JVM managed runtime — included when feature = "jvm".
