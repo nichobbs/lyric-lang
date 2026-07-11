@@ -8,11 +8,23 @@ package Std.EnvironmentHost
 
 import Std.Core
 
-@externTarget("System.Environment.GetEnvironmentVariable")
-pub func hostGetEnvironmentVariable(key: in String): String? = ()
+extern type NetEnvironment = "System.Environment"
 
-@externTarget("System.Environment.GetCommandLineArgs")
-pub func hostGetCommandLineArgs(): slice[String] = ()
+extern type NetAppContext = "System.AppContext"
+
+extern type EnvDirectory = "System.IO.Directory"
+
+extern type NetRuntimeEnv = "System.Runtime.InteropServices.RuntimeEnvironment"
+
+extern type NetRuntimeInfo = "System.Runtime.InteropServices.RuntimeInformation"
+
+pub func hostGetEnvironmentVariable(key: in String): String? {
+  NetEnvironment.GetEnvironmentVariable(key)
+}
+
+pub func hostGetCommandLineArgs(): slice[String] {
+  NetEnvironment.GetCommandLineArgs()
+}
 
 // Base directory of the host process — `System.AppContext.BaseDirectory`
 // resolves to the entry-point assembly's directory, not the currently-
@@ -20,17 +32,19 @@ pub func hostGetCommandLineArgs(): slice[String] = ()
 // from a different path than the apphost stub).  Native callers (the
 // self-hosted MSIL bridge) walk up from here to find the
 // `lyric-stdlib/std/` source tree at runtime — same convention the F#
-// bootstrap `Lyric.Cli.SelfHostedBridge.findStdlibSources` uses.
-@externTarget("System.AppContext.get_BaseDirectory")
-pub func hostAppBaseDirectory(): String = ()
+// bootstrap `Lyric.Cli.SelfHostedBridge.findStdlibSources` used.
+pub func hostAppBaseDirectory(): String {
+  NetAppContext.BaseDirectory
+}
 
 // Current working directory of the process.  Used by the self-hosted
 // compiler bridges as a fallback when `hostAppBaseDirectory()` doesn't
 // resolve to a location with the stdlib in a known relative position
 // (e.g. when running a compiled DLL from a temp directory under a
 // development tree).
-@externTarget("System.IO.Directory.GetCurrentDirectory")
-pub func hostCurrentDirectory(): String = ()
+pub func hostCurrentDirectory(): String {
+  EnvDirectory.GetCurrentDirectory()
+}
 
 // Directory of the active .NET runtime shared framework, e.g.
 // `/usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.x/`.  Used by
@@ -39,28 +53,32 @@ pub func hostCurrentDirectory(): String = ()
 // standard `/usr/share/dotnet` or `~/.dotnet` paths (e.g. Homebrew macOS).
 // May return an empty string in native-AOT scenarios.
 @axiom("System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory conforms to its documented .NET contract")
-@externTarget("System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory")
-pub func hostRuntimeDirectory(): String = ()
+pub func hostRuntimeDirectory(): String {
+  NetRuntimeEnv.GetRuntimeDirectory()
+}
 
 // The .NET runtime identifier of the running process (`"linux-x64"`,
-// `"win-x64"`, `"osx-arm64"`, …).  Wraps the static property
+// `"win-x64"`, `"osx-arm64"`, …).  Reads the static property
 // `System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier`.
 // Always non-empty on .NET.
 @axiom("System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier conforms to its documented .NET contract")
-@externTarget("System.Runtime.InteropServices.RuntimeInformation.get_RuntimeIdentifier")
-pub func hostRuntimeIdentifier(): String = ()
+pub func hostRuntimeIdentifier(): String {
+  NetRuntimeInfo.RuntimeIdentifier
+}
 
 // Set (or unset) a process-level environment variable.  Wraps
 // `System.Environment.SetEnvironmentVariable(string, string)`.  The new
 // value is visible to `GetEnvironmentVariable` in the same process and
 // is inherited by any child processes spawned afterwards.
-@externTarget("System.Environment.SetEnvironmentVariable")
-pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit = ()
+pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
+  NetEnvironment.SetEnvironmentVariable(key, value)
+}
 
 // Terminates the current process. The BCL method is void; Lyric callers
 // see Never because Environment.Exit does not return in practice.
-@externTarget("System.Environment.Exit")
-pub func hostExit(code: in Int): Never = ()
+pub func hostExit(code: in Int): Never {
+  NetEnvironment.Exit(code)
+}
 
 // =====================================================================
 // Option seam — the exception-free surface both kernel twins implement
