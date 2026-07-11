@@ -224,6 +224,15 @@ func importedPackageNames(source: in String): List[String] {
 // gate intact for loose scripts that merely sit near a manifest.
 // Returns None after printing errors when a package's sources cannot be
 // read.
+// `Std.*` / `Lyric.*` manifest entries must never be swept in as own
+// packages: those heads resolve through the stdlib / compiler restored
+// bundles, and compiling them into the user assembly double-books their
+// types against the bundle registration (a file built near
+// lyric-stdlib/lyric.toml lost `Std.Core.Option_Some` resolution this way).
+func isReservedHeadPackage(name: in String): Bool {
+  name == "Std" or name == "Lyric" or Str.startsWith(name, "Std.") or Str.startsWith(name, "Lyric.")
+}
+
 func collectImportedOwnPackages(
   proj: in ProjectSection,
   mfDir: in String,
@@ -247,7 +256,7 @@ func collectImportedOwnPackages(
     var pi = 0
     while pi < proj.packages.count {
       val pkgEntry = proj.packages[pi]
-      if stringListContains(needed, pkgEntry.name) and not stringListContains(included, pkgEntry.name) {
+      if stringListContains(needed, pkgEntry.name) and not stringListContains(included, pkgEntry.name) and not isReservedHeadPackage(pkgEntry.name) {
         match readProjectPackageSources(pkgEntry, mfDir, mfPath) {
           case Some(pkgSources) -> {
             included.add(pkgEntry.name)

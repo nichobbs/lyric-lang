@@ -316,6 +316,44 @@ test "buildOneNative: single-file build near a manifest compiles the [project.pa
   assertTrue(File.fileExists(outPath), "output DLL is produced")
 }
 
+// A manifest whose [project.packages] declares Std.*/Lyric.* entries (the
+// stdlib and compiler trees themselves) must NOT have those swept in as
+// own packages: they resolve through the restored bundles, and compiling
+// them into the user assembly double-books their types — a file built
+// near lyric-stdlib/lyric.toml lost `Std.Core.Option_Some` match
+// resolution this way (wave-5 integration regression).
+test "buildOneNative: single-file build near a manifest never sweeps in Std.*/Lyric.* packages" {
+  val dir = freshTempDir("stdhead")
+  defer {
+    cleanup(dir)
+  }
+  writeManifestOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\n" + "name = \"StdHead\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" + "name = \"StdHead\"\n" +
+      "output_assembly = \"StdHead.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Std.Core\" = \"fake/core.l\"\n"
+  )
+  // The manifest points Std.Core at a bogus path: if the sweep ever
+  // includes reserved-head packages again, the build fails on the missing
+  // source instead of using the restored stdlib bundle.
+  match File.createDir(Path.join(dir, "tests")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create tests dir: " + IOError.message(e))
+  }
+  val loosePath = Path.join(Path.join(dir, "tests"), "consumer.l")
+  writeFileOrPanic(
+    loosePath,
+    "package StdHead.Consumer\n\nimport Std.Core\n\nfunc main(): Int {\n  val o: Option[Int] = Some(7)\n  match o {\n    case Some(v) -> v - 7\n    case None -> 1\n  }\n}\n"
+  )
+  val outPath = Path.join(Path.join(dir, "tests"), "consumer.dll")
+
+  val exitCode = Cli.buildOneNative(loosePath, outPath, Emitter.Dotnet, None, "", "")
+  assertEqualInt(exitCode, 0, "Std.Core resolves via the restored stdlib bundle, not the manifest sweep")
+  assertTrue(File.fileExists(outPath), "output DLL is produced")
+}
+
 test "buildOneNative: single-file build near a manifest fails loudly on an unbuilt path dependency" {
   val depDir = freshTempDir("dep-unbuilt")
   defer {

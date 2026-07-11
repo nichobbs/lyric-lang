@@ -189,7 +189,7 @@ impl MailSender for NativeSender {
       while i < msg.to.length {
         if msg.to[i].address.length > 0 {
           val addr = MailAddress.new(msg.to[i].address)
-          toCollection.Add(addr)
+          MailKernel.mailAddressCollectionAdd(toCollection, addr)
         }
         i = i + 1
       }
@@ -198,7 +198,7 @@ impl MailSender for NativeSender {
       while ci < msg.cc.length {
         if msg.cc[ci].address.length > 0 {
           val addr = MailAddress.new(msg.cc[ci].address)
-          ccCollection.Add(addr)
+          MailKernel.mailAddressCollectionAdd(ccCollection, addr)
         }
         ci = ci + 1
       }
@@ -207,7 +207,7 @@ impl MailSender for NativeSender {
       while bi < msg.bcc.length {
         if msg.bcc[bi].address.length > 0 {
           val addr = MailAddress.new(msg.bcc[bi].address)
-          bccCollection.Add(addr)
+          MailKernel.mailAddressCollectionAdd(bccCollection, addr)
         }
         bi = bi + 1
       }
@@ -216,7 +216,7 @@ impl MailSender for NativeSender {
           if rt.address.length > 0 {
             val replyToList = mailMsg.get_ReplyToList()
             val rtAddr = MailAddress.new(rt.address)
-            replyToList.Add(rtAddr)
+            MailKernel.mailAddressCollectionAdd(replyToList, rtAddr)
           }
         }
         case None -> ()
@@ -240,7 +240,7 @@ impl MailSender for NativeSender {
         val bytes = MailKernel.base64Decode(att.dataBase64)
         val stream = MailKernel.newMemoryStream(bytes)
         val bclAtt = MailKernel.newBclAttachment(stream, att.filename, att.contentType)
-        attColl.Add(bclAtt)
+        MailKernel.attachmentCollectionAdd(attColl, bclAtt)
         ai = ai + 1
       }
       self.client.Send(mailMsg)
