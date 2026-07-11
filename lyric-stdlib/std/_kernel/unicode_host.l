@@ -18,8 +18,13 @@
 @axiom("System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32")
 package Std.UnicodeHost
 
-@externTarget("System.Char.GetUnicodeCategory")
-pub func hostUnicodeCategory(c: in Char): Int = ()
+extern type UnicodeChar = "System.Char"
+
+// The UnicodeCategory enum return erases to its underlying int32 on the
+// IL stack, so binding the return as Int is exact (see the module header).
+pub func hostUnicodeCategory(c: in Char): Int {
+  UnicodeChar.GetUnicodeCategory(c)
+}
 
 // `UnicodeCategory` enum constants (numeric values), kept here so
 // callers don't have to memorise them.  These match the .NET enum
