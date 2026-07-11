@@ -239,6 +239,21 @@ func txCommit(t: in DbTxT): Unit = ()
 @externTarget("System.Data.Common.DbTransaction.Rollback")
 func txRollback(t: in DbTxT): Unit = ()
 
+// ─── Disposal (DbCommand / DbDataReader) ─────────────────────────────────────
+// `DbCommand` and `DbDataReader` both implement `IDisposable` (`DbCommand`
+// via `System.ComponentModel.Component`; `DbDataReader` directly). Every
+// `cmd`/`reader` created below must be disposed on both the success and
+// error path — an undisposed `DbDataReader` can hold the SQLite connection's
+// read lock open past the point its result has been consumed, which then
+// makes a same-connection `DbTransaction.Commit()` fail (#5583).
+@externInstance
+@externTarget("System.Data.Common.DbCommand.Dispose")
+func cmdDispose(c: in DbCmd): Unit = ()
+
+@externInstance
+@externTarget("System.Data.Common.DbDataReader.Dispose")
+func readerDispose(r: in DbReader): Unit = ()
+
 // ─── Culture-invariant text formatting ───────────────────────────────────────
 // The row wire format is JSON; every numeric/date value must render in a
 // locale-independent way regardless of the host OS's current culture, or
@@ -565,9 +580,15 @@ pub func query(conn: in DbConn, sql: in String, params: in slice[String]): Resul
 {
   try {
     val cmd = connCreateCommand(conn)
+    defer {
+      cmdDispose(cmd)
+    }
     cmdSetSql(cmd, sql)
     bindParams(cmd, params)
     val reader = cmdExecuteReader(cmd)
+    defer {
+      readerDispose(reader)
+    }
     Ok(serializeRows(reader))
   } catch Bug as b {
     Err(b.message)
@@ -579,6 +600,9 @@ pub func execute(conn: in DbConn, sql: in String, params: in slice[String]): Res
 {
   try {
     val cmd = connCreateCommand(conn)
+    defer {
+      cmdDispose(cmd)
+    }
     cmdSetSql(cmd, sql)
     bindParams(cmd, params)
     Ok(cmdExecuteNonQuery(cmd))
@@ -600,10 +624,16 @@ pub func txQuery(conn: in DbConn, tx: in DbTxT, sql: in String, params: in slice
 {
   try {
     val cmd = connCreateCommand(conn)
+    defer {
+      cmdDispose(cmd)
+    }
     cmdSetSql(cmd, sql)
     cmdSetTransaction(cmd, tx)
     bindParams(cmd, params)
     val reader = cmdExecuteReader(cmd)
+    defer {
+      readerDispose(reader)
+    }
     Ok(serializeRows(reader))
   } catch Bug as b {
     Err(b.message)
@@ -615,6 +645,9 @@ pub func txExecute(conn: in DbConn, tx: in DbTxT, sql: in String, params: in sli
 {
   try {
     val cmd = connCreateCommand(conn)
+    defer {
+      cmdDispose(cmd)
+    }
     cmdSetSql(cmd, sql)
     cmdSetTransaction(cmd, tx)
     bindParams(cmd, params)

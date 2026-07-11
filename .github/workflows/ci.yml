@@ -3845,6 +3845,22 @@ jobs:
           fi
           export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
           .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l
+      # Erased-element checkcast (JVM, #5055/#5381/#5249/#5439): pins the fix
+      # that narrows an indexed List[T]/slice[T] element back to its
+      # statically-declared type (checkcast for refs, unbox for primitives)
+      # so field access / method dispatch / numeric intrinsics on the element
+      # work instead of collapsing to java/lang/Object.  Imports only `Std.*`.
+      - name: Erased-element checkcast self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -x .bootstrap/stage2/bin/lyric ]; then
+            echo "::error::stage 2 binary missing; skipping erased-element checkcast JVM self-test"
+            exit 1
+          fi
+          export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
+          .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/jvm/erased_element_checkcast_jvm_self_test.l
       # out/inout parameter parity (docs/44 m-3, #1763, follow-up to #1761) —
       # exercises the JVM holder-array lowering for free-function `out`/`inout`
       # parameters: the caller wraps each holder argument in a single-element
@@ -4963,7 +4979,12 @@ jobs:
             echo "::error::failed to restore lyric-db NuGet dependencies"
             overall=1
           fi
-          sqlite_native="$(find "$HOME/.nuget/packages/sqlitepclraw.lib.e_sqlite3" -path '*linux-x64/native*' -name '*.so' 2>/dev/null | head -1 | xargs -r dirname)"
+          # `|| true` on the whole substitution: under `set -e`/`pipefail` a
+          # `find` that hits an unreadable dir, or the SIGPIPE from `head`
+          # closing the pipe early, would otherwise abort the entire step
+          # (#5602).  An empty result just means the loader falls back to its
+          # normal probe path.
+          sqlite_native="$( { find "$HOME/.nuget/packages/sqlitepclraw.lib.e_sqlite3" -path '*linux-x64/native*' -name '*.so' 2>/dev/null || true; } | head -1 | { xargs -r dirname || true; } )"
           LD_LIBRARY_PATH="${sqlite_native}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             "$lyric_bin" test --manifest lyric-db/lyric.toml || overall=$?
           echo "=== lyric-search tests ==="

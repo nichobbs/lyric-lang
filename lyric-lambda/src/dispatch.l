@@ -621,6 +621,19 @@ pub func lambdaErrorJson(err: in LambdaError): String {
   }
 }
 
+/// The `errorType` string AWS's Runtime API expects in the
+/// `Lambda-Runtime-Function-Error-Type` header on an `/error` POST — the
+/// same discriminant `lambdaErrorJson` embeds in the body's `errorType`
+/// field, so the header and body agree.
+pub func lambdaErrorType(err: in LambdaError): String {
+  match err {
+    case HandlerError(_, t) -> t
+    case ParseError(_) -> "ParseError"
+    case TimeoutError(_) -> "TimeoutError"
+    case InternalError(_) -> "InternalError"
+  }
+}
+
 // ─── DirectHandler lookup ─────────────────────────────────────────────────────
 func findSqsDirect(app: in LambdaApp): Option[DirectHandler] {
   var i = 0
@@ -907,14 +920,29 @@ func buildAwsContext(inv: in Invocation): LambdaContext {
 // `sendAsync` (the free-function form — see `getNextInvocation`'s comment
 // on why not the `HttpClient` interface) rather than widen the shared
 // `Std.Http` post() contract.
-func postJson(urlStr: in String, body: in String): Result[Unit, String] {
+//
+// `errorType` is non-empty only for the `/error` and `/init/error` POSTs;
+// when present it is sent in the `Lambda-Runtime-Function-Error-Type`
+// header AWS's Runtime API keys the invocation's error classification on
+// (#5592).  A non-2xx status is treated as a transport failure (#5601):
+// the API returns 202 Accepted on success, and a 4xx/5xx means the POST
+// was rejected (e.g. the request was already responded to), which the
+// loop must surface rather than silently swallow.
+func postJson(urlStr: in String, body: in String, errorType: in String): Result[Unit, String] {
   match Url.tryFrom(urlStr) {
     case Err(e) -> Err(error = HttpError.message(e))
     case Ok(url) -> {
-      val req = withJsonBody(request(POST, url), body)
+      val base = withJsonBody(request(POST, url), body)
+      val req = if errorType.length > 0 { withHeader(base, "Lambda-Runtime-Function-Error-Type", errorType) } else { base }
       match await sendAsync(req) {
         case Err(e) -> Err(error = HttpError.message(e))
-        case Ok(_) -> Ok(value = ())
+        case Ok(resp) -> {
+          if HttpResponse.isSuccess(resp) {
+            Ok(value = ())
+          } else {
+            Err(error = "Runtime API POST to " + urlStr + " returned status " + HttpResponse.statusCode(resp).toString())
+          }
+        }
       }
     }
   }
@@ -935,15 +963,19 @@ pub func pollAndDispatchOnce(runtimeApi: in String, app: in LambdaApp): Result[U
     case Ok(inv) -> {
       val ctx = buildAwsContext(inv)
       match dispatchInvocation(app, inv.payload, ctx) {
-        case Ok(body) -> postJson("http://" + runtimeApi + "/2018-06-01/runtime/invocation/" + inv.requestId + "/response", body)
-        case Err(lambdaErr) -> postJson("http://" + runtimeApi + "/2018-06-01/runtime/invocation/" + inv.requestId + "/error", lambdaErrorJson(lambdaErr))
+        case Ok(body) -> postJson("http://" + runtimeApi + "/2018-06-01/runtime/invocation/" + inv.requestId + "/response", body, "")
+        case Err(lambdaErr) -> postJson("http://" + runtimeApi + "/2018-06-01/runtime/invocation/" + inv.requestId + "/error", lambdaErrorJson(lambdaErr), lambdaErrorType(lambdaErr))
       }
     }
   }
 }
 
 func postInitError(runtimeApi: in String, message: in String): Result[Unit, String] {
-  return postJson("http://" + runtimeApi + "/2018-06-01/runtime/init/error", awsErrorJson(message, "InitError"))
+  return postJson(
+    "http://" + runtimeApi + "/2018-06-01/runtime/init/error",
+    awsErrorJson(message, "InitError"),
+    "InitError"
+  )
 }
 
 /// Entry point for `Lambda.Kernel.Runtime`'s `aws` feature variant. Blocks

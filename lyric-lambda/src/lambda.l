@@ -21,10 +21,14 @@
 //!        Lambda.serve(Lambda.withRouter(Lambda.newApp(), router))
 //!
 //!   2. Custom event source handlers
-//!      Register handlers by fully-qualified function name with the
-//!      onSqs / onSns / onS3 / onEventBridge / onDynamoDb / onRaw helpers.
-//!      The kernel resolves each handler via DLL reflection at startup and
-//!      invokes it with the deserialised event and LambdaContext.
+//!      Register handlers as typed values with `Lambda.Direct.sqsHandler` /
+//!      `rawHandler` / the authorizer handlers, then attach them with
+//!      `Lambda.withDirect`.  Dispatch is by static value, not name-based
+//!      DLL reflection: the reflective `on*` model was rejected (D099) —
+//!      bare function references and cross-package closures are unreliable
+//!      (#5362/#5363), so handlers are single-method interfaces the
+//!      dispatcher invokes directly.  (The signatures below still apply;
+//!      only the registration mechanism changed.)
 //!
 //!      Handler signatures:
 //!        SQS:         func h(event: Lambda.Events.SqsEvent,         ctx: Lambda.LambdaContext): Result[R, Lambda.LambdaError]
@@ -213,7 +217,12 @@ pub func errorMessage(err: in LambdaError): String {
 
 // ─── EventHandler ─────────────────────────────────────────────────────────────
 /// Binds an event-source key to a Lyric handler function by qualified name.
-/// The kernel resolves handlerName via DLL reflection at startup.
+///
+/// DEPRECATED / NON-FUNCTIONAL: the name-based reflective dispatch this
+/// record was built for was rejected (D099) and is never invoked by the
+/// runtime loop — registering an `EventHandler` has no effect.  Use
+/// `Lambda.Direct.*` + `Lambda.withDirect` instead.  Retained only so
+/// existing `@stable` signatures still resolve; slated for removal.
 ///
 /// Standard event-source keys (matched against the raw JSON payload by the kernel):
 ///   "aws:sqs"      — SQS record batch         (Lambda.Events.SqsEvent)
@@ -231,7 +240,11 @@ pub record EventHandler {
 
 // ─── AuthorizerHandler ────────────────────────────────────────────────────────
 /// Binds an authorizer type to a Lyric handler function by qualified name.
-/// The kernel resolves handlerName via DLL reflection at startup.
+///
+/// DEPRECATED / NON-FUNCTIONAL: like `EventHandler`, the reflective
+/// name-based dispatch was rejected (D099) and is never invoked — use
+/// `Lambda.Direct.tokenAuthorizerHandler` / `requestAuthorizerHandler` /
+/// `httpAuthorizerHandler` + `Lambda.withDirect` instead.
 ///
 /// authorizerType values:
 ///   "token"   — REST API TOKEN authorizer  (Lambda.Authorizer.TokenAuthorizerEvent)

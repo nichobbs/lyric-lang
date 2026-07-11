@@ -228,3 +228,39 @@ test "#4259: generator function preceding a record executes correctly" {
   assertEqualInt(result[0], 0, "first item = 0")
   assertEqualInt(result[2], 2, "third item = 2")
 }
+
+// ── #5582: generator body using plain `val` bindings, then a record ──────────
+// The #4259 field-count predictor (`countGenLocalsStmt`) originally counted
+// `let`/`var` slots but not `val` slots, so a generator whose body binds with
+// the common `val` form under-predicted its hoisted `__local_` fields and
+// tripped the field-count cross-check panic at build time.  Generator
+// synthesis hoists every body slot by index regardless of binding form, so
+// this generator (three `val`s) plus a following record must build and run.
+async func genWithVals(n: in Int): Int {
+  val base = n * 10
+  val step = 2
+  val cap = base + step + step
+  var i = base
+  while i <= cap {
+    yield i
+    i = i + step
+  }
+}
+
+record RecordAfterValGen {
+  p: Int
+  q: String
+}
+
+test "#5582: generator with val bindings builds and yields, record after it is correct" {
+  val result: List[Int] = newList()
+  for x in genWithVals(1) {
+    result.add(x)
+  }
+  assertEqualInt(result.count, 3, "genWithVals(1) yields 10, 12, 14")
+  assertEqualInt(result[0], 10, "first yielded value = base = 10")
+  assertEqualInt(result[2], 14, "third yielded value = cap = 14")
+  val r = RecordAfterValGen(p = 5, q = "ok")
+  assertEqualInt(r.p, 5, "RecordAfterValGen.p reads correctly after a val-using generator")
+  assertEqual(r.q, "ok", "RecordAfterValGen.q reads correctly after a val-using generator")
+}
