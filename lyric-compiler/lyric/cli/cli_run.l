@@ -152,7 +152,7 @@ union WatchAction {
   case RunFile(sourcePath: String, userArgs: List[String], target: CompileTarget)
   case RunProj(mfPath: String, userArgs: List[String], target: CompileTarget)
   case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool, pkgVer: Option[String])
-  case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String], nativeTriple: String, nativeOpt: String)
+  case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String], nativeTriple: String, nativeOpt: String, feats: List[String], noDef: Bool, allF: Bool)
 }
 
 // Build the program once and execute it.  Target-aware: Dotnet runs via
@@ -239,7 +239,7 @@ func runWatchAction(a: in WatchAction): Int {
     case RunFile(sp, ua, t) -> runOnce(sp, ua, t)
     case RunProj(mp, ua, t) -> runProjectOnce(mp, ua, t)
     case BuildProj(mf, o, t, f, nd, af, nr, pv) -> buildProject(mf, o, t, f, nd, af, nr, pv)
-    case BuildFile(sp, o, t, m, tr, op) -> buildOneNative(sp, o, t, m, tr, op)
+    case BuildFile(sp, o, t, m, tr, op, f, nd, af) -> buildOneNativeWithFeatures(sp, o, t, m, tr, op, f, nd, af)
   }
 }
 

@@ -4651,6 +4651,44 @@ jobs:
           fi
           export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
           .bootstrap/stage2/bin/lyric test --manifest lyric-resilience/lyric.toml --target jvm --no-default-features --features jvm
+      # lyric-auth manifest build on JVM with NO feature flags (#5571) — the
+      # regression pin for target-normalized feature resolution: a plain
+      # `--target jvm` build of a `default = ["dotnet"]` platform-split
+      # manifest must swap in the declared `jvm` feature and compile
+      # Auth.Kernel.Jvm, not the `@cfg(feature = "dotnet")` kernel (which
+      # fails JVM codegen with J002 on its BCL externs).  This was the
+      # failure mode of #5571's workspace-dependency chain; the same
+      # resolver now backs root and dependency builds, so pinning the
+      # flag-less root build pins the propagation rule too (the end-to-end
+      # lyric-web Undertow smoke, tests/jvm_server_smoke.l, stays unwired
+      # until the JVM codegen blockers in its header land — see #5444).
+      - name: lyric-auth manifest build on JVM without feature flags (#5571)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-auth JVM feature-resolution build"
+            exit 1
+          fi
+          rm -rf lyric-auth/bin
+          "$lyric_bin" build --manifest lyric-auth/lyric.toml --target jvm
+          if [ ! -f lyric-auth/bin/Lyric.Auth.dll ]; then
+            echo "::error::lyric-auth JVM build produced no artifact"
+            exit 1
+          fi
+          # The artifact must be a JAR (zip magic), i.e. the JVM bundle —
+          # proof the build went through the JVM pipeline with the jvm
+          # kernel selected rather than dying in Auth.Kernel.Net (J002).
+          head -c 2 lyric-auth/bin/Lyric.Auth.dll | grep -q 'PK' || {
+            echo "::error::lyric-auth JVM artifact is not a JAR"
+            exit 1
+          }
+          # A JVM bundle at the dotnet artifact path would poison later
+          # dotnet builds of dependents; drop it now that it is asserted.
+          rm -rf lyric-auth/bin
+          echo "lyric-auth JVM feature-resolution build ran (no --features flags)" >> "$GITHUB_STEP_SUMMARY"
       # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
       # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
       # views, pure-Lyric tryGetValue) AND the post-mono signature

@@ -45,9 +45,21 @@
 //! for LyricUndertowHandler` interface binding were verified by hand (a
 //! from-scratch `impl <ExternInterface> for Record` repro against
 //! `java.lang.Runnable`, run under `java`, plus `lyric-compiler/jvm/
-//! ffi_iface_impl_jvm_self_test.l`) independent of #5443/#5444.  Once #5444
-//! lands, re-run this file's manual steps above and wire it into `ci.yml`
-//! alongside the existing dotnet `rest_service.l` smoke test.
+//! ffi_iface_impl_jvm_self_test.l`) independent of #5443/#5444.
+//!
+//! Since #5571 the build command above resolves everything OUTSIDE JVM
+//! codegen: workspace deps build with target-normalized features
+//! (Auth.Kernel.Jvm, not the dotnet kernel), and the single-file path
+//! compiles this file's imported `[project.packages]` (Web,
+//! Web.Kernel.Runtime) into the bundle — the same command on `--target
+//! dotnet` compiles AND serves end-to-end.  On `--target jvm` two codegen
+//! defects still block it: an impl-method parameter typed with another
+//! package's record is registered under the declaring file's own package
+//! (`req.body` here fails with receiver `'Web/JvmServerSmoke/Request' has
+//! no known field or member 'body'`), and #5444 beneath it inside
+//! `Web.dispatch`.  Once those land, re-run this file's manual steps above
+//! and wire it into `ci.yml` alongside the existing dotnet
+//! `rest_service.l` smoke test.
 package Web.JvmServerSmoke
 
 import Std.Core

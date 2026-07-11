@@ -35,34 +35,31 @@ import Lyric.Emitter as Emitter
 /// deps; buildErrors is True if any direct dep build failed; wsCtxOpt is the
 /// discovered workspace context (None when not in a workspace).
 ///
-/// `activeFeatures` is the CONSUMER's already-resolved active feature set
-/// (from `resolveManifestFeatures`).  When non-empty, it is forced verbatim
-/// (via `noDefaultFeatures = true`) onto every workspace dependency's own
-/// build — a dependency honors the consumer's `--target`/`--features`
-/// selection exactly rather than falling back to its own
-/// `[features].default`.  Before this, a workspace dep always built with its
-/// own default features regardless of the consumer's
-/// `--features`/`--no-default-features` flags: a `--target jvm --features
-/// jvm --no-default-features` consumer build would still compile a
-/// `default = ["dotnet"]` workspace dependency's `@cfg(feature = "dotnet")`
-/// branch into JVM bytecode (and erase its `@cfg(feature = "jvm")` branch),
-/// silently building the wrong platform-specific code path.
+/// `cliFeatures` / `noDefaultFeatures` are the ROOT build's explicit CLI
+/// feature selection (`--features` / `--no-default-features`), forwarded
+/// verbatim into every workspace dependency's own build (#5571).  Each
+/// dependency then resolves its feature set exactly the way the root
+/// package does: its own `[features].default` (unless the root passed
+/// `--no-default-features`) plus the root's explicit `--features`, followed
+/// by `resolveManifestFeatures`'s target normalization against the
+/// dependency's own declared table — so a `--target jvm` build selects a
+/// `default = ["dotnet"]` dependency's `@cfg(feature = "jvm")` kernel
+/// instead of compiling the .NET kernel into JVM bytecode.  Before this,
+/// the CONSUMER's fully-resolved active set was forced onto dependencies
+/// (and the single-file build path dropped CLI feature flags entirely), so
+/// the root manifest's `default = ["dotnet"]` leaked into every dependency
+/// of a `--target jvm` build regardless of `--features`.
 ///
-/// When `activeFeatures` is EMPTY — the consumer's own manifest declares no
-/// `[features]` table at all and no CLI feature flags were given (e.g.
-/// `lyric-testing/lyric.toml`, which has no `[features]` section) — there is
-/// no consumer selection to propagate, so each dependency falls back to
-/// building with its own `[features].default` (`noDefaultFeatures = false`)
-/// exactly as it did before this mechanism existed.  Without this carve-out,
-/// an empty consumer feature set would forcibly erase every dependency's
-/// own defaults instead of merely declining to override them, breaking any
-/// `default = ["dotnet"]` dependency's mandatory kernel selection for a
-/// consumer that never expressed an opinion about targets/features at all.
+/// `--all-features` is deliberately NOT forwarded: its meaning — "every
+/// feature THIS manifest declares" — is root-manifest-scoped and would
+/// activate mutually-exclusive platform kernels in dependencies whose
+/// feature tables the root knows nothing about.
 pub func buildWorkspaceDeps(
   manifest: in Mf.Manifest,
   mfPath: in String,
   target: in Emitter.CompileTarget,
-  activeFeatures: in List[String],
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
 ): (List[String], Bool, Option[Ws.WorkspaceContext]) {
   val result: List[String] = newList()
   var hadError = false
@@ -78,6 +75,22 @@ pub func buildWorkspaceDeps(
     }
   }
 
+  // The JVM bundled compile consumes cross-package code from SOURCE
+  // (`depTemplateSrcs` + the stdlib-closure bundling model);
+  // `emitProjectJvmInProcess` never reads `restoredDllPaths`.  Building
+  // workspace dep DLLs for a `--target jvm` consumer is therefore pure
+  // waste — and actively harmful: the dep's `[project].output_assembly`
+  // names a `.dll`, so the JVM dep build wrote a JAR to `bin/<name>.dll`,
+  // which the next `--target dotnet` build of any consumer then failed to
+  // load as a restored dep ("no Lyric.Contract resource") until the file
+  // was deleted by hand (#5571).
+  match target {
+    case Jvm -> {
+      return (result, false, wsCtxOpt)
+    }
+    case _ -> ()
+  }
+
   val buildStack: List[String] = newList()
   val seen: List[String] = newList()
   val mfDir = Path.dirname(mfPath)
@@ -89,7 +102,7 @@ pub func buildWorkspaceDeps(
         // Resolve the dependency name to its directory within the workspace.
         match Ws.resolveDep(dep.name, wsCtx) {
           case Some(depDir) -> {
-            val buildResult = buildWorkspaceDep(dep.name, depDir, target, activeFeatures, versionOpt, buildStack)
+            val buildResult = buildWorkspaceDep(dep.name, depDir, target, cliFeatures, noDefaultFeatures, versionOpt, buildStack)
             match buildResult {
               case Ok(dllPath) -> {
                 if not stringListContains(seen, dep.name) {
@@ -230,7 +243,8 @@ func buildWorkspaceDep(
   depName: in String,
   depDir: in String,
   target: in Emitter.CompileTarget,
-  activeFeatures: in List[String],
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
   versionConstraint: in Option[String],
   buildStack: in List[String],
 ): Result[String, String] {
@@ -297,30 +311,22 @@ func buildWorkspaceDep(
   buildStack.add(depName)
   Console.println("build: building workspace dep '" + depName + "' (" + depDir + ") ...")
 
-  // Only force the consumer's resolved feature set onto the dependency when
-  // the consumer actually resolved one (its own `[features].default`, or an
-  // explicit `--features`/`--all-features` CLI selection).  When the
-  // consumer's own manifest has no `[features]` table at all and no CLI
-  // feature flags were passed — e.g. `lyric-testing/lyric.toml`, which
-  // declares zero features of its own — `activeFeatures` is legitimately
-  // empty, and forcing `noDefaultFeatures = true` in that case would wipe
-  // out every workspace dependency's own defaults (e.g. `Lyric.Storage`'s
-  // `default = ["dotnet"]`), erasing its `@cfg(feature = "dotnet")` kernel
-  // entirely and leaving its extern bindings unresolved.  Falling
-  // back to the dependency's own defaults here reproduces the pre-fix
-  // behaviour for exactly the case the fix wasn't meant to touch, while
-  // still forcing the exact set through whenever the consumer resolved a
-  // non-empty one (the originally-motivating `--target jvm --features jvm
-  // --no-default-features` scenario this doc comment above describes).
-  val depNoDefaultFeatures = activeFeatures.count > 0
-
+  // The dependency resolves features the same way the root does: its own
+  // `[features].default` (unless the root's `--no-default-features`), plus
+  // the root's explicit `--features`, then `resolveManifestFeatures`'s
+  // target normalization against the dependency's OWN declared table
+  // (#5571).  The root's resolved active set is deliberately not forced
+  // through: it carries the root manifest's defaults (e.g. lyric-web's
+  // `default = ["dotnet"]`), which are that manifest's choice, not a user
+  // selection, and forcing them made every `--target jvm` build compile
+  // dependencies' .NET kernels into JVM bytecode.
   val buildExit = buildProject(
     depToml,
     None,
     // use the manifest's default output location
     target,
-    activeFeatures,
-    depNoDefaultFeatures,
+    cliFeatures,
+    noDefaultFeatures,
     // no --all-features
     false,
     // allow restore
@@ -415,43 +421,109 @@ func checkDllIsStale(dllPath: in String, manifestPath: in String, sourceDir: in 
 // lyric.toml resolves dependencies/features/Maven classpath identically to a
 // project build of the same manifest, instead of maintaining two copies of
 // this logic.
+/// The plain feature name conventionally paired with a compile target by
+/// the ecosystem's `[features]` tables (`default = ["dotnet"]`, `dotnet =
+/// []`, `jvm = []`): every platform-split library gates its kernels on
+/// `@cfg(feature = "dotnet")` / `@cfg(feature = "jvm")`.  Distinct from
+/// the D-N-013 `target.<name>` pseudo-feature (which backs `@cfg(target =
+/// "X")` and is injected by each backend bridge, never declared in a
+/// manifest).
+pub func targetFeatureName(target: in Emitter.CompileTarget): String {
+  // var-mutation shape (stage-0 value-position-match lowering gap, #4631;
+  // see cli_run.l's runTarget note).
+  var name = "dotnet"
+  match target {
+    case Jvm -> {
+      name = "jvm"
+    }
+    case Native -> {
+      name = "native"
+    }
+    case Dotnet -> ()
+  }
+  name
+}
+
+func isTargetFeatureName(name: in String): Bool {
+  name == "dotnet" or name == "jvm" or name == "native"
+}
+
 /// Resolve a manifest's active/declared feature sets for `@cfg` erasure:
 /// the manifest's `[features].default` set unless `--no-default-features`,
 /// `--all-features` selecting every declared feature, else CLI `--features`
-/// layered on top of the defaults.  Single-file builds have no
-/// `--features`/`--no-default-features`/`--all-features` CLI flags of their
-/// own, so their caller always passes an empty `cliFeatures` and
-/// `false`/`false`, which resolves to exactly the manifest's own defaults.
+/// layered on top of the defaults.
+///
+/// The composed set is then TARGET-NORMALIZED (#5571): features named
+/// after a NON-active target (`dotnet` / `jvm` / `native`) are deactivated
+/// unless the user asked for them explicitly (via `--features` or
+/// `--all-features`), and — only when such a mismatched platform default
+/// was removed — the active target's own feature name is swapped in if the
+/// manifest declares it.  Without this, every platform-split manifest
+/// (`default = ["dotnet"]`, kernels gated on `@cfg(feature = "dotnet")` /
+/// `@cfg(feature = "jvm")`) compiled its .NET kernel into `--target jvm`
+/// builds unless the caller remembered to pass `--no-default-features
+/// --features jvm` on every invocation.
+///
+/// The swap fires ONLY on a removed mismatch — a target-named feature is
+/// never introduced into a composed set that contained none.  A manifest
+/// with an empty default set is a deliberate opt-out, not an omission:
+/// lyric-session documents that defaulting either target feature on would
+/// make every transitive build compile a kernel with a mandatory
+/// NuGet/Maven dependency the builder may not have restored.  Manifests
+/// that declare no target-named features at all are likewise unaffected in
+/// both directions.
 pub func resolveManifestFeatures(
   mfText: in String,
   mfPath: in String,
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
+  target: in Emitter.CompileTarget,
 ): (List[String], List[String]) {
   val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
   val mfDeclared = Mf.readFeatureDeclaredFromToml(mfText, mfPath)
-  val activeFeatures: List[String] = newList()
+  val composed: List[String] = newList()
   if allFeatures {
     var ai = 0
     while ai < mfDeclared.count {
-      activeFeatures.add(mfDeclared[ai])
+      composed.add(mfDeclared[ai])
       ai += 1
     }
   } else {
     if not noDefaultFeatures {
       var ai = 0
       while ai < mfDefaults.count {
-        activeFeatures.add(mfDefaults[ai])
+        composed.add(mfDefaults[ai])
         ai += 1
       }
     }
     var ci = 0
     while ci < cliFeatures.count {
-      activeFeatures.add(cliFeatures[ci])
+      composed.add(cliFeatures[ci])
       ci += 1
     }
+  }
+
+  val tName = targetFeatureName(target)
+  val activeFeatures: List[String] = newList()
+  var removedMismatch = false
+  var fi = 0
+  while fi < composed.count {
+    val f = composed[fi]
+    val explicitlyRequested = allFeatures or stringListContains(cliFeatures, f)
+    if isTargetFeatureName(f) and f != tName and not explicitlyRequested {
+      removedMismatch = true
+    } else {
+      if not stringListContains(activeFeatures, f) {
+        activeFeatures.add(f)
+      }
+    }
+    fi += 1
+  }
+  if removedMismatch and stringListContains(mfDeclared, tName) and not stringListContains(activeFeatures, tName) {
+    activeFeatures.add(tName)
   };
+
   (activeFeatures, mfDeclared)
 }
 
@@ -487,19 +559,21 @@ pub record ResolvedManifestDeps {
 /// recursively via `buildWorkspaceDeps`), local `path = "..."` deps, and
 /// `[nuget]` assets that are themselves Lyric packages — into the
 /// `restoredDllPaths` / `nugetAssemblyPaths` / `depTemplateSrcs` shape
-/// `Emitter.EmitProjectRequest` expects.  `activeFeatures` (the caller's own
-/// already-resolved feature set) is forced onto every workspace dependency's
-/// build — see `buildWorkspaceDeps`'s doc comment.  Does NOT itself resolve
-/// feature sets (see `resolveManifestFeatures`) or `[maven]` classpath
-/// injection (see `injectMavenClasspathForJvm`) — those are independent
-/// concerns with their own callers.  Never triggers a restore: a dependency
-/// that isn't already built is reported via `hadUnbuiltLocalDep` / the
-/// printed message, not fetched.
+/// `Emitter.EmitProjectRequest` expects.  `cliFeatures` /
+/// `noDefaultFeatures` (the root build's explicit CLI feature selection)
+/// are forwarded into every workspace dependency's build — see
+/// `buildWorkspaceDeps`'s doc comment for the composition rule (#5571).
+/// Does NOT itself resolve feature sets (see `resolveManifestFeatures`) or
+/// `[maven]` classpath injection (see `injectMavenClasspathForJvm`) —
+/// those are independent concerns with their own callers.  Never triggers
+/// a restore: a dependency that isn't already built is reported via
+/// `hadUnbuiltLocalDep` / the printed message, not fetched.
 pub func resolveManifestDependencies(
   manifest: in Manifest,
   mfPath: in String,
   target: in Emitter.CompileTarget,
-  activeFeatures: in List[String],
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
 ): ResolvedManifestDeps {
   val mfDir = Path.dirname(mfPath)
   val restoredDlls: List[String] = newList()
@@ -507,7 +581,7 @@ pub func resolveManifestDependencies(
   val seenDeps: List[String] = newList()
   var hadUnbuiltLocalDep = false
 
-  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, target, activeFeatures)
+  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, target, cliFeatures, noDefaultFeatures)
   if wsHadError {
     return ResolvedManifestDeps(
       restoredDlls = restoredDlls,
