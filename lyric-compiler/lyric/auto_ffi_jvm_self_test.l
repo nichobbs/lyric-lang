@@ -428,3 +428,78 @@ test "enum instance method resolves through the java.lang.Enum superclass walk" 
   val mode = JRoundingMode.HALF_UP
   assertEqual(mode.name(), "HALF_UP", "Enum.name() on an enum constant")
 }
+
+// ── Lambda → functional-interface (SAM) bridging at auto-FFI boundaries ──────
+//
+// A Lyric lambda lowers to a closure class implementing the package's shared
+// `Lyric$Lambda` interface (`invoke(Object[])Object`).  Passing one to a JDK
+// method whose parameter is a functional interface (`Runnable`, `Comparator`,
+// `Function`, `Consumer`, …) previously either failed overload resolution or
+// emitted bytecode the JVM verifier rejects (the raw closure object where the
+// nominal interface is expected).  With SAM bridging: the overload scorer
+// recognizes a lambda argument as assignable to exactly the
+// functional-interface parameters (`Jvm.AutoFfi.findSamMethod`), and
+// `emitFfiCoerce` wraps the closure in a synthesized per-interface adapter
+// class whose SAM method adapts typed params/return to the boxed
+// `invoke(Object[])Object` calling convention.
+extern type JThread = "java.lang.Thread"
+
+extern type JHashMap = "java.util.HashMap"
+
+test "Runnable: zero-arg void lambda capturing a var, via Thread(Runnable)" {
+  // Thread declares both Thread(Runnable) and Thread(String): the lambda
+  // argument must score as assignable to the functional interface and NOT to
+  // String, selecting Thread(Runnable) deterministically.
+  var ran = 0
+  val r = { -> ran = ran + 1 }
+  val t = JThread.new(r)
+  t.start()
+  t.join()
+  assertEqualInt(ran, 1, "Runnable lambda ran exactly once on the spawned thread")
+}
+
+test "Runnable: inline lambda literal argument" {
+  var hits = 0
+  val t = JThread.new({ -> hits = hits + 10 })
+  t.start()
+  t.join()
+  assertEqualInt(hits, 10, "inline Runnable lambda literal ran")
+}
+
+test "Comparator: two-arg int-returning lambda through Arrays.sort(T[], Comparator)" {
+  val words: slice[String] = ["bb", "a", "ccc"]
+  // Sort by descending length so the result proves the comparator body ran
+  // (natural order would yield ["a", "bb", "ccc"]).
+  JArrays.sort(words, { a: String, b: String -> b.length - a.length })
+  assertEqual(words[0], "ccc", "longest word first")
+  assertEqual(words[1], "bb", "middle word second")
+  assertEqual(words[2], "a", "shortest word last")
+}
+
+test "Function: value-returning single-arg lambda through Map.computeIfAbsent" {
+  val m = JHashMap.new()
+  val len = m.computeIfAbsent("answer", { k: String -> k.length })
+  assertEqualInt(len, 6, "computeIfAbsent invoked the mapping lambda")
+  assertEqualInt(m.size(), 1, "mapped value was stored")
+}
+
+test "Function: lambda capturing a local, through Map.computeIfAbsent" {
+  val suffix = "!"
+  val m = JHashMap.new()
+  val v = m.computeIfAbsent("x", { k: String -> k + suffix })
+  assertEqual(v, "x!", "capturing Function lambda produced key + captured suffix")
+}
+
+test "Consumer: reference-arg void-return lambda through ArrayList.forEach" {
+  // The Consumer shape (one reference parameter, void return) is the same SAM
+  // shape as com.sun.net.httpserver.HttpHandler.handle(HttpExchange) — the
+  // form the _kernel_jvm http kernels need — exercisable network-free here.
+  val items = JArrayList.new()
+  items.add("alpha")
+  items.add("beta")
+  var seen = 0
+  var joined = ""
+  items.forEach({ x: String -> seen = seen + 1; joined = joined + x })
+  assertEqualInt(seen, 2, "Consumer lambda visited every element")
+  assertEqual(joined, "alphabeta", "Consumer lambda observed element values in order")
+}
