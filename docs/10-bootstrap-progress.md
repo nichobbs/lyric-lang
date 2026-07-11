@@ -30176,10 +30176,14 @@ the @externTarget literal-const path (`Std.Math.pi()` previously threw
 stopped extern-alias member access from mis-binding to nullary union
 cases (`Alias.None` → `Std.Core.Option_None`).
 
-Verified by `import_extern_self_test.l` (13 cases) and
-`metadata_reader_self_test.l` (17 cases, incl. `rdI64` bit-pattern
-pins). Value-type instance receivers and value-type `.new()`
-(Q48-004) are the next gap.
+Verified by `import_extern_self_test.l` (13 cases at the time; 27 after
+the async/array wave) and `metadata_reader_self_test.l` (17 cases, incl.
+`rdI64` bit-pattern pins). Value-type instance receivers and value-type
+`.new()` (Q48-004) shipped in the following wave (D-progress-641), as
+did async Task unwrap, `slice[T]` arguments (D-progress-645), and JVM
+SAM bridging (D-progress-643). The kernel migration itself began in
+D-progress-644: `_kernel/` is down from 277 to 172 `@externTarget`
+declarations across 11 migrated files.
 
 **Related:** `docs/03-decision-log.md` D-progress-638, docs/42 §5
 status note.

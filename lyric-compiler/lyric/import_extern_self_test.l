@@ -5,7 +5,7 @@ import Std.Core
 import Std.Math as Math
 import Std.Testing
 import Std.Uuid
-import extern System.{Math as SystemMath, Int32 as NetInt32, Int64 as NetInt64, String as NetString, Environment as NetEnv, TimeSpan, Guid, DateTime}
+import extern System.{Math as SystemMath, Int32 as NetInt32, Int64 as NetInt64, String as NetString, Environment as NetEnv, TimeSpan, Guid, DateTime, Convert}
 import extern System.Text.{Encoding, StringBuilder}
 import extern System.Diagnostics.{Stopwatch}
 import extern System.Text.RegularExpressions.{Regex, RegexOptions}
@@ -34,10 +34,12 @@ test "Math.PI literal R8 constant inlines via member access" {
   assertTrue(tau < 6.283186, "Tau upper bound")
 }
 
-test "Std.Math.pi routes the R8 constant through @externTarget" {
-  // Regression: the @externTarget static-field path used to fall through to
-  // `ldsfld` for a non-Int32 literal constant, which faults at run time with
-  // MissingFieldException (a literal field has no storage).
+test "Std.Math.pi inlines the R8 constant through the stdlib kernel" {
+  // Regression: a literal constant used to fall through to `ldsfld` for a
+  // non-Int32 literal, which faults at run time with MissingFieldException
+  // (a literal field has no storage).  Std.MathHost now reads Math.PI via
+  // extern-type member access (auto-FFI const inlining) rather than an
+  // @externTarget wrapper; the runtime value must be unchanged.
   val pi = Math.pi()
   assertTrue(pi > 3.141592, "Std.Math.pi lower bound")
   assertTrue(pi < 3.141593, "Std.Math.pi upper bound")
@@ -149,6 +151,16 @@ test "extern struct interpolation boxes before ToString" {
   assertEqual("id=${g}", "id=550e8400-e29b-41d4-a716-446655440000", "interpolated struct")
   val ts = TimeSpan.FromMinutes(5.0)
   assertEqual("span=${ts}", "span=00:05:00", "interpolated TimeSpan")
+}
+
+test "slice[Byte] argument resolves Convert.ToBase64String(byte[])" {
+  val bs: slice[Byte] = [77u8, 97u8, 110u8]
+  assertEqual(Convert.ToBase64String(bs), "TWFu", "ToBase64String(byte[]) on 'Man'")
+}
+
+test "slice[String] argument resolves String.Join(string, string[])" {
+  val parts: slice[String] = ["a", "b", "c"]
+  assertEqual(NetString.Join("-", parts), "a-b-c", "Join(string, string[])")
 }
 
 test "extern struct flows through uniform-ABI generic calls (#5196)" {

@@ -2191,6 +2191,77 @@ test "for nested tuple pattern accepted" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// docs/59 A1: `for`-loop element typing over ranges and List.  Before this a
+// range-driven loop variable was `TyError` (universal wildcard), so the loop
+// body was effectively unchecked, and the range bounds themselves were never
+// visited by the checker at all.
+// ─────────────────────────────────────────────────────────────────────────────
+test "for range binds Int" {
+  val ok = "package P\nfunc f(n: in Int): Int {\n  var total = 0\n  for i in 0 ..< n {\n    total = total + i\n  }\n  total\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "range-for: Int loop var in arithmetic is clean")
+  val bad = "package P\nfunc g(n: in Int): Unit {\n  for i in 0 ..< n {\n    val s: String = i\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "range-for: String binding of an Int loop var is T0060")
+}
+
+test "for range binds Long" {
+  val ok = "package P\nfunc f(): Long {\n  var total: Long = 0\n  for i in 1i64 ..= 3i64 {\n    total = total + i\n  }\n  total\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "range-for: Long bounds bind a Long loop var")
+  val bad = "package P\nfunc g(): Unit {\n  for i in 1i64 ..= 3i64 {\n    val n: Int = i\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "range-for: Int binding of a Long loop var is T0060")
+}
+
+test "for range bound exprs are checked" {
+  val bad = "package P\nfunc h(k: in Int): Int { k }\nfunc f(): Unit {\n  for i in 0 ..< h(\"s\") {\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0043"), "range-for: a bad call inside a bound is now caught (T0043)")
+}
+
+// Known-mismatched bound widths (Int lo, Long hi) have no working lowering on
+// either backend (the JVM counting-for panics; MSIL emits width-mismatched IL),
+// so the checker degrades the binding to the lenient wildcard rather than
+// claiming a type — no new rejections for a shape codegen owns.
+test "for range mixed-width bounds degrade" {
+  val src = "package P\nfunc f(n: in Long): Unit {\n  for i in 0 ..< n {\n    val s: String = i\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "range-for: mixed Int/Long bounds keep the lenient wildcard")
+}
+
+test "for over List binds element type" {
+  val ok = "package P\nextern type List[T] = \"System.Collections.Generic.List`1\"\nfunc f(xs: in List[String]): Int {\n  var n = 0\n  for s in xs {\n    n = n + s.length\n  }\n  n\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "list-for: String element member access is clean")
+  val bad = "package P\nextern type List[T] = \"System.Collections.Generic.List`1\"\nfunc g(xs: in List[String]): Unit {\n  for s in xs {\n    val i: Int = s\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "list-for: Int binding of a String element is T0060")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// docs/59 A3: generic record field access keeps the receiver's instantiation —
+// `b.value` on `Box[Int]` is `Int`, mirroring the union path
+// (`caseFieldTypesInstantiated`).  Before this the field type resolved under an
+// empty generic context to a swallowed `TyError`, so anything flowed.
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic record field instantiated" {
+  val ok = "package P\nrecord Box[T] { value: T }\nfunc f(): Int {\n  val b = Box(value = 41)\n  b.value + 1\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "box-field: Box[Int].value flows into arithmetic cleanly")
+  val bad = "package P\nrecord Box[T] { value: T }\nfunc g(): Int {\n  val b = Box(value = \"s\")\n  b.value\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "box-field: Box[String].value mismatches Int return (T0070)")
+}
+
+test "generic record field from annotated param" {
+  val bad = "package P\nrecord Box[T] { value: T }\nfunc f(b: in Box[String]): Int {\n  b.value\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "box-param: Box[String].value mismatches Int return (T0070)")
+  val badBind = "package P\nrecord Box[T] { value: T }\nfunc g(b: in Box[String]): Unit {\n  val n: Int = b.value\n}\n"
+  assertTrue(hasDiagCode(parseCheck(badBind), "T0060"), "box-param: Int binding of a String field is T0060")
+}
+
+// A non-generic record's fields are unaffected, and a generic receiver whose
+// instantiation could not be inferred (no targs) stays lenient — the erased
+// wildcard, never a new rejection.
+test "generic record field degrades without targs" {
+  val ok = "package P\nrecord Box[T] { value: T }\nfunc f[T](b: in Box[T]): Int {\n  val n: Int = b.value\n  n\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "box-generic-ctx: uninstantiated T stays lenient")
+  val plain = "package P\nrecord Point { x: Int }\nfunc g(p: in Point): Int {\n  p.x + 1\n}\n"
+  assertEqualInt(diagCount(parseCheck(plain)), 0, "plain record field access unchanged")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Const patterns (docs/46, D101).  checkConstRefPattern diagnostics; the
 // positive runtime behaviour lives in const_pattern_self_test.l.  #3485.
 // ─────────────────────────────────────────────────────────────────────────────

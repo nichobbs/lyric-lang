@@ -1173,8 +1173,178 @@ func emitUnboxObjectArray(ctx: in FuncCtx, insns: in List[LInsn], elemTy: in Jvm
 // (`[Ljava/lang/Object;`, of boxed wrapper values) to any JDK primitive
 // array by materialising a fresh primitive array and unboxing each element —
 // see `scoreParamMatch`'s `[Ljava/lang/Object; -> primitive[]` arm.
+// ── Lambda → functional-interface (SAM) bridging ──────────────────────────────
+// A Lyric lambda's closure class implements only the package's shared
+// `Lyric$Lambda` interface (`invoke(Object[])Object`), so passing one to a JDK
+// method whose parameter is a nominal functional interface (`Runnable`,
+// `Comparator`, `Function`, …) needs an adapter: a synthesized per-interface
+// class implementing the target interface whose SAM method boxes its typed
+// parameters into an `Object[]`, invokes the wrapped `Lyric$Lambda`, and
+// adapts the boxed result back to the SAM's return type (unbox / checkcast /
+// discard-for-void).  One adapter class is synthesized per (package, target
+// interface) pair and reused across call sites.
+// Deterministic adapter class name for a target interface within a package:
+// `<pkg>$Sam$<mangled iface>` (e.g. `Pkg$Sam$java_lang_Runnable`).  `$Sam$`
+// cannot collide with user types (`$` is not a Lyric identifier character) or
+// with the `$Lambda$<n>` closure names.
+func samAdapterClassName(pkgName: in String, ifaceBin: in String): String {
+  pkgName + "$Sam$" + ifaceBin.replace("/", "_").replace("$", "_")
+}
+
+// Append the return-adaptation instructions for a SAM adapter body: the boxed
+// `Object` result of `Lyric$Lambda.invoke` is on the stack; convert it to the
+// SAM method's declared return type and return it.  Numeric primitives unbox
+// through `java.lang.Number` (a Lyric lambda may box any numeric width — e.g.
+// an `Int`-producing body yields `Integer` even where the SAM declares long).
+func emitSamAdapterReturn(body: in List[LInsn], retTy: in JvmType): Unit {
+  match retTy {
+    case JVoid -> {
+      body.add(LPop)
+      body.add(LReturn)
+    }
+    case JBoolean -> {
+      body.add(LCheckcast(className = "java/lang/Boolean"))
+      body.add(LUnboxBool)
+      body.add(LIreturn)
+    }
+    case JChar -> {
+      body.add(LCheckcast(className = "java/lang/Character"))
+      body.add(LUnboxChar)
+      body.add(LIreturn)
+    }
+    case JInt -> emitSamNumberReturn(body, "intValue", JInt)
+    case JLong -> emitSamNumberReturn(body, "longValue", JLong)
+    case JFloat -> emitSamNumberReturn(body, "floatValue", JFloat)
+    case JDouble -> emitSamNumberReturn(body, "doubleValue", JDouble)
+    case JByte -> emitSamNumberReturn(body, "byteValue", JByte)
+    case JShort -> emitSamNumberReturn(body, "shortValue", JShort)
+    case JRef(cls) -> {
+      if cls != "java/lang/Object" {
+        body.add(LCheckcast(className = cls))
+      }
+      body.add(LAreturn)
+    }
+    case JArray(_) -> {
+      // CONSTANT_Class entries for array types carry the descriptor form.
+      body.add(LCheckcast(className = jvmTypeToDescStr(retTy)))
+      body.add(LAreturn)
+    }
+  }
+}
+
+func emitSamNumberReturn(body: in List[LInsn], accessor: in String, retPrim: in JvmType): Unit {
+  body.add(LCheckcast(className = "java/lang/Number"))
+  val ps: List[JvmType] = newList()
+  body.add(LInvokevirtual(owner = "java/lang/Number", name = accessor, params = ps, ret = retPrim))
+  emitReturn(body, retPrim)
+}
+
+// Ensure the adapter class bridging `Lyric$Lambda` to `ifaceBin`'s SAM method
+// exists in the package's closure accumulator (the same synthesis channel
+// lambda closures use — `lowerClosure` is shape-agnostic), and return its
+// class name.  The adapter holds the wrapped `Lyric$Lambda` in a ctor-bound
+// capture field; its SAM method body is straight-line (no branch targets, so
+// the uniform StackMapTable generation is trivially satisfied).
+func ensureSamAdapterClass(ctx: in FuncCtx, ifaceBin: in String, sam: in ClassMethod): String {
+  val adapterClass = samAdapterClassName(ctx.pkgName, ifaceBin)
+  var ei = 0
+  while ei < ctx.closureAcc.count {
+    if ctx.closureAcc[ei].closureClass == adapterClass {
+      return adapterClass
+    }
+    ei = ei + 1
+  }
+  val lambdaIface = lambdaIfaceName(ctx.pkgName)
+  val paramDescs = parseDescriptorParams(sam.descriptor)
+  val retTy = descStrToJvmType(returnDescFromMethodDesc(sam.descriptor))
+  val paramTys: List[JvmType] = newList()
+  var pi = 0
+  while pi < paramDescs.count {
+    paramTys.add(descStrToJvmType(paramDescs[pi]))
+    pi = pi + 1
+  }
+  val captures: List[LClosureCapture] = newList()
+  captures.add(LClosureCapture(captureName = "__lyric_sam_target", captureType = JRef(className = lambdaIface)))
+
+  val body: List[LInsn] = newList()
+  body.add(LAload(slot = 0))
+  body.add(LGetfield(owner = adapterClass, name = "__lyric_sam_target", t = JRef(className = lambdaIface)))
+  body.add(LIconst(v = paramTys.count))
+  body.add(LAnewarray(className = "java/lang/Object"))
+  // Slot 0 is `this`; SAM params follow (long/double occupy two slots).
+  var slot = 1
+  var bi = 0
+  while bi < paramTys.count {
+    val pty = paramTys[bi]
+    body.add(LDup)
+    body.add(LIconst(v = bi))
+    emitLoad(body, slot, pty)
+    boxIfNeeded(body, pty)
+    body.add(LAastore)
+    val pw = match pty { case JLong -> 2; case JDouble -> 2; case _ -> 1 }
+    slot = slot + pw
+    bi = bi + 1
+  }
+  val invPs: List[JvmType] = newList()
+  invPs.add(JArray(elem = JRef(className = "java/lang/Object")))
+  body.add(
+    LInvokeinterface(
+      owner = lambdaIface,
+      name = lambdaIfaceMethod(),
+      params = invPs,
+      ret = JRef(className = "java/lang/Object"),
+      argCount = 2
+    )
+  )
+  emitSamAdapterReturn(body, retTy)
+
+  ctx.closureAcc.add(
+    LClosure(
+      closureClass = adapterClass,
+      ifaceClass = ifaceBin,
+      ifaceMethod = sam.name,
+      captures = captures,
+      methodParams = paramTys,
+      methodRet = retTy,
+      bodyInsns = body,
+      bodyMaxLocals = 0
+    )
+  )
+  adapterClass
+}
+
+// Wrap the `Lyric$Lambda` value on top of the stack in the adapter class for
+// `ifaceBin`, leaving an instance of the target functional interface.  The
+// lambda is stashed to a temp slot so the `new; dup; aload; invokespecial`
+// construction sequence runs on a clean stack top.
+func emitSamAdapterWrap(ctx: in FuncCtx, insns: in List[LInsn], ifaceBin: in String, sam: in ClassMethod): Unit {
+  val lambdaIface = lambdaIfaceName(ctx.pkgName)
+  val adapterClass = ensureSamAdapterClass(ctx, ifaceBin, sam)
+  val tmp = allocSlot(ctx, "__sam_tmp_" + freshLabel(ctx), JRef(className = lambdaIface))
+  insns.add(LAstoreAs(slot = tmp, className = lambdaIface))
+  insns.add(LNew(className = adapterClass))
+  insns.add(LDup)
+  insns.add(LAload(slot = tmp))
+  val ctorPs: List[JvmType] = newList()
+  ctorPs.add(JRef(className = lambdaIface))
+  insns.add(LInvokespecial(owner = adapterClass, name = "<init>", params = ctorPs, ret = JVoid))
+}
+
 func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, toDesc: in String): Unit {
   if fromDesc == toDesc {
+    return ()
+  }
+  // Lyric lambda → JDK functional-interface parameter: wrap in the synthesized
+  // SAM adapter (the score-8 arm in `scoreParam`).  A target whose metadata is
+  // unavailable (or that is not a functional interface — only reachable through
+  // the permissive no-metadata score) is left untouched, preserving the legacy
+  // behavior for that configuration.
+  if toDesc.startsWith("L") and toDesc != "Ljava/lang/Object;" and fromDesc == "L" + lambdaIfaceName(ctx.pkgName) + ";" {
+    val ifaceBin = refDescToBinary(toDesc)
+    match findSamMethod(ctx.autoFfi, ifaceBin) {
+      case Some(sam) -> emitSamAdapterWrap(ctx, insns, ifaceBin, sam)
+      case None -> ()
+    }
     return ()
   }
   // Primitive → Object parameter: box (the score-2 arm in scoreParamMatch).

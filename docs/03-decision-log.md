@@ -14410,6 +14410,207 @@ D-progress-638/640 (the tracking note, now marked resolved above),
 `native/plan/04-arc-design.md` §NativeWeak (KNOWN UNSOUNDNESS → RESOLVED),
 D-N-005, #5504, #5539.
 
+## D-progress-643 — JVM lambdas bridge to JDK functional interfaces at auto-FFI boundaries (SAM conversion)
+
+**Status:** ACCEPTED
+
+Lyric lambdas can now be passed to JDK methods expecting functional
+interfaces (`Runnable`, `Comparator`, `Function`, `Consumer`, …) on
+`--target jvm` — previously every such call produced
+`IncompatibleClassChangeError` bytecode (docs/59 §6.4 item 6, JVM half).
+
+- **SAM detection** (`jvm/class_reader.l` + `jvm/auto_ffi.l`):
+  `findSamMethod` collects abstract instance methods of an interface plus
+  transitive superinterfaces, deduped by name+erased descriptor, excluding
+  public-`Object`-signature redeclarations (the JLS 9.8 rule — needed for
+  `Comparator`); exactly one survivor is the SAM. Conservative: ambiguous
+  shapes yield None, never a wrong pick.
+- **Overload scoring**: a lambda argument (recognized by the
+  `/Lyric$Lambda;` descriptor suffix, unproducible by user types) scores 8
+  against a confirmed functional-interface parameter and −1 against a
+  loadable non-functional reference parameter — making `Thread(Runnable)`
+  vs `Thread(String)` deterministic where it was order-dependent. No
+  existing resolution shifted (all 31 prior auto-FFI cases unchanged).
+- **Adapter emission** (`jvm/codegen/04_calls.l`): a per-(package,
+  interface) adapter class implements the interface, boxes typed SAM
+  params into `Object[]`, `invokeinterface`s the wrapped `Lyric$Lambda`,
+  and adapts the return (all-primitive unbox / checkcast / void pop).
+  Deduped across call sites; covers static, instance, and constructor
+  auto-FFI paths.
+- **Scope**: bridging covers arguments whose static JVM type is the lambda
+  interface (lambda literals and un-annotated `val`-bound lambdas);
+  explicitly function-type-annotated locals/params erase to `Object` and
+  are not bridged (the docs/52-scale JVM ABI change remains open).
+- `sam_detection_self_test.l` had **never compiled** (arrow-lambda syntax
+  the parser rejects) and detected nothing; rewritten as a compiling
+  companion with a real SAM round-trip.
+
+Verified: `auto_ffi_jvm_self_test.l` 37/37 (6 new fail-before/pass-after
+cases: Runnable ×2 incl. capture-of-var, Comparator via `Arrays.sort`,
+Function via `computeIfAbsent` ×2 incl. capture, Consumer via `forEach` —
+the reference-arg/void `HttpHandler` shape); full JVM sweep + lyric-storage
+manifest suite green.
+
+This was the prerequisite for the two remaining phantom `_kernel_jvm` http
+kernels (#2663). Latent bug found, not fixed: `not <lambda-result>` on JVM
+applies `ixor` to an erased `Object` (VerifyError) — tracked separately.
+
+**Related:** docs/59 §6.4 item 6, D-progress-640 (the http-kernel skip),
+docs/50/52.
+
+---
+
+## D-progress-644 — stdlib kernel `@externTarget` retirement, first tranche: 11 files migrated, 277 → 172 declarations; #5167 refuted (the v0.4.22 seed compiles arg-bearing `.new()` inside the stdlib)
+
+**Status:** ACCEPTED
+
+The first real tranche of the docs/59 §6 retirement plan. Migration form:
+`extern type Alias = "CLR.Fqn"` + direct auto-FFI calls/member access;
+public kernel surfaces (names, signatures, contracts, panic/Result
+semantics) byte-identical; `_kernel_jvm` twins untouched; every `@axiom`
+string preserved verbatim (docs/17 baseline unchanged).
+
+| file | before | after | residual blocker |
+|---|---|---|---|
+| path_host.l | 5 | 0 | — |
+| process_host.l | 4 | 1 | inherited instance member (`Process.Dispose`) |
+| secure_random_host.l | 3 | 0 | — |
+| unicode_host.l | 1 | 0 | — |
+| verifier_env_host.l | 1 | 0 | — |
+| math_host.l | 30 | 0 | — (PI/E/Tau via D-progress-638 const inlining) |
+| char_host.l | 11 | 0 | — (predicted overload ambiguity did not materialize) |
+| file_host.l | 15 | 1 | `slice[Byte]` argument (`File.WriteAllBytes`) — lifted by D-progress-645 for future work |
+| environment_host.l | 8 | 0 | — |
+| random_host.l | 7 | 0 | — (incl. `Random.new(seed)`) |
+| time_host.l | 32 | 10 | value-type instance receivers ×9 (needs a wave-2-capable seed), out-param `TryParse` |
+
+**Seed probe (empirical, v0.4.22):** static calls with exact overload
+scoring (incl. `Convert.ToInt32`'s ~19 overloads), literal consts, static
+fields (incl. value-type `TimeSpan.Zero`), static properties (value-type
+returns included), operators as explicit `T.op_X(a,b)`, arg-bearing
+ref-type `.new(args)`, instance calls and property gets, enum-returning
+statics, nullable returns, slice returns. Confirmed blocked at probe time:
+`slice[Byte]` *arguments* (fixed in D-progress-645). **#5167 is refuted**:
+the seed compiles `Random.new(seed)` inside `lyric-stdlib/` (stage-1
+green, seeded-determinism runtime check passes) — automated releases had
+already delivered the post-`a64e649` seed.
+
+**Two new blocker classes discovered** (tracked for follow-up):
+1. **Inherited instance members don't resolve** — the instance auto-FFI
+   metadata walk doesn't traverse base types (`Process.Dispose` from
+   `Component`).
+2. **Unresolved *instance* auto-FFI defers to a runtime throw** (`ldstr` +
+   `throw` at the call site) instead of a compile-time panic like the
+   static path — this briefly shipped a green build whose `Std.Process`
+   broke every spawn. The instance path must fail at compile time.
+
+Also reproduced on unmigrated baseline (pre-existing, tracked): a
+`Never`-returning call in tail position of a value-returning `main`
+produces `InvalidProgramException`.
+
+Verified: per-file stage-1 builds (the seed compiling the bundle IS the
+capability test), full `make lyric`, 24-check sweep (stdlib test programs
+on both targets, kernel self-tests, `lyric-web` manifest canary) all green.
+
+**Related:** docs/59 §6/§7.1, #5167 (close), docs/04-ffi-gap-matrix
+retirement plan, D-progress-638/641.
+
+---
+
+## D-progress-645 — MSIL auto-FFI: synchronous Task/Task<T> unwrap in `async func` bodies; `slice[T]` argument signatures; signature-intern key collision fix
+
+**Status:** ACCEPTED
+
+The last two capability gaps blocking the `Std.Http` kernel migration
+(docs/59 §6.4 items 3 and 7 MSIL half):
+
+1. **Task unwrap, gated on the enclosing `async func`** (mirroring
+   `@externTarget`'s `decl.isAsync` keying, D085/D091): inside an
+   `async func`, an auto-FFI call resolving a `Task`/`Task`1<T>`-returning
+   method unwraps synchronously (`Wait()` → Unit; `get_Result` via closed
+   TypeSpec → `T`, value types included). In non-async bodies the Task
+   stays opaque and the blocking `EAwait` shim unwraps it. `.new()`
+   results are exempt (Wait on a cold Task deadlocks). Before the fix,
+   `await autoFfiCall()` in an async func was a hard compile failure
+   (await-prescan/lowering disagreement). Full suspend-point integration
+   of auto-FFI Tasks in Phase-B state machines remains open (needs
+   metadata-typed pre-scan — the docs/42 pipeline-disconnect work).
+2. **`slice[T]` arguments**: `argTyToSig` maps `MArray(elem)` →
+   `STSzArray` (element recursion), so `byte[]`/`char[]`/`string[]`
+   parameters resolve; `argCoercionInsns` passes exact element matches.
+3. **Intern-key collision fix**: `sigTypeKeyFrag` now recurses through
+   array elements and byref pointees — previously overloads differing only
+   in element type (`Join(string,string[])` vs `Join(string,object[])`)
+   aliased onto one MemberRef blob (the #1442/#3943 class).
+
+Acceptance probe: a scratch-migrated `hostReadBodyTextSafe` +
+`hostSendSafe` performed a real HTTP round trip through public `Std.Http`
+(constraint learned: the auto-FFI call must be inlined into the
+`host*Safe` wrapper — a two-hop `await` inside a `try` region hits the
+known protected-region await hazard).
+
+**Three pre-existing bugs surfaced** (reproduced with the untouched main
+binary; tracked for follow-up):
+1. `Std.Http`'s async sends are runtime-broken today — async @ET instance
+   externs without `@externInstance` emit as **static** calls
+   (`MissingMethodException`); no CI test sends a request.
+2. Cross-assembly calls to restored `async func`s fail — the call site
+   encodes `Result<…>` while the restored kickoff returns
+   `Task`1<Result<…>>`.
+3. `slice[Char]` literals fail strict ILVerify (`stelem.any System.Char`
+   with a raw i4) — runs correctly at JIT.
+
+Verified: `import_extern_self_test.l` 27/27 (7 new fail-before/pass-after
+cases), async_extern/async_sm/auto_ffi/typed_ffi_delegate/typechecker all
+green, ilverify clean on the new shapes.
+
+**Related:** docs/59 §6.4, D085/D091, D-progress-638/644.
+
+---
+
+## D-progress-646 — type checker: for-loop elements over ranges and List are typed (docs/59 A1); generic record field access instantiates the receiver's type args (A3)
+
+**Status:** ACCEPTED
+
+First slice of docs/59 Band 4 (the `TyError`-degradation inventory). Both
+changes were engineered for zero new rejections of shipping code and
+verified by a repo-wide sweep.
+
+1. **A1 — for-loop element typing.** A range-driven `for` variable typed
+   as `TyError` (the universal wildcard), so loop bodies were unchecked
+   and the bounds never visited. The parser only builds `ERange` in
+   for-iterator position, so `SFor` types the binding directly (lower
+   blast radius; `ERange`'s own inferExpr result is unchanged). The
+   element type mirrors what the counting-loop codegen lowers: derived
+   from the LOW bound (Int/Int → Int, Long/Long → Long; an unknown-typed
+   high bound — the common `0 ..< xs.count` shape, untypeable until A4 —
+   still binds from the low bound); a KNOWN Int/Long width mismatch has
+   no working lowering on either backend, so it degrades to TyError
+   rather than claiming a type. `SFor`'s collection arms gain
+   `List[T] → T`.
+2. **A3 — generic record fields.** `inferMember` ignored the receiver's
+   type args and `extractRecordFields` resolved field types under an
+   empty generic context with a swallowed diagnostic — `box.value` on
+   `Box[Int]` accepted anything. Records now mirror the union path:
+   fields resolve under the record's declared type params (TyVars), and
+   `fieldsOfRecordInstantiated` substitutes the receiver's targs
+   (`substituteTyVars`, the same engine), erasing unresolved params back
+   to TyError so under-instantiated receivers degrade to the old
+   leniency instead of tripping false T0030s. Both record-pattern paths
+   consume the instantiated form. Non-generic records are byte-for-byte
+   unaffected.
+
+Verified: new typechecker_self_test cases fail against the pre-change
+checker and pass after (suite 248/248); repo-wide sweep surfaced ZERO new
+diagnostics (the only production generic record is
+`Std.Collections.MapEntry`); full integrated-tree gate green (13 suites
+both targets, all examples build, lyric-web manifest 4/4).
+
+**Related:** docs/59 §5.1 A1/A3; A2 (lambda params) and A4 (method-call
+checking) remain the next Band-4 slices.
+
+---
+
 ---
 
 ## Decisions deferred to v2 or later

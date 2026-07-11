@@ -42,6 +42,10 @@ pub record ClassMethod {
   name: String
   descriptor: String   // JVM method descriptor, e.g. "(II)I"
   isStatic: Bool
+  // ACC_ABSTRACT (0x0400): true for an interface's abstract methods (i.e. not
+  // `default` and not `static`).  Drives functional-interface (SAM) detection
+  // in `Jvm.AutoFfi.findSamMethod`; always false for fields and constructors.
+  isAbstract: Bool
 }
 
 pub record ClassInfo {
@@ -311,7 +315,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
       val fName = getSStr(utf8Map, toString(fNameIdx))
       val fDesc = getSStr(utf8Map, toString(fDescIdx))
       if fName.length > 0 and fDesc.length > 0 {
-        fields.add(ClassMethod(name = fName, descriptor = fDesc, isStatic = fIsStatic))
+        fields.add(ClassMethod(name = fName, descriptor = fDesc, isStatic = fIsStatic, isAbstract = false))
       }
     }
     var ai = 0
@@ -369,18 +373,19 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     }
 
     // Keep only public, non-synthetic, non-bridge, non-constructor methods.
-    // ACC_PUBLIC=1, ACC_SYNTHETIC=4096, ACC_BRIDGE=64, ACC_STATIC=8
+    // ACC_PUBLIC=1, ACC_SYNTHETIC=4096, ACC_BRIDGE=64, ACC_STATIC=8, ACC_ABSTRACT=1024
     val isPublic = mAccess % 2 != 0
     val isSynthetic = (mAccess / 4096) % 2 != 0
     val isBridge = (mAccess / 64) % 2 != 0
     val isStatic = (mAccess / 8) % 2 != 0
+    val mIsAbstract = (mAccess / 1024) % 2 != 0
     if isPublic and not isSynthetic and not isBridge {
       val mName = getSStr(utf8Map, toString(nameIdx))
       val mDesc = getSStr(utf8Map, toString(descIdx))
       if mName == "<init>" {
-        constructors.add(ClassMethod(name = "<init>", descriptor = mDesc, isStatic = false))
+        constructors.add(ClassMethod(name = "<init>", descriptor = mDesc, isStatic = false, isAbstract = false))
       } else if mName != "<clinit>" and mName.length > 0 {
-        methods.add(ClassMethod(name = mName, descriptor = mDesc, isStatic = isStatic))
+        methods.add(ClassMethod(name = mName, descriptor = mDesc, isStatic = isStatic, isAbstract = mIsAbstract))
       }
     }
 

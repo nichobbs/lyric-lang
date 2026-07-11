@@ -3849,6 +3849,15 @@ pub record FuncCtx {
   // introduced).  A change log rather than a whole-map snapshot — see
   // `BlockScopeMsil`.  Initialised `newList()` at the construction site.
   scopeUndoMsil: List[ScopeUndoMsil]
+  // Non-empty when this FuncCtx lowers the body of a Lyric `async func`
+  // (either async state-machine MoveNext flavour, or an async generator).
+  // A metadata-resolved auto-FFI call whose BCL return type is Task / Task<T>
+  // checks this to decide whether to synchronously unwrap the Task at the
+  // call site (Task::Wait() / Task`1<T>::get_Result()), mirroring the
+  // `@externTarget async func` convention (D085/D091): inside an `async func`
+  // the .NET call yields T directly; in a non-async function the Task is left
+  // opaque for `await` (the blocking EAwait shim) to unwrap.
+  asyncFuncFlag: List[Int]
   // Slots of locals DECLARED `Byte` (docs/59 §4.3 cross-target parity).  The
   // MSIL type map erases a bare `Byte` annotation to `MInt` (an int32 local),
   // so without this the codegen cannot tell a Byte local from an Int local and
@@ -14362,6 +14371,7 @@ func makeFuncCtxMsil(
     captureCellNames = captureCellNames,
     phaseBCtx = newList(),
     lazyGenCtx = newList(),
+    asyncFuncFlag = newList(),
     scopeBaseMsil = 0,
     scopeUndoMsil = newList(),
     byteSlots = newMap()
@@ -18179,6 +18189,9 @@ func synthesizeAsyncSmMsil(
   // `leave`s to the epilogue, so that slot must be typed as the result and the
   // SReturn collExpect must match the result type (#2289).
   val mnFctx = makeFuncCtxMsil(pkgName, smFqn, "MoveNext", 1, retTy)
+  // This MoveNext lowers an `async func` body: auto-FFI Task returns unwrap
+  // synchronously (see FuncCtx.asyncFuncFlag).
+  mnFctx.asyncFuncFlag.add(1)
 
   // Pre-populate slotTicker with one entry for the `this` arg (slot 0) so
   // that the first allocSlotMsil call below gets slot 1 (a local, not an arg).
@@ -18634,6 +18647,9 @@ func synthesizeAsyncSmPhaseBMsil(
   // protected region stashes into a correctly-typed `retvalSlot` and the
   // SReturn collExpect matches the result type (#2289).
   val mnFctx = makeFuncCtxMsil(pkgName, smFqn, "MoveNext", 1, retTy)
+  // This MoveNext lowers an `async func` body: auto-FFI Task returns unwrap
+  // synchronously (see FuncCtx.asyncFuncFlag).
+  mnFctx.asyncFuncFlag.add(1)
   mnFctx.slotTicker.add(0)  // reserve slot 0 for 'this' arg
 
   // Pre-allocate labels
@@ -19264,6 +19280,9 @@ func synthesizeGeneratorMsil(
   // paramCount = 1 (slot 0 = 'this').
   val mnInsns: List[MInsn] = newList()
   val mnFctx = makeFuncCtxMsil(pkgName, genFqn, "MoveNext", 1, MVoid)
+  // Generators are `async func` bodies (isAsync + yield): auto-FFI Task
+  // returns unwrap synchronously (see FuncCtx.asyncFuncFlag).
+  mnFctx.asyncFuncFlag.add(1)
   mnFctx.slotTicker.add(0)  // reserve slot 0 for 'this'
 
   // Pre-allocate labels.
@@ -24019,6 +24038,15 @@ func argTyToSig(t: in MsilType): Option[Mdr.SigType] {
     case MByRef(inner) -> {
       return match argTyToSig(inner) { case Some(s) -> Some(value = Mdr.mkByRefSig(s)); case None -> None }
     }
+    // A `slice[T]` argument is a genuine CLR `T[]` (`MArray`), so it
+    // contributes an `STSzArray` SigType — otherwise any BCL overload taking
+    // `byte[]` / `char[]` / `string[]` could never be metadata-resolved at an
+    // auto-FFI call site (docs/59 §6.4).  Element recursion reuses this
+    // function, so `slice[Byte]` scores as `uint8[]` (slice elements are
+    // already U1, docs/59 §3.2 F7) and extern-typed elements score by FQN.
+    case MArray(elem) -> {
+      return match argTyToSig(elem) { case Some(s) -> Some(value = Mdr.mkSzArraySig(s)); case None -> None }
+    }
     case _ -> ()
   }
   val eb = msilToElemByte(t)
@@ -24071,9 +24099,22 @@ func ffiMemberRefSigKey(
   }
 }
 
-// A stable key fragment identifying a resolved `SigType` (primitive byte or
-// value/class FQN) so the MemberRef blob-intern key distinguishes overloads.
+// A stable key fragment identifying a resolved `SigType` (primitive byte,
+// value/class FQN, array element, or by-ref pointee) so the MemberRef
+// blob-intern key distinguishes overloads.  Arrays and by-refs recurse —
+// without it every array-typed parameter contributed the same bare "n"
+// fragment and two overloads differing only in element type (e.g.
+// `Join(string, string[])` vs `Join(string, object[])`) would alias onto one
+// signature blob.
 func sigTypeKeyFrag(sig: in Mdr.SigType): String {
+  match Mdr.sigSzArrayElem(sig) {
+    case Some(elem) -> return "a" + sigTypeKeyFrag(elem)
+    case None -> ()
+  }
+  match Mdr.sigByRefInner(sig) {
+    case Some(inner) -> return "r" + sigTypeKeyFrag(inner)
+    case None -> ()
+  }
   val pb = Mdr.sigPrimByte(sig)
   if pb >= 0 {
     "p" + toString(pb)
@@ -24187,6 +24228,25 @@ func elemNumericRank(b: in Int): Int {
 // None when the conversion isn't supported (caller falls back to legacy).
 func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.SigType): Option[List[MInsn]] {
   val acc: List[MInsn] = newList()
+  // Array parameter (`byte[]`, `string[]`): a `slice[T]` argument passes by
+  // reference with no coercion when its element type matches exactly.  CLR
+  // arrays with value-type elements are invariant, so anything short of an
+  // exact element match (score 2) must not bind — the same rule the overload
+  // scorer applies (`scoreSigType`'s STSzArray case).
+  match Mdr.sigSzArrayElem(paramSig) {
+    case Some(paramElem) -> {
+      return match argTy {
+        case MArray(argElem) -> {
+          match argTyToSig(argElem) {
+            case Some(argElemSig) -> if Mdr.scoreSigType(argElemSig, paramElem) == 2 { Some(value = acc) } else { None }
+            case None -> None
+          }
+        }
+        case _ -> None
+      }
+    }
+    case None -> ()
+  }
   val paramByte = Mdr.sigPrimByte(paramSig)
   if paramByte < 0 {
     // Non-primitive parameter: an extern value or class type.  The argument
@@ -24220,6 +24280,52 @@ func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.
         None  // → R4 / narrower int: unsupported
       }
     }
+  }
+}
+
+// Synchronously unwrap a Task / Task<T> left on the stack by a metadata-
+// resolved auto-FFI call when the enclosing Lyric function is an `async func`
+// (docs/59 §6.4 item 3).  Mirrors the `@externTarget async func` convention
+// (D085/D091, `emitExternTargetBody`): a bare Task blocks via Task::Wait()
+// and yields Unit; a Task<T> yields T via Task`1<T>::get_Result() through a
+// closed TypeSpec.  Outside an `async func` the Task is returned unchanged —
+// `await` (the blocking EAwait shim / Phase B protocol) owns the unwrap
+// there, keeping non-async callers' Task handles intact (spawn-style use).
+// Inside an `async func` both spellings therefore agree: a bare auto-FFI
+// call yields T, and `await autoFfiCall()` sees the already-resolved T and
+// passes it through (isTaskTypeMsil = false) — which also keeps the Phase B
+// awaiter pre-scan (which cannot type auto-FFI calls and reports MObject)
+// consistent with what lowering produces.
+func unwrapAutoFfiTaskMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], retTy: in MsilType): MsilType {
+  if fctx.asyncFuncFlag.count == 0 {
+    return retTy
+  }
+  match retTy {
+    case MClassRef(_, fqn) -> {
+      if fqn == "System.Threading.Tasks.Task" {
+        insns.add(MCallvirt(methodToken = cctx.tokTaskWait))
+        MVoid
+      } else {
+        retTy
+      }
+    }
+    case MGenericInst(_, headFqn, typeArgs) -> {
+      if headFqn == "System.Threading.Tasks.Task`1" and typeArgs.count == 1 {
+        val resT = typeArgs[0]
+        val tsArgs: List[MsilType] = newList()
+        tsArgs.add(resT)
+        val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs)
+        val tsKey = "ts_task1_result_" + msilTypeKeyStr(resT)
+        val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+        val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
+        val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
+        insns.add(MCallvirt(methodToken = 0x0A000000 + mrRow))
+        resT
+      } else {
+        retTy
+      }
+    }
+    case _ -> retTy
   }
 }
 
@@ -24876,12 +24982,15 @@ func tryInstanceAutoFfiFromMetadata(
     // means the name only exists as a static — fall back rather than
     // emit a callvirt against a static (which would be malformed).
     match direct {
-      case Some(rt) -> Some(value = rt)
+      case Some(rt) -> Some(value = unwrapAutoFfiTaskMsil(cctx, fctx, insns, rt))
       case None -> {
         // Property getter probe (docs/59 §6): a zero-arg call `x.Prop()` on
         // a CLR property has no method named `Prop` — only `get_Prop`.
         if args.count == 0 {
-          tryExternInstanceGetterMsil(cctx, insns, fqn, memberName, valueTypeRecv)
+          match tryExternInstanceGetterMsil(cctx, insns, fqn, memberName, valueTypeRecv) {
+            case Some(gt) -> Some(value = unwrapAutoFfiTaskMsil(cctx, fctx, insns, gt))
+            case None -> None
+          }
         } else {
           None
         }
@@ -24967,7 +25076,7 @@ func tryAutoFfiFromMetadata(
             case Some(gp) -> {
               if gp.sig.isStatic {
                 match emitResolvedAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + methodName, "get_" + methodName, argBufs, argTys, gp.sig) {
-                  case Some(rt) -> return Some(value = rt)
+                  case Some(rt) -> return Some(value = unwrapAutoFfiTaskMsil(cctx, fctx, insns, rt))
                   case None -> ()
                 }
               }
@@ -24987,7 +25096,14 @@ func tryAutoFfiFromMetadata(
         }
         None
       }
-      case Some(re) -> emitResolvedAutoFfi(cctx, insns, re.assemblyName, clrFqn, resolveMethodName, methodName, argBufs, argTys, re.sig)
+      case Some(re) -> {
+        match emitResolvedAutoFfi(cctx, insns, re.assemblyName, clrFqn, resolveMethodName, methodName, argBufs, argTys, re.sig) {
+          // A constructed value is never unwrapped: `.new()` on a Task type
+          // yields the (cold, unstarted) handle — Wait() on it would deadlock.
+          case Some(rt) -> if methodName == "new" { Some(value = rt) } else { Some(value = unwrapAutoFfiTaskMsil(cctx, fctx, insns, rt)) }
+          case None -> None
+        }
+      }
     }
   }
 }

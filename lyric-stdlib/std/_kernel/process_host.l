@@ -22,17 +22,24 @@ extern type ProcessHandle = "System.Diagnostics.Process"
 /// the current process's stdin, stdout, and stderr.
 ///
 /// Panics (Bug) if the executable cannot be found or the OS rejects the spawn.
-@externTarget("System.Diagnostics.Process.Start")
-pub func hostSpawn(fileName: in String, arguments: in String): ProcessHandle = ()
+pub func hostSpawn(fileName: in String, arguments: in String): ProcessHandle {
+  ProcessHandle.Start(fileName, arguments)
+}
 
 /// Block the calling thread until `proc` exits.
-@externTarget("System.Diagnostics.Process.WaitForExit")
-pub func hostWait(proc: in ProcessHandle): Unit = ()
+pub func hostWait(proc: in ProcessHandle): Unit {
+  proc.WaitForExit()
+}
 
 /// Return the OS exit code of `proc`.  Only valid after `hostWait`.
-@externTarget("System.Diagnostics.Process.ExitCode")
-pub func hostExitCode(proc: in ProcessHandle): Int = ()
+pub func hostExitCode(proc: in ProcessHandle): Int {
+  proc.ExitCode
+}
 
+// stays @externTarget: Dispose() is inherited from
+// System.ComponentModel.Component and the MSIL auto-FFI instance resolver
+// does not walk base-type metadata, so `proc.Dispose()` resolves to a
+// deferred runtime panic instead of the inherited method.
 /// Release the OS handle held by `proc`.
 /// Must be called after `hostWait` / `hostExitCode` to avoid handle leaks.
 @externTarget("System.Diagnostics.Process.Dispose")

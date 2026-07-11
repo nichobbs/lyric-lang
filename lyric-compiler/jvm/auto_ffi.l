@@ -489,7 +489,7 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
 
 // `Lxxx;` reference descriptor → JVM binary name (`Ljava/util/List;` ->
 // `java/util/List`); "" for any non-object descriptor (primitive, array, …).
-func refDescToBinary(desc: in String): String {
+pub func refDescToBinary(desc: in String): String {
   if desc.length >= 3 and desc.startsWith("L") and desc.endsWith(";") {
     desc.substring(1, desc.length - 2)
   } else {
@@ -536,6 +536,100 @@ func isAssignableRef(ctx: in AutoFfiCtx, fromBin: in String, toBin: in String): 
   false
 }
 
+// True when `desc` is the reference descriptor of a package's synthesized
+// shared lambda interface (`L<pkg>/Lyric$Lambda;` — see
+// `Jvm.Codegen.lambdaIfaceName`).  `$` is not a Lyric identifier character,
+// so no user-declared type can produce this suffix; matching on it lets the
+// scorer recognize a lambda-typed argument without knowing the package name.
+func isLyricLambdaDesc(desc: in String): Bool {
+  desc.startsWith("L") and desc.endsWith("/Lyric$Lambda;")
+}
+
+// True when `m` has the same signature as a public method of java.lang.Object
+// (JLS §9.8: such abstract redeclarations — e.g. `Comparator.equals(Object)` —
+// do not count against an interface's single-abstract-method requirement).
+// Object's other public methods (`getClass`, `notify`, `notifyAll`, `wait`)
+// are final and can never be redeclared abstract, so three checks suffice.
+func isObjectSigMethod(m: in ClassMethod): Bool {
+  (m.name == "equals" and m.descriptor == "(Ljava/lang/Object;)Z") or (m.name == "hashCode" and m.descriptor == "()I") or
+    (m.name == "toString" and m.descriptor == "()Ljava/lang/String;")
+}
+
+// Accumulate the distinct abstract instance methods (name + descriptor,
+// Object-signature redeclarations excluded) of interface `bin` and its
+// transitive superinterfaces into `acc`/`accKeys`.  Uses the
+// load → `findCacheIdx` → `cacheVals[idx]` walk (see `isAssignableRef`).
+func collectAbstractIfaceMethods(
+  ctx: in AutoFfiCtx,
+  bin: in String,
+  acc: in List[ClassMethod],
+  accKeys: in List[String],
+  visited: in List[String],
+): Unit {
+  if visited.contains(bin) {
+    return ()
+  }
+  visited.add(bin)
+  loadClass(ctx, bin.replace("/", "."))
+  val idx = findCacheIdx(ctx, bin)
+  if idx < 0 {
+    return ()
+  }
+  val ci = ctx.cacheVals[idx]
+  if not ci.isInterface {
+    return ()
+  }
+  var i = 0
+  while i < ci.methods.count {
+    val m = ci.methods[i]
+    if m.isAbstract and not m.isStatic and not isObjectSigMethod(m) {
+      val key = m.name + "|" + m.descriptor
+      if not accKeys.contains(key) {
+        accKeys.add(key)
+        acc.add(m)
+      }
+    }
+    i = i + 1
+  }
+  var k = 0
+  while k < ci.interfaces.count {
+    collectAbstractIfaceMethods(ctx, ci.interfaces[k], acc, accKeys, visited)
+    k = k + 1
+  }
+}
+
+/// Functional-interface (SAM) detection for lambda → JDK bridging: returns the
+/// single abstract method of interface `ifaceBin` (a JVM binary name, e.g.
+/// "java/lang/Runnable"), or None when the class is not loadable, is not an
+/// interface, or does not have exactly one abstract method.
+///
+/// Practical subset of JLS §9.8 implemented: abstract instance methods are
+/// collected from the interface and its transitive superinterfaces, deduped by
+/// exact name + erased descriptor, with public-Object-signature redeclarations
+/// (`equals(Object)`, `hashCode()`, `toString()`) excluded.  Out of scope
+/// (conservatively yields None, never a wrong pick): generic superinterface
+/// redeclarations whose erasures differ (two distinct entries survive dedup),
+/// and return-type-covariant overrides across the hierarchy.
+pub func findSamMethod(ctx: in AutoFfiCtx, ifaceBin: in String): Option[ClassMethod] {
+  loadClass(ctx, ifaceBin.replace("/", "."))
+  val idx = findCacheIdx(ctx, ifaceBin)
+  if idx < 0 {
+    return None
+  }
+  if not ctx.cacheVals[idx].isInterface {
+    return None
+  }
+  val acc: List[ClassMethod] = newList()
+  val accKeys: List[String] = newList()
+  val visited: List[String] = newList()
+  collectAbstractIfaceMethods(ctx, ifaceBin, acc, accKeys, visited)
+  if acc.count == 1 {
+    Some(value = acc[0])
+  } else {
+    None
+  }
+}
+
 // Score one argument descriptor against one parameter descriptor with auto-FFI
 // context.  Delegates the context-free cases to `scoreParamMatch`; for an
 // otherwise-unmatched reference/reference pair, a verified IS-A match scores 4
@@ -546,6 +640,27 @@ func scoreParam(ctx: in AutoFfiCtx, argDesc: in String, paramDesc: in String): I
   val base = scoreParamMatch(argDesc, paramDesc)
   if base >= 0 {
     return base
+  }
+  // A Lyric lambda argument (the package's synthesized `Lyric$Lambda` iface)
+  // is bridgeable to exactly the functional-interface parameters: score a
+  // confirmed SAM target at 8 (above verified IS-A at 4, below exact at 10)
+  // and reject a loadable non-functional target outright — a `Lyric$Lambda`
+  // closure can never satisfy any other reference type, and the pre-SAM
+  // permissive score of 1 only ever produced VerifyError bytecode.  A target
+  // whose metadata is unavailable keeps the legacy permissive 1.
+  // Object-typed parameters never reach here (`scoreParamMatch` scored 3).
+  if isLyricLambdaDesc(argDesc) and paramDesc.startsWith("L") {
+    val samBin = refDescToBinary(paramDesc)
+    if samBin.length > 0 {
+      loadClass(ctx, samBin.replace("/", "."))
+      if findCacheIdx(ctx, samBin) < 0 {
+        return 1
+      }
+      match findSamMethod(ctx, samBin) {
+        case Some(_) -> return 8
+        case None -> return -1
+      }
+    }
   }
   if argDesc.startsWith("L") and paramDesc.startsWith("L") {
     val fromBin = refDescToBinary(argDesc)
