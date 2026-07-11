@@ -3172,8 +3172,36 @@ pub func inspectInterfaceTarget(asmPath: in String, typeFqn: in String): Option[
 // `enumRefAssemblies(refPackDir())` plus any restored-dependency DLLs) and
 // reuse them across call sites.
 pub record ResolvedExtern {
-  assemblyName: String        // owning assembly's simple name (for the AssemblyRef)
+  assemblyName: String        // DECLARING assembly's simple name (for the AssemblyRef)
+  declaringFqn: String        // FQN of the type that declares the member (== the
+  // queried FQN unless the Extends-chain walk found the
+  // member on a base type, #5562)
   sig: ResolvedMethod
+}
+
+// Result of a single-assembly resolution step in the Extends-chain walk:
+// either the member resolved on the queried TypeDef, or (on a miss) the FQN
+// of the type's base so the caller can continue the walk — possibly in a
+// different assembly.  `baseFqn` is "" when the type is absent from the
+// assembly, has no base (System.Object, interfaces), or the base is a
+// TypeSpec-shaped closed-generic instantiation (the walk does not follow
+// generic bases; those are rare in BCL surface and need VAR substitution).
+pub record OverloadOrBase {
+  found: Option[ResolvedMethod]
+  baseFqn: String
+}
+
+// Resolve the best-matching overload of `member` on `typeFqn` in the assembly
+// at `asmPath`, additionally reporting the base-type FQN on a miss (one file
+// parse serves both, so the Extends walk costs one parse per inheritance
+// level rather than two).
+pub func resolveOverloadOrBase(
+  asmPath: in String, typeFqn: in String, member: in String, argTypes: in List[SigType]
+): OverloadOrBase {
+  match File.readBytes(asmPath) {
+    case Err(_) -> OverloadOrBase(found = None, baseFqn = "")
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(layout) -> { match resolveOverloadIn(img, layout, th, typeFqn, member, argTypes) { case Some(m) -> OverloadOrBase(found = Some(value = m), baseFqn = ""); case None -> { val typeRow = findTypeDefByFqn(img, layout, th, typeFqn); if typeRow < 0 { OverloadOrBase(found = None, baseFqn = "") } else { OverloadOrBase(found = None, baseFqn = resolveTypeDefOrRefName(img, layout, th, readTypeDef(img, layout, typeRow).extendsToken)) } } } } } } } }
+  }
 }
 
 // Build an assembly-simple-name → full-DLL-path index over the given
@@ -3216,10 +3244,29 @@ pub func resolveExtern(
   member: in String,
   argTypes: in List[SigType],
 ): Option[ResolvedExtern] {
-  match assemblyForType(typeIndex, typeFqn) {
-    case None -> None
-    case Some(asmName) -> match mapGet(pathIndex, asmName) { case None -> None; case Some(asmPath) -> match resolveOverload(asmPath, typeFqn, member, argTypes) { case None -> None; case Some(m) -> Some(value = ResolvedExtern(assemblyName = asmName, sig = m)) } }
+  // Walk the TypeDef Extends chain (#5562): a member inherited from a base
+  // type (e.g. `Process.Dispose()` declared on
+  // `System.ComponentModel.Component`) lives on a base TypeDef, usually in a
+  // DIFFERENT assembly — follow the chain by resolving each base FQN through
+  // the type index, mirroring the JVM resolver's superclass walk.  The
+  // returned `declaringFqn` names the type that actually declares the member
+  // so the emitter parents the MemberRef there (as C# does).  Guards:
+  //   - `.ctor` never walks: a base-class ctor constructs the BASE type, so
+  //     inheriting it through `newobj` would silently build the wrong object;
+  //   - the walk stops at System.ValueType / System.Enum: a struct or enum
+  //     receiver would need `constrained.` dispatch for the System.Object
+  //     members above them, which the auto-FFI emitter does not produce;
+  //   - a depth cap bounds the loop against malformed cyclic metadata.
+  var curFqn = typeFqn
+  var depth = 0
+  while depth < 16 and curFqn.length > 0 {
+    match assemblyForType(typeIndex, curFqn) {
+      case None -> return None
+      case Some(asmName) -> match mapGet(pathIndex, asmName) { case None -> return None; case Some(asmPath) -> { val step = resolveOverloadOrBase(asmPath, curFqn, member, argTypes); match step.found { case Some(m) -> return Some(value = ResolvedExtern(assemblyName = asmName, declaringFqn = curFqn, sig = m)); case None -> { if member == ".ctor" or step.baseFqn.length == 0 or step.baseFqn == "System.ValueType" or step.baseFqn == "System.Enum" { return None }; curFqn = step.baseFqn } } } }
+    }
+    depth = depth + 1
   }
+  None
 }
 
 // ── Layer 6: embedded managed resources ──────────────────────────────────────

@@ -21,6 +21,7 @@
 package Lyric.AutoFfiSelfTest
 
 import Std.Core
+import Std.String as Str
 import Std.Testing
 
 extern type Math = "System.Math"
@@ -254,4 +255,40 @@ test "auto-FFI resolves an instance method with an array-typed return" {
   // (b) @externTarget wrapper with no explicit instance/static hint.
   val viaWrapper = externEncodingGetBytes(externUtf8Encoding(), "hi")
   assertEqualInt(viaWrapper.count, 2, "GetBytes(\"hi\") via unhinted @externTarget wrapper returns 2 bytes")
+}
+
+// #5562: instance members INHERITED from a base type resolve through the
+// metadata reader's TypeDef Extends-chain walk — `StringWriter` declares
+// none of the members below; they live on `System.IO.TextWriter`, one
+// assembly-crossing step up the chain (System.Runtime).  Before the walk,
+// each of these calls failed the build with "does not match any instance
+// method" (and, before #5562's compile-time enforcement, compiled into a
+// deferred runtime throw).  `Dispose()` is the exact shape that kept
+// `Std.ProcessHost.hostDisposeProc` on an `@externTarget` wrapper
+// (`Process.Dispose()` inherited from `System.ComponentModel.Component`).
+extern type StringWriter = "System.IO.StringWriter"
+
+extern type MemoryStream = "System.IO.MemoryStream"
+
+test "auto-FFI resolves inherited instance members through the Extends chain" {
+  val w = StringWriter.new()
+  // Overridden member (declared on StringWriter itself): resolves without
+  // the walk — pins that the walk does not disturb the direct case.
+  w.Write("probe")
+  // Inherited, argument-bearing: TextWriter.WriteLine(string) is not
+  // overridden by StringWriter, so resolution must walk to the base
+  // TypeDef.  It appends the platform newline, hence startsWith + length.
+  w.WriteLine("-line")
+  // Inherited, zero-arg void: TextWriter.Flush().
+  w.Flush()
+  val text = w.ToString()
+  assertTrue(Str.startsWith(text, "probe-line"), "Write + inherited WriteLine both reached the writer")
+  assertTrue(text.length > 10, "WriteLine appended a newline")
+  // Inherited, zero-arg void through IDisposable: TextWriter.Dispose() —
+  // the `Process.Dispose()` shape from #5562.
+  w.Dispose()
+  // Inherited instance PROPERTY getter: Stream.CanTimeout is not overridden
+  // by MemoryStream, so the member-read path walks the chain too.
+  val ms = MemoryStream.new()
+  assertTrue(not ms.CanTimeout, "inherited Stream.CanTimeout getter resolves and reads false")
 }
