@@ -3460,6 +3460,61 @@ pub func dllNullaryInstanceInfo(dllPath: in String): InstanceFieldKind {
   }
 }
 
+// Scan `dllPath` once and return the set of methods on the free-function host
+// class (`<pkgNamespace>.Program`) whose MethodDef return type is
+// `System.Threading.Tasks.Task` or `Task`1<T>` — i.e. `async func`
+// state-machine kickoffs.  Keys are "<name>/<paramCount>"; the value is true
+// for the generic `Task`1` shape, false for the non-generic `Task`.
+//
+// Contract-metadata reprs do not carry asyncness (a restored decl's
+// `isAsync` is always false), and DLLs built by older compilers never will,
+// so the consumer derives it from the producer DLL's own metadata — this is
+// the restored-func analog of the auto-FFI metadata-direct resolution
+// (#5561).  A missing/unreadable DLL or an absent `Program` TypeDef yields an
+// empty map (safe default: no Task wrapping at the registration site).
+pub func dllTaskReturningFuncs(dllPath: in String, pkgNamespace: in String): Map[String, Bool] {
+  val found: Map[String, Bool] = newMap()
+  match File.readBytes(dllPath) {
+    case Err(_) -> return found
+    case Ok(raw) -> {
+      match parseAssemblyImage(raw.toArray()) {
+        case None -> return found
+        case Some(ri) -> {
+          val typeRow = findTypeDefByFqn(ri.img, ri.layout, ri.th, pkgNamespace + ".Program")
+          if typeRow < 0 {
+            return found
+          }
+          val mr = methodRange(ri.img, ri.layout, ri.th, typeRow)
+          var mi = mr.start
+          while mi <= mr.endRow {
+            val md = readMethodDef(ri.img, ri.layout, mi)
+            match decodeMethodSig(blobAt(ri.img, ri.layout, md.sigBlob)) {
+              case Err(_) -> {
+              }
+              case Ok(sig) -> {
+                val ret = resolveSigTypeFqn(ri.img, ri.layout, ri.th, sig.returnType)
+                val isTask = match ret { case STNamed(fqn, _) -> fqn == "System.Threading.Tasks.Task"; case _ -> false }
+                val isTask1 = match ret {
+                  case STNamedGenericInst(fqn, _, _) -> fqn == "System.Threading.Tasks.Task`1"
+                  case _ -> false
+                }
+                if isTask or isTask1 {
+                  val key = md.name + "/" + toString(sig.paramTypes.count)
+                  if not found.containsKey(key) {
+                    found.add(key, isTask1)
+                  }
+                }
+              }
+            }
+            mi = mi + 1
+          }
+          found
+        }
+      }
+    }
+  }
+}
+
 // A simple container for Assembly version components.
 pub record AssemblyVersion {
   major: Int
