@@ -1014,6 +1014,134 @@ func isCodegenBuiltinName(name: in String): Bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §7a. Method-signature space (docs/59 A4).
+// ─────────────────────────────────────────────────────────────────────────────
+// Build the *call-facing* ResolvedSignature for a method attached to a type:
+// the leading `self` param (records inject one in the parser) is dropped so
+// `sig.params` aligns 1:1 with a call site's argument list; `impl` block and
+// interface members never carry a `self` param (the receiver is implicit).
+// Owner generics are pushed alongside the method's own generics so a `Box[T]`
+// method's `T`-typed params resolve to `TyVar("T")` (substitutable at the call
+// site from the receiver's type args).  Type-reference diagnostics go to a
+// scratch list: declaration-position validation of member signatures is
+// `checkMemberSigTypes`'s job (T4), and re-reporting here would duplicate it.
+func resolveMethodSigParts(
+  tbl: in SymbolTable,
+  pkgName: in String,
+  ownerGenerics: in List[String],
+  fnGenerics: in Option[GenericParams],
+  fnParams: in List[Param],
+  fnRet: in Option[TypeExpr],
+  fnIsAsync: in Bool,
+  span: in Span,
+): ResolvedSignature {
+  val genericNames = extractGenericNames(fnGenerics)
+  val ctx = newGenericContext()
+  if ownerGenerics.count > 0 {
+    gctxPush(ctx, ownerGenerics)
+  }
+  if genericNames.count > 0 {
+    gctxPush(ctx, genericNames)
+  }
+  val scratch: List[Diagnostic] = newList()
+  val params: List[ResolvedParam] = newList()
+  var i = 0
+  while i < fnParams.count {
+    val p = fnParams[i]
+    if not (i == 0 and p.name == "self") {
+      params.add(
+        ResolvedParam(
+          name = p.name,
+          ty = resolveType(tbl, ctx, scratch, p.ty),
+          mode = p.mode,
+          hasDefault = match p.dflt { case None -> false; case Some(_) -> true },
+          span = p.span
+        )
+      )
+    }
+    i = i + 1
+  }
+  val returnTy = match fnRet { case None -> TyPrim(pt = PtUnit); case Some(te) -> resolveType(tbl, ctx, scratch, te) }
+  val noBounds: List[ResolvedBound] = newList()
+  ResolvedSignature(
+    generics = genericNames,
+    bounds = noBounds,
+    params = params,
+    returnTy = returnTy,
+    isAsync = fnIsAsync,
+    isHot = false,
+    isGenerator = false,
+    originPackage = pkgName,
+    span = span
+  )
+}
+
+// The simple name of a resolved user type (empty for non-`TyUser`).
+func simpleTypeNameOf(t: in Type): String {
+  match unrefine(t) {
+    case TyUser(_, nm, _) -> nm
+    case _ -> ""
+  }
+}
+
+func addRecordMethodSigs(tbl: in SymbolTable, pkgName: in String, decl: in RecordDecl): Unit {
+  match symTableTryFindOne(tbl, decl.name) {
+    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(tid) -> { val ownerGen = recordDeclGenericNames(decl); var m = 0; while m < decl.members.count { match decl.members[m] { case RMFunc(fn) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = decl.name, ownerGenerics = ownerGen, name = fn.name, sig = resolveMethodSigParts(tbl, pkgName, ownerGen, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span))); case _ -> {  } }; m = m + 1 } }; case None -> {  } }
+    case None -> {
+    }
+  }
+}
+
+// Collect every method signature reachable through a value receiver — record
+// body methods, `impl` block methods (keyed by the resolved target type), and
+// interface members — into the symbol table's method-signature space.  Runs in
+// the same per-package T3 loops as `addSigsFromItems`, so each package's
+// member types resolve under its own scope.
+func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: in String): Unit {
+  val scratch: List[Diagnostic] = newList()
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IRecord(decl) -> addRecordMethodSigs(tbl, pkgName, decl)
+      case IExposedRec(decl) -> addRecordMethodSigs(tbl, pkgName, decl)
+      case IImpl(decl) -> {
+        val implGenerics = extractGenericNames(decl.generics)
+        val ctx = newGenericContext()
+        if implGenerics.count > 0 {
+          gctxPush(ctx, implGenerics)
+        }
+        val targetTy = resolveType(tbl, ctx, scratch, decl.target)
+        match typeIdOfType(targetTy) {
+          case Some(tid) -> {
+            var m = 0
+            while m < decl.members.count {
+              match decl.members[m] {
+                case IMplFunc(fn) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = simpleTypeNameOf(targetTy), ownerGenerics = implGenerics, name = fn.name, sig = resolveMethodSigParts(tbl, pkgName, implGenerics, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span)))
+                case _ -> {
+                }
+              }
+              m = m + 1
+            }
+          }
+          case None -> {
+          }
+        }
+      }
+      case IInterface(decl) -> {
+        match symTableTryFindOne(tbl, decl.name) {
+          case Some(sym) -> match sym.kind { case DKInterface(tid, _) -> { val ifaceGen = extractGenericNames(decl.generics); var m = 0; while m < decl.members.count { match decl.members[m] { case IMSig(sig) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = decl.name, ownerGenerics = ifaceGen, name = sig.name, sig = resolveMethodSigParts(tbl, pkgName, ifaceGen, sig.generics, sig.params, sig.ret, sig.isAsync, sig.span))); case IMFunc(fn) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = decl.name, ownerGenerics = ifaceGen, name = fn.name, sig = resolveMethodSigParts(tbl, pkgName, ifaceGen, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span))); case _ -> {  } }; m = m + 1 } }; case _ -> {  } }
+          case None -> {
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §8a. impl/interface conformance (#1486).
 // ─────────────────────────────────────────────────────────────────────────────
 // Replace every `TySelf` occurrence in `t` with `selfTy`, used when matching
@@ -1706,6 +1834,7 @@ func checkWithImportedPackagesCore(
     symTableSetScope(tbl, ip2.name, ip2.imports)
     addSigsFromItems(tbl, importedDiag, sigs, ip2.items, true, ip2.name)
     registerImplsFromItems(tbl, newGenericContext(), implDiag, ip2.items)
+    addMethodSigsFromItems(tbl, ip2.items, ip2.name)
     sp = sp + 1
   }
 
@@ -1713,6 +1842,7 @@ func checkWithImportedPackagesCore(
   symTableSetScope(tbl, userPkg, userImports)
   addSigsFromItems(tbl, diag, sigs, file.items, false, userPkg)
   registerImplsFromItems(tbl, newGenericContext(), implDiag, file.items)
+  addMethodSigsFromItems(tbl, file.items, userPkg)
 
   // T4: validate declaration-position type references (#1228) so an unknown
   // type in a record/union/interface/opaque/protected/alias/val declaration
