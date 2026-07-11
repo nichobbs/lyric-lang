@@ -5,10 +5,12 @@ import Std.Core
 import Std.Math as Math
 import Std.Testing
 import Std.Uuid
-import extern System.{Math as SystemMath, Int32 as NetInt32, Int64 as NetInt64, String as NetString, Environment as NetEnv, TimeSpan, Guid, DateTime}
+import extern System.{Math as SystemMath, Int32 as NetInt32, Int64 as NetInt64, String as NetString, Environment as NetEnv, TimeSpan, Guid, DateTime, Convert}
+import extern System.IO.{StringReader}
 import extern System.Text.{Encoding, StringBuilder}
 import extern System.Diagnostics.{Stopwatch}
 import extern System.Text.RegularExpressions.{Regex, RegexOptions}
+import extern System.Threading.Tasks.{Task as NetTask}
 
 test "Math.Max binds the int overload via import extern" {
   assertEqualInt(SystemMath.Max(2, 5), 5, "Max(2,5)")
@@ -151,6 +153,68 @@ test "extern struct interpolation boxes before ToString" {
   assertEqual("id=${g}", "id=550e8400-e29b-41d4-a716-446655440000", "interpolated struct")
   val ts = TimeSpan.FromMinutes(5.0)
   assertEqual("span=${ts}", "span=00:05:00", "interpolated TimeSpan")
+}
+
+test "slice[Byte] argument resolves Convert.ToBase64String(byte[])" {
+  val bs: slice[Byte] = [77u8, 97u8, 110u8]
+  assertEqual(Convert.ToBase64String(bs), "TWFu", "ToBase64String(byte[]) on 'Man'")
+}
+
+test "slice[String] argument resolves String.Join(string, string[])" {
+  val parts: slice[String] = ["a", "b", "c"]
+  assertEqual(NetString.Join("-", parts), "a-b-c", "Join(string, string[])")
+}
+
+// Inside an `async func`, a metadata-resolved auto-FFI call returning Task<T>
+// unwraps synchronously to T (the @externTarget async convention, D085/D091):
+// the `await` spelling sees the already-resolved value and passes it through.
+async func readAllAsyncAwaited(content: String): String {
+  val r = StringReader.new(content)
+  await r.ReadToEndAsync()
+}
+
+// The bare (no-await) spelling: the call itself yields T inside an async func.
+async func readAllAsyncBare(content: String): String {
+  val r = StringReader.new(content)
+  r.ReadToEndAsync()
+}
+
+// A bare Task return unwraps via Task::Wait() in statement position.
+async func delayThenAdd(a: Int, b: Int): Int {
+  NetTask.Delay(1)
+  a + b
+}
+
+// Task<Int32>: a value-type T flows through get_Result, and the char[] buffer
+// exercises a slice[Char] argument on an instance auto-FFI call.
+async func readTwoChars(content: String): Int {
+  val r = StringReader.new(content)
+  val buf: slice[Char] = [' ', ' ', ' ', ' ']
+  await r.ReadAsync(buf, 0, 2)
+}
+
+test "async func unwraps an auto-FFI Task<String> (await form)" {
+  val s = await readAllAsyncAwaited("task unwrap awaited")
+  assertEqual(s, "task unwrap awaited", "ReadToEndAsync via await inside async func")
+}
+
+test "async func unwraps an auto-FFI Task<String> (bare call form)" {
+  val s = await readAllAsyncBare("task unwrap bare")
+  assertEqual(s, "task unwrap bare", "ReadToEndAsync without await inside async func")
+}
+
+test "async func unwraps a bare auto-FFI Task via Wait" {
+  assertEqualInt(await delayThenAdd(20, 22), 42, "Task.Delay unwrapped, sum returned")
+}
+
+test "async func unwraps an auto-FFI Task<Int32> with a slice[Char] argument" {
+  assertEqualInt(await readTwoChars("lyric"), 2, "ReadAsync(char[], int, int) read count")
+}
+
+test "blocking await unwraps an auto-FFI Task<T> in a non-async body" {
+  val r = StringReader.new("direct blocking")
+  val s = await r.ReadToEndAsync()
+  assertEqual(s, "direct blocking", "EAwait blocking shim over an auto-FFI Task<String>")
 }
 
 test "extern struct flows through uniform-ABI generic calls (#5196)" {
