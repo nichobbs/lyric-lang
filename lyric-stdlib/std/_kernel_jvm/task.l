@@ -15,15 +15,16 @@
 //! Two hard constraints shaped this rewrite (both verified empirically,
 //! not assumed):
 //!
-//!   1. The JVM auto-FFI class-file reader intentionally skips
-//!      `ACC_INTERFACE` class files (`Jvm.ClassReader.parseClass`), so
-//!      instance methods on JDK *interfaces* — `java.util.concurrent
-//!      .ExecutorService`, `Future`, `Executor` — have no metadata-backed
-//!      resolution path; calling them falls through to the legacy blind
-//!      guess and throws `IncompatibleClassChangeError` at runtime.  Only
-//!      *concrete* JDK classes (`java.util.concurrent.atomic.AtomicBoolean`
-//!      / `AtomicReference`, `java.lang.Thread`, `java.lang.System`) are
-//!      usable from this file.
+//!   1. At the time of this rewrite the JVM auto-FFI class-file reader
+//!      skipped `ACC_INTERFACE` class files, so instance methods on JDK
+//!      *interfaces* — `java.util.concurrent.ExecutorService`, `Future`,
+//!      `Executor` — had no metadata-backed resolution path.  That reader
+//!      limitation is gone (`Jvm.ClassReader.parseClass` handles interfaces
+//!      and enums, D-progress-640/643, with interface receivers dispatched
+//!      via `invokeinterface`), but this file's design predates it and
+//!      still uses only *concrete* JDK classes
+//!      (`java.util.concurrent.atomic.AtomicBoolean` / `AtomicReference`,
+//!      `java.lang.Thread`, `java.lang.System`).
 //!   2. Lyric closures have no bridge to arbitrary JDK functional
 //!      interfaces (`Runnable`/`Callable`/`Supplier`) — that adaptation
 //!      exists only inside the compiler's own `spawn`/`scope { }` keyword

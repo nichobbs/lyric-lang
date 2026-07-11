@@ -1992,7 +1992,11 @@ func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in Str
         val fty = fields[i].ty
         if i < ordered.count {
           val aTy = lowerCallArg(ctx, insns, ordered[i])
-          coerceArgTo(insns, aTy, fty)
+          // `coerceValueTo` (not bare `coerceArgTo`) so a raw JDK primitive
+          // array flowing into a declared `slice[T]` field boxes into the
+          // erased `[Ljava/lang/Object;` representation the field descriptor
+          // (and this arg slot's StackMapTable entry) declares (#5572).
+          coerceValueTo(ctx, insns, aTy, fty)
           val slot = allocSlot(ctx, "__ctor_arg_" + freshLabel(ctx), fty)
           emitStore(insns, slot, fty)
           argSlots.add(slot)

@@ -269,17 +269,29 @@ func makeFuncCtxInstance(
 // function boundary actually matches the method's `[Ljava/lang/Object;`
 // descriptor.
 func emitReturnArrayCoerced(ctx: in FuncCtx, insns: in List[LInsn], tailTy: in JvmType, retTy: in JvmType): Unit {
-  coerceReturnValue(ctx, insns, tailTy, retTy)
+  coerceValueTo(ctx, insns, tailTy, retTy)
   emitReturn(insns, retTy)
 }
 
-// The coercion half of `emitReturnArrayCoerced`, split out so the explicit
-// `return` statement path (`SReturn` in `05_stmts.l`) applies the same
-// primitive-array boxing this function does for an implicit tail-expression
-// return, instead of skipping it: only the tail-position path applied this
-// coercion, so `return someIntArray` on a `slice[Int]` function crashed at
-// runtime while an equivalent tail expression worked.
-func coerceReturnValue(ctx: in FuncCtx, insns: in List[LInsn], tailTy: in JvmType, retTy: in JvmType): Unit {
+// Ctx-aware value coercion for binding sites: the coercion half of
+// `emitReturnArrayCoerced`, split out so the explicit `return` statement path
+// (`SReturn` in `05_stmts.l`) applies the same primitive-array boxing this
+// function does for an implicit tail-expression return, instead of skipping
+// it: only the tail-position path applied this coercion, so `return
+// someIntArray` on a `slice[Int]` function crashed at runtime while an
+// equivalent tail expression worked.  Constructor arguments and annotated
+// local bindings route through here too (#5572): a raw JDK primitive array
+// (`s.getBytes()` → `[B`) flowing into a declared `slice[T]` field or local
+// (`[Ljava/lang/Object;`) previously kept its primitive representation while
+// the slot/field descriptor claimed the erased shape — a VerifyError at class
+// load (plain form: "Bad type on operand stack" at the ctor invokespecial;
+// inside a try/catch: "Stack map does not match the one at exception
+// handler").  NOTE: `emitBoxPrimitiveArray` emits a back-branching loop, and
+// the StackMapTable generator assumes an empty operand stack at branch
+// targets — call this only where the value being coerced is the only thing
+// on the operand stack (statement-position bindings, or the
+// args-stashed-to-locals constructor/call patterns).
+func coerceValueTo(ctx: in FuncCtx, insns: in List[LInsn], tailTy: in JvmType, retTy: in JvmType): Unit {
   if isPrimitiveArrayToObjectArray(tailTy, retTy) {
     match tailTy {
       case JArray(elemTy) -> emitBoxPrimitiveArray(ctx, insns, elemTy)

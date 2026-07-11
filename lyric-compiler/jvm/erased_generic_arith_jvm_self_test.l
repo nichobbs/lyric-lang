@@ -248,3 +248,86 @@ test "captured val-bound Int result unboxes inside a lambda (#4945)" {
 test "captured val-bound Long result unboxes inside a lambda (#4945)" {
   assertEqualLong(addCapturedLongResult(3), 3001i64, "captured Ok(3000) + 1 == 3001 (long add)")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. `slice[T]` payloads (#5570) — a byte slice flowing inside a generic
+//    payload arrived as a boxed array typed plain `Object` at the bind site:
+//    `.length` worked, but `bytes[i]` took the imprecise-receiver path
+//    (`checkcast ArrayList` — ClassCastException) and `for b in bytes` took
+//    the Iterable path (IncompatibleClassChangeError).  The fix normalizes a
+//    `slice[prim]` payload to a real primitive array at the bind site
+//    (`emitNormalizeErasedSlice`) and narrows `slice[Ref]` payloads to the
+//    erased reference-array shape with the element class recorded for
+//    indexed reads.
+// ─────────────────────────────────────────────────────────────────────────────
+func makeBytesResult(): Result[slice[Byte], String] {
+  val xs: slice[Byte] = [1.toByte(), 2.toByte(), 200.toByte()]
+  Ok(value = xs)
+}
+
+func makeStringsResult(): Result[slice[String], String] {
+  val ss: slice[String] = ["alpha", "be", "c"]
+  Ok(value = ss)
+}
+
+test "slice[Byte] payload bound from match indexes and iterates (#5570)" {
+  match makeBytesResult() {
+    case Ok(bytes) -> {
+      assertEqualInt(bytes.length, 3, "payload length")
+      assertEqualInt(bytes[0].toInt(), 1, "payload[0]")
+      assertEqualInt(bytes[2].toInt(), 200, "payload[2] stays unsigned 200")
+      var sum = 0
+      for b in bytes {
+        sum = sum + b.toInt()
+      }
+      assertEqualInt(sum, 203, "for-in sum over the payload")
+    }
+    case Err(_) -> assertTrue(false, "unexpected Err from makeBytesResult")
+  }
+}
+
+test "variable-bound slice[Byte] payload indexes and iterates (#5570, #4938)" {
+  val r = makeBytesResult()
+  match r {
+    case Ok(bytes) -> {
+      assertEqualInt(bytes.length, 3, "val-bound payload length")
+      var sum = 0
+      for b in bytes {
+        sum = sum + b.toInt()
+      }
+      assertEqualInt(sum, 203, "val-bound for-in sum")
+    }
+    case Err(_) -> assertTrue(false, "unexpected Err from val-bound makeBytesResult")
+  }
+}
+
+test "slice[String] payload element narrows for member access (#5570)" {
+  match makeStringsResult() {
+    case Ok(ss) -> {
+      assertEqualInt(ss.length, 3, "ref-slice payload length")
+      assertEqualInt(ss[0].length, 5, "ss[0].length on the narrowed element")
+      assertEqual(ss[1], "be", "ss[1] value")
+      var n = 0
+      for _ in ss {
+        n = n + 1
+      }
+      assertEqualInt(n, 3, "for-in count over the ref-slice payload")
+    }
+    case Err(_) -> assertTrue(false, "unexpected Err from makeStringsResult")
+  }
+}
+
+func fillBytes(): Slot[slice[Byte]] {
+  val bs: slice[Byte] = [7.toByte(), 9.toByte()]
+  Filled(item = bs)
+}
+
+test "user-defined generic union slice[Byte] payload indexes (#5570)" {
+  match fillBytes() {
+    case Filled(bs) -> {
+      assertEqualInt(bs.length, 2, "Slot payload length")
+      assertEqualInt(bs[1].toInt(), 9, "Slot payload[1]")
+    }
+    case Blank -> assertTrue(false, "unexpected Blank")
+  }
+}

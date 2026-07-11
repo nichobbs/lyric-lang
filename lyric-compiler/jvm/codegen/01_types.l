@@ -299,6 +299,13 @@ func eagerlyResolveGenericArg(te: in TypeExpr, pkgName: in String, externTypes: 
       }
       TypeExpr(kind = TGenericApp(head = head, args = newArgs), span = te.span)
     }
+    case TSlice(elem) -> {
+      // A `slice[Elem]` instantiation carries its element forward pre-resolved
+      // for the same reason a nested `TGenericApp` does: the consumer's
+      // match-bind (`emitNormalizeErasedSlice` / `indexedElemClassOverride`,
+      // #5570) must not re-guess `Elem` against the CALLER's package context.
+      TypeExpr(kind = TSlice(element = eagerlyResolveGenericArg(elem, pkgName, externTypes)), span = te.span)
+    }
     case TParen(inner) -> TypeExpr(kind = TParen(inner = eagerlyResolveGenericArg(inner, pkgName, externTypes)), span = te.span)
     case _ -> te
   }
