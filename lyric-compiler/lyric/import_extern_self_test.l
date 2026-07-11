@@ -34,10 +34,12 @@ test "Math.PI literal R8 constant inlines via member access" {
   assertTrue(tau < 6.283186, "Tau upper bound")
 }
 
-test "Std.Math.pi routes the R8 constant through @externTarget" {
-  // Regression: the @externTarget static-field path used to fall through to
-  // `ldsfld` for a non-Int32 literal constant, which faults at run time with
-  // MissingFieldException (a literal field has no storage).
+test "Std.Math.pi inlines the R8 constant through the stdlib kernel" {
+  // Regression: a literal constant used to fall through to `ldsfld` for a
+  // non-Int32 literal, which faults at run time with MissingFieldException
+  // (a literal field has no storage).  Std.MathHost now reads Math.PI via
+  // extern-type member access (auto-FFI const inlining) rather than an
+  // @externTarget wrapper; the runtime value must be unchanged.
   val pi = Math.pi()
   assertTrue(pi > 3.141592, "Std.Math.pi lower bound")
   assertTrue(pi < 3.141593, "Std.Math.pi upper bound")
