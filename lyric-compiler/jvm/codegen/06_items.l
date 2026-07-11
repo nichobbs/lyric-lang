@@ -2674,7 +2674,10 @@ pub func collectFileSigsSeeded(
                     JvmFuncSig(
                       owner = opqCls,
                       params = fPs,
-                      ret = typeExprToJvm(f.ty, owner),
+                      // Extern-alias + generic-erasure aware (same reason as the
+                      // opaque-field arm of `collectFileCasesExtern`): the
+                      // accessor's declared return otherwise names `<pkg>/<Alias>`.
+                      ret = typeExprToJvmErasedExtern(f.ty, owner, opqTps, externTypes),
                       paramNames = newList(),
                       paramDefaults = newList(),
                       paramModes = newList(),
@@ -3128,7 +3131,13 @@ pub func collectFileCasesExtern(
             var mi = 0
             while mi < decl.members.count {
               match decl.members[mi] {
-                case OMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvm(f.ty, owner), paramIdx = -1))
+                // Resolve through extern aliases + generic erasure like record
+                // fields above: an opaque field typed by an imported extern
+                // alias (`CompiledRegex { handle: RxHost.Regex }`) otherwise
+                // registers as a nonexistent `<pkg>/<Alias>` class, and every
+                // construction site checkcasts to it — NoClassDefFoundError at
+                // first call (the Std.Regex-on-JVM failure shape).
+                case OMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, genericParamNames(decl.generics), externTypes), paramIdx = -1))
                 case OMInvariant(_) -> ()
               }
               mi = mi + 1
@@ -4059,7 +4068,10 @@ pub func codegenPackageWithSigsSeeded(
             var ofi = 0
             while ofi < decl.members.count {
               match decl.members[ofi] {
-                case OMField(f) -> oFields.add(LOpaqueField(name = f.name, fieldType = typeExprToJvm(f.ty, pkgName)))
+                // Extern-alias + generic-erasure aware so the emitted field /
+                // `$<name>()` accessor descriptor names the real JVM class
+                // (matches the `collectFileCasesExtern` opaque arm).
+                case OMField(f) -> oFields.add(LOpaqueField(name = f.name, fieldType = typeExprToJvmErasedExtern(f.ty, pkgName, genericParamNames(decl.generics), externTypes)))
                 case OMInvariant(_) -> ()
               }
               ofi = ofi + 1

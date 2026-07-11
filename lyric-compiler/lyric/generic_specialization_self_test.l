@@ -76,8 +76,17 @@ func optId[T](x: in Option[T]): Option[T] {
   }
 }
 
+// The argument is bound to an explicitly-annotated local first so the
+// monomorphizer can infer T from the env: a bare `optId(None)` argument
+// carries no type evidence, so the call could never specialise — it
+// previously compiled anyway because the dangling call to the erased
+// generic degenerated to an identity pass-through of the argument (the
+// silent miscompile M0002 now rejects, docs/59 §5.2 B2).  These tests
+// only ever passed by that accident; with the annotated binding they
+// exercise the real #1745 spec-body path.
 test "#1745: bare None arm in generic match specialises correctly for Int" {
-  val a: Option[Int] = optId(None)
+  val src: Option[Int] = None
+  val a = optId(src)
   match a {
     case None -> assertTrue(true, "None -> None (Int)")
     case Some(v) -> assertTrue(false, "expected None")
@@ -85,7 +94,8 @@ test "#1745: bare None arm in generic match specialises correctly for Int" {
 }
 
 test "#1745: bare Some arm in generic match preserved for Int" {
-  val a: Option[Int] = optId(Some(value = 77))
+  val src: Option[Int] = Some(value = 77)
+  val a = optId(src)
   match a {
     case None -> assertTrue(false, "expected Some")
     case Some(v) -> assertEqualInt(v, 77, "Some(77) round-trips")
@@ -93,7 +103,8 @@ test "#1745: bare Some arm in generic match preserved for Int" {
 }
 
 test "#1745: bare None arm in generic match specialises correctly for String" {
-  val a: Option[String] = optId(None)
+  val src: Option[String] = None
+  val a = optId(src)
   match a {
     case None -> assertTrue(true, "None -> None (String)")
     case Some(v) -> assertTrue(false, "expected None")

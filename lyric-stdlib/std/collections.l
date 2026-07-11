@@ -120,3 +120,21 @@ pub func mapEntries[K, V](m: in Map[K, V]): List[MapEntry[K, V]] {
   }
   result
 }
+
+/// True when `xs` contains an element equal to `x` (linear scan).
+///
+/// String-typed rather than generic: equality on an unconstrained type
+/// parameter is not expressible until `where T: Equals` bounds land
+/// (see `std/iter.l`'s pending `where T: Add` note), and `List[String]`
+/// membership is by far the most re-implemented form across the tree.
+@stable(since = "1.0")
+pub func listContains(xs: in List[String], x: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == x {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}

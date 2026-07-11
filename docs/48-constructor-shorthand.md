@@ -1,10 +1,13 @@
 # 48 — Constructor Shorthand for Extern Types
 
-**Status:** Shipped for reference-type extern types (D117). Design question
-Q48-003 is resolved (static factory methods already supported). Questions
-Q48-001 and Q48-002 are deferred (tracked separately as generic-FFI and
-async-constructor design work); Q48-004 (value-type `.new()` result-type
-inference) also remains open. The `.new()` lowering itself shipped alongside
+**Status:** Shipped for reference-type extern types (D117) **and value-type
+extern types (Q48-004 resolved, 2026-07-10)**: `.new(args)` on a value type
+emits `newobj` (ECMA-335 III.4.21 value-type semantics) with the result typed
+`MValueTypeRef`; a zero-arg `.new()` on a struct with no parameterless ctor
+row yields the zero-initialised default via `ldloca`+`initobj`+`ldloc`.
+Design question Q48-003 is resolved (static factory methods already
+supported). Questions Q48-001 and Q48-002 are deferred (tracked separately as
+generic-FFI and async-constructor design work). The `.new()` lowering itself shipped alongside
 `import extern` type-checker integration in commit `a64e649` (2026-07-03,
 #4714) — see `msil/codegen.l`'s constructor-shorthand path
 (`resolveMethodName == ".ctor"`) and `docs/10-bootstrap-progress.md`
@@ -222,9 +225,13 @@ The following are **out of scope** for this proposal:
   clear error rather than a silent miscompile. The result-type builder used
   for the reference-type fast path hardcodes `Mdr.STNamed(fqn, valueType =
   false)` — correct only because value-type targets never reach that line.
-  Proper support (constructing a value type via `.new()` and inferring
-  `valueType = true` for its result signature, which needs `initobj`/`ldloca`
-  emission rather than `newobj`) is deferred; tracked as Q48-004.
+  **Resolved (2026-07-10):** the vtype rejection was removed — `newobj` on a
+  value type is legal per ECMA-335 III.4.21 (the ctor runs on a temp's
+  address and the *value* is pushed), matching what the `@externTarget`
+  `"Type..ctor"` path already emitted; the result signature carries
+  `valueType = true` from the metadata vtype index. Zero-arg `.new()` with no
+  parameterless ctor row lowers to `ldloca`+`initobj`+`ldloc`. Verified by
+  `import_extern_self_test.l` cases 16–17.
 
 ---
 

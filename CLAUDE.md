@@ -660,7 +660,7 @@ need direction and have nothing else productive to do**.  Specifically:
   contain `@externTarget` / `extern type` declarations or `import extern` statements.
   Key modules: `Std.Core` (Option, Result), `Std.Collections` (List, Map),
   `Std.String`, `Std.Char`, `Std.Json` (BCL-backed, `.NET`-only),
-  `Std.Time` (Instant, Duration, Clock, SystemClock, toEpochMillis),
+  `Std.Time` (Instant, Duration, now, nowEpochMillis, fromEpochMillis, toIsoString),
   `Std.Uuid` (newUuid, uuidToString, parseUuidOpt),
   `Std.Xml` (pure-Lyric XML 1.0 parser, cross-platform, D065),
   `Std.Yaml` (pure-Lyric YAML 1.2 + JSON parser, cross-platform, D065).
@@ -757,13 +757,9 @@ need direction and have nothing else productive to do**.  Specifically:
     via a non-empty declared set).  File-level `@cfg` annotations erase
     every item in the file.  Boolean composition (`any` / `all` /
     `not`) deferred to v1.1 per D045.
-  - `manifest_bridge.l` — `Lyric.ManifestBridge` protocol bridge used by
-    `SelfHostedManifest.fs` (D-progress-231).
   - `fmt/` — self-hosted formatter `Lyric.Fmt` (M5.3 stages 2–5);
     three files: `fmt.l`, `fmt_core.l`, `fmt_items.l`.
   - `test_synth/test_synth.l` — `Lyric.TestSynth` rewriter (see above).
-  - `test_synth_bridge.l` — `Lyric.TestSynthBridge` protocol bridge used
-    by `SelfHostedTestSynth.fs` (D-progress-231).
   - `cli/` — `Lyric.Cli` full command dispatcher (M5.3, D-progress-260);
     split into 13 files: `cli_shared.l` (helpers), `cli_build.l`,
     `cli_run.l`, `cli_fmt.l`, `cli_lint.l`, `cli_prove.l`, `cli_doc.l`,

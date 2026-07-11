@@ -678,8 +678,10 @@ jobs:
             lyric-compiler/lyric/modechecker_self_test.l \
             lyric-compiler/lyric/contract_elaborator_self_test.l \
             lyric-compiler/lyric/cfg_self_test.l \
+            lyric-compiler/lyric/cfg_single_file_self_test.l \
             lyric-compiler/lyric/derives_self_test.l \
             lyric-compiler/lyric/mono_self_test.l \
+            lyric-compiler/lyric/result_generic_specialization_self_test.l \
             lyric-compiler/lyric/alias_impl_self_test.l \
             lyric-compiler/lyric/quantifier_ident_self_test.l \
             lyric-compiler/lyric/range_subtype_self_test.l \
@@ -3378,6 +3380,39 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
 
+      # #3693/#3705-shape generic-specialisation regression on the JVM
+      # single-file build (docs/59 §5.4 item: JVM single-file mono decl
+      # feeding).  The file's header always claimed a jvm run but none was
+      # wired; this pins isOk/isErr specialisation over interface/record
+      # Results on the `lyric test --target jvm` single-file pipeline.
+      - name: Result-generic-specialisation self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping result-generic-specialisation JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/result_generic_specialization_self_test.l
+
+      # Single-file `@cfg` erasure parity on JVM — the JVM half of the
+      # dotnet-job case (docs/59 §5.4): the same source must see the same
+      # `@cfg(feature = ...)` erasure and `target.jvm` pseudo-feature
+      # selection on both targets.
+      - name: Cfg single-file self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping cfg single-file JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/cfg_single_file_self_test.l
+
       # Byte-arithmetic self-test on JVM — the JVM half of the dotnet-job step
       # of the same name (docs/59 §4.3).  The canonical in-slot `JByte` form is
       # masked-unsigned 0..255: these cases pin unsigned division/modulo,
@@ -5031,9 +5066,10 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/log_tests.l
 
-      # Pins the D-N-026 four-format parse contract (and #5196's inline-match
-      # workaround) on the managed target; uuid_tests.l is a plain-main
-      # program, so it runs via `lyric run` rather than `lyric test` (#5200).
+      # Pins the D-N-026 four-format parse contract on the managed target,
+      # including Option[Uuid] flowing through the generic Std.Core helpers
+      # (#5196 regression); uuid_tests.l is a plain-main program, so it runs
+      # via `lyric run` rather than `lyric test` (#5200).
       - name: Std.Uuid test coverage (lyric run)
         working-directory: ${{ github.workspace }}
         run: |

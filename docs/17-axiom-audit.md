@@ -855,7 +855,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.HttpHost` | `http_host.l` | System.Net.Http operations conform to their documented .NET contracts |
 | `dotnet` | `Std.JsonHost` | `json_host.l` | System.Text.Json operations conform to their documented .NET contracts |
 | `dotnet` | `Std.Jvm` | `jvm.l` | Std.Jvm provides JVM-target escape hatches for interoperating with Java exception semantics per docs/31-maven-linking.md Q-J012 |
-| `dotnet` | `Std.JvmExceptionHost` | `jvm_exception.l` | java.lang.Exception is the Java checked-exception root; JvmException wraps it for Lyric callers at the FFI boundary per docs/31-maven-linking.md §5 |
+| `dotnet` | `Std.JvmExceptionHost` | `jvm_exception.l` | java.lang.Exception is the Java checked-exception root; \n JvmException wraps it for Lyric callers at the FFI boundary \n per docs/31-maven-linking.md §5 |
 | `dotnet` | `Std.MathHost` | `math_host.l` | System.Math and System.Double operations conform to their documented .NET / IEEE 754 contracts |
 | `dotnet` | `Std.ParseHost` | `parse_host.l` | System.Double/Boolean.TryParse conform to their documented .NET contracts |
 | `dotnet` | `Std.PathHost` | `path_host.l` | System.IO.Path operations conform to their documented .NET contracts |
@@ -873,16 +873,16 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.EncodingHost` | `encoding_host.l` | JVM List[Byte].toArray() produces a properly typed byte array; pure-Lyric accumulators are safe on JVM |
 | `jvm` | `Std.EnvironmentHost` | `environment_host.l` | java.lang.System operations conform to their documented JVM contracts |
 | `jvm` | `Std.FileHost` | `file_host.l` | java.io.File / FileInputStream / FileOutputStream conform to their documented JVM contracts |
-| `jvm` | `Std.FormatHost` | `format_host.l` | lyric.stdlib.jvm.FormatHost formatting operations conform to their documented JVM contracts |
+| `jvm` | `Std.FormatHost` | `format_host.l` | java.math.BigDecimal, java.lang.Integer, and java.util.Locale conform to their documented JVM contracts |
 | `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-256/SHA-512 semantics and are pure functions of their input bytes |
 | `jvm` | `Std.HttpHost` | `http_host.l` | lyric.stdlib.jvm.HttpClientHost operations conform to their documented JVM / java.net.http contracts |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
 | `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |
-| `jvm` | `Std.PathHost` | `path_host.l` | lyric.stdlib.jvm.PathHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.PathHost` | `path_host.l` | java.io.File.separatorChar and java.io.File.getParent conform to their documented JVM contracts |
 | `jvm` | `Std.ProcessCaptureHost` | `process_capture_host.l` | java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics |
 | `jvm` | `Std.ProcessHost` | `process_host.l` | java.lang.Process and java.lang.ProcessBuilder conform to their documented JVM contracts |
 | `jvm` | `Std.RandomHost` | `random_host.l` | java.util.Random conforms to its documented JDK contracts |
-| `jvm` | `Std.RegexHost` | `regex_host.l` | lyric.stdlib.jvm.RegexHost operations conform to their documented JVM / java.util.regex contracts |
+| `jvm` | `Std.RegexHost` | `regex_host.l` | java.util.regex.Pattern and java.util.regex.Matcher conform to their documented JVM contracts |
 | `jvm` | `Std.SecureRandomHost` | `secure_random_host.l` | java.security.SecureRandom conforms to its documented JDK contracts and produces cryptographically strong output |
 | `jvm` | `Std.TimeHost` | `time_host.l` | java.time.* / java.lang.Math.round / java.lang.System.nanoTime / java.lang.Thread.sleep conform to their documented JVM / ISO 8601 contracts |
 | `jvm` | `Std.UnicodeHost` | `unicode_host.l` | java.lang.Character.getType conforms to its documented JVM contract; jvmCategoryToNetConvention correctly cross-references it to the .NET UnicodeCategory convention via Unicode General_Category |

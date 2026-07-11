@@ -88,6 +88,21 @@ pub func compileToMsilWithVersion(
     return false
   }
 
+  // `@cfg` erasure with an empty active set (plus the `target.dotnet`
+  // pseudo-feature, D-N-013) — the same semantics a manifest build with
+  // no `--features` applies via `compileProjectToMsilWithFeatures`.
+  // Without this, `@cfg(feature = "X")`-gated items compiled
+  // unconditionally on the single-file path while manifest builds erased
+  // them — same source, divergent semantics (docs/59 §5.4).  The
+  // declared set stays empty so the F0013 typo guard is off, matching a
+  // manifest with no `[features]` table.
+  val noCfgFeatures: List[String] = newList()
+  val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(noCfgFeatures, "dotnet"), noCfgFeatures, parseResult.file)
+  if reportAndAbort(cfgRes.diagnostics) {
+    return false
+  }
+  val cfgFile = cfgRes.file
+
   // ── Middle-end (Band 1 + Band 6 of docs/41 §9) ─────────────────────────
   // Run the self-hosted type checker with stdlib imports, mode checker, and
   // contract elaborator before codegen so that source-level diagnostics surface
@@ -130,12 +145,12 @@ pub func compileToMsilWithVersion(
   val weWires: Map[String, CollectedWireTemplate] = newMap()
   val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
   WireExpand.collectWireTemplates(
-    parseResult.file.items,
-    segmentsToString(parseResult.file.packageDecl.path.segments),
+    cfgFile.items,
+    segmentsToString(cfgFile.packageDecl.path.segments),
     weWires,
     weConfigs
   )
-  val weRes = WireExpand.expandFile(parseResult.file, weWires, weConfigs)
+  val weRes = WireExpand.expandFile(cfgFile, weWires, weConfigs)
   if reportAndAbort(weRes.diagnostics) {
     return false
   }
@@ -174,9 +189,24 @@ pub func compileToMsilWithVersion(
   // predicates like `isOk(bucket.exists(...))` to specialise instead of
   // staying type-erased (#3813).
   val stdlibGenFuncs = collectStdlibGenericFuncs(stdlibPkgs)
+  // Non-generic stdlib pub funcs feed inference only (never specialised) so
+  // a generic call whose type argument flows through a stdlib return —
+  // `unwrapOr(parseUuidOpt(s), nilUuid())` — can specialise (#5196).
+  val stdlibNonGenFuncs = collectStdlibNonGenericFuncs(stdlibPkgs)
+  val allMonoFuncs: List[FunctionDecl] = newList()
+  var smgi = 0
+  while smgi < stdlibGenFuncs.count {
+    allMonoFuncs.add(stdlibGenFuncs[smgi])
+    smgi = smgi + 1
+  }
+  var smni = 0
+  while smni < stdlibNonGenFuncs.count {
+    allMonoFuncs.add(stdlibNonGenFuncs[smni])
+    smni = smni + 1
+  }
   val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
   val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
-  val monoRes = monoFileWithImportsAndTypeDecls(derived, stdlibGenFuncs, stdlibIfaces, stdlibRecs)
+  val monoRes = monoFileWithImportsAndTypeDecls(derived, allMonoFuncs, stdlibIfaces, stdlibRecs)
   if reportAndAbort(monoRes.diagnostics) {
     return false
   }
@@ -214,6 +244,17 @@ pub func compileToMsilWithVersion(
   // applied during `lyric build`, not just `lyric prove` (#1327).  Abort
   // on any weave-time error (A0042 / A0043 / A0044) so the user sees the
   // weaver-targeted message rather than a downstream codegen error.
+  //
+  // Unlike the JVM bridges, no pre-typecheck `Weaver.injectWeaveImports`
+  // call is needed on the MSIL paths (docs/59 §5.4 flagged the asymmetry):
+  // the JVM bundler walks `file.imports` to decide which stdlib packages'
+  // bytecode lands in the JAR, so `call.elapsed`'s synthesised
+  // `Std.Time.monotonicNanos` calls need the import present before that
+  // closure walk — whereas `registerStdlibArtifactTokens` above seeds
+  // MemberRef rows for EVERY stdlib `pub func` import-independently, and
+  // `weaveFileWithDiags` itself ensures the import on its output for any
+  // later consumer.  Verified at runtime on both targets with a
+  // `call.elapsed` aspect in a file with no `import Std.Time`.
   val weaveRes = Weaver.weaveFileWithDiags(file)
   if reportAndAbort(weaveRes.diagnostics) {
     return false
@@ -570,6 +611,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // never matches the concrete value, so the match falls off and the
   // scrutinee leaks back as the `Bool` result — #3705).
   val inBundleNonGenFuncs = collectInBundleNonGenericFuncs(parsedPkgs)
+  // Non-generic stdlib pub funcs: inference-only, same rationale as the
+  // in-bundle set below — lets a generic call whose type argument flows
+  // through a stdlib return (`unwrapOr(parseUuidOpt(s), nilUuid())`)
+  // specialise instead of hitting the unresolved-call fallback (#5196).
+  val stdlibNonGenFuncs = collectStdlibNonGenericFuncs(stdlibPkgs)
   // Restored-dependency generic pub funcs: cross-DLL generic calls specialise
   // into the consumer bundle rather than erasing return type to `object` (#1498).
   val restoredGenFuncs = collectRestoredGenericFuncs(restoredArtifacts)
@@ -593,6 +639,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   while agfm < inBundleNonGenFuncs.count {
     allImportedGenFuncs.add(inBundleNonGenFuncs[agfm])
     agfm = agfm + 1
+  }
+  var agfn = 0
+  while agfn < stdlibNonGenFuncs.count {
+    allImportedGenFuncs.add(stdlibNonGenFuncs[agfn])
+    agfn = agfn + 1
   }
   // Interface decls (in-bundle + stdlib + restored), fed to the monomorphizer
   // for method-call return inference on interface-typed receivers (#3813).
@@ -1470,6 +1521,49 @@ func collectInBundleNonGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[Fu
           }
         }
         case _ -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  nonGenFuncs
+}
+
+// Counterpart of `collectInBundleNonGenericFuncs` for stdlib packages:
+// non-generic block-bodied stdlib `pub func`s, fed to the monomorphizer
+// purely so it can resolve stdlib call return types during inference.
+// Without these, a generic call whose type argument only flows through a
+// stdlib function's return — e.g. `unwrapOr(parseUuidOpt(s), nilUuid())`,
+// where T = Uuid is visible only via `parseUuidOpt` / `nilUuid`'s declared
+// returns — cannot specialise; the un-specialised call then hits the
+// unresolved-call fallback (stdlib generics are skipped by
+// `registerStdlibFunc`), which lowers the arguments and emits NO call —
+// a silent miscompile plus unbalanced-stack InvalidProgramException
+// (#5196).  Because they are non-generic they only land in the
+// monomorphizer's `funcDecls` map (inference), never in `genDecls` (the
+// specialisation worklist).  Expression-bodied wrappers (`= ()` extern
+// stubs) are excluded, mirroring the in-bundle collector.
+pub func collectStdlibNonGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl] {
+  val nonGenFuncs: List[FunctionDecl] = newList()
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    var ii = 0
+    while ii < pkg.items.count {
+      match pkg.items[ii].kind {
+        case IFunc(decl) -> {
+          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+          val hasBlockBody = match decl.body {
+            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
+            case None -> false
+          }
+          if isPub and not isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) {
+            nonGenFuncs.add(decl)
+          }
+        }
+        case _ -> {
+        }
       }
       ii = ii + 1
     }

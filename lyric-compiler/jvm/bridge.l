@@ -99,11 +99,26 @@ pub func compileToJar(
     return false
   }
 
+  // `@cfg` erasure with an empty active set (plus the `target.jvm`
+  // pseudo-feature, D-N-013) — the same semantics a manifest build with no
+  // `--features` applies via `compileProjectToJarBundledWithFeatures`.
+  // Without this, `@cfg(feature = "X")`-gated items compiled
+  // unconditionally on this path while every other build path erased
+  // them — same source, divergent semantics (docs/59 §5.4).  The
+  // declared set stays empty so the F0013 typo guard is off, matching a
+  // manifest with no `[features]` table.
+  val noFeatures: List[String] = newList()
+  val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(noFeatures, "jvm"), noFeatures, parseResult.file)
+  if reportAndAbort(cfgRes.diagnostics) {
+    return false
+  }
+  val cfgFile = cfgRes.file
+
   // Reject func main(): Long/Double before codegen: the JVM main wrapper emits
   // a single-slot POP to discard the return value, which would corrupt the operand
   // stack for 2-slot types (VerifyError at class load).  Surface the error here
   // as a clean compiler diagnostic rather than a panic inside codegenPackage.
-  match mainReturns2SlotType(parseResult.file) {
+  match mainReturns2SlotType(cfgFile) {
     case Some(ty) -> {
       Console.error("error[J001]: `func main(): " + ty + "` is not supported on the JVM target")
       Console.error("  hint: use `func main(): Int` (exit code) or `func main(): Unit`")
@@ -167,13 +182,8 @@ pub func compileToJar(
   // alias name matches an imported package's last segment.
   val weWires: Map[String, CollectedWireTemplate] = newMap()
   val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
-  WireExpand.collectWireTemplates(
-    parseResult.file.items,
-    dottedPath(parseResult.file.packageDecl.path),
-    weWires,
-    weConfigs
-  )
-  val weRes = WireExpand.expandFile(parseResult.file, weWires, weConfigs)
+  WireExpand.collectWireTemplates(cfgFile.items, dottedPath(cfgFile.packageDecl.path), weWires, weConfigs)
+  val weRes = WireExpand.expandFile(cfgFile, weWires, weConfigs)
   if reportAndAbort(weRes.diagnostics) {
     return false
   }
@@ -205,10 +215,16 @@ pub func compileToJar(
   // Monomorphise generic calls (Band 5 — docs/41 §9), feeding the stdlib's
   // pure-Lyric generic `pub func`s so cross-package generic calls (`mapGet`,
   // `unwrapOr`, …) specialise into this artifact instead of erasing their
-  // generic return to `object` (M-5; parity with the MSIL bridge's
-  // `monoFileWithImports`).
+  // generic return to `object`, plus the imported interface and record
+  // decls so method-call returns and field projections on imported types
+  // drive call-site inference (#3813; parity with the MSIL single-file
+  // path and this bridge's own `runMiddleEnd` — docs/59 §5.4 flagged this
+  // path as the last one still on the decl-less `monoFileWithImports`).
   val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
-  val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
+  val importedItems = flattenImportedItems(importedPkgs)
+  val importedIfaceDecls = collectInterfaceDeclsFromItems(importedItems)
+  val importedRecordDecls = collectRecordDeclsFromItems(importedItems)
+  val monoRes = monoFileWithImportsAndTypeDecls(derived, stdlibGenFuncs, importedIfaceDecls, importedRecordDecls)
   if reportAndAbort(monoRes.diagnostics) {
     return false
   }

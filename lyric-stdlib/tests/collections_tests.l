@@ -1,7 +1,7 @@
 //! stdlib/tests/collections_tests.l — Tests for Std.Collections.
 //!
-//! Covers: List construction, add, count, index access; Map construction,
-//! add, containsKey, mapGet (Some/None), and count.
+//! Covers: List construction, add, count, index access, listContains;
+//! Map construction, add, containsKey, mapGet (Some/None), and count.
 package Std.Collections.Tests
 
 import Std.Core
@@ -38,6 +38,22 @@ func testListWithCapacity(): Unit {
   assertTrue(xs.count == 0, "capacity-constructed list starts empty")
   xs.add(1)
   assertEqualInt(xs.count, 1, "count after add to capacity list")
+}
+
+func testListContains(): Unit {
+  val xs: List[String] = newList()
+  assertTrue(not listContains(xs, "a"), "empty list contains nothing")
+  xs.add("alpha")
+  xs.add("beta")
+  xs.add("gamma")
+  assertTrue(listContains(xs, "alpha"), "contains first element")
+  assertTrue(listContains(xs, "beta"), "contains middle element")
+  assertTrue(listContains(xs, "gamma"), "contains last element")
+  assertTrue(not listContains(xs, "delta"), "does not contain absent element")
+  assertTrue(not listContains(xs, "alph"), "no prefix match")
+  assertTrue(not listContains(xs, ""), "empty string absent")
+  xs.add("")
+  assertTrue(listContains(xs, ""), "empty string present after add")
 }
 
 func testMapConstruction(): Unit {
@@ -88,6 +104,7 @@ func main(): Unit {
   testListAddAndAccess()
   testListStrings()
   testListWithCapacity()
+  testListContains()
   testMapConstruction()
   testMapAddAndContainsKey()
   testMapGet()

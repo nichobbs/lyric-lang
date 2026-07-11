@@ -328,8 +328,13 @@ runtime gap.
 > I8/U8/R4/R8 via `ExternConstValue`; enum constants typed as their enum value
 > type). This closes the "property access" row of the docs/59 §6 capability
 > matrix — the single largest `@externTarget`-retirement blocker (~24% of
-> kernel externs). Value-type instance receivers and `.new()` on value types
-> remain the next gap (step 4b / Q48-004). The same change fixed the @ET
+> kernel externs). Value-type instance receivers (`ldloca` + `call` dispatch,
+> incl. the property-getter probe) and value-type `.new()` (Q48-004, plain
+> `newobj` + zero-arg `initobj` default) shipped in the follow-up wave, along
+> with extern-struct boxing into object contexts (equality / interpolation /
+> `castObjectToMsil` / uniform-ABI generic args). Remaining call-site gaps:
+> `inout` struct receivers and property *set* on value-type receivers (both
+> byref-receiver shapes), async Task unwrap, out/ref params. The same change fixed the @ET
 > path's literal-const handling (`Math.PI` previously fell through to a
 > `ldsfld` on a storage-less literal field → `MissingFieldException` at
 > runtime) and excluded extern type names from the nullary-union-case

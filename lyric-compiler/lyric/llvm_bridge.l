@@ -59,6 +59,41 @@ func dottedPath(path: in ModulePath): String {
   modulePathJoin(path.segments)
 }
 
+// Every `IInterface` decl in a flat item list — fed to the monomorphizer
+// (#3813) so a method-call return on an interface-typed receiver can be
+// inferred and the enclosing generic call specialised.  Mirrors
+// `Jvm.Bridge.collectInterfaceDeclsFromItems` (the JVM package is not
+// importable from here).
+func collectNativeInterfaceDecls(items: in List[Item]): List[InterfaceDecl] {
+  val ifaces: List[InterfaceDecl] = newList()
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IInterface(decl) -> ifaces.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  ifaces
+}
+
+// Every record decl (plain + exposed) in a flat item list — fed to the
+// monomorphizer (#3813 follow-up) so `recv.field` projections on values
+// whose record type is declared in an imported package can be inferred.
+func collectNativeRecordDecls(items: in List[Item]): List[RecordDecl] {
+  val recs: List[RecordDecl] = newList()
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IRecord(decl) -> recs.add(decl)
+      case IExposedRec(decl) -> recs.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  recs
+}
+
 // True for top-level items that must reach packages importing this one
 // (types, pub module vals, and pub funcs) so cross-package names
 // resolve during the advisory typecheck — without the pub funcs every
@@ -434,7 +469,23 @@ pub func compileToNativeWithFlags(
     return false
   }
   val derived = deriveFile(propRes.file)
-  val monoRes = monoFile(derived)
+  // Feed the stdlib's interface and record decls to the monomorphizer so
+  // method-call returns and field projections on imported types drive
+  // same-package call-site inference (#3813; parity with the MSIL and JVM
+  // bridges — docs/59 §5.4 flagged this path as running bare `monoFile`).
+  // Imported GENERIC decls are deliberately NOT fed: unlike MSIL/JVM
+  // codegen, the native backend performs its own whole-bundle generic
+  // instantiation at lowering time (`Lyric.LlvmCodegen.genericFnDefs`,
+  // N3.1) over the never-mono'd bundled stdlib files, so cross-package
+  // generic calls are not erased on native — copying stdlib generic
+  // bodies into the user package here would only duplicate that work and
+  // risk dangling references to intra-stdlib helpers the function-
+  // granularity reachability walk never registered for the user package.
+  val importedItemsForMono = flattenImportedItems(importedPkgs)
+  val importedIfaceDecls = collectNativeInterfaceDecls(importedItemsForMono)
+  val importedRecordDecls = collectNativeRecordDecls(importedItemsForMono)
+  val noImportedGenFuncs: List[FunctionDecl] = newList()
+  val monoRes = monoFileWithImportsAndTypeDecls(derived, noImportedGenFuncs, importedIfaceDecls, importedRecordDecls)
   if reportAndAbort(monoRes.diagnostics) {
     return false
   }

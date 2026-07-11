@@ -788,3 +788,114 @@ test "mixed inference shapes" {
   )
   assertTrue(hasFunc(res.file, "wrap__Int"), "#349 mixed: wrap__Int (nested) specialisation")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constraint validation (docs/59 §5.2 B3) and unspecialisable-call / budget
+// diagnostics (B2, B5).
+// ─────────────────────────────────────────────────────────────────────────────
+func diagCountCode(diags: in List[Diagnostic], code: in String): Int {
+  var n = 0
+  var i = 0
+  while i < diags.count {
+    if diags[i].code == code {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+// B3: a primitive that lacks the bound's marker must raise M0001 — before
+// the fix `satisfiesMarker` returned true on every branch, so this
+// diagnostic was unreachable.
+test "where bound violated by primitive raises M0001" {
+  val src = "package P\n" + "func subAll[T](a: in T, b: in T): T where T: Sub { a }\n" +
+    "func caller(): String { subAll(\"x\", \"y\") }\n"
+  val res = runMono(src)
+  assertEqualInt(diagCountCode(res.diagnostics, "M0001"), 1, "String does not satisfy 'where T: Sub' — M0001 fires")
+}
+
+// B3: a primitive that carries the marker specialises without diagnostics.
+// `Add` on Int (arithmetic) and on String (concatenation) both hold.
+test "where bound satisfied by primitive proceeds" {
+  val src = "package P\n" + "func addAll[T](a: in T, b: in T): T where T: Add { a }\n" +
+    "func callerI(): Int { addAll(1, 2) }\n" +
+    "func callerS(): String { addAll(\"x\", \"y\") }\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "addAll__Int"), "Int satisfies Add — specialisation emitted")
+  assertTrue(hasFunc(res.file, "addAll__String"), "String satisfies Add (concatenation) — specialisation emitted")
+  assertEqualInt(diagCountCode(res.diagnostics, "M0001"), 0, "no M0001 for satisfied bounds")
+}
+
+// B3: non-primitive type arguments accept silently — mono cannot see
+// `@derive(...)` lists pre-resolution; the type checker's T0108 owns them.
+test "where bound on user type accepts silently" {
+  val src = "package P\n" + "record Plain { value: Int }\n" + "func subAll[T](a: in T, b: in T): T where T: Sub { a }\n" +
+    "func caller(p: in Plain, q: in Plain): Plain { subAll(p, q) }\n"
+  val res = runMono(src)
+  assertEqualInt(diagCountCode(res.diagnostics, "M0001"), 0, "user types pass silently (T0108 owns derive lists)")
+  assertTrue(hasFunc(res.file, "subAll__Plain"), "specialisation still proceeds for user types")
+}
+
+// B2: a call to a same-package generic whose type arguments cannot be
+// inferred must raise M0002 — the generic decl is erased from the output,
+// so the surviving call site would be a dangling reference at codegen
+// (previously a silent runtime crash).
+test "uninferable call to dropped same-package generic raises M0002" {
+  val src = "package P\n" + "func pick[T](): Int { 0 }\n" + "func caller(): Int { pick() }\n"
+  val res = runMono(src)
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 1, "zero-arg call cannot infer T — M0002 fires")
+}
+
+// B2: lambda arguments are an inference gap (`inferExprTE` returns None
+// for ELambda), so a generic call whose only evidence is a lambda must
+// raise M0002 instead of dangling.
+test "lambda-arg call to dropped same-package generic raises M0002" {
+  val src = "package P\n" + "func applyIt[T](f: in (T) -> T): Int { 0 }\n" +
+    "func caller(): Int { applyIt({ x -> x }) }\n"
+  val res = runMono(src)
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 1, "lambda arg cannot drive inference — M0002 fires")
+}
+
+// B2 negative: the same uninferable shape against an IMPORTED generic must
+// stay silent — the imported decl is not erased from its home assembly, so
+// the un-specialised call legitimately falls back to the erased-generic
+// path at codegen.
+test "uninferable call to imported generic stays silent" {
+  val callerSrc = "package Caller\n" + "func caller(): Int { pickImported() }\n"
+  val importedSrc = "package Lib\n" + "pub func pickImported[T](): Int { 0 }\n"
+  val importedPr = parse(importedSrc)
+  val importedGen: List[FunctionDecl] = newList()
+  var i = 0
+  while i < importedPr.file.items.count {
+    match importedPr.file.items[i].kind {
+      case IFunc(decl) -> match decl.generics { case Some(_) -> importedGen.add(decl); case None -> () }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  val res = monoFileWithImports(parse(callerSrc).file, importedGen)
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 0, "imported generics keep the erased fallback — no M0002")
+}
+
+// B2 negative: the #3677 arity-overflow shape (call has MORE args than the
+// same-named generic has params) targets an unrelated function and must not
+// raise M0002 either.
+test "arity-overflow call to same-named generic stays silent (#3677)" {
+  val src = "package P\n" + "func assertEq[T](x: in T): T { x }\n" +
+    "func caller(): Unit { assertEq(\"x\", \"y\", \"z\") }\n"
+  val res = runMono(src)
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 0, "#3677 shape resolves elsewhere — no M0002")
+}
+
+// B5: unbounded recursive instantiation must terminate with M0003 instead
+// of the former compiler panic.  `deepen[A,B,C]` re-instantiates itself
+// with a strictly larger type in one slot per call, so the worklist grows
+// without bound until the 10k budget trips.
+test "specialisation budget exhaustion raises M0003 instead of panicking" {
+  val src = "package P\n" + "func wrap[T](x: in T): List[T] { wrap(x) }\n" +
+    "func deepen[A, B, C](a: in A, b: in B, c: in C): Int { deepen(wrap(a), b, c) + deepen(a, wrap(b), c) + deepen(a, b, wrap(c)) }\n" +
+    "func caller(): Int { deepen(1, 2, 3) }\n"
+  val res = runMono(src)
+  assertEqualInt(diagCountCode(res.diagnostics, "M0003"), 1, "budget exhaustion surfaces as a single M0003 diagnostic")
+}

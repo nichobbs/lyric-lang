@@ -14208,6 +14208,165 @@ by proxy: `NativeSender.send`'s guard is `Mail.validateNoInjection`, which is no
 live-SMTP-shaped `SmtpClient`, so an end-to-end direct test is not worth the
 fragility.
 
+## D-progress-640 — real JVM kernels for Std.Format/Path/Regex/Math and the exception helper (docs/59 H5); auto-FFI class reader parsed no enum class files; opaque-type fields ignored extern-alias seeds
+
+**Status:** ACCEPTED
+
+Four of the five phantom `_kernel_jvm` bindings (docs/59 §7.2 F-1a/b/c) are
+replaced with real pure-Lyric-over-JVM-auto-FFI implementations, making
+`Std.Format`, `Std.Path`, `Std.Regex` (matching; the 1-second match timeout
+is accepted-not-enforced pending #1103), and `Std.Math.intToLong/longToInt`
+functional on `--target jvm` for the first time. Semantics were captured
+empirically from `--target dotnet` runs and asserted byte-identical:
+.NET "F" formatting is round-half-to-even over the exact binary value
+(`BigDecimal` + `RoundingMode.HALF_EVEN` on JVM), negative-zero sign and
+"NaN"/"Infinity" spellings preserved; `Std.Path` implements `System.IO.Path`
+semantics in pure Lyric (java.nio is varargs-shaped and `java.io.File`
+normalizes trailing separators — both diverge); `hostLongToInt` uses
+`Math.toIntExact` to match `Convert.ToInt32`'s overflow panic.
+`jvmExceptionTypeName` is pure Lyric over `getClass().getName()`.
+`_kernel_jvm/http_host.l` and `http_server.l` remain the only phantom
+bindings (closure→SAM bridging prerequisite; tracked under #2663) and the
+kernel README now says so.
+
+Two compiler prerequisites fixed en route:
+- `jvm/class_reader.l` **skipped ACC_ENUM class files**, so every JDK enum
+  constant read and enum-typed overload was unresolvable.
+- `jvm/codegen/06_items.l` ignored extern-alias seeds in opaque-type field
+  descriptors (3 sites) — `Std.Regex`'s `CompiledRegex { handle: RxHost.Regex }`
+  emitted checkcasts against a nonexistent `Std/Regex/Regex`.
+
+Verified: `stdlib_jvm_kernels_self_test.l` 21/21 on jvm with **zero J003
+skips**; `auto_ffi_jvm_self_test.l` 25/25 (+2 enum cases); the dotnet
+`format/path/math/regex_tests` stdlib suites now pass unchanged on jvm.
+
+**Related:** docs/59 §7.2, #2669, #2663, docs/44 m-89 (the pattern).
+
+---
+
+## D-progress-641 — MSIL auto-FFI value-type instance receivers and value-type `.new()` (Q48-004); extern-struct boxing into object contexts; #5196 was two bugs (boxing + mono starved of stdlib non-generic signatures)
+
+**Status:** ACCEPTED
+
+The #2 CRITICAL `@externTarget`-retirement capability (docs/59 §6.4 item 2):
+
+1. **Value-type instance dispatch** — `MValueTypeRef` receivers now route to
+   metadata resolution: spill to a typed local, `ldloca`, non-virtual `call`
+   (mirroring `emitExternTargetBody`'s `isValueTypeReceiverMsil` rule),
+   covering methods and the D-progress-638 property-getter probe. On a
+   metadata miss the address is popped and the value reloaded so legacy
+   dispatch (`.toString()` intrinsics) is preserved.
+2. **Value-type `.new(args)`** (Q48-004) — the vtype rejection removed:
+   `newobj` on a value type is legal (ECMA-335 III.4.21) and is what the @ET
+   `"Type..ctor"` path always emitted; zero-arg `.new()` with no
+   parameterless ctor row lowers to `ldloca`+`initobj`+`ldloc`.
+3. **Extern-struct boxing (docs/59 §3.2 F6)** — `isValueType` widened to
+   `MValueTypeRef` after auditing all 31 call sites (`MValueTypeGenericInst`
+   stays excluded — `boxTypeRef` cannot name a closed TypeSpec); equality's
+   `Object.Equals` fallback boxes the lhs too; `coerceCallArgMsil` learned
+   object→struct unbox and struct→object box. Fixes `uuid1 == uuid2`
+   (was invalid IL), `"${uuid}"`, `toString(guid)`, `castObjectToMsil`.
+
+**#5196 root cause was two bugs; both fixed.** Beyond the missing boxing,
+`unwrapOr(parseUuidOpt(s), nilUuid())` failed because the monomorphizer
+received no signatures for *non-generic* stdlib functions, so `T = Uuid` was
+uninferable and the un-specialised call hit the unresolved-call fallback —
+which lowers arguments and **emits no call** (silent miscompile, unbalanced
+stack). `collectStdlibNonGenericFuncs` (the stdlib twin of #3705's in-bundle
+collector, inference-only) is now fed to both `Msil.Bridge` mono call sites.
+The `uuid_tests.l` workaround is reverted; the suite passes on both targets.
+
+Not shipped (byref-receiver family, deliberately): `inout` struct receivers
+and property *set* on value-type receivers.
+
+Verified: `import_extern_self_test.l` 20/20 (7 new blocks, each
+fail-before/pass-after), ilverify clean on the value-type and #5196 repros,
+full FFI + generics + typechecker regression sweep green.
+
+**Follow-ups surfaced (pre-existing, baseline-verified):**
+`lyric-stdlib/tests/core_tests.l` fails at the wave-1 HEAD (not CI-wired):
+mono cannot infer `T` from union-case-constructor or lambda arguments, and
+the same silent no-call fallback swallows it — (a) teach `inferExprTE`
+union-case ctor returns, (b) make the unresolved-call fallback panic when
+the name matches a known generic.
+
+**Related:** docs/48 (Q48-004 resolved), docs/42 §5 status note, #5196,
+D-progress-638.
+
+---
+
+## D-progress-642 — mono: real where-bound checking (M0001), M0002 dangling-dropped-generic and M0003 budget diagnostics; per-target pipeline-matrix holes closed; three docs/59 §5.4 audit corrections
+
+**Status:** ACCEPTED
+
+**Mono (docs/59 §5.2 B2/B3/B5):**
+- `satisfiesMarker` was constant-`true` (M0001 unreachable). It now
+  implements the documented check: mono's marker vocabulary aligned to the
+  checker's (`{Add,Sub,Mul,Div,Mod,Compare,Hash,Equals,Default}`; the old
+  `Show`/`Ord` were never valid markers), primitives carry a fixed
+  capability set (arithmetic on numerics, `Add` also on `String`);
+  non-primitives stay mono-silent because the checker's T0108
+  (`checkBoundsSatisfied`/`hasDerive`) owns derive/interface satisfaction.
+- **M0002**: a call site targeting a same-file generic that will be dropped,
+  whose rewrite failed, is now a compile error naming the inference-failure
+  reason. The pre-fix behavior was a **proven silent miscompile**: a 1-arg
+  dangling call degenerated to identity pass-through of the argument
+  (`negFirst(None)` returned `None` where the body returns `Some(0)`);
+  2-arg shapes threw `InvalidProgramException`.
+  `generic_specialization_self_test.l`'s #1745 `optId` cases were green
+  purely by the identity accident and now exercise the real path.
+- **M0003**: the 10,000-spec recursion budget emits a diagnostic naming the
+  runaway generic instead of panicking.
+
+**Pipeline matrix (docs/59 §5.4):** legacy `Jvm.Bridge.compileToJar` now
+feeds iface/record decls to mono and runs cfg erasure;
+`Msil.Bridge.compileToMsilWithVersion` (the dotnet single-file path) now
+runs cfg erasure (empty active set + target pseudo-feature, F0013 guard off
+— matching a featureless manifest build); `llvm_bridge.l` feeds stdlib
+iface/record decls to mono (with **empty** imported generics — see
+correction below). New `cfg_single_file_self_test.l` (CI-wired, both
+targets) proves erasure runs pre-typecheck on the single-file pipeline;
+`result_generic_specialization_self_test.l` now actually runs on jvm in CI
+(its header had claimed wiring that never existed).
+
+**Audit corrections to docs/59 §5.4** (recorded here so the audit is not
+re-trusted on these points):
+1. The JVM *user* single-file path (`compileToJarBundledWithFeatures →
+   runMiddleEnd`) already fed type decls and already cfg-erased — only the
+   legacy `compileToJar` entry had the holes.
+2. "Every cross-package/stdlib generic call stays erased on native" is
+   wrong: the native backend performs whole-bundle generic instantiation at
+   lowering (`llvm_codegen.l` `genericFnDefs`, N3.1); feeding imported
+   generic *bodies* to native mono would duplicate that machinery.
+3. The `injectWeaveImports` asymmetry is intentional: probe evidence shows
+   `call.elapsed` aspects compile and run correctly on **both** targets
+   without `import Std.Time` (MSIL seeds stdlib MemberRefs
+   import-independently; the JVM injection is load-bearing for the JAR
+   bundling import-closure walk). Documented at the MSIL weave site.
+
+**Housekeeping in the same wave:** seven dead protocol-bridge files deleted
+(`manifest/test_synth/lint/bench_synth/pack/open_api/doc_bridge.l` — zero
+importers since the F# hosts were removed); `scripts/bootstrap.sh.{bak,orig,rej}`
+cruft deleted; stale CLAUDE.md claims corrected (bridge descriptions,
+`Std.Time` module summary); docs/44's "orphaned `resolver/`" claim struck
+(it is the live Maven path); dead .NET kernel surface deleted
+(`lyricJsonGet*Slice`, nine non-`Safe` http wrappers, `respondBytes` —
+JVM `json_host.l` twins deferred to the kernel rewrite);
+`Std.Collections.listContains` shipped (String form; a generic form needs
+`where T: Equals`, which is not wired — root cause of 19 compiler-local
+copies, migration deferred). One §9.4 correction: `jvm/fuzzer.l` is *alive*
+(`self_test_b8.l` imports it and the numbered corpus is CI-wired since
+#5515).
+
+Verified: mono 31/31 (8 new), full dotnet + jvm + native self-test sweep
+green (incl. llvm_heap 31/31 and llvm_collections 13/13 under ASan), stdlib
+manifest build clean with no M-diags, all `examples/*.l` single-file builds
+clean, ecosystem suites green.
+
+**Related:** docs/59 §5.2/§5.4/§9.3/§9.4, #3705, #1745, D-progress-639.
+
+---
+
 ---
 
 ## D-progress-644 — native NativeWeak use-after-free fixed with a two-count LyricObjectHeader (#5504)

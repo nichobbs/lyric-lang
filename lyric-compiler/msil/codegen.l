@@ -5139,6 +5139,16 @@ func isValueType(ty: in MsilType): Bool {
     case MBool -> true
     case MChar -> true
     case MByte -> true
+    // An extern BCL struct (System.Guid / System.TimeSpan / …) is as much a
+    // value type as the six primitives: it must be boxed into every object
+    // context (Object.Equals for `==`, ToString for interpolation, erased
+    // generic-function parameters) and unboxed back out (castObjectToMsil).
+    // Leaving it out silently emitted callvirt/Equals against the raw struct
+    // bits — InvalidProgramException at runtime (docs/59 §3.2 F6, #5196).
+    // `MValueTypeGenericInst` stays excluded: `boxTypeRef` can only name a
+    // TypeRef token, not the closed TypeSpec a generic instantiation's
+    // box/unbox needs, so widening it here would emit a wrong `box object`.
+    case MValueTypeRef(_, _) -> true
     case _ -> false
   }
 }
@@ -6630,13 +6640,40 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // emit a runtime-throw stub (the same pattern the unresolved
               // instance-method dispatch uses, #1041) rather than silently
               // yielding null.
-              match tryExternInstanceGetterMsil(cctx, insns, extInstFqn, memberName) {
+              match tryExternInstanceGetterMsil(cctx, insns, extInstFqn, memberName, false) {
                 case Some(extTy) -> extTy
                 case None -> {
                   val extMsg = "unresolved extern member '" + memberName + "' on '" + extInstFqn + "': no instance property getter get_" +
                     memberName +
                     " found in .NET metadata.  Declare an @externTarget wrapper if a custom binding is intended."
                   insns.add(MLdStr(token = ctxInternUs(cctx.lctx, extMsg)))
+                  insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+                  insns.add(MThrow)
+                  MObject
+                }
+              }
+            }
+            case MValueTypeRef(_, extVtFqn) -> {
+              // Instance property read on an extern STRUCT receiver
+              // (docs/59 §6.4 item 2): `ts.TotalMinutes` resolves
+              // `get_TotalMinutes` from metadata and must be reached through
+              // the receiver's address with a non-virtual `call` (the same
+              // rule as method dispatch above).  Spill the value, push
+              // `ldloca`, resolve; on a miss emit the runtime-throw stub —
+              // a struct has no Lyric-visible fields, so no other member
+              // read is legitimate here.
+              val extVtSlot = allocSlotMsil(fctx, "__vt_prop_recv_" + toString(fctx.slotTicker.count), recvTy)
+              emitStoreSlot(insns, extVtSlot, fctx.paramCount)
+              insns.add(MLdloca(slot = extVtSlot - fctx.paramCount))
+              match tryExternInstanceGetterMsil(cctx, insns, extVtFqn, memberName, true) {
+                case Some(extTy) -> extTy
+                case None -> {
+                  insns.add(MPop)
+                  val extVtMsg = "unresolved extern member '" + memberName + "' on value type '" + extVtFqn +
+                    "': no instance property getter get_" +
+                    memberName +
+                    " found in .NET metadata.  Declare an @externTarget wrapper if a custom binding is intended."
+                  insns.add(MLdStr(token = ctxInternUs(cctx.lctx, extVtMsg)))
                   insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
                   insns.add(MThrow)
                   MObject
@@ -7510,7 +7547,16 @@ func lowerBinopMsil(
             insns.add(MCall(methodToken = eqTok))
             MBool
           } else {
-            // Object.Equals(object, object): box rhs if it's a value type.
+            // Object.Equals(object, object): both operands must be boxed
+            // references.  A value-type LHS (an extern struct such as a Guid —
+            // primitives never reach this arm) sits UNDER the rhs on the
+            // stack, so box it by spilling the rhs first (docs/59 §3.2 F6).
+            if isValueType(beqLhsTy) {
+              val beqRSlot = allocSlotMsil(fctx, "__beq_r_" + toString(fctx.slotTicker.count), beqRhsTy)
+              emitStoreSlot(insns, beqRSlot, fctx.paramCount)
+              boxIfNeededMsil(cctx, insns, beqLhsTy)
+              emitLoadSlot(insns, beqRSlot, fctx.paramCount)
+            }
             boxIfNeededMsil(cctx, insns, beqRhsTy)
             insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
             MBool
@@ -7542,6 +7588,14 @@ func lowerBinopMsil(
           if neqTok > 0 {
             insns.add(MCall(methodToken = neqTok))
           } else {
+            // See the BEq arm: a value-type LHS must be boxed under the rhs
+            // before Object.Equals (docs/59 §3.2 F6).
+            if isValueType(bneqLhsTy) {
+              val bneqRSlot = allocSlotMsil(fctx, "__bneq_r_" + toString(fctx.slotTicker.count), bneqRhsTy)
+              emitStoreSlot(insns, bneqRSlot, fctx.paramCount)
+              boxIfNeededMsil(cctx, insns, bneqLhsTy)
+              emitLoadSlot(insns, bneqRSlot, fctx.paramCount)
+            }
             boxIfNeededMsil(cctx, insns, bneqRhsTy)
             insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
           }
@@ -10562,6 +10616,11 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       case MBool -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MBool)))
       case MChar -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MChar)))
       case MByte -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MByte)))
+      // An extern struct parameter (System.Guid, …) needs the boxed `object`
+      // (e.g. the erased return of a uniform-ABI generic such as `unwrapOr`)
+      // unboxed back to the raw struct, exactly like the primitives above
+      // (#5196).
+      case MValueTypeRef(_, _) -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, toTy)))
       case _ -> ()
     }
   } else {
@@ -10587,6 +10646,12 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       case MInt -> match toTy { case MLong -> insns.add(MConvI8); case _ -> () }
       case MByte -> match toTy { case MLong -> insns.add(MConvI8); case _ -> () }
       case MChar -> match toTy { case MLong -> insns.add(MConvI8); case _ -> () }
+      // An extern struct argument flowing into an `object` parameter (the
+      // uniform-ABI erased `T` of a cross-package generic function) must be
+      // boxed; the raw struct bits are not a reference (#5196).  Primitives
+      // never take this path — the monomorphizer specialises their call
+      // sites, and pre-existing behaviour is preserved regardless.
+      case MValueTypeRef(_, _) -> match toTy { case MObject -> boxIfNeededMsil(cctx, insns, fromTy); case _ -> () }
       case _ -> ()
     }
   }
@@ -12305,7 +12370,7 @@ func lowerMethodCallMsil(
   // instance methods via `callvirt` against the real CLR method, resolved from
   // metadata.  The receiver is already on the stack.
   match recvTy {
-    case MClassRef(_, fqn) -> match tryInstanceAutoFfiFromMetadata(cctx, fctx, insns, fqn, memberName, args) { case Some(rt) -> { return rt }; case None -> { val msg = "unresolved extern instance method '" + memberName + "' on '" + fqn + "': no matching instance method found in .NET metadata for the given argument " + "types.  Declare an @externTarget wrapper if a custom binding is intended."; insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg))); insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor)); insns.add(MThrow); return MObject } }
+    case MClassRef(_, fqn) -> match tryInstanceAutoFfiFromMetadata(cctx, fctx, insns, fqn, memberName, args, false) { case Some(rt) -> { return rt }; case None -> { val msg = "unresolved extern instance method '" + memberName + "' on '" + fqn + "': no matching instance method found in .NET metadata for the given argument " + "types.  Declare an @externTarget wrapper if a custom binding is intended."; insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg))); insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor)); insns.add(MThrow); return MObject } }
     // An MClassRef receiver is exclusively produced by metadata-resolved
     // auto-FFI, so there is no other legitimate dispatch for it.  An
     // unresolved instance method means no matching instance method exists in
@@ -12315,6 +12380,28 @@ func lowerMethodCallMsil(
     // unresolved-@externTarget path uses (#1041), honouring the language
     // reference's "never silently mis-bound" guarantee while keeping the
     // failure graceful and located at the offending call.
+    case MValueTypeRef(_, vtFqn) -> {
+      // Value-type instance dispatch (docs/59 §6.4 item 2): a struct's
+      // instance member must be reached through the receiver's ADDRESS and a
+      // non-virtual `call` (docs/42 step 4b).  Spill the receiver value to a
+      // typed local and push `ldloca`; on a metadata miss, drop the address
+      // and reload the value so the legacy dispatch below (`.toString()`
+      // intrinsic, user UFCS-style helpers) still sees the plain receiver —
+      // unlike MClassRef, an extern-struct-typed value can flow through
+      // ordinary declared Lyric code, so a miss is not necessarily an error.
+      val vtRecvSlot = allocSlotMsil(fctx, "__vt_recv_" + toString(fctx.slotTicker.count), recvTy)
+      emitStoreSlot(insns, vtRecvSlot, fctx.paramCount)
+      insns.add(MLdloca(slot = vtRecvSlot - fctx.paramCount))
+      match tryInstanceAutoFfiFromMetadata(cctx, fctx, insns, vtFqn, memberName, args, true) {
+        case Some(rt) -> {
+          return rt
+        }
+        case None -> {
+          insns.add(MPop)
+          emitLoadSlot(insns, vtRecvSlot, fctx.paramCount)
+        }
+      }
+    }
     case _ -> {
     }
   }
@@ -24181,21 +24268,16 @@ func emitResolvedAutoFfi(
   if not ok {
     return None
   }
-  // Constructor shorthand: detect and reject value-type constructors.
-  // Value types (System.DateTime, System.Guid, etc.) have different construction
-  // semantics than reference types (initobj vs. newobj); proper support is tracked
-  // as Q48-004. For now, fall back to legacy path to provide a clear error message.
-  if isConstructor {
-    val isVtype = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn)
-    if isVtype {
-      return None
-    }
-  }
   // Constructor shorthand (.new) returns the constructed type, not the void
-  // signature from the .ctor metadata.
-  // Q48-004: valueType always false until metadata inference is implemented.
+  // signature from the .ctor metadata.  A value-type target (Q48-004:
+  // System.Guid, System.TimeSpan, …) is constructed with the same `newobj`
+  // as a reference type — ECMA-335 III.4.21 defines `newobj` on a value type
+  // as "allocate an uninitialized instance, call the ctor on its address,
+  // push the resulting VALUE" — so only the result's encoding differs
+  // (VALUETYPE + TypeRef via `MValueTypeRef`, matching what the metadata
+  // vtype index says about the target).
   val resultType = if isConstructor {
-    resolvedSigToMsil(cctx, Mdr.STNamed(fqn = clrFqn, valueType = false))
+    resolvedSigToMsil(cctx, Mdr.STNamed(fqn = clrFqn, valueType = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn)))
   } else {
     resolvedSigToMsil(cctx, m.returnType)
   }
@@ -24250,8 +24332,12 @@ func emitResolvedAutoFfi(
 // receiver is already on the stack (lowered by the caller).  Builds an instance
 // (HASTHIS) MethodSig and emits `callvirt` against the real CLR method —
 // callvirt is valid for both virtual and non-virtual instance methods on a
-// reference receiver and performs the null check.  `argBufs` carry each
-// argument's already-lowered IL; `argTys` their MsilTypes.
+// reference receiver and performs the null check.  When `valueTypeRecv` is
+// true the receiver on the stack is the ADDRESS of a value-type local
+// (`ldloca`) and the call must be a non-virtual `call` — `callvirt` against a
+// managed pointer to a struct is invalid IL (CallVirtOnValueType), the same
+// rule `emitExternTargetBody` applies via `isValueTypeReceiverMsil`.
+// `argBufs` carry each argument's already-lowered IL; `argTys` their MsilTypes.
 func emitResolvedInstanceAutoFfi(
   cctx: in CodegenCtx,
   insns: in List[MInsn],
@@ -24261,6 +24347,7 @@ func emitResolvedInstanceAutoFfi(
   argBufs: in List[List[MInsn]],
   argTys: in List[MsilType],
   m: in Mdr.ResolvedMethod,
+  valueTypeRecv: in Bool,
 ): Option[MsilType] {
   val paramMsil: List[MsilType] = newList()
   val coercions: List[List[MInsn]] = newList()
@@ -24296,14 +24383,18 @@ func emitResolvedInstanceAutoFfi(
       sigKey = sigKey + "_r" + sigTypeKeyFrag(m.returnType)
       val mrRow = ctxAddMemberRef(cctx.lctx, tRef, methodName, sigKey, sig)
       val tok = 0x0A000000 + mrRow
-      // Receiver is already on the stack; push args (with coercions) then callvirt.
+      // Receiver is already on the stack; push args (with coercions) then call.
       var bi = 0
       while bi < argBufs.count {
         appendInsnsMsil(insns, argBufs[bi])
         appendInsnsMsil(insns, coercions[bi])
         bi = bi + 1
       }
-      insns.add(MCallvirt(methodToken = tok))
+      if valueTypeRecv {
+        insns.add(MCall(methodToken = tok))
+      } else {
+        insns.add(MCallvirt(methodToken = tok))
+      }
       Some(value = retMsil)
     }
   }
@@ -24432,10 +24523,15 @@ func tryExternStaticMemberReadMsil(
 }
 
 // Resolve and emit an INSTANCE property getter (`get_<Member>`) on an extern
-// class-ref receiver already on the stack.  None when no instance getter of
-// that name exists (or its shape can't be expressed).
+// receiver already on the stack — a class reference, or (when `valueTypeRecv`)
+// the address of a value-type local.  None when no instance getter of that
+// name exists (or its shape can't be expressed).
 func tryExternInstanceGetterMsil(
-  cctx: in CodegenCtx, insns: in List[MInsn], clrFqn: in String, memberName: in String
+  cctx: in CodegenCtx,
+  insns: in List[MInsn],
+  clrFqn: in String,
+  memberName: in String,
+  valueTypeRecv: in Bool,
 ): Option[MsilType] {
   ensureMetadataIndex(cctx)
   val noArgs: List[Mdr.SigType] = newList()
@@ -24447,7 +24543,17 @@ func tryExternInstanceGetterMsil(
       } else {
         val emptyBufs: List[List[MInsn]] = newList()
         val emptyTys: List[MsilType] = newList()
-        emitResolvedInstanceAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig)
+        emitResolvedInstanceAutoFfi(
+          cctx,
+          insns,
+          gp.assemblyName,
+          clrFqn,
+          "get_" + memberName,
+          emptyBufs,
+          emptyTys,
+          gp.sig,
+          valueTypeRecv
+        )
       }
     }
   }
@@ -24701,7 +24807,7 @@ func emitExternInstancePropertySetMsil(
           val emptyBufs: List[List[MInsn]] = newList()
           val emptyTys: List[MsilType] = newList()
           var propTyV: MsilType = MVoid
-          match emitResolvedInstanceAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
+          match emitResolvedInstanceAutoFfi(cctx, insns, gp.assemblyName, clrFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig, false) {
             case Some(t) -> {
               propTyV = t
             }
@@ -24722,10 +24828,11 @@ func emitExternInstancePropertySetMsil(
 }
 
 // Try to resolve and emit a metadata-resolved instance call on an extern
-// class-ref receiver `expr.method(args)`.  The receiver is already on the
-// stack.  Returns the result MsilType on success, or None to fall back (the
-// stack is left holding just the receiver — args are buffered, not emitted —
-// so the caller's legacy dispatch stays correct).
+// receiver `expr.method(args)` — a class reference or, when `valueTypeRecv`,
+// the address of a value-type local (see `emitResolvedInstanceAutoFfi`).  The
+// receiver is already on the stack.  Returns the result MsilType on success,
+// or None to fall back (the stack is left holding just the receiver — args
+// are buffered, not emitted — so the caller's legacy dispatch stays correct).
 func tryInstanceAutoFfiFromMetadata(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -24733,6 +24840,7 @@ func tryInstanceAutoFfiFromMetadata(
   fqn: in String,
   memberName: in String,
   args: in List[CallArg],
+  valueTypeRecv: in Bool,
 ): Option[MsilType] {
   ensureMetadataIndex(cctx)
   val argBufs: List[List[MInsn]] = newList()
@@ -24762,7 +24870,7 @@ func tryInstanceAutoFfiFromMetadata(
     match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, fqn, memberName, argSigs) {
       case None -> {
       }
-      case Some(re) -> if not re.sig.isStatic { direct = emitResolvedInstanceAutoFfi(cctx, insns, re.assemblyName, fqn, memberName, argBufs, argTys, re.sig) }
+      case Some(re) -> if not re.sig.isStatic { direct = emitResolvedInstanceAutoFfi(cctx, insns, re.assemblyName, fqn, memberName, argBufs, argTys, re.sig, valueTypeRecv) }
     }
     // A receiver-based call needs an instance method; a resolved static
     // means the name only exists as a static — fall back rather than
@@ -24773,7 +24881,7 @@ func tryInstanceAutoFfiFromMetadata(
         // Property getter probe (docs/59 §6): a zero-arg call `x.Prop()` on
         // a CLR property has no method named `Prop` — only `get_Prop`.
         if args.count == 0 {
-          tryExternInstanceGetterMsil(cctx, insns, fqn, memberName)
+          tryExternInstanceGetterMsil(cctx, insns, fqn, memberName, valueTypeRecv)
         } else {
           None
         }
@@ -24907,27 +25015,34 @@ func emitAutoFfiCallMsil(
     case None -> {
     }
   }
-  // Constructor shorthand (.new()) on a value type: `emitResolvedAutoFfi`
-  // (called by `tryAutoFfiFromMetadata` above) deliberately returns None for
-  // value-type constructors (Q48-004 — value types need `initobj`, not
-  // `newobj`, and are not yet supported).  Without this check, a zero-arg
-  // `.new()` would fall through to the generic static "()-shape" guess below
-  // and register a bogus static MemberRef literally named "new" against the
-  // value type — not a real member, so it fails at MSIL load time with no
-  // indication of the real problem (#3777).  Multi-arg calls already panic
-  // via the `args.count > 0` guard further down, but with a message that
-  // doesn't name the actual (value-type) cause; catching both shapes here
-  // gives one specific, actionable diagnostic instead.
+  // Constructor shorthand (.new()) on a value type that metadata resolution
+  // did not bind (Q48-004 shipped — arg-bearing struct ctors resolve above).
+  // A ZERO-ARG `.new()` is the type's zero-initialised default: most BCL
+  // structs declare no parameterless `.ctor` row at all (C#'s `new Guid()`
+  // is `initobj`, not a ctor call), so emit `ldloca`+`initobj`+`ldloc` —
+  // the same idiom `emitExternOptionalDefault` uses.  An ARG-BEARING call
+  // that resolved nothing is a real signature mismatch: without this check
+  // it would fall through to the generic static "()-shape" guess below and
+  // register a bogus static MemberRef literally named "new" against the
+  // value type — not a real member, failing at MSIL load time with no
+  // indication of the real problem (#3777).
   if methodName == "new" and Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn) {
+    if args.count == 0 {
+      val vtNewRefRow = internFfiTypeRefNested(cctx, clrFqn)
+      val vtNewTy = MValueTypeRef(typeRefCode = tdrTypeRef(vtNewRefRow), clrFqn = clrFqn)
+      val vtNewSlot = allocSlotMsil(fctx, "__vt_new_" + toString(fctx.slotTicker.count), vtNewTy)
+      insns.add(MLdloca(slot = vtNewSlot - fctx.paramCount))
+      insns.add(MInitobj(typeToken = 0x01000000 + vtNewRefRow))
+      emitLoadSlot(insns, vtNewSlot, fctx.paramCount)
+      return vtNewTy
+    }
     panic(
-      "Msil.Codegen: '" + clrFqn + ".new(...)' targets a value type (struct); " +
-        "constructor shorthand (.new()) is only supported for reference types " +
-        "today (Q48-004).  Declare an @externTarget wrapper function instead — " +
-        "e.g. `@externTarget(\"" +
+      "Msil.Codegen: '" + clrFqn + ".new(...)' does not match any constructor " +
+        "of that value type in .NET reference-assembly metadata for the given " +
+        "argument types; check the argument types against the BCL overloads.  " +
+        "Declare an @externTarget wrapper (`@externTarget(\"" +
         clrFqn +
-        "..ctor\") @externStatic func ...`, " +
-        "or, if the type's default value is sufficient, rely on its " +
-        "zero-initialised default rather than calling .new()."
+        "..ctor\") @externStatic func ...`) if a custom binding is intended."
     )
   }
   // Reject an extern-type CLR name the FFI cascade can't resolve to a known
