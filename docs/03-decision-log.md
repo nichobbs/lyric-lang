@@ -14568,6 +14568,49 @@ green, ilverify clean on the new shapes.
 
 ---
 
+## D-progress-646 — type checker: for-loop elements over ranges and List are typed (docs/59 A1); generic record field access instantiates the receiver's type args (A3)
+
+**Status:** ACCEPTED
+
+First slice of docs/59 Band 4 (the `TyError`-degradation inventory). Both
+changes were engineered for zero new rejections of shipping code and
+verified by a repo-wide sweep.
+
+1. **A1 — for-loop element typing.** A range-driven `for` variable typed
+   as `TyError` (the universal wildcard), so loop bodies were unchecked
+   and the bounds never visited. The parser only builds `ERange` in
+   for-iterator position, so `SFor` types the binding directly (lower
+   blast radius; `ERange`'s own inferExpr result is unchanged). The
+   element type mirrors what the counting-loop codegen lowers: derived
+   from the LOW bound (Int/Int → Int, Long/Long → Long; an unknown-typed
+   high bound — the common `0 ..< xs.count` shape, untypeable until A4 —
+   still binds from the low bound); a KNOWN Int/Long width mismatch has
+   no working lowering on either backend, so it degrades to TyError
+   rather than claiming a type. `SFor`'s collection arms gain
+   `List[T] → T`.
+2. **A3 — generic record fields.** `inferMember` ignored the receiver's
+   type args and `extractRecordFields` resolved field types under an
+   empty generic context with a swallowed diagnostic — `box.value` on
+   `Box[Int]` accepted anything. Records now mirror the union path:
+   fields resolve under the record's declared type params (TyVars), and
+   `fieldsOfRecordInstantiated` substitutes the receiver's targs
+   (`substituteTyVars`, the same engine), erasing unresolved params back
+   to TyError so under-instantiated receivers degrade to the old
+   leniency instead of tripping false T0030s. Both record-pattern paths
+   consume the instantiated form. Non-generic records are byte-for-byte
+   unaffected.
+
+Verified: new typechecker_self_test cases fail against the pre-change
+checker and pass after (suite 248/248); repo-wide sweep surfaced ZERO new
+diagnostics (the only production generic record is
+`Std.Collections.MapEntry`); full integrated-tree gate green (13 suites
+both targets, all examples build, lyric-web manifest 4/4).
+
+**Related:** docs/59 §5.1 A1/A3; A2 (lambda params) and A4 (method-call
+checking) remain the next Band-4 slices.
+
+---
+
 ---
 
 ## Decisions deferred to v2 or later
