@@ -21,11 +21,13 @@
 //! degenerate-synchronous on MSIL.  The child echoes everything it
 //! observed (method, path, the `X-Probe` request header, the request body)
 //! into the response body, so every server-side observation is asserted
-//! client-side in TAP output.  (Response-header READS via
-//! `HttpResponse.header` are deliberately not asserted: the kernel's
-//! `HttpHeaders.TryGetValues` extern — an instance extern with a
-//! generic-typed `out` param — has never bound at run time, a separate
-//! pre-existing FFI gap surfaced while writing this test.)  The child
+//! client-side in TAP output.  Response-header READS via
+//! `HttpResponse.header` are asserted too (#5568 — the kernel's previous
+//! `HttpHeaders.TryGetValues` extern carried a generic-typed `out` param
+//! whose MemberRef never bound at run time): the child sets a custom
+//! `X-Echo-Probe` response header the client checks (response-level
+//! collection), the client also reads `Content-Type` (content-level
+//! fall-through), and an absent header reads as `None`.  The child
 //! binds its listener BEFORE writing
 //! the port file the test polls, so there is no readiness race; it exits
 //! on a `/quit` request or after a bounded number of requests, so a failed
@@ -73,7 +75,7 @@ import Lyric.Emitter as Emitter
 // safety cap.  Echo body: "<method>|<path>|<X-Probe>|<body>"; status 201
 // for path `/submit`, 200 otherwise.
 func serverSource(): String {
-  "package HttpRt.Server\n" + "\n" + "import Std.Collections\n" + "import Std.Core\n" +
+  "package HttpRt.Server\n" + "\n" + "import Std.Collections\n" + "import Std.Core\n" + "import Std.Encoding as Enc\n" +
     "import Std.Environment as Environment\n" +
     "import Std.File as File\n" +
     "import Std.HttpServer as Server\n" +
@@ -120,7 +122,9 @@ func serverSource(): String {
     "      val probe = headerValue(headers, \"X-Probe\")\n" +
     "      val respBody = method + \"|\" + path + \"|\" + probe + \"|\" + body\n" +
     "      val status = if path == \"/submit\" { 201 } else { 200 }\n" +
-    "      Server.respondText(ctx, status, respBody)\n" +
+    "      val respHeaders: Map[String, String] = newMap()\n" +
+    "      respHeaders.add(\"X-Echo-Probe\", \"srv-\" + probe)\n" +
+    "      Server.respondBytesWithHeaders(ctx, status, \"text/plain; charset=utf-8\", Enc.encodeUtf8(respBody), respHeaders)\n" +
     "    }\n" +
     "    served = served + 1\n" +
     "  }\n" +
@@ -367,6 +371,21 @@ test "sendAsync round-trip: a custom request header reaches the server" {
     case Err(e) -> panic("sendAsync " + urlStr + " failed: " + HttpError.message(e))
     case Ok(resp) -> {
       assertEqualInt(resp.statusCode(), 200, "sendAsync status is 200")
+      // Response-header reads (#5568): a custom header set by the server
+      // (response-level collection), Content-Type (content-level
+      // fall-through), and an absent header reading as None.
+      match resp.header("X-Echo-Probe") {
+        case Some(v) -> assertEqual(v, "srv-probe-7", "custom X-Echo-Probe response header read back")
+        case None -> panic("X-Echo-Probe response header missing — HttpResponse.header read failed (#5568)")
+      }
+      match resp.header("Content-Type") {
+        case Some(ct) -> assertTrue(Str.startsWith(ct, "text/plain"), "Content-Type read through the content-header fall-through")
+        case None -> panic("Content-Type response header missing — content-header fall-through failed (#5568)")
+      }
+      match resp.header("X-Definitely-Not-Set") {
+        case Some(v) -> panic("absent header unexpectedly present: " + v)
+        case None -> assertTrue(true, "absent response header reads as None")
+      }
       val bodyRes = await resp.bodyText()
       match bodyRes {
         case Ok(body) -> assertEqual(body, "GET|/probe|probe-7|", "server observed the X-Probe request header value")

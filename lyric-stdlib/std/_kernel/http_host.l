@@ -206,18 +206,27 @@ pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirect
 @externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocketNoRedirects")
 pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClientHandle = ()
 
-// `ResponseHeader` (G12 follow-up): native Lyric on top of
-// `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + a
-// `System.Linq.Enumerable.ToArray<string>` shuttle into a
-// `slice[String]` the Lyric side can index.  The BCL splits headers
-// across `response.Headers` (general + caller-set) and
-// `response.Content.Headers` (Content-Type, Content-Length, …) — try
-// the former first, then fall through to the latter, then `""`.
+// `ResponseHeader` (#5568): native Lyric over `HttpHeaders.Contains` +
+// `HttpHeaders.GetValues`, plus a NON-GENERIC `System.Collections.IEnumerator`
+// walk to take the first value.  The previous shape —
+// `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` — was an instance
+// extern with a generic-typed `out` parameter: the emitted MemberRef was
+// unbindable, so every `HttpResponse.header` call faulted at run time with
+// MissingMethodException.  `Contains` guards `GetValues`, so the
+// absent-header case never rides on exception control flow; the value walk
+// goes through the non-generic `IEnumerable` slot (which
+// `IEnumerable<string>` always implements), so no MemberRef in this chain
+// mentions a generic parameter in an argument position.  The BCL splits
+// headers across `response.Headers` (general + caller-set) and
+// `response.Content.Headers` (Content-Type, Content-Length, …) — try the
+// former first, then fall through to the latter, then `""`.
 extern type HttpResponseHeaders = "System.Net.Http.Headers.HttpResponseHeaders"
 
 extern type HttpContentHeaders = "System.Net.Http.Headers.HttpContentHeaders"
 
 extern type IEnumerableStr = "System.Collections.Generic.IEnumerable`1[System.String]"
+
+extern type NonGenericEnumerator = "System.Collections.IEnumerator"
 
 @externTarget("System.Net.Http.HttpResponseMessage.Headers")
 func responseHeadersOf(r: in HttpResponseMessage): HttpResponseHeaders = ()
@@ -225,36 +234,68 @@ func responseHeadersOf(r: in HttpResponseMessage): HttpResponseHeaders = ()
 @externTarget("System.Net.Http.HttpContent.Headers")
 func contentHeadersOf(c: in HttpContent): HttpContentHeaders = ()
 
-@externTarget("System.Net.Http.Headers.HttpHeaders.TryGetValues")
-func responseHeadersTryGet(h: in HttpResponseHeaders, name: in String, values: out IEnumerableStr): Bool = ()
+@externTarget("System.Net.Http.Headers.HttpHeaders.Contains")
+func responseHeadersContain(h: in HttpResponseHeaders, name: in String): Bool = ()
 
-@externTarget("System.Net.Http.Headers.HttpHeaders.TryGetValues")
-func contentHeadersTryGet(h: in HttpContentHeaders, name: in String, values: out IEnumerableStr): Bool = ()
+@externTarget("System.Net.Http.Headers.HttpHeaders.Contains")
+func contentHeadersContain(h: in HttpContentHeaders, name: in String): Bool = ()
 
-@externTarget("System.Linq.Enumerable.ToArray")
-func enumerableStrToArray(values: in IEnumerableStr): slice[String] = ()
+@externTarget("System.Net.Http.Headers.HttpHeaders.GetValues")
+func responseHeaderValues(h: in HttpResponseHeaders, name: in String): IEnumerableStr = ()
 
-// Take the first element of `values` or `""` if empty.  Pure Lyric.
-func firstOrEmpty(values: in slice[String]): String {
-  if values.length > 0 {
-    values[0]
+@externTarget("System.Net.Http.Headers.HttpHeaders.GetValues")
+func contentHeaderValues(h: in HttpContentHeaders, name: in String): IEnumerableStr = ()
+
+@externTarget("System.Collections.IEnumerable.GetEnumerator")
+func headerValuesEnumerator(values: in IEnumerableStr): NonGenericEnumerator = ()
+
+@externTarget("System.Collections.IEnumerator.MoveNext")
+func enumeratorMoveNext(e: in NonGenericEnumerator): Bool = ()
+
+@externTarget("System.Collections.IEnumerator.Current")
+func enumeratorCurrent(e: in NonGenericEnumerator): String = ()
+
+// First element of `values`, or `""` when the sequence is empty.
+func firstHeaderValue(values: in IEnumerableStr): String {
+  val e = headerValuesEnumerator(values)
+  if enumeratorMoveNext(e) {
+    enumeratorCurrent(e)
   } else {
     ""
   }
 }
 
 pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): String {
-  val respHeaders = responseHeadersOf(response)
-  var responseValues: IEnumerableStr = default()
-  if responseHeadersTryGet(respHeaders, name, responseValues) {
-    return firstOrEmpty(enumerableStrToArray(responseValues))
+  // Each leg is exception-mapped SEPARATELY: `Contains` throws
+  // InvalidOperationException for a known header of the other category
+  // (`response.Headers.Contains("Content-Type")` — the strict category
+  // check that motivated the BCL's TryGetValues) and FormatException for a
+  // syntactically invalid name, so a throwing response-leg lookup must
+  // still fall through to the content leg rather than aborting the whole
+  // read.
+  val fromResponse = try {
+    val respHeaders = responseHeadersOf(response)
+    if responseHeadersContain(respHeaders, name) {
+      firstHeaderValue(responseHeaderValues(respHeaders, name))
+    } else {
+      ""
+    }
+  } catch Bug as _ {
+    ""
   }
-  val contentHeaders = contentHeadersOf(responseContent(response))
-  var contentValues: IEnumerableStr = default()
-  if contentHeadersTryGet(contentHeaders, name, contentValues) {
-    return firstOrEmpty(enumerableStrToArray(contentValues))
+  if fromResponse.length > 0 {
+    return fromResponse
   }
-  ""
+  return try {
+    val contentHeaders = contentHeadersOf(responseContent(response))
+    if contentHeadersContain(contentHeaders, name) {
+      firstHeaderValue(contentHeaderValues(contentHeaders, name))
+    } else {
+      ""
+    }
+  } catch Bug as _ {
+    ""
+  }
 }
 
 // ---------------------------------------------------------------------------
