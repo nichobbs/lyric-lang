@@ -2939,17 +2939,41 @@ pub func inferExpr(
         case Some(rt) -> match fn.kind { case EMember(_, mname2) -> inferMember(tbl, diag, rt, mname2, fn.span); case _ -> inferExpr(sc, tbl, sigs, diag, fn) }
         case None -> inferExpr(sc, tbl, sigs, diag, fn)
       }
+      // A2 (docs/59 §5.1): lambda arguments with unannotated params are typed
+      // in two passes.  The first pass types them leniently (params `TyError`,
+      // diagnostics to a scratch list) so overload selection sees the same
+      // shape it always has; after the signature is selected, the second pass
+      // re-checks each such lambda body once — into the real diagnostic list —
+      // with the callee's parameter type as the expectation.  When no usable
+      // expectation exists the second pass is identical to the historical
+      // single pass, so nothing previously accepted is newly rejected.
       val argTypes: List[Type] = newList()
+      var anyDeferredLambda = false
       var i = 0
       while i < args.count {
-        match args[i] {
-          case CAPositional(ae) -> argTypes.add(inferExpr(sc, tbl, sigs, diag, ae))
-          case CANamed(_, ae, _) -> argTypes.add(inferExpr(sc, tbl, sigs, diag, ae))
+        val ae = callArgExpr(args[i])
+        if lambdaHasUnannotatedParam(ae) {
+          val scratch: List[Diagnostic] = newList()
+          argTypes.add(inferExpr(sc, tbl, sigs, scratch, ae))
+          anyDeferredLambda = true
+        } else {
+          argTypes.add(inferExpr(sc, tbl, sigs, diag, ae))
         }
         i = i + 1
       }
       // Try direct-sig lookup first.
       val directSig = findDirectSig(sc, tbl, sigs, fn, args.count, argTypes)
+      if anyDeferredLambda {
+        val expectedArgTys = expectedCallArgTypes(args, argTypes, directSig, fnT)
+        var di = 0
+        while di < args.count {
+          val dae = callArgExpr(args[di])
+          if lambdaHasUnannotatedParam(dae) {
+            argTypes[di] = inferExprExpected(sc, tbl, sigs, diag, dae, expectedArgTys[di])
+          }
+          di = di + 1
+        }
+      }
       match directSig {
         case Some(sig) -> {
           // Count required params (those without a default value) to allow
@@ -3086,24 +3110,11 @@ pub func inferExpr(
     // ELambda: a closure literal `|x: T, y: U| { body }`.  Resolve each
     // annotated parameter type (unannotated params stay lenient as TyError),
     // bind them into a fresh scope frame, check the body, then return the
-    // inferred function type.  The lambda's own return type is TyError (the
-    // lenient unifier) since we have no contextual expected return here.
-    case ELambda(lambdaParams, body) -> {
-      val lctx = newGenericContext()
-      val paramTypes: List[Type] = newList()
-      scopePush(sc)
-      var li = 0
-      while li < lambdaParams.count {
-        val lp = lambdaParams[li]
-        val pTy = match lp.ty { case None -> TyError; case Some(te) -> resolveType(tbl, lctx, diag, te) }
-        paramTypes.add(pTy)
-        scopeAdd(sc, LocalBinding(name = lp.name, ty = pTy, isMutable = false))
-        li = li + 1
-      }
-      val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, diag, body, true)
-      scopePop(sc)
-      TyFunction(params = paramTypes, ret = bodyTy, isAsync = false)
-    }
+    // inferred function type.  Bare inference has no contextual expectation;
+    // call-argument and annotated-binding positions route through
+    // `inferExprExpected` instead so unannotated params adopt the expected
+    // function type's parameter types (docs/59 A2).
+    case ELambda(lambdaParams, body) -> inferLambda(sc, tbl, sigs, diag, lambdaParams, body, newList())
     // An `if`/`else` expression takes the unified type of its branches.  An
     // `if` without an `else` produces no value on the false path, so it is
     // `Unit` (the parser desugars a statement-position brace-`if` so a trailing
@@ -3255,6 +3266,158 @@ pub func inferExpr(
 // still select the structurally-correct overload (#1488 category C) — or
 // interface subtyping, so overload selection agrees with the argument check
 // (#2304).
+// A2 (docs/59 §5.1): the shared lambda-literal inference.  `expectedParams`
+// carries the parameter types the surrounding context expects for this lambda
+// (from the callee's resolved signature at a call-argument position, or a
+// binding's declared function type).  An empty or arity-mismatched list means
+// "no expectation": unannotated params degrade to `TyError`, the historical
+// leniency, so a mismatched expectation never rejects here — the ordinary
+// arg-vs-param / binding checks report any genuine mismatch.  Explicit
+// annotations always win over the expectation.  Leftover generic `TyVar`s in
+// an expected param (a partially-inferred generic callee) are erased to
+// `TyError` so partially-known expectations still type what they can.
+func inferLambda(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  lambdaParams: in List[LambdaParam],
+  body: in Block,
+  expectedParams: in List[Type],
+): Type {
+  val useExpected = expectedParams.count == lambdaParams.count
+  val lctx = newGenericContext()
+  val paramTypes: List[Type] = newList()
+  scopePush(sc)
+  var li = 0
+  while li < lambdaParams.count {
+    val lp = lambdaParams[li]
+    val pTy = match lp.ty {
+      case None -> if useExpected { eraseTyVars(expectedParams[li]) } else { TyError }
+      case Some(te) -> resolveType(tbl, lctx, diag, te)
+    }
+    paramTypes.add(pTy)
+    scopeAdd(sc, LocalBinding(name = lp.name, ty = pTy, isMutable = false))
+    li = li + 1
+  }
+  val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, diag, body, true)
+  scopePop(sc)
+  TyFunction(params = paramTypes, ret = bodyTy, isAsync = false)
+}
+
+// True for a lambda literal (possibly parenthesised) with at least one
+// unannotated parameter — the only expression shape whose typing benefits
+// from a contextual expected type (A2).
+func lambdaHasUnannotatedParam(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> lambdaHasUnannotatedParam(inner)
+    case ELambda(ps, _) -> {
+      var i = 0
+      while i < ps.count {
+        match ps[i].ty {
+          case None -> return true
+          case Some(_) -> {
+          }
+        }
+        i = i + 1
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+// A2: infer `e` under a contextual expected type.  Only lambda literals
+// consume the expectation (their unannotated params adopt the expected
+// function type's parameter types); every other expression shape — and any
+// non-function or arity-mismatched expectation — defers to plain `inferExpr`,
+// so this never rejects anything the bare path accepts.
+pub func inferExprExpected(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  expected: in Type,
+): Type {
+  match e.kind {
+    case EParen(inner) -> inferExprExpected(sc, tbl, sigs, diag, inner, expected)
+    case ELambda(ps, body) -> match unrefine(expected) { case TyFunction(eps, _, _) -> inferLambda(sc, tbl, sigs, diag, ps, body, eps); case _ -> inferExpr(sc, tbl, sigs, diag, e) }
+    case _ -> inferExpr(sc, tbl, sigs, diag, e)
+  }
+}
+
+// A2: the contextual (expected) type for each call argument, used to type
+// deferred lambda arguments.  Slots without a usable expectation carry
+// `TyError` ("no expectation" — `inferExprExpected` then falls back to the
+// historical lenient path).  Expectations come from the selected direct
+// signature (named-arg aware via `argIndicesInParamOrder`; generic `TyVar`s
+// substituted from the *other* arguments' types, mirroring
+// `instantiateReturnType`'s substitute-then-erase approach) or, for a
+// function-typed callee value, positionally from its parameter types.
+// Deferred-lambda slots are blanked to `TyError` during generic inference so
+// their first-pass placeholder types never poison a binding that another
+// argument position determines.
+func expectedCallArgTypes(
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  directSig: in Option[ResolvedSignature],
+  fnT: in Type,
+): List[Type] {
+  val expected: List[Type] = newList()
+  var i = 0
+  while i < args.count {
+    expected.add(TyError)
+    i = i + 1
+  }
+  match directSig {
+    case Some(sig) -> {
+      if args.count <= sig.params.count {
+        val paramNames: List[String] = newList()
+        var pn = 0
+        while pn < sig.params.count {
+          paramNames.add(sig.params[pn].name)
+          pn = pn + 1
+        }
+        val srcIdx = argIndicesInParamOrder(args, paramNames)
+        var targs: List[Type] = newList()
+        if sig.generics.count > 0 {
+          val paramTys: List[Type] = newList()
+          val argsInParamOrder: List[Type] = newList()
+          var k = 0
+          while k < sig.params.count {
+            paramTys.add(sig.params[k].ty)
+            val ai = srcIdx[k]
+            var slotTy: Type = TyError
+            if ai >= 0 and ai < argTypes.count {
+              if not lambdaHasUnannotatedParam(callArgExpr(args[ai])) {
+                slotTy = argTypes[ai]
+              }
+            }
+            argsInParamOrder.add(slotTy)
+            k = k + 1
+          }
+          targs = inferGenericArgsDeep(sig.generics, paramTys, argsInParamOrder)
+        }
+        var k2 = 0
+        while k2 < sig.params.count {
+          val ai2 = srcIdx[k2]
+          if ai2 >= 0 and ai2 < expected.count {
+            if sig.generics.count > 0 {
+              expected[ai2] = substituteTyVars(sig.params[k2].ty, sig.generics, targs)
+            } else {
+              expected[ai2] = sig.params[k2].ty
+            }
+          }
+          k2 = k2 + 1
+        }
+      }
+    }
+    case None -> match unrefine(fnT) { case TyFunction(pps, _, _) -> if pps.count == args.count { var k3 = 0; while k3 < pps.count { expected[k3] = pps[k3]; k3 = k3 + 1 } }; case _ -> {  } }
+  }
+  expected
+}
+
 func paramsMatchArgs(tbl: in SymbolTable, params: in List[ResolvedParam], argTypes: in List[Type]): Bool {
   if params.count != argTypes.count {
     return false
