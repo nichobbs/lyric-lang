@@ -4935,9 +4935,9 @@ jobs:
           "$lyric_bin" test --manifest lyric-storage/lyric.toml || overall=$?
           echo "=== lyric-proto tests ==="
           "$lyric_bin" test --manifest lyric-proto/lyric.toml || overall=$?
-          # lyric-otel — OTel type vocabulary tests; no path deps (the OTLP
-          # kernel's nuget is only pulled by OTel.Kernel.Net, which the type
-          # tests don't import).
+          # lyric-otel — type vocabulary + OTLP codec/transport tests; depends
+          # on Lyric.Proto as a workspace member (built by the workspace
+          # resolution above; keep lyric-proto's own tests before this).
           echo "=== lyric-otel tests ==="
           "$lyric_bin" test --manifest lyric-otel/lyric.toml || overall=$?
           # lyric-logging, lyric-mq, and lyric-grpc went green once the

@@ -58,4 +58,4 @@ output_assembly = "Lyric.OTel.dll"
 "OTel.OtlpTransportTests"  = "tests/otlp_transport_tests.l"
 
 [dependencies]
-"Lyric.Proto" = { path = "../lyric-proto" }
+"Lyric.Proto" = { workspace = true }
