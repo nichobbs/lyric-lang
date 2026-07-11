@@ -1089,8 +1089,73 @@ func fieldEntryType(fields: in List[FieldEntry], name: in String): Type {
   TyError
 }
 
+func recordDeclGenericNames(rd: in RecordDecl): List[String] {
+  val names: List[String] = newList()
+  match rd.generics {
+    case None -> {
+    }
+    case Some(g) -> {
+      var j = 0
+      while j < g.params.count {
+        match g.params[j] {
+          case GPType(nm, _) -> names.add(nm)
+          case GPValue(nm, _, _) -> names.add(nm)
+        }
+        j = j + 1
+      }
+    }
+  }
+  names
+}
+
+func recordGenericNamesOf(tbl: in SymbolTable, tid: in TypeId): List[String] {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKRecord(did, rd) -> {
+        if typeIdEq(did, tid) {
+          return recordDeclGenericNames(rd)
+        }
+      }
+      case DKExposedRec(did, rd) -> {
+        if typeIdEq(did, tid) {
+          return recordDeclGenericNames(rd)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  val empty: List[String] = newList()
+  empty
+}
+
+// The record's fields *instantiated* against the receiver's type args
+// (mirrors `caseFieldTypesInstantiated` for union cases): `value: T` on
+// `Box[Int]` → `Int`.  Type params left unresolved after substitution
+// (absent or partially-inferred receiver targs) are erased to `TyError` —
+// the lenient wildcard — so an under-instantiated receiver degrades to the
+// pre-instantiation behaviour instead of tripping false T0030-style
+// diagnostics on a raw `TyVar`.
+func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in TypeId, targs: in List[Type]): List[FieldEntry] {
+  val raw = fieldsOfRecord(tbl, tid)
+  val gnames = recordGenericNamesOf(tbl, tid)
+  val result: List[FieldEntry] = newList()
+  var i = 0
+  while i < raw.count {
+    result.add(FieldEntry(name = raw[i].name, ty = eraseTyVars(substituteTyVars(raw[i].ty, gnames, targs))))
+    i = i + 1
+  }
+  result
+}
+
 func extractRecordFields(tbl: in SymbolTable, rd: in RecordDecl, result: in List[FieldEntry]): Unit {
   val ctx = newGenericContext()
+  // Register the record's own type params so a `value: T` field resolves to
+  // `TyVar("T")` (substitutable by `fieldsOfRecordInstantiated`) instead of a
+  // swallowed unknown-type `TyError`.
+  gctxPush(ctx, recordDeclGenericNames(rd))
   val dummyDiag: List[Diagnostic] = newList()
   var i = 0
   while i < rd.members.count {
@@ -1251,8 +1316,8 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
 func inferMember(tbl: in SymbolTable, diag: in List[Diagnostic], recvRaw: in Type, name: in String, span: in Span): Type {
   val recv = unrefine(recvRaw)
   match recv {
-    case TyUser(tid, _, _) -> {
-      val fs = fieldsOfRecord(tbl, tid)
+    case TyUser(tid, _, targs) -> {
+      val fs = fieldsOfRecordInstantiated(tbl, tid, targs)
       var i = 0
       while i < fs.count {
         if fs[i].name == name {
@@ -2643,7 +2708,7 @@ func checkConstRefPattern(
     }
     case PRecord(_, fields, _) -> {
       val recFields: List[FieldEntry] = match unrefine(scrutineeTy) {
-        case TyUser(tid, _, _) -> fieldsOfRecord(tbl, tid)
+        case TyUser(tid, _, targs) -> fieldsOfRecordInstantiated(tbl, tid, targs)
         case _ -> newList()
       }
       var i = 0
@@ -2745,7 +2810,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       // bound field carries its real type (e.g. `Point{x = a}` types `a` as
       // `Int`) rather than `TyError`.
       val recFields: List[FieldEntry] = match unrefine(ty) {
-        case TyUser(tid, _, _) -> fieldsOfRecord(tbl, tid)
+        case TyUser(tid, _, targs) -> fieldsOfRecordInstantiated(tbl, tid, targs)
         case _ -> newList()
       }
       var i = 0

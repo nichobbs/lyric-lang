@@ -2232,6 +2232,36 @@ test "for over List binds element type" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// docs/59 A3: generic record field access keeps the receiver's instantiation —
+// `b.value` on `Box[Int]` is `Int`, mirroring the union path
+// (`caseFieldTypesInstantiated`).  Before this the field type resolved under an
+// empty generic context to a swallowed `TyError`, so anything flowed.
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic record field instantiated" {
+  val ok = "package P\nrecord Box[T] { value: T }\nfunc f(): Int {\n  val b = Box(value = 41)\n  b.value + 1\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "box-field: Box[Int].value flows into arithmetic cleanly")
+  val bad = "package P\nrecord Box[T] { value: T }\nfunc g(): Int {\n  val b = Box(value = \"s\")\n  b.value\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "box-field: Box[String].value mismatches Int return (T0070)")
+}
+
+test "generic record field from annotated param" {
+  val bad = "package P\nrecord Box[T] { value: T }\nfunc f(b: in Box[String]): Int {\n  b.value\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "box-param: Box[String].value mismatches Int return (T0070)")
+  val badBind = "package P\nrecord Box[T] { value: T }\nfunc g(b: in Box[String]): Unit {\n  val n: Int = b.value\n}\n"
+  assertTrue(hasDiagCode(parseCheck(badBind), "T0060"), "box-param: Int binding of a String field is T0060")
+}
+
+// A non-generic record's fields are unaffected, and a generic receiver whose
+// instantiation could not be inferred (no targs) stays lenient — the erased
+// wildcard, never a new rejection.
+test "generic record field degrades without targs" {
+  val ok = "package P\nrecord Box[T] { value: T }\nfunc f[T](b: in Box[T]): Int {\n  val n: Int = b.value\n  n\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "box-generic-ctx: uninstantiated T stays lenient")
+  val plain = "package P\nrecord Point { x: Int }\nfunc g(p: in Point): Int {\n  p.x + 1\n}\n"
+  assertEqualInt(diagCount(parseCheck(plain)), 0, "plain record field access unchanged")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Const patterns (docs/46, D101).  checkConstRefPattern diagnostics; the
 // positive runtime behaviour lives in const_pattern_self_test.l.  #3485.
 // ─────────────────────────────────────────────────────────────────────────────
