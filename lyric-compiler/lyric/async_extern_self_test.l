@@ -57,3 +57,27 @@ test "await non-void async extern is pass-through" {
 test "await void async extern is pass-through" {
   await taskDelay(0)
 }
+
+// #5560: an async INSTANCE extern declared WITHOUT `@externInstance` must
+// still emit an instance call.  The metadata-direct staticness correction
+// (`hasThis` from reference-assembly metadata) previously only ran on the
+// non-async @externTarget path, so this shape emitted `call` with the
+// receiver as arg0 of a static signature and faulted at run time with
+//   MissingMethodException: Method not found:
+//     'Task`1<String> System.IO.StringReader.ReadToEndAsync(System.IO.StringReader)'.
+// This is exactly the shape of every async send in the Std.Http kernel
+// (`HttpClient.SendAsync` / `GetAsync` / `PostAsync`).
+@externTarget("System.IO.StringReader.ReadToEndAsync")
+async func stringReaderReadToEndNoHint(reader: in StringReader): String = ()
+
+test "async instance extern without @externInstance resolves via metadata" {
+  val reader = newStringReader("hello nohint")
+  val content = stringReaderReadToEndNoHint(reader)
+  assertEqual(content, "hello nohint", "async instance extern without @externInstance must emit an instance call")
+}
+
+test "await async instance extern without @externInstance is pass-through" {
+  val reader = newStringReader("hello await nohint")
+  val content = await stringReaderReadToEndNoHint(reader)
+  assertEqual(content, "hello await nohint", "await on the no-hint blocking extern should pass through resolved T")
+}

@@ -16068,8 +16068,8 @@ func emitExternTargetBody(
       }
 
       // Metadata-direct method resolution (docs/42): for a plain method extern
-      // (not a ctor, not resolved as a property above, not async — async keeps
-      // its Task-return path below) decode the BCL method's true signature so
+      // (not a ctor, not resolved as a property above) decode the BCL
+      // method's true signature so
       // (a) the instance/static calling convention comes from the metadata
       // `hasThis` rather than the @externInstance-or-default-static guess in
       // `resolveExternTarget`, and (b) each MemberRef param/return encodes the
@@ -16100,7 +16100,7 @@ func emitExternTargetBody(
         }
         asi = asi + 1
       }
-      if not decl.isAsync and emitMember == r.memberName and argSigsOk {
+      if emitMember == r.memberName and argSigsOk {
         match mapGet(cctx.metadataPathIndex, assemblyForTypeMsil(cctx, resolvedFqn)) {
           case None -> ()
           case Some(asmPath) -> {
@@ -16119,20 +16119,35 @@ func emitExternTargetBody(
                   }
                   mk = mk + 1
                 }
-                match resolvedSigToMsil(cctx, msig.returnType) {
-                  case Some(rm) -> {
-                    if convOk {
-                      // Do not overwrite emitIsStatic for constructors: ctors
-                      // always use newobj (emitIsStatic=true from FfiResolved)
-                      // regardless of the CLR hasThis convention bit.
-                      if not r.isCtor {
-                        emitIsStatic = not msig.hasThis
-                      }
-                      resolvedMethodParams = Some(value = mParams)
-                      resolvedMethodRet = Some(value = rm)
-                    }
+                if decl.isAsync {
+                  // Async externs keep the Task/Task<T> MemberRef return built
+                  // below (bclRetTy) — only the calling convention and the
+                  // param encodings come from metadata here.  Before this, the
+                  // whole metadata-direct pass was gated on `not decl.isAsync`,
+                  // so an async INSTANCE extern declared without
+                  // `@externInstance` fell back to the default-static guess
+                  // and emitted `call` with the receiver as arg0 of a static
+                  // signature — MissingMethodException at run time (#5560).
+                  if convOk and not r.isCtor {
+                    emitIsStatic = not msig.hasThis
+                    resolvedMethodParams = Some(value = mParams)
                   }
-                  case None -> ()
+                } else {
+                  match resolvedSigToMsil(cctx, msig.returnType) {
+                    case Some(rm) -> {
+                      if convOk {
+                        // Do not overwrite emitIsStatic for constructors: ctors
+                        // always use newobj (emitIsStatic=true from FfiResolved)
+                        // regardless of the CLR hasThis convention bit.
+                        if not r.isCtor {
+                          emitIsStatic = not msig.hasThis
+                        }
+                        resolvedMethodParams = Some(value = mParams)
+                        resolvedMethodRet = Some(value = rm)
+                      }
+                    }
+                    case None -> ()
+                  }
                 }
               }
             }
