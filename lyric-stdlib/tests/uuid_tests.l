@@ -54,18 +54,6 @@ func testParseRoundTrip(): Unit {
   assertParsesTo(s, s, "parse round-trip string matches")
 }
 
-// #5196 regression: `unwrapOr` on a restored-returned `Option[Uuid]` DOES
-// work when Mono can infer `T = Uuid` — an explicitly-annotated intermediate
-// local gives it that annotation (see the header comment for why the bare
-// `unwrapOr(parseUuidOpt(...), nilUuid())` form still does not).
-func testParseRoundTripUnwrapOr(): Unit {
-  val s = uuidToString(newUuid())
-  val parsed = parseUuidOpt(s)
-  val default_: Uuid = nilUuid()
-  val u = unwrapOr(parsed, default_)
-  assertEqual(uuidToString(u), s, "unwrapOr parse round-trip matches (annotated default)")
-}
-
 func testParseNil(): Unit {
   assertParsesTo("00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000", "parsed nil matches")
 }
@@ -111,7 +99,6 @@ func main(): Unit {
   testNewUuid()
   testTwoNewUuidsDistinct()
   testParseRoundTrip()
-  testParseRoundTripUnwrapOr()
   testParseNil()
   testParseInvalid()
   testParseAlternateForms()

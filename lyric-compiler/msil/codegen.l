@@ -18164,7 +18164,12 @@ func countGenLocalsStmt(stmt: in Statement): Int {
         case LBVar(_, _, initOpt) -> {
           1 + match initOpt { case Some(init) -> countGenLocalsExpr(init); case None -> 0 }
         }
-        case LBVal(_, _, init) -> countGenLocalsExpr(init)
+        // A plain `val x = ...` allocates a local slot exactly like `let`/`var`,
+        // and generator synthesis hoists every body slot to a `__local_<slot>`
+        // field by slot index (not binding form).  Omitting this `+ 1`
+        // undercounted `val`-using generators, tripping the field-count
+        // cross-check panic (#5582).
+        case LBVal(_, _, init) -> 1 + countGenLocalsExpr(init)
       }
     }
     case SExpr(e) -> countGenLocalsExpr(e)
