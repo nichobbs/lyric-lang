@@ -89,6 +89,53 @@ func forPatternIrrefutable(p: in Pattern): Bool {
   }
 }
 
+// The element type a range-driven `for` binds: `Int` when both bounds are
+// `Int`, `Long` when both are `Long` — the two shapes the counting-loop
+// codegen actually supports (`emitCountingForMsil` drives the increment and
+// comparison off the low bound's width; `emitCountingForJvm` panics on a
+// width mismatch).  Everything else — mixed Int/Long, non-integer bounds,
+// open-ended ranges — degrades to `TyError` (the lenient wildcard), never a
+// new rejection: codegen owns those failure modes today.  The bound
+// expressions are always inferred so their own contents are checked.
+func forRangeElemType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  bound: in RangeBound,
+): Type {
+  match bound {
+    case RBClosed(lo, hi) -> forRangeBoundsElemType(inferExpr(sc, tbl, sigs, diag, lo), inferExpr(sc, tbl, sigs, diag, hi))
+    case RBHalfOpen(lo, hi) -> forRangeBoundsElemType(inferExpr(sc, tbl, sigs, diag, lo), inferExpr(sc, tbl, sigs, diag, hi))
+    case RBLowerOpen(hi) -> {
+      val _ = inferExpr(sc, tbl, sigs, diag, hi)
+      TyError
+    }
+    case RBUpperOpen(lo) -> {
+      val _ = inferExpr(sc, tbl, sigs, diag, lo)
+      TyError
+    }
+  }
+}
+
+// Both counting-loop backends derive the loop variable from the LOW bound
+// (`emitCountingForMsil` / `emitCountingForJvm` allocate the counter slot from
+// `loTy`), so an unknown-typed high bound — today most commonly `xs.count`,
+// which the member checker cannot type yet (docs/59 A4) — does not block
+// typing the binding: the low bound alone determines it.  A *known*
+// mismatched high bound (Int lo with Long hi or vice versa) degrades to
+// `TyError` rather than claiming a type for a loop codegen cannot lower.
+func forRangeBoundsElemType(loTy: in Type, hiTy: in Type): Type {
+  val hiUnknown = match hiTy { case TyError -> true; case TyVar(_) -> true; case _ -> false }
+  if unrefinesToInt(loTy) and (unrefinesToInt(hiTy) or hiUnknown) {
+    return TyPrim(pt = PtInt)
+  }
+  if unrefinesToLong(loTy) and (unrefinesToLong(hiTy) or hiUnknown) {
+    return TyPrim(pt = PtLong)
+  }
+  TyError
+}
+
 // When a binding is declared with an inline refined type (`Int range lo .. hi`)
 // and initialised with an integer literal, reject a literal that falls outside
 // the statically-known bounds (T0015).  This is the inline-refined-type
@@ -193,21 +240,37 @@ pub func checkStatement(
     }
 
     case SFor(_, pat, iter, body) -> {
-      val iterType = inferExpr(sc, tbl, sigs, diag, iter)
-      val elemType = match iterType {
-        case TySlice(e) -> e
-        case TyArray(_, e) -> e
-        case TyUser(_, iterName, iterArgs) -> {
-          // MapKeyCollection[K,V] iterates over K; MapValueCollection[K,V] over V.
-          if iterName == "MapKeyCollection" and iterArgs.count == 2 {
-            iterArgs[0]
-          } else if iterName == "MapValueCollection" and iterArgs.count == 2 {
-            iterArgs[1]
-          } else {
-            TyError
+      // A range iterator is typed here, not in `inferExpr`'s `ERange` arm: the
+      // parser only builds `ERange` in `for`-iterator position, so `for` is the
+      // sole consumer of a range's element type and `ERange` itself can keep its
+      // lenient `TyError` result (#1478 / docs/59 A1).  Typing the bounds also
+      // checks them — before this they were never visited by the checker.
+      val elemType = match iter.kind {
+        case ERange(bound) -> forRangeElemType(sc, tbl, sigs, diag, bound)
+        case _ -> {
+          val iterType = inferExpr(sc, tbl, sigs, diag, iter)
+          match iterType {
+            case TySlice(e) -> e
+            case TyArray(_, e) -> e
+            case TyUser(_, iterName, iterArgs) -> {
+              // List[T] iterates over T; MapKeyCollection[K,V] over K;
+              // MapValueCollection[K,V] over V.  A bare `Map[K,V]` iterator has
+              // no runtime lowering on either backend (iteration goes through
+              // `.keys()` / `.values()`), so it stays `TyError` — codegen owns
+              // that rejection.
+              if iterName == "List" and iterArgs.count == 1 {
+                iterArgs[0]
+              } else if iterName == "MapKeyCollection" and iterArgs.count == 2 {
+                iterArgs[0]
+              } else if iterName == "MapValueCollection" and iterArgs.count == 2 {
+                iterArgs[1]
+              } else {
+                TyError
+              }
+            }
+            case _ -> TyError
           }
         }
-        case _ -> TyError
       }
       // #3187: a `for` binding must be irrefutable — codegen has no failure
       // path for a non-matching element, so a refutable pattern accepted here
@@ -224,7 +287,11 @@ pub func checkStatement(
         )
       }
       scopePush(sc)
-      bindPattern(sc, pat, elemType)
+      // Erase unresolved type variables (a `List[T]` / `slice[T]` element inside
+      // a generic function) to the lenient wildcard: `TyVar` passes `typeEquiv`
+      // but not `isNumericType`, so binding it raw would trip false T0030s on
+      // arithmetic the where-bounds make valid.
+      bindPattern(sc, pat, eraseTyVars(elemType))
       val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
       scopePop(sc)
     }

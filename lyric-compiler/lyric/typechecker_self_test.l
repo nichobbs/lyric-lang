@@ -2191,6 +2191,47 @@ test "for nested tuple pattern accepted" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// docs/59 A1: `for`-loop element typing over ranges and List.  Before this a
+// range-driven loop variable was `TyError` (universal wildcard), so the loop
+// body was effectively unchecked, and the range bounds themselves were never
+// visited by the checker at all.
+// ─────────────────────────────────────────────────────────────────────────────
+test "for range binds Int" {
+  val ok = "package P\nfunc f(n: in Int): Int {\n  var total = 0\n  for i in 0 ..< n {\n    total = total + i\n  }\n  total\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "range-for: Int loop var in arithmetic is clean")
+  val bad = "package P\nfunc g(n: in Int): Unit {\n  for i in 0 ..< n {\n    val s: String = i\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "range-for: String binding of an Int loop var is T0060")
+}
+
+test "for range binds Long" {
+  val ok = "package P\nfunc f(): Long {\n  var total: Long = 0\n  for i in 1i64 ..= 3i64 {\n    total = total + i\n  }\n  total\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "range-for: Long bounds bind a Long loop var")
+  val bad = "package P\nfunc g(): Unit {\n  for i in 1i64 ..= 3i64 {\n    val n: Int = i\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "range-for: Int binding of a Long loop var is T0060")
+}
+
+test "for range bound exprs are checked" {
+  val bad = "package P\nfunc h(k: in Int): Int { k }\nfunc f(): Unit {\n  for i in 0 ..< h(\"s\") {\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0043"), "range-for: a bad call inside a bound is now caught (T0043)")
+}
+
+// Known-mismatched bound widths (Int lo, Long hi) have no working lowering on
+// either backend (the JVM counting-for panics; MSIL emits width-mismatched IL),
+// so the checker degrades the binding to the lenient wildcard rather than
+// claiming a type — no new rejections for a shape codegen owns.
+test "for range mixed-width bounds degrade" {
+  val src = "package P\nfunc f(n: in Long): Unit {\n  for i in 0 ..< n {\n    val s: String = i\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "range-for: mixed Int/Long bounds keep the lenient wildcard")
+}
+
+test "for over List binds element type" {
+  val ok = "package P\nextern type List[T] = \"System.Collections.Generic.List`1\"\nfunc f(xs: in List[String]): Int {\n  var n = 0\n  for s in xs {\n    n = n + s.length\n  }\n  n\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "list-for: String element member access is clean")
+  val bad = "package P\nextern type List[T] = \"System.Collections.Generic.List`1\"\nfunc g(xs: in List[String]): Unit {\n  for s in xs {\n    val i: Int = s\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "list-for: Int binding of a String element is T0060")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Const patterns (docs/46, D101).  checkConstRefPattern diagnostics; the
 // positive runtime behaviour lives in const_pattern_self_test.l.  #3485.
 // ─────────────────────────────────────────────────────────────────────────────
