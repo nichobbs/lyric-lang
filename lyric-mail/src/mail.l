@@ -193,7 +193,7 @@ impl MailSender for NativeSender {
         }
         i = i + 1
       }
-      val ccCollection = mailMsg.get_Cc()
+      val ccCollection = mailMsg.get_CC()
       var ci = 0
       while ci < msg.cc.length {
         if msg.cc[ci].address.length > 0 {
