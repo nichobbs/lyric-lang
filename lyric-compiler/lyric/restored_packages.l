@@ -332,11 +332,17 @@ func isWhitelistedT0010(d: in Diagnostic): Bool {
 //   T0100 — opaque construction outside its package
 //   T0101 — constructor names an unknown field
 //   T0102 — opaque representation pattern-match outside its package
+//   T0113 — unknown member/method (record reprs drop method members, so the
+//           synthesised member surface is incomplete by construction)
+//   T0114 — non-Unit function without a value-producing body (synthesised
+//           function bodies are stubs / omitted by `reprForFunc`)
 func isSynthesizedBodyDiag(d: in Diagnostic): Bool {
   d.code == "T0085" or d.code == "T0086" or d.code == "T0087" or d.code == "T0098" or d.code == "T0099" or
     d.code == "T0100" or
     d.code == "T0101" or
-    d.code == "T0102"
+    d.code == "T0102" or
+    d.code == "T0113" or
+    d.code == "T0114"
 }
 
 // True iff `d` is a DiagError (vs DiagWarning).

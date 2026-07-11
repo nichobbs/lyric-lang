@@ -626,36 +626,24 @@ func cmdTestManifest(
   val testExt = if targetJvm { ".jar" } else { ".dll" }
   val testTarget: CompileTarget = if targetJvm { Jvm } else { Dotnet }
 
-  // Resolve active feature set from manifest defaults + CLI flags, mirroring
-  // `lyric build` (D045): `--all-features` activates every declared feature;
-  // otherwise defaults apply unless `--no-default-features`, and
-  // `--features a,b` adds on top.  Needed so target-gated kernels
+  // Resolve active feature set from manifest defaults + CLI flags via the
+  // same shared resolver `lyric build` uses (D045, #5571): `--all-features`
+  // activates every declared feature; otherwise defaults apply unless
+  // `--no-default-features`, `--features a,b` adds on top, and the set is
+  // target-normalized (a non-explicit feature named after another target
+  // is swapped for the active target's declared feature — see
+  // `resolveManifestFeatures`).  Needed so target-gated kernels
   // (`@cfg(feature = "dotnet")` / `@cfg(feature = "jvm")`, e.g.
-  // lyric-storage's Storage.Kernel.Net/Jvm split, #1444) can be selected
-  // when running a manifest suite on the non-default target.
-  val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
-  val mfDeclared = Mf.readFeatureDeclaredFromToml(mfText, mfPath)
-  val activeFeatures: List[String] = newList()
-  if allFeatures {
-    var afi = 0
-    while afi < mfDeclared.count {
-      activeFeatures.add(mfDeclared[afi])
-      afi += 1
-    }
-  } else {
-    if not noDefaultFeatures {
-      var afi = 0
-      while afi < mfDefaults.count {
-        activeFeatures.add(mfDefaults[afi])
-        afi += 1
-      }
-    }
-    var cfi = 0
-    while cfi < cliFeatures.count {
-      activeFeatures.add(cliFeatures[cfi])
-      cfi += 1
-    }
-  }
+  // lyric-storage's Storage.Kernel.Net/Jvm split, #1444) are selected when
+  // running a manifest suite on the non-default target.
+  val (activeFeatures, mfDeclared) = resolveManifestFeatures(
+    mfText,
+    mfPath,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures,
+    testTarget
+  )
 
   // Build ProjectPackage entries from [project.packages], matching buildProject.
   val libPkgs: List[ProjectPackage] = newList()
@@ -781,7 +769,13 @@ func cmdTestManifest(
 
   // Build workspace dependencies first, so their DLLs are available when building
   // path deps and test packages. This mirrors the integration in cli_build.l.
-  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, testTarget, activeFeatures)
+  val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(
+    manifest,
+    mfPath,
+    testTarget,
+    cliFeatures,
+    noDefaultFeatures
+  )
   if wsHadError {
     return 1
   }

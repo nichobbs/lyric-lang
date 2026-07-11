@@ -83,12 +83,9 @@ pub func hostReadAllBytes(path: in String): slice[Byte] {
   NetFile.ReadAllBytes(path)
 }
 
-// stays @externTarget: slice[T]-argument auto-FFI resolution shipped in
-// D-progress-645, but the stdlib bundle is compiled by the pinned
-// bootstrap seed, which predates it — migrate once a post-D-progress-645
-// seed releases (#5555).
-@externTarget("System.IO.File.WriteAllBytes")
-pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit = ()
+pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit {
+  NetFile.WriteAllBytes(path, bytes)
+}
 
 // =====================================================================
 // Directory enumeration — used by the LSP workspace index builder.

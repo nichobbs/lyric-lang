@@ -2976,8 +2976,13 @@ pub func monoFileWithImportsAndTypeDecls(
             case IMplFunc(fn) -> {
               val env = seedEnvFromParams(fn.params)
               // Seed `self` so `self.field` projections in the method body
-              // resolve to the impl target's record fields.  `self` is a
-              // keyword so it cannot collide with a parameter name.
+              // resolve to the impl target's record fields.  Impl methods
+              // declare the receiver as an explicit `self: in Target` param
+              // (D037), so seedEnvFromParams may already have bound the name —
+              // rebind with the authoritative impl target rather than double-add.
+              if env.containsKey("self") {
+                env.remove("self")
+              }
               env.add("self", decl.target)
               newMembers.add(IMplFunc(fn = rewriteMethodDecl(state, env, fn)))
             }

@@ -155,12 +155,44 @@ pub record SymbolTable {
   /// `TyUser`-typed call argument in `argSatisfiesParam`) is O(1) instead of
   /// a full symbol scan (#3903).
   externDelegateFlags: Map[String, Bool]
+  /// Method-signature space for value-receiver method calls (docs/59 A4).
+  /// Entries live in `methodSigs`; `methodSigIndex` maps the probing key
+  /// `toString(owner.id) + "#" + name + "@" + i` to an index (the
+  /// `registerOverloadCandidate` idiom, so same-name overloads on one type
+  /// occupy `@0`, `@1`, …).  An `Int`-valued map plus a `List` read is the
+  /// established safe pattern (see `unionDeclIndex`).
+  methodSigs: List[MethodEntry]
+  methodSigIndex: Map[String, Int]
+  /// `toString(TypeId.id)` present ⇒ the type is declared in the file being
+  /// checked (not imported) AND its full member surface is known to the
+  /// checker (records, exposed records, interfaces).  Unknown-member
+  /// diagnostics (docs/59 A5) fire only for these types: imported records
+  /// may originate from restored contract metadata, whose record reprs drop
+  /// method members, so an unknown-member error there would be a false
+  /// positive.
+  memberCompleteTypes: Map[String, Bool]
   // One `impl Iface for Target` conformance, by resolved `TypeId`.
 }
 
 pub record ImplPair {
   target: TypeId
   iface: TypeId
+}
+
+/// One method signature attached to a nominal type — a record-body method
+/// (`RMFunc`, leading `self` dropped), an `impl` block method (`IMplFunc`,
+/// receiver implicit), or an interface member (`IMSig`/`IMFunc`).  The stored
+/// `sig` is the *call-facing* signature: its params never include the
+/// receiver, so a call site validates `x.m(a, b)`'s two arguments directly
+/// against `sig.params` (docs/59 A4).
+pub record MethodEntry {
+  owner: TypeId
+  ownerName: String
+  /// The owning type's generic parameter names (`Box[T]` → `["T"]`), so a
+  /// call site can substitute the receiver's type args into `sig`.
+  ownerGenerics: List[String]
+  name: String
+  sig: ResolvedSignature
 }
 
 pub func newSymbolTable(): SymbolTable {
@@ -172,8 +204,55 @@ pub func newSymbolTable(): SymbolTable {
     importedOpaqueNames = newMap(),
     unionDeclIndex = newMap(),
     unionDeclList = newList(),
-    externDelegateFlags = newMap()
+    externDelegateFlags = newMap(),
+    methodSigs = newList(),
+    methodSigIndex = newMap(),
+    memberCompleteTypes = newMap()
   )
+}
+
+// Register one method signature for `entry.owner`, probing `@0`, `@1`, … for
+// the first free slot (same-name overloads on one type append).
+pub func symTableAddMethodSig(tbl: in SymbolTable, entry: in MethodEntry): Unit {
+  val base = toString(entry.owner.id) + "#" + entry.name + "@"
+  var i = 0
+  var placed = false
+  while not placed {
+    val k = base + toString(i)
+    if not tbl.methodSigIndex.containsKey(k) {
+      tbl.methodSigs.add(entry)
+      tbl.methodSigIndex.add(k, tbl.methodSigs.count - 1)
+      placed = true
+    } else {
+      i = i + 1
+    }
+  }
+}
+
+// Every method entry registered for (`owner`, `name`), in registration order.
+pub func symTableMethodSigs(tbl: in SymbolTable, owner: in TypeId, name: in String): List[MethodEntry] {
+  val acc: List[MethodEntry] = newList()
+  val base = toString(owner.id) + "#" + name + "@"
+  var i = 0
+  var more = true
+  while more {
+    match mapGet(tbl.methodSigIndex, base + toString(i)) {
+      case Some(ix) -> {
+        acc.add(tbl.methodSigs[ix])
+        i = i + 1
+      }
+      case None -> {
+        more = false
+      }
+    }
+  }
+  acc
+}
+
+// True when unknown-member diagnostics may fire for the type `tid` — it is
+// declared in the file being checked and its member surface is fully known.
+pub func symTableIsMemberComplete(tbl: in SymbolTable, tid: in TypeId): Bool {
+  tbl.memberCompleteTypes.containsKey(toString(tid.id))
 }
 
 // Record that the type with id `target` implements the interface with id
@@ -211,6 +290,30 @@ pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
         val key = toString(oid.id)
         if not tbl.importedOpaqueNames.containsKey(key) {
           tbl.importedOpaqueNames.add(key, sym.name)
+        }
+      }
+    }
+    case DKRecord(rid, _) -> {
+      if not sym.isImported {
+        val key = toString(rid.id)
+        if not tbl.memberCompleteTypes.containsKey(key) {
+          tbl.memberCompleteTypes.add(key, true)
+        }
+      }
+    }
+    case DKExposedRec(xid, _) -> {
+      if not sym.isImported {
+        val key = toString(xid.id)
+        if not tbl.memberCompleteTypes.containsKey(key) {
+          tbl.memberCompleteTypes.add(key, true)
+        }
+      }
+    }
+    case DKInterface(iid, _) -> {
+      if not sym.isImported {
+        val key = toString(iid.id)
+        if not tbl.memberCompleteTypes.containsKey(key) {
+          tbl.memberCompleteTypes.add(key, true)
         }
       }
     }

@@ -132,8 +132,10 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   // contentLength = n` on Option[Long]) assigned into a
                   // primitive-typed var left an Object on the stack for an
                   // lstore — VerifyError (lyric-storage's listEntryForKey).
-                  // Same coercion discipline as call arguments.
-                  coerceArgTo(insns, vTy, ty)
+                  // Same coercion discipline as call arguments; the ctx-aware
+                  // form also boxes a primitive array assigned into a
+                  // `slice[T]`-typed var (#5572).
+                  coerceValueTo(ctx, insns, vTy, ty)
                   emitStoreLocalWriteThrough(ctx, insns, slot, ty)
                   // Re-binding a `var handle = spawn f()` handle to a new spawn
                   // (`handle = spawn g()`) must refresh the slot's spawn-result
@@ -738,7 +740,9 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           } else {
             val initTy = lowerExpr(ctx, insns, init)
             val ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
-            coerceArgTo(insns, initTy, ty)
+            // `coerceValueTo` boxes a primitive array into an annotated
+            // `slice[T]` local's erased slot type (#5572).
+            coerceValueTo(ctx, insns, initTy, ty)
             val slot = allocSlot(ctx, name, ty)
             emitStore(insns, slot, ty)
             recordVarGenericArgs(ctx, name, init)
@@ -763,7 +767,9 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               } else {
                 val initTy = lowerExpr(ctx, insns, init)
                 ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
-                coerceArgTo(insns, initTy, ty)
+                // `coerceValueTo` boxes a primitive array into an annotated
+                // `slice[T]` var's erased slot type (#5572).
+                coerceValueTo(ctx, insns, initTy, ty)
               }
               if isHoisted {
                 // Allocate a heap cell (1-element typed array) for the var.
@@ -894,10 +900,10 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // descriptor (e.g. a plain Double literal in a `: Float` function
           // narrows with d2f).  Skip for void / generator contexts where the
           // declared return type isn't threaded.  Routes through
-          // `coerceReturnValue` (not bare `coerceArgTo`) so an explicit
+          // `coerceValueTo` (not bare `coerceArgTo`) so an explicit
           // `return someIntArray` gets the same primitive-array boxing an
           // equivalent tail-expression return already got.
-          val rt = match ctx.retTy { case JVoid -> ty; case t -> { coerceReturnValue(ctx, insns, ty, t); t } }
+          val rt = match ctx.retTy { case JVoid -> ty; case t -> { coerceValueTo(ctx, insns, ty, t); t } }
           // A `return` exits the function, so every still-pending `defer` block
           // (the whole stack) must run first.  Stash the already-coerced value
           // in a temp so the deferred blocks run on an empty operand stack, then
@@ -1200,7 +1206,9 @@ func lowerLocalPatBind(
   match pat.kind {
     case PBinding(name, _) -> {
       val ty = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> initTy }
-      coerceArgTo(insns, initTy, ty)
+      // `coerceValueTo` boxes a primitive array into an annotated `slice[T]`
+      // val's erased slot type (#5572).
+      coerceValueTo(ctx, insns, initTy, ty)
       val slot = allocSlot(ctx, name, ty)
       emitStore(insns, slot, ty)
     }
@@ -1610,7 +1618,20 @@ func lowerDeferRegion(
   val skipDeferL = freshLabel(ctx)
   insns.add(LIload(slot = ranSlot))
   insns.add(LIfne(label = skipDeferL))
-  lowerBlock(ctx, insns, deferBody)
+  // A `scope { }` body's synthesized close-defer must NOT run `close()` on the
+  // exception path (#5569 item 3): `close()` blocks until every submitted task
+  // terminates, so a Throwable escaping the body with an unfinished spawned
+  // task parked the rethrow behind an unbounded wait — the error became a
+  // silent hang in `ThreadPerTaskExecutor.close`.  First-failure semantics
+  // (D119 §7.4) want the opposite: cancel outstanding children and propagate.
+  // `shutdownNow()` interrupts running tasks and returns without waiting, so
+  // the rethrow below surfaces the original Throwable immediately.  User
+  // `defer` blocks are unaffected — this substitution applies only to the
+  // compiler-synthesized close intrinsic.
+  match scopeCloseDeferExecName(deferBody) {
+    case Some(execName) -> emitAbortExecutor(ctx, insns, execName)
+    case None -> lowerBlock(ctx, insns, deferBody)
+  }
   insns.add(LLabel(name = skipDeferL))
   emitLoad(insns, tmpSlot, exTy)
   insns.add(LAthrow)
@@ -1742,6 +1763,66 @@ func putSpawnResultType(ctx: in FuncCtx, name: in String, t: in JvmType): Unit {
 // keeps these entries visually distinct from other string keys.
 pub func spawnSlotKey(slot: in Int): String {
   "slot:" + toString(slot)
+}
+
+// When `deferBody` is a `scope { }`'s synthesized close-defer — exactly one
+// statement, a call to the reserved close intrinsic with the executor local as
+// its single positional argument (see `makeCloseDeferStmt`) — return the
+// executor local's name.  `None` for every user-written defer.  The reserved
+// `__lyric_` prefix guarantees no user function can produce this shape.
+func scopeCloseDeferExecName(deferBody: in Block): Option[String] {
+  if deferBody.statements.count != 1 {
+    return None
+  }
+  match deferBody.statements[0].kind {
+    case SExpr(e) -> {
+      match e.kind {
+        case ECall(fn, args) -> {
+          match fn.kind {
+            case EPath(p) -> {
+              if p.segments.count == 1 and lastSegment(p) == jvmCloseExecutorIntrinsic() and args.count == 1 {
+                val argExpr = match args[0] { case CAPositional(a) -> a; case CANamed(_, a, _) -> a }
+                match argExpr.kind {
+                  case EPath(ap) -> Some(value = lastSegment(ap))
+                  case _ -> None
+                }
+              } else {
+                None
+              }
+            }
+            case _ -> None
+          }
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// Emit `<execLocal>.shutdownNow()` (result discarded) — the exception-path
+// counterpart of `lowerCloseExecutorIntrinsic`'s `close()`: interrupt every
+// running spawned task and return WITHOUT waiting for them, so the pending
+// rethrow propagates the scope body's Throwable immediately (#5569 item 3).
+func emitAbortExecutor(ctx: in FuncCtx, insns: in List[LInsn], execName: in String): Unit {
+  val execTy = JRef(className = "java/util/concurrent/ExecutorService")
+  match lookupSlot(ctx, execName) {
+    case Some(s) -> {
+      emitLoad(insns, s, execTy)
+      val noParams: List[JvmType] = newList()
+      insns.add(
+        LInvokeinterface(
+          owner = "java/util/concurrent/ExecutorService",
+          name = "shutdownNow",
+          params = noParams,
+          ret = JRef(className = "java/util/List"),
+          argCount = 1
+        )
+      )
+      insns.add(LPop)
+    }
+    case None -> panic("Jvm.Codegen: scope abort references unknown executor local '" + execName + "' (unreachable)")
+  }
 }
 
 // Synthesize `defer { <jvmCloseExecutorIntrinsic>(<execName>) }` as an AST

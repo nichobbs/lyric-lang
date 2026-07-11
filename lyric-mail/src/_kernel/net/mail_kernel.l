@@ -44,6 +44,31 @@ pub func newMemoryStream(buf: in slice[Byte]): MemoryStream = ()
 @externTarget("System.Net.Mail.Attachment..ctor")
 pub func newBclAttachment(stream: in MemoryStream, name: in String, mediaType: in String): BclAttachment = ()
 
+// `Add(T)` on these collections lives on the generic base
+// `Collection<T>`, which auto-FFI's Extends walk deliberately does not
+// cross (generic TypeSpec base), so a bare `coll.Add(x)` is a
+// compile-time resolution failure (#5562).  Declared-signature wrappers
+// bind it the way the stdlib collections kernels do — the runtime
+// resolves the MemberRef through the instantiated base.
+@axiom("BCL System.Net.Mail.MailAddressCollection — recipient list on MailMessage")
+pub extern type KMailAddressCollection = "System.Net.Mail.MailAddressCollection"
+
+@axiom("BCL System.Net.Mail.MailAddress — parsed mail address")
+pub extern type KMailAddress = "System.Net.Mail.MailAddress"
+
+@axiom("BCL System.Net.Mail.AttachmentCollection — attachment list on MailMessage")
+pub extern type KAttachmentCollection = "System.Net.Mail.AttachmentCollection"
+
+@axiom("Collection<MailAddress>.Add(MailAddress) via MailAddressCollection — append a recipient")
+@externInstance
+@externTarget("System.Net.Mail.MailAddressCollection.Add")
+pub func mailAddressCollectionAdd(coll: in KMailAddressCollection, addr: in KMailAddress): Unit = ()
+
+@axiom("Collection<Attachment>.Add(Attachment) via AttachmentCollection — append an attachment")
+@externInstance
+@externTarget("System.Net.Mail.AttachmentCollection.Add")
+pub func attachmentCollectionAdd(coll: in KAttachmentCollection, att: in BclAttachment): Unit = ()
+
 // ─── Amazon SES (Phase 4 follow-up of #733) ──────────────────────────────────
 @axiom("Amazon SES backend not yet implemented (#733 follow-up)")
 @cfg(feature = "ses")

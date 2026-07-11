@@ -92,6 +92,32 @@ logic; optimisations; non-idiomatic usage; stdlib API-surface consolidation;
 > #5561 (async FFI correctness) are fixed with the missing HTTP
 > round-trip CI coverage added. §5.1 A2 shipped (lambda params typed
 > from expected function types).
+>
+> **Wave 5 (2026-07-11, D-progress-651–657):** kernel migration tranche 2
+> — `_kernel/` down from 170 to 69 `@externTarget` (value-type receivers,
+> slice args, ctors, statics; the residuals each carry a "stays" note;
+> §6.4's `Encoding.GetBytes` / `Stream.Write` staleness corrected — both
+> resolve). §5.1 **A4 and A5 shipped** (method-call checking with a
+> `SymbolTable` method-signature space + **T0113** unknown-member
+> diagnostics scoped to member-complete local types; **T0114** rejects
+> body-less non-Unit functions, #5603). §6.4's instance-resolution
+> failure mode is fixed twice over: unresolved instance auto-FFI **fails
+> the build** (#5562) and inherited members resolve via a metadata
+> Extends-chain walk (the `process_host.l` residual is retired);
+> `HttpResponse.header` works for the first time (#5568, kernel reworked
+> off the generic-out-param shape). MSIL async interface dispatch is
+> fixed (#5566: a mono `self`-key crash plus explicit-`self` encoded as a
+> real IL param) and stdlib interfaces get method MemberRefs (#5564 — the
+> whole `Std.Http` async client surface threw before). JVM: scope-body
+> Throwables propagate instead of hanging (#5569); erased `slice[prim]`
+> payloads bind precisely (#5570); the §4.6-family try/catch
+> `slice[Byte]` VerifyError and a *parser* postfix-`(`-across-newline
+> mis-parse (#5572) are fixed. `--features` propagates to
+> workspace-dependency and single-file builds with swap-only target
+> normalization (#5571 — unblocks `lyric-auth` / `lyric-web` JVM builds,
+> CI-gated). New blocker found and reverted in-wave: auto-FFI overload
+> scoring is exact-arity, so trailing-optional-param BCL methods
+> (`JsonEncodedText.Encode`) stay `@externTarget` (Q-MD-004 family).
 
 ---
 

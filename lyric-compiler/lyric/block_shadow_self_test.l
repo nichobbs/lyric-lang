@@ -334,3 +334,27 @@ test "collection-for element shadow leaves the outer binding intact" {
 test "or-pattern arm binds shadow and restore the outer binding" {
   assertEqualInt(orPatternBindShadow(), 55, "orPatternBindShadow")
 }
+
+// #5572: a binding statement followed by a parenthesized boolean-chain tail
+// expression on the next line.  This mis-parsed as a CALL of the binding's
+// initializer value (`toInt(c)(cp >= 48 …)`) because the lexer inserts no
+// statement ends inside braces — the binding then never existed for the tail
+// expression ("reference 'cp' resolves to no local" from the JVM bundled-
+// stdlib compile).  The parser now line-gates the postfix `(` / `[` forms
+// (`postfixOnSameLine`); this runtime case pins the statement boundary AND
+// the value-position lowering of the nested parenthesized chain on both
+// targets (the `_kernel_jvm/http_server.l` `isHexDigit` shape).
+func isHexCode(cp: in Int): Bool {
+  val base = cp + 0;
+  (base >= 48 and base <= 57) or (base >= 97 and base <= 102) or (base >= 65 and base <= 70)
+}
+
+test "paren boolean-chain tail after a binding is its own statement" {
+  assertTrue(isHexCode(48), "digit 0")
+  assertTrue(isHexCode(57), "digit 9")
+  assertTrue(isHexCode(97), "lower a")
+  assertTrue(isHexCode(70), "upper F")
+  assertFalse(isHexCode(47), "below digits")
+  assertFalse(isHexCode(58), "between digits and uppercase")
+  assertFalse(isHexCode(200), "above hex range")
+}

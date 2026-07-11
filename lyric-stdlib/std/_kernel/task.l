@@ -110,44 +110,50 @@ extern type AsyncLocal[T] = "System.Threading.AsyncLocal`1"
 /// `CancellationToken.None` in the BCL.  Use as the "no
 /// cancellation requested" sentinel when an API requires a
 /// token but the caller has no source.
-@externTarget("System.Threading.CancellationToken.None")
-pub func noCancellation(): CancellationToken = ()
+pub func noCancellation(): CancellationToken {
+  CancellationToken.None
+}
 
 /// Create a fresh `CancellationTokenSource`.  Pass its token
 /// (`source.token()`) into cancellable async operations; call
 /// `source.cancel()` when you want them to abort.  Sources own
 /// unmanaged resources — wrap usage in `defer { source.dispose()
 /// }` or use `withScope` for automatic cleanup.
-@externTarget("System.Threading.CancellationTokenSource..ctor")
-pub func makeCancelSource(): CancellationTokenSource = ()
+pub func makeCancelSource(): CancellationTokenSource {
+  CancellationTokenSource.new()
+}
 
 /// Same as `makeCancelSource` but auto-cancels the resulting
 /// source after `ms` milliseconds — convenient for deadline-
 /// shaped scopes.  Routes through the `(int millisecondsDelay)`
 /// constructor overload.
-@externTarget("System.Threading.CancellationTokenSource..ctor")
-pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource = ()
+pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource {
+  CancellationTokenSource.new(ms)
+}
 
 // =====================================================================
 // Source operations.
 // =====================================================================
 /// Project a token from a source.  Multiple calls return the
 /// same token (BCL semantics).
-@externTarget("System.Threading.CancellationTokenSource.Token")
-pub func sourceToken(source: in CancellationTokenSource): CancellationToken = ()
+pub func sourceToken(source: in CancellationTokenSource): CancellationToken {
+  source.Token
+}
 
 /// Request cancellation.  Idempotent: subsequent calls are no-ops.
 /// Spawned async work observing the source's token will see
 /// `isCancelled == true` (and any `delayWithCancel` / similar in
 /// flight will throw `OperationCanceledException` at the next
 /// resume point).
-@externTarget("System.Threading.CancellationTokenSource.Cancel")
-pub func cancelSource(source: in CancellationTokenSource): Unit = ()
+pub func cancelSource(source: in CancellationTokenSource): Unit {
+  source.Cancel()
+}
 
 /// Release the source's unmanaged resources.  Always safe to
 /// call after the source's last consumer has resumed.
-@externTarget("System.Threading.CancellationTokenSource.Dispose")
-pub func disposeSource(source: in CancellationTokenSource): Unit = ()
+pub func disposeSource(source: in CancellationTokenSource): Unit {
+  source.Dispose()
+}
 
 // =====================================================================
 // Token observation.
@@ -155,15 +161,17 @@ pub func disposeSource(source: in CancellationTokenSource): Unit = ()
 /// Has cancellation been requested for this token's source?
 /// Async loops can poll this between iterations as a cheap
 /// alternative to `throwIfCancelled`.
-@externTarget("System.Threading.CancellationToken.IsCancellationRequested")
-pub func isCancelled(token: in CancellationToken): Bool = ()
+pub func isCancelled(token: in CancellationToken): Bool {
+  token.IsCancellationRequested
+}
 
 /// Throw `OperationCanceledException` (which Lyric catches as
 /// `Exception`) when the token has been cancelled.  Use as a
 /// cooperative cancellation point inside long-running synchronous
 /// stretches that can't naturally suspend.
-@externTarget("System.Threading.CancellationToken.ThrowIfCancellationRequested")
-pub func throwIfCancelled(token: in CancellationToken): Unit = ()
+pub func throwIfCancelled(token: in CancellationToken): Unit {
+  token.ThrowIfCancellationRequested()
+}
 
 // =====================================================================
 // Cancellable delay.
@@ -171,15 +179,17 @@ pub func throwIfCancelled(token: in CancellationToken): Unit = ()
 /// `Task.Delay(ms)` — non-cancellable timer.  Pre-Phase-C
 /// callers continue to use this; the SM will suspend until `ms`
 /// elapses.
-@externTarget("System.Threading.Tasks.Task.Delay")
-pub func delay(ms: in Int): Task = ()
+pub func delay(ms: in Int): Task {
+  Task.Delay(ms)
+}
 
 /// `Task.Delay(ms, token)` — cancellable timer.  When the token
 /// is cancelled before the timer fires, the awaiting state
 /// machine resumes with `OperationCanceledException` (caught as
 /// `Exception` on the Lyric side).  Phase C / D-progress-068.
-@externTarget("System.Threading.Tasks.Task.Delay")
-pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task = ()
+pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task {
+  Task.Delay(ms, token)
+}
 
 // =====================================================================
 // BCL primitives used by structured-concurrency wrappers.
@@ -188,12 +198,18 @@ pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task = ()
 /// on the thread pool with scope-level cancellation.  Lyric's
 /// `() -> Unit` closures lower to `System.Action`, so the BCL
 /// `Task.Run(Action, CancellationToken)` overload is targeted.
+/// stays @externTarget: delegate-typed parameters are only bridged
+/// through @externTarget declarations (D122).
 @externTarget("System.Threading.Tasks.Task.Run")
 func taskRunWithCancel(action: in () -> Unit, token: in CancellationToken): Task = ()
 
 /// `Task.WhenAll(tasks)` — returns a task that completes when
 /// every element of `tasks` completes.  Throws the first failure
 /// exception when any child faults.
+/// stays @externTarget for now: every runtime path through this
+/// binding (`awaitAll`, even with an empty scope) is a documented
+/// known failure on both targets (#5329), so an auto-FFI migration
+/// cannot be runtime-verified until that is fixed.
 @externTarget("System.Threading.Tasks.Task.WhenAll")
 func taskWhenAll(tasks: in slice[Task]): Task = ()
 
@@ -342,6 +358,10 @@ func ambientValue(slot: in AsyncLocal[CancellationToken]): CancellationToken = (
 @externTarget("System.Threading.AsyncLocal`1.set_Value")
 func setAmbientValue(slot: in AsyncLocal[CancellationToken], v: in CancellationToken): Unit = ()
 
+// stays @externTarget for now: the only caller (`hasAmbient`, via
+// `currentToken`) crashes on .NET on its first call in a process
+// (#5330), so an auto-FFI migration cannot be runtime-verified until
+// that is fixed.
 @externTarget("System.Threading.CancellationToken.CanBeCanceled")
 func tokenCanBeCanceled(token: in CancellationToken): Bool = ()
 

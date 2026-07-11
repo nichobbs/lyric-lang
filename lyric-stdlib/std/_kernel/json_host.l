@@ -45,20 +45,20 @@ pub func hostParseJson(s: in String): JsonDoc = ()
 /// returns the pooled `byte[]` backing the JSON to the array pool instead
 /// of waiting for the GC.  Every `lyricJsonGet*` helper in `Std.Json` calls
 /// this via `defer` so documents are released at the earliest opportunity.
-@externInstance
-@externTarget("System.Text.Json.JsonDocument.Dispose")
-pub func hostDisposeJson(d: in JsonDoc): Unit = ()
+pub func hostDisposeJson(d: in JsonDoc): Unit {
+  d.Dispose()
+}
 
-@externInstance
-@externTarget("System.Text.Json.JsonDocument.get_RootElement")
-pub func hostRootElement(d: in JsonDoc): JsonElement = ()
+pub func hostRootElement(d: in JsonDoc): JsonElement {
+  d.RootElement
+}
 
 // =====================================================================
 // Walking the tree.
 // =====================================================================
-@externInstance
-@externTarget("System.Text.Json.JsonElement.GetProperty")
-pub func hostGetProperty(elem: in JsonElement, name: in String): JsonElement = ()
+pub func hostGetProperty(elem: in JsonElement, name: in String): JsonElement {
+  elem.GetProperty(name)
+}
 
 @externInstance
 @externTarget("System.Text.Json.JsonElement.TryGetProperty")
@@ -68,25 +68,25 @@ pub func hostTryGetProperty(elem: in JsonElement, name: in String, out_: out Jso
 // Leaf accessors.  All `GetXyz` methods on `JsonElement` throw if the
 // kind is wrong; the `tryGet*` family is the safe wrapper.
 // =====================================================================
-@externInstance
-@externTarget("System.Text.Json.JsonElement.GetString")
-pub func hostGetString(elem: in JsonElement): String = ()
+pub func hostGetString(elem: in JsonElement): String {
+  elem.GetString()
+}
 
-@externInstance
-@externTarget("System.Text.Json.JsonElement.GetInt32")
-pub func hostGetInt32(elem: in JsonElement): Int = ()
+pub func hostGetInt32(elem: in JsonElement): Int {
+  elem.GetInt32()
+}
 
-@externInstance
-@externTarget("System.Text.Json.JsonElement.GetInt64")
-pub func hostGetInt64(elem: in JsonElement): Long = ()
+pub func hostGetInt64(elem: in JsonElement): Long {
+  elem.GetInt64()
+}
 
-@externInstance
-@externTarget("System.Text.Json.JsonElement.GetBoolean")
-pub func hostGetBoolean(elem: in JsonElement): Bool = ()
+pub func hostGetBoolean(elem: in JsonElement): Bool {
+  elem.GetBoolean()
+}
 
-@externInstance
-@externTarget("System.Text.Json.JsonElement.GetDouble")
-pub func hostGetDouble(elem: in JsonElement): Double = ()
+pub func hostGetDouble(elem: in JsonElement): Double {
+  elem.GetDouble()
+}
 
 @externInstance
 @externTarget("System.Text.Json.JsonElement.TryGetInt32")
@@ -100,13 +100,13 @@ pub func hostTryGetInt64(elem: in JsonElement, value: out Long): Bool = ()
 @externTarget("System.Text.Json.JsonElement.TryGetDouble")
 pub func hostTryGetDouble(elem: in JsonElement, value: out Double): Bool = ()
 
-@externInstance
-@externTarget("System.Text.Json.JsonElement.GetRawText")
-pub func hostGetRawText(elem: in JsonElement): String = ()
+pub func hostGetRawText(elem: in JsonElement): String {
+  elem.GetRawText()
+}
 
-@externInstance
-@externTarget("System.Text.Json.JsonElement.get_ValueKind")
-pub func hostValueKind(elem: in JsonElement): Int = ()
+pub func hostValueKind(elem: in JsonElement): Int {
+  elem.ValueKind
+}
 
 // =====================================================================
 // Array iteration — direct externs over `JsonElement.ArrayEnumerator`
@@ -115,9 +115,9 @@ pub func hostValueKind(elem: in JsonElement): Int = ()
 // param is `inout`; Current is a property getter and doesn't mutate
 // but routes through `propGetter ()` in the FFI resolver.
 // =====================================================================
-@externInstance
-@externTarget("System.Text.Json.JsonElement.EnumerateArray")
-pub func hostEnumerateArray(elem: in JsonElement): JsonArrayEnumerator = ()
+pub func hostEnumerateArray(elem: in JsonElement): JsonArrayEnumerator {
+  elem.EnumerateArray()
+}
 
 @externInstance
 @externTarget("System.Text.Json.JsonElement+ArrayEnumerator.MoveNext")
@@ -131,9 +131,9 @@ pub func hostEnumCurrent(en: inout JsonArrayEnumerator): JsonElement = ()
 // Object iteration — direct externs over `JsonElement.ObjectEnumerator`
 // (the nested-CLR struct) so object-walking code can stay in pure Lyric.
 // =====================================================================
-@externInstance
-@externTarget("System.Text.Json.JsonElement.EnumerateObject")
-pub func hostEnumerateObject(elem: in JsonElement): JsonObjectEnumerator = ()
+pub func hostEnumerateObject(elem: in JsonElement): JsonObjectEnumerator {
+  elem.EnumerateObject()
+}
 
 @externInstance
 @externTarget("System.Text.Json.JsonElement+ObjectEnumerator.MoveNext")
@@ -143,13 +143,13 @@ pub func hostEnumObjectMoveNext(en: inout JsonObjectEnumerator): Bool = ()
 @externTarget("System.Text.Json.JsonElement+ObjectEnumerator.get_Current")
 pub func hostEnumObjectCurrent(en: inout JsonObjectEnumerator): JsonProperty = ()
 
-@externInstance
-@externTarget("System.Text.Json.JsonProperty.get_Name")
-pub func hostPropertyName(prop: in JsonProperty): String = ()
+pub func hostPropertyName(prop: in JsonProperty): String {
+  prop.Name
+}
 
-@externInstance
-@externTarget("System.Text.Json.JsonProperty.get_Value")
-pub func hostPropertyValue(prop: in JsonProperty): JsonElement = ()
+pub func hostPropertyValue(prop: in JsonProperty): JsonElement {
+  prop.Value
+}
 
 // =====================================================================
 // Manual serialization helpers.
@@ -160,12 +160,15 @@ pub func hostPropertyValue(prop: in JsonProperty): JsonElement = ()
 // `ToString()` instance method renders the escaped UTF-16 form
 // without the surrounding quotes; we add those in Lyric.
 // =====================================================================
+// stays @externTarget: `Encode(String, JavaScriptEncoder = null)` carries a
+// trailing optional reference param, and auto-FFI overload scoring is
+// exact-arity (Q-MD-004) — a 1-arg call matches no overload.
 @externTarget("System.Text.Json.JsonEncodedText.Encode")
 pub func hostEncodeText(s: in String): JsonEncodedText = ()
 
-@externInstance
-@externTarget("System.Text.Json.JsonEncodedText.ToString")
-pub func hostEncodedTextToString(t: in JsonEncodedText): String = ()
+pub func hostEncodedTextToString(t: in JsonEncodedText): String {
+  t.ToString()
+}
 
 /// Wrap `s` as a JSON string literal — escapes quotes / backslashes /
 /// control characters via `JsonEncodedText.Encode` and surrounds the

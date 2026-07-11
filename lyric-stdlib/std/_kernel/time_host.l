@@ -11,11 +11,11 @@
 //! aliases are visible package-wide once declared in this file and
 //! `Std.Time` imports it).
 //!
-//! Static members (factories, operators, fields, properties) are
-//! auto-FFI calls on the extern-type aliases; INSTANCE members of
-//! these value types keep their `@externTarget` wrappers — the
-//! auto-FFI path has no value-type receiver dispatch under the
-//! current bootstrap seed.
+//! All members — static factories, operators, fields, properties,
+//! and value-type instance members — are auto-FFI calls on the
+//! extern-type aliases; only the out-param `DateTime.TryParse`
+//! bridge keeps its `@externTarget` wrapper (out params have no
+//! auto-FFI call-site surface).
 //!
 //! Internal: only `Std.Time` should import this; per
 //! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
@@ -106,31 +106,31 @@ pub func hostPlus(t: in Instant, d: in Duration): Instant {
 }
 
 // =====================================================================
-// Inspection.
-// stays @externTarget (both): TotalMilliseconds/TotalSeconds are
-// instance properties of the TimeSpan value type — no auto-FFI
-// value-type receiver dispatch under the current bootstrap seed.
+// Inspection — instance properties of the TimeSpan value type,
+// dispatched through the receiver's address (ldloca + call).
 // =====================================================================
-@externTarget("System.TimeSpan.TotalMilliseconds")
-pub func hostTotalMillis(d: in Duration): Double = ()
+pub func hostTotalMillis(d: in Duration): Double {
+  d.TotalMilliseconds
+}
 
-@externTarget("System.TimeSpan.TotalSeconds")
-pub func hostTotalSeconds(d: in Duration): Double = ()
+pub func hostTotalSeconds(d: in Duration): Double {
+  d.TotalSeconds
+}
 
 // =====================================================================
-// Calendar arithmetic.
-// stays @externTarget (all three): instance methods on the DateTime
-// value type — no auto-FFI value-type receiver dispatch under the
-// current bootstrap seed.
+// Calendar arithmetic — instance methods on the DateTime value type.
 // =====================================================================
-@externTarget("System.DateTime.AddMonths")
-pub func hostAddMonths(t: in Instant, n: in Int): Instant = ()
+pub func hostAddMonths(t: in Instant, n: in Int): Instant {
+  t.AddMonths(n)
+}
 
-@externTarget("System.DateTime.AddYears")
-pub func hostAddYears(t: in Instant, n: in Int): Instant = ()
+pub func hostAddYears(t: in Instant, n: in Int): Instant {
+  t.AddYears(n)
+}
 
-@externTarget("System.DateTime.AddDays")
-pub func hostAddDays(t: in Instant, n: in Double): Instant = ()
+pub func hostAddDays(t: in Instant, n: in Double): Instant {
+  t.AddDays(n)
+}
 
 // =====================================================================
 // Epoch conversions.
@@ -143,11 +143,9 @@ pub func hostDtoFromEpochSeconds(n: in Long): DateTimeOffset {
   DateTimeOffset.FromUnixTimeSeconds(n)
 }
 
-// stays @externTarget: UtcDateTime is an instance property of the
-// DateTimeOffset value type (no auto-FFI value-type receiver dispatch
-// under the current bootstrap seed).
-@externTarget("System.DateTimeOffset.UtcDateTime")
-pub func hostDtoUtcDateTime(d: in DateTimeOffset): Instant = ()
+pub func hostDtoUtcDateTime(d: in DateTimeOffset): Instant {
+  d.UtcDateTime
+}
 
 // =====================================================================
 // Comparison.
@@ -189,12 +187,10 @@ pub func hostSubDurations(a: in Duration, b: in Duration): Duration {
 // precision and breaking the documented parse round-trip.  Fixed as
 // part of D-N-027: format explicitly with the round-trippable "o"
 // specifier.
-// stays @externTarget: ToString(string) is an instance method on the
-// DateTime value type (no auto-FFI value-type receiver dispatch under
-// the current bootstrap seed).
 // =====================================================================
-@externTarget("System.DateTime.ToString")
-func hostInstantToStringFmt(value: in Instant, fmt: in String): String = ()
+func hostInstantToStringFmt(value: in Instant, fmt: in String): String {
+  value.ToString(fmt)
+}
 
 pub func hostInstantToString(value: in Instant): String {
   hostInstantToStringFmt(value, "o")
@@ -204,9 +200,9 @@ pub func hostInstantToString(value: in Instant): String {
 // the clock time shifted to the host timezone; normalize back to UTC
 // so the parse seam returns the same instant `toIsoString` printed
 // regardless of the machine's timezone (D-N-027).
-// stays @externTarget: instance method on the DateTime value type.
-@externTarget("System.DateTime.ToUniversalTime")
-func hostToUniversalTime(t: in Instant): Instant = ()
+func hostToUniversalTime(t: in Instant): Instant {
+  t.ToUniversalTime()
+}
 
 // ─── Monotonic clock ──────────────────────────────────────────────────────────
 pub func hostStopwatchTimestamp(): Long {
@@ -224,11 +220,9 @@ pub func hostDtoUtcNow(): DateTimeOffset {
   DateTimeOffset.UtcNow
 }
 
-// stays @externTarget: ToUnixTimeMilliseconds is an instance method on
-// the DateTimeOffset value type (no auto-FFI value-type receiver
-// dispatch under the current bootstrap seed).
-@externTarget("System.DateTimeOffset.ToUnixTimeMilliseconds")
-pub func hostDtoToEpochMillis(d: in DateTimeOffset): Long = ()
+pub func hostDtoToEpochMillis(d: in DateTimeOffset): Long {
+  d.ToUnixTimeMilliseconds()
+}
 
 // ─── Synchronous sleep — block the calling thread for `ms` milliseconds ───────
 // Backs Std.Time.sleepMillis (used by `lyric run/build --watch`'s poll loop).

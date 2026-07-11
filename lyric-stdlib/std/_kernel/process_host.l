@@ -36,12 +36,12 @@ pub func hostExitCode(proc: in ProcessHandle): Int {
   proc.ExitCode
 }
 
-// stays @externTarget: Dispose() is inherited from
-// System.ComponentModel.Component and the MSIL auto-FFI instance resolver
-// does not walk base-type metadata, so `proc.Dispose()` resolves to a
-// deferred runtime panic instead of the inherited method.
 /// Release the OS handle held by `proc`.
 /// Must be called after `hostWait` / `hostExitCode` to avoid handle leaks.
-@externTarget("System.Diagnostics.Process.Dispose")
-@externInstance
-pub func hostDisposeProc(proc: in ProcessHandle): Unit = ()
+///
+/// `Dispose()` is inherited from `System.ComponentModel.Component`; the MSIL
+/// auto-FFI instance resolver walks the base-type Extends chain (#5562), so
+/// the plain method-call form resolves to the inherited method.
+pub func hostDisposeProc(proc: in ProcessHandle): Unit {
+  proc.Dispose()
+}

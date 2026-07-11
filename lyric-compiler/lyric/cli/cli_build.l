@@ -176,6 +176,122 @@ func loadManifestForSingleFileBuild(
   }
 }
 
+// The dotted package names `source` imports, in first-appearance order.
+// A text scan over lines beginning with `import ` (the same idiom as
+// `Release.packageNameOf`), taking the dotted path token, dropping any
+// `as Alias` suffix and inline comment, and skipping `import extern`
+// (an FFI form, not a package reference).
+func importedPackageNames(source: in String): List[String] {
+  val names: List[String] = newList()
+  val lines = Str.split(source, "\n")
+  var i = 0
+  while i < lines.length {
+    val line = Str.trim(lines[i])
+    if Str.startsWith(line, "import ") {
+      var rest = Str.trim(Str.substring(line, 7, Str.length(line) - 7))
+      match Str.indexOf(rest, "//") {
+        case Some(ci) -> {
+          rest = Str.trim(Str.substring(rest, 0, ci))
+        }
+        case None -> ()
+      }
+      match Str.indexOf(rest, " ") {
+        case Some(si) -> {
+          rest = Str.substring(rest, 0, si)
+        }
+        case None -> ()
+      }
+      if rest.length > 0 and rest != "extern" {
+        if not stringListContains(names, rest) {
+          names.add(rest)
+        }
+      }
+    }
+    i += 1
+  }
+  names
+}
+
+// The manifest's own [project.packages] entries reachable from `source`'s
+// transitive import closure, read + generator-preprocessed via
+// `readProjectPackageSources`.  A single-file build near a manifest could
+// previously never compile a file that imports one of the manifest's own
+// packages (`lyric build tests/x.l` inside a library tree): the synthetic
+// one-package request carried only dependencies, so `import Web` either
+// failed to resolve or fell through to an unrelated same-named function
+// (#5571).  Including exactly the imported packages (not the whole
+// [project.packages] table) keeps the D123 "only when earning its keep"
+// gate intact for loose scripts that merely sit near a manifest.
+// Returns None after printing errors when a package's sources cannot be
+// read.
+// `Std.*` / `Lyric.*` manifest entries must never be swept in as own
+// packages: those heads resolve through the stdlib / compiler restored
+// bundles, and compiling them into the user assembly double-books their
+// types against the bundle registration (a file built near
+// lyric-stdlib/lyric.toml lost `Std.Core.Option_Some` resolution this way).
+func isReservedHeadPackage(name: in String): Bool {
+  name == "Std" or name == "Lyric" or Str.startsWith(name, "Std.") or Str.startsWith(name, "Lyric.")
+}
+
+func collectImportedOwnPackages(
+  proj: in ProjectSection,
+  mfDir: in String,
+  mfPath: in String,
+  source: in String,
+  ownPkgName: in String,
+): Option[List[ProjectPackage]] {
+  val needed = importedPackageNames(source)
+  // Never include a manifest entry carrying the source's own package name:
+  // building one of the project's own package files directly (`lyric build
+  // src/web.l`) can pull the file's own package back into `needed` through
+  // a sibling's import cycle, and bundling two declarations of the same
+  // package is a compile error.
+  val included: List[String] = newList()
+  included.add(ownPkgName)
+  val result: List[ProjectPackage] = newList()
+  var hadFatal = false
+  var changed = true
+  while changed and not hadFatal {
+    changed = false
+    var pi = 0
+    while pi < proj.packages.count {
+      val pkgEntry = proj.packages[pi]
+      if stringListContains(needed, pkgEntry.name) and not stringListContains(included, pkgEntry.name) and not isReservedHeadPackage(pkgEntry.name) {
+        match readProjectPackageSources(pkgEntry, mfDir, mfPath) {
+          case Some(pkgSources) -> {
+            included.add(pkgEntry.name)
+            changed = true
+            if pkgSources.count > 0 {
+              result.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
+              var si = 0
+              while si < pkgSources.count {
+                val innerNames = importedPackageNames(pkgSources[si])
+                var ni = 0
+                while ni < innerNames.count {
+                  if not stringListContains(needed, innerNames[ni]) {
+                    needed.add(innerNames[ni])
+                  }
+                  ni += 1
+                }
+                si += 1
+              }
+            }
+          }
+          case None -> {
+            hadFatal = true
+          }
+        }
+      }
+      pi += 1
+    }
+  }
+  if hadFatal {
+    val noPkgs: Option[List[ProjectPackage]] = None
+    return noPkgs
+  }
+  Some(value = result)
+}
+
 func noContributionOutcome(req: in EmitRequest): NonNativeEmitOutcome {
   NonNativeEmitOutcome(emitResult = Emitter.emit(req), restoredDlls = newList(), nugetThirdPartyPaths = newList())
 }
@@ -194,11 +310,16 @@ func failedEmitOutcome(msg: in String): NonNativeEmitOutcome {
 // file sits near a lyric.toml — an explicit `--manifest`, or one discovered
 // by walking up from the source file's own directory
 // (`discoverManifestForSourceFile`) — that actually declares dependencies,
-// NuGet/Maven assets, or features, synthesizes a one-package
-// `EmitProjectRequest` and routes it through `Emitter.emitProject`: the same
-// dependency-resolution and bundling pipeline `buildProject` uses for a
-// manifest's `[project.packages]`, instead of the standalone `Emitter.emit`
-// path, which structurally cannot see anything outside `Std.*` (D123).
+// NuGet/Maven assets, features, or [project.packages] the source imports,
+// synthesizes a project-shaped `EmitProjectRequest` and routes it through
+// `Emitter.emitProject`: the same dependency-resolution and bundling
+// pipeline `buildProject` uses for a manifest's `[project.packages]`,
+// instead of the standalone `Emitter.emit` path, which structurally cannot
+// see anything outside `Std.*` (D123).  The manifest's own packages that
+// the source (transitively) imports are compiled into the request
+// alongside the source's package (`collectImportedOwnPackages`, #5571),
+// and the caller's `--features` / `--no-default-features` /
+// `--all-features` selection is honored exactly as in a project build.
 //
 // Falls back to the historical `Emitter.emit(req)` path UNCHANGED whenever
 // there is nothing for the new pipeline to contribute: no manifest found at
@@ -218,7 +339,12 @@ func failedEmitOutcome(msg: in String): NonNativeEmitOutcome {
 // compiling without it: single-file mode never triggers an implicit
 // restore (a deliberate, conservative default — see the decision log).
 func emitSingleFileOrProject(
-  req: in EmitRequest, sourcePath: in String, manifestPath: in Option[String]
+  req: in EmitRequest,
+  sourcePath: in String,
+  manifestPath: in Option[String],
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
 ): NonNativeEmitOutcome {
   val loaded = match loadManifestForSingleFileBuild(sourcePath, manifestPath) {
     case Err(msg) -> return failedEmitOutcome(msg)
@@ -226,9 +352,15 @@ func emitSingleFileOrProject(
   }
   val lm = match loaded { case None -> return noContributionOutcome(req); case Some(l) -> l }
 
-  val emptyCliFeatures: List[String] = newList()
-  val (activeFeatures, declaredFeatures) = resolveManifestFeatures(lm.mfText, lm.mfPath, emptyCliFeatures, false, false)
-  val resolvedDeps = resolveManifestDependencies(lm.manifest, lm.mfPath, req.target, activeFeatures)
+  val (activeFeatures, declaredFeatures) = resolveManifestFeatures(
+    lm.mfText,
+    lm.mfPath,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures,
+    req.target
+  )
+  val resolvedDeps = resolveManifestDependencies(lm.manifest, lm.mfPath, req.target, cliFeatures, noDefaultFeatures)
   if resolvedDeps.hadWorkspaceError {
     return failedEmitOutcome(
       sourcePath + ": build failed (workspace dependency declared in " + lm.mfPath + " failed to build; see above)"
@@ -240,6 +372,15 @@ func emitSingleFileOrProject(
     )
   }
 
+  val pkgNameRaw = Release.packageNameOf(req.source)
+  val pkgName = if pkgNameRaw.length > 0 { pkgNameRaw } else { req.assemblyName }
+
+  val noOwnPkgs: List[ProjectPackage] = newList()
+  val ownPkgs = match lm.manifest.project {
+    case Some(proj) -> match collectImportedOwnPackages(proj, Path.dirname(lm.mfPath), lm.mfPath, req.source, pkgName) { case Some(ps) -> ps; case None -> return failedEmitOutcome(sourcePath + ": build failed (cannot read a [project.packages] source declared in " + lm.mfPath + "; see above)") }
+    case None -> noOwnPkgs
+  }
+
   val hasMavenEntries = match lm.manifest.maven { case Some(m) -> m.entries.count > 0; case None -> false }
   val jvmNeedsMaven = match req.target { case Jvm -> hasMavenEntries; case _ -> false }
 
@@ -247,18 +388,26 @@ func emitSingleFileOrProject(
     activeFeatures.count > 0 or
     declaredFeatures.count > 0 or
     resolvedDeps.depTemplateSrcs.count > 0 or
+    ownPkgs.count > 0 or
     jvmNeedsMaven
 
   if not hasContribution {
     return noContributionOutcome(req)
   }
 
-  val pkgNameRaw = Release.packageNameOf(req.source)
-  val pkgName = if pkgNameRaw.length > 0 { pkgNameRaw } else { req.assemblyName }
   val srcs: List[String] = newList()
   srcs.add(req.source)
   val pkgs: List[ProjectPackage] = newList()
+  // The source's own package goes FIRST: the JVM bundled compile takes
+  // `packages[0].name` as the bundle's entry package, and the MSIL entry
+  // scan is first-wins (#2885) — same ordering convention as `cmdTest`'s
+  // test-package-first layout.
   pkgs.add(ProjectPackage(name = pkgName, sources = srcs))
+  var opi = 0
+  while opi < ownPkgs.count {
+    pkgs.add(ownPkgs[opi])
+    opi += 1
+  }
 
   val projReq = EmitProjectRequest(
     packages = pkgs,
@@ -306,6 +455,10 @@ pub func buildOne(
 
 // `nativeTriple` / `nativeOpt` only apply to `--target native` (the
 // `--triple` / `--opt` flags); empty strings mean host triple / -O2.
+// Callers with no CLI feature selection of their own (`lyric run`, the
+// self-tests) use this default-feature entry point; `cmdBuild` threads the
+// user's `--features` / `--no-default-features` / `--all-features` through
+// `buildOneNativeWithFeatures` below (#5571).
 pub func buildOneNative(
   sourcePath: in String,
   outPath: in String,
@@ -313,6 +466,31 @@ pub func buildOneNative(
   manifestPath: in Option[String],
   nativeTriple: in String,
   nativeOpt: in String,
+): Int {
+  val noCliFeatures: List[String] = newList()
+  buildOneNativeWithFeatures(
+    sourcePath,
+    outPath,
+    target,
+    manifestPath,
+    nativeTriple,
+    nativeOpt,
+    noCliFeatures,
+    false,
+    false
+  )
+}
+
+pub func buildOneNativeWithFeatures(
+  sourcePath: in String,
+  outPath: in String,
+  target: in CompileTarget,
+  manifestPath: in Option[String],
+  nativeTriple: in String,
+  nativeOpt: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
 ): Int {
   val buildStart = Time.now()
   var source = match File.readText(sourcePath) {
@@ -380,7 +558,7 @@ pub func buildOneNative(
   val result = if isNativeTarget {
     Emitter.emitNative(req, effTriple, effOpt, effLibs)
   } else {
-    val outcome = emitSingleFileOrProject(req, sourcePath, manifestPath)
+    val outcome = emitSingleFileOrProject(req, sourcePath, manifestPath, cliFeatures, noDefaultFeatures, allFeatures)
     resolvedRestoredDlls = outcome.restoredDlls
     resolvedNugetPaths = outcome.nugetThirdPartyPaths
     outcome.emitResult
@@ -789,12 +967,25 @@ func cmdBuild(argv: in slice[String]): Int {
         target = target,
         manifest = manifestArg,
         nativeTriple = tripleArg,
-        nativeOpt = optArg
+        nativeOpt = optArg,
+        feats = cliFeatures,
+        noDef = noDefaultFeatures,
+        allF = allFeatures
       )
     )
   }
 
-  buildOneNative(sourcePath, outPath, target, manifestArg, tripleArg, optArg)
+  buildOneNativeWithFeatures(
+    sourcePath,
+    outPath,
+    target,
+    manifestArg,
+    tripleArg,
+    optArg,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures
+  )
 }
 
 // Single-file `lyric build --release <source.l>`: compile to a staging DLL,
@@ -1102,6 +1293,111 @@ func sortFileList(xs: in List[String]): List[String] {
   sorted
 }
 
+// Read one [project.packages] entry's source texts (single .l file, explicit
+// TOML-array file list, or a directory of .l files collected recursively in
+// sorted order), running the custom-generator pre-processor on each file.
+// Returns None after printing package-labelled errors when anything fails to
+// read or preprocess.  Shared by `buildProject` and
+// `emitSingleFileOrProject`'s own-package inclusion (#5571).
+func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, mfPath: in String): Option[List[String]] {
+  val pkgSources: List[String] = newList()
+  var hadFatal = false
+  if pkgEntry.paths.count > 0 {
+    // Explicit file list (TOML array form): read each named file in order.
+    var fi = 0
+    while fi < pkgEntry.paths.count {
+      val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) {
+        pkgEntry.paths[fi]
+      } else {
+        Path.join(mfDir, pkgEntry.paths[fi])
+      }
+      match File.readText(absFile) {
+        case Ok(raw) -> {
+          match Generator.preprocess(raw, mfPath, absFile) {
+            case Ok(t) -> pkgSources.add(t)
+            case Err(e) -> {
+              printErr("build: package '" + pkgEntry.name + "': generator error in " + absFile + ": " + e)
+              hadFatal = true
+            }
+          }
+        }
+        case Err(e) -> {
+          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+        }
+      }
+      fi += 1
+    }
+  } else {
+    val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
+    if File.fileExists(abs) {
+      // Single .l file: read it directly, then run custom generators.
+      match File.readText(abs) {
+        case Ok(raw) -> {
+          match Generator.preprocess(raw, mfPath, abs) {
+            case Ok(t) -> pkgSources.add(t)
+            case Err(e) -> {
+              printErr("build: package '" + pkgEntry.name + "': generator error in " + abs + ": " + e)
+              hadFatal = true
+            }
+          }
+        }
+        case Err(e) -> {
+          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+        }
+      }
+    } else if File.dirExists(abs) {
+      // Directory: collect all .l files recursively, sorted for determinism.
+      val allFiles = match File.listFilesRecursive(abs) {
+        case Ok(fs) -> fs
+        case Err(e) -> {
+          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+          newList()
+        }
+      }
+      val lFiles: List[String] = newList()
+      for f in allFiles.toArray() {
+        if Str.endsWith(f, ".l") {
+          lFiles.add(f)
+        }
+      }
+      if lFiles.count == 0 {
+        printErr("build: package '" + pkgEntry.name + "': no .l files found in " + abs)
+        hadFatal = true
+      } else {
+        val sorted = sortFileList(lFiles)
+        for f in sorted {
+          match File.readText(f) {
+            case Ok(raw) -> {
+              match Generator.preprocess(raw, mfPath, f) {
+                case Ok(t) -> pkgSources.add(t)
+                case Err(e) -> {
+                  printErr("build: package '" + pkgEntry.name + "': generator error in " + f + ": " + e)
+                  hadFatal = true
+                }
+              }
+            }
+            case Err(e) -> {
+              printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+              hadFatal = true
+            }
+          }
+        }
+      }
+    } else {
+      printErr("build: package '" + pkgEntry.name + "': path not found: " + abs)
+      hadFatal = true
+    }
+  }
+  if hadFatal {
+    val noSources: Option[List[String]] = None
+    return noSources
+  }
+  Some(value = pkgSources)
+}
+
 // Project-mode build: reads [project.packages] from lyric.toml and
 // bundles every package's .l files into a single DLL.
 func buildProject(
@@ -1161,7 +1457,8 @@ func buildProject(
     mfPath,
     cliFeatures,
     noDefaultFeatures,
-    allFeatures
+    allFeatures,
+    target
   )
 
   val mfDir = Path.dirname(mfPath)
@@ -1217,98 +1514,15 @@ func buildProject(
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
-    val pkgSources: List[String] = newList()
-    if pkgEntry.paths.count > 0 {
-      // Explicit file list (TOML array form): read each named file in order.
-      var fi = 0
-      while fi < pkgEntry.paths.count {
-        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) {
-          pkgEntry.paths[fi]
-        } else {
-          Path.join(mfDir, pkgEntry.paths[fi])
+    match readProjectPackageSources(pkgEntry, mfDir, mfPath) {
+      case Some(pkgSources) -> {
+        if pkgSources.count > 0 {
+          pkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
         }
-        match File.readText(absFile) {
-          case Ok(raw) -> {
-            match Generator.preprocess(raw, mfPath, absFile) {
-              case Ok(t) -> pkgSources.add(t)
-              case Err(e) -> {
-                printErr("build: package '" + pkgEntry.name + "': generator error in " + absFile + ": " + e)
-                hadFatal = true
-              }
-            }
-          }
-          case Err(e) -> {
-            printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-            hadFatal = true
-          }
-        }
-        fi += 1
       }
-    } else {
-      val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
-      if File.fileExists(abs) {
-        // Single .l file: read it directly, then run custom generators.
-        match File.readText(abs) {
-          case Ok(raw) -> {
-            match Generator.preprocess(raw, mfPath, abs) {
-              case Ok(t) -> pkgSources.add(t)
-              case Err(e) -> {
-                printErr("build: package '" + pkgEntry.name + "': generator error in " + abs + ": " + e)
-                hadFatal = true
-              }
-            }
-          }
-          case Err(e) -> {
-            printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-            hadFatal = true
-          }
-        }
-      } else if File.dirExists(abs) {
-        // Directory: collect all .l files recursively, sorted for determinism.
-        val allFiles = match File.listFilesRecursive(abs) {
-          case Ok(fs) -> fs
-          case Err(e) -> {
-            printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-            hadFatal = true
-            newList()
-          }
-        }
-        val lFiles: List[String] = newList()
-        for f in allFiles.toArray() {
-          if Str.endsWith(f, ".l") {
-            lFiles.add(f)
-          }
-        }
-        if lFiles.count == 0 {
-          printErr("build: package '" + pkgEntry.name + "': no .l files found in " + abs)
-          hadFatal = true
-        } else {
-          val sorted = sortFileList(lFiles)
-          for f in sorted {
-            match File.readText(f) {
-              case Ok(raw) -> {
-                match Generator.preprocess(raw, mfPath, f) {
-                  case Ok(t) -> pkgSources.add(t)
-                  case Err(e) -> {
-                    printErr("build: package '" + pkgEntry.name + "': generator error in " + f + ": " + e)
-                    hadFatal = true
-                  }
-                }
-              }
-              case Err(e) -> {
-                printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-                hadFatal = true
-              }
-            }
-          }
-        }
-      } else {
-        printErr("build: package '" + pkgEntry.name + "': path not found: " + abs)
+      case None -> {
         hadFatal = true
       }
-    }
-    if pkgSources.count > 0 {
-      pkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
     }
     pi += 1
   }
@@ -1325,7 +1539,7 @@ func buildProject(
   // workspace-error-vs-unbuilt-local-dep distinction this function preserves
   // verbatim (a workspace failure has always been an immediate `return 1`
   // here; an unbuilt local `path` dep has always been a non-fatal warning).
-  val resolved = resolveManifestDependencies(manifest, mfPath, target, activeFeatures)
+  val resolved = resolveManifestDependencies(manifest, mfPath, target, cliFeatures, noDefaultFeatures)
   if resolved.hadWorkspaceError {
     return 1
   }

@@ -90,3 +90,63 @@ test "try-catch expression: bound exception arm still yields a value" {
   assertEqualInt(computeBound(4), 5, "4 + 1 = 5 (try body)")
   assertEqualInt(computeBound(200), 0, "200 > 100 -> panic -> catch 0")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5572: a try/catch expression whose success arm constructs a record with a
+// `slice[Byte]`-typed local failed stackmap verification — the raw JDK
+// primitive array (`s.getBytes()` -> `[B`) was stored into the constructor's
+// arg slot whose StackMapTable entry (and the field descriptor) declare the
+// erased `[Ljava/lang/Object;` slice shape, so the handler-entry frame
+// disagreed with the dataflow type ("Stack map does not match the one at
+// exception handler"; the plain no-try form failed the same way as "Bad type
+// on operand stack" at the ctor invokespecial).  `lowerConstruction` (and
+// annotated `slice[T]` local bindings) now box a primitive array into the
+// erased representation via `coerceValueTo`.
+// ─────────────────────────────────────────────────────────────────────────────
+record BytesWrapper {
+  tag: Int
+  payload: slice[Byte]
+}
+
+// The direct form of the shape `_kernel_jvm/http_host.l` worked around by
+// isolating the try/catch into the bytes-only `readAllAndClose` helper.
+func buildWrapped(s: String): BytesWrapper {
+  try {
+    val bytes = s.getBytes()
+    BytesWrapper(tag = 1, payload = bytes)
+  } catch Bug as b {
+    panic(b.message)
+  }
+}
+
+// Same construction without the try/catch: the plain-form VerifyError repro.
+func buildPlain(s: String): BytesWrapper {
+  val bytes = s.getBytes()
+  BytesWrapper(tag = 2, payload = bytes)
+}
+
+// Annotated `slice[Byte]` local bound straight from the FFI `[B` (the
+// `coerceValueTo` let/val binding path).
+func lengthViaAnnotatedLocal(s: String): Int {
+  val bs: slice[Byte] = s.getBytes()
+  bs.length
+}
+
+test "try-catch success arm constructs a record from a byte[] local (#5572)" {
+  val w = buildWrapped("hi")
+  assertEqualInt(w.tag, 1, "tag")
+  assertEqualInt(w.payload.length, 2, "payload length through the field read")
+  val p: slice[Byte] = w.payload
+  val b0: Byte = p[0]
+  assertEqualInt(b0.toInt(), 104, "payload[0] is 'h'")
+}
+
+test "plain construction from a byte[] local verifies and runs (#5572)" {
+  val w = buildPlain("abc")
+  assertEqualInt(w.tag, 2, "tag")
+  assertEqualInt(w.payload.length, 3, "payload length")
+}
+
+test "annotated slice[Byte] local binds a byte[] initializer (#5572)" {
+  assertEqualInt(lengthViaAnnotatedLocal("lyric"), 5, "length via annotated local")
+}

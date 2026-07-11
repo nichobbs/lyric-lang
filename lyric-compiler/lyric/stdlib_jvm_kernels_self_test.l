@@ -507,12 +507,14 @@ async func jsonSummary(port: in Int): String {
   "unreachable"
 }
 
-// Byte content is asserted through both views of the same buffered body:
-// bodyBytes length plus bodyText over the identical bytes.  (Per-element
-// user-code access to a cross-package `slice[Byte]` payload is a
-// pre-existing JVM ABI gap — the payload arrives as a boxed Byte[] that is
-// neither indexable nor iterable — so the text view carries the content
-// assertion.)
+// Byte content is asserted through both views of the same buffered body —
+// bodyBytes (length, per-element indexing, and for-in iteration) plus
+// bodyText over the identical bytes.  Per-element access to a
+// cross-package `slice[Byte]` payload was a JVM ABI gap (the payload
+// arrived as a boxed Byte[] that was neither indexable nor iterable) fixed
+// in #5570 (`emitNormalizeErasedSlice`); the index and for-in assertions
+// below pin that fix against the real `Std.Http` kernel path the issue
+// reported.
 async func bytesSummary(port: in Int): String {
   val r = await getWithTimeoutAsync("http://127.0.0.1:" + port.toString() + "/bytes", 10000)
   match r {
@@ -526,16 +528,25 @@ async func bytesSummary(port: in Int): String {
         case None -> ()
       }
       var lenText = "?"
+      var firstByte = -1
+      var byteSum = 0
       val bb = await HttpResponse.bodyBytes(resp)
       match bb {
         case Ok(bytes) -> {
           lenText = bytes.length.toString()
+          firstByte = bytes[0].toInt()
+          for b in bytes {
+            byteSum = byteSum + b.toInt()
+          }
         }
         case Err(_) -> return "bodyBytes failed"
       }
       val bt = await HttpResponse.bodyText(resp)
       match bt {
-        case Ok(text) -> return HttpResponse.statusCode(resp).toString() + "|" + probe + "|" + lenText + "|" + text
+        case Ok(text) -> return HttpResponse.statusCode(resp).toString() + "|" + probe + "|" + lenText + "|" + text + "|" +
+          firstByte.toString() +
+          "|" +
+          byteSum.toString()
         case Err(_) -> return "bodyText failed"
       }
     }
@@ -668,7 +679,11 @@ test "respondBytesWithHeaders: byte body, custom header, and both body views" {
     await serverTask
   }
   HttpSrv.stopListener(srv.listener)
-  assertEqual(summary, "202|forty-two|3|abc", "byte-body response with extra headers")
+  assertEqual(
+    summary,
+    "202|forty-two|3|abc|97|294",
+    "byte-body response with extra headers, indexed and iterated (#5570)"
+  )
 }
 
 test "default client follows a 302 served by Std.HttpServer" {

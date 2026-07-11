@@ -216,7 +216,7 @@ test "buildWorkspaceDeps: tuple's Option element round-trips without crashing on
 
   val directIsWorkspace = isSomeWs(Ws.findWorkspaceRoot(Path.dirname(mfPath)))
   val noFeatures: List[String] = newList()
-  val (dllPaths, hadError, wsCtxOpt) = Cli.buildWorkspaceDeps(manifest, mfPath, Emitter.Dotnet, noFeatures)
+  val (dllPaths, hadError, wsCtxOpt) = Cli.buildWorkspaceDeps(manifest, mfPath, Emitter.Dotnet, noFeatures, false)
   val tupleIsWorkspace = isSomeWs(wsCtxOpt)
 
   assertEqualInt(dllPaths.count, 0, "buildWorkspaceDeps: no {workspace = true} deps declared, so nothing is built")
@@ -235,7 +235,7 @@ test "buildWorkspaceDeps: tuple's Option element round-trips without crashing on
 test "resolveManifestFeatures: manifest defaults are active with no CLI overrides" {
   val mfPath = "/tmp/fixture-not-read/lyric.toml"
   val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[features]\ndefault = [\"a\", \"b\"]\na = []\nb = []\nc = []\n"
-  val (active, declared) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, false)
+  val (active, declared) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, false, Emitter.Dotnet)
   assertEqualInt(active.count, 2, "resolveManifestFeatures: default features are active")
   assertTrue(
     listContainsPrefix(active, "a") and listContainsPrefix(active, "b"),
@@ -249,7 +249,7 @@ test "resolveManifestFeatures: noDefaultFeatures suppresses defaults, CLI featur
   val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[features]\ndefault = [\"a\"]\na = []\nb = []\n"
   val cliFeatures: List[String] = newList()
   cliFeatures.add("b")
-  val (active, _) = Cli.resolveManifestFeatures(mfText, mfPath, cliFeatures, true, false)
+  val (active, _) = Cli.resolveManifestFeatures(mfText, mfPath, cliFeatures, true, false, Emitter.Dotnet)
   assertEqualInt(active.count, 1, "resolveManifestFeatures: only the CLI feature is active, default suppressed")
   assertTrue(listContainsPrefix(active, "b"), "resolveManifestFeatures: CLI-supplied feature is active")
 }
@@ -257,7 +257,7 @@ test "resolveManifestFeatures: noDefaultFeatures suppresses defaults, CLI featur
 test "resolveManifestFeatures: allFeatures activates every declared feature" {
   val mfPath = "/tmp/fixture-not-read/lyric.toml"
   val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[features]\ndefault = []\na = []\nb = []\nc = []\n"
-  val (active, declared) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, true)
+  val (active, declared) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, true, Emitter.Dotnet)
   assertEqualInt(
     active.count,
     declared.count,
@@ -268,9 +268,68 @@ test "resolveManifestFeatures: allFeatures activates every declared feature" {
 test "resolveManifestFeatures: no [features] table yields empty active and declared sets" {
   val mfPath = "/tmp/fixture-not-read/lyric.toml"
   val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n"
-  val (active, declared) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, false)
+  val (active, declared) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, false, Emitter.Dotnet)
   assertEqualInt(active.count, 0, "resolveManifestFeatures: no [features] table means no active features")
   assertEqualInt(declared.count, 0, "resolveManifestFeatures: no [features] table means no declared features")
+}
+
+// Target normalization (#5571): a platform-split manifest (`default =
+// ["dotnet"]`, declared `dotnet` + `jvm`) must resolve to the ACTIVE
+// target's feature, not the default target's, so `--target jvm` builds do
+// not compile `@cfg(feature = "dotnet")` kernels into JVM bytecode.
+func platformSplitMf(): String {
+  "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[features]\ndefault = [\"dotnet\"]\ndotnet = []\njvm = []\n"
+}
+
+test "resolveManifestFeatures: --target jvm swaps a dotnet default for the declared jvm feature" {
+  val mfPath = "/tmp/fixture-not-read/lyric.toml"
+  val (active, _) = Cli.resolveManifestFeatures(platformSplitMf(), mfPath, newList(), false, false, Emitter.Jvm)
+  assertEqualInt(active.count, 1, "target-normalize: exactly one platform feature active on jvm")
+  assertTrue(listContainsPrefix(active, "jvm"), "target-normalize: the jvm feature is active")
+  assertFalse(listContainsPrefix(active, "dotnet"), "target-normalize: the dotnet default is deactivated on jvm")
+}
+
+test "resolveManifestFeatures: --target dotnet leaves a dotnet default untouched" {
+  val mfPath = "/tmp/fixture-not-read/lyric.toml"
+  val (active, _) = Cli.resolveManifestFeatures(platformSplitMf(), mfPath, newList(), false, false, Emitter.Dotnet)
+  assertEqualInt(active.count, 1, "target-normalize: dotnet default stays the sole active feature on dotnet")
+  assertTrue(listContainsPrefix(active, "dotnet"), "target-normalize: the dotnet feature is active")
+}
+
+test "resolveManifestFeatures: explicit --features overrides target normalization" {
+  val mfPath = "/tmp/fixture-not-read/lyric.toml"
+  val cliFeatures: List[String] = newList()
+  cliFeatures.add("dotnet")
+  val (active, _) = Cli.resolveManifestFeatures(platformSplitMf(), mfPath, cliFeatures, false, false, Emitter.Jvm)
+  assertEqualInt(active.count, 1, "target-normalize: the explicit selection is honored verbatim")
+  assertTrue(
+    listContainsPrefix(active, "dotnet"),
+    "target-normalize: an explicitly-requested other-target feature is honored"
+  )
+}
+
+test "resolveManifestFeatures: an undeclared target feature is not invented" {
+  val mfPath = "/tmp/fixture-not-read/lyric.toml"
+  val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[features]\ndefault = [\"a\"]\na = []\n"
+  val (active, _) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, false, Emitter.Jvm)
+  assertEqualInt(active.count, 1, "target-normalize: non-platform features pass through unchanged")
+  assertTrue(
+    listContainsPrefix(active, "a"),
+    "target-normalize: a manifest with no target-named features is unaffected"
+  )
+}
+
+test "resolveManifestFeatures: an empty-default manifest keeps its deliberate opt-out on every target" {
+  // lyric-session's shape: dotnet/jvm are declared but neither is a
+  // default, because each kernel carries a mandatory NuGet/Maven
+  // dependency.  The swap fires only on a removed mismatch, so no
+  // target-named feature may be introduced here.
+  val mfPath = "/tmp/fixture-not-read/lyric.toml"
+  val mfText = "[package]\nname = \"Fixture\"\nversion = \"0.1.0\"\n\n[features]\ndefault = []\ndotnet = []\njvm = []\n"
+  val (activeJvm, _) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, false, Emitter.Jvm)
+  assertEqualInt(activeJvm.count, 0, "target-normalize: empty defaults stay empty on jvm")
+  val (activeNet, _) = Cli.resolveManifestFeatures(mfText, mfPath, newList(), false, false, Emitter.Dotnet)
+  assertEqualInt(activeNet.count, 0, "target-normalize: empty defaults stay empty on dotnet")
 }
 
 // Direct coverage for `injectMavenClasspathForJvm` / `restoreMavenClasspath`

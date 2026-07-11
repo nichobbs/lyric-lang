@@ -120,6 +120,13 @@ useful for catching accidental version skew within the monorepo:
 If the member's `[package].version` does not satisfy the constraint, the build
 fails.
 
+**Feature resolution.** A workspace dependency is compiled from source by the
+consumer's build, so it resolves its own feature set: its own
+`[features].default` composed with the root build's *explicit* `--features` /
+`--no-default-features` flags, plus swap-only target normalization for
+platform-named features. The full rule lives in
+`docs/24-build-features.md` §2.3 (shipped with #5571).
+
 ### 3.2 Registry form (unchanged)
 
 ```toml

@@ -1009,14 +1009,16 @@ pub func parseCorsMaxAge(maxAgeStr: in String, defaultValue: in Int): Int {
 }
 
 // ─── Server entry point ───────────────────────────────────────────────────────
-// The four helpers below and the dotnet serve() implementation call
-// Std.HttpServer symbols (requestQuery/requestHeaders/respondBytesWithHeaders)
-// that only the dotnet kernel (`_kernel/http_server.l`) exposes — the JVM
-// kernel (`_kernel_jvm/http_server.l`) is a narrower bootstrap-grade surface
-// (see its header comment), so Web binds `io.undertow` directly on jvm
-// instead (Web.Kernel.Runtime, below).  All five items are therefore
-// dotnet-only; erased for jvm builds by Lyric.Cfg before type-checking, so
-// the absent Std.HttpServer symbols never surface as an unknown-name error.
+// The four helpers below and the dotnet serve() implementation are the
+// Std.HttpServer shell of the dotnet accept loop.  The jvm serve() does not
+// go through Std.HttpServer at all — Web binds `io.undertow` directly
+// (Web.Kernel.Runtime, below) for a production multi-threaded server with
+// real exchange I/O, rather than the JVM kernel's single-consumer
+// pull-model bridge over `com.sun.net.httpserver` (which, since
+// D-progress-648, does expose the same twelve-function surface as the
+// dotnet kernel — the split here is a server-architecture choice, not a
+// kernel-surface gap).  All five items are therefore dotnet-only; erased
+// for jvm builds by Lyric.Cfg before type-checking.
 @cfg(feature = "dotnet")
 func headerValueOr(rawHeaders: in Map[String, String], name: in String, fallback: in String): String {
   match mapGet(rawHeaders, name) {

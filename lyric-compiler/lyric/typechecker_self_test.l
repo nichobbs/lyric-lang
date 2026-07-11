@@ -768,7 +768,7 @@ test "first wins on import func collision" {
     i = i + 1
   }
   // (a) same name + same arity: must not crash; check completes.
-  val srcSame = "package App\n" + "func collide(x: in Int): Int { x + 1 }\n" + "func use(): Int { collide(7) }\n"
+  val srcSame = "package App\n" + "func collide(x: in Int): Int { x + 1 }\n" + "func consume(): Int { collide(7) }\n"
   val prSame = parse(srcSame)
   val crSame = checkWithImports(prSame.file, importedItems)
   assertTrue(
@@ -779,7 +779,7 @@ test "first wins on import func collision" {
   // (b) same name + different arity: user overload registers on its
   // own arity-qualified key; both calls resolve.
   val srcDiff = "package App2\n" + "func collide(x: in Int, y: in Int): Int { x + y }\n" +
-    "func use(): Int { collide(7, 8) }\n"
+    "func consume(): Int { collide(7, 8) }\n"
   val prDiff = parse(srcDiff)
   val crDiff = checkWithImports(prDiff.file, importedItems)
   assertTrue(diagCount(crDiff) == 0, "first-wins: same-name different-arity user overload registers cleanly")
@@ -2486,4 +2486,120 @@ test "extern boundary leak fires through generic type argument" {
     hasDiagCode(cr, "W0006"),
     "extern-leak: nested generic type argument exposing imported nested extern type triggers W0006"
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// docs/59 A4: method-style calls on user types are arity/argument-checked.
+// ─────────────────────────────────────────────────────────────────────────────
+test "record body method call: valid call has no diagnostics" {
+  val src = "package P\nrecord Counter {\n  n: Int\n  func bump(by: in Int): Int { self.n + by }\n}\nfunc consume(c: in Counter): Int { c.bump(2) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "valid record method call: no diagnostics")
+}
+
+test "record body method call: wrong arg type is T0043" {
+  val src = "package P\nrecord Counter {\n  n: Int\n  func bump(by: in Int): Int { self.n + by }\n}\nfunc consume(c: in Counter): Int { c.bump(\"x\") }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "method arg type mismatch: T0043")
+}
+
+test "impl method call: wrong arity is T0042" {
+  val src = "package P\ninterface Greeter {\n  func greet(name: in String): String\n}\nrecord G {\n  z: Int\n}\nimpl Greeter for G {\n  func greet(name: in String): String { name }\n}\nfunc consume(g: in G): String { g.greet(\"a\", \"b\") }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0042"), "impl method wrong arity: T0042")
+}
+
+test "method return type flows onward" {
+  val src = "package P\nrecord Named {\n  tag: Int\n  func name(): String { \"n\" }\n}\nfunc wantInt(x: in Int): Int { x }\nfunc consume(n: in Named): Int { wantInt(n.name()) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "String method result into Int param: T0043 (return type known)")
+}
+
+test "generic record method call: owner generics substituted from receiver" {
+  val src = "package P\nrecord Box[T] {\n  v: T\n  func get(): T { self.v }\n}\nfunc consume(b: in Box[Int]): String { b.get() }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0070"), "Box[Int].get(): Int returned where String declared: T0070")
+}
+
+test "interface method call: arg types checked" {
+  val src = "package P\ninterface Speaker {\n  func speak(volume: in Int): String\n}\nfunc consume(s: in Speaker): String { s.speak(\"loud\") }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "interface method arg mismatch: T0043")
+}
+
+test "dot-named type-associated function callable method-style with typed return" {
+  val src = "package P\nrecord Wrap {\n  v: Int\n}\nfunc Wrap.unwrap(w: in Wrap): Int { w.v }\nfunc consume(x: in Wrap): String { x.unwrap() }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0113"), "dot-named method-style call resolves: no T0113")
+  assertTrue(hasDiagCode(cr, "T0070"), "dot-named call result Int where String declared: T0070")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// docs/59 A5: unknown members on member-complete receivers are T0113.
+// ─────────────────────────────────────────────────────────────────────────────
+test "unknown member on known record is T0113" {
+  val src = "package P\nrecord Point {\n  x: Int\n}\nfunc consume(p: in Point): Int { p.nope }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0113"), "unknown field on local record: T0113")
+  assertTrue(diagMessageFor(cr, "T0113").contains("Point"), "T0113 names the receiver type")
+}
+
+test "unknown method call on known record is T0113" {
+  val src = "package P\nrecord Point {\n  x: Int\n}\nfunc consume(p: in Point): Int { p.frobnicate(1) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0113"), "unknown method on local record: T0113")
+}
+
+test "typo'd chained member path is T0113" {
+  val src = "package P\nrecord Inner {\n  v: Int\n}\nrecord Outer {\n  inner: Inner\n}\nfunc consume(o: in Outer): Int { o.inner.typo }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0113"), "typo on chained member path: T0113")
+}
+
+test "toString on a record stays lenient" {
+  val src = "package P\nrecord Point {\n  x: Int\n}\nfunc consume(p: in Point): String { p.toString() }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0113"), "toString is a universal codegen intrinsic: no T0113")
+}
+
+test "derive-synthesised method names stay lenient before the derive pass" {
+  val src = "package P\n@derive(Equals)\nrecord Point {\n  x: Int\n}\nfunc consume(a: in Point, b: in Point): Bool { a.equals(b) }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0113"), "equals resolves post-check via the derive pass: no T0113")
+}
+
+test "unknown member on a union receiver stays lenient" {
+  val src = "package P\nunion U {\n  case A\n}\nfunc consume(u: in U): Int { u.whatever }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0113"), "unions are not member-complete: no T0113")
+}
+
+test "unknown member on an imported record stays lenient" {
+  val importedItems = importedItemsOf("package Dep\npub record Widget {\n  w: Int\n}\n")
+  val src = "package App\nimport Dep\nfunc consume(x: in Widget): Int { x.mystery() }\n"
+  val cr = checkWithImports(parse(src).file, importedItems)
+  assertTrue(not hasDiagCode(cr, "T0113"), "imported records may come from method-dropping contract reprs: no T0113")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5603: a concrete non-Unit function must have a value-producing body.
+// ─────────────────────────────────────────────────────────────────────────────
+test "non-Unit function with absent body is T0114" {
+  val src = "package P\nfunc f(): Int\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0114"), "absent body on non-Unit func: T0114")
+}
+
+test "non-Unit function with empty block body is T0114" {
+  val src = "package P\nfunc f(): Int {\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0114"), "empty block body on non-Unit func: T0114")
+}
+
+test "@axiom body-less function stays accepted" {
+  val src = "package P\n@axiom\nfunc f(): Int\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0114"), "@axiom body-less: no T0114")
+}
+
+test "@externTarget body-less function stays accepted" {
+  val src = "package P\n@externTarget(\"System.Math::Abs\")\nfunc abs(x: in Int): Int\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0114"), "@externTarget body-less: no T0114")
+}
+
+test "interface method signature stays accepted" {
+  val src = "package P\ninterface I {\n  func m(): Int\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0114"), "interface method sig: no T0114")
+}
+
+test "Unit function with absent body stays accepted" {
+  val src = "package P\nfunc f(): Unit\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0114"), "Unit body-less func: no T0114")
 }

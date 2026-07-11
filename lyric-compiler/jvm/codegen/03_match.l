@@ -95,13 +95,32 @@ func instanceMethodRetGenericArgs(ctx: in FuncCtx, recv: in Expr, memberName: in
 func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
   match scrutinee.kind {
     case EParen(inner) -> scrutineeGenericArgs(ctx, inner)
+    // `await` unwraps the task but keeps the awaited call's logical value type
+    // (an async func's `retGenericArgs` carry its DECLARED return, e.g.
+    // `Result[slice[Byte], String]`), so the instantiation passes through
+    // (#5570 — `val bb = await HttpResponse.bodyBytes(resp); match bb { … }`).
+    case EAwait(inner) -> scrutineeGenericArgs(ctx, inner)
     case ECall(fn, _) -> {
       match fn.kind {
         case EPath(path) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, lastSegment(path)))
         // `recv.method(...)` — an in-body / `impl` method registers under
         // `<receiverClass>#<method>` with its `retGenericArgs`; resolve the
         // receiver's class (local/param/`self`) to find it, else stay boxed.
-        case EMember(recv, memberName) -> instanceMethodRetGenericArgs(ctx, recv, memberName)
+        // A type-qualified dot-named FUNCTION (`HttpResponse.bodyBytes(resp)`)
+        // instead registers under `<TypeName>.<func>` (the key lowerMethodCall
+        // dispatches through); fall back to it when no instance-method sig
+        // resolves, so the declared-return instantiation is recovered (#5570).
+        case EMember(recv, memberName) -> {
+          val viaInstance = instanceMethodRetGenericArgs(ctx, recv, memberName)
+          if viaInstance.count > 0 {
+            viaInstance
+          } else {
+            match recv.kind {
+              case EPath(p) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, lastSegment(p) + "." + memberName))
+              case _ -> newList()
+            }
+          }
+        }
         case _ -> newList()
       }
     }
@@ -1024,6 +1043,70 @@ func typeArgsToTypeExprs(args: in List[TypeArg]): List[TypeExpr] {
   result
 }
 
+// The slice element TypeExpr when `te` is a (possibly parenthesised)
+// `slice[Elem]` shape; `None` for every other type expression.
+func sliceElemTypeExpr(te: in TypeExpr): Option[TypeExpr] {
+  match te.kind {
+    case TSlice(elem) -> Some(value = elem)
+    case TParen(inner) -> sliceElemTypeExpr(inner)
+    case _ -> None
+  }
+}
+
+// Normalize an erased generic `slice[T]` payload on the operand stack
+// (statically `Object`) to its precise slice binding type (#5570).
+//
+// A `slice[prim]` payload's RUNTIME class is genuinely dual: a producer that
+// wraps an FFI-produced primitive array directly (`Ok(value = s.getBytes())`
+// — `coerceArgTo`'s `JRef(Object)` arm stores the `[B` as-is) yields a real
+// primitive array, while one that bounced the bytes through any
+// `slice[T]`-typed function boundary yields the canonical boxed-wrapper
+// array (`Byte[]`, via `emitBoxPrimitiveArray`).  An `instanceof` fork
+// normalizes both to the primitive array, so element reads take the precise
+// `Txaload` path (`bytes[i]` → `baload`, `for b in bytes` → the primitive
+// index loop) instead of the imprecise-receiver `ArrayList` cast that threw
+// `ClassCastException` / `IncompatibleClassChangeError` at runtime.
+//
+// A `slice[Ref]` payload stays a reference array: `checkcast
+// [Ljava/lang/Object;` narrows the erased `Object` so `.length` /
+// indexing / `for` take the array paths (covariance admits the precise
+// `Elem[]` runtime class); element narrowing to `Elem` is the caller's
+// `varGenericArgs` recording consumed by `indexedElemClassOverride`.
+//
+// Every branch target keeps an empty operand stack (the StackMapTable
+// generator's invariant): the value is stashed to a slot before the fork and
+// each arm re-stores into the shared result slot, reloaded after the join.
+func emitNormalizeErasedSlice(ctx: in FuncCtx, insns: in List[LInsn], elemTe: in TypeExpr): JvmType {
+  val elemJvm = resolveConcreteTypeExpr(ctx, elemTe)
+  if isJvmPrimitiveElemType(elemJvm) {
+    val primArrTy = JArray(elem = elemJvm)
+    val primDesc = jvmTypeToDescStr(primArrTy)
+    val objSlot = allocSlot(ctx, "__slicebind_obj_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
+    val resSlot = allocSlot(ctx, "__slicebind_res_" + freshLabel(ctx), primArrTy)
+    val isPrimL = freshLabel(ctx)
+    val doneL = freshLabel(ctx)
+    insns.add(LAstore(slot = objSlot))
+    insns.add(LAload(slot = objSlot))
+    insns.add(LInstanceof(className = primDesc))
+    insns.add(LIfne(label = isPrimL))
+    insns.add(LAload(slot = objSlot))
+    insns.add(LCheckcast(className = "[Ljava/lang/Object;"))
+    emitUnboxObjectArray(ctx, insns, elemJvm)
+    emitStore(insns, resSlot, primArrTy)
+    insns.add(LGoto(label = doneL))
+    insns.add(LLabel(name = isPrimL))
+    insns.add(LAload(slot = objSlot))
+    insns.add(LCheckcast(className = primDesc))
+    emitStore(insns, resSlot, primArrTy)
+    insns.add(LLabel(name = doneL))
+    emitLoad(insns, resSlot, primArrTy)
+    primArrTy
+  } else {
+    insns.add(LCheckcast(className = "[Ljava/lang/Object;"))
+    JArray(elem = JRef(className = "java/lang/Object"))
+  }
+}
+
 func bindCaseField(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -1043,9 +1126,18 @@ func bindCaseField(
       // When the scrutinee's instantiation resolves this payload to a concrete
       // primitive (`concreteTy`), unbox the boxed value so the binding is a real
       // primitive — otherwise arithmetic on it mis-lowers (`x + y` string-concats
-      // or VerifyErrors) (#4877).  Reference / unresolved payloads stay boxed.
+      // or VerifyErrors) (#4877).  A `slice[T]` instantiation normalizes to the
+      // array binding type via `emitNormalizeErasedSlice` (#5570).  Other
+      // reference / unresolved payloads stay boxed.
+      val sliceElemOpt: Option[TypeExpr] = match concreteTypeExprOpt {
+        case Some(cte) -> sliceElemTypeExpr(cte)
+        case None -> None
+      }
       val boundTy = if isErasedObject(fty) {
-        emitUnboxObjectTo(insns, concreteTy)
+        match sliceElemOpt {
+          case Some(elemTe) -> emitNormalizeErasedSlice(ctx, insns, elemTe)
+          case None -> emitUnboxObjectTo(insns, concreteTy)
+        }
       } else {
         // `getfield` of a byte field sign-extends; mask to the canonical
         // unsigned form (see maskByteUnsigned in 04_calls.l).
@@ -1074,6 +1166,21 @@ func bindCaseField(
               if inner.count > 0 {
                 ctx.varGenericArgs.add(fname, inner)
               }
+            }
+            case TSlice(sliceElem) -> {
+              // A `slice[Elem]` payload records its element type in the same
+              // single-arg registry `recordDeclaredElemType` feeds, so an
+              // indexed element read on the bound name narrows the erased
+              // `Object` element to `Elem` via `indexedElemClassOverride`
+              // (#5570; primitive elements are already precise through the
+              // `emitNormalizeErasedSlice` binding type and are ignored by
+              // the override lookup).
+              val sliceInner: List[TypeExpr] = newList()
+              sliceInner.add(sliceElem)
+              if ctx.varGenericArgs.containsKey(fname) {
+                ctx.varGenericArgs.remove(fname)
+              }
+              ctx.varGenericArgs.add(fname, sliceInner)
             }
             case _ -> ()
           }

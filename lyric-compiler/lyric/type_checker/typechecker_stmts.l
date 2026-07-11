@@ -790,6 +790,33 @@ pub func checkFunctionBody(
     i = i + 1
   }
 
+  // #5603: a concrete function with a non-Unit return type must have a body
+  // that can produce a value — an absent body (`body: None` parses fine and
+  // codegen emits nothing, so the function returns garbage at runtime) or an
+  // empty block is a hard error.  Legitimately body-less forms stay exempt:
+  // `@axiom` functions (checked here), `@externTarget` externs (early return
+  // above), `extern func` / interface method signatures (different item
+  // kinds, never routed through this function).  A `TyError` return type is
+  // already diagnosed at the declaration; skip to avoid a cascade.
+  val returnNeedsBody = not isUnitType(sig.returnTy) and (match sig.returnTy { case TyError -> false; case _ -> true }) and
+    not fnHasAnnotation(fn, "axiom")
+  if returnNeedsBody {
+    val bodyMissing = match fn.body {
+      case None -> true
+      case Some(b0) -> match b0 { case FBBlock(blk0) -> blk0.statements.count == 0; case FBExpr(_) -> false }
+    }
+    if bodyMissing {
+      diag.add(
+        errorDiagnostic(
+          "T0114",
+          "function '" + fn.name + "' declares return type " + renderType(sig.returnTy) +
+            " but has no body that produces a value (only @axiom functions, externs, and interface method signatures may omit the body)",
+          fn.span
+        )
+      )
+    }
+  }
+
   match fn.body {
     case None -> {
     }

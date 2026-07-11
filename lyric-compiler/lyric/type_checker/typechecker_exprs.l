@@ -962,7 +962,13 @@ func builtinMember(recvRaw: in Type, name: in String): Option[Type] {
       // scrutinee silently degenerates to the first case (#2126).
       if nm == "List" and targs.count == 1 {
         if name == "toArray" {
-          return Some(value = TySlice(element = targs[0]))
+          // A real `TyFunction` (zero params), not the bare result type:
+          // `toArray` is always used call-style (`xs.toArray()`), and a bare
+          // `TySlice` would make the `ECall` arm report T0044 "called value
+          // of non-function type" now that `inferMemberBase` consults this
+          // table for `TyUser` receivers (the slice-method precedent above).
+          val noParams: List[Type] = newList()
+          return Some(value = TyFunction(params = noParams, ret = TySlice(element = targs[0]), isAsync = false))
         }
         if name == "count" {
           return Some(value = TyPrim(pt = PtInt))
@@ -1313,7 +1319,12 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
   }
 }
 
-func inferMember(tbl: in SymbolTable, diag: in List[Diagnostic], recvRaw: in Type, name: in String, span: in Span): Type {
+// Field / builtin member typing only — no method-space consultation and no
+// unknown-member diagnostics.  The `ECall` arm uses this directly for a
+// member callee (methods are resolved arity-aware there); the plain `EMember`
+// arm goes through `inferMember`, which layers method references and the A5
+// unknown-member diagnostic on top.
+func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Type {
   val recv = unrefine(recvRaw)
   match recv {
     case TyUser(tid, _, targs) -> {
@@ -1325,7 +1336,12 @@ func inferMember(tbl: in SymbolTable, diag: in List[Diagnostic], recvRaw: in Typ
         }
         i = i + 1
       }
-      TyError
+      // Builtin members on nominal receivers (`List.toArray`/`count`, #2126)
+      // — consulted after fields so a same-named user field wins.
+      match builtinMember(recv, name) {
+        case Some(t) -> t
+        case None -> TyError
+      }
     }
     case TyError -> TyError
     case _ -> {
@@ -1334,6 +1350,359 @@ func inferMember(tbl: in SymbolTable, diag: in List[Diagnostic], recvRaw: in Typ
         case None -> TyError
       }
     }
+  }
+}
+
+// Method names that resolve on essentially any receiver at codegen time
+// even though no source-level signature exists at type-check time:
+// `toString` is a codegen intrinsic on every receiver, and the rest are
+// `@derive`/`@generate`-synthesised type-associated functions — the derive
+// pass runs AFTER the type checker (`pipeCheckAndMono` order), so their
+// `T.equals`-style signatures are not yet in `sigs` when the checker runs.
+func isUniversalMethodName(name: in String): Bool {
+  name == "toString" or name == "equals" or name == "hash" or name == "show" or name == "compare" or name == "toJson"
+}
+
+// Substitute the receiver into a stored method signature: `Self` becomes the
+// receiver type, and the owner's generic params are replaced by the
+// receiver's type args when the arities line up (a raw/under-instantiated
+// receiver leaves them as `TyVar` wildcards — lenient).
+func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Type]): ResolvedSignature {
+  val doSub = entry.ownerGenerics.count > 0 and entry.ownerGenerics.count == targs.count
+  val np: List[ResolvedParam] = newList()
+  var i = 0
+  while i < entry.sig.params.count {
+    val p = entry.sig.params[i]
+    var ty = substitutesSelf(p.ty, recv)
+    if doSub {
+      ty = substituteTyVars(ty, entry.ownerGenerics, targs)
+    }
+    np.add(ResolvedParam(name = p.name, ty = ty, mode = p.mode, hasDefault = p.hasDefault, span = p.span))
+    i = i + 1
+  }
+  var rty = substitutesSelf(entry.sig.returnTy, recv)
+  if doSub {
+    rty = substituteTyVars(rty, entry.ownerGenerics, targs)
+  }
+  ResolvedSignature(
+    generics = entry.sig.generics,
+    bounds = entry.sig.bounds,
+    params = np,
+    returnTy = rty,
+    isAsync = entry.sig.isAsync,
+    isHot = entry.sig.isHot,
+    isGenerator = entry.sig.isGenerator,
+    originPackage = entry.sig.originPackage,
+    span = entry.sig.span
+  )
+}
+
+// Every method signature reachable on a value of type `recv` (an unrefined
+// `TyUser`) under `name`: the type's own record-body/impl methods, plus the
+// members of every interface it implements (covers interface default methods
+// on a concrete receiver).  Receiver-substituted and call-facing.
+func methodCandidatesFor(tbl: in SymbolTable, recv: in Type, name: in String): List[ResolvedSignature] {
+  val acc: List[ResolvedSignature] = newList()
+  match recv {
+    case TyUser(tid, _, targs) -> {
+      val entries = symTableMethodSigs(tbl, tid, name)
+      var i = 0
+      while i < entries.count {
+        acc.add(substituteMethodSig(entries[i], recv, targs))
+        i = i + 1
+      }
+      val noTargs: List[Type] = newList()
+      var pi = 0
+      while pi < tbl.impls.count {
+        if typeIdEq(tbl.impls[pi].target, tid) {
+          val ientries = symTableMethodSigs(tbl, tbl.impls[pi].iface, name)
+          var q = 0
+          while q < ientries.count {
+            acc.add(substituteMethodSig(ientries[q], recv, noTargs))
+            q = q + 1
+          }
+        }
+        pi = pi + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+  acc
+}
+
+// D037 type-associated functions (`func T.m(recv, ...)`) callable
+// method-style: same-arity `sigs` candidates under the dotted key whose
+// FIRST param accepts the receiver.  Returned as full signatures (receiver
+// param included); the call site drops the receiver slot for argument
+// validation and uses the full signature for return-type inference (a
+// generic like `func Box.get[T](self: in Box[T]): T` binds `T` from the
+// receiver).
+func dotNamedCandidatesFor(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  recv: in Type,
+  name: in String,
+  argc: in Int,
+): List[ResolvedSignature] {
+  val acc: List[ResolvedSignature] = newList()
+  match recv {
+    case TyUser(_, tname, _) -> {
+      val key = tname + "." + name
+      val arityKey = key + "/" + toString(argc + 1)
+      match mapGet(sigs, arityKey) {
+        case Some(s) -> acc.add(s)
+        case None -> match mapGet(sigs, key) { case Some(s2) -> acc.add(s2); case None -> {  } }
+      }
+      val over = gatherOverloadCandidates(sigs, arityKey)
+      var i = 0
+      while i < over.count {
+        acc.add(over[i])
+        i = i + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+  val kept: List[ResolvedSignature] = newList()
+  var k = 0
+  while k < acc.count {
+    val c = acc[k]
+    if c.params.count >= 1 and argSatisfiesParam(tbl, c.params[0].ty, recv) {
+      kept.add(c)
+    }
+    k = k + 1
+  }
+  kept
+}
+
+// A resolved method call: `sig` is the receiver-dropped signature the
+// argument list validates against; `fullSig` is set for dot-named
+// (`func T.m(recv, ...)`) candidates whose return type must be instantiated
+// against `[receiver] ++ args`.
+record MethodCallPick {
+  sig: ResolvedSignature
+  fullSig: Option[ResolvedSignature]
+}
+
+// The receiver-dropped copy of a full dot-named signature.
+func dropReceiverParam(full: in ResolvedSignature): ResolvedSignature {
+  val np: List[ResolvedParam] = newList()
+  var i = 1
+  while i < full.params.count {
+    np.add(full.params[i])
+    i = i + 1
+  }
+  ResolvedSignature(
+    generics = full.generics,
+    bounds = full.bounds,
+    params = np,
+    returnTy = full.returnTy,
+    isAsync = full.isAsync,
+    isHot = full.isHot,
+    isGenerator = full.isGenerator,
+    originPackage = full.originPackage,
+    span = full.span
+  )
+}
+
+// Positional supplied-argument compatibility for CANDIDATE SELECTION only
+// (named-arg pairing and the real T0042/T0043 reporting happen in
+// `checkCallArgsAgainstSig` after selection).
+func suppliedArgsMatch(tbl: in SymbolTable, params: in List[ResolvedParam], argTypes: in List[Type]): Bool {
+  var i = 0
+  while i < argTypes.count and i < params.count {
+    if not argSatisfiesParam(tbl, params[i].ty, argTypes[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func minRequiredParams(sig: in ResolvedSignature): Int {
+  var minRequired = 0
+  var i = 0
+  while i < sig.params.count {
+    if not sig.params[i].hasDefault {
+      minRequired = minRequired + 1
+    }
+    i = i + 1
+  }
+  minRequired
+}
+
+// Resolve `recv.name(<argc args>)` against the method-signature space
+// (docs/59 A4): the type's own/interface methods first, then dot-named
+// type-associated functions.  Selection prefers an arity-fitting candidate
+// whose params accept the supplied argument types, then any arity-fitting
+// candidate, then the first candidate at all (so T0042/T0043 report against
+// a real signature instead of silently degrading).
+func resolveMethodCallPick(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  recvRaw: in Type,
+  name: in String,
+  argc: in Int,
+  argTypes: in List[Type],
+): Option[MethodCallPick] {
+  val recv = unrefine(recvRaw)
+  match recv {
+    case TyUser(_, _, _) -> {
+    }
+    case _ -> {
+      return None
+    }
+  }
+  val picks: List[MethodCallPick] = newList()
+  val direct = methodCandidatesFor(tbl, recv, name)
+  var i = 0
+  while i < direct.count {
+    picks.add(MethodCallPick(sig = direct[i], fullSig = None))
+    i = i + 1
+  }
+  val dotted = dotNamedCandidatesFor(tbl, sigs, recv, name, argc)
+  var d = 0
+  while d < dotted.count {
+    picks.add(MethodCallPick(sig = dropReceiverParam(dotted[d]), fullSig = Some(value = dotted[d])))
+    d = d + 1
+  }
+  var best: Option[MethodCallPick] = None
+  var arityFit: Option[MethodCallPick] = None
+  var anyPick: Option[MethodCallPick] = None
+  var k = 0
+  while k < picks.count {
+    val p = picks[k]
+    match anyPick {
+      case None -> {
+        anyPick = Some(value = p)
+      }
+      case Some(_) -> {
+      }
+    }
+    if argc >= minRequiredParams(p.sig) and argc <= p.sig.params.count {
+      match arityFit {
+        case None -> {
+          arityFit = Some(value = p)
+        }
+        case Some(_) -> {
+        }
+      }
+      match best {
+        case None -> if suppliedArgsMatch(tbl, p.sig.params, argTypes) { best = Some(value = p) }
+        case Some(_) -> {
+        }
+      }
+    }
+    k = k + 1
+  }
+  match best {
+    case Some(_) -> best
+    case None -> match arityFit { case Some(_) -> arityFit; case None -> anyPick }
+  }
+}
+
+// A5 (docs/59 §5.1): report an unknown member/method on a receiver whose
+// member surface is fully known — a record, exposed record, or interface
+// DECLARED IN THE FILE BEING CHECKED (`symTableIsMemberComplete`; imported
+// types may originate from restored contract metadata, whose record reprs
+// drop methods, so they stay lenient).  Emits nothing when the name exists
+// anywhere in the member/method space, is a universal codegen intrinsic /
+// derive-synthesised name, or has a dot-named type-associated signature.
+func maybeUnknownMemberDiag(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  recvRaw: in Type,
+  name: in String,
+  span: in Span,
+  isCall: in Bool,
+): Unit {
+  val recv = unrefine(recvRaw)
+  match recv {
+    case TyUser(tid, tname, _) -> {
+      if not symTableIsMemberComplete(tbl, tid) {
+        return
+      }
+      if isUniversalMethodName(name) {
+        return
+      }
+      val fs = fieldsOfRecord(tbl, tid)
+      var i = 0
+      while i < fs.count {
+        if fs[i].name == name {
+          return
+        }
+        i = i + 1
+      }
+      match builtinMember(recv, name) {
+        case Some(_) -> {
+          return
+        }
+        case None -> {
+        }
+      }
+      if symTableMethodSigs(tbl, tid, name).count > 0 {
+        return
+      }
+      var pi = 0
+      while pi < tbl.impls.count {
+        if typeIdEq(tbl.impls[pi].target, tid) {
+          if symTableMethodSigs(tbl, tbl.impls[pi].iface, name).count > 0 {
+            return
+          }
+        }
+        pi = pi + 1
+      }
+      if sigs.containsKey(tname + "." + name) {
+        return
+      }
+      val what = if isCall { "no method '" } else { "no member '" }
+      diag.add(errorDiagnostic("T0113", what + name + "' on type '" + tname + "'", span))
+    }
+    case _ -> {
+    }
+  }
+}
+
+func inferMember(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  recvRaw: in Type,
+  name: in String,
+  span: in Span,
+): Type {
+  val base = inferMemberBase(tbl, recvRaw, name)
+  match base {
+    case TyError -> {
+    }
+    case _ -> {
+      return base
+    }
+  }
+  // A method referenced in plain member position types as its function type
+  // (receiver dropped) so `x.method` flows into the general `TyFunction`
+  // call validation; a name that exists nowhere on a member-complete type
+  // gets the A5 diagnostic.
+  val recv = unrefine(recvRaw)
+  match recv {
+    case TyUser(_, _, _) -> {
+      val cands = methodCandidatesFor(tbl, recv, name)
+      if cands.count > 0 {
+        val ms = cands[0]
+        val pts: List[Type] = newList()
+        var k = 0
+        while k < ms.params.count {
+          pts.add(ms.params[k].ty)
+          k = k + 1
+        }
+        return TyFunction(params = pts, ret = ms.returnTy, isAsync = ms.isAsync)
+      }
+      maybeUnknownMemberDiag(tbl, sigs, diag, recvRaw, name, span, false)
+      TyError
+    }
+    case _ -> TyError
   }
 }
 
@@ -2932,11 +3301,36 @@ pub func inferExpr(
         case _ -> {
         }
       }
-      // Use the cached receiver type (if the intrinsics check already inferred it)
-      // to avoid a second inference of the receiver expression, which would emit
-      // diagnostics again for any problematic sub-expressions.
-      val fnT = match cachedRecvType {
-        case Some(rt) -> match fn.kind { case EMember(_, mname2) -> inferMember(tbl, diag, rt, mname2, fn.span); case _ -> inferExpr(sc, tbl, sigs, diag, fn) }
+      // A4 (docs/59 §5.1): for a member callee, infer the receiver ONCE (with
+      // the same module-alias leniency as the plain `EMember` arm, and reusing
+      // the conversion pre-pass's cached type) and type the callee through the
+      // field/builtin surface only — the method-signature space is consulted
+      // arity-aware below, after the argument types are known.
+      var memberRecvTy: Option[Type] = None
+      var memberName = ""
+      var isMemberCallee = false
+      match fn.kind {
+        case EMember(recvE2, mname2) -> {
+          isMemberCallee = true
+          memberName = mname2
+          match cachedRecvType {
+            case Some(rt0) -> {
+              memberRecvTy = Some(value = rt0)
+            }
+            case None -> {
+              val rt1 = match recvE2.kind {
+                case EPath(p2) -> if p2.segments.count == 1 and startsUppercase(p2.segments[0]) { val scratch2: List[Diagnostic] = newList(); inferExpr(sc, tbl, sigs, scratch2, recvE2) } else { inferExpr(sc, tbl, sigs, diag, recvE2) }
+                case _ -> inferExpr(sc, tbl, sigs, diag, recvE2)
+              }
+              memberRecvTy = Some(value = rt1)
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
+      val fnT = match memberRecvTy {
+        case Some(rt) -> inferMemberBase(tbl, rt, memberName)
         case None -> inferExpr(sc, tbl, sigs, diag, fn)
       }
       // A2 (docs/59 §5.1): lambda arguments with unannotated params are typed
@@ -2963,8 +3357,21 @@ pub func inferExpr(
       }
       // Try direct-sig lookup first.
       val directSig = findDirectSig(sc, tbl, sigs, fn, args.count, argTypes)
+      // A4: method-space resolution for a member callee — consulted only when
+      // neither a direct signature nor a field/builtin member type resolved
+      // (a function-typed FIELD keeps winning over a same-named method).
+      var methodPick: Option[MethodCallPick] = None
+      match directSig {
+        case Some(_) -> {
+        }
+        case None -> if isMemberCallee { match fnT { case TyError -> match memberRecvTy { case Some(rt3) -> { methodPick = resolveMethodCallPick(tbl, sigs, rt3, memberName, args.count, argTypes) }; case None -> {  } }; case _ -> {  } } }
+      }
       if anyDeferredLambda {
-        val expectedArgTys = expectedCallArgTypes(args, argTypes, directSig, fnT)
+        val lambdaSig = match directSig {
+          case Some(_) -> directSig
+          case None -> match methodPick { case Some(mp0) -> Some(value = mp0.sig); case None -> None }
+        }
+        val expectedArgTys = expectedCallArgTypes(args, argTypes, lambdaSig, fnT)
         var di = 0
         while di < args.count {
           val dae = callArgExpr(args[di])
@@ -2976,75 +3383,14 @@ pub func inferExpr(
       }
       match directSig {
         case Some(sig) -> {
-          // Count required params (those without a default value) to allow
-          // calls that omit trailing defaulted parameters (#1503).
-          var minRequired = 0
-          var mri = 0
-          while mri < sig.params.count {
-            if not sig.params[mri].hasDefault {
-              minRequired = minRequired + 1
-            }
-            mri = mri + 1
-          }
-          if args.count < minRequired or args.count > sig.params.count {
-            val expectedMsg = if minRequired == sig.params.count {
-              toString(sig.params.count) + " argument(s)"
-            } else {
-              toString(minRequired) + "–" + toString(sig.params.count) + " argument(s)"
-            }
-            diag.add(errorDiagnostic("T0042", "expected " + expectedMsg + ", got " + toString(args.count), e.span))
-          } else {
-            // Only validate the args that were actually supplied; missing
-            // trailing params with defaults are filled in by codegen.  Args
-            // are paired with their parameter by name for named args (#3066),
-            // mirroring the constructor path's `argTypesInFieldOrder`; a
-            // purely positional call pairs slot k with arg k as before.
-            val paramNames: List[String] = newList()
-            var pni = 0
-            while pni < sig.params.count {
-              paramNames.add(sig.params[pni].name)
-              pni = pni + 1
-            }
-            val srcIdx = argIndicesInParamOrder(args, paramNames)
-            var k = 0
-            while k < sig.params.count {
-              val p = sig.params[k]
-              val ai = srcIdx[k]
-              if ai >= 0 {
-                val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
-                if not argSatisfiesParam(tbl, p.ty, argTy) {
-                  diag.add(
-                    errorDiagnostic(
-                      "T0043",
-                      "argument type " + renderType(argTy) + " does not match parameter type " + renderType(p.ty),
-                      e.span
-                    )
-                  )
-                }
-                // #1487 (§5.2): a value-type `out`/`inout` argument must be a
-                // writable l-value (reference-type by-ref params are mutated in
-                // place — see `isByRefValueType`).
-                if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
-                  diag.add(
-                    errorDiagnostic(
-                      "T0085",
-                      "argument for `out`/`inout` parameter '" + p.name +
-                        "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)",
-                      e.span
-                    )
-                  )
-                }
-              }
-              k = k + 1
-            }
-          }
+          checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
           // H15: verify where-clause bounds on generic call sites.
           checkBoundsSatisfied(tbl, diag, sig, argTypes, e.span)
           // Instantiate a generic return type from the argument types (#1488
           // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
           instantiateReturnType(sig, argTypes)
         }
-        case None -> match unionCaseSymbolOf(tbl, fn) { case Some(caseSym) -> inferUnionCaseConstruction(tbl, diag, caseSym, argTypes, e.span); case None -> match constructorSymbolOf(tbl, fn) { case Some(ctorSym) -> inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span); case None -> match fnT { case TyFunction(paramTypes, ret, _) -> { if paramTypes.count != argTypes.count { diag.add(errorDiagnostic("T0042", "expected " + toString(paramTypes.count) + " argument(s), got " + toString(argTypes.count), e.span)) } else { var k = 0; while k < paramTypes.count { if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) { diag.add(errorDiagnostic("T0043", "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]), e.span)) }; k = k + 1 } }; ret }; case TyError -> TyError; case _ -> { diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span)); TyError } } } }
+        case None -> match unionCaseSymbolOf(tbl, fn) { case Some(caseSym) -> inferUnionCaseConstruction(tbl, diag, caseSym, argTypes, e.span); case None -> match constructorSymbolOf(tbl, fn) { case Some(ctorSym) -> inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span); case None -> match methodPick { case Some(mp) -> { checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span); checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span); match mp.fullSig { case Some(fullS) -> { val extArgs: List[Type] = newList(); match memberRecvTy { case Some(rt4) -> extArgs.add(rt4); case None -> extArgs.add(TyError) }; var xi = 0; while xi < argTypes.count { extArgs.add(argTypes[xi]); xi = xi + 1 }; instantiateReturnType(fullS, extArgs) }; case None -> instantiateReturnType(mp.sig, argTypes) } }; case None -> { if isMemberCallee { match fnT { case TyError -> match memberRecvTy { case Some(rt5) -> maybeUnknownMemberDiag(tbl, sigs, diag, rt5, memberName, fn.span, true); case None -> {  } }; case _ -> {  } } }; match fnT { case TyFunction(paramTypes, ret, _) -> { if paramTypes.count != argTypes.count { diag.add(errorDiagnostic("T0042", "expected " + toString(paramTypes.count) + " argument(s), got " + toString(argTypes.count), e.span)) } else { var k = 0; while k < paramTypes.count { if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) { diag.add(errorDiagnostic("T0043", "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]), e.span)) }; k = k + 1 } }; ret }; case TyError -> TyError; case _ -> { diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span)); TyError } } } } } }
       }
     }
 
@@ -3063,7 +3409,7 @@ pub func inferExpr(
         case EPath(p) -> if p.segments.count == 1 and startsUppercase(p.segments[0]) { val scratch: List[Diagnostic] = newList(); inferExpr(sc, tbl, sigs, scratch, recv) } else { inferExpr(sc, tbl, sigs, diag, recv) }
         case _ -> inferExpr(sc, tbl, sigs, diag, recv)
       }
-      inferMember(tbl, diag, rt, name, e.span)
+      inferMember(tbl, sigs, diag, rt, name, e.span)
     }
 
     case EPropagate(inner) -> {
@@ -3358,6 +3704,85 @@ pub func inferExprExpected(
 // Deferred-lambda slots are blanked to `TyError` during generic inference so
 // their first-pass placeholder types never poison a binding that another
 // argument position determines.
+// Validate a call's argument list against a selected signature: arity with
+// trailing-default elision (#1503, T0042), named-arg pairing (#3066),
+// per-argument assignability (T0043), and `out`/`inout` l-value-ness (#1487,
+// T0085).  Shared by the direct-signature path and the A4 method-call path
+// (whose signatures are receiver-dropped, so `sig.params` aligns 1:1 with
+// `args` in both).
+func checkCallArgsAgainstSig(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  span: in Span,
+): Unit {
+  // Count required params (those without a default value) to allow
+  // calls that omit trailing defaulted parameters (#1503).
+  var minRequired = 0
+  var mri = 0
+  while mri < sig.params.count {
+    if not sig.params[mri].hasDefault {
+      minRequired = minRequired + 1
+    }
+    mri = mri + 1
+  }
+  if args.count < minRequired or args.count > sig.params.count {
+    val expectedMsg = if minRequired == sig.params.count {
+      toString(sig.params.count) + " argument(s)"
+    } else {
+      toString(minRequired) + "–" + toString(sig.params.count) + " argument(s)"
+    }
+    diag.add(errorDiagnostic("T0042", "expected " + expectedMsg + ", got " + toString(args.count), span))
+  } else {
+    // Only validate the args that were actually supplied; missing
+    // trailing params with defaults are filled in by codegen.  Args
+    // are paired with their parameter by name for named args (#3066),
+    // mirroring the constructor path's `argTypesInFieldOrder`; a
+    // purely positional call pairs slot k with arg k as before.
+    val paramNames: List[String] = newList()
+    var pni = 0
+    while pni < sig.params.count {
+      paramNames.add(sig.params[pni].name)
+      pni = pni + 1
+    }
+    val srcIdx = argIndicesInParamOrder(args, paramNames)
+    var k = 0
+    while k < sig.params.count {
+      val p = sig.params[k]
+      val ai = srcIdx[k]
+      if ai >= 0 {
+        val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
+        if not argSatisfiesParam(tbl, p.ty, argTy) {
+          diag.add(
+            errorDiagnostic(
+              "T0043",
+              "argument type " + renderType(argTy) + " does not match parameter type " + renderType(p.ty),
+              span
+            )
+          )
+        }
+        // #1487 (§5.2): a value-type `out`/`inout` argument must be a
+        // writable l-value (reference-type by-ref params are mutated in
+        // place — see `isByRefValueType`).
+        if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
+          diag.add(
+            errorDiagnostic(
+              "T0085",
+              "argument for `out`/`inout` parameter '" + p.name +
+                "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)",
+              span
+            )
+          )
+        }
+      }
+      k = k + 1
+    }
+  }
+}
+
 func expectedCallArgTypes(
   args: in List[CallArg],
   argTypes: in List[Type],

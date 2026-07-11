@@ -133,6 +133,8 @@ Doc comments are part of the contract metadata and surface in `lyric doc`. Docte
 
 Whitespace is not significant beyond token separation. Statements are terminated by newlines; semicolons are optional but permitted for multiple statements on one line. Blocks use braces.
 
+A consequence of newline termination: the postfix call and index forms bind only on the **same line** as the expression they follow. A line beginning with `(` or `[` starts a new statement — it is never a call or index applied to the previous line's result. So `val cp = toInt(c)` followed by a parenthesized expression on the next line is two statements, not the call `toInt(c)(…)`.
+
 ## 2. Type system
 
 ### 2.1 Primitive types
@@ -810,6 +812,22 @@ reads `@body` to choose which parameter receives the deserialised request body
 (falling back to the last non-path, non-query parameter when no `@body` is
 present).
 
+A concrete function with a non-`Unit` return type must have a body that
+produces a value of the declared type; a declaration with no body — or an
+empty block body — is a compile error (**T0114**). The legitimate body-less
+forms are exempt: `@axiom` functions, `extern func` declarations,
+`@externTarget` stubs (`= ()`), and interface method signatures.
+
+Method-style calls `x.method(args)` on user-declared types are checked like
+any other call: the checker resolves the method through the type's declared
+members (record-body methods, `impl`-block methods, interface members, and
+D037 dot-named functions), validates arity and argument types (**T0042** /
+**T0043**), and gives the call its real declared return type. A member or
+method name that does not exist on a locally-declared record, exposed
+record, or interface is a compile error (**T0113**) naming the receiver
+type; types imported from other packages are currently checked leniently
+(their contract metadata does not yet carry method signatures).
+
 ### 5.2 Parameter modes
 
 - `in`: parameter is read-only inside the function. **Default mode** when no keyword is given. The compiler may pass by value or by reference; the function cannot mutate.
@@ -1057,6 +1075,8 @@ This is the structured concurrency pattern; raw "fire and forget" is not availab
 - **MSIL runtime** — a BCL-only lowering (linked `CancellationTokenSource`, per-task fault→cancel continuation, `Task.WhenAll` join at scope exit, `AggregateException` propagation) that respects V0012 by keeping the join out of any protected region (slice S6, on the §7.3 token from S5).
 
 Until a backend's runtime slice lands, that backend keeps the interim behaviour (MSIL: `spawn` exposes the hot `Task<T>`, `scope` is a lexical block; JVM: `spawn` runs inline). See D119 for the full mechanism.
+
+**A `spawn` outside any `scope { }` is degenerate-synchronous on the JVM** (D119/D120, by design, not a gap): `val t = spawn f(); … ; await t` runs `f` to completion **on the calling thread at the spawn site**, and the later `await` merely unwraps the already-computed result. Only spawns lexically inside a `scope { }` body fork onto virtual threads. Code that needs genuine concurrency must open a `scope`; a bare spawn buys deferred *consumption* of the result, never parallelism. On error paths, a Throwable escaping a `scope` body interrupts outstanding spawned tasks (`shutdownNow`) and propagates immediately rather than waiting for them to finish (D-progress-652).
 
 **`--target native` (D-N-021, D-N-022):** `spawn f(...)` runs `f`'s
 body hot until its first suspension and binds the (possibly still

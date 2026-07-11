@@ -34,12 +34,19 @@
 //!   - a bare `spawn` with no enclosing `scope` (the degenerate path — the
 //!     handle is consumed by `await` with no executor);
 //!   - three concurrent spawns to confirm submit/join scales past two;
-//!   - a `Unit`-returning spawned task (the boxed-null Callable return).
+//!   - a `Unit`-returning spawned task (the boxed-null Callable return);
+//!   - `await` in compound positions inside a scope body — compound-assignment
+//!     RHS, call arguments, `if` conditions — with trailing statements
+//!     asserted (#5569 item 2's reported shape);
+//!   - a scope body that panics while a spawned task is still running: the
+//!     Throwable propagates instead of hanging in the executor close
+//!     (#5569 item 3).
 @test_module
 package Lyric.AsyncSpawnSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Time
 
 // A pure leaf the spawned tasks evaluate.  Kept trivial and deterministic so
 // the assertions are identical under synchronous and concurrent execution.
@@ -188,6 +195,73 @@ async func spawnStringResult(name: in String): String {
   }
 }
 
+// A compound assignment whose RHS contains `await` inside a `scope { }` body,
+// followed by further statements (#5569 item 2's reported shape: `x = x +
+// await f()` was observed skipping the rest of the body and hanging in the
+// executor close).  Covers both await forms in compound-RHS position — a
+// spawn-handle join (`await t`, the `Future.get()` path) and a direct async
+// call (`await addOne(b)`, the pass-through/Task-unwrap path) — and asserts
+// the trailing statement's effect so a silent skip fails the value check.
+async func compoundAwaitAssign(a: in Int, b: in Int): Int {
+  var x = 1
+  var after = 0
+  scope {
+    val t = spawn doubleIt(a)
+    x = x + await t
+    x = x + await addOne(b)
+    after = 7
+  }
+  return x * 1000 + after
+}
+
+// `await` in a call-argument position inside a `scope { }` body (#5569 item 2
+// family): each spawn-handle join happens directly in an argument list, and a
+// statement after the calls is asserted.
+//
+// Both joins sit in FIRST-argument position deliberately: on MSIL, awaiting a
+// scope-spawn handle in an argument position with a PRECEDING argument already
+// evaluated (`combineTwo(5, await t)`, or two awaits in one argument list)
+// dies with `InvalidProgramException` in the async-SM `MoveNext` — a
+// pre-existing operand-stack-across-await hole in the D-progress-602 pre-scan
+// family, on the .NET side.  The JVM backend handles every argument position
+// (the `__lyric_await` invokestatic join keeps the operand stack legal).
+// Widening this case to non-first argument positions is blocked on that MSIL
+// fix.
+func combineTwo(a: in Int, b: in Int): Int {
+  a * 10 + b
+}
+
+async func awaitInCallArg(a: in Int, b: in Int): Int {
+  var combined = 0
+  var after = 0
+  scope {
+    val ta = spawn doubleIt(a)
+    val tb = spawn addOne(b)
+    combined = combineTwo(await ta, 5)
+    val second = combineTwo(await tb, 6)
+    combined = combined + second
+    after = 3
+  }
+  return combined * 10 + after
+}
+
+// `await` in an `if` condition inside a `scope { }` body (#5569 item 2
+// family): the join happens while evaluating the branch condition, and a
+// statement after the `if` is asserted.
+async func awaitInIfCond(a: in Int): Int {
+  var r = 0
+  scope {
+    val t = spawn doubleIt(a)
+    if await t == a * 2 {
+      r = 1
+    } else {
+      r = 2
+    }
+    r = r + 10
+  }
+  return r
+}
+
 // A spawned task that panics: `await` must propagate its failure (§7.4's
 // first-failure-propagates guarantee).  On JVM the join helper `__lyric_await`
 // unwraps the `ExecutionException` to its cause so the original panic message
@@ -202,6 +276,46 @@ async func awaitFailingSpawn(): Unit {
   scope {
     val t = spawn boomTask()
     val _ = await t
+  }
+}
+
+// A scope BODY that panics while a spawned task is still running (#5569 item
+// 3): the Throwable must propagate out of the scope instead of parking behind
+// the executor close.  Before the fix, the exception path of the synthesized
+// close-defer ran `ExecutorService.close()`, which waits for every submitted
+// task — with `loiter` live the rethrow never happened and the error was a
+// silent hang in `ThreadPerTaskExecutor.close`; now that path runs
+// `shutdownNow()` (interrupt, no wait) and rethrows immediately.
+//
+// A plain (non-async) func: it awaits nothing, and the MSIL async-SM
+// closure pre-pass has a pre-existing hole for a `var` captured by a lambda
+// declared inside a `scope` body (it panics "captured mutable local 'go' was
+// not hoisted"); the plain-func pre-pass handles the shape correctly.
+//
+// `loiter` is concurrency-conditional so the test is safe on MSIL's
+// degenerate-synchronous `spawn`: it polls the hoisted `go` flag (set AFTER
+// the spawn statement) for up to one second.  Run inline (MSIL), `go` is
+// still 0, so it exits after the bounded wait and the panic follows.  Run
+// concurrently (JVM), it observes `go == 1` and loiters in interruptible
+// sleeps until `shutdownNow()` interrupts it — before the fix this loitering
+// made the hang unbounded, which is exactly the regression this case guards.
+func panicWithUnfinishedSpawn(): Unit {
+  var go = 0
+  scope {
+    val loiter = { ->
+      var waited = 0
+      while go == 0 and waited < 20 {
+        sleepMillis(50)
+        waited = waited + 1
+      }
+      while go == 1 {
+        sleepMillis(200)
+      }
+      0
+    }
+    val t = spawn loiter()
+    go = 1
+    panic("boom-in-scope-body")
   }
 }
 
@@ -266,6 +380,22 @@ test "nested scopes submit spawns to the innermost executor" {
   assertEqualInt(await nestedScopeSpawns(3, 3), 10, "nested double(3)+addOne(3)")
 }
 
+test "compound assignment with await in a scope runs the whole body" {
+  // x = 1 + double(5) + addOne(6) = 1 + 10 + 7 = 18; after = 7
+  assertEqualInt(await compoundAwaitAssign(5, 6), 18007, "compound awaits then trailing statement")
+  // x = 1 + double(2) + addOne(0) = 1 + 4 + 1 = 6; after = 7
+  assertEqualInt(await compoundAwaitAssign(2, 0), 6007, "compound awaits, small values")
+}
+
+test "await in call-argument position inside a scope" {
+  // combineTwo(double(4), 5) + combineTwo(addOne(6), 6) = 85 + 76 = 161; *10 + 3 = 1613
+  assertEqualInt(await awaitInCallArg(4, 6), 1613, "spawn joins as call arguments")
+}
+
+test "await in an if condition inside a scope" {
+  assertEqualInt(await awaitInIfCond(9), 11, "join inside the branch condition")
+}
+
 test "spawned task that panics propagates through await" {
   // The closure is a non-async lambda, so its `await` uses the blocking resolve
   // path and V0012 (await-in-try, async-only) does not apply; the try/catch that
@@ -276,4 +406,13 @@ test "spawned task that panics propagates through await" {
   // separately end-to-end; message-substring matching through the test-synth
   // is avoided here as brittle.
   assertPanics("failing spawn propagates", { -> await awaitFailingSpawn() })
+}
+
+test "a panic escaping a scope body propagates without waiting for unfinished spawns" {
+  // Before the #5569 item-3 fix this HUNG on JVM (the close-defer's exception
+  // path joined the still-loitering task before the rethrow); the fix aborts
+  // the executor via shutdownNow and rethrows immediately, so the panic
+  // surfaces here.  On MSIL the degenerate-synchronous spawn runs `loiter`
+  // inline (bounded, `go` still 0) and the panic follows it.
+  assertPanics("scope-body panic propagates past a live spawned task", { -> panicWithUnfinishedSpawn() })
 }
