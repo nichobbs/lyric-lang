@@ -6,17 +6,24 @@
 @axiom("System.IO.Path operations conform to their documented .NET contracts")
 package Std.PathHost
 
-@externTarget("System.IO.Path.Combine")
-pub func hostPathCombine(base: in String, relative: in String): String = ()
+extern type NetPath = "System.IO.Path"
 
-@externTarget("System.IO.Path.GetExtension")
-pub func hostPathGetExtension(path: in String): String = ()
+pub func hostPathCombine(base: in String, relative: in String): String {
+  NetPath.Combine(base, relative)
+}
 
-@externTarget("System.IO.Path.GetFileName")
-pub func hostPathGetFileName(path: in String): String = ()
+pub func hostPathGetExtension(path: in String): String {
+  NetPath.GetExtension(path)
+}
 
-@externTarget("System.IO.Path.GetDirectoryName")
-pub func hostPathGetDirectoryName(path: in String): String? = ()
+pub func hostPathGetFileName(path: in String): String {
+  NetPath.GetFileName(path)
+}
 
-@externTarget("System.IO.Path.IsPathRooted")
-pub func hostPathIsRooted(path: in String): Bool = ()
+pub func hostPathGetDirectoryName(path: in String): String? {
+  NetPath.GetDirectoryName(path)
+}
+
+pub func hostPathIsRooted(path: in String): Bool {
+  NetPath.IsPathRooted(path)
+}
