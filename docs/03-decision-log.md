@@ -14789,6 +14789,198 @@ call checking — the next Band-4 slice).
 
 ---
 
+## D-progress-651 — kernel `@externTarget` tranche 2: 170 → 69 via the v0.4.23 seed's value-type / slice / ctor auto-FFI
+
+The v0.4.23 seed (cut from the wave-4 merge) is the first whose auto-FFI
+carries waves 1–3's full capability set, so the `.NET _kernel/` migrations
+those waves were seed-blocked on shipped in one tranche: the time value-type
+half (`time_host.l` 10 → 1 — DateTime/DateTimeOffset/TimeSpan instance
+members on value-type receivers), `File.WriteAllBytes` and the other
+`slice[Byte]`-blocked externs (`file_host.l` → 0, `hash_host.l` → 0 via
+`SHA256.HashData` / `Convert.ToHexString`, `Stream.Write`,
+`Encoding.GetBytes` — the "GetBytes fails at runtime" note was stale), and a
+sweep across json/task/http-server/process-capture/regex/console/uuid/
+parse/format. 102 migrated, each exercised by an existing or added runtime
+test. Residuals each carry an in-file "stays @externTarget: reason" note
+(out-params, generic declaring types, delegate params, primitive Lyric
+receivers, nullable returns, lenient-subtype args, `inout` struct
+enumerators). One migration was **reverted at integration**:
+`JsonEncodedText.Encode(s)` — the BCL signature carries a trailing optional
+`JavaScriptEncoder = null` and auto-FFI overload scoring is exact-arity, so
+the seed cannot compile the migrated form (the agent's green builds were a
+stale `stage1.stamp` artifact; the checker agent's independent probe caught
+it). Trailing-optional scoring is the Q-MD-004 family, tracked for a future
+seed. Two auto-FFI-compatible migrations (`Task.WhenAll`,
+`CancellationToken.CanBeCanceled`) were also left as `@externTarget` because
+every runtime path through them is a documented pre-existing failure
+(#5329/#5330) — no test could verify them.
+
+**Related:** docs/59 §6.4/§7.1, D-progress-638/643/644, Q-MD-004, #5329.
+
+---
+
+## D-progress-652 — JVM: a Throwable escaping a `scope { }` body propagates via `shutdownNow` instead of hanging in executor close (#5569)
+
+The synthesized scope-close defer ran `ExecutorService.close()` — which
+blocks until every submitted task terminates — *before* rethrowing a
+Throwable that escaped the scope body, so an error with an unfinished
+spawned task became a silent unbounded hang. `lowerDeferRegion`'s exception
+handler now detects the compiler-synthesized close intrinsic (a reserved
+shape unreachable from user code) and emits `shutdownNow()` — interrupt
+outstanding children, rethrow immediately (D119 §7.4 first-failure
+semantics). Orderly exits keep the joining `close()`; user `defer` blocks
+are untouched (verified bit-identical). #5569's item 2 (`x = x + await f()`
+"skipping" the rest of a scope body) does **not** reproduce in any probed
+shape under either seed vintage — the observed symptom was this hang
+triggered by an incidental throw; the shapes are regression-pinned anyway
+(compound-assign/call-arg/if-cond awaits in `async_spawn_self_test.l`,
+15/15 both targets). Item 1 (bare no-scope spawn is degenerate-synchronous)
+is confirmed per-design D119/D120 and now documented in the language
+reference §7.4.
+
+**Related:** #5569, D119/D120, D-progress-602, docs/59 §4.x.
+
+---
+
+## D-progress-653 — JVM erased `slice[prim]` payload binding; parser line-gates postfix `(` / `[`; primitive-array boxing at binding sites (#5570, #5572)
+
+Three defects from PR #5567's http-kernel work. (1) A `slice[Byte]` inside
+a generic payload (`Ok` of `Result[slice[Byte], E]`) arrived boxed —
+`bindCaseField` now normalizes via a new `emitNormalizeErasedSlice` with an
+`instanceof` fork handling **both** runtime shapes (direct FFI `[B` and the
+`Byte[]` produced by `emitBoxPrimitiveArray` — a plain `checkcast [B` would
+CCE on the latter, which is what `bodyBytes` actually delivers);
+`scrutineeGenericArgs` learns `await` scrutinees and type-qualified
+dot-named callees. (2) The "parenthesized boolean-chain tail expression
+resolves a phantom local" bundled-stdlib break was a **parser** bug, not
+codegen: the lexer inserts no statement ends inside braces, so a
+`(`-initial line glued onto the previous expression as a call.
+`parsePostfixExpr` now line-gates the postfix `(` / `[` forms, matching the
+statements-terminate-at-newlines rule (corpus scan: only the
+`isHexDigit` workaround relied on the old parse; reverted to the natural
+form). (3) The try/catch + `slice[Byte]` local VerifyError was a lowering
+hole, not a stackmap-generator bug: constructor args and local
+bindings/assignments never boxed `[B` into the erased
+`[Ljava/lang/Object;` the descriptors declare — `coerceReturnValue` is
+generalized to a site-neutral `coerceValueTo` and applied at those sites.
+Residual (pre-existing): `putfield`/hoisted-cell paths still use bare
+`coerceArgTo` (needs a stash-receiver variant), tracked with the wave-5
+follow-up tickets.
+
+**Related:** #5570, #5572, D-progress-639/648, docs/59 §4.6, #3613, #4938.
+
+---
+
+## D-progress-654 — `--features` propagates to workspace-dependency and single-file builds; swap-only target normalization (#5571)
+
+Building lyric-web for `--target jvm` compiled `lyric-auth`'s **.NET**
+kernel into the JVM build: workspace-dependency compilations never received
+the root build's feature selection. One `resolveManifestFeatures` now
+serves `lyric build` project mode, the single-file synthetic-project path,
+and `lyric test`: each dependency composes **its own** `[features].default`
+with the root's *explicit* `--features` / `--no-default-features`
+(`--all-features` stays root-manifest-scoped), then applies **swap-only
+target normalization** — a non-explicit feature named after another target
+is removed and the active target's own *declared* feature swapped in, never
+inventing one (lyric-session's deliberately empty default set is the
+load-bearing counter-case: its platform kernels carry mandatory
+NuGet/Maven deps, so activation-based normalization would regress it — the
+first draft did, and the workspace-dep test matrix caught it). Adjacent
+holes fixed en route: `cmdBuild` parsed-then-dropped feature flags on
+single-file builds; `emitSingleFileOrProject` could not resolve the nearby
+manifest's own `[project.packages]` from the source's import closure at
+all; `buildWorkspaceDeps` wrote JVM dep JARs to `bin/<name>.dll`, poisoning
+the next dotnet build. CI gains the direct regression pin
+(`lyric build --manifest lyric-auth/lyric.toml --target jvm`). The full
+Undertow smoke stays blocked by two pre-existing JVM codegen bugs
+(cross-package impl-param registration; #5444), documented in its header.
+
+**Related:** #5571, docs/24 §2.3 (new), docs/38 §3.1, D045, D-N-013.
+
+---
+
+## D-progress-655 — type checker: method-call checking (docs/59 A4), unknown-member diagnostics T0113 (A5), body-less non-Unit rejection T0114 (#5603)
+
+The largest unchecked surface closes: `SymbolTable` gains a
+method-signature space populated from record-body methods, impl-block
+methods, and interface members; `ECall` resolves `x.method(args)`
+arity-aware against it (plus D037 dot-named functions with
+receiver-compat), validates through the same helper as direct calls
+(T0042/T0043/T0085 with default elision and named-arg pairing), and
+instantiates the real return type (owner generics from receiver type args,
+`Self` substitution, method generics inferred from args). **T0113** fires
+for unknown members — scoped to receivers whose member surface is fully
+known (records/exposed records/interfaces *declared in the file being
+checked*); imported types stay lenient because contract metadata drops
+method members from record reprs (extending T0113 across packages needs
+body-less method sigs in `reprForRecord`, docs/45 territory — tracked).
+**T0114** rejects a concrete non-Unit function with an absent or empty
+body (the #5603 "compiles to a no-op" class; `@axiom` / `@externTarget` /
+`extern` / interface signatures exempt; `TyError` returns exempt to avoid
+cascades). `builtinMember` is reachable again for `TyUser` receivers
+(restoring `List.toArray`/`count`, #2126). Fallout engineering at the
+D-progress-646 bar: zero new rejections across the full tree; two
+self-tests were silently rotten (used the reserved keyword `use` as a
+function name, so their call sites never parsed) — renamed.
+
+**Related:** docs/59 §5.1 A4/A5, #5603, #2126, D037, D-progress-646/650.
+
+---
+
+## D-progress-656 — MSIL FFI hardening: unresolved instance auto-FFI fails the build; metadata Extends-chain walk; `HttpResponse.header` works (#5562, #5568)
+
+Instance auto-FFI resolution misses emitted a deferred runtime throw while
+the build stayed green (the D-progress-644 blocker class that once shipped
+a broken `Std.Process`); all three such stub positions (instance call,
+`MClassRef` / `MValueTypeRef` property reads) now panic at build time with
+the member, receiver FQN, and argument context named. `Mdr.resolveExtern`
+walks the TypeDef `Extends` chain (TypeRef bases followed across
+assemblies; `.ctor` excluded; stops at `ValueType`/`Enum`/generic
+TypeSpec bases; depth-capped), and every emission consumer parents the
+MemberRef on the *declaring* type — `process_host.l`'s last
+`@externTarget` (`Process.Dispose`, inherited from `Component`) is
+retired as the proof. `HttpResponse.header` had never worked (unbindable
+MemberRef for `TryGetValues`' generic out-param): the kernel drops the
+out-param shape for `Contains`-guarded `GetValues` reading the first value
+through the non-generic `IEnumerator` slot, with per-leg exception mapping
+(`Contains` itself throws on the wrong header category — the reason the
+BCL grew `TryGetValues`). The round-trip CI test now asserts
+response-level, content-level-fallthrough, and absent-header reads.
+
+**Related:** #5562, #5568, D-progress-644/649, docs/42, docs/59 §6.4.
+
+---
+
+## D-progress-657 — MSIL async interface dispatch (#5566); stdlib interface MemberRefs (#5564); async-SM lambda capture of `var` locals
+
+Async-through-interface dispatch had two stacked root causes, neither in
+the awaiter plumbing: `Lyric.Mono`'s IImpl arm double-added the `self` key
+(a hard crash for any impl method with an explicit `self` whenever any
+generic was in scope — it also masked the repro), and the MSIL backend
+encoded an explicit `self` receiver (the D037 spelling) as a *real* IL
+parameter on both the interface slot and the impl method, so the CLR never
+wired the impl to the slot. A `stripExplicitSelfParamMsil` is applied at
+every point a declared-param list feeds arity keys, signatures, or slots.
+Separately, `registerStdlibTypeItemMembers` early-returned for
+`IInterface`, so stdlib interfaces got a TypeRef but **zero method
+MemberRefs** — the reason `Std.Http`'s entire client surface
+(`defaultClient().get(...)` et al.) threw for every program (#5564); it
+now reuses `registerRestoredInterface`. The async state machine also
+gains the #1479 v2 closure-capture pre-pass (a `var` captured by a lambda
+in an async body panicked the compiler; the cell reference is promoted to
+an SM field so it survives suspension) — async *generators* deliberately
+excluded (their yield-suspension model would turn the loud panic into a
+silent miscompile; own slice). #5561 was verified already fixed by wave 4.
+Known remaining: operand-stack values live across an await in
+call-argument position (the fix is a statement-level ANF hoist of
+await-bearing call arguments, ideally in `Lyric.Pipeline` so JVM shares
+it) — ticketed; JVM has its own explicit-self interface-descriptor bug —
+ticketed.
+
+**Related:** #5566, #5564, #5561, #1479, D037, D-progress-649, docs/59 §3.
+
+---
+
 ---
 
 ## Decisions deferred to v2 or later

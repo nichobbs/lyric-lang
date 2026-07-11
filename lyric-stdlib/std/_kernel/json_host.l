@@ -160,9 +160,11 @@ pub func hostPropertyValue(prop: in JsonProperty): JsonElement {
 // `ToString()` instance method renders the escaped UTF-16 form
 // without the surrounding quotes; we add those in Lyric.
 // =====================================================================
-pub func hostEncodeText(s: in String): JsonEncodedText {
-  JsonEncodedText.Encode(s)
-}
+// stays @externTarget: `Encode(String, JavaScriptEncoder = null)` carries a
+// trailing optional reference param, and auto-FFI overload scoring is
+// exact-arity (Q-MD-004) — a 1-arg call matches no overload.
+@externTarget("System.Text.Json.JsonEncodedText.Encode")
+pub func hostEncodeText(s: in String): JsonEncodedText = ()
 
 pub func hostEncodedTextToString(t: in JsonEncodedText): String {
   t.ToString()

@@ -938,6 +938,10 @@ lyric build --no-default-features      # suppress the default = […] set
 lyric build --all-features             # transitive closure of every declared feature
                                        # (all of the above flags also work on
                                        #  lyric run / test / prove / publish)
+                                       # --features/--no-default-features propagate to
+                                       # workspace-dependency builds; a platform-named
+                                       # default feature (dotnet/jvm/native) is swapped
+                                       # to match --target (docs/24 s2.3)
 
 # Run
 lyric run <file.l>                     # compile and immediately execute

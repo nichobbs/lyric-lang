@@ -120,6 +120,34 @@ baked at `lyric publish` time.  See §1.1 for the recommended
 alternative (D046 runtime config) and Q-features-001 in §8 for
 the closure rationale.
 
+### 2.3 Feature resolution for workspace-dependency and single-file builds
+
+§2.2's privacy rule governs *published* dependencies. **Workspace
+dependencies** (path deps built from source in the same tree, docs/38) are
+compiled by the consumer's build, so each one must resolve its own feature
+set. The rule, shipped with #5571 (shared by `lyric build`, `lyric test`,
+and the single-file path — all through one `resolveManifestFeatures`):
+
+1. Each dependency starts from **its own** `[features].default` (or its
+   full declared table under `--all-features`, which is root-manifest-scoped
+   and *not* forwarded to dependencies).
+2. The root build's **explicit** `--features` list and
+   `--no-default-features` flag are forwarded to every workspace-dependency
+   compilation — the root's *resolved* set (which carries the root's own
+   defaults) is not.
+3. **Target normalization (swap-only):** a *non-explicit* active feature
+   named after a different target (`dotnet` / `jvm` / `native`) is removed,
+   and — only when such a mismatched platform default was removed — the
+   active target's own *declared* feature is swapped in. The swap never
+   invents a target feature for a manifest that activates none: a package
+   with a deliberately empty default set (e.g. lyric-session, whose platform
+   kernels carry mandatory NuGet/Maven deps) keeps its opt-out on every
+   target. An explicitly passed feature is never removed.
+
+The D-N-013 `target.<name>` pseudo-feature is injected per compilation by
+every backend bridge, for root and dependency builds alike, independent of
+this table-level resolution.
+
 ---
 
 ## 3. CLI flags

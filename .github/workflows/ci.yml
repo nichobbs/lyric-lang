@@ -3524,6 +3524,22 @@ jobs:
           "$lyric_bin" test --target jvm lyric-compiler/lyric/async_spawn_self_test.l
           echo "async-spawn self-test ran: async_spawn_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
+      # Std.Http async client surface on JVM (#5564) — the JVM half of the
+      # dotnet-job step of the same name.  Deterministic error-path dispatch,
+      # no live listener needed.
+      - name: Std.Http async-surface test coverage on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Http async JVM tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-stdlib/tests/http_async_tests.l
+          echo "Std.Http async-surface test ran: http_async_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
       # Map-key self-test on JVM (#1480 MSIL / #4982 Finding 1 JVM) — the JVM
       # half of the dotnet-job step of the same name.  Records with
       # `@derive(Equals)`/`@derive(Hash)` now carry synthesised
@@ -5148,6 +5164,21 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_tests.l
+
+      # Std.Http async client surface (#5564): interface dispatch through
+      # defaultClient() and the free getAsync/sendAsync functions.  Uses
+      # deterministic error-path dispatch (no live listener needed), so it
+      # runs on both targets.
+      - name: Std.Http async-surface test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Http async tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_async_tests.l
 
       # Real HTTP round-trips through the PUBLIC Std.Http API against a live
       # Std.HttpServer listener (#5560/#5561): GET, POST, and
