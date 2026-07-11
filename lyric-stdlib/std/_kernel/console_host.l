@@ -13,15 +13,23 @@ package Std.ConsoleHost
 
 import Std.Core
 
-@externTarget("System.Console.Read")
-pub func hostConsoleRead(): Int = ()
+extern type NetConsole = "System.Console"
 
-@externTarget("System.Console.Write")
-pub func hostConsoleWrite(text: in String): Unit = ()
+pub func hostConsoleRead(): Int {
+  NetConsole.Read()
+}
 
-@externTarget("System.Console.WriteLine")
-pub func hostConsoleWriteLine(text: in String): Unit = ()
+pub func hostConsoleWrite(text: in String): Unit {
+  NetConsole.Write(text)
+}
 
+pub func hostConsoleWriteLine(text: in String): Unit {
+  NetConsole.WriteLine(text)
+}
+
+// stays @externTarget: the nullable `String?` return relies on the
+// declared-signature nullable-return handling only the @externTarget
+// path provides (auto-FFI has no null-return convention).
 @externTarget("System.Console.ReadLine")
 pub func hostConsoleReadLine(): String? = ()
 
@@ -40,13 +48,15 @@ pub func hostReadLineOpt(): Option[String] {
 // instance `WriteLine(String)` in pure Lyric (no F# shim — #1493).
 extern type TextWriter = "System.IO.TextWriter"
 
-@externTarget("System.Console.get_Error")
-func consoleErrorWriter(): TextWriter = ()
+func consoleErrorWriter(): TextWriter {
+  NetConsole.Error
+}
 
-// Targets the `TextWriter.WriteLine(string)` overload; the emitter resolves it by the `in String` parameter type.
-@externTarget("System.IO.TextWriter.WriteLine")
-@externInstance
-func textWriterWriteLine(w: in TextWriter, text: in String): Unit = ()
+// Binds the `TextWriter.WriteLine(string)` overload; auto-FFI overload
+// scoring resolves it by the String argument type.
+func textWriterWriteLine(w: in TextWriter, text: in String): Unit {
+  w.WriteLine(text)
+}
 
 pub func hostConsoleErrorWriteLine(text: in String): Unit {
   textWriterWriteLine(consoleErrorWriter(), text)

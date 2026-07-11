@@ -27,16 +27,19 @@ import Std.Core
 extern type Uuid = "System.Guid"
 
 // Generate a new random (version 4) UUID.
-@externTarget("System.Guid.NewGuid")
-pub func hostNewGuid(): Uuid = ()
+pub func hostNewGuid(): Uuid {
+  Uuid.NewGuid()
+}
 
 // The nil UUID: 00000000-0000-0000-0000-000000000000.
-@externTarget("System.Guid.Empty")
-pub func hostEmptyGuid(): Uuid = ()
+pub func hostEmptyGuid(): Uuid {
+  Uuid.Empty
+}
 
 // Format a UUID as the canonical lowercase hyphenated string.
-@externTarget("System.Guid.ToString")
-pub func hostGuidToString(g: in Uuid): String = ()
+pub func hostGuidToString(g: in Uuid): String {
+  g.ToString()
+}
 
 // The out-param bridge to Guid.TryParse; only hostParseCanonicalGuid
 // below should call it.

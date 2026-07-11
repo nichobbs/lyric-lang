@@ -29,17 +29,20 @@ extern type RegexOptions = "System.Text.RegularExpressions.RegexOptions"
 
 // ─── Private BCL bindings ────────────────────────────────────────────────────
 // TimeSpan.FromSeconds(double) — creates a timeout duration.
-@externTarget("System.TimeSpan.FromSeconds")
-func timeSpanFromSeconds(seconds: in Double): TimeSpan = ()
+func timeSpanFromSeconds(seconds: in Double): TimeSpan {
+  TimeSpan.FromSeconds(seconds)
+}
 
 // RegexOptions.None (flags value 0).
-@externTarget("System.Text.RegularExpressions.RegexOptions.None")
-func regexOptionsNone(): RegexOptions = ()
+func regexOptionsNone(): RegexOptions {
+  RegexOptions.None
+}
 
 // 3-argument Regex constructor: pattern, options, matchTimeout.
-// The FFI picks this overload over the 1-arg ctor when 3 args are supplied.
-@externTarget("System.Text.RegularExpressions.Regex..ctor")
-func hostCompileRaw(pattern: in String, options: in RegexOptions, timeout: in TimeSpan): Regex = ()
+// Overload scoring picks this ctor over the 1-arg form by exact arity.
+func hostCompileRaw(pattern: in String, options: in RegexOptions, timeout: in TimeSpan): Regex {
+  Regex.new(pattern, options, timeout)
+}
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 /// Compile a regex pattern with a default 1-second match timeout.
@@ -63,14 +66,17 @@ pub func hostCompileWithTimeout(pattern: in String, seconds: in Double): Regex
   hostCompileRaw(pattern, regexOptionsNone(), timeSpanFromSeconds(seconds))
 }
 
-@externTarget("System.Text.RegularExpressions.Regex.IsMatch")
-pub func hostIsMatch(r: in Regex, input: in String): Bool = ()
+pub func hostIsMatch(r: in Regex, input: in String): Bool {
+  r.IsMatch(input)
+}
 
-@externTarget("System.Text.RegularExpressions.Regex.Match")
-pub func hostMatchOne(r: in Regex, input: in String): Match = ()
+pub func hostMatchOne(r: in Regex, input: in String): Match {
+  r.Match(input)
+}
 
-@externTarget("System.Text.RegularExpressions.Regex.Replace")
-pub func hostReplace(r: in Regex, input: in String, replacement: in String): String = ()
+pub func hostReplace(r: in Regex, input: in String, replacement: in String): String {
+  r.Replace(input, replacement)
+}
 
 // ─── Match inspection ────────────────────────────────────────────────────────
 //

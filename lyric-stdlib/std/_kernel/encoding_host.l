@@ -14,21 +14,23 @@ package Std.EncodingHost
 // Opaque handle for the BCL System.Text.Encoding type.
 extern type Enc = "System.Text.Encoding"
 
-// Returns the .NET UTF-8 encoding singleton (System.Text.Encoding.UTF8).
-// Bound to the static property getter get_UTF8 on System.Text.Encoding.
-@externTarget("System.Text.Encoding.get_UTF8")
-pub func hostGetUtf8Enc(): Enc = ()
+extern type NetConvert = "System.Convert"
 
-// Encodes a string to UTF-8 bytes.  Binds to the BCL instance method
-// Encoding.GetBytes(string) — `enc` is the receiver, `s` is the argument.
-// Returns a genuine byte[] (not List<object> or object[]).
-@externTarget("System.Text.Encoding.GetBytes")
-@externInstance
-pub func hostEncodeUtf8(enc: in Enc, s: in String): slice[Byte] = ()
+// Returns the .NET UTF-8 encoding singleton (System.Text.Encoding.UTF8).
+pub func hostGetUtf8Enc(): Enc {
+  Enc.UTF8
+}
+
+// Encodes a string to UTF-8 bytes via the BCL instance method
+// Encoding.GetBytes(string).  Returns a genuine byte[] (not
+// List<object> or object[]).
+pub func hostEncodeUtf8(enc: in Enc, s: in String): slice[Byte] {
+  enc.GetBytes(s)
+}
 
 // Decodes a standard Base64 string (RFC 4648 §4) to raw bytes.
-// Binds to System.Convert.FromBase64String(string).
 // Throws System.FormatException (caught by `catch Bug`) on malformed input.
 // Returns a genuine byte[] on success.
-@externTarget("System.Convert.FromBase64String")
-pub func hostFromBase64(s: in String): slice[Byte] = ()
+pub func hostFromBase64(s: in String): slice[Byte] {
+  NetConvert.FromBase64String(s)
+}

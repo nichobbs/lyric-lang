@@ -22,8 +22,9 @@ extern type CultureInfo = "System.Globalization.CultureInfo"
 // =====================================================================
 // System.Globalization.CultureInfo.InvariantCulture (static property).
 // Returns the invariant (English) culture — decimal separator is always ".".
-@externTarget("System.Globalization.CultureInfo.InvariantCulture")
-pub func hostInvariantCulture(): CultureInfo = ()
+pub func hostInvariantCulture(): CultureInfo {
+  CultureInfo.InvariantCulture
+}
 
 // =====================================================================
 // Integer formatting.

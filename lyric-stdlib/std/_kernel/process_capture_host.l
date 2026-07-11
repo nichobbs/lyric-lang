@@ -35,78 +35,79 @@ extern type Stream = "System.IO.Stream"
 extern type MemStream = "System.IO.MemoryStream"
 
 // ── ProcessStartInfo setup ─────────────────────────────────────────────────
-@externTarget("System.Diagnostics.ProcessStartInfo..ctor")
-func newPsi(): Psi = ()
+func newPsi(): Psi {
+  Psi.new()
+}
 
-@externInstance
-@externTarget("System.Diagnostics.ProcessStartInfo.set_FileName")
-func psiFileName(psi: in Psi, v: in String): Unit = ()
+func psiFileName(psi: in Psi, v: in String): Unit {
+  psi.FileName = v
+}
 
-@externInstance
-@externTarget("System.Diagnostics.ProcessStartInfo.set_Arguments")
-func psiArguments(psi: in Psi, v: in String): Unit = ()
+func psiArguments(psi: in Psi, v: in String): Unit {
+  psi.Arguments = v
+}
 
-@externInstance
-@externTarget("System.Diagnostics.ProcessStartInfo.set_RedirectStandardInput")
-func psiRedirectInput(psi: in Psi, v: in Bool): Unit = ()
+func psiRedirectInput(psi: in Psi, v: in Bool): Unit {
+  psi.RedirectStandardInput = v
+}
 
-@externInstance
-@externTarget("System.Diagnostics.ProcessStartInfo.set_RedirectStandardOutput")
-func psiRedirectOutput(psi: in Psi, v: in Bool): Unit = ()
+func psiRedirectOutput(psi: in Psi, v: in Bool): Unit {
+  psi.RedirectStandardOutput = v
+}
 
-@externInstance
-@externTarget("System.Diagnostics.ProcessStartInfo.set_RedirectStandardError")
-func psiRedirectError(psi: in Psi, v: in Bool): Unit = ()
+func psiRedirectError(psi: in Psi, v: in Bool): Unit {
+  psi.RedirectStandardError = v
+}
 
-@externInstance
-@externTarget("System.Diagnostics.ProcessStartInfo.set_UseShellExecute")
-func psiUseShell(psi: in Psi, v: in Bool): Unit = ()
+func psiUseShell(psi: in Psi, v: in Bool): Unit {
+  psi.UseShellExecute = v
+}
 
-@externInstance
-@externTarget("System.Diagnostics.ProcessStartInfo.set_CreateNoWindow")
-func psiNoWindow(psi: in Psi, v: in Bool): Unit = ()
+func psiNoWindow(psi: in Psi, v: in Bool): Unit {
+  psi.CreateNoWindow = v
+}
 
 // ── Process control ────────────────────────────────────────────────────────
 // Process.Start(ProcessStartInfo) is a static method; the Psi parameter is
 // not an instance receiver here — it is the sole argument.
-@externStatic
-@externTarget("System.Diagnostics.Process.Start")
-func procStart(psi: in Psi): Proc = ()
+func procStart(psi: in Psi): Proc {
+  Proc.Start(psi)
+}
 
-@externInstance
-@externTarget("System.Diagnostics.Process.get_StandardInput")
-func procStdinWriter(p: in Proc): ProcWriter = ()
+func procStdinWriter(p: in Proc): ProcWriter {
+  p.StandardInput
+}
 
-@externInstance
-@externTarget("System.Diagnostics.Process.get_StandardOutput")
-func procStdoutReader(p: in Proc): ProcReader = ()
+func procStdoutReader(p: in Proc): ProcReader {
+  p.StandardOutput
+}
 
-@externInstance
-@externTarget("System.Diagnostics.Process.get_StandardError")
-func procStderrReader(p: in Proc): ProcReader = ()
+func procStderrReader(p: in Proc): ProcReader {
+  p.StandardError
+}
 
 // Returns true when the process exited within `ms` milliseconds, false on
 // timeout.  .NET 5+ overload; we target .NET 10 so this is always available.
-@externInstance
-@externTarget("System.Diagnostics.Process.WaitForExit")
-func procWaitMs(p: in Proc, ms: in Int): Bool = ()
+func procWaitMs(p: in Proc, ms: in Int): Bool {
+  p.WaitForExit(ms)
+}
 
-@externInstance
-@externTarget("System.Diagnostics.Process.Kill")
-func procKillTree(p: in Proc, entireProcessTree: in Bool): Unit = ()
+func procKillTree(p: in Proc, entireProcessTree: in Bool): Unit {
+  p.Kill(entireProcessTree)
+}
 
-@externInstance
-@externTarget("System.Diagnostics.Process.get_ExitCode")
-func procExitCode(p: in Proc): Int = ()
+func procExitCode(p: in Proc): Int {
+  p.ExitCode
+}
 
 // ── Stdin write ────────────────────────────────────────────────────────────
-@externInstance
-@externTarget("System.IO.StreamWriter.Write")
-func writerWrite(w: in ProcWriter, s: in String): Unit = ()
+func writerWrite(w: in ProcWriter, s: in String): Unit {
+  w.Write(s)
+}
 
-@externInstance
-@externTarget("System.IO.StreamWriter.Close")
-func writerClose(w: in ProcWriter): Unit = ()
+func writerClose(w: in ProcWriter): Unit {
+  w.Close()
+}
 
 // ── Async pipe drain (MemoryStream-based) ─────────────────────────────────
 // Instead of ReadToEndAsync() → Task<string> (which hits invariant-generic
@@ -116,13 +117,14 @@ func writerClose(w: in ProcWriter): Unit = ()
 // preventing the pipe-buffer-full deadlock (#3029).
 // The underlying raw Stream from a StreamReader — the drain target for
 // CopyToAsync so we bypass the generic Task<string> problem.
-@externInstance
-@externTarget("System.IO.StreamReader.get_BaseStream")
-func readerBaseStream(r: in ProcReader): Stream = ()
+func readerBaseStream(r: in ProcReader): Stream {
+  r.BaseStream
+}
 
 // Create a fresh MemoryStream accumulator.
-@externTarget("System.IO.MemoryStream..ctor")
-func newMemStream(): MemStream = ()
+func newMemStream(): MemStream {
+  MemStream.new()
+}
 
 // Drain `src` into `dst` asynchronously and return a non-generic Task.
 // `dst` is declared as MemStream (not Stream) because the self-hosted
@@ -132,35 +134,42 @@ func newMemStream(): MemStream = ()
 // scoreSigTypeLenient to match STNamed(MemStream) against BCL's Stream
 // parameter and emits the correct MemberRef for
 // Stream.CopyToAsync(Stream destination) at compile time.
+// stays @externTarget: the auto-FFI call-site overload scorer matches
+// argument FQNs exactly (no base-type walk), so a MemStream argument
+// never binds the CopyToAsync(Stream) overload without the declared
+// signature's lenient scoring.
 @externInstance
 @externTarget("System.IO.Stream.CopyToAsync")
 func streamCopyTo(src: in Stream, dst: in MemStream): Task = ()
 
 // Block for up to `ms` milliseconds until the drain Task completes.
 // Returns true on completion, false on timeout.
-@externInstance
-@externTarget("System.Threading.Tasks.Task.Wait")
-func drainWaitMs(t: in Task, ms: in Int): Bool = ()
+func drainWaitMs(t: in Task, ms: in Int): Bool {
+  t.Wait(ms)
+}
 
 // Seek the MemStream back to the start so the StreamReader sees the full
 // content.  Position is Int64 (Long); pass 0i64.
-@externInstance
-@externTarget("System.IO.Stream.set_Position")
-func memStreamResetPos(ms: in MemStream, pos: in Long): Unit = ()
+func memStreamResetPos(ms: in MemStream, pos: in Long): Unit {
+  ms.Position = pos
+}
 
 // Wrap a MemStream in a new StreamReader for decoding.  Reuses the ProcReader
 // extern type (same CLR type).  `s` is declared as MemStream (not Stream) for
 // the same self-hosted-type-checker reason as streamCopyTo above.
 // scoreSigTypeLenient resolves the correct BCL StreamReader(Stream)
 // MemberRef at compile time via the self-hosted auto-FFI path.
+// stays @externTarget: same exact-FQN scoring limitation as streamCopyTo —
+// a MemStream argument cannot bind the StreamReader(Stream) ctor at an
+// auto-FFI `.new()` call site.
 @externTarget("System.IO.StreamReader..ctor")
 func newProcReaderFrom(s: in MemStream): ProcReader = ()
 
 // Synchronously read all remaining content from a StreamReader.  Safe here
 // because all content is already buffered in the MemStream.
-@externInstance
-@externTarget("System.IO.TextReader.ReadToEnd")
-func readAllSync(r: in ProcReader): String = ()
+func readAllSync(r: in ProcReader): String {
+  r.ReadToEnd()
+}
 
 // ── Public result record ───────────────────────────────────────────────────
 // Replaces the former opaque `extern type ProcessCaptureResult =

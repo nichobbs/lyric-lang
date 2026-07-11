@@ -13,12 +13,14 @@ extern type CultureInfo = "System.Globalization.CultureInfo"
 extern type NumberStyles = "System.Globalization.NumberStyles"
 
 // System.Globalization.CultureInfo.InvariantCulture (static property).
-@externTarget("System.Globalization.CultureInfo.InvariantCulture")
-pub func hostInvariantCulture(): CultureInfo = ()
+pub func hostInvariantCulture(): CultureInfo {
+  CultureInfo.InvariantCulture
+}
 
 // System.Globalization.NumberStyles.Float (enum field).
-@externTarget("System.Globalization.NumberStyles.Float")
-pub func hostNumberStylesFloat(): NumberStyles = ()
+pub func hostNumberStylesFloat(): NumberStyles {
+  NumberStyles.Float
+}
 
 // System.Double.TryParse(string, NumberStyles, IFormatProvider, out double).
 // Arity-4 static overload — invariant culture eliminates locale-dependent failures.

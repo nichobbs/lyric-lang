@@ -55,93 +55,95 @@ extern type Encoding = "System.Text.Encoding"
 
 extern type Uri = "System.Uri"
 
+extern type NetConvert = "System.Convert"
+
 // =====================================================================
-// Primitive externs (private to this kernel file).
+// Primitive helpers (private to this kernel file) — auto-FFI calls
+// resolved from reference-assembly metadata: property gets via member
+// access, property sets via assignment, ctors via `.new(args)`.
 // =====================================================================
-// Note: Constructors with arguments are wrapped manually to prevent stage-0
-// seed compiler panics on metadata-based `.new(args)` calls (#5167 tracks
-// migrating these wrappers to `.new(args)` now that the seed supports it).
-//
-// .NET properties are exposed as `get_<Name>` / `set_<Name>` methods
-// on the declaring type; @externTarget binds to method names, not property
-// names, so each property reader/writer must use the prefixed form.  Instance
-// properties also need `@externInstance` so the FFI emitter routes through
-// callvirt instead of treating them as static calls.
-@externInstance
-@externTarget("System.Net.HttpListenerContext.get_Request")
-func ctxRequest(c: in HttpContext): HttpListenerRequest = ()
+func ctxRequest(c: in HttpContext): HttpListenerRequest {
+  c.Request
+}
 
-@externInstance
-@externTarget("System.Net.HttpListenerContext.get_Response")
-func ctxResponse(c: in HttpContext): HttpListenerResponse = ()
+func ctxResponse(c: in HttpContext): HttpListenerResponse {
+  c.Response
+}
 
-@externInstance
-@externTarget("System.Net.HttpListenerRequest.get_Url")
-func requestUrl(req: in HttpListenerRequest): Uri = ()
+func requestUrl(req: in HttpListenerRequest): Uri {
+  req.Url
+}
 
-@externInstance
-@externTarget("System.Uri.get_Query")
-func uriQuery(u: in Uri): String = ()
+func uriQuery(u: in Uri): String {
+  u.Query
+}
 
-@externTarget("System.Uri.UnescapeDataString")
-func uriUnescape(s: in String): String = ()
+func uriUnescape(s: in String): String {
+  Uri.UnescapeDataString(s)
+}
 
-@externInstance
-@externTarget("System.Net.HttpListenerRequest.get_Headers")
-func requestHeadersRaw(req: in HttpListenerRequest): WebHeaderCollection = ()
+func requestHeadersRaw(req: in HttpListenerRequest): WebHeaderCollection {
+  req.Headers
+}
 
-@externInstance
-@externTarget("System.Net.WebHeaderCollection.get_AllKeys")
-func headersAllKeys(h: in WebHeaderCollection): slice[String] = ()
+func headersAllKeys(h: in WebHeaderCollection): slice[String] {
+  h.AllKeys
+}
 
+// stays @externTarget: `Get(string)` is declared on the base class
+// `NameValueCollection`, and auto-FFI instance resolution only searches
+// the receiver's own TypeDef (no base-type walk on MSIL).
 @externInstance
 @externTarget("System.Collections.Specialized.NameValueCollection.Get")
 func headersGet(h: in WebHeaderCollection, name: in String): String = ()
 
-@externInstance
-@externTarget("System.Net.HttpListenerResponse.AddHeader")
-func responseAddHeader(resp: in HttpListenerResponse, name: in String, value: in String): Unit = ()
+func responseAddHeader(resp: in HttpListenerResponse, name: in String, value: in String): Unit {
+  resp.AddHeader(name, value)
+}
 
-@externTarget("System.IO.StreamReader..ctor")
-func newStreamReader(stream: in Stream, encoding: in Encoding): StreamReader = ()
+func newStreamReader(stream: in Stream, encoding: in Encoding): StreamReader {
+  StreamReader.new(stream, encoding)
+}
 
-@externInstance
-@externTarget("System.Net.HttpListenerResponse.set_StatusCode")
-func setResponseStatus(resp: in HttpListenerResponse, status: in Int): Unit = ()
+func setResponseStatus(resp: in HttpListenerResponse, status: in Int): Unit {
+  resp.StatusCode = status
+}
 
-@externInstance
-@externTarget("System.Net.HttpListenerResponse.set_ContentType")
-func setResponseContentType(resp: in HttpListenerResponse, ct: in String): Unit = ()
+func setResponseContentType(resp: in HttpListenerResponse, ct: in String): Unit {
+  resp.ContentType = ct
+}
 
-@externInstance
-@externTarget("System.Net.HttpListenerResponse.set_ContentLength64")
-func setResponseContentLength(resp: in HttpListenerResponse, len: in Long): Unit = ()
+func setResponseContentLength(resp: in HttpListenerResponse, len: in Long): Unit {
+  resp.ContentLength64 = len
+}
 
-@externInstance
-@externTarget("System.Net.HttpListenerResponse.get_OutputStream")
-func responseOutputStream(resp: in HttpListenerResponse): Stream = ()
+func responseOutputStream(resp: in HttpListenerResponse): Stream {
+  resp.OutputStream
+}
 
-@externInstance
-@externTarget("System.IO.Stream.Write")
-func streamWrite(s: in Stream, buffer: in slice[Byte], offset: in Int, count: in Int): Unit = ()
+func streamWrite(s: in Stream, buffer: in slice[Byte], offset: in Int, count: in Int): Unit {
+  s.Write(buffer, offset, count)
+}
 
-@externInstance
-@externTarget("System.IO.Stream.Close")
-func streamClose(s: in Stream): Unit = ()
+func streamClose(s: in Stream): Unit {
+  s.Close()
+}
 
-@externInstance
-@externTarget("System.Net.HttpListenerResponse.Close")
-func responseClose(resp: in HttpListenerResponse): Unit = ()
+func responseClose(resp: in HttpListenerResponse): Unit {
+  resp.Close()
+}
 
-@externTarget("System.Text.Encoding.get_UTF8")
-func utf8(): Encoding = ()
+func utf8(): Encoding {
+  Encoding.UTF8
+}
 
-@externInstance
-@externTarget("System.Text.Encoding.GetBytes")
-func encodingGetBytes(e: in Encoding, s: in String): slice[Byte] = ()
+func encodingGetBytes(e: in Encoding, s: in String): slice[Byte] {
+  e.GetBytes(s)
+}
 
-@externTarget("System.Convert.ToInt64")
-func intToLong(n: in Int): Long = ()
+func intToLong(n: in Int): Long {
+  NetConvert.ToInt64(n)
+}
 
 // =====================================================================
 // Public host helpers.
@@ -249,13 +251,6 @@ pub func urlDecode(s: in String): String {
 // Internal: shared response writer for both the text and JSON helpers.
 // Sets status + content-type, encodes the body to UTF-8 bytes, writes
 // the full buffer, then closes the output stream and the response.
-//
-// Uses the audited @externTarget wrappers throughout rather than auto-FFI
-// method-call syntax: both `Encoding.GetBytes` and `Stream.Write` have
-// enough overloads that auto-FFI resolution fails at runtime ("unresolved
-// extern instance method... Declare an @externTarget wrapper if a custom
-// binding is intended") — the same pattern `respondBytesWith` below already
-// uses successfully.
 func respondWith(c: in HttpContext, status: in Int, contentType: in String, body: in String): Unit {
   val resp = ctxResponse(c)
   setResponseStatus(resp, status)
