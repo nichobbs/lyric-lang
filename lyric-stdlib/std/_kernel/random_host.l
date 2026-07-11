@@ -10,25 +10,32 @@ package Std.RandomHost
 
 extern type Random = "System.Random"
 
-@externTarget("System.Random.Shared")
-pub func hostSharedRandom(): Random = ()
+pub func hostSharedRandom(): Random {
+  Random.Shared
+}
 
-@externTarget("System.Random..ctor")
-pub func hostMakeRandom(seed: in Int): Random = ()
+pub func hostMakeRandom(seed: in Int): Random {
+  Random.new(seed)
+}
 
-@externTarget("System.Random.Next")
-pub func hostNextInt(rng: in Random): Int = ()
+pub func hostNextInt(rng: in Random): Int {
+  rng.Next()
+}
 
 /// Random integer in `[0, max)`.  Negative `max` panics at the BCL boundary.
-@externTarget("System.Random.Next")
-pub func hostNextIntBelow(rng: in Random, max: in Int): Int = ()
+pub func hostNextIntBelow(rng: in Random, max: in Int): Int {
+  rng.Next(max)
+}
 
 /// Random integer in `[min, max)`.  `min >= max` panics at the BCL boundary.
-@externTarget("System.Random.Next")
-pub func hostNextIntRange(rng: in Random, min: in Int, max: in Int): Int = ()
+pub func hostNextIntRange(rng: in Random, min: in Int, max: in Int): Int {
+  rng.Next(min, max)
+}
 
-@externTarget("System.Random.NextInt64")
-pub func hostNextLong(rng: in Random): Long = ()
+pub func hostNextLong(rng: in Random): Long {
+  rng.NextInt64()
+}
 
-@externTarget("System.Random.NextDouble")
-pub func hostNextDouble(rng: in Random): Double = ()
+pub func hostNextDouble(rng: in Random): Double {
+  rng.NextDouble()
+}
