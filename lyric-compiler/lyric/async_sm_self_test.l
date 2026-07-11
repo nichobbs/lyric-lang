@@ -593,7 +593,6 @@ test "#2736: await outside try, return from catch after panic (Phase B)" {
 // emits TypeDefs in source order (SM classes interleaved with records).  Any
 // IRecord defined AFTER an async func in source order received wrong
 // cctx.fieldTokens entries → ilverify TokenResolve errors + runtime crashes.
-
 async func smBeforeRecordHelper(n: in Int): Int {
   n + 10
 }
@@ -681,7 +680,15 @@ union Direction {
 }
 
 async func asyncGetDirection(n: in Int): Direction {
-  if n == 0 { North } else if n == 1 { South } else if n == 2 { East } else { West }
+  if n == 0 {
+    North
+  } else if n == 1 {
+    South
+  } else if n == 2 {
+    East
+  } else {
+    West
+  }
 }
 
 async func asyncDirectionRoundTrip(n: in Int): Direction {
@@ -749,4 +756,116 @@ test "#4266: SM func returning local union type: match all arms" {
   assertTrue(match o { case One -> true; case _ -> false }, "asyncToSmallInt(1) = One")
   assertTrue(match tw { case Two -> true; case _ -> false }, "asyncToSmallInt(2) = Two")
   assertTrue(match m { case Many -> true; case _ -> false }, "asyncToSmallInt(99) = Many")
+}
+
+// ── #5566: async func awaiting an interface-dispatched call ──────────────────
+// An `async func` whose body awaits a call through an interface-typed
+// receiver.  Before the fix the impl-method / interface-slot signatures
+// disagreed whenever the receiver was declared explicitly (`self: in Self`
+// D037 spelling), and Lyric.Mono double-added the `self` key and crashed the
+// whole compile for any impl method + any in-scope generic.
+interface FetchClient {
+  async func fetch(q: in String): String
+}
+
+record FakeFetch {
+}
+
+impl FetchClient for FakeFetch {
+  async func fetch(q: in String): String {
+    return q + "!"
+  }
+}
+
+async func runFetch(c: in FetchClient): String {
+  val r = await c.fetch("hi")
+  return r
+}
+
+// The same shape with the receiver declared explicitly (`self: in Self` in
+// the interface, `self: in Target` in the impl) — the exact #5566 repro.
+interface SelfClient {
+  async func fetchSelf(self: in Self, q: in String): String
+}
+
+record SelfFake {
+}
+
+impl SelfClient for SelfFake {
+  async func fetchSelf(self: in SelfFake, q: in String): String {
+    return q + "?"
+  }
+}
+
+async func runFetchSelf(c: in SelfClient): String {
+  val r = await c.fetchSelf("yo")
+  return r
+}
+
+// Sync dispatch of an explicit-self impl method (the mono `self` double-add
+// crashed here too — generic in scope + impl method with explicit self).
+interface SelfNamer {
+  func nameOf(self: in Self): String
+}
+
+record SelfNamed {
+}
+
+impl SelfNamer for SelfNamed {
+  func nameOf(self: in SelfNamed): String = "named"
+}
+
+test "#5566: async interface dispatch through param" {
+  val res = await runFetch(FakeFetch())
+  assertEqual(res, "hi!", "await c.fetch through interface-typed param")
+}
+
+test "#5566: async interface dispatch through interface-typed binding" {
+  val c: FetchClient = FakeFetch()
+  val res = await c.fetch("yo")
+  assertEqual(res, "yo!", "await c.fetch through interface-typed val binding")
+}
+
+test "#5566: async interface dispatch with explicit self receiver" {
+  val res = await runFetchSelf(SelfFake())
+  assertEqual(res, "yo?", "await c.fetchSelf through explicit-self interface")
+}
+
+test "#5566: sync interface dispatch with explicit self receiver" {
+  val n: SelfNamer = SelfNamed()
+  assertEqual(n.nameOf(), "named", "explicit-self sync interface dispatch")
+}
+
+// ── #1479 v2 in async SMs: lambda-captured `var` locals ──────────────────────
+// The closure-capture heap-cell pre-pass ran only in the plain-func lowering;
+// neither async-SM synthesis populated `hoistedVarNames`, so a `var` captured
+// by a lambda inside an `async func` panicked the compiler ("captured mutable
+// (`var`) local ... was not hoisted to a heap cell").  The Phase B fix also
+// promotes the cell REFERENCE to an SM field so it survives suspension.
+// B.0 shape: no awaits in the body.
+async func asyncVarCapturedByLambda(n: in Int): Int {
+  var acc = n
+  val bump = { -> acc = acc + 1 }
+  bump()
+  bump()
+  acc
+}
+
+// B.1 shape: a real suspension point between the capture and the use.
+async func asyncVarCellAcrossAwait(n: in Int): Int {
+  var acc = n
+  val bump = { -> acc = acc + 10 }
+  val extra = await asyncAddOne(n)
+  bump()
+  acc + extra
+}
+
+test "#1479/async: var captured by lambda in async func (no await)" {
+  val r = await asyncVarCapturedByLambda(5)
+  assertEqualInt(r, 7, "two bump() calls through the shared cell")
+}
+
+test "#1479/async: var cell survives an await between capture and use" {
+  val r = await asyncVarCellAcrossAwait(3)
+  assertEqualInt(r, 17, "3 + 10 (cell write after await) + 4 (await result)")
 }
