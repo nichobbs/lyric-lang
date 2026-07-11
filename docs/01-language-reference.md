@@ -1575,6 +1575,8 @@ Supported features:
 - **Static fields, literal constants, and enum constants**: `Alias.Field` member access emits `ldsfld` with the field's real signature type for genuine static fields, and inlines literal constants from the metadata Constant table (`ldc.i4`/`ldc.i8`/`ldc.r8` — e.g. `Math.PI` inlines the exact R8 bit pattern). Enum constants are typed as their enum value type so they score exactly against enum-typed parameters.
 
 - **Value-type instance receivers**: instance methods and property getters on an extern struct value (`TimeSpan`, `Guid`, `DateTime`, …) dispatch by spilling the receiver to a local and emitting `ldloca` + `call` with the metadata-resolved signature. Extern structs also box correctly into object contexts (equality, interpolation, `toString`, uniform-ABI generic arguments).
+- **Async methods**: inside an `async func`, an auto-FFI call resolving a `Task`- or `Task<T>`-returning method unwraps synchronously (`Task<T>` → `get_Result`, `Task` → `Wait()`), matching the `@externTarget` async convention (D085/D091): the kernel convention is that .NET externs unwrap and callers carry concurrency. In a non-`async` body the Task stays opaque and a blocking `await` unwraps it.
+- **Array arguments**: `slice[T]` arguments resolve BCL `T[]` parameters (e.g. `Convert.ToBase64String(byte[])`, `String.Join(string, string[])`).
 
 Unresolved calls and narrowing coercions fall back to requiring an explicit `@externTarget` wrapper; property *assignment* on a value-type receiver (a byref-receiver shape) is not yet expressible via auto-FFI. All unresolved auto-FFI calls, member reads, and property assignments on extern receivers produce a compile-time diagnostic — never a silent mis-lowering.
 
@@ -1582,6 +1584,7 @@ Unresolved calls and narrowing coercions fall back to requiring an explicit `@ex
 
 - **`invokestatic`** for static methods (e.g. `JMath.abs(-7)` → `invokestatic`).
 - **`invokevirtual`** for instance methods on a JDK reference receiver (e.g. calling `.intValue()` on the `Integer` returned by `JInteger.valueOf(42)`).
+- **Functional-interface (SAM) bridging** for lambda arguments: a Lyric lambda passed where a JDK method expects a functional interface (`Runnable`, `Comparator<T>`, `java.util.function.*`, …) is wrapped in a synthesized adapter class implementing that interface, with primitive boxing/unboxing and void adaptation. Applies to lambda literals and un-annotated lambda bindings; explicitly function-type-annotated values are not yet bridged.
 - **`new` + `invokespecial <init>`** for constructors via the `.new(args)` shorthand (e.g. `JStringBuilder.new("hello")` → `new java/lang/StringBuilder; dup; ldc "hello"; invokespecial java/lang/StringBuilder.<init>(Ljava/lang/String;)V`).
 
 The same overload-scoring rules as dotnet apply (exact match → numeric widening); an unresolved call when the JDK is present is a compile-time error. When `JAVA_HOME` is unset and no JDK is found on the standard search paths, the emitter silently falls back to the legacy object-typed binding (no JDK required at compile time for that mode, but resolution may fail at JVM link time).

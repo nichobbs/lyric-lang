@@ -72,6 +72,17 @@ logic; optimisations; non-idiomatic usage; stdlib API-surface consolidation;
 > surface are deleted; `Std.Collections.listContains` shipped (§9.4 root
 > cause); one §9.4 correction — `jvm/fuzzer.l` is *alive* (self_test_b8
 > is CI-wired since #5515).
+>
+> **Wave 3 (2026-07-11, D-progress-643/644/645):** the `@externTarget`
+> retirement has begun in earnest — 11 kernel files migrated, `_kernel/`
+> down from 277 to 172 declarations (§7.1's zero-adoption finding is
+> obsolete); #5167 refuted (the v0.4.22 seed compiles arg-bearing
+> `.new()` in the stdlib). §6.4 item 3 shipped (auto-FFI Task/Task<T>
+> unwrap in `async func` bodies) and the `slice[T]`-argument gap closed;
+> §6.4 item 6's JVM half shipped (lambda→SAM bridging at auto-FFI
+> boundaries — the #2663 http-kernel prerequisite). New blocker classes
+> found: inherited instance members don't resolve; unresolved instance
+> auto-FFI defers to a runtime throw instead of a compile panic.
 
 ---
 

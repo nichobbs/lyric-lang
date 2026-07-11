@@ -334,7 +334,14 @@ runtime gap.
 > with extern-struct boxing into object contexts (equality / interpolation /
 > `castObjectToMsil` / uniform-ABI generic args). Remaining call-site gaps:
 > `inout` struct receivers and property *set* on value-type receivers (both
-> byref-receiver shapes), async Task unwrap, out/ref params. The same change fixed the @ET
+> byref-receiver shapes) and out/ref params. Async Task/Task<T> unwrap at
+> auto-FFI call sites shipped in the following wave (gated on the
+> enclosing `async func`, mirroring @externTarget's D085/D091 keying), as
+> did `slice[T]` argument signatures (`argTyToSig` STSzArray mapping) and
+> an intern-key collision fix for array/byref-differing overloads. New
+> known gaps from the first kernel-migration tranche: inherited instance
+> members (no base-type metadata walk) and the unresolved-instance-call
+> runtime-throw fallback (should be a compile-time panic). The same change fixed the @ET
 > path's literal-const handling (`Math.PI` previously fell through to a
 > `ldsfld` on a storage-less literal field → `MissingFieldException` at
 > runtime) and excluded extern type names from the nullary-union-case
