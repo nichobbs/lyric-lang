@@ -158,6 +158,34 @@ pub protected type SpanBuffer {
     spans = newList()
     return taken
   }
+  // Non-destructive read of every currently-buffered span. Callers that
+  // must know an export *succeeded* before discarding spans (see
+  // `OTel.Otlp.flushOtlpAsync`, #5588) snapshot here, encode/POST, and only
+  // call `removeExported` on success — never `drain`, which would drop the
+  // batch unconditionally before the export result is known.
+  func snapshot(): List[Span] {
+    return spans
+  }
+  // Remove the first `n` spans (the ones a caller already exported
+  // successfully, per `snapshot`'s FIFO order) rather than clearing
+  // whatever happens to be buffered `n` calls later — any span pushed
+  // after `snapshot()` was taken (e.g. while an export POST was in
+  // flight) is preserved for the next flush.
+  entry removeExported(n: in Int): Unit {
+    if n <= 0 {
+      // no-op: nothing exported, nothing to remove.
+    } else if n >= spans.length {
+      spans = newList()
+    } else {
+      val remaining: List[Span] = newList()
+      var i = n
+      while i < spans.length {
+        remaining.add(spans[i])
+        i = i + 1
+      }
+      spans = remaining
+    }
+  }
   func count(): Int {
     return spans.length
   }

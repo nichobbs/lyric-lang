@@ -41,6 +41,7 @@ test "SQLite: create table, parameterised insert, and typed value extraction" {
           if rows.length == 1 {
             val row = rows[0]
             assertEqualLong(Db.getLong(row, "id"), 1i64, "id column (Long)")
+            assertEqualInt(Db.getInt(row, "id"), 1, "id column (Int)")
             assertEqual(Db.dbGetString(row, "name"), "widget", "name column (String)")
             match Db.col(row, "price") {
               case DbValue.DbDouble(v) -> assertTrue(v > 9.98 and v < 10.0, "price column (Double)")
@@ -51,6 +52,40 @@ test "SQLite: create table, parameterised insert, and typed value extraction" {
               case DbValue.DbNull -> ()
               case _ -> assertTrue(false, "expected DbNull for note")
             }
+          }
+        }
+      }
+      conn.close()
+    }
+  }
+}
+
+test "SQLite: getInt narrows an INTEGER value that overflows Int32 (#5597)" {
+  // Microsoft.Data.Sqlite picks the reader's CLR type per stored value, not
+  // per declared column type: an INTEGER value that overflows Int32 range
+  // reports as `System.Int64` (this library's `DbValue.DbLong`), not
+  // `System.Int32` (`DbValue.DbInt`). Before #5597, `Db.getInt` only
+  // matched `DbInt`, so it silently returned 0 for any INTEGER column
+  // holding a value that big.
+  match Db.connectSqlite("sqlite::memory:", 5000) {
+    case Err(e) -> assertTrue(false, "connect failed: " + e.message)
+    case Ok(conn) -> {
+      val _ = conn.execute("CREATE TABLE big_ints (n INTEGER)", [])
+      // 5,000,000,000 overflows Int32.MaxValue (~2.1 billion).
+      val _ = conn.execute("INSERT INTO big_ints (n) VALUES (5000000000)", [])
+      match conn.query("SELECT n FROM big_ints", []) {
+        case Err(e) -> assertTrue(false, "query failed: " + e.message)
+        case Ok(rows) -> {
+          assertEqualInt(rows.length, 1, "one row returned")
+          if rows.length == 1 {
+            val row = rows[0]
+            match Db.col(row, "n") {
+              case DbValue.DbLong(v) -> assertEqualLong(v, 5000000000i64, "n column surfaces as DbLong")
+              case _ -> assertTrue(false, "expected DbLong for an INTEGER value beyond Int32 range")
+            }
+            // `.toInt()` truncates toward zero (docs/01 §4, numeric
+            // conversions); 5,000,000,000 mod 2^32 = 705,032,704.
+            assertEqualInt(Db.getInt(row, "n"), 705032704, "getInt narrows the DbLong instead of returning 0")
           }
         }
       }

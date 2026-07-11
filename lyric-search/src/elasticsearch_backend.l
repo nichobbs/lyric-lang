@@ -8,7 +8,11 @@
 //! by pure-Lyric HTTP + JSON (issue #5408).
 //!
 //! Query/filter/sort mapping:
-//!   - `SearchQuery.query` (non-empty)  -> `query_string` clause
+//!   - `SearchQuery.query` (non-empty)  -> `multi_match` clause across
+//!     every field (`fields: ["*"]`) — plain-text matching, not
+//!     Elasticsearch's Lucene-derived `query_string` mini-language
+//!     (#5589; `query_string` let caller-supplied text carry query
+//!     syntax — field scoping, wildcards, regex — into the query parser)
 //!   - `SearchQuery.query` (empty)      -> `match_all`
 //!   - `SearchFilter.operator = "eq"`        -> `term`
 //!   - `SearchFilter.operator = "gt"/"gte"/"lt"/"lte"` -> `range`
@@ -100,11 +104,22 @@ pub func esFieldsToJsonObject(fields: in Map[String, String]): String {
   return body + "}"
 }
 
+// `multi_match` (not `query_string`): `query_string` parses its input as
+// Elasticsearch's Lucene-derived mini-language — operators, field
+// prefixes, wildcards, regex, proximity/boost syntax — so caller-supplied
+// search text reaches the query parser as *syntax*, not plain terms. That
+// is both a query-injection surface (a user can scope/boost/exclude
+// arbitrary fields the UI never intended to expose) and a DoS surface
+// (wildcard/regex terms are expensive to evaluate). `multi_match` treats
+// the whole input as plain text tokens to match — no operators are parsed
+// — while still searching across every field (`"fields":["*"]`), matching
+// `query_string`'s previous "search everything" behaviour without its
+// syntax surface (#5589).
 pub func esQueryClause(q: in String): String {
   if q.length == 0 {
     return "{\"match_all\":{}}"
   }
-  return "{\"query_string\":{\"query\":" + encodeString(q) + "}}"
+  return "{\"multi_match\":{\"query\":" + encodeString(q) + ",\"fields\":[\"*\"]}}"
 }
 
 pub func esFilterClause(f: in SearchFilter): String {

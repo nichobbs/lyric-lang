@@ -31,6 +31,7 @@ import Std.Core
 import Std.Testing
 import Std.Environment
 import OTel
+import OTel.Types
 import OTel.Otlp
 
 test "flushOtlpAsync sends real OTLP/HTTP protobuf to a live collector (env-gated)" {
@@ -50,4 +51,29 @@ test "flushOtlpAsync sends real OTLP/HTTP protobuf to a live collector (env-gate
     val ok = await flushOtlpAsync(5000)
     assertTrue(ok, "flushOtlpAsync reported success (2xx) against " + url)
   }
+}
+
+// A deterministic, always-on regression test for #5588: before the fix,
+// `flushOtlpAsync` drained (removed) the span buffer *before* POSTing, so
+// any transport failure silently lost the batch. A closed TCP port on
+// localhost produces a real, fast, deterministic transport failure without
+// needing a live collector (the same pattern lyric-search and lyric-db use
+// for their connect-failure tests).
+test "flushOtlpAsync leaves spans buffered when the export transport fails" {
+  val _ = globalSpanBuffer.drain()
+  match configureOtlpTraces(OtlpExporterConfig(endpoint = "http://127.0.0.1:1", protocol = OtlpProtocol.HttpProtobuf, timeoutMs = 2000, headers = [])) {
+    case Err(e) -> assertTrue(false, "configureOtlpTraces failed: " + e)
+    case Ok(_) -> {
+    }
+  }
+  val span = startSpan("otlp_transport_tests.failed_flush", 0)
+  endSpan(span)
+  val beforeCount = globalSpanBuffer.count()
+  val ok = await flushOtlpAsync(2000)
+  assertFalse(ok, "flushOtlpAsync reports failure against an unreachable collector")
+  assertEqualInt(
+    globalSpanBuffer.count(),
+    beforeCount,
+    "the span is still buffered after a failed export, not silently dropped"
+  )
 }

@@ -4987,8 +4987,14 @@ jobs:
           sqlite_native="$( { find "$HOME/.nuget/packages/sqlitepclraw.lib.e_sqlite3" -path '*linux-x64/native*' -name '*.so' 2>/dev/null || true; } | head -1 | { xargs -r dirname || true; } )"
           LD_LIBRARY_PATH="${sqlite_native}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             "$lyric_bin" test --manifest lyric-db/lyric.toml || overall=$?
-          echo "=== lyric-search tests ==="
+          echo "=== lyric-search tests (elasticsearch, default) ==="
           "$lyric_bin" test --manifest lyric-search/lyric.toml || overall=$?
+          # Meilisearch backend is a mutually-exclusive alternative feature, so
+          # it gets zero coverage from the default (elasticsearch) run (#5598).
+          # --no-default-features drops elasticsearch so the @cfg-gated probes
+          # don't collide on a duplicate name.
+          echo "=== lyric-search tests (meilisearch) ==="
+          "$lyric_bin" test --manifest lyric-search/lyric.toml --no-default-features --features meilisearch || overall=$?
           # lyric-lambda (dep: lyric-web, built above) — test file corrected from
           # non-Lyric syntax (|> pipe, phantom Map API, qualified union ctor); the
           # library gained LambdaError factory functions + an authorizer split fix.

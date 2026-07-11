@@ -18,8 +18,8 @@ every operation past `connect` unconditionally returned
 
 - **SQLite (Microsoft.Data.Sqlite)** is exercised end-to-end in CI against
   a real `:memory:` database: DDL, parameterised insert, typed value
-  extraction (`Long`/`Double`/`String`/`Bool`/`NULL`/`Bytes`), affected-row
-  counts, transaction commit visibility, transaction rollback
+  extraction (`Long`/`Int`/`Double`/`String`/`Bool`/`NULL`/`Bytes`),
+  affected-row counts, transaction commit visibility, transaction rollback
   invisibility, and SQL-error mapping. See `tests/db_sqlite_tests.l`.
 - **Postgres (Npgsql)** shares the exact same query/execute/transaction
   code path as SQLite (both operate through the shared
@@ -204,8 +204,35 @@ variant. The `DbValue` variants are:
 | `DbDecimal(value)` | `String` (invariant-culture text) | `System.Decimal` |
 | `DbDateTime(value)` | `String` (ISO 8601 UTC, `"o"` round-trip format) | `System.DateTime` |
 
-`Int`/`Long`/`Float`/`Double`/`Bool`/`String`/`Bytes`/`Null` are exercised
-end-to-end against a real SQLite database (`tests/db_sqlite_tests.l`).
+`Long`/`Double`/`Bool`/`String`/`Bytes`/`Null` are exercised end-to-end
+against a real SQLite database (`tests/db_sqlite_tests.l`).
+
+`Int` is also exercised end-to-end, but with a caveat worth knowing:
+Microsoft.Data.Sqlite picks the reader's CLR type **per stored value, not
+per declared column type** — an `INTEGER` column reports `System.Int32`
+(`DbInt`) while every stored value fits Int32 range, but reports
+`System.Int64` (`DbLong`) the moment a value overflows it (SQLite has no
+native 32-bit integer storage class; this is Microsoft.Data.Sqlite's own
+choice of CLR type per row, verified empirically). `Db.getInt`/
+`Db.getIntOpt` narrow a `DbLong` down to `Int` (`.toInt()`, truncating) so
+callers get a consistent `Int`-typed accessor regardless of which variant
+the driver happened to pick for a given value (#5597); pattern-matching
+`Db.col(...)` directly still sees the real `DbInt`/`DbLong` split. Both
+cases (fits Int32, overflows Int32) are asserted in
+`tests/db_sqlite_tests.l`.
+
+**`Float` cannot be exercised against SQLite at all**: Microsoft.Data.Sqlite
+always reports a `REAL`-storage-class value as `System.Double`
+(`DbDouble`), never `System.Single` (`DbFloat`), regardless of the declared
+column type name (`REAL`, `FLOAT`, …) — verified empirically. There is no
+SQLite-reachable path to `DbFloat` at all, and no live Postgres server is
+available in CI/sandboxes to exercise it there either (Postgres's `real`
+column type does map to `System.Single` via Npgsql). The `DbFloat` encoding
+path was verified correct in isolation (a standalone repro against
+`System.Single` directly) but not through this library's own kernel
+end-to-end — a real gap, tracked as follow-up alongside live-server
+Postgres coverage.
+
 **`Decimal` and `DateTime` are not exercised by any test in this
 repository** — Microsoft.Data.Sqlite reports plain `Double`/`String` CLR
 types for `DECIMAL`/`DATETIME`-declared SQLite columns regardless of the

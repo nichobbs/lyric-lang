@@ -55,6 +55,7 @@ import Std.Errors
 import Std.Http
 import Std.Json
 import Std.Task
+import Std.Char
 
 val msTaskPollIntervalMs: Int = 50
 
@@ -97,12 +98,23 @@ pub func msDocToJsonObject(doc: in SearchDocument): String {
   return body + "}"
 }
 
+// Escapes both `\` and `'` (backslash first, so an already-escaped `\'`
+// produced by this function is never re-escaped): Meilisearch's filter
+// grammar quotes string values in single or double quotes with backslash
+// escaping for embedded quote/backslash characters, the same convention
+// as shell/SQL string literals (#5585). Scanning the *original*
+// characters one at a time (not re-scanning the growing `escaped`
+// accumulator) means checking backslash before quote per character is
+// sufficient — there is no way for the two checks to interact within a
+// single pass.
 pub func msQuote(v: in String): String {
   var escaped = ""
   var i = 0
   while i < v.length {
     val c = v[i]
-    if c == '\'' {
+    if c == '\\' {
+      escaped = escaped + "\\\\"
+    } else if c == '\'' {
       escaped = escaped + "\\'"
     } else {
       escaped = escaped + c.toString()
@@ -112,14 +124,53 @@ pub func msQuote(v: in String): String {
   return "'" + escaped + "'"
 }
 
+// Meilisearch's filter grammar has no quoting/escaping mechanism for
+// *attribute names* (only for string values, via `msQuote` above) — an
+// attribute name is spliced into the filter expression as a bare,
+// unquoted token. A caller-supplied `field` is therefore restricted to a
+// safe identifier charset (letters, digits, `_`, `.`, `-` — covering
+// ordinary attribute names and Meilisearch's dotted nested-attribute
+// paths) before it is ever concatenated into a filter clause (#5585).
+func msIsSafeFieldName(field: in String): Bool {
+  if field.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < field.length {
+    val c = field[i]
+    if not (isAsciiLetterOrDigit(c) or c == '_' or c == '.' or c == '-') {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+// A field name outside the safe charset is never spliced into the filter
+// expression as-is. There is no field-name quoting to fall back to (see
+// `msIsSafeFieldName`'s doc comment), so the only safe substitute is a
+// placeholder attribute name that can never exist in a real index:
+// Meilisearch rejects a filter referencing an unknown/non-filterable
+// attribute with an HTTP 400, which surfaces through the normal
+// `SEARCH_FAILED`/`BATCH_INDEX_FAILED` transport-error path — the request
+// fails closed instead of splicing attacker-controlled filter syntax.
+func msSafeField(field: in String): String {
+  if msIsSafeFieldName(field) {
+    field
+  } else {
+    "__lyric_rejected_unsafe_field_name__"
+  }
+}
+
 pub func msFilterExpr(f: in SearchFilter): String {
+  val field = msSafeField(f.field)
   match f.operator {
-    case "gt" -> f.field + " > " + msQuote(f.value)
-    case "gte" -> f.field + " >= " + msQuote(f.value)
-    case "lt" -> f.field + " < " + msQuote(f.value)
-    case "lte" -> f.field + " <= " + msQuote(f.value)
-    case "contains" -> f.field + " CONTAINS " + msQuote(f.value)
-    case _ -> f.field + " = " + msQuote(f.value)
+    case "gt" -> field + " > " + msQuote(f.value)
+    case "gte" -> field + " >= " + msQuote(f.value)
+    case "lt" -> field + " < " + msQuote(f.value)
+    case "lte" -> field + " <= " + msQuote(f.value)
+    case "contains" -> field + " CONTAINS " + msQuote(f.value)
+    case _ -> field + " = " + msQuote(f.value)
   }
 }
 

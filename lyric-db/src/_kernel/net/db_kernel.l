@@ -71,6 +71,7 @@ package Db.Kernel.Net
 import Std.Core
 import Std.String as Str
 import Std.Encoding
+import Std.Parse
 
 // ─── Shared ADO.NET extern types (System.Data.Common — always in the BCL,
 // no NuGet dependency needed for this part) ───────────────────────────────
@@ -419,87 +420,199 @@ func bindParams(cmd: in DbCmd, params: in slice[String]): Unit {
 @externTarget("Npgsql.NpgsqlConnection..ctor")
 func newNpgsqlConnection(connStr: in String): DbConn = ()
 
+// `NpgsqlConnectionStringBuilder` (not raw string concatenation): every
+// setter quotes/escapes its value per Npgsql's own connection-string
+// grammar, so a host/user/password/database value containing `;` or `=`
+// cannot break out into arbitrary connection options (#5584). Building the
+// final string via `get_ConnectionString` is the only place that emits it.
+@axiom("Npgsql.NpgsqlConnectionStringBuilder escapes every keyword value per Npgsql's own connection-string quoting rules")
+@cfg(feature = "postgres")
+extern type NpgsqlConnStrBuilder = "Npgsql.NpgsqlConnectionStringBuilder"
+
+@cfg(feature = "postgres")
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder..ctor")
+func newPgConnStrBuilder(): NpgsqlConnStrBuilder = ()
+
+// Overload of the same ctor, seeded from an already-formed Npgsql
+// keyword=value connection string (parsed and re-escaped by the builder).
+@cfg(feature = "postgres")
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder..ctor")
+func newPgConnStrBuilderFrom(connStr: in String): NpgsqlConnStrBuilder = ()
+
+@cfg(feature = "postgres")
+@externInstance
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder.set_Host")
+func pgSetHost(b: in NpgsqlConnStrBuilder, v: in String): Unit = ()
+
+@cfg(feature = "postgres")
+@externInstance
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder.set_Port")
+func pgSetPort(b: in NpgsqlConnStrBuilder, v: in Int): Unit = ()
+
+@cfg(feature = "postgres")
+@externInstance
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder.set_Username")
+func pgSetUsername(b: in NpgsqlConnStrBuilder, v: in String): Unit = ()
+
+@cfg(feature = "postgres")
+@externInstance
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder.set_Password")
+func pgSetPassword(b: in NpgsqlConnStrBuilder, v: in String): Unit = ()
+
+@cfg(feature = "postgres")
+@externInstance
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder.get_Password")
+func pgGetPassword(b: in NpgsqlConnStrBuilder): String = ()
+
+@cfg(feature = "postgres")
+@externInstance
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder.set_Database")
+func pgSetDatabase(b: in NpgsqlConnStrBuilder, v: in String): Unit = ()
+
+@cfg(feature = "postgres")
+@externInstance
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder.get_Host")
+func pgGetHost(b: in NpgsqlConnStrBuilder): String = ()
+
+@cfg(feature = "postgres")
+@externInstance
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder.set_Timeout")
+func pgSetTimeout(b: in NpgsqlConnStrBuilder, v: in Int): Unit = ()
+
+@cfg(feature = "postgres")
+@externInstance
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder.get_Timeout")
+func pgGetTimeout(b: in NpgsqlConnStrBuilder): Int = ()
+
+@cfg(feature = "postgres")
+@externInstance
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder.set_MaxPoolSize")
+func pgSetMaxPoolSize(b: in NpgsqlConnStrBuilder, v: in Int): Unit = ()
+
+@cfg(feature = "postgres")
+@externInstance
+@externTarget("Npgsql.NpgsqlConnectionStringBuilder.get_ConnectionString")
+func pgConnStrBuilderToString(b: in NpgsqlConnStrBuilder): String = ()
+
+// Npgsql's `Timeout` keyword is whole seconds; a sub-second, but still
+// positive, `connectTimeoutMs` (e.g. 100-999) must not truncate to `0` —
+// Npgsql treats `Timeout=0` as **infinite**, not "immediate" (#5596). Round
+// up so any positive millisecond value maps to at least one second.
+func msToWholeSecondsRoundedUp(ms: in Int): Int {
+  if ms <= 0 {
+    return 0
+  }
+  val secs = (ms + 999) / 1000
+  if secs < 1 {
+    1
+  } else {
+    secs
+  }
+}
+
 // Build an Npgsql keyword=value connection string. Accepts either a
 // `postgres://` / `postgresql://` URI (parsed here) or an already-formed
-// Npgsql connection string (passed through, with tuning params appended).
+// Npgsql connection string (passed through, with tuning params applied on
+// top via the builder).
 @cfg(feature = "postgres")
-func buildPgConnStr(dsn: in String, poolSize: in Int, connectTimeoutMs: in Int, passwordOverride: in String): String {
+pub func buildPgConnStr(dsn: in String, poolSize: in Int, connectTimeoutMs: in Int, passwordOverride: in String): String {
   val isUri = Str.startsWith(dsn, "postgres://") or Str.startsWith(dsn, "postgresql://")
-  if not isUri {
-    return appendPgTuning(dsn, poolSize, connectTimeoutMs, passwordOverride)
-  }
-  val prefixLen = if Str.startsWith(dsn, "postgresql://") { 13 } else { 11 }
-  val rest = Str.substring(dsn, prefixLen)
+  val builder = if isUri { newPgConnStrBuilder() } else { newPgConnStrBuilderFrom(dsn) }
 
-  var userinfo = ""
-  var afterAt = rest
-  match Str.indexOf(rest, "@") {
-    case Some(at) -> {
-      userinfo = Str.substring(rest, 0, at)
-      afterAt = Str.substring(rest, at + 1)
+  if isUri {
+    val prefixLen = if Str.startsWith(dsn, "postgresql://") { 13 } else { 11 }
+    val rest = Str.substring(dsn, prefixLen)
+
+    var userinfo = ""
+    var afterAt = rest
+    match Str.indexOf(rest, "@") {
+      case Some(at) -> {
+        userinfo = Str.substring(rest, 0, at)
+        afterAt = Str.substring(rest, at + 1)
+      }
+      case None -> ()
     }
-    case None -> ()
-  }
 
-  var hostport = afterAt
-  var pathAndQuery = ""
-  match Str.indexOf(afterAt, "/") {
-    case Some(slash) -> {
-      hostport = Str.substring(afterAt, 0, slash)
-      pathAndQuery = Str.substring(afterAt, slash + 1)
+    var hostport = afterAt
+    var pathAndQuery = ""
+    match Str.indexOf(afterAt, "/") {
+      case Some(slash) -> {
+        hostport = Str.substring(afterAt, 0, slash)
+        pathAndQuery = Str.substring(afterAt, slash + 1)
+      }
+      case None -> ()
     }
-    case None -> ()
-  }
 
-  var dbName = pathAndQuery
-  match Str.indexOf(pathAndQuery, "?") {
-    case Some(q) -> {
-      dbName = Str.substring(pathAndQuery, 0, q)
+    var dbName = pathAndQuery
+    match Str.indexOf(pathAndQuery, "?") {
+      case Some(q) -> {
+        dbName = Str.substring(pathAndQuery, 0, q)
+      }
+      case None -> ()
     }
-    case None -> ()
-  }
 
-  var host = hostport
-  var port = "5432"
-  match Str.indexOf(hostport, ":") {
-    case Some(c) -> {
-      host = Str.substring(hostport, 0, c)
-      port = Str.substring(hostport, c + 1)
-    }
-    case None -> ()
-  }
-  if host.length == 0 {
-    host = "localhost"
-  }
-
-  var user = ""
-  var pass = ""
-  if userinfo.length > 0 {
-    match Str.indexOf(userinfo, ":") {
+    var host = hostport
+    var port = 5432
+    match Str.indexOf(hostport, ":") {
       case Some(c) -> {
-        user = Str.substring(userinfo, 0, c)
-        pass = Str.substring(userinfo, c + 1)
+        host = Str.substring(hostport, 0, c)
+        port = match Std.Parse.parseOptInt(Str.substring(hostport, c + 1)) { case Some(p) -> p; case None -> 5432 }
       }
-      case None -> {
-        user = userinfo
+      case None -> ()
+    }
+    if host.length == 0 {
+      host = "localhost"
+    }
+
+    var user = ""
+    var pass = ""
+    if userinfo.length > 0 {
+      match Str.indexOf(userinfo, ":") {
+        case Some(c) -> {
+          user = Str.substring(userinfo, 0, c)
+          pass = Str.substring(userinfo, c + 1)
+        }
+        case None -> {
+          user = userinfo
+        }
       }
+    }
+
+    pgSetHost(builder, host)
+    pgSetPort(builder, port)
+    pgSetUsername(builder, user)
+    pgSetDatabase(builder, dbName)
+    if pass.length > 0 {
+      pgSetPassword(builder, pass)
     }
   }
 
-  var connStr = "Host=" + host + ";Port=" + port + ";Username=" + user + ";Database=" + dbName
-  if pass.length > 0 {
-    connStr = connStr + ";Password=" + pass
+  if passwordOverride.length > 0 {
+    pgSetPassword(builder, passwordOverride)
   }
-  appendPgTuning(connStr, poolSize, connectTimeoutMs, passwordOverride)
+  pgSetTimeout(builder, msToWholeSecondsRoundedUp(connectTimeoutMs))
+  pgSetMaxPoolSize(builder, poolSize)
+  pgConnStrBuilderToString(builder)
+}
+
+// Round-trip a built connection string back through
+// `NpgsqlConnectionStringBuilder` and read a single keyword back out.
+// Exists so tests can assert `buildPgConnStr` correctly quoted a value
+// containing `;`/`=` (#5584) without needing their own extern
+// declarations — only `_kernel/` files may declare externs.
+@cfg(feature = "postgres")
+pub func pgConnStrExtractPassword(connStr: in String): String {
+  pgGetPassword(newPgConnStrBuilderFrom(connStr))
 }
 
 @cfg(feature = "postgres")
-func appendPgTuning(base: in String, poolSize: in Int, connectTimeoutMs: in Int, passwordOverride: in String): String {
-  var s = base
-  if passwordOverride.length > 0 {
-    s = s + ";Password=" + passwordOverride
-  }
-  s + ";Timeout=" + (connectTimeoutMs / 1000).toString() + ";Maximum Pool Size=" + poolSize.toString()
+pub func pgConnStrExtractHost(connStr: in String): String {
+  pgGetHost(newPgConnStrBuilderFrom(connStr))
+}
+
+@cfg(feature = "postgres")
+pub func pgConnStrExtractTimeoutSeconds(connStr: in String): Int {
+  pgGetTimeout(newPgConnStrBuilderFrom(connStr))
 }
 
 /// Open a PostgreSQL connection.  Available when the `postgres` feature is

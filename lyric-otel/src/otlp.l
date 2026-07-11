@@ -111,11 +111,40 @@ func newExporterConfigState(): ExporterConfigState {
 
 val exporterState: ExporterConfigState = newExporterConfigState()
 
+// `netPostProtobuf` (dotnet) is a real transport; `jvmPostProtobuf` (jvm)
+// always returns `Err` (see `_kernel/jvm/otlp_kernel.l`'s module doc).
+// Before #5587/#5594, `configureOtlpTraces`/`configureOtlpMetrics` stored
+// the config and returned `Ok` unconditionally on *both* targets, so a JVM
+// caller believed export was configured — the module doc already claimed
+// "every `configureOtlp*` function returns `Err`" on `jvm`, but the code
+// didn't do that. Gate configuration itself on transport availability so
+// the `jvm` feature fails fast and honestly, instead of silently buffering
+// spans/metrics that can never be exported (and, for histograms, panicking
+// later in `flushOtlpAsync` when `OTel.Otlp.Codec` tries to encode one via
+// `jvmDoubleToInt64Bits` — see that function's doc comment).
+@cfg(feature = "dotnet")
+func otlpTransportImplemented(): Bool {
+  true
+}
+
+@cfg(feature = "jvm")
+func otlpTransportImplemented(): Bool {
+  false
+}
+
+func otlpTransportNotImplementedError(): String {
+  "lyric-otel's JVM OTLP/HTTP transport is not implemented (dotnet-only today); see lyric-otel/README.md and docs/44-jvm-production-readiness-plan.md"
+}
+
 // ─── Signal-specific configure functions ──────────────────────────────────────
 /// Configure OTLP/HTTP trace export.  Returns `Err` for
-/// `OtlpProtocol.Grpc` (not implemented — see module doc).
+/// `OtlpProtocol.Grpc` (not implemented — see module doc) and for the `jvm`
+/// feature (OTLP/HTTP export is dotnet-only today).
 @stable(since = "0.2")
 pub func configureOtlpTraces(cfg: OtlpExporterConfig): Result[Unit, String] {
+  if not otlpTransportImplemented() {
+    return Err(error = otlpTransportNotImplementedError())
+  }
   match cfg.protocol {
     case OtlpProtocol.Grpc -> Err(error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)")
     case OtlpProtocol.HttpProtobuf -> {
@@ -126,9 +155,13 @@ pub func configureOtlpTraces(cfg: OtlpExporterConfig): Result[Unit, String] {
 }
 
 /// Configure OTLP/HTTP metrics export.  Returns `Err` for
-/// `OtlpProtocol.Grpc` (not implemented — see module doc).
+/// `OtlpProtocol.Grpc` (not implemented — see module doc) and for the `jvm`
+/// feature (OTLP/HTTP export is dotnet-only today).
 @stable(since = "0.2")
 pub func configureOtlpMetrics(cfg: OtlpExporterConfig): Result[Unit, String] {
+  if not otlpTransportImplemented() {
+    return Err(error = otlpTransportNotImplementedError())
+  }
   match cfg.protocol {
     case OtlpProtocol.Grpc -> Err(error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)")
     case OtlpProtocol.HttpProtobuf -> {
@@ -223,10 +256,13 @@ func isSuccessStatus(status: in Int): Bool {
 /// counted as a failure); an empty buffer for a configured signal is
 /// also skipped (no request sent).
 ///
-/// Spans are drained (removed from the buffer) on flush.  Counters and
-/// histograms are only snapshotted (not drained): OTLP reports them
-/// with `AGGREGATION_TEMPORALITY_CUMULATIVE`, so re-sending the running
-/// total on every flush is correct, not a duplicate.
+/// Spans are only removed from the buffer once their export POST actually
+/// succeeds (a 2xx response) — a transport failure or non-2xx status
+/// leaves them buffered so the next `flushOtlpAsync` call retries them,
+/// instead of silently dropping a batch that was never delivered (#5588).
+/// Counters and histograms are only snapshotted (never removed): OTLP
+/// reports them with `AGGREGATION_TEMPORALITY_CUMULATIVE`, so re-sending
+/// the running total on every flush is correct, not a duplicate.
 ///
 /// Call this before process exit (Lambda / short-lived containers) and
 /// periodically otherwise — there is no background flush thread.
@@ -237,7 +273,7 @@ pub async func flushOtlpAsync(timeoutMs: Int): Bool {
     case None -> {
     }
     case Some(cfg) -> {
-      val spans = globalSpanBuffer.drain()
+      val spans = globalSpanBuffer.snapshot()
       if spans.length > 0 {
         val payload = Codec.encodeExportTraceServiceRequest(spans)
         val url = joinUrl(cfg.endpoint, "/v1/traces")
@@ -245,7 +281,13 @@ pub async func flushOtlpAsync(timeoutMs: Int): Bool {
           case Err(_) -> {
             allOk = false
           }
-          case Ok(status) -> if not isSuccessStatus(status) { allOk = false }
+          case Ok(status) -> {
+            if isSuccessStatus(status) {
+              globalSpanBuffer.removeExported(spans.length)
+            } else {
+              allOk = false
+            }
+          }
         }
       }
     }

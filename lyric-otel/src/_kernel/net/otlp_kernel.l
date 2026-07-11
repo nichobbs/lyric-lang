@@ -100,6 +100,18 @@ async func clientSendAsync(client: in NetHttpClient, request: in NetHttpRequestM
 @externTarget("System.Net.Http.HttpResponseMessage.StatusCode")
 func responseStatusInt(response: in NetHttpResponseMessage): Int = ()
 
+// `HttpClient` and `HttpResponseMessage` both implement `IDisposable`; a
+// fresh client per call (see `netPostProtobuf`'s doc comment) must be
+// disposed at the end of that call or every flush leaks a client/handler
+// pair (#5586).
+@externInstance
+@externTarget("System.Net.Http.HttpClient.Dispose")
+func clientDispose(client: in NetHttpClient): Unit = ()
+
+@externInstance
+@externTarget("System.Net.Http.HttpResponseMessage.Dispose")
+func responseDispose(response: in NetHttpResponseMessage): Unit = ()
+
 // =====================================================================
 // Public boundary — the single entry point `OTel.Otlp` calls.
 // =====================================================================
@@ -138,6 +150,12 @@ pub async func netPostProtobuf(
     val _ = contentHeadersTryAdd(contentHeadersOf(content), "Content-Type", "application/x-protobuf")
     setRequestContent(req, content)
     val resp = await clientSendAsync(client, req)
+    defer {
+      clientDispose(client)
+    }
+    defer {
+      responseDispose(resp)
+    }
     Ok(value = responseStatusInt(resp))
   } catch Bug as b {
     Err(error = b.message)

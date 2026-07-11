@@ -423,13 +423,19 @@ pub func dbGetString(row: in DbRow, name: in String): String
 }
 
 /// Extract an Int column value.  Returns 0 for NULL or non-integer values.
-/// Use getLong for columns that may hold values outside Int32 range.
+/// SQLite reports an `INTEGER` column as `DbLong` whenever the stored value
+/// doesn't fit `Int32` (Microsoft.Data.Sqlite picks the CLR type per value,
+/// not per declared column type), so a `DbLong` is narrowed to `Int` here
+/// too (`.toInt()` truncates toward zero — see `getLong` for the full-range
+/// extractor when that matters).  Use `getLong` for columns that may hold
+/// values outside Int32 range.
 @stable(since = "0.1")
 pub func getInt(row: in DbRow, name: in String): Int
   requires: name.length > 0
 {
   match col(row, name) {
     case DbInt(v) -> return v
+    case DbLong(v) -> return v.toInt()
     case _ -> return 0
   }
 }
@@ -476,6 +482,9 @@ pub func dbGetStringOpt(row: in DbRow, name: in String): Option[String]
 }
 
 /// Extract an Int column value.  Returns None for NULL or non-integer values.
+/// See `getInt`'s doc comment for why a `DbLong` is also narrowed here
+/// (SQLite `INTEGER` columns surface as `DbLong` once the value exceeds
+/// Int32 range).
 @stable(since = "0.1")
 pub func getIntOpt(row: in DbRow, name: in String): Option[Int]
   requires: name.length > 0
@@ -483,6 +492,7 @@ pub func getIntOpt(row: in DbRow, name: in String): Option[Int]
   match col(row, name) {
     case DbNull -> return None
     case DbInt(v) -> return Some(value = v)
+    case DbLong(v) -> return Some(value = v.toInt())
     case _ -> return None
   }
 }

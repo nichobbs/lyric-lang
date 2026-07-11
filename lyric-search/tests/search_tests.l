@@ -255,8 +255,39 @@ test "elasticsearch query clause: empty query text maps to match_all" {
   assertEqual(
     probeEsQueryClauseEmpty(),
     "{\"match_all\":{}}",
-    "empty query text is match_all, not an empty query_string"
+    "empty query text is match_all, not an empty multi_match"
   )
+}
+
+// #5589: `query_string` parses caller-supplied text as Elasticsearch's
+// Lucene-derived mini-language (field scoping, wildcards, regex,
+// proximity/boost operators) — a query-injection and DoS surface. The
+// fixed default (`multi_match`) must never appear as `query_string`, and
+// Lucene-operator-shaped input must reach the request body as a literal
+// value, not get treated as syntax.
+@cfg(feature = "elasticsearch")
+func probeEsQueryClauseLuceneShaped(): String {
+  Search.esQueryClause("title:evil OR *:* AND user.password:*")
+}
+
+@cfg(feature = "meilisearch")
+func probeEsQueryClauseLuceneShaped(): String {
+  ""
+}
+
+test "elasticsearch query clause: never emits query_string (Lucene injection/DoS surface)" {
+  val clause = probeEsQueryClauseLuceneShaped()
+  if clause.length > 0 {
+    assertTrue(
+      not Str.contains(clause, "query_string"),
+      "query_string must never be emitted for user-supplied query text"
+    )
+    assertTrue(Str.contains(clause, "\"multi_match\""), "the default query clause is multi_match")
+    assertTrue(
+      Str.contains(clause, "title:evil OR *:* AND user.password:*"),
+      "Lucene-operator-shaped input is carried as a literal value, not parsed as syntax"
+    )
+  }
 }
 
 @cfg(feature = "elasticsearch")
@@ -276,7 +307,14 @@ test "elasticsearch search body: carries query text, from, and size" {
     assertTrue(Str.contains(body, "widget"), "query text appears in body")
     assertTrue(Str.contains(body, "\"from\":0"), "default from appears in body")
     assertTrue(Str.contains(body, "\"size\":10"), "default size appears in body")
-    assertTrue(Str.contains(body, "\"query_string\""), "non-empty query uses query_string")
+    assertTrue(
+      Str.contains(body, "\"multi_match\""),
+      "non-empty query uses multi_match, not the Lucene-syntax query_string"
+    )
+    assertTrue(
+      Str.contains(body, "\"fields\":[\"*\"]"),
+      "multi_match searches every field, matching query_string's prior 'search everything' behaviour"
+    )
   }
 }
 
@@ -469,6 +507,87 @@ test "meilisearch msQuote: escapes an embedded single quote" {
   val quoted = probeMsQuoteEscaping()
   if quoted.length > 0 {
     assertEqual(quoted, "'O\\'Brien'", "embedded quote is backslash-escaped")
+  }
+}
+
+// #5585: `msQuote` originally escaped only `'`, leaving a literal `\` in
+// the emitted filter value — a backslash immediately before the closing
+// quote (or before another `\'` sequence) can shift where the quoted
+// string ends from Meilisearch's parser's point of view.
+@cfg(feature = "meilisearch")
+func probeMsQuoteBackslash(): String {
+  Search.msQuote("C:\\evil\\path")
+}
+
+@cfg(feature = "elasticsearch")
+func probeMsQuoteBackslash(): String {
+  ""
+}
+
+test "meilisearch msQuote: escapes an embedded backslash" {
+  val quoted = probeMsQuoteBackslash()
+  if quoted.length > 0 {
+    assertEqual(quoted, "'C:\\\\evil\\\\path'", "every backslash is doubled")
+  }
+}
+
+@cfg(feature = "meilisearch")
+func probeMsQuoteBackslashAndQuote(): String {
+  // A value engineered so an unescaped trailing backslash would appear to
+  // "escape" the closing quote from the parser's perspective if only `'`
+  // were escaped: `it\` followed by `'` naively becomes `it\'` — which
+  // reads as an escaped quote, not a closing quote.
+  Search.msQuote("it\\'s a trap")
+}
+
+@cfg(feature = "elasticsearch")
+func probeMsQuoteBackslashAndQuote(): String {
+  ""
+}
+
+test "meilisearch msQuote: escapes a backslash immediately followed by a quote" {
+  val quoted = probeMsQuoteBackslashAndQuote()
+  if quoted.length > 0 {
+    assertEqual(quoted, "'it\\\\\\'s a trap'", "backslash and quote are each escaped independently")
+  }
+}
+
+// #5585: an attacker-controlled field name (not just a value) is spliced
+// unescaped into the filter expression; Meilisearch's filter grammar has
+// no quoting mechanism for field names, so anything outside a safe
+// identifier charset must be rejected rather than passed through.
+@cfg(feature = "meilisearch")
+func probeMsFilterUnsafeField(): String {
+  Search.msFilterExpr(SearchFilter(field = "status = 'active' OR 1 = 1 OR x", value = "ignored", operator = "eq"))
+}
+
+@cfg(feature = "elasticsearch")
+func probeMsFilterUnsafeField(): String {
+  ""
+}
+
+test "meilisearch filter expression: an unsafe field name is not spliced into the filter" {
+  val expr = probeMsFilterUnsafeField()
+  if expr.length > 0 {
+    assertTrue(not Str.contains(expr, "OR 1 = 1"), "injected boolean logic from the field name must not reach the filter")
+    assertTrue(not Str.contains(expr, "status = 'active' OR"), "the raw unsafe field name must not appear verbatim")
+  }
+}
+
+@cfg(feature = "meilisearch")
+func probeMsFilterSafeFieldWithDot(): String {
+  Search.msFilterExpr(SearchFilter(field = "attributes.color", value = "red", operator = "eq"))
+}
+
+@cfg(feature = "elasticsearch")
+func probeMsFilterSafeFieldWithDot(): String {
+  ""
+}
+
+test "meilisearch filter expression: a dotted nested-attribute field name passes through" {
+  val expr = probeMsFilterSafeFieldWithDot()
+  if expr.length > 0 {
+    assertEqual(expr, "attributes.color = 'red'", "a safe, dotted field name is not rejected")
   }
 }
 

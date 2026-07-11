@@ -92,6 +92,35 @@ test "globalSpanBuffer.drain empties the buffer" {
   assertEqualInt(globalSpanBuffer.count(), 0, "buffer is empty immediately after drain")
 }
 
+// `snapshot`/`removeExported` back the #5588 fix in `OTel.Otlp.flushOtlpAsync`:
+// a caller must be able to read the buffer without clearing it (so a failed
+// export leaves spans in place for the next flush) and later remove only
+// the spans it already exported, never whatever happens to be in the
+// buffer at that later point.
+test "globalSpanBuffer.snapshot does not clear the buffer" {
+  val _ = globalSpanBuffer.drain()
+  val span = startSpan("snapshot.op", 0)
+  endSpan(span)
+  val seen = globalSpanBuffer.snapshot()
+  assertTrue(seen.length >= 1, "snapshot sees the buffered span")
+  assertTrue(globalSpanBuffer.count() >= 1, "snapshot is non-destructive")
+}
+
+test "globalSpanBuffer.removeExported only removes the snapshotted prefix" {
+  val _ = globalSpanBuffer.drain()
+  val first = startSpan("removeExported.first", 0)
+  endSpan(first)
+  val exportedCount = globalSpanBuffer.snapshot().length
+  // Simulate a span arriving while the (simulated) export POST is in
+  // flight — it must survive the removal below.
+  val second = startSpan("removeExported.second", 0)
+  endSpan(second)
+  globalSpanBuffer.removeExported(exportedCount)
+  assertEqualInt(globalSpanBuffer.count(), 1, "only the exported prefix was removed")
+  val remaining = globalSpanBuffer.snapshot()
+  assertEqual(spanName(remaining[0]), "removeExported.second", "the late-arriving span survives")
+}
+
 // ─── Counters ─────────────────────────────────────────────────────────────────
 test "incrementCounter accumulates across calls with the same name" {
   incrementCounter("otel_span_tests.counter.a", 3, "requests")

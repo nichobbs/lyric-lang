@@ -32,11 +32,17 @@ pub async func jvmPostProtobuf(
   )
 }
 
-/// Never reachable in practice (no JVM caller can get a histogram past
-/// `jvmPostProtobuf`'s permanent failure above), but `OTel.Otlp.Codec`
-/// needs a `jvm`-feature counterpart to `netDoubleToInt64Bits` to
-/// compile under `--features jvm`.  Panics rather than returning a wrong
-/// bit pattern.
+/// Not reachable: `OTel.Otlp.configureOtlpMetrics` returns `Err` outright
+/// on the `jvm` feature (#5587), so `exporterState.metrics()` can never be
+/// `Some` here and `flushOtlpAsync` never reaches a histogram to encode
+/// (previously this was merely believed unreachable via
+/// `jvmPostProtobuf`'s permanent transport failure, but `OTel.Otlp.Codec`'s
+/// histogram encoding runs *before* the transport call — see #5594 — so
+/// that argument didn't actually hold; the fix is enforced one layer up,
+/// at configure time). This function only exists so `OTel.Otlp.Codec`
+/// has a `jvm`-feature counterpart to `netDoubleToInt64Bits` to compile
+/// under `--features jvm`. Panics rather than returning a wrong bit
+/// pattern.
 pub func jvmDoubleToInt64Bits(v: in Double): Long {
   panic(
     "lyric-otel: histogram sum encoding is not implemented on the jvm feature (OTLP export is dotnet-only today); see README.md"
