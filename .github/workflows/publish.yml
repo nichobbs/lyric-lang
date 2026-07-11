@@ -712,6 +712,14 @@ jobs:
           RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           # Intentionally NOT `set -e`: a failing library must not abort the run.
+          # GitHub's default `run:` shell is `bash -e -o pipefail`, so errexit
+          # must be explicitly turned OFF — `set -uo pipefail` alone leaves the
+          # wrapper's -e active. With -e active, a failing `lyric build` inside
+          # publish_lib's redirect group killed the background shell before the
+          # attempt log was appended to the per-library log, so every real
+          # build failure surfaced as an EMPTY "FAIL <lib>" group (no
+          # diagnostics at all) and the NU1102 retry loop below was dead code.
+          set +e
           set -uo pipefail
           LYRIC=./bin/lyric
           API_KEY="$LYRIC_NUGET_API_KEY"
