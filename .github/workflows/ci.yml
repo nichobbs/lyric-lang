@@ -1639,6 +1639,31 @@ jobs:
           fi
           LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cross_package_generics_self_test.l
 
+      # Cross-assembly restored async funcs self-test (#5561).  Builds a
+      # PRODUCER DLL of `pub async func`s in-process via
+      # `Lyric.Emitter.emitProject`, then compiles a CONSUMER that awaits them
+      # as a restored dep and runs it.  Verifies the consumer MemberRef
+      # encodes the Task-wrapped kickoff return (asyncness derived from the
+      # producer DLL's own MethodDef metadata — contract reprs don't carry
+      # it) and that the caller-side await unwraps it, on both the blocking
+      # shim (plain main) and the Phase-B state-machine paths.  Uses
+      # `Lyric.Emitter`, so LYRIC_LOAD_COMPILER=1 is needed.
+      - name: Restored async funcs self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping restored async self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping restored async self-test"
+            exit 1
+          fi
+          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/restored_async_self_test.l
+
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
       # Before this fix, @externTarget async func left Task<T> on the stack where
@@ -5047,6 +5072,46 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_tests.l
+
+      # Real HTTP round-trips through the PUBLIC Std.Http API against a live
+      # Std.HttpServer listener (#5560/#5561): GET, POST, and
+      # sendAsync-with-header, each asserting status and the server-side
+      # echo of method/path/request-header/body.  This is the coverage that
+      # was missing when #5560 shipped — no other CI test ever sends a
+      # request (http_tests.l above is deliberately construction-only).  The
+      # listener runs in a child process the test builds via Lyric.Emitter:
+      # an in-process server thread is not possible today because
+      # Std.Task.scopeSpawn's Task.Run delegate never invokes the Lyric
+      # closure on .NET (#5329).  LYRIC_STDLIB_BIN points at a merged dir:
+      # the stage-1 compiler DLLs (the module imports Lyric.Emitter, and
+      # LYRIC_STDLIB_BIN also redirects compiler-DLL discovery) overlaid
+      # with the lyric.full.toml stdlib built by the "Build full stdlib"
+      # step above, so the round trip executes stdlib machine code emitted
+      # by the compiler under test — default discovery would find the
+      # seed-built .bootstrap/stage1 stdlib, whose kernel carries the
+      # previous release's codegen.
+      - name: Std.Http round-trip self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping Std.Http round-trip self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Http round-trip self-test"
+            exit 1
+          fi
+          if [ ! -f lyric-stdlib/bin/Lyric.Stdlib.dll ]; then
+            echo "::error::lyric-stdlib/bin/Lyric.Stdlib.dll missing — the 'Build full stdlib' step must run before this one"
+            exit 1
+          fi
+          rm -rf .bootstrap/httprt-lib
+          mkdir -p .bootstrap/httprt-lib
+          cp .bootstrap/stage1/*.dll .bootstrap/httprt-lib/
+          cp lyric-stdlib/bin/Lyric.Stdlib*.dll .bootstrap/httprt-lib/
+          LYRIC_STDLIB_BIN="$PWD/.bootstrap/httprt-lib" "$lyric_bin" test --target dotnet lyric-compiler/lyric/http_roundtrip_self_test.l
 
       # Std.Log structured-fields regression coverage (docs/59 §8.1): the
       # escapeLogValue substring count-vs-end bug made any log call with a

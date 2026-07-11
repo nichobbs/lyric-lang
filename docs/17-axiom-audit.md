@@ -792,6 +792,7 @@ recorded in the §19 baseline.
 | `Std.FormatHost`         | `format_host.l`              | 1      | 0           |
 | `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
 | `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
+| `Std.HttpServer`         | `http_server.l`              | 1      | 0           |
 | `Std.MathHost`           | `math_host.l`                | 1      | 0           |
 | `Std.ParseHost`          | `parse_host.l`               | 1      | 0           |
 | `Std.PathHost`           | `path_host.l`                | 1      | 0           |
@@ -803,13 +804,18 @@ recorded in the §19 baseline.
 | `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
 | `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
-| **Total**                |                              | **20** | **0**       |
+| **Total**                |                              | **21** | **0**       |
 
 ### Combined total
 
-.NET (23 stable + 2 provisional = 25) + JVM (20 stable + 0 provisional =
-20) = **45** `@axiom` annotations covering the entire extern boundary
-across both targets.
+.NET (23 stable + 2 provisional = 25) + JVM (21 stable + 0 provisional =
+21) = **46** `@axiom` annotations covering the entire extern boundary
+across both targets.  The JVM `Std.HttpHost` axiom was re-scoped from the
+retired phantom `lyric.stdlib.jvm.HttpClientHost` shim to the real
+`java.net.http.HttpClient` boundary, and `Std.HttpServer` gained its own
+axiom when its kernel was rewritten onto `com.sun.net.httpserver.HttpServer`
+(the .NET `http_server.l` twin carries no axiom; its extern boundary is
+covered by per-declaration `@externTarget` bindings audited in §12).
 
 Note: the old `std.bcl.*` entries from the M4.3 baseline (11 axioms in 6
 modules) were the conceptual design-doc predecessors of the current
@@ -875,7 +881,8 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.FileHost` | `file_host.l` | java.io.File / FileInputStream / FileOutputStream conform to their documented JVM contracts |
 | `jvm` | `Std.FormatHost` | `format_host.l` | java.math.BigDecimal, java.lang.Integer, and java.util.Locale conform to their documented JVM contracts |
 | `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-256/SHA-512 semantics and are pure functions of their input bytes |
-| `jvm` | `Std.HttpHost` | `http_host.l` | lyric.stdlib.jvm.HttpClientHost operations conform to their documented JVM / java.net.http contracts |
+| `jvm` | `Std.HttpHost` | `http_host.l` | java.net.http.HttpClient operations conform to their documented JVM contracts |
+| `jvm` | `Std.HttpServer` | `http_server.l` | com.sun.net.httpserver.HttpServer operations conform to their documented JVM contracts |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
 | `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |
 | `jvm` | `Std.PathHost` | `path_host.l` | java.io.File.separatorChar and java.io.File.getParent conform to their documented JVM contracts |

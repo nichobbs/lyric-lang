@@ -16068,8 +16068,8 @@ func emitExternTargetBody(
       }
 
       // Metadata-direct method resolution (docs/42): for a plain method extern
-      // (not a ctor, not resolved as a property above, not async — async keeps
-      // its Task-return path below) decode the BCL method's true signature so
+      // (not a ctor, not resolved as a property above) decode the BCL
+      // method's true signature so
       // (a) the instance/static calling convention comes from the metadata
       // `hasThis` rather than the @externInstance-or-default-static guess in
       // `resolveExternTarget`, and (b) each MemberRef param/return encodes the
@@ -16100,7 +16100,7 @@ func emitExternTargetBody(
         }
         asi = asi + 1
       }
-      if not decl.isAsync and emitMember == r.memberName and argSigsOk {
+      if emitMember == r.memberName and argSigsOk {
         match mapGet(cctx.metadataPathIndex, assemblyForTypeMsil(cctx, resolvedFqn)) {
           case None -> ()
           case Some(asmPath) -> {
@@ -16119,20 +16119,35 @@ func emitExternTargetBody(
                   }
                   mk = mk + 1
                 }
-                match resolvedSigToMsil(cctx, msig.returnType) {
-                  case Some(rm) -> {
-                    if convOk {
-                      // Do not overwrite emitIsStatic for constructors: ctors
-                      // always use newobj (emitIsStatic=true from FfiResolved)
-                      // regardless of the CLR hasThis convention bit.
-                      if not r.isCtor {
-                        emitIsStatic = not msig.hasThis
-                      }
-                      resolvedMethodParams = Some(value = mParams)
-                      resolvedMethodRet = Some(value = rm)
-                    }
+                if decl.isAsync {
+                  // Async externs keep the Task/Task<T> MemberRef return built
+                  // below (bclRetTy) — only the calling convention and the
+                  // param encodings come from metadata here.  Before this, the
+                  // whole metadata-direct pass was gated on `not decl.isAsync`,
+                  // so an async INSTANCE extern declared without
+                  // `@externInstance` fell back to the default-static guess
+                  // and emitted `call` with the receiver as arg0 of a static
+                  // signature — MissingMethodException at run time (#5560).
+                  if convOk and not r.isCtor {
+                    emitIsStatic = not msig.hasThis
+                    resolvedMethodParams = Some(value = mParams)
                   }
-                  case None -> ()
+                } else {
+                  match resolvedSigToMsil(cctx, msig.returnType) {
+                    case Some(rm) -> {
+                      if convOk {
+                        // Do not overwrite emitIsStatic for constructors: ctors
+                        // always use newobj (emitIsStatic=true from FfiResolved)
+                        // regardless of the CLR hasThis convention bit.
+                        if not r.isCtor {
+                          emitIsStatic = not msig.hasThis
+                        }
+                        resolvedMethodParams = Some(value = mParams)
+                        resolvedMethodRet = Some(value = rm)
+                      }
+                    }
+                    case None -> ()
+                  }
                 }
               }
             }
@@ -27215,7 +27230,32 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
 // the static method calling convention (no HASTHIS); returns the
 // function's declared return type or MVoid when absent.  Skipped
 // if `funcTokens` already has the FQN (in-bundle wins).
-func registerRestoredFunc(cctx: in CodegenCtx, packageName: in String, fn: in FunctionDecl): Unit {
+// The Task/Task<T> return shape of an `async func` state-machine kickoff,
+// mirroring the in-bundle registration (the `isSm` branch of the per-file
+// pre-pass): a return type with no generic-argument encoding
+// (`elementTypeByte == 0`) degrades to the non-generic `Task`, exactly as the
+// producer's kickoff MethodDef does.  Cross-assembly MemberRefs to async
+// funcs must encode this wrapped shape — encoding the bare declared return
+// fails to bind against the kickoff at run time (MissingMethodException,
+// #5561) — and record it in `funcRetTypes` so the EAwait handler unwraps at
+// the call site via GetAwaiter/GetResult, exactly like in-bundle calls.
+func asyncKickoffReturnMsil(cctx: in CodegenCtx, declRet: in MsilType): MsilType {
+  val bare = if elementTypeByte(declRet) == 0 { MVoid } else { declRet }
+  if bare == MVoid {
+    MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
+  } else {
+    val taskArgs: List[MsilType] = newList()
+    taskArgs.add(bare)
+    MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = taskArgs)
+  }
+}
+
+func registerRestoredFunc(
+  cctx: in CodegenCtx,
+  packageName: in String,
+  fn: in FunctionDecl,
+  taskReturningFuncs: in Map[String, Bool],
+): Unit {
   // Only `pub` functions surface in the foreign DLL with a public
   // method; `internal` functions are emitted with internal accessibility
   // and a cross-assembly MemberRef pointing at them would fail to
@@ -27249,7 +27289,23 @@ func registerRestoredFunc(cctx: in CodegenCtx, packageName: in String, fn: in Fu
     paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
   }
-  val retType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
+  val declRetType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
+  // Contract-metadata reprs do not carry asyncness (`reprForFunc` renders a
+  // bodyless `pub func` head), so `fn.isAsync` is always false here — and
+  // DLLs built by older compilers would lack the flag even if the repr grew
+  // one.  Instead the restored DLL's own MethodDef metadata is the ground
+  // truth: `dllTaskReturningFuncs` (hoisted once per artifact by the caller)
+  // records every host-class method whose real return is Task / Task`1<T>.
+  // For those, encode the Task-wrapped kickoff return in the MemberRef and
+  // in `funcRetTypes` (#5561).  A declared return that is ALREADY
+  // Task-shaped (an extern alias of Task) is a synchronous func returning a
+  // Task value — leave it untouched.
+  val taskKey = fn.name + "/" + toString(fn.params.count)
+  val retType = if taskReturningFuncs.containsKey(taskKey) and not isTaskTypeMsil(cctx, declRetType) {
+    asyncKickoffReturnMsil(cctx, declRetType)
+  } else {
+    declRetType
+  }
 
   val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
   val sigKey = "restored_func_" + fqn
@@ -27522,6 +27578,12 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): 
   // element type 0x12) from self-hosted DLLs (OBJECT-typed, 0x1c) so that the
   // MemberRef signature byte-matches the FieldDef the CLR will resolve.
   val instKind = Mdr.dllNullaryInstanceInfo(art.dllPath)
+  // Hoisted like `instKind`: one metadata scan per artifact yields the set of
+  // host-class methods whose real return is Task / Task`1<T> (async kickoffs),
+  // consumed by `registerRestoredFunc` to Task-wrap the MemberRef return
+  // (#5561).  Unreadable DLL or absent host class yields an empty map (safe
+  // default: no wrapping, the pre-fix encoding).
+  val taskFuncs = Mdr.dllTaskReturningFuncs(art.dllPath, art.packageName)
   val items = art.source.items
   var i = 0
   while i < items.count {
@@ -27531,7 +27593,7 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): 
         registerRestoredRecordFields(cctx, art.packageName, decl)
       }
       case IFunc(decl) -> {
-        registerRestoredFunc(cctx, art.packageName, decl)
+        registerRestoredFunc(cctx, art.packageName, decl, taskFuncs)
       }
       case IUnion(decl) -> {
         // Compute asmRefRow only when actually needed — the record /
@@ -28956,7 +29018,19 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
     paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
   }
-  val retType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
+  val declRetType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
+  // An `async func` (no @externTarget, no yield) is emitted as a
+  // state-machine kickoff returning Task / Task`1<T>, never the bare T —
+  // encode that shape in the cross-assembly MemberRef and record it in
+  // `funcRetTypes` so the EAwait handler unwraps at the call site, exactly
+  // like the in-bundle `isSm` registration (#5561).  @externTarget async
+  // wrappers block internally and return the bare T; async generators
+  // return IAsyncEnumerable (a pre-existing, separately-tracked encoding).
+  // The stdlib sources are parsed with bodies here, so `fn.isAsync` is the
+  // real declared flag (unlike restored contract-metadata decls).
+  val isGen = fn.isAsync and funcBodyContainsYieldMsil(fn)
+  val isSm = fn.isAsync and not isGen and not hasExternTargetMsil(fn.annotations)
+  val retType = if isSm { asyncKickoffReturnMsil(cctx, declRetType) } else { declRetType }
   val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
   val fnModes = paramModesOf(fn.params)
   // Register with an arity-specific key so overloaded stdlib functions

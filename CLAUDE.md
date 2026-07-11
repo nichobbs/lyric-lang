@@ -728,6 +728,13 @@ need direction and have nothing else productive to do**.  Specifically:
     AST, replaces each `ITest` with a synthesised `func __lyric_test_<i>`,
     and appends a synthesised `func main(): Int` that runs them and
     prints TAP-shaped output. This is fully self-hosted and handles `lyric test` completely.
+  - `pipeline/pipeline.l` — `Lyric.Pipeline` shared target-independent
+    middle-end driver (D-progress-647): diagnostics gating policy, the
+    authoritative pass ordering (`pipeParseAndErase` /
+    `pipeExpandAndRewrite` / `pipeCheckAndMono` / `pipeWeave`), and the
+    deduped cross-package decl-collection families consumed by all three
+    backend bridges (`Msil.Bridge`, `Jvm.Bridge`, `Lyric.LlvmBridge`).
+    Depends only on front-/middle-end packages, never `Msil.*`/`Jvm.*`.
   - `mono.l` — `Lyric.Mono` monomorphizer (M5.2 stage 4, D-progress-229).
     Call-site monomorphizer for generic functions defined in the same
     compilation unit.  Collects all generic `IFunc` items, walks non-generic

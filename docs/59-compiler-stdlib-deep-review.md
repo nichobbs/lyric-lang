@@ -83,6 +83,15 @@ logic; optimisations; non-idiomatic usage; stdlib API-surface consolidation;
 > boundaries — the #2663 http-kernel prerequisite). New blocker classes
 > found: inherited instance members don't resolve; unresolved instance
 > auto-FFI defers to a runtime throw instead of a compile panic.
+>
+> **Wave 4 (2026-07-11, D-progress-647/648/649/650):** **H5 is fully
+> closed** — Std.Http and Std.HttpServer have real JVM kernels; zero
+> phantom `_kernel_jvm` bindings remain. §9.2's bridge triplication is
+> consolidated into `Lyric.Pipeline` (sha256-identical outputs on all
+> three targets; net −300 lines; pass order single-sourced). #5560 and
+> #5561 (async FFI correctness) are fixed with the missing HTTP
+> round-trip CI coverage added. §5.1 A2 shipped (lambda params typed
+> from expected function types).
 
 ---
 

@@ -1656,6 +1656,100 @@ test "lambda body type error reported" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// A2 (docs/59 §5.1): bidirectional lambda parameter typing — unannotated
+// lambda params adopt the expected function type at call-argument and
+// annotated-binding positions, so lambda bodies are actually checked.
+// ─────────────────────────────────────────────────────────────────────────────
+test "unannotated lambda param typed from callee signature" {
+  val src = "package P\nfunc apply(f: in (Int) -> Int, x: in Int): Int {\n  f(x)\n}\nfunc g(): Int {\n  apply({ n -> n + 1 }, 3)\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "lambda param typed Int from apply's signature: no errors")
+}
+
+test "lambda-arg body type error diagnosed via expected param type" {
+  // Before A2 the param was TyError so `n + true` passed silently.
+  val src = "package P\nfunc apply(f: in (Int) -> Int, x: in Int): Int {\n  f(x)\n}\nfunc g(): Int {\n  apply({ n -> n + true }, 3)\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    hasDiagCode(cr, "T0030") or hasDiagCode(cr, "T0031"),
+    "Int param makes `n + true` a diagnosed arithmetic mismatch"
+  )
+}
+
+test "lambda-arg return mismatch diagnosed against expected ret" {
+  // With the param typed, the body's Int result no longer unifies with the
+  // expected `(Int) -> Bool` — the standard argument check reports it.
+  val src = "package P\nfunc applyB(f: in (Int) -> Bool, x: in Int): Bool {\n  f(x)\n}\nfunc g(): Bool {\n  applyB({ n -> n + 1 }, 3)\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0043"), "(Int) -> Int lambda at (Int) -> Bool param: T0043")
+}
+
+test "annotated binding types unannotated lambda param" {
+  val src = "package P\nfunc f(): Unit {\n  val fn: (Int) -> Bool = { x -> x > 0 }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "declared (Int) -> Bool binding types the lambda param: no errors")
+}
+
+test "annotated binding lambda return mismatch diagnosed" {
+  val src = "package P\nfunc f(): Unit {\n  val fn: (Int) -> Bool = { x -> x + 1 }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0060"), "declared (Int) -> Bool but body yields Int: T0060")
+}
+
+test "generic callee lambda param typed by substitution from sibling arg" {
+  // T is inferred Int from the second argument; the lambda's expected type
+  // becomes (Int) -> Bool after TyVar substitution.
+  val src = "package P\nfunc pick[T](f: in (T) -> Bool, x: in T): T {\n  x\n}\nfunc g(): Int {\n  pick({ n -> n > 0 }, 5)\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "generic expectation substituted to (Int) -> Bool: no errors")
+}
+
+test "generic callee lambda body error diagnosed after substitution" {
+  val src = "package P\nfunc pick[T](f: in (T) -> Bool, x: in T): T {\n  x\n}\nfunc g(): Int {\n  pick({ n -> n + true }, 5)\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    hasDiagCode(cr, "T0030") or hasDiagCode(cr, "T0031"),
+    "substituted Int param makes `n + true` a diagnosed mismatch"
+  )
+}
+
+test "unresolved generic expectation degrades to lenient" {
+  // The generic T occurs only in the lambda's own parameter position, so no
+  // sibling argument determines it — the leftover TyVar is erased to TyError
+  // and the lambda stays lenient (no false rejection).
+  val src = "package P\nfunc only[T](f: in (T) -> Bool): Bool {\n  true\n}\nfunc g(): Bool {\n  only({ n -> n > 0 })\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "undeterminable T erased: lambda stays lenient, no errors")
+}
+
+test "arity-mismatched lambda expectation degrades to lenient params" {
+  // A two-param lambda at a one-param slot: the expectation is unusable, so
+  // params degrade to TyError (no body false positives) and the standard
+  // argument check reports the function-shape mismatch.
+  val src = "package P\nfunc apply(f: in (Int) -> Int, x: in Int): Int {\n  f(x)\n}\nfunc g(): Int {\n  apply({ a, b -> a }, 3)\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0043"), "two-param lambda at (Int) -> Int param: T0043, not a crash")
+}
+
+test "named lambda arg typed via param-name pairing" {
+  val src = "package P\nfunc apply(f: in (Int) -> Int, x: in Int): Int {\n  f(x)\n}\nfunc g(): Int {\n  apply(x = 3, f = { n -> n + true })\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    hasDiagCode(cr, "T0030") or hasDiagCode(cr, "T0031"),
+    "named-arg lambda still gets the (Int) -> Int expectation"
+  )
+}
+
+test "function-typed local callee threads expectation to lambda arg" {
+  val src = "package P\nfunc g(h: in ((Int) -> Int, Int) -> Int): Int {\n  h({ n -> n + true }, 3)\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    hasDiagCode(cr, "T0030") or hasDiagCode(cr, "T0031"),
+    "function-typed value callee: lambda param typed positionally"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Front-end soundness: EAssign in expression position.
 // ─────────────────────────────────────────────────────────────────────────────
 test "assign stmt type mismatch rejected" {
