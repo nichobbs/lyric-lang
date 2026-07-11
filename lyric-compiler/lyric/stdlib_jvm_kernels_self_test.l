@@ -37,12 +37,21 @@
 //! literal below was captured from a `--target dotnet` run of the same
 //! expression, so the assertions double as cross-target parity checks.
 //!
+//! Also covers the last two phantom-kernel rewrites (docs/59 F-1c, #2663):
+//! `http_host.l` (java.net.http.HttpClient) and `http_server.l`
+//! (com.sun.net.httpserver.HttpServer), which retired the final
+//! `lyric.stdlib.jvm.*` bindings.  These cases run REAL local HTTP round
+//! trips through the PUBLIC `Std.Http` / `Std.HttpServer` APIs -- server on
+//! an ephemeral 127.0.0.1 port in a spawned virtual thread, client driving
+//! it -- proving the two kernels against each other network-free.
+//!
 //! Run via `lyric test --target jvm` so the self-hosted Jvm.Bridge pipeline
 //! is exercised end-to-end.
 @test_module
 package Lyric.StdlibJvmKernelsSelfTest
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 import Std.EnvironmentHost
 import Std.ProcessHost
@@ -60,6 +69,10 @@ import Std.Regex as Rx
 // seed for the Ok-payload binding to checkcast to java.util.regex.Pattern.
 import Std.RegexHost as RxHost
 import Std.RegexSafe as RxSafe
+import Std.Http
+import Std.HttpServer as HttpSrv
+import Std.Task
+import Std.Time
 
 // Concrete unchecked Exception subclass used to exercise the
 // Std.JvmExceptionHost accessors without an FFI boundary crossing.
@@ -314,4 +327,396 @@ test "Std.Math intToLong/longToInt round-trip and panic on overflow" {
   // Matches the .NET twin's System.Convert.ToInt32 OverflowException panic
   // (java.lang.Math.toIntExact throws ArithmeticException).
   assertPanics("longToInt panics on a value outside Int range", { -> Math.longToInt(overflowing); () })
+}
+
+// ── Std.Http / Std.HttpServer (docs/59 F-1c, #2663) ─────────────────────────
+//
+// End-to-end round trips over 127.0.0.1: Std.HttpServer serves, Std.Http
+// drives it — all through the PUBLIC std APIs, proving the two rewritten
+// `_kernel_jvm` kernels (the last two `lyric.stdlib.jvm.*` phantoms) against
+// each other with no external network.  Each test runs its server exchange
+// as a `scope { spawn ... }` virtual thread and joins it (`await`) after the
+// client call returns — a bare no-scope `spawn` is degenerate-synchronous on
+// this target, so the scope form is required for genuine concurrency; a
+// server-side panic propagates through the join.  Every client call goes
+// through the *WithTimeout*/*WithCancel* family so a kernel regression fails
+// the run with a timeout Err instead of hanging CI.
+// Where an asserted literal is target-neutral (status codes, echo bodies,
+// urlDecode outputs), it matches what the .NET twins produce for the same
+// public-API calls.
+record HttpTestSrv {
+  listener: HttpSrv.HttpListener
+  port: Int
+}
+
+// Time-derived local port with bind-failure retry: the public startListener
+// contract (mirroring .NET HttpListener prefixes) has no port-0
+// "pick-for-me" form, so the test derives a port and strides on collision.
+func startTestListener(offset: in Int): HttpTestSrv {
+  var attempt = 0
+  while attempt < 5 {
+    val port = 30000 + Math.longToInt(nowEpochMillis() % 20000i64) + offset + attempt * 131
+    val started = try {
+      Some(value = HttpSrv.startListener("http://127.0.0.1:" + port.toString() + "/"))
+    } catch Bug as _ {
+      None
+    }
+    match started {
+      case Some(l) -> return HttpTestSrv(listener = l, port = port)
+      case None -> ()
+    }
+    attempt = attempt + 1
+  }
+  panic("no free local port for the HTTP kernel round-trip test")
+}
+
+// One echo exchange: method|path|rawQuery|decodedQuery|X-tag|body — a single
+// response exercising requestMethod / requestPath / requestQuery /
+// requestHeaders / urlDecode / requestBody / respondText.
+func serveEchoOnce(l: in HttpSrv.HttpListener): Unit {
+  val ctx = HttpSrv.nextContext(l)
+  val method = HttpSrv.requestMethod(ctx)
+  val path = HttpSrv.requestPath(ctx)
+  val query = HttpSrv.requestQuery(ctx)
+  val headers = HttpSrv.requestHeaders(ctx)
+  // com.sun.net.httpserver.Headers normalizes header-name capitalization
+  // ("X-Tag" arrives as "X-tag"); names are case-insensitive per RFC 7230.
+  val tag = match mapGet(headers, "X-tag") { case Some(v) -> v; case None -> "(absent)" }
+  val body = HttpSrv.requestBody(ctx)
+  HttpSrv.respondText(
+    ctx,
+    200,
+    method + "|" + path + "|" + query + "|" + HttpSrv.urlDecode(query) + "|" + tag + "|" + body
+  )
+}
+
+func serveJsonOnce(l: in HttpSrv.HttpListener): Unit {
+  val ctx = HttpSrv.nextContext(l)
+  HttpSrv.respondJson(ctx, 201, "{\"ok\":true}")
+}
+
+func serveBytesOnce(l: in HttpSrv.HttpListener): Unit {
+  val ctx = HttpSrv.nextContext(l)
+  val extra: Map[String, String] = newMap()
+  extra.add("X-Kernel-Probe", "forty-two")
+  val payload: List[Byte] = newList()
+  payload.add(97)
+  payload.add(98)
+  payload.add(99)
+  HttpSrv.respondBytesWithHeaders(ctx, 202, "application/octet-stream", payload.toArray(), extra)
+}
+
+// 302 to /target, then 200 on the follow-up — one function so a single
+// spawn serves the redirect-following client's two requests in order.
+func serveRedirectThenTarget(l: in HttpSrv.HttpListener): Unit {
+  val ctx = HttpSrv.nextContext(l)
+  val extra: Map[String, String] = newMap()
+  extra.add("Location", "/target")
+  val empty: List[Byte] = newList()
+  HttpSrv.respondBytesWithHeaders(ctx, 302, "text/plain; charset=utf-8", empty.toArray(), extra)
+  val ctx2 = HttpSrv.nextContext(l)
+  HttpSrv.respondText(ctx2, 200, "after-redirect|" + HttpSrv.requestPath(ctx2))
+}
+
+func serveRedirectOnce(l: in HttpSrv.HttpListener): Unit {
+  val ctx = HttpSrv.nextContext(l)
+  val extra: Map[String, String] = newMap()
+  extra.add("Location", "/target")
+  val empty: List[Byte] = newList()
+  HttpSrv.respondBytesWithHeaders(ctx, 302, "text/plain; charset=utf-8", empty.toArray(), extra)
+}
+
+// Client summaries flatten status/headers/body into one assertable string so
+// each test block stays a single await + assertEqual.
+async func getEchoSummary(port: in Int): String {
+  val r = await getWithTimeoutAsync("http://127.0.0.1:" + port.toString() + "/hello?a=1&msg=hi%20there", 10000)
+  match r {
+    case Err(e) -> return "GET failed: " + HttpError.message(e)
+    case Ok(resp) -> {
+      var ct = "(none)"
+      match HttpResponse.header(resp, "Content-Type") {
+        case Some(v) -> {
+          ct = v
+        }
+        case None -> ()
+      }
+      val bt = await HttpResponse.bodyText(resp)
+      match bt {
+        case Ok(text) -> return HttpResponse.statusCode(resp).toString() + "|" + ct + "|" + text
+        case Err(_) -> return "bodyText failed"
+      }
+    }
+  }
+  "unreachable"
+}
+
+async func postEchoSummary(port: in Int): String {
+  val r = await postWithTimeoutAsync("http://127.0.0.1:" + port.toString() + "/echo", "ping-body", 10000)
+  match r {
+    case Err(e) -> return "POST failed: " + HttpError.message(e)
+    case Ok(resp) -> {
+      val bt = await HttpResponse.bodyText(resp)
+      match bt {
+        case Ok(text) -> return HttpResponse.statusCode(resp).toString() + "|" + text
+        case Err(_) -> return "bodyText failed"
+      }
+    }
+  }
+  "unreachable"
+}
+
+async func headerEchoSummary(port: in Int): String {
+  val url = match Url.tryFrom("http://127.0.0.1:" + port.toString() + "/hdr") {
+    case Ok(u) -> u
+    case Err(_) -> return "bad url"
+  }
+  val req = withHeader(request(GET, url), "X-Tag", "kernel-tag")
+  val r = await sendWithTimeoutAsync(req, 10000)
+  match r {
+    case Err(e) -> return "send failed: " + HttpError.message(e)
+    case Ok(resp) -> {
+      val bt = await HttpResponse.bodyText(resp)
+      match bt {
+        case Ok(text) -> return HttpResponse.statusCode(resp).toString() + "|" + text
+        case Err(_) -> return "bodyText failed"
+      }
+    }
+  }
+  "unreachable"
+}
+
+async func jsonSummary(port: in Int): String {
+  val r = await getWithTimeoutAsync("http://127.0.0.1:" + port.toString() + "/json", 10000)
+  match r {
+    case Err(e) -> return "GET failed: " + HttpError.message(e)
+    case Ok(resp) -> {
+      var ct = "(none)"
+      match HttpResponse.header(resp, "Content-Type") {
+        case Some(v) -> {
+          ct = v
+        }
+        case None -> ()
+      }
+      val bt = await HttpResponse.bodyText(resp)
+      match bt {
+        case Ok(text) -> return HttpResponse.statusCode(resp).toString() + "|" + ct + "|" + text
+        case Err(_) -> return "bodyText failed"
+      }
+    }
+  }
+  "unreachable"
+}
+
+// Byte content is asserted through both views of the same buffered body:
+// bodyBytes length plus bodyText over the identical bytes.  (Per-element
+// user-code access to a cross-package `slice[Byte]` payload is a
+// pre-existing JVM ABI gap — the payload arrives as a boxed Byte[] that is
+// neither indexable nor iterable — so the text view carries the content
+// assertion.)
+async func bytesSummary(port: in Int): String {
+  val r = await getWithTimeoutAsync("http://127.0.0.1:" + port.toString() + "/bytes", 10000)
+  match r {
+    case Err(e) -> return "GET failed: " + HttpError.message(e)
+    case Ok(resp) -> {
+      var probe = "(none)"
+      match HttpResponse.header(resp, "X-Kernel-Probe") {
+        case Some(v) -> {
+          probe = v
+        }
+        case None -> ()
+      }
+      var lenText = "?"
+      val bb = await HttpResponse.bodyBytes(resp)
+      match bb {
+        case Ok(bytes) -> {
+          lenText = bytes.length.toString()
+        }
+        case Err(_) -> return "bodyBytes failed"
+      }
+      val bt = await HttpResponse.bodyText(resp)
+      match bt {
+        case Ok(text) -> return HttpResponse.statusCode(resp).toString() + "|" + probe + "|" + lenText + "|" + text
+        case Err(_) -> return "bodyText failed"
+      }
+    }
+  }
+  "unreachable"
+}
+
+async func followRedirectSummary(port: in Int): String {
+  val r = await getWithTimeoutAsync("http://127.0.0.1:" + port.toString() + "/hop", 10000)
+  match r {
+    case Err(e) -> return "GET failed: " + HttpError.message(e)
+    case Ok(resp) -> {
+      val bt = await HttpResponse.bodyText(resp)
+      match bt {
+        case Ok(text) -> return HttpResponse.statusCode(resp).toString() + "|" + text
+        case Err(_) -> return "bodyText failed"
+      }
+    }
+  }
+  "unreachable"
+}
+
+// Drives the HttpClient interface surface (clientNoRedirects + sendWithCancel
+// with a timeout token) rather than the free functions, so the configured-
+// client path through HttpClientImpl is exercised too.
+async func noFollowRedirectSummary(port: in Int): String {
+  val url = match Url.tryFrom("http://127.0.0.1:" + port.toString() + "/hop") {
+    case Ok(u) -> u
+    case Err(_) -> return "bad url"
+  }
+  val client = clientNoRedirects()
+  val src = makeCancelSourceTimeout(10000)
+  val tok = sourceToken(src)
+  val r = await client.sendWithCancel(request(GET, url), tok)
+  disposeSource(src)
+  match r {
+    case Err(e) -> return "send failed: " + HttpError.message(e)
+    case Ok(resp) -> {
+      var loc = "(none)"
+      match HttpResponse.header(resp, "Location") {
+        case Some(v) -> {
+          loc = v
+        }
+        case None -> ()
+      }
+      return HttpResponse.statusCode(resp).toString() + "|" + loc
+    }
+  }
+  "unreachable"
+}
+
+// Network-free: an already-cancelled token must surface as Err before any
+// connection is attempted (cooperative cancellation on this target).
+async func cancelledSendSummary(): String {
+  val src = makeCancelSource()
+  cancelSource(src)
+  val tok = sourceToken(src)
+  val url = match Url.tryFrom("http://127.0.0.1:9/never") { case Ok(u) -> u; case Err(_) -> return "bad url" }
+  val r = await sendWithCancelAsync(request(GET, url), tok)
+  match r {
+    case Ok(_) -> return "unexpected ok"
+    case Err(e) -> return HttpError.message(e)
+  }
+  "unreachable"
+}
+
+test "Std.Http GET drives Std.HttpServer: status, content-type, query, urlDecode, header map, body echo" {
+  val srv = startTestListener(0)
+  var summary = ""
+  scope {
+    val serverTask = spawn serveEchoOnce(srv.listener)
+    val s = await getEchoSummary(srv.port)
+    summary = s
+    await serverTask
+  }
+  HttpSrv.stopListener(srv.listener)
+  assertEqual(
+    summary,
+    "200|text/plain; charset=utf-8|GET|/hello|a=1&msg=hi%20there|a=1&msg=hi there|(absent)|",
+    "GET round trip through the public APIs"
+  )
+}
+
+test "Std.Http POST body round-trips through Std.HttpServer.requestBody" {
+  val srv = startTestListener(700)
+  var summary = ""
+  scope {
+    val serverTask = spawn serveEchoOnce(srv.listener)
+    val s = await postEchoSummary(srv.port)
+    summary = s
+    await serverTask
+  }
+  HttpSrv.stopListener(srv.listener)
+  assertEqual(summary, "200|POST|/echo|||(absent)|ping-body", "POST round trip echoes the request body")
+}
+
+test "request headers cross the boundary: withHeader -> requestHeaders map" {
+  val srv = startTestListener(1400)
+  var summary = ""
+  scope {
+    val serverTask = spawn serveEchoOnce(srv.listener)
+    val s = await headerEchoSummary(srv.port)
+    summary = s
+    await serverTask
+  }
+  HttpSrv.stopListener(srv.listener)
+  assertEqual(summary, "200|GET|/hdr|||kernel-tag|", "custom request header observed by the server")
+}
+
+test "respondJson sets application/json and the verbatim body" {
+  val srv = startTestListener(2100)
+  var summary = ""
+  scope {
+    val serverTask = spawn serveJsonOnce(srv.listener)
+    val s = await jsonSummary(srv.port)
+    summary = s
+    await serverTask
+  }
+  HttpSrv.stopListener(srv.listener)
+  assertEqual(summary, "201|application/json; charset=utf-8|{\"ok\":true}", "JSON response round trip")
+}
+
+test "respondBytesWithHeaders: byte body, custom header, and both body views" {
+  val srv = startTestListener(2800)
+  var summary = ""
+  scope {
+    val serverTask = spawn serveBytesOnce(srv.listener)
+    val s = await bytesSummary(srv.port)
+    summary = s
+    await serverTask
+  }
+  HttpSrv.stopListener(srv.listener)
+  assertEqual(summary, "202|forty-two|3|abc", "byte-body response with extra headers")
+}
+
+test "default client follows a 302 served by Std.HttpServer" {
+  val srv = startTestListener(3500)
+  var summary = ""
+  scope {
+    val serverTask = spawn serveRedirectThenTarget(srv.listener)
+    val s = await followRedirectSummary(srv.port)
+    summary = s
+    await serverTask
+  }
+  HttpSrv.stopListener(srv.listener)
+  assertEqual(summary, "200|after-redirect|/target", "redirect followed to the target path")
+}
+
+test "clientNoRedirects surfaces the 302 and its Location header" {
+  val srv = startTestListener(4200)
+  var summary = ""
+  scope {
+    val serverTask = spawn serveRedirectOnce(srv.listener)
+    val s = await noFollowRedirectSummary(srv.port)
+    summary = s
+    await serverTask
+  }
+  HttpSrv.stopListener(srv.listener)
+  assertEqual(summary, "302|/target", "3xx returned to the caller with Location intact")
+}
+
+test "an already-cancelled token fails a send before connecting" {
+  val summary = await cancelledSendSummary()
+  assertTrue(summary.contains("cancellation was requested"), "cancellation classified in the Err message")
+}
+
+test "Std.HttpServer.urlDecode matches Uri.UnescapeDataString semantics" {
+  assertEqual(HttpSrv.urlDecode("hi%20there"), "hi there", "%20 decodes to a space")
+  assertEqual(HttpSrv.urlDecode("a+b"), "a+b", "plus is NOT a space (UnescapeDataString, not form decoding)")
+  assertEqual(HttpSrv.urlDecode("100%"), "100%", "lone percent passes through")
+  assertEqual(HttpSrv.urlDecode("%GG"), "%GG", "invalid escape passes through")
+  assertEqual(HttpSrv.urlDecode("caf%C3%A9"), "café", "multi-byte UTF-8 run decodes as one code point")
+  assertEqual(HttpSrv.urlDecode("%E2%82%AC5"), "€5", "three-byte UTF-8 escape run decodes")
+}
+
+test "unsupported JVM paths fail loudly: Unix-socket client and https prefix" {
+  // Fail-loud stubs (tracked in #2663): a wrong-but-running TCP client or a
+  // silently-plaintext "https" server would be worse than a panic.
+  assertPanics("clientWithUnixSocket panics on the JVM target", { -> clientWithUnixSocket("/var/run/docker.sock"); () })
+  assertPanics(
+    "https startListener prefix panics on the JVM target",
+    { -> HttpSrv.startListener("https://127.0.0.1:8443/"); () }
+  )
 }

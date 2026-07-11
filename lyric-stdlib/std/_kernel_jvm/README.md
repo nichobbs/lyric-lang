@@ -32,13 +32,16 @@ Two routing patterns appear throughout this directory:
    equivalents (`tau`, `log2`, `truncate`, fixed-point formatting).
 
 A third, historical pattern — shim classes under `lyric.stdlib.jvm.*` —
-was retired: those classes were never built, so every binding against
-them crashed on first call (`NoClassDefFoundError` / `VerifyError`;
-docs/44 m-89, docs/59 F-1c).  The last remaining `lyric.stdlib.jvm.*`
-bindings are `http_host.l` and `http_server.l`, which are still
-non-functional on this target and tracked in #2663 (Std.Http /
-Std.HttpServer JVM implementations over `java.net.http.HttpClient` /
-`com.sun.net.httpserver.HttpServer`).
+was retired entirely: those classes were never built, so every binding
+against them crashed on first call (`NoClassDefFoundError` /
+`VerifyError`; docs/44 m-89, docs/59 F-1c).  The last two holdouts,
+`http_host.l` (over `java.net.http.HttpClient`) and `http_server.l`
+(over `com.sun.net.httpserver.HttpServer`), were rewritten onto pattern
+2 as part of #2663; no `lyric.stdlib.jvm.*` binding remains in this
+directory.  The only JVM-side gaps left in those two files fail loudly
+by design (Unix-socket clients and `https://` listener prefixes, which
+the JDK's client/server APIs cannot express here — see the file
+headers).
 
 ## What does NOT live here
 
