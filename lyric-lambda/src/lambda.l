@@ -50,14 +50,113 @@ import Std.Iter
 import Lambda.Kernel.Runtime as LambdaRuntime
 import Web
 import Lambda.Kernel.WebBridge as WebBridge
+import Lambda.Events
+import Lambda.Authorizer
 
 // ─── DirectHandler ───────────────────────────────────────────────────────────
-/// An AOT-rooted handler wrapping a function reference.
-/// Created exclusively by the typed factory functions in Lambda.Direct.
-/// The kernel holds the delegate directly without reflection.
+/// One single-method interface per registrable event source / authorizer
+/// type. Implement one with a small (usually zero-field) record and
+/// register an instance via the matching `Lambda.Direct.*Handler`
+/// factory — see `docs/02-worked-examples.md`-style usage in this
+/// package's README.
+///
+/// These are interfaces, not stored closures, for the same reason
+/// `Web.Handler`/`Web.Middleware` are (docs/03-decision-log.md's "Decision
+/// 4 — Handler/Middleware are interfaces, not closures" entry): a bare
+/// named function passed as a function-typed value crashes the first time
+/// it's invoked (#5362), and invoking *any* closure — bare or literal —
+/// across two or more packages compiled into the same program is
+/// unreliable on the current self-hosted MSIL backend, from silent
+/// wrong-value corruption to outright crashes (#5363). `DirectHandler`
+/// necessarily crosses at least three packages (the consumer's handler,
+/// `Lambda.Direct`'s factory, and the kernel's dispatch), so it hits this
+/// exactly. Interfaces are `#5363`'s confirmed-safe alternative, verified
+/// with the identical repro that found the bug — the same fix already
+/// applied to `Web.Handler`/`Web.Middleware`, `WsHandler`, `MailSender`,
+/// and `StorageBucket` elsewhere in this codebase.
 @stable(since = "0.1")
-pub opaque type DirectHandler {
-  // kernel-held delegate; eventSource key for dispatch
+pub interface SqsHandler {
+  func handle(event: in SqsEvent, ctx: in LambdaContext): Result[Unit, LambdaError]
+}
+
+@stable(since = "0.1")
+pub interface SqsBatchHandler {
+  func handle(event: in SqsEvent, ctx: in LambdaContext): Result[SqsBatchResponse, LambdaError]
+}
+
+@stable(since = "0.1")
+pub interface SnsHandler {
+  func handle(event: in SnsEvent, ctx: in LambdaContext): Result[Unit, LambdaError]
+}
+
+@stable(since = "0.1")
+pub interface S3Handler {
+  func handle(event: in S3Event, ctx: in LambdaContext): Result[Unit, LambdaError]
+}
+
+@stable(since = "0.1")
+pub interface EventBridgeHandler {
+  func handle(event: in EventBridgeEvent, ctx: in LambdaContext): Result[Unit, LambdaError]
+}
+
+@stable(since = "0.1")
+pub interface DynamoDbHandler {
+  func handle(event: in DynamoDbEvent, ctx: in LambdaContext): Result[Unit, LambdaError]
+}
+
+@stable(since = "0.1")
+pub interface KinesisHandler {
+  func handle(event: in KinesisEvent, ctx: in LambdaContext): Result[Unit, LambdaError]
+}
+
+@stable(since = "0.1")
+pub interface RawHandler {
+  func handle(payload: in String, ctx: in LambdaContext): Result[Unit, LambdaError]
+}
+
+@stable(since = "0.1")
+pub interface TokenAuthorizerHandler {
+  func handle(event: in TokenAuthorizerEvent, ctx: in LambdaContext): Result[AuthorizerResponse, LambdaError]
+}
+
+@stable(since = "0.1")
+pub interface RequestAuthorizerHandler {
+  func handle(event: in RequestAuthorizerEvent, ctx: in LambdaContext): Result[AuthorizerResponse, LambdaError]
+}
+
+@stable(since = "0.1")
+pub interface HttpAuthorizerHandler {
+  func handle(event: in HttpAuthorizerEvent, ctx: in LambdaContext): Result[HttpAuthorizerResponse, LambdaError]
+}
+
+/// An AOT-rooted handler wrapping one of the interfaces above.
+/// Created exclusively by the typed factory functions in Lambda.Direct.
+/// The kernel pattern-matches on the case and calls `handler.handle(...)`
+/// directly — no reflection, no name-based lookup (the DLL-reflection
+/// dispatcher this library's doc comments used to describe was never
+/// implemented anywhere in the codebase and is rejected by later codebase
+/// direction; see D099 in docs/03-decision-log.md, which killed the
+/// identical design for `lyric-health`).
+///
+/// One case per registrable event source / authorizer type; there is no
+/// streaming case because `Lambda.Stream`'s `StreamWriter` transport has
+/// no working kernel yet (see `Lambda.Stream`'s header comment) — adding a
+/// case here would also create a `Lambda` <-> `Lambda.Stream` import cycle,
+/// since `Lambda.Stream` itself imports `Lambda` for `LambdaContext`/
+/// `LambdaError`. `Lambda.Direct.streamingHandler` documents this gap.
+@stable(since = "0.1")
+pub union DirectHandler {
+  case SqsDirect(handler: SqsHandler)
+  case SqsBatchDirect(handler: SqsBatchHandler)
+  case SnsDirect(handler: SnsHandler)
+  case S3Direct(handler: S3Handler)
+  case EventBridgeDirect(handler: EventBridgeHandler)
+  case DynamoDbDirect(handler: DynamoDbHandler)
+  case KinesisDirect(handler: KinesisHandler)
+  case RawDirect(handler: RawHandler)
+  case TokenAuthorizerDirect(handler: TokenAuthorizerHandler)
+  case RequestAuthorizerDirect(handler: RequestAuthorizerHandler)
+  case HttpAuthorizerDirect(handler: HttpAuthorizerHandler)
 }
 
 // ─── LambdaRouter ────────────────────────────────────────────────────────────

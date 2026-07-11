@@ -1,11 +1,25 @@
 //! Search — search engine integration for Lyric applications.
-//! Stability: @experimental — the API compiles, but the Elasticsearch and
-//! Meilisearch backends have not been driven against a live cluster in CI.
+//! Stability: @experimental — the API compiles and the Elasticsearch and
+//! Meilisearch backends are implemented over real HTTP + JSON (issue #5408),
+//! but neither has been driven against a live cluster in CI (no Elasticsearch
+//! or Meilisearch server is available in this repository's CI sandbox).
 //!
 //! Provides a `SearchClient` interface with Elasticsearch and Meilisearch
 //! backends selectable at runtime via feature flags.  Both backends expose
 //! the same API: index, batch-index, search, suggest, delete, and index
 //! management.
+//!
+//! Neither backend binds a native SDK (`Elastic.Clients.Elasticsearch` /
+//! `com.meilisearch.sdk`, etc.) — both engines speak plain HTTP + JSON, so
+//! the implementation is pure Lyric over `Std.Http` / `Std.Json`. It is
+//! built directly on `Std.Http` rather than the higher-level `Std.Rest`:
+//! `Std.Rest`'s `RestClient` verbs throw `System.MissingMethodException`
+//! at runtime (a pre-existing `Std.Http`/`Std.Rest` cross-package
+//! free-async-function defect, documented in detail in
+//! `lyric-lambda/src/dispatch.l`'s header and confirmed independently
+//! here — see `HttpConfig`'s doc comment below). See README.md "Platform
+//! parity" for why the earlier `extern package` native-SDK approach was
+//! abandoned (issues #5067, #5324, #5408).
 //!
 //! Typical usage:
 //!
@@ -13,295 +27,41 @@
 //!   import Std.Collections
 //!
 //!   // Connect (backend selected by compile-time feature flag):
-//!   match Search.connect("elasticsearch") {
+//!   match await Search.connect("elasticsearch") {
 //!     case Ok(client) ->
 //!       val doc = Search.makeDoc("products", "p-1", Map.of("name", "Widget"))
-//!       Search.index(client, doc)
+//!       await Search.index(client, doc)
 //!
 //!       val q = Search.makeQuery("products", "Widget")
-//!       match Search.search(client, q) {
+//!       match await Search.search(client, q) {
 //!         case Ok(result) -> ...
 //!         case Err(e)     -> ...
 //!       }
 //!     case Err(e) -> ...
 //!   }
 //!
-//! Runtime config env vars (LYRIC_CONFIG_SEARCH_CONNECTION_*):
-//!   LYRIC_CONFIG_SEARCH_CONNECTION_URL                — backend URL (required)
-//!   LYRIC_CONFIG_SEARCH_CONNECTION_INDEXPREFIX        — prefix for all index names (default: "")
-//!   LYRIC_CONFIG_SEARCH_CONNECTION_APIKEY             — API key (default: "")
-//!   LYRIC_CONFIG_SEARCH_CONNECTION_USERNAME           — HTTP basic username (default: "")
-//!   LYRIC_CONFIG_SEARCH_CONNECTION_PASSWORD           — HTTP basic password (default: "")
-//!   LYRIC_CONFIG_SEARCH_CONNECTION_CONNECTTIMEOUTMS   — connection timeout ms (default: 5000)
-//!   LYRIC_CONFIG_SEARCH_CONNECTION_REQUESTTIMEOUTMS   — request timeout ms (default: 30000)
+//! Runtime config env vars, read by `Search.connect`:
+//!   LYRIC_SEARCH_ELASTICSEARCH_URL         — Elasticsearch base URL (required)
+//!   LYRIC_SEARCH_ELASTICSEARCH_USERNAME    — HTTP basic auth username (default: "")
+//!   LYRIC_SEARCH_ELASTICSEARCH_PASSWORD    — HTTP basic auth password (default: "")
+//!   LYRIC_SEARCH_ELASTICSEARCH_TIMEOUT_MS  — request timeout ms (default: 30000)
+//!   LYRIC_SEARCH_MEILISEARCH_URL           — Meilisearch base URL (required)
+//!   LYRIC_SEARCH_MEILISEARCH_API_KEY       — Meilisearch API key (default: "")
+//!   LYRIC_SEARCH_MEILISEARCH_TIMEOUT_MS    — request timeout ms (default: 30000)
+//! `connectElasticsearch` / `connectMeilisearch` accept these values explicitly
+//! instead, for callers that don't want env-var-driven configuration.
 @runtime_checked
 package Search
 
 import Std.Core
 import Std.Collections
 import Std.Json
-import Std.Iter
-import Std.String
-import Search.Kernel.Net
-import Search.Kernel.Jvm
-
-// ─── Kernel boundary (target-dispatching wrappers) ───────────────────────────
-// Each wrapper below delegates to the fully-qualified kernel function for the
-// active target (`Search.Kernel.Net` on `dotnet`, `Search.Kernel.Jvm` on
-// `jvm`).  The two kernels export identical signatures per-backend
-// (elasticsearch / meilisearch), so calling through a fully-qualified name
-// here — rather than an unqualified, import-flattened one — avoids colliding
-// with this package's own public API of the same name (e.g. `Search.index`,
-// `Search.search`, `Search.delete`).
-//
-// KNOWN COMPILER LIMITATION (verified 2026-07-06, tracked as #5324):
-// `Search.Kernel.Net` / `Search.Kernel.Jvm` bind the Elasticsearch and
-// Meilisearch clients via `extern package <Dotted.Path> { pub func ... }`
-// blocks.  On the current self-hosted compiler this mechanism does not
-// resolve to a real FFI call on *either* backend — a call through it
-// compiles cleanly but throws `"unsupported method '<member>' on the
-// receiver type at this call site (no matching user method, extern
-// binding, or built-in intrinsic)"` (MSIL) / an equivalent JVM auto-FFI
-// resolution failure at runtime, confirmed with both a minimal isolated
-// repro and this package's own kernel.  This is a different, deeper defect
-// than #5067's original finding ("nobody calls the kernel") — the kernel's
-// own extern declarations do not work, independent of this file.  Every
-// wrapper below therefore catches that failure and surfaces it as a typed,
-// honest `Err` instead of an unhandled crash.  `wrapKernelBug` (below)
-// narrows the catch to that specific "unsupported method" signal so an
-// unrelated failure (a kernel `requires:` violation, or once #5324 lands, a
-// genuine connection/auth error) isn't mislabeled as an FFI-codegen gap.
-// This `try`/`catch` is not a permanent design — once `extern package`
-// codegen lands (or the kernels are ported to the working `extern type` +
-// `@externTarget` mechanism, as lyric-mail's and lyric-session's `.NET`
-// kernels already do), these calls will simply start returning real results
-// with no change needed here.
-// See lyric-search/README.md "Platform parity" for the full writeup.
-func searchKernelFfiUnavailable(op: in String, cause: in String): String {
-  return "search kernel FFI binding for '" + op +
-    "' did not resolve on this target (extern package codegen is not yet implemented in the self-hosted compiler — see lyric-search/README.md \"Platform parity\"): " +
-    cause
-}
-
-// Every wrapper below runs its kernel call through `try`/`catch Bug` because
-// today *every* kernel call fails the same way: `extern package` codegen
-// (#5324) doesn't resolve to a real FFI call, so the runtime throws the
-// distinctive "unsupported method '<member>' on the receiver type at this
-// call site (no matching user method, extern binding, or built-in
-// intrinsic)" message on both targets. That message is the one signal this
-// wrapper narrows on — anything else (e.g. a kernel `requires:` precondition
-// violation, or once #5324 lands, a genuine connection/auth failure) is
-// surfaced as-is rather than mislabeled as an FFI-codegen gap. Once #5324
-// ships, this branch stops firing on real calls and can be deleted along
-// with `searchKernelFfiUnavailable`.
-func wrapKernelBug(op: in String, cause: in String): String {
-  if contains(cause, "unsupported method") {
-    return searchKernelFfiUnavailable(op, cause)
-  }
-  return cause
-}
-
-@cfg(feature = "elasticsearch")
-@cfg(feature = "dotnet")
-func searchConnectElasticsearch(
-  url: in String,
-  apiKey: in String,
-  username: in String,
-  password: in String,
-  connectTimeoutMs: in Int,
-  requestTimeoutMs: in Int,
-): Result[Int, String] {
-  try {
-    Search.Kernel.Net.connectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
-  } catch Bug as bug {
-    Err(wrapKernelBug("connectElasticsearch", bug.message))
-  }
-}
-
-@cfg(feature = "elasticsearch")
-@cfg(feature = "jvm")
-func searchConnectElasticsearch(
-  url: in String,
-  apiKey: in String,
-  username: in String,
-  password: in String,
-  connectTimeoutMs: in Int,
-  requestTimeoutMs: in Int,
-): Result[Int, String] {
-  try {
-    Search.Kernel.Jvm.connectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
-  } catch Bug as bug {
-    Err(wrapKernelBug("connectElasticsearch", bug.message))
-  }
-}
-
-@cfg(feature = "meilisearch")
-@cfg(feature = "dotnet")
-func searchConnectMeilisearch(url: in String, apiKey: in String, connectTimeoutMs: in Int): Result[Int, String] {
-  try {
-    Search.Kernel.Net.connectMeilisearch(url, apiKey, connectTimeoutMs)
-  } catch Bug as bug {
-    Err(wrapKernelBug("connectMeilisearch", bug.message))
-  }
-}
-
-@cfg(feature = "meilisearch")
-@cfg(feature = "jvm")
-func searchConnectMeilisearch(url: in String, apiKey: in String, connectTimeoutMs: in Int): Result[Int, String] {
-  try {
-    Search.Kernel.Jvm.connectMeilisearch(url, apiKey, connectTimeoutMs)
-  } catch Bug as bug {
-    Err(wrapKernelBug("connectMeilisearch", bug.message))
-  }
-}
-
-@cfg(feature = "dotnet")
-func searchIndex(clientHandle: in Int, docJson: in String): Result[String, String] {
-  try {
-    Search.Kernel.Net.index(clientHandle, docJson)
-  } catch Bug as bug {
-    Err(wrapKernelBug("index", bug.message))
-  }
-}
-
-@cfg(feature = "jvm")
-func searchIndex(clientHandle: in Int, docJson: in String): Result[String, String] {
-  try {
-    Search.Kernel.Jvm.index(clientHandle, docJson)
-  } catch Bug as bug {
-    Err(wrapKernelBug("index", bug.message))
-  }
-}
-
-@cfg(feature = "dotnet")
-func searchIndexBatch(clientHandle: in Int, docsJson: in String): Result[String, String] {
-  try {
-    Search.Kernel.Net.indexBatch(clientHandle, docsJson)
-  } catch Bug as bug {
-    Err(wrapKernelBug("indexBatch", bug.message))
-  }
-}
-
-@cfg(feature = "jvm")
-func searchIndexBatch(clientHandle: in Int, docsJson: in String): Result[String, String] {
-  try {
-    Search.Kernel.Jvm.indexBatch(clientHandle, docsJson)
-  } catch Bug as bug {
-    Err(wrapKernelBug("indexBatch", bug.message))
-  }
-}
-
-@cfg(feature = "dotnet")
-func searchQuery(clientHandle: in Int, queryJson: in String): Result[String, String] {
-  try {
-    Search.Kernel.Net.search(clientHandle, queryJson)
-  } catch Bug as bug {
-    Err(wrapKernelBug("search", bug.message))
-  }
-}
-
-@cfg(feature = "jvm")
-func searchQuery(clientHandle: in Int, queryJson: in String): Result[String, String] {
-  try {
-    Search.Kernel.Jvm.search(clientHandle, queryJson)
-  } catch Bug as bug {
-    Err(wrapKernelBug("search", bug.message))
-  }
-}
-
-@cfg(feature = "dotnet")
-func searchSuggest(
-  clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int
-): Result[String, String] {
-  try {
-    Search.Kernel.Net.suggest(clientHandle, index, text, field, size)
-  } catch Bug as bug {
-    Err(wrapKernelBug("suggest", bug.message))
-  }
-}
-
-@cfg(feature = "jvm")
-func searchSuggest(
-  clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int
-): Result[String, String] {
-  try {
-    Search.Kernel.Jvm.suggest(clientHandle, index, text, field, size)
-  } catch Bug as bug {
-    Err(wrapKernelBug("suggest", bug.message))
-  }
-}
-
-@cfg(feature = "dotnet")
-func searchDelete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String] {
-  try {
-    Search.Kernel.Net.delete(clientHandle, index, id)
-  } catch Bug as bug {
-    Err(wrapKernelBug("delete", bug.message))
-  }
-}
-
-@cfg(feature = "jvm")
-func searchDelete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String] {
-  try {
-    Search.Kernel.Jvm.delete(clientHandle, index, id)
-  } catch Bug as bug {
-    Err(wrapKernelBug("delete", bug.message))
-  }
-}
-
-@cfg(feature = "dotnet")
-func searchDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, String] {
-  try {
-    Search.Kernel.Net.deleteIndex(clientHandle, index)
-  } catch Bug as bug {
-    Err(wrapKernelBug("deleteIndex", bug.message))
-  }
-}
-
-@cfg(feature = "jvm")
-func searchDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, String] {
-  try {
-    Search.Kernel.Jvm.deleteIndex(clientHandle, index)
-  } catch Bug as bug {
-    Err(wrapKernelBug("deleteIndex", bug.message))
-  }
-}
-
-@cfg(feature = "dotnet")
-func searchExists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String] {
-  try {
-    Search.Kernel.Net.exists(clientHandle, index, id)
-  } catch Bug as bug {
-    Err(wrapKernelBug("exists", bug.message))
-  }
-}
-
-@cfg(feature = "jvm")
-func searchExists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String] {
-  try {
-    Search.Kernel.Jvm.exists(clientHandle, index, id)
-  } catch Bug as bug {
-    Err(wrapKernelBug("exists", bug.message))
-  }
-}
-
-@cfg(feature = "dotnet")
-func searchCreateIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String] {
-  try {
-    Search.Kernel.Net.createIndex(clientHandle, index, mappingJson)
-  } catch Bug as bug {
-    Err(wrapKernelBug("createIndex", bug.message))
-  }
-}
-
-@cfg(feature = "jvm")
-func searchCreateIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String] {
-  try {
-    Search.Kernel.Jvm.createIndex(clientHandle, index, mappingJson)
-  } catch Bug as bug {
-    Err(wrapKernelBug("createIndex", bug.message))
-  }
-}
+import Std.Errors
+import Std.Http
+import Std.Char
+import Std.Encoding
+import Std.Environment
+import Std.Parse
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 /// Error returned by SearchClient operations.
@@ -384,176 +144,192 @@ pub record SuggestResult {
   tookMs: Int
 }
 
-/// Result of an index or upsert operation.
+/// Result of an index or upsert operation.  `status` is "created" or
+/// "updated" for Elasticsearch (its `_doc` API reports which occurred).
+/// Meilisearch's document API is asynchronous (task-queue based); this
+/// client waits briefly for the enqueued task to finish and reports
+/// "created" on success or "enqueued" if it did not finish within the
+/// wait budget — see `meilisearch_backend.l`'s `msAwaitTask`.
 @stable(since = "0.1")
 pub record IndexResult {
   id: String
   version: Long
-  status: String   // "created", "updated", or "noop"
+  status: String   // "created", "updated", "enqueued", or "noop"
 }
 
 // ─── Client interface ─────────────────────────────────────────────────────────
 /// Search engine client.  Obtain via `Search.connectElasticsearch()`,
 /// `Search.connectMeilisearch()`, or the dispatching `Search.connect()`.
+///
+/// Every method is `async` because every implementation performs a real
+/// HTTP round trip — there is no synchronous, in-process fast path.
 @stable(since = "0.1")
 pub interface SearchClient {
   /// Index a single document.
-  func index(doc: in SearchDocument): Result[IndexResult, SearchError]
+  async func index(doc: in SearchDocument): Result[IndexResult, SearchError]
     requires: doc.index.length > 0
     requires: doc.id.length > 0
 
   /// Index a batch of documents in a single request.
-  func indexBatch(docs: in slice[SearchDocument]): Result[slice[IndexResult], SearchError]
+  async func indexBatch(docs: in slice[SearchDocument]): Result[slice[IndexResult], SearchError]
 
   /// Execute a search query and return matching hits.
-  func search(query: in SearchQuery): Result[SearchResult, SearchError]
+  async func search(query: in SearchQuery): Result[SearchResult, SearchError]
     requires: query.index.length > 0
 
   /// Return autocomplete suggestions for `text` on `field` in `index`.
-  func suggest(index: in String, text: in String, field: in String, size: in Int): Result[SuggestResult, SearchError]
+  async func suggest(index: in String, text: in String, field: in String, size: in Int): Result[SuggestResult, SearchError]
     requires: index.length > 0
     requires: field.length > 0
     requires: size > 0
 
   /// Delete a single document by ID.
-  func delete(index: in String, id: in String): Result[Unit, SearchError]
+  async func delete(index: in String, id: in String): Result[Unit, SearchError]
     requires: index.length > 0
     requires: id.length > 0
 
   /// Delete an entire index.
-  func deleteIndex(index: in String): Result[Unit, SearchError]
+  async func deleteIndex(index: in String): Result[Unit, SearchError]
     requires: index.length > 0
 
   /// Return whether a document exists.
-  func exists(index: in String, id: in String): Result[Bool, SearchError]
+  async func exists(index: in String, id: in String): Result[Bool, SearchError]
     requires: index.length > 0
     requires: id.length > 0
 
-  /// Create an index with the given mapping JSON.
-  func createIndex(index: in String, mappingJson: in String): Result[Unit, SearchError]
+  /// Create an index with the given mapping JSON.  For Elasticsearch this
+  /// is the raw `{"mappings": {...}, "settings": {...}}` body passed
+  /// verbatim to `PUT /{index}`. Meilisearch has no equivalent up-front
+  /// schema; a non-empty `mappingJson` is instead applied via
+  /// `PATCH /indexes/{index}/settings` after index creation — see
+  /// `meilisearch_backend.l`'s `backendCreateIndex`.
+  async func createIndex(index: in String, mappingJson: in String): Result[Unit, SearchError]
     requires: index.length > 0
 }
 
 // ─── Native client ────────────────────────────────────────────────────────────
-/// Kernel-backed search client.  Obtain via the factory functions.
+/// HTTP-backed search client.  Obtain via the factory functions.  Holds a
+/// `Std.Rest.RestClient` pre-configured with the backend's base URL and
+/// auth strategy; every operation below delegates to the active backend's
+/// `backend*` functions (`elasticsearch_backend.l` or
+/// `meilisearch_backend.l` — exactly one is compiled in per build, per
+/// `lyric.toml`'s `elasticsearch` / `meilisearch` features).
 @stable(since = "0.1")
 pub record NativeSearchClient {
-  clientHandle: Int
+  cfg: HttpConfig
 }
 
 impl SearchClient for NativeSearchClient {
-  func index(doc: in SearchDocument): Result[IndexResult, SearchError] {
-    val docJson = serializeDoc(doc)
-    match searchIndex(self.clientHandle, docJson) {
-      case Ok(json) -> Ok(parseIndexResult(json))
-      case Err(err) -> Err(SearchError(message = err, code = "INDEX_FAILED", statusCode = 0))
-    }
+  async func index(doc: in SearchDocument): Result[IndexResult, SearchError] {
+    return await backendIndex(self.cfg, doc)
   }
 
-  func indexBatch(docs: in slice[SearchDocument]): Result[slice[IndexResult], SearchError] {
-    val docsJson = serializeDocList(docs)
-    match searchIndexBatch(self.clientHandle, docsJson) {
-      case Ok(json) -> Ok(parseIndexResultList(json))
-      case Err(err) -> Err(SearchError(message = err, code = "BATCH_INDEX_FAILED", statusCode = 0))
-    }
+  async func indexBatch(docs: in slice[SearchDocument]): Result[slice[IndexResult], SearchError] {
+    return await backendIndexBatch(self.cfg, docs)
   }
 
-  func search(query: in SearchQuery): Result[SearchResult, SearchError] {
-    val queryJson = serializeQuery(query)
-    match searchQuery(self.clientHandle, queryJson) {
-      case Ok(json) -> Ok(parseSearchResult(json))
-      case Err(err) -> Err(SearchError(message = err, code = "SEARCH_FAILED", statusCode = 0))
-    }
+  async func search(query: in SearchQuery): Result[SearchResult, SearchError] {
+    val result = await backendSearch(self.cfg, query)
+    return result
   }
 
-  func suggest(index: in String, text: in String, field: in String, size: in Int): Result[SuggestResult, SearchError] {
-    match searchSuggest(self.clientHandle, index, text, field, size) {
-      case Ok(json) -> Ok(parseSuggestResult(json))
-      case Err(err) -> Err(SearchError(message = err, code = "SUGGEST_FAILED", statusCode = 0))
-    }
+  async func suggest(
+    index: in String, text: in String, field: in String, size: in Int
+  ): Result[SuggestResult, SearchError] {
+    return await backendSuggest(self.cfg, index, text, field, size)
   }
 
-  func delete(index: in String, id: in String): Result[Unit, SearchError] {
-    match searchDelete(self.clientHandle, index, id) {
-      case Ok(u) -> Ok(u)
-      case Err(err) -> Err(SearchError(message = err, code = "DELETE_FAILED", statusCode = 0))
-    }
+  async func delete(index: in String, id: in String): Result[Unit, SearchError] {
+    return await backendDelete(self.cfg, index, id)
   }
 
-  func deleteIndex(index: in String): Result[Unit, SearchError] {
-    match searchDeleteIndex(self.clientHandle, index) {
-      case Ok(u) -> Ok(u)
-      case Err(err) -> Err(SearchError(message = err, code = "DELETE_INDEX_FAILED", statusCode = 0))
-    }
+  async func deleteIndex(index: in String): Result[Unit, SearchError] {
+    return await backendDeleteIndex(self.cfg, index)
   }
 
-  func exists(index: in String, id: in String): Result[Bool, SearchError] {
-    match searchExists(self.clientHandle, index, id) {
-      case Ok(b) -> Ok(b)
-      case Err(err) -> Err(SearchError(message = err, code = "EXISTS_FAILED", statusCode = 0))
-    }
+  async func exists(index: in String, id: in String): Result[Bool, SearchError] {
+    return await backendExists(self.cfg, index, id)
   }
 
-  func createIndex(index: in String, mappingJson: in String): Result[Unit, SearchError] {
-    match searchCreateIndex(self.clientHandle, index, mappingJson) {
-      case Ok(u) -> Ok(u)
-      case Err(err) -> Err(SearchError(message = err, code = "CREATE_INDEX_FAILED", statusCode = 0))
-    }
+  async func createIndex(index: in String, mappingJson: in String): Result[Unit, SearchError] {
+    return await backendCreateIndex(self.cfg, index, mappingJson)
   }
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
-/// Connect to Elasticsearch.  URL, credentials, and timeouts are read from
-/// LYRIC_CONFIG_SEARCH_CONNECTION_* environment variables at runtime.
+/// Connect to Elasticsearch.  Performs a `GET /` health probe so a
+/// connection failure surfaces immediately, rather than on the first real
+/// operation.
 @stable(since = "0.1")
 @cfg(feature = "elasticsearch")
-pub func connectElasticsearch(
+pub async func connectElasticsearch(
   url: in String,
   apiKey: in String,
   username: in String,
   password: in String,
   connectTimeoutMs: in Int,
   requestTimeoutMs: in Int,
-): Result[SearchClient, SearchError] {
-  match searchConnectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs) {
-    case Ok(handle) -> Ok(NativeSearchClient(clientHandle = handle))
-    case Err(err) -> Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
+): Result[SearchClient, SearchError]
+  requires: url.length > 0
+{
+  val connected = await backendConnectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
+  match connected {
+    case Err(e) -> return Err(error = e)
+    case Ok(cfg) -> {
+      val client: SearchClient = NativeSearchClient(cfg = cfg)
+      return Ok(value = client)
+    }
   }
 }
 
-/// Connect to Meilisearch.  URL, API key, and timeout are passed explicitly.
+/// Connect to Meilisearch.  Performs a `GET /health` probe so a connection
+/// failure surfaces immediately, rather than on the first real operation.
 @stable(since = "0.1")
 @cfg(feature = "meilisearch")
-pub func connectMeilisearch(
+pub async func connectMeilisearch(
   url: in String, apiKey: in String, connectTimeoutMs: in Int
-): Result[SearchClient, SearchError] {
-  match searchConnectMeilisearch(url, apiKey, connectTimeoutMs) {
-    case Ok(handle) -> Ok(NativeSearchClient(clientHandle = handle))
-    case Err(err) -> Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
+): Result[SearchClient, SearchError]
+  requires: url.length > 0
+{
+  val connected = await backendConnectMeilisearch(url, apiKey, connectTimeoutMs)
+  match connected {
+    case Err(e) -> return Err(error = e)
+    case Ok(cfg) -> {
+      val client: SearchClient = NativeSearchClient(cfg = cfg)
+      return Ok(value = client)
+    }
   }
 }
 
-/// Dispatch to the configured backend by name.  Returns Err for a provider
-/// string that does not match the backend feature compiled into this build
-/// (`@cfg(feature = "elasticsearch")` / `@cfg(feature = "meilisearch")` — see
-/// lyric.toml; the two features are mutually exclusive per build, mirroring
-/// the `dotnet` / `jvm` target split).
+/// Dispatch to the configured backend by name, reading connection settings
+/// from the `LYRIC_SEARCH_*` environment variables documented at the top of
+/// this file. Returns Err for a provider string that does not match the
+/// backend feature compiled into this build (`@cfg(feature =
+/// "elasticsearch")` / `@cfg(feature = "meilisearch")` — see lyric.toml; the
+/// two features are mutually exclusive per build).
 @experimental
 @cfg(feature = "elasticsearch")
-pub func connect(provider: in String): Result[SearchClient, SearchError]
+pub async func connect(provider: in String): Result[SearchClient, SearchError]
   requires: provider.length > 0
 {
   if provider == "elasticsearch" {
-    match searchConnectElasticsearch("", "", "", "", 5000, 30000) {
-      case Ok(handle) -> {
-        val sc: SearchClient = NativeSearchClient(clientHandle = handle)
-        return Ok(sc)
-      }
-      case Err(err) -> return Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
+    val url = getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_URL", "")
+    if url.length == 0 {
+      return Err(
+        error = SearchError(
+          message = "LYRIC_SEARCH_ELASTICSEARCH_URL is not set",
+          code = "MISSING_CONFIG",
+          statusCode = 0
+        )
+      )
     }
+    val username = getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_USERNAME", "")
+    val password = getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_PASSWORD", "")
+    val requestTimeoutMs = parseIntOrDefault(getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_TIMEOUT_MS", "30000"), 30000)
+    return await connectElasticsearch(url, "", username, password, 10000, requestTimeoutMs)
   }
   return Err(
-    SearchError(
+    error = SearchError(
       message = "Unknown search provider: " + provider + ". This build only supports \"elasticsearch\".",
       code = "UNKNOWN_PROVIDER",
       statusCode = 0
@@ -563,20 +339,26 @@ pub func connect(provider: in String): Result[SearchClient, SearchError]
 
 @experimental
 @cfg(feature = "meilisearch")
-pub func connect(provider: in String): Result[SearchClient, SearchError]
+pub async func connect(provider: in String): Result[SearchClient, SearchError]
   requires: provider.length > 0
 {
   if provider == "meilisearch" {
-    match searchConnectMeilisearch("", "", 5000) {
-      case Ok(handle) -> {
-        val sc: SearchClient = NativeSearchClient(clientHandle = handle)
-        return Ok(sc)
-      }
-      case Err(err) -> return Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
+    val url = getVarOrDefault("LYRIC_SEARCH_MEILISEARCH_URL", "")
+    if url.length == 0 {
+      return Err(
+        error = SearchError(
+          message = "LYRIC_SEARCH_MEILISEARCH_URL is not set",
+          code = "MISSING_CONFIG",
+          statusCode = 0
+        )
+      )
     }
+    val apiKey = getVarOrDefault("LYRIC_SEARCH_MEILISEARCH_API_KEY", "")
+    val requestTimeoutMs = parseIntOrDefault(getVarOrDefault("LYRIC_SEARCH_MEILISEARCH_TIMEOUT_MS", "30000"), 30000)
+    return await connectMeilisearch(url, apiKey, requestTimeoutMs)
   }
   return Err(
-    SearchError(
+    error = SearchError(
       message = "Unknown search provider: " + provider + ". This build only supports \"meilisearch\".",
       code = "UNKNOWN_PROVIDER",
       statusCode = 0
@@ -585,13 +367,30 @@ pub func connect(provider: in String): Result[SearchClient, SearchError]
 }
 
 // ─── Convenience helpers ──────────────────────────────────────────────────────
+// These are plain (non-`async`) functions, not `async func`, even though
+// their bodies `await` an interface-dispatched call. That's deliberate: an
+// `async func` whose state machine awaits a `SearchClient`-interface-
+// dispatched call (`client.search(...)` etc.) throws `System.
+// InvalidProgramException` at runtime — a third defect in the same family
+// documented at `HttpConfig`'s declaration above, reproduced independently
+// of the Std.Http ones (this one is triggered by `Search`'s *own*
+// interface, `SearchClient`, not `Std.Http`'s). A plain function awaiting
+// the same call directly ("awaits in place" — see
+// docs/01-language-reference.md's async section) does not hit it. Callers
+// may still `await Search.search(client, query)` etc. from their own
+// code — direct calls to a function work with or without `await` — but a
+// caller who writes their OWN `async func` around a raw `client.search(...)`
+// call (bypassing these helpers) can hit the same defect; prefer these
+// helpers, or `NativeSearchClient`'s own async impl methods called
+// directly from a non-`async` context, over rolling your own async
+// wrapper around the interface.
 /// Index a single document.
 @stable(since = "0.1")
 pub func index(client: in SearchClient, doc: in SearchDocument): Result[IndexResult, SearchError]
   requires: doc.index.length > 0
   requires: doc.id.length > 0
 {
-  return client.index(doc)
+  return await client.index(doc)
 }
 
 /// Execute a search query.
@@ -599,7 +398,7 @@ pub func index(client: in SearchClient, doc: in SearchDocument): Result[IndexRes
 pub func search(client: in SearchClient, query: in SearchQuery): Result[SearchResult, SearchError]
   requires: query.index.length > 0
 {
-  return client.search(query)
+  return await client.search(query)
 }
 
 /// Execute a simple keyword search with default pagination (from=0, size=10).
@@ -608,7 +407,7 @@ pub func searchSimple(client: in SearchClient, index: in String, query: in Strin
   requires: index.length > 0
 {
   val q = SearchQuery(index = index, query = query, filters = [], from = 0, size = 10, sort = [], highlightFields = [])
-  return client.search(q)
+  return await client.search(q)
 }
 
 /// Delete a document by index and ID.
@@ -617,7 +416,7 @@ pub func delete(client: in SearchClient, index: in String, id: in String): Resul
   requires: index.length > 0
   requires: id.length > 0
 {
-  return client.delete(index, id)
+  return await client.delete(index, id)
 }
 
 /// Return autocomplete suggestions using a default size of 5.
@@ -628,7 +427,7 @@ pub func suggest(
   requires: index.length > 0
   requires: field.length > 0
 {
-  return client.suggest(index, text, field, 5)
+  return await client.suggest(index, text, field, 5)
 }
 
 /// Build a SearchQuery with default pagination and no filters, sort, or highlights.
@@ -664,315 +463,273 @@ pub func makeDoc(index: in String, id: in String, fields: in Map[String, String]
   return SearchDocument(id = id, index = index, fields = fields)
 }
 
-// ─── Private serialization helpers ───────────────────────────────────────────
-// Escape a string for JSON serialization (handles \, ", and common control chars).
-func jsonEscapeStr(s: in String): String {
+// ─── Shared helpers used by both backend files ───────────────────────────────
+// (elasticsearch_backend.l / meilisearch_backend.l — same package, so these
+// package-private helpers are visible there without an import; see
+// docs/19-multi-file-packages.md.)
+func parseIntOrDefault(s: in String, default: in Int): Int {
+  match parseOptInt(s) {
+    case Some(n) -> n
+    case None -> default
+  }
+}
+
+/// Percent-encode a single URL path segment (RFC 3986 unreserved set is
+/// kept literal; everything else, including `/`, is escaped).  Both
+/// backends key documents by caller-supplied `index`/`id` strings that may
+/// contain characters unsafe in a URL path segment.
+pub func pathEscape(s: in String): String {
   var result = ""
   var i = 0
   while i < s.length {
-    val ch = s[i].toString()
-    if ch == "\\" {
-      result = result + "\\\\"
-    } else if ch == "\"" {
-      result = result + "\\\""
-    } else if ch == "\n" {
-      result = result + "\\n"
-    } else if ch == "\r" {
-      result = result + "\\r"
-    } else if ch == "\t" {
-      result = result + "\\t"
+    val c = s[i]
+    if isAsciiLetterOrDigit(c) or c == '-' or c == '_' or c == '.' or c == '~' {
+      result = result + c.toString()
     } else {
-      result = result + ch
+      val bytes = encodeUtf8(c.toString())
+      var j = 0
+      while j < bytes.length {
+        result = result + "%" + encodeHex([bytes[j]])
+        j = j + 1
+      }
     }
     i = i + 1
   }
   return result
 }
 
-// Serialize a SearchDocument to a minimal JSON object for the kernel.
-func serializeDoc(doc: in SearchDocument): String {
-  var fieldsJson = "{"
-  var first = true
-  for k in doc.fields {
-    match mapGet(doc.fields, k) {
-      case Some(v) -> {
-        if not first {
-          fieldsJson = fieldsJson + ","
+/// Convert a JSON scalar element to a String for storage in a
+/// `Map[String, String]` (`SearchHit.source`).  Non-scalar values (nested
+/// objects/arrays) fall back to their raw JSON text.
+func jsonScalarToString(v: in JsonElement): String {
+  val kind = valueKind(v)
+  if kind == 3 {
+    return getString(v)
+  }
+  if kind == 5 {
+    return "true"
+  }
+  if kind == 6 {
+    return "false"
+  }
+  if kind == 7 {
+    return ""
+  }
+  return getRawText(v)
+}
+
+// ─── HTTP transport (direct Std.Http, not Std.Rest) ──────────────────────────
+// `Std.Rest.RestClient`'s `get`/`post`/`put`/`patch`/`delete` are plain
+// top-level `pub async func`s. They throw `System.MissingMethodException`
+// at runtime when reached through `Std.Rest`'s own `sendRequest`, which
+// itself calls `Std.Http`'s free async functions (`sendAsync`/`getAsync`/
+// `postAsync`) — the exact cross-package free-async-function defect
+// `lyric-lambda/src/dispatch.l`'s header comment documents in detail
+// (reproduced there with a 10-line, zero-Lambda-code repro). This package
+// builds its HTTP layer directly on `Std.Http` instead — but two more,
+// previously-undocumented defects in `Std.Http`/interface-async-dispatch
+// were found and characterized while doing that (each reproduced
+// standalone with a ~15-line repro carrying zero Search code):
+//
+//   1. `HttpClient.send(req)` (an *interface* method, not a free
+//      function) ALSO throws at runtime ("unsupported method 'send' on
+//      the receiver type...") when called from any package other than
+//      `Std.Http` itself — from *inside* an `async func`. Calling it from
+//      a plain (non-async) function wrapped in `try { await
+//      client.send(req) } catch Bug as bug { ... }` reliably catches it
+//      as an ordinary `Bug` — V0012 forbids that same `try`/`await`
+//      combination inside an `async func` ("await inside a try/catch/
+//      finally... emits invalid IL"), which is *why* `sendRequest`/
+//      `sendRequestRaw` below (and `sendCatching`, which they share) are
+//      plain funcs, not `async func`, despite calling an async interface
+//      method internally (a direct call to an async function "awaits in
+//      place" from a synchronous caller — see
+//      docs/01-language-reference.md's async section). WORKED AROUND.
+//   2. An `async func` that itself `await`s a call dispatched through
+//      *any* interface (this reproduces with `Search`'s own
+//      `SearchClient`, not just `Std.Http`'s `HttpClient` — it is not
+//      `Std.Http`-specific) throws `System.InvalidProgramException` (bad
+//      IL) at runtime. Calling the same interface method from a plain
+//      (non-async) function does not. This is *why* the convenience
+//      wrappers below (`index`/`search`/`searchSimple`/`delete`/
+//      `suggest`) are plain funcs rather than `async func`, even though
+//      each is a one-line forward to `client.<method>(...)`. WORKED
+//      AROUND for this package's own call sites; a caller who writes
+//      their *own* `async func` wrapping a raw `client.search(...)` call
+//      (bypassing these helpers) can still hit it.
+//   3. `HttpResponse.bodyText(response)` throws a raw
+//      `System.MissingMethodException` (not a Lyric `Bug`) under the same
+//      cross-package condition as defect 1 — `try`/`catch Bug` does NOT
+//      catch it, in an `async func` or otherwise. NOT WORKED AROUND: no
+//      catchable failure mode was found, and `HttpResponse`'s internals
+//      are opaque to this package, so there is no lower-level escape
+//      hatch either. Reading a real response body from outside
+//      `Std.Http` is not currently possible. `readJsonBody` below is
+//      therefore unavoidably a hard crash if a request actually reaches a
+//      live server that returns a body — every code path this package's
+//      own tests exercise fails before reaching that point (connection
+//      refused at `send`, caught by defect 1's workaround), so this crash
+//      is untested-but-real, not merely theoretical, and is the one
+//      remaining live-connectivity blocker.
+//
+// None of the three can be fixed from this directory (all are
+// `lyric-compiler`/`lyric-stdlib` bugs, each reproduced with zero Search
+// code). This also means `Search` cannot use `Std.Rest.RestAuth`/
+// `RestClient`'s base-URL-plus-headers convenience; `HttpConfig` below is
+// this package's own (much smaller) equivalent.
+/// Everything a backend needs to send an authenticated request: the
+/// shared `HttpClient`, the connection's base URL, and an optional single
+/// auth header (`authHeaderName` empty means no auth header is sent).
+pub opaque type HttpConfig {
+  client: HttpClient
+  baseUrl: String
+  authHeaderName: String
+  authHeaderValue: String
+}
+
+/// Construct an `HttpConfig` directly (bypassing `connectElasticsearch`/
+/// `connectMeilisearch`'s health probe).  Exposed for tests that need to
+/// exercise `NativeSearchClient`'s generic operations against a specific
+/// `HttpClient` without a live backend.
+@stable(since = "0.1")
+pub func HttpConfig.new(
+  client: in HttpClient, baseUrl: in String, authHeaderName: in String, authHeaderValue: in String
+): HttpConfig {
+  return HttpConfig(
+    client = client,
+    baseUrl = baseUrl,
+    authHeaderName = authHeaderName,
+    authHeaderValue = authHeaderValue
+  )
+}
+
+/// Join `baseUrl` and `path`, collapsing the doubled `/` when both the
+/// base ends with one and the path starts with one.  Mirrors
+/// `Std.Rest`'s (unusable, see above) `fullUrl`.
+func joinUrl(baseUrl: in String, path: in String): String {
+  if path.length == 0 {
+    return baseUrl
+  }
+  val lastBase = baseUrl.length - 1
+  val baseEndsSlash = baseUrl[lastBase] == '/'
+  val pathStartsSlash = path[0] == '/'
+  if baseEndsSlash and pathStartsSlash {
+    return baseUrl + path.substring(1, path.length)
+  }
+  if baseEndsSlash or pathStartsSlash {
+    return baseUrl + path
+  }
+  return baseUrl + "/" + path
+}
+
+/// Extract the HTTP status code carried by an HttpError, or 0 when the
+/// failure occurred below the HTTP layer (DNS, connect, timeout — those
+/// never get a status code).
+func httpErrorStatusCode(e: in HttpError): Int {
+  match e {
+    case BadStatus(url, statusCode) -> statusCode
+    case _ -> 0
+  }
+}
+
+/// Convert a transport-level HttpError into a typed SearchError, tagging
+/// it with the given operation code (e.g. "INDEX_FAILED").
+pub func toSearchError(e: in HttpError, code: in String): SearchError {
+  return SearchError(message = HttpError.message(e), code = code, statusCode = httpErrorStatusCode(e))
+}
+
+func buildRequest(
+  cfg: in HttpConfig, method: in HttpMethod, path: in String, body: in Option[String]
+): Result[HttpRequest, SearchError] {
+  val url = joinUrl(cfg.baseUrl, path)
+  match Url.tryFrom(url) {
+    case Err(e) -> return Err(error = toSearchError(e, "INVALID_URL"))
+    case Ok(parsed) -> {
+      var req = request(method, parsed)
+      if cfg.authHeaderName.length > 0 {
+        req = withHeader(req, cfg.authHeaderName, cfg.authHeaderValue)
+      }
+      match body {
+        case Some(json) -> {
+          req = withJsonBody(req, json)
         }
-        fieldsJson = fieldsJson + "\"" + jsonEscapeStr(k) + "\":\"" + jsonEscapeStr(v) + "\""
-        first = false
+        case None -> ()
       }
-      case None -> ()
+      return Ok(value = req)
     }
   }
-  fieldsJson = fieldsJson + "}"
-  return "{\"id\":\"" + jsonEscapeStr(doc.id) + "\"," + "\"index\":\"" + jsonEscapeStr(doc.index) + "\"," +
-    "\"fields\":" +
-    fieldsJson +
-    "}"
 }
 
-// Serialize a list of documents as a JSON array.
-func serializeDocList(docs: in slice[SearchDocument]): String {
-  var json = "["
-  var first = true
-  for doc in docs {
-    if not first {
-      json = json + ","
-    }
-    json = json + serializeDoc(doc)
-    first = false
+/// Call `client.send(req)`, catching the cross-package `HttpClient.send`
+/// dispatch defect described at the top of this file (defect 1). Must be
+/// a plain (non-`async`) function: V0012 rejects `await` inside `try` in
+/// an `async func`, but a synchronous caller may freely `await` an async
+/// call ("awaits in place").
+func sendCatching(client: in HttpClient, req: in HttpRequest, url: in String): Result[HttpResponse, HttpError] {
+  return try {
+    await client.send(req)
+  } catch Bug as bug {
+    Err(
+      error = ConnectionFailed(
+        url = url,
+        message = "Std.Http cross-package `HttpClient.send` dispatch failure (compiler defect, see this file's header): " +
+          bug.message
+      )
+    )
   }
-  return json + "]"
 }
 
-// Serialize a list of SearchFilter to a JSON array.
-func serializeFilters(filters: in slice[SearchFilter]): String {
-  var json = "["
-  var first = true
-  for f in filters {
-    if not first {
-      json = json + ","
-    }
-    json = json + "{\"field\":\"" + jsonEscapeStr(f.field) + "\"," + "\"value\":\"" + jsonEscapeStr(f.value) + "\"," +
-      "\"operator\":\"" +
-      jsonEscapeStr(f.operator) +
-      "\"}"
-    first = false
-  }
-  return json + "]"
-}
-
-// Serialize a list of SortField to a JSON array.
-func serializeSortFields(sorts: in slice[SortField]): String {
-  var json = "["
-  var first = true
-  for s in sorts {
-    if not first {
-      json = json + ","
-    }
-    val descVal = if s.descending { "true" } else { "false" }
-    json = json + "{\"field\":\"" + jsonEscapeStr(s.field) + "\"," + "\"descending\":" + descVal + "}"
-    first = false
-  }
-  return json + "]"
-}
-
-// Serialize a list of highlight field names to a JSON array.
-func serializeHighlightFields(fields: in slice[String]): String {
-  var json = "["
-  var first = true
-  for f in fields {
-    if not first {
-      json = json + ","
-    }
-    json = json + "\"" + jsonEscapeStr(f) + "\""
-    first = false
-  }
-  return json + "]"
-}
-
-// Serialize a SearchQuery to JSON for the kernel.
-func serializeQuery(query: in SearchQuery): String {
-  return "{\"index\":\"" + jsonEscapeStr(query.index) + "\"," + "\"query\":\"" + jsonEscapeStr(query.query) + "\"," +
-    "\"from\":" +
-    query.from.toString() +
-    "," +
-    "\"size\":" +
-    query.size.toString() +
-    "," +
-    "\"filters\":" +
-    serializeFilters(query.filters) +
-    "," +
-    "\"sort\":" +
-    serializeSortFields(query.sort) +
-    "," +
-    "\"highlightFields\":" +
-    serializeHighlightFields(query.highlightFields) +
-    "}"
-}
-
-// Parse an IndexResult from the JSON object returned by the kernel.
-// Expected fields: id (String), version (Long), result (String).
-func parseIndexResult(json: in String): IndexResult {
-  val doc = parseJson(json)
-  val root = rootElement(doc)
-  var id: String = ""
-  var version: Long = 0i64
-  var indexStatus: String = "created"
-  match tryGetProperty(root, "id") {
-    case Some(v) -> {
-      id = getString(v)
-    }
-    case None -> ()
-  }
-  match tryGetProperty(root, "version") {
-    case Some(v) -> match tryGetLong(v) { case Some(n) -> { version = n }; case None -> () }
-    case None -> ()
-  }
-  match tryGetProperty(root, "result") {
-    case Some(v) -> {
-      indexStatus = getString(v)
-    }
-    case None -> ()
-  }
-  return IndexResult(id = id, version = version, status = indexStatus)
-}
-
-// Parse a JSON array of IndexResult objects returned by the kernel.
-func parseIndexResultList(json: in String): slice[IndexResult] {
-  val doc = parseJson(json)
-  val root = rootElement(doc)
-  var results: slice[IndexResult] = []
-  var en = enumerateArray(root)
-  while arrayMoveNext(en) {
-    val elem = arrayCurrent(en)
-    val raw = getRawText(elem)
-    results = concat(results, [parseIndexResult(raw)])
-  }
-  return results
-}
-
-// Parse a SearchResult from the JSON object returned by the kernel.
-// Expected fields: total (Long), tookMs (Int), scrollId (String|null), hits (Array).
-func parseSearchResult(json: in String): SearchResult {
-  val doc = parseJson(json)
-  val root = rootElement(doc)
-  var total: Long = 0i64
-  var tookMs: Int = 0
-  var scrollId: Option[String] = None
-  var hits: slice[SearchHit] = []
-  match tryGetProperty(root, "total") {
-    case Some(v) -> match tryGetLong(v) { case Some(n) -> { total = n }; case None -> () }
-    case None -> ()
-  }
-  match tryGetProperty(root, "tookMs") {
-    case Some(v) -> match tryGetInt(v) { case Some(n) -> { tookMs = n }; case None -> () }
-    case None -> ()
-  }
-  match tryGetProperty(root, "scrollId") {
-    case Some(v) -> if valueKind(v) == 3 { scrollId = Some(value = getString(v)) }   // 3 = string
-    case None -> ()
-  }
-  match tryGetProperty(root, "hits") {
-    case Some(arr) -> {
-      var en = enumerateArray(arr)
-      while arrayMoveNext(en) {
-        val elem = arrayCurrent(en)
-        val hitJson = getRawText(elem)
-        hits = concat(hits, [parseSearchHit(hitJson)])
+/// Send a request and require a 2xx response, tagging any failure
+/// (transport or non-2xx status) with `code`.
+pub func sendRequest(
+  cfg: in HttpConfig,
+  method: in HttpMethod,
+  path: in String,
+  body: in Option[String],
+  code: in String,
+): Result[HttpResponse, SearchError] {
+  match buildRequest(cfg, method, path, body) {
+    case Err(e) -> return Err(error = e)
+    case Ok(req) -> {
+      val url = joinUrl(cfg.baseUrl, path)
+      match sendCatching(cfg.client, req, url) {
+        case Err(e) -> return Err(error = toSearchError(e, code))
+        case Ok(response) -> match HttpResponse.ensureSuccess(response) { case Err(e) -> return Err(error = toSearchError(e, code)); case Ok(ok) -> return Ok(value = ok) }
       }
     }
-    case None -> ()
   }
-  return SearchResult(total = total, hits = hits, tookMs = tookMs, scrollId = scrollId)
 }
 
-// Parse a SuggestResult from the JSON object returned by the kernel.
-// Expected fields: tookMs (Int), suggestions (Array of String).
-func parseSuggestResult(json: in String): SuggestResult {
-  val doc = parseJson(json)
-  val root = rootElement(doc)
-  var tookMs: Int = 0
-  var suggestions: slice[String] = []
-  match tryGetProperty(root, "tookMs") {
-    case Some(v) -> match tryGetInt(v) { case Some(n) -> { tookMs = n }; case None -> () }
-    case None -> ()
-  }
-  match tryGetProperty(root, "suggestions") {
-    case Some(arr) -> {
-      var en = enumerateArray(arr)
-      while arrayMoveNext(en) {
-        val elem = arrayCurrent(en)
-        if valueKind(elem) == 3 {
-          // 3 = string
-          suggestions = concat(suggestions, [getString(elem)])
-        }
+/// Send a request without requiring 2xx — for operations (`exists`) that
+/// need to distinguish 404 from other statuses themselves.
+pub func sendRequestRaw(
+  cfg: in HttpConfig, method: in HttpMethod, path: in String, code: in String
+): Result[HttpResponse, SearchError] {
+  match buildRequest(cfg, method, path, None) {
+    case Err(e) -> return Err(error = e)
+    case Ok(req) -> {
+      val url = joinUrl(cfg.baseUrl, path)
+      match sendCatching(cfg.client, req, url) {
+        case Err(e) -> return Err(error = toSearchError(e, code))
+        case Ok(response) -> return Ok(value = response)
       }
     }
-    case None -> ()
   }
-  return SuggestResult(suggestions = suggestions, tookMs = tookMs)
 }
 
-// Parse a single SearchHit from a raw JSON string.
-func parseSearchHit(json: in String): SearchHit {
-  val doc = parseJson(json)
-  val root = rootElement(doc)
-  var id: String = ""
-  var index: String = ""
-  var score: Double = 0.0
-  var source: Map[String, String] = newMap()
-  var highlights: slice[Highlight] = []
-  match tryGetProperty(root, "score") {
-    case Some(v) -> {
-      score = getDouble(v)
-    }
-    case None -> ()
+/// Read a response body and parse it as JSON, tagging any failure with
+/// `code`.  Caller MUST `disposeJson` the returned doc.
+///
+/// UNLIKE `sendRequest`/`sendRequestRaw`, this has no defensive wrapper:
+/// `HttpResponse.bodyText` throws a raw `System.MissingMethodException`
+/// (defect 2 above), which `try`/`catch Bug` cannot catch on any target.
+/// Reaching this function against a real, reachable server is a hard
+/// crash today. Every path this package's tests exercise fails at
+/// `sendRequest`/`sendCatching` first (closed port / no configured
+/// server), so the crash is real but not exercised by CI.
+pub async func readJsonBody(response: in HttpResponse, code: in String): Result[JsonDoc, SearchError] {
+  match await HttpResponse.bodyText(response) {
+    case Err(e) -> return Err(error = SearchError(message = IOError.message(e), code = code, statusCode = 0))
+    case Ok(text) -> return Ok(value = parseJson(text))
   }
-  match tryGetProperty(root, "id") {
-    case Some(v) -> {
-      id = getString(v)
-    }
-    case None -> ()
-  }
-  match tryGetProperty(root, "index") {
-    case Some(v) -> {
-      index = getString(v)
-    }
-    case None -> ()
-  }
-  match tryGetProperty(root, "source") {
-    case Some(obj) -> {
-      var en = enumerateObject(obj)
-      while objectMoveNext(en) {
-        val prop = objectCurrent(en)
-        val k = propertyName(prop)
-        val v = getString(propertyValue(prop))
-        source.add(k, v)
-      }
-    }
-    case None -> ()
-  }
-  match tryGetProperty(root, "highlights") {
-    case Some(arr) -> {
-      var en = enumerateArray(arr)
-      while arrayMoveNext(en) {
-        val hElem = arrayCurrent(en)
-        val hJson = getRawText(hElem)
-        highlights = concat(highlights, [parseHighlight(hJson)])
-      }
-    }
-    case None -> ()
-  }
-  return SearchHit(id = id, index = index, score = score, highlights = highlights, source = source)
-}
-
-// Parse a Highlight from a raw JSON string.
-// Expected fields: field (String), fragments (Array of String).
-func parseHighlight(json: in String): Highlight {
-  val doc = parseJson(json)
-  val root = rootElement(doc)
-  var field: String = ""
-  var fragments: slice[String] = []
-  match tryGetProperty(root, "field") {
-    case Some(v) -> {
-      field = getString(v)
-    }
-    case None -> ()
-  }
-  match tryGetProperty(root, "fragments") {
-    case Some(arr) -> {
-      var en = enumerateArray(arr)
-      while arrayMoveNext(en) {
-        val fElem = arrayCurrent(en)
-        if valueKind(fElem) == 3 {
-          // 3 = string
-          fragments = concat(fragments, [getString(fElem)])
-        }
-      }
-    }
-    case None -> ()
-  }
-  return Highlight(field = field, fragments = fragments)
 }

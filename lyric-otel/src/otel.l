@@ -1,12 +1,12 @@
-//! Lyric OpenTelemetry library — platform-dispatch wrappers and pub aspect
+//! Lyric OpenTelemetry library — span/metric recording API and pub aspect
 //! templates.
-//! Stability: @experimental — the OTLP exporter shipped (D069) and unit tests
-//! cover the envelope, but the end-to-end trace + metric + log pipeline has
-//! not been exercised against a live OTel collector in CI.
+//! Stability: @experimental. Span/metric recording (this file) is
+//! platform-neutral pure Lyric; OTLP/HTTP export (`OTel.Otlp`) is
+//! implemented for the `dotnet` target (see `docs/03-decision-log.md`
+//! issue #5410) and honestly not-implemented on `jvm`.
 //!
-//! Each wrapper function has two @cfg-gated implementations (dotnet / jvm)
-//! so the aspect templates remain platform-neutral.  Consumers bind a
-//! `matches:` selector and optionally override config defaults:
+//! Consumers bind a `matches:` selector and optionally override config
+//! defaults:
 //!
 //!   aspect HttpTracing from OTel.Tracing {
 //!     matches: name like "*/Http/*"
@@ -20,13 +20,14 @@ package OTel
 
 import OTel.Types
 import Std.Core
-import OTel.Kernel.Net as OtelKernelNet
-import OTel.Kernel.Jvm as OtelKernelJvm
-import Std.Char as StdChar
+import Std.SecureRandom
 import Std.Log as StdLog
 
 // ─── OTel enum types (must be in same package for pattern matching) ───────────
-/// OpenTelemetry span kind — maps to `SpanKind` on both .NET and JVM.
+/// OpenTelemetry span kind.  Declaration order is the ordinal `startSpan`'s
+/// `kind: Int` expects (`Internal`=0 .. `Consumer`=4); `OTel.Otlp.Codec`
+/// maps these onto the OTLP wire `Span.SpanKind` enum, which reserves 0
+/// for "unspecified" and so is offset by one.
 pub enum SpanKind {
   case Internal
   case Server
@@ -43,80 +44,56 @@ pub enum MetricUnit {
   case Requests
 }
 
-// ─── Tracing wrappers ────────────────────────────────────────────────────────
+// ─── Tracing ─────────────────────────────────────────────────────────────────
 /// Start a new tracing span.  `kind` is the integer value of `SpanKind`.
-@cfg(feature = "dotnet")
+///
+/// Always succeeds: unlike the earlier `System.Diagnostics.ActivitySource`
+/// design (issue #5410), there is no host listener whose absence could
+/// make this return a null/no-op span.
+@stable(since = "0.2")
 pub func startSpan(operationName: String, kind: Int): Span {
-  OtelKernelNet.netStartSpan("lyric.otel", operationName, kind)
-}
-
-@cfg(feature = "jvm")
-pub func startSpan(operationName: String, kind: Int): Span {
-  OtelKernelJvm.jvmStartSpan("lyric.otel", operationName, kind)
+  val traceId = secureGetBytes(16)
+  val spanId = secureGetBytes(8)
+  newSpanRecord(traceId, spanId, operationName, kind, nowUnixNanos())
 }
 
 /// Record an error on the span (does not end it).
-@cfg(feature = "dotnet")
+@stable(since = "0.2")
 pub func setSpanError(span: Span, message: String): Unit {
-  OtelKernelNet.netSetSpanError(span, message)
-}
-
-@cfg(feature = "jvm")
-pub func setSpanError(span: Span, message: String): Unit {
-  OtelKernelJvm.jvmSetSpanError(span, message)
+  spanSetError(span, message)
 }
 
 /// Attach a string attribute to the span.  Call before endSpan.
-@cfg(feature = "dotnet")
+@stable(since = "0.2")
 pub func setSpanAttribute(span: Span, key: String, value: String): Unit {
-  OtelKernelNet.netSetSpanAttribute(span, key, value)
+  spanAddAttribute(span, key, value)
 }
 
-@cfg(feature = "jvm")
-pub func setSpanAttribute(span: Span, key: String, value: String): Unit {
-  OtelKernelJvm.jvmSetSpanAttribute(span, key, value)
-}
-
-/// End the span.  Must be called even when an error was recorded.
-@cfg(feature = "dotnet")
+/// End the span: stamps the end timestamp and enqueues it for OTLP
+/// export via `OTel.Otlp.flushOtlpAsync`.  Must be called even when an
+/// error was recorded.
+@stable(since = "0.2")
 pub func endSpan(span: Span): Unit {
-  OtelKernelNet.netEndSpan(span)
+  spanFinish(span, nowUnixNanos())
+  globalSpanBuffer.push(span)
 }
 
-@cfg(feature = "jvm")
-pub func endSpan(span: Span): Unit {
-  OtelKernelJvm.jvmEndSpan(span)
-}
-
-// ─── Metrics wrappers ────────────────────────────────────────────────────────
-@cfg(feature = "dotnet")
+// ─── Metrics ────────────────────────────────────────────────────────────────
+/// Add `delta` to the named cumulative counter.
+@stable(since = "0.2")
 pub func incrementCounter(name: String, delta: Int, unit: String): Unit {
-  OtelKernelNet.netIncrementCounter("lyric.otel", name, delta, unit)
+  globalMetricsBuffer.incrementCounter(name, delta.toLong(), unit)
 }
 
-@cfg(feature = "jvm")
-pub func incrementCounter(name: String, delta: Int, unit: String): Unit {
-  OtelKernelJvm.jvmIncrementCounter("lyric.otel", name, delta, unit)
-}
-
-@cfg(feature = "dotnet")
+/// Record one histogram observation.
+@stable(since = "0.2")
 pub func recordHistogram(name: String, value: Float, unit: String): Unit {
-  OtelKernelNet.netRecordHistogram("lyric.otel", name, value, unit)
-}
-
-@cfg(feature = "jvm")
-pub func recordHistogram(name: String, value: Float, unit: String): Unit {
-  OtelKernelJvm.jvmRecordHistogram("lyric.otel", name, value, unit)
+  globalMetricsBuffer.recordHistogram(name, value.toDouble(), unit)
 }
 
 // ─── Aspect templates ────────────────────────────────────────────────────────
-/// Wrap every matched call in an OTel trace span.
-/// Config fields:
-///   enabled    — gate the whole aspect at startup; default true.
-///   sampleRate — fraction of calls to trace (0.0–1.0); default 1.0.
-///   spanKind   — OTel SpanKind for every span; default Internal.
-/// Map `SpanKind` to its OTel integer ordinal.
-/// OTel SDK convention: Internal=0, Server=1, Client=2, Producer=3, Consumer=4.
+/// Map `SpanKind` to its ordinal (also its OTel-wire-mappable value —
+/// see `OTel.Otlp.Codec.kindToOtlpWire`).
 func spanKindToInt(k: SpanKind): Int {
   match k {
     case SpanKind.Internal -> 0
@@ -127,6 +104,11 @@ func spanKindToInt(k: SpanKind): Int {
   }
 }
 
+/// Wrap every matched call in an OTel trace span.
+/// Config fields:
+///   enabled    — gate the whole aspect at startup; default true.
+///   sampleRate — fraction of calls to trace (0.0–1.0); default 1.0.
+///   spanKind   — OTel SpanKind for every span; default Internal.
 pub aspect Tracing {
   config {
     enabled: Bool = true

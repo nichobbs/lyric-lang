@@ -1,13 +1,21 @@
 //! Db — driver-agnostic database access with typed rows and transactions.
-//! Stability: @experimental — the driver interface compiles and tests exercise
-//! a SQLite path, but the production drivers (Npgsql, MySqlConnector, etc.)
-//! have not been exercised against a live database in CI.
+//! Stability: @stable — `query`/`execute`/`transaction` are real ADO.NET
+//! calls (`Db.Kernel.Net`, `System.Data.Common`), not the historical
+//! hardcoded-`Err` stubs (#5407). The SQLite path (Microsoft.Data.Sqlite)
+//! is exercised end-to-end in CI against a real `:memory:` database
+//! (`tests/db_sqlite_tests.l`); the Postgres path (Npgsql) shares the exact
+//! same query/execute/transaction code and is verified for connect-failure
+//! error mapping only — no live Postgres server is available in CI/sandboxes
+//! (`tests/db_postgres_connect_tests.l`). See lyric-db/README.md "Platform
+//! parity" for the full, honest breakdown.
 //!
 //! `DbConnection` is the public interface; implement it to add a new driver.
 //! Two built-in drivers are provided via feature-gated kernel packages:
 //!
 //! Convenience wrappers (added for gRPC / non-web consumers):
 //!   Db.connect(connStr)      — open a connection from an explicit DSN
+//!   Db.connectPostgres(...)  — open a Postgres connection directly
+//!   Db.connectSqlite(...)    — open a SQLite connection directly
 //!   Db.query(conn, sql, p)   — call conn.query; top-level wrapper
 //!   Db.execute(conn, sql, p) — call conn.execute; top-level wrapper
 //!   Db.getString/getInt/getLong/getBool — typed column extractors
@@ -37,8 +45,9 @@ import Std.Core
 import Std.Collections
 import Std.Json as StdJson
 import Std.Environment as Environment
+import Std.Encoding
 import Db.Kernel.Net as DbKernel
-import extern System.{ Convert }
+import extern System.{Convert}
 
 // ─── Error ────────────────────────────────────────────────────────────────────
 /// A database error with a driver-reported code and message.
@@ -164,66 +173,68 @@ pub interface DbConnection {
 }
 
 // ─── Native connection wrapper (internal) ────────────────────────────────────
-// Integer handle issued by the kernel; opaque to consumers.
+// Holds a real ADO.NET `DbConnection` reference (Db.Kernel.Net.DbConn) — not
+// an integer registry handle; the connection object itself is the handle.
 record NativeConnection {
-  connId: Int
+  conn: DbKernel.DbConn
 }
 
 impl DbConnection for NativeConnection {
   func query(sql: in String, params: in slice[String]): Result[slice[DbRow], DbError] {
-    match DbKernel.query(self.connId, sql, params) {
+    match DbKernel.query(self.conn, sql, params) {
       case Ok(jsonRows) -> parseRows(jsonRows)
       case Err(msg) -> Err(DbError(message = msg, code = "QUERY_ERROR"))
     }
   }
 
   func execute(sql: in String, params: in slice[String]): Result[Int, DbError] {
-    match DbKernel.execute(self.connId, sql, params) {
+    match DbKernel.execute(self.conn, sql, params) {
       case Ok(n) -> Ok(n)
       case Err(msg) -> Err(DbError(message = msg, code = "EXECUTE_ERROR"))
     }
   }
 
   func transaction(): Result[DbTransaction, DbError] {
-    match DbKernel.beginTransaction(self.connId) {
-      case Ok(txId) -> Ok(NativeTransaction(txId = txId))
+    match DbKernel.beginTransaction(self.conn) {
+      case Ok(tx) -> Ok(NativeTransaction(conn = self.conn, tx = tx))
       case Err(msg) -> Err(DbError(message = msg, code = "TX_BEGIN_ERROR"))
     }
   }
 
   func close(): Unit {
-    DbKernel.close(self.connId)
+    DbKernel.close(self.conn)
   }
 }
 
 record NativeTransaction {
-  txId: Int
+  conn: DbKernel.DbConn
+  tx: DbKernel.DbTxT
 }
 
 impl DbTransaction for NativeTransaction {
   func query(sql: in String, params: in slice[String]): Result[slice[DbRow], DbError] {
-    match DbKernel.txQuery(self.txId, sql, params) {
+    match DbKernel.txQuery(self.conn, self.tx, sql, params) {
       case Ok(jsonRows) -> parseRows(jsonRows)
       case Err(msg) -> Err(DbError(message = msg, code = "TX_QUERY_ERROR"))
     }
   }
 
   func execute(sql: in String, params: in slice[String]): Result[Int, DbError] {
-    match DbKernel.txExecute(self.txId, sql, params) {
+    match DbKernel.txExecute(self.conn, self.tx, sql, params) {
       case Ok(n) -> Ok(n)
       case Err(msg) -> Err(DbError(message = msg, code = "TX_EXECUTE_ERROR"))
     }
   }
 
   func commit(): Result[Unit, DbError] {
-    match DbKernel.commitTransaction(self.txId) {
+    match DbKernel.commitTransaction(self.tx) {
       case Ok(_) -> Ok(())
       case Err(msg) -> Err(DbError(message = msg, code = "TX_COMMIT_ERROR"))
     }
   }
 
   func rollback(): Result[Unit, DbError] {
-    match DbKernel.rollbackTransaction(self.txId) {
+    match DbKernel.rollbackTransaction(self.tx) {
       case Ok(_) -> Ok(())
       case Err(msg) -> Err(DbError(message = msg, code = "TX_ROLLBACK_ERROR"))
     }
@@ -234,13 +245,19 @@ impl DbTransaction for NativeTransaction {
 /// Open a connection from an explicit connection-string DSN.
 /// Detects the driver from the DSN scheme: `postgres://` / `postgresql://`
 /// uses the Postgres driver; `sqlite://` uses SQLite.
+///
+/// Requires both the `postgres` and `sqlite` features active in this build
+/// of `Lyric.Db` (its `[features] default`) — see
+/// `Db.Kernel.Net.connectDsn` and lyric-db/README.md "Feature combinations".
+/// Consumers that build `Lyric.Db` with only one driver feature active
+/// should call `connectPostgres` / `connectSqlite` directly instead.
 @stable(since = "0.1")
 pub func connect(connStr: in String): Result[DbConnection, DbError]
   requires: connStr.length > 0
 {
   match DbKernel.connectDsn(connStr) {
-    case Ok(connId) -> {
-      val c: DbConnection = NativeConnection(connId = connId)
+    case Ok(conn) -> {
+      val c: DbConnection = NativeConnection(conn = conn)
       Ok(c)
     }
     case Err(msg) -> Err(DbError(message = msg, code = "CONNECT_ERROR"))
@@ -262,6 +279,49 @@ pub func connectFromEnv(): Result[DbConnection, DbError] {
     return Err(DbError(message = "LYRIC_CONFIG_DB_CONNECTION_URL is not set", code = "CONFIG_ERROR"))
   }
   connect(url)
+}
+
+/// Open a PostgreSQL connection directly, bypassing DSN scheme sniffing.
+/// Available whenever the `postgres` feature is active, independent of
+/// whether `sqlite` is also active. `url` accepts a
+/// `postgres://user:pass@host:port/database` URI or an already-formed
+/// Npgsql keyword=value connection string.
+@cfg(feature = "postgres")
+@stable(since = "0.1")
+pub func connectPostgres(
+  url: in String, poolSize: in Int, connectTimeoutMs: in Int, password: in String
+): Result[DbConnection, DbError]
+  requires: url.length > 0
+  requires: poolSize >= 1
+  requires: connectTimeoutMs >= 100
+{
+  match DbKernel.connectPostgres(url, poolSize, connectTimeoutMs, password) {
+    case Ok(conn) -> {
+      val c: DbConnection = NativeConnection(conn = conn)
+      Ok(c)
+    }
+    case Err(msg) -> Err(DbError(message = msg, code = "CONNECT_ERROR"))
+  }
+}
+
+/// Open a SQLite connection directly, bypassing DSN scheme sniffing.
+/// Available whenever the `sqlite` feature is active, independent of
+/// whether `postgres` is also active. `url` accepts a `sqlite://<path>`
+/// URI, the literal `sqlite::memory:` shorthand, or an already-formed
+/// `Data Source=...` connection string.
+@cfg(feature = "sqlite")
+@stable(since = "0.1")
+pub func connectSqlite(url: in String, connectTimeoutMs: in Int): Result[DbConnection, DbError]
+  requires: url.length > 0
+  requires: connectTimeoutMs >= 100
+{
+  match DbKernel.connectSqlite(url, connectTimeoutMs) {
+    case Ok(conn) -> {
+      val c: DbConnection = NativeConnection(conn = conn)
+      Ok(c)
+    }
+    case Err(msg) -> Err(DbError(message = msg, code = "CONNECT_ERROR"))
+  }
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
@@ -323,7 +383,7 @@ func parseDbValue(raw: in String): DbValue {
     case 1 -> {
       match StdJson.tryGetProperty(elem, "$decimal") {
         case Some(v) -> DbDecimal(value = StdJson.getString(v))
-        case None -> match StdJson.tryGetProperty(elem, "$datetime") { case Some(v) -> DbDateTime(value = StdJson.getString(v)); case None -> DbNull }
+        case None -> match StdJson.tryGetProperty(elem, "$datetime") { case Some(v) -> DbDateTime(value = StdJson.getString(v)); case None -> match StdJson.tryGetProperty(elem, "$bytes") { case Some(v) -> match Std.Encoding.tryDecodeBase64(StdJson.getString(v)) { case Some(bytes) -> DbBytes(value = bytes); case None -> DbNull }; case None -> DbNull } }
       }
     }
     case _ -> DbNull

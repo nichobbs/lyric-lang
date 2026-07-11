@@ -11,46 +11,32 @@ output          = "single"
 output_assembly = "Search.dll"
 
 [project.packages]
-"Search"            = "src/search.l"
-"Search.Kernel.Net" = "src/_kernel/net/search_kernel.l"
-"Search.Kernel.Jvm" = "src/_kernel/jvm/search_kernel.l"
+# Directory form (docs/19-multi-file-packages.md): every `.l` file under
+# `src/` declares `package Search` and is compiled together — `search.l`
+# (shared types/interface/helpers), `elasticsearch_backend.l`, and
+# `meilisearch_backend.l`.
+"Search" = "src"
 
 [project.tests]
 "Search.SearchTests" = "tests/search_tests.l"
 
-# Target-kernel selection (#5067, mirrors lyric-storage/#1444 and
-# lyric-grpc): `Search.Kernel.Net` is gated on `dotnet`, `Search.Kernel.Jvm`
-# on `jvm`.  Both kernels export the same connect/index/search/suggest/
-# delete/... surface; the inactive one is erased.
-#
-# `dotnet` and `jvm` are MUTUALLY EXCLUSIVE: activating both leaves two
-# definitions of every shared kernel wrapper in the bundle (ambiguous-symbol
-# build error).  Select exactly one, matching `--target`.
-#
-# `elasticsearch` and `meilisearch` are similarly MUTUALLY EXCLUSIVE per
-# build: `search.l`'s generic client operations (index/search/suggest/
-# delete/...) resolve to whichever single backend feature is active.
-# `default` picks `dotnet` + `elasticsearch` so the crate is usable
-# out of the box; pass `--no-default-features --features jvm,meilisearch`
-# (or any other combination) to select a different target/backend pair.
+# `elasticsearch` and `meilisearch` are MUTUALLY EXCLUSIVE per build:
+# `search.l`'s generic client operations (index/search/suggest/delete/...)
+# dispatch to whichever single backend feature is active, via same-named
+# `backend*` functions defined once per backend file
+# (`src/elasticsearch_backend.l` / `src/meilisearch_backend.l`) and gated by
+# a file-level `@cfg`. Both backend files share the `Search` package with
+# `search.l` (docs/19-multi-file-packages.md), so no separate per-target
+# kernel package is needed: both engines speak plain HTTP + JSON (issue
+# #5408), implemented directly over `Std.Http` / `Std.Json` (not
+# `Std.Rest` — see README.md "Platform parity" for why).
+# `default` picks `elasticsearch` so the crate is usable out of the box;
+# pass `--no-default-features --features meilisearch` to select the other
+# backend.
 [features]
-default       = ["dotnet", "elasticsearch"]
-dotnet        = []   # Target the .NET kernel (`Search.Kernel.Net`)
-jvm           = []   # Target the JVM kernel (`Search.Kernel.Jvm`)
-elasticsearch = []   # Elasticsearch (Elastic.Clients.Elasticsearch on .NET / co.elastic.clients:elasticsearch-java on JVM)
-meilisearch   = []   # Meilisearch (Meilisearch .NET client / com.meilisearch.sdk:meilisearch-java on JVM)
+default       = ["elasticsearch"]
+elasticsearch = []   # Elasticsearch, over its HTTP + JSON REST API
+meilisearch   = []   # Meilisearch, over its HTTP + JSON REST API
 
 [dependencies]
 "Lyric.Resilience" = { workspace = true }
-
-[nuget]
-# feature = "elasticsearch" — Elasticsearch .NET client
-"Elastic.Clients.Elasticsearch" = "8.14.0"
-# feature = "meilisearch" — Meilisearch .NET client
-"Meilisearch"                   = "0.18.0"
-
-[maven]
-# feature = "elasticsearch" — Elasticsearch Java client
-"co.elastic.clients:elasticsearch-java" = "8.14.0"
-# feature = "meilisearch" — Meilisearch Java client
-"com.meilisearch.sdk:meilisearch-java"  = "0.13.2"

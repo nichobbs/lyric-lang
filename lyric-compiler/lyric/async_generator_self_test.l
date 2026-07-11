@@ -155,3 +155,76 @@ test "#2480: SM async func and generator in the same package both work" {
   assertEqualInt(evens[1], 2, "genEvens second item = 2")
   assertEqualInt(evens[2], 4, "genEvens third item = 4")
 }
+
+// ── #4259: generator FieldDef ordering — generator func before record ────────
+// Regression: Pass 1's `isGenP1` branch in `addPackageTokens` advanced
+// `methodDefRow` (+7) for a generator class's synthesised methods but never
+// advanced `fieldDefRow` for its FieldDef rows (`_state`, `_tcs`, `__current`,
+// `__pN` params, hoisted body locals) — the generator analog of #4187 (async
+// state-machine classes).  Any `IRecord` defined AFTER a generator function in
+// source order received wrong `cctx.fieldTokens` entries, mis-binding its
+// field reads/writes to the generator class's own fields instead.
+async func genBeforeRecordHelper(n: in Int): Int {
+  var i = 0
+  while i < n {
+    yield i
+    i = i + 1
+  }
+}
+
+record RecordAfterGen {
+  x: Int
+  y: Int
+}
+
+async func genAfterRecord(n: in Int): Int {
+  var i = 0
+  while i < n {
+    yield i * 2
+    i = i + 1
+  }
+}
+
+record SecondRecordAfterGen {
+  a: Int
+  b: String
+}
+
+test "#4259: record field access after generator class in source order" {
+  val r = RecordAfterGen(x = 3, y = 7)
+  assertEqualInt(r.x, 3, "RecordAfterGen.x = 3")
+  assertEqualInt(r.y, 7, "RecordAfterGen.y = 7")
+}
+
+test "#4259: second record field access after two generator classes" {
+  val s = SecondRecordAfterGen(a = 42, b = "hello")
+  assertEqualInt(s.a, 42, "SecondRecordAfterGen.a = 42")
+  assertEqual(s.b, "hello", "SecondRecordAfterGen.b = hello")
+}
+
+test "#4259: record fields remain correct alongside generator functions" {
+  val r = RecordAfterGen(x = 100, y = 200)
+  val s = SecondRecordAfterGen(a = r.x + r.y, b = "sum")
+  assertEqualInt(s.a, 300, "sum of RecordAfterGen fields = 300")
+  assertEqual(s.b, "sum", "SecondRecordAfterGen.b = sum")
+}
+
+test "#4259: generator function between records still yields correctly" {
+  val result: List[Int] = newList()
+  for x in genAfterRecord(3) {
+    result.add(x)
+  }
+  assertEqualInt(result.count, 3, "genAfterRecord(3) should yield 3 items")
+  assertEqualInt(result[0], 0, "first item = 0")
+  assertEqualInt(result[2], 4, "third item = 4")
+}
+
+test "#4259: generator function preceding a record executes correctly" {
+  val result: List[Int] = newList()
+  for x in genBeforeRecordHelper(3) {
+    result.add(x)
+  }
+  assertEqualInt(result.count, 3, "genBeforeRecordHelper(3) should yield 3 items")
+  assertEqualInt(result[0], 0, "first item = 0")
+  assertEqualInt(result[2], 2, "third item = 2")
+}

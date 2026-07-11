@@ -61,9 +61,20 @@ import Lambda
 /// An active response stream for a Lambda streaming invocation.
 /// Valid only within the handler call that received it; do not store beyond
 /// the handler's return.
+///
+/// **Not implemented.**  No kernel has ever constructed a `StreamWriter`
+/// value or wired it to a real transport (Lambda Function URL
+/// `RESPONSE_STREAM` mode uses a different invoke path than the
+/// GET-next/POST-response custom runtime loop this library now implements
+/// for `Lambda.Kernel.Runtime`'s `aws`/`local` features — see
+/// `docs/35-lambda-library.md` §11 and the `Lambda.Direct.streamingHandler`
+/// header comment). Every function below panics rather than silently
+/// no-op'ing; there is currently no way to obtain a `StreamWriter` instance
+/// at all, so these bodies exist only to give the declared signatures a
+/// well-defined (loud) runtime behaviour if that ever changes accidentally.
 @stable(since = "0.1")
 pub opaque type StreamWriter {
-  // kernel-managed write channel
+  // kernel-managed write channel — never populated; see header comment.
 }
 
 /// Set the Content-Type header of the streaming response.
@@ -72,6 +83,9 @@ pub opaque type StreamWriter {
 @stable(since = "0.1")
 pub func setContentType(writer: in StreamWriter, contentType: in String): Unit
   requires: contentType.length > 0
+{
+  return panic("Lambda.Stream: response streaming has no working transport yet")
+}
 
 /// Write a UTF-8 string chunk to the response stream.
 /// Each call delivers the chunk to the caller immediately.
@@ -80,15 +94,23 @@ pub func setContentType(writer: in StreamWriter, contentType: in String): Unit
 @stable(since = "0.1")
 pub func write(writer: in StreamWriter, chunk: in String): Result[Unit, LambdaError]
   requires: chunk.length > 0
+{
+  return panic("Lambda.Stream: response streaming has no working transport yet")
+}
 
 /// Write a base64-encoded binary chunk to the response stream.
 /// The kernel decodes the base64 and delivers raw bytes to the caller.
 @stable(since = "0.1")
 pub func writeBytes(writer: in StreamWriter, base64Chunk: in String): Result[Unit, LambdaError]
   requires: base64Chunk.length > 0
+{
+  return panic("Lambda.Stream: response streaming has no working transport yet")
+}
 
 /// Close the response stream.
 /// Signals to the caller that the response is complete.
 /// Called automatically if the handler returns without closing.
 @stable(since = "0.1")
-pub func close(writer: in StreamWriter): Unit
+pub func close(writer: in StreamWriter): Unit {
+  return panic("Lambda.Stream: response streaming has no working transport yet")
+}
