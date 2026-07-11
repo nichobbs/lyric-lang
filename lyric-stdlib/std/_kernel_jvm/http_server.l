@@ -273,14 +273,8 @@ pub func requestHeaders(c: in HttpContext): Map[String, String] {
 }
 
 func isHexDigit(c: in Char): Bool {
-  val cp = toInt(c)
-  if cp >= 48 and cp <= 57 {
-    return true
-  }
-  if cp >= 97 and cp <= 102 {
-    return true
-  }
-  cp >= 65 and cp <= 70
+  val cp = toInt(c);
+  (cp >= 48 and cp <= 57) or (cp >= 97 and cp <= 102) or (cp >= 65 and cp <= 70)
 }
 
 func hexDigitValue(c: in Char): Int {

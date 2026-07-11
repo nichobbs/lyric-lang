@@ -1198,11 +1198,26 @@ func singletonList(stmt: in Statement): List[Statement] {
   xs
 }
 
+// True when the next token begins on the same line the last consumed token
+// ended on.  A `(` / `[` postfix continuation (call arguments, index) must be
+// line-adjacent to the expression it extends: the lexer never inserts
+// statement ends inside braces (`maybeEmitStmtEnd` is gated on bracket depth
+// 0), so without this check a statement-initial parenthesized expression on
+// the next line — `val cp = toInt(c)` followed by `(cp >= 48 and cp <= 57)
+// or …` — silently parsed as a CALL of the previous line's value
+// (`toInt(c)(…)`), the #5572 mis-parse.  `.`-chains and leading binary
+// operators still continue across newlines: only the two bracketing postfix
+// forms are line-gated, mirroring the language reference's
+// statements-terminate-at-newlines rule.
+func postfixOnSameLine(st: in ParseState): Bool {
+  lastSpan(st).endPos.line == peek(st).span.startPos.line
+}
+
 pub func parsePostfixExpr(st: inout ParseState): Expr {
   var e = parsePrimaryExpr(st)
   var keep = true
   while keep {
-    if isPunct(peekToken(st), LParen) {
+    if isPunct(peekToken(st), LParen) and postfixOnSameLine(st) {
       val _ = advance(st)
       val args: List[CallArg] = newList()
       if not isPunct(peekToken(st), RParen) {
@@ -1241,7 +1256,7 @@ pub func parsePostfixExpr(st: inout ParseState): Expr {
     } else if isPunct(peekToken(st), Question) {
       val qTok = advance(st)
       e = mkExpr(EPropagate(inner = e), joinSpans(e.span, qTok.span))
-    } else if isPunct(peekToken(st), LBracket) {
+    } else if isPunct(peekToken(st), LBracket) and postfixOnSameLine(st) {
       val _ = advance(st)
       val xs: List[Expr] = newList()
       if not isPunct(peekToken(st), RBracket) {

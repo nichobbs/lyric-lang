@@ -1490,3 +1490,45 @@ test "wire-body config without from is P0343" {
   }
   assertTrue(saw, "wire-body config without from raises P0343")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5572: a parenthesized expression opening the NEXT line is a new statement,
+// not the argument list of the previous line's value.  The lexer never inserts
+// statement ends inside braces (bracket-depth gate), so `val cp = toInt(c)`
+// followed by `(cp >= 48 and cp <= 57) or …` silently parsed as the call
+// `toInt(c)(…)` — `cp` was then unknown (T0020) and the JVM bundled-stdlib
+// compile surfaced it as `error[J002] reference 'cp' resolves to no local`.
+// The postfix `(` / `[` forms are now line-gated (`postfixOnSameLine`), the
+// same family as the #1943 brace-`if` statement-glue rule above.
+// ─────────────────────────────────────────────────────────────────────────────
+test "newline before ( starts a new statement, not call args" {
+  val pr = parse(
+    "package P\nfunc f(cp: in Int): Bool {\n  val unused = g(cp)\n  (cp >= 48 and cp <= 57) or (cp >= 65 and cp <= 70)\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "paren-stmt: no diagnostics")
+  assertEqualInt(firstFuncBodyStmtCount(pr), 2, "paren-stmt: binding + paren tail are two statements")
+}
+
+test "same-line ( is still a call" {
+  val pr = parse("package P\nfunc f(): Int {\n  g(1)\n}\n")
+  assertEqualInt(diagCount(pr), 0, "same-line call: no diagnostics")
+  assertEqualInt(firstFuncBodyStmtCount(pr), 1, "same-line call: one statement")
+}
+
+test "multi-line call argument list still parses as one call" {
+  val pr = parse("package P\nfunc f(): Int {\n  g(\n    1,\n    2\n  )\n}\n")
+  assertEqualInt(diagCount(pr), 0, "multi-line args: no diagnostics")
+  assertEqualInt(firstFuncBodyStmtCount(pr), 1, "multi-line args: one statement")
+}
+
+test "newline before [ starts a new statement, not an index" {
+  val pr = parse("package P\nfunc f(): Int {\n  val xs = mk()\n  [1, 2].length\n}\n")
+  assertEqualInt(diagCount(pr), 0, "bracket-stmt: no diagnostics")
+  assertEqualInt(firstFuncBodyStmtCount(pr), 2, "bracket-stmt: binding + list tail are two statements")
+}
+
+test "dot-chain continuation across a newline still extends the expression" {
+  val pr = parse("package P\nfunc f(): Int {\n  builder\n    .stepOne()\n    .stepTwo(1)\n}\n")
+  assertEqualInt(diagCount(pr), 0, "dot-chain: no diagnostics")
+  assertEqualInt(firstFuncBodyStmtCount(pr), 1, "dot-chain: one statement")
+}
