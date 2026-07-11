@@ -4954,7 +4954,18 @@ jobs:
           # files corrected from non-Lyric syntax (qualified union construction /
           # phantom Map API); deps built above.
           echo "=== lyric-db tests ==="
-          "$lyric_bin" test --manifest lyric-db/lyric.toml || overall=$?
+          # lyric-db's dotnet kernel has mandatory NuGet deps (Npgsql +
+          # Microsoft.Data.Sqlite) whose extern ctors resolve from package
+          # metadata at compile time — restore first, like lyric-session.
+          # The SQLite native asset (libe_sqlite3.so) is not deployed by the
+          # bundler yet (#5573), so point the loader at the NuGet cache.
+          if ! "$lyric_bin" restore --manifest lyric-db/lyric.toml; then
+            echo "::error::failed to restore lyric-db NuGet dependencies"
+            overall=1
+          fi
+          sqlite_native="$(find "$HOME/.nuget/packages/sqlitepclraw.lib.e_sqlite3" -path '*linux-x64/native*' -name '*.so' 2>/dev/null | head -1 | xargs -r dirname)"
+          LD_LIBRARY_PATH="${sqlite_native}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            "$lyric_bin" test --manifest lyric-db/lyric.toml || overall=$?
           echo "=== lyric-search tests ==="
           "$lyric_bin" test --manifest lyric-search/lyric.toml || overall=$?
           # lyric-lambda (dep: lyric-web, built above) — test file corrected from
