@@ -14611,6 +14611,138 @@ checking) remain the next Band-4 slices.
 
 ---
 
+## D-progress-647 — `Lyric.Pipeline`: one shared target-independent middle-end driver for the three backend bridges
+
+**Status:** ACCEPTED
+
+The docs/59 §9.2 structural consolidation. New
+`lyric-compiler/lyric/pipeline/pipeline.l` (`Lyric.Pipeline`, 434 lines)
+owns: diagnostics gating policy (the verbatim-triplicated
+`reportAndAbort`/`reportDiagnostics` wrappers are deleted; per-pass gating
+decisions live in the pipeline drivers over `Lyric.DiagnosticUtil`
+primitives), the authoritative pass ordering (`pipeParseAndErase` →
+`pipeExpandAndRewrite` → `pipeCheckAndMono` → `pipeWeave`, with
+D-progress-642's cfg placement and the genuinely target-specific bits —
+JVM's `injectWeaveImports`, native's absent wires/stubbable — as explicit
+options rather than forks), and the deduped
+`collect{CrossPackageItems,GenericFuncs,NonGenericFuncs,InterfaceDecls,RecordDecls}`
+families (ONE visibility rule; the three-way `isTypeItem` drift is
+structurally closed; dead `collectStdlibTypeItems` deleted).
+`Lyric.Pipeline` depends only on front-/middle-end packages — never
+`Msil.*`/`Jvm.*`. The MSIL 8-entry-point `CompileOptions` collapse was
+deliberately skipped (the variants forward to one implementation and are a
+reflection-consumed ABI).
+
+Line delta: bridges 4,533 → 3,799 (+434 shared) = net −300, with the
+correctness-bearing ordering single-sourced.
+
+**Zero-behavior-change proof:** fixed programs (records/unions/generics/
+aspect/`?`) compiled before and after on ALL THREE targets —
+**sha256-identical artifacts** (PE DLL, JAR, native LLVM IR), re-verified
+after formatting. Full sweeps: 18 dotnet suites, 8 jvm suites, native
+llvm_codegen/stdlib + llvm_heap 35 and llvm_collections 13 under ASan,
+stdlib manifest (64 packages), lyric-web, all examples, numbered-corpus
+sample 5/5 — zero failures.
+
+**Related:** docs/59 §9.2/§10 item 20, D-progress-642, reports/07 §2.
+
+---
+
+## D-progress-648 — real JVM kernels for Std.Http and Std.HttpServer: zero phantom `_kernel_jvm` bindings remain (docs/59 H5 closed)
+
+**Status:** ACCEPTED
+
+The last two phantom kernels (skipped in D-progress-640 on the
+then-missing SAM prerequisite; unblocked by D-progress-643):
+
+- **`_kernel_jvm/http_host.l`** over `java.net.http.HttpClient`
+  (synchronous `send` per the JVM-externs-are-synchronous convention):
+  full 21-function twin surface — client construction incl. redirect
+  config, request accumulation (a record, since `HttpRequest.Builder`
+  can't attach a body after the method), eager response buffering via
+  `BodyHandlers.ofInputStream` + `readAllBytes` (the erased `body()`
+  return is only class-typed-checkcast-expressible), genuinely-enforced
+  timeouts via `Builder.timeout`, the ten `*Safe` wrappers, loud panics
+  for the JDK-unsupported Unix-socket paths (#2663 family).
+- **`_kernel_jvm/http_server.l`** over `com.sun.net.httpserver.HttpServer`
+  (`jdk.httpserver` jmod): all 12 public functions of the .NET twin
+  (the docs/59 "8 of 15" count was miscounted — the twin has 12). The
+  pull model bridges the JDK's callback API with a SAM-bridged capturing
+  Lyric lambda enqueuing each `HttpExchange` on a `LinkedBlockingQueue`;
+  `nextContext` is a blocking `take()`; virtual-thread executor. Pure-Lyric
+  `urlDecode` with `Uri.UnescapeDataString` semantics (grouped `%XX` runs,
+  `+` NOT a space — `java.net.URLDecoder` would diverge); multi-value
+  headers comma-joined for `WebHeaderCollection` parity.
+
+Verified: `stdlib_jvm_kernels_self_test.l` **31/31** on jvm — ten new
+cases drive a real `Std.Http` ↔ `Std.HttpServer` round trip through the
+public APIs only (GET/POST/bytes/headers/redirect-follow and no-follow/
+cancellation/urlDecode/loud-failure paths). Zero `J003` skips. dotnet
+`http_tests` unchanged 10/10. Kernel README's phantom note retired;
+docs/17 baseline regenerated (JVM=21).
+
+**Nine pre-existing JVM findings recorded** for follow-up, notably: bare
+no-scope `spawn` is degenerate-synchronous; `x = x + await f()` inside
+`scope { }` silently skips the rest of the body; cross-package
+`slice[Byte]` payloads arrive boxed (`Byte[]` — indexing CCEs);
+`--features` is not propagated to workspace-dependency builds (blocks any
+lyric-web JVM build); parenthesized boolean-chain tail expressions and
+try/catch-with-`slice[Byte]`-local stackmap breaks in bundled stdlib
+packages.
+
+**Related:** docs/59 H5/§7.2, #2663, #2669, D-progress-640/643.
+
+---
+
+## D-progress-649 — async FFI correctness: async @externTarget staticness resolved from metadata `hasThis` (#5560); cross-assembly async funcs encode the Task-wrapped kickoff return (#5561); real HTTP round-trip CI coverage
+
+**Status:** ACCEPTED
+
+Both bugs shipped on main and were reproduced there before fixing:
+
+1. **#5560** — `emitExternTargetBody`'s metadata-direct resolution was
+   gated on `not decl.isAsync`, so the `hasThis` staticness correction
+   never ran for async externs: `Std.HttpHost.clientGetAsync` emitted as
+   a static call (`MissingMethodException: HttpClient.GetAsync(HttpClient,
+   String)`). The scored metadata pass now runs for async externs, taking
+   only `hasThis` + receiver-excluded parameter encodings; the MemberRef
+   return keeps the `Task`-shape the D085/D091 unwrap protocol requires.
+   The exact-arity bonus binds `GetAsync(string)` over the `Uri` overload.
+   No "missing @externInstance" warning was added — the metadata
+   correction makes the annotation redundant.
+2. **#5561 had two flavors, both fixed** via a shared
+   `asyncKickoffReturnMsil` helper mirroring the in-bundle `isSm`
+   registration: `registerStdlibFunc` (the actual `Std.Http.getAsync`
+   repro — stdlib sources carry `fn.isAsync`) and `registerRestoredFunc`
+   (contract metadata does NOT carry asyncness and older DLLs never will,
+   so asyncness derives from the producer DLL's own MethodDef metadata via
+   the new `Mdr.dllTaskReturningFuncs`, scanned once per artifact). The
+   wrapped type is recorded in `funcRetTypes`, so caller-side `await`
+   unwraps through the existing EAwait handling on both the blocking shim
+   and Phase-B SM paths.
+
+**Coverage that let these ship silently is closed**: new CI-wired
+`http_roundtrip_self_test.l` drives GET/POST/`sendAsync` through the
+public `Std.Http` API against a live `Std.HttpServer` listener (child
+process, because #5329's `scopeSpawn` no-op still holds — re-verified
+live), with the CI step rebuilding the stdlib with the compiler under
+test (`LYRIC_STDLIB_BIN` merged dir) since stage-1 stdlib DLLs are
+seed-emitted; and `restored_async_self_test.l` covers the
+producer/consumer async shapes (4/4).
+
+**New latent bug recorded:** `HttpResponse.header` has never worked at
+runtime — the kernel's `TryGetValues` externs (instance + generic-typed
+`out` param) emit an unbindable MemberRef; needs the docs/59 out-param FFI
+work; the round-trip test documents the exclusion.
+
+Verified: async_extern 6/6 (incl. the no-hint instance case), async_sm
+57/57, restored_packages 15/15, full FFI/weaver/contract sweeps green,
+lyric-web manifest green.
+
+**Related:** #5560, #5561, #5329, D085/D091, D-progress-644/645.
+
+---
+
 ---
 
 ## Decisions deferred to v2 or later
