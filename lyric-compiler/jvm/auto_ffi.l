@@ -489,7 +489,7 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
 
 // `Lxxx;` reference descriptor → JVM binary name (`Ljava/util/List;` ->
 // `java/util/List`); "" for any non-object descriptor (primitive, array, …).
-func refDescToBinary(desc: in String): String {
+pub func refDescToBinary(desc: in String): String {
   if desc.length >= 3 and desc.startsWith("L") and desc.endsWith(";") {
     desc.substring(1, desc.length - 2)
   } else {

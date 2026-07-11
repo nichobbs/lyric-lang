@@ -83,9 +83,10 @@ pub func hostReadAllBytes(path: in String): slice[Byte] {
   NetFile.ReadAllBytes(path)
 }
 
-// stays @externTarget: the auto-FFI overload scorer cannot describe a
-// slice[Byte] argument (argTyToSig has no array-argument mapping), so
-// the call panics at compile time without the declared signature.
+// stays @externTarget: slice[T]-argument auto-FFI resolution shipped in
+// D-progress-645, but the stdlib bundle is compiled by the pinned
+// bootstrap seed, which predates it — migrate once a post-D-progress-645
+// seed releases (#5555).
 @externTarget("System.IO.File.WriteAllBytes")
 pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit = ()
 

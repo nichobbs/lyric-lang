@@ -1340,7 +1340,7 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
   // the permissive no-metadata score) is left untouched, preserving the legacy
   // behavior for that configuration.
   if toDesc.startsWith("L") and toDesc != "Ljava/lang/Object;" and fromDesc == "L" + lambdaIfaceName(ctx.pkgName) + ";" {
-    val ifaceBin = toDesc.substring(1, toDesc.length - 2)
+    val ifaceBin = refDescToBinary(toDesc)
     match findSamMethod(ctx.autoFfi, ifaceBin) {
       case Some(sam) -> emitSamAdapterWrap(ctx, insns, ifaceBin, sam)
       case None -> ()
