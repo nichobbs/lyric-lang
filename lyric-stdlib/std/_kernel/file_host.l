@@ -4,8 +4,10 @@
 //! G10 follow-up (`docs/23-fsharp-shim-elimination.md` §5): replaces
 //! the F# `Lyric.Stdlib.FileHost` pair-of-statics workaround
 //! (`*IsValid` + `*Value` / `*Error` per operation) with direct BCL
-//! `@externTarget`s.  `Std.File` wraps each call in `try { … } catch
-//! Bug as b { … b.message }` to surface failures as `Result.Err`.
+//! externs — now expressed as `extern type` auto-FFI calls resolved
+//! from reference-assembly metadata.  `Std.File` wraps each call in
+//! `try { … } catch Bug as b { … b.message }` to surface failures as
+//! `Result.Err`.
 //!
 //! Internal: only `Std.File` and `Std.Directory` should import this;
 //! per `compiler/lyric/std/_kernel/README.md` the kernel is the audited
@@ -17,24 +19,32 @@ import Std.Core
 import Std.Collections
 import Std.Errors
 
+extern type NetFile = "System.IO.File"
+
+extern type NetDirectory = "System.IO.Directory"
+
 // =====================================================================
 // Probes — return Bool, never throw under normal use.
 // =====================================================================
-@externTarget("System.IO.File.Exists")
-pub func hostFileExists(path: in String): Bool = ()
+pub func hostFileExists(path: in String): Bool {
+  NetFile.Exists(path)
+}
 
-@externTarget("System.IO.Directory.Exists")
-pub func hostDirectoryExists(path: in String): Bool = ()
+pub func hostDirectoryExists(path: in String): Bool {
+  NetDirectory.Exists(path)
+}
 
 // =====================================================================
 // Text-mode IO — both methods throw on host failure (not-found,
 // permission, encoding, …); callers wrap in `try { } catch`.
 // =====================================================================
-@externTarget("System.IO.File.ReadAllText")
-pub func hostReadAllText(path: in String): String = ()
+pub func hostReadAllText(path: in String): String {
+  NetFile.ReadAllText(path)
+}
 
-@externTarget("System.IO.File.WriteAllText")
-pub func hostWriteAllText(path: in String, contents: in String): Unit = ()
+pub func hostWriteAllText(path: in String, contents: in String): Unit {
+  NetFile.WriteAllText(path, contents)
+}
 
 // =====================================================================
 // File metadata — modification time via DateTime objects.
@@ -44,11 +54,15 @@ pub func hostWriteAllText(path: in String, contents: in String): Unit = ()
 // on the JVM kernel it is the boxed epoch-milliseconds Long.
 extern type FileTime = "System.DateTime"
 
-@externTarget("System.IO.File.GetLastWriteTimeUtc")
-pub func hostGetLastWriteTimeUtc(path: in String): FileTime = ()
+pub func hostGetLastWriteTimeUtc(path: in String): FileTime {
+  NetFile.GetLastWriteTimeUtc(path)
+}
 
-@externTarget("System.DateTime.op_GreaterThan")
-pub func hostDateTimeGreaterThan(a: in FileTime, b: in FileTime): Bool = ()
+// DateTime's `>` is the static operator method op_GreaterThan; spelled
+// as an explicit static call on the FileTime (System.DateTime) alias.
+pub func hostDateTimeGreaterThan(a: in FileTime, b: in FileTime): Bool {
+  FileTime.op_GreaterThan(a, b)
+}
 
 // =====================================================================
 // Directory creation — `CreateDirectory` returns `DirectoryInfo` in
@@ -56,40 +70,51 @@ pub func hostDateTimeGreaterThan(a: in FileTime, b: in FileTime): Bool = ()
 // =====================================================================
 extern type DirectoryInfo = "System.IO.DirectoryInfo"
 
-@externTarget("System.IO.Directory.CreateDirectory")
-pub func hostCreateDirectory(path: in String): DirectoryInfo = ()
+pub func hostCreateDirectory(path: in String): DirectoryInfo {
+  NetDirectory.CreateDirectory(path)
+}
 
 // =====================================================================
 // Bytes-mode IO — `ReadAllBytes` returns `byte[]` (which Lyric maps
 // to `slice[Byte]`); `WriteAllBytes` takes `byte[]`.  Both throw on
 // host failure; `Std.File` wraps them in `try { } catch Bug as b`.
 // =====================================================================
-@externTarget("System.IO.File.ReadAllBytes")
-pub func hostReadAllBytes(path: in String): slice[Byte] = ()
+pub func hostReadAllBytes(path: in String): slice[Byte] {
+  NetFile.ReadAllBytes(path)
+}
 
+// stays @externTarget: the auto-FFI overload scorer cannot describe a
+// slice[Byte] argument (argTyToSig has no array-argument mapping), so
+// the call panics at compile time without the declared signature.
 @externTarget("System.IO.File.WriteAllBytes")
 pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit = ()
 
 // =====================================================================
 // Directory enumeration — used by the LSP workspace index builder.
 // =====================================================================
-@externTarget("System.IO.Directory.GetFiles")
-pub func hostEnumerateFiles(path: in String): slice[String] = ()
+pub func hostEnumerateFiles(path: in String): slice[String] {
+  NetDirectory.GetFiles(path)
+}
 
-@externTarget("System.IO.Directory.GetDirectories")
-pub func hostEnumerateDirectories(path: in String): slice[String] = ()
+pub func hostEnumerateDirectories(path: in String): slice[String] {
+  NetDirectory.GetDirectories(path)
+}
 
-@externTarget("System.IO.Directory.GetFileSystemEntries")
-pub func hostEnumerateFileSystemEntries(path: in String): slice[String] = ()
+pub func hostEnumerateFileSystemEntries(path: in String): slice[String] {
+  NetDirectory.GetFileSystemEntries(path)
+}
 
-@externTarget("System.IO.Directory.Delete")
-pub func hostDeleteDirectory(path: in String): Unit = ()
+pub func hostDeleteDirectory(path: in String): Unit {
+  NetDirectory.Delete(path)
+}
 
-@externTarget("System.IO.Directory.Delete")
-pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit = ()
+pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit {
+  NetDirectory.Delete(path, recursive)
+}
 
-@externTarget("System.IO.File.Delete")
-pub func hostDeleteFile(path: in String): Unit = ()
+pub func hostDeleteFile(path: in String): Unit {
+  NetFile.Delete(path)
+}
 
 // =====================================================================
 // Result seams — the exception-free surface both kernel twins
