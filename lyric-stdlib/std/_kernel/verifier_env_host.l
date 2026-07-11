@@ -18,5 +18,8 @@ pub func hostGetEnv(name: in String): String {
   }
 }
 
-@externTarget("System.OperatingSystem.IsWindows")
-pub func hostIsWindows(): Bool = ()
+extern type NetOperatingSystem = "System.OperatingSystem"
+
+pub func hostIsWindows(): Bool {
+  NetOperatingSystem.IsWindows()
+}
