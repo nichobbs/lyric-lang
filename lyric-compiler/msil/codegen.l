@@ -24038,6 +24038,15 @@ func argTyToSig(t: in MsilType): Option[Mdr.SigType] {
     case MByRef(inner) -> {
       return match argTyToSig(inner) { case Some(s) -> Some(value = Mdr.mkByRefSig(s)); case None -> None }
     }
+    // A `slice[T]` argument is a genuine CLR `T[]` (`MArray`), so it
+    // contributes an `STSzArray` SigType — otherwise any BCL overload taking
+    // `byte[]` / `char[]` / `string[]` could never be metadata-resolved at an
+    // auto-FFI call site (docs/59 §6.4).  Element recursion reuses this
+    // function, so `slice[Byte]` scores as `uint8[]` (slice elements are
+    // already U1, docs/59 §3.2 F7) and extern-typed elements score by FQN.
+    case MArray(elem) -> {
+      return match argTyToSig(elem) { case Some(s) -> Some(value = Mdr.mkSzArraySig(s)); case None -> None }
+    }
     case _ -> ()
   }
   val eb = msilToElemByte(t)
@@ -24090,9 +24099,22 @@ func ffiMemberRefSigKey(
   }
 }
 
-// A stable key fragment identifying a resolved `SigType` (primitive byte or
-// value/class FQN) so the MemberRef blob-intern key distinguishes overloads.
+// A stable key fragment identifying a resolved `SigType` (primitive byte,
+// value/class FQN, array element, or by-ref pointee) so the MemberRef
+// blob-intern key distinguishes overloads.  Arrays and by-refs recurse —
+// without it every array-typed parameter contributed the same bare "n"
+// fragment and two overloads differing only in element type (e.g.
+// `Join(string, string[])` vs `Join(string, object[])`) would alias onto one
+// signature blob.
 func sigTypeKeyFrag(sig: in Mdr.SigType): String {
+  match Mdr.sigSzArrayElem(sig) {
+    case Some(elem) -> return "a" + sigTypeKeyFrag(elem)
+    case None -> ()
+  }
+  match Mdr.sigByRefInner(sig) {
+    case Some(inner) -> return "r" + sigTypeKeyFrag(inner)
+    case None -> ()
+  }
   val pb = Mdr.sigPrimByte(sig)
   if pb >= 0 {
     "p" + toString(pb)
@@ -24206,6 +24228,25 @@ func elemNumericRank(b: in Int): Int {
 // None when the conversion isn't supported (caller falls back to legacy).
 func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.SigType): Option[List[MInsn]] {
   val acc: List[MInsn] = newList()
+  // Array parameter (`byte[]`, `string[]`): a `slice[T]` argument passes by
+  // reference with no coercion when its element type matches exactly.  CLR
+  // arrays with value-type elements are invariant, so anything short of an
+  // exact element match (score 2) must not bind — the same rule the overload
+  // scorer applies (`scoreSigType`'s STSzArray case).
+  match Mdr.sigSzArrayElem(paramSig) {
+    case Some(paramElem) -> {
+      return match argTy {
+        case MArray(argElem) -> {
+          match argTyToSig(argElem) {
+            case Some(argElemSig) -> if Mdr.scoreSigType(argElemSig, paramElem) == 2 { Some(value = acc) } else { None }
+            case None -> None
+          }
+        }
+        case _ -> None
+      }
+    }
+    case None -> ()
+  }
   val paramByte = Mdr.sigPrimByte(paramSig)
   if paramByte < 0 {
     // Non-primitive parameter: an extern value or class type.  The argument
