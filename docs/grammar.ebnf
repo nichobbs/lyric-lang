@@ -1503,7 +1503,6 @@ RawStringLit    = RAW_STRING_LITERAL ;
  *       resolution decides whether it is a constructor or a function
  *       call. Named arguments are accepted in both cases.
  *
-
  *    6. LambdaExpr versus Block — both start with '{'. A lambda has a
  *       parameter-arrow header; a block does not. The parser resolves
  *       this with a single-token lookahead after the '{': if the next

@@ -1481,9 +1481,11 @@ pub func parseIfExpr(st: inout ParseState): Expr {
 // SAME expression contains both a legitimate nested lambda call AND a
 // later ambiguous trailing paren-group — that would need suppression to
 // track expression *position* rather than being a single on/off flag.
+// Tracked as #5672.
 func parseArrowSensitiveExpr(st: inout ParseState): Expr {
   val savedPos = mark(st)
   val savedDiagsCount = st.diags.count
+  val savedCstEventsCount = st.cstEvents.count
   val e = parseExpr(st)
   if isPunct(peekToken(st), Arrow) {
     e
@@ -1491,6 +1493,18 @@ func parseArrowSensitiveExpr(st: inout ParseState): Expr {
     reset(st, savedPos)
     while st.diags.count > savedDiagsCount {
       st.diags.removeAt(st.diags.count - 1)
+    }
+    // Unlike `reset`'s own token-position rewind, `parseExpr` (unique among
+    // this parser's other mark/reset speculation, which only does raw
+    // token matching — see `parseLambdaExpr`'s tentative paren-list scan)
+    // emits real `cstStart`/`cstFinish` events for the abandoned attempt.
+    // Those events are unreachable by any current CST consumer (`Lyric.Fmt`'s
+    // `itemNodes`/`harvestTrivia` walk stops at the first `SkItem` boundary
+    // and never descends into expression-level nodes), but leaving them in
+    // place would still corrupt `buildGreenTree`'s reconstruction for any
+    // future consumer that does look that deep — so truncate them too.
+    while st.cstEvents.count > savedCstEventsCount {
+      st.cstEvents.removeAt(st.cstEvents.count - 1)
     }
     st.suppressArrowLambda = true
     val e2 = parseExpr(st)
@@ -2290,12 +2304,18 @@ func parseStatementInner(st: inout ParseState): Statement {
 func parseStatementLeadExpr(st: inout ParseState): Expr {
   val savedPos = mark(st)
   val savedDiagsCount = st.diags.count
+  val savedCstEventsCount = st.cstEvents.count
   val e = parseExpr(st)
   match e.kind {
     case ELambda(_, _) -> {
       reset(st, savedPos)
       while st.diags.count > savedDiagsCount {
         st.diags.removeAt(st.diags.count - 1)
+      }
+      // See the matching comment in `parseArrowSensitiveExpr`: truncate the
+      // abandoned attempt's cstEvents too, not just diags.
+      while st.cstEvents.count > savedCstEventsCount {
+        st.cstEvents.removeAt(st.cstEvents.count - 1)
       }
       st.suppressArrowLambda = true
       val e2 = parseExpr(st)
