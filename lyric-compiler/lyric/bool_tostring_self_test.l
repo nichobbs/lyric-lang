@@ -61,4 +61,4 @@ test "string interpolation of a Bool renders lowercase true/false" {
 // true` (and equally `s += 3.5`, `s += 42`, for any String-typed `s`) is
 // currently rejected by the type checker with T0063 on both targets, a
 // pre-existing gap unrelated to this issue's Bool-stringification scope.
-// Tracked separately; not fixed here.
+// Tracked separately as #5657; not fixed here.

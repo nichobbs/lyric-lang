@@ -24,14 +24,14 @@
 //!      emitted a non-existent static factory → NoSuchMethodError).
 //!   5. Named-argument record construction reorder (B-7 / #1793: out-of-order
 //!      named args were placed into the wrong ctor slots).
-//!   13. Whole-valued Double stringification matches .NET (#4688, docs/44
-//!       m-21: Java's Double.toString() always renders a fractional digit
-//!       where .NET's default ToString() omits it for whole values).
-//!   14. A `var` declared inside an `if`-expression passed as a call
+//!   10. A `var` declared inside an `if`-expression passed as a call
 //!       argument is hoisted for lambda capture (#4264: the hoisting
 //!       pre-pass `collectMutableVarsExpr` never recursed into `ECall`
 //!       arguments, so a `var` nested that way was never hoisted and a
 //!       lambda mutating it silently wrote to its own by-value snapshot).
+//!   13. Whole-valued Double stringification matches .NET (#4688, docs/44
+//!       m-21: Java's Double.toString() always renders a fractional digit
+//!       where .NET's default ToString() omits it for whole values).
 @test_module
 package Lyric.SilentMiscompileGuardJvmSelfTest
 

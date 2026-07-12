@@ -15229,7 +15229,7 @@ Seven independent fixes, each scoped to its own file(s):
   — a separate, pre-existing `SAssign`/T0063 gap (the type checker doesn't
   special-case `+=`'s "any operand + String = String" semantics the way
   the binary `+` operator's inference does) — out of scope here, and
-  explicitly not claimed as fixed in either test or docs.
+  explicitly not claimed as fixed in either test or docs. Tracked as #5657.
 - **Formatter/parser mid-file `import extern` (#5523):** `lyric-compiler/
   msil/_kernel/kernel.l` had a mid-file `import extern` after item
   declarations; the compile path accepted it but the self-hosted parser

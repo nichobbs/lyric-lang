@@ -4615,8 +4615,8 @@ func emitCompoundCombineMsil(
         // Lowercase "true"/"false", not "True"/"False" (#5552). Currently
         // unreachable in practice: `SAssign` type-checking rejects
         // `s += true` with T0063 today regardless of RHS type (a separate,
-        // pre-existing gap — see the #4688/#5552 decision-log entry), so no
-        // program can reach this arm with `rTy == MBool` yet. Kept here
+        // pre-existing gap tracked in #5657), so no program can reach this
+        // arm with `rTy == MBool` yet. Kept here
         // rather than deleted so this call site doesn't silently regress to
         // the wrong (uppercase) spelling the moment that type-checker gap
         // is fixed — matching the other three now-reachable Bool
