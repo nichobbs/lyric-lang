@@ -84,7 +84,7 @@ lyric build --manifest lyric.toml
 
 `lyric test` runs every `test` and `property` declaration in `@test_module` packages found under the project root. Dev-dependencies are on the compilation path during test builds.
 
-`lyric publish` builds a `.nupkg` from your pre-built DLL and uploads it to NuGet. It generates a temporary `.csproj` that attaches the DLL, wires up the manifest metadata (`name`, `version`, `authors`, and so on), and forwards `[dependencies]` as `PackageReference` items so NuGet records the transitive dependency graph correctly.
+`lyric publish` builds a `.nupkg` from your pre-built DLL and uploads it to NuGet. It writes a hand-authored `.nuspec` that attaches the DLL under `lib/net10.0/`, wires up the manifest metadata (`name`, `version`, `authors`, and so on), and forwards `[dependencies]` as `<dependency>` metadata so NuGet records the transitive dependency graph correctly. Those dependencies are pure package metadata — they are never restored at pack time — so publishing an interdependent set of libraries in a single run never blocks on NuGet.org indexing a sibling that was pushed moments earlier. The nuspec is packed via a minimal dependency-free `.csproj` whose implicit restore stays offline.
 
 ## §20.3 Contract metadata in packages
 

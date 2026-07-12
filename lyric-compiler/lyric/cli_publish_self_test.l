@@ -1,11 +1,17 @@
 //! cli_publish_self_test.l — exercises the pure NU1102 retry/backoff
 //! decision helpers in `Lyric.Cli` (cli/cli_shared.l): `shouldRetryRestore`
 //! and `backoffMsForAttempt`. These back `runRestoreWithRetry`, which wraps
-//! the `dotnet restore` calls in both `lyric publish` (cli_publish.l) and
-//! `lyric restore` (cli_restore.l) with retry-on-NU1102 logic, but the
-//! decision logic itself does no I/O and no process spawning, so it can be
-//! exercised directly without a network connection or a real `dotnet`
-//! invocation (#5239).
+//! the `dotnet restore` call in `lyric restore` (cli_restore.l) with
+//! retry-on-NU1102 logic. (`lyric publish` no longer restores at all: since
+//! #5644 it packs from a hand-authored `.nuspec`, so the retry path is
+//! restore-only.) The decision logic itself does no I/O and no process
+//! spawning, so it can be exercised directly without a network connection or
+//! a real `dotnet` invocation (#5239).
+//!
+//! Also covers the pure `buildPublishNuspec` (cli/cli_publish.l), the #5644
+//! nuspec-generation helper, including a regression guard that its output
+//! never emits `<PackageReference>` (the retired mechanism that caused the
+//! NU1102 ecosystem-publish race).
 //!
 //! The schedule constants are asserted as literals (8 attempts, 30s base,
 //! 4-attempt ramp, 120s plateau) rather than via `Cli.nu1102MaxAttempts`
