@@ -30081,7 +30081,8 @@ Found and filed (not fixed, each independent of this migration) 6
 pre-existing JVM codegen bugs while verifying end-to-end: #5377
 (`Std.Environment.args()` has no implementation path on JVM), #5378 (a
 `Never`-returning call as a bare tail expression in a differently-typed
-function produces a `VerifyError`), #5379 (discarding an instance auto-FFI
+function produces a `VerifyError` — fixed in D-progress-664, PR #5637;
+see `docs/03-decision-log.md`), #5379 (discarding an instance auto-FFI
 call's result on a parameter receiver emits no invoke instruction), #5380
 (a nullary enum case value is corrupted when passed as a function
 argument — a significant, previously-undiscovered general correctness
