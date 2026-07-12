@@ -2355,6 +2355,39 @@ pub func isValueTypeFqn(vtypeSet: in Map[String, Bool], typeFqn: in String): Boo
 // types to `SigType`s); the scoring replicates the bootstrap emitter's
 // coercion rules: an exact match beats a widening numeric conversion
 // (`Int`→`Long`, etc.), and an `object` parameter accepts any argument.
+// The synthesizable default for one BCL parameter position, decoded from the
+// Param row's flags (Optional 0x0010 / HasDefault 0x1000, ECMA-335 §II.23.1.13)
+// and the Constant table (§II.22.9, HasConstant Param tag = 1).  `EPDNone`
+// marks a caller-supplied position (no default needed).  Non-null STRING
+// defaults (ELEMENT_TYPE_STRING, a UTF-16LE blob needing surrogate-aware
+// decoding) are deliberately not decoded — the same exclusion as
+// `getLiteralFieldConstIn` — so an overload whose unfilled trailing param
+// carries one is NOT admitted by the trailing-default scoring (#5605).
+pub union ExternParamDefault {
+  case EPDNone
+  // The Constant row says null (ELEMENT_TYPE_CLASS + zero value) and the
+  // parameter is reference-shaped: the emitter loads `ldnull`.
+  case EPDNull
+  // The zero bit pattern of the parameter type: a `= default` struct
+  // (Roslyn encodes it as a nullref Constant on the value-typed param), or
+  // an `[Optional]` param with no Constant row at all.
+  case EPDZero
+  // A numeric / bool / char / enum constant from the Constant table.
+  case EPDConst(v: ExternConstValue)
+}
+
+// A list of `n` EPDNone entries — the paramDefaults of a resolution where
+// every parameter is caller-supplied.
+func epdNoneList(n: in Int): List[ExternParamDefault] {
+  val acc: List[ExternParamDefault] = newList()
+  var i = 0
+  while i < n {
+    acc.add(EPDNone)
+    i = i + 1
+  }
+  acc
+}
+
 // A resolved method: its calling shape and decoded signature.
 pub record ResolvedMethod {
   name: String
@@ -2367,6 +2400,10 @@ pub record ResolvedMethod {
   isAbstract: Bool
   returnType: SigType
   paramTypes: List[SigType]
+  // Aligned with `paramTypes`: EPDNone for every caller-supplied position;
+  // trailing positions the caller did not supply carry the decoded default
+  // the emitter must synthesize (#5605).  Same count as `paramTypes`.
+  paramDefaults: List[ExternParamDefault]
 }
 
 // Widening rank for the numeric primitive element types (-1 for non-numeric).
@@ -2520,6 +2557,68 @@ pub func scoreParams(argTypes: in List[SigType], params: in List[SigType]): Int 
   total
 }
 
+func listContainsString(xs: in List[String], v: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == v {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Like `scoreSigType`, but additionally accepts a NAMED reference argument
+// into a NAMED reference parameter that appears in the argument's Extends
+// chain (`bases`, computed by `externBaseChain`) — a VERIFIED implicit upcast
+// (e.g. MemoryStream → Stream), scored 1 so an exact match's 2 always wins
+// (#5605).  Unlike `scoreSigTypeLenient` (the `@externTarget` path, where the
+// user-declared wrapper signature is trusted), an upcast is only accepted
+// when the metadata chain actually reaches the parameter type.
+func scoreSigTypeWithBases(arg: in SigType, param: in SigType, bases: in List[String]): Int {
+  val s = scoreSigType(arg, param)
+  if s >= 0 {
+    return s
+  }
+  match param {
+    case STNamed(pfqn, pvt) -> {
+      if pvt {
+        return -1
+      }
+      match arg {
+        case STNamed(_, avt) -> if not avt and listContainsString(bases, pfqn) { 1 } else { -1 }
+        case _ -> -1
+      }
+    }
+    case _ -> -1
+  }
+}
+
+// Score `argTypes` against the leading `argTypes.count` entries of `params`
+// (which may be longer when the trailing params are defaulted), honouring
+// per-argument Extends-chain upcasts.  `argBases` is either empty (no chains
+// computed — every upcast is rejected) or one chain per argument.  Returns -1
+// when `params` is shorter than `argTypes` or any leading parameter is
+// incompatible.
+func scoreParamsPrefixBases(argTypes: in List[SigType], params: in List[SigType], argBases: in List[List[String]]): Int {
+  if params.count < argTypes.count {
+    return -1
+  }
+  val noBases: List[String] = newList()
+  var total = 0
+  var i = 0
+  while i < argTypes.count {
+    val bases = if argBases.count == argTypes.count { argBases[i] } else { noBases }
+    val s = scoreSigTypeWithBases(argTypes[i], params[i], bases)
+    if s < 0 {
+      return -1
+    }
+    total = total + s
+    i = i + 1
+  }
+  total
+}
+
 // Score a whole candidate against the argument list: the sum of per-parameter
 // scores, or -1 on arity mismatch or any incompatible parameter.
 //
@@ -2637,24 +2736,170 @@ pub func methodIsAbstract(flags: in Int): Bool {
   (flags / 1024) % 2 == 1
 }
 
+// True when a parameter of this (FQN-normalised) shape defaults to null —
+// i.e. it is reference-shaped.  Value shapes (primitives, structs, enums,
+// value generic instantiations) default to their zero bit pattern instead.
+func sigDefaultIsNullShape(t: in SigType): Bool {
+  match t {
+    case STPrim(b) -> b == 0x0E or b == 0x1C
+    case STNamed(_, vt) -> not vt
+    case STNamedGenericInst(_, vt, _) -> not vt
+    case STSzArray(_) -> true
+    case STClass(_) -> true
+    case _ -> false
+  }
+}
+
+// Decode the synthesizable default of the 1-based param `seq` of the method
+// whose Param rows span [pstart, pend), given the param's FQN-normalised
+// `paramType`.  None when the param has no Param row, carries neither the
+// Optional (0x0010) nor the HasDefault (0x1000) flag, or its Constant is a
+// shape the emitter cannot synthesize (a non-null string default).
+func paramDefaultAt(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  pstart: in Int,
+  pend: in Int,
+  seq: in Int,
+  paramType: in SigType,
+): Option[ExternParamDefault] {
+  var paramRow = -1
+  var pflags = 0
+  var pr = pstart
+  while pr < pend {
+    val prow = readParam(img, layout, pr)
+    if prow.sequence == seq {
+      paramRow = pr
+      pflags = prow.flags
+      break
+    }
+    pr = pr + 1
+  }
+  if paramRow < 0 {
+    return None
+  }
+  val optional = (pflags / 16) % 2 == 1
+  val hasDefault = (pflags / 4096) % 2 == 1
+  if not optional and not hasDefault {
+    return None
+  }
+  if hasDefault {
+    // Find the Constant row parented on this Param (HasConstant tag 1).
+    val parentIdx = paramRow * 4 + 1
+    val constCount = rowCountOf(th, 0x0B)
+    val hasConstIdxWidth = codedWidthFor(th, tableIds([0x04, 0x08, 0x17]), 2)
+    val b = img.bytes
+    var crow = 1
+    while crow <= constCount {
+      val o = layout.dataStart[0x0B] + (crow - 1) * layout.rowSize[0x0B]
+      val pVal = rdIdx(b, o + 2, hasConstIdxWidth)
+      if pVal == parentIdx {
+        val typeVal = b[o].toInt()
+        val blobIndex = rdIdx(b, o + 2 + hasConstIdxWidth, layout.blobIdx)
+        val blobBytes = blobAt(img, layout, blobIndex)
+        if typeVal >= 0x02 and typeVal <= 0x09 {
+          return match decodeInt32ConstantBlob(typeVal, blobBytes) {
+            case Some(v) -> Some(value = EPDConst(v = ECVInt(v = v)))
+            case None -> None
+          }
+        } else if (typeVal == 0x0A or typeVal == 0x0B) and blobBytes.length >= 8 {
+          return Some(value = EPDConst(v = ECVLong(v = rdI64(blobBytes, 0))))
+        } else if typeVal == 0x0C and blobBytes.length >= 4 {
+          return Some(value = EPDConst(v = ECVR4Bits(bits = rdI32(blobBytes, 0))))
+        } else if typeVal == 0x12 {
+          // ELEMENT_TYPE_CLASS + zero value: a null default.  Roslyn also
+          // encodes a `= default` STRUCT param this way (a Constant cannot
+          // represent a struct), so a value-shaped param zeroes instead.
+          return if sigDefaultIsNullShape(paramType) { Some(value = EPDNull) } else { Some(value = EPDZero) }
+        } else if typeVal == 0x0E {
+          // A null string default is a 0xFF "no value" blob; a real string
+          // default is UTF-16LE and deliberately not decoded (see
+          // ExternParamDefault) — reject so the overload is not admitted.
+          return if blobBytes.length == 0 or (blobBytes.length == 1 and blobBytes[0].toInt() == 0xFF) {
+            Some(value = EPDNull)
+          } else {
+            None
+          }
+        } else if typeVal == 0x0D and blobBytes.length >= 8 {
+          return Some(value = EPDConst(v = ECVR8Bits(bits = rdI64(blobBytes, 0))))
+        }
+        return None
+      }
+      crow = crow + 1
+    }
+    // HasDefault with no Constant row is malformed metadata: not admitted.
+    return None
+  }
+  // `[Optional]` with no Constant row (COM-style, and struct `= default` in
+  // some compilers): the type default.
+  if sigDefaultIsNullShape(paramType) {
+    Some(value = EPDNull)
+  } else {
+    Some(value = EPDZero)
+  }
+}
+
+// The defaults for params [fromIdx, params.count) of MethodDef `methodRow`
+// (0-based `fromIdx` into `params`, so Param sequence is `fromIdx + 1`), or
+// None when any of them has no synthesizable default — the admission gate for
+// trailing-default overload scoring (#5605).
+func trailingParamDefaults(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  methodRow: in Int,
+  params: in List[SigType],
+  fromIdx: in Int,
+): Option[List[ExternParamDefault]] {
+  val md = readMethodDef(img, layout, methodRow)
+  val pstart = md.paramListStart
+  val totalMethods = rowCountOf(th, 0x06)
+  val pend = if methodRow < totalMethods {
+    readMethodDef(img, layout, methodRow + 1).paramListStart
+  } else {
+    rowCountOf(th, 0x08) + 1
+  }
+  val acc: List[ExternParamDefault] = newList()
+  var k = fromIdx
+  while k < params.count {
+    match paramDefaultAt(img, layout, th, pstart, pend, k + 1, params[k]) {
+      case None -> return None
+      case Some(d) -> acc.add(d)
+    }
+    k = k + 1
+  }
+  Some(value = acc)
+}
+
 // Resolve the best-matching overload of `member` on `typeFqn` for `argTypes`,
 // reading from already-parsed metadata.  Returns None when the type is absent
 // or no overload is compatible.
-pub func resolveOverloadIn(
+//
+// Candidate ranking (#5605): an exact-arity candidate earns a large bonus so
+// it always beats a longer candidate whose unfilled trailing params are all
+// defaulted (which scores its supplied prefix only); among equal scores a
+// candidate synthesizing fewer defaults wins.  `argBases` (empty, or one
+// Extends-chain FQN list per argument) admits verified reference upcasts at
+// score 1 per param, below an exact type match's 2.
+pub func resolveOverloadInBases(
   img: in PeImage,
   layout: in TableLayout,
   th: in TablesHeader,
   typeFqn: in String,
   member: in String,
   argTypes: in List[SigType],
+  argBases: in List[List[String]],
 ): Option[ResolvedMethod] {
   val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
   if typeRow < 0 {
     return None
   }
+  val exactBonus = 1000000
   val mr = methodRange(img, layout, th, typeRow)
   var best: Option[ResolvedMethod] = None
   var bestScore = -1
+  var bestExtras = 0
   var mi = mr.start
   while mi <= mr.endRow {
     val md = readMethodDef(img, layout, mi)
@@ -2671,9 +2916,46 @@ pub func resolveOverloadIn(
             normParams.add(resolveSigTypeFqn(img, layout, th, sig.paramTypes[pj]))
             pj = pj + 1
           }
-          val score = scoreParams(argTypes, normParams)
-          if score >= 0 and score > bestScore {
+          var score = -1
+          var extras = 0
+          var defaults: List[ExternParamDefault] = epdNoneList(normParams.count)
+          if normParams.count == argTypes.count {
+            val s = scoreParamsPrefixBases(argTypes, normParams, argBases)
+            if s >= 0 {
+              score = s + exactBonus
+            }
+          } else if normParams.count > argTypes.count {
+            match trailingParamDefaults(img, layout, th, mi, normParams, argTypes.count) {
+              case None -> {
+              }
+              case Some(tds) -> {
+                val s = scoreParamsPrefixBases(argTypes, normParams, argBases)
+                if s >= 0 {
+                  score = s
+                  extras = normParams.count - argTypes.count
+                  val full: List[ExternParamDefault] = epdNoneList(argTypes.count)
+                  var di = 0
+                  while di < tds.count {
+                    full.add(tds[di])
+                    di = di + 1
+                  }
+                  defaults = full
+                }
+              }
+            }
+          }
+          val better = if score < 0 {
+            false
+          } else if score > bestScore {
+            true
+          } else if score == bestScore and extras < bestExtras {
+            true
+          } else {
+            false
+          }
+          if better {
             bestScore = score
+            bestExtras = extras
             best = Some(
               value = ResolvedMethod(
                 name = md.name,
@@ -2681,7 +2963,8 @@ pub func resolveOverloadIn(
                 isVirtual = methodIsVirtual(md.flags),
                 isAbstract = methodIsAbstract(md.flags),
                 returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
-                paramTypes = normParams
+                paramTypes = normParams,
+                paramDefaults = defaults
               )
             )
           }
@@ -2691,6 +2974,20 @@ pub func resolveOverloadIn(
     mi = mi + 1
   }
   best
+}
+
+// Compatibility entry point: exact / widening / boxing scoring only, no
+// Extends-chain upcasts (the trailing-default admission still applies).
+pub func resolveOverloadIn(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  typeFqn: in String,
+  member: in String,
+  argTypes: in List[SigType],
+): Option[ResolvedMethod] {
+  val noBases: List[List[String]] = newList()
+  resolveOverloadInBases(img, layout, th, typeFqn, member, argTypes, noBases)
 }
 
 // Resolve an overload by reading the assembly at `asmPath`.  A convenience
@@ -3119,7 +3416,8 @@ pub func allMethodSigsOn(
             isVirtual = methodIsVirtual(md.flags),
             isAbstract = methodIsAbstract(md.flags),
             returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
-            paramTypes = normParams
+            paramTypes = normParams,
+            paramDefaults = epdNoneList(normParams.count)
           )
         )
       }
@@ -3194,14 +3492,61 @@ pub record OverloadOrBase {
 // Resolve the best-matching overload of `member` on `typeFqn` in the assembly
 // at `asmPath`, additionally reporting the base-type FQN on a miss (one file
 // parse serves both, so the Extends walk costs one parse per inheritance
-// level rather than two).
+// level rather than two).  `argBases` is empty or one Extends-chain FQN list
+// per argument (see `resolveOverloadInBases`).
 pub func resolveOverloadOrBase(
-  asmPath: in String, typeFqn: in String, member: in String, argTypes: in List[SigType]
+  asmPath: in String,
+  typeFqn: in String,
+  member: in String,
+  argTypes: in List[SigType],
+  argBases: in List[List[String]],
 ): OverloadOrBase {
   match File.readBytes(asmPath) {
     case Err(_) -> OverloadOrBase(found = None, baseFqn = "")
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(layout) -> { match resolveOverloadIn(img, layout, th, typeFqn, member, argTypes) { case Some(m) -> OverloadOrBase(found = Some(value = m), baseFqn = ""); case None -> { val typeRow = findTypeDefByFqn(img, layout, th, typeFqn); if typeRow < 0 { OverloadOrBase(found = None, baseFqn = "") } else { OverloadOrBase(found = None, baseFqn = resolveTypeDefOrRefName(img, layout, th, readTypeDef(img, layout, typeRow).extendsToken)) } } } } } } } }
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(layout) -> { match resolveOverloadInBases(img, layout, th, typeFqn, member, argTypes, argBases) { case Some(m) -> OverloadOrBase(found = Some(value = m), baseFqn = ""); case None -> { val typeRow = findTypeDefByFqn(img, layout, th, typeFqn); if typeRow < 0 { OverloadOrBase(found = None, baseFqn = "") } else { OverloadOrBase(found = None, baseFqn = resolveTypeDefOrRefName(img, layout, th, readTypeDef(img, layout, typeRow).extendsToken)) } } } } } } } }
   }
+}
+
+// The base-type FQN of `typeFqn` in the assembly at `asmPath`, or "" when the
+// file is unreadable, the type is absent, or it has no base.
+pub func typeBaseFqn(asmPath: in String, typeFqn: in String): String {
+  match File.readBytes(asmPath) {
+    case Err(_) -> ""
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> ""; case Some(ri) -> { val typeRow = findTypeDefByFqn(ri.img, ri.layout, ri.th, typeFqn); if typeRow < 0 { "" } else { resolveTypeDefOrRefName(ri.img, ri.layout, ri.th, readTypeDef(ri.img, ri.layout, typeRow).extendsToken) } } }
+  }
+}
+
+// The Extends-chain FQNs of `typeFqn` (nearest base first), resolved across
+// assemblies through the type/path indexes — the argument-side counterpart of
+// `resolveExtern`'s receiver walk (#5605).  Stops at the value-type / enum
+// roots (a struct argument cannot upcast without boxing) and caps the depth
+// against malformed cyclic metadata.
+pub func externBaseChain(
+  typeIndex: in Map[String, String], pathIndex: in Map[String, String], typeFqn: in String
+): List[String] {
+  val acc: List[String] = newList()
+  var cur = typeFqn
+  var depth = 0
+  while depth < 16 {
+    match assemblyForType(typeIndex, cur) {
+      case None -> return acc
+      case Some(asmName) -> match mapGet(pathIndex, asmName) { case None -> return acc; case Some(asmPath) -> { val base = typeBaseFqn(asmPath, cur); if base.length == 0 or base == "System.ValueType" or base == "System.Enum" { return acc }; acc.add(base); cur = base } }
+    }
+    depth = depth + 1
+  }
+  acc
+}
+
+// True iff `typeFqn`'s Extends chain reaches `targetFqn` — the emitter-side
+// verification that a reference upcast admitted by the scorer is genuine
+// before the call is emitted with no coercion IL (#5605).
+pub func externChainReaches(
+  typeIndex: in Map[String, String],
+  pathIndex: in Map[String, String],
+  typeFqn: in String,
+  targetFqn: in String,
+): Bool {
+  listContainsString(externBaseChain(typeIndex, pathIndex, typeFqn), targetFqn)
 }
 
 // Build an assembly-simple-name → full-DLL-path index over the given
@@ -3237,12 +3582,13 @@ pub func refAssemblyPath(refDir: in String, asmName: in String): String {
   Path.join(refDir, asmName + ".dll")
 }
 
-pub func resolveExtern(
+func resolveExternWalk(
   typeIndex: in Map[String, String],
   pathIndex: in Map[String, String],
   typeFqn: in String,
   member: in String,
   argTypes: in List[SigType],
+  argBases: in List[List[String]],
 ): Option[ResolvedExtern] {
   // Walk the TypeDef Extends chain (#5562): a member inherited from a base
   // type (e.g. `Process.Dispose()` declared on
@@ -3262,11 +3608,52 @@ pub func resolveExtern(
   while depth < 16 and curFqn.length > 0 {
     match assemblyForType(typeIndex, curFqn) {
       case None -> return None
-      case Some(asmName) -> match mapGet(pathIndex, asmName) { case None -> return None; case Some(asmPath) -> { val step = resolveOverloadOrBase(asmPath, curFqn, member, argTypes); match step.found { case Some(m) -> return Some(value = ResolvedExtern(assemblyName = asmName, declaringFqn = curFqn, sig = m)); case None -> { if member == ".ctor" or step.baseFqn.length == 0 or step.baseFqn == "System.ValueType" or step.baseFqn == "System.Enum" { return None }; curFqn = step.baseFqn } } } }
+      case Some(asmName) -> match mapGet(pathIndex, asmName) { case None -> return None; case Some(asmPath) -> { val step = resolveOverloadOrBase(asmPath, curFqn, member, argTypes, argBases); match step.found { case Some(m) -> return Some(value = ResolvedExtern(assemblyName = asmName, declaringFqn = curFqn, sig = m)); case None -> { if member == ".ctor" or step.baseFqn.length == 0 or step.baseFqn == "System.ValueType" or step.baseFqn == "System.Enum" { return None }; curFqn = step.baseFqn } } } }
     }
     depth = depth + 1
   }
   None
+}
+
+pub func resolveExtern(
+  typeIndex: in Map[String, String],
+  pathIndex: in Map[String, String],
+  typeFqn: in String,
+  member: in String,
+  argTypes: in List[SigType],
+): Option[ResolvedExtern] {
+  val noBases: List[List[String]] = newList()
+  match resolveExternWalk(typeIndex, pathIndex, typeFqn, member, argTypes, noBases) {
+    case Some(r) -> Some(value = r)
+    case None -> {
+      // Second-chance pass (#5605): the exact/widening scoring found nothing,
+      // so compute each named-reference argument's Extends chain and re-walk
+      // admitting verified upcasts (e.g. a MemoryStream argument where the
+      // method declares Stream).  Chains are computed lazily — only on a
+      // first-pass miss with at least one chain-bearing argument — so the
+      // common exact-resolution path pays nothing.
+      var anyChain = false
+      val bases: List[List[String]] = newList()
+      var i = 0
+      while i < argTypes.count {
+        val empty: List[String] = newList()
+        val chain = match argTypes[i] {
+          case STNamed(afqn, avt) -> if avt { empty } else { externBaseChain(typeIndex, pathIndex, afqn) }
+          case _ -> empty
+        }
+        if chain.count > 0 {
+          anyChain = true
+        }
+        bases.add(chain)
+        i = i + 1
+      }
+      if anyChain {
+        resolveExternWalk(typeIndex, pathIndex, typeFqn, member, argTypes, bases)
+      } else {
+        None
+      }
+    }
+  }
 }
 
 // ── Layer 6: embedded managed resources ──────────────────────────────────────

@@ -92,14 +92,23 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               val cellType = JArray(elem = cellElemTy)
               match op {
                 case AssEq -> {
+                  // Evaluate and coerce the RHS BEFORE pushing the cell array
+                  // and index: the ctx-aware coercion's primitive-array boxing
+                  // loop (`[B` assigned into a hoisted `slice[Byte]` var,
+                  // #5609 item 2) requires an empty operand stack under the
+                  // value, and the cell/index loads are pure so the reorder
+                  // is unobservable.  The coercion itself is the same as call
+                  // arguments / local bindings: the value's static type may
+                  // not match the cell's element type (an erased-Object match
+                  // payload assigned into a primitive-typed var, and vice
+                  // versa).
+                  val cvTy = lowerExpr(ctx, insns, value)
+                  coerceValueTo(ctx, insns, cvTy, cellElemTy)
+                  val hvSlot = allocSlot(ctx, "__cellv_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, hvSlot, cellElemTy)
                   emitLoad(insns, cellSlot, cellType)
                   insns.add(LIconst(v = 0))
-                  val cvTy = lowerExpr(ctx, insns, value)
-                  // The value's static type may not match the cell's element
-                  // type (an erased-Object match payload assigned into a
-                  // primitive-typed var, and vice versa) — same coercion as
-                  // call arguments.
-                  coerceArgTo(insns, cvTy, cellElemTy)
+                  emitLoad(insns, hvSlot, cellElemTy)
                   emitArrayStore(insns, cellElemTy)
                 }
                 case _ -> {
@@ -171,7 +180,10 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 case AssEq -> {
                   insns.add(LAload(slot = 0))
                   val vTy = lowerExpr(ctx, insns, value)
-                  coerceArgTo(insns, vTy, fty)
+                  // Receiver-aware coercion: a `[B` flowing into a
+                  // `slice[Byte]`-typed receiver field needs the boxing loop,
+                  // which requires spilling `this` around it (#5609 item 2).
+                  coerceValueToUnderReceiver(ctx, insns, JRef(className = selfCls), vTy, fty)
                   insns.add(LPutfield(owner = selfCls, name = name, t = fty))
                 }
                 case _ -> {
@@ -222,7 +234,10 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           match op {
             case AssEq -> {
               val vTy = lowerExpr(ctx, insns, value)
-              coerceArgTo(insns, vTy, fty)
+              // Receiver-aware coercion (#5609 item 2): the boxing loop for
+              // a `[B` → `slice[Byte]` field needs an empty operand stack,
+              // so the already-stacked receiver is spilled around it.
+              coerceValueToUnderReceiver(ctx, insns, recvTy, vTy, fty)
               insns.add(LPutfield(owner = cls, name = fieldName, t = fty))
             }
             case _ -> {
@@ -410,7 +425,11 @@ func emitNewarray(insns: in List[LInsn], elem: in JvmType): Unit {
     case JInt -> insns.add(LNewarray(typeCode = 10))     // T_INT
     case JLong -> insns.add(LNewarray(typeCode = 11))    // T_LONG
     case JRef(className) -> insns.add(LAnewarray(className = className))
-    case JArray(_) -> panic("emitNewarray: multi-dimensional array allocation not supported")
+    // An array-typed ELEMENT (a hoisted heap cell for a lambda-captured
+    // `var acc: slice[T]`, #5609 item 2) is a single-dimension `anewarray`
+    // whose CONSTANT_Class is the element's array descriptor
+    // (`[Ljava/lang/Object;`) — JVMS §6.5 anewarray accepts array classes.
+    case JArray(inner) -> insns.add(LAnewarray(className = "[" + typeDescriptor(inner)))
     case JVoid -> panic("emitNewarray: cannot create array of void")
   }
 }
@@ -979,6 +998,18 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           }
         }
         case _ -> {
+          // Resolved BEFORE the iterable is lowered (mirrors `EIndex`'s
+          // ordering): the loop element's recorded declared type — the same
+          // `indexedElemTypeOverride` resolution `EIndex` applies (a declared
+          // `slice[Elem]`/`List[Elem]` parameter/local, a call-derived binding
+          // #4938, a direct call's declared return instantiation, or a record
+          // FIELD receiver via the `elem:<class>#<field>` registry, #5444).
+          // Without it the loop variable stays `Object`, so a typed use in
+          // the body (an instance method, an auto-FFI overload pick)
+          // mis-resolves — e.g. `for name in mapKeys(...)` fed
+          // `HttpString.new(name)` the `ByteBuffer` ctor overload instead of
+          // `String` (VerifyError at class load).
+          val forElemOverride = indexedElemTypeOverride(ctx, iter)
           val iterTy = lowerExpr(ctx, insns, iter)
           match iterTy {
             case JArray(elemArr) -> {
@@ -1002,12 +1033,25 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               emitLoad(insns, arrSlot, iterTy)
               emitLoad(insns, iSlot, JInt)
               emitArrayLoad(insns, elemArr)
-              val elemSlotA = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemArr)
-              emitStore(insns, elemSlotA, elemArr)
+              // A slice's erased `Object[]` element narrows to the recorded
+              // declared element type, exactly as `EIndex`'s JArray arm does;
+              // a precisely-typed array element keeps its own type.
+              val elemTyA = match elemArr {
+                case JRef(cA) -> {
+                  if cA == "java/lang/Object" {
+                    applyIndexedElemOverride(insns, forElemOverride)
+                  } else {
+                    elemArr
+                  }
+                }
+                case _ -> elemArr
+              }
+              val elemSlotA = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyA)
+              emitStore(insns, elemSlotA, elemTyA)
               // Loop-variable bind is a per-loop lexical scope — see
               // `emitCountingForJvm` (#5191 follow-up).
               val forScopeA = enterBlockScope(ctx)
-              lowerPatternBind(ctx, insns, pat, elemSlotA, elemArr, newList())
+              lowerPatternBind(ctx, insns, pat, elemSlotA, elemTyA, newList())
               // #2854: `continue` targets the index-increment point (`contLA`), not
               // the loop top, so the loop variable still advances; `break` targets
               // `endLA`.  `loopDeferDepth` captures the entry depth so a body `defer`
@@ -1070,7 +1114,9 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                   argCount = 1
                 )
               )
-              val elemTyB = JRef(className = "java/lang/Object")
+              // Narrow the erased `next()` element to the iterable's recorded
+              // declared element type when known (see `forElemOverride` above).
+              val elemTyB = applyIndexedElemOverride(insns, forElemOverride)
               val elemSlotB = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyB)
               emitStore(insns, elemSlotB, elemTyB)
               // Loop-variable bind is a per-loop lexical scope — see

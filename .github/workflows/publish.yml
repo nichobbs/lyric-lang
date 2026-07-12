@@ -623,6 +623,18 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
 
+      # The released lyric-resolver.jar is built with Java 21 (class file 65).
+      # Without this step the runner's default JDK (17) throws
+      # UnsupportedClassVersionError when `lyric build` shells out to the
+      # Maven resolver for any library with a [maven] table — this silently
+      # failed lyric-grpc/-web/-mq/-session/-lambda on every release until the
+      # per-library logs were fixed (#5615) and the error became visible.
+      - name: Set up Java 21 (for the Maven resolver jar)
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a  # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
       # Reuse the self-contained binary build-standalone already published to
       # this release instead of rebuilding the whole compiler (stage 2 + AOT)
       # from scratch.  The release is finalized (non-draft) by finalize-release
@@ -725,7 +737,9 @@ jobs:
           API_KEY="$LYRIC_NUGET_API_KEY"
           VERSION="$RELEASE_VERSION"
 
-          LOG_DIR="$(mktemp -d)"
+          # `set -e` is off, so a failed mktemp would otherwise flow through
+          # with an empty LOG_DIR and scatter logs at filesystem root.
+          LOG_DIR="$(mktemp -d)" || { echo "::error::mktemp -d failed; cannot create log directory"; exit 1; }
           declare -a SUCCEEDED=()
           declare -a FAILED=()
 
@@ -738,7 +752,7 @@ jobs:
             local log="$3"
             local attempt build_rc attempt_log
             : > "$log"
-            attempt_log="$(mktemp)"
+            attempt_log="$(mktemp)" || { echo "=== mktemp failed; cannot create attempt log for ${manifest} ===" >> "$log"; return 1; }
             for attempt in 1 2 3 4; do
               {
                 echo "=== Building ${manifest} (version ${version}, attempt ${attempt}) ==="
@@ -811,6 +825,14 @@ jobs:
             done
           }
 
+          # Warm up the dotnet CLI's first-run state (NuGet-Migrations et al.)
+          # once, serially, before the tiers fan out: with 13 concurrent
+          # `lyric publish` children each spawning `dotnet`, the first-run
+          # migration mutex creation races and one child dies with
+          # IOException "cannot open ... 'NuGet-Migrations'" (observed on
+          # lyric-cache in run 29173340105).
+          dotnet nuget locals http-cache --list > /dev/null 2>&1 || true
+
           # Tier 1: no Lyric package dependencies.
           run_tier 1 \
             lyric-resilience/lyric.toml \
@@ -822,11 +844,16 @@ jobs:
           # Tier 2: depends on Tier 1.
           run_tier 2 \
             lyric-auth/lyric.toml \
-            lyric-otel/lyric.toml \
             lyric-proto/lyric.toml
 
-          # Tier 3: depends on Tier 1–2.
+          # Tier 3: depends on Tier 1–2.  lyric-otel moved here from Tier 2:
+          # its Lyric.Proto dependency is a REGISTRY dep restored from
+          # nuget.org, so publishing it in the same tier as lyric-proto races
+          # NuGet's indexing of the just-pushed Lyric.Proto (observed in run
+          # 29173340105: 7 NU1102 retries over ~10 minutes, still unindexed).
+          # The tier barrier buys the indexing lag the retry budget needs.
           run_tier 3 \
+            lyric-otel/lyric.toml \
             lyric-grpc/lyric.toml \
             lyric-web/lyric.toml \
             lyric-db/lyric.toml \

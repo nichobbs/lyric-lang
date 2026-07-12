@@ -4676,8 +4676,8 @@ jobs:
       # failure mode of #5571's workspace-dependency chain; the same
       # resolver now backs root and dependency builds, so pinning the
       # flag-less root build pins the propagation rule too (the end-to-end
-      # lyric-web Undertow smoke, tests/jvm_server_smoke.l, stays unwired
-      # until the JVM codegen blockers in its header land — see #5444).
+      # lyric-web Undertow smoke, tests/jvm_server_smoke.l, is wired as its
+      # own step below now that #5610/#5444/#5458 landed).
       - name: lyric-auth manifest build on JVM without feature flags (#5571)
         background: true
         working-directory: ${{ github.workspace }}
@@ -4705,6 +4705,63 @@ jobs:
           # dotnet builds of dependents; drop it now that it is asserted.
           rm -rf lyric-auth/bin
           echo "lyric-auth JVM feature-resolution build ran (no --features flags)" >> "$GITHUB_STEP_SUMMARY"
+      # lyric-web Undertow end-to-end smoke on JVM (#5610/#5444/#5458): builds
+      # tests/jvm_server_smoke.l single-file (bundling the imported Web +
+      # Web.Kernel.Runtime project packages with their workspace deps and
+      # target-normalized features, #5571), starts the real Undertow listener
+      # under java, and asserts all four endpoints — path param, header echo
+      # through HeaderMap, request-body echo, and 404.  This is also the
+      # regression pin for cross-package impl-method parameter registration
+      # (#5610): a two-package bundled compile where an impl method takes
+      # another package's record cannot be expressed in a single-file
+      # self-test, so this smoke IS that test.  Needs the Maven resolver jar
+      # and a lyric-web restore first: a single-file jvm build reads the
+      # restored lyric-web/target/restore/jvm-classpath.txt (NOT
+      # module-path.txt), and the bundle jar's manifest Class-Path carries
+      # the restored Undertow jar paths, so `java -jar` needs no -cp.
+      - name: lyric-web Undertow smoke on JVM (tests/jvm_server_smoke.l)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-web JVM smoke"
+            exit 1
+          fi
+          make maven-resolver
+          export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
+          "$lyric_bin" restore --manifest "$PWD/lyric-web/lyric.toml"
+          (cd lyric-web && "../$lyric_bin" build --target jvm tests/jvm_server_smoke.l -o /tmp/jvm_server_smoke.jar)
+          java -jar /tmp/jvm_server_smoke.jar > /tmp/jvm_server_smoke.run.log 2>&1 &
+          srv_pid=$!
+          up=0
+          for _ in $(seq 1 40); do
+            if curl -s --max-time 1 -o /dev/null http://localhost:8099/hello/Ada; then up=1; break; fi
+            if ! kill -0 "$srv_pid" 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          if [ "$up" != 1 ]; then
+            echo "::error::jvm_server_smoke server did not come up"
+            tail -40 /tmp/jvm_server_smoke.run.log
+            exit 1
+          fi
+          hello="$(curl -s --max-time 3 http://localhost:8099/hello/Ada)"
+          header="$(curl -s --max-time 3 -H 'X-Test: abc' http://localhost:8099/echo-header)"
+          body="$(curl -s --max-time 3 -X POST --data 'ping' http://localhost:8099/echo-body)"
+          code404="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:8099/nope)"
+          kill "$srv_pid" 2>/dev/null || true
+          wait "$srv_pid" 2>/dev/null || true
+          fail=0
+          [ "$hello" = "Hello, Ada!" ] || { echo "::error::hello endpoint returned '$hello'"; fail=1; }
+          [ "$header" = '{"xTest":"abc"}' ] || { echo "::error::header endpoint returned '$header'"; fail=1; }
+          [ "$body" = "ping" ] || { echo "::error::body endpoint returned '$body'"; fail=1; }
+          [ "$code404" = "404" ] || { echo "::error::unmatched route returned HTTP $code404, expected 404"; fail=1; }
+          if [ "$fail" != 0 ]; then
+            tail -40 /tmp/jvm_server_smoke.run.log
+            exit 1
+          fi
+          echo "lyric-web Undertow JVM smoke passed (4/4 endpoints)" >> "$GITHUB_STEP_SUMMARY"
       # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
       # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
       # views, pure-Lyric tryGetValue) AND the post-mono signature
@@ -5164,6 +5221,30 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_tests.l
+
+      # Stdlib runtime suites on dotnet (#5604): these five `func main`-shaped
+      # suites (run via `lyric run`, not `lyric test` — they predate
+      # @test_module) were CI-wired nowhere on dotnet, which let a whole
+      # family of silent miscompiles ship invisibly: generic stdlib calls
+      # dropped when the monomorphizer could not infer type args
+      # (core/iter), open-generic isinst from tuple-pattern tests
+      # (encoding), wrong-union case construction under a cross-package
+      # case-name collision (regex_safe), and object-degraded union-ctor
+      # MemberRef signatures (rest).  Each suite exits non-zero on any
+      # assertion failure or runtime fault.
+      - name: Stdlib runtime suites on dotnet (core, iter, encoding, regex_safe, rest)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping stdlib runtime suites"
+            exit 1
+          fi
+          for suite in core_tests iter_tests encoding_tests regex_safe_tests rest_tests; do
+            echo "--- lyric run lyric-stdlib/tests/$suite.l"
+            "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
+          done
 
       # Std.Http async client surface (#5564): interface dispatch through
       # defaultClient() and the free getAsync/sendAsync functions.  Uses

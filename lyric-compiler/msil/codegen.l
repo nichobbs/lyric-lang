@@ -211,6 +211,25 @@ pub record CodegenCtx {
   // LATER package purely because that package hasn't been visited yet (#5177).
   // Never used for the token's numeric VALUE — only checked via containsKey.
   bundleFuncFqns: Map[String, Bool]
+  // Bundle-stable declared-type registries for the async-SM await pre-scan
+  // (#5606 sibling fix, the lyric-docker `emitPhaseBAwait` count crash).
+  // `inferCallReturnTypePB` types method-call receivers through these maps;
+  // they are seeded ONCE, before any per-package `addPackageTokens` pass
+  // (bundle-wide via `preSeedBundleAsyncRetTypesMsil`, per stdlib package
+  // via `registerStdlibArtifactTokens`, per compiled package at the top of
+  // `addPackageTokens`), so the Pass-1 `countSmFieldsMsil` run and the
+  // Phase-B `collectAwaitTypesPhaseBMsil` run observe IDENTICAL contents —
+  // the live `methodRetTypes`/`funcTokens` maps grow during the package
+  // loop, and depending on them would let the two runs disagree on the SM
+  // FieldDef budget, silently corrupting every later token.
+  //   pbFieldTypes:     "pkg.Type/field"          → declared field type
+  //   pbMethodRetTypes: "pkg.Type/method/arity"   → declared return (also
+  //                     bare "pkg.Type/method"; arity excludes `self`)
+  //   pbFuncRetTypes:   "pkg.funcName" (incl. dotted UFCS names, also
+  //                     arity-qualified) → declared return
+  pbFieldTypes: Map[String, MsilType]
+  pbMethodRetTypes: Map[String, MsilType]
+  pbFuncRetTypes: Map[String, MsilType]
   funcRetTypes: Map[String, MsilType]  // funcName → MsilType of declared return
   // funcName → declared parameter MsilTypes (same arity-qualified + bare keys
   // as funcTokens).  Used to thread a call argument's expected type into
@@ -1713,6 +1732,9 @@ pub func newCodegenCtx(
     fieldFuncParamTypes = newMap(),
     funcTokens = funcToks,
     bundleFuncFqns = newMap(),
+    pbFieldTypes = newMap(),
+    pbMethodRetTypes = newMap(),
+    pbFuncRetTypes = newMap(),
     funcRetTypes = newMap(),
     funcParamTypes = newMap(),
     funcParamModes = newMap(),
@@ -2120,7 +2142,116 @@ pub func preSeedBundleAsyncRetTypesMsil(
       }
       ii = ii + 1
     }
+    pbSeedTypeInfoItemsMsil(cctx, pkgName, file.items)
     fi = fi + 1
+  }
+}
+
+// ── Bundle-stable pre-scan type registries (#5606 sibling fix) ───────────────
+// Seed `pbFieldTypes` / `pbMethodRetTypes` / `pbFuncRetTypes` from one
+// package's items.  First registration wins, so calling this both bundle-wide
+// (before the package loop) and per-package (top of `addPackageTokens`) is
+// idempotent.  These maps let the await pre-scan type method-call receivers
+// (`await response.bodyText()`) without consulting the live token maps, whose
+// contents differ between the Pass-1 count and the Phase-B count.
+func pbSeedRetTy(
+  cctx: in CodegenCtx,
+  key: in String,
+  ret: in Option[TypeExpr],
+  pkgName: in String,
+  dest: in Map[String, MsilType],
+): Unit {
+  if not dest.containsKey(key) {
+    val mty = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
+    dest.add(key, mty)
+  }
+}
+
+pub func pbSeedTypeInfoItemsMsil(cctx: in CodegenCtx, pkgName: in String, items: in List[Item]): Unit {
+  var ii = 0
+  while ii < items.count {
+    match items[ii].kind {
+      case IFunc(decl) -> {
+        val fqn = pkgName + "." + decl.name
+        pbSeedRetTy(cctx, fqn + "/" + toString(decl.params.count), decl.ret, pkgName, cctx.pbFuncRetTypes)
+        pbSeedRetTy(cctx, fqn, decl.ret, pkgName, cctx.pbFuncRetTypes)
+      }
+      case IRecord(decl) -> pbSeedTypeInfoRecordMsil(cctx, pkgName, decl)
+      case IExposedRec(decl) -> pbSeedTypeInfoRecordMsil(cctx, pkgName, decl)
+      // Opaque types carry fields too (`DockerClient.handle`,
+      // `HttpResponse.handle`); a receiver chain through one must type the
+      // same way a record field does.
+      case IOpaque(decl) -> {
+        val opFqn = pkgName + "." + decl.name
+        var omi = 0
+        while omi < decl.members.count {
+          match decl.members[omi] {
+            case OMField(f) -> {
+              val okey = opFqn + "/" + f.name
+              if not cctx.pbFieldTypes.containsKey(okey) {
+                cctx.pbFieldTypes.add(okey, typeExprToMsilCtx(cctx, f.ty, pkgName))
+              }
+            }
+            case OMInvariant(_) -> {
+            }
+          }
+          omi = omi + 1
+        }
+      }
+      case IInterface(decl) -> {
+        val ifaceFqn = pkgName + "." + decl.name
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMSig(sig) -> {
+              val realParams = stripExplicitSelfParamMsil(sig.params)
+              pbSeedRetTy(
+                cctx,
+                ifaceFqn + "/" + sig.name + "/" + toString(realParams.count),
+                sig.ret,
+                pkgName,
+                cctx.pbMethodRetTypes
+              )
+              pbSeedRetTy(cctx, ifaceFqn + "/" + sig.name, sig.ret, pkgName, cctx.pbMethodRetTypes)
+            }
+            case IMFunc(fn) -> {
+              val realParams = stripExplicitSelfParamMsil(fn.params)
+              pbSeedRetTy(cctx, ifaceFqn + "/" + fn.name + "/" + toString(realParams.count), fn.ret, pkgName, cctx.pbMethodRetTypes)
+              pbSeedRetTy(cctx, ifaceFqn + "/" + fn.name, fn.ret, pkgName, cctx.pbMethodRetTypes)
+            }
+            case IMAssoc(_) -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case _ -> {
+      }
+    }
+    ii = ii + 1
+  }
+}
+
+func pbSeedTypeInfoRecordMsil(cctx: in CodegenCtx, pkgName: in String, decl: in RecordDecl): Unit {
+  val recFqn = pkgName + "." + decl.name
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case RMField(f) -> {
+        val fkey = recFqn + "/" + f.name
+        if not cctx.pbFieldTypes.containsKey(fkey) {
+          cctx.pbFieldTypes.add(fkey, typeExprToMsilCtx(cctx, f.ty, pkgName))
+        }
+      }
+      case RMFunc(fn) -> {
+        val realParams = stripExplicitSelfParamMsil(fn.params)
+        pbSeedRetTy(cctx, recFqn + "/" + fn.name + "/" + toString(realParams.count), fn.ret, pkgName, cctx.pbMethodRetTypes)
+        pbSeedRetTy(cctx, recFqn + "/" + fn.name, fn.ret, pkgName, cctx.pbMethodRetTypes)
+      }
+      case RMInvariant(_) -> {
+      }
+    }
+    mi = mi + 1
   }
 }
 
@@ -2244,6 +2375,14 @@ func registerWireStaticMsil(
 pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
   // Collect IExternType names so auto-FFI call interception can resolve them.
   scanExternTypesMsil(cctx, file)
+
+  // Seed the bundle-stable pre-scan type registries for this package BEFORE
+  // any item is counted, so `countSmFieldsMsil`'s receiver typing does not
+  // depend on the source order of record/interface items vs the async
+  // functions that reference them (single-file builds have no bundle-wide
+  // pre-seed; on the project path this is an idempotent duplicate of the
+  // `preSeedBundleAsyncRetTypesMsil` seeding).
+  pbSeedTypeInfoItemsMsil(cctx, pkgName, file.items)
 
   // Stash this package's import edges so call-site resolution can walk
   // them (#1183 Phase 2).  Each import contributes its dotted path; the
@@ -9286,28 +9425,73 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
 func pickCaseFqnByQualifier(
   cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in List[String], qualifier: in String
 ): String {
-  if candidates.count == 1 or qualifier.length == 0 {
-    return pickCaseFqnByScope(cctx, fctx, candidates)
+  if candidates.count == 1 {
+    return candidates[0]
   }
-  var i = 0
-  while i < candidates.count {
-    match mapGet(cctx.caseParentUnion, candidates[i]) {
-      case Some(parentFqn) -> {
-        val dotIdx = parentFqn.lastIndexOf(".")
-        val parentSimple = if dotIdx >= 0 {
-          parentFqn.substring(dotIdx + 1, parentFqn.length - dotIdx - 1)
-        } else {
-          parentFqn
+  if qualifier.length > 0 {
+    var i = 0
+    while i < candidates.count {
+      match mapGet(cctx.caseParentUnion, candidates[i]) {
+        case Some(parentFqn) -> {
+          val dotIdx = parentFqn.lastIndexOf(".")
+          val parentSimple = if dotIdx >= 0 {
+            parentFqn.substring(dotIdx + 1, parentFqn.length - dotIdx - 1)
+          } else {
+            parentFqn
+          }
+          if parentSimple == qualifier {
+            return candidates[i]
+          }
         }
-        if parentSimple == qualifier {
-          return candidates[i]
-        }
+        case None -> ()
       }
-      case None -> ()
+      i = i + 1
     }
-    i = i + 1
+  }
+  // No qualifier (or no qualifier match): before falling back to import-order
+  // scope tiers, prefer the candidate whose parent union matches the
+  // EXPECTED type of the position being lowered (the call argument's declared
+  // parameter type, pushed onto `collExpect` by the resolved-call argument
+  // loop).  Two imported unions sharing a case name (`Std.Regex.RegexError`
+  // vs `Std.RegexSafe.RegexError`, both with `TimedOut`) otherwise resolve
+  // by import order, constructing the WRONG union's case for
+  // `errorMessage(TimedOut(...))` — the callee's isinst tests then match no
+  // arm and the match-not-exhaustive panic fires at run time (#5604).
+  // Pattern positions never route through this function (they use
+  // `pickCaseFqnByScrutinee`), so a stale enclosing expectation cannot leak
+  // into pattern-case resolution.
+  if fctx.collExpect.count > 0 {
+    val expectedFqn = unionHeadFqnOfMsilType(fctx.collExpect[fctx.collExpect.count - 1])
+    if expectedFqn.length > 0 {
+      var ei = 0
+      while ei < candidates.count {
+        match mapGet(cctx.caseParentUnion, candidates[ei]) {
+          case Some(p) -> {
+            if p == expectedFqn {
+              return candidates[ei]
+            }
+          }
+          case None -> ()
+        }
+        ei = ei + 1
+      }
+    }
   }
   pickCaseFqnByScope(cctx, fctx, candidates)
+}
+
+// The class FQN a union-shaped MsilType names (arity suffix stripped), or ""
+// for shapes that cannot name a union.  Shared by the expected-type step in
+// `pickCaseFqnByQualifier` and mirrors `pickCaseFqnByScrutinee`'s extraction.
+func unionHeadFqnOfMsilType(t: in MsilType): String {
+  match t {
+    case MClass(cls) -> cls
+    case MGenericInst(_, fqn, _) -> stripGenericArity(fqn)
+    case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
+    case MValueTypeGenericInst(_, fqn, _) -> stripGenericArity(fqn)
+    case MClassRef(_, clrFqn) -> stripGenericArity(clrFqn)
+    case _ -> ""
+  }
 }
 
 // Pattern-matching variant of `pickCaseFqnByScope`.  When `scrutTy`
@@ -9865,15 +10049,40 @@ func lowerPatternTestMsil(
       // from the `List<object>` representation) so refutable sub-patterns
       // (literals, ranges, nested cases) are honoured rather than the tuple
       // matching unconditionally.
+      //
+      // When the scrutinee's type tracks the element types (MTuple), each
+      // element test runs at its precise static type — mirroring the PTuple
+      // BIND path below.  Testing at the erased `MObject` type instead sent a
+      // generic union-case sub-pattern (`case (Some(hi), Some(lo))`) down the
+      // erased-scrutinee path, which resolved the case class by NAME and
+      // emitted `isinst` against the OPEN generic TypeDef (`Option_Some`1`
+      // with no instantiation) — a JIT-time TypeLoadException ("Could not
+      // load type 'Std.Core.Option_Some`1'") in every method containing such
+      // a match (#5604, Std.Encoding.tryDecodeHex).  With the precise
+      // MGenericInstByName element type the test takes the closed-TypeSpec
+      // MIsinstGeneric path above.
+      val tupElemTys: List[MsilType] = match scrutTy { case MTuple(elems) -> elems; case _ -> newList() }
       var pti = 0
       while pti < tuplePats.count {
         emitLoadSlot(insns, scrutSlot, fctx.paramCount)
         insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
         insns.add(MLdcI4(v = pti))
         insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
-        val ptElemSlot = allocSlotMsil(fctx, "__tuptest_" + toString(pti) + "_" + toString(fctx.slotTicker.count), MObject)
+        val ptElemTy = if pti < tupElemTys.count { tupElemTys[pti] } else { MObject }
+        // `get_Item` returns object; narrow to the tracked element type
+        // (`unbox.any` for value elements, `castclass` for reference
+        // elements).  A nested tuple element stays `object` (its runtime rep
+        // is itself a List<object>).
+        match ptElemTy {
+          case MObject -> {
+          }
+          case MTuple(_) -> {
+          }
+          case _ -> castObjectToMsil(cctx, insns, ptElemTy)
+        }
+        val ptElemSlot = allocSlotMsil(fctx, "__tuptest_" + toString(pti) + "_" + toString(fctx.slotTicker.count), ptElemTy)
         emitStoreSlot(insns, ptElemSlot, fctx.paramCount)
-        lowerPatternTestMsil(cctx, fctx, insns, tuplePats[pti], ptElemSlot, MObject, failLabel)
+        lowerPatternTestMsil(cctx, fctx, insns, tuplePats[pti], ptElemSlot, ptElemTy, failLabel)
         pti = pti + 1
       }
     }
@@ -16208,12 +16417,21 @@ func emitExternTargetBody(
       // methods (`emitMember == r.memberName`), so the getter return type is
       // resolved here instead.
       var propGetterRet: Option[MsilType] = None
+      // Parent row for the emitted MemberRef: the declared target type, unless
+      // the getter probe resolves the property on a base type via the Extends
+      // walk (#5562) — then parent on the resolved declaring type, matching
+      // the auto-FFI paths (runtime base-class search tolerates the declared
+      // parent per ECMA-335 §II.22.25, but C# encodes the declaring type).
+      var memberParentRow = tRefRow
       if not r.isCtor {
         val noArgs: List[Mdr.SigType] = newList()
         match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, "get_" + r.memberName, noArgs) {
           case Some(gp) -> {
             emitMember = "get_" + r.memberName
             emitIsStatic = gp.sig.isStatic
+            if gp.declaringFqn != resolvedFqn {
+              memberParentRow = internExternTypeRefMsil(cctx, gp.assemblyName, gp.declaringFqn)
+            }
             match resolvedSigToMsil(cctx, gp.sig.returnType) {
               case Some(rm) -> {
                 propGetterRet = Some(value = rm)
@@ -16421,7 +16639,7 @@ func emitExternTargetBody(
       // `"ffi_" + target` key made the second wrapper reuse the first's sig blob
       // — the call popped the wrong arity and left a value on the stack (#3943).
       val ffiSigKey = ffiMemberRefSigKey(target, r.isCtor, emitIsStatic, paramTypes, sigParams, sigRet)
-      val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, emitMember, ffiSigKey, sig)
+      val mrRow = ctxAddMemberRef(cctx.lctx, memberParentRow, emitMember, ffiSigKey, sig)
       val tok = 0x0A000000 + mrRow
 
       // A value-type instance member (e.g. `System.TimeSpan.TotalMilliseconds`)
@@ -17223,10 +17441,12 @@ func inferCallReturnTypePB(
   e: in Expr,
   spawnNms: in List[String],
   spawnTys: in List[MsilType],
+  localNms: in List[String],
+  localTys: in List[MsilType],
 ): MsilType {
   match e.kind {
-    case EParen(inner) -> inferCallReturnTypePB(cctx, pkgName, inner, spawnNms, spawnTys)
-    case ESpawn(inner) -> inferCallReturnTypePB(cctx, pkgName, inner, spawnNms, spawnTys)
+    case EParen(inner) -> inferCallReturnTypePB(cctx, pkgName, inner, spawnNms, spawnTys, localNms, localTys)
+    case ESpawn(inner) -> inferCallReturnTypePB(cctx, pkgName, inner, spawnNms, spawnTys, localNms, localTys)
     case EPath(path) -> {
       if path.segments.count == 1 {
         val lookupName = path.segments[0]
@@ -17243,11 +17463,101 @@ func inferCallReturnTypePB(
             si = si + 1
           }
         }
+        // Local-type environment (#5606): params and val/let/var bindings,
+        // LAST-entry-wins so a walk-order rebinding shadows like emission's
+        // slot typing.
+        if found == MObject {
+          var li = localNms.count - 1
+          while li >= 0 {
+            if localNms[li] == lookupName {
+              found = localTys[li]
+              li = -1
+            } else {
+              li = li - 1
+            }
+          }
+        }
         found
       } else {
         MObject
       }
     }
+    case ESelf -> {
+      var selfFound: MsilType = MObject
+      var sli = localNms.count - 1
+      while sli >= 0 {
+        if localNms[sli] == "self" {
+          selfFound = localTys[sli]
+          sli = -1
+        } else {
+          sli = sli - 1
+        }
+      }
+      selfFound
+    }
+    // `val sent = await f(...)`: the binding's type is the awaited Task's
+    // payload; a non-Task awaitee passes through unchanged (the blocking
+    // extern shape).
+    case EAwait(inner) -> {
+      val awaited = inferCallReturnTypePB(cctx, pkgName, inner, spawnNms, spawnTys, localNms, localTys)
+      if isTaskTypeMsil(cctx, awaited) {
+        taskResultType(awaited)
+      } else {
+        awaited
+      }
+    }
+    // Field projection: `client.handle` types through the bundle-stable
+    // declared-field registry.  A package-qualifier chain never resolves a
+    // receiver class, so this cannot mis-fire on qualified names.
+    case EMember(mRecv, mField) -> {
+      val mRecvTy = inferCallReturnTypePB(cctx, pkgName, mRecv, spawnNms, spawnTys, localNms, localTys)
+      match mRecvTy {
+        case MClass(mCls) -> {
+          match mapGet(cctx.pbFieldTypes, mCls + "/" + mField) {
+            case Some(ft) -> ft
+            case None -> MObject
+          }
+        }
+        case _ -> MObject
+      }
+    }
+    // Match/if/block expressions type as their first informative arm/tail so
+    // a match-bound receiver (`val resp = match sent { case Ok(r) -> r … }`)
+    // resolves for later method-call awaits.
+    case EMatch(mScr, mArms) -> {
+      val mScrTy = inferCallReturnTypePB(cctx, pkgName, mScr, spawnNms, spawnTys, localNms, localTys)
+      var mResult: MsilType = MObject
+      var mAi = 0
+      while mAi < mArms.count and mResult == MObject {
+        val savedLen = localNms.count
+        pbPatternBindPB(mArms[mAi].pattern, mScrTy, localNms, localTys)
+        val bodyTy = match mArms[mAi].body {
+          case EOBExpr(be) -> inferCallReturnTypePB(cctx, pkgName, be, spawnNms, spawnTys, localNms, localTys)
+          case EOBBlock(bb) -> pbBlockTailTypePB(cctx, pkgName, bb, spawnNms, spawnTys, localNms, localTys)
+        }
+        while localNms.count > savedLen {
+          localNms.removeAt(localNms.count - 1)
+          localTys.removeAt(localTys.count - 1)
+        }
+        if bodyTy != MVoid {
+          mResult = bodyTy
+        }
+        mAi = mAi + 1
+      }
+      mResult
+    }
+    case EIf(_, ifThen, ifElseOpt, _) -> {
+      val thenTy = pbEobTypePB(cctx, pkgName, ifThen, spawnNms, spawnTys, localNms, localTys)
+      if thenTy != MObject and thenTy != MVoid {
+        thenTy
+      } else {
+        match ifElseOpt {
+          case Some(eb) -> pbEobTypePB(cctx, pkgName, eb, spawnNms, spawnTys, localNms, localTys)
+          case None -> MObject
+        }
+      }
+    }
+    case EBlock(blkE) -> pbBlockTailTypePB(cctx, pkgName, blkE, spawnNms, spawnTys, localNms, localTys)
     case ECall(callee, args) -> {
       match callee.kind {
         case EPath(path) -> {
@@ -17310,6 +17620,28 @@ func inferCallReturnTypePB(
             }
             ci = ci + 1
           }
+          // Bundle-stable declared-return fallback (#5606): the live
+          // `funcRetTypes` is only fully populated for packages whose own
+          // `addPackageTokens` pass has already run, so the Pass-1 count and
+          // the Phase-B count would see different typings for a plain
+          // cross-package helper.  `pbFuncRetTypes` was seeded once before
+          // the package loop with the same declared types, so both runs
+          // agree.
+          if result == MObject {
+            var ci2 = 0
+            var done2 = false
+            while ci2 < candidates.count and not done2 {
+              val c2 = candidates[ci2]
+              match mapGet(cctx.pbFuncRetTypes, c2 + "/" + toString(cnt)) {
+                case Some(ty2) -> {
+                  result = ty2
+                  done2 = true
+                }
+                case None -> match mapGet(cctx.pbFuncRetTypes, c2) { case Some(ty2) -> { result = ty2; done2 = true }; case None -> () }
+              }
+              ci2 = ci2 + 1
+            }
+          }
           result
         }
         // `TypeName.method(recv, args)` parses as
@@ -17370,15 +17702,175 @@ func inferCallReturnTypePB(
                 }
                 ci = ci + 1
               }
+              // Receiver-typed method resolution (#5606): `client.get(path)`
+              // where `client` is a local/param, not a package qualifier —
+              // none of the qualified-name candidates exist, so type the
+              // receiver through the environment and resolve the member
+              // against its class.
+              if result == MObject {
+                result = pbMethodCallRetPB(cctx, pkgName, recv, field, cnt, spawnNms, spawnTys, localNms, localTys)
+              }
               result
             }
-            case _ -> MObject
+            // A non-path receiver (`client.handle.send(request)`, a call
+            // result, a match-bound local's field chain): type the receiver
+            // expression and resolve the member against its class.
+            case _ -> pbMethodCallRetPB(cctx, pkgName, recv, field, args.count, spawnNms, spawnTys, localNms, localTys)
           }
         }
         case _ -> MObject
       }
     }
     case _ -> MObject
+  }
+}
+
+// ── #5606 pre-scan typing helpers ────────────────────────────────────────────
+// Resolve a method call's return type through the receiver's inferred class,
+// mirroring `lowerMethodCallMsil`'s resolution order:
+//   1. the free-function UFCS fallback `funcRetTypes[cls + "." + member]` —
+//      the ONLY source that can be Task-typed (async stdlib/restored
+//      registrations Task-wrap the kickoff return, and in-bundle async
+//      functions carry bundle-wide pre-seeded Task placeholders), so the
+//      await COUNT decision matches what emission resolves;
+//   2. the bundle-stable declared-return registries (`pbFuncRetTypes`,
+//      `pbMethodRetTypes`) — never Task-typed, used only to keep typing
+//      receiver CHAINS (`await x.m1().m2()`) identical between the Pass-1
+//      count and the Phase-B count.
+func pbMethodCallRetPB(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  recv: in Expr,
+  member: in String,
+  argCount: in Int,
+  spawnNms: in List[String],
+  spawnTys: in List[MsilType],
+  localNms: in List[String],
+  localTys: in List[MsilType],
+): MsilType {
+  val recvTy = inferCallReturnTypePB(cctx, pkgName, recv, spawnNms, spawnTys, localNms, localTys)
+  val cls = match recvTy { case MClass(n) -> n; case _ -> "" }
+  if cls.length == 0 {
+    return MObject
+  }
+  match mapGet(cctx.funcRetTypes, cls + "." + member) {
+    case Some(ty) -> return ty
+    case None -> ()
+  }
+  match mapGet(cctx.pbFuncRetTypes, cls + "." + member) {
+    case Some(ty) -> return ty
+    case None -> ()
+  }
+  match mapGet(cctx.pbMethodRetTypes, cls + "/" + member + "/" + toString(argCount)) {
+    case Some(ty) -> return ty
+    case None -> ()
+  }
+  match mapGet(cctx.pbMethodRetTypes, cls + "/" + member) {
+    case Some(ty) -> ty
+    case None -> MObject
+  }
+}
+
+// Bind a match arm's pattern names into the local-type environment, typed
+// from the scrutinee.  Only the shapes the emission's own slot typing gets
+// right are modelled: a plain binding takes the scrutinee type, and the
+// stdlib `Ok`/`Err`/`Some` constructors project their `Result`/`Option`
+// payload type argument.  Everything else stays untyped (MObject).
+func pbPatternBindPB(
+  pat: in Pattern, scrutTy: in MsilType, localNms: in List[String], localTys: in List[MsilType]
+): Unit {
+  match pat.kind {
+    case PBinding(bindName, innerOpt) -> {
+      localNms.add(bindName)
+      localTys.add(scrutTy)
+      match innerOpt {
+        case Some(ip) -> pbPatternBindPB(ip, scrutTy, localNms, localTys)
+        case None -> ()
+      }
+    }
+    case PConstructor(head, ctorArgs) -> {
+      val ctor = if head.segments.count == 0 { "" } else { head.segments[head.segments.count - 1] }
+      // Generic instantiations reach here under two constructors (resolved
+      // `MGenericInst` rows and by-name `MGenericInstByName`) and two head
+      // spellings (with and without the CLR arity suffix) depending on the
+      // registration site; accept all of them.
+      match scrutTy {
+        case MGenericInst(_, headFqn, tyArgs) -> pbBindCtorPayloadPB(ctor, headFqn, tyArgs, ctorArgs, localNms, localTys)
+        case MGenericInstByName(headFqn, tyArgs) -> pbBindCtorPayloadPB(ctor, headFqn, tyArgs, ctorArgs, localNms, localTys)
+        case _ -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func pbBindCtorPayloadPB(
+  ctor: in String,
+  headFqn: in String,
+  tyArgs: in List[MsilType],
+  ctorArgs: in List[Pattern],
+  localNms: in List[String],
+  localTys: in List[MsilType],
+): Unit {
+  val isResult = headFqn == "Std.Core.Result`2" or headFqn == "Std.Core.Result"
+  val isOption = headFqn == "Std.Core.Option`1" or headFqn == "Std.Core.Option"
+  if ctor == "Ok" and isResult and tyArgs.count >= 1 and ctorArgs.count == 1 {
+    pbPatternBindPB(ctorArgs[0], tyArgs[0], localNms, localTys)
+  } else if ctor == "Err" and isResult and tyArgs.count >= 2 and ctorArgs.count == 1 {
+    pbPatternBindPB(ctorArgs[0], tyArgs[1], localNms, localTys)
+  } else if ctor == "Some" and isOption and tyArgs.count >= 1 and ctorArgs.count == 1 {
+    pbPatternBindPB(ctorArgs[0], tyArgs[0], localNms, localTys)
+  }
+}
+
+// The type of a value-producing block: its trailing expression statement.
+func pbBlockTailTypePB(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  blk: in Block,
+  spawnNms: in List[String],
+  spawnTys: in List[MsilType],
+  localNms: in List[String],
+  localTys: in List[MsilType],
+): MsilType {
+  if blk.statements.count == 0 {
+    return MObject
+  }
+  match blk.statements[blk.statements.count - 1].kind {
+    case SExpr(te) -> inferCallReturnTypePB(cctx, pkgName, te, spawnNms, spawnTys, localNms, localTys)
+    case _ -> MObject
+  }
+}
+
+func pbEobTypePB(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  eob: in ExprOrBlock,
+  spawnNms: in List[String],
+  spawnTys: in List[MsilType],
+  localNms: in List[String],
+  localTys: in List[MsilType],
+): MsilType {
+  match eob {
+    case EOBExpr(be) -> inferCallReturnTypePB(cctx, pkgName, be, spawnNms, spawnTys, localNms, localTys)
+    case EOBBlock(bb) -> pbBlockTailTypePB(cctx, pkgName, bb, spawnNms, spawnTys, localNms, localTys)
+  }
+}
+
+// Declared-type-first binding typing for the walk's environment updates.
+func pbBindingTypePB(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  tyOpt: in Option[TypeExpr],
+  init: in Expr,
+  spawnNms: in List[String],
+  spawnTys: in List[MsilType],
+  localNms: in List[String],
+  localTys: in List[MsilType],
+): MsilType {
+  match tyOpt {
+    case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
+    case None -> inferCallReturnTypePB(cctx, pkgName, init, spawnNms, spawnTys, localNms, localTys)
   }
 }
 
@@ -17389,10 +17881,12 @@ func collectAwaitTypesExprPB(
   acc: in List[MsilType],
   spawnNms: in List[String],
   spawnTys: in List[MsilType],
+  localNms: in List[String],
+  localTys: in List[MsilType],
 ): Unit {
   match e.kind {
     case EAwait(inner) -> {
-      val taskTy = inferCallReturnTypePB(cctx, pkgName, inner, spawnNms, spawnTys)
+      val taskTy = inferCallReturnTypePB(cctx, pkgName, inner, spawnNms, spawnTys, localNms, localTys)
       // Only allocate an awaiter field for real async Tasks.  Blocking
       // @externTarget async functions return T (not Task<T>) from their Lyric
       // wrapper; `await externFn()` is a pass-through and needs no field.
@@ -17401,33 +17895,33 @@ func collectAwaitTypesExprPB(
         acc.add(awTy)
       }
     }
-    case EBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, acc, spawnNms, spawnTys)
-    case EParen(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
-    case ESpawn(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
+    case EBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, acc, spawnNms, spawnTys, localNms, localTys)
+    case EParen(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys, localNms, localTys)
+    case ESpawn(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys, localNms, localTys)
     case EIf(c, t, el, _) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, c, acc, spawnNms, spawnTys)
+      collectAwaitTypesExprPB(cctx, pkgName, c, acc, spawnNms, spawnTys, localNms, localTys)
       match t {
-        case EOBBlock(b) -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc, spawnNms, spawnTys)
-        case EOBExpr(e2) -> collectAwaitTypesExprPB(cctx, pkgName, e2, acc, spawnNms, spawnTys)
+        case EOBBlock(b) -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc, spawnNms, spawnTys, localNms, localTys)
+        case EOBExpr(e2) -> collectAwaitTypesExprPB(cctx, pkgName, e2, acc, spawnNms, spawnTys, localNms, localTys)
       }
       match el {
-        case Some(els) -> match els { case EOBBlock(b) -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc, spawnNms, spawnTys); case EOBExpr(e3) -> collectAwaitTypesExprPB(cctx, pkgName, e3, acc, spawnNms, spawnTys) }
+        case Some(els) -> match els { case EOBBlock(b) -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc, spawnNms, spawnTys, localNms, localTys); case EOBExpr(e3) -> collectAwaitTypesExprPB(cctx, pkgName, e3, acc, spawnNms, spawnTys, localNms, localTys) }
         case None -> {
         }
       }
     }
     case ECall(callee, args) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, callee, acc, spawnNms, spawnTys)
+      collectAwaitTypesExprPB(cctx, pkgName, callee, acc, spawnNms, spawnTys, localNms, localTys)
       var aci = 0
       while aci < args.count {
         val argExpr = match args[aci] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
-        collectAwaitTypesExprPB(cctx, pkgName, argExpr, acc, spawnNms, spawnTys)
+        collectAwaitTypesExprPB(cctx, pkgName, argExpr, acc, spawnNms, spawnTys, localNms, localTys)
         aci = aci + 1
       }
     }
     case EBinop(_, l, r) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, l, acc, spawnNms, spawnTys)
-      collectAwaitTypesExprPB(cctx, pkgName, r, acc, spawnNms, spawnTys)
+      collectAwaitTypesExprPB(cctx, pkgName, l, acc, spawnNms, spawnTys, localNms, localTys)
+      collectAwaitTypesExprPB(cctx, pkgName, r, acc, spawnNms, spawnTys, localNms, localTys)
     }
     // A `match` can contain awaits in its scrutinee, an arm guard, or an arm
     // body.  Phase B (`lowerMatchExprMsil`) lowers them in exactly this order —
@@ -17435,18 +17929,28 @@ func collectAwaitTypesExprPB(
     // walk the same order, or the await index N runs past the pre-sized
     // `resumeLabels` / `awaiterFieldNames` and faults (index out of range).
     case EMatch(scrutinee, arms) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, scrutinee, acc, spawnNms, spawnTys)
+      collectAwaitTypesExprPB(cctx, pkgName, scrutinee, acc, spawnNms, spawnTys, localNms, localTys)
+      // Arm pattern binds are typed from the scrutinee and scoped to the
+      // arm's walk (#5606): `match sent { case Ok(resp) -> await
+      // resp.bodyText() }` must type `resp` or the await goes uncounted.
+      val scrTyPB = inferCallReturnTypePB(cctx, pkgName, scrutinee, spawnNms, spawnTys, localNms, localTys)
       var ami = 0
       while ami < arms.count {
         val arm = arms[ami]
+        val armSavedLen = localNms.count
+        pbPatternBindPB(arm.pattern, scrTyPB, localNms, localTys)
         match arm.guard {
-          case Some(g) -> collectAwaitTypesExprPB(cctx, pkgName, g, acc, spawnNms, spawnTys)
+          case Some(g) -> collectAwaitTypesExprPB(cctx, pkgName, g, acc, spawnNms, spawnTys, localNms, localTys)
           case None -> {
           }
         }
         match arm.body {
-          case EOBBlock(b) -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc, spawnNms, spawnTys)
-          case EOBExpr(e2) -> collectAwaitTypesExprPB(cctx, pkgName, e2, acc, spawnNms, spawnTys)
+          case EOBBlock(b) -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc, spawnNms, spawnTys, localNms, localTys)
+          case EOBExpr(e2) -> collectAwaitTypesExprPB(cctx, pkgName, e2, acc, spawnNms, spawnTys, localNms, localTys)
+        }
+        while localNms.count > armSavedLen {
+          localNms.removeAt(localNms.count - 1)
+          localTys.removeAt(localTys.count - 1)
         }
         ami = ami + 1
       }
@@ -17454,41 +17958,41 @@ func collectAwaitTypesExprPB(
     // Phase B's `lowerExprMsil` descends into these expression kinds, so Phase A
     // must count any awaits nested inside them or the resumeLabels index runs past
     // the pre-allocated size and faults.
-    case ETry(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
-    case EPropagate(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
-    case EUnsafe(block) -> collectAwaitTypesBlockPB(cctx, pkgName, block, acc, spawnNms, spawnTys)
-    case EMember(recv, _) -> collectAwaitTypesExprPB(cctx, pkgName, recv, acc, spawnNms, spawnTys)
-    case EPrefix(_, op) -> collectAwaitTypesExprPB(cctx, pkgName, op, acc, spawnNms, spawnTys)
+    case ETry(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys, localNms, localTys)
+    case EPropagate(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys, localNms, localTys)
+    case EUnsafe(block) -> collectAwaitTypesBlockPB(cctx, pkgName, block, acc, spawnNms, spawnTys, localNms, localTys)
+    case EMember(recv, _) -> collectAwaitTypesExprPB(cctx, pkgName, recv, acc, spawnNms, spawnTys, localNms, localTys)
+    case EPrefix(_, op) -> collectAwaitTypesExprPB(cctx, pkgName, op, acc, spawnNms, spawnTys, localNms, localTys)
     case ETuple(exprs) -> {
       var ti = 0
       while ti < exprs.count {
-        collectAwaitTypesExprPB(cctx, pkgName, exprs[ti], acc, spawnNms, spawnTys)
+        collectAwaitTypesExprPB(cctx, pkgName, exprs[ti], acc, spawnNms, spawnTys, localNms, localTys)
         ti = ti + 1
       }
     }
     case EList(exprs) -> {
       var li = 0
       while li < exprs.count {
-        collectAwaitTypesExprPB(cctx, pkgName, exprs[li], acc, spawnNms, spawnTys)
+        collectAwaitTypesExprPB(cctx, pkgName, exprs[li], acc, spawnNms, spawnTys, localNms, localTys)
         li = li + 1
       }
     }
     case EIndex(recv, indices) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, recv, acc, spawnNms, spawnTys)
+      collectAwaitTypesExprPB(cctx, pkgName, recv, acc, spawnNms, spawnTys, localNms, localTys)
       var indi = 0
       while indi < indices.count {
-        collectAwaitTypesExprPB(cctx, pkgName, indices[indi], acc, spawnNms, spawnTys)
+        collectAwaitTypesExprPB(cctx, pkgName, indices[indi], acc, spawnNms, spawnTys, localNms, localTys)
         indi = indi + 1
       }
     }
-    case ETypeApp(fn, _) -> collectAwaitTypesExprPB(cctx, pkgName, fn, acc, spawnNms, spawnTys)
+    case ETypeApp(fn, _) -> collectAwaitTypesExprPB(cctx, pkgName, fn, acc, spawnNms, spawnTys, localNms, localTys)
     case EInterpolated(segments) -> {
       var si = 0
       while si < segments.count {
         match segments[si] {
           case ISText(_, _) -> {
           }
-          case ISExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc, spawnNms, spawnTys)
+          case ISExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc, spawnNms, spawnTys, localNms, localTys)
         }
         si = si + 1
       }
@@ -17496,20 +18000,20 @@ func collectAwaitTypesExprPB(
     case ERange(bound) -> {
       match bound {
         case RBHalfOpen(lo, hi) -> {
-          collectAwaitTypesExprPB(cctx, pkgName, lo, acc, spawnNms, spawnTys)
-          collectAwaitTypesExprPB(cctx, pkgName, hi, acc, spawnNms, spawnTys)
+          collectAwaitTypesExprPB(cctx, pkgName, lo, acc, spawnNms, spawnTys, localNms, localTys)
+          collectAwaitTypesExprPB(cctx, pkgName, hi, acc, spawnNms, spawnTys, localNms, localTys)
         }
         case RBClosed(lo, hi) -> {
-          collectAwaitTypesExprPB(cctx, pkgName, lo, acc, spawnNms, spawnTys)
-          collectAwaitTypesExprPB(cctx, pkgName, hi, acc, spawnNms, spawnTys)
+          collectAwaitTypesExprPB(cctx, pkgName, lo, acc, spawnNms, spawnTys, localNms, localTys)
+          collectAwaitTypesExprPB(cctx, pkgName, hi, acc, spawnNms, spawnTys, localNms, localTys)
         }
-        case RBLowerOpen(hi) -> collectAwaitTypesExprPB(cctx, pkgName, hi, acc, spawnNms, spawnTys)
-        case RBUpperOpen(lo) -> collectAwaitTypesExprPB(cctx, pkgName, lo, acc, spawnNms, spawnTys)
+        case RBLowerOpen(hi) -> collectAwaitTypesExprPB(cctx, pkgName, hi, acc, spawnNms, spawnTys, localNms, localTys)
+        case RBUpperOpen(lo) -> collectAwaitTypesExprPB(cctx, pkgName, lo, acc, spawnNms, spawnTys, localNms, localTys)
       }
     }
     case EAssign(target, _, value) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, target, acc, spawnNms, spawnTys)
-      collectAwaitTypesExprPB(cctx, pkgName, value, acc, spawnNms, spawnTys)
+      collectAwaitTypesExprPB(cctx, pkgName, target, acc, spawnNms, spawnTys, localNms, localTys)
+      collectAwaitTypesExprPB(cctx, pkgName, value, acc, spawnNms, spawnTys, localNms, localTys)
     }
     case _ -> {
     }
@@ -17523,10 +18027,12 @@ func collectAwaitTypesBlockPB(
   acc: in List[MsilType],
   spawnNms: in List[String],
   spawnTys: in List[MsilType],
+  localNms: in List[String],
+  localTys: in List[MsilType],
 ): Unit {
   var i = 0
   while i < blk.statements.count {
-    collectAwaitTypesStmtPB(cctx, pkgName, blk.statements[i], acc, spawnNms, spawnTys)
+    collectAwaitTypesStmtPB(cctx, pkgName, blk.statements[i], acc, spawnNms, spawnTys, localNms, localTys)
     i = i + 1
   }
 }
@@ -17538,32 +18044,80 @@ func collectAwaitTypesStmtPB(
   acc: in List[MsilType],
   spawnNms: in List[String],
   spawnTys: in List[MsilType],
+  localNms: in List[String],
+  localTys: in List[MsilType],
 ): Unit {
   match stmt.kind {
-    case SLocal(binding) -> match binding { case LBVal(_, _, init) -> collectAwaitTypesExprPB(cctx, pkgName, init, acc, spawnNms, spawnTys); case LBLet(_, _, init) -> collectAwaitTypesExprPB(cctx, pkgName, init, acc, spawnNms, spawnTys); case LBVar(_, _, initOpt) -> match initOpt { case Some(init) -> collectAwaitTypesExprPB(cctx, pkgName, init, acc, spawnNms, spawnTys); case None -> {  } } }
-    case SExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc, spawnNms, spawnTys)
-    case SReturn(valOpt) -> match valOpt { case Some(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc, spawnNms, spawnTys); case None -> {  } }
-    case SAssign(_, _, value) -> collectAwaitTypesExprPB(cctx, pkgName, value, acc, spawnNms, spawnTys)
-    case SThrow(expr) -> collectAwaitTypesExprPB(cctx, pkgName, expr, acc, spawnNms, spawnTys)
+    // Bindings extend the local-type environment AFTER their initialiser is
+    // walked (the init's own awaits see the pre-binding environment, exactly
+    // as emission types the slot only once the init has been lowered).
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(pat, tyOpt, init) -> {
+          collectAwaitTypesExprPB(cctx, pkgName, init, acc, spawnNms, spawnTys, localNms, localTys)
+          match pat.kind {
+            case PBinding(bindNm, _) -> {
+              // Type BEFORE appending the name: a shadowing init (`val x =
+              // f(x)`) must resolve against the OUTER binding, and the two
+              // parallel lists must never diverge in length mid-lookup.
+              val bindTy = pbBindingTypePB(cctx, pkgName, tyOpt, init, spawnNms, spawnTys, localNms, localTys)
+              localNms.add(bindNm)
+              localTys.add(bindTy)
+            }
+            case _ -> ()
+          }
+        }
+        case LBLet(letNm, tyOpt, init) -> {
+          collectAwaitTypesExprPB(cctx, pkgName, init, acc, spawnNms, spawnTys, localNms, localTys)
+          val letTy = pbBindingTypePB(cctx, pkgName, tyOpt, init, spawnNms, spawnTys, localNms, localTys)
+          localNms.add(letNm)
+          localTys.add(letTy)
+        }
+        case LBVar(varNm, tyOpt, initOpt) -> {
+          match initOpt {
+            case Some(init) -> {
+              collectAwaitTypesExprPB(cctx, pkgName, init, acc, spawnNms, spawnTys, localNms, localTys)
+              val varTy = pbBindingTypePB(cctx, pkgName, tyOpt, init, spawnNms, spawnTys, localNms, localTys)
+              localNms.add(varNm)
+              localTys.add(varTy)
+            }
+            case None -> {
+              match tyOpt {
+                case Some(te) -> {
+                  localNms.add(varNm)
+                  localTys.add(typeExprToMsilCtx(cctx, te, pkgName))
+                }
+                case None -> {
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    case SExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc, spawnNms, spawnTys, localNms, localTys)
+    case SReturn(valOpt) -> match valOpt { case Some(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc, spawnNms, spawnTys, localNms, localTys); case None -> {  } }
+    case SAssign(_, _, value) -> collectAwaitTypesExprPB(cctx, pkgName, value, acc, spawnNms, spawnTys, localNms, localTys)
+    case SThrow(expr) -> collectAwaitTypesExprPB(cctx, pkgName, expr, acc, spawnNms, spawnTys, localNms, localTys)
     case SWhile(_, cond, body) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, cond, acc, spawnNms, spawnTys)
-      collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys)
+      collectAwaitTypesExprPB(cctx, pkgName, cond, acc, spawnNms, spawnTys, localNms, localTys)
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys, localNms, localTys)
     }
     case SFor(_, _, iter, body) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, iter, acc, spawnNms, spawnTys)
-      collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys)
+      collectAwaitTypesExprPB(cctx, pkgName, iter, acc, spawnNms, spawnTys, localNms, localTys)
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys, localNms, localTys)
     }
-    case SLoop(_, body) -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys)
-    case SScope(_, body) -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys)
+    case SLoop(_, body) -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys, localNms, localTys)
+    case SScope(_, body) -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys, localNms, localTys)
     case STry(body, catches, finally_) -> {
-      collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys)
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys, localNms, localTys)
       var ci = 0
       while ci < catches.count {
-        collectAwaitTypesBlockPB(cctx, pkgName, catches[ci].body, acc, spawnNms, spawnTys)
+        collectAwaitTypesBlockPB(cctx, pkgName, catches[ci].body, acc, spawnNms, spawnTys, localNms, localTys)
         ci = ci + 1
       }
       match finally_ {
-        case Some(fb) -> collectAwaitTypesBlockPB(cctx, pkgName, fb, acc, spawnNms, spawnTys)
+        case Some(fb) -> collectAwaitTypesBlockPB(cctx, pkgName, fb, acc, spawnNms, spawnTys, localNms, localTys)
         case None -> {
         }
       }
@@ -17606,6 +18160,8 @@ func collectSpawnBindingLocalMsil(
   binding: in LocalBinding,
   spawnNms: in List[String],
   spawnTys: in List[MsilType],
+  localNms: in List[String],
+  localTys: in List[MsilType],
 ): Unit {
   match binding {
     case LBVal(pat, _, init) -> {
@@ -17613,7 +18169,7 @@ func collectSpawnBindingLocalMsil(
         case PBinding(bindName, _) -> {
           match spawnInnerOfInitMsil(init) {
             case Some(spawnInner) -> {
-              val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys)
+              val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys, localNms, localTys)
               if isTaskTypeMsil(cctx, sTy) {
                 spawnNms.add(bindName)
                 spawnTys.add(sTy)
@@ -17637,7 +18193,7 @@ func collectSpawnBindingLocalMsil(
         case Some(init) -> {
           match spawnInnerOfInitMsil(init) {
             case Some(spawnInner) -> {
-              val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys)
+              val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys, localNms, localTys)
               if isTaskTypeMsil(cctx, sTy) {
                 spawnNms.add(varName)
                 spawnTys.add(sTy)
@@ -17667,9 +18223,11 @@ func collectSpawnBindingsStmtMsil(
   st: in Statement,
   spawnNms: in List[String],
   spawnTys: in List[MsilType],
+  localNms: in List[String],
+  localTys: in List[MsilType],
 ): Unit {
   match st.kind {
-    case SLocal(binding) -> collectSpawnBindingLocalMsil(cctx, pkgName, binding, spawnNms, spawnTys)
+    case SLocal(binding) -> collectSpawnBindingLocalMsil(cctx, pkgName, binding, spawnNms, spawnTys, localNms, localTys)
     // A `handle = spawn asyncFn(…)` reassignment (#5205, mirrors the JVM
     // `recordSpawnResultType` SAssign wiring): track the reassigned handle so a
     // later `await handle` resolves its `Task<T>` type in the pre-scan.
@@ -17678,7 +18236,7 @@ func collectSpawnBindingsStmtMsil(
         case EPath(path) -> {
           match spawnInnerOfInitMsil(value) {
             case Some(spawnInner) -> {
-              val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys)
+              val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys, localNms, localTys)
               if isTaskTypeMsil(cctx, sTy) {
                 spawnNms.add(path.segments[path.segments.count - 1])
                 spawnTys.add(sTy)
@@ -17692,20 +18250,20 @@ func collectSpawnBindingsStmtMsil(
         }
       }
     }
-    case SScope(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
-    case SLoop(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
-    case SWhile(_, _, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
-    case SFor(_, _, _, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
-    case SDefer(body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
+    case SScope(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
+    case SLoop(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
+    case SWhile(_, _, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
+    case SFor(_, _, _, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
+    case SDefer(body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
     case STry(body, catches, finally_) -> {
-      collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys)
+      collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
       var ci = 0
       while ci < catches.count {
-        collectSpawnBindingsBlockMsil(cctx, pkgName, catches[ci].body, spawnNms, spawnTys)
+        collectSpawnBindingsBlockMsil(cctx, pkgName, catches[ci].body, spawnNms, spawnTys, localNms, localTys)
         ci = ci + 1
       }
       match finally_ {
-        case Some(fb) -> collectSpawnBindingsBlockMsil(cctx, pkgName, fb, spawnNms, spawnTys)
+        case Some(fb) -> collectSpawnBindingsBlockMsil(cctx, pkgName, fb, spawnNms, spawnTys, localNms, localTys)
         case None -> {
         }
       }
@@ -17721,10 +18279,12 @@ func collectSpawnBindingsBlockMsil(
   blk: in Block,
   spawnNms: in List[String],
   spawnTys: in List[MsilType],
+  localNms: in List[String],
+  localTys: in List[MsilType],
 ): Unit {
   var si = 0
   while si < blk.statements.count {
-    collectSpawnBindingsStmtMsil(cctx, pkgName, blk.statements[si], spawnNms, spawnTys)
+    collectSpawnBindingsStmtMsil(cctx, pkgName, blk.statements[si], spawnNms, spawnTys, localNms, localTys)
     si = si + 1
   }
 }
@@ -17734,6 +18294,19 @@ func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: 
   val spawnNms: List[String] = newList()
   val spawnTys: List[MsilType] = newList()
 
+  // Local-type environment for receiver typing (#5606 sibling fix): seeded
+  // with the declared parameters, extended by the walk at `val`/`let`/`var`
+  // bindings and match-arm pattern binds.  Lookup is LAST-entry-wins, so a
+  // walk-order rebinding shadows exactly as emission's slot typing does.
+  val localNms: List[String] = newList()
+  val localTys: List[MsilType] = newList()
+  var lpi = 0
+  while lpi < decl.params.count {
+    localNms.add(decl.params[lpi].name)
+    localTys.add(typeExprToMsilCtx(cctx, decl.params[lpi].ty, pkgName))
+    lpi = lpi + 1
+  }
+
   // Phase 1: pre-scan to collect spawn bindings, recursing into block-bearing
   // statements (`scope { }`, loops, `try`) so a `val x = spawn …` inside a
   // `scope { }` is captured.  Spawn bindings inside `if` / `match` branch
@@ -17741,7 +18314,7 @@ func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: 
   match decl.body {
     case None -> {
     }
-    case Some(body) -> match body { case FBExpr(_) -> {  }; case FBBlock(blk) -> collectSpawnBindingsBlockMsil(cctx, pkgName, blk, spawnNms, spawnTys) }
+    case Some(body) -> match body { case FBExpr(_) -> {  }; case FBBlock(blk) -> collectSpawnBindingsBlockMsil(cctx, pkgName, blk, spawnNms, spawnTys, localNms, localTys) }
   }
 
   // Phase 2: recursive scan over the full body using the pre-built spawn lists
@@ -17749,7 +18322,7 @@ func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: 
   match decl.body {
     case None -> {
     }
-    case Some(body) -> match body { case FBBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, result, spawnNms, spawnTys); case FBExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, result, spawnNms, spawnTys) }
+    case Some(body) -> match body { case FBBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, result, spawnNms, spawnTys, localNms, localTys); case FBExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, result, spawnNms, spawnTys, localNms, localTys) }
   }
   result
 }
@@ -18431,7 +19004,8 @@ func emitPhaseBAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn
   pbc.nextAwaitIndex.add(0)  // consume index N
   if N >= pbc.resumeLabels.count or N >= pbc.awaiterFieldNames.count {
     panic(
-      "emitPhaseBAwait: await index " + toString(N) + " exceeds pre-allocated resume labels (" +
+      "emitPhaseBAwait: await index " + toString(N) + " in '" + pbc.smFqn + "' (awaited type: " + msilTypeKeyStr(taskTy) +
+        ") exceeds pre-allocated resume labels (" +
         toString(pbc.resumeLabels.count) +
         ") or awaiter fields (" +
         toString(pbc.awaiterFieldNames.count) +
@@ -19238,6 +19812,18 @@ func synthesizeAsyncSmPhaseBMsil(
     }
     case None -> {
     }
+  }
+
+  // Safety net (#5606): place any resume labels the body's emission never
+  // consumed (a pre-scan overcount — an await site the pre-scan typed as a
+  // Task but emission resolved as a pass-through), so the state-dispatch
+  // MSwitch has a defined target for every entry.  `__state` is only ever
+  // set to a CONSUMED index at run time, so these targets are unreachable;
+  // falling through them lands on the normal-completion epilogue.
+  var unusedRl = pbCtx.nextAwaitIndex.count
+  while unusedRl < resumeLabels.count {
+    mnInsns.add(MLabel(id = resumeLabels[unusedRl]))
+    unusedRl = unusedRl + 1
   }
 
   // ── Normal completion epilogue ────────────────────────────────────────────
@@ -24709,10 +25295,19 @@ func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.
   if paramByte < 0 {
     // Non-primitive parameter: an extern value or class type.  The argument
     // must be the same extern type (matched by FQN) — no coercion is emitted
-    // (a value type is passed by value, a class by reference).
+    // (a value type is passed by value, a class by reference).  A CLASS
+    // argument of a DIFFERENT FQN is accepted when its Extends chain reaches
+    // the declared parameter type (#5605): a reference upcast needs no IL,
+    // but the chain is re-verified here so the emitter can never silently
+    // bind a candidate the scorer did not admit.
     val pfqn = Mdr.sigNamedFqn(paramSig)
     if pfqn.length > 0 and externRefFqn(argTy) == pfqn {
       Some(value = acc)
+    } else if pfqn.length > 0 and not Mdr.sigNamedIsValueType(paramSig) {
+      match argTy {
+        case MClassRef(_, afqn) -> if Mdr.externChainReaches(cctx.metadataTypeIndex, cctx.metadataPathIndex, afqn, pfqn) { Some(value = acc) } else { None }
+        case _ -> None
+      }
     } else {
       None
     }
@@ -24787,10 +25382,139 @@ func unwrapAutoFfiTaskMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List
   }
 }
 
+// True when `emitAutoFfiDefaultLoad` can synthesize `dflt` for an unsupplied
+// trailing parameter of type `pm` (#5605).  Checked during the validation
+// pass — before any IL or scratch locals are produced — so an unsupported
+// shape falls back cleanly instead of leaving a half-emitted call.  A
+// value-type zero needs a scratch local (`ldloca` + `initobj`), hence the
+// FuncCtx requirement.
+func autoFfiDefaultLoadable(pm: in MsilType, dflt: in Mdr.ExternParamDefault, hasFctx: in Bool): Bool {
+  match dflt {
+    case Mdr.EPDNone -> false
+    case Mdr.EPDNull -> match pm {
+      case MString -> true
+      case MObject -> true
+      case MClass(_) -> true
+      case MClassRef(_, _) -> true
+      case MGenericInst(_, _, _) -> true
+      case MGenericInstByName(_, _) -> true
+      case MArray(_) -> true
+      // A nullref Constant on a value-shaped param decodes as EPDZero, so
+      // EPDNull against a value type here is malformed metadata: reject.
+      case _ -> false
+    }
+    case Mdr.EPDZero -> match pm { case MBool -> true; case MChar -> true; case MByte -> true; case MInt -> true; case MLong -> true; case MDouble -> true; case MString -> true; case MObject -> true; case MClass(_) -> true; case MClassRef(_, _) -> true; case MGenericInst(_, _, _) -> true; case MGenericInstByName(_, _) -> true; case MArray(_) -> true; case MValueTypeRef(_, _) -> hasFctx; case MValueTypeGenericInst(_, _, _) -> hasFctx; case _ -> false }
+    case Mdr.EPDConst(cv) -> match cv {
+      // An int-family constant loads for any int-family / widened param, and
+      // for an enum-typed param (the Constant row of an enum default carries
+      // the underlying primitive; the verifier treats an enum and its
+      // underlying type as interchangeable on the stack).
+      case Mdr.ECVInt(_) -> match pm { case MBool -> true; case MChar -> true; case MByte -> true; case MInt -> true; case MLong -> true; case MDouble -> true; case MValueTypeRef(_, _) -> true; case _ -> false }
+      case Mdr.ECVLong(_) -> match pm { case MLong -> true; case MDouble -> true; case MValueTypeRef(_, _) -> true; case _ -> false }
+      case Mdr.ECVR4Bits(_) -> match pm { case MDouble -> true; case _ -> false }
+      case Mdr.ECVR8Bits(_) -> match pm { case MDouble -> true; case _ -> false }
+    }
+  }
+}
+
+// Push the decoded default for an unsupplied trailing BCL parameter at an
+// auto-FFI call site (#5605).  Every shape reaching here passed
+// `autoFfiDefaultLoadable` during validation; anything else is a compiler
+// bug, so the mismatch arms panic rather than emit invalid IL.
+func emitAutoFfiDefaultLoad(
+  cctx: in CodegenCtx,
+  fctxOpt: in Option[FuncCtx],
+  insns: in List[MInsn],
+  pm: in MsilType,
+  dflt: in Mdr.ExternParamDefault,
+): Unit {
+  match dflt {
+    case Mdr.EPDNull -> insns.add(MLdNull)
+    case Mdr.EPDZero -> match pm {
+      case MBool -> insns.add(MLdcI4(v = 0))
+      case MChar -> insns.add(MLdcI4(v = 0))
+      case MByte -> insns.add(MLdcI4(v = 0))
+      case MInt -> insns.add(MLdcI4(v = 0))
+      case MLong -> insns.add(MLdcI8(v = 0i64))
+      case MDouble -> insns.add(MLdcR8(v = 0.0))
+      // A `= default` struct is its zero bit pattern: scratch local,
+      // `initobj`, load — the same idiom as `emitExternOptionalDefault`.
+      case MValueTypeRef(_, clrFqn) -> match fctxOpt { case Some(fctx) -> { val refRow = internFfiTypeRefNested(cctx, clrFqn); val slot = allocSlotMsil(fctx, "__ffi_default_" + toString(fctx.slotTicker.count), pm); insns.add(MLdloca(slot = slot - fctx.paramCount)); insns.add(MInitobj(typeToken = 0x01000000 + refRow)); emitLoadSlot(insns, slot, fctx.paramCount) }; case None -> panic("Msil.Codegen: internal error — a value-type default argument was admitted without a function context") }
+      case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> match fctxOpt { case Some(fctx) -> { val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs); val tsKey = "ffidef_vtgi_" + msilTypeKeyStr(pm); val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob); val slot = allocSlotMsil(fctx, "__ffi_default_" + toString(fctx.slotTicker.count), pm); insns.add(MLdloca(slot = slot - fctx.paramCount)); insns.add(MInitobj(typeToken = 0x1B000000 + tsRow)); emitLoadSlot(insns, slot, fctx.paramCount) }; case None -> panic("Msil.Codegen: internal error — a value-type default argument was admitted without a function context") }
+      case _ -> insns.add(MLdNull)
+    }
+    case Mdr.EPDConst(cv) -> {
+      val pmIsLong = match pm { case MLong -> true; case _ -> false }
+      val pmIsDouble = match pm { case MDouble -> true; case _ -> false }
+      match cv {
+        case Mdr.ECVInt(v) -> {
+          if pmIsLong {
+            insns.add(MLdcI8(v = v.toLong()))
+          } else if pmIsDouble {
+            insns.add(MLdcR8(v = v.toDouble()))
+          } else {
+            insns.add(MLdcI4(v = v))
+          }
+        }
+        case Mdr.ECVLong(v) -> if pmIsDouble { insns.add(MLdcR8(v = v.toDouble())) } else { insns.add(MLdcI8(v = v)) }
+        case Mdr.ECVR4Bits(bits) -> insns.add(MLdcR8(v = int32BitsToDouble(bits)))
+        case Mdr.ECVR8Bits(bits) -> insns.add(MLdcR8(v = int64BitsToDouble(bits)))
+      }
+    }
+    case Mdr.EPDNone -> panic("Msil.Codegen: internal error — EPDNone reached default-argument emission")
+  }
+}
+
+// Validate the parameter shapes of a metadata-resolved auto-FFI candidate
+// against the supplied arguments: fills `paramMsil` for EVERY BCL parameter,
+// `coercions` for each supplied argument, and confirms every unsupplied
+// trailing parameter's default is synthesizable.  False → the caller falls
+// back (nothing was emitted).
+func autoFfiValidateParams(
+  cctx: in CodegenCtx,
+  m: in Mdr.ResolvedMethod,
+  argTys: in List[MsilType],
+  hasFctx: in Bool,
+  paramMsil: in List[MsilType],
+  coercions: in List[List[MInsn]],
+): Bool {
+  if m.paramTypes.count < argTys.count {
+    return false
+  }
+  if m.paramTypes.count > argTys.count and m.paramDefaults.count != m.paramTypes.count {
+    return false
+  }
+  var pi = 0
+  while pi < m.paramTypes.count {
+    val psig = m.paramTypes[pi]
+    match resolvedSigToMsil(cctx, psig) {
+      case None -> return false
+      case Some(pm) -> {
+        if pi < argTys.count {
+          match argCoercionInsns(cctx, argTys[pi], psig) {
+            case None -> return false
+            case Some(cins) -> coercions.add(cins)
+          }
+        } else if not autoFfiDefaultLoadable(pm, m.paramDefaults[pi], hasFctx) {
+          return false
+        }
+        paramMsil.add(pm)
+      }
+    }
+    pi = pi + 1
+  }
+  true
+}
+
 // Emit a metadata-resolved auto-FFI call, or None to fall back.  `argBufs`
 // carry each argument's already-lowered IL; `argTys` their MsilTypes.
+// `fctxOpt` supplies the function context when the caller has one — required
+// only to synthesize a value-type (`initobj`) default for an unsupplied
+// trailing optional parameter (#5605); the property-getter call sites pass
+// None (a getter has no parameters, so no default is ever synthesized).
 func emitResolvedAutoFfi(
   cctx: in CodegenCtx,
+  fctxOpt: in Option[FuncCtx],
   insns: in List[MInsn],
   asmName: in String,
   clrFqn: in String,
@@ -24808,28 +25532,16 @@ func emitResolvedAutoFfi(
   if not isConstructor and not m.isStatic {
     return None
   }
-  if m.paramTypes.count != argTys.count {
-    return None
-  }
   // Build the parameter MsilTypes (from the resolved signature) and the
   // per-argument coercion (exact / widening conv / box) needed to adapt each
-  // argument to its parameter.  Bail to the legacy path on any unsupported
-  // parameter shape (non-primitive, or an unsupported conversion).
+  // argument to its parameter.  The resolved candidate may declare MORE
+  // params than the caller supplied when the trailing ones are defaulted
+  // (#5605); those defaults are validated here and synthesized below.  Bail
+  // to the legacy path on any unsupported parameter shape.
+  val hasFctx = match fctxOpt { case Some(_) -> true; case None -> false }
   val paramMsil: List[MsilType] = newList()
   val coercions: List[List[MInsn]] = newList()
-  var pi = 0
-  var ok = true
-  while pi < m.paramTypes.count and ok {
-    val psig = m.paramTypes[pi]
-    match resolvedSigToMsil(cctx, psig) {
-      case None -> {
-        ok = false
-      }
-      case Some(pm) -> match argCoercionInsns(cctx, argTys[pi], psig) { case None -> { ok = false }; case Some(cins) -> { paramMsil.add(pm); coercions.add(cins) } }
-    }
-    pi = pi + 1
-  }
-  if not ok {
+  if not autoFfiValidateParams(cctx, m, argTys, hasFctx, paramMsil, coercions) {
     return None
   }
   // Constructor shorthand (.new) returns the constructed type, not the void
@@ -24881,6 +25593,12 @@ func emitResolvedAutoFfi(
         appendInsnsMsil(insns, coercions[bi])  // exact: empty; widening: conv; object: box
         bi = bi + 1
       }
+      // Synthesize every unsupplied trailing default (#5605).
+      var dk = argTys.count
+      while dk < m.paramTypes.count {
+        emitAutoFfiDefaultLoad(cctx, fctxOpt, insns, paramMsil[dk], m.paramDefaults[dk])
+        dk = dk + 1
+      }
       // Constructor: emit newobj (allocates + initializes). Regular method: emit call.
       if isConstructor {
         insns.add(MNewobj(ctorToken = tok))
@@ -24904,6 +25622,7 @@ func emitResolvedAutoFfi(
 // `argBufs` carry each argument's already-lowered IL; `argTys` their MsilTypes.
 func emitResolvedInstanceAutoFfi(
   cctx: in CodegenCtx,
+  fctxOpt: in Option[FuncCtx],
   insns: in List[MInsn],
   asmName: in String,
   clrFqn: in String,
@@ -24913,21 +25632,10 @@ func emitResolvedInstanceAutoFfi(
   m: in Mdr.ResolvedMethod,
   valueTypeRecv: in Bool,
 ): Option[MsilType] {
+  val hasFctx = match fctxOpt { case Some(_) -> true; case None -> false }
   val paramMsil: List[MsilType] = newList()
   val coercions: List[List[MInsn]] = newList()
-  var pi = 0
-  var ok = true
-  while pi < m.paramTypes.count and ok {
-    val psig = m.paramTypes[pi]
-    match resolvedSigToMsil(cctx, psig) {
-      case None -> {
-        ok = false
-      }
-      case Some(pm) -> match argCoercionInsns(cctx, argTys[pi], psig) { case None -> { ok = false }; case Some(cins) -> { paramMsil.add(pm); coercions.add(cins) } }
-    }
-    pi = pi + 1
-  }
-  if not ok {
+  if not autoFfiValidateParams(cctx, m, argTys, hasFctx, paramMsil, coercions) {
     return None
   }
   match resolvedSigToMsil(cctx, m.returnType) {
@@ -24953,6 +25661,12 @@ func emitResolvedInstanceAutoFfi(
         appendInsnsMsil(insns, argBufs[bi])
         appendInsnsMsil(insns, coercions[bi])
         bi = bi + 1
+      }
+      // Synthesize every unsupplied trailing default (#5605).
+      var dk = argTys.count
+      while dk < m.paramTypes.count {
+        emitAutoFfiDefaultLoad(cctx, fctxOpt, insns, paramMsil[dk], m.paramDefaults[dk])
+        dk = dk + 1
       }
       if valueTypeRecv {
         insns.add(MCall(methodToken = tok))
@@ -25040,7 +25754,8 @@ func tryExternStaticMemberReadMsil(
       if gp.sig.isStatic {
         val emptyBufs: List[List[MInsn]] = newList()
         val emptyTys: List[MsilType] = newList()
-        match emitResolvedAutoFfi(cctx, insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
+        val noFctx: Option[FuncCtx] = None
+        match emitResolvedAutoFfi(cctx, noFctx, insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
           case Some(rt) -> return Some(value = rt)
           case None -> ()
         }
@@ -25107,8 +25822,10 @@ func tryExternInstanceGetterMsil(
       } else {
         val emptyBufs: List[List[MInsn]] = newList()
         val emptyTys: List[MsilType] = newList()
+        val noFctx: Option[FuncCtx] = None
         emitResolvedInstanceAutoFfi(
           cctx,
+          noFctx,
           insns,
           gp.assemblyName,
           gp.declaringFqn,
@@ -25306,7 +26023,7 @@ func emitExternStaticPropertySetMsil(
           val emptyBufs: List[List[MInsn]] = newList()
           val emptyTys: List[MsilType] = newList()
           var propTyV: MsilType = MVoid
-          match emitResolvedAutoFfi(cctx, insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
+          match emitResolvedAutoFfi(cctx, Some(value = fctx), insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
             case Some(t) -> {
               propTyV = t
             }
@@ -25374,7 +26091,7 @@ func emitExternInstancePropertySetMsil(
           val emptyBufs: List[List[MInsn]] = newList()
           val emptyTys: List[MsilType] = newList()
           var propTyV: MsilType = MVoid
-          match emitResolvedInstanceAutoFfi(cctx, insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig, false) {
+          match emitResolvedInstanceAutoFfi(cctx, Some(value = fctx), insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig, false) {
             case Some(t) -> {
               propTyV = t
             }
@@ -25440,7 +26157,7 @@ func tryInstanceAutoFfiFromMetadata(
     match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, fqn, memberName, argSigs) {
       case None -> {
       }
-      case Some(re) -> if not re.sig.isStatic { direct = emitResolvedInstanceAutoFfi(cctx, insns, re.assemblyName, re.declaringFqn, memberName, argBufs, argTys, re.sig, valueTypeRecv) }
+      case Some(re) -> if not re.sig.isStatic { direct = emitResolvedInstanceAutoFfi(cctx, Some(value = fctx), insns, re.assemblyName, re.declaringFqn, memberName, argBufs, argTys, re.sig, valueTypeRecv) }
     }
     // A receiver-based call needs an instance method; a resolved static
     // means the name only exists as a static — fall back rather than
@@ -25539,7 +26256,7 @@ func tryAutoFfiFromMetadata(
           match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, "get_" + methodName, noArgsP) {
             case Some(gp) -> {
               if gp.sig.isStatic {
-                match emitResolvedAutoFfi(cctx, insns, gp.assemblyName, gp.declaringFqn, "get_" + methodName, "get_" + methodName, argBufs, argTys, gp.sig) {
+                match emitResolvedAutoFfi(cctx, Some(value = fctx), insns, gp.assemblyName, gp.declaringFqn, "get_" + methodName, "get_" + methodName, argBufs, argTys, gp.sig) {
                   case Some(rt) -> return Some(value = unwrapAutoFfiTaskMsil(cctx, fctx, insns, rt))
                   case None -> ()
                 }
@@ -25561,7 +26278,7 @@ func tryAutoFfiFromMetadata(
         None
       }
       case Some(re) -> {
-        match emitResolvedAutoFfi(cctx, insns, re.assemblyName, re.declaringFqn, resolveMethodName, methodName, argBufs, argTys, re.sig) {
+        match emitResolvedAutoFfi(cctx, Some(value = fctx), insns, re.assemblyName, re.declaringFqn, resolveMethodName, methodName, argBufs, argTys, re.sig) {
           // A constructed value is never unwrapped: `.new()` on a Task type
           // yields the (cold, unstarted) handle — Wait() on it would deadlock.
           case Some(rt) -> if methodName == "new" { Some(value = rt) } else { Some(value = unwrapAutoFfiTaskMsil(cctx, fctx, insns, rt)) }
@@ -28661,6 +29378,17 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
     }
     pi2 = pi2 + 1
   }
+  // Pass 3: seed the bundle-stable pre-scan type registries from every
+  // stdlib package (after type registration, so declared types resolve to
+  // their real TypeRefs), letting the async-SM await pre-scan type
+  // stdlib-classed receivers (`await response.bodyText()`, #5606 sibling
+  // fix) with identical contents at Pass-1 count time and Phase-B count
+  // time.
+  var pi3 = 0
+  while pi3 < pkgs.count {
+    pbSeedTypeInfoItemsMsil(cctx, pkgs[pi3].name, pkgs[pi3].items)
+    pi3 = pi3 + 1
+  }
 }
 
 // Build a TypeSpec-based newobj token for a stdlib generic union case
@@ -29212,7 +29940,16 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
             ctorParams2.add(cpMsilTy)
             cpi = cpi + 1
           }
-          val ctorSig2 = buildInstanceMethodSig(ctorParams2, MVoid)
+          // Context-aware sig builder: a concrete class-typed field (e.g.
+          // `Transport(url: String, error: IOError)`) must encode CLASS +
+          // TypeRef in the consumer's ctor MemberRef to match the bundle's
+          // MethodDef `.ctor(string, class Std.Errors.IOError)`.  The
+          // context-free builder degraded MClass params to `object`, so the
+          // MemberRef `(string, object)` never bound — MissingMethodException
+          // at every cross-assembly construction of such a case (#5604).
+          // Mirrors `registerRestoredUnionCase`, which already uses the
+          // ctx-aware builder.
+          val ctorSig2 = buildInstanceMethodSigWithCtx(ctorParams2, MVoid, cctx.lctx)
           val ctorSigKey = "stdlib_case_ctor_" + ctorKey
           val ctorMrRow = ctxAddMemberRef(cctx.lctx, caseRow, ".ctor", ctorSigKey, ctorSig2)
           if not cctx.recordCtorTokens.containsKey(ctorKey) {
@@ -29367,7 +30104,12 @@ func registerStdlibRecordLikeType(
       }
       ci = ci + 1
     }
-    val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
+    // Ctx-aware for the same reason as the union-case ctor above (#5604):
+    // concrete class-typed record fields must encode CLASS + TypeRef, not
+    // degrade to `object`, or the consumer's `.ctor` MemberRef diverges from
+    // the bundle's MethodDef.  Type-param fields are unaffected (they resolve
+    // no TypeRef row and keep the `object` encoding either way).
+    val ctorSig = buildInstanceMethodSigWithCtx(ctorParams, MVoid, cctx.lctx)
     val ctorSigKey = "stdlib_ctor_" + typeFqn
     val ctorMrRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", ctorSigKey, ctorSig)
     if not cctx.recordCtorTokens.containsKey(typeFqn) {

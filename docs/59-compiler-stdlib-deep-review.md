@@ -118,6 +118,26 @@ logic; optimisations; non-idiomatic usage; stdlib API-surface consolidation;
 > CI-gated). New blocker found and reverted in-wave: auto-FFI overload
 > scoring is exact-arity, so trailing-optional-param BCL methods
 > (`JsonEncodedText.Encode`) stay `@externTarget` (Q-MD-004 family).
+>
+> **Wave 6 (2026-07-12, D-progress-658–663):** the #5604 stdlib-suite
+> breakage bisects to *standing* dotnet defects (never CI-run; #5578
+> exonerated) and is root-fixed four ways — headline: **the silent
+> generic-call drop** (mono inference gaps let codegen drop unresolved
+> calls without a diagnostic; also the #5612 mechanism) — with all five
+> suites CI-wired. §6.4's overload-scoring rows close (#5605:
+> trailing-optional defaults + Extends-chain subtype args; kernel
+> un-reverts stay seed-gated). The §3 async-SM operand-stack class
+> closes via a new shared `Lyric.AwaitHoist` middle-end pass (#5606),
+> and the Phase-A pre-scan gains a typed environment — fixing the
+> release-blocking lyric-docker build crash the intact publish logs
+> confirmed from CI. JVM: explicit-self interface descriptors (#5607),
+> **fatal type-error gating parity with dotnet** (#5609 — jvm builds no
+> longer "succeed" with type errors), `[B`-into-field coercion, and
+> cross-package enum types. Ecosystem publishing's five-release failure
+> streak root-caused from the first intact logs: the publish job lacked
+> Java 21 for the Maven resolver (fixed, with warm-up and tier fixes,
+> D-progress-662). The lyric-web Undertow smoke runs end-to-end on both
+> targets and is CI-gated (#5610/#5444/#5458 fixed, D-progress-663).
 
 ---
 

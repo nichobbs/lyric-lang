@@ -159,6 +159,14 @@ pub func compileToMsilWithVersion(
     allMonoFuncs.add(stdlibNonGenFuncs[smni])
     smni = smni + 1
   }
+  // Inference-only union-case ctor decls, appended LAST so real functions win
+  // the monomorphizer's first-wins name merge (#5604).
+  val stdlibUnionCtors = collectStdlibUnionCtorDecls(stdlibPkgs)
+  var smui = 0
+  while smui < stdlibUnionCtors.count {
+    allMonoFuncs.add(stdlibUnionCtors[smui])
+    smui = smui + 1
+  }
   val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
   val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
   val noDeriveImports: List[Item] = newList()
@@ -591,6 +599,27 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   while agfn < stdlibNonGenFuncs.count {
     allImportedGenFuncs.add(stdlibNonGenFuncs[agfn])
     agfn = agfn + 1
+  }
+  // Inference-only union-case ctor decls (stdlib + in-bundle siblings +
+  // restored deps), appended LAST so real functions win the monomorphizer's
+  // first-wins name merge (#5604).
+  val stdlibUnionCtors = collectStdlibUnionCtorDecls(stdlibPkgs)
+  var agfu = 0
+  while agfu < stdlibUnionCtors.count {
+    allImportedGenFuncs.add(stdlibUnionCtors[agfu])
+    agfu = agfu + 1
+  }
+  val inBundleUnionCtors = collectInBundleUnionCtorDecls(parsedPkgs)
+  var agfv = 0
+  while agfv < inBundleUnionCtors.count {
+    allImportedGenFuncs.add(inBundleUnionCtors[agfv])
+    agfv = agfv + 1
+  }
+  val restoredUnionCtors = collectRestoredUnionCtorDecls(restoredArtifacts)
+  var agfw = 0
+  while agfw < restoredUnionCtors.count {
+    allImportedGenFuncs.add(restoredUnionCtors[agfw])
+    agfw = agfw + 1
   }
   // Interface decls (in-bundle + stdlib + restored), fed to the monomorphizer
   // for method-call return inference on interface-typed receivers (#3813).
@@ -1254,6 +1283,60 @@ pub func collectStdlibNonGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDe
     pi = pi + 1
   }
   nonGenFuncs
+}
+
+// Inference-only union-case constructor decls for every union declared in
+// `pkgs` (see `Lyric.Mono.unionCtorInferenceDecls`): lets a generic call
+// whose only type-argument source is a union-case constructor argument
+// (`isSome(Some(value = 1))`) bind its type parameters and specialise
+// instead of silently staying generic (#5604).  Append these AFTER every
+// real-function collector so genuine functions win the monomorphizer's
+// first-wins name merge.
+pub func collectStdlibUnionCtorDecls(pkgs: in List[StdlibPkg]): List[FunctionDecl] {
+  val ctorDecls: List[FunctionDecl] = newList()
+  var pi = 0
+  while pi < pkgs.count {
+    val synths = unionCtorInferenceDecls(pkgs[pi].items)
+    var si = 0
+    while si < synths.count {
+      ctorDecls.add(synths[si])
+      si = si + 1
+    }
+    pi = pi + 1
+  }
+  ctorDecls
+}
+
+// In-bundle sibling-package analog of `collectStdlibUnionCtorDecls`.
+func collectInBundleUnionCtorDecls(parsedPkgs: in List[ParsedUserPkg]): List[FunctionDecl] {
+  val ctorDecls: List[FunctionDecl] = newList()
+  var pi = 0
+  while pi < parsedPkgs.count {
+    val synths = unionCtorInferenceDecls(parsedPkgs[pi].file.items)
+    var si = 0
+    while si < synths.count {
+      ctorDecls.add(synths[si])
+      si = si + 1
+    }
+    pi = pi + 1
+  }
+  ctorDecls
+}
+
+// Restored-dependency analog of `collectStdlibUnionCtorDecls`.
+func collectRestoredUnionCtorDecls(artifacts: in List[SynthesisedArtifact]): List[FunctionDecl] {
+  val ctorDecls: List[FunctionDecl] = newList()
+  var ai = 0
+  while ai < artifacts.count {
+    val synths = unionCtorInferenceDecls(artifacts[ai].source.items)
+    var si = 0
+    while si < synths.count {
+      ctorDecls.add(synths[si])
+      si = si + 1
+    }
+    ai = ai + 1
+  }
+  ctorDecls
 }
 
 // Collect interface decls from all in-bundle parsed packages.  Fed to the

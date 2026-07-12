@@ -14981,6 +14981,194 @@ ticketed.
 
 ---
 
+## D-progress-658 — stdlib runtime breakage on dotnet: four root fixes; #5578 exonerated; the silent generic-call drop (#5604, #5612)
+
+The five suites #5604 reported broken on "pristine main" turn out to predate
+wave 2 entirely — bisect ground-truth binaries at e1322d3 (wave 4) and
+5755a8b both reproduce every failure, and PR #5578's diff was audited
+hunk-by-hunk and is innocent. These suites were simply never run on dotnet
+after the F# harness retired. Four distinct compiler bugs, all root-fixed:
+(1) **the silent generic-call drop** — `Lyric.Mono` could not infer type
+args from union-ctor args (`Some(value = 1)`), lambda args, or
+unconstrained calls, and codegen then *silently dropped* the unresolved
+call (args lowered, no call emitted — `isSome(x)` returned `x`). Mono
+gains inference-only union-ctor decls (a reserved
+`__lyric_union_ctor_infer` marker fed for stdlib/in-bundle/restored
+unions), field-pinned argument unification, lambda-arg unification, and
+Object-defaulting for genuinely unconstrained *imported* generics
+(same-package generics keep the loud M0002); codegen boxes value args into
+declared-`object` params. (2) The `PTuple` pattern-*test* path erased
+element types, emitting `isinst` against an *open* generic TypeDef →
+TypeLoadException; it now threads tracked element types like the bind path.
+(3) `registerStdlibTypeItemMembers` built ctor MemberRef sigs context-free
+(`.ctor(string, object)` vs the bundle's typed ctor →
+MissingMethodException); union-case and record paths now use the
+restored-package sig builder. (4) Unqualified union-case construction
+resolved by import order between same-named cases
+(`Std.Regex.RegexError.TimedOut` vs `Std.RegexSafe.RegexError.TimedOut`);
+`pickCaseFqnByQualifier` now prefers the candidate whose parent union
+matches the expected parameter type. All five suites are CI-wired on
+dotnet. **#5612 is a distinct defect**: lyric-session declares no default
+features, so a bare `lyric test` cfg-erases both `@cfg`-gated
+`connectRedis` definitions and codegen silently drops the unresolved call
+(InvalidProgramException in every test); `--features dotnet` gives 6/6.
+The shared deeper defect — codegen dropping unresolved calls *silently* —
+is the mechanism that hid all of this and is now tracked for a loud
+diagnostic.
+
+**Related:** #5604, #5612, #5578 (exonerated), #2494 (the W0005 noise the
+ctx-aware ctor sigs surface), docs/59 §5.2/§3.
+
+---
+
+## D-progress-659 — MSIL auto-FFI overload scoring: trailing-optional defaults and Extends-chain subtype arguments (#5605)
+
+`scoreParams`/`scoreOverload` required exact arity and exact parameter
+FQNs. Now: (1) when no exact-arity overload matches, candidates whose
+extra trailing params all carry defaults are admitted — Param-row
+flags + Constant table decoded into an `ExternParamDefault` union
+(`ldnull` for reference/null-string defaults, scratch-local `initobj`
+for zeroed structs incl. `Nullable<T>` TypeSpecs, integral/bool/char/
+enum constants, I8/U8, R4/R8 bit patterns, `[Optional]`-no-Constant →
+type default); *non-null string* defaults are deliberately not admitted
+(UTF-16LE constant decoding, the `getLiteralFieldConstIn` exclusion).
+Exact-arity candidates outrank defaulted ones; ties prefer fewer
+synthesized defaults; all shapes validate before emission. (2) A
+first-pass miss re-scores named-reference arguments through their
+Extends chain (the argument-side twin of D-progress-656's receiver
+walk); upcasts score below exact and re-verify at emission. Kernel
+migrations this unblocks (`JsonEncodedText.Encode` un-revert,
+`JsonDocument.Parse`, `MemoryStream`-as-`Stream`) stay gated on the
+next seed. Lyric-emitted assemblies can never trip default admission
+(Msil.Lowering writes placeholder Param rows with sequence 0 — which is
+also why the orphaned `metadata_reader_tests.l` fails, now tracked).
+
+**Related:** #5605, Q-MD-004, D-progress-651/656, docs/42.
+
+---
+
+## D-progress-660 — `Lyric.AwaitHoist`: awaits leave operand position; the async-SM pre-scan gets a typed environment (#5606, lyric-docker)
+
+Two related fixes to the MSIL async state machine's Phase A (sizing) /
+Phase B (emission) split. (1) A new shared middle-end pass
+(`lyric-compiler/lyric/await_hoist.l`, wired last in `pipeWeave` so all
+backends and the pre-scan see one tree) rewrites await-bearing operands
+into statement-level bindings: free-call args past index 0 or with two
+awaits, method-call args at any index, constructor args, nested awaits,
+list-literal elements, index expressions, interpolation segments, and
+`while` conditions (loop+break rewrite, per-iteration re-evaluation).
+Identity everywhere else; no descent into lambda/spawn/try bodies;
+left-to-right evaluation preserved; `async func` bodies only. This closes
+the operand-stack-live-across-suspension class (`combineTwo(5, await t)`
+→ InvalidProgramException; nested awaits crashed the *compiler*). (2) The
+Phase A pre-scan (`inferCallReturnTypePB`) had no local-type environment,
+so `await response.bodyText()` on a typed receiver was never counted as a
+real await while Phase B resolved it Task-typed — the
+`emitPhaseBAwait` mismatch panic that crashed the lyric-docker build
+(unmasked by D-progress-657's interface MemberRefs; latent since wave 4
+for declared-param receivers). The pre-scan now carries an environment
+(params, bindings, stdlib `Ok`/`Err`/`Some` match binds, await unwrap,
+field projections) with **bundle-stable** snapshots of the type maps (the
+FieldDef budget fixed at Pass-1 must equal Phase-B's label count), a
+dead-label safety net for overcounts, and a mismatch panic that names the
+SM class and awaited type. The two-pass Phase-B refactor (eliminating the
+mirror entirely) is tracked separately.
+
+**Related:** #5606, D-progress-602/652/657, docs/59 §3, lyric-docker.
+
+---
+
+## D-progress-661 — JVM correctness cluster: explicit-self interface descriptors; fatal type-error gating parity; `[B` field stores; cross-package enum types (#5607, #5609)
+
+Four JVM fixes. (1) `stripLeadingSelfParam` now applies wherever a
+declared-param list feeds descriptors or dispatch (`registerIfaceSig`,
+IMSig abstract-method emission, `lowerImplMethod`), the JVM mirror of
+D-progress-657 — explicit-`self` interface methods dispatch correctly,
+async included (the #2736 VerifyError is MSIL-side only). (2)
+`--target jvm` builds now **fail on type errors** like dotnet: the JVM
+bridge passed `tcFatal = false` to `Lyric.Pipeline` everywhere; user and
+sibling project packages now gate fatally while bundled stdlib packages
+keep the advisory-suppressed check. En route, the JVM codegen intrinsic
+`stringToUtf8Bytes` had to be registered in the checker's
+`codegenBuiltinType` table (fatal gating exposed it as a spurious T0020).
+(3) `[B` assigned into a `slice[Byte]`-typed *field* VerifyErrored (the
+boxing loop needs an empty operand stack); a stash-receiver
+`coerceValueToUnderReceiver` covers putfield/self-field sites, the
+hoisted-cell path is reordered value-first, and `emitNewarray` learns
+array-typed elements. (4) Cross-package enum-typed descriptors named the
+consumer package (`collectFileDeclaredTypeFqns` had no `IEnum` arm) →
+NoClassDefFoundError; fixed.
+
+**Related:** #5607, #5609 (items 1–3; item 4 remains open), D-progress-653/657, D037.
+
+---
+
+## D-progress-662 — ecosystem publish root causes closed: Java 21 in the publish job; log capture; probe parenting; mktemp hardening (#5615 follow-ons, #5613 item 1, #5616)
+
+The first publish run with intact per-library logs (29173340105, unblocked
+by #5615's `set +e`) exposed why the same libraries failed every release
+since 0.4.20: the `publish-ecosystem` job never ran `setup-java`, so the
+runner's default JDK 17 threw `UnsupportedClassVersionError` loading the
+Java-21-built `lyric-resolver.jar` the moment `lyric build` resolved any
+`[maven]` table — deterministically failing lyric-grpc/-web/-mq/-session/
+-lambda (and cascading to lyric-testing). The job gains the same Set up
+Java 21 step every other job already had, a serial dotnet warm-up before
+the 13-way tier fan-out (the NuGet-Migrations mutex race that hit
+lyric-cache), and lyric-otel moves to Tier 3 (its `Lyric.Proto` registry
+dep races NuGet indexing when published in the same tier). Also landed:
+`@externTarget` getter probes parent MemberRefs on the resolved
+`declaringFqn` (consistency with the auto-FFI paths; runtime tolerated
+the old parents per ECMA-335 §II.22.25), and the publish script's mktemp
+calls carry explicit failure handling now that errexit is genuinely off.
+lyric-docker's failure in the same run was the D-progress-660 compiler
+crash, not a workflow issue.
+
+**Related:** #5615, #5613 (item 1), #5616, D-progress-656, docs/22.
+
+---
+
+## D-progress-663 — JVM cross-package/extern type resolution for params and collection elements; the lyric-web Undertow smoke goes end-to-end and CI-gated (#5610, #5444, #5458)
+
+The two blockers that kept `lyric-web/tests/jvm_server_smoke.l` from
+running under java are root-fixed generally. (1) **#5610**:
+instance-method parameter *slot* types resolved via the plain in-package
+guess while descriptors and registration resolved through the
+extern/imported-type seed — `Web.Request` became
+`Web/JvmServerSmoke/Request` and field access panicked.
+`setupInstanceParamSlotsAndHolders` now takes the extern-type map
+(impl, record, and protected methods), and `lowerRecordMethod`'s emitted
+descriptor is aligned with its registration (a latent divergence). (2)
+**#5444**: `indexedElemTypeOverride`'s documented scope boundary is
+lifted — record/protected/opaque slice/List *field* element types
+register under `elem:<class>#<field>` pseudo-keys in the existing
+`funcSigs` registry, member and self-field receivers resolve through
+`staticBaseClass` (chained fields included), and `SFor` narrows loop
+elements on both arms. En route, each next-crash-beneath was fixed:
+generic extern alias resolution + CLR arity-suffix strip (#5458),
+`@externTarget` param descriptors extern-resolved, JVM
+`.indexOf`/`.lastIndexOf` routed to their checker-assigned `Option[Int]`
+UFCS signature (a silent int miscompile; the MSIL twin is #5625),
+mono's module-level `val` initializers rewritten in phase 2 and surface
+explicit type application `f[T](args)` recognized (closing #5623), a
+spurious T0020 for primitive type names in call-position indices, and
+lyric-web's ungated BCL externs target-split with Undertow handlers
+re-dispatched off the IO thread. The smoke passes 4/4 endpoints under
+java and on dotnet and is wired into CI (it *is* #5610's regression test
+— a single-file self-test cannot express the two-package impl-param
+shape). Integration hardening from the wave-close verification: the
+#5604 batch's object-param value-arg box was dropped (it fired on
+degraded signatures — the #2494 family — producing invalid IL at
+`peekAt(-1)` and `MockStorageBucket.presignedUrl`, while its motivating
+shape is specialized concretely by the same batch's inference work), and
+T0086's definite-assignment collector learned that an out param *named*
+`result` assigns through an `EResult` target (the false positive that
+turned fatal with D-progress-661's jvm gating — `Auth.Kernel.Jvm` was
+the first casualty).
+
+**Related:** #5610, #5444, #5458, #5623, #5625, #5626, D-progress-654/658/661, docs/44.
+
+---
+
 ---
 
 ## Decisions deferred to v2 or later

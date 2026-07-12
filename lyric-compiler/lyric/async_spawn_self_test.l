@@ -38,12 +38,18 @@
 //!   - `await` in compound positions inside a scope body — compound-assignment
 //!     RHS, call arguments, `if` conditions — with trailing statements
 //!     asserted (#5569 item 2's reported shape);
+//!   - the #5606 operand-stack family (second-argument and both-argument
+//!     spawn joins, constructor/method-call arguments, nested awaits,
+//!     interpolation segments, list elements, index expressions, `while`
+//!     conditions), which the `Lyric.AwaitHoist` middle-end pass rewrites
+//!     into hoisted `val` bindings on every target;
 //!   - a scope body that panics while a spawned task is still running: the
 //!     Throwable propagates instead of hanging in the executor close
 //!     (#5569 item 3).
 @test_module
 package Lyric.AsyncSpawnSelfTest
 
+import Std.Collections
 import Std.Core
 import Std.Testing
 import Std.Time
@@ -217,16 +223,6 @@ async func compoundAwaitAssign(a: in Int, b: in Int): Int {
 // `await` in a call-argument position inside a `scope { }` body (#5569 item 2
 // family): each spawn-handle join happens directly in an argument list, and a
 // statement after the calls is asserted.
-//
-// Both joins sit in FIRST-argument position deliberately: on MSIL, awaiting a
-// scope-spawn handle in an argument position with a PRECEDING argument already
-// evaluated (`combineTwo(5, await t)`, or two awaits in one argument list)
-// dies with `InvalidProgramException` in the async-SM `MoveNext` — a
-// pre-existing operand-stack-across-await hole in the D-progress-602 pre-scan
-// family, on the .NET side.  The JVM backend handles every argument position
-// (the `__lyric_await` invokestatic join keeps the operand stack legal).
-// Widening this case to non-first argument positions is blocked on that MSIL
-// fix.
 func combineTwo(a: in Int, b: in Int): Int {
   a * 10 + b
 }
@@ -243,6 +239,96 @@ async func awaitInCallArg(a: in Int, b: in Int): Int {
     after = 3
   }
   return combined * 10 + after
+}
+
+// ── #5606: operand-stack values live across an await ─────────────────────────
+// Before the statement-level await hoist (`Lyric.AwaitHoist`, the last
+// middle-end pass), any await in an operand position with values already
+// evaluated — a second-argument spawn join (`combineTwo(5, await t)`), two
+// joins in one argument list, a constructor argument, a method-call argument
+// (the receiver counts as a stacked operand), a nested await, a list element,
+// an index expression, an interpolation segment, a `while` condition — died on
+// MSIL with `InvalidProgramException` in the async-SM `MoveNext` (the CLR does
+// not preserve the operand stack across a suspension), or crashed the compiler
+// with an `emitPhaseBAwait` count mismatch for the nested-await shapes.  The
+// JVM backend handled every position already; both targets now compile the
+// same hoisted tree, so these cases pin the hoist's runtime values on both.
+async func awaitInSecondArg(a: in Int): Int {
+  scope {
+    val t = spawn doubleIt(a)
+    return combineTwo(5, await t)
+  }
+}
+
+async func awaitsInBothArgs(a: in Int, b: in Int): Int {
+  scope {
+    val ta = spawn doubleIt(a)
+    val tb = spawn addOne(b)
+    return combineTwo(await ta, await tb)
+  }
+}
+
+record PairBox {
+  first: Int
+  second: Int
+}
+
+async func ctorArgAwait(x: in Int): Int {
+  val p = PairBox(first = 5, second = await addOne(x))
+  return p.first * 100 + p.second
+}
+
+record Scaler {
+  base: Int
+
+  func scale(self: in Scaler, x: in Int, y: in Int): Int {
+    self.base * 100 + x * 10 + y
+  }
+}
+
+async func methodArgAwait(x: in Int): Int {
+  val s = Scaler(base = 3)
+  val firstPos = s.scale(await addOne(x), 1)
+  val secondPos = s.scale(5, await doubleIt(x))
+  return firstPos * 10000 + secondPos
+}
+
+async func nestedAwaits(x: in Int): Int {
+  return combineTwo(5, await addOne(await doubleIt(x)))
+}
+
+async func interpAwait(x: in Int): String {
+  val a = 7
+  return "a=${a} b=${await addOne(x)}"
+}
+
+// The list-literal case asserts through `.count` and the index case builds
+// its list via `newList()` because MSIL list-LITERAL element reads are
+// broken on main independently of async/await (`[9, 7]` then `xs[0]`
+// returns garbage even in a plain function; `newList()` + `add` reads
+// correctly) — a separate pre-existing silent miscompile this suite must
+// not couple to.
+async func listElemAwait(x: in Int): Int {
+  val xs = [1, await addOne(x)]
+  return xs.count * 100 + 5
+}
+
+async func indexAwait(x: in Int): Int {
+  val xs: List[Int] = newList()
+  xs.add(10)
+  xs.add(20)
+  xs.add(30)
+  return xs[await addOne(x) - 4]
+}
+
+async func whileCondAwait(x: in Int): Int {
+  var n = x
+  var iters = 0
+  while combineTwo(0, await addOne(n)) > 5 {
+    n = n - 1
+    iters = iters + 1
+  }
+  return n * 10 + iters
 }
 
 // `await` in an `if` condition inside a `scope { }` body (#5569 item 2
@@ -390,6 +476,50 @@ test "compound assignment with await in a scope runs the whole body" {
 test "await in call-argument position inside a scope" {
   // combineTwo(double(4), 5) + combineTwo(addOne(6), 6) = 85 + 76 = 161; *10 + 3 = 1613
   assertEqualInt(await awaitInCallArg(4, 6), 1613, "spawn joins as call arguments")
+}
+
+test "#5606: await in second-argument position inside a scope" {
+  // combineTwo(5, double(4)) = 50 + 8 = 58
+  assertEqualInt(await awaitInSecondArg(4), 58, "second-arg spawn join")
+}
+
+test "#5606: two awaits in one argument list inside a scope" {
+  // combineTwo(double(4), addOne(6)) = 80 + 7 = 87
+  assertEqualInt(await awaitsInBothArgs(4, 6), 87, "both arguments are spawn joins")
+}
+
+test "#5606: await in a constructor argument" {
+  // PairBox(5, addOne(4)) -> 5 * 100 + 5
+  assertEqualInt(await ctorArgAwait(4), 505, "ctor second-field await")
+}
+
+test "#5606: await in method-call arguments (receiver stacked)" {
+  // scale(addOne(4), 1) = 300 + 50 + 1 = 351; scale(5, double(4)) = 300 + 50 + 8 = 358
+  assertEqualInt(await methodArgAwait(4), 3510358, "first- and second-position method-arg awaits")
+}
+
+test "#5606: nested awaits stay correctly ordered" {
+  // addOne(double(4)) = 9; combineTwo(5, 9) = 59
+  assertEqualInt(await nestedAwaits(4), 59, "await addOne(await doubleIt(x))")
+}
+
+test "#5606: await in an interpolation segment" {
+  assertEqual(await interpAwait(4), "a=7 b=5", "interpolated await after a text+expr prefix")
+}
+
+test "#5606: await in a list-literal element" {
+  // [1, addOne(4)].count = 2 -> 2 * 100 + 5
+  assertEqualInt(await listElemAwait(4), 205, "second list element is an await")
+}
+
+test "#5606: await in an index expression" {
+  // xs[addOne(4) - 4] = xs[1] = 20
+  assertEqualInt(await indexAwait(4), 20, "receiver stacked across an index await")
+}
+
+test "#5606: await in a while condition re-evaluates per iteration" {
+  // n: 8..5 iterate (addOne(n) > 5), stop at n = 4 -> 4 * 10 + 4
+  assertEqualInt(await whileCondAwait(8), 44, "hoisted condition inside the loop rewrite")
 }
 
 test "await in an if condition inside a scope" {

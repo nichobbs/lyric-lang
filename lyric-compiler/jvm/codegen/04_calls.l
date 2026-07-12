@@ -197,10 +197,17 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
       // but no static overload matches, treat the first parameter as the
       // receiver.  Classes absent from the metadata index keep the name
       // heuristic.
+      // Extern-alias-resolving on every declared param (#5610 family): a
+      // parameter typed with an `extern type` alias (`handler: in
+      // JHttpHandler`) must contribute the real host class to the emitted
+      // call descriptor and the staticness/overload scoring — the plain
+      // `typeExprToJvm` guess baked `L<pkg>/<Alias>;` into the invoke and
+      // failed class resolution at runtime.  The return type (below) was
+      // already extern-resolving.
       val allParamDescs: List[String] = newList()
       var apdI = 0
       while apdI < decl.params.count {
-        allParamDescs.add(jvmTypeToDescStr(typeExprToJvm(decl.params[apdI].ty, ctx.pkgName)))
+        allParamDescs.add(jvmTypeToDescStr(typeExprToJvmExtern(decl.params[apdI].ty, ctx.pkgName, ctx.externTypes)))
         apdI = apdI + 1
       }
       val targetFqnDot = replace(javaClass, "/", ".")
@@ -213,7 +220,7 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
         val ctorParamTys: List[JvmType] = newList()
         var cpI = 0
         while cpI < decl.params.count {
-          ctorParamTys.add(typeExprToJvm(decl.params[cpI].ty, ctx.pkgName))
+          ctorParamTys.add(typeExprToJvmExtern(decl.params[cpI].ty, ctx.pkgName, ctx.externTypes))
           cpI = cpI + 1
         }
         insns.add(LNew(className = javaClass))
@@ -269,7 +276,7 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
       val javaArgTypes: List[JvmType] = newList()
       var ai = startParam
       while ai < decl.params.count {
-        javaArgTypes.add(typeExprToJvm(decl.params[ai].ty, ctx.pkgName))
+        javaArgTypes.add(typeExprToJvmExtern(decl.params[ai].ty, ctx.pkgName, ctx.externTypes))
         ai = ai + 1
       }
 
@@ -3092,6 +3099,32 @@ func lowerMethodCall(
     return retT
   }
   if isStringRecv and args.count == 1 and (memberName == "indexOf" or memberName == "lastIndexOf") {
+    // Lyric's `s.indexOf(needle)` / `s.lastIndexOf(needle)` is UFCS sugar for
+    // `Std.String.indexOf(s, needle): Option[Int]` — that is the type the
+    // checker assigned this call.  Route through the registered free function
+    // when `Std.String` is in the bundle: the raw JDK `String.indexOf(String)I`
+    // intrinsic below silently diverged from the checker (int, -1 sentinel),
+    // so `match s.indexOf(x) { case Some(i) -> ... }` emitted `instanceof` on
+    // an int and failed bytecode verification the moment the class loaded
+    // (hit by `Web.parseQueryPair` once #5610/#5444 let lyric-web reach
+    // class-load on the JVM).  The JDK intrinsic stays as the fallback for a
+    // bundle without `Std.String` (where the checker could only have typed
+    // the call against the JDK method through an extern receiver).
+    // ...except inside `Std.String` itself: its wrapper body
+    // (`val i = s.indexOf(substring); if i < 0 ...`) is the one legitimate
+    // raw-JDK call site — routing it through its own registered sig would be
+    // infinite recursion (StackOverflowError).
+    if ctx.pkgName != "Std/String" {
+      match mapGet(ctx.funcSigs, "Std/String/" + memberName + "@2") {
+        case Some(ufcsSig) -> {
+          val needleTy = lowerCallArg(ctx, insns, args[0])
+          coerceArgTo(insns, needleTy, ufcsSig.params[1])
+          insns.add(LInvokestatic(owner = ufcsSig.owner, name = memberName, params = ufcsSig.params, ret = ufcsSig.ret))
+          return ufcsSig.ret
+        }
+        case None -> ()
+      }
+    }
     lowerCallArg(ctx, insns, args[0])
     val ps1: List[JvmType] = newList()
     ps1.add(JRef(className = "java/lang/String"))

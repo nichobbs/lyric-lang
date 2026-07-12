@@ -162,17 +162,19 @@ pub func compileToJar(
     case None -> return false
   }
 
-  // Middle end (typecheck advisory on the JVM target — the self-hosted
-  // checker lacks full builtin coverage; mode check, `?`-propagation,
-  // mono, and weave gate).  Mono is fed the stdlib's pure-Lyric generic
-  // `pub func`s plus the imported interface / record decls (#3813).
-  // This legacy path derives without imported items (`deriveImports`
-  // empty), matching its historical `deriveFile` call.
+  // Middle end.  Type-check errors on the user's own file gate fatally,
+  // matching the MSIL bridge — a build that prints error[T00xx] and still
+  // reports "built" ships a miscompiled program (#5609 item 1).  Mode
+  // check, `?`-propagation, mono, and weave gate as before.  Mono is fed
+  // the stdlib's pure-Lyric generic `pub func`s plus the imported
+  // interface / record decls (#3813).  This legacy path derives without
+  // imported items (`deriveImports` empty), matching its historical
+  // `deriveFile` call.
   val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
   val importedItems = flattenImportedItems(importedPkgs)
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, CollectedTemplate] = newMap()
-  val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = "")
+  val opts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = "")
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts) {
     case Some(f) -> f
     case None -> return false
@@ -251,10 +253,9 @@ func dottedPath(path: in ModulePath): String {
 
 // Run the middle-end (type check → mode check → contract elaborate →
 // `?`-propagation lower → derive → monomorphise → weave) on one parsed file.
-// Returns the post-weave file, or None if a fatal mode-check / propagate /
-// mono / weave diagnostic was raised.  Type-check diagnostics are advisory
-// (the self-hosted checker lacks full builtin coverage), mirroring
-// `compileToJar`.
+// Returns the post-weave file, or None if a fatal type-check (user-owned
+// packages only, see `tcFatalUserPkg` below) / mode-check / propagate /
+// mono / weave diagnostic was raised.
 //
 // Mirrors the MSIL bridge's per-package pass order (`?`-propagation after the
 // elaborator, `monoFileWithImports` fed the stdlib's generic `pub func`s, then
@@ -270,23 +271,29 @@ func dottedPath(path: in ModulePath): String {
 // `stdlibGenFuncs` supplies the stdlib's pure-Lyric generic `pub func`s to the
 // monomorphizer so cross-package generic calls specialise into this bundle.
 //
-// `reportTcAdvisories` gates whether the (non-gating) type-check diagnostics
-// are echoed to stderr.  Bundled stdlib packages pass `false`: their advisory
-// T0020-style noise (the self-hosted checker lacks full builtin coverage)
-// would otherwise leak onto a *successful* build's output.  Real errors still
-// gate on the mode-check / propagate / mono / weave passes regardless.
-// Thin wrapper over `Lyric.Pipeline.pipeMiddleEnd`, which owns the pass
-// order; this bridge's per-target choices are the derive-with-imports
-// project semantics and the advisory (never fatal) type check.
+// `tcFatalUserPkg` selects the type-check gating policy.  The user's own
+// packages (the main file and sibling project packages) pass `true`:
+// error-severity type diagnostics fail the build, exactly as on the MSIL
+// target (#5609 item 1 — the JVM build previously printed error[T00xx]
+// and still reported "built").  Bundled stdlib packages pass `false`:
+// their type check stays advisory AND suppressed — the self-hosted
+// checker lacks full builtin coverage on stdlib source, and echoing that
+// noise would leak onto every *successful* build's output.  Real errors
+// still gate on the mode-check / propagate / mono / weave passes for
+// every package.  Thin wrapper over `Lyric.Pipeline.pipeMiddleEnd`,
+// which owns the pass order; this bridge's per-target choices are the
+// derive-with-imports project semantics and the stdlib-advisory type
+// check.
 func runMiddleEnd(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
   stdlibGenFuncs: in List[FunctionDecl],
   templates: in Map[String, CollectedTemplate],
-  reportTcAdvisories: in Bool,
+  tcFatalUserPkg: in Bool,
+  pkgLabel: in String,
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
-  val opts = MiddleEndOptions(tcFatal = false, tcReport = reportTcAdvisories, pkgLabel = "")
+  val opts = MiddleEndOptions(tcFatal = tcFatalUserPkg, tcReport = false, pkgLabel = pkgLabel)
   pipeMiddleEnd(
     file0,
     importedPkgs,
@@ -1417,8 +1424,8 @@ pub func compileProjectToJarBundledWithFeatures(
   }
 
   // User package first (its codegen failing is always fatal).  Its type-check
-  // advisories are echoed (they are about the program the user actually wrote).
-  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, allTemplates, true) {
+  // errors gate fatally (they are about the program the user actually wrote).
+  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, allTemplates, true, "") {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -1473,12 +1480,12 @@ pub func compileProjectToJarBundledWithFeatures(
     val f = toBundle[bi]
     val pkgName = dottedPath(f.packageDecl.path)
     // A sibling project package is the user's own code: its failures are
-    // always fatal (reachable or not) and its type-check advisories are
-    // echoed, unlike bundled stdlib files.
+    // always fatal (reachable or not) and its type-check errors gate
+    // fatally, unlike bundled stdlib files.
     val isProjectPkg = projectOwners.containsKey(pkgJvmOwner(f.packageDecl.path))
     val reachable = referencedPkgs.containsKey(pkgJvmOwner(f.packageDecl.path)) or isProjectPkg
     val ok = try {
-      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg) {
+      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg, pkgName) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
           collectMonoSpecializedSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps))

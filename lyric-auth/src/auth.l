@@ -196,10 +196,11 @@ func jwtAlg(token: in String): String {
 // full explanation.
 @cfg(feature = "jvm")
 func jwtAlg(token: in String): String {
-  val dot = token.indexOf(".")
-  if dot < 0 {
-    return ""
-  }
+  // `Std.String.indexOf`/`lastIndexOf` return `Option[Int]` — the raw-int
+  // `-1` idiom the dotnet twin still carries rides the #5625 MSIL
+  // miscompile and cannot compile on the JVM (a relational op on the
+  // Option reference).
+  val dot = match token.indexOf(".") { case Some(i) -> i; case None -> return "" }
   val seg = token.substring(0, dot)
   var headerBytes: slice[Byte] = []
   if not AuthKernelJvm.tryFromBase64Url(seg, headerBytes) {
@@ -214,16 +215,16 @@ func jwtAlg(token: in String): String {
       // many JWT libraries use the last value).  This prevents a crafted first
       // alg=RS256 from masking a final alg=none in the same header.
       val pfx = "\"alg\":\""
-      val pfxPos = header.lastIndexOf(pfx)
-      if pfxPos < 0 {
-        ""
-      } else {
-        val vs = pfxPos + pfx.length
-        val ve = indexOfCharAfter(header, '"', vs)
-        if ve < 0 {
-          ""
-        } else {
-          header.substring(vs, ve - vs)
+      match header.lastIndexOf(pfx) {
+        case None -> ""
+        case Some(pfxPos) -> {
+          val vs = pfxPos + pfx.length
+          val ve = indexOfCharAfter(header, '"', vs)
+          if ve < 0 {
+            ""
+          } else {
+            header.substring(vs, ve - vs)
+          }
         }
       }
     }

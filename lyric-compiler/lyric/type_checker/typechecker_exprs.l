@@ -71,6 +71,16 @@ func codegenBuiltinType(name: in String): Option[Type] {
     ps.add(TyError)
     return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtString), isAsync = false))
   }
+  if name == "stringToUtf8Bytes" {
+    // JVM codegen intrinsic (`lowerCall` in jvm/codegen/04_calls.l): kernel
+    // packages (stdlib `_kernel_jvm/` and ecosystem `_kernel/jvm/` twins)
+    // call it unqualified.  Registered here so fatal type-check gating on
+    // user-owned JVM packages (#5609 item 1) does not reject working kernel
+    // code with a spurious T0020.
+    val ps: List[Type] = newList()
+    ps.add(TyPrim(pt = PtString))
+    return Some(value = TyFunction(params = ps, ret = TySlice(element = TyPrim(pt = PtByte)), isAsync = false))
+  }
   if name == "hostParseIntIsValid" or name == "hostParseLongIsValid" or name == "hostParseDoubleIsValid" or name == "hostFileExists" or name == "hostReadAllTextIsValid" or name == "hostDirectoryExists" or name == "hostCreateDirectoryIsValid" {
     val ps: List[Type] = newList()
     ps.add(TyPrim(pt = PtString))
@@ -3444,7 +3454,29 @@ pub func inferExpr(
       val rt = inferExpr(sc, tbl, sigs, diag, recvE)
       var ii = 0
       while ii < indices.count {
-        inferExpr(sc, tbl, sigs, diag, indices[ii])
+        // A bare primitive TYPE name as an index is the surface explicit
+        // type application (`mapKeys[String, String](m)` parses as
+        // `ECall(EIndex(...))`, never `ETypeApp`); inferring it as a value
+        // expression produced a spurious `T0020 unknown name 'String'`.
+        // Record/interface names already resolve through the symbol table
+        // without a diagnostic; primitives are not value symbols, so skip
+        // them here.  A genuine value index never names a primitive type.
+        val isPrimTypeIndex = match indices[ii].kind {
+          case EPath(ip) -> {
+            if ip.segments.count == 1 {
+              match primFromString(ip.segments[0]) {
+                case Some(_) -> true
+                case None -> false
+              }
+            } else {
+              false
+            }
+          }
+          case _ -> false
+        }
+        if not isPrimTypeIndex {
+          inferExpr(sc, tbl, sigs, diag, indices[ii])
+        }
         ii = ii + 1
       }
       indexElementType(rt)

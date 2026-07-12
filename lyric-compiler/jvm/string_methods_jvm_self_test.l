@@ -13,16 +13,32 @@
 //!             toUpper → toUpperCase (String)
 //!             toLower → toLowerCase (String)
 //!             length  → length()    (int)
-//!   • 1-arg: indexOf/lastIndexOf(String) → indexOf/lastIndexOf(String) (int)
+//!   • 1-arg: indexOf/lastIndexOf(String) — routed to the UFCS
+//!             `Std.String.indexOf/lastIndexOf(s, needle): Option[Int]`
+//!             registered sig (the type the checker assigns; the original
+//!             #1585 raw-JDK-int intrinsic silently diverged from MSIL and
+//!             is now only the fallback for a bundle without `Std.String`)
 //!   • 2-arg: replace(old, new) → replace(CharSequence, CharSequence) (String)
 //!
 //! Run via the native test runner on the JVM target:
 //!
 //!   lyric test --target jvm lyric-compiler/jvm/string_methods_jvm_self_test.l
+//!
+//! Known cross-target divergence (NOT covered here — this file is CI-wired
+//! jvm-only): the MSIL backend still lowers `s.indexOf(x)` to the raw BCL
+//! `String.IndexOf` int against the checker's `Option[Int]`, and its lenient
+//! union match lets `case Some(_)` match the boxed int — so the two
+//! None-expecting cases below fail on `--target dotnet` until the MSIL side
+//! adopts the same UFCS routing the JVM backend now has.
 @test_module
 package Lyric.StringMethodsJvmSelfTest
 
 import Std.Core
+// Std.String must be in the import closure for `.indexOf`/`.lastIndexOf`:
+// they are UFCS sugar for `Std.String.indexOf(s, needle): Option[Int]`, and
+// the JVM bundles by import closure — exactly the requirement the checker
+// imposes to type these calls in the first place.
+import Std.String
 import Std.Testing
 
 test "trim removes leading and trailing whitespace" {
@@ -55,24 +71,36 @@ test "length returns character count" {
   assertEqualInt(s.length, 5, "length")
 }
 
-test "indexOf returns position of first occurrence" {
+test "indexOf returns the first occurrence as Some" {
   val s = "abcabc"
-  assertEqualInt(s.indexOf("bc"), 1, "indexOf first")
+  match s.indexOf("bc") {
+    case Some(i) -> assertEqualInt(i, 1, "indexOf first")
+    case None -> assertTrue(false, "indexOf must find 'bc'")
+  }
 }
 
-test "indexOf returns -1 when not found" {
+test "indexOf returns None when not found" {
   val s = "hello"
-  assertEqualInt(s.indexOf("xyz"), -1, "indexOf not found")
+  match s.indexOf("xyz") {
+    case Some(_) -> assertTrue(false, "indexOf must not find 'xyz'")
+    case None -> assertTrue(true, "indexOf not-found is None")
+  }
 }
 
-test "lastIndexOf returns position of last occurrence" {
+test "lastIndexOf returns the last occurrence as Some" {
   val s = "abcabc"
-  assertEqualInt(s.lastIndexOf("bc"), 4, "lastIndexOf last")
+  match s.lastIndexOf("bc") {
+    case Some(i) -> assertEqualInt(i, 4, "lastIndexOf last")
+    case None -> assertTrue(false, "lastIndexOf must find 'bc'")
+  }
 }
 
-test "lastIndexOf returns -1 when not found" {
+test "lastIndexOf returns None when not found" {
   val s = "hello"
-  assertEqualInt(s.lastIndexOf("xyz"), -1, "lastIndexOf not found")
+  match s.lastIndexOf("xyz") {
+    case Some(_) -> assertTrue(false, "lastIndexOf must not find 'xyz'")
+    case None -> assertTrue(true, "lastIndexOf not-found is None")
+  }
 }
 
 test "replace substitutes all occurrences" {

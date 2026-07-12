@@ -151,7 +151,7 @@ func lowerCmp(
             emitObjectsEquals(insns)
             insns.add(LIfeq(label = trueLabel))
           }
-          case _ -> panic("Jvm.Codegen: unsupported reference comparison op")
+          case _ -> panic("Jvm.Codegen: unsupported reference comparison op: a relational operator (<, <=, >, >=) on operands of reference type '" + cls + "' — only String supports relational comparison; check whether an operand's declared type is a reference (e.g. Option[Int] from Std.String.indexOf) being compared like a number")
         }
       }
     }
@@ -223,19 +223,18 @@ func emitPanicFromStack(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
 // resolves against the real type instead of panicking on / silently
 // miscompiling against a statically-`Object` receiver.
 //
-// SCOPE BOUNDARY (left for a follow-up, not attempted here): this only
-// resolves a BARE NAME (`EPath`) receiver — a parameter, local, or
-// match-bound name whose own declared/recorded type is visible in `ctx`
-// without any further indirection. A receiver that is itself a field access
+// FIELD receivers (#5444): a receiver that is a field access
 // (`self.mws[self.idx]`, the exact shape `lyric-web`'s `MiddlewareChain`
-// hits in #5444) or any other non-bare-name expression is NOT covered: doing
-// so would need a parallel "declared element type" registry threaded
-// alongside `ctx.caseFields` through every one of `Jvm.Codegen`'s ~30
-// `caseFields`-plumbed construction/lowering entry points (records, union
-// cases, protected types, opaque types, exposed views) — a materially larger
-// change than this bounded fix. `indexedElemTypeOverride` returns `JVoid`
-// (no override) for such receivers, same as before this fix; the call site
-// falls back to the pre-existing erased-`Object` behaviour, unchanged.
+// hits) resolves through the `elem:<class>#<field>` funcSigs registry
+// (`registerFieldElemSig`, 06_items.l) — record/protected/opaque slice/List
+// fields register their declared element type there, eagerly resolved in the
+// DECLARING file's context, so no new registry needed threading through the
+// ~30 `caseFields`-plumbed entry points. The field's owner class is resolved
+// statically (`staticBaseClass`): `self`, a typed local/param, or a chained
+// field access off one. A bare name that is a `selfClass` FIELD (not a
+// local) resolves through the same registry. Anything else stays `JVoid`
+// (no override) and falls back to the pre-existing erased-`Object`
+// behaviour, unchanged.
 //
 // A same-package INTERFACE (or protected/opaque type) element — `List[Shape]`
 // / `slice[Shape]` where `Shape` is a non-generic interface declared in the
@@ -288,35 +287,125 @@ func sameTypeExprElemFallback(ctx: in FuncCtx, te: in TypeExpr, resolved: in Jvm
   }
 }
 
-func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr): JvmType {
-  match recv.kind {
+// The statically-known JVM class of a simple base expression, WITHOUT
+// lowering it: `self` (→ `ctx.selfClass`), a bare typed local/param
+// (→ `ctx.types`), or a one-step-at-a-time chain of field accesses off
+// either (→ `recordFieldType` through `ctx.caseFields`).  Used by
+// `indexedElemTypeOverride`'s field-receiver arm (#5444) to key the
+// `elem:<class>#<field>` registry lookup.  `Object` (erased) bases yield
+// `None` — there is nothing precise to key by.
+func staticBaseClass(ctx: in FuncCtx, base: in Expr): Option[String] {
+  match base.kind {
+    case ESelf -> ctx.selfClass
     case EPath(p) -> {
       if p.segments.count == 1 {
-        val args = optGenericArgs(mapGet(ctx.varGenericArgs, p.segments[0]))
-        if args.count == 1 {
-          match sameTypeExprElemFallback(ctx, args[0], resolveConcreteTypeExpr(ctx, args[0])) {
-            case JRef(cls) -> {
-              if cls == "java/lang/Object" {
-                JVoid
-              } else {
-                JRef(className = cls)
+        match mapGet(ctx.types, p.segments[0]) {
+          case Some(t) -> {
+            match t {
+              case JRef(cls) -> {
+                if cls == "java/lang/Object" {
+                  None
+                } else {
+                  Some(value = cls)
+                }
+              }
+              case _ -> None
+            }
+          }
+          case None -> None
+        }
+      } else {
+        None
+      }
+    }
+    case EMember(inner, fieldName) -> {
+      match staticBaseClass(ctx, inner) {
+        case Some(cls) -> {
+          match recordFieldType(ctx, cls, fieldName) {
+            case Some(fty) -> {
+              match fty {
+                case JRef(fcls) -> {
+                  if fcls == "java/lang/Object" {
+                    None
+                  } else {
+                    Some(value = fcls)
+                  }
+                }
+                case _ -> None
               }
             }
-            // A nested `slice[slice[Elem]]`/`List[List[Elem]]` element resolves
-            // to `JArray`; `coerceArgTo` has no narrowing arm for a boxed
-            // `Object` flowing into an array-typed target (nested slices were
-            // never covered by this override before this fix either), so stay
-            // at the safe "no override" sentinel rather than risk a
-            // `ClassCastException` from a half-handled narrowing.
-            case JArray(_) -> JVoid
-            case JVoid -> JVoid
-            case t -> t
+            case None -> None
           }
-        } else {
-          JVoid
+        }
+        case None -> None
+      }
+    }
+    case EParen(inner) -> staticBaseClass(ctx, inner)
+    case _ -> None
+  }
+}
+
+// The registered declared element type for field `fieldName` of class `cls`
+// (#5444) — `registerFieldElemSig` (06_items.l) only registers genuinely
+// narrowing entries (never `Object`, `JArray`, or an erased type param), so
+// a hit's `ret` is applied unconditionally; a miss is the no-override
+// sentinel.
+func fieldElemOverride(ctx: in FuncCtx, cls: in String, fieldName: in String): JvmType {
+  match mapGet(ctx.funcSigs, "elem:" + cls + "#" + fieldName) {
+    case Some(sig) -> sig.ret
+    case None -> JVoid
+  }
+}
+
+func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr): JvmType {
+  // Recorded/declared instantiation args first, resolved through the same
+  // `scrutineeGenericArgs` extraction match-payload unboxing uses
+  // (#4938/#4933/#5570): a bare name's recorded `varGenericArgs` entry, a
+  // direct call's declared return instantiation (`for n in headerNamesOf(hm)`
+  // — the phantom-generic extern-collection idiom), an instance-method call,
+  // or an `await`-wrapped call.
+  val args = scrutineeGenericArgs(ctx, recv)
+  if args.count == 1 {
+    val resolved = sameTypeExprElemFallback(ctx, args[0], resolveConcreteTypeExpr(ctx, args[0]))
+    match resolved {
+      case JRef(cls) -> {
+        if cls != "java/lang/Object" {
+          return JRef(className = cls)
+        }
+      }
+      // A nested `slice[slice[Elem]]`/`List[List[Elem]]` element resolves
+      // to `JArray`; `coerceArgTo` has no narrowing arm for a boxed
+      // `Object` flowing into an array-typed target (nested slices were
+      // never covered by this override before this fix either), so stay
+      // at the safe "no override" sentinel rather than risk a
+      // `ClassCastException` from a half-handled narrowing.
+      case JArray(_) -> return JVoid
+      case JVoid -> ()
+      case t -> return t
+    }
+  }
+  match recv.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 and not ctx.slots.containsKey(p.segments[0]) {
+        // A bare name with no recorded element entry and no local slot: in
+        // an instance method it may be a `selfClass` FIELD read (`mws[i]`
+        // with implicit self) — resolve through the same field-element
+        // registry the explicit `self.mws[i]` spelling uses (#5444).
+        match ctx.selfClass {
+          case Some(sc) -> fieldElemOverride(ctx, sc, p.segments[0])
+          case None -> JVoid
         }
       } else {
         JVoid
+      }
+    }
+    case EMember(base, fieldName) -> {
+      // Field-access receiver (`self.mws[self.idx]`, `router.middlewares[i]`,
+      // #5444): the field's declared slice/List element type was registered
+      // by the declaring package under `elem:<class>#<field>`.
+      match staticBaseClass(ctx, base) {
+        case Some(cls) -> fieldElemOverride(ctx, cls, fieldName)
+        case None -> JVoid
       }
     }
     case EParen(inner) -> indexedElemTypeOverride(ctx, inner)
