@@ -448,6 +448,140 @@ test "cross package imported generic" {
   )
 }
 
+// Collect the generic IFunc decls of a parsed file plus the inference-only
+// union-case constructor synths for its unions — the same feed the MSIL
+// bridge composes via `collectStdlibGenericFuncs` + `collectStdlibUnionCtorDecls`.
+func genericsAndUnionCtors(file: in SourceFile): List[FunctionDecl] {
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        match decl.generics {
+          case Some(_) -> feed.add(decl)
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  val ctors = unionCtorInferenceDecls(file.items)
+  var ci = 0
+  while ci < ctors.count {
+    feed.add(ctors[ci])
+    ci = ci + 1
+  }
+  feed
+}
+
+// #5604: a generic call whose only type-argument source is a UNION-CASE
+// CONSTRUCTOR argument (`isSome(Some(value = 1))`) must specialise.  The
+// inference-only ctor synths (`unionCtorInferenceDecls`) type the argument
+// as `OptLike[Int]`, binding T — without them the call silently stayed
+// generic and codegen dropped it (returning its own argument).
+test "union-case ctor argument binds imported generic's type param (#5604)" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool { isLike(SomeLike(v = 5)) }\n"
+  val libSrc = "package Lib\n" + "pub union OptLike[T] { case SomeLike(v: T)\n case NoneLike }\n" +
+    "pub func isLike[T](o: in OptLike[T]): Bool { match o { case SomeLike(x) -> true\n case _ -> false } }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(hasFunc(res.file, "isLike__Int"), "isLike specialises to isLike__Int from the SomeLike(v = 5) argument")
+  assertFalse(hasFunc(res.file, "SomeLike__Int"), "the inference-only ctor synth is never itself specialised")
+}
+
+// Same-file unions get the same treatment without any imported feed: the
+// monomorphizer synthesises the ctor decls from the file's own IUnion items.
+test "union-case ctor argument binds same-file generic's type param (#5604)" {
+  val src = "package P\n" + "union BoxLike[T] { case Full(v: T)\n case Empty }\n" +
+    "func pick[T](b: in BoxLike[T]): Bool { match b { case Full(x) -> true\n case _ -> false } }\n" +
+    "func caller(): Bool { pick(Full(v = 3)) }\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "pick__Int"), "pick specialises to pick__Int from the Full(v = 3) argument")
+}
+
+// #5604: a lambda argument's ANNOTATED parameter types (and, when the body
+// ends in an inferable trailing expression, its result type) bind type
+// params.  `forEach([], { x: Int -> () })` / `mapOption(None, { x: Int ->
+// x * 2 })` were the stdlib shapes that silently stayed generic.
+test "lambda argument binds imported generic's type params (#5604)" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool { mapLike(1, { y: Int -> y > 0 }) }\n"
+  val libSrc = "package Lib\n" + "pub func mapLike[T, U](x: in T, f: (T) -> U): U { f(x) }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(
+    hasFunc(res.file, "mapLike__Int__Bool"),
+    "mapLike binds T from the lambda's annotated param and U from its body"
+  )
+}
+
+test "lambda-only argument binds type param when no other source exists (#5604)" {
+  val callerSrc = "package Caller\n" + "func caller(): Int { eachLike({ z: Int -> () }) }\n"
+  val libSrc = "package Lib\n" + "pub func eachLike[T](f: (T) -> Unit): Int { 0 }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(hasFunc(res.file, "eachLike__Int"), "eachLike binds T from the lambda's annotated param alone")
+}
+
+// #5604: an IMPORTED generic whose type params the arguments cannot pin
+// (`isNone(None)` — a nullary case carries no type information) defaults the
+// unbound params to Object and specialises, matching the erased uniform-ABI
+// meaning.  Generic pub funcs are never emitted to any assembly, so leaving
+// the call generic meant codegen silently dropped it.  Local generics keep
+// the loud M0002 (covered by the existing M0002 tests).
+// #5604: a ctor argument that pins only SOME of the union's type params
+// (`isOk(Ok(value = 7))` — T pinned by the field, E unpinned) must
+// specialise with the pinned slot concrete and the unpinned slot Object —
+// the exact instantiation the argument's `newobj` builds (field-derived
+// per-slot, `object` fill).  An all-Object specialisation here mismatched
+// the construction and the specialised match's closed isinst never fired.
+test "partially-pinned union-ctor argument mixes concrete and Object slots (#5604)" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool { isOkLike2(MkOk(v = 7)) }\n"
+  val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk(v: T)\n case MkErr(e: E) }\n" +
+    "pub func isOkLike2[T, E](r: in ResLike[T, E]): Bool { match r { case MkOk(x) -> true\n case _ -> false } }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(
+    hasFunc(res.file, "isOkLike2__Int__Object"),
+    "isOkLike2 pins T from the MkOk field and defaults the unpinned E to Object"
+  )
+}
+
+// #5604: a binding initialised from an imported generic call must track the
+// CALL's (defaulted) instantiation, so a later generic call over the binding
+// specialises at the instantiation the value actually carries.
+test "binding from an imported generic call tracks the defaulted instantiation (#5604)" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool { val m = wrapIt(MkOk(v = 5))\n isOkLike2(m) }\n"
+  val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk(v: T)\n case MkErr(e: E) }\n" +
+    "pub func wrapIt[T, E](r: in ResLike[T, E]): ResLike[T, E] { r }\n" +
+    "pub func isOkLike2[T, E](r: in ResLike[T, E]): Bool { match r { case MkOk(x) -> true\n case _ -> false } }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(hasFunc(res.file, "wrapIt__Int__Object"), "wrapIt specialises with T pinned and E defaulted")
+  assertTrue(
+    hasFunc(res.file, "isOkLike2__Int__Object"),
+    "isOkLike2 over the binding reuses the call's defaulted instantiation"
+  )
+}
+
+test "unconstrained imported generic defaults unbound type params to Object (#5604)" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool { isEmptyLike(NoneLike) }\n"
+  val libSrc = "package Lib\n" + "pub union OptLike[T] { case SomeLike(v: T)\n case NoneLike }\n" +
+    "pub func isEmptyLike[T](o: in OptLike[T]): Bool { match o { case NoneLike -> true\n case _ -> false } }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(
+    hasFunc(res.file, "isEmptyLike__Object"),
+    "isEmptyLike defaults its unbound T to Object instead of staying generic"
+  )
+}
+
 // #3705: a generic union predicate (`isErrLike`, the shape of stdlib
 // `isOk`/`isErr`) is specialised over the *concrete* Result type only
 // when the monomorphizer can infer the argument's type — which, for a
@@ -479,7 +613,8 @@ test "non-generic callee return feeds cross-package union-predicate specialisati
   }
 
   // Without the non-generic callee, the argument type can't be inferred, so
-  // the predicate stays erased — no concrete specialisation is produced.
+  // no CONCRETE specialisation is produced (the unbound params default to
+  // Object — see the #5604 defaulting test below).
   val resNoFeed = monoFileWithImports(parse(callerSrc).file, genOnly)
   assertTrue(
     not hasFunc(resNoFeed.file, "isErrLike__Int__String"),
@@ -545,8 +680,8 @@ test "interface-method return feeds union-predicate specialisation (#3813)" {
     ii = ii + 1
   }
 
-  // Without the interface decl, `b.probe()`'s return type is unknown, so the
-  // predicate stays erased.
+  // Without the interface decl, `b.probe()`'s return type is unknown, so no
+  // concrete specialisation is produced (unbound params default to Object).
   val emptyIfaces: List[InterfaceDecl] = newList()
   val resNoIface = monoFileWithImportsAndIfaces(parse(callerSrc).file, genFeed, emptyIfaces)
   assertTrue(
@@ -600,8 +735,8 @@ test "imported record field feeds union-predicate specialisation (#3813)" {
   val emptyIfaces: List[InterfaceDecl] = newList()
   val emptyRecs: List[RecordDecl] = newList()
 
-  // Without the record decl, `p.tok`'s type is unknown, so the predicate stays
-  // erased.
+  // Without the record decl, `p.tok`'s type is unknown, so no concrete
+  // specialisation is produced (unbound params default to Object).
   val resNoRec = monoFileWithImportsAndTypeDecls(parse(callerSrc).file, genFeed, emptyIfaces, emptyRecs)
   assertTrue(
     not hasFunc(resNoRec.file, "isSomeLike__String"),
@@ -847,9 +982,10 @@ test "uninferable call to dropped same-package generic raises M0002" {
   assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 1, "zero-arg call cannot infer T — M0002 fires")
 }
 
-// B2: lambda arguments are an inference gap (`inferExprTE` returns None
-// for ELambda), so a generic call whose only evidence is a lambda must
-// raise M0002 instead of dangling.
+// B2: an UNANNOTATED lambda argument cannot drive inference (no param
+// types to unify, no env to type the body), so a same-package generic call
+// whose only evidence is such a lambda must raise M0002 instead of
+// dangling.  Annotated lambdas DO drive inference — see the #5604 tests.
 test "lambda-arg call to dropped same-package generic raises M0002" {
   val src = "package P\n" + "func applyIt[T](f: in (T) -> T): Int { 0 }\n" +
     "func caller(): Int { applyIt({ x -> x }) }\n"
@@ -858,9 +994,8 @@ test "lambda-arg call to dropped same-package generic raises M0002" {
 }
 
 // B2 negative: the same uninferable shape against an IMPORTED generic must
-// stay silent — the imported decl is not erased from its home assembly, so
-// the un-specialised call legitimately falls back to the erased-generic
-// path at codegen.
+// stay silent — its unbound type params default to Object and the call
+// specialises (#5604); nothing dangles, so no diagnostic.
 test "uninferable call to imported generic stays silent" {
   val callerSrc = "package Caller\n" + "func caller(): Int { pickImported() }\n"
   val importedSrc = "package Lib\n" + "pub func pickImported[T](): Int { 0 }\n"

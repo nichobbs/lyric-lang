@@ -9425,28 +9425,73 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
 func pickCaseFqnByQualifier(
   cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in List[String], qualifier: in String
 ): String {
-  if candidates.count == 1 or qualifier.length == 0 {
-    return pickCaseFqnByScope(cctx, fctx, candidates)
+  if candidates.count == 1 {
+    return candidates[0]
   }
-  var i = 0
-  while i < candidates.count {
-    match mapGet(cctx.caseParentUnion, candidates[i]) {
-      case Some(parentFqn) -> {
-        val dotIdx = parentFqn.lastIndexOf(".")
-        val parentSimple = if dotIdx >= 0 {
-          parentFqn.substring(dotIdx + 1, parentFqn.length - dotIdx - 1)
-        } else {
-          parentFqn
+  if qualifier.length > 0 {
+    var i = 0
+    while i < candidates.count {
+      match mapGet(cctx.caseParentUnion, candidates[i]) {
+        case Some(parentFqn) -> {
+          val dotIdx = parentFqn.lastIndexOf(".")
+          val parentSimple = if dotIdx >= 0 {
+            parentFqn.substring(dotIdx + 1, parentFqn.length - dotIdx - 1)
+          } else {
+            parentFqn
+          }
+          if parentSimple == qualifier {
+            return candidates[i]
+          }
         }
-        if parentSimple == qualifier {
-          return candidates[i]
-        }
+        case None -> ()
       }
-      case None -> ()
+      i = i + 1
     }
-    i = i + 1
+  }
+  // No qualifier (or no qualifier match): before falling back to import-order
+  // scope tiers, prefer the candidate whose parent union matches the
+  // EXPECTED type of the position being lowered (the call argument's declared
+  // parameter type, pushed onto `collExpect` by the resolved-call argument
+  // loop).  Two imported unions sharing a case name (`Std.Regex.RegexError`
+  // vs `Std.RegexSafe.RegexError`, both with `TimedOut`) otherwise resolve
+  // by import order, constructing the WRONG union's case for
+  // `errorMessage(TimedOut(...))` — the callee's isinst tests then match no
+  // arm and the match-not-exhaustive panic fires at run time (#5604).
+  // Pattern positions never route through this function (they use
+  // `pickCaseFqnByScrutinee`), so a stale enclosing expectation cannot leak
+  // into pattern-case resolution.
+  if fctx.collExpect.count > 0 {
+    val expectedFqn = unionHeadFqnOfMsilType(fctx.collExpect[fctx.collExpect.count - 1])
+    if expectedFqn.length > 0 {
+      var ei = 0
+      while ei < candidates.count {
+        match mapGet(cctx.caseParentUnion, candidates[ei]) {
+          case Some(p) -> {
+            if p == expectedFqn {
+              return candidates[ei]
+            }
+          }
+          case None -> ()
+        }
+        ei = ei + 1
+      }
+    }
   }
   pickCaseFqnByScope(cctx, fctx, candidates)
+}
+
+// The class FQN a union-shaped MsilType names (arity suffix stripped), or ""
+// for shapes that cannot name a union.  Shared by the expected-type step in
+// `pickCaseFqnByQualifier` and mirrors `pickCaseFqnByScrutinee`'s extraction.
+func unionHeadFqnOfMsilType(t: in MsilType): String {
+  match t {
+    case MClass(cls) -> cls
+    case MGenericInst(_, fqn, _) -> stripGenericArity(fqn)
+    case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
+    case MValueTypeGenericInst(_, fqn, _) -> stripGenericArity(fqn)
+    case MClassRef(_, clrFqn) -> stripGenericArity(clrFqn)
+    case _ -> ""
+  }
 }
 
 // Pattern-matching variant of `pickCaseFqnByScope`.  When `scrutTy`
@@ -10004,15 +10049,40 @@ func lowerPatternTestMsil(
       // from the `List<object>` representation) so refutable sub-patterns
       // (literals, ranges, nested cases) are honoured rather than the tuple
       // matching unconditionally.
+      //
+      // When the scrutinee's type tracks the element types (MTuple), each
+      // element test runs at its precise static type — mirroring the PTuple
+      // BIND path below.  Testing at the erased `MObject` type instead sent a
+      // generic union-case sub-pattern (`case (Some(hi), Some(lo))`) down the
+      // erased-scrutinee path, which resolved the case class by NAME and
+      // emitted `isinst` against the OPEN generic TypeDef (`Option_Some`1`
+      // with no instantiation) — a JIT-time TypeLoadException ("Could not
+      // load type 'Std.Core.Option_Some`1'") in every method containing such
+      // a match (#5604, Std.Encoding.tryDecodeHex).  With the precise
+      // MGenericInstByName element type the test takes the closed-TypeSpec
+      // MIsinstGeneric path above.
+      val tupElemTys: List[MsilType] = match scrutTy { case MTuple(elems) -> elems; case _ -> newList() }
       var pti = 0
       while pti < tuplePats.count {
         emitLoadSlot(insns, scrutSlot, fctx.paramCount)
         insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
         insns.add(MLdcI4(v = pti))
         insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
-        val ptElemSlot = allocSlotMsil(fctx, "__tuptest_" + toString(pti) + "_" + toString(fctx.slotTicker.count), MObject)
+        val ptElemTy = if pti < tupElemTys.count { tupElemTys[pti] } else { MObject }
+        // `get_Item` returns object; narrow to the tracked element type
+        // (`unbox.any` for value elements, `castclass` for reference
+        // elements).  A nested tuple element stays `object` (its runtime rep
+        // is itself a List<object>).
+        match ptElemTy {
+          case MObject -> {
+          }
+          case MTuple(_) -> {
+          }
+          case _ -> castObjectToMsil(cctx, insns, ptElemTy)
+        }
+        val ptElemSlot = allocSlotMsil(fctx, "__tuptest_" + toString(pti) + "_" + toString(fctx.slotTicker.count), ptElemTy)
         emitStoreSlot(insns, ptElemSlot, fctx.paramCount)
-        lowerPatternTestMsil(cctx, fctx, insns, tuplePats[pti], ptElemSlot, MObject, failLabel)
+        lowerPatternTestMsil(cctx, fctx, insns, tuplePats[pti], ptElemSlot, ptElemTy, failLabel)
         pti = pti + 1
       }
     }
@@ -11997,6 +12067,20 @@ func lowerBuiltinOrStaticCallMsil(
                           pushCollExpect(fctx, pTy)
                           val aTy = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
                           popCollExpect(fctx)
+                          // A value argument flowing into a declared `object`
+                          // parameter must box (mirrors the sibling-method arm
+                          // below).  Object-typed parameters on ordinary static
+                          // calls arise from monomorphized copies whose type
+                          // param defaulted to Object (`unwrapResultOr(Err(
+                          // error = 1), 99)` → `unwrapResultOr__Object__Int(...,
+                          // object)`, #5604): without the box the raw int32 hits
+                          // the stack where the JIT expects a reference —
+                          // InvalidProgramException in the calling method.
+                          match pTy {
+                            case MObject -> boxIfNeededMsil(cctx, insns, aTy)
+                            case _ -> {
+                            }
+                          }
                           // #2455: unbox a boxed (object) argument — e.g. a bound
                           // tuple element — to a value-type parameter.
                           coerceCallArgMsil(cctx, insns, aTy, pTy)
@@ -29870,7 +29954,16 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
             ctorParams2.add(cpMsilTy)
             cpi = cpi + 1
           }
-          val ctorSig2 = buildInstanceMethodSig(ctorParams2, MVoid)
+          // Context-aware sig builder: a concrete class-typed field (e.g.
+          // `Transport(url: String, error: IOError)`) must encode CLASS +
+          // TypeRef in the consumer's ctor MemberRef to match the bundle's
+          // MethodDef `.ctor(string, class Std.Errors.IOError)`.  The
+          // context-free builder degraded MClass params to `object`, so the
+          // MemberRef `(string, object)` never bound — MissingMethodException
+          // at every cross-assembly construction of such a case (#5604).
+          // Mirrors `registerRestoredUnionCase`, which already uses the
+          // ctx-aware builder.
+          val ctorSig2 = buildInstanceMethodSigWithCtx(ctorParams2, MVoid, cctx.lctx)
           val ctorSigKey = "stdlib_case_ctor_" + ctorKey
           val ctorMrRow = ctxAddMemberRef(cctx.lctx, caseRow, ".ctor", ctorSigKey, ctorSig2)
           if not cctx.recordCtorTokens.containsKey(ctorKey) {
@@ -30025,7 +30118,12 @@ func registerStdlibRecordLikeType(
       }
       ci = ci + 1
     }
-    val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
+    // Ctx-aware for the same reason as the union-case ctor above (#5604):
+    // concrete class-typed record fields must encode CLASS + TypeRef, not
+    // degrade to `object`, or the consumer's `.ctor` MemberRef diverges from
+    // the bundle's MethodDef.  Type-param fields are unaffected (they resolve
+    // no TypeRef row and keep the `object` encoding either way).
+    val ctorSig = buildInstanceMethodSigWithCtx(ctorParams, MVoid, cctx.lctx)
     val ctorSigKey = "stdlib_ctor_" + typeFqn
     val ctorMrRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", ctorSigKey, ctorSig)
     if not cctx.recordCtorTokens.containsKey(typeFqn) {

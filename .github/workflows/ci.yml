@@ -5165,6 +5165,30 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_tests.l
 
+      # Stdlib runtime suites on dotnet (#5604): these five `func main`-shaped
+      # suites (run via `lyric run`, not `lyric test` — they predate
+      # @test_module) were CI-wired nowhere on dotnet, which let a whole
+      # family of silent miscompiles ship invisibly: generic stdlib calls
+      # dropped when the monomorphizer could not infer type args
+      # (core/iter), open-generic isinst from tuple-pattern tests
+      # (encoding), wrong-union case construction under a cross-package
+      # case-name collision (regex_safe), and object-degraded union-ctor
+      # MemberRef signatures (rest).  Each suite exits non-zero on any
+      # assertion failure or runtime fault.
+      - name: Stdlib runtime suites on dotnet (core, iter, encoding, regex_safe, rest)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping stdlib runtime suites"
+            exit 1
+          fi
+          for suite in core_tests iter_tests encoding_tests regex_safe_tests rest_tests; do
+            echo "--- lyric run lyric-stdlib/tests/$suite.l"
+            "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
+          done
+
       # Std.Http async client surface (#5564): interface dispatch through
       # defaultClient() and the free getAsync/sendAsync functions.  Uses
       # deterministic error-path dispatch (no live listener needed), so it

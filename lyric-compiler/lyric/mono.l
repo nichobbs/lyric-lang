@@ -1369,6 +1369,295 @@ func inferRecordCtorTE(
   }
 }
 
+// True when `te` mentions any name in `typeParams` (i.e. it is not yet a
+// fully concrete type under the current substitution).
+func teMentionsTypeParam(typeParams: in List[String], te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(path) -> path.segments.count == 1 and listContainsStr(typeParams, path.segments[0])
+    case TGenericApp(_, args) -> {
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(inner) -> {
+            if teMentionsTypeParam(typeParams, inner) {
+              return true
+            }
+          }
+          case TAValue(_) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TNullable(inner) -> teMentionsTypeParam(typeParams, inner)
+    case TSlice(elem) -> teMentionsTypeParam(typeParams, elem)
+    case TArray(_, elem) -> teMentionsTypeParam(typeParams, elem)
+    case TFunction(ps, ret) -> {
+      var i = 0
+      while i < ps.count {
+        if teMentionsTypeParam(typeParams, ps[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      teMentionsTypeParam(typeParams, ret)
+    }
+    case TTuple(elems) -> {
+      var i = 0
+      while i < elems.count {
+        if teMentionsTypeParam(typeParams, elems[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TParen(inner) -> teMentionsTypeParam(typeParams, inner)
+    case _ -> false
+  }
+}
+
+// The result TypeExpr of a lambda's block body, when the block ends in a
+// single inferable trailing expression (`SExpr` fall-off or `return e`).
+// Bounded on purpose: multi-branch bodies return None and the caller's
+// unification simply skips the return slot.
+func lambdaBodyResultTE(state: in MonoState, env: in Map[String, TypeExpr], body: in Block): Option[TypeExpr] {
+  if body.statements.count == 0 {
+    return None
+  }
+  match body.statements[body.statements.count - 1].kind {
+    case SExpr(e) -> inferExprTE(state, env, e)
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(e) -> inferExprTE(state, env, e)
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// Unify a lambda argument against its declared `(P0, …) -> R` parameter type,
+// binding any of `typeParams` reachable from the lambda's ANNOTATED parameter
+// types and (when the body ends in an inferable trailing expression) its
+// result type.  This is what lets a call whose only type-argument source is
+// the lambda — `forEach([], { x: Int -> () })`, `mapOption(None, { x: Int ->
+// x * 2 })` — specialise instead of silently staying generic (#5604).
+// Unannotated lambda params are seeded from the declared parameter type when
+// the substitution built so far already makes it concrete (earlier arguments
+// bound it), so `{ x -> x * 2 }` still types its body against a `T` pinned by
+// a preceding argument.  The caller's `env` is temporarily extended for the
+// body inference and restored before returning (params shadow outer names).
+func unifyLambdaArgTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  typeParams: in List[String],
+  declParamTy: in TypeExpr,
+  lambdaParams: in List[LambdaParam],
+  body: in Block,
+  subst: in Map[String, TypeExpr],
+): Unit {
+  match declParamTy.kind {
+    case TFunction(dParams, dRet) -> {
+      val emptyValueSubst: Map[String, Expr] = newMap()
+      // Save shadowed outer bindings so env can be restored afterwards.
+      val addedNames: List[String] = newList()
+      val shadowedNames: List[String] = newList()
+      val shadowedVals: List[TypeExpr] = newList()
+      var j = 0
+      while j < lambdaParams.count and j < dParams.count {
+        val lp = lambdaParams[j]
+        var seedTy: Option[TypeExpr] = None
+        match lp.ty {
+          case Some(annTy) -> {
+            unifyTE(typeParams, dParams[j], annTy, subst)
+            seedTy = Some(value = annTy)
+          }
+          case None -> {
+            val substituted = substTypeExpr(subst, emptyValueSubst, dParams[j])
+            if not teMentionsTypeParam(typeParams, substituted) {
+              seedTy = Some(value = substituted)
+            }
+          }
+        }
+        match seedTy {
+          case Some(sty) -> {
+            match mapGet(env, lp.name) {
+              case Some(prev) -> {
+                shadowedNames.add(lp.name)
+                shadowedVals.add(prev)
+                env.remove(lp.name)
+              }
+              case None -> ()
+            }
+            env.add(lp.name, sty)
+            addedNames.add(lp.name)
+          }
+          case None -> ()
+        }
+        j = j + 1
+      }
+      if teMentionsTypeParam(typeParams, dRet) {
+        match lambdaBodyResultTE(state, env, body) {
+          case Some(bodyTE) -> unifyTE(typeParams, dRet, bodyTE, subst)
+          case None -> ()
+        }
+      }
+      var ai = 0
+      while ai < addedNames.count {
+        if env.containsKey(addedNames[ai]) {
+          env.remove(addedNames[ai])
+        }
+        ai = ai + 1
+      }
+      var si = 0
+      while si < shadowedNames.count {
+        env.add(shadowedNames[si], shadowedVals[si])
+        si = si + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+}
+
+// A call argument's lambda shape, unwrapped through parens; `None` for any
+// other expression.
+func lambdaShapeOfArg(e: in Expr): Option[Expr] {
+  match e.kind {
+    case ELambda(_, _) -> Some(value = e)
+    case EParen(inner) -> lambdaShapeOfArg(inner)
+    case _ -> None
+  }
+}
+
+// Strip wrapping EParen layers (mono-local mirror of the codegen helper).
+func unwrapParenExprMono(e: in Expr): Expr {
+  match e.kind {
+    case EParen(inner) -> unwrapParenExprMono(inner)
+    case _ -> e
+  }
+}
+
+// The inference-only union-case ctor decl a call argument names, when the
+// argument is a direct `CaseName(...)` construction; `None` otherwise.
+func ctorSynthOfArg(state: in MonoState, e: in Expr): Option[FunctionDecl] {
+  match e.kind {
+    case EParen(inner) -> ctorSynthOfArg(state, inner)
+    case ECall(fn, _) -> {
+      match fn.kind {
+        case EPath(path) -> {
+          if path.segments.count == 1 {
+            match mapGet(state.funcDecls, path.segments[0]) {
+              case Some(d) -> {
+                if annsInferenceOnlyMono(d.annotations) {
+                  Some(value = d)
+                } else {
+                  None
+                }
+              }
+              case None -> None
+            }
+          } else {
+            None
+          }
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// Unify a union-case constructor ARGUMENT against its declared parameter
+// type, binding only the slots the constructor's fields actually PIN
+// (`isOk(Ok(value = 7))` binds T=Int and leaves E untouched).  A
+// construction in argument position takes the surrounding parameter's
+// instantiation as its per-slot HINT for every slot its fields don't pin,
+// so the unpinned slots agree with WHATEVER the outer params finally
+// resolve to (a later argument, or the final Object default) — binding
+// them eagerly to the Object fill here would poison a later, more precise
+// binding (`andThenResult(Ok(5), { x: Int -> Err(error = 42) })`: E must
+// come from the lambda body's Err, not from Ok's unpinned slot).  Only the
+// matching-generic-head shape partial-binds; any other declared parameter
+// shape falls back to the caller's full-TE path (where the fill is the
+// correct construction model).  Returns true when the partial path applied.
+func partialUnifyCtorArg(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  outerTypeParams: in List[String],
+  declParamTy: in TypeExpr,
+  ctorDecl: in FunctionDecl,
+  ctorArgs: in List[CallArg],
+  subst: in Map[String, TypeExpr],
+): Bool {
+  val innerParams = extractTypeParamNames(ctorDecl.generics)
+  if innerParams.count == 0 {
+    return false
+  }
+  val declShape = match declParamTy.kind { case TGenericApp(dHead, dArgs) -> Some(value = dArgs); case _ -> None }
+  match declShape {
+    case None -> false
+    case Some(dArgs) -> {
+      match ctorDecl.ret {
+        case None -> false
+        case Some(retTe) -> {
+          match retTe.kind {
+            case TGenericApp(retHead, retArgs) -> {
+              val dHeadName = match declParamTy.kind {
+                case TGenericApp(h, _) -> if h.segments.count > 0 { h.segments[h.segments.count - 1] } else { "" }
+                case _ -> ""
+              }
+              val rHeadName = if retHead.segments.count > 0 { retHead.segments[retHead.segments.count - 1] } else { "" }
+              if dHeadName.length == 0 or dHeadName != rHeadName or dArgs.count != retArgs.count {
+                return false
+              }
+              val innerSubst: Map[String, TypeExpr] = newMap()
+              var k = 0
+              while k < ctorArgs.count and k < ctorDecl.params.count {
+                match inferExprTE(state, env, callArgExpr(ctorArgs[k])) {
+                  case Some(argTE) -> unifyTE(innerParams, ctorDecl.params[k].ty, argTE, innerSubst)
+                  case None -> ()
+                }
+                k = k + 1
+              }
+              var q = 0
+              while q < retArgs.count {
+                match retArgs[q] {
+                  case TAType(rte) -> {
+                    match rte.kind {
+                      case TRef(rp) -> {
+                        if rp.segments.count == 1 {
+                          match mapGet(innerSubst, rp.segments[0]) {
+                            case Some(pinnedTE) -> {
+                              match dArgs[q] {
+                                case TAType(dte) -> unifyTE(outerTypeParams, dte, pinnedTE, subst)
+                                case TAValue(_) -> ()
+                              }
+                            }
+                            case None -> ()
+                          }
+                        }
+                      }
+                      case _ -> {
+                      }
+                    }
+                  }
+                  case TAValue(_) -> {
+                  }
+                }
+                q = q + 1
+              }
+              true
+            }
+            case _ -> false
+          }
+        }
+      }
+    }
+  }
+}
+
 // Look up `fname` in funcDecls and return its return TypeExpr after
 // substituting either explicit type args or args inferred from
 // positional arguments.  None when the callee is unknown, has no
@@ -1404,13 +1693,68 @@ func inferReturnFromName(
           if typeParams.count > 0 {
             var i = 0
             while i < args.count and i < decl.params.count {
-              match inferExprTE(state, env, callArgExpr(args[i])) {
-                case Some(argTE) -> unifyTE(typeParams, decl.params[i].ty, argTE, subst)
-                case None -> ()
+              match lambdaShapeOfArg(callArgExpr(args[i])) {
+                case Some(lamE) -> {
+                  match lamE.kind {
+                    case ELambda(lps, lbody) -> unifyLambdaArgTE(state, env, typeParams, decl.params[i].ty, lps, lbody, subst)
+                    case _ -> ()
+                  }
+                }
+                case None -> {
+                  // Direct union-case construction: bind only field-pinned
+                  // slots (see partialUnifyCtorArg); everything else takes the
+                  // full inferred TE.
+                  var handled = false
+                  match ctorSynthOfArg(state, callArgExpr(args[i])) {
+                    case Some(ctorD) -> {
+                      val ctorCallArgs = match unwrapParenExprMono(callArgExpr(args[i])).kind {
+                        case ECall(_, cas) -> cas
+                        case _ -> newList()
+                      }
+                      handled = partialUnifyCtorArg(state, env, typeParams, decl.params[i].ty, ctorD, ctorCallArgs, subst)
+                    }
+                    case None -> ()
+                  }
+                  if not handled {
+                    match inferExprTE(state, env, callArgExpr(args[i])) {
+                      case Some(argTE) -> unifyTE(typeParams, decl.params[i].ty, argTE, subst)
+                      case None -> ()
+                    }
+                  }
+                }
               }
               i = i + 1
             }
           }
+        }
+      }
+      // Two decl classes report their UNPINNED type params as `Object`
+      // rather than failing the whole inference (#5604):
+      //   - Inference-only union-case ctor synths: mirrors exactly what
+      //     codegen constructs for the corresponding slot with no hint or an
+      //     erased hint (field-derived types win per slot; everything else
+      //     fills as `object`), so `Ok(value = 7)` infers as
+      //     `Result[Int, Object]`.
+      //   - IMPORTED (non-dropped-local, non-axiom) generics: the call-site
+      //     rewriter defaults exactly these params to Object when it
+      //     specialises, so the value a binding receives really carries the
+      //     filled instantiation (`val mapped = mapResult(Ok(5), f)` returns
+      //     the `Result[Int, Object]` of `mapResult__Int__Int__Object`).
+      //     Reporting `None` instead left the binding untyped, and a later
+      //     `isOk(mapped)` specialised at `__Object__Object` — an
+      //     instantiation the value never had, so its closed isinst missed
+      //     every arm.
+      // Same-package generics stay all-or-nothing: their uninferable call
+      // sites raise M0002 at the rewriter, never a defaulted specialisation.
+      val importedFill = (not state.droppedLocalGenerics.containsKey(fname)) and not annsHaveAxiomMono(decl.annotations)
+      val fillsUnpinned = annsInferenceOnlyMono(decl.annotations) or importedFill
+      if typeParams.count > 0 and fillsUnpinned {
+        var uf = 0
+        while uf < typeParams.count {
+          if not subst.containsKey(typeParams[uf]) {
+            subst.add(typeParams[uf], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = decl.span))
+          }
+          uf = uf + 1
         }
       }
       if typeParams.count > 0 and not substIsComplete(typeParams, subst) {
@@ -1814,6 +2158,99 @@ func annsHaveAxiomMono(anns: in List[Annotation]): Bool {
     i = i + 1
   }
   false
+}
+
+// Reserved compiler-internal marker (never parseable from source — `__lyric_`
+// names are reserved): tags a FunctionDecl synthesized by
+// `unionCtorInferenceDecls` purely so `inferExprTE` can type a union-case
+// constructor call (`Some(value = 1)` → `Option[Int]`).  Marked decls join
+// `funcDecls` (the inference surface) but NEVER `genDecls`: rewriting the
+// call site to a specialised name (`Some__Int`) would break codegen's
+// by-case-name union-construction resolution, and the decl has no body to
+// specialise.
+func annsInferenceOnlyMono(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == "__lyric_union_ctor_infer" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Synthesize one inference-only constructor FunctionDecl per union case in
+/// `items` (`case Some(value: T)` of `union Option[T]` →
+/// `func Some[T](value: T): Option[T]`, body-less, tagged with the reserved
+/// `__lyric_union_ctor_infer` annotation).  Feed the result into the
+/// monomorphizer's imported-generics list so a generic call whose only
+/// type-argument source is a union-case constructor argument
+/// (`isSome(Some(value = 1))`) can bind its type parameters instead of
+/// silently staying generic (#5604).  Positional case fields synthesize
+/// `field<i>` parameter names; inference unifies positionally, so the names
+/// only need to be distinct.
+pub func unionCtorInferenceDecls(items: in List[Item]): List[FunctionDecl] {
+  val ctorDecls: List[FunctionDecl] = newList()
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IUnion(decl) -> {
+        val typeParamNames = extractTypeParamNames(decl.generics)
+        val retTe = if typeParamNames.count > 0 {
+          val retArgs: List[TypeArg] = newList()
+          var gi = 0
+          while gi < typeParamNames.count {
+            retArgs.add(TAType(ty = TypeExpr(kind = TRef(path = singleSegPath(typeParamNames[gi])), span = decl.span)))
+            gi = gi + 1
+          }
+          TypeExpr(kind = TGenericApp(head = singleSegPath(decl.name), args = retArgs), span = decl.span)
+        } else {
+          TypeExpr(kind = TRef(path = singleSegPath(decl.name)), span = decl.span)
+        }
+        val marker: List[Annotation] = newList()
+        val markerArgs: List[AnnotationArg] = newList()
+        marker.add(Annotation(name = singleSegPath("__lyric_union_ctor_infer"), args = markerArgs, span = decl.span))
+        var ci = 0
+        while ci < decl.cases.count {
+          val c = decl.cases[ci]
+          val ctorParams: List[Param] = newList()
+          var fi = 0
+          while fi < c.fields.count {
+            val pName = match c.fields[fi] { case UFNamed(fname, _, _) -> fname; case UFPos(_, _) -> "field" + toString(fi) }
+            val pTy = match c.fields[fi] { case UFNamed(_, fty, _) -> fty; case UFPos(fty, _) -> fty }
+            val pAnns: List[Annotation] = newList()
+            ctorParams.add(
+              Param(mode = PMIn, modeExplicit = false, name = pName, ty = pTy, dflt = None, annotations = pAnns, span = c.span)
+            )
+            fi = fi + 1
+          }
+          val noDocs: List[DocComment] = newList()
+          val noContracts: List[ContractClause] = newList()
+          ctorDecls.add(
+            FunctionDecl(
+              docComments = noDocs,
+              annotations = marker,
+              visibility = None,
+              isAsync = false,
+              name = c.name,
+              generics = decl.generics,
+              params = ctorParams,
+              ret = Some(value = retTe),
+              whereClause = None,
+              contracts = noContracts,
+              body = None,
+              span = c.span
+            )
+          )
+          ci = ci + 1
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  ctorDecls
 }
 
 func specializeFunc(
@@ -2267,13 +2704,62 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                   val subst: Map[String, TypeExpr] = newMap()
                   var i = 0
                   while i < args.count and i < baseDecl.params.count {
-                    match inferExprTE(state, env, callArgExpr(args[i])) {
-                      case Some(argTE) -> {
-                        unifyTE(typeParams, baseDecl.params[i].ty, argTE, subst)
+                    match lambdaShapeOfArg(callArgExpr(args[i])) {
+                      case Some(lamE) -> {
+                        match lamE.kind {
+                          case ELambda(lps, lbody) -> unifyLambdaArgTE(state, env, typeParams, baseDecl.params[i].ty, lps, lbody, subst)
+                          case _ -> ()
+                        }
                       }
-                      case None -> ()
+                      case None -> {
+                        // Direct union-case construction: bind only
+                        // field-pinned slots (see partialUnifyCtorArg).
+                        var handled = false
+                        match ctorSynthOfArg(state, callArgExpr(args[i])) {
+                          case Some(ctorD) -> {
+                            val ctorCallArgs = match unwrapParenExprMono(callArgExpr(args[i])).kind {
+                              case ECall(_, cas) -> cas
+                              case _ -> newList()
+                            }
+                            handled = partialUnifyCtorArg(state, env, typeParams, baseDecl.params[i].ty, ctorD, ctorCallArgs, subst)
+                          }
+                          case None -> ()
+                        }
+                        if not handled {
+                          match inferExprTE(state, env, callArgExpr(args[i])) {
+                            case Some(argTE) -> {
+                              unifyTE(typeParams, baseDecl.params[i].ty, argTE, subst)
+                            }
+                            case None -> ()
+                          }
+                        }
+                      }
                     }
                     i = i + 1
+                  }
+                  // An IMPORTED generic whose declaration is erased from every
+                  // assembly (generic pub funcs are never emitted — the bundle
+                  // drops them and `registerStdlibFunc` skips them) has exactly
+                  // one executable form: a local specialisation.  When the
+                  // arguments pin only some (or none) of the type parameters,
+                  // default the unbound ones to `Object` — the erased
+                  // uniform-ABI meaning the un-specialised call always had —
+                  // instead of leaving the call generic, which codegen then
+                  // silently DROPPED (arguments lowered, no call emitted:
+                  // `isNone(None)` returned its own argument, #5604).  Local
+                  // generics keep the loud M0002 below: their declaration is
+                  // still in the file, so the erased-default is never the
+                  // user's intent there.
+                  if not substIsComplete(typeParams, subst) {
+                    if not state.droppedLocalGenerics.containsKey(fname) and not annsHaveAxiomMono(baseDecl.annotations) {
+                      var du = 0
+                      while du < typeParams.count {
+                        if not subst.containsKey(typeParams[du]) {
+                          subst.add(typeParams[du], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = fn.span))
+                        }
+                        du = du + 1
+                      }
+                    }
                   }
                   if substIsComplete(typeParams, subst) {
                     val allParams = extractAllParamInfo(baseDecl.generics)
@@ -2557,11 +3043,47 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
 // reach record field projections through `b.<field>` later.  Re-binding
 // `var` / `let` with a fresh annotation drops the prior env entry so
 // shadows reflect the new type (closes the MEDIUM #349 gap).
+// The env TE for an ANNOTATED binding: when the initializer is a call to a
+// known (non-ctor-synth) single-segment function, the runtime value's closed
+// instantiation is decided by the CALLEE's specialisation — not by the
+// binding annotation.  `val err: Result[Int, Int] = andThenResult(...)`
+// annotates a value that actually carries the callee's `Result[Object, Int]`
+// instantiation; tracking the annotation would make a later `isErr(err)`
+// specialise (and closed-isinst) at an instantiation the value never had
+// (#5604).  A DIRECT construction initializer keeps the annotation: codegen
+// threads the annotation into the construction as its per-slot hint, so
+// there the annotation IS the runtime instantiation.
+func bindingEnvTE(state: in MonoState, env: in Map[String, TypeExpr], annoTe: in TypeExpr, init: in Expr): TypeExpr {
+  val callFnName = match unwrapParenExprMono(init).kind {
+    case ECall(fn, _) -> {
+      match fn.kind {
+        case EPath(fp) -> if fp.segments.count == 1 { fp.segments[0] } else { "" }
+        case _ -> ""
+      }
+    }
+    case _ -> ""
+  }
+  if callFnName.length == 0 {
+    return annoTe
+  }
+  val isNonCtorCall = match mapGet(state.funcDecls, callFnName) {
+    case Some(d) -> not annsInferenceOnlyMono(d.annotations)
+    case None -> false
+  }
+  if not isNonCtorCall {
+    return annoTe
+  }
+  match inferExprTE(state, env, init) {
+    case Some(te) -> te
+    case None -> annoTe
+  }
+}
+
 func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding: in LocalBinding): LocalBinding {
   match binding {
     case LBVal(pat, tyOpt, init) -> {
       match tyOpt {
-        case Some(te) -> trackPatternEnv(env, pat, te)
+        case Some(te) -> trackPatternEnv(env, pat, bindingEnvTE(state, env, te, init))
         case None -> {
           match inferExprTE(state, env, init) {
             case Some(inferred) -> trackPatternEnv(env, pat, inferred)
@@ -2574,10 +3096,11 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
     case LBVar(name, tyOpt, initOpt) -> {
       match tyOpt {
         case Some(te) -> {
+          val envTe = match initOpt { case Some(ie) -> bindingEnvTE(state, env, te, ie); case None -> te }
           if env.containsKey(name) {
             env.remove(name)
           }
-          env.add(name, te)
+          env.add(name, envTe)
         }
         case None -> {
           match initOpt {
@@ -2614,7 +3137,7 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
           if env.containsKey(name) {
             env.remove(name)
           }
-          env.add(name, te)
+          env.add(name, bindingEnvTE(state, env, te, init))
         }
         case None -> {
           match inferExprTE(state, env, init) {
@@ -2889,9 +3412,12 @@ pub func monoFileWithImportsAndTypeDecls(
     val idecl = importedGenDecls[ig]
     if not funcDecls.containsKey(idecl.name) {
       funcDecls.add(idecl.name, idecl)
+      // Inference-only union-ctor synths (see `annsInferenceOnlyMono`) join
+      // the inference surface but must never become specialisation
+      // candidates.
       match idecl.generics {
         case Some(_) -> {
-          if not genDecls.containsKey(idecl.name) {
+          if not genDecls.containsKey(idecl.name) and not annsInferenceOnlyMono(idecl.annotations) {
             genDecls.add(idecl.name, idecl)
           }
         }
@@ -2899,6 +3425,21 @@ pub func monoFileWithImportsAndTypeDecls(
       }
     }
     ig = ig + 1
+  }
+
+  // Same-file union-case constructors join the inference surface too, so a
+  // generic call typed only by a local union's constructor argument
+  // (`isSome(MyCase(x = 1))` against a same-file union) infers exactly like
+  // the imported-union path above.  Real functions win name collisions (the
+  // `containsKey` guard), and none of these enter `genDecls`.
+  val localUnionCtors = unionCtorInferenceDecls(file.items)
+  var lu = 0
+  while lu < localUnionCtors.count {
+    val ldecl = localUnionCtors[lu]
+    if not funcDecls.containsKey(ldecl.name) {
+      funcDecls.add(ldecl.name, ldecl)
+    }
+    lu = lu + 1
   }
 
   // If nothing to monomorphise, return early.
