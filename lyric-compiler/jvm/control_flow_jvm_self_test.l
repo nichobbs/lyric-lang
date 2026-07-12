@@ -18,6 +18,10 @@
 //!   - a control case proving the implicit-return / fall-off path still works:
 //!     a `Unit` fall-off function, and an `if` with NO `else` followed by a
 //!     tail-value (the false path falls through to the implicit return).
+//!   - #5378: a bare tail-position call to a user-defined `: Never` function
+//!     inside a differently-typed function/record-method (`Never` erases to
+//!     `JVoid` just like `Unit`, which previously produced a stray void
+//!     `return` and a class-load `VerifyError`).
 //!
 //! Run by native `lyric test --target jvm`, which compiles this module in-process
 //! through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs it under
@@ -132,6 +136,38 @@ record Point {
   }
 }
 
+// ── #5378: Never-tail-position call inside a differently-typed function ──────
+// `Never` erases to `JVoid` on the JVM backend exactly like `Unit`
+// (`Jvm.Codegen.typeExprToJvm`).  A bare tail-position call to a user-defined
+// `: Never` function inside a function/method whose own declared return type
+// is non-void previously emitted a bare void `return` after the call — a
+// class-load `VerifyError: Method expects a return value` (the enclosing
+// method's descriptor promises an `Int`/`String`, not nothing).
+// `alwaysDiverges` mirrors the issue's `myExit` (a real, unconditionally-
+// diverging callee) without actually terminating the test process: it
+// records that it ran via `Counter`, then panics — a real, observable
+// divergence — instead of calling `System.exit`.
+func alwaysDiverges(c: in Counter): Never {
+  c.increment()
+  panic("alwaysDiverges: unreachable side effect marker")
+}
+
+// Free-function shape — the exact #5378 repro: `func myExit(...): Never { … }`
+// called bare in tail position inside `func main(): Int { …; myExit(42) }`.
+// Exercises the `lowerFunc` fix in `06_items.l`.
+func triggerDivergeInt(c: in Counter): Int {
+  alwaysDiverges(c)
+}
+
+// Record-method shape: the identical gap in `lowerInstanceMethodBody`
+// (06_items.l), reached via a record method's tail-position `Never` call.
+record Diverger {
+  marker: Int
+  func triggerDivergeString(c: in Counter): String {
+    alwaysDiverges(c)
+  }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 test "return in both if/else branches (the #2870 repro)" {
   assertEqual(classify(5), "pos", "positive input")
@@ -177,4 +213,29 @@ test "record method with all-terminating if/else arms (blockTerminates at lowerR
   assertEqual(p2.quadrant(), "Q2", "Q2: (-, +)")
   assertEqual(p3.quadrant(), "Q3", "Q3: (-, -)")
   assertEqual(p4.quadrant(), "Q4", "Q4: (+, -)")
+}
+
+test "#5378: bare tail-position call to a `: Never` free function inside a non-void function" {
+  val c = Counter(count = 0)
+  var caught = false
+  try {
+    triggerDivergeInt(c)
+  } catch Bug as _ {
+    caught = true
+  }
+  assertTrue(caught, "alwaysDiverges' panic must propagate out of triggerDivergeInt")
+  assertEqualInt(c.get(), 1, "alwaysDiverges' side effect (increment) ran before it diverged")
+}
+
+test "#5378: bare tail-position call to a `: Never` function inside a non-void record method" {
+  val c = Counter(count = 0)
+  val d = Diverger(marker = 0)
+  var caught = false
+  try {
+    d.triggerDivergeString(c)
+  } catch Bug as _ {
+    caught = true
+  }
+  assertTrue(caught, "alwaysDiverges' panic must propagate out of the record method too")
+  assertEqualInt(c.get(), 1, "side effect ran exactly once")
 }

@@ -1322,6 +1322,44 @@ test "lambda: parenthesised param with type annotation parses clean" {
   assertEqualInt(diagCount(pr), 0, "lambda: `{ (k: String) -> k }` parses clean")
 }
 
+// #4748: bare (non-`{ }`-wrapped) parenthesised lambda literals used
+// directly in call-argument position. Before the fix, `parsePrimaryExpr`'s
+// `LParen` case always resolved `(k, v)` to a tuple/grouped expression, so
+// a following `->` was unexpected and raised P0080 ("expected ')' to close
+// call argument list") followed by a cascade of P0050s.
+test "lambda: bare two-param form parses clean as a call argument" {
+  val pr = parse("package P\nfunc f(): Int {\n  val r = mapForEach(m, (k, v) -> k + v)\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `(k, v) -> ...` as a bare call argument parses clean")
+}
+
+test "lambda: bare three-param form parses clean as a call argument" {
+  val pr = parse("package P\nfunc f(): Int {\n  val r = fold3(m, (a, b, c) -> a + b + c)\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `(a, b, c) -> ...` as a bare call argument parses clean")
+}
+
+test "lambda: bare single-param form parses clean as a call argument" {
+  val pr = parse("package P\nfunc f(): Int {\n  val r = apply(x, (v) -> v + 1)\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `(v) -> ...` as a bare call argument parses clean")
+}
+
+// Exact shape from the issue repro: a bare two-param lambda whose body is a
+// multi-line `{ ... }` block (not a single expression), as the second
+// positional call argument.
+test "lambda: bare two-param form with block body parses clean (issue repro)" {
+  val pr = parse(
+    "package P\nfunc f(): Int {\n  var total = 0\n  mapForEach(m, (k, v) -> {\n    total = total + v\n  })\n  return total\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "lambda: `(k, v) -> { ... }` block-body call argument parses clean")
+}
+
+// A tuple expression that happens to contain bare identifiers but has no
+// trailing `->` must still parse as an ordinary tuple, not be mistaken for
+// an (incomplete) lambda parameter list.
+test "lambda: paren-list call argument without arrow still parses as a tuple" {
+  val pr = parse("package P\nfunc f(): Int {\n  val r = g((a, b))\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `(a, b)` without `->` as a call argument still parses clean")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // docs/58 (D121) — wire templates, contributes[T], include, config `from`.
 // ─────────────────────────────────────────────────────────────────────────────

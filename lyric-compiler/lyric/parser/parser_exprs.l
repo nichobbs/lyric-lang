@@ -43,6 +43,68 @@ func isQuantifierContext(st: in ParseState): Bool {
   }
 }
 
+// exprAsLambdaParam / exprListAsLambdaParams: reinterpret a parenthesised
+// expression (or expression list) as a `LambdaParams` list when it turns
+// out to be followed by `->`.  Used by `parsePrimaryExpr`'s `LParen` case
+// to support a bare lambda literal directly in call-argument position
+// (e.g. `f((k, v) -> k + v)`) without requiring the `{ ... }` wrapper form
+// (#4748).  Only plain bare identifiers (`EPath` with a single segment)
+// qualify; anything else means the parenthesised group really was a
+// tuple/grouped expression, so the caller falls back to building that
+// instead, leaving the unexpected `->` for whatever parses next to error
+// on — unchanged from prior behaviour.
+func exprAsLambdaParam(e: in Expr): Option[LambdaParam] {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        Some(value = LambdaParam(name = path.segments[0], ty = None, span = e.span))
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func exprListAsLambdaParams(items: in List[Expr]): Option[List[LambdaParam]] {
+  val ps: List[LambdaParam] = newList()
+  var ok = true
+  var i = 0
+  while i < items.count and ok {
+    match exprAsLambdaParam(items[i]) {
+      case Some(p) -> {
+        ps.add(p)
+      }
+      case None -> {
+        ok = false
+      }
+    }
+    i = i + 1
+  }
+  if ok {
+    Some(value = ps)
+  } else {
+    None
+  }
+}
+
+// After a parenthesised group is confirmed to be a lambda parameter list
+// (the next token is `->`), consume the arrow and parse the body: either a
+// `{ ... }` block, or a single expression wrapped into a one-statement
+// block (mirroring how a bodyless match arm is handled elsewhere).
+func parseArrowLambdaTail(st: inout ParseState, startSpan: in Span, lambdaParams: in List[LambdaParam]): Expr {
+  val _ = advance(st)  // '->'
+  val body = if isPunct(peekToken(st), LBrace) {
+    parseBlock(st)
+  } else {
+    val e = parseExpr(st)
+    val stmts: List[Statement] = newList()
+    stmts.add(mkStmt(SExpr(expr = e), e.span))
+    Block(statements = stmts, span = e.span)
+  }
+  mkExpr(ELambda(lambdaParams = lambdaParams, body = body), joinSpans(startSpan, body.span))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Generic parameters.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1019,7 +1081,14 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
                     items[items.count - 1].span
                   }
                 }
-                mkExpr(ETuple(exprs = items), joinSpans(tok.span, endSpan))
+                if isPunct(peekToken(st), Arrow) {
+                  match exprListAsLambdaParams(items) {
+                    case Some(ps) -> parseArrowLambdaTail(st, tok.span, ps)
+                    case None -> mkExpr(ETuple(exprs = items), joinSpans(tok.span, endSpan))
+                  }
+                } else {
+                  mkExpr(ETuple(exprs = items), joinSpans(tok.span, endSpan))
+                }
               } else {
                 val endSpan = match tryEatPunct(st, RParen) {
                   case Some(t) -> t.span
@@ -1028,7 +1097,18 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
                     inner.span
                   }
                 }
-                mkExpr(EParen(inner = inner), joinSpans(tok.span, endSpan))
+                if isPunct(peekToken(st), Arrow) {
+                  match exprAsLambdaParam(inner) {
+                    case Some(p) -> {
+                      val ps: List[LambdaParam] = newList()
+                      ps.add(p)
+                      parseArrowLambdaTail(st, tok.span, ps)
+                    }
+                    case None -> mkExpr(EParen(inner = inner), joinSpans(tok.span, endSpan))
+                  }
+                } else {
+                  mkExpr(EParen(inner = inner), joinSpans(tok.span, endSpan))
+                }
               }
             }
           }

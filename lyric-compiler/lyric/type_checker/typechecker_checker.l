@@ -1663,6 +1663,7 @@ pub func registerExternalImports(
               generics = None,
               clrName = externalFqn,
               clrNameQuoted = true,
+              arityAppended = false,
               span = imp.span
             )
             val vis = if imp.isPubUse { Some(value = VisPub(span = imp.span)) } else { None }
@@ -1684,6 +1685,7 @@ pub func registerExternalImports(
             generics = None,
             clrName = externalFqn,
             clrNameQuoted = true,
+            arityAppended = false,
             span = imp.span
           )
           val vis = if imp.isPubUse { Some(value = VisPub(span = imp.span)) } else { None }
@@ -1704,6 +1706,7 @@ pub func registerExternalImports(
             generics = None,
             clrName = externalFqn,
             clrNameQuoted = true,
+            arityAppended = false,
             span = imp.span
           )
           val vis = if imp.isPubUse { Some(value = VisPub(span = imp.span)) } else { None }

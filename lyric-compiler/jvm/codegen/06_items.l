@@ -672,10 +672,17 @@ func computeHoistedVarNamesJvm(decl: in FunctionDecl, mutableVars: in Map[String
   hoisted
 }
 
-// Collect all `var` declarations in a function body.
+// Collect all `var` declarations in a function body.  Mirrors the
+// `collectInLambdaNamesExpr` traversal in `02_exprs.l` (same set of
+// sub-expression-carrying `ExprKind` arms) so a `var` declared inside a
+// block that appears in call-argument, operand, or other nested-expression
+// position is not missed (#4264).  `ELambda` is deliberately NOT recursed
+// into: a `var` declared inside a lambda's own body belongs to that
+// lambda's own scope and is analyzed separately when the lambda is lowered.
 func collectMutableVarsExpr(e: in Expr, acc: in Map[String, Bool]): Unit {
   match e.kind {
     case EIf(cond, thenBranch, elseBranch, thenForm) -> {
+      collectMutableVarsExpr(cond, acc)
       match thenBranch {
         case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
         case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
@@ -691,8 +698,13 @@ func collectMutableVarsExpr(e: in Expr, acc: in Map[String, Bool]): Unit {
       }
     }
     case EMatch(scr, arms) -> {
+      collectMutableVarsExpr(scr, acc)
       var ai = 0
       while ai < arms.count {
+        match arms[ai].guard {
+          case Some(guardExpr) -> collectMutableVarsExpr(guardExpr, acc)
+          case None -> ()
+        }
         match arms[ai].body {
           case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
           case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
@@ -706,6 +718,66 @@ func collectMutableVarsExpr(e: in Expr, acc: in Map[String, Bool]): Unit {
     case EUnsafe(blk) -> {
       collectMutableVarsBlock(blk, acc)
     }
+    case ECall(fn, args) -> {
+      collectMutableVarsExpr(fn, acc)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(ex) -> collectMutableVarsExpr(ex, acc)
+          case CANamed(_, ex, _) -> collectMutableVarsExpr(ex, acc)
+        }
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, lhs, rhs) -> {
+      collectMutableVarsExpr(lhs, acc)
+      collectMutableVarsExpr(rhs, acc)
+    }
+    case EPrefix(_, operand) -> collectMutableVarsExpr(operand, acc)
+    case EParen(inner) -> collectMutableVarsExpr(inner, acc)
+    case EMember(recv, _) -> collectMutableVarsExpr(recv, acc)
+    case EList(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectMutableVarsExpr(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case ETuple(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectMutableVarsExpr(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case EIndex(recv, indices) -> {
+      collectMutableVarsExpr(recv, acc)
+      var ii = 0
+      while ii < indices.count {
+        collectMutableVarsExpr(indices[ii], acc)
+        ii = ii + 1
+      }
+    }
+    case EAwait(inner) -> collectMutableVarsExpr(inner, acc)
+    case EYield(inner) -> collectMutableVarsExpr(inner, acc)
+    case ESpawn(inner) -> collectMutableVarsExpr(inner, acc)
+    case ETry(inner) -> collectMutableVarsExpr(inner, acc)
+    case EPropagate(inner) -> collectMutableVarsExpr(inner, acc)
+    case EAssign(target, _, v) -> {
+      collectMutableVarsExpr(target, acc)
+      collectMutableVarsExpr(v, acc)
+    }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] {
+          case ISExpr(ex) -> collectMutableVarsExpr(ex, acc)
+          case _ -> ()
+        }
+        si = si + 1
+      }
+    }
+    case ETypeApp(fn, _) -> collectMutableVarsExpr(fn, acc)
     case _ -> ()
   }
 }
@@ -801,7 +873,6 @@ pub func lowerFunc(
     ctx.hoistedVarNames.add(hoistedVars[hvi])
     hvi = hvi + 1
   }
-
   val insns: List[LInsn] = newList()
 
   // Allocate slots for parameters and set up any `out`/`inout` holder bindings;
@@ -849,10 +920,15 @@ pub func lowerFunc(
                   val tailTy = lowerBlockExpr(ctx, insns, block)
                   // `try { … } finally { … }` in tail position falls back to
                   // statement-mode lowering inside `lowerBlockExpr` and reports
-                  // `JVoid` (value discarded by the fallback).  Emitting a typed
-                  // `ireturn`/`areturn` next would underflow the operand stack
-                  // (VerifyError) — so a tail value of `JVoid` requires the
-                  // value-less `return` instead (#1683).
+                  // `JVoid` (value discarded by the fallback, #1683); a bare
+                  // tail-position call to a `: Never`-declared function reports
+                  // `JVoid` the same way, since `Never` erases to `JVoid` just
+                  // like `Unit` (#5378).  Either way nothing is left on the
+                  // operand stack here, so `emitNeverTailReturn` pushes
+                  // `retTy`'s zero/default value before returning instead of
+                  // emitting a value-less `return` that fails class-load
+                  // verification ("Method expects a return value") against
+                  // this non-void method's descriptor.
                   //
                   // `blockTerminates(block)` covers the case where the tail is an
                   // `if`/`else` (or `match`) whose arms all `return`: the lowering
@@ -861,7 +937,7 @@ pub func lowerFunc(
                   // append a stray void `return` (#2870).
                   if not endsWithReturn(insns) and not blockTerminates(block) {
                     match tailTy {
-                      case JVoid -> emitReturn(insns, JVoid)
+                      case JVoid -> emitNeverTailReturn(insns, retTy)
                       case _ -> emitReturnArrayCoerced(ctx, insns, tailTy, retTy)
                     }
                   }
@@ -1238,9 +1314,15 @@ func lowerInstanceMethodBody(ctx: in FuncCtx, insns: in List[LInsn], body: in Fu
         }
         case _ -> {
           val tailTy = lowerBlockExpr(ctx, insns, block)
+          // Same `Never`-tail gap as `lowerFunc` (#5378): a bare tail-position
+          // call to a `: Never`-declared method/function reports `JVoid`
+          // (Never erases to JVoid, same as Unit), leaving nothing on the
+          // operand stack.  `emitNeverTailReturn` pushes `retTy`'s
+          // zero/default value before returning instead of a value-less
+          // `return` that fails class-load verification.
           if not endsWithReturn(insns) and not blockTerminates(block) {
             match tailTy {
-              case JVoid -> emitReturn(insns, JVoid)
+              case JVoid -> emitNeverTailReturn(insns, retTy)
               case _ -> {
                 coerceArgTo(insns, tailTy, retTy)
                 emitReturn(insns, retTy)
@@ -3443,7 +3525,15 @@ pub func collectFileCtors(file: in SourceFile, into: in Map[String, String]): Un
         var ci = 0
         while ci < decl.cases.count {
           val c = decl.cases[ci]
-          addCtorKeys(into, owner, c.name, owner + "/" + decl.name + "$" + c.name)
+          val caseCls = owner + "/" + decl.name + "$" + c.name
+          addCtorKeys(into, owner, c.name, caseCls)
+          // Also register the union-name-qualified key (`<Union>$<Case>`,
+          // e.g. "YamlError$InvalidDocument") so `resolveCaseClassJvm` can
+          // resolve an imported union's in-package-guessed static class to
+          // its REAL declaring package's case class via a single `ctors`
+          // lookup instead of a linear scan over every registered case class
+          // (#4802) — same first-wins semantics as the bare/scoped keys above.
+          addCtorKeys(into, owner, decl.name + "$" + c.name, caseCls)
           ci = ci + 1
         }
       }

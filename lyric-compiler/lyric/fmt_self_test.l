@@ -1449,6 +1449,42 @@ test "extern type unquoted generic form strips the derived arity suffix" {
   assertTrue(isFormatted(acc, parse(acc)), "extern type unquoted generic: idempotent")
 }
 
+// #5476: the quoted form combined with generics has the same class of bug
+// as #5472's unquoted case. `parseExternTypeBody` appends the same
+// compiler-derived `` `N `` arity suffix to `clrName` whenever the quoted
+// string literal doesn't already contain a backtick, so the formatter's
+// quoted branch must strip it back off too rather than re-quoting the
+// internal suffix verbatim (which produced a different string literal
+// than the source and tripped the loss-checker).
+test "extern type quoted generic form strips the derived arity suffix" {
+  val src = "package Std.ProbeHost\n\nextern type CD[K, V] = \"Some.Generic.Type\"\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "extern type quoted generic: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "extern type CD[K, V] = \"Some.Generic.Type\"\n"),
+    "extern type quoted generic: arity suffix not rendered"
+  )
+  assertTrue(isFormatted(acc, parse(acc)), "extern type quoted generic: idempotent")
+}
+
+// A quoted `clrName` may legitimately contain a user-authored backtick
+// (unlike the unquoted dotted-path form, which cannot lexically contain
+// one) — e.g. spelling out the .NET generic-arity suffix explicitly. That
+// case must round-trip untouched: the formatter must not treat a
+// user-typed backtick as the compiler-derived suffix and strip it.
+test "extern type quoted generic form with explicit backtick round trips" {
+  val src = "package Std.ProbeHost\n\nextern type CD[K, V] = \"Some.Generic.Type`2\"\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "extern type quoted generic explicit backtick: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "extern type CD[K, V] = \"Some.Generic.Type`2\"\n"),
+    "extern type quoted generic explicit backtick: explicit suffix preserved"
+  )
+  assertTrue(isFormatted(acc, parse(acc)), "extern type quoted generic explicit backtick: idempotent")
+}
+
 test "val binding named result round trips" {
   // #4778: a `val` binding named `result` (a valid binding name outside
   // `ensures:` position) was formatted with its name dropped, producing

@@ -650,7 +650,28 @@ func lowerBuiltinOrStaticCall(
     // the frames disagree and the class fails verification.  Stash the
     // lowered argument to a temp, then push the receiver and reload.
     if args.count > 0 {
-      val argTy = lowerCallArg(ctx, insns, args[0])
+      val rawTy = lowerCallArg(ctx, insns, args[0])
+      // #4688: PrintStream.println(double) would hand off to Java's
+      // Double.toString directly ("1500.0" for a whole value) — normalize
+      // to a String first so println matches the interpolation/toString()
+      // rendering ("1500", matching .NET's Double.ToString()).
+      val argTy = match rawTy {
+        case JDouble -> {
+          val voPs: List[JvmType] = newList()
+          voPs.add(JDouble)
+          insns.add(
+            LInvokestatic(
+              owner = "java/lang/String",
+              name = "valueOf",
+              params = voPs,
+              ret = JRef(className = "java/lang/String")
+            )
+          )
+          emitNormalizeDoubleString(ctx, insns)
+          JRef(className = "java/lang/String")
+        }
+        case _ -> rawTy
+      }
       val aSlot = allocSlot(ctx, "__println_a_" + freshLabel(ctx), argTy)
       emitStore(insns, aSlot, argTy)
       insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
@@ -667,7 +688,25 @@ func lowerBuiltinOrStaticCall(
   } else if funcName == "print" {
     // Same receiver-after-argument discipline as println above.
     if args.count > 0 {
-      val argTy = lowerCallArg(ctx, insns, args[0])
+      val rawTy = lowerCallArg(ctx, insns, args[0])
+      // #4688: same Double normalization as println above.
+      val argTy = match rawTy {
+        case JDouble -> {
+          val voPs: List[JvmType] = newList()
+          voPs.add(JDouble)
+          insns.add(
+            LInvokestatic(
+              owner = "java/lang/String",
+              name = "valueOf",
+              params = voPs,
+              ret = JRef(className = "java/lang/String")
+            )
+          )
+          emitNormalizeDoubleString(ctx, insns)
+          JRef(className = "java/lang/String")
+        }
+        case _ -> rawTy
+      }
       val aSlot = allocSlot(ctx, "__print_a_" + freshLabel(ctx), argTy)
       emitStore(insns, aSlot, argTy)
       insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
@@ -716,6 +755,13 @@ func lowerBuiltinOrStaticCall(
               ret = JRef(className = "java/lang/String")
             )
           )
+          // #4688: the free-function `toString(x)` form boxes and dispatches
+          // to Double.toString the same way the member `x.toString()` form
+          // does — normalize identically.
+          match argTy {
+            case JDouble -> emitNormalizeDoubleString(ctx, insns)
+            case _ -> ()
+          }
         }
       }
     } else {
@@ -3029,9 +3075,6 @@ func lowerMethodCall(
   // append(String)) still unboxed and fails JVM verification ("Bad type on
   // operand stack").  Reference receivers fall through to the instance
   // auto-FFI / registry paths below, which resolve the real toString.
-  // Note: Java's Double.toString renders a trailing ".0" for whole values
-  // where .NET renders none — a documented cross-target formatting
-  // divergence, not a correctness gap.
   val recvIsBoxablePrim = isNumericJvm(recvTy) or (match recvTy { case JBoolean -> true; case _ -> false })
   if memberName == "toString" and args.count == 0 and recvIsBoxablePrim {
     // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
@@ -3046,6 +3089,12 @@ func lowerMethodCall(
         ret = JRef(className = "java/lang/String")
       )
     )
+    // #4688: normalize a whole-valued Double's rendering onto .NET's
+    // established "1500" (no trailing ".0") instead of Java's "1500.0".
+    match recvTy {
+      case JDouble -> emitNormalizeDoubleString(ctx, insns)
+      case _ -> ()
+    }
     return JRef(className = "java/lang/String")
   }
   // String predicate methods return `boolean` (Z), not Object.  Emitting them

@@ -4611,6 +4611,10 @@ func emitCompoundCombineMsil(
     match rTy {
       case MString -> {
       }
+      case MBool -> {
+        // Lowercase "true"/"false", not "True"/"False" (#5552).
+        emitBoolToStringMsil(cctx, fctx, insns)
+      }
       case _ -> {
         if isValueType(rTy) {
           boxIfNeededMsil(cctx, insns, rTy)
@@ -5552,6 +5556,27 @@ func boxIfNeededMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType
   if isValueType(ty) {
     insns.add(MBox(typeToken = boxTypeRef(cctx, ty)))
   }
+}
+
+// Convert a `Bool` (I4 0/1) already on top of the stack into the canonical
+// lowercase `"true"` / `"false"` string, leaving the string on the stack.
+// Pins the same spelling the language's own Bool literals and `Std.Json` use,
+// matching the JVM backend's `String.valueOf(boolean)` — the BCL's
+// `Boolean.ToString()` renders `"True"`/`"False"` instead, which diverged
+// across targets (#5552).  Unlike `Double` (#2462), `bool.ToString()` has no
+// `IFormatProvider` overload to pin via `InvariantCulture`, so the spelling is
+// pinned directly with a runtime branch over the two literal strings.
+func emitBoolToStringMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn]): Unit {
+  val falseL = freshLabelMsil(fctx)
+  val afterL = freshLabelMsil(fctx)
+  insns.add(MBrFalse(label = falseL))
+  val trueTok = ctxInternUs(cctx.lctx, "true")
+  insns.add(MLdStr(token = trueTok))
+  insns.add(MBr(label = afterL))
+  insns.add(MLabel(id = falseL))
+  val falseTok = ctxInternUs(cctx.lctx, "false")
+  insns.add(MLdStr(token = falseTok))
+  insns.add(MLabel(id = afterL))
 }
 
 // TypeRef token for an array element type, suitable for `newarr` / `stelem`.
@@ -8036,6 +8061,10 @@ func lowerBinopMsil(
           val saddRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
           match saddRhsTy {
             case MString -> {
+            }
+            case MBool -> {
+              // Lowercase "true"/"false", not "True"/"False" (#5552).
+              emitBoolToStringMsil(cctx, fctx, insns)
             }
             case _ -> {
               // Convert non-string rhs to string: box value types, then call ToString().
@@ -10661,19 +10690,27 @@ func lowerInterpolatedMsil(
       case ISExpr(e) -> {
         val eTy = lowerExprMsil(cctx, fctx, insns, e)
         // Convert to string.
-        if isValueType(eTy) {
-          boxIfNeededMsil(cctx, insns, eTy)
-          insns.add(MCallvirt(methodToken = cctx.tokObjToString))
-        } else {
-          match eTy {
-            case MString -> {
-            }
-            case MVoid -> {
-              val emptyTok2 = ctxInternUs(cctx.lctx, "")
-              insns.add(MLdStr(token = emptyTok2))
-            }
-            case _ -> {
+        match eTy {
+          case MBool -> {
+            // Lowercase "true"/"false", not "True"/"False" (#5552).
+            emitBoolToStringMsil(cctx, fctx, insns)
+          }
+          case _ -> {
+            if isValueType(eTy) {
+              boxIfNeededMsil(cctx, insns, eTy)
               insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+            } else {
+              match eTy {
+                case MString -> {
+                }
+                case MVoid -> {
+                  val emptyTok2 = ctxInternUs(cctx.lctx, "")
+                  insns.add(MLdStr(token = emptyTok2))
+                }
+                case _ -> {
+                  insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+                }
+              }
             }
           }
         }
@@ -11124,6 +11161,10 @@ func lowerBuiltinOrStaticCallMsil(
           insns.add(MLdloca(slot = dblSlot - fctx.paramCount))
           insns.add(MCall(methodToken = cctx.tokInvariantCulture))
           insns.add(MCall(methodToken = cctx.tokDoubleToStringInv))
+        }
+        case MBool -> {
+          // Lowercase "true"/"false", not BCL Boolean.ToString()'s "True"/"False" (#5552).
+          emitBoolToStringMsil(cctx, fctx, insns)
         }
         case _ -> {
           if isClrDateTimeMsil(argTy) {
@@ -13119,12 +13160,20 @@ func lowerMethodCallMsil(
       case _ -> recvTy
     }
   } else if memberName == "toString" {
-    // `callvirt Object.ToString()` requires a boxed reference on the stack.
-    // Value types (Int, Long, Double, Bool, Char, Byte) must be boxed first
-    // — without the `box` instruction the JIT treats the raw value bits as an
-    // object pointer, causing a NullReferenceException at runtime.
-    boxIfNeededMsil(cctx, insns, recvTy)
-    insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+    match recvTy {
+      case MBool -> {
+        // Lowercase "true"/"false", not BCL Boolean.ToString()'s "True"/"False" (#5552).
+        emitBoolToStringMsil(cctx, fctx, insns)
+      }
+      case _ -> {
+        // `callvirt Object.ToString()` requires a boxed reference on the stack.
+        // Value types (Int, Long, Double, Char, Byte) must be boxed first — without
+        // the `box` instruction the JIT treats the raw value bits as an object
+        // pointer, causing a NullReferenceException at runtime.
+        boxIfNeededMsil(cctx, insns, recvTy)
+        insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+      }
+    }
     MString
   } else if memberName == "substring" {
     // String.Substring(start, length): string.

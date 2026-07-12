@@ -320,6 +320,28 @@ jobs:
             bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}
           retention-days: 1
 
+  # Static lint over every workflow file under .github/workflows/. Catches
+  # structural bugs (bad expressions, unreachable jobs, invalid needs/if
+  # combinations) that YAML parsing alone can't see -- e.g. the implicit
+  # success()-over-transitive-needs bug that silently skipped
+  # publish.yml's publish-ecosystem job (#5579/#5580): a bare `if:` with
+  # no explicit status-check function gets an implicit success() prepended
+  # by GitHub Actions, and success() evaluates over the transitive needs
+  # chain, not just the job's direct needs (actions/runner#2205). No
+  # `needs:`/`has_code_changes` gate -- this is independent of the app
+  # build and cheap enough to run unconditionally on every push/PR.
+  actionlint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Run actionlint
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667  # 1.7.12
+        with:
+          args: -color
+
   # The bundled Maven resolver (resolver/pom.xml) that `lyric restore
   # --target jvm` shells out to for `[maven]` dependency resolution
   # (docs/44-jvm-production-readiness-plan.md finding M-7) was previously
@@ -760,6 +782,30 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
+
+      # Bool stringification cross-target parity (#5552): toString(Bool),
+      # Bool.toString(), string concatenation, and string interpolation all
+      # render lowercase "true"/"false" on both targets — the BCL's
+      # Boolean.ToString() would otherwise render "True"/"False" on
+      # `--target dotnet` while Java's String.valueOf(boolean) renders
+      # lowercase on `--target jvm`, a target-dependent divergence. The
+      # dotnet half of the MSIL/JVM agreement check; the JVM half runs
+      # alongside `bitwise_self_test.l` (see the JVM self-tests job below).
+      - name: Bool stringification self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping bool_tostring self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping bool_tostring self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/bool_tostring_self_test.l
 
       # Unsigned Byte semantics (docs/59 §4.3): division/modulo, every
       # compound-assignment path, and the >= 128 canonicalization cases
@@ -3404,6 +3450,24 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # JVM half of the Bool stringification cross-target parity check
+      # (#5552) — see the dotnet-side step above for the full rationale.
+      - name: Bool stringification self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping bool_tostring JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping bool_tostring JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/bool_tostring_self_test.l
 
       # #3693/#3705-shape generic-specialisation regression on the JVM
       # single-file build (docs/59 §5.4 item: JVM single-file mono decl

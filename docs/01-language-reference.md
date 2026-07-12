@@ -159,6 +159,8 @@ Integer arithmetic panics on overflow in checked builds (default for `--debug`).
 
 Floating-point follows IEEE 754-2019 with default rounding mode (round-to-nearest-even) and traps disabled. NaN comparisons follow the standard (`NaN != NaN` is `true`, `NaN < x` is `false` for all `x`).
 
+Stringifying a `Double` (`.toString()`, the free `toString(x)` function, string interpolation, `+` concatenation, and `println`/`print`) never emits a trailing `.0` for a whole value: `1500.0.toString()` is `"1500"`, matching .NET's default `Double.ToString()` ("G" format). A value with a genuine fractional part keeps its digits (`1500.5.toString()` is `"1500.5"`). This is normalized identically on both the MSIL and JVM backends — Java's `Double.toString()`/`String.valueOf(double)` would otherwise always render at least one fractional digit (`"1500.0"`); the JVM backend strips the trailing `.0` at every stringification call site to match (#4688). (Compound-assignment `+=` onto a `String` target does not yet type-check against a non-`String` RHS of any type — a separate, pre-existing gap, not addressed here.)
+
 ### 2.2 Range subtypes
 
 A range subtype constrains a numeric type to a contiguous range:
