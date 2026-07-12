@@ -162,6 +162,7 @@ test "buildPublishNuspec: emits a dependency as nuspec metadata, never a Package
   val ns = Cli.buildPublishNuspec(
     "Lyric.OTel",
     "1.2.3",
+    noAuthors(),
     "OTel exporters",
     "MIT",
     None,
@@ -184,6 +185,7 @@ test "buildPublishNuspec: packs the payload DLL into lib/net10.0 and carries id/
   val ns = Cli.buildPublishNuspec(
     "Lyric.OTel",
     "1.2.3",
+    noAuthors(),
     "OTel exporters",
     "MIT",
     None,
@@ -201,9 +203,20 @@ test "buildPublishNuspec: packs the payload DLL into lib/net10.0 and carries id/
 }
 
 test "buildPublishNuspec: description falls back to the id when empty (NuGet requires one)" {
-  val ns = Cli.buildPublishNuspec("Lyric.Proto", "0.1.0", "", "", None, "", "/abs/Lyric.Proto.dll", "Lyric.Proto.dll")
+  val ns = Cli.buildPublishNuspec(
+    "Lyric.Proto",
+    "0.1.0",
+    noAuthors(),
+    "",
+    "",
+    None,
+    "",
+    "/abs/Lyric.Proto.dll",
+    "Lyric.Proto.dll"
+  )
   assertTrue(strContains(ns, "<description>Lyric.Proto</description>"), "empty description falls back to the id")
   assertFalse(strContains(ns, "<license"), "no license element when license is empty")
+  assertTrue(strContains(ns, "<authors>Lyric.Proto</authors>"), "empty authors falls back to the id")
 }
 
 // XML metacharacters in any field must be escaped so the emitted .nuspec stays
@@ -213,6 +226,7 @@ test "buildPublishNuspec: escapes XML metacharacters in its own fields" {
   val ns = Cli.buildPublishNuspec(
     "A&B",
     "1.0-<rc>",
+    noAuthors(),
     "desc \"q\" & <tag>",
     "MIT & Apache",
     Some(value = "https://ex.com/?a=1&b=2"),
@@ -229,6 +243,34 @@ test "buildPublishNuspec: escapes XML metacharacters in its own fields" {
   assertFalse(strContains(ns, "<id>A&B</id>"), "raw unescaped ampersand never appears in id")
 }
 
+// The manifest's [package] authors must reach the nuspec <authors> element as a
+// comma-separated, XML-escaped list — not be silently replaced by the id (#5683).
+test "buildPublishNuspec: emits manifest authors as a comma-separated escaped list" {
+  val authors: List[String] = newList()
+  authors.add("Alice Example")
+  authors.add("Bob & Co")
+  val ns = Cli.buildPublishNuspec(
+    "Lyric.OTel",
+    "1.2.3",
+    authors,
+    "OTel exporters",
+    "MIT",
+    None,
+    "",
+    "/abs/Lyric.OTel.dll",
+    "Lyric.OTel.dll"
+  )
+  assertTrue(
+    strContains(ns, "<authors>Alice Example, Bob &amp; Co</authors>"),
+    "authors joined by comma, escaped, not replaced by the id"
+  )
+  assertFalse(strContains(ns, "<authors>Lyric.OTel</authors>"), "id is not used when authors are declared")
+}
+
 func strContains(haystack: in String, needle: in String): Bool {
   haystack.contains(needle)
+}
+
+func noAuthors(): List[String] {
+  newList()
 }

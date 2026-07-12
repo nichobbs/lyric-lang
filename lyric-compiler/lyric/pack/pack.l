@@ -34,24 +34,6 @@ pub func sanitisedPackageName(raw: in String): String {
   s
 }
 
-// Extract the filename component from a path (handles both / and \).
-pub func getFileName(path: in String): String {
-  var best = 0
-  var i = 0
-  while i < path.length {
-    val c = path[i]
-    if c == '/' or c == '\\' {
-      best = i + 1
-    }
-    i = i + 1
-  }
-  if best >= path.length {
-    path
-  } else {
-    Str.substring(path, best, path.length - best)
-  }
-}
-
 // ─── Restore csproj ───────────────────────────────────────────────────────────
 /// Generate the `.csproj` content for `lyric restore`.
 pub func restoreCsproj(m: in Manifest): String {

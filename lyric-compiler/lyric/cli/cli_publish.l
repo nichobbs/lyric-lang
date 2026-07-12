@@ -31,6 +31,7 @@ import Lyric.Discovery as Disc
 pub func buildPublishNuspec(
   id: in String,
   version: in String,
+  authors: in List[String],
   description: in String,
   license: in String,
   repository: in Option[String],
@@ -39,12 +40,27 @@ pub func buildPublishNuspec(
   dllBase: in String,
 ): String {
   val descText = if Str.isEmpty(description) { id } else { description }
+  // NuGet <authors> is a comma-separated list.  Fall back to the package id
+  // when the manifest declares no [package] authors (NuGet requires a
+  // non-empty authors value).
+  var authorsText = ""
+  var ai = 0
+  while ai < authors.count {
+    if ai > 0 {
+      authorsText = authorsText + ", "
+    }
+    authorsText = authorsText + authors[ai]
+    ai = ai + 1
+  }
+  if Str.isEmpty(authorsText) {
+    authorsText = id
+  }
   var nuspec = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
   nuspec = nuspec + "<package>\n"
   nuspec = nuspec + "  <metadata>\n"
   nuspec = nuspec + "    <id>" + Pack.xmlEscape(id) + "</id>\n"
   nuspec = nuspec + "    <version>" + Pack.xmlEscape(version) + "</version>\n"
-  nuspec = nuspec + "    <authors>" + Pack.xmlEscape(id) + "</authors>\n"
+  nuspec = nuspec + "    <authors>" + Pack.xmlEscape(authorsText) + "</authors>\n"
   nuspec = nuspec + "    <description>" + Pack.xmlEscape(descText) + "</description>\n"
   if not Str.isEmpty(license) {
     nuspec = nuspec + "    <license type=\"expression\">" + Pack.xmlEscape(license) + "</license>\n"
@@ -277,6 +293,7 @@ func cmdPublish(argv: in slice[String]): Int {
   val nuspec = buildPublishNuspec(
     pkg.name,
     effectiveVersion,
+    pkg.authors,
     pkg.description,
     pkg.license,
     pkg.repository,
