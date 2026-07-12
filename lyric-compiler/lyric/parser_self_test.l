@@ -1342,6 +1342,20 @@ test "lambda: bare single-param form parses clean as a call argument" {
   assertEqualInt(diagCount(pr), 0, "lambda: `(v) -> ...` as a bare call argument parses clean")
 }
 
+// #5646: the empty-parens case is parsed separately from the general
+// tuple/paren path (it would otherwise become the `()` Unit literal), so it
+// needs its own arrow lookahead to support the zero-param bare form.
+test "lambda: bare zero-param form parses clean as a call argument" {
+  val pr = parse("package P\nfunc f(): Int {\n  val r = callIt(() -> 42)\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `() -> ...` as a bare call argument parses clean")
+}
+
+// A bare `()` not followed by `->` must still parse as the Unit literal.
+test "lambda: bare empty parens without arrow still parses as Unit literal" {
+  val pr = parse("package P\nfunc f(): Unit {\n  val r = ()\n}\n")
+  assertEqualInt(diagCount(pr), 0, "`()` without a following arrow parses as the Unit literal")
+}
+
 // Exact shape from the issue repro: a bare two-param lambda whose body is a
 // multi-line `{ ... }` block (not a single expression), as the second
 // positional call argument.

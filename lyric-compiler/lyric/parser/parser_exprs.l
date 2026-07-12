@@ -1057,7 +1057,16 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
             val _ = advance(st)
             if isPunct(peekToken(st), RParen) {
               val endTok = advance(st)
-              mkExpr(ELiteral(lit = LUnit), joinSpans(tok.span, endTok.span))
+              // `() -> expr` is the zero-param bare lambda literal (#4748,
+              // #5646): a following `->` reinterprets the just-consumed
+              // empty parens as an empty `LambdaParams` list instead of the
+              // Unit literal `()` would otherwise be.
+              if isPunct(peekToken(st), Arrow) {
+                val noParams: List[LambdaParam] = newList()
+                parseArrowLambdaTail(st, tok.span, noParams)
+              } else {
+                mkExpr(ELiteral(lit = LUnit), joinSpans(tok.span, endTok.span))
+              }
             } else {
               val inner = parseExpr(st)
               if isPunct(peekToken(st), Comma) {

@@ -4612,7 +4612,15 @@ func emitCompoundCombineMsil(
       case MString -> {
       }
       case MBool -> {
-        // Lowercase "true"/"false", not "True"/"False" (#5552).
+        // Lowercase "true"/"false", not "True"/"False" (#5552). Currently
+        // unreachable in practice: `SAssign` type-checking rejects
+        // `s += true` with T0063 today regardless of RHS type (a separate,
+        // pre-existing gap — see the #4688/#5552 decision-log entry), so no
+        // program can reach this arm with `rTy == MBool` yet. Kept here
+        // rather than deleted so this call site doesn't silently regress to
+        // the wrong (uppercase) spelling the moment that type-checker gap
+        // is fixed — matching the other three now-reachable Bool
+        // stringification call sites' discipline.
         emitBoolToStringMsil(cctx, fctx, insns)
       }
       case _ -> {

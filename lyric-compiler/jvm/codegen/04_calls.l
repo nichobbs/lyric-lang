@@ -655,23 +655,7 @@ func lowerBuiltinOrStaticCall(
       // Double.toString directly ("1500.0" for a whole value) — normalize
       // to a String first so println matches the interpolation/toString()
       // rendering ("1500", matching .NET's Double.ToString()).
-      val argTy = match rawTy {
-        case JDouble -> {
-          val voPs: List[JvmType] = newList()
-          voPs.add(JDouble)
-          insns.add(
-            LInvokestatic(
-              owner = "java/lang/String",
-              name = "valueOf",
-              params = voPs,
-              ret = JRef(className = "java/lang/String")
-            )
-          )
-          emitNormalizeDoubleString(ctx, insns)
-          JRef(className = "java/lang/String")
-        }
-        case _ -> rawTy
-      }
+      val argTy = normalizeDoublePrintArg(ctx, insns, rawTy)
       val aSlot = allocSlot(ctx, "__println_a_" + freshLabel(ctx), argTy)
       emitStore(insns, aSlot, argTy)
       insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
@@ -690,23 +674,7 @@ func lowerBuiltinOrStaticCall(
     if args.count > 0 {
       val rawTy = lowerCallArg(ctx, insns, args[0])
       // #4688: same Double normalization as println above.
-      val argTy = match rawTy {
-        case JDouble -> {
-          val voPs: List[JvmType] = newList()
-          voPs.add(JDouble)
-          insns.add(
-            LInvokestatic(
-              owner = "java/lang/String",
-              name = "valueOf",
-              params = voPs,
-              ret = JRef(className = "java/lang/String")
-            )
-          )
-          emitNormalizeDoubleString(ctx, insns)
-          JRef(className = "java/lang/String")
-        }
-        case _ -> rawTy
-      }
+      val argTy = normalizeDoublePrintArg(ctx, insns, rawTy)
       val aSlot = allocSlot(ctx, "__print_a_" + freshLabel(ctx), argTy)
       emitStore(insns, aSlot, argTy)
       insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
@@ -3454,6 +3422,33 @@ func lowerMethodCall(
           "' cannot be called on a primitive-typed receiver"
       )
     }
+  }
+}
+
+// #4688: `println`/`print`'s already-lowered argument, on the stack as
+// `rawTy`. `PrintStream.println(double)`/`.print(double)` would hand off to
+// Java's `Double.toString` directly ("1500.0" for a whole value); stringify
+// via `String.valueOf(double)` and strip the trailing ".0" so println/print
+// match the interpolation/toString() rendering ("1500", matching .NET's
+// `Double.ToString()`). Non-Double args pass through unchanged. Shared by
+// both `println` and `print` in `lowerBuiltinOrStaticCall` above.
+func normalizeDoublePrintArg(ctx: in FuncCtx, insns: in List[LInsn], rawTy: in JvmType): JvmType {
+  match rawTy {
+    case JDouble -> {
+      val voPs: List[JvmType] = newList()
+      voPs.add(JDouble)
+      insns.add(
+        LInvokestatic(
+          owner = "java/lang/String",
+          name = "valueOf",
+          params = voPs,
+          ret = JRef(className = "java/lang/String")
+        )
+      )
+      emitNormalizeDoubleString(ctx, insns)
+      JRef(className = "java/lang/String")
+    }
+    case _ -> rawTy
   }
 }
 

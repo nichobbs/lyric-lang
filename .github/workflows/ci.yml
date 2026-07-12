@@ -1995,7 +1995,9 @@ jobs:
           }
           LYRIC
           aout="$("$lyric_bin" run "$ann" 2>&1)" || { echo "::error::param-taking HOF program failed to run"; echo "$aout"; exit 1; }
-          for expect in "a1=11" "u1=11" "u2=42" "uB=False"; do
+          # #5552: Bool.toString() is pinned to lowercase "true"/"false" now
+          # (was the BCL Boolean.ToString() default, "True").
+          for expect in "a1=11" "u1=11" "u2=42" "uB=false"; do
             if ! grep -qx "$expect" <<< "$aout"; then
               echo "::error::expected '$expect' in param-taking HOF output"; echo "$aout"; exit 1
             fi

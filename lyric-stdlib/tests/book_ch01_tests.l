@@ -55,9 +55,10 @@ func testUnitReturn(): Unit {
 
 func testToString(): Unit {
   assertEqual(toString(42), "42", "toString Int")
-  // Bool toString uses .NET's Boolean.ToString() which capitalises: "True"/"False".
-  // This is a known stage-0 bootstrap emitter behaviour; tracked in issue #2225.
-  assertEqual(toString(true), "True", "toString Bool")
+  // #5552: Bool toString() is pinned to lowercase "true"/"false" on both
+  // targets now, matching the language's own Bool literals — closes the
+  // stage-0 bootstrap-emitter capitalisation wart tracked in issue #2225.
+  assertEqual(toString(true), "true", "toString Bool")
   assertEqual(toString(3.14), "3.14", "toString Double")
 }
 

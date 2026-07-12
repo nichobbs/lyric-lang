@@ -15169,9 +15169,9 @@ the first casualty).
 
 ---
 
-## D-progress-664 — Round-3 issue batch: fmt quoted-generic-arity ambiguity, JVM case-class O(1) lookup, hoisting-pass ECall recursion gap, JVM `Never`-tail VerifyError, cross-target Double/Bool stringification parity, formatter parser-order gap
+## D-progress-664 — Round-3 issue batch: fmt quoted-generic-arity ambiguity, JVM case-class O(1) lookup, hoisting-pass ECall recursion gap, JVM `Never`-tail VerifyError, cross-target Double/Bool stringification parity, formatter parser-order gap, bare parenthesised lambda literals
 
-Six independent fixes, each scoped to its own file(s):
+Seven independent fixes, each scoped to its own file(s):
 
 - **`lyric fmt` quoted extern-type generic arity (#5476):** the quoted
   `extern type X[T] = "Foo`1"` form can't be losslessly reformatted by
@@ -15230,9 +15230,27 @@ Six independent fixes, each scoped to its own file(s):
   relocating the import to the file's top-level import block (the compile
   path's leniency was the actual bug, not the parser) — no grammar or
   parser change needed.
+- **Bare parenthesised lambda literals (#4748, #5646):** a parenthesised
+  parameter list immediately followed by `->` now parses as a lambda
+  literal directly in expression position — `list.fold(0, (acc, x) -> acc
+  + x)` — without the `{ params -> body }` wrapper, covering the 0/1/2/3+
+  bare-identifier-parameter shapes (`() -> e`, `(x) -> e`, `(x, y) -> e`,
+  …). The parser speculatively parses the parenthesised group as an
+  expression/tuple first; if every element is a bare identifier and the
+  next token is `->`, it reinterprets the group as `LambdaParams` and
+  continues parsing a lambda body, otherwise falling back to the ordinary
+  `ParenExpr`/`TupleExpr`/`ETuple` it already builds — no re-tokenizing or
+  backtracking over consumed tokens. The zero-param case needed its own
+  arrow lookahead: `()` is parsed as the Unit literal by a separate,
+  earlier branch (`isPunct(peekToken(st), RParen)` short-circuits before
+  the general tuple/paren path even runs), so it silently swallowed a
+  following `-> expr` until that branch grew the same check. Documented in
+  `docs/grammar.ebnf` §7.1.3.1 and ambiguity note 7 (§14), and in
+  `docs/01-language-reference.md` §5.4.
 
-**Related:** #5476, #4802, #4264, #5378, #4688, #5552, #5523, #2870 (Never
-erasure precedent), #2462 (Double MSIL invariant-culture precedent).
+**Related:** #5476, #4802, #4264, #5378, #4688, #5552, #5523, #4748, #5646,
+#2870 (Never erasure precedent), #2462 (Double MSIL invariant-culture
+precedent).
 
 ---
 
