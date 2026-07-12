@@ -24,6 +24,14 @@
 //!      emitted a non-existent static factory → NoSuchMethodError).
 //!   5. Named-argument record construction reorder (B-7 / #1793: out-of-order
 //!      named args were placed into the wrong ctor slots).
+//!   10. A `var` declared inside an `if`-expression passed as a call
+//!       argument is hoisted for lambda capture (#4264: the hoisting
+//!       pre-pass `collectMutableVarsExpr` never recursed into `ECall`
+//!       arguments, so a `var` nested that way was never hoisted and a
+//!       lambda mutating it silently wrote to its own by-value snapshot).
+//!   13. Whole-valued Double stringification matches .NET (#4688, docs/44
+//!       m-21: Java's Double.toString() always renders a fractional digit
+//!       where .NET's default ToString() omits it for whole values).
 @test_module
 package Lyric.SilentMiscompileGuardJvmSelfTest
 
@@ -58,6 +66,12 @@ union Tagged2 {
 // boundary (param load + arithmetic + return all in 32-bit float opcodes).
 func scaleFloat(v: in Float, by: in Float): Float {
   v * by
+}
+
+// Identity wrapper used to force an `if`-expression into call-argument
+// position for the #4264 hoisting-completeness test below.
+func identityInt(x: in Int): Int {
+  x
 }
 
 // Returns the i-th element of a 3-element Int slice after mutating it.
@@ -313,6 +327,35 @@ test "compound assignment on hoisted (captured) vars of each shape" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 10. `collectMutableVarsExpr`'s hoisting pre-pass must see a `var` declared
+//     inside an expression nested in call-argument position (#4264): before
+//     the fix, `collectMutableVarsExpr` recursed into `EIf`/`EMatch`/`EBlock`/
+//     `EUnsafe` only when they were direct statement- or binding-init-level
+//     expressions, never when reached through an intervening `ECall`. A `var`
+//     declared inside an `if`-expression passed as a call argument was
+//     therefore never added to the function's `mutableVars` set, so the
+//     lambda that mutates it through a captured reference was never hoisted
+//     to a heap cell: the lambda silently mutated its own by-value capture
+//     instead, and the mutation was never observed by the enclosing scope.
+// ─────────────────────────────────────────────────────────────────────────────
+test "var declared inside an if-expression call argument is hoisted for lambda capture" {
+  val r = identityInt(
+    if true {
+      var x = 1
+      val g: () -> Int = { -> x = x + 1; x }
+      val r1 = g()
+      val r2 = g()
+      assertEqualInt(r1, 2, "first g() call observes the hoisted cell (x: 1 -> 2)")
+      assertEqualInt(r2, 3, "second g() call observes the mutation from the first (x: 2 -> 3)")
+      x
+    } else {
+      0
+    }
+  )
+  assertEqualInt(r, 3, "the call argument's var is hoisted, so the if-expression yields 3")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 12. Indexed slice/List elements carry their declared concrete type
 //     (docs/59 §4.3, the #5439 class).  `fields[i]` on a `slice[Rec]` /
 //     `List[Rec]` receiver was statically Object, so the member read that
@@ -365,4 +408,54 @@ test "slice[Record] elements read fields through the declared element type" {
 test "List[Record] elements read fields through the declared element type" {
   val fields: List[KvField] = [KvField(key = "x", value = "9"), KvField(key = "y", value = "8")]
   assertEqual(joinListFields(fields), "x=9 y=8", "formatFields shape over List[KvField]")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. Whole-valued Double stringification matches .NET (#4688, docs/44 m-21).
+//     Java's Double.toString()/String.valueOf(double) always renders a
+//     fractional digit ("1500.0"); .NET's default Double.ToString() omits
+//     the trailing ".0" for whole values ("1500").  `.toString()`, the free
+//     `toString(x)` function, string interpolation, `+` concatenation, and
+//     compound `+=` concatenation all route through the same
+//     `emitNormalizeDoubleString` helper and are asserted below;
+//     `println`/`print` share the identical helper call (`codegen/04_calls.l`)
+//     but aren't independently assertable here (no stdout-capture harness).
+//     A genuine fractional part is left untouched.
+// ─────────────────────────────────────────────────────────────────────────────
+func describeDouble(d: in Double): String {
+  "value: ${d}"
+}
+
+test "Double.toString() omits trailing .0 for a whole value" {
+  val d: Double = 1500.0
+  assertEqual(d.toString(), "1500", "1500.0.toString() == \"1500\"")
+}
+
+test "Double.toString() keeps a genuine fractional part" {
+  val d: Double = 1500.5
+  assertEqual(d.toString(), "1500.5", "1500.5.toString() == \"1500.5\"")
+}
+
+test "free toString(x) omits trailing .0 for a whole Double" {
+  val d: Double = 42.0
+  assertEqual(toString(d), "42", "toString(42.0) == \"42\"")
+}
+
+test "string interpolation of a whole Double omits trailing .0" {
+  val d: Double = 1500.0
+  assertEqual(describeDouble(d), "value: 1500", "interpolated whole Double renders without .0")
+  val frac: Double = 1500.5
+  assertEqual(describeDouble(frac), "value: 1500.5", "interpolated fractional Double keeps its digits")
+}
+
+test "+ concatenation of a whole Double omits trailing .0" {
+  val d: Double = 7.0
+  assertEqual("n=" + d, "n=7", "string + whole Double renders without .0")
+}
+
+test "zero and negative whole Doubles omit trailing .0" {
+  val z: Double = 0.0
+  val neg: Double = -5.0
+  assertEqual(z.toString(), "0", "0.0.toString() == \"0\"")
+  assertEqual(neg.toString(), "-5", "(-5.0).toString() == \"-5\"")
 }

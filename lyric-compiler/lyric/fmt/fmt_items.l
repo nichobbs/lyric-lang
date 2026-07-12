@@ -1128,7 +1128,31 @@ func externDoc(item: in Item, ep: in ExternPackageDecl, ctx: inout FmtCtx): List
 
 func externTypeDoc(visStr: in String, et: in ExternTypeDecl): List[String] {
   if et.clrNameQuoted {
-    singleLineDoc(visStr + "extern type " + et.name + genParamsStr(et.generics) + " = \"" + et.clrName + "\"")
+    // Quoted form: unlike the unquoted dotted-path form, a quoted string
+    // literal *can* legitimately contain a user-typed backtick (e.g. the
+    // user spells out ``"System.Collections.Generic.List`1"`` themselves) —
+    // including one that happens to end in exactly `` `<arity> ``, the same
+    // shape the parser itself would have appended. String-inspection alone
+    // can't disambiguate those two cases, so `et.arityAppended` (set by
+    // `parseExternTypeBody`, parser_items.l) carries the parser's own
+    // ground truth: strip the suffix only when the parser is the one that
+    // put it there (#5476).
+    val quotedDisplayName = if et.arityAppended {
+      match et.generics {
+        case Some(gps) -> {
+          val suffix = "`" + toString(gps.params.count)
+          if et.clrName.endsWith(suffix) {
+            et.clrName.substring(0, et.clrName.length - suffix.length)
+          } else {
+            et.clrName
+          }
+        }
+        case None -> et.clrName
+      }
+    } else {
+      et.clrName
+    }
+    singleLineDoc(visStr + "extern type " + et.name + genParamsStr(et.generics) + " = \"" + quotedDisplayName + "\"")
   } else {
     // Unquoted dotted-path form (docs/47): `et.clrName` may carry a
     // compiler-appended `` `N `` generic-arity suffix (parser_items.l's

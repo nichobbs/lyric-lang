@@ -729,7 +729,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                     // backend's String.Concat lowering instead of panicking.
                     val rSlot = allocSlot(ctx, "__cat_rhs_" + freshLabel(ctx), rhsTy)
                     emitStore(insns, rSlot, rhsTy)
-                    coerceToStringForConcat(insns, lhsTy)
+                    coerceToStringForConcat(ctx, insns, lhsTy)
                     val catSb: List[JvmType] = newList()
                     val lSlot = allocSlot(ctx, "__cat_lhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
                     emitStore(insns, lSlot, JRef(className = "java/lang/String"))
@@ -748,7 +748,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                       )
                     )
                     emitLoad(insns, rSlot, rhsTy)
-                    coerceToStringForConcat(insns, rhsTy)
+                    coerceToStringForConcat(ctx, insns, rhsTy)
                     insns.add(
                       LInvokevirtual(
                         owner = "java/lang/StringBuilder",
@@ -805,7 +805,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // `Object` slice element, a primitive): stringify before the
               // `append(String)` call or verification fails at the append.
               val rhsConcatTy = lowerExpr(ctx, insns, rhs)
-              coerceToStringForConcat(insns, rhsConcatTy)
+              coerceToStringForConcat(ctx, insns, rhsConcatTy)
               val rhsSlot = allocSlot(ctx, "__add_rhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
               emitStore(insns, rhsSlot, JRef(className = "java/lang/String"))
               insns.add(LNew(className = "java/lang/StringBuilder"))
@@ -2280,7 +2280,7 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
     match segments[pi] {
       case ISExpr(e) -> {
         val eTy = lowerExpr(ctx, insns, e)
-        coerceToStringForConcat(insns, eTy)
+        coerceToStringForConcat(ctx, insns, eTy)
         val eSlot = allocSlot(ctx, "__interp_" + freshLabel(ctx), JRef(className = "java/lang/String"))
         emitStore(insns, eSlot, JRef(className = "java/lang/String"))
         exprSlots.add(eSlot)
@@ -2336,7 +2336,7 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
 // element, an extern value) calls `Object.toString`; a primitive goes through
 // `String.valueOf(<primitive>)` (no boxing).  `JVoid` (nothing on the stack)
 // is a type-checker/lowering bug and panics (#4685).
-func coerceToStringForConcat(insns: in List[LInsn], ty: in JvmType): Unit {
+func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmType): Unit {
   match ty {
     case JRef(c) -> {
       if not (c == "java/lang/String") {
@@ -2389,6 +2389,15 @@ func coerceToStringForConcat(insns: in List[LInsn], ty: in JvmType): Unit {
           ret = JRef(className = "java/lang/String")
         )
       )
+      // #4688: Java's Double.toString always renders a fractional digit
+      // ("1500.0") where .NET's default ToString() omits it for whole values
+      // ("1500").  Normalize the JVM target onto the already-established
+      // .NET behavior so string interpolation / `+` concatenation of a
+      // Double operand renders identically on both targets.
+      match ty {
+        case JDouble -> emitNormalizeDoubleString(ctx, insns)
+        case _ -> ()
+      }
     }
   }
 }
@@ -2404,6 +2413,55 @@ func stringValueOfParam(ty: in JvmType): JvmType {
     case JChar -> JChar
     case _ -> JInt
   }
+}
+
+// #4688: strip a trailing ".0" from the `String.valueOf(double)` /
+// `Double.toString` result already on the stack, so a whole-valued Double
+// stringifies as "1500" on the JVM target instead of Java's "1500.0" —
+// matching .NET's default `Double.ToString()` ("G" format), which never
+// emits a trailing ".0".  Values with a genuine fractional part (e.g.
+// "1500.5") are left untouched.  Stack in: [String]; stack out: [String].
+//
+// This codegen's StackMapTable frames (`lowering.l`'s per-function
+// `full_frame` emission) declare an EMPTY operand stack at every branch
+// target — every other branchy path in this file stores its result to a
+// local before a `goto`/label and reloads after the merge, never leaving a
+// value on the stack across one.  Both arms below store the (unchanged or
+// stripped) String back into `sSlot` before falling into `endLabel`, then
+// reload it once, after the merge, for the caller.
+func emitNormalizeDoubleString(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+  val strTy = JRef(className = "java/lang/String")
+  val sSlot = allocSlot(ctx, "__dblstr_s_" + freshLabel(ctx), strTy)
+  emitStore(insns, sSlot, strTy)
+  emitLoad(insns, sSlot, strTy)
+  insns.add(LPushString(s = ".0"))
+  val ewPs: List[JvmType] = newList()
+  ewPs.add(strTy)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "endsWith", params = ewPs, ret = JBoolean))
+  val skipLabel = freshLabel(ctx)
+  val endLabel = freshLabel(ctx)
+  insns.add(LIfeq(label = skipLabel))
+  // Strip: substring(0, s.length() - 2), then overwrite sSlot so the
+  // operand stack is empty again before the `goto` to the merge point.
+  emitLoad(insns, sSlot, strTy)
+  val lenPs: List[JvmType] = newList()
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = lenPs, ret = JInt))
+  insns.add(LIconst(v = 2))
+  insns.add(LIsub)
+  val lenSlot = allocSlot(ctx, "__dblstr_len_" + freshLabel(ctx), JInt)
+  emitStore(insns, lenSlot, JInt)
+  emitLoad(insns, sSlot, strTy)
+  insns.add(LIconst(v = 0))
+  emitLoad(insns, lenSlot, JInt)
+  val subPs: List[JvmType] = newList()
+  subPs.add(JInt)
+  subPs.add(JInt)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "substring", params = subPs, ret = strTy))
+  emitStore(insns, sSlot, strTy)
+  insns.add(LGoto(label = endLabel))
+  insns.add(LLabel(name = skipLabel))
+  insns.add(LLabel(name = endLabel))
+  emitLoad(insns, sSlot, strTy)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

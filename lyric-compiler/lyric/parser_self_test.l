@@ -1322,6 +1322,107 @@ test "lambda: parenthesised param with type annotation parses clean" {
   assertEqualInt(diagCount(pr), 0, "lambda: `{ (k: String) -> k }` parses clean")
 }
 
+// #4748: bare (non-`{ }`-wrapped) parenthesised lambda literals used
+// directly in call-argument position. Before the fix, `parsePrimaryExpr`'s
+// `LParen` case always resolved `(k, v)` to a tuple/grouped expression, so
+// a following `->` was unexpected and raised P0080 ("expected ')' to close
+// call argument list") followed by a cascade of P0050s.
+test "lambda: bare two-param form parses clean as a call argument" {
+  val pr = parse("package P\nfunc f(): Int {\n  val r = mapForEach(m, (k, v) -> k + v)\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `(k, v) -> ...` as a bare call argument parses clean")
+}
+
+test "lambda: bare three-param form parses clean as a call argument" {
+  val pr = parse("package P\nfunc f(): Int {\n  val r = fold3(m, (a, b, c) -> a + b + c)\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `(a, b, c) -> ...` as a bare call argument parses clean")
+}
+
+test "lambda: bare single-param form parses clean as a call argument" {
+  val pr = parse("package P\nfunc f(): Int {\n  val r = apply(x, (v) -> v + 1)\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `(v) -> ...` as a bare call argument parses clean")
+}
+
+// #5646: the empty-parens case is parsed separately from the general
+// tuple/paren path (it would otherwise become the `()` Unit literal), so it
+// needs its own arrow lookahead to support the zero-param bare form.
+test "lambda: bare zero-param form parses clean as a call argument" {
+  val pr = parse("package P\nfunc f(): Int {\n  val r = callIt(() -> 42)\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `() -> ...` as a bare call argument parses clean")
+}
+
+// A bare `()` not followed by `->` must still parse as the Unit literal.
+test "lambda: bare empty parens without arrow still parses as Unit literal" {
+  val pr = parse("package P\nfunc f(): Unit {\n  val r = ()\n}\n")
+  assertEqualInt(diagCount(pr), 0, "`()` without a following arrow parses as the Unit literal")
+}
+
+// #5667: a match-arm guard that's just a parenthesised bare identifier
+// must not let the bare-lambda reinterpretation (#4748/#5646) swallow the
+// arm's own `->` separator (previously a P0202 "expected '->'" cascade).
+test "lambda: parenthesised match-arm guard does not swallow the arm arrow" {
+  val pr = parse(
+    "package P\nfunc f(x: Int): Int {\n  val flag = x > 0\n  return match x {\n    case y if (flag) -> 1\n    case _ -> 2\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "guard `if (flag) -> ...` parses clean, arrow belongs to the match arm")
+}
+
+// A guard containing a nested bare-lambda call argument must still get the
+// ordinary lambda treatment — only the guard's own outermost primary
+// expression is suppressed, not everything inside it.
+test "lambda: bare-lambda call argument nested inside a match-arm guard still parses as a lambda" {
+  val pr = parse(
+    "package P\nfunc f(xs: List[Int]): Int {\n  return match xs {\n    case ys if ys.any((y) -> y > 0) -> 1\n    case _ -> 2\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "nested `(y) -> y > 0` call argument inside a guard still parses clean")
+}
+
+// #5667: a bare `(x) -> rhs` statement is an SRule (stub-builder rule), not
+// a discarded lambda literal — the statement-level `->` detection
+// (parseExprStatement) must not have its arrow swallowed either.
+test "lambda: bare-paren statement followed by arrow parses as a rule, not a discarded lambda" {
+  val pr = parse("package P\nfunc f(): Unit {\n  (x) -> x\n}\n")
+  assertEqualInt(diagCount(pr), 0, "`(x) -> x` as a bare statement parses clean")
+}
+
+// A statement containing a nested bare-lambda call argument must still get
+// the ordinary lambda treatment (parseStatementLeadExpr's retry only fires
+// when the WHOLE statement parses to a bare top-level ELambda, which a
+// call like `xs.forEach(...)` never does).
+test "lambda: bare-lambda call argument nested inside a plain statement still parses as a lambda" {
+  val pr = parse("package P\nfunc f(xs: List[Int]): Unit {\n  xs.forEach((x) -> println(toString(x)))\n}\n")
+  assertEqualInt(diagCount(pr), 0, "nested `(x) -> ...` call argument inside a statement still parses clean")
+}
+
+// #5668: a COMPOUND match-arm guard ending in a parenthesised bare
+// identifier must not let the bare-lambda reinterpretation swallow the
+// arm's own `->` either — the original #5667 fix only protected the
+// guard's very first primary expression (here, `flag`), leaving the
+// trailing `(cond)` free to misparse once precedence-climbing reached it.
+test "lambda: compound match-arm guard ending in a parenthesised identifier does not swallow the arm arrow" {
+  val pr = parse(
+    "package P\nfunc f(x: Int): Int {\n  val flag = true\n  val cond = x > 0\n  return match x {\n    case y if flag and (cond) -> 1\n    case _ -> 2\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "guard `if flag and (cond) -> ...` parses clean")
+}
+
+// Exact shape from the issue repro: a bare two-param lambda whose body is a
+// multi-line `{ ... }` block (not a single expression), as the second
+// positional call argument.
+test "lambda: bare two-param form with block body parses clean (issue repro)" {
+  val pr = parse(
+    "package P\nfunc f(): Int {\n  var total = 0\n  mapForEach(m, (k, v) -> {\n    total = total + v\n  })\n  return total\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "lambda: `(k, v) -> { ... }` block-body call argument parses clean")
+}
+
+// A tuple expression that happens to contain bare identifiers but has no
+// trailing `->` must still parse as an ordinary tuple, not be mistaken for
+// an (incomplete) lambda parameter list.
+test "lambda: paren-list call argument without arrow still parses as a tuple" {
+  val pr = parse("package P\nfunc f(): Int {\n  val r = g((a, b))\n  return 0\n}\n")
+  assertEqualInt(diagCount(pr), 0, "lambda: `(a, b)` without `->` as a call argument still parses clean")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // docs/58 (D121) — wire templates, contributes[T], include, config `from`.
 // ─────────────────────────────────────────────────────────────────────────────

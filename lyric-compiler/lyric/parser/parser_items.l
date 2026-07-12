@@ -2360,21 +2360,24 @@ func parseExternTypeBody(st: inout ParseState): ExternTypeDecl {
     }
     sIdx = sIdx + 1
   }
-  val finalClrName = match generics {
-    case Some(gps) -> {
-      if gps.params.count > 0 and not hasBacktick {
-        clrNameResult.name + "`" + toString(gps.params.count)
-      } else {
-        clrNameResult.name
-      }
+  val willAppendArity = match generics {
+    case Some(gps) -> gps.params.count > 0 and not hasBacktick
+    case None -> false
+  }
+  val finalClrName = if willAppendArity {
+    match generics {
+      case Some(gps) -> clrNameResult.name + "`" + toString(gps.params.count)
+      case None -> clrNameResult.name
     }
-    case None -> clrNameResult.name
+  } else {
+    clrNameResult.name
   }
   ExternTypeDecl(
     name = ns.name,
     generics = generics,
     clrName = finalClrName,
     clrNameQuoted = clrNameQuoted,
+    arityAppended = willAppendArity,
     span = joinSpans(startTok.span, clrNameResult.span)
   )
 }

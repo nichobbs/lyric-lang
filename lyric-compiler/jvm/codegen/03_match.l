@@ -353,26 +353,20 @@ func resolveCaseClassJvm(ctx: in FuncCtx, head: in ModulePath, scrutTy: in JvmTy
           derived
         } else {
           // The guess carries the right UNION name with the wrong package
-          // (`Std/JsonHost/YamlError` for Std.Yaml's `YamlError`): search
-          // the registered case classes for `…/<Union>$<case>` so a match
-          // on an imported union resolves to its declaring package even
-          // when ANOTHER package registered a same-named case first
-          // (`InvalidDocument` exists in both XmlError and YamlError).
+          // (`Std/JsonHost/YamlError` for Std.Yaml's `YamlError`): the
+          // `ctors` registry carries a union-name-qualified key
+          // (`<Union>$<case>`, e.g. "YamlError$InvalidDocument") for every
+          // registered case class (see `collectFileCtors`'s `IUnion`
+          // branch), built once at bundle setup time. A single `mapGet`
+          // resolves the match on an imported union to its declaring
+          // package even when ANOTHER package registered a same-named case
+          // first (`InvalidDocument` exists in both XmlError and
+          // YamlError) — O(1) instead of a linear scan over every
+          // registered case class per match arm (#4802).
           val unionName = jvmSimpleName(baseCls)
-          val wantSuffix = "/" + unionName + "$" + caseName
-          var found = ""
-          for k in mapKeys(ctx.caseFields) {
-            if found == "" and endsWith(k, wantSuffix) {
-              found = k
-            }
-          }
-          if found != "" {
-            found
-          } else {
-            match ctorClassFor(ctx, caseName) {
-              case Some(cls) -> cls
-              case None -> derived
-            }
+          match mapGet(ctx.ctors, unionName + "$" + caseName) {
+            case Some(cls) -> cls
+            case None -> match ctorClassFor(ctx, caseName) { case Some(cls) -> cls; case None -> derived }
           }
         }
       } else {

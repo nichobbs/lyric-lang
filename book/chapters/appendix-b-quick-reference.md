@@ -463,6 +463,7 @@ No `do … while`; use `while true { ... if cond { break } }`.
 x?                     // error propagation: return Err(e) / None on failure
 x ?? fallback          // nil-coalescing: fallback if x is None
 { x: Int -> x * 2 }   // closure / lambda
+(a, b) -> a + b        // bare parenthesised lambda (call-argument position only, no braces)
 await expr             // suspend until task completes (inside async func)
 yield expr             // emit element from async generator (turns async func into IAsyncEnumerable<T>)
 spawn expr             // launch task within enclosing scope

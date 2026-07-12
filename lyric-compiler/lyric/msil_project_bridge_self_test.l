@@ -1168,7 +1168,9 @@ test "externTarget property getter resolves with get_ prefix" {
   )
   val result = compileAndRun("prop_getter", packages, "PropGetter")
   assertEqualInt(result.exitCode, 0, "prop_getter: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "True", "prop_getter: MachineName resolved and non-empty")
+  // #5552: Bool.toString() on .NET now pins lowercase "true"/"false" (was
+  // the BCL Boolean.ToString() default, "True"), matching the JVM backend.
+  assertEqual(Str.trim(result.stdout), "true", "prop_getter: MachineName resolved and non-empty")
 }
 
 // Regression for #4980: hits the compiled-bundle fallback directly, since this process's CWD sits inside the checkout and would always find the real source tree.

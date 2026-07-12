@@ -13,6 +13,8 @@ package Jvm.Kernel
 import Std.Core
 import Std.Collections
 import Std.Char
+// BCL externs for float/double bit pattern extraction.
+import extern System.{Single}
 
 // ── ByteWriter ────────────────────────────────────────────────────────────────
 /// Mutable big-endian byte buffer for JVM class-file construction.
@@ -548,9 +550,6 @@ pub func poolInteger(pool: in Pool, v: in Int): Int {
   poolAppendU4(e, v)
   poolAdd(pool, key, e)
 }
-
-// BCL externs for float/double bit pattern extraction.
-import extern System.{ Single }
 
 @externTarget("System.Convert.ToSingle")
 func dblToSingle(v: in Double): Single = ()

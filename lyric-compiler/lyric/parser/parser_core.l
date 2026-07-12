@@ -28,11 +28,23 @@ pub record ParseState {
   /// so internal `mark` / `reset` speculation does not need to
   /// truncate the log.
   cstEvents: List[CstEvent]
+  /// Suppresses the bare-parenthesised-lambda reinterpretation (#4748/
+  /// #5646) in `parsePrimaryExpr`'s `LParen` case: while `true`, a
+  /// parenthesised bare-identifier group immediately followed by `->`
+  /// stays an ordinary `ParenExpr`/`TupleExpr` instead of becoming a
+  /// lambda literal. Owned for its entire duration by
+  /// `parseArrowSensitiveExpr` (#5667/#5668) — see that function's doc
+  /// for why a simple set-before/clear-after around one `parseExpr` call
+  /// isn't enough (it only protects the FIRST primary expression parsed,
+  /// not a later one reached after climbing through binary operators,
+  /// e.g. `flag and (cond) -> 1`). Plain callers of `parseExpr` elsewhere
+  /// should never touch this field directly.
+  suppressArrowLambda: Bool
 }
 
 pub func makeParseState(tokens: in List[SpannedToken], diags: in List[Diagnostic]): ParseState {
   val events: List[CstEvent] = newList()
-  ParseState(tokens = tokens, pos = 0, diags = diags, cstEvents = events)
+  ParseState(tokens = tokens, pos = 0, diags = diags, cstEvents = events, suppressArrowLambda = false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -773,10 +785,7 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
       case None -> None
     }
 
-    var endSp = match selectorParse {
-      case Some(sp2) -> sp2.endSp
-      case None -> path.span
-    }
+    var endSp = match selectorParse { case Some(sp2) -> sp2.endSp; case None -> path.span }
     val result = match tryEatKw(st, KwAs) {
       case Some(_) -> {
         match tryEatIdent(st) {

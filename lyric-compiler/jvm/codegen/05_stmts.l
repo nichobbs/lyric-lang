@@ -77,6 +77,50 @@ func pushPrimitiveZero(insns: in List[LInsn], ty: in JvmType): Bool {
   }
 }
 
+// Push the JVM zero/default value for `ty`, covering every `JvmType` variant
+// (unlike `pushPrimitiveZero` above, which only covers primitives and signals
+// failure for the rest via its `Bool` result): a reference or array type
+// pushes `aconst_null`.  Used by `emitNeverTailReturn` below.
+func pushDefaultValueJvm(insns: in List[LInsn], ty: in JvmType): Unit {
+  match ty {
+    case JLong -> insns.add(LLconst(v = 0i64))
+    case JDouble -> insns.add(LDconst(v = 0.0))
+    case JFloat -> insns.add(LFconst(v = 0.0))
+    case JBoolean -> insns.add(LIconst(v = 0))
+    case JByte -> insns.add(LIconst(v = 0))
+    case JShort -> insns.add(LIconst(v = 0))
+    case JChar -> insns.add(LIconst(v = 0))
+    case JInt -> insns.add(LIconst(v = 0))
+    case JRef(_) -> insns.add(LAconstNull)
+    case JArray(_) -> insns.add(LAconstNull)
+    case JVoid -> ()
+  }
+}
+
+// A block's tail expression can lower to the erased `JVoid` — `Never` erases
+// to `JVoid` exactly like `Unit` (`Jvm.Codegen.typeExprToJvm`) — even though
+// the ENCLOSING function's declared return type is non-void.  Type-checking
+// only accepts a `Unit`-shaped tail value inside a differently-typed function
+// when the tail expression's REAL type is `Never`: a genuine `Unit` value
+// never unifies with a non-Unit declared return type, but `Never` unifies
+// with anything.  So reaching this helper (from `lowerFunc` /
+// `lowerInstanceMethodBody` in `06_items.l`) is proof the tail expression
+// diverges — e.g. a bare tail-position call to a user-defined (or
+// `@externTarget`-bound) function declared `: Never`, which erases to a
+// `JVoid`-returning call and leaves nothing on the operand stack.
+//
+// Emitting a bare `return` there does not match the method's descriptor and
+// fails class-load verification ("Method expects a return value", #5378).
+// Push `retTy`'s zero/default value and return it instead: this is dead code
+// whenever the `Never` contract holds, and mirrors how `panic(...)` in the
+// same tail position already terminates cleanly via a real `athrow` — a
+// `panic(...)` tail never reaches this helper because `endsWithReturn`
+// recognizes its `athrow` as a terminator before the caller gets here.
+pub func emitNeverTailReturn(insns: in List[LInsn], retTy: in JvmType): Unit {
+  pushDefaultValueJvm(insns, retTy)
+  emitReturn(insns, retTy)
+}
+
 func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op: in AssignOp, value: in Expr): JvmType {
   match target.kind {
     case EPath(path) -> {
@@ -546,7 +590,7 @@ func emitCompoundCombineJvm(
             // conversions, so values already on the stack stay verifiable),
             // then spill both operands and build via StringBuilder — the same
             // shape the BAdd String path emits.
-            coerceToStringForConcat(insns, vTy)
+            coerceToStringForConcat(ctx, insns, vTy)
             val rSlot = allocSlot(ctx, "__compcat_rhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
             emitStore(insns, rSlot, JRef(className = "java/lang/String"))
             val lSlot = allocSlot(ctx, "__compcat_lhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
@@ -1349,6 +1393,20 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
               // prefix below name the offending catch arm precisely.  Code
               // is threaded through the panic message because the codegen
               // tree returns `JvmType`, not a diagnostic-collecting Result.
+              // #3310: this message's prefix is `line:col` only, unlike the
+              // `path:line:col:` convention other compiler diagnostics use —
+              // unhelpful in a multi-file project.  Not fixed here: no
+              // source-file path is threaded anywhere in the JVM codegen
+              // pipeline to reach this point.  `Span`/`Position`
+              // (`lyric-compiler/lyric/lexer.l`) carry only offset/line/column,
+              // `SourceFile` (`lyric-compiler/lyric/parser/parser_ast.l`)
+              // carries no path, and `FuncCtx` (`01_types.l`) — threaded
+              // through every call in this file — has no path field either
+              // (adding one means touching all ~10 `FuncCtx`/`makeFuncCtx*`
+              // construction sites across `02_exprs.l`/`06_items.l`, per the
+              // record's own "no defaulted fields" discipline, plus the
+              // driver that knows the path in the first place). That is a
+              // real plumbing item, not a one-line fix; tracked in #3310.
               val pos = c.span.startPos
               panic(
                 "error[J004]: " + pos.line.toString() + ":" + pos.column.toString() +

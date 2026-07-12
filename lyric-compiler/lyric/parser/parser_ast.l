@@ -678,6 +678,16 @@ pub record ExternTypeDecl {
   // to one form (#5472) — `lyric fmt`'s loss-checker rejects an output that
   // silently rewrites a bare dotted path into a string literal.
   clrNameQuoted: Bool
+  // True when the parser itself appended the `` `<arity> `` generic-arity
+  // suffix to `clrName` (because the source's quoted string had no backtick
+  // of its own) — false when the source already spelled the suffix out
+  // explicitly, or when there's no suffix to speak of (unquoted form,
+  // non-generic, or a synthetic decl with no formatter presence, #5476).
+  // Distinguishing this from `clrName`'s own content is required because a
+  // user-authored quoted string can legitimately end in exactly
+  // `` `<arity> `` (matching what the parser would have appended anyway) —
+  // the formatter cannot tell the two apart by string-inspection alone.
+  arityAppended: Bool
   span: Span
 }
 

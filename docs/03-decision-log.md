@@ -15169,6 +15169,97 @@ the first casualty).
 
 ---
 
+## D-progress-664 — Round-3 issue batch: fmt quoted-generic-arity ambiguity, JVM case-class O(1) lookup, hoisting-pass ECall recursion gap, JVM `Never`-tail VerifyError, cross-target Double/Bool stringification parity, formatter parser-order gap, bare parenthesised lambda literals
+
+Seven independent fixes, each scoped to its own file(s):
+
+- **`lyric fmt` quoted extern-type generic arity (#5476):** the quoted
+  `extern type X[T] = "Foo`1"` form can't be losslessly reformatted by
+  string-inspecting `clrName` alone — a user-authored quoted string can
+  legitimately end in exactly `` `<arity> ``, the same shape the parser's
+  own auto-append produces, and the two are indistinguishable after the
+  fact. Fixed at the source: `ExternTypeDecl` gains an `arityAppended: Bool`
+  field, set by `parseExternTypeBody` at the one point it actually knows
+  whether it appended the suffix; `fmt_items.l`'s quoted branch reads that
+  flag instead of guessing.
+- **JVM `resolveCaseClassJvm` O(n) scan (#4802):** the union-name-qualified
+  fallback (`<Union>$<Case>` → declaring class) now goes through the
+  existing `ctors` map instead of a linear scan over every registered case
+  class per match arm; `collectFileCtors` registers the qualified key
+  alongside the existing bare/scoped keys, same first-wins semantics.
+- **JVM hoisting pre-pass recursion gap (#4264):** `collectMutableVarsExpr`
+  only recursed into `EIf`/`EMatch`/`EBlock`/`EUnsafe`, so a `var` declared
+  in a block reached only through an intervening `ECall`/`EBinop`/`EIndex`/
+  etc. (call-argument position, operand position, …) was invisible to the
+  by-ref-hoisting decision — a lambda mutating it silently wrote to its own
+  by-value snapshot instead. Widened to mirror `02_exprs.l`'s
+  `collectInLambdaNamesExpr` traversal (deliberately excluding `ELambda`
+  itself — a nested lambda's own `var`s are its own scope's concern).
+- **JVM `Never`-tail VerifyError (#5378, #5651):** `Never` erases to
+  `JVoid` same as `Unit`; a bare tail-position call to a `: Never`-declared
+  function inside a non-void function previously emitted a bare `return`,
+  which fails class-load verification against the enclosing method's real
+  descriptor. `emitNeverTailReturn` pushes the enclosing function's return
+  type's zero/default value before returning instead. The initial fix only
+  covered the block-tail (`FBBlock`) function-body form; the `func f(): T =
+  expr` (equals-arrow, `FBExpr`) form hits a separate lowering arm in both
+  `lowerFunc` and `lowerInstanceMethodBody` that went straight through
+  `emitReturnArrayCoerced`/`coerceArgTo` (neither has `JVoid`->primitive-
+  `toTy` handling) — caught by review as #5651 and fixed the same way.
+  MSIL has the identical bug class on both function-body forms (confirmed
+  by direct repro, `InvalidProgramException`) but was never in scope for
+  #5378 (filed JVM-only) — tracked separately as #5652.
+- **Cross-target Double/Bool stringification (#4688, #5552):** Java's
+  `Double.toString()` always renders a fractional digit (`"1500.0"`) where
+  .NET's default `Double.ToString()` doesn't (`"1500"`); the JVM backend
+  now strips a trailing `.0` at every stringification call site to match.
+  Symmetrically, .NET's `Boolean.ToString()` renders `"True"`/`"False"`
+  where Java's `String.valueOf(boolean)` renders lowercase; the MSIL
+  backend now pins lowercase at every stringification call site instead.
+  Both fixes hit the same four call sites (`toString()`, the free
+  `toString(x)`, string interpolation, `+` concatenation) on their
+  respective backend. The JVM Double fix required care: its first attempt
+  left the stripped/unstripped `String` result on the operand stack across
+  a `goto`/label branch, which this backend's StackMapTable frame emission
+  doesn't support (every other branchy path in the file stores to a local
+  before a branch and reloads after the merge) — `VerifyError: Inconsistent
+  stackmap frames`, caught by the existing `silent_miscompile_guard_jvm_self_test.l`
+  CI test before landing. Compound-assignment (`s += true`/`s += 3.5`)
+  onto a `String` target does NOT yet type-check for any non-`String` RHS
+  — a separate, pre-existing `SAssign`/T0063 gap (the type checker doesn't
+  special-case `+=`'s "any operand + String = String" semantics the way
+  the binary `+` operator's inference does) — out of scope here, and
+  explicitly not claimed as fixed in either test or docs. Tracked as #5657.
+- **Formatter/parser mid-file `import extern` (#5523):** `lyric-compiler/
+  msil/_kernel/kernel.l` had a mid-file `import extern` after item
+  declarations; the compile path accepted it but the self-hosted parser
+  (matching `docs/grammar.ebnf`'s imports-must-precede-items rule) rejected
+  it with P0040, so `lyric fmt --write` refused the file outright. Fixed by
+  relocating the import to the file's top-level import block (the compile
+  path's leniency was the actual bug, not the parser) — no grammar or
+  parser change needed.
+- **Bare parenthesised lambda literals (#4748, #5646):** a parenthesised
+  parameter list immediately followed by `->` now parses as a lambda
+  literal directly in expression position — `list.fold(0, (acc, x) -> acc
+  + x)` — without the `{ params -> body }` wrapper, covering the 0/1/2/3+
+  bare-identifier-parameter shapes (`() -> e`, `(x) -> e`, `(x, y) -> e`,
+  …). The parser speculatively parses the parenthesised group as an
+  expression/tuple first; if every element is a bare identifier and the
+  next token is `->`, it reinterprets the group as `LambdaParams` and
+  continues parsing a lambda body, otherwise falling back to the ordinary
+  `ParenExpr`/`TupleExpr`/`ETuple` it already builds — no re-tokenizing or
+  backtracking over consumed tokens. The zero-param case needed its own
+  arrow lookahead: `()` is parsed as the Unit literal by a separate,
+  earlier branch (`isPunct(peekToken(st), RParen)` short-circuits before
+  the general tuple/paren path even runs), so it silently swallowed a
+  following `-> expr` until that branch grew the same check. Documented in
+  `docs/grammar.ebnf` §7.1.3.1 and ambiguity note 7 (§14), and in
+  `docs/01-language-reference.md` §5.4.
+
+**Related:** #5476, #4802, #4264, #5378, #4688, #5552, #5523, #4748, #5646,
+#2870 (Never erasure precedent), #2462 (Double MSIL invariant-culture
+precedent).
+
 ---
 
 ## Decisions deferred to v2 or later

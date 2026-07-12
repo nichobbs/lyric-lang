@@ -43,6 +43,68 @@ func isQuantifierContext(st: in ParseState): Bool {
   }
 }
 
+// exprAsLambdaParam / exprListAsLambdaParams: reinterpret a parenthesised
+// expression (or expression list) as a `LambdaParams` list when it turns
+// out to be followed by `->`.  Used by `parsePrimaryExpr`'s `LParen` case
+// to support a bare lambda literal directly in call-argument position
+// (e.g. `f((k, v) -> k + v)`) without requiring the `{ ... }` wrapper form
+// (#4748).  Only plain bare identifiers (`EPath` with a single segment)
+// qualify; anything else means the parenthesised group really was a
+// tuple/grouped expression, so the caller falls back to building that
+// instead, leaving the unexpected `->` for whatever parses next to error
+// on — unchanged from prior behaviour.
+func exprAsLambdaParam(e: in Expr): Option[LambdaParam] {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        Some(value = LambdaParam(name = path.segments[0], ty = None, span = e.span))
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func exprListAsLambdaParams(items: in List[Expr]): Option[List[LambdaParam]] {
+  val ps: List[LambdaParam] = newList()
+  var ok = true
+  var i = 0
+  while i < items.count and ok {
+    match exprAsLambdaParam(items[i]) {
+      case Some(p) -> {
+        ps.add(p)
+      }
+      case None -> {
+        ok = false
+      }
+    }
+    i = i + 1
+  }
+  if ok {
+    Some(value = ps)
+  } else {
+    None
+  }
+}
+
+// After a parenthesised group is confirmed to be a lambda parameter list
+// (the next token is `->`), consume the arrow and parse the body: either a
+// `{ ... }` block, or a single expression wrapped into a one-statement
+// block (mirroring how a bodyless match arm is handled elsewhere).
+func parseArrowLambdaTail(st: inout ParseState, startSpan: in Span, lambdaParams: in List[LambdaParam]): Expr {
+  val _ = advance(st)  // '->'
+  val body = if isPunct(peekToken(st), LBrace) {
+    parseBlock(st)
+  } else {
+    val e = parseExpr(st)
+    val stmts: List[Statement] = newList()
+    stmts.add(mkStmt(SExpr(expr = e), e.span))
+    Block(statements = stmts, span = e.span)
+  }
+  mkExpr(ELambda(lambdaParams = lambdaParams, body = body), joinSpans(startSpan, body.span))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Generic parameters.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -882,6 +944,11 @@ pub func parsePattern(st: inout ParseState): Pattern {
 // Expressions — primary, postfix, prefix, binary precedence cascade.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func parsePrimaryExpr(st: inout ParseState): Expr {
+  // #5667/#5668: see the field doc on `ParseState.suppressArrowLambda` and
+  // `parseArrowSensitiveExpr` for why this is a plain read, not a
+  // read-and-clear — the caller (`parseArrowSensitiveExpr`) owns the
+  // flag's lifetime for its entire speculative-retry parse.
+  val suppressArrowLambda = st.suppressArrowLambda
   val tok = peek(st)
   match tok.token {
     case TInt(_, _, _) -> {
@@ -995,7 +1062,18 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
             val _ = advance(st)
             if isPunct(peekToken(st), RParen) {
               val endTok = advance(st)
-              mkExpr(ELiteral(lit = LUnit), joinSpans(tok.span, endTok.span))
+              // `() -> expr` is the zero-param bare lambda literal (#4748,
+              // #5646): a following `->` reinterprets the just-consumed
+              // empty parens as an empty `LambdaParams` list instead of the
+              // Unit literal `()` would otherwise be.  Suppressed (#5667)
+              // in a match-arm guard / `SRule` LHS, where the `->` belongs
+              // to the enclosing construct, not a lambda.
+              if (not suppressArrowLambda) and isPunct(peekToken(st), Arrow) {
+                val noParams: List[LambdaParam] = newList()
+                parseArrowLambdaTail(st, tok.span, noParams)
+              } else {
+                mkExpr(ELiteral(lit = LUnit), joinSpans(tok.span, endTok.span))
+              }
             } else {
               val inner = parseExpr(st)
               if isPunct(peekToken(st), Comma) {
@@ -1019,7 +1097,14 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
                     items[items.count - 1].span
                   }
                 }
-                mkExpr(ETuple(exprs = items), joinSpans(tok.span, endSpan))
+                if (not suppressArrowLambda) and isPunct(peekToken(st), Arrow) {
+                  match exprListAsLambdaParams(items) {
+                    case Some(ps) -> parseArrowLambdaTail(st, tok.span, ps)
+                    case None -> mkExpr(ETuple(exprs = items), joinSpans(tok.span, endSpan))
+                  }
+                } else {
+                  mkExpr(ETuple(exprs = items), joinSpans(tok.span, endSpan))
+                }
               } else {
                 val endSpan = match tryEatPunct(st, RParen) {
                   case Some(t) -> t.span
@@ -1028,7 +1113,18 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
                     inner.span
                   }
                 }
-                mkExpr(EParen(inner = inner), joinSpans(tok.span, endSpan))
+                if (not suppressArrowLambda) and isPunct(peekToken(st), Arrow) {
+                  match exprAsLambdaParam(inner) {
+                    case Some(p) -> {
+                      val ps: List[LambdaParam] = newList()
+                      ps.add(p)
+                      parseArrowLambdaTail(st, tok.span, ps)
+                    }
+                    case None -> mkExpr(EParen(inner = inner), joinSpans(tok.span, endSpan))
+                  }
+                } else {
+                  mkExpr(EParen(inner = inner), joinSpans(tok.span, endSpan))
+                }
               }
             }
           }
@@ -1359,6 +1455,64 @@ pub func parseIfExpr(st: inout ParseState): Expr {
   }
 }
 
+// parseArrowSensitiveExpr: parse an expression whose immediately-following
+// `->` belongs to something else — a match-arm guard's own arm separator
+// (`case x if <this> -> body`), or an `SRule` statement's rule arrow
+// (`<this> -> rhs`) — so the bare-parenthesised-lambda reinterpretation
+// (#4748/#5646) must not swallow it.
+//
+// A simple "suppress for the first primary expression only" flag (the
+// original #5667 fix) isn't enough: `parseExpr`'s precedence-climbing
+// parses the guard/statement's LEFTMOST operand first, so a compound
+// expression like `flag and (cond) -> 1` clears the suppression while
+// parsing `flag`, leaving `(cond) -> 1` free to misparse as a lambda by
+// the time the parser reaches it (#5668).
+//
+// Instead: parse normally first (full lambda support, so a legitimate
+// nested lambda call argument anywhere in the expression — e.g.
+// `list.any((v) -> v > 0) and flag` — still works, since a call's own
+// `)` naturally separates it from whatever follows). Only if the `->`
+// this function's caller needs turns out to be missing afterward — proof
+// some trailing paren-group swallowed it — reset to the start and re-parse
+// with suppression held for the ENTIRE expression this time (no nested
+// lambda reinterpretation anywhere), which correctly handles both the
+// original #5667 shape and the compound #5668 shape. This does not
+// recover the (much narrower, unencountered in practice) case where the
+// SAME expression contains both a legitimate nested lambda call AND a
+// later ambiguous trailing paren-group — that would need suppression to
+// track expression *position* rather than being a single on/off flag.
+// Tracked as #5672.
+func parseArrowSensitiveExpr(st: inout ParseState): Expr {
+  val savedPos = mark(st)
+  val savedDiagsCount = st.diags.count
+  val savedCstEventsCount = st.cstEvents.count
+  val e = parseExpr(st)
+  if isPunct(peekToken(st), Arrow) {
+    e
+  } else {
+    reset(st, savedPos)
+    while st.diags.count > savedDiagsCount {
+      st.diags.removeAt(st.diags.count - 1)
+    }
+    // Unlike `reset`'s own token-position rewind, `parseExpr` (unique among
+    // this parser's other mark/reset speculation, which only does raw
+    // token matching — see `parseLambdaExpr`'s tentative paren-list scan)
+    // emits real `cstStart`/`cstFinish` events for the abandoned attempt.
+    // Those events are unreachable by any current CST consumer (`Lyric.Fmt`'s
+    // `itemNodes`/`harvestTrivia` walk stops at the first `SkItem` boundary
+    // and never descends into expression-level nodes), but leaving them in
+    // place would still corrupt `buildGreenTree`'s reconstruction for any
+    // future consumer that does look that deep — so truncate them too.
+    while st.cstEvents.count > savedCstEventsCount {
+      st.cstEvents.removeAt(st.cstEvents.count - 1)
+    }
+    st.suppressArrowLambda = true
+    val e2 = parseExpr(st)
+    st.suppressArrowLambda = false
+    e2
+  }
+}
+
 func parseMatchArmBody(st: inout ParseState): ExprOrBlock {
   if isPunct(peekToken(st), LBrace) {
     EOBBlock(block = parseBlock(st))
@@ -1389,7 +1543,11 @@ func parseMatchArm(st: inout ParseState): MatchArm {
   val pat = parsePattern(st)
   val guard: Option[Expr] = if isKw(peekToken(st), KwWhere) or isKw(peekToken(st), KwIf) {
     val _ = advance(st)
-    Some(value = parseExpr(st))
+    // #5667/#5668: a guard ending in a parenthesised bare-identifier group
+    // (`if (y) -> body`, or the compound `if flag and (cond) -> body`)
+    // must not let the bare-lambda reinterpretation (#4748/#5646) swallow
+    // the match arm's own `->` separator — see `parseArrowSensitiveExpr`.
+    Some(value = parseArrowSensitiveExpr(st))
   } else {
     None
   }
@@ -2120,8 +2278,56 @@ func parseStatementInner(st: inout ParseState): Statement {
   }
 }
 
-func parseExprStatement(st: inout ParseState, startSpan: in Span): Statement {
+// parseStatementLeadExpr: parse an expression statement's leading
+// expression, correctly distinguishing a bare `(x) -> rhs` `SRule` (a
+// "stub-builder rule" — see weaver.l/wire_expand.l/alias_rewriter.l, which
+// synthesize and re-parse this shape internally) from the bare-
+// parenthesised-lambda-literal reinterpretation (#4748/#5646/#5667).
+//
+// Unlike a match-arm guard (which always has a `->` immediately after it —
+// see `parseArrowSensitiveExpr`), a plain statement usually has NO trailing
+// `->` at all, so "retry when the arrow is missing" is the wrong signal
+// here: it would misfire on every ordinary statement and, worse, retrying
+// with suppression held for the whole expression would break a legitimate
+// nested lambda call argument elsewhere in that statement (e.g.
+// `list.forEach((x) -> print(x))`, which has no trailing arrow either).
+//
+// Instead: parse normally first. Retry (reset + suppressed re-parse) only
+// if the result is itself a bare top-level `ELambda` — a plain statement
+// naturally never produces one intentionally (a discarded closure that's
+// immediately thrown away does nothing), so this can only mean the
+// bare-paren reinterpretation just consumed what should have been an
+// `SRule`'s `(pattern) ->`. A genuinely-intended discarded `{ x -> ... }`
+// block-form lambda statement round-trips through the retry unaffected,
+// since `suppressArrowLambda` only affects the `LParen` case, not
+// `parseLambdaExpr`'s `{ }` form.
+func parseStatementLeadExpr(st: inout ParseState): Expr {
+  val savedPos = mark(st)
+  val savedDiagsCount = st.diags.count
+  val savedCstEventsCount = st.cstEvents.count
   val e = parseExpr(st)
+  match e.kind {
+    case ELambda(_, _) -> {
+      reset(st, savedPos)
+      while st.diags.count > savedDiagsCount {
+        st.diags.removeAt(st.diags.count - 1)
+      }
+      // See the matching comment in `parseArrowSensitiveExpr`: truncate the
+      // abandoned attempt's cstEvents too, not just diags.
+      while st.cstEvents.count > savedCstEventsCount {
+        st.cstEvents.removeAt(st.cstEvents.count - 1)
+      }
+      st.suppressArrowLambda = true
+      val e2 = parseExpr(st)
+      st.suppressArrowLambda = false
+      e2
+    }
+    case _ -> e
+  }
+}
+
+func parseExprStatement(st: inout ParseState, startSpan: in Span): Statement {
+  val e = parseStatementLeadExpr(st)
   // Distinguish: assignment, stub-builder rule (`->`), or plain expression.
   if isPunct(peekToken(st), Eq) or isPunct(peekToken(st), PlusEq) or isPunct(peekToken(st), MinusEq) or isPunct(peekToken(st), StarEq) or isPunct(peekToken(st), SlashEq) or isPunct(peekToken(st), PercentEq) {
     var assignOp = AssEq

@@ -320,6 +320,63 @@ jobs:
             bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}
           retention-days: 1
 
+  # Static lint over every workflow file under .github/workflows/. Catches
+  # structural bugs (bad expressions, unreachable jobs, invalid needs/if
+  # combinations) that YAML parsing alone can't see -- e.g. the implicit
+  # success()-over-transitive-needs bug that silently skipped
+  # publish.yml's publish-ecosystem job (#5579/#5580): a bare `if:` with
+  # no explicit status-check function gets an implicit success() prepended
+  # by GitHub Actions, and success() evaluates over the transitive needs
+  # chain, not just the job's direct needs (actions/runner#2205). No
+  # `needs:`/`has_code_changes` gate -- this is independent of the app
+  # build and cheap enough to run unconditionally on every push/PR.
+  actionlint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      # Five `-ignore` patterns suppress known-benign findings rather than
+      # failing on them forever silently; each is tracked in #5638 with the
+      # condition under which it should be revisited:
+      #   1/2. `background:`/`wait-all:` are this repo's custom step keys for
+      #      concurrent execution on its extended runner (documented above,
+      #      empirically verified) -- actionlint validates against the
+      #      standard GitHub Actions schema and has no notion of them, so a
+      #      step using one always trips two separate findings: "unexpected
+      #      key" for the custom key itself, and "step must run script with"
+      #      because actionlint doesn't recognize the custom key as a valid
+      #      step body (in place of `run:`/`uses:`). Same root cause; not a
+      #      bug; permanent.
+      #   3. gemini-teammate.yaml's `on:` trigger is deliberately commented
+      #      out (integration disabled) -- revisit if/when it's restored.
+      #   4. publish.yml's `matrix.authenticode` is only defined on the
+      #      commented-out win-x64 matrix entry (#3941) -- revisit once
+      #      win-x64 is re-enabled.
+      #   5. bench.yml's job-level `env:` references `${{ env.BUILD_CONFIG }}`
+      #      (a workflow-level env var) from within another job-level `env:`
+      #      key -- the `env` context isn't available there per GitHub's own
+      #      context-availability table, a genuine pre-existing bug. Fixing
+      #      it correctly needs the `LYRIC_BIN` computation moved to step
+      #      level (or every step's `run:` switched to shell-expand
+      #      `$BUILD_CONFIG` directly) and a real bench run to confirm the
+      #      fix doesn't change the resolved binary path -- deferred so as
+      #      not to risk breaking the benchmark workflow blind; tracked
+      #      in #5638.
+      # `-shellcheck=` (empty) disables actionlint's embedded shellcheck pass:
+      # this is the first time actionlint has run over this repo's ~6000
+      # lines of workflow `run:` scripts, and shellcheck alone surfaces
+      # dozens of pre-existing info/warning-level nits (SC2086, SC2015,
+      # SC2155, ...) scattered across many files -- an unrelated cleanup
+      # far larger than this change, tracked in #5638. The structural
+      # checks actionlint was added for (#5579/#5580) don't depend on
+      # shellcheck and stay fully active.
+      - name: Run actionlint
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667  # 1.7.12
+        with:
+          args: -color -shellcheck= -ignore "unexpected key .(background|wait-all).|step must run script with|.on. section is missing in workflow|property .authenticode. is not defined in object type|context .env. is not allowed here"
+
   # The bundled Maven resolver (resolver/pom.xml) that `lyric restore
   # --target jvm` shells out to for `[maven]` dependency resolution
   # (docs/44-jvm-production-readiness-plan.md finding M-7) was previously
@@ -760,6 +817,63 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
+
+      # Bool stringification cross-target parity (#5552): toString(Bool),
+      # Bool.toString(), string concatenation, and string interpolation all
+      # render lowercase "true"/"false" on both targets — the BCL's
+      # Boolean.ToString() would otherwise render "True"/"False" on
+      # `--target dotnet` while Java's String.valueOf(boolean) renders
+      # lowercase on `--target jvm`, a target-dependent divergence. The
+      # dotnet half of the MSIL/JVM agreement check; the JVM half runs
+      # alongside `bitwise_self_test.l` (see the JVM self-tests job below).
+      - name: Bool stringification self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping bool_tostring self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping bool_tostring self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/bool_tostring_self_test.l
+
+      # `println(Bool)` cross-target parity (#5666, a `bool_tostring_self_test.l`
+      # gap since @test_module assertions can't capture stdout): `println` is
+      # a polymorphic codegen builtin (unlike `print`, which stays String-only
+      # until it's added to `isCodegenBuiltinName`), so `println(true)` type-
+      # checks and previously rendered the BCL's `Console.WriteLine(bool)`
+      # "True" on dotnet where JVM's `PrintStream.println(boolean)` already
+      # renders lowercase "true".
+      - name: println(Bool) lowercase parity self-test (dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping println(Bool) self-test"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          cat > "$dir/printbool.l" <<'LYRIC'
+          package PrintBool
+          func main(): Unit {
+            println(true)
+            println(false)
+          }
+          LYRIC
+          out="$("$lyric_bin" run --target dotnet "$dir/printbool.l" 2>&1)" || { echo "::error::println(Bool) program failed to run"; echo "$out"; exit 1; }
+          for expect in "true" "false"; do
+            if ! grep -qx "$expect" <<< "$out"; then
+              echo "::error::expected '$expect' in println(Bool) output, got:"; echo "$out"; exit 1
+            fi
+          done
+          echo "OK: println(Bool) renders lowercase true/false on dotnet."
 
       # Unsigned Byte semantics (docs/59 §4.3): division/modulo, every
       # compound-assignment path, and the >= 128 canonicalization cases
@@ -1918,7 +2032,9 @@ jobs:
           }
           LYRIC
           aout="$("$lyric_bin" run "$ann" 2>&1)" || { echo "::error::param-taking HOF program failed to run"; echo "$aout"; exit 1; }
-          for expect in "a1=11" "u1=11" "u2=42" "uB=False"; do
+          # #5552: Bool.toString() is pinned to lowercase "true"/"false" now
+          # (was the BCL Boolean.ToString() default, "True").
+          for expect in "a1=11" "u1=11" "u2=42" "uB=false"; do
             if ! grep -qx "$expect" <<< "$aout"; then
               echo "::error::expected '$expect' in param-taking HOF output"; echo "$aout"; exit 1
             fi
@@ -3404,6 +3520,24 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # JVM half of the Bool stringification cross-target parity check
+      # (#5552) — see the dotnet-side step above for the full rationale.
+      - name: Bool stringification self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping bool_tostring JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping bool_tostring JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/bool_tostring_self_test.l
 
       # #3693/#3705-shape generic-specialisation regression on the JVM
       # single-file build (docs/59 §5.4 item: JVM single-file mono decl
@@ -5820,8 +5954,9 @@ jobs:
               exit 1
             fi
           done
-          n="$(ls "$work/out"/Lyric.Lyric.*.dll "$work/out"/Lyric.Msil.*.dll "$work/out"/Lyric.Jvm.*.dll 2>/dev/null | wc -l)"
-          echo "whole compiler self-host-compiles: $n compiler-package DLLs emitted"
+          shopt -s nullglob
+          dlls=("$work/out"/Lyric.Lyric.*.dll "$work/out"/Lyric.Msil.*.dll "$work/out"/Lyric.Jvm.*.dll)
+          echo "whole compiler self-host-compiles: ${#dlls[@]} compiler-package DLLs emitted"
 
       # Shipped Std.Sort works via the default toolchain (#2592 close).  The
       # AOT-build step above ran scripts/stage-selfhosted-stdlib.sh, which

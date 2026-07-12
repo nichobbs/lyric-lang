@@ -17,6 +17,7 @@ package Msil.Kernel
 
 import Std.Core
 import Std.Collections
+import extern System.{Single}
 
 // Growable byte buffer.  The inner `List[Byte]` is the mutable store; the
 // `buf*` helpers append into it in place (the record wrapper gives the buffer
@@ -162,8 +163,6 @@ pub func bufF8Le(w: in ByteWriter, v: in Double): Unit {
 // (never into a Lyric local), so the narrowing + bit pattern are exactly the
 // CLR's `(float)v` -> `SingleToInt32Bits`, matching the former host's
 // `BitConverter.GetBytes(single v)`.
-import extern System.{ Single }
-
 @externTarget("System.Convert.ToSingle")
 func dblToSingle(v: in Double): Single = ()
 
