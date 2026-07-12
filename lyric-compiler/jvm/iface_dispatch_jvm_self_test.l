@@ -80,3 +80,66 @@ test "interface dispatch on a direct record value still works" {
   val sq = Square(side = 4)
   assertEqualInt(sq.area(), 16, "direct record method call unaffected")
 }
+
+// ── #5607: explicit-self (D037) interface methods ─────────────────────────────
+// An interface method declared with an explicit `self: in Self` receiver got
+// `self` included in the JVM interface method DESCRIPTOR, so every
+// `invokeinterface` call site arity-mismatched — VerifyError "Attempt to pop
+// empty stack" in the caller.  The canonical no-self spelling above was
+// unaffected.  `stripLeadingSelfParam` now applies at interface registration
+// (`registerIfaceSig`), abstract-method emission, and `lowerImplMethod`,
+// mirroring the MSIL fix's placement discipline (D-progress-657).
+pub interface SelfNamer {
+  func nameOf(self: in Self): String
+  func tagged(self: in Self, tag: String): String
+}
+
+pub record SelfNamed {
+  label: String
+}
+
+impl SelfNamer for SelfNamed {
+  func nameOf(self: in SelfNamed): String {
+    self.label
+  }
+
+  func tagged(self: in SelfNamed, tag: String): String {
+    self.label + ":" + tag
+  }
+}
+
+func nameThrough(n: in SelfNamer): String {
+  n.nameOf()
+}
+
+test "explicit-self interface dispatch through an interface-typed binding (#5607)" {
+  val n: SelfNamer = SelfNamed(label = "named")
+  assertEqual(n.nameOf(), "named", "explicit-self nameOf through binding")
+}
+
+test "explicit-self interface dispatch with an argument (#5607)" {
+  val n: SelfNamer = SelfNamed(label = "x")
+  assertEqual(n.tagged("t"), "x:t", "explicit-self descriptor keeps only real params")
+  assertEqual(nameThrough(SelfNamed(label = "via")), "via", "explicit-self through param")
+}
+
+// The async form of the same shape (the MSIL twin lives in
+// async_sm_self_test.l ok 58-61, dotnet-only per #2736).
+pub interface SelfFetcher {
+  async func fetchSelf(self: in Self, q: in String): String
+}
+
+pub record SelfFetch {
+}
+
+impl SelfFetcher for SelfFetch {
+  async func fetchSelf(self: in SelfFetch, q: in String): String {
+    q + "?"
+  }
+}
+
+test "explicit-self async interface dispatch (#5607)" {
+  val c: SelfFetcher = SelfFetch()
+  val r = await c.fetchSelf("yo")
+  assertEqual(r, "yo?", "explicit-self async dispatch")
+}

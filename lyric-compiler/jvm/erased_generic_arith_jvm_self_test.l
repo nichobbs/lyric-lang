@@ -331,3 +331,78 @@ test "user-defined generic union slice[Byte] payload indexes (#5570)" {
     case Blank -> assertTrue(false, "unexpected Blank")
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. `[B` into slice-typed FIELDS and hoisted cells (#5609 item 2) — the
+//    match-bound payload above is normalized to a real primitive `byte[]` at
+//    the bind site, so assigning it into a `slice[Byte]`-typed record field
+//    (`putfield`, declared `[Ljava/lang/Object;`), a receiver field from
+//    inside a method, or a lambda-captured (hoisted-cell) `var` needs the
+//    boxing coercion with the receiver / cell spilled around the loop.
+//    Before the fix: VerifyError "Bad type on operand stack" at the putfield.
+// ─────────────────────────────────────────────────────────────────────────────
+record ByteHolder {
+  var data: slice[Byte]
+
+  func refreshFromMatch(): Unit {
+    match makeBytesResult() {
+      case Ok(bs) -> {
+        self.data = bs
+      }
+      case Err(_) -> ()
+    }
+  }
+}
+
+// Read the field back through an annotated local and INDEXED reads: the
+// declared `slice[Byte]` records the element type so `d[i]` narrows to a
+// real Byte (for-in / direct-`h.data` element reads are the pre-existing
+// element-erasure gap on boxed payloads, docs/59 - not this fix).
+func sumHolder(h: in ByteHolder): Int {
+  val d: slice[Byte] = h.data
+  var sum = 0
+  var i = 0
+  while i < d.length {
+    sum = sum + d[i].toInt()
+    i = i + 1
+  }
+  sum
+}
+
+test "match-bound [B assigned into a slice[Byte] record field reads back (#5609)" {
+  val h = ByteHolder(data = [0.toByte()])
+  match makeBytesResult() {
+    case Ok(bytes) -> {
+      h.data = bytes
+    }
+    case Err(_) -> assertTrue(false, "unexpected Err from makeBytesResult")
+  }
+  assertEqualInt(h.data.length, 3, "field length after [B assignment")
+  val d: slice[Byte] = h.data
+  assertEqualInt(d[2].toInt(), 200, "field[2] stays unsigned 200")
+  assertEqualInt(sumHolder(h), 203, "indexed sum over the reassigned field")
+}
+
+test "match-bound [B assigned to a receiver field inside a method (#5609)" {
+  val h = ByteHolder(data = [0.toByte()])
+  h.refreshFromMatch()
+  assertEqualInt(h.data.length, 3, "receiver-field length after [B assignment")
+  val d0: slice[Byte] = h.data
+  assertEqualInt(d0[0].toInt(), 1, "receiver field[0]")
+}
+
+func hoistedCellSliceAssign(): Int {
+  var acc: slice[Byte] = [0.toByte()]
+  val readLen: (Int) -> Int = { extra: Int -> acc.length + extra }
+  match makeBytesResult() {
+    case Ok(bs) -> {
+      acc = bs
+    }
+    case Err(_) -> ()
+  }
+  readLen(10)
+}
+
+test "match-bound [B assigned to a lambda-captured hoisted var (#5609)" {
+  assertEqualInt(hoistedCellSliceAssign(), 13, "hoisted-cell length 3 + 10")
+}

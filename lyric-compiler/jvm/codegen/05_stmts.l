@@ -92,14 +92,23 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               val cellType = JArray(elem = cellElemTy)
               match op {
                 case AssEq -> {
+                  // Evaluate and coerce the RHS BEFORE pushing the cell array
+                  // and index: the ctx-aware coercion's primitive-array boxing
+                  // loop (`[B` assigned into a hoisted `slice[Byte]` var,
+                  // #5609 item 2) requires an empty operand stack under the
+                  // value, and the cell/index loads are pure so the reorder
+                  // is unobservable.  The coercion itself is the same as call
+                  // arguments / local bindings: the value's static type may
+                  // not match the cell's element type (an erased-Object match
+                  // payload assigned into a primitive-typed var, and vice
+                  // versa).
+                  val cvTy = lowerExpr(ctx, insns, value)
+                  coerceValueTo(ctx, insns, cvTy, cellElemTy)
+                  val hvSlot = allocSlot(ctx, "__cellv_" + freshLabel(ctx), cellElemTy)
+                  emitStore(insns, hvSlot, cellElemTy)
                   emitLoad(insns, cellSlot, cellType)
                   insns.add(LIconst(v = 0))
-                  val cvTy = lowerExpr(ctx, insns, value)
-                  // The value's static type may not match the cell's element
-                  // type (an erased-Object match payload assigned into a
-                  // primitive-typed var, and vice versa) — same coercion as
-                  // call arguments.
-                  coerceArgTo(insns, cvTy, cellElemTy)
+                  emitLoad(insns, hvSlot, cellElemTy)
                   emitArrayStore(insns, cellElemTy)
                 }
                 case _ -> {
@@ -171,7 +180,10 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 case AssEq -> {
                   insns.add(LAload(slot = 0))
                   val vTy = lowerExpr(ctx, insns, value)
-                  coerceArgTo(insns, vTy, fty)
+                  // Receiver-aware coercion: a `[B` flowing into a
+                  // `slice[Byte]`-typed receiver field needs the boxing loop,
+                  // which requires spilling `this` around it (#5609 item 2).
+                  coerceValueToUnderReceiver(ctx, insns, JRef(className = selfCls), vTy, fty)
                   insns.add(LPutfield(owner = selfCls, name = name, t = fty))
                 }
                 case _ -> {
@@ -222,7 +234,10 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           match op {
             case AssEq -> {
               val vTy = lowerExpr(ctx, insns, value)
-              coerceArgTo(insns, vTy, fty)
+              // Receiver-aware coercion (#5609 item 2): the boxing loop for
+              // a `[B` → `slice[Byte]` field needs an empty operand stack,
+              // so the already-stacked receiver is spilled around it.
+              coerceValueToUnderReceiver(ctx, insns, recvTy, vTy, fty)
               insns.add(LPutfield(owner = cls, name = fieldName, t = fty))
             }
             case _ -> {
@@ -410,7 +425,11 @@ func emitNewarray(insns: in List[LInsn], elem: in JvmType): Unit {
     case JInt -> insns.add(LNewarray(typeCode = 10))     // T_INT
     case JLong -> insns.add(LNewarray(typeCode = 11))    // T_LONG
     case JRef(className) -> insns.add(LAnewarray(className = className))
-    case JArray(_) -> panic("emitNewarray: multi-dimensional array allocation not supported")
+    // An array-typed ELEMENT (a hoisted heap cell for a lambda-captured
+    // `var acc: slice[T]`, #5609 item 2) is a single-dimension `anewarray`
+    // whose CONSTANT_Class is the element's array descriptor
+    // (`[Ljava/lang/Object;`) — JVMS §6.5 anewarray accepts array classes.
+    case JArray(inner) -> insns.add(LAnewarray(className = "[" + typeDescriptor(inner)))
     case JVoid -> panic("emitNewarray: cannot create array of void")
   }
 }

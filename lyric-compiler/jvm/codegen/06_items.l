@@ -305,6 +305,38 @@ func coerceValueTo(ctx: in FuncCtx, insns: in List[LInsn], tailTy: in JvmType, r
   }
 }
 
+// As `coerceValueTo`, but for `putfield` shapes where a receiver is already
+// on the operand stack beneath the value.  `emitBoxPrimitiveArray`
+// back-branches and the StackMapTable generator types every branch-target
+// frame with an EMPTY operand stack, so the stacked receiver must be
+// spilled to a local around the boxing loop and restored after (#5609
+// item 2 — a `[B` assigned into a `slice[Byte]`-typed field either kept
+// its primitive representation (putfield VerifyError "Bad type on operand
+// stack") or, boxed in place, tripped the empty-stack frame invariant).
+// The single-instruction coercions keep the direct `coerceArgTo` path.
+func coerceValueToUnderReceiver(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  recvTy: in JvmType,
+  vTy: in JvmType,
+  fty: in JvmType,
+): Unit {
+  if isPrimitiveArrayToObjectArray(vTy, fty) {
+    val vSlot = allocSlot(ctx, "__pfv_" + freshLabel(ctx), vTy)
+    emitStore(insns, vSlot, vTy)
+    val rSlot = allocSlot(ctx, "__pfr_" + freshLabel(ctx), recvTy)
+    emitStore(insns, rSlot, recvTy)
+    emitLoad(insns, vSlot, vTy)
+    coerceValueTo(ctx, insns, vTy, fty)
+    val bSlot = allocSlot(ctx, "__pfb_" + freshLabel(ctx), fty)
+    emitStore(insns, bSlot, fty)
+    emitLoad(insns, rSlot, recvTy)
+    emitLoad(insns, bSlot, fty)
+  } else {
+    coerceArgTo(insns, vTy, fty)
+  }
+}
+
 // True when `fromTy` is a JVM primitive array (`boolean[]`/`char[]`/
 // `float[]`/`double[]`/`byte[]`/`short[]`/`int[]`/`long[]`) and `toTy` is the
 // erased Lyric slice representation `java.lang.Object[]` (`JArray(JRef
@@ -1366,8 +1398,14 @@ func lowerImplMethod(
   )
   val insns: List[LInsn] = newList()
   val noTpsImpl: List[String] = newList()
-  val paramTypes = holderAwareParamTypes(fn.params, pkgName, true, noTpsImpl, externTypes)
-  setupInstanceParamSlotsAndHolders(ctxSelf, insns, fn.params, pkgName, noTpsImpl)
+  // An explicit `self: in <Target>` receiver (D037) must not become a real
+  // JVM parameter: slot 0 is already `this` (the body's `self` lowers via
+  // `ESelf` → aload_0), and the registration side
+  // (`registerInstanceSigErased`) strips it — an unstripped emission here
+  // disagreed with every registered descriptor (#5607).
+  val implRealParams = stripLeadingSelfParam(fn.params)
+  val paramTypes = holderAwareParamTypes(implRealParams, pkgName, true, noTpsImpl, externTypes)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, implRealParams, pkgName, noTpsImpl)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
@@ -2966,16 +3004,22 @@ func registerIfaceSig(
   externTypes: in Map[String, String],
   typeParams: in List[String],
 ): Unit {
-  val ps = holderAwareParamTypes(params, owner, true, typeParams, externTypes)
+  // An explicit `self: in Self` receiver (the D037 spelling) is the
+  // dispatch receiver, never a descriptor parameter — leaving it in made
+  // every `invokeinterface` call site arity-mismatch (VerifyError
+  // "Attempt to pop empty stack", #5607).  Same discipline as
+  // `registerInstanceSigErased` and the MSIL `stripExplicitSelfParamMsil`.
+  val realParams = stripLeadingSelfParam(params)
+  val ps = holderAwareParamTypes(realParams, owner, true, typeParams, externTypes)
   val ret = match retOpt { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
   val pNames: List[String] = newList()
   val pDefs: List[Option[Expr]] = newList()
   val pModes: List[ParamMode] = newList()
   var pi = 0
-  while pi < params.count {
-    pNames.add(params[pi].name)
-    pDefs.add(params[pi].dflt)
-    pModes.add(params[pi].mode)
+  while pi < realParams.count {
+    pNames.add(realParams[pi].name)
+    pDefs.add(realParams[pi].dflt)
+    pModes.add(realParams[pi].mode)
     pi = pi + 1
   }
   val key = ifClass + "#" + methodName
@@ -3235,6 +3279,17 @@ pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, S
             }
           }
           case Some(_) -> ()
+        }
+      }
+      case IEnum(decl) -> {
+        // Enums are emitted as real JVM classes (`lowerEnum`); without this a
+        // consumer's enum-typed parameter / binding / field descriptor named
+        // the in-package guess (`<consumerPkg>/HttpMethod`), which fails
+        // linking with NoClassDefFoundError at first use (#5609 item 3 —
+        // the variant-value registry (`enum:` keys) was already
+        // cross-package, but the TYPE name itself never resolved).
+        if not into.containsKey(decl.name) {
+          into.add(decl.name, pkgDotted + "." + decl.name)
         }
       }
       case _ -> {
@@ -4128,7 +4183,12 @@ pub func codegenPackageWithSigsSeeded(
         while imi < decl.members.count {
           match decl.members[imi] {
             case IMSig(sig) -> {
-              val params = holderAwareParamTypes(sig.params, pkgName, true, ifaceEmitTps, externTypes)
+              // Strip an explicit `self: in Self` receiver exactly as
+              // `registerIfaceSig` does — the emitted abstract descriptor
+              // and the registered call-site descriptor must stay in
+              // lockstep (#5607, same invariant as #5534).
+              val sigRealParams = stripLeadingSelfParam(sig.params)
+              val params = holderAwareParamTypes(sigRealParams, pkgName, true, ifaceEmitTps, externTypes)
               val ret = match sig.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
               val desc = buildDescriptor(params, ret)
               abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
