@@ -337,10 +337,23 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
+      # Three `-ignore` patterns suppress known-benign findings rather than
+      # failing on them forever silently; each is tracked in #5638 with the
+      # condition under which it should be revisited:
+      #   1. `background:`/`wait-all:` are this repo's custom step keys for
+      #      concurrent execution on its extended runner (documented above,
+      #      empirically verified) -- actionlint validates against the
+      #      standard GitHub Actions schema and has no notion of them, so
+      #      it always flags them as unrecognized. Not a bug; permanent.
+      #   2. gemini-teammate.yaml's `on:` trigger is deliberately commented
+      #      out (integration disabled) -- revisit if/when it's restored.
+      #   3. publish.yml's `matrix.authenticode` is only defined on the
+      #      commented-out win-x64 matrix entry (#3941) -- revisit once
+      #      win-x64 is re-enabled.
       - name: Run actionlint
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667  # 1.7.12
         with:
-          args: -color
+          args: -color -ignore "unexpected key .(background|wait-all).|step must run script with|.on. section is missing in workflow|property .authenticode. is not defined in object type"
 
   # The bundled Maven resolver (resolver/pom.xml) that `lyric restore
   # --target jvm` shells out to for `[maven]` dependency resolution
@@ -5884,8 +5897,9 @@ jobs:
               exit 1
             fi
           done
-          n="$(ls "$work/out"/Lyric.Lyric.*.dll "$work/out"/Lyric.Msil.*.dll "$work/out"/Lyric.Jvm.*.dll 2>/dev/null | wc -l)"
-          echo "whole compiler self-host-compiles: $n compiler-package DLLs emitted"
+          shopt -s nullglob
+          dlls=("$work/out"/Lyric.Lyric.*.dll "$work/out"/Lyric.Msil.*.dll "$work/out"/Lyric.Jvm.*.dll)
+          echo "whole compiler self-host-compiles: ${#dlls[@]} compiler-package DLLs emitted"
 
       # Shipped Std.Sort works via the default toolchain (#2592 close).  The
       # AOT-build step above ran scripts/stage-selfhosted-stdlib.sh, which
