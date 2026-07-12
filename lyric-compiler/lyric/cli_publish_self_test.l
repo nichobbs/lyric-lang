@@ -206,6 +206,29 @@ test "buildPublishNuspec: description falls back to the id when empty (NuGet req
   assertFalse(strContains(ns, "<license"), "no license element when license is empty")
 }
 
+// XML metacharacters in any field must be escaped so the emitted .nuspec stays
+// well-formed and dotnet pack does not choke (a git-ref-derived version or a
+// description with `&`/`<`/`"` is the realistic trigger).
+test "buildPublishNuspec: escapes XML metacharacters in its own fields" {
+  val ns = Cli.buildPublishNuspec(
+    "A&B",
+    "1.0-<rc>",
+    "desc \"q\" & <tag>",
+    "MIT & Apache",
+    Some(value = "https://ex.com/?a=1&b=2"),
+    "",
+    "/abs/A&B.dll",
+    "A&B.dll"
+  )
+  assertTrue(strContains(ns, "<id>A&amp;B</id>"), "id ampersand escaped")
+  assertTrue(strContains(ns, "<version>1.0-&lt;rc&gt;</version>"), "version angle brackets escaped")
+  assertTrue(strContains(ns, "<description>desc &quot;q&quot; &amp; &lt;tag&gt;</description>"), "description escaped")
+  assertTrue(strContains(ns, "MIT &amp; Apache"), "license ampersand escaped")
+  assertTrue(strContains(ns, "url=\"https://ex.com/?a=1&amp;b=2\""), "repository url ampersand escaped")
+  assertTrue(strContains(ns, "target=\"lib/net10.0/A&amp;B.dll\""), "dll basename escaped")
+  assertFalse(strContains(ns, "<id>A&B</id>"), "raw unescaped ampersand never appears in id")
+}
+
 func strContains(haystack: in String, needle: in String): Bool {
   haystack.contains(needle)
 }

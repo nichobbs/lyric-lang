@@ -1,7 +1,6 @@
-//! pack/pack.l — self-hosted csproj XML generator for `lyric publish` / `lyric restore`.
-//! Mirrors the XML-generation portion of compiler/src/Lyric.Cli/Pack.fs
-//! (Phase 5 §M5.3 shim elimination).  Process invocation (dotnet pack/restore)
-//! stays in the F# Pack.fs.
+//! pack/pack.l — self-hosted csproj XML generator for `lyric restore`.
+//! (`lyric publish` packs from a hand-authored .nuspec built in
+//! cli/cli_publish.l since #5644, so its csproj generator was removed here.)
 //!
 //! Only Registry(version) deps emit <PackageReference>; Workspace/Path/Git deps
 //! are resolved locally by Lyric.Workspace and never expressed as NuGet refs.
