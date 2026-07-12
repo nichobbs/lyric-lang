@@ -92,3 +92,56 @@ test "backoffMsForAttempt: plateau equals the top of the escalation ramp" {
     "plateau backoff must equal the top of the escalation ramp"
   )
 }
+
+// ─── restoreArgsForAttempt: first attempt cached, retries bypass HTTP cache ──
+// The NU1102 retry (runRestoreWithRetry) was firing but never succeeding: the
+// first attempt's "package not found" response was served from dotnet's HTTP
+// cache on every retry, so a sibling package nuget.org had since indexed was
+// never observed and a fresh job rerun was needed (#5644).  Retries now pass
+// --no-http-cache; the first attempt stays cached/fast.
+test "restoreArgsForAttempt: first attempt uses base args unchanged" {
+  val base: List[String] = newList()
+  base.add("restore")
+  base.add("Foo.csproj")
+  val got = Cli.restoreArgsForAttempt(base, 1)
+  assertEqualInt(got.count, 2, "attempt 1 must not add flags")
+  assertFalse(stringsContain(got, "--no-http-cache"), "attempt 1 keeps the HTTP cache")
+}
+
+test "restoreArgsForAttempt: a retry appends --no-http-cache" {
+  val base: List[String] = newList()
+  base.add("restore")
+  base.add("Foo.csproj")
+  val got = Cli.restoreArgsForAttempt(base, 2)
+  assertEqualInt(got.count, 3, "a retry adds exactly one flag")
+  assertTrue(stringsContain(got, "--no-http-cache"), "a retry must bypass the HTTP cache")
+  assertTrue(stringsContain(got, "restore"), "base args are preserved")
+  assertTrue(stringsContain(got, "Foo.csproj"), "base args are preserved")
+}
+
+test "restoreArgsForAttempt: never double-adds --no-http-cache" {
+  val base: List[String] = newList()
+  base.add("restore")
+  base.add("--no-http-cache")
+  val got = Cli.restoreArgsForAttempt(base, 3)
+  var count = 0
+  var i = 0
+  while i < got.count {
+    if got[i] == "--no-http-cache" {
+      count = count + 1
+    }
+    i = i + 1
+  }
+  assertEqualInt(count, 1, "--no-http-cache appears exactly once even if already present")
+}
+
+func stringsContain(xs: in List[String], s: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == s {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
