@@ -426,13 +426,25 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
 // is an availability-only risk, not a security risk, because the function fails
 // closed on any ambiguity.  A full structural JSON parser would eliminate the
 // false-positive surface; tracked for a future hardening pass (#3165).
+// `Std.String.indexOf`/`lastIndexOf` return `Option[Int]`; this kernel's
+// JSON scanners are written against the classic -1 sentinel because
+// positions are compared across forms (`pfxArrPos > pfxStrPos`,
+// `strFirst != strLast`), where an absent match must sort below every
+// real index.  Adapt the Option contract to the sentinel at one seam.
+func idxOrNeg(pos: in Option[Int]): Int {
+  match pos {
+    case Some(i) -> i
+    case None -> -1
+  }
+}
+
 func audHasDuplicates(json: in String): Bool {
   val pfxStr = "\"aud\":\""
   val pfxArr = "\"aud\":["
-  val strFirst = json.indexOf(pfxStr)
-  val strLast = json.lastIndexOf(pfxStr)
-  val arrFirst = json.indexOf(pfxArr)
-  val arrLast = json.lastIndexOf(pfxArr)
+  val strFirst = idxOrNeg(json.indexOf(pfxStr))
+  val strLast = idxOrNeg(json.lastIndexOf(pfxStr))
+  val arrFirst = idxOrNeg(json.indexOf(pfxArr))
+  val arrLast = idxOrNeg(json.lastIndexOf(pfxArr))
   // Both string-form and array-form present simultaneously.
   if strFirst >= 0 and arrFirst >= 0 {
     return true
@@ -465,9 +477,9 @@ func audienceMatches(json: in String, audience: in String): Bool {
     return true
   }
   val pfxStr = "\"aud\":\""
-  val pfxStrPos = json.lastIndexOf(pfxStr)
+  val pfxStrPos = idxOrNeg(json.lastIndexOf(pfxStr))
   val pfxArr = "\"aud\":["
-  val pfxArrPos = json.lastIndexOf(pfxArr)
+  val pfxArrPos = idxOrNeg(json.lastIndexOf(pfxArr))
   // Only the later occurrence is authoritative — earlier `aud` declarations
   // are shadowed (#1162).  When both forms appear, the one with the larger
   // byte offset wins; the other is not consulted.
@@ -518,7 +530,7 @@ func audienceMatches(json: in String, audience: in String): Bool {
 // Returns "" when the key is absent or the JSON is malformed.
 func getStringClaimFromJson(json: in String, key: in String): String {
   val pfx = "\"" + key + "\":\""
-  val pfxPos = json.lastIndexOf(pfx)
+  val pfxPos = idxOrNeg(json.lastIndexOf(pfx))
   if pfxPos < 0 {
     return ""
   }
@@ -601,7 +613,7 @@ func parseLong(s: in String): Result[Long, String] {
 //   Err("parse_error") — key present but value malformed (non-digit, empty)
 func getLongClaimFromJson(json: in String, key: in String): Result[Option[Long], String] {
   val pfx = "\"" + key + "\":"
-  val pfxPos = json.lastIndexOf(pfx)
+  val pfxPos = idxOrNeg(json.lastIndexOf(pfx))
   if pfxPos < 0 {
     return Ok(None)
   }

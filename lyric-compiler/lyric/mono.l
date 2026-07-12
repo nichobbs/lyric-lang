@@ -1486,7 +1486,11 @@ func unifyLambdaArgTE(
               case Some(prev) -> {
                 shadowedNames.add(lp.name)
                 shadowedVals.add(prev)
-                env.remove(lp.name)
+                // `val _ =`: Map.remove returns Bool; a value-returning call as
+                // the arm's trailing statement leaves Int32 on one merge path
+                // while the None arm's () leaves a null objref — ILVerify
+                // PathStackUnexpected (#3943 emitter family).
+                val _ = env.remove(lp.name)
               }
               case None -> ()
             }
@@ -1506,7 +1510,7 @@ func unifyLambdaArgTE(
       var ai = 0
       while ai < addedNames.count {
         if env.containsKey(addedNames[ai]) {
-          env.remove(addedNames[ai])
+          val _ = env.remove(addedNames[ai])
         }
         ai = ai + 1
       }

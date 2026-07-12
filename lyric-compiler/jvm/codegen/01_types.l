@@ -913,6 +913,13 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
         JByte
       } else if seg == "Unit" {
         JVoid
+      } else if seg == "Object" {
+        // Mono's unconstrained-generic defaulting substitutes the bare name
+        // `Object` (D-progress-658); without this arm it resolved as a
+        // same-package user type (`<pkg>/Object`) and every specialised
+        // signature referencing it failed class-load with
+        // NoClassDefFoundError.  Reserved like `Int` / `String` above.
+        JRef(className = "java/lang/Object")
       } else {
         // User-defined type in the same package.
         JRef(className = pkgName + "/" + seg)

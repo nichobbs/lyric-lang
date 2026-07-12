@@ -151,7 +151,7 @@ func lowerCmp(
             emitObjectsEquals(insns)
             insns.add(LIfeq(label = trueLabel))
           }
-          case _ -> panic("Jvm.Codegen: unsupported reference comparison op")
+          case _ -> panic("Jvm.Codegen: unsupported reference comparison op: a relational operator (<, <=, >, >=) on operands of reference type '" + cls + "' — only String supports relational comparison; check whether an operand's declared type is a reference (e.g. Option[Int] from Std.String.indexOf) being compared like a number")
         }
       }
     }
