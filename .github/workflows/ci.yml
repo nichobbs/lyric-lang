@@ -337,20 +337,24 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
-      # Three `-ignore` patterns suppress known-benign findings rather than
+      # Five `-ignore` patterns suppress known-benign findings rather than
       # failing on them forever silently; each is tracked in #5638 with the
       # condition under which it should be revisited:
-      #   1. `background:`/`wait-all:` are this repo's custom step keys for
+      #   1/2. `background:`/`wait-all:` are this repo's custom step keys for
       #      concurrent execution on its extended runner (documented above,
       #      empirically verified) -- actionlint validates against the
-      #      standard GitHub Actions schema and has no notion of them, so
-      #      it always flags them as unrecognized. Not a bug; permanent.
-      #   2. gemini-teammate.yaml's `on:` trigger is deliberately commented
+      #      standard GitHub Actions schema and has no notion of them, so a
+      #      step using one always trips two separate findings: "unexpected
+      #      key" for the custom key itself, and "step must run script with"
+      #      because actionlint doesn't recognize the custom key as a valid
+      #      step body (in place of `run:`/`uses:`). Same root cause; not a
+      #      bug; permanent.
+      #   3. gemini-teammate.yaml's `on:` trigger is deliberately commented
       #      out (integration disabled) -- revisit if/when it's restored.
-      #   3. publish.yml's `matrix.authenticode` is only defined on the
+      #   4. publish.yml's `matrix.authenticode` is only defined on the
       #      commented-out win-x64 matrix entry (#3941) -- revisit once
       #      win-x64 is re-enabled.
-      #   4. bench.yml's job-level `env:` references `${{ env.BUILD_CONFIG }}`
+      #   5. bench.yml's job-level `env:` references `${{ env.BUILD_CONFIG }}`
       #      (a workflow-level env var) from within another job-level `env:`
       #      key -- the `env` context isn't available there per GitHub's own
       #      context-availability table, a genuine pre-existing bug. Fixing
