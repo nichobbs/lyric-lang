@@ -28,20 +28,17 @@ pub record ParseState {
   /// so internal `mark` / `reset` speculation does not need to
   /// truncate the log.
   cstEvents: List[CstEvent]
-  /// Read-and-clear request (#5667): set `true` immediately before a
-  /// `parseExpr` call whose result must NOT be reinterpreted as a bare
-  /// parenthesised lambda literal (#4748/#5646) even if it's immediately
-  /// followed by `->` — e.g. a match-arm guard (`case x if (y) -> body`,
-  /// where the arm's own separator must stay a separator) or an `SRule`
-  /// statement's LHS (`(x) -> rhs`, where the rule's arrow must stay a
-  /// rule arrow, not get consumed into a discarded lambda literal).
-  /// `parsePrimaryExpr` reads this flag once on entry and immediately
-  /// resets it to `false`, so only the FIRST (outermost) primary
-  /// expression parsed after the caller sets it is affected — a nested
-  /// call argument inside that same guard/LHS (`list.any((y) -> y > 0)`)
-  /// still gets the ordinary lambda-literal treatment, since by the time
-  /// its own `parsePrimaryExpr` call runs the flag has already been
-  /// cleared.
+  /// Suppresses the bare-parenthesised-lambda reinterpretation (#4748/
+  /// #5646) in `parsePrimaryExpr`'s `LParen` case: while `true`, a
+  /// parenthesised bare-identifier group immediately followed by `->`
+  /// stays an ordinary `ParenExpr`/`TupleExpr` instead of becoming a
+  /// lambda literal. Owned for its entire duration by
+  /// `parseArrowSensitiveExpr` (#5667/#5668) — see that function's doc
+  /// for why a simple set-before/clear-after around one `parseExpr` call
+  /// isn't enough (it only protects the FIRST primary expression parsed,
+  /// not a later one reached after climbing through binary operators,
+  /// e.g. `flag and (cond) -> 1`). Plain callers of `parseExpr` elsewhere
+  /// should never touch this field directly.
   suppressArrowLambda: Bool
 }
 

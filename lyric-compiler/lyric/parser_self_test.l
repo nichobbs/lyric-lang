@@ -1384,6 +1384,27 @@ test "lambda: bare-paren statement followed by arrow parses as a rule, not a dis
   assertEqualInt(diagCount(pr), 0, "`(x) -> x` as a bare statement parses clean")
 }
 
+// A statement containing a nested bare-lambda call argument must still get
+// the ordinary lambda treatment (parseStatementLeadExpr's retry only fires
+// when the WHOLE statement parses to a bare top-level ELambda, which a
+// call like `xs.forEach(...)` never does).
+test "lambda: bare-lambda call argument nested inside a plain statement still parses as a lambda" {
+  val pr = parse("package P\nfunc f(xs: List[Int]): Unit {\n  xs.forEach((x) -> println(toString(x)))\n}\n")
+  assertEqualInt(diagCount(pr), 0, "nested `(x) -> ...` call argument inside a statement still parses clean")
+}
+
+// #5668: a COMPOUND match-arm guard ending in a parenthesised bare
+// identifier must not let the bare-lambda reinterpretation swallow the
+// arm's own `->` either — the original #5667 fix only protected the
+// guard's very first primary expression (here, `flag`), leaving the
+// trailing `(cond)` free to misparse once precedence-climbing reached it.
+test "lambda: compound match-arm guard ending in a parenthesised identifier does not swallow the arm arrow" {
+  val pr = parse(
+    "package P\nfunc f(x: Int): Int {\n  val flag = true\n  val cond = x > 0\n  return match x {\n    case y if flag and (cond) -> 1\n    case _ -> 2\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "guard `if flag and (cond) -> ...` parses clean")
+}
+
 // Exact shape from the issue repro: a bare two-param lambda whose body is a
 // multi-line `{ ... }` block (not a single expression), as the second
 // positional call argument.
