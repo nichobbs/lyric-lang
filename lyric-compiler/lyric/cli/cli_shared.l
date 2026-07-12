@@ -168,11 +168,37 @@ pub func shouldRetryRestore(
 // indexing delay) with the escalating-then-plateau backoff above. `label`
 // prefixes log/error output (e.g. "publish" or "restore") to match the
 // caller's command.
+// Effective `dotnet restore` args for a given (1-based) attempt.  The first
+// attempt uses the caller's args verbatim; every retry additionally passes
+// `--no-http-cache`.  Without this, the first attempt's NU1102 ("package
+// version not found") response is written to the on-disk HTTP cache, so a
+// plain retry re-reads that stale negative in ~200ms instead of re-querying
+// the feed — the retry fires but can never observe a sibling package that
+// nuget.org has since indexed, which is why a just-published ecosystem
+// dependency needed a whole fresh job rerun to resolve (#5644).
+pub func restoreArgsForAttempt(baseArgs: in List[String], attempt: in Int): List[String] {
+  if attempt <= 1 {
+    baseArgs
+  } else {
+    val withNoCache: List[String] = newList()
+    var ci = 0
+    while ci < baseArgs.count {
+      withNoCache.add(baseArgs[ci])
+      ci += 1
+    }
+    if not stringListContains(baseArgs, "--no-http-cache") {
+      withNoCache.add("--no-http-cache")
+    }
+    withNoCache
+  }
+}
+
 pub func runRestoreWithRetry(restoreArgs: in List[String], label: in String): Int {
   var attempt = 1
   while attempt <= nu1102MaxAttempts {
+    val effectiveArgs = restoreArgsForAttempt(restoreArgs, attempt)
     val captureResult = try {
-      ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", restoreArgs, "", 300000)
+      ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", effectiveArgs, "", 300000)
     } catch Bug as b {
       CaptureResult(stdout = "", stderr = b.message, exitCode = -1, timedOut = false)
     }
