@@ -24,42 +24,36 @@
 //!   curl -s -X POST --data 'ping' http://localhost:8099/echo-body
 //!   curl -s -o /dev/null -w '%{http_code}' http://localhost:8099/nope
 //!
-//! **Not yet wired into CI as an automated smoke test.**  Two newly-found
-//! JVM backend bugs (neither is #1707 — that ticket is closed and covers a
-//! different, narrower nested-generic-construction defect) blocked the rest
-//! of this library's JVM test suite from compiling at all: #5443 (a
-//! `[project.packages]` multi-file-same-package entry leaking the
-//! non-selected file's `extern type` binding) and #5444 (an interface-typed
-//! `List`/`slice` element erasing to `Object` without a checkcast before a
-//! method call, crashing auto-FFI resolution).  #5443's specific instance is
-//! now worked around: `_kernel/jvm/web_kernel.l`'s rate-limiter map alias
-//! was renamed from `ConcurrentDict` to `JvmConcurrentDict` so it no longer
-//! collides with `_kernel/net/web_kernel.l`'s identically-named `.NET`
-//! alias — the general `[project.packages]` alias-collision compiler bug
-//! #5443 describes is still open and still worth a real fix for future
-//! multi-file packages, but this library no longer trips over it.  #5444
-//! remains open and still blocks the rest of the JVM suite (`dispatch_tests.l`
-//! et al. fail with `JVM auto-FFI: no matching instance ... for
-//! 'java.lang.Object.wrap(LWeb/Request;, LWeb/Handler;)'`).  This file,
-//! `Web.Kernel.Runtime`'s Undertow implementation, and the `impl JHttpHandler
-//! for LyricUndertowHandler` interface binding were verified by hand (a
-//! from-scratch `impl <ExternInterface> for Record` repro against
-//! `java.lang.Runnable`, run under `java`, plus `lyric-compiler/jvm/
-//! ffi_iface_impl_jvm_self_test.l`) independent of #5443/#5444.
-//!
-//! Since #5571 the build command above resolves everything OUTSIDE JVM
-//! codegen: workspace deps build with target-normalized features
-//! (Auth.Kernel.Jvm, not the dotnet kernel), and the single-file path
-//! compiles this file's imported `[project.packages]` (Web,
-//! Web.Kernel.Runtime) into the bundle — the same command on `--target
-//! dotnet` compiles AND serves end-to-end.  On `--target jvm` two codegen
-//! defects still block it: an impl-method parameter typed with another
-//! package's record is registered under the declaring file's own package
-//! (`req.body` here fails with receiver `'Web/JvmServerSmoke/Request' has
-//! no known field or member 'body'`), and #5444 beneath it inside
-//! `Web.dispatch`.  Once those land, re-run this file's manual steps above
-//! and wire it into `ci.yml` alongside the existing dotnet
-//! `rest_service.l` smoke test.
+//! **Wired into CI**: the `lyric-web Undertow smoke on JVM` step of the
+//! `compiler-self-tests-jvm` job runs `make maven-resolver`, restores this
+//! manifest (a single-file jvm build reads the restored
+//! `target/restore/jvm-classpath.txt`, and the bundle jar's manifest
+//! `Class-Path` carries the restored Undertow jar paths so `java -jar`
+//! needs no `-cp`), builds this file, and asserts all four endpoints.
+//! Since #5571 the build resolves everything outside JVM codegen (workspace
+//! deps with target-normalized features, `[project.packages]` bundling into
+//! the single-file bundle), and the same command on `--target dotnet`
+//! compiles and serves identically.  The JVM codegen blockers this header
+//! used to document are fixed:
+//!   - #5610 — an impl-method parameter typed with another package's record
+//!     registered under the declaring file's own package (`req.body` here
+//!     panicked with receiver `'Web/JvmServerSmoke/Request' has no known
+//!     field or member 'body'`); instance-method parameter slots now resolve
+//!     through the extern/imported-type seed, in lockstep with descriptors.
+//!     This smoke is also #5610's regression pin — a two-package bundled
+//!     compile with a cross-package impl param is not expressible in a
+//!     single-file self-test.
+//!   - #5444 — `self.mws[self.idx]` (a record FIELD of `slice[Middleware]`)
+//!     erased its element to `Object`, so `mw.wrap(req, next)` fell through
+//!     to auto-FFI on `java.lang.Object`; field elements now narrow via the
+//!     `elem:<class>#<field>` registry (single-file regression cases live in
+//!     `lyric-compiler/jvm/erased_element_checkcast_jvm_self_test.l` §6).
+//!   - #5458 — a generic `extern type` alias (`JvmConcurrentDict[K, V]`)
+//!     erased to `Object`, so `dict.get(key)` had no receiver class for
+//!     auto-FFI.
+//! #5443's general `[project.packages]` alias-collision bug remains open;
+//! this library works around it via the `JvmConcurrentDict` rename (see
+//! `_kernel/jvm/web_kernel.l`).
 package Web.JvmServerSmoke
 
 import Std.Core

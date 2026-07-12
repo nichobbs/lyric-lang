@@ -67,26 +67,37 @@ import Std.Collections
 import Std.String
 import Std.HttpServer
 import Std.File
+import Std.Encoding as Enc
 import Web.Kernel.Runtime as HttpKernel
 
+// Canonical-path resolution for the static-files path-traversal guard
+// (`withinRoot`), target-split: these BCL/JDK externs previously sat
+// ungated, so a `--target jvm` bundle carried an unloadable
+// `System.IO.Path` reference that failed bytecode verification the moment
+// the `Web` class loaded (masked until the #5610/#5444 codegen fixes let
+// JVM compilation reach class-load at all).
+@cfg(feature = "dotnet")
 @externTarget("System.IO.Path.GetFullPath")
 func pathGetFullPath(path: in String): String = ()
 
-// Explicit @externTarget bindings rather than auto-FFI-resolved
-// `Encoding.get_UTF8().GetBytes(s)` call syntax: the auto-FFI resolution
-// path for a plain `import extern`-declared type's instance methods does
-// not reliably resolve at runtime once `Web` is consumed as a restored
-// (already-compiled) dependency from another project — see issue #5361's
-// neighboring finding. Explicit bindings (matching `Std.HttpServer`'s
-// kernel) are unaffected.
-extern type Encoding = "System.Text.Encoding"
+@cfg(feature = "jvm")
+extern type JCanonFile = "java.io.File"
 
-@externTarget("System.Text.Encoding.get_UTF8")
-func utf8Encoding(): Encoding = ()
+@cfg(feature = "jvm")
+@externTarget("java.io.File.<init>")
+func canonFileNew(path: in String): JCanonFile = ()
 
+@cfg(feature = "jvm")
 @externInstance
-@externTarget("System.Text.Encoding.GetBytes")
-func encodingGetBytes(e: in Encoding, s: in String): slice[Byte] = ()
+@externTarget("java.io.File.getCanonicalPath")
+func canonFileGetCanonicalPath(f: in JCanonFile): String = ()
+
+// `File.getCanonicalPath` collapses `.`/`..` and resolves symlinks — at
+// least as strict as `Path.GetFullPath` for the traversal guard's purpose.
+@cfg(feature = "jvm")
+func pathGetFullPath(path: in String): String {
+  return canonFileGetCanonicalPath(canonFileNew(path))
+}
 
 func webJsonStr(s: in String): String {
   var r = "\""
@@ -254,8 +265,13 @@ pub record Response {
   headers: Map[String, String]
 }
 
+// Std.Encoding routes through its own per-target kernel boundary
+// (`Std.EncodingHost`), so it stays restored-dep-safe on dotnet (the #5361
+// concern the previous hand-rolled `System.Text.Encoding` externs guarded
+// against) AND loads on the JVM (where those ungated BCL externs
+// VerifyError'd the whole `Web` class).
 func utf8Encode(s: in String): slice[Byte] {
-  return encodingGetBytes(utf8Encoding(), s)
+  return Enc.encodeUtf8(s)
 }
 
 /// A `application/json; charset=utf-8` response with the given raw JSON body.

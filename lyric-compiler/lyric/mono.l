@@ -2597,6 +2597,29 @@ func rewriteInterpolSegs(
   buf
 }
 
+// Convert one index of a surface explicit type application
+// (`f[String, WebRateEntry](...)`) to a `TypeArg`: a bare single-segment
+// name that resolves as a type in this file's mono tables.  `None` for
+// anything else so a genuine indexed-value call is never hijacked (a local
+// value name, a literal, a qualified constant all stay indices).
+func indexExprToTypeArgMono(state: in MonoState, e: in Expr): Option[TypeArg] {
+  match e.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        val nm = p.segments[0]
+        if isPrimitiveName(nm) or state.recordDecls.containsKey(nm) or state.ifaceDecls.containsKey(nm) {
+          Some(value = TAType(ty = TypeExpr(kind = TRef(path = p), span = e.span)))
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
 func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Expr {
   val s = expr.span
   match expr.kind {
@@ -2853,6 +2876,42 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
               case None -> Expr(kind = ECall(fn = fn, args = newArgs), span = s)
             }
           }
+        }
+        case EIndex(idxRecv, idxExprs) -> {
+          // Surface explicit type application: `f[T, U](args)` parses as
+          // `ECall(EIndex(EPath([f]), [T, U]))` — the parser never builds
+          // `ETypeApp` (see mono_self_test.l's synthetic-AST note), so the
+          // ETypeApp arm above was unreachable from real source.  Recognise
+          // the shape when `f` names a known generic AND every index is a
+          // bare single-segment name resolvable as a type in this file's
+          // tables (primitive / record / interface) — then route through the
+          // ETypeApp arm via a synthetic node.  Anything else (a genuine
+          // indexed-value call, a value-generic literal index, an
+          // unresolvable name) falls through unchanged, exactly as before.
+          match idxRecv.kind {
+            case EPath(ipath) -> {
+              if ipath.segments.count == 1 and state.genDecls.containsKey(ipath.segments[0]) and idxExprs.count > 0 {
+                val targsConv: List[TypeArg] = newList()
+                var convOk = true
+                var xi = 0
+                while xi < idxExprs.count {
+                  match indexExprToTypeArgMono(state, idxExprs[xi]) {
+                    case Some(ta) -> targsConv.add(ta)
+                    case None -> {
+                      convOk = false
+                    }
+                  }
+                  xi = xi + 1
+                }
+                if convOk {
+                  val taFn = Expr(kind = ETypeApp(fn = idxRecv, args = targsConv), span = fn.span)
+                  return rewriteExpr(state, env, Expr(kind = ECall(fn = taFn, args = args), span = s))
+                }
+              }
+            }
+            case _ -> ()
+          }
+          Expr(kind = ECall(fn = rewriteExpr(state, env, fn), args = newArgs), span = s)
         }
         case _ -> Expr(kind = ECall(fn = rewriteExpr(state, env, fn), args = newArgs), span = s)
       }
@@ -3575,6 +3634,37 @@ pub func monoFileWithImportsAndTypeDecls(
                 generics = decl.generics,
                 whereClause = decl.whereClause,
                 members = newMembers,
+                span = decl.span
+              )
+            ),
+            span = item.span
+          )
+        )
+      }
+      // Module-level `val` initializers are function-free bodies too: a
+      // generic call in one (`val m: Dict[String, Entry] = newDict[String,
+      // Entry]()`) must specialise exactly like a call inside a function
+      // body — without this arm the init passed through untouched, its
+      // explicit type application never produced a specialisation, and the
+      // call site dangled against a generic that phase 2 erases
+      // (NoSuchMethodError at class init on the JVM, which emits only
+      // specialised copies).
+      case IVal(decl) -> {
+        val env: Map[String, TypeExpr] = newMap()
+        match decl.ty {
+          case Some(te) -> trackPatternEnv(env, decl.pattern, te)
+          case None -> ()
+        }
+        rewrittenItems.add(
+          Item(
+            docComments = item.docComments,
+            annotations = item.annotations,
+            visibility = item.visibility,
+            kind = IVal(
+              decl = ValDecl(
+                pattern = decl.pattern,
+                ty = decl.ty,
+                init = rewriteExpr(state, env, decl.init),
                 span = decl.span
               )
             ),

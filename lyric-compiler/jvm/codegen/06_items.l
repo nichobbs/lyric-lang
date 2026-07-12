@@ -523,17 +523,25 @@ pub func setupStaticParamSlotsAndHolders(
 // Allocate JVM local slots for an instance method's parameters (slot 0 = `this`
 // is already reserved), set up `out`/`inout` holder bindings, and emit the
 // entry-prologue unwrap for each holder parameter (#1763).  Identical in structure
-// to `setupStaticParamSlotsAndHolders` but uses `typeExprToJvmErased` with the
-// caller-supplied `typeParams` list so generic record methods erase type variables
-// to `Object`, matching the descriptor emitted for the method.  For non-generic
-// methods pass `newList()` for `typeParams`; the result is the same as
-// `typeExprToJvm` (no-op erase with an empty list).
+// to `setupStaticParamSlotsAndHolders` but uses `typeExprToJvmErasedExtern` with
+// the caller-supplied `typeParams` list so generic record methods erase type
+// variables to `Object`, matching the descriptor emitted for the method.  For
+// non-generic methods pass `newList()` for `typeParams`.  Resolves through
+// `externTypes` so a parameter typed with an imported extern type OR another
+// package's record/interface (seeded as a dotted FQN by
+// `collectFileDeclaredTypeFqns`) registers its slot under the real JVM class —
+// the plain `typeExprToJvmErased` this used before fell to the declaring file's
+// in-package `<pkg>/<Name>` guess, so `req.body` on a `Web.Request`-typed impl
+// param panicked with "receiver of type 'Web/JvmServerSmoke/Request' has no
+// known field or member" in a bundled multi-package compile (#5610); the slot
+// type and the `holderAwareParamTypes` descriptor now stay in lockstep.
 pub func setupInstanceParamSlotsAndHolders(
   ctx: in FuncCtx,
   insns: in List[LInsn],
   params: in List[Param],
   pkgName: in String,
   typeParams: in List[String],
+  externTypes: in Map[String, String],
 ): Unit {
   val holderIdx: List[Int] = newList()
   val holderSlots: List[Int] = newList()
@@ -541,7 +549,7 @@ pub func setupInstanceParamSlotsAndHolders(
   var pi = 0
   while pi < params.count {
     val p = params[pi]
-    val elemTy = typeExprToJvmErased(p.ty, pkgName, typeParams)
+    val elemTy = typeExprToJvmErasedExtern(p.ty, pkgName, typeParams, externTypes)
     if isHolderMode(p.mode) {
       val hs = allocSlot(ctx, "__holder$" + p.name, holderArrayType(elemTy))
       holderIdx.add(pi)
@@ -1288,7 +1296,7 @@ func lowerProtectedMethod(
   val insns: List[LInsn] = newList()
   val noTps: List[String] = newList()
   val paramTypes = holderAwareParamTypes(params, pkgName, true, noTps, externTypes)
-  setupInstanceParamSlotsAndHolders(ctxSelf, insns, params, pkgName, noTps)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, params, pkgName, noTps, externTypes)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = flags, name = name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
@@ -1333,7 +1341,16 @@ func lowerRecordMethod(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
 ): LFunc {
-  val retTy = match fn.ret { case Some(te) -> typeExprToJvmErased(te, pkgName, typeParams); case None -> JVoid }
+  // Extern/import-resolving on ret + params (#5610): the registered
+  // `<class>#<method>` sig (`registerInstanceSigErased`, #5051) resolves
+  // through the declaring file's `externTypes`, so the EMITTED descriptor must
+  // too or an extern-typed / imported-record-typed param diverges from the
+  // registration and the call site's `invokevirtual` targets a descriptor the
+  // class never carries.
+  val retTy = match fn.ret {
+    case Some(te) -> typeExprToJvmErasedExtern(te, pkgName, typeParams, externTypes)
+    case None -> JVoid
+  }
   val ctxSelf = makeFuncCtxInstance(
     pkgName,
     className,
@@ -1348,10 +1365,9 @@ func lowerRecordMethod(
     closureAcc
   )
   val insns: List[LInsn] = newList()
-  val noExts: Map[String, String] = newMap()
   val filteredParams = stripLeadingSelfParam(fn.params)
-  val paramTypes = holderAwareParamTypes(filteredParams, pkgName, true, typeParams, noExts)
-  setupInstanceParamSlotsAndHolders(ctxSelf, insns, filteredParams, pkgName, typeParams)
+  val paramTypes = holderAwareParamTypes(filteredParams, pkgName, true, typeParams, externTypes)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, filteredParams, pkgName, typeParams, externTypes)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
@@ -1405,7 +1421,7 @@ func lowerImplMethod(
   // disagreed with every registered descriptor (#5607).
   val implRealParams = stripLeadingSelfParam(fn.params)
   val paramTypes = holderAwareParamTypes(implRealParams, pkgName, true, noTpsImpl, externTypes)
-  setupInstanceParamSlotsAndHolders(ctxSelf, insns, implRealParams, pkgName, noTpsImpl)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, implRealParams, pkgName, noTpsImpl, externTypes)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
@@ -2331,10 +2347,12 @@ func lowerGeneratorBody(
     gpi = gpi + 1
   }
   // Preamble: load each param from this.<field> into a local slot.
+  // Extern/import-resolving (#5610): must match the LGenParam field descriptor
+  // and the factory ctor, which resolve the same way.
   var pi = 0
   while pi < decl.params.count {
     val p = decl.params[pi]
-    val paramTy = typeExprToJvm(p.ty, pkgName)
+    val paramTy = typeExprToJvmExtern(p.ty, pkgName, externTypes)
     val slot = allocSlot(ctx, p.name, paramTy)
     // load this (slot 0), then getfield, then store into slot
     insns.add(LAload(slot = 0))
@@ -2364,7 +2382,12 @@ func lowerGeneratorBody(
 // Synthesise the static factory LFunc that constructs a generator instance.
 // `public static Object name(params...) { return new GenClass(params...); }`
 // This is added to LPFuncs so it lands in the same class file as main().
-func makeGeneratorFactory(decl: in FunctionDecl, genClass: in String, pkgName: in String): LFunc {
+func makeGeneratorFactory(
+  decl: in FunctionDecl,
+  genClass: in String,
+  pkgName: in String,
+  externTypes: in Map[String, String],
+): LFunc {
   val insns: List[LInsn] = newList()
   insns.add(LNew(className = genClass))
   insns.add(LDup)
@@ -2373,7 +2396,9 @@ func makeGeneratorFactory(decl: in FunctionDecl, genClass: in String, pkgName: i
   var slot = 0
   var pi = 0
   while pi < decl.params.count {
-    val pty = typeExprToJvm(decl.params[pi].ty, pkgName)
+    // Extern/import-resolving (#5610): the generator ctor descriptor derives
+    // from LGenParam, which resolves the same way — keep them in lockstep.
+    val pty = typeExprToJvmExtern(decl.params[pi].ty, pkgName, externTypes)
     ctorParams.add(pty)
     match pty {
       case JLong -> {
@@ -2626,6 +2651,7 @@ pub func collectFileSigsSeeded(
         // instance-method key `<class>#<method>` so `c.increment()` resolves to
         // the real descriptor (e.g. `()V`) instead of the `()Object` guess.
         val protClass = owner + "/" + decl.name
+        val protTps = genericParamNames(decl.generics)
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
@@ -2634,6 +2660,13 @@ pub func collectFileSigsSeeded(
             }
             case PMFunc(fn) -> {
               registerInstanceSig(into, protClass, fn.name, fn.params, fn.ret, owner, externTypes)
+            }
+            case PMField(pf) -> {
+              match pf {
+                case PFVar(name, ty, _, _) -> registerFieldElemSig(into, protClass, name, ty, owner, protTps, externTypes)
+                case PFLet(name, ty, _, _) -> registerFieldElemSig(into, protClass, name, ty, owner, protTps, externTypes)
+                case PFImmutable(f) -> registerFieldElemSig(into, protClass, f.name, f.ty, owner, protTps, externTypes)
+              }
             }
             case _ -> ()
           }
@@ -2653,6 +2686,9 @@ pub func collectFileSigsSeeded(
           match decl.members[mi] {
             case RMFunc(fn) -> {
               registerInstanceSigErased(into, recClass, fn.name, fn.params, fn.ret, owner, recTps, externTypes)
+            }
+            case RMField(f) -> {
+              registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
             }
             case _ -> ()
           }
@@ -2716,6 +2752,7 @@ pub func collectFileSigsSeeded(
           while mi < decl.members.count {
             match decl.members[mi] {
               case OMField(f) -> {
+                registerFieldElemSig(into, opqCls, f.name, f.ty, owner, opqTps, externTypes)
                 val fkey = "field:" + f.name
                 if not into.containsKey(fkey) {
                   val fPs: List[JvmType] = newList()
@@ -2986,6 +3023,88 @@ func registerInstanceSigErased(
       )
     )
   }
+}
+
+// Register a record/protected/opaque field's DECLARED `slice[Elem]` /
+// `List[Elem]` element type under the pseudo-key `elem:<class>#<field>`
+// (#5444, following the `field:` / `enum:` / `enumcase:` funcSigs-key
+// precedents).  `indexedElemTypeOverride`'s `EMember` / bare-self-field arms
+// consult it so an indexed element read through a FIELD receiver
+// (`self.mws[self.idx]` — the lyric-web `MiddlewareChain` shape) narrows the
+// erased `Object` element back to its concrete class, exactly as the
+// bare-name `varGenericArgs` path already does for parameters and locals.
+// The element is resolved eagerly against the DECLARING file's own
+// `owner`/`externTypes` (like `retGenericArgs`, #5050), so a cross-package
+// consumer reading the field sees the real class, never its own in-package
+// guess.  Only genuinely-narrowing elements are registered: the declaration's
+// own generic params (erase to Object), `Object` itself, and nested
+// slice/List elements (`JArray` — `coerceArgTo` has no Object→array narrowing
+// arm, mirroring `indexedElemTypeOverride`'s caution) are all skipped, so a
+// registered entry's `ret` can be applied unconditionally at the read site.
+func registerFieldElemSig(
+  into: in Map[String, JvmFuncSig],
+  className: in String,
+  fieldName: in String,
+  fty: in TypeExpr,
+  owner: in String,
+  typeParams: in List[String],
+  externTypes: in Map[String, String],
+): Unit {
+  val elems: List[TypeExpr] = newList()
+  match fty.kind {
+    case TSlice(elem) -> elems.add(elem)
+    case TGenericApp(head, args) -> {
+      if head.segments.count == 1 and lastSegment(head) == "List" and args.count == 1 {
+        match args[0] {
+          case TAType(inner) -> elems.add(inner)
+          case TAValue(_) -> ()
+        }
+      }
+    }
+    case TParen(inner) -> {
+      registerFieldElemSig(into, className, fieldName, inner, owner, typeParams, externTypes)
+      return
+    }
+    case _ -> ()
+  }
+  if elems.count != 1 {
+    return
+  }
+  if typeParamIndexOf(elems[0], typeParams) >= 0 {
+    return
+  }
+  val elemJvm = typeExprToJvmErasedExtern(elems[0], owner, typeParams, externTypes)
+  val usable = match elemJvm {
+    case JRef(cls) -> cls != "java/lang/Object"
+    case JArray(_) -> false
+    case JVoid -> false
+    case _ -> true
+  }
+  if not usable {
+    return
+  }
+  val key = "elem:" + className + "#" + fieldName
+  if into.containsKey(key) {
+    return
+  }
+  val noPs: List[JvmType] = newList()
+  val noNames: List[String] = newList()
+  val noDefs: List[Option[Expr]] = newList()
+  val noModes: List[ParamMode] = newList()
+  val noRga: List[TypeExpr] = newList()
+  into.add(
+    key,
+    JvmFuncSig(
+      owner = className,
+      params = noPs,
+      ret = elemJvm,
+      paramNames = noNames,
+      paramDefaults = noDefs,
+      paramModes = noModes,
+      isIface = false,
+      retGenericArgs = noRga
+    )
+  )
 }
 
 // Register one interface member under `<ifaceClass>#<method>` with
@@ -3919,7 +4038,7 @@ pub func codegenPackageWithSigsSeeded(
           var pi = 0
           while pi < decl.params.count {
             val p = decl.params[pi]
-            genParams.add(LGenParam(paramName = p.name, paramType = typeExprToJvm(p.ty, pkgName)))
+            genParams.add(LGenParam(paramName = p.name, paramType = typeExprToJvmExtern(p.ty, pkgName, externTypes)))
             pi = pi + 1
           }
           val elemTy = match decl.ret {
@@ -3937,7 +4056,7 @@ pub func codegenPackageWithSigsSeeded(
           )
           items.add(LPAsyncGenerator(g = genFunc))
           // Factory method lives alongside main() in the functions class.
-          fns.add(makeGeneratorFactory(decl, genClass, pkgName))
+          fns.add(makeGeneratorFactory(decl, genClass, pkgName, externTypes))
         } else {
           fns.add(
             lowerFunc(

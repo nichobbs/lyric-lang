@@ -25,16 +25,19 @@
 //! `externTypes`-seeded — #5444's class) resolves through the additional
 //! `sameTypeExprElemFallback` same-package guess.
 //!
-//! SCOPE BOUNDARY (see the doc comment on `indexedElemTypeOverride`): this
-//! only resolves a BARE NAME receiver. A receiver that is itself a field
-//! access (`self.mws[self.idx]`, the exact shape the real #5444 `lyric-web`
-//! `MiddlewareChain` repro hits) is NOT covered — that needs a parallel
-//! declared-element registry threaded through every `caseFields`-plumbed
-//! construction site, out of scope for this fix. `Map[K, V]` VALUES are also
-//! NOT covered (`recordDeclaredElemType` deliberately skips `Map`, and the
-//! `HashMap.get` `EIndex` arm has no override applied) — extending to Map
-//! would need a 2-argument `varGenericArgs` convention (record `[K, V]`,
-//! consult index 1) that isn't wired here either.
+//! FIELD receivers (#5444, section 6 below): a receiver that is itself a
+//! field access (`self.mws[self.idx]`, the exact shape the real #5444
+//! `lyric-web` `MiddlewareChain` repro hits) resolves through the
+//! `elem:<class>#<field>` funcSigs registry (`registerFieldElemSig`,
+//! jvm/codegen/06_items.l): record/protected/opaque slice/List fields
+//! register their declared element type at signature collection, and
+//! `indexedElemTypeOverride`'s `EMember` / bare-self-field arms consult it
+//! with the base's statically-resolved class (`staticBaseClass`).
+//! `Map[K, V]` VALUES remain NOT covered (`recordDeclaredElemType` and
+//! `registerFieldElemSig` both skip `Map`, and the `HashMap.get` `EIndex`
+//! arm has no override applied) — extending to Map would need a 2-argument
+//! `varGenericArgs` convention (record `[K, V]`, consult index 1) that
+//! isn't wired here either.
 //!
 //! NOT this fix (found while drafting this file, unrelated pre-existing bug,
 //! reported separately): a UFCS method declared OUTSIDE a record body
@@ -175,9 +178,7 @@ test "unannotated local bound from a slice[Record]-returning call narrows on ind
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. List[Interface] / List[Record-with-method] PARAMETER indexed then a
-//    method call on the element (#5444 class, covered sub-case: a bare-name
-//    List parameter, not a record-field receiver like `self.mws[self.idx]` —
-//    see the module header's scope-boundary note).
+//    method call on the element (#5444 class, bare-name sub-case).
 // ─────────────────────────────────────────────────────────────────────────────
 func firstArea(shapes: in List[Shape]): Int {
   shapes[0].area()
@@ -197,4 +198,75 @@ test "List[Record] parameter: a record instance method call on the indexed eleme
   val squares: List[Square] = newList()
   squares.add(Square(side = 6))
   assertEqualInt(firstSquareArea(squares), 36, "squares[0].area() resolves the record's own method, not Object")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. FIELD receivers (#5444, the real lyric-web `MiddlewareChain` shape): the
+//    indexed slice/List lives in a record FIELD and is read as
+//    `self.f[self.idx]` inside an impl method (recursive chain, interface
+//    dispatch on the element), as `local.f[i]` off a typed local, and as
+//    `holder.inner.f[i]` through a chained field access.  Resolved via the
+//    `elem:<class>#<field>` registry (`registerFieldElemSig`) +
+//    `staticBaseClass`, not the bare-name `varGenericArgs` path sections 1-5
+//    exercise.
+// ─────────────────────────────────────────────────────────────────────────────
+record ShapeChain {
+  shapes: slice[Shape]
+  idx: Int
+}
+
+impl Shape for ShapeChain {
+  func area(): Int {
+    if self.idx >= self.shapes.length {
+      return 0
+    }
+    val s = self.shapes[self.idx]
+    val rest = ShapeChain(shapes = self.shapes, idx = self.idx + 1)
+    return s.area() + rest.area()
+  }
+}
+
+record ShapeBox {
+  items: List[Shape]
+}
+
+record BoxHolder {
+  inner: ShapeBox
+}
+
+record SquareRow {
+  row: slice[Square]
+  func firstArea(): Int {
+    return self.row[0].area()
+  }
+}
+
+test "slice[Interface] record field: self.f[self.idx] chains interface dispatch (#5444 exact MiddlewareChain shape)" {
+  // Element-wise upcast: the checker does not widen a `slice[Square]`
+  // literal to `slice[Shape]` at the binding (T0060), so bind each element
+  // as `Shape` first — the same spelling lyric-web's middleware setup uses.
+  val s2: Shape = Square(side = 2)
+  val s3: Shape = Square(side = 3)
+  val shapes: slice[Shape] = [s2, s3]
+  val chain = ShapeChain(shapes = shapes, idx = 0)
+  assertEqualInt(chain.area(), 13, "4 + 9 summed by walking self.shapes[self.idx] recursively")
+}
+
+test "List[Interface] record field: local.f[i] narrows for interface dispatch (#5444)" {
+  val items: List[Shape] = newList()
+  items.add(Square(side = 4))
+  val box = ShapeBox(items = items)
+  assertEqualInt(box.items[0].area(), 16, "box.items[0].area() dispatches through the interface")
+}
+
+test "chained field access: holder.inner.f[i] narrows for interface dispatch (#5444)" {
+  val items: List[Shape] = newList()
+  items.add(Square(side = 7))
+  val holder = BoxHolder(inner = ShapeBox(items = items))
+  assertEqualInt(holder.inner.items[0].area(), 49, "two-step field chain resolves the element class")
+}
+
+test "slice[Record] record field: self.f[0] inside a record method calls the element's own method (#5444)" {
+  val srow = SquareRow(row = [Square(side = 8)])
+  assertEqualInt(srow.firstArea(), 64, "self.row[0].area() inside a record method")
 }

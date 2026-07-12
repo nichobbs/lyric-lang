@@ -115,9 +115,20 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
           if viaInstance.count > 0 {
             viaInstance
           } else {
-            match recv.kind {
-              case EPath(p) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, lastSegment(p) + "." + memberName))
-              case _ -> newList()
+            // `s.indexOf(x)` / `s.lastIndexOf(x)` on a String receiver routes
+            // to the UFCS `Std.String.<member>(s, x): Option[Int]` free
+            // function (lowerMethodCall's String arm) — follow the same
+            // routing here so `match s.indexOf(x) { case Some(i) -> ... }`
+            // unboxes the erased Int payload instead of leaving it a boxed
+            // Object.
+            val isStrRecv = match receiverClassOf(ctx, recv) { case Some(c) -> c == "java/lang/String"; case None -> false }
+            if isStrRecv and (memberName == "indexOf" or memberName == "lastIndexOf") {
+              funcSigRetGenericArgs(mapGet(ctx.funcSigs, "Std/String/" + memberName + "@2"))
+            } else {
+              match recv.kind {
+                case EPath(p) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, lastSegment(p) + "." + memberName))
+                case _ -> newList()
+              }
             }
           }
         }
@@ -1011,7 +1022,7 @@ func resolveConcreteTypeExpr(ctx: in FuncCtx, te: in TypeExpr): JvmType {
             case Some(cls) -> JRef(className = cls)
             case None -> {
               match mapGet(ctx.externTypes, seg) {
-                case Some(javaFqn) -> JRef(className = javaFqn.replace(".", "/"))
+                case Some(javaFqn) -> JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
                 case None -> JRef(className = "java/lang/Object")
               }
             }

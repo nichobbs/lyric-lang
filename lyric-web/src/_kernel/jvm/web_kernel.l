@@ -71,6 +71,19 @@ extern type JCountDownLatch = "java.util.concurrent.CountDownLatch"
 @externTarget("java.util.concurrent.CountDownLatch.await")
 func latchAwaitForever(latch: in JCountDownLatch): Unit = ()
 
+// `HttpServerExchange.dispatch(HttpHandler)` — bound explicitly so the
+// overload is pinned to the single-HttpHandler form (auto-FFI cannot score
+// an in-bundle record receiver-arg against the JDK-loaded HttpHandler
+// interface among dispatch's several overloads).  Returns the exchange
+// itself (fluent API); callers discard it.
+@externInstance
+@externTarget("io.undertow.server.HttpServerExchange.dispatch")
+func exchangeDispatch(exchange: in JHttpServerExchange, handler: in JHttpHandler): JHttpServerExchange = ()
+
+func exchangeDispatchToWorker(exchange: in JHttpServerExchange, handler: in JHttpHandler): Unit {
+  val _ = exchangeDispatch(exchange, handler)
+}
+
 func headerNamesOf(hm: in JHeaderMap): JHttpStringCollection[JHttpString] {
   hm.getHeaderNames()
 }
@@ -121,7 +134,15 @@ func writeJvmResponse(exchange: in JHttpServerExchange, resp: in Web.Response): 
   if resp.contentType.length > 0 {
     val _ = respHeaders.put(JHttpString.new("Content-Type"), resp.contentType)
   }
-  val names = mapKeys(resp.headers)
+  // Explicit type application + `List[String]` annotation: the monomorphizer
+  // does not infer `mapKeys`' type args through a cross-package field-access
+  // argument, and on the JVM an unspecialised imported-generic call dangles
+  // at runtime (`NoSuchMethodError` — only specialised copies are emitted,
+  // unlike MSIL's reified generics).  The annotation additionally records
+  // the declared element type so the `for` element narrows to `String`
+  // instead of erased `Object` (docs/59 §4.3 family), keeping the
+  // `JHttpString.new(name)` ctor resolution on the `String` overload.
+  val names: List[String] = mapKeys[String, String](resp.headers)
   for name in names {
     match mapGet(resp.headers, name) {
       case Some(headerValue) -> {
@@ -153,6 +174,15 @@ impl JHttpHandler for LyricUndertowHandler {
   // rather than letting the panic propagate into Undertow's own per-request
   // exception handling with no application-level logging at all.
   func handleRequest(exchange: in JHttpServerExchange): Unit {
+    // Undertow invokes the root handler on an XNIO IO thread, where blocking
+    // stream IO is prohibited (UT000126 IllegalStateException on the first
+    // body/response write).  The canonical Undertow pattern: re-dispatch
+    // this same handler onto a worker thread and return; the dispatched
+    // invocation sees isInIoThread() == false and proceeds.
+    if exchange.isInIoThread() {
+      exchangeDispatchToWorker(exchange, self)
+      return
+    }
     // getInputStream()/getOutputStream() require blocking mode; Undertow
     // completes the exchange automatically once this method returns.
     val _ = exchange.startBlocking()
@@ -229,7 +259,12 @@ record WebRateEntry {
 
 val webRateLock: JLock = newLock()
 
-val webRateLimitMap: JvmConcurrentDict[String, WebRateEntry] = newConcurrentDict()
+// Explicit call-site type application: a no-argument generic call gives the
+// monomorphizer nothing to infer from at this module-level binding, and the
+// JVM backend emits only specialised copies of generic functions — an
+// unspecialised call dangled against the erased generic (NoSuchMethodError
+// at class init).  The explicit args drive a concrete specialisation.
+val webRateLimitMap: JvmConcurrentDict[String, WebRateEntry] = newConcurrentDict[String, WebRateEntry]()
 
 /// Check whether a call from this endpoint is within the rate limit.
 /// Returns true (allow) or false (deny).  State is per-process and

@@ -276,7 +276,7 @@ func eagerlyResolveGenericArg(te: in TypeExpr, pkgName: in String, externTypes: 
           te
         } else {
           val cls = match mapGet(externTypes, seg) {
-            case Some(javaFqn) -> javaFqn.replace(".", "/")
+            case Some(javaFqn) -> stripClrAritySuffix(javaFqn).replace(".", "/")
             case None -> pkgName + "/" + seg
           }
           val segs: List[String] = newList()
@@ -834,6 +834,21 @@ pub func typeExprToJvmErasedExtern(
   }
 }
 
+// Drop a CLR-convention arity suffix (`` `N ``) from a host type name: the
+// parser canonicalises a GENERIC `extern type` alias's host name to
+// `Name`<arity>` for the MSIL backend's TypeRef encoding, but a JVM binary
+// name never carries one (#5458).
+pub func stripClrAritySuffix(fqn: in String): String {
+  var i = 0
+  while i < fqn.length {
+    if fqn[i] == '`' {
+      return fqn.substring(0, i)
+    }
+    i = i + 1
+  }
+  fqn
+}
+
 // Map a Lyric TypeExpr to a JvmType, resolving an `extern type` alias (e.g.
 // `JBAOS` -> `java/io/ByteArrayOutputStream`) via `externTypes` instead of the
 // same-package `<pkg>/<name>` fallback `typeExprToJvm` would pick (#3334).
@@ -841,8 +856,31 @@ pub func typeExprToJvmExtern(te: in TypeExpr, pkgName: in String, externTypes: i
   match te.kind {
     case TRef(path) -> {
       match mapGet(externTypes, lastSegment(path)) {
-        case Some(javaFqn) -> JRef(className = javaFqn.replace(".", "/"))
+        case Some(javaFqn) -> JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
         case None -> typeExprToJvm(te, pkgName)
+      }
+    }
+    case TGenericApp(head, _) -> {
+      // A GENERIC `extern type` alias (`JvmConcurrentDict[K, V] =
+      // "java.util.concurrent.ConcurrentHashMap"`) parses as TGenericApp, so
+      // the TRef arm never resolved it and every value of the alias erased to
+      // `Object` — auto-FFI then had no receiver class to resolve
+      // `dict.get(key)` against and the whole package failed codegen (#5458).
+      // The JVM has no reified generics: the alias resolves to its raw host
+      // class, type args erased.  The parser canonicalises a generic alias's
+      // host name with the CLR arity suffix (`ConcurrentHashMap`2`, needed by
+      // MSIL) — strip it, it is meaningless in a JVM binary name.  The bare
+      // `List`/`Map` heads stay reserved for the built-in ArrayList/HashMap
+      // mapping exactly as in `typeExprToJvm`'s own TGenericApp arm.
+      val hseg = lastSegment(head)
+      val isBareBuiltin = head.segments.count == 1 and (hseg == "List" or hseg == "Map")
+      if isBareBuiltin {
+        typeExprToJvm(te, pkgName)
+      } else {
+        match mapGet(externTypes, hseg) {
+          case Some(javaFqn) -> JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
+          case None -> typeExprToJvm(te, pkgName)
+        }
       }
     }
     case TParen(inner) -> typeExprToJvmExtern(inner, pkgName, externTypes)

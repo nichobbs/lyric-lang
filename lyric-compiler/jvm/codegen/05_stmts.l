@@ -998,6 +998,18 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           }
         }
         case _ -> {
+          // Resolved BEFORE the iterable is lowered (mirrors `EIndex`'s
+          // ordering): the loop element's recorded declared type — the same
+          // `indexedElemTypeOverride` resolution `EIndex` applies (a declared
+          // `slice[Elem]`/`List[Elem]` parameter/local, a call-derived binding
+          // #4938, a direct call's declared return instantiation, or a record
+          // FIELD receiver via the `elem:<class>#<field>` registry, #5444).
+          // Without it the loop variable stays `Object`, so a typed use in
+          // the body (an instance method, an auto-FFI overload pick)
+          // mis-resolves — e.g. `for name in mapKeys(...)` fed
+          // `HttpString.new(name)` the `ByteBuffer` ctor overload instead of
+          // `String` (VerifyError at class load).
+          val forElemOverride = indexedElemTypeOverride(ctx, iter)
           val iterTy = lowerExpr(ctx, insns, iter)
           match iterTy {
             case JArray(elemArr) -> {
@@ -1021,12 +1033,25 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               emitLoad(insns, arrSlot, iterTy)
               emitLoad(insns, iSlot, JInt)
               emitArrayLoad(insns, elemArr)
-              val elemSlotA = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemArr)
-              emitStore(insns, elemSlotA, elemArr)
+              // A slice's erased `Object[]` element narrows to the recorded
+              // declared element type, exactly as `EIndex`'s JArray arm does;
+              // a precisely-typed array element keeps its own type.
+              val elemTyA = match elemArr {
+                case JRef(cA) -> {
+                  if cA == "java/lang/Object" {
+                    applyIndexedElemOverride(insns, forElemOverride)
+                  } else {
+                    elemArr
+                  }
+                }
+                case _ -> elemArr
+              }
+              val elemSlotA = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyA)
+              emitStore(insns, elemSlotA, elemTyA)
               // Loop-variable bind is a per-loop lexical scope — see
               // `emitCountingForJvm` (#5191 follow-up).
               val forScopeA = enterBlockScope(ctx)
-              lowerPatternBind(ctx, insns, pat, elemSlotA, elemArr, newList())
+              lowerPatternBind(ctx, insns, pat, elemSlotA, elemTyA, newList())
               // #2854: `continue` targets the index-increment point (`contLA`), not
               // the loop top, so the loop variable still advances; `break` targets
               // `endLA`.  `loopDeferDepth` captures the entry depth so a body `defer`
@@ -1089,7 +1114,9 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                   argCount = 1
                 )
               )
-              val elemTyB = JRef(className = "java/lang/Object")
+              // Narrow the erased `next()` element to the iterable's recorded
+              // declared element type when known (see `forElemOverride` above).
+              val elemTyB = applyIndexedElemOverride(insns, forElemOverride)
               val elemSlotB = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyB)
               emitStore(insns, elemSlotB, elemTyB)
               // Loop-variable bind is a per-loop lexical scope — see
