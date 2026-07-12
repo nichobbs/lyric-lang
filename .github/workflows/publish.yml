@@ -725,7 +725,9 @@ jobs:
           API_KEY="$LYRIC_NUGET_API_KEY"
           VERSION="$RELEASE_VERSION"
 
-          LOG_DIR="$(mktemp -d)"
+          # `set -e` is off, so a failed mktemp would otherwise flow through
+          # with an empty LOG_DIR and scatter logs at filesystem root.
+          LOG_DIR="$(mktemp -d)" || { echo "::error::mktemp -d failed; cannot create log directory"; exit 1; }
           declare -a SUCCEEDED=()
           declare -a FAILED=()
 
@@ -738,7 +740,7 @@ jobs:
             local log="$3"
             local attempt build_rc attempt_log
             : > "$log"
-            attempt_log="$(mktemp)"
+            attempt_log="$(mktemp)" || { echo "=== mktemp failed; cannot create attempt log for ${manifest} ===" >> "$log"; return 1; }
             for attempt in 1 2 3 4; do
               {
                 echo "=== Building ${manifest} (version ${version}, attempt ${attempt}) ==="
