@@ -164,10 +164,6 @@ pub func shouldRetryRestore(
   }
 }
 
-// Run `dotnet restore` for the given args, retrying on NU1102 (NuGet
-// indexing delay) with the escalating-then-plateau backoff above. `label`
-// prefixes log/error output (e.g. "publish" or "restore") to match the
-// caller's command.
 // Effective `dotnet restore` args for a given (1-based) attempt.  The first
 // attempt uses the caller's args verbatim; every retry additionally passes
 // `--no-http-cache`.  Without this, the first attempt's NU1102 ("package
@@ -193,6 +189,10 @@ pub func restoreArgsForAttempt(baseArgs: in List[String], attempt: in Int): List
   }
 }
 
+// Run `dotnet restore` for the given args, retrying on NU1102 (NuGet
+// indexing delay) with the escalating-then-plateau backoff above. `label`
+// prefixes log/error output (e.g. "publish" or "restore") to match the
+// caller's command.
 pub func runRestoreWithRetry(restoreArgs: in List[String], label: in String): Int {
   var attempt = 1
   while attempt <= nu1102MaxAttempts {
