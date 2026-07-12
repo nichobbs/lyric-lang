@@ -1,11 +1,17 @@
 //! cli_publish_self_test.l — exercises the pure NU1102 retry/backoff
 //! decision helpers in `Lyric.Cli` (cli/cli_shared.l): `shouldRetryRestore`
 //! and `backoffMsForAttempt`. These back `runRestoreWithRetry`, which wraps
-//! the `dotnet restore` calls in both `lyric publish` (cli_publish.l) and
-//! `lyric restore` (cli_restore.l) with retry-on-NU1102 logic, but the
-//! decision logic itself does no I/O and no process spawning, so it can be
-//! exercised directly without a network connection or a real `dotnet`
-//! invocation (#5239).
+//! the `dotnet restore` call in `lyric restore` (cli_restore.l) with
+//! retry-on-NU1102 logic. (`lyric publish` no longer restores at all: since
+//! #5644 it packs from a hand-authored `.nuspec`, so the retry path is
+//! restore-only.) The decision logic itself does no I/O and no process
+//! spawning, so it can be exercised directly without a network connection or
+//! a real `dotnet` invocation (#5239).
+//!
+//! Also covers the pure `buildPublishNuspec` (cli/cli_publish.l), the #5644
+//! nuspec-generation helper, including a regression guard that its output
+//! never emits `<PackageReference>` (the retired mechanism that caused the
+//! NU1102 ecosystem-publish race).
 //!
 //! The schedule constants are asserted as literals (8 attempts, 30s base,
 //! 4-attempt ramp, 120s plateau) rather than via `Cli.nu1102MaxAttempts`
@@ -144,4 +150,127 @@ func stringsContain(xs: in List[String], s: in String): Bool {
     i = i + 1
   }
   false
+}
+
+// ─── buildPublishNuspec: deps are metadata, not restorable PackageReferences ──
+// The ecosystem-publish NU1102 race (#5644) came from packing a csproj whose
+// sibling deps were <PackageReference> (restored from nuget.org before it had
+// indexed the just-published sibling).  buildPublishNuspec emits deps as
+// <dependency> metadata packed offline instead.
+test "buildPublishNuspec: emits a dependency as nuspec metadata, never a PackageReference" {
+  val deps = "        <dependency id=\"Lyric.Proto\" version=\"1.2.3\" />\n"
+  val ns = Cli.buildPublishNuspec(
+    "Lyric.OTel",
+    "1.2.3",
+    noAuthors(),
+    "OTel exporters",
+    "MIT",
+    None,
+    deps,
+    "/abs/Lyric.OTel.dll",
+    "Lyric.OTel.dll"
+  )
+  assertTrue(
+    strContains(ns, "<dependency id=\"Lyric.Proto\" version=\"1.2.3\" />"),
+    "dep appears as <dependency> metadata"
+  )
+  assertTrue(strContains(ns, "<dependencies>"), "dependencies group is emitted")
+  assertFalse(
+    strContains(ns, "PackageReference"),
+    "must NOT use <PackageReference> (that would require a restore, #5644)"
+  )
+}
+
+test "buildPublishNuspec: packs the payload DLL into lib/net10.0 and carries id/version" {
+  val ns = Cli.buildPublishNuspec(
+    "Lyric.OTel",
+    "1.2.3",
+    noAuthors(),
+    "OTel exporters",
+    "MIT",
+    None,
+    "",
+    "/abs/Lyric.OTel.dll",
+    "Lyric.OTel.dll"
+  )
+  assertTrue(strContains(ns, "<id>Lyric.OTel</id>"), "id present")
+  assertTrue(strContains(ns, "<version>1.2.3</version>"), "version present")
+  assertTrue(
+    strContains(ns, "<file src=\"/abs/Lyric.OTel.dll\" target=\"lib/net10.0/Lyric.OTel.dll\" />"),
+    "payload DLL mapped into lib/net10.0"
+  )
+  assertFalse(strContains(ns, "<dependencies>"), "no dependencies block when there are no deps")
+}
+
+test "buildPublishNuspec: description falls back to the id when empty (NuGet requires one)" {
+  val ns = Cli.buildPublishNuspec(
+    "Lyric.Proto",
+    "0.1.0",
+    noAuthors(),
+    "",
+    "",
+    None,
+    "",
+    "/abs/Lyric.Proto.dll",
+    "Lyric.Proto.dll"
+  )
+  assertTrue(strContains(ns, "<description>Lyric.Proto</description>"), "empty description falls back to the id")
+  assertFalse(strContains(ns, "<license"), "no license element when license is empty")
+  assertTrue(strContains(ns, "<authors>Lyric.Proto</authors>"), "empty authors falls back to the id")
+}
+
+// XML metacharacters in any field must be escaped so the emitted .nuspec stays
+// well-formed and dotnet pack does not choke (a git-ref-derived version or a
+// description with `&`/`<`/`"` is the realistic trigger).
+test "buildPublishNuspec: escapes XML metacharacters in its own fields" {
+  val ns = Cli.buildPublishNuspec(
+    "A&B",
+    "1.0-<rc>",
+    noAuthors(),
+    "desc \"q\" & <tag>",
+    "MIT & Apache",
+    Some(value = "https://ex.com/?a=1&b=2"),
+    "",
+    "/abs/A&B.dll",
+    "A&B.dll"
+  )
+  assertTrue(strContains(ns, "<id>A&amp;B</id>"), "id ampersand escaped")
+  assertTrue(strContains(ns, "<version>1.0-&lt;rc&gt;</version>"), "version angle brackets escaped")
+  assertTrue(strContains(ns, "<description>desc &quot;q&quot; &amp; &lt;tag&gt;</description>"), "description escaped")
+  assertTrue(strContains(ns, "MIT &amp; Apache"), "license ampersand escaped")
+  assertTrue(strContains(ns, "url=\"https://ex.com/?a=1&amp;b=2\""), "repository url ampersand escaped")
+  assertTrue(strContains(ns, "target=\"lib/net10.0/A&amp;B.dll\""), "dll basename escaped")
+  assertFalse(strContains(ns, "<id>A&B</id>"), "raw unescaped ampersand never appears in id")
+}
+
+// The manifest's [package] authors must reach the nuspec <authors> element as a
+// comma-separated, XML-escaped list — not be silently replaced by the id (#5683).
+test "buildPublishNuspec: emits manifest authors as a comma-separated escaped list" {
+  val authors: List[String] = newList()
+  authors.add("Alice Example")
+  authors.add("Bob & Co")
+  val ns = Cli.buildPublishNuspec(
+    "Lyric.OTel",
+    "1.2.3",
+    authors,
+    "OTel exporters",
+    "MIT",
+    None,
+    "",
+    "/abs/Lyric.OTel.dll",
+    "Lyric.OTel.dll"
+  )
+  assertTrue(
+    strContains(ns, "<authors>Alice Example, Bob &amp; Co</authors>"),
+    "authors joined by comma, escaped, not replaced by the id"
+  )
+  assertFalse(strContains(ns, "<authors>Lyric.OTel</authors>"), "id is not used when authors are declared")
+}
+
+func strContains(haystack: in String, needle: in String): Bool {
+  haystack.contains(needle)
+}
+
+func noAuthors(): List[String] {
+  newList()
 }

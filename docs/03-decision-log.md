@@ -15262,6 +15262,45 @@ precedent).
 
 ---
 
+## D-progress-665 — `lyric publish` packs from a hand-authored `.nuspec`, eliminating the ecosystem-publish NuGet-indexing race (#5644)
+
+`lyric publish` built a temp csproj that declared each dependency as a
+`<PackageReference>` and ran `dotnet restore` on it before `dotnet pack`.
+That restore resolves the references from nuget.org — so when an
+interdependent ecosystem is published in one run, a tier-3 library
+(e.g. `lyric-otel` → `Lyric.Proto`) restoring against a sibling that was
+`dotnet nuget push`ed only minutes earlier fails **NU1102** ("package
+version not found") because nuget.org has not indexed it yet. The
+`runRestoreWithRetry` loop (D-progress-659 backoff + the #5647
+`--no-http-cache` fix) mitigates but cannot beat a slow index within its
+budget, so the run reports failure and needs a manual rerun once indexing
+catches up.
+
+The fix removes the sibling restore entirely. Publish now writes a
+hand-authored `.nuspec` whose dependencies are `<dependency>` **metadata**
+(never `<PackageReference>`) and packs it via a dependency-free csproj
+(`<NuspecFile>` + `EnableDefaultItems=false`), whose implicit restore is
+offline-trivial. `dotnet pack` copies the dependency list straight into
+the package without ever contacting the feed, so publishing an
+interdependent set in one run can never block on indexing. Verified
+end-to-end: `lyric publish` of `lyric-otel` at a version whose
+`Lyric.Proto` dependency is **not** on nuget.org now packs successfully
+(the packed `.nuspec` carries `<dependency id="Lyric.Proto" .../>` and the
+payload DLL under `lib/net10.0/`) and reaches the push step — the same
+command previously died at restore with NU1102. The nuspec construction is
+extracted as the pure `Lyric.Cli.buildPublishNuspec` with unit tests
+(including a regression guard that the output never contains
+`PackageReference`).
+
+The `--no-http-cache` retry fix (#5647) stays: it still covers `lyric
+restore`'s build-phase resolution of third-party `[nuget]` deps. This
+change supersedes the retry for the publish path's sibling-dependency
+case.
+
+**Related:** #5644, #5647, D-progress-659, docs/22, docs/39.
+
+---
+
 ## Decisions deferred to v2 or later
 
 

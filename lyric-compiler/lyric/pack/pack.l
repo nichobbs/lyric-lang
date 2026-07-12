@@ -1,7 +1,6 @@
-//! pack/pack.l — self-hosted csproj XML generator for `lyric publish` / `lyric restore`.
-//! Mirrors the XML-generation portion of compiler/src/Lyric.Cli/Pack.fs
-//! (Phase 5 §M5.3 shim elimination).  Process invocation (dotnet pack/restore)
-//! stays in the F# Pack.fs.
+//! pack/pack.l — self-hosted csproj XML generator for `lyric restore`.
+//! (`lyric publish` packs from a hand-authored .nuspec built in
+//! cli/cli_publish.l since #5644, so its csproj generator was removed here.)
 //!
 //! Only Registry(version) deps emit <PackageReference>; Workspace/Path/Git deps
 //! are resolved locally by Lyric.Workspace and never expressed as NuGet refs.
@@ -33,112 +32,6 @@ pub func sanitisedPackageName(raw: in String): String {
     i = i + 1
   }
   s
-}
-
-// Extract the filename component from a path (handles both / and \).
-pub func getFileName(path: in String): String {
-  var best = 0
-  var i = 0
-  while i < path.length {
-    val c = path[i]
-    if c == '/' or c == '\\' {
-      best = i + 1
-    }
-    i = i + 1
-  }
-  if best >= path.length {
-    path
-  } else {
-    Str.substring(path, best, path.length - best)
-  }
-}
-
-// ─── Publish csproj ───────────────────────────────────────────────────────────
-/// Generate the `.csproj` content for `lyric publish`.
-/// `dllAbsPath` must be an absolute path (the F# caller resolves it before
-/// passing it here via the bridge).
-pub func publishCsproj(m: in Manifest, dllAbsPath: in String): String {
-  val pkg = m.packageSection
-  val sanitisedId = sanitisedPackageName(pkg.name)
-  val assemblyFile = getFileName(dllAbsPath)
-
-  var authorsXml = ""
-  if pkg.authors.count > 0 {
-    var authorStr = ""
-    var ai = 0
-    while ai < pkg.authors.count {
-      if ai > 0 {
-        authorStr = authorStr + ";"
-      }
-      authorStr = authorStr + xmlEscape(pkg.authors[ai])
-      ai = ai + 1
-    }
-    authorsXml = "    <Authors>" + authorStr + "</Authors>"
-  }
-
-  val descXml = if Str.isEmpty(pkg.description) {
-    ""
-  } else {
-    "    <Description>" + xmlEscape(pkg.description) + "</Description>"
-  }
-
-  val licXml = if Str.isEmpty(pkg.license) {
-    ""
-  } else {
-    "    <PackageLicenseExpression>" + xmlEscape(pkg.license) + "</PackageLicenseExpression>"
-  }
-
-  val repoXml = match pkg.repository {
-    case None -> ""
-    case Some(r) -> "    <RepositoryUrl>" + xmlEscape(r) + "</RepositoryUrl>"
-  }
-
-  var depsXml = ""
-  var di = 0
-  while di < m.deps.count {
-    val d = m.deps[di]
-    match d.source {
-      case Registry(version) -> {
-        depsXml = depsXml + "    <PackageReference Include=\"" + xmlEscape(d.name) + "\" Version=\"" + xmlEscape(version) +
-          "\" />\n"
-      }
-      case _ -> ()
-    }
-    di = di + 1
-  }
-
-  var xml = "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
-  xml = xml + "  <PropertyGroup>\n"
-  xml = xml + "    <TargetFramework>net10.0</TargetFramework>\n"
-  xml = xml + "    <IncludeBuildOutput>false</IncludeBuildOutput>\n"
-  xml = xml + "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n"
-  xml = xml + "    <NoWarn>$(NoWarn);NU5128</NoWarn>\n"
-  xml = xml + "    <PackageId>" + xmlEscape(sanitisedId) + "</PackageId>\n"
-  xml = xml + "    <Version>" + xmlEscape(pkg.version) + "</Version>\n"
-  if not Str.isEmpty(authorsXml) {
-    xml = xml + authorsXml + "\n"
-  }
-  if not Str.isEmpty(descXml) {
-    xml = xml + descXml + "\n"
-  }
-  if not Str.isEmpty(licXml) {
-    xml = xml + licXml + "\n"
-  }
-  if not Str.isEmpty(repoXml) {
-    xml = xml + repoXml + "\n"
-  }
-  xml = xml + "  </PropertyGroup>\n"
-  xml = xml + "  <ItemGroup>\n"
-  xml = xml + "    <None Include=\"" + xmlEscape(dllAbsPath) + "\" Pack=\"true\" PackagePath=\"lib/net10.0/" +
-    xmlEscape(assemblyFile) +
-    "\" />\n"
-  xml = xml + "  </ItemGroup>\n"
-  if not Str.isEmpty(depsXml) {
-    xml = xml + "  <ItemGroup>\n"
-    xml = xml + depsXml
-    xml = xml + "  </ItemGroup>\n"
-  }
-  xml + "</Project>\n"
 }
 
 // ─── Restore csproj ───────────────────────────────────────────────────────────

@@ -1089,8 +1089,8 @@ lyric publish                          # publish package to the configured regis
 lyric publish --registry <url>         # publish to a specific registry feed URL
 lyric publish --api-key <key>          # supply an API key (NuGet push token / GitHub PAT)
 lyric publish --skip-duplicate         # silently succeed if this version already exists on the registry
-lyric publish --package-version <ver>  # override the NuGet <Version>, .nupkg filename, and
-                                       # cross-library <PackageReference> versions; also stamps
+lyric publish --package-version <ver>  # override the NuGet <version>, .nupkg filename, and
+                                       # cross-library <dependency> versions in the nuspec; also stamps
                                        # Lyric.Contract.* metadata resources embedded in the DLL;
                                        # used by publish pipelines to stamp the git release version
 lyric search <query>                   # search the registry for matching packages

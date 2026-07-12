@@ -21,6 +21,74 @@ import Lyric.Discovery as Disc
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Publish command
 // ─────────────────────────────────────────────────────────────────────────────
+// Build the `.nuspec` document for a published Lyric package.  Dependencies
+// are emitted as `<dependency>` metadata inside a single net10.0 group
+// (`dependenciesMetadata` is the pre-rendered `<dependency .../>` lines) —
+// never as `<PackageReference>`, so `dotnet pack` copies them into the
+// package without a `dotnet restore` that would fail NU1102 on a
+// same-run-but-not-yet-indexed sibling (#5644).  `description` falls back to
+// the package id when empty (NuGet requires a non-empty description).
+pub func buildPublishNuspec(
+  id: in String,
+  version: in String,
+  authors: in List[String],
+  description: in String,
+  license: in String,
+  repository: in Option[String],
+  dependenciesMetadata: in String,
+  absDllPath: in String,
+  dllBase: in String,
+): String {
+  val descText = if Str.isEmpty(description) { id } else { description }
+  // NuGet <authors> is a comma-separated list.  Fall back to the package id
+  // when the manifest declares no [package] authors (NuGet requires a
+  // non-empty authors value).
+  var authorsText = ""
+  var ai = 0
+  while ai < authors.count {
+    if ai > 0 {
+      authorsText = authorsText + ", "
+    }
+    authorsText = authorsText + authors[ai]
+    ai = ai + 1
+  }
+  if Str.isEmpty(authorsText) {
+    authorsText = id
+  }
+  var nuspec = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+  nuspec = nuspec + "<package>\n"
+  nuspec = nuspec + "  <metadata>\n"
+  nuspec = nuspec + "    <id>" + Pack.xmlEscape(id) + "</id>\n"
+  nuspec = nuspec + "    <version>" + Pack.xmlEscape(version) + "</version>\n"
+  nuspec = nuspec + "    <authors>" + Pack.xmlEscape(authorsText) + "</authors>\n"
+  nuspec = nuspec + "    <description>" + Pack.xmlEscape(descText) + "</description>\n"
+  if not Str.isEmpty(license) {
+    nuspec = nuspec + "    <license type=\"expression\">" + Pack.xmlEscape(license) + "</license>\n"
+  }
+  match repository {
+    case Some(r) -> {
+      nuspec = nuspec + "    <repository url=\"" + Pack.xmlEscape(r) + "\" />\n"
+    }
+    case None -> ()
+  }
+  nuspec = nuspec + "    <tags>lyric-package</tags>\n"
+  if not Str.isEmpty(dependenciesMetadata) {
+    nuspec = nuspec + "    <dependencies>\n"
+    nuspec = nuspec + "      <group targetFramework=\"net10.0\">\n"
+    nuspec = nuspec + dependenciesMetadata
+    nuspec = nuspec + "      </group>\n"
+    nuspec = nuspec + "    </dependencies>\n"
+  }
+  nuspec = nuspec + "  </metadata>\n"
+  nuspec = nuspec + "  <files>\n"
+  nuspec = nuspec + "    <file src=\"" + Pack.xmlEscape(absDllPath) + "\" target=\"lib/net10.0/" +
+    Pack.xmlEscape(dllBase) +
+    "\" />\n"
+  nuspec = nuspec + "  </files>\n"
+  nuspec = nuspec + "</package>\n"
+  nuspec
+}
+
 func cmdPublish(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var dllOverride: Option[String] = None
@@ -204,44 +272,58 @@ func cmdPublish(argv: in slice[String]): Int {
       }
       case Git(_, _, refValue, _) -> refValue  // tag name / SHA / branch (branch rejected above)
     }
-    nuspecDeps = nuspecDeps + "    <PackageReference Include=\"" + dep.name + "\" Version=\"" + version + "\" />\n"
+    nuspecDeps = nuspecDeps + "        <dependency id=\"" + Pack.xmlEscape(dep.name) + "\" version=\"" +
+      Pack.xmlEscape(version) +
+      "\" />\n"
     si += 1
   }
 
   val absDllPath = if Path.isAbsolute(dllPath) { dllPath } else { Path.join(Environment.currentDirectory(), dllPath) }
   val dllBase = Path.basename(absDllPath)
+
+  // Pack from a hand-authored .nuspec rather than a csproj carrying the deps
+  // as <PackageReference>.  A PackageReference must be `dotnet restore`d, which
+  // fails NU1102 when a sibling ecosystem package was pushed to nuget.org only
+  // moments earlier and is not yet indexed — the whole ecosystem-publish race
+  // (#5644): tier-3 libraries restoring against a just-published tier-1/2
+  // package that nuget.org has not indexed yet.  In a .nuspec the same
+  // dependencies are pure metadata: pack copies them straight into the
+  // package's own <dependencies> without ever contacting the feed, so
+  // publishing an interdependent set in one run never blocks on indexing.
+  val nuspec = buildPublishNuspec(
+    pkg.name,
+    effectiveVersion,
+    pkg.authors,
+    pkg.description,
+    pkg.license,
+    pkg.repository,
+    nuspecDeps,
+    absDllPath,
+    dllBase
+  )
+
+  val tmpNuspec = Path.join(mfDir, pkg.name + "-" + effectiveVersion + "-publish.nuspec")
+  match File.writeText(tmpNuspec, nuspec) {
+    case Err(e) -> {
+      printErr("publish: cannot write temp nuspec: " + IOError.message(e))
+      return 1
+    }
+    case Ok(_) -> ()
+  }
+
+  // A minimal csproj whose only job is to point `dotnet pack` at the nuspec.
+  // It declares no package dependencies, so its implicit restore is trivial
+  // and offline — no nuget.org round-trip, no NU1102.  CS2008 ("no source
+  // files") is expected: there is nothing to compile, only a package to pack.
   var csproj = "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
   csproj = csproj + "  <PropertyGroup>\n"
   csproj = csproj + "    <TargetFramework>net10.0</TargetFramework>\n"
   csproj = csproj + "    <IncludeBuildOutput>false</IncludeBuildOutput>\n"
   csproj = csproj + "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n"
-  csproj = csproj + "    <NoWarn>$(NoWarn);NU5128</NoWarn>\n"
-  csproj = csproj + "    <PackageId>" + Pack.xmlEscape(pkg.name) + "</PackageId>\n"
-  csproj = csproj + "    <Version>" + Pack.xmlEscape(effectiveVersion) + "</Version>\n"
-  if not Str.isEmpty(pkg.description) {
-    csproj = csproj + "    <Description>" + Pack.xmlEscape(pkg.description) + "</Description>\n"
-  }
-  if not Str.isEmpty(pkg.license) {
-    csproj = csproj + "    <PackageLicenseExpression>" + Pack.xmlEscape(pkg.license) + "</PackageLicenseExpression>\n"
-  }
-  match pkg.repository {
-    case Some(r) -> {
-      csproj = csproj + "    <RepositoryUrl>" + Pack.xmlEscape(r) + "</RepositoryUrl>\n"
-    }
-    case None -> ()
-  }
-  csproj = csproj + "    <PackageTags>lyric-package</PackageTags>\n"
+  csproj = csproj + "    <EnableDefaultItems>false</EnableDefaultItems>\n"
+  csproj = csproj + "    <NoWarn>$(NoWarn);NU5128;CS2008</NoWarn>\n"
+  csproj = csproj + "    <NuspecFile>" + Pack.xmlEscape(Path.basename(tmpNuspec)) + "</NuspecFile>\n"
   csproj = csproj + "  </PropertyGroup>\n"
-  csproj = csproj + "  <ItemGroup>\n"
-  csproj = csproj + "    <None Include=\"" + Pack.xmlEscape(absDllPath) + "\" Pack=\"true\" PackagePath=\"lib/net10.0/" +
-    Pack.xmlEscape(dllBase) +
-    "\" />\n"
-  csproj = csproj + "  </ItemGroup>\n"
-  if not Str.isEmpty(nuspecDeps) {
-    csproj = csproj + "  <ItemGroup>\n"
-    csproj = csproj + nuspecDeps
-    csproj = csproj + "  </ItemGroup>\n"
-  }
   csproj = csproj + "</Project>\n"
 
   val tmpCsproj = Path.join(mfDir, pkg.name + "-" + effectiveVersion + "-publish.csproj")
@@ -253,36 +335,15 @@ func cmdPublish(argv: in slice[String]): Int {
     case Ok(_) -> ()
   }
 
-  // Run `dotnet restore` first so that dotnet pack has project.assets.json
-  val restoreArgs: List[String] = newList()
-  restoreArgs.add("restore")
-  restoreArgs.add(tmpCsproj)
-  match registryUrl {
-    case Some(url) -> {
-      restoreArgs.add("--source")
-      restoreArgs.add(url)
-      restoreArgs.add("--source")
-      restoreArgs.add("https://api.nuget.org/v3/index.json")
-    }
-    case None -> {
-      match manifest.registry {
-        case Some(rc) -> match rc.dotnet { case Some(url) -> { restoreArgs.add("--source"); restoreArgs.add(url); restoreArgs.add("--source"); restoreArgs.add("https://api.nuget.org/v3/index.json") }; case None -> () }
-        case None -> ()
-      }
-    }
-  }
-  val restoreExit = runRestoreWithRetry(restoreArgs, "publish")
-  if restoreExit != 0 {
-    return restoreExit
-  }
-
-  // Run `dotnet pack`.
+  // Pack.  No explicit restore step: the csproj carries no package
+  // dependencies (they live in the nuspec as metadata), so `dotnet pack`'s
+  // implicit restore is offline-trivial and the nuspec supplies both the
+  // payload DLL and the dependency list.
   val packArgs: List[String] = newList()
   packArgs.add("pack")
   packArgs.add(tmpCsproj)
   packArgs.add("-o")
   packArgs.add(outDir)
-  packArgs.add("--no-build")
   val packExit = match Process.run("dotnet", packArgs) {
     case Ok(code) -> code
     case Err(e) -> {

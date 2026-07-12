@@ -94,6 +94,8 @@ nunit-*.xml
 /bin/
 lyric.lock
 *-restore.csproj
+*-publish.csproj
+*-publish.nuspec
 book/*.pdf
 book/*.html
 .claude/settings.local.json
