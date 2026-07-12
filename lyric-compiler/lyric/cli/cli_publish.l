@@ -256,7 +256,9 @@ func cmdPublish(argv: in slice[String]): Int {
       }
       case Git(_, _, refValue, _) -> refValue  // tag name / SHA / branch (branch rejected above)
     }
-    nuspecDeps = nuspecDeps + "        <dependency id=\"" + dep.name + "\" version=\"" + version + "\" />\n"
+    nuspecDeps = nuspecDeps + "        <dependency id=\"" + Pack.xmlEscape(dep.name) + "\" version=\"" +
+      Pack.xmlEscape(version) +
+      "\" />\n"
     si += 1
   }
 
