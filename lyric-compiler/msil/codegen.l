@@ -16208,12 +16208,21 @@ func emitExternTargetBody(
       // methods (`emitMember == r.memberName`), so the getter return type is
       // resolved here instead.
       var propGetterRet: Option[MsilType] = None
+      // Parent row for the emitted MemberRef: the declared target type, unless
+      // the getter probe resolves the property on a base type via the Extends
+      // walk (#5562) — then parent on the resolved declaring type, matching
+      // the auto-FFI paths (runtime base-class search tolerates the declared
+      // parent per ECMA-335 §II.22.25, but C# encodes the declaring type).
+      var memberParentRow = tRefRow
       if not r.isCtor {
         val noArgs: List[Mdr.SigType] = newList()
         match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, "get_" + r.memberName, noArgs) {
           case Some(gp) -> {
             emitMember = "get_" + r.memberName
             emitIsStatic = gp.sig.isStatic
+            if gp.declaringFqn != resolvedFqn {
+              memberParentRow = internExternTypeRefMsil(cctx, gp.assemblyName, gp.declaringFqn)
+            }
             match resolvedSigToMsil(cctx, gp.sig.returnType) {
               case Some(rm) -> {
                 propGetterRet = Some(value = rm)
@@ -16421,7 +16430,7 @@ func emitExternTargetBody(
       // `"ffi_" + target` key made the second wrapper reuse the first's sig blob
       // — the call popped the wrong arity and left a value on the stack (#3943).
       val ffiSigKey = ffiMemberRefSigKey(target, r.isCtor, emitIsStatic, paramTypes, sigParams, sigRet)
-      val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, emitMember, ffiSigKey, sig)
+      val mrRow = ctxAddMemberRef(cctx.lctx, memberParentRow, emitMember, ffiSigKey, sig)
       val tok = 0x0A000000 + mrRow
 
       // A value-type instance member (e.g. `System.TimeSpan.TotalMilliseconds`)

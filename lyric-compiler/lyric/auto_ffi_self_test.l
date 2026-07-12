@@ -292,3 +292,19 @@ test "auto-FFI resolves inherited instance members through the Extends chain" {
   val ms = MemoryStream.new()
   assertTrue(not ms.CanTimeout, "inherited Stream.CanTimeout getter resolves and reads false")
 }
+
+// #5613: an `@externTarget` naming a property INHERITED from a base type —
+// `StringWriter.NewLine` is declared on `System.IO.TextWriter`, so the
+// getter probe resolves `get_NewLine` through the Extends walk and the
+// emitted MemberRef parents on the resolved declaring type (TextWriter)
+// rather than the declared target type.
+@externTarget("System.IO.StringWriter.NewLine")
+@externInstance
+func externWriterNewLine(w: in StringWriter): String = ()
+
+test "@externTarget resolves an inherited property through the Extends chain (#5613)" {
+  val w = StringWriter.new()
+  val nl = externWriterNewLine(w)
+  assertTrue(nl.length >= 1, "inherited TextWriter.NewLine getter returns a non-empty line separator")
+  w.Dispose()
+}
