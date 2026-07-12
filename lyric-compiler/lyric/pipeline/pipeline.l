@@ -8,10 +8,13 @@
 //!
 //!   * the pass ORDER — parse → cfg erasure → wire-expand → alias rewrite →
 //!     @stubbable synthesis → typecheck → modecheck → contract elaboration →
-//!     `?`-propagation → derive → mono → weave — with the cfg-erasure
-//!     placement D-progress-642 established (erasure directly after parse,
-//!     before anything indexes the items, on every path including
-//!     single-file builds);
+//!     `?`-propagation → derive → mono → weave → await-hoist — with the
+//!     cfg-erasure placement D-progress-642 established (erasure directly
+//!     after parse, before anything indexes the items, on every path
+//!     including single-file builds), and the await-hoist LAST (#5606: it
+//!     rewrites `f(a, await e)`-family shapes inside `async func` bodies
+//!     into hoisted `val` bindings, so it must see the final tree — woven
+//!     wrappers included — that codegen sees);
 //!   * the diagnostics gating for each pass (which passes are fatal, which
 //!     are advisory, and how a multi-package build labels the owning
 //!     package);
@@ -52,6 +55,7 @@ import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.Propagate
 import Lyric.Cfg as Cfg
+import Lyric.AwaitHoist as AwaitHoist
 import Lyric.AliasRewriter as Aliases
 import Lyric.Stubbable as Stubbable
 import Lyric.WireExpand as WireExpand
@@ -204,6 +208,14 @@ pub func pipeCheckAndMono(
 /// templates is the documented behaviour-preserving degeneration of
 /// `weaveFileWithDiags`).  Weave-time diagnostics (A0042/A0043/A0044) gate
 /// fatally.
+///
+/// The await-hoist (#5606) runs directly after the weave as the FINAL
+/// middle-end rewrite: `f(a, await e)`-family shapes in `async func` bodies
+/// become hoisted `val` bindings so no await suspends with operands already
+/// on the MSIL evaluation stack.  It is semantics-preserving on every target
+/// (left-to-right evaluation order is kept), and running it here — on the
+/// one tree all backends consume — keeps the MSIL async-SM pre-scan and
+/// emission in lockstep by construction.
 pub func pipeWeave(
   file: in SourceFile, templates: in Map[String, CollectedTemplate], pkgLabel: in String
 ): Option[SourceFile] {
@@ -211,7 +223,7 @@ pub func pipeWeave(
   if gate(pkgLabel, weaveRes.diagnostics) {
     return None
   }
-  Some(value = weaveRes.file)
+  Some(value = AwaitHoist.hoistAwaitsFile(weaveRes.file))
 }
 
 /// The full per-file middle end: `pipeCheckAndMono` then `pipeWeave`.
