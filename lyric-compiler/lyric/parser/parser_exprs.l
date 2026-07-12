@@ -944,6 +944,11 @@ pub func parsePattern(st: inout ParseState): Pattern {
 // Expressions — primary, postfix, prefix, binary precedence cascade.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func parsePrimaryExpr(st: inout ParseState): Expr {
+  // Read-and-clear (#5667): only the very first primary expression parsed
+  // after a caller requests suppression is affected — see the field doc on
+  // `ParseState.suppressArrowLambda`.
+  val suppressArrowLambda = st.suppressArrowLambda
+  st.suppressArrowLambda = false
   val tok = peek(st)
   match tok.token {
     case TInt(_, _, _) -> {
@@ -1060,8 +1065,10 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
               // `() -> expr` is the zero-param bare lambda literal (#4748,
               // #5646): a following `->` reinterprets the just-consumed
               // empty parens as an empty `LambdaParams` list instead of the
-              // Unit literal `()` would otherwise be.
-              if isPunct(peekToken(st), Arrow) {
+              // Unit literal `()` would otherwise be.  Suppressed (#5667)
+              // in a match-arm guard / `SRule` LHS, where the `->` belongs
+              // to the enclosing construct, not a lambda.
+              if (not suppressArrowLambda) and isPunct(peekToken(st), Arrow) {
                 val noParams: List[LambdaParam] = newList()
                 parseArrowLambdaTail(st, tok.span, noParams)
               } else {
@@ -1090,7 +1097,7 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
                     items[items.count - 1].span
                   }
                 }
-                if isPunct(peekToken(st), Arrow) {
+                if (not suppressArrowLambda) and isPunct(peekToken(st), Arrow) {
                   match exprListAsLambdaParams(items) {
                     case Some(ps) -> parseArrowLambdaTail(st, tok.span, ps)
                     case None -> mkExpr(ETuple(exprs = items), joinSpans(tok.span, endSpan))
@@ -1106,7 +1113,7 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
                     inner.span
                   }
                 }
-                if isPunct(peekToken(st), Arrow) {
+                if (not suppressArrowLambda) and isPunct(peekToken(st), Arrow) {
                   match exprAsLambdaParam(inner) {
                     case Some(p) -> {
                       val ps: List[LambdaParam] = newList()
@@ -1478,6 +1485,10 @@ func parseMatchArm(st: inout ParseState): MatchArm {
   val pat = parsePattern(st)
   val guard: Option[Expr] = if isKw(peekToken(st), KwWhere) or isKw(peekToken(st), KwIf) {
     val _ = advance(st)
+    // #5667: a guard that's just a parenthesised bare-identifier group
+    // (`if (y) -> body`) must not let the bare-lambda reinterpretation
+    // (#4748/#5646) swallow the match arm's own `->` separator.
+    st.suppressArrowLambda = true
     Some(value = parseExpr(st))
   } else {
     None
@@ -2210,6 +2221,13 @@ func parseStatementInner(st: inout ParseState): Statement {
 }
 
 func parseExprStatement(st: inout ParseState, startSpan: in Span): Statement {
+  // #5667: a bare `(x) -> rhs` statement is an `SRule`, not a discarded
+  // lambda literal — suppress the bare-lambda reinterpretation (#4748/
+  // #5646) for the statement's own leading expression so the `->` below
+  // is still there to detect. Nested call arguments elsewhere in `e`
+  // are unaffected (the flag is read-and-cleared on `parsePrimaryExpr`
+  // entry, so only this statement's own first/outermost primary sees it).
+  st.suppressArrowLambda = true
   val e = parseExpr(st)
   // Distinguish: assignment, stub-builder rule (`->`), or plain expression.
   if isPunct(peekToken(st), Eq) or isPunct(peekToken(st), PlusEq) or isPunct(peekToken(st), MinusEq) or isPunct(peekToken(st), StarEq) or isPunct(peekToken(st), SlashEq) or isPunct(peekToken(st), PercentEq) {

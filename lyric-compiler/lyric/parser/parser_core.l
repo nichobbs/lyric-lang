@@ -28,11 +28,26 @@ pub record ParseState {
   /// so internal `mark` / `reset` speculation does not need to
   /// truncate the log.
   cstEvents: List[CstEvent]
+  /// Read-and-clear request (#5667): set `true` immediately before a
+  /// `parseExpr` call whose result must NOT be reinterpreted as a bare
+  /// parenthesised lambda literal (#4748/#5646) even if it's immediately
+  /// followed by `->` — e.g. a match-arm guard (`case x if (y) -> body`,
+  /// where the arm's own separator must stay a separator) or an `SRule`
+  /// statement's LHS (`(x) -> rhs`, where the rule's arrow must stay a
+  /// rule arrow, not get consumed into a discarded lambda literal).
+  /// `parsePrimaryExpr` reads this flag once on entry and immediately
+  /// resets it to `false`, so only the FIRST (outermost) primary
+  /// expression parsed after the caller sets it is affected — a nested
+  /// call argument inside that same guard/LHS (`list.any((y) -> y > 0)`)
+  /// still gets the ordinary lambda-literal treatment, since by the time
+  /// its own `parsePrimaryExpr` call runs the flag has already been
+  /// cleared.
+  suppressArrowLambda: Bool
 }
 
 pub func makeParseState(tokens: in List[SpannedToken], diags: in List[Diagnostic]): ParseState {
   val events: List[CstEvent] = newList()
-  ParseState(tokens = tokens, pos = 0, diags = diags, cstEvents = events)
+  ParseState(tokens = tokens, pos = 0, diags = diags, cstEvents = events, suppressArrowLambda = false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -773,10 +788,7 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
       case None -> None
     }
 
-    var endSp = match selectorParse {
-      case Some(sp2) -> sp2.endSp
-      case None -> path.span
-    }
+    var endSp = match selectorParse { case Some(sp2) -> sp2.endSp; case None -> path.span }
     val result = match tryEatKw(st, KwAs) {
       case Some(_) -> {
         match tryEatIdent(st) {

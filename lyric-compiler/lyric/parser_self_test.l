@@ -1356,6 +1356,34 @@ test "lambda: bare empty parens without arrow still parses as Unit literal" {
   assertEqualInt(diagCount(pr), 0, "`()` without a following arrow parses as the Unit literal")
 }
 
+// #5667: a match-arm guard that's just a parenthesised bare identifier
+// must not let the bare-lambda reinterpretation (#4748/#5646) swallow the
+// arm's own `->` separator (previously a P0202 "expected '->'" cascade).
+test "lambda: parenthesised match-arm guard does not swallow the arm arrow" {
+  val pr = parse(
+    "package P\nfunc f(x: Int): Int {\n  val flag = x > 0\n  return match x {\n    case y if (flag) -> 1\n    case _ -> 2\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "guard `if (flag) -> ...` parses clean, arrow belongs to the match arm")
+}
+
+// A guard containing a nested bare-lambda call argument must still get the
+// ordinary lambda treatment — only the guard's own outermost primary
+// expression is suppressed, not everything inside it.
+test "lambda: bare-lambda call argument nested inside a match-arm guard still parses as a lambda" {
+  val pr = parse(
+    "package P\nfunc f(xs: List[Int]): Int {\n  return match xs {\n    case ys if ys.any((y) -> y > 0) -> 1\n    case _ -> 2\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "nested `(y) -> y > 0` call argument inside a guard still parses clean")
+}
+
+// #5667: a bare `(x) -> rhs` statement is an SRule (stub-builder rule), not
+// a discarded lambda literal — the statement-level `->` detection
+// (parseExprStatement) must not have its arrow swallowed either.
+test "lambda: bare-paren statement followed by arrow parses as a rule, not a discarded lambda" {
+  val pr = parse("package P\nfunc f(): Unit {\n  (x) -> x\n}\n")
+  assertEqualInt(diagCount(pr), 0, "`(x) -> x` as a bare statement parses clean")
+}
+
 // Exact shape from the issue repro: a bare two-param lambda whose body is a
 // multi-line `{ ... }` block (not a single expression), as the second
 // positional call argument.
