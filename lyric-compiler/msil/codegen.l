@@ -24718,10 +24718,19 @@ func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.
   if paramByte < 0 {
     // Non-primitive parameter: an extern value or class type.  The argument
     // must be the same extern type (matched by FQN) — no coercion is emitted
-    // (a value type is passed by value, a class by reference).
+    // (a value type is passed by value, a class by reference).  A CLASS
+    // argument of a DIFFERENT FQN is accepted when its Extends chain reaches
+    // the declared parameter type (#5605): a reference upcast needs no IL,
+    // but the chain is re-verified here so the emitter can never silently
+    // bind a candidate the scorer did not admit.
     val pfqn = Mdr.sigNamedFqn(paramSig)
     if pfqn.length > 0 and externRefFqn(argTy) == pfqn {
       Some(value = acc)
+    } else if pfqn.length > 0 and not Mdr.sigNamedIsValueType(paramSig) {
+      match argTy {
+        case MClassRef(_, afqn) -> if Mdr.externChainReaches(cctx.metadataTypeIndex, cctx.metadataPathIndex, afqn, pfqn) { Some(value = acc) } else { None }
+        case _ -> None
+      }
     } else {
       None
     }
@@ -24796,10 +24805,139 @@ func unwrapAutoFfiTaskMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List
   }
 }
 
+// True when `emitAutoFfiDefaultLoad` can synthesize `dflt` for an unsupplied
+// trailing parameter of type `pm` (#5605).  Checked during the validation
+// pass — before any IL or scratch locals are produced — so an unsupported
+// shape falls back cleanly instead of leaving a half-emitted call.  A
+// value-type zero needs a scratch local (`ldloca` + `initobj`), hence the
+// FuncCtx requirement.
+func autoFfiDefaultLoadable(pm: in MsilType, dflt: in Mdr.ExternParamDefault, hasFctx: in Bool): Bool {
+  match dflt {
+    case Mdr.EPDNone -> false
+    case Mdr.EPDNull -> match pm {
+      case MString -> true
+      case MObject -> true
+      case MClass(_) -> true
+      case MClassRef(_, _) -> true
+      case MGenericInst(_, _, _) -> true
+      case MGenericInstByName(_, _) -> true
+      case MArray(_) -> true
+      // A nullref Constant on a value-shaped param decodes as EPDZero, so
+      // EPDNull against a value type here is malformed metadata: reject.
+      case _ -> false
+    }
+    case Mdr.EPDZero -> match pm { case MBool -> true; case MChar -> true; case MByte -> true; case MInt -> true; case MLong -> true; case MDouble -> true; case MString -> true; case MObject -> true; case MClass(_) -> true; case MClassRef(_, _) -> true; case MGenericInst(_, _, _) -> true; case MGenericInstByName(_, _) -> true; case MArray(_) -> true; case MValueTypeRef(_, _) -> hasFctx; case MValueTypeGenericInst(_, _, _) -> hasFctx; case _ -> false }
+    case Mdr.EPDConst(cv) -> match cv {
+      // An int-family constant loads for any int-family / widened param, and
+      // for an enum-typed param (the Constant row of an enum default carries
+      // the underlying primitive; the verifier treats an enum and its
+      // underlying type as interchangeable on the stack).
+      case Mdr.ECVInt(_) -> match pm { case MBool -> true; case MChar -> true; case MByte -> true; case MInt -> true; case MLong -> true; case MDouble -> true; case MValueTypeRef(_, _) -> true; case _ -> false }
+      case Mdr.ECVLong(_) -> match pm { case MLong -> true; case MDouble -> true; case MValueTypeRef(_, _) -> true; case _ -> false }
+      case Mdr.ECVR4Bits(_) -> match pm { case MDouble -> true; case _ -> false }
+      case Mdr.ECVR8Bits(_) -> match pm { case MDouble -> true; case _ -> false }
+    }
+  }
+}
+
+// Push the decoded default for an unsupplied trailing BCL parameter at an
+// auto-FFI call site (#5605).  Every shape reaching here passed
+// `autoFfiDefaultLoadable` during validation; anything else is a compiler
+// bug, so the mismatch arms panic rather than emit invalid IL.
+func emitAutoFfiDefaultLoad(
+  cctx: in CodegenCtx,
+  fctxOpt: in Option[FuncCtx],
+  insns: in List[MInsn],
+  pm: in MsilType,
+  dflt: in Mdr.ExternParamDefault,
+): Unit {
+  match dflt {
+    case Mdr.EPDNull -> insns.add(MLdNull)
+    case Mdr.EPDZero -> match pm {
+      case MBool -> insns.add(MLdcI4(v = 0))
+      case MChar -> insns.add(MLdcI4(v = 0))
+      case MByte -> insns.add(MLdcI4(v = 0))
+      case MInt -> insns.add(MLdcI4(v = 0))
+      case MLong -> insns.add(MLdcI8(v = 0i64))
+      case MDouble -> insns.add(MLdcR8(v = 0.0))
+      // A `= default` struct is its zero bit pattern: scratch local,
+      // `initobj`, load — the same idiom as `emitExternOptionalDefault`.
+      case MValueTypeRef(_, clrFqn) -> match fctxOpt { case Some(fctx) -> { val refRow = internFfiTypeRefNested(cctx, clrFqn); val slot = allocSlotMsil(fctx, "__ffi_default_" + toString(fctx.slotTicker.count), pm); insns.add(MLdloca(slot = slot - fctx.paramCount)); insns.add(MInitobj(typeToken = 0x01000000 + refRow)); emitLoadSlot(insns, slot, fctx.paramCount) }; case None -> panic("Msil.Codegen: internal error — a value-type default argument was admitted without a function context") }
+      case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> match fctxOpt { case Some(fctx) -> { val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs); val tsKey = "ffidef_vtgi_" + msilTypeKeyStr(pm); val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob); val slot = allocSlotMsil(fctx, "__ffi_default_" + toString(fctx.slotTicker.count), pm); insns.add(MLdloca(slot = slot - fctx.paramCount)); insns.add(MInitobj(typeToken = 0x1B000000 + tsRow)); emitLoadSlot(insns, slot, fctx.paramCount) }; case None -> panic("Msil.Codegen: internal error — a value-type default argument was admitted without a function context") }
+      case _ -> insns.add(MLdNull)
+    }
+    case Mdr.EPDConst(cv) -> {
+      val pmIsLong = match pm { case MLong -> true; case _ -> false }
+      val pmIsDouble = match pm { case MDouble -> true; case _ -> false }
+      match cv {
+        case Mdr.ECVInt(v) -> {
+          if pmIsLong {
+            insns.add(MLdcI8(v = v.toLong()))
+          } else if pmIsDouble {
+            insns.add(MLdcR8(v = v.toDouble()))
+          } else {
+            insns.add(MLdcI4(v = v))
+          }
+        }
+        case Mdr.ECVLong(v) -> if pmIsDouble { insns.add(MLdcR8(v = v.toDouble())) } else { insns.add(MLdcI8(v = v)) }
+        case Mdr.ECVR4Bits(bits) -> insns.add(MLdcR8(v = int32BitsToDouble(bits)))
+        case Mdr.ECVR8Bits(bits) -> insns.add(MLdcR8(v = int64BitsToDouble(bits)))
+      }
+    }
+    case Mdr.EPDNone -> panic("Msil.Codegen: internal error — EPDNone reached default-argument emission")
+  }
+}
+
+// Validate the parameter shapes of a metadata-resolved auto-FFI candidate
+// against the supplied arguments: fills `paramMsil` for EVERY BCL parameter,
+// `coercions` for each supplied argument, and confirms every unsupplied
+// trailing parameter's default is synthesizable.  False → the caller falls
+// back (nothing was emitted).
+func autoFfiValidateParams(
+  cctx: in CodegenCtx,
+  m: in Mdr.ResolvedMethod,
+  argTys: in List[MsilType],
+  hasFctx: in Bool,
+  paramMsil: in List[MsilType],
+  coercions: in List[List[MInsn]],
+): Bool {
+  if m.paramTypes.count < argTys.count {
+    return false
+  }
+  if m.paramTypes.count > argTys.count and m.paramDefaults.count != m.paramTypes.count {
+    return false
+  }
+  var pi = 0
+  while pi < m.paramTypes.count {
+    val psig = m.paramTypes[pi]
+    match resolvedSigToMsil(cctx, psig) {
+      case None -> return false
+      case Some(pm) -> {
+        if pi < argTys.count {
+          match argCoercionInsns(cctx, argTys[pi], psig) {
+            case None -> return false
+            case Some(cins) -> coercions.add(cins)
+          }
+        } else if not autoFfiDefaultLoadable(pm, m.paramDefaults[pi], hasFctx) {
+          return false
+        }
+        paramMsil.add(pm)
+      }
+    }
+    pi = pi + 1
+  }
+  true
+}
+
 // Emit a metadata-resolved auto-FFI call, or None to fall back.  `argBufs`
 // carry each argument's already-lowered IL; `argTys` their MsilTypes.
+// `fctxOpt` supplies the function context when the caller has one — required
+// only to synthesize a value-type (`initobj`) default for an unsupplied
+// trailing optional parameter (#5605); the property-getter call sites pass
+// None (a getter has no parameters, so no default is ever synthesized).
 func emitResolvedAutoFfi(
   cctx: in CodegenCtx,
+  fctxOpt: in Option[FuncCtx],
   insns: in List[MInsn],
   asmName: in String,
   clrFqn: in String,
@@ -24817,28 +24955,16 @@ func emitResolvedAutoFfi(
   if not isConstructor and not m.isStatic {
     return None
   }
-  if m.paramTypes.count != argTys.count {
-    return None
-  }
   // Build the parameter MsilTypes (from the resolved signature) and the
   // per-argument coercion (exact / widening conv / box) needed to adapt each
-  // argument to its parameter.  Bail to the legacy path on any unsupported
-  // parameter shape (non-primitive, or an unsupported conversion).
+  // argument to its parameter.  The resolved candidate may declare MORE
+  // params than the caller supplied when the trailing ones are defaulted
+  // (#5605); those defaults are validated here and synthesized below.  Bail
+  // to the legacy path on any unsupported parameter shape.
+  val hasFctx = match fctxOpt { case Some(_) -> true; case None -> false }
   val paramMsil: List[MsilType] = newList()
   val coercions: List[List[MInsn]] = newList()
-  var pi = 0
-  var ok = true
-  while pi < m.paramTypes.count and ok {
-    val psig = m.paramTypes[pi]
-    match resolvedSigToMsil(cctx, psig) {
-      case None -> {
-        ok = false
-      }
-      case Some(pm) -> match argCoercionInsns(cctx, argTys[pi], psig) { case None -> { ok = false }; case Some(cins) -> { paramMsil.add(pm); coercions.add(cins) } }
-    }
-    pi = pi + 1
-  }
-  if not ok {
+  if not autoFfiValidateParams(cctx, m, argTys, hasFctx, paramMsil, coercions) {
     return None
   }
   // Constructor shorthand (.new) returns the constructed type, not the void
@@ -24890,6 +25016,12 @@ func emitResolvedAutoFfi(
         appendInsnsMsil(insns, coercions[bi])  // exact: empty; widening: conv; object: box
         bi = bi + 1
       }
+      // Synthesize every unsupplied trailing default (#5605).
+      var dk = argTys.count
+      while dk < m.paramTypes.count {
+        emitAutoFfiDefaultLoad(cctx, fctxOpt, insns, paramMsil[dk], m.paramDefaults[dk])
+        dk = dk + 1
+      }
       // Constructor: emit newobj (allocates + initializes). Regular method: emit call.
       if isConstructor {
         insns.add(MNewobj(ctorToken = tok))
@@ -24913,6 +25045,7 @@ func emitResolvedAutoFfi(
 // `argBufs` carry each argument's already-lowered IL; `argTys` their MsilTypes.
 func emitResolvedInstanceAutoFfi(
   cctx: in CodegenCtx,
+  fctxOpt: in Option[FuncCtx],
   insns: in List[MInsn],
   asmName: in String,
   clrFqn: in String,
@@ -24922,21 +25055,10 @@ func emitResolvedInstanceAutoFfi(
   m: in Mdr.ResolvedMethod,
   valueTypeRecv: in Bool,
 ): Option[MsilType] {
+  val hasFctx = match fctxOpt { case Some(_) -> true; case None -> false }
   val paramMsil: List[MsilType] = newList()
   val coercions: List[List[MInsn]] = newList()
-  var pi = 0
-  var ok = true
-  while pi < m.paramTypes.count and ok {
-    val psig = m.paramTypes[pi]
-    match resolvedSigToMsil(cctx, psig) {
-      case None -> {
-        ok = false
-      }
-      case Some(pm) -> match argCoercionInsns(cctx, argTys[pi], psig) { case None -> { ok = false }; case Some(cins) -> { paramMsil.add(pm); coercions.add(cins) } }
-    }
-    pi = pi + 1
-  }
-  if not ok {
+  if not autoFfiValidateParams(cctx, m, argTys, hasFctx, paramMsil, coercions) {
     return None
   }
   match resolvedSigToMsil(cctx, m.returnType) {
@@ -24962,6 +25084,12 @@ func emitResolvedInstanceAutoFfi(
         appendInsnsMsil(insns, argBufs[bi])
         appendInsnsMsil(insns, coercions[bi])
         bi = bi + 1
+      }
+      // Synthesize every unsupplied trailing default (#5605).
+      var dk = argTys.count
+      while dk < m.paramTypes.count {
+        emitAutoFfiDefaultLoad(cctx, fctxOpt, insns, paramMsil[dk], m.paramDefaults[dk])
+        dk = dk + 1
       }
       if valueTypeRecv {
         insns.add(MCall(methodToken = tok))
@@ -25049,7 +25177,8 @@ func tryExternStaticMemberReadMsil(
       if gp.sig.isStatic {
         val emptyBufs: List[List[MInsn]] = newList()
         val emptyTys: List[MsilType] = newList()
-        match emitResolvedAutoFfi(cctx, insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
+        val noFctx: Option[FuncCtx] = None
+        match emitResolvedAutoFfi(cctx, noFctx, insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
           case Some(rt) -> return Some(value = rt)
           case None -> ()
         }
@@ -25116,8 +25245,10 @@ func tryExternInstanceGetterMsil(
       } else {
         val emptyBufs: List[List[MInsn]] = newList()
         val emptyTys: List[MsilType] = newList()
+        val noFctx: Option[FuncCtx] = None
         emitResolvedInstanceAutoFfi(
           cctx,
+          noFctx,
           insns,
           gp.assemblyName,
           gp.declaringFqn,
@@ -25315,7 +25446,7 @@ func emitExternStaticPropertySetMsil(
           val emptyBufs: List[List[MInsn]] = newList()
           val emptyTys: List[MsilType] = newList()
           var propTyV: MsilType = MVoid
-          match emitResolvedAutoFfi(cctx, insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
+          match emitResolvedAutoFfi(cctx, Some(value = fctx), insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
             case Some(t) -> {
               propTyV = t
             }
@@ -25383,7 +25514,7 @@ func emitExternInstancePropertySetMsil(
           val emptyBufs: List[List[MInsn]] = newList()
           val emptyTys: List[MsilType] = newList()
           var propTyV: MsilType = MVoid
-          match emitResolvedInstanceAutoFfi(cctx, insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig, false) {
+          match emitResolvedInstanceAutoFfi(cctx, Some(value = fctx), insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, emptyBufs, emptyTys, gp.sig, false) {
             case Some(t) -> {
               propTyV = t
             }
@@ -25449,7 +25580,7 @@ func tryInstanceAutoFfiFromMetadata(
     match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, fqn, memberName, argSigs) {
       case None -> {
       }
-      case Some(re) -> if not re.sig.isStatic { direct = emitResolvedInstanceAutoFfi(cctx, insns, re.assemblyName, re.declaringFqn, memberName, argBufs, argTys, re.sig, valueTypeRecv) }
+      case Some(re) -> if not re.sig.isStatic { direct = emitResolvedInstanceAutoFfi(cctx, Some(value = fctx), insns, re.assemblyName, re.declaringFqn, memberName, argBufs, argTys, re.sig, valueTypeRecv) }
     }
     // A receiver-based call needs an instance method; a resolved static
     // means the name only exists as a static — fall back rather than
@@ -25548,7 +25679,7 @@ func tryAutoFfiFromMetadata(
           match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, clrFqn, "get_" + methodName, noArgsP) {
             case Some(gp) -> {
               if gp.sig.isStatic {
-                match emitResolvedAutoFfi(cctx, insns, gp.assemblyName, gp.declaringFqn, "get_" + methodName, "get_" + methodName, argBufs, argTys, gp.sig) {
+                match emitResolvedAutoFfi(cctx, Some(value = fctx), insns, gp.assemblyName, gp.declaringFqn, "get_" + methodName, "get_" + methodName, argBufs, argTys, gp.sig) {
                   case Some(rt) -> return Some(value = unwrapAutoFfiTaskMsil(cctx, fctx, insns, rt))
                   case None -> ()
                 }
@@ -25570,7 +25701,7 @@ func tryAutoFfiFromMetadata(
         None
       }
       case Some(re) -> {
-        match emitResolvedAutoFfi(cctx, insns, re.assemblyName, re.declaringFqn, resolveMethodName, methodName, argBufs, argTys, re.sig) {
+        match emitResolvedAutoFfi(cctx, Some(value = fctx), insns, re.assemblyName, re.declaringFqn, resolveMethodName, methodName, argBufs, argTys, re.sig) {
           // A constructed value is never unwrapped: `.new()` on a Task type
           // yields the (cold, unstarted) handle — Wait() on it would deadlock.
           case Some(rt) -> if methodName == "new" { Some(value = rt) } else { Some(value = unwrapAutoFfiTaskMsil(cctx, fctx, insns, rt)) }

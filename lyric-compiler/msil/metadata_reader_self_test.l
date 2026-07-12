@@ -211,3 +211,44 @@ test "rdI64: reads at a non-zero offset, ignoring surrounding bytes" {
   bytes.add(0xAAu8)
   assertEqualLong(rdI64(bytes.toArray(), 1), 42i64, "rdI64_offset")
 }
+
+// #5605: trailing-default overload admission and Extends-chain argument
+// upcasts, pinned at the RESOLUTION level against the real reference pack —
+// the runtime (emission) coverage lives in auto_ffi_self_test.l.  When the
+// host has no reference pack there is nothing to resolve against, matching
+// the graceful-None handling of the refPackDir() tests above.
+test "resolveExtern: trailing-default admission and exact-arity ranking (#5605)" {
+  match refPackDir() {
+    case None -> assertTrue(true, "no reference pack on this host; nothing to pin")
+    case Some(dir) -> {
+      val paths = enumRefAssemblies(dir)
+      val typeIndex = buildTypeIndex(paths)
+      val pathIndex = buildPathIndex(paths)
+      // JsonEncodedText.Encode has NO 1-arg overload — a string-only call
+      // must admit Encode(String, JavaScriptEncoder = null) and decode the
+      // unfilled default as null.
+      val args: List[SigType] = newList()
+      args.add(mkPrimSig(0x0E))
+      match resolveExtern(typeIndex, pathIndex, "System.Text.Json.JsonEncodedText", "Encode", args) {
+        case None -> assertTrue(false, "Encode(string) must resolve via the defaulted 2-param overload")
+        case Some(re) -> {
+          assertEqualInt(re.sig.paramTypes.count, 2, "bound Encode(String, JavaScriptEncoder)")
+          match re.sig.paramDefaults[1] {
+            case EPDNull -> assertTrue(true, "the unfilled JavaScriptEncoder default decodes to null")
+            case _ -> assertTrue(false, "expected EPDNull for the unfilled JavaScriptEncoder default")
+          }
+        }
+      }
+      // StreamReader declares BOTH .ctor(Stream) and a defaulted 5-param
+      // ctor: with a MemoryStream argument (admitted only through the
+      // Extends-chain upcast) the exact-arity candidate must still win —
+      // the exact-arity bonus outranks any trailing-default prefix match.
+      val ctorArgs: List[SigType] = newList()
+      ctorArgs.add(mkNamedSig("System.IO.MemoryStream", false))
+      match resolveExtern(typeIndex, pathIndex, "System.IO.StreamReader", ".ctor", ctorArgs) {
+        case None -> assertTrue(false, ".ctor(MemoryStream) must resolve via the Extends-chain upcast")
+        case Some(ctorRe) -> assertEqualInt(ctorRe.sig.paramTypes.count, 1, "the exact-arity .ctor(Stream) outranks the defaulted 5-param ctor")
+      }
+    }
+  }
+}

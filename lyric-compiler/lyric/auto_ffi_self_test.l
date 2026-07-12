@@ -270,6 +270,78 @@ extern type StringWriter = "System.IO.StringWriter"
 
 extern type MemoryStream = "System.IO.MemoryStream"
 
+// #5605: overloads whose TRAILING params are all defaulted are admitted when
+// no exact-arity overload matches, and the emitter synthesizes each unfilled
+// default (null for `= null` reference defaults, a zeroed struct for
+// `= default`, the Constant-table value for numeric / enum constants).
+extern type JsonText = "System.Text.Json.JsonEncodedText"
+
+extern type JsonDoc = "System.Text.Json.JsonDocument"
+
+extern type FileK = "System.IO.File"
+
+extern type StreamReader = "System.IO.StreamReader"
+
+test "auto-FFI fills a trailing optional reference param with null (#5605)" {
+  // JsonEncodedText.Encode has NO 1-arg overload — only
+  // Encode(String, JavaScriptEncoder = null).  Before #5605 this call failed
+  // the build ("does not match any ... method"), which is exactly why
+  // Std.Json's hostJsonEscape stayed on an @externTarget wrapper.
+  val encoded = JsonText.Encode("hi")
+  assertEqual(encoded.ToString(), "hi", "Encode(string) resolves the 2-param overload and passes encoder = null")
+}
+
+test "auto-FFI fills a trailing optional struct param with a zeroed default (#5605)" {
+  // JsonDocument.Parse(String, JsonDocumentOptions = default): the unfilled
+  // options struct is synthesized as its zero bit pattern (ldloca + initobj).
+  val doc = JsonDoc.Parse("{\"a\":42}")
+  val root = doc.RootElement
+  assertEqual(root.GetRawText(), "{\"a\":42}", "Parse(string) resolves with options = default and round-trips")
+  doc.Dispose()
+}
+
+test "auto-FFI fills trailing optional enum and long constants (#5605)" {
+  // File.OpenHandle(String, FileMode = Open, FileAccess = Read,
+  // FileShare = Read, FileOptions = None, Long preallocationSize = 0):
+  // five unfilled defaults, two of them NON-ZERO enum constants decoded from
+  // the Constant table (FileMode.Open = 3, FileAccess.Read = 1) plus an I8
+  // constant — the shapes a bare type-default guess would get wrong.
+  val tmp = Path.GetTempFileName()
+  val handle = FileK.OpenHandle(tmp)
+  assertTrue(not handle.IsInvalid, "OpenHandle(path) fills five trailing defaults and opens the file")
+  handle.Dispose()
+  FileK.Delete(tmp)
+}
+
+test "auto-FFI passes a subtype argument where the base class is declared (#5605)" {
+  // Stream.CopyTo(Stream): the receiver resolves through the Extends walk
+  // (declared on Stream, not MemoryStream) AND the MemoryStream-typed
+  // argument upcasts to the Stream-typed parameter via its Extends chain —
+  // before #5605 the argument's FQN had to match the parameter exactly.
+  val bytes = externUtf8Encoding().GetBytes("hi")
+  val src = MemoryStream.new(bytes)
+  val dst = MemoryStream.new()
+  src.CopyTo(dst)
+  val copied = dst.ToArray()
+  assertEqualInt(copied.count, 2, "CopyTo copied both bytes through the Stream-typed parameter")
+  assertEqualInt(copied[0].toInt(), 104, "first copied byte is 'h'")
+  assertEqualInt(copied[1].toInt(), 105, "second copied byte is 'i'")
+}
+
+test "exact-arity overload still outranks a trailing-default candidate (#5605)" {
+  // StreamReader declares BOTH .ctor(Stream) and the defaulted
+  // .ctor(Stream, Encoding = null, Boolean = true, Int32 = -1, Boolean = false):
+  // the exact-arity candidate must win (its bonus outranks any prefix match),
+  // with the MemoryStream argument upcast to the Stream parameter.  The
+  // resolution-level pin that the 1-param ctor was chosen lives in
+  // metadata_reader_self_test.l; this asserts the woven end-to-end behaviour.
+  val bytes2 = externUtf8Encoding().GetBytes("ok")
+  val src2 = MemoryStream.new(bytes2)
+  val reader = StreamReader.new(src2)
+  assertEqual(reader.ReadToEnd(), "ok", "StreamReader over an upcast MemoryStream reads the content")
+  reader.Dispose()
+}
+
 test "auto-FFI resolves inherited instance members through the Extends chain" {
   val w = StringWriter.new()
   // Overridden member (declared on StringWriter itself): resolves without
