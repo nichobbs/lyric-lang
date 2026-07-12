@@ -11086,7 +11086,16 @@ func lowerBuiltinOrStaticCallMsil(
         case MInt -> insns.add(MCall(methodToken = cctx.tokWriteLineInt))
         case MLong -> insns.add(MCall(methodToken = cctx.tokWriteLineLong))
         case MDouble -> insns.add(MCall(methodToken = cctx.tokWriteLineDbl))
-        case MBool -> insns.add(MCall(methodToken = cctx.tokWriteLineBool))
+        case MBool -> {
+          // Lowercase "true"/"false", not BCL Console.WriteLine(bool)'s
+          // "True"/"False" (#5552/#5666): route through the same
+          // emitBoolToStringMsil helper the other four stringification
+          // call sites use, then WriteLine(string) instead of
+          // WriteLine(bool). JVM needs no equivalent fix here —
+          // PrintStream.println(boolean) already renders lowercase.
+          emitBoolToStringMsil(cctx, fctx, insns)
+          insns.add(MCall(methodToken = cctx.tokWriteLineStr))
+        }
         // Console.WriteLine(char) prints the glyph (JVM parity, docs/59 §3 F5);
         // the WriteLine(int32) overload printed the char's integer code.
         case MChar -> insns.add(MCall(methodToken = cctx.tokWriteLineChar))
@@ -11111,6 +11120,17 @@ func lowerBuiltinOrStaticCallMsil(
         case MVoid -> {
           val emptyTok = ctxInternUs(cctx.lctx, "")
           insns.add(MLdStr(token = emptyTok))
+          insns.add(MCall(methodToken = cctx.tokWriteStr))
+        }
+        case MBool -> {
+          // Lowercase "true"/"false" (#5552/#5666), not `Object.ToString()`'s
+          // "True"/"False". Currently unreachable: `print` (unlike
+          // `println`) isn't in `isCodegenBuiltinName`'s polymorphic-arg
+          // allowlist (typechecker_checker.l), so `print(<Bool>)` is
+          // rejected by T0043 before reaching codegen. Kept here so this
+          // call site doesn't silently regress to the wrong spelling if
+          // `print` is ever added to that allowlist.
+          emitBoolToStringMsil(cctx, fctx, insns)
           insns.add(MCall(methodToken = cctx.tokWriteStr))
         }
         case _ -> {

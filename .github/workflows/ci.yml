@@ -842,6 +842,39 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/bool_tostring_self_test.l
 
+      # `println(Bool)` cross-target parity (#5666, a `bool_tostring_self_test.l`
+      # gap since @test_module assertions can't capture stdout): `println` is
+      # a polymorphic codegen builtin (unlike `print`, which stays String-only
+      # until it's added to `isCodegenBuiltinName`), so `println(true)` type-
+      # checks and previously rendered the BCL's `Console.WriteLine(bool)`
+      # "True" on dotnet where JVM's `PrintStream.println(boolean)` already
+      # renders lowercase "true".
+      - name: println(Bool) lowercase parity self-test (dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping println(Bool) self-test"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          cat > "$dir/printbool.l" <<'LYRIC'
+          package PrintBool
+          func main(): Unit {
+            println(true)
+            println(false)
+          }
+          LYRIC
+          out="$("$lyric_bin" run --target dotnet "$dir/printbool.l" 2>&1)" || { echo "::error::println(Bool) program failed to run"; echo "$out"; exit 1; }
+          for expect in "true" "false"; do
+            if ! grep -qx "$expect" <<< "$out"; then
+              echo "::error::expected '$expect' in println(Bool) output, got:"; echo "$out"; exit 1
+            fi
+          done
+          echo "OK: println(Bool) renders lowercase true/false on dotnet."
+
       # Unsigned Byte semantics (docs/59 §4.3): division/modulo, every
       # compound-assignment path, and the >= 128 canonicalization cases
       # (List/slice round-trips, unsigned ordering, wraparound, boxing).
