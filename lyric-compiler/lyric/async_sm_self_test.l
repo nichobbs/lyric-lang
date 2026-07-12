@@ -22,6 +22,7 @@
 package Lyric.AsyncSmSelfTest
 
 import Std.Core
+import Std.Rest
 import Std.Testing
 
 // ── Phase B.0: no awaits in body ─────────────────────────────────────────────
@@ -868,4 +869,67 @@ test "#1479/async: var captured by lambda in async func (no await)" {
 test "#1479/async: var cell survives an await between capture and use" {
   val r = await asyncVarCellAcrossAwait(3)
   assertEqualInt(r, 17, "3 + 10 (cell write after await) + 4 (await result)")
+}
+
+// ── #5606 sibling fix: awaited stdlib async methods on typed receivers ───────
+// The Phase A await pre-scan (`inferCallReturnTypePB`) had no local-type
+// environment: for `await client.get(path)` — a stdlib async UFCS method on a
+// receiver that is a declared parameter or a match-bound local — every
+// candidate FQN it tried missed `funcRetTypes` (the real key is
+// `Std.Rest.RestClient.get`, reachable only by typing the RECEIVER), so the
+// await went uncounted while Phase B emission resolved the same call through
+// the free-function fallback to its Task-wrapped kickoff return and consumed
+// a resume label that was never allocated: `lyric build` crashed with
+// "emitPhaseBAwait: await index 0 exceeds pre-allocated resume labels (0)"
+// (the lyric-docker `sendAndReadBody` shape).  The pre-scan now types
+// receivers through declared params, `val`/`var` bindings, and stdlib
+// `Ok`/`Err`/`Some` match binds via bundle-stable declared-type registries.
+//
+// The regression here is a BUILD-time crash, so the load-bearing coverage is
+// that these functions COMPILE: the awaited `client.get("")` is fully present
+// in each state machine (counted by the pre-scan, emitted by Phase B).  The
+// actual send is gated behind a runtime-false flag because `Std.Rest`'s MSIL
+// runtime path is broken independently of this fix (pre-existing
+// runtime-throw stubs the release binary carries too: `fullUrl`'s
+// `base.charAt(...)` on an opaque-field receiver plants "unsupported method
+// 'charAt'", and `sendRequest`'s `match body { None / Some }` plants "match
+// not exhaustive ... scr=GNStd.Core.Option`1"); the tests assert the guarded
+// path's value at runtime.
+async func restViaParamRecv(client: in RestClient, doSend: in Bool): Int {
+  if doSend {
+    val res = await client.get("")
+    match res {
+      case Ok(_) -> 1
+      case Err(_) -> 2
+    }
+  } else {
+    3
+  }
+}
+
+async func restViaMatchBoundRecv(ok: in Bool, doSend: in Bool): Int {
+  val made: Result[RestClient, String] = if ok {
+    Ok(value = RestClient.create("http://127.0.0.1:1"))
+  } else {
+    Err(error = "no client")
+  }
+  val client = match made { case Err(_) -> return 0; case Ok(c) -> c }
+  if doSend {
+    val res = await client.get("")
+    match res {
+      case Ok(_) -> 1
+      case Err(_) -> 2
+    }
+  } else {
+    3
+  }
+}
+
+test "#5606: awaited stdlib async method on a declared-param receiver compiles" {
+  val client = RestClient.create("http://127.0.0.1:1")
+  assertEqualInt(await restViaParamRecv(client, false), 3, "guarded path runs; the await compiled")
+}
+
+test "#5606: awaited stdlib async method on a match-bound receiver compiles" {
+  assertEqualInt(await restViaMatchBoundRecv(true, false), 3, "match-bound client typed; the await compiled")
 }
