@@ -350,10 +350,18 @@ jobs:
       #   3. publish.yml's `matrix.authenticode` is only defined on the
       #      commented-out win-x64 matrix entry (#3941) -- revisit once
       #      win-x64 is re-enabled.
+      # `-shellcheck=` (empty) disables actionlint's embedded shellcheck pass:
+      # this is the first time actionlint has run over this repo's ~6000
+      # lines of workflow `run:` scripts, and shellcheck alone surfaces
+      # dozens of pre-existing info/warning-level nits (SC2086, SC2015,
+      # SC2155, ...) scattered across many files -- an unrelated cleanup
+      # far larger than this change, tracked in #5638. The structural
+      # checks actionlint was added for (#5579/#5580) don't depend on
+      # shellcheck and stay fully active.
       - name: Run actionlint
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667  # 1.7.12
         with:
-          args: -color -ignore "unexpected key .(background|wait-all).|step must run script with|.on. section is missing in workflow|property .authenticode. is not defined in object type"
+          args: -color -shellcheck= -ignore "unexpected key .(background|wait-all).|step must run script with|.on. section is missing in workflow|property .authenticode. is not defined in object type"
 
   # The bundled Maven resolver (resolver/pom.xml) that `lyric restore
   # --target jvm` shells out to for `[maven]` dependency resolution
