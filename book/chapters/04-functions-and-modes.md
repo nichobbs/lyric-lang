@@ -193,6 +193,18 @@ val doubled = numbers.map { x -> x * 2 }
 val doubled = numbers.map { x -> x * 2 }
 ```
 
+### Bare parenthesised lambda literals
+
+For lambdas passed as an ordinary (non-trailing) call argument, a parenthesised parameter list immediately followed by `->` also works directly, without the `{ }` wrapper — as long as every parameter is a bare identifier:
+
+```lyric
+val sums = pairs.map((a, b) -> a + b)
+val total = numbers.fold(0, (acc, x) -> acc + x)
+val greet = () -> "hello"
+```
+
+`(a, b) -> a + b` and `{ a, b -> a + b }` are the same lambda. A parenthesised group that isn't immediately followed by `->`, or whose elements aren't all bare identifiers, is parsed as a tuple or parenthesised expression as usual.
+
 ### Closures as first-class values
 
 Closures are values. You can store them in variables, pass them to functions, and return them from functions:
