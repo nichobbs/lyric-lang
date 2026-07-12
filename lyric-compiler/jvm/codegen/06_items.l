@@ -952,7 +952,16 @@ pub func lowerFunc(
             }
             case FBExpr(e) -> {
               val ty = lowerExpr(ctx, insns, e)
-              emitReturnArrayCoerced(ctx, insns, ty, retTy)
+              // A `func f(): T = <Never-typed call>` body reports `JVoid`
+              // (`Never` erases to `JVoid` same as `Unit`, #5378/#5651) with
+              // nothing left on the operand stack; `emitReturnArrayCoerced`
+              // has no `JVoid`->primitive-`toTy` coercion and would emit a
+              // value-less `return` against this non-void method's real
+              // descriptor otherwise ("Operand stack underflow").
+              match ty {
+                case JVoid -> emitNeverTailReturn(insns, retTy)
+                case _ -> emitReturnArrayCoerced(ctx, insns, ty, retTy)
+              }
             }
           }
         }
@@ -1334,8 +1343,17 @@ func lowerInstanceMethodBody(ctx: in FuncCtx, insns: in List[LInsn], body: in Fu
     }
     case FBExpr(e) -> {
       val ty = lowerExpr(ctx, insns, e)
-      coerceArgTo(insns, ty, retTy)
-      emitReturn(insns, retTy)
+      // Same `Never`-tail gap as `lowerFunc`'s `FBExpr` arm (#5378/#5651):
+      // `coerceArgTo` has no `JVoid`->primitive-`toTy` handling, so a bare
+      // `: Never`-declared call here (erased to `JVoid`, nothing left on the
+      // operand stack) would fail class-load verification.
+      match ty {
+        case JVoid -> emitNeverTailReturn(insns, retTy)
+        case _ -> {
+          coerceArgTo(insns, ty, retTy)
+          emitReturn(insns, retTy)
+        }
+      }
     }
   }
 }

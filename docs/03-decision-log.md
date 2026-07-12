@@ -15195,12 +15195,20 @@ Seven independent fixes, each scoped to its own file(s):
   by-value snapshot instead. Widened to mirror `02_exprs.l`'s
   `collectInLambdaNamesExpr` traversal (deliberately excluding `ELambda`
   itself — a nested lambda's own `var`s are its own scope's concern).
-- **JVM `Never`-tail VerifyError (#5378):** `Never` erases to `JVoid` same
-  as `Unit`; a bare tail-position call to a `: Never`-declared function
-  inside a non-void function previously emitted a bare `return`, which
-  fails class-load verification against the enclosing method's real
+- **JVM `Never`-tail VerifyError (#5378, #5651):** `Never` erases to
+  `JVoid` same as `Unit`; a bare tail-position call to a `: Never`-declared
+  function inside a non-void function previously emitted a bare `return`,
+  which fails class-load verification against the enclosing method's real
   descriptor. `emitNeverTailReturn` pushes the enclosing function's return
-  type's zero/default value before returning instead.
+  type's zero/default value before returning instead. The initial fix only
+  covered the block-tail (`FBBlock`) function-body form; the `func f(): T =
+  expr` (equals-arrow, `FBExpr`) form hits a separate lowering arm in both
+  `lowerFunc` and `lowerInstanceMethodBody` that went straight through
+  `emitReturnArrayCoerced`/`coerceArgTo` (neither has `JVoid`->primitive-
+  `toTy` handling) — caught by review as #5651 and fixed the same way.
+  MSIL has the identical bug class on both function-body forms (confirmed
+  by direct repro, `InvalidProgramException`) but was never in scope for
+  #5378 (filed JVM-only) — tracked separately as #5652.
 - **Cross-target Double/Bool stringification (#4688, #5552):** Java's
   `Double.toString()` always renders a fractional digit (`"1500.0"`) where
   .NET's default `Double.ToString()` doesn't (`"1500"`); the JVM backend

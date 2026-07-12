@@ -21,7 +21,8 @@
 //!   - #5378: a bare tail-position call to a user-defined `: Never` function
 //!     inside a differently-typed function/record-method (`Never` erases to
 //!     `JVoid` just like `Unit`, which previously produced a stray void
-//!     `return` and a class-load `VerifyError`).
+//!     `return` and a class-load `VerifyError`), in both the block-tail
+//!     (`FBBlock`) and `= expr` (`FBExpr`, #5651) function-body forms.
 //!
 //! Run by native `lyric test --target jvm`, which compiles this module in-process
 //! through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs it under
@@ -168,6 +169,19 @@ record Diverger {
   }
 }
 
+// #5651: the `= expr` (equals-arrow, `FBExpr`) function-body form hits a
+// SEPARATE lowering arm from the block-tail (`FBBlock`) form the original
+// #5378 fix covered — `emitReturnArrayCoerced`/`coerceArgTo` have no
+// `JVoid`->primitive-`toTy` handling, so this shape still crashed
+// ("Operand stack underflow") after the #5378 fix landed. Exercises the
+// `FBExpr` arms in both `lowerFunc` and `lowerInstanceMethodBody`.
+func triggerDivergeIntEq(c: in Counter): Int = alwaysDiverges(c)
+
+record DivergerEq {
+  marker: Int
+  func triggerDivergeStringEq(c: in Counter): String = alwaysDiverges(c)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 test "return in both if/else branches (the #2870 repro)" {
   assertEqual(classify(5), "pos", "positive input")
@@ -237,5 +251,30 @@ test "#5378: bare tail-position call to a `: Never` function inside a non-void r
     caught = true
   }
   assertTrue(caught, "alwaysDiverges' panic must propagate out of the record method too")
+  assertEqualInt(c.get(), 1, "side effect ran exactly once")
+}
+
+test "#5651: `= expr` (FBExpr) body form of a Never-tail free function" {
+  val c = Counter(count = 0)
+  var caught = false
+  try {
+    triggerDivergeIntEq(c)
+  } catch Bug as _ {
+    caught = true
+  }
+  assertTrue(caught, "alwaysDiverges' panic must propagate out of an `= expr` body")
+  assertEqualInt(c.get(), 1, "alwaysDiverges' side effect ran before it diverged")
+}
+
+test "#5651: `= expr` (FBExpr) body form of a Never-tail record method" {
+  val c = Counter(count = 0)
+  val d = DivergerEq(marker = 0)
+  var caught = false
+  try {
+    d.triggerDivergeStringEq(c)
+  } catch Bug as _ {
+    caught = true
+  }
+  assertTrue(caught, "alwaysDiverges' panic must propagate out of an `= expr` record method")
   assertEqualInt(c.get(), 1, "side effect ran exactly once")
 }
