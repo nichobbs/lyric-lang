@@ -145,3 +145,61 @@ func stringsContain(xs: in List[String], s: in String): Bool {
   }
   false
 }
+
+// ─── buildPublishNuspec: deps are metadata, not restorable PackageReferences ──
+// The ecosystem-publish NU1102 race (#5644) came from packing a csproj whose
+// sibling deps were <PackageReference> (restored from nuget.org before it had
+// indexed the just-published sibling).  buildPublishNuspec emits deps as
+// <dependency> metadata packed offline instead.
+test "buildPublishNuspec: emits a dependency as nuspec metadata, never a PackageReference" {
+  val deps = "        <dependency id=\"Lyric.Proto\" version=\"1.2.3\" />\n"
+  val ns = Cli.buildPublishNuspec(
+    "Lyric.OTel",
+    "1.2.3",
+    "OTel exporters",
+    "MIT",
+    None,
+    deps,
+    "/abs/Lyric.OTel.dll",
+    "Lyric.OTel.dll"
+  )
+  assertTrue(
+    strContains(ns, "<dependency id=\"Lyric.Proto\" version=\"1.2.3\" />"),
+    "dep appears as <dependency> metadata"
+  )
+  assertTrue(strContains(ns, "<dependencies>"), "dependencies group is emitted")
+  assertFalse(
+    strContains(ns, "PackageReference"),
+    "must NOT use <PackageReference> (that would require a restore, #5644)"
+  )
+}
+
+test "buildPublishNuspec: packs the payload DLL into lib/net10.0 and carries id/version" {
+  val ns = Cli.buildPublishNuspec(
+    "Lyric.OTel",
+    "1.2.3",
+    "OTel exporters",
+    "MIT",
+    None,
+    "",
+    "/abs/Lyric.OTel.dll",
+    "Lyric.OTel.dll"
+  )
+  assertTrue(strContains(ns, "<id>Lyric.OTel</id>"), "id present")
+  assertTrue(strContains(ns, "<version>1.2.3</version>"), "version present")
+  assertTrue(
+    strContains(ns, "<file src=\"/abs/Lyric.OTel.dll\" target=\"lib/net10.0/Lyric.OTel.dll\" />"),
+    "payload DLL mapped into lib/net10.0"
+  )
+  assertFalse(strContains(ns, "<dependencies>"), "no dependencies block when there are no deps")
+}
+
+test "buildPublishNuspec: description falls back to the id when empty (NuGet requires one)" {
+  val ns = Cli.buildPublishNuspec("Lyric.Proto", "0.1.0", "", "", None, "", "/abs/Lyric.Proto.dll", "Lyric.Proto.dll")
+  assertTrue(strContains(ns, "<description>Lyric.Proto</description>"), "empty description falls back to the id")
+  assertFalse(strContains(ns, "<license"), "no license element when license is empty")
+}
+
+func strContains(haystack: in String, needle: in String): Bool {
+  haystack.contains(needle)
+}
