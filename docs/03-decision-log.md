@@ -15127,6 +15127,48 @@ crash, not a workflow issue.
 
 ---
 
+## D-progress-663 — JVM cross-package/extern type resolution for params and collection elements; the lyric-web Undertow smoke goes end-to-end and CI-gated (#5610, #5444, #5458)
+
+The two blockers that kept `lyric-web/tests/jvm_server_smoke.l` from
+running under java are root-fixed generally. (1) **#5610**:
+instance-method parameter *slot* types resolved via the plain in-package
+guess while descriptors and registration resolved through the
+extern/imported-type seed — `Web.Request` became
+`Web/JvmServerSmoke/Request` and field access panicked.
+`setupInstanceParamSlotsAndHolders` now takes the extern-type map
+(impl, record, and protected methods), and `lowerRecordMethod`'s emitted
+descriptor is aligned with its registration (a latent divergence). (2)
+**#5444**: `indexedElemTypeOverride`'s documented scope boundary is
+lifted — record/protected/opaque slice/List *field* element types
+register under `elem:<class>#<field>` pseudo-keys in the existing
+`funcSigs` registry, member and self-field receivers resolve through
+`staticBaseClass` (chained fields included), and `SFor` narrows loop
+elements on both arms. En route, each next-crash-beneath was fixed:
+generic extern alias resolution + CLR arity-suffix strip (#5458),
+`@externTarget` param descriptors extern-resolved, JVM
+`.indexOf`/`.lastIndexOf` routed to their checker-assigned `Option[Int]`
+UFCS signature (a silent int miscompile; the MSIL twin is #5625),
+mono's module-level `val` initializers rewritten in phase 2 and surface
+explicit type application `f[T](args)` recognized (closing #5623), a
+spurious T0020 for primitive type names in call-position indices, and
+lyric-web's ungated BCL externs target-split with Undertow handlers
+re-dispatched off the IO thread. The smoke passes 4/4 endpoints under
+java and on dotnet and is wired into CI (it *is* #5610's regression test
+— a single-file self-test cannot express the two-package impl-param
+shape). Integration hardening from the wave-close verification: the
+#5604 batch's object-param value-arg box was dropped (it fired on
+degraded signatures — the #2494 family — producing invalid IL at
+`peekAt(-1)` and `MockStorageBucket.presignedUrl`, while its motivating
+shape is specialized concretely by the same batch's inference work), and
+T0086's definite-assignment collector learned that an out param *named*
+`result` assigns through an `EResult` target (the false positive that
+turned fatal with D-progress-661's jvm gating — `Auth.Kernel.Jvm` was
+the first casualty).
+
+**Related:** #5610, #5444, #5458, #5623, #5625, #5626, D-progress-654/658/661, docs/44.
+
+---
+
 ---
 
 ## Decisions deferred to v2 or later

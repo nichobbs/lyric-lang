@@ -119,7 +119,7 @@ logic; optimisations; non-idiomatic usage; stdlib API-surface consolidation;
 > scoring is exact-arity, so trailing-optional-param BCL methods
 > (`JsonEncodedText.Encode`) stay `@externTarget` (Q-MD-004 family).
 >
-> **Wave 6 (2026-07-12, D-progress-658–662):** the #5604 stdlib-suite
+> **Wave 6 (2026-07-12, D-progress-658–663):** the #5604 stdlib-suite
 > breakage bisects to *standing* dotnet defects (never CI-run; #5578
 > exonerated) and is root-fixed four ways — headline: **the silent
 > generic-call drop** (mono inference gaps let codegen drop unresolved
@@ -136,7 +136,8 @@ logic; optimisations; non-idiomatic usage; stdlib API-surface consolidation;
 > cross-package enum types. Ecosystem publishing's five-release failure
 > streak root-caused from the first intact logs: the publish job lacked
 > Java 21 for the Maven resolver (fixed, with warm-up and tier fixes,
-> D-progress-662).
+> D-progress-662). The lyric-web Undertow smoke runs end-to-end on both
+> targets and is CI-gated (#5610/#5444/#5458 fixed, D-progress-663).
 
 ---
 
