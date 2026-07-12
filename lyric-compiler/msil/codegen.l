@@ -12067,20 +12067,6 @@ func lowerBuiltinOrStaticCallMsil(
                           pushCollExpect(fctx, pTy)
                           val aTy = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
                           popCollExpect(fctx)
-                          // A value argument flowing into a declared `object`
-                          // parameter must box (mirrors the sibling-method arm
-                          // below).  Object-typed parameters on ordinary static
-                          // calls arise from monomorphized copies whose type
-                          // param defaulted to Object (`unwrapResultOr(Err(
-                          // error = 1), 99)` → `unwrapResultOr__Object__Int(...,
-                          // object)`, #5604): without the box the raw int32 hits
-                          // the stack where the JIT expects a reference —
-                          // InvalidProgramException in the calling method.
-                          match pTy {
-                            case MObject -> boxIfNeededMsil(cctx, insns, aTy)
-                            case _ -> {
-                            }
-                          }
                           // #2455: unbox a boxed (object) argument — e.g. a bound
                           // tuple element — to a value-type parameter.
                           coerceCallArgMsil(cctx, insns, aTy, pTy)
