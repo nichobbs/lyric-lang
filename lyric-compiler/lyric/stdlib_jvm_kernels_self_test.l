@@ -735,3 +735,25 @@ test "unsupported JVM paths fail loudly: Unix-socket client and https prefix" {
     { -> HttpSrv.startListener("https://127.0.0.1:8443/"); () }
   )
 }
+
+// ── Cross-package enum references (#5609 item 3) ──────────────────────────────
+// `Std.Http.HttpMethod` referenced from this (consumer) package: the variant
+// VALUE registry (`enum:` keys) was already cross-package, but the enum TYPE
+// name itself never resolved — an `HttpMethod`-typed parameter descriptor
+// named the in-package guess (`<consumerPkg>/HttpMethod`), failing linking
+// with NoClassDefFoundError at the first call.  `collectFileDeclaredTypeFqns`
+// now includes `IEnum` alongside records / unions / interfaces.
+func methodLabel(m: in HttpMethod): String {
+  match m {
+    case HttpMethod.GET -> "GET"
+    case HttpMethod.POST -> "POST"
+    case _ -> "other"
+  }
+}
+
+test "cross-package enum-typed parameter and variant reference (#5609)" {
+  val m = HttpMethod.GET
+  assertEqual(methodLabel(m), "GET", "HttpMethod.GET through an enum-typed param")
+  assertEqual(methodLabel(HttpMethod.POST), "POST", "variant passed directly as an argument")
+  assertEqual(methodLabel(HttpMethod.DELETE), "other", "wildcard arm for other variants")
+}
