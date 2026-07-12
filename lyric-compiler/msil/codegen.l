@@ -67,7 +67,6 @@ pub record CodegenCtx {
   tokWriteLineInt: Int  // Console.WriteLine(int32)
   tokWriteLineLong: Int  // Console.WriteLine(int64)
   tokWriteLineDbl: Int  // Console.WriteLine(double)
-  tokWriteLineBool: Int  // Console.WriteLine(bool)
   tokWriteLineChar: Int  // Console.WriteLine(char)
   tokWriteStr: Int  // Console.Write(string)
   tokConcat2: Int  // String.Concat(string,string)
@@ -710,11 +709,13 @@ pub func newCodegenCtx(
   val tokWLDbl = 0x0A000000 +
     ctxAddMemberRef(lctx, trConsole, "WriteLine", "wl_dbl", buildStaticMethodSig(wlDblPs, MVoid))
 
-  // 5. Console.WriteLine(bool): void  → 0x0A000005
+  // 5. Console.WriteLine(bool): void  → 0x0A000005. Row kept (not skipped)
+  // to avoid shifting every subsequent MemberRef's row number; #5552/#5666
+  // route println(Bool) through Console.WriteLine(string) instead, so
+  // nothing reads this token anymore — hence the discard.
   val wlBoolPs: List[MsilType] = newList()
   wlBoolPs.add(MBool)
-  val tokWLBool = 0x0A000000 +
-    ctxAddMemberRef(lctx, trConsole, "WriteLine", "wl_bool", buildStaticMethodSig(wlBoolPs, MVoid))
+  val _ = ctxAddMemberRef(lctx, trConsole, "WriteLine", "wl_bool", buildStaticMethodSig(wlBoolPs, MVoid))
 
   // 6. Console.WriteLine(char): void  → 0x0A000006 — `println('A')` must print
   // the glyph like the JVM backend does, not the char's integer code
@@ -1681,7 +1682,6 @@ pub func newCodegenCtx(
     tokWriteLineInt = tokWLInt,
     tokWriteLineLong = tokWLLong,
     tokWriteLineDbl = tokWLDbl,
-    tokWriteLineBool = tokWLBool,
     tokWriteLineChar = tokWLChar,
     tokWriteStr = tokWStr,
     tokConcat2 = tokConcat2,
