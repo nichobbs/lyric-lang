@@ -992,6 +992,16 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Extra barrier (batch 1a-split): the batch above the batch-1a barrier had
+      # grown to ~21 concurrent in-process compilations — well over the ~14-step
+      # cap the header comment documents as the point where the runner's
+      # parallel-step status collection starts misreporting a passing step as
+      # failed (the four wave-7 self-tests below pushed it from ~17 to ~21).
+      # This barrier splits it into ~11 + ~10 so each sub-batch stays under the
+      # cap.  Per the header note: split, don't serialize.
+      - name: Wait for parallel tests (batch 1a-split)
+        wait-all: true
+
       # Compound-assign String self-test (#5657).  `s += <rhs>` onto a String
       # plain variable now type-checks for any RHS (mirroring binary `+`), and
       # lowers to the same lowercase-Bool / no-trailing-`.0`-Double
@@ -3801,6 +3811,15 @@ jobs:
           "$lyric_bin" test --target jvm lyric-stdlib/tests/http_async_tests.l
           echo "Std.Http async-surface test ran: http_async_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
+      # Extra barrier (JVM batch 1-split): the JVM batch-1 group had grown to
+      # ~21 concurrent in-process JVM compilations — well over the ~14-step cap
+      # (see the dotnet-a header comment) at which the runner's parallel-step
+      # status collection starts misreporting a passing step as failed (the two
+      # wave-7 JVM self-tests above pushed it from ~19 to ~21).  Split into
+      # ~11 + ~10 so each sub-batch stays under the cap.
+      - name: Wait for parallel tests (JVM batch 1-split)
+        wait-all: true
+
       # Map-key self-test on JVM (#1480 MSIL / #4982 Finding 1 JVM) — the JVM
       # half of the dotnet-job step of the same name.  Records with
       # `@derive(Equals)`/`@derive(Hash)` now carry synthesised
@@ -4227,6 +4246,13 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/defer_self_test.l
+
+      # Extra barrier (JVM batch 3-split): keeps this group under the ~14-step
+      # cap (was 15) so the runner's parallel-step status collection doesn't
+      # misreport a passing step as failed.
+      - name: Wait for parallel tests (JVM batch 3-split)
+        wait-all: true
+
       # Range-for self-test on JVM (#4878 follow-up, band J4).  Range-driven `for`
       # (`for i in lo ..< hi` / `lo ..= hi`) reached MSIL parity via
       # `emitCountingForJvm` (previously `ERange not supported in JVM codegen`).
@@ -4875,6 +4901,13 @@ jobs:
           out="$(java -jar "$work/task_tests.jar")"
           echo "$out" | tail -3
           grep -q "task tests: ok" <<< "$out" || { echo "::error::Std.Task JVM suite did not report success"; exit 1; }
+
+      # Extra barrier (JVM batch 5-split): keeps this group under the ~14-step
+      # cap (was 15) so the runner's parallel-step status collection doesn't
+      # misreport a passing step as failed.
+      - name: Wait for parallel tests (JVM batch 5-split)
+        wait-all: true
+
       # Std.Task ambient-cancellation-slot regression coverage (#5342):
       # installToken/currentToken/restoreToken/hasAmbient, JVM-only (the
       # .NET twin crashes on its first call today, a separate pre-existing
