@@ -851,6 +851,27 @@ func jsonFinalOkExpr(typeName: in String, fields: in List[FieldDecl]): Expr {
   call1("Ok", mkExpr(ECall(fn = pathExpr(typeName), args = args), sp()))
 }
 
+// `jsonTypeNameOf` only names `TRef`-shaped types; a field/element type
+// that isn't a plain named type or a `slice[T]` of one (a `TGenericApp`
+// like `Option[T]`/`Result[T,E]`, a tuple, ...) has no name to build a
+// `TypeName.fromJson(...)` call against. `jsonFieldDecodeBlock`'s
+// nested-record fallback doesn't check for this — it would synthesize a
+// call on an empty type name — so `jsonBuildFieldChain` gates on this
+// first and reports D0002 instead (#5730).
+//
+// `Float` is excluded too: `jsonScalarGetterFor` routes it through
+// `Std.Json.getDouble`, but there is no `.toFloat()` narrowing conversion
+// yet (docs/01-language-reference.md §"Numeric / character conversions" —
+// reserved pending backend support), so the decoded `Double` doesn't
+// type-check against the declared `Float` field (T0104, #5733).
+func jsonFieldTypeSupported(ty: in TypeExpr): Bool {
+  match ty.kind {
+    case TSlice(elem) -> jsonFieldTypeSupported(elem)
+    case TRef(_) -> jsonTypeNameOf(ty) != "Float"
+    case _ -> false
+  }
+}
+
 // Recursively build: for each field, `match Std.Json.tryGetProperty(__root,
 // "name") { None -> Err(...); Some(__e) -> <decode field, then recurse> }`,
 // bottoming out at `jsonFinalOkExpr` once every field is bound.
@@ -860,7 +881,28 @@ func jsonBuildFieldChain(typeName: in String, fields: in List[FieldDecl], idx: i
   }
   val f = fields[idx]
   val rest = jsonBuildFieldChain(typeName, fields, idx + 1)
-  val someArm = mkArmBlock(ctorPat("Some", oneList(bindingPat("__e"))), jsonFieldDecodeBlock(f.name, f.ty, rest))
+  val decodeBlock = if jsonFieldTypeSupported(f.ty) {
+    jsonFieldDecodeBlock(f.name, f.ty, rest)
+  } else {
+    // D0002: @generate(Json) fromJson can't decode this field's type —
+    // either its shape has no name to build a `TypeName.fromJson(...)` call
+    // against (Option[T]/Result[T,E]/tuple/other generic application, #5730),
+    // or it's `Float`, whose JSON decode would need a `Double`→`Float`
+    // narrowing conversion that doesn't exist yet (#5733). Fail fast with a
+    // clear runtime Err instead of synthesizing a call on an empty type name
+    // or a type-mismatched local, either of which would fail to compile with
+    // a confusing message (or, worse, panic the compiler itself).
+    println(
+      "D0002: @generate(Json) on '" + typeName + "': field '" + f.name +
+        "' has a type fromJson decoding doesn't support (Option/Result/generic/tuple shapes, or Float) — decoding this field will always fail; add a custom fromJson or restructure the field (#5730, #5733)"
+    )
+    blockOf(
+      oneStmtList(
+        stmtReturn(call1("Err", strLit("field '" + f.name + "' has an unsupported type for @generate(Json) fromJson")))
+      )
+    )
+  }
+  val someArm = mkArmBlock(ctorPat("Some", oneList(bindingPat("__e"))), decodeBlock)
   val noneArm = jsonMissingFieldArm(f.name)
   mkMatchExpr(jsonCall2("tryGetProperty", pathExpr("__root"), strLit(f.name)), matchArmPair(noneArm, someArm))
 }

@@ -18007,6 +18007,14 @@ func inferCallReturnTypePB(
           match recv.kind {
             case EPath(recvPath) -> {
               val cnt = args.count
+              // Guard against misreading a value-receiver (`client.get(path)`
+              // where `client` is a local/param whose name happens to collide
+              // with an unrelated same-package free function) as a package
+              // qualifier — same risk `isKnownValueNamePB` guards in the
+              // 3+-segment `EMember(_, _)` arm below (#5734).
+              if recvPath.segments.count > 0 and isKnownValueNamePB(recvPath.segments[0], spawnNms, localNms) {
+                return pbMethodCallRetPB(cctx, pkgName, recv, field, cnt, spawnNms, spawnTys, localNms, localTys)
+              }
               val joinedPath = joinSegsMsil(recvPath.segments, ".") + "." + field
               val candidates: List[String] = newList()
               candidates.add(joinedPath)

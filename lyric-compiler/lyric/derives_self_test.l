@@ -163,6 +163,91 @@ func countMethodCallsInBlock(body: in Block, methodName: in String): Int {
   n
 }
 
+// Recursively counts `val`/`var`/`let` local bindings named `localName` in
+// `e`.  Unlike `countMethodCalls`, this also catches calls made through a
+// bare qualified path (e.g. `Std.Json.getDouble(...)`, built as
+// `ECall(EPath(...), args)`), which `countMethodCalls` can't see since it
+// only recognises `EMember`-shaped callees — so this is the only reliable
+// way to assert a scalar-getter decode statement (`val fieldName =
+// Std.Json.get*(...)`) is or isn't present.
+func countLocalBindingsNamed(e: in Expr, localName: in String): Int {
+  var n = 0
+  match e.kind {
+    case EBlock(body) -> {
+      n = n + countLocalBindingsNamedInBlock(body, localName)
+    }
+    case EParen(inner) -> {
+      n = n + countLocalBindingsNamed(inner, localName)
+    }
+    case EMatch(scrutinee, arms) -> {
+      n = n + countLocalBindingsNamed(scrutinee, localName)
+      var i = 0
+      while i < arms.count {
+        n = n + countLocalBindingsNamedInArmBody(arms[i].body, localName)
+        i = i + 1
+      }
+    }
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      n = n + countLocalBindingsNamed(cond, localName)
+      n = n + countLocalBindingsNamedInArmBody(thenBranch, localName)
+      match elseBranch {
+        case Some(eb) -> {
+          n = n + countLocalBindingsNamedInArmBody(eb, localName)
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+  n
+}
+
+func countLocalBindingsNamedInArmBody(body: in ExprOrBlock, localName: in String): Int {
+  match body {
+    case EOBExpr(expr) -> countLocalBindingsNamed(expr, localName)
+    case EOBBlock(blk) -> countLocalBindingsNamedInBlock(blk, localName)
+  }
+}
+
+func countLocalBindingsNamedInBlock(body: in Block, localName: in String): Int {
+  var n = 0
+  var i = 0
+  while i < body.statements.count {
+    match body.statements[i].kind {
+      case SLocal(binding) -> {
+        match binding {
+          case LBVal(pat, _, _) -> {
+            match pat.kind {
+              case PBinding(bindName, _) -> {
+                if bindName == localName {
+                  n = n + 1
+                }
+              }
+              case _ -> ()
+            }
+          }
+          case LBVar(varName, _, _) -> {
+            if varName == localName {
+              n = n + 1
+            }
+          }
+          case LBLet(letName, _, _) -> {
+            if letName == localName {
+              n = n + 1
+            }
+          }
+        }
+      }
+      case SDefer(deferBody) -> {
+        n = n + countLocalBindingsNamedInBlock(deferBody, localName)
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  n
+}
+
 // Find the synthesised IFunc with the given name and return its body
 // expression (the synthesiser wraps the toJson expression in a single
 // SReturn).  Returns None if not found or shaped unexpectedly.
@@ -335,6 +420,53 @@ test "generate json record byte char scalars" {
     }
     case None -> assertTrue(false, "json-bytechar: Flags.toJson body not found")
   }
+}
+
+// Regression for #5730: `jsonTypeNameOf` only names `TRef`-shaped types, so
+// an `Option[T]`/`Result[T,E]`/generic-application field's name resolved to
+// "" and `jsonFieldDecodeBlock`'s nested-record fallback synthesised a call
+// to `.fromJson` on that empty name. `jsonBuildFieldChain` now detects this
+// (`jsonFieldTypeSupported`) and reports D0002 with a safe immediate `Err`
+// instead — `fromJson` must still be synthesised (other fields still
+// decode), but must contain zero `fromJson` calls for a record whose only
+// field is unsupported.
+test "generate json record unsupported generic field reports D0002" {
+  val src = "package P\n@generate(Json)\nrecord Wrapper { opt: Option[Int] }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertTrue(parseDeriveAndFindFunc(src, "Wrapper.fromJson"), "json-d0002: Wrapper.fromJson still synthesised")
+  match findFuncBodyLastReturn(sf, "Wrapper.fromJson") {
+    case Some(body) -> {
+      assertEqualInt(countMethodCalls(body, "fromJson"), 0, "json-d0002: no broken fromJson call for the unsupported field")
+    }
+    case None -> assertTrue(false, "json-d0002: Wrapper.fromJson body not found")
+  }
+}
+
+// Regression for #5733: `jsonScalarGetterFor` routed `Float` through
+// `Std.Json.getDouble` with no narrowing conversion — there is no
+// `.toFloat()` yet (docs/01-language-reference.md), so the decoded
+// `Double` didn't type-check against the declared `Float` field. `Float`
+// now goes through the same D0002 fallback as an unsupported field type
+// (still synthesises `fromJson`, but decodes via a safe immediate `Err`,
+// never a `.getDouble()` call bound to a `Float`-typed local).
+test "generate json record float field reports D0002" {
+  val src = "package P\n@generate(Json)\nrecord Reading { value: Float }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertTrue(parseDeriveAndFindFunc(src, "Reading.fromJson"), "json-float: Reading.fromJson still synthesised")
+  match findFuncBodyLastReturn(sf, "Reading.fromJson") {
+    case Some(body) -> {
+      assertEqualInt(
+        countLocalBindingsNamed(body, "value"),
+        0,
+        "json-float: no `val value = Std.Json.getDouble(...)` bound against the Float field (#5733)"
+      )
+    }
+    case None -> assertTrue(false, "json-float: Reading.fromJson body not found")
+  }
+  // toJson is unaffected — Float.toString() needs no conversion.
+  assertTrue(parseDeriveAndFindFunc(src, "Reading.toJson"), "json-float: Reading.toJson still synthesised")
 }
 
 test "multiple derives" {
