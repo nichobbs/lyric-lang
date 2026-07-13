@@ -15469,10 +15469,29 @@ entry and hits the "unsupported method" runtime throw. This is a real,
 pre-existing gap in cross-package `.from`/`.tryFrom` resolution — not
 fixed here (out of scope; not exercised by `range_subtype_self_test.l`,
 which is single-package). Worked around in the test by having the
-producer expose plain wrapper functions (`makeScore`/`scoreToInt`,
-`makeCounter`/`counterScoreToInt`) so the consumer only ever passes the
+producer expose plain wrapper functions (`makeScore`/`scoreToLong`,
+`makeCounter`/`counterScoreToLong`) so the consumer only ever passes the
 opaque `Score`/`Counter` value through ordinary cross-package calls,
 never calling `.from`/`.tryFrom` itself.
+
+**Fourth correction (found by CI, not review):** with that worked
+around, the test's *second* draft still failed — now inside the
+PRODUCER itself, at `s.toInt()`: `unsupported method 'toInt' on the
+receiver type`. Root cause: this PR's `Nat` fix was in fact working
+correctly, and the test's own method name was wrong. A distinct type's
+inherent conversion method is named by `distinctConvName(innerTy)`
+(`msil/lowering.l:3097`), keyed off the underlying MSIL type — `MInt`
+→ `"toInt"`, `MLong` → `"toLong"`, etc. — and `Score`'s `innerTy` is
+correctly `MLong` post-fix (`Nat` → `MLong`), so `Score` only gets a
+synthesised `.toLong()` projection, never `.toInt()`; likewise
+`Score.from(x)`'s real MSIL parameter is `Long`
+(`msil/lowering.l:3225-3226`), not `Int`. This is exactly the expected,
+correct behaviour of the fix in this PR working as intended — not a new
+gap — and confirms the `Nat` → `MLong` mapping is flowing correctly
+into the distinct-type-construction machinery (`msil/codegen.l:3304`'s
+`typeExprToMsilCtx(cctx, decl.underlying, pkgName)` call, which uses the
+exact function this PR patches). Fixed by using `Long`/`.toLong()`
+throughout the test instead of `Int`/`.toInt()`.
 
 Regression coverage:
 `nat_cross_package_self_test.l` (mirrors
