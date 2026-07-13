@@ -15620,6 +15620,49 @@ constructor-arg limitation above is specific to the `.ctor` resolver.
 
 ---
 
+## D-progress-670 — Close the D-progress-669 verification gap: a stdlib-bundle freshness guard and CI coverage for local-only runtime suites
+
+D-progress-669 surfaced a footgun: `lyric run` / `lyric test` link the
+*precompiled* `Lyric.Stdlib.dll` bundle for runtime execution (kernel source is
+read only for compile-time type-checking), so editing `lyric-stdlib/std/**` and
+re-running a test *without* rebuilding the bundle silently exercises the stale
+bundle and reports results that don't reflect the edit — which is exactly how an
+auto-FFI migration produced a false "all green" locally before CI (which does
+rebuild) caught the real breakage.  Two fixes close the gap:
+
+**1. Dev-loop freshness guard (`Lyric.Cli.warnIfStdlibBundleStale`).** When a
+`--target dotnet` `lyric run` / `lyric test` resolves a compiled bundle, the CLI
+now compares the bundle's mtime against the newest `.l` under the located
+`lyric-stdlib/std/` source tree (`Lyric.Emitter.locateStdlibDir`, newly `pub`)
+and prints a stderr warning — "stdlib source is newer than the compiled
+bundle … run `make lyric`" — when the source is newer.  It is a **dev-tree-only
+no-op**: silent when no source tree is found (installed SDKs) or the bundle is
+already fresh (a CI job that just rebuilt), and the warning goes to stderr so
+TAP stdout stays clean.  This makes the stale-bundle false-pass impossible to
+miss during the exact edit-then-test loop that bit the migration.
+
+**2. Wire the local-only stdlib runtime suites into CI.** 17 `func main`
+suites that exercise the FFI kernels and core stdlib but previously ran only on
+developers' machines are added to the dotnet "Stdlib runtime suites" step
+(`process_capture_tests` — the #5710 namesake — plus `process`, `format`,
+`json`, `collections`, `char`, `math`, `hash`, `path`, `errors`,
+`environment`, `string`, `string_methods`, `regex`, `yaml`, `testing`,
+`mocking`).  Each was verified to pass via `lyric run` before wiring.
+
+Bringing them in **immediately surfaced three pre-existing silent breakages**
+that no CI test covered: `set_tests` (`InvalidProgramException` in `Std.Set`,
+#5711), `sort_tests` (`InvalidProgramException` in a monomorphized generic
+`sort` with a `Func` comparator, #5712), and `xml_tests` (`Std.Xml` accepts an
+out-of-range astral numeric character entity it should reject, #5713).  Per the
+"no disabled/failing tests to make CI green" standard these are **not** wired in
+and **not** silenced; they are filed as tracked issues (candidates for the
+docs/59 / D-progress-669 follow-on emitter-fix band) and named in the CI step
+comment so the omission is explicit, not invisible.
+
+**Related:** D-progress-669, #5710, #5711, #5712, #5713.
+
+---
+
 ## Decisions deferred to v2 or later
 
 

@@ -5564,7 +5564,17 @@ jobs:
       # case-name collision (regex_safe), and object-degraded union-ctor
       # MemberRef signatures (rest).  Each suite exits non-zero on any
       # assertion failure or runtime fault.
-      - name: Stdlib runtime suites on dotnet (core, iter, encoding, regex_safe, rest)
+      # The suite list below is the local-only stdlib runtime coverage brought
+      # into CI (D-progress-670, follow-up to #5710): these `func main` suites
+      # exercise the FFI kernels and core stdlib but previously ran only on
+      # developers' machines, so a kernel regression (e.g. the D-progress-669
+      # auto-FFI migration breakage) could ship without any CI signal.  Every
+      # suite here is verified to pass via `lyric run`; suites that currently
+      # crash (`set_tests` #5711, `sort_tests` #5712, `xml_tests` #5713 —
+      # pre-existing emitter / stdlib bugs) are deliberately NOT listed and are
+      # tracked as issues, not silenced.  Each suite exits non-zero on any
+      # assertion failure or fault.
+      - name: Stdlib runtime suites on dotnet (kernels + core stdlib)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -5573,7 +5583,12 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping stdlib runtime suites"
             exit 1
           fi
-          for suite in core_tests iter_tests encoding_tests regex_safe_tests rest_tests; do
+          for suite in \
+            core_tests iter_tests encoding_tests regex_safe_tests rest_tests \
+            process_capture_tests process_tests format_tests json_tests \
+            collections_tests char_tests math_tests hash_tests path_tests \
+            errors_tests environment_tests string_tests string_methods_tests \
+            regex_tests yaml_tests testing_tests mocking_tests; do
             echo "--- lyric run lyric-stdlib/tests/$suite.l"
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done

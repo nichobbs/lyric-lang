@@ -645,6 +645,72 @@ func findCompiledLibDir(): String {
   ""
 }
 
+// ── Stdlib bundle freshness guard (D-progress-670) ─────────────────────────
+// `lyric run` / `lyric test` link the PRECOMPILED `Lyric.Stdlib.dll` bundle
+// for runtime execution; kernel source is read only for compile-time type
+// checking.  So editing `lyric-stdlib/std/**` and re-running a test WITHOUT
+// rebuilding the bundle silently exercises the stale bundle and reports
+// results that don't reflect the edit — the exact trap that produced a false
+// "all green" during the D-progress-669 auto-FFI migration.  This guard
+// surfaces that staleness.
+// Newest modification time among all `.l` files under `dir` (recursive), or
+// `None` when the directory can't be read or holds no `.l` source.
+func newestLyricSourceStat(dir: in String): Option[File.FileStat] {
+  match File.listFilesRecursive(dir) {
+    case Err(_) -> None
+    case Ok(files) -> {
+      var best: Option[File.FileStat] = None
+      for f in files.toArray() {
+        if Str.endsWith(f, ".l") {
+          match File.stat(f) {
+            case Ok(st) -> {
+              val newer = match best { case None -> true; case Some(cur) -> File.fileStatIsNewer(st, cur) }
+              if newer {
+                best = Some(value = st)
+              }
+            }
+            case Err(_) -> ()
+          }
+        }
+      }
+      best
+    }
+  }
+}
+
+// Warn (to stderr) when the compiled stdlib bundle at `libDir` is older than
+// the newest `lyric-stdlib/std/**` source file — i.e. a dev edited a kernel
+// but hasn't re-run `make lyric`, so this run links a stale bundle.  Dev-tree
+// only: a silent no-op when the source tree isn't found (installed toolchains)
+// or no bundle is present, so it never fires for shipped SDKs or a CI job that
+// freshly rebuilt the bundle.
+pub func warnIfStdlibBundleStale(libDir: in String): Unit {
+  if libDir.length == 0 {
+    return
+  }
+  val srcDir = Emitter.locateStdlibDir()
+  if srcDir.length == 0 {
+    return
+  }
+  val bundlePath = Path.join(libDir, "Lyric.Stdlib.dll")
+  match File.stat(bundlePath) {
+    case Err(_) -> ()
+    case Ok(bundleStat) -> {
+      match newestLyricSourceStat(srcDir) {
+        case None -> ()
+        case Some(srcStat) -> {
+          if File.fileStatIsNewer(srcStat, bundleStat) {
+            Console.error("warning: stdlib source under '" + srcDir + "' is newer than the compiled bundle at")
+            Console.error("         '" + bundlePath + "'.")
+            Console.error("         `lyric run` / `lyric test` link the prebuilt bundle for runtime, so this run")
+            Console.error("         may not reflect your source edits — run `make lyric` to rebuild the stdlib.")
+          }
+        }
+      }
+    }
+  }
+}
+
 // Co-locate the stdlib runtime assemblies (the single `Lyric.Stdlib.dll` bundle
 // plus the per-package HTTP/async DLLs not yet bundleable, #4030) from the
 // SDK/publish lib dir `srcDir` next to the assembly at `outPath`, so `dotnet
