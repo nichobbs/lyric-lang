@@ -80,29 +80,170 @@ func countMethodCalls(e: in Expr, methodName: in String): Int {
       n = n + countMethodCalls(rhs, methodName)
     }
     case EBlock(body) -> {
-      var i = 0
-      while i < body.statements.count {
-        match body.statements[i].kind {
-          case SExpr(expr) -> {
-            n = n + countMethodCalls(expr, methodName)
-          }
-          case SReturn(opt) -> {
-            match opt {
-              case Some(expr) -> {
-                n = n + countMethodCalls(expr, methodName)
-              }
-              case None -> ()
-            }
-          }
-          case _ -> ()
-        }
-        i = i + 1
-      }
+      n = n + countMethodCallsInBlock(body, methodName)
     }
     case EParen(inner) -> {
       n = n + countMethodCalls(inner, methodName)
     }
+    case EMatch(scrutinee, arms) -> {
+      n = n + countMethodCalls(scrutinee, methodName)
+      var i = 0
+      while i < arms.count {
+        n = n + countMethodCallsInArmBody(arms[i].body, methodName)
+        i = i + 1
+      }
+    }
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      n = n + countMethodCalls(cond, methodName)
+      n = n + countMethodCallsInArmBody(thenBranch, methodName)
+      match elseBranch {
+        case Some(eb) -> {
+          n = n + countMethodCallsInArmBody(eb, methodName)
+        }
+        case None -> ()
+      }
+    }
     case _ -> ()
+  }
+  n
+}
+
+func countMethodCallsInArmBody(body: in ExprOrBlock, methodName: in String): Int {
+  match body {
+    case EOBExpr(expr) -> countMethodCalls(expr, methodName)
+    case EOBBlock(blk) -> countMethodCallsInBlock(blk, methodName)
+  }
+}
+
+// Walks every statement in a block, including `val`/`var` initializers and
+// `defer` bodies, so match-arm decode blocks (which bind locals before
+// falling through to the next field) are actually visited — a plain
+// first/last-statement peek misses the method calls buried inside them.
+func countMethodCallsInBlock(body: in Block, methodName: in String): Int {
+  var n = 0
+  var i = 0
+  while i < body.statements.count {
+    match body.statements[i].kind {
+      case SExpr(expr) -> {
+        n = n + countMethodCalls(expr, methodName)
+      }
+      case SReturn(opt) -> {
+        match opt {
+          case Some(expr) -> {
+            n = n + countMethodCalls(expr, methodName)
+          }
+          case None -> ()
+        }
+      }
+      case SLocal(binding) -> {
+        match binding {
+          case LBVal(_, _, init) -> {
+            n = n + countMethodCalls(init, methodName)
+          }
+          case LBVar(_, _, initOpt) -> {
+            match initOpt {
+              case Some(init) -> {
+                n = n + countMethodCalls(init, methodName)
+              }
+              case None -> ()
+            }
+          }
+          case LBLet(_, _, init) -> {
+            n = n + countMethodCalls(init, methodName)
+          }
+        }
+      }
+      case SDefer(deferBody) -> {
+        n = n + countMethodCallsInBlock(deferBody, methodName)
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  n
+}
+
+// Recursively counts `val`/`var`/`let` local bindings named `localName` in
+// `e`.  Unlike `countMethodCalls`, this also catches calls made through a
+// bare qualified path (e.g. `Std.Json.getDouble(...)`, built as
+// `ECall(EPath(...), args)`), which `countMethodCalls` can't see since it
+// only recognises `EMember`-shaped callees — so this is the only reliable
+// way to assert a scalar-getter decode statement (`val fieldName =
+// Std.Json.get*(...)`) is or isn't present.
+func countLocalBindingsNamed(e: in Expr, localName: in String): Int {
+  var n = 0
+  match e.kind {
+    case EBlock(body) -> {
+      n = n + countLocalBindingsNamedInBlock(body, localName)
+    }
+    case EParen(inner) -> {
+      n = n + countLocalBindingsNamed(inner, localName)
+    }
+    case EMatch(scrutinee, arms) -> {
+      n = n + countLocalBindingsNamed(scrutinee, localName)
+      var i = 0
+      while i < arms.count {
+        n = n + countLocalBindingsNamedInArmBody(arms[i].body, localName)
+        i = i + 1
+      }
+    }
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      n = n + countLocalBindingsNamed(cond, localName)
+      n = n + countLocalBindingsNamedInArmBody(thenBranch, localName)
+      match elseBranch {
+        case Some(eb) -> {
+          n = n + countLocalBindingsNamedInArmBody(eb, localName)
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+  n
+}
+
+func countLocalBindingsNamedInArmBody(body: in ExprOrBlock, localName: in String): Int {
+  match body {
+    case EOBExpr(expr) -> countLocalBindingsNamed(expr, localName)
+    case EOBBlock(blk) -> countLocalBindingsNamedInBlock(blk, localName)
+  }
+}
+
+func countLocalBindingsNamedInBlock(body: in Block, localName: in String): Int {
+  var n = 0
+  var i = 0
+  while i < body.statements.count {
+    match body.statements[i].kind {
+      case SLocal(binding) -> {
+        match binding {
+          case LBVal(pat, _, _) -> {
+            match pat.kind {
+              case PBinding(bindName, _) -> {
+                if bindName == localName {
+                  n = n + 1
+                }
+              }
+              case _ -> ()
+            }
+          }
+          case LBVar(varName, _, _) -> {
+            if varName == localName {
+              n = n + 1
+            }
+          }
+          case LBLet(letName, _, _) -> {
+            if letName == localName {
+              n = n + 1
+            }
+          }
+        }
+      }
+      case SDefer(deferBody) -> {
+        n = n + countLocalBindingsNamedInBlock(deferBody, localName)
+      }
+      case _ -> ()
+    }
+    i = i + 1
   }
   n
 }
@@ -125,6 +266,53 @@ func findFuncBody(sf: in SourceFile, name: in String): Option[Expr] {
                 case FBBlock(blk) -> {
                   if blk.statements.count > 0 {
                     match blk.statements[0].kind {
+                      case SReturn(opt) -> {
+                        return opt
+                      }
+                      case SExpr(e) -> {
+                        return Some(value = e)
+                      }
+                      case _ -> {
+                        return None
+                      }
+                    }
+                  }
+                  return None
+                }
+              }
+            }
+            case None -> {
+              return None
+            }
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Like `findFuncBody`, but for multi-statement bodies (e.g. synthesised
+// `fromJson`, whose body is `__doc`/`defer`/`__root` prelude statements
+// followed by a final `SReturn`) — returns the *last* statement's return
+// expression rather than assuming it's the first statement.
+func findFuncBodyLastReturn(sf: in SourceFile, name: in String): Option[Expr] {
+  var i = 0
+  while i < sf.items.count {
+    match sf.items[i].kind {
+      case IFunc(decl) -> {
+        if decl.name == name {
+          match decl.body {
+            case Some(fb) -> {
+              match fb {
+                case FBExpr(expr) -> {
+                  return Some(value = expr)
+                }
+                case FBBlock(blk) -> {
+                  if blk.statements.count > 0 {
+                    match blk.statements[blk.statements.count - 1].kind {
                       case SReturn(opt) -> {
                         return opt
                       }
@@ -181,8 +369,9 @@ test "generate json record" {
   val src = "package P\n@generate(Json)\nrecord Point { x: Int; y: Int }\n"
   val pr = parse(src)
   val sf = deriveFile(pr.file)
-  assertEqualInt(sf.items.count, 2, "json-rec: 1 record + 1 synth (toJson)")
+  assertEqualInt(sf.items.count, 3, "json-rec: 1 record + 2 synths (toJson, fromJson)")
   assertTrue(parseDeriveAndFindFunc(src, "Point.toJson"), "json-rec: Point.toJson synthesised")
+  assertTrue(parseDeriveAndFindFunc(src, "Point.fromJson"), "json-rec: Point.fromJson synthesised")
 }
 
 // Regression for #992: the synthesised `toJson` for a record with a
@@ -203,6 +392,81 @@ test "generate json record string escape" {
     }
     case None -> assertTrue(false, "json-string: Msg.toJson body not found")
   }
+}
+
+// Regression for #5729: `jsonScalarGetterFor` didn't recognise `Byte`/`Char`
+// as scalars, so the synthesised `fromJson` fell back to nested-record
+// decoding and called a nonexistent `Byte.fromJson`/`Char.fromJson`. A
+// correct fix decodes both via `Std.Json` accessors (`.toByte()` /
+// string-indexing) with zero `fromJson` calls in the body.
+test "generate json record byte char scalars" {
+  val src = "package P\n@generate(Json)\nrecord Flags { b: Byte; c: Char }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertTrue(parseDeriveAndFindFunc(src, "Flags.fromJson"), "json-bytechar: Flags.fromJson synthesised")
+  match findFuncBodyLastReturn(sf, "Flags.fromJson") {
+    case Some(body) -> {
+      assertEqualInt(countMethodCalls(body, "fromJson"), 0, "json-bytechar: no nested-record fromJson call for Byte/Char")
+      assertEqualInt(countMethodCalls(body, "toByte"), 1, "json-bytechar: Byte field decoded via .toByte()")
+    }
+    case None -> assertTrue(false, "json-bytechar: Flags.fromJson body not found")
+  }
+  match findFuncBody(sf, "Flags.toJson") {
+    case Some(body) -> {
+      // Char must round-trip as a quoted one-character JSON string, not a
+      // bare unquoted character (invalid JSON) — same five-step escape
+      // chain as String fields.
+      assertEqualInt(countMethodCalls(body, "replace"), 5, "json-bytechar: Char field quoted via escape chain")
+    }
+    case None -> assertTrue(false, "json-bytechar: Flags.toJson body not found")
+  }
+}
+
+// Regression for #5730: `jsonTypeNameOf` only names `TRef`-shaped types, so
+// an `Option[T]`/`Result[T,E]`/generic-application field's name resolved to
+// "" and `jsonFieldDecodeBlock`'s nested-record fallback synthesised a call
+// to `.fromJson` on that empty name. `jsonBuildFieldChain` now detects this
+// (`jsonFieldTypeSupported`) and reports D0002 with a safe immediate `Err`
+// instead — `fromJson` must still be synthesised (other fields still
+// decode), but must contain zero `fromJson` calls for a record whose only
+// field is unsupported.
+test "generate json record unsupported generic field reports D0002" {
+  val src = "package P\n@generate(Json)\nrecord Wrapper { opt: Option[Int] }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertTrue(parseDeriveAndFindFunc(src, "Wrapper.fromJson"), "json-d0002: Wrapper.fromJson still synthesised")
+  match findFuncBodyLastReturn(sf, "Wrapper.fromJson") {
+    case Some(body) -> {
+      assertEqualInt(countMethodCalls(body, "fromJson"), 0, "json-d0002: no broken fromJson call for the unsupported field")
+    }
+    case None -> assertTrue(false, "json-d0002: Wrapper.fromJson body not found")
+  }
+}
+
+// Regression for #5733: `jsonScalarGetterFor` routed `Float` through
+// `Std.Json.getDouble` with no narrowing conversion — there is no
+// `.toFloat()` yet (docs/01-language-reference.md), so the decoded
+// `Double` didn't type-check against the declared `Float` field. `Float`
+// now goes through the same D0002 fallback as an unsupported field type
+// (still synthesises `fromJson`, but decodes via a safe immediate `Err`,
+// never a `.getDouble()` call bound to a `Float`-typed local).
+test "generate json record float field reports D0002" {
+  val src = "package P\n@generate(Json)\nrecord Reading { value: Float }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertTrue(parseDeriveAndFindFunc(src, "Reading.fromJson"), "json-float: Reading.fromJson still synthesised")
+  match findFuncBodyLastReturn(sf, "Reading.fromJson") {
+    case Some(body) -> {
+      assertEqualInt(
+        countLocalBindingsNamed(body, "value"),
+        0,
+        "json-float: no `val value = Std.Json.getDouble(...)` bound against the Float field (#5733)"
+      )
+    }
+    case None -> assertTrue(false, "json-float: Reading.fromJson body not found")
+  }
+  // toJson is unaffected — Float.toString() needs no conversion.
+  assertTrue(parseDeriveAndFindFunc(src, "Reading.toJson"), "json-float: Reading.toJson still synthesised")
 }
 
 test "multiple derives" {

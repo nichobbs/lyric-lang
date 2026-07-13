@@ -2153,7 +2153,17 @@ pub func preSeedBundleAsyncRetTypesMsil(
 // (before the package loop) and per-package (top of `addPackageTokens`) is
 // idempotent.  These maps let the await pre-scan type method-call receivers
 // (`await response.bodyText()`) without consulting the live token maps, whose
-// contents differ between the Pass-1 count and the Phase-B count.
+// contents differ between the Pass-1 count and the Phase-B count.  Always the
+// BARE declared return, never Task-wrapped: `pbMethodCallRetPB`'s receiver-chain
+// resolution and the `EMember`/`EMatch` typing above assume these registries
+// name the logical (post-await) type, and Task-wrapping them for async items
+// was tried (#5731) and reverted after it corrupted receiver-chain typing for
+// blocking-`@externTarget async` methods (whose Lyric-visible wrapper returns
+// the bare type, not Task<T>), producing a real SIGSEGV in
+// `lyric-stdlib/tests/http_tests.l`. The narrower bug this would have fixed
+// (an uncounted await on a bundle-local/restored async interface method, e.g.
+// `Std.Http.HttpClient.send`) remains open — see docs/59 or the PR description
+// for the known repro.
 func pbSeedRetTy(
   cctx: in CodegenCtx,
   key: in String,
@@ -17698,6 +17708,167 @@ func emitBlockingAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
 // spawnNms/spawnTys are parallel lists tracking `val x = spawn f()` bindings:
 // spawnNms[i] is the local name, spawnTys[i] is its Task<T> type.
 // This lets `await x` resolve to the correct TaskAwaiter<T> field.
+// Resolve a qualified free-function call's return type by mirroring the
+// call-EMISSION resolution order (qualified path -> current package ->
+// imported package). The imported fallback is essential for cross-package
+// calls written through an import alias (`Ws.findWorkspaceRoot` where
+// `import Lyric.Workspace as Ws`): the literal `Ws.findWorkspaceRoot` FQN is
+// never registered, so without resolving the alias the result type degraded
+// to `object`, erasing a generic return (`Option[T]`, `Result[T,E]`) and
+// forcing the match to the lossy erased dispatch path — which mis-dispatches
+// a cross-package `Some`/`None`.
+//
+// Shared by both a flat multi-segment `EPath` callee (`Pkg.Sub.func(args)`,
+// segments already a single ModulePath) and a callee built as nested
+// `EMember`s over an `EPath` (`Pkg.Sub.func(args)` parses this way when
+// there's a 3+-segment qualifier, e.g. `Std.Http.sendAsync` —
+// `EMember(EMember(EPath(["Std"]), "Http"), "sendAsync")` — the parser
+// builds left-to-right postfix, so only a 2-segment qualifier stays a flat
+// `EPath`). Before this helper was shared, the nested-EMember shape fell
+// through to `pbMethodCallRetPB`'s receiver-typed resolution, which cannot
+// type a package qualifier and returns `MObject` — the await went uncounted
+// in the pre-scan while emission still resolved a real `Task<T>`, corrupting
+// the async state machine's resume-label/awaiter-field bookkeeping (compiler
+// panic in `emitPhaseBAwait`, or a silent field-count mismatch surfacing as
+// `InvalidProgramException` at runtime).
+func resolveQualifiedFreeCallRetTypePB(
+  cctx: in CodegenCtx, pkgName: in String, segments: in List[String], cnt: in Int
+): MsilType {
+  val lastSeg = segments[segments.count - 1]
+  val candidates: List[String] = newList()
+  if segments.count >= 2 {
+    val joinedPath = joinSegsMsil(segments, ".")
+    candidates.add(joinedPath)
+    // Alias resolution: `Alias.func(args)` where `import Pkg as Alias`.
+    // Phase B resolves the alias via pkgImportAliases; Phase A must too
+    // or await counts diverge and resumeLabels index faults.
+    if segments.count == 2 {
+      match mapGet(cctx.pkgImportAliases, pkgName + "/" + segments[0]) {
+        case Some(realPkg) -> candidates.add(realPkg + "." + segments[1])
+        case None -> ()
+      }
+    }
+    match mapGet(cctx.pkgImports, pkgName) {
+      case Some(imps) -> {
+        var pfxI = 0
+        while pfxI < imps.count {
+          candidates.add(imps[pfxI] + "." + joinedPath)
+          pfxI = pfxI + 1
+        }
+      }
+      case None -> ()
+    }
+  }
+  candidates.add(pkgName + "." + lastSeg)
+  match mapGet(cctx.pkgImports, pkgName) {
+    case Some(imps) -> {
+      val imp = findImportedFqn(cctx, imps, lastSeg)
+      if imp.length > 0 {
+        candidates.add(imp)
+      }
+    }
+    case None -> ()
+  }
+  var result = MObject
+  var ci = 0
+  var done = false
+  while ci < candidates.count and not done {
+    val c = candidates[ci]
+    match mapGet(cctx.funcRetTypes, c + "/" + toString(cnt)) {
+      case Some(ty) -> {
+        result = ty
+        done = true
+      }
+      case None -> match mapGet(cctx.funcRetTypes, c) { case Some(ty) -> { result = ty; done = true }; case None -> () }
+    }
+    ci = ci + 1
+  }
+  // Bundle-stable declared-return fallback (#5606): the live `funcRetTypes`
+  // is only fully populated for packages whose own `addPackageTokens` pass
+  // has already run, so the Pass-1 count and the Phase-B count would see
+  // different typings for a plain cross-package helper. `pbFuncRetTypes` was
+  // seeded once before the package loop with the same declared types, so
+  // both runs agree.
+  if result == MObject {
+    var ci2 = 0
+    var done2 = false
+    while ci2 < candidates.count and not done2 {
+      val c2 = candidates[ci2]
+      match mapGet(cctx.pbFuncRetTypes, c2 + "/" + toString(cnt)) {
+        case Some(ty2) -> {
+          result = ty2
+          done2 = true
+        }
+        case None -> match mapGet(cctx.pbFuncRetTypes, c2) { case Some(ty2) -> { result = ty2; done2 = true }; case None -> () }
+      }
+      ci2 = ci2 + 1
+    }
+  }
+  result
+}
+
+// Flattens a callee expression built purely from `EMember`-over-`EPath`
+// nodes (a package/module qualifier chain with no value receiver, e.g.
+// `Std.Http.sendAsync` parsed as `EMember(EMember(EPath(["Std"]),"Http"),
+// "sendAsync")`) into its full segment list. Returns `None` the moment a
+// non-path/non-member node is hit (a real value receiver — `client.send`,
+// `x.m1().m2()`, etc.) so the caller falls back to receiver-typed resolution.
+func flattenPureQualifierPB(e: in Expr): Option[List[String]] {
+  match e.kind {
+    case EPath(path) -> {
+      val segs: List[String] = newList()
+      var i = 0
+      while i < path.segments.count {
+        segs.add(path.segments[i])
+        i = i + 1
+      }
+      Some(value = segs)
+    }
+    case EMember(recv, field) -> {
+      match flattenPureQualifierPB(recv) {
+        case Some(segs) -> {
+          segs.add(field)
+          Some(value = segs)
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// True if `name` is a spawn binding or a local (param/val/var) in the
+// current pre-scan environment. `flattenPureQualifierPB` flattens ANY
+// EMember/EPath chain into segments regardless of whether its root is a
+// package qualifier or a plain value — a value-receiver chain like
+// `client.conn.readAsync(args)` flattens exactly the same as a real
+// package-qualified call. Without this guard, `resolveQualifiedFreeCallRetTypePB`
+// still usually falls back safely (its candidates rarely resolve), but its
+// unconditional `pkgName + "." + lastSeg` candidate means a value-receiver
+// call whose trailing method name happens to collide with an unrelated
+// same-package free function of the same name gets mistyped instead of
+// falling through to receiver-typed resolution — corrupting the async SM's
+// resume-label/awaiter-field count exactly like the mismatch this whole
+// pre-scan machinery exists to prevent (found via SIGSEGV in
+// `lyric-stdlib/tests/http_tests.l`, #5731).
+func isKnownValueNamePB(name: in String, spawnNms: in List[String], localNms: in List[String]): Bool {
+  var i = 0
+  while i < spawnNms.count {
+    if spawnNms[i] == name {
+      return true
+    }
+    i = i + 1
+  }
+  var j = 0
+  while j < localNms.count {
+    if localNms[j] == name {
+      return true
+    }
+    j = j + 1
+  }
+  false
+}
+
 func inferCallReturnTypePB(
   cctx: in CodegenCtx,
   pkgName: in String,
@@ -17823,90 +17994,7 @@ func inferCallReturnTypePB(
     case EBlock(blkE) -> pbBlockTailTypePB(cctx, pkgName, blkE, spawnNms, spawnTys, localNms, localTys)
     case ECall(callee, args) -> {
       match callee.kind {
-        case EPath(path) -> {
-          // Resolve the call's return type by mirroring the call-EMISSION
-          // resolution order (qualified path → current package → imported
-          // package).  The imported fallback is essential for cross-package
-          // calls written through an import alias (`Ws.findWorkspaceRoot` where
-          // `import Lyric.Workspace as Ws`): the literal `Ws.findWorkspaceRoot`
-          // FQN is never registered, so without resolving the alias the result
-          // type degraded to `object`, erasing a generic return (`Option[T]`,
-          // `Result[T,E]`) and forcing the match to the lossy erased dispatch
-          // path — which mis-dispatches a cross-package `Some`/`None`.
-          val cnt = args.count
-          val lastSeg = path.segments[path.segments.count - 1]
-          val candidates: List[String] = newList()
-          if path.segments.count >= 2 {
-            val joinedPath = joinSegsMsil(path.segments, ".")
-            candidates.add(joinedPath)
-            // Alias resolution: `Alias.func(args)` where `import Pkg as Alias`.
-            // Phase B resolves the alias via pkgImportAliases; Phase A must too
-            // or await counts diverge and resumeLabels index faults.
-            if path.segments.count == 2 {
-              match mapGet(cctx.pkgImportAliases, pkgName + "/" + path.segments[0]) {
-                case Some(realPkg) -> candidates.add(realPkg + "." + path.segments[1])
-                case None -> ()
-              }
-            }
-            match mapGet(cctx.pkgImports, pkgName) {
-              case Some(imps) -> {
-                var pfxI = 0
-                while pfxI < imps.count {
-                  candidates.add(imps[pfxI] + "." + joinedPath)
-                  pfxI = pfxI + 1
-                }
-              }
-              case None -> ()
-            }
-          }
-          candidates.add(pkgName + "." + lastSeg)
-          match mapGet(cctx.pkgImports, pkgName) {
-            case Some(imps) -> {
-              val imp = findImportedFqn(cctx, imps, lastSeg)
-              if imp.length > 0 {
-                candidates.add(imp)
-              }
-            }
-            case None -> ()
-          }
-          var result = MObject
-          var ci = 0
-          var done = false
-          while ci < candidates.count and not done {
-            val c = candidates[ci]
-            match mapGet(cctx.funcRetTypes, c + "/" + toString(cnt)) {
-              case Some(ty) -> {
-                result = ty
-                done = true
-              }
-              case None -> match mapGet(cctx.funcRetTypes, c) { case Some(ty) -> { result = ty; done = true }; case None -> () }
-            }
-            ci = ci + 1
-          }
-          // Bundle-stable declared-return fallback (#5606): the live
-          // `funcRetTypes` is only fully populated for packages whose own
-          // `addPackageTokens` pass has already run, so the Pass-1 count and
-          // the Phase-B count would see different typings for a plain
-          // cross-package helper.  `pbFuncRetTypes` was seeded once before
-          // the package loop with the same declared types, so both runs
-          // agree.
-          if result == MObject {
-            var ci2 = 0
-            var done2 = false
-            while ci2 < candidates.count and not done2 {
-              val c2 = candidates[ci2]
-              match mapGet(cctx.pbFuncRetTypes, c2 + "/" + toString(cnt)) {
-                case Some(ty2) -> {
-                  result = ty2
-                  done2 = true
-                }
-                case None -> match mapGet(cctx.pbFuncRetTypes, c2) { case Some(ty2) -> { result = ty2; done2 = true }; case None -> () }
-              }
-              ci2 = ci2 + 1
-            }
-          }
-          result
-        }
+        case EPath(path) -> resolveQualifiedFreeCallRetTypePB(cctx, pkgName, path.segments, args.count)
         // `TypeName.method(recv, args)` parses as
         // ECall(EMember(EPath(["TypeName"]), "method"), args) — the parser
         // builds left-to-right postfix so the `.method` becomes an EMember
@@ -17919,6 +18007,14 @@ func inferCallReturnTypePB(
           match recv.kind {
             case EPath(recvPath) -> {
               val cnt = args.count
+              // Guard against misreading a value-receiver (`client.get(path)`
+              // where `client` is a local/param whose name happens to collide
+              // with an unrelated same-package free function) as a package
+              // qualifier — same risk `isKnownValueNamePB` guards in the
+              // 3+-segment `EMember(_, _)` arm below (#5734).
+              if recvPath.segments.count > 0 and isKnownValueNamePB(recvPath.segments[0], spawnNms, localNms) {
+                return pbMethodCallRetPB(cctx, pkgName, recv, field, cnt, spawnNms, spawnTys, localNms, localTys)
+              }
               val joinedPath = joinSegsMsil(recvPath.segments, ".") + "." + field
               val candidates: List[String] = newList()
               candidates.add(joinedPath)
@@ -17974,6 +18070,37 @@ func inferCallReturnTypePB(
                 result = pbMethodCallRetPB(cctx, pkgName, recv, field, cnt, spawnNms, spawnTys, localNms, localTys)
               }
               result
+            }
+            // `Pkg.Sub.func(args)`: a 3+-segment qualifier parses as nested
+            // `EMember`s over an `EPath` (`recv` is itself an `EMember`, e.g.
+            // `Std.Http.sendAsync` -> `EMember(EMember(EPath(["Std"]),"Http"),
+            // "sendAsync")`), not a flat `EPath` — the case above only ever
+            // matches a 2-segment qualifier. Without this arm the call fell
+            // straight to the value-receiver fallback below, which cannot
+            // type a package qualifier and returns `MObject`, undercounting
+            // the await relative to emission (which DOES flatten the
+            // qualifier) and corrupting the async SM's resume-label/awaiter
+            // bookkeeping.
+            case EMember(_, _) -> {
+              match flattenPureQualifierPB(recv) {
+                case Some(recvSegs) -> {
+                  // Guard against misreading a value-receiver chain (e.g.
+                  // `client.conn.readAsync(args)`) as a package qualifier —
+                  // see `isKnownValueNamePB`'s doc comment (#5731).
+                  if recvSegs.count > 0 and isKnownValueNamePB(recvSegs[0], spawnNms, localNms) {
+                    pbMethodCallRetPB(cctx, pkgName, recv, field, args.count, spawnNms, spawnTys, localNms, localTys)
+                  } else {
+                    recvSegs.add(field)
+                    val result = resolveQualifiedFreeCallRetTypePB(cctx, pkgName, recvSegs, args.count)
+                    if result == MObject {
+                      pbMethodCallRetPB(cctx, pkgName, recv, field, args.count, spawnNms, spawnTys, localNms, localTys)
+                    } else {
+                      result
+                    }
+                  }
+                }
+                case None -> pbMethodCallRetPB(cctx, pkgName, recv, field, args.count, spawnNms, spawnTys, localNms, localTys)
+              }
             }
             // A non-path receiver (`client.handle.send(request)`, a call
             // result, a match-bound local's field chain): type the receiver
@@ -29313,6 +29440,11 @@ func registerRestoredIfaceMethod(
   // Record the fully-resolved return type (ctx-aware, so `Result[T, E]` keeps
   // its `MGenericInst` identity) for the call site.  This is what the
   // consumer's `match` on the call result needs to emit correct isinst tests.
+  // Bare (not Task-wrapped): the producer's own interface-slot MethodDef
+  // signature also declares the bare logical return (`lowerMInterface`,
+  // lowering.l ~2798, `buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)`)
+  // — an async interface method's physical ABI is its declared return type,
+  // not Task<T>, so this stays correct for the callvirt/match paths.
   if not cctx.methodRetTypes.containsKey(key) {
     cctx.methodRetTypes.add(key, sigRetType)
   }
