@@ -30188,3 +30188,23 @@ declarations across 11 migrated files.
 
 **Related:** `docs/03-decision-log.md` D-progress-638, docs/42 §5
 status note.
+
+## Stdlib-bundle freshness guard + CI runtime-suite coverage (2026-07-13)
+
+`lyric run` / `lyric test` link the precompiled `Lyric.Stdlib.dll` bundle
+for runtime execution, so editing `lyric-stdlib/std/**` without rebuilding
+the bundle silently runs against stale code — the trap that produced a false
+local "all green" before CI caught the real breakage during the
+D-progress-669 auto-FFI migration. A dev-loop guard now prints a stderr
+warning when, inside a source checkout, any stdlib `.l` source is newer than
+the compiled bundle on a `--target dotnet` run/test (pointing at `make
+lyric`). It is a no-op for installed SDKs (no source tree) and freshly-built
+CI bundles, and writes to stderr so TAP stdout stays clean
+(`Lyric.Cli.warnIfStdlibBundleStale`; `Lyric.Emitter.locateStdlibDir` is now
+`pub`). Alongside it, 17 previously local-only stdlib runtime suites were
+wired into the dotnet CI step; doing so surfaced three pre-existing silent
+breakages no CI covered — `set_tests` (#5711), `sort_tests` (#5712),
+`xml_tests` (#5713) — which are filed (not silenced) rather than added while
+red.
+
+**Related:** `docs/03-decision-log.md` D-progress-670; #5710–#5713.

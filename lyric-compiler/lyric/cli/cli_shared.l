@@ -653,36 +653,38 @@ func findCompiledLibDir(): String {
 // results that don't reflect the edit — the exact trap that produced a false
 // "all green" during the D-progress-669 auto-FFI migration.  This guard
 // surfaces that staleness.
-// Newest modification time among all `.l` files under `dir` (recursive), or
-// `None` when the directory can't be read or holds no `.l` source.
-func newestLyricSourceStat(dir: in String): Option[File.FileStat] {
+// True iff any `.l` file under `dir` (recursive) is newer than `ref`.  Stats
+// the bundle ONCE up front and passes it in so we can early-exit at the first
+// newer source rather than computing the newest of the whole tree — the common
+// (fresh) case still walks every file to confirm none are newer, but that is a
+// bounded one-time `stat` sweep of the ~100-file stdlib source dir, dwarfed by
+// the compile that always follows, and it only runs in a dev tree.
+func anyLyricSourceNewerThan(dir: in String, ref: in File.FileStat): Bool {
   match File.listFilesRecursive(dir) {
-    case Err(_) -> None
+    case Err(_) -> false
     case Ok(files) -> {
-      var best: Option[File.FileStat] = None
       for f in files.toArray() {
         if Str.endsWith(f, ".l") {
           match File.stat(f) {
             case Ok(st) -> {
-              val newer = match best { case None -> true; case Some(cur) -> File.fileStatIsNewer(st, cur) }
-              if newer {
-                best = Some(value = st)
+              if File.fileStatIsNewer(st, ref) {
+                return true
               }
             }
             case Err(_) -> ()
           }
         }
       }
-      best
+      false
     }
   }
 }
 
 // Warn (to stderr) when the compiled stdlib bundle at `libDir` is older than
-// the newest `lyric-stdlib/std/**` source file — i.e. a dev edited a kernel
-// but hasn't re-run `make lyric`, so this run links a stale bundle.  Dev-tree
-// only: a silent no-op when the source tree isn't found (installed toolchains)
-// or no bundle is present, so it never fires for shipped SDKs or a CI job that
+// any `lyric-stdlib/std/**` source file — i.e. a dev edited a kernel but hasn't
+// re-run `make lyric`, so this run links a stale bundle.  Dev-tree only: a
+// silent no-op when the source tree isn't found (installed toolchains) or no
+// bundle is present, so it never fires for shipped SDKs or a CI job that
 // freshly rebuilt the bundle.
 pub func warnIfStdlibBundleStale(libDir: in String): Unit {
   if libDir.length == 0 {
@@ -696,16 +698,11 @@ pub func warnIfStdlibBundleStale(libDir: in String): Unit {
   match File.stat(bundlePath) {
     case Err(_) -> ()
     case Ok(bundleStat) -> {
-      match newestLyricSourceStat(srcDir) {
-        case None -> ()
-        case Some(srcStat) -> {
-          if File.fileStatIsNewer(srcStat, bundleStat) {
-            Console.error("warning: stdlib source under '" + srcDir + "' is newer than the compiled bundle at")
-            Console.error("         '" + bundlePath + "'.")
-            Console.error("         `lyric run` / `lyric test` link the prebuilt bundle for runtime, so this run")
-            Console.error("         may not reflect your source edits — run `make lyric` to rebuild the stdlib.")
-          }
-        }
+      if anyLyricSourceNewerThan(srcDir, bundleStat) {
+        Console.error("warning: stdlib source under '" + srcDir + "' is newer than the compiled bundle at")
+        Console.error("         '" + bundlePath + "'.")
+        Console.error("         `lyric run` / `lyric test` link the prebuilt bundle for runtime, so this run")
+        Console.error("         may not reflect your source edits — run `make lyric` to rebuild the stdlib.")
       }
     }
   }

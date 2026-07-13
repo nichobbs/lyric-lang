@@ -985,6 +985,15 @@ lyric test --all-features              # activate every declared feature
                                        #   lyric test --manifest m.toml --target jvm \
                                        #     --no-default-features --features jvm
 
+# Stale-stdlib-bundle warning (dev tree only, --target dotnet)
+#   `lyric run` / `lyric test` link the PRECOMPILED Lyric.Stdlib.dll for
+#   runtime, so editing lyric-stdlib/std/** without rebuilding the bundle
+#   silently runs against stale code.  When run inside a source checkout, both
+#   commands print a stderr warning if any stdlib source is newer than the
+#   compiled bundle — rebuild with `make lyric` before trusting the run.  It is
+#   a no-op for installed SDKs (no source tree) and for a freshly-built bundle,
+#   and goes to stderr so TAP output on stdout stays clean.
+
 # Format
 lyric fmt <file.l>                     # print formatted source to stdout (no configuration)
 lyric fmt <file1.l> <file2.l> ...      # format multiple files (multi-file variadic)
