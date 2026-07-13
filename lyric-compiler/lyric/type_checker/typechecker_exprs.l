@@ -3613,10 +3613,20 @@ pub func inferExpr(
     }
     // EAssign: assignment in expression position.  Check target/value types
     // and the immutability of the target exactly as the statement path does.
-    case EAssign(target, _, value) -> {
+    case EAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExpr(sc, tbl, sigs, diag, value)
-      if not argSatisfiesParam(tbl, targetType, valueType) {
+      // `s += <rhs>` on a String plain-variable target accepts any RHS,
+      // mirroring binary `+` (#5657) — kept in sync with the SAssign path in
+      // typechecker_stmts.l (field/indexed targets stay strict; see the note
+      // there).
+      val targetIsSimpleVar = match target.kind { case EPath(p) -> p.segments.count == 1; case _ -> false }
+      val stringPlusAssign = targetIsSimpleVar and
+        match op {
+          case AssPlus -> match targetType { case TyPrim(pt) -> match pt { case PtString -> true; case _ -> false }; case _ -> false }
+          case _ -> false
+        }
+      if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(
             "T0063",

@@ -1494,11 +1494,21 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     case ESelf -> {
       insns.add(LAload(slot = 0))
       // Type `self` to the enclosing instance class when known so `self.field`
-      // member access resolves the field's precise descriptor; otherwise the
-      // erased Object receiver (records / unhosted contexts) is reported.
+      // member access resolves the field's precise descriptor.  For a true
+      // instance method `selfClass` carries the implementing type.  For a
+      // top-level UFCS function `func Outer.m(self: in Outer)`, `self` parses
+      // to ESelf but there is no `selfClass`; its declared type is registered
+      // in `ctx.types["self"]` by the static-param setup, so fall back to that
+      // before degrading to the erased Object receiver (#5565), mirroring the
+      // MSIL emitter's ESelf handling.
       match ctx.selfClass {
         case Some(cls) -> JRef(className = cls)
-        case None -> JRef(className = "java/lang/Object")
+        case None -> {
+          match lookupType(ctx, "self") {
+            case Some(t) -> t
+            case None -> JRef(className = "java/lang/Object")
+          }
+        }
       }
     }
     case EResult -> {

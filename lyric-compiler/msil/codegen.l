@@ -3114,6 +3114,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           // Register opaque field tokens so same-package ldfld (e.g. via a
           // @projectionBoundary view field returning the raw opaque) resolves correctly.
           var fi = 0
+          var fpos = 0
           while fi < decl.members.count {
             match decl.members[fi] {
               case OMField(f2) -> {
@@ -3137,6 +3138,21 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 if not cctx.fieldMsilTypes.containsKey(ofByNameKey) {
                   cctx.fieldMsilTypes.add(ofByNameKey, ofTy)
                 }
+                // Positional field-name registration, mirroring record
+                // (codegen.l:~2644) and protected type (~3186).  Without it the
+                // ctor-argument type-hint recovery at the construction site
+                // (~11695) cannot recover an opaque field's declared type from
+                // its position, so a bare `None`/nullary-generic-case field
+                // initializer erased to `Option_None<object>`, and a later
+                // `match` on the field's closed instantiation panicked as
+                // non-exhaustive (#5576).  `fpos` (not the member index `fi`)
+                // is the field ordinal, so interleaved OMInvariant members
+                // don't skew it.
+                val byPosKey = className + "/field" + toString(fpos)
+                if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
+                  cctx.fieldDeclaredNames.add(byPosKey, f2.name)
+                }
+                fpos = fpos + 1
                 fieldDefRow = fieldDefRow + 1
               }
               case OMInvariant(_) -> {
@@ -3883,6 +3899,54 @@ func inferUntypedStaticValMsilType(e: in Expr): MsilType {
   }
 }
 
+// Structural equality over the simple MsilTypes that
+// `inferUntypedStaticValMsilType` can produce (MInt/MLong/MDouble/MBool/
+// MChar/MString).  Sufficient for the homogeneous-literal-list check below;
+// not a general MsilType equality.
+func msilSimpleTypeEq(a: in MsilType, b: in MsilType): Bool {
+  match a {
+    case MInt -> match b { case MInt -> true; case _ -> false }
+    case MLong -> match b { case MLong -> true; case _ -> false }
+    case MDouble -> match b { case MDouble -> true; case _ -> false }
+    case MBool -> match b { case MBool -> true; case _ -> false }
+    case MChar -> match b { case MChar -> true; case _ -> false }
+    case MString -> match b { case MString -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// Infer a single concrete element MsilType for an unannotated list literal when
+// every element is a literal (or `-literal`) sharing one static type (#5620).
+// Returns None for an empty list, any non-literal element (calls, idents, …),
+// or a heterogeneous mix — those keep falling back to the legacy `List<object>`
+// path.  When Some(e) is returned and `collElemConcrete(e)` holds, the literal
+// can be built as a genuine `List<e>` so indexed reads recover the real element
+// type instead of a boxed `object` (which downstream arithmetic/println then
+// mis-read as garbage).
+func inferHomogeneousListElemTypeMsil(exprs: in List[Expr]): Option[MsilType] {
+  if exprs.count == 0 {
+    return None
+  }
+  val firstTy = inferUntypedStaticValMsilType(exprs[0])
+  match firstTy {
+    case MObject -> return None
+    case _ -> ()
+  }
+  var i = 1
+  var homogeneous = true
+  while i < exprs.count {
+    if not msilSimpleTypeEq(inferUntypedStaticValMsilType(exprs[i]), firstTy) {
+      homogeneous = false
+    }
+    i = i + 1
+  }
+  if homogeneous {
+    Some(value = firstTy)
+  } else {
+    None
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Per-function codegen context.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4612,15 +4676,10 @@ func emitCompoundCombineMsil(
       case MString -> {
       }
       case MBool -> {
-        // Lowercase "true"/"false", not "True"/"False" (#5552). Currently
-        // unreachable in practice: `SAssign` type-checking rejects
-        // `s += true` with T0063 today regardless of RHS type (a separate,
-        // pre-existing gap tracked in #5657), so no program can reach this
-        // arm with `rTy == MBool` yet. Kept here
-        // rather than deleted so this call site doesn't silently regress to
-        // the wrong (uppercase) spelling the moment that type-checker gap
-        // is fixed — matching the other three now-reachable Bool
-        // stringification call sites' discipline.
+        // Lowercase "true"/"false", not "True"/"False" (#5552).  Reachable
+        // since #5657: `s += true` onto a String plain variable now
+        // type-checks, so this arm runs (covered by
+        // compound_string_assign_self_test.l on dotnet).
         emitBoolToStringMsil(cctx, fctx, insns)
       }
       case _ -> {
@@ -7132,16 +7191,54 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case _ -> {
-          insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-          var eli = 0
-          while eli < exprs.count {
-            insns.add(MDup)
-            val eTy = lowerExprMsil(cctx, fctx, insns, exprs[eli])
-            boxIfNeededMsil(cctx, insns, eTy)
-            insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
-            eli = eli + 1
+          // No surrounding type hint.  If the literal is homogeneous over a
+          // single concrete element type (`[9, 7]`, `["a", "b"]`), build a
+          // genuine `List<e>` — the same construction as the MConcreteList arm
+          // above — so an indexed read (`xs[0]`) recovers `e` instead of a
+          // boxed `object` that downstream `+`/`println` mis-read as garbage
+          // (#5620).  Anything non-homogeneous or non-literal keeps the legacy
+          // `List<object>` fallback.
+          match inferHomogeneousListElemTypeMsil(exprs) {
+            case Some(e) -> {
+              if collElemConcrete(e) {
+                insns.add(MListOp(op = LoCtor, elemTy = e))
+                var celc = 0
+                while celc < exprs.count {
+                  insns.add(MDup)
+                  pushCollExpect(fctx, e)
+                  val ceTy = lowerExprMsil(cctx, fctx, insns, exprs[celc])
+                  popCollExpect(fctx)
+                  collBoxIfNeeded(cctx, insns, ceTy, MConcreteList(elemTy = e))
+                  insns.add(MListOp(op = LoAdd, elemTy = e))
+                  celc = celc + 1
+                }
+                MConcreteList(elemTy = e)
+              } else {
+                insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+                var eli3 = 0
+                while eli3 < exprs.count {
+                  insns.add(MDup)
+                  val eTy3 = lowerExprMsil(cctx, fctx, insns, exprs[eli3])
+                  boxIfNeededMsil(cctx, insns, eTy3)
+                  insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+                  eli3 = eli3 + 1
+                }
+                MObject
+              }
+            }
+            case None -> {
+              insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+              var eli = 0
+              while eli < exprs.count {
+                insns.add(MDup)
+                val eTy = lowerExprMsil(cctx, fctx, insns, exprs[eli])
+                boxIfNeededMsil(cctx, insns, eTy)
+                insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+                eli = eli + 1
+              }
+              MObject
+            }
           }
-          MObject
         }
       }
     }

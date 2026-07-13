@@ -992,6 +992,92 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Compound-assign String self-test (#5657).  `s += <rhs>` onto a String
+      # plain variable now type-checks for any RHS (mirroring binary `+`), and
+      # lowers to the same lowercase-Bool / no-trailing-`.0`-Double
+      # stringification.  Both targets; the JVM half runs in
+      # `compiler-self-tests-jvm`.  Imports only `Std.*`.
+      - name: Compound-assign String self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping compound-assign self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping compound-assign self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/compound_string_assign_self_test.l
+
+      # UFCS self-field self-test (#5565).  An out-of-body UFCS method
+      # (`func Outer.m(self: in Outer)`) reading a `self` field now resolves the
+      # receiver type on JVM via `ctx.types["self"]` instead of erasing to
+      # Object.  Both targets; the JVM half runs in `compiler-self-tests-jvm`.
+      # Imports only `Std.*`.
+      - name: UFCS self-field self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping UFCS self-field self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping UFCS self-field self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/ufcs_self_field_self_test.l
+
+      # Opaque Option-field match self-test (#5576, MSIL).  Matching an
+      # `Option[T]` field stored in an opaque type no longer panics as
+      # non-exhaustive (the field's declared name is now registered so the ctor
+      # type-hint recovery builds the closed instantiation).  dotnet-only — the
+      # JVM backend has a separate, tracked gap for the same shape.  Imports
+      # only `Std.*`.
+      - name: Opaque Option-field self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping opaque Option-field self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping opaque Option-field self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/opaque_option_field_self_test.l
+
+      # List-literal indexed-read self-test (#5620, MSIL).  An unannotated list
+      # literal (`val xs = [9, 7]`) now builds a genuine `List<e>` when
+      # homogeneous, so `xs[0]` recovers the element type instead of a boxed
+      # `object` that downstream `+`/comparison mis-read as garbage.  dotnet-only
+      # — the JVM backend has the same root cause in a separate path, tracked as
+      # a parity follow-up.  Imports only `Std.*`.
+      - name: List-literal index self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping list-literal index self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping list-literal index self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/list_literal_index_self_test.l
+
       # Enum/closure/pattern-bind self-test (D-progress-623 / #5361, #5364).
       # Pins two self-hosted MSIL backend bugs: a payload-free `enum`
       # co-compiled with a closure crashing `Msil.Lowering` (#5361), and a
@@ -3520,6 +3606,47 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # JVM half of the compound-assign String self-test (#5657).  The JVM
+      # `s += <Double>` path spills the rhs to a slot before the (branching)
+      # Double `.0`-normalization so the stringification is verifiable — before
+      # the fix this was a class-load VerifyError.  dotnet half runs in
+      # compiler-self-tests-dotnet-a.
+      - name: Compound-assign String self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping compound-assign JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping compound-assign JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/compound_string_assign_self_test.l
+
+      # JVM half of the UFCS self-field self-test (#5565) — the load-bearing
+      # target: before the fix, an out-of-body UFCS method reading a `self` field
+      # panicked on JVM ("erased receiver").  dotnet half runs in
+      # compiler-self-tests-dotnet-a.
+      - name: UFCS self-field self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping UFCS self-field JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping UFCS self-field JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/ufcs_self_field_self_test.l
 
       # JVM half of the Bool stringification cross-target parity check
       # (#5552) — see the dotnet-side step above for the full rationale.

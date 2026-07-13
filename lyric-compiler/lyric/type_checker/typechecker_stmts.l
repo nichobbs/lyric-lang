@@ -169,10 +169,27 @@ pub func checkStatement(
     // unannotated bindings take the plain-inference path exactly as before.
     case SLocal(binding) -> match binding { case LBVal(pat, tyOpt, init) -> match tyOpt { case None -> bindPattern(sc, pat, inferExpr(sc, tbl, sigs, diag, init)); case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0060", "val binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); bindPattern(sc, pat, declT) } }; case LBVar(name, tyOpt, initOpt) -> match tyOpt { case None -> { val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }; scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = true)) }; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); match initOpt { case Some(initE) -> { val initType = inferExprExpected(sc, tbl, sigs, diag, initE, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0061", "var binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, initE, diag) }; case None -> {  } }; scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = true)) } }; case LBLet(name, tyOpt, init) -> match tyOpt { case None -> scopeAdd(sc, LocalBinding(name = name, ty = inferExpr(sc, tbl, sigs, diag, init), isMutable = false)); case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0062", "let binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = false)) } } }
 
-    case SAssign(target, _, value) -> {
+    case SAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExpr(sc, tbl, sigs, diag, value)
-      if not argSatisfiesParam(tbl, targetType, valueType) {
+      // `s += <rhs>` where `s: String` accepts any RHS type, mirroring binary
+      // `+`'s own "any operand + String = String" inference (`inferBinop`,
+      // BAdd/PtString).  Scoped to `+=` with a String-typed *plain variable*
+      // target (a 1-segment path) — the only shape whose compound-combine
+      // codegen is verified correct on both backends (#5657).  Field
+      // (`obj.f += x`) and indexed (`xs[i] += x`) String targets keep the
+      // strict check: their compound-assign codegen infers the element/field
+      // type from the RHS and would miscompile a non-String RHS, so widening
+      // them is deferred to a tracked follow-up rather than turned into a
+      // silent runtime crash.  Every other compound op (`-=`/`*=`/…) and every
+      // other target type also stays strict, exactly like `=`.
+      val targetIsSimpleVar = match target.kind { case EPath(p) -> p.segments.count == 1; case _ -> false }
+      val stringPlusAssign = targetIsSimpleVar and
+        match op {
+          case AssPlus -> match targetType { case TyPrim(pt) -> match pt { case PtString -> true; case _ -> false }; case _ -> false }
+          case _ -> false
+        }
+      if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(
             "T0063",
