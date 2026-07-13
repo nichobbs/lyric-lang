@@ -1685,11 +1685,26 @@ func inferReturnFromName(
       // logical return is Unit), producing a specialisation whose
       // parameter type lowers to the illegal MSIL `ELEMENT_TYPE_VOID` in
       // a parameter position (`TypeLoadException: The signature is
-      // incorrect.` at type-load time, unconditionally). Fall back to the
-      // same `None` degradation already used for lambdas, BCL returns,
-      // and impl-block dispatch — the call stays generic/erased instead
-      // of miscompiling.
-      None
+      // incorrect.` at type-load time, unconditionally).
+      //
+      // For a `Unit`-returning async func the physical value is a bare
+      // `System.Threading.Tasks.Task` — nameable via the same `Task`
+      // extern type `Std.Task` already exposes (D-progress-541 and
+      // friends), so report that instead of the misleading `Unit`. A
+      // non-`Unit` async return would physically be `Task<T>`, which has
+      // no corresponding public Lyric generic type to name safely here;
+      // fall back to the same `None` degradation used for lambdas, BCL
+      // returns, and impl-block dispatch so the call stays generic/erased
+      // instead of guessing at a shape that might not resolve.
+      val isUnitRet = match decl.ret {
+        case None -> true
+        case Some(r) -> match r.kind { case TUnit -> true; case _ -> false }
+      }
+      if isUnitRet {
+        Some(value = TypeExpr(kind = TRef(path = singleSegPath("Task")), span = decl.span))
+      } else {
+        None
+      }
     } else {
       val typeParams = extractTypeParamNames(decl.generics)
       val subst: Map[String, TypeExpr] = newMap()
