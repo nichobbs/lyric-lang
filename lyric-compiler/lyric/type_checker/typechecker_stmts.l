@@ -172,23 +172,11 @@ pub func checkStatement(
     case SAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExpr(sc, tbl, sigs, diag, value)
-      // `s += <rhs>` where `s: String` accepts any RHS type, mirroring binary
-      // `+`'s own "any operand + String = String" inference (`inferBinop`,
-      // BAdd/PtString).  Scoped to `+=` with a String-typed *plain variable*
-      // target (a 1-segment path) — the only shape whose compound-combine
-      // codegen is verified correct on both backends (#5657).  Field
-      // (`obj.f += x`) and indexed (`xs[i] += x`) String targets keep the
-      // strict check: their compound-assign codegen infers the element/field
-      // type from the RHS and would miscompile a non-String RHS, so widening
-      // them is deferred to a tracked follow-up rather than turned into a
-      // silent runtime crash.  Every other compound op (`-=`/`*=`/…) and every
-      // other target type also stays strict, exactly like `=`.
-      val targetIsSimpleVar = match target.kind { case EPath(p) -> p.segments.count == 1; case _ -> false }
-      val stringPlusAssign = targetIsSimpleVar and
-        match op {
-          case AssPlus -> match targetType { case TyPrim(pt) -> match pt { case PtString -> true; case _ -> false }; case _ -> false }
-          case _ -> false
-        }
+      // `s += <rhs>` onto a String plain-variable target accepts any RHS type
+      // (mirroring binary `+`); field/indexed String targets stay strict.  See
+      // `isStringPlusVarAssign` (typechecker_exprs.l) for the full rationale
+      // and the #5688 follow-up (#5657).
+      val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
       if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(

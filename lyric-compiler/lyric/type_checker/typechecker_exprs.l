@@ -7,6 +7,23 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 
+// `s += <rhs>` onto a String *plain-variable* target accepts any RHS type,
+// mirroring binary `+`'s "any operand + String = String" inference (#5657).
+// Scoped to `+=` with a 1-segment path target of String type: field
+// (`obj.f += x`) and indexed (`xs[i] += x`) String targets stay strict because
+// their compound-assign codegen infers the element/field type from the RHS and
+// would miscompile a non-String RHS (widening them is tracked in #5688).  Every
+// other compound op and every other target type also stays strict, like `=`.
+// Shared by the SAssign (typechecker_stmts.l) and EAssign checking paths.
+pub func isStringPlusVarAssign(target: in Expr, op: in AssignOp, targetType: in Type): Bool {
+  val targetIsSimpleVar = match target.kind { case EPath(p) -> p.segments.count == 1; case _ -> false }
+  targetIsSimpleVar and
+    match op {
+      case AssPlus -> match targetType { case TyPrim(pt) -> match pt { case PtString -> true; case _ -> false }; case _ -> false }
+      case _ -> false
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Literal types.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3616,16 +3633,7 @@ pub func inferExpr(
     case EAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExpr(sc, tbl, sigs, diag, value)
-      // `s += <rhs>` on a String plain-variable target accepts any RHS,
-      // mirroring binary `+` (#5657) — kept in sync with the SAssign path in
-      // typechecker_stmts.l (field/indexed targets stay strict; see the note
-      // there).
-      val targetIsSimpleVar = match target.kind { case EPath(p) -> p.segments.count == 1; case _ -> false }
-      val stringPlusAssign = targetIsSimpleVar and
-        match op {
-          case AssPlus -> match targetType { case TyPrim(pt) -> match pt { case PtString -> true; case _ -> false }; case _ -> false }
-          case _ -> false
-        }
+      val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
       if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(

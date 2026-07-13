@@ -72,3 +72,28 @@ test "opaque Option[String] field Some matches with its payload" {
 test "opaque Option[Int] field None matches (generic-payload variant)" {
   assertEqualInt(readNoneI(), 0 - 1, "Int None arm is reached")
 }
+
+// Interleaved `invariant:` member: `v` is the SECOND field but the THIRD
+// member, so the field-ordinal counter (`fpos`) must advance on fields only,
+// not track the raw member index (`fi`).  This is the exact scenario the fix's
+// dedicated `fpos` counter guards against (#5692).
+opaque type HolderInv {
+  n: Int
+  invariant: n >= 0
+  v: Option[String]
+}
+
+func HolderInv.value(self: in HolderInv): Option[String] = self.v
+
+func makeInvNone(): HolderInv = HolderInv(n = 0, v = None)
+
+func readInvNone(): String {
+  match makeInvNone().value() {
+    case Some(s) -> s
+    case None -> "none"
+  }
+}
+
+test "opaque Option field after an interleaved invariant still matches None (#5692)" {
+  assertEqual(readInvNone(), "none", "field ordinal not skewed by the invariant member")
+}

@@ -52,6 +52,37 @@ func litStrings(): String {
   xs[0] + xs[1]
 }
 
+func litDoubles(): Bool {
+  val xs = [1.5, 2.5]
+  xs[0] + xs[1] == 4.0
+}
+
+func litBools(): Bool {
+  val xs = [true, false]
+  xs[0] and not xs[1]
+}
+
+func litChars(): Bool {
+  val xs = ['a', 'b']
+  xs[0] == 'a' and xs[1] == 'b'
+}
+
+func litLongs(): Bool {
+  // Magnitudes beyond Int32 range infer as Long, so this exercises the MLong
+  // element path.
+  val xs = [10000000000, 20000000000]
+  xs[0] + xs[1] == 30000000000
+}
+
+// Element type recovered from a bare local variable, not a syntactic literal
+// (the #5690 extension: `[a, b]` builds `List<Int>`, not `List<object>`).
+func litVars(): Int {
+  val a = 9
+  val b = 7
+  val xs = [a, b]
+  xs[0] + xs[1]
+}
+
 test "unannotated Int list literal indexes as Int, not garbage (#5620)" {
   assertEqualInt(litIndex0(), 9, "xs[0] == 9")
   assertEqualInt(litSum(), 16, "xs[0] + xs[1] == 16 (integer add, not object-ref garbage)")
@@ -67,4 +98,15 @@ test "annotated newList()+.add baseline stays correct" {
 
 test "unannotated String list literal indexes as String" {
   assertEqual(litStrings(), "ab", "xs[0] + xs[1] == \"ab\"")
+}
+
+test "unannotated list literals recover Double/Bool/Char/Long element types" {
+  assertTrue(litDoubles(), "Double: xs[0] + xs[1] == 4.0")
+  assertTrue(litBools(), "Bool: xs[0] and not xs[1]")
+  assertTrue(litChars(), "Char: xs[0] == 'a' and xs[1] == 'b'")
+  assertTrue(litLongs(), "Long: xs[0] + xs[1] == 30000000000")
+}
+
+test "list literal over local variables recovers the element type (#5690)" {
+  assertEqualInt(litVars(), 16, "[a, b] with Int locals indexes as Int")
 }

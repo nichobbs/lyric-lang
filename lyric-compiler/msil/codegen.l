@@ -3915,27 +3915,58 @@ func msilSimpleTypeEq(a: in MsilType, b: in MsilType): Bool {
   }
 }
 
+// The static element type of one list-literal element for the homogeneity
+// check: a simple literal's type, or — for a bare 1-segment name — the tracked
+// MsilType of the local/param it binds (`fctx.types`), so `[a, b]` with Int
+// locals recovers `MInt`, not just `[9, 7]`.  Function calls, member access,
+// and other complex element expressions still resolve to `MObject` here (their
+// type needs call/name resolution the peek doesn't do), so a literal with any
+// such element keeps the legacy `List<object>` fallback — a residual of #5620
+// tracked in #5690.
+func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
+  match e.kind {
+    case EPath(p) -> if p.segments.count == 1 { match mapGet(fctx.types, p.segments[0]) { case Some(t) -> t; case None -> MObject } } else { MObject }
+    case _ -> inferUntypedStaticValMsilType(e)
+  }
+}
+
+// True for the value/String element types whose boxing was the #5620 miscompile
+// (a value element stored boxed and read back mis-typed).  Reference/record
+// element types are deliberately excluded — they don't garbage-read the same
+// way, so a `[record, record]` literal keeps the conservative legacy path.
+func isSimpleListElemMsil(t: in MsilType): Bool {
+  match t {
+    case MInt -> true
+    case MLong -> true
+    case MDouble -> true
+    case MBool -> true
+    case MChar -> true
+    case MString -> true
+    case _ -> false
+  }
+}
+
 // Infer a single concrete element MsilType for an unannotated list literal when
-// every element is a literal (or `-literal`) sharing one static type (#5620).
-// Returns None for an empty list, any non-literal element (calls, idents, …),
-// or a heterogeneous mix — those keep falling back to the legacy `List<object>`
-// path.  When Some(e) is returned and `collElemConcrete(e)` holds, the literal
-// can be built as a genuine `List<e>` so indexed reads recover the real element
-// type instead of a boxed `object` (which downstream arithmetic/println then
-// mis-read as garbage).
-func inferHomogeneousListElemTypeMsil(exprs: in List[Expr]): Option[MsilType] {
+// every element shares one simple static type (#5620) — a literal, or a bare
+// local/param name (via `listLiteralElemTypeMsil`).  Returns None for an empty
+// list, any element whose type can't be peeked (calls, member access, …; #5690),
+// a non-simple element type, or a heterogeneous mix — those keep falling back to
+// the legacy `List<object>` path.  When Some(e) is returned and
+// `collElemConcrete(e)` holds, the literal can be built as a genuine `List<e>`
+// so indexed reads recover the real element type instead of a boxed `object`
+// (which downstream arithmetic/println then mis-read as garbage).
+func inferHomogeneousListElemTypeMsil(fctx: in FuncCtx, exprs: in List[Expr]): Option[MsilType] {
   if exprs.count == 0 {
     return None
   }
-  val firstTy = inferUntypedStaticValMsilType(exprs[0])
-  match firstTy {
-    case MObject -> return None
-    case _ -> ()
+  val firstTy = listLiteralElemTypeMsil(fctx, exprs[0])
+  if not isSimpleListElemMsil(firstTy) {
+    return None
   }
   var i = 1
   var homogeneous = true
   while i < exprs.count {
-    if not msilSimpleTypeEq(inferUntypedStaticValMsilType(exprs[i]), firstTy) {
+    if not msilSimpleTypeEq(listLiteralElemTypeMsil(fctx, exprs[i]), firstTy) {
       homogeneous = false
     }
     i = i + 1
@@ -7192,13 +7223,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         }
         case _ -> {
           // No surrounding type hint.  If the literal is homogeneous over a
-          // single concrete element type (`[9, 7]`, `["a", "b"]`), build a
-          // genuine `List<e>` — the same construction as the MConcreteList arm
-          // above — so an indexed read (`xs[0]`) recovers `e` instead of a
-          // boxed `object` that downstream `+`/`println` mis-read as garbage
-          // (#5620).  Anything non-homogeneous or non-literal keeps the legacy
-          // `List<object>` fallback.
-          match inferHomogeneousListElemTypeMsil(exprs) {
+          // single simple element type — from literals (`[9, 7]`) or bare
+          // local/param names (`[a, b]`) — build a genuine `List<e>` (the same
+          // construction as the MConcreteList arm above) so an indexed read
+          // (`xs[0]`) recovers `e` instead of a boxed `object` that downstream
+          // `+`/`println` mis-read as garbage (#5620).  A heterogeneous mix, or
+          // any element whose type can't be peeked (calls, member access, …;
+          // residual tracked in #5690), keeps the legacy `List<object>` fallback.
+          match inferHomogeneousListElemTypeMsil(fctx, exprs) {
             case Some(e) -> {
               if collElemConcrete(e) {
                 insns.add(MListOp(op = LoCtor, elemTy = e))
