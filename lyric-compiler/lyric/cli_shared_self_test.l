@@ -368,3 +368,31 @@ test "resolveProjectSources: a [project.packages] entry pointing at a missing fi
     case Cli.ProjSourcesMissingManifest -> panic("resolveProjectSources: expected ProjSourcesFatal, got ProjSourcesMissingManifest")
   }
 }
+
+// isDotnetStdlibSource: the freshness-guard filter that keeps a JVM- or
+// native-only kernel edit from spuriously flagging the .NET bundle stale
+// (#5718).  Pure over the path string, so this is deterministic — no mtime
+// timing dependence.
+test "isDotnetStdlibSource: .NET-relevant sources included, JVM/native-only excluded" {
+  // Public stdlib surface and the shared .NET kernel are relevant.
+  assertTrue(Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/http.l"), "public stdlib file is .NET-relevant")
+  assertTrue(
+    Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/_kernel/format_host.l"),
+    "shared _kernel host is .NET-relevant"
+  )
+  // JVM- and native-only kernel trees do not contribute to the .NET bundle.
+  assertFalse(
+    Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/_kernel_jvm/char_host.l"),
+    "_kernel_jvm file is excluded"
+  )
+  assertFalse(
+    Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/_kernel_native/file.l"),
+    "_kernel_native file is excluded"
+  )
+  // The two JVM-only files inside the shared _kernel dir are also excluded.
+  assertFalse(Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/_kernel/jvm.l"), "_kernel/jvm.l is excluded")
+  assertFalse(
+    Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/_kernel/jvm_exception.l"),
+    "_kernel/jvm_exception.l is excluded"
+  )
+}

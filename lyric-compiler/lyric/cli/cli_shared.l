@@ -653,18 +653,33 @@ func findCompiledLibDir(): String {
 // results that don't reflect the edit — the exact trap that produced a false
 // "all green" during the D-progress-669 auto-FFI migration.  This guard
 // surfaces that staleness.
-// True iff any `.l` file under `dir` (recursive) is newer than `ref`.  Stats
-// the bundle ONCE up front and passes it in so we can early-exit at the first
-// newer source rather than computing the newest of the whole tree — the common
-// (fresh) case still walks every file to confirm none are newer, but that is a
-// bounded one-time `stat` sweep of the ~100-file stdlib source dir, dwarfed by
-// the compile that always follows, and it only runs in a dev tree.
+// True iff a `.l` source file is one that the `.NET` `Lyric.Stdlib.dll` bundle
+// is built from.  Mirrors `findStdlibSourcesForTarget(false)`: the JVM- and
+// native-only kernels — the whole `_kernel_jvm/` and `_kernel_native/` trees,
+// plus the two JVM-only `_kernel/jvm*.l` files — never contribute to the .NET
+// bundle, so editing one must NOT flag the bundle stale on a `--target dotnet`
+// run (which would break the guard's "never fires spuriously" invariant).
+pub func isDotnetStdlibSource(path: in String): Bool {
+  if Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") {
+    return false
+  }
+  val base = Path.basename(path)
+  not (base == "jvm.l" or base == "jvm_exception.l")
+}
+
+// True iff any `.NET`-relevant `.l` file under `dir` (recursive) is newer than
+// `ref`.  Stats the bundle ONCE up front and passes it in so we can early-exit
+// at the first newer source rather than computing the newest of the whole tree
+// — the common (fresh) case still walks every file to confirm none are newer,
+// but that is a bounded one-time `stat` sweep of the ~100-file stdlib source
+// dir, dwarfed by the compile that always follows, and it only runs in a dev
+// tree.
 func anyLyricSourceNewerThan(dir: in String, ref: in File.FileStat): Bool {
   match File.listFilesRecursive(dir) {
     case Err(_) -> false
     case Ok(files) -> {
       for f in files.toArray() {
-        if Str.endsWith(f, ".l") {
+        if Str.endsWith(f, ".l") and isDotnetStdlibSource(f) {
           match File.stat(f) {
             case Ok(st) -> {
               if File.fileStatIsNewer(st, ref) {
