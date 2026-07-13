@@ -111,7 +111,8 @@ val client = Lyric.Docker.makeDockerClientAt("/custom/path/docker.sock")
 ### Container Operations
 
 - `listContainers(client)` — List all containers
-- `createContainer(client, image, env, binds)` — Create a container from an image with env vars and volume binds
+- `createContainer(client, image, env, binds)` — Create a container from an image with env vars and volume binds, using the Docker default network
+- `createContainerWithNetwork(client, image, env, binds, networkMode)` — Create a container, additionally pinning its NetworkMode (e.g. `"none"` for full isolation, or a named Docker network); an empty `networkMode` keeps the Docker default
 - `startContainer(client, containerId)` — Start a created container
 - `waitContainer(client, containerId)` — Block until a container exits; returns its exit code
 - `stopContainer(client, containerId)` — Stop a running container
