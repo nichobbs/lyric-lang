@@ -15542,6 +15542,84 @@ failure shape without any change needed to `routeDispatch`.
 
 ---
 
+## D-progress-669 — Retire `@externTarget` from `streamCopyTo`; catalogue what blocks auto-FFI migration of the rest of the HTTP + process kernels
+
+The FFI-capability work of docs/59 waves 1–5 (auto-FFI properties/statics,
+value-type receivers, base-type method walks, generic returns) made a receiver
+declared as an `extern type` able to call BCL members directly
+(`recv.Method(args)`, `recv.Prop`, `recv.Prop = v`, `Type.Static(args)`,
+`Type.new(args)`), with the MSIL emitter resolving the real MemberRef from
+reference-assembly metadata.  This entry set out to retire the stdlib kernel's
+manual `@externTarget("Type.Member") … = ()` bindings wholesale, but the actual
+shippable result is narrow: **only `streamCopyTo` in `process_capture_host.l`
+migrates** (`src.CopyToAsync(dst)` binds `Stream.CopyToAsync(Stream)` through
+the instance-call scorer's base-type walk).  An 18-extern `http_host.l`
+migration passed `http_tests` (10/10) and `http_async_tests` (6/6) but **was
+reverted** — it crashed the live-round-trip regression
+`http_roundtrip_self_test.l` (a real `GET`/`POST`/`sendAsync` against a spawned
+server, the #5560 coverage test), which the construction- and
+interface-dispatch-only suites never exercise.  Reverting the response getters
+alone did not fix it and the crash surfaces no diagnostic (hard exit 1),
+so isolating the offending function across the ~2-minute bundle-rebuild loop
+was not worth the risk of shipping a subtle send-path miscompile; per-function
+live-send re-verification of `http_host.l` is filed as follow-up.  Verified:
+`process_capture_tests` ok, `http_roundtrip_self_test` 3/3, plus the regression
+sweep (`http_tests` 10/10, `http_async_tests` 6/6, `format`/`json`/`process`/
+`time`/`uuid` all ok).
+
+The load-bearing lesson is a **hard bootstrap constraint that gates every
+stdlib-kernel FFI migration**: the stdlib bundle is compiled by the *stage-0
+seed* compiler, and a bad auto-FFI shape does **not** fail the seed at compile
+time — the seed emits a broken call that only faults at *runtime*, silently
+poisoning `Lyric.Stdlib.dll` (a migrated `Double.ToString(fmt, culture)` on a
+builtin `Double` receiver compiled clean, then threw
+"unsupported method 'ToString'" from inside the running compiler's own
+`Std.Format.formatFixed`).  Compile-success — *and even passing the
+construction-only suites* — is therefore not verification; only rebuilding the
+bundle and running the full behavioural suites (including live round-trips) is.
+The shapes that must stay `@externTarget`, confirmed empirically against the
+seed and by runtime tests:
+
+- **Live-send HTTP client/response paths** (`http_host.l`): the request-build /
+  client-construct / response-read externs emit IL that passes construction and
+  interface-dispatch tests but crashes an end-to-end round trip; kept manual
+  pending per-function live verification.
+
+- **Builtin-typed receivers** (`Int`/`Double`/… `.ToString(fmt)`): auto-FFI
+  needs an `extern type` receiver; a Lyric builtin has no metadata binding.
+  (`format_host.l` — not migrated.)
+- **Async externs**: `Std.Http` depends on these being `@externTarget async
+  func … = ()` returning `T` (not `Task[T]`) so the emitter's `isTaskTypeMsil`
+  check sees zero state-machine resume points and the await-in-try safe
+  wrappers never route a resume label into a CLR protected region (V0012 /
+  #2985).  A native `await client.SendAsync(request)` body reintroduces a real
+  `Task[T]` resume point and miscompiles to invalid IL
+  (`InvalidProgramException`).
+- **Constructors whose argument is itself an extern-type value**
+  (`HttpRequestMessage.new(method, url)`, `StreamReader.new(memStream)`): the
+  metadata `.ctor` resolver matches primitive/`String` args but not a
+  class-typed argument.  Zero-arg and `String`/primitive-arg ctors migrate
+  fine (`HttpClientHandle.new()`, `BclHttpMethod.new(name)`).
+- **Overloads reachable only via a trailing optional/`out` param**
+  (`JsonDocument.Parse(string, JsonDocumentOptions = default)`, every
+  `TryParse`/`TryGetValue`/`TryGetProperty`): auto-FFI overload scoring is
+  exact-arity (Q-MD-004).  (`json_host.l` — not migrated.)
+- **Nested value-type struct enumerators** (`JsonElement+ArrayEnumerator`
+  `MoveNext`/`Current`): the emitted reference faults with `TypeLoadException`
+  at runtime.  (`json_host.l` — not migrated.)
+
+Notably, an *instance* call binding a base-class or interface parameter with a
+derived argument (`Stream.CopyToAsync(memStream)`,
+`Double.ToString(fmt, cultureInfo)` where `CultureInfo` implements
+`IFormatProvider`) **does** resolve — the instance-call scorer walks base
+types — so the "no base-type walk" caveats on the old `streamCopyTo` /
+`headersGet` comments were stale; `streamCopyTo` was migrated, and the
+constructor-arg limitation above is specific to the `.ctor` resolver.
+
+**Related:** docs/59, #1622, #5577 (D-progress-667).
+
+---
+
 ## Decisions deferred to v2 or later
 
 
