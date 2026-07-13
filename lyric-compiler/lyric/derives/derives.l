@@ -171,6 +171,13 @@ func methodCall1(recv: in Expr, methodName: in String, a1: in Expr): Expr {
   mkExpr(ECall(fn = callee, args = args), sp())
 }
 
+// `recv[idx]`
+func indexExpr(recv: in Expr, idx: in Expr): Expr {
+  val indices: List[Expr] = newList()
+  indices.add(idx)
+  mkExpr(EIndex(receiver = recv, indices = indices), sp())
+}
+
 // `Std.Json.<fn>` as a qualified path expression.
 func jsonPath(fn: in String): Expr {
   val segs: List[String] = newList()
@@ -583,7 +590,25 @@ func jsonTypeNameOf(ty: in TypeExpr): String {
 }
 
 func isJsonScalarPrimitiveName(name: in String): Bool {
-  name == "Int" or name == "Long" or name == "Bool" or name == "Double" or name == "Float" or name == "Byte" or name == "Char"
+  name == "Int" or name == "Long" or name == "Bool" or name == "Double" or name == "Float" or name == "Byte" or
+    name == "Char"
+}
+
+// Wraps a `String`-typed expression in JSON-escaped double quotes:
+// `"\"" + strExpr.replace(...) + "\""`.
+func quoteJsonStringExpr(strExpr: in Expr): Expr {
+  // strExpr
+  //   .replace("\\", "\\\\")   // must be first so the \\ introduced
+  //   .replace("\"", "\\\"")   //   by the next step isn't doubled
+  //   .replace("\n", "\\n")
+  //   .replace("\r", "\\r")
+  //   .replace("\t", "\\t")
+  val esc1 = methodCall2(strExpr, "replace", strLit("\\"), strLit("\\\\"))
+  val esc2 = methodCall2(esc1, "replace", strLit("\""), strLit("\\\""))
+  val esc3 = methodCall2(esc2, "replace", strLit("\n"), strLit("\\n"))
+  val esc4 = methodCall2(esc3, "replace", strLit("\r"), strLit("\\r"))
+  val esc5 = methodCall2(esc4, "replace", strLit("\t"), strLit("\\t"))
+  strCat(strCat(strLit("\""), esc5), strLit("\""))
 }
 
 func jsonFieldExpr(fieldExpr: in Expr, ty: in TypeExpr): Expr {
@@ -592,18 +617,11 @@ func jsonFieldExpr(fieldExpr: in Expr, ty: in TypeExpr): Expr {
     case _ -> {
       val typeName = jsonTypeNameOf(ty)
       if typeName == "String" {
-        // self.field
-        //   .replace("\\", "\\\\")   // must be first so the \\ introduced
-        //   .replace("\"", "\\\"")   //   by the next step isn't doubled
-        //   .replace("\n", "\\n")
-        //   .replace("\r", "\\r")
-        //   .replace("\t", "\\t")
-        val esc1 = methodCall2(fieldExpr, "replace", strLit("\\"), strLit("\\\\"))
-        val esc2 = methodCall2(esc1, "replace", strLit("\""), strLit("\\\""))
-        val esc3 = methodCall2(esc2, "replace", strLit("\n"), strLit("\\n"))
-        val esc4 = methodCall2(esc3, "replace", strLit("\r"), strLit("\\r"))
-        val esc5 = methodCall2(esc4, "replace", strLit("\t"), strLit("\\t"))
-        strCat(strCat(strLit("\""), esc5), strLit("\""))
+        quoteJsonStringExpr(fieldExpr)
+      } else if typeName == "Char" {
+        // Char isn't a native JSON type; encode as a one-character JSON
+        // string, matching `fromJson`'s `getString(...)[0]` decode.
+        quoteJsonStringExpr(call1("toString", fieldExpr))
       } else if isJsonScalarPrimitiveName(typeName) or typeName == "" {
         call1("toString", fieldExpr)
       } else {
@@ -626,7 +644,10 @@ func jsonArraySerializeExpr(fieldExpr: in Expr, elemTy: in TypeExpr): Expr {
   stmts.add(stmtLocal("__json_first", Some(typeRef("Bool")), boolLit(true)))
   val loopStmts: List[Statement] = newList()
   loopStmts.add(
-    stmtIf(notExpr(pathExpr("__json_first")), blockOf(oneStmtList(stmtAssign(pathExpr("__json_acc"), strCat(pathExpr("__json_acc"), strLit(","))))))
+    stmtIf(
+      notExpr(pathExpr("__json_first")),
+      blockOf(oneStmtList(stmtAssign(pathExpr("__json_acc"), strCat(pathExpr("__json_acc"), strLit(",")))))
+    )
   )
   loopStmts.add(stmtAssign(pathExpr("__json_first"), boolLit(false)))
   loopStmts.add(
@@ -692,6 +713,14 @@ func jsonScalarGetterFor(typeName: in String): String {
     "getBoolean"
   } else if typeName == "Double" or typeName == "Float" {
     "getDouble"
+  } else if typeName == "Byte" {
+    // Post-processed by `jsonDecodeScalarExpr` via `.toByte()` — `Std.Json`
+    // has no dedicated byte accessor (#5729).
+    "getInt32"
+  } else if typeName == "Char" {
+    // Post-processed by `jsonDecodeScalarExpr` via string-indexing — encoded
+    // as a one-character JSON string by `jsonFieldExpr` (#5729).
+    "getString"
   } else {
     ""
   }
@@ -706,7 +735,14 @@ func jsonScalarOrNone(typeName: in String): Bool {
 }
 
 func jsonDecodeScalarExpr(elemVarName: in String, typeName: in String): Expr {
-  jsonCall1(jsonScalarGetterFor(typeName), pathExpr(elemVarName))
+  val getterExpr = jsonCall1(jsonScalarGetterFor(typeName), pathExpr(elemVarName))
+  if typeName == "Byte" {
+    methodCall0(getterExpr, "toByte")
+  } else if typeName == "Char" {
+    indexExpr(getterExpr, longLitOf(0i64))
+  } else {
+    getterExpr
+  }
 }
 
 // Build `var __json_slice: slice[ElemTy] = []` + a `for` loop over
@@ -722,7 +758,10 @@ func jsonSliceDecodeBlock(fieldName: in String, elemTy: in TypeExpr, restExpr: i
   loopStmts.add(stmtVal("__json_elem", None, jsonCall1("arrayCurrent", pathExpr("__json_cur"))))
   if jsonScalarOrNone(elemTypeName) {
     loopStmts.add(
-      stmtAssign(pathExpr(fieldName), methodCall1(pathExpr(fieldName), "append", jsonDecodeScalarExpr("__json_elem", elemTypeName)))
+      stmtAssign(
+        pathExpr(fieldName),
+        methodCall1(pathExpr(fieldName), "append", jsonDecodeScalarExpr("__json_elem", elemTypeName))
+      )
     )
   } else {
     // Nested record element: recursively parse via its own `fromJson` from
@@ -734,7 +773,14 @@ func jsonSliceDecodeBlock(fieldName: in String, elemTy: in TypeExpr, restExpr: i
     // discard the call's result (#5725).
     val appendArm = mkArmBlock(
       ctorPat("Ok", oneList(bindingPat("__json_ev"))),
-      blockOf(oneStmtList(stmtAssign(pathExpr(fieldName), methodCall1(pathExpr(fieldName), "append", pathExpr("__json_ev")))))
+      blockOf(
+        oneStmtList(
+          stmtAssign(
+            pathExpr(fieldName),
+            methodCall1(pathExpr(fieldName), "append", pathExpr("__json_ev"))
+          )
+        )
+      )
     )
     val returnErrArm = mkArmBlock(
       ctorPat("Err", oneList(bindingPat("__json_em"))),
@@ -746,7 +792,14 @@ func jsonSliceDecodeBlock(fieldName: in String, elemTy: in TypeExpr, restExpr: i
     )
     loopStmts.add(stmtExprOnly(decodeMatch))
   }
-  val whileLoop = mkStmt(SWhile(label = None, cond = jsonCall1("arrayMoveNext", pathExpr("__json_cur")), body = blockOf(loopStmts)), sp())
+  val whileLoop = mkStmt(
+    SWhile(
+      label = None,
+      cond = jsonCall1("arrayMoveNext", pathExpr("__json_cur")),
+      body = blockOf(loopStmts)
+    ),
+    sp()
+  )
   stmts.add(whileLoop)
   blockValue(stmts, restExpr)
 }
@@ -776,7 +829,10 @@ func jsonFieldDecodeBlock(fieldName: in String, ty: in TypeExpr, restExpr: in Ex
         val errArm = mkArm(ctorPat("Err", oneList(bindingPat("__json_em"))), call1("Err", pathExpr("__json_em")))
         blockValue(
           newList(),
-          mkMatchExpr(methodCall1(pathExpr(typeName), "fromJson", jsonCall1("getRawText", pathExpr("__e"))), matchArmPair(errArm, okArm))
+          mkMatchExpr(
+            methodCall1(pathExpr(typeName), "fromJson", jsonCall1("getRawText", pathExpr("__e"))),
+            matchArmPair(errArm, okArm)
+          )
         )
       }
     }
@@ -814,12 +870,20 @@ func synthesizeFromJsonRecord(typeName: in String, decl: in RecordDecl, vis: in 
   val fields = collectFields(decl)
   val stmts: List[Statement] = newList()
   stmts.add(stmtVal("__doc", None, jsonCall1("parseJson", pathExpr("json"))))
-  stmts.add(mkStmt(SDefer(body = blockOf(oneStmtList(stmtExprOnly(jsonCall1("disposeJson", pathExpr("__doc")))))), sp()))
+  stmts.add(
+    mkStmt(SDefer(body = blockOf(oneStmtList(stmtExprOnly(jsonCall1("disposeJson", pathExpr("__doc")))))), sp())
+  )
   stmts.add(stmtVal("__root", None, jsonCall1("rootElement", pathExpr("__doc"))))
   val body = blockStmtsReturn(stmts, jsonBuildFieldChain(typeName, fields, 0))
   val params: List[Param] = newList()
   params.add(makeParam("json", typeRef("String")))
-  val retTy = mkType(TGenericApp(head = ModulePath(segments = oneStrList("Result"), span = sp()), args = resultTypeArgs(typeName)), sp())
+  val retTy = mkType(
+    TGenericApp(
+      head = ModulePath(segments = oneStrList("Result"), span = sp()),
+      args = resultTypeArgs(typeName)
+    ),
+    sp()
+  )
   funcItem(makeFuncDecl(typeName + ".fromJson", params, retTy, body, vis), vis)
 }
 
@@ -1412,9 +1476,11 @@ pub func deriveFile(file: in SourceFile): SourceFile {
 /// `self.field.subfield` read in a UFCS method body to invalid IL — a
 /// pre-existing codegen defect that affects hand-written methods too and is
 /// orthogonal to this AST transform (tracked in #3353).
-// True if any synthesised item is a `.fromJson`/`.toJson` helper — both are
-// always added together by `deriveItem`, so checking one name suffix suffices.
-func synthsUseJson(synths: in List[Item]): Bool {
+func synthsUseJson(
+  // True if any synthesised item is a `.fromJson`/`.toJson` helper — both are
+  // always added together by `deriveItem`, so checking one name suffix suffices.
+  synths: in List[Item],
+): Bool {
   var i = 0
   while i < synths.count {
     match synths[i].kind {

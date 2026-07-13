@@ -2153,28 +2153,26 @@ pub func preSeedBundleAsyncRetTypesMsil(
 // (before the package loop) and per-package (top of `addPackageTokens`) is
 // idempotent.  These maps let the await pre-scan type method-call receivers
 // (`await response.bodyText()`) without consulting the live token maps, whose
-// contents differ between the Pass-1 count and the Phase-B count.
-// `isAsync`: an async SM's kickoff MethodDef physically returns
-// Task/Task<T> even though the AST's `ret` names the logical (post-await)
-// type — the pre-scan (Phase A) and emission (Phase B) must agree on this
-// wrapped shape for `await`'s bookkeeping to stay consistent (#5xxx). Before
-// this fix, every registry `pbSeedTypeInfoItemsMsil`/`pbSeedTypeInfoRecordMsil`
-// populate recorded the BARE declared return, while codegen's own EAwait
-// emission resolves the real Task-wrapped return for these same cross-package
-// async calls — the mismatch corrupted the async state machine's resume-label/
-// awaiter-field count (compiler panic in `emitPhaseBAwait`, or a silently wrong
-// field count that crashes the JIT with `InvalidProgramException` at runtime).
+// contents differ between the Pass-1 count and the Phase-B count.  Always the
+// BARE declared return, never Task-wrapped: `pbMethodCallRetPB`'s receiver-chain
+// resolution and the `EMember`/`EMatch` typing above assume these registries
+// name the logical (post-await) type, and Task-wrapping them for async items
+// was tried (#5731) and reverted after it corrupted receiver-chain typing for
+// blocking-`@externTarget async` methods (whose Lyric-visible wrapper returns
+// the bare type, not Task<T>), producing a real SIGSEGV in
+// `lyric-stdlib/tests/http_tests.l`. The narrower bug this would have fixed
+// (an uncounted await on a bundle-local/restored async interface method, e.g.
+// `Std.Http.HttpClient.send`) remains open — see docs/59 or the PR description
+// for the known repro.
 func pbSeedRetTy(
   cctx: in CodegenCtx,
   key: in String,
   ret: in Option[TypeExpr],
   pkgName: in String,
   dest: in Map[String, MsilType],
-  isAsync: in Bool,
 ): Unit {
   if not dest.containsKey(key) {
-    val declTy = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
-    val mty = if isAsync { asyncKickoffReturnMsil(cctx, declTy) } else { declTy }
+    val mty = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
     dest.add(key, mty)
   }
 }
@@ -2185,8 +2183,8 @@ pub func pbSeedTypeInfoItemsMsil(cctx: in CodegenCtx, pkgName: in String, items:
     match items[ii].kind {
       case IFunc(decl) -> {
         val fqn = pkgName + "." + decl.name
-        pbSeedRetTy(cctx, fqn + "/" + toString(decl.params.count), decl.ret, pkgName, cctx.pbFuncRetTypes, decl.isAsync)
-        pbSeedRetTy(cctx, fqn, decl.ret, pkgName, cctx.pbFuncRetTypes, decl.isAsync)
+        pbSeedRetTy(cctx, fqn + "/" + toString(decl.params.count), decl.ret, pkgName, cctx.pbFuncRetTypes)
+        pbSeedRetTy(cctx, fqn, decl.ret, pkgName, cctx.pbFuncRetTypes)
       }
       case IRecord(decl) -> pbSeedTypeInfoRecordMsil(cctx, pkgName, decl)
       case IExposedRec(decl) -> pbSeedTypeInfoRecordMsil(cctx, pkgName, decl)
@@ -2222,15 +2220,14 @@ pub func pbSeedTypeInfoItemsMsil(cctx: in CodegenCtx, pkgName: in String, items:
                 ifaceFqn + "/" + sig.name + "/" + toString(realParams.count),
                 sig.ret,
                 pkgName,
-                cctx.pbMethodRetTypes,
-                sig.isAsync
+                cctx.pbMethodRetTypes
               )
-              pbSeedRetTy(cctx, ifaceFqn + "/" + sig.name, sig.ret, pkgName, cctx.pbMethodRetTypes, sig.isAsync)
+              pbSeedRetTy(cctx, ifaceFqn + "/" + sig.name, sig.ret, pkgName, cctx.pbMethodRetTypes)
             }
             case IMFunc(fn) -> {
               val realParams = stripExplicitSelfParamMsil(fn.params)
-              pbSeedRetTy(cctx, ifaceFqn + "/" + fn.name + "/" + toString(realParams.count), fn.ret, pkgName, cctx.pbMethodRetTypes, fn.isAsync)
-              pbSeedRetTy(cctx, ifaceFqn + "/" + fn.name, fn.ret, pkgName, cctx.pbMethodRetTypes, fn.isAsync)
+              pbSeedRetTy(cctx, ifaceFqn + "/" + fn.name + "/" + toString(realParams.count), fn.ret, pkgName, cctx.pbMethodRetTypes)
+              pbSeedRetTy(cctx, ifaceFqn + "/" + fn.name, fn.ret, pkgName, cctx.pbMethodRetTypes)
             }
             case IMAssoc(_) -> {
             }
@@ -2258,8 +2255,8 @@ func pbSeedTypeInfoRecordMsil(cctx: in CodegenCtx, pkgName: in String, decl: in 
       }
       case RMFunc(fn) -> {
         val realParams = stripExplicitSelfParamMsil(fn.params)
-        pbSeedRetTy(cctx, recFqn + "/" + fn.name + "/" + toString(realParams.count), fn.ret, pkgName, cctx.pbMethodRetTypes, fn.isAsync)
-        pbSeedRetTy(cctx, recFqn + "/" + fn.name, fn.ret, pkgName, cctx.pbMethodRetTypes, fn.isAsync)
+        pbSeedRetTy(cctx, recFqn + "/" + fn.name + "/" + toString(realParams.count), fn.ret, pkgName, cctx.pbMethodRetTypes)
+        pbSeedRetTy(cctx, recFqn + "/" + fn.name, fn.ret, pkgName, cctx.pbMethodRetTypes)
       }
       case RMInvariant(_) -> {
       }
@@ -17734,7 +17731,9 @@ func emitBlockingAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
 // the async state machine's resume-label/awaiter-field bookkeeping (compiler
 // panic in `emitPhaseBAwait`, or a silent field-count mismatch surfacing as
 // `InvalidProgramException` at runtime).
-func resolveQualifiedFreeCallRetTypePB(cctx: in CodegenCtx, pkgName: in String, segments: in List[String], cnt: in Int): MsilType {
+func resolveQualifiedFreeCallRetTypePB(
+  cctx: in CodegenCtx, pkgName: in String, segments: in List[String], cnt: in Int
+): MsilType {
   val lastSeg = segments[segments.count - 1]
   val candidates: List[String] = newList()
   if segments.count >= 2 {
@@ -17836,6 +17835,38 @@ func flattenPureQualifierPB(e: in Expr): Option[List[String]] {
     }
     case _ -> None
   }
+}
+
+// True if `name` is a spawn binding or a local (param/val/var) in the
+// current pre-scan environment. `flattenPureQualifierPB` flattens ANY
+// EMember/EPath chain into segments regardless of whether its root is a
+// package qualifier or a plain value — a value-receiver chain like
+// `client.conn.readAsync(args)` flattens exactly the same as a real
+// package-qualified call. Without this guard, `resolveQualifiedFreeCallRetTypePB`
+// still usually falls back safely (its candidates rarely resolve), but its
+// unconditional `pkgName + "." + lastSeg` candidate means a value-receiver
+// call whose trailing method name happens to collide with an unrelated
+// same-package free function of the same name gets mistyped instead of
+// falling through to receiver-typed resolution — corrupting the async SM's
+// resume-label/awaiter-field count exactly like the mismatch this whole
+// pre-scan machinery exists to prevent (found via SIGSEGV in
+// `lyric-stdlib/tests/http_tests.l`, #5731).
+func isKnownValueNamePB(name: in String, spawnNms: in List[String], localNms: in List[String]): Bool {
+  var i = 0
+  while i < spawnNms.count {
+    if spawnNms[i] == name {
+      return true
+    }
+    i = i + 1
+  }
+  var j = 0
+  while j < localNms.count {
+    if localNms[j] == name {
+      return true
+    }
+    j = j + 1
+  }
+  false
 }
 
 func inferCallReturnTypePB(
@@ -18045,12 +18076,19 @@ func inferCallReturnTypePB(
             case EMember(_, _) -> {
               match flattenPureQualifierPB(recv) {
                 case Some(recvSegs) -> {
-                  recvSegs.add(field)
-                  val result = resolveQualifiedFreeCallRetTypePB(cctx, pkgName, recvSegs, args.count)
-                  if result == MObject {
+                  // Guard against misreading a value-receiver chain (e.g.
+                  // `client.conn.readAsync(args)`) as a package qualifier —
+                  // see `isKnownValueNamePB`'s doc comment (#5731).
+                  if recvSegs.count > 0 and isKnownValueNamePB(recvSegs[0], spawnNms, localNms) {
                     pbMethodCallRetPB(cctx, pkgName, recv, field, args.count, spawnNms, spawnTys, localNms, localTys)
                   } else {
-                    result
+                    recvSegs.add(field)
+                    val result = resolveQualifiedFreeCallRetTypePB(cctx, pkgName, recvSegs, args.count)
+                    if result == MObject {
+                      pbMethodCallRetPB(cctx, pkgName, recv, field, args.count, spawnNms, spawnTys, localNms, localTys)
+                    } else {
+                      result
+                    }
                   }
                 }
                 case None -> pbMethodCallRetPB(cctx, pkgName, recv, field, args.count, spawnNms, spawnTys, localNms, localTys)
@@ -29341,8 +29379,8 @@ func registerRestoredInterface(cctx: in CodegenCtx, packageName: in String, decl
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
-      case IMSig(sig) -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow, packageName, sig.name, sig.params, sig.ret, sig.isAsync)
-      case IMFunc(fn) -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow, packageName, fn.name, fn.params, fn.ret, fn.isAsync)
+      case IMSig(sig) -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow, packageName, sig.name, sig.params, sig.ret)
+      case IMFunc(fn) -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow, packageName, fn.name, fn.params, fn.ret)
       case IMAssoc(_) -> ()
     }
     mi = mi + 1
@@ -29360,7 +29398,6 @@ func registerRestoredIfaceMethod(
   methodName: in String,
   params: in List[Param],
   ret: in Option[TypeExpr],
-  isAsync: in Bool,
 ): Unit {
   val key = ifaceFqn + "/" + methodName
   if cctx.methodTokens.containsKey(key) {
@@ -29402,23 +29439,6 @@ func registerRestoredIfaceMethod(
   // not Task<T>, so this stays correct for the callvirt/match paths.
   if not cctx.methodRetTypes.containsKey(key) {
     cctx.methodRetTypes.add(key, sigRetType)
-  }
-  // Also seed the PRE-SCAN's method-return registry, Task-wrapped when async
-  // (#5xxx). `pbMethodCallRetPB` (the await-counting pre-scan's receiver-typed
-  // resolver) never consults `cctx.methodRetTypes` — only `pbMethodRetTypes` —
-  // so without this a restored/stdlib async interface method's await went
-  // completely untyped in the pre-scan (MObject, uncounted), corrupting the
-  // async state machine's resume-label/awaiter-field bookkeeping relative to
-  // whatever emission's `EAwait` handler actually resolves.
-  if isAsync {
-    val taskRetType = asyncKickoffReturnMsil(cctx, sigRetType)
-    val arityKey = key + "/" + toString(realParams.count)
-    if not cctx.pbMethodRetTypes.containsKey(arityKey) {
-      cctx.pbMethodRetTypes.add(arityKey, taskRetType)
-    }
-    if not cctx.pbMethodRetTypes.containsKey(key) {
-      cctx.pbMethodRetTypes.add(key, taskRetType)
-    }
   }
   // Cache the param types/modes the call site needs, exactly as the
   // local-interface (same-assembly) pre-scan does.  Without these,
