@@ -352,9 +352,11 @@ pub func disposeScope(s: in Scope): Unit {
 @asyncLocal
 val __ambientSlot: AsyncLocal[CancellationToken] = ()
 
+@externInstance
 @externTarget("System.Threading.AsyncLocal`1.Value")
 func ambientValue(slot: in AsyncLocal[CancellationToken]): CancellationToken = ()
 
+@externInstance
 @externTarget("System.Threading.AsyncLocal`1.set_Value")
 func setAmbientValue(slot: in AsyncLocal[CancellationToken], v: in CancellationToken): Unit = ()
 
@@ -362,6 +364,7 @@ func setAmbientValue(slot: in AsyncLocal[CancellationToken], v: in CancellationT
 // `currentToken`) crashes on .NET on its first call in a process
 // (#5330), so an auto-FFI migration cannot be runtime-verified until
 // that is fixed.
+@externInstance
 @externTarget("System.Threading.CancellationToken.CanBeCanceled")
 func tokenCanBeCanceled(token: in CancellationToken): Bool = ()
 

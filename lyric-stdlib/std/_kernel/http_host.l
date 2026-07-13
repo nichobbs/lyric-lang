@@ -60,15 +60,18 @@ func newHttpMethod(name: in String): BclHttpMethod = ()
 @externTarget("System.Net.Http.HttpRequestMessage..ctor")
 func newRequest(method: in BclHttpMethod, url: in String): HttpRequestMessage = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpRequestMessage.Headers")
 func requestHeaders(req: in HttpRequestMessage): HttpHeaders = ()
 
+@externInstance
 @externTarget("System.Net.Http.Headers.HttpHeaders.TryAddWithoutValidation")
 func headersTryAdd(h: in HttpHeaders, name: in String, value: in String): Bool = ()
 
 @externTarget("System.Net.Http.StringContent..ctor")
 func newStringContent(body: in String, encoding: in Encoding, mediaType: in String): StringContent = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpRequestMessage.set_Content")
 func setRequestContent(req: in HttpRequestMessage, content: in StringContent): Unit = ()
 
@@ -81,9 +84,11 @@ func newClientFromHandler(handler: in HttpClientHandler): HttpClientHandle = ()
 @externTarget("System.Net.Http.HttpClientHandler..ctor")
 func newHandler(): HttpClientHandler = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpClientHandler.set_AllowAutoRedirect")
 func setAllowAutoRedirect(h: in HttpClientHandler, v: in Bool): Unit = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpClientHandler.set_MaxAutomaticRedirections")
 func setMaxAutomaticRedirections(h: in HttpClientHandler, n: in Int): Unit = ()
 
@@ -93,15 +98,19 @@ func newUnixDomainSocketEndPoint(path: in String): UnixDomainSocketEndPoint = ()
 @externTarget("System.Net.Http.SocketsHttpHandler..ctor")
 func newSocketsHandler(): SocketsHttpHandler = ()
 
+@externInstance
 @externTarget("System.Net.Http.SocketsHttpHandler.set_AllowAutoRedirect")
 func socketsSetAllowAutoRedirect(h: in SocketsHttpHandler, v: in Bool): Unit = ()
 
+@externInstance
 @externTarget("System.Net.Http.SocketsHttpHandler.set_MaxAutomaticRedirections")
 func socketsSetMaxAutomaticRedirections(h: in SocketsHttpHandler, n: in Int): Unit = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpClient.SendAsync")
 async func clientSendAsync(client: in HttpClientHandle, request: in HttpRequestMessage): HttpResponseMessage = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpClient.SendAsync")
 async func clientSendAsyncCancel(
   client: in HttpClientHandle,
@@ -109,17 +118,21 @@ async func clientSendAsyncCancel(
   token: in CancellationToken,
 ): HttpResponseMessage = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpClient.GetAsync")
 async func clientGetAsync(client: in HttpClientHandle, url: in String): HttpResponseMessage = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpClient.GetAsync")
 async func clientGetAsyncCancel(
   client: in HttpClientHandle, url: in String, token: in CancellationToken
 ): HttpResponseMessage = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpClient.PostAsync")
 async func clientPostAsync(client: in HttpClientHandle, url: in String, content: in StringContent): HttpResponseMessage = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpClient.PostAsync")
 async func clientPostAsyncCancel(
   client: in HttpClientHandle,
@@ -128,21 +141,27 @@ async func clientPostAsyncCancel(
   token: in CancellationToken,
 ): HttpResponseMessage = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpResponseMessage.StatusCode")
 func responseStatusInt(response: in HttpResponseMessage): Int = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpResponseMessage.Content")
 func responseContent(response: in HttpResponseMessage): HttpContent = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpContent.ReadAsStringAsync")
 async func contentReadAsString(c: in HttpContent): String = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpContent.ReadAsStringAsync")
 async func contentReadAsStringCancel(c: in HttpContent, token: in CancellationToken): String = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpContent.ReadAsByteArrayAsync")
 async func contentReadAsBytes(c: in HttpContent): slice[Byte] = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpContent.ReadAsByteArrayAsync")
 async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationToken): slice[Byte] = ()
 
@@ -228,30 +247,39 @@ extern type IEnumerableStr = "System.Collections.Generic.IEnumerable`1[System.St
 
 extern type NonGenericEnumerator = "System.Collections.IEnumerator"
 
+@externInstance
 @externTarget("System.Net.Http.HttpResponseMessage.Headers")
 func responseHeadersOf(r: in HttpResponseMessage): HttpResponseHeaders = ()
 
+@externInstance
 @externTarget("System.Net.Http.HttpContent.Headers")
 func contentHeadersOf(c: in HttpContent): HttpContentHeaders = ()
 
+@externInstance
 @externTarget("System.Net.Http.Headers.HttpHeaders.Contains")
 func responseHeadersContain(h: in HttpResponseHeaders, name: in String): Bool = ()
 
+@externInstance
 @externTarget("System.Net.Http.Headers.HttpHeaders.Contains")
 func contentHeadersContain(h: in HttpContentHeaders, name: in String): Bool = ()
 
+@externInstance
 @externTarget("System.Net.Http.Headers.HttpHeaders.GetValues")
 func responseHeaderValues(h: in HttpResponseHeaders, name: in String): IEnumerableStr = ()
 
+@externInstance
 @externTarget("System.Net.Http.Headers.HttpHeaders.GetValues")
 func contentHeaderValues(h: in HttpContentHeaders, name: in String): IEnumerableStr = ()
 
+@externInstance
 @externTarget("System.Collections.IEnumerable.GetEnumerator")
 func headerValuesEnumerator(values: in IEnumerableStr): NonGenericEnumerator = ()
 
+@externInstance
 @externTarget("System.Collections.IEnumerator.MoveNext")
 func enumeratorMoveNext(e: in NonGenericEnumerator): Bool = ()
 
+@externInstance
 @externTarget("System.Collections.IEnumerator.Current")
 func enumeratorCurrent(e: in NonGenericEnumerator): String = ()
 
