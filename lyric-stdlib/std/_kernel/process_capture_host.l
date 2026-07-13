@@ -130,17 +130,13 @@ func newMemStream(): MemStream {
 // `dst` is declared as MemStream (not Stream) because the self-hosted
 // type-checker doesn't recognize MemStream as a subtype of Stream, so a
 // call site passing a MemStream value needs the parameter typed as
-// MemStream to type-check. The self-hosted auto-FFI resolver then uses
-// scoreSigTypeLenient to match STNamed(MemStream) against BCL's Stream
-// parameter and emits the correct MemberRef for
-// Stream.CopyToAsync(Stream destination) at compile time.
-// stays @externTarget: the auto-FFI call-site overload scorer matches
-// argument FQNs exactly (no base-type walk), so a MemStream argument
-// never binds the CopyToAsync(Stream) overload without the declared
-// signature's lenient scoring.
-@externInstance
-@externTarget("System.IO.Stream.CopyToAsync")
-func streamCopyTo(src: in Stream, dst: in MemStream): Task = ()
+// MemStream to type-check.  The instance-call auto-FFI overload scorer does
+// walk base types, so `src.CopyToAsync(dst)` binds the real
+// `Stream.CopyToAsync(Stream)` MemberRef from metadata even though `dst` is
+// the derived `MemoryStream`.
+func streamCopyTo(src: in Stream, dst: in MemStream): Task {
+  src.CopyToAsync(dst)
+}
 
 // Block for up to `ms` milliseconds until the drain Task completes.
 // Returns true on completion, false on timeout.
@@ -155,13 +151,11 @@ func memStreamResetPos(ms: in MemStream, pos: in Long): Unit {
 }
 
 // Wrap a MemStream in a new StreamReader for decoding.  Reuses the ProcReader
-// extern type (same CLR type).  `s` is declared as MemStream (not Stream) for
-// the same self-hosted-type-checker reason as streamCopyTo above.
-// scoreSigTypeLenient resolves the correct BCL StreamReader(Stream)
-// MemberRef at compile time via the self-hosted auto-FFI path.
-// stays @externTarget: same exact-FQN scoring limitation as streamCopyTo —
-// a MemStream argument cannot bind the StreamReader(Stream) ctor at an
-// auto-FFI `.new()` call site.
+// extern type (same CLR type).  Stays @externTarget: unlike the instance-call
+// scorer (see streamCopyTo), the metadata `.ctor` auto-FFI resolver does not
+// match a constructor whose argument is an extern-type value — a `MemStream`
+// argument never binds the `StreamReader(Stream)` ctor at a `.new()` call
+// site.
 @externTarget("System.IO.StreamReader..ctor")
 func newProcReaderFrom(s: in MemStream): ProcReader = ()
 
