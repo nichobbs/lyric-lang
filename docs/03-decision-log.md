@@ -15443,6 +15443,18 @@ from `underlying`. `nat_cross_package_self_test.l` remains MSIL-only
 established scope) — this JVM fix has no dedicated regression test in
 this PR; tracked as a coverage gap.
 
+**Second correction (found by CI, not review):** `nat_cross_package_self_test.l`
+initially failed to even compile — `isNumericPrimitiveName`
+(`typechecker_checker.l`, gates `T0091` for `type X = <underlying>
+range A..=B` distinct-type declarations) never listed `"Nat"`, so
+`Nat range A..=B` was rejected outright, independent of and prior to
+the MSIL/JVM encoding bug above. This is the same "`Nat` is a real
+`PtNat` primitive elsewhere in the checker but a name-based gate simply
+forgot it" pattern, and it means `docs/02-worked-examples.md`'s own
+`Nat range 1 ..= 100` / `dbPoolSize: Nat range 1 ..= 100` examples did
+not actually type-check before this fix. Fixed by adding `"Nat"` to
+`isNumericPrimitiveName`.
+
 Regression coverage:
 `nat_cross_package_self_test.l` (mirrors
 `cross_package_generics_self_test.l`'s producer/consumer-DLL harness):
