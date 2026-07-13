@@ -31,6 +31,7 @@ pub func hostInvariantCulture(): CultureInfo {
 // =====================================================================
 // Format an Int using a BCL format string (e.g. "x", "X", "D3").
 // System.Int32.ToString(string format) — instance method.
+@externInstance
 @externTarget("System.Int32.ToString")
 pub func hostIntToString(n: in Int, fmt: in String): String = ()
 
@@ -40,5 +41,6 @@ pub func hostIntToString(n: in Int, fmt: in String): String = ()
 // Format a Double with the given BCL format string and IFormatProvider.
 // System.Double.ToString(string format, IFormatProvider provider) — instance method.
 // Pass hostInvariantCulture() as the provider for locale-independent output.
+@externInstance
 @externTarget("System.Double.ToString")
 pub func hostDoubleToString(x: in Double, fmt: in String, culture: in CultureInfo): String = ()

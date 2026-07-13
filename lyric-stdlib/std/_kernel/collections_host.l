@@ -32,6 +32,7 @@ pub func newMap[K, V](): Map[K, V] = ()
 /// Direct binding to `Dictionary.TryGetValue` via FFI — the canonical
 /// .NET "lookup with sentinel" API.  Lifted into `Option[V]` by
 /// `Std.Collections.mapGet`.
+@externInstance
 @externTarget("System.Collections.Generic.Dictionary`2.TryGetValue")
 pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool = ()
 

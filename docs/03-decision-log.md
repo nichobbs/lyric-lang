@@ -15352,6 +15352,43 @@ blast radius and belongs in its own effort.
 
 ---
 
+## D-progress-667 — Explicit `@externInstance` on the stdlib kernel's hint-less instance externs (#5577 slice)
+
+`Msil.Ffi.resolveExternTarget` defaults a hint-less (`RHEither`)
+`@externTarget` to **static** (`ffi.l:207-215`).  A downstream metadata
+correction in `emitExternTargetBody` flips the static guess to instance when
+it can confidently resolve `hasThis` from reference-assembly metadata — so an
+instance-method extern declared without `@externInstance` *works today*, but
+only because the correction happens to succeed.  In a build without the .NET
+reference pack (or when the scorer can't match the overload) the correction
+silently falls back to the bad static guess and the call throws
+`MissingMethodException` at runtime.  The stdlib's own kernel carried ~34 such
+hint-less instance externs (notably `HttpClient.SendAsync`, the #5577
+namesake) — one build-environment change away from breaking.
+
+This change annotates every genuinely-instance kernel extern with an explicit
+`@externInstance`, so their resolution no longer depends on the correction:
+28 in `http_host.l` (client send/get/post, content readers, header
+accessors, property getters/setters, the non-generic enumerator walk), 2 in
+`format_host.l` (`Int32`/`Double.ToString`), 1 in `collections_host.l`
+(`Dictionary.TryGetValue`), 3 in `task.l` (`AsyncLocal.Value`/`set_Value`,
+`CancellationToken.CanBeCanceled`).  Constructors, static properties
+(`Encoding.UTF8`), and static methods (`Task.Run`/`Task.WhenAll`,
+`UnixSocketHttpClient.Create*`) were left as-is.  Verified by re-running the
+kernel-exercising stdlib suites (`http_tests` 10/10, plus `format_tests`,
+`collections_tests`, `task_tests` all `ok`) — no misclassification, identical
+runtime behavior, now robust against a missing reference pack.
+
+The **enforcement** half — a build-gating `F0027` that fails the build when a
+hint-less instance extern can't be metadata-verified (so *new* landmines are
+caught, per #5621's fail-loudly principle) — is deferred to #5704: it requires
+a full ecosystem audit (every `lyric-*/` kernel and user `@externTarget`)
+before it can be turned on without breaking builds.
+
+**Related:** #5577, #5704, #5560 (D-progress-649), #5621.
+
+---
+
 ## Decisions deferred to v2 or later
 
 
