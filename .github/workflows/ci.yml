@@ -5335,6 +5335,15 @@ jobs:
           # dependency).
           echo "=== lyric-cache tests ==="
           "$lyric_bin" test --manifest lyric-cache/lyric.toml || overall=$?
+          # lyric-docker had never been wired into CI at all (#5697 follow-up):
+          # its own createContainerBody/extractJsonField suite went undetected-red
+          # for multiple releases (jsonEscapeValue called the nonexistent
+          # String.codePointAt, and \uXXXX/decimal decoding called the
+          # nonexistent Int.parse(s, radix) — both compiled, both crashed at
+          # runtime on first use). Tier-0 (no local path deps besides its own
+          # Sockets sub-package); run here so this can't regress silently again.
+          echo "=== lyric-docker tests ==="
+          "$lyric_bin" test --manifest lyric-docker/lyric.toml || overall=$?
           echo "=== lyric-mail tests ==="
           "$lyric_bin" test --manifest lyric-mail/lyric.toml || overall=$?
           echo "=== lyric-aws-xray tests ==="
