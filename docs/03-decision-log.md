@@ -15737,6 +15737,56 @@ emitter fixes.
 
 ---
 
+## D-progress-673 — Co-locate NuGet-restored native runtime assets beside the build output (#5573)
+
+Found while shipping lyric-db's real SQLite kernel (#5407): a `lyric
+build`/`lyric test` consumer of a NuGet package that carries native assets
+(`SQLitePCLRaw.provider.e_sqlite3`, whose `runtimes/<rid>/native/libe_sqlite3.so`
+is required by `Microsoft.Data.Sqlite`) failed at first use with `The type
+initializer for 'Microsoft.Data.Sqlite.SqliteConnection' threw an
+exception.` The CLI's single-output bundler already co-located managed
+NuGet assemblies beside the output (`copyNugetAssembliesBeside`, #5066) but
+never scanned `project.assets.json` for RID-specific native assets, and the
+CLI emits no `.deps.json` that would let the .NET host's default probing
+fall back to the nested restore-cache layout.
+
+`project.assets.json` records a package's RID-specific assets (both native
+binaries and RID-specific managed assemblies) under a `runtimeTargets` map —
+a sibling of the `runtime` map `extractDllPathsFromYaml` already reads —
+keyed by the asset's package-relative path, with each entry's `assetType`
+("native" vs "runtime") and `rid` fields identifying what it is and which
+RID it targets. `extractNativeAssetPathsFromYaml`
+(`cli/cli_shared.l`) mirrors `extractDllPathsFromYaml`'s package-typed-entry
+walk but filters `runtimeTargets` entries to `assetType == "native"` and
+`rid == ` the current host RID (`Environment.runtimeIdentifier()` — `lyric
+build`/`lyric test` always run on the same machine they compile on, so
+there is no cross-compilation target to choose between). The
+file-read/parse/packages-dir-resolution logic `resolveNugetAssets` already
+had was split into a shared `loadNugetAssets` helper so the new
+`resolveNugetNativeAssets` entry point reuses it instead of re-reading
+`project.assets.json` a second time.
+
+The resolved paths thread through `ResolvedManifestDeps.nativeAssetPaths`
+(`cli/workspace_builder.l`) and `NonNativeEmitOutcome.nativeAssetPaths`
+(`cli/cli_build.l`) alongside the existing `nugetThirdPartyPaths` field, and
+`copyNugetNativeAssetsBeside` (reusing the existing generic `copyDllBeside`
+file copy) is called at every site that already calls
+`copyNugetAssembliesBeside`: `buildOne`'s single-file Dotnet path,
+`buildProject`'s manifest/workspace path, and `cmdTestManifest`. Each
+RID-specific asset is flattened directly beside the output rather than
+preserving its `runtimes/<rid>/native/` nesting, matching how the .NET
+host's default native-library probing checks the loading assembly's own
+directory. Verified by `cli_shared_self_test.l` fixture tests built against
+the real `Environment.runtimeIdentifier()` of whatever host CI runs on:
+resolving only the host-RID native entry among RID/assetType decoys, a
+missing-restore no-op, and a declared-but-not-materialised asset being
+skipped — the same three shapes `resolveNugetAssets`'s existing tests cover
+for the managed-DLL case.
+
+**Related:** #5573, #5407, #5066.
+
+---
+
 ## Decisions deferred to v2 or later
 
 

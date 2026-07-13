@@ -1070,12 +1070,14 @@ func cmdTestManifest(
   // be a Lyric package (e.g. `Lyric.Web`), so its contract is routed through
   // the same restored-dep path a workspace/path dependency uses instead of
   // leaving it to the auto-FFI metadata guess (#5004).
-  val nugetPaths = resolveNugetAssets(mfDir)
+  val allNugetAssets = resolveAllNugetAssets(mfDir)
+  val nugetPaths = allNugetAssets.dllPaths
   warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
   val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
   for entry in nugetLyricEntries {
     restoredDlls.add(entry)
   }
+  val nativeAssetPaths = allNugetAssets.nativePaths
 
   // For a JVM manifest suite, inject the resolved Maven classpath into
   // LYRIC_FFI_JARS (mirroring `buildProject`'s `injectMavenClasspathForJvm`
@@ -1249,6 +1251,7 @@ func cmdTestManifest(
       // dep-DLL copy the CI ecosystem step used to do by hand.
       copyRestoredDepDlls(outPath, restoredDlls)
       copyNugetAssembliesBeside(outPath, nugetThirdPartyPaths)
+      copyNugetNativeAssetsBeside(outPath, nativeAssetPaths)
       writeRuntimeConfigWithProbing(outPath, depBinDirs)
 
       val execArgs: List[String] = newList()

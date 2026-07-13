@@ -30227,3 +30227,32 @@ annotated `@externStatic`. Warning-first by design: the ecosystem kernels are
 annotated incrementally before F0027 is ever promoted to a hard error.
 
 **Related:** `docs/03-decision-log.md` D-progress-671, D-progress-667; #5704.
+
+## Co-locate NuGet-restored native runtime assets beside the build output (2026-07-13)
+
+The CLI's single-output bundler already co-located resolved managed NuGet
+assemblies beside the output (D-progress-592, #5066), but never scanned
+`project.assets.json` for RID-specific **native** assets
+(`runtimes/<rid>/native/*`), so a package carrying one
+(`SQLitePCLRaw.provider.e_sqlite3`, a transitive dependency of
+`Microsoft.Data.Sqlite` used by lyric-db's real SQLite kernel, #5407) failed
+at first use with a `SqliteConnection` type-initializer exception. Fixed by
+adding `extractNativeAssetPathsFromYaml`/`resolveNugetNativeAssets` (filtered
+to the current host RID via `Environment.runtimeIdentifier()`) and
+`copyNugetNativeAssetsBeside` to `cli/cli_shared.l`, threaded through
+`ResolvedManifestDeps`/`NonNativeEmitOutcome` to every site that already
+colocates third-party NuGet assemblies (`buildOne`, `buildProject`,
+`cmdTestManifest`).
+
+A follow-up commit in the same PR fixed an `ilverify-required` regression
+the first cut introduced: a self-hosted MSIL emitter `StackUnexpected`
+miscompile triggered by binding a match-expression to a `val` where one arm
+early-`return`s a differently-typed value from an `Option[Record]`-returning
+function — the same class of bug as this doc's "Deeply-nested
+match-as-expression emitter bug" entry. Fixed by rewriting the offending
+`loadNugetAssets` helper to statement-position match + explicit follow-up
+`if` checks instead of relying on the match expression's value. A second
+follow-up added `resolveAllNugetAssets` so the two call sites needing both
+managed and native assets parse `project.assets.json` once instead of twice.
+
+**Related:** `docs/03-decision-log.md` D-progress-673, D-progress-592; #5573, #5407, #5066.

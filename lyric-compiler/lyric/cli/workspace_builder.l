@@ -539,6 +539,11 @@ pub record ResolvedManifestDeps {
   /// Genuine third-party NuGet assembly paths (not Lyric packages) —
   /// appendable directly to `EmitProjectRequest.nugetAssemblyPaths`.
   nugetThirdPartyPaths: List[String]
+  /// NuGet-restored native runtime assets for the current host RID (e.g.
+  /// `runtimes/linux-x64/native/libe_sqlite3.so`) — co-located beside the
+  /// build output by `copyNugetNativeAssetsBeside` so a package like
+  /// `SQLitePCLRaw.provider.e_sqlite3` actually loads at runtime (#5573).
+  nativeAssetPaths: List[String]
   /// True when a `{ workspace = true }` dependency failed to build.
   /// `buildProject` has always treated this as an immediate `return 1`
   /// (mirrors `buildWorkspaceDeps`'s own fatal signal); callers that want
@@ -587,6 +592,7 @@ pub func resolveManifestDependencies(
       restoredDlls = restoredDlls,
       depTemplateSrcs = depTemplatePkgsList,
       nugetThirdPartyPaths = newList(),
+      nativeAssetPaths = newList(),
       hadWorkspaceError = true,
       hadUnbuiltLocalDep = false
     )
@@ -692,17 +698,20 @@ pub func resolveManifestDependencies(
     di += 1
   }
 
-  val nugetPaths = resolveNugetAssets(mfDir)
+  val allNugetAssets = resolveAllNugetAssets(mfDir)
+  val nugetPaths = allNugetAssets.dllPaths
   warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
   val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
   for entry in nugetLyricEntries {
     restoredDlls.add(entry)
   }
+  val nativeAssetPaths = allNugetAssets.nativePaths
 
   ResolvedManifestDeps(
     restoredDlls = restoredDlls,
     depTemplateSrcs = depTemplatePkgsList,
     nugetThirdPartyPaths = nugetThirdPartyPaths,
+    nativeAssetPaths = nativeAssetPaths,
     hadWorkspaceError = false,
     hadUnbuiltLocalDep = hadUnbuiltLocalDep
   )

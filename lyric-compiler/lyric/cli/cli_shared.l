@@ -815,6 +815,22 @@ func copyNugetAssembliesBeside(outPath: in String, nugetPaths: in List[String]):
   }
 }
 
+// Co-locate NuGet-restored native runtime assets (`resolveNugetNativeAssets`)
+// beside the output DLL, reusing the same flat co-location `copyDllBeside`
+// already provides for managed assemblies.  The CLI's bundler emits no
+// `.deps.json`, and without one the .NET host's default native-library
+// probing only checks the loading assembly's own directory — not the nested
+// `runtimes/<rid>/native/` layout NuGet packages ship in the restore cache —
+// so each RID-specific file is flattened directly beside the output rather
+// than preserving that nesting (#5573).
+func copyNugetNativeAssetsBeside(outPath: in String, nativePaths: in List[String]): Unit {
+  var i = 0
+  while i < nativePaths.count {
+    copyDllBeside(outPath, nativePaths[i])
+    i += 1
+  }
+}
+
 // Pure decision logic behind `warnIfNugetUnresolved`: `Some(reason)` when
 // the manifest declares `[nuget]` entries but no assemblies resolved,
 // `None` when there is nothing to warn about.  `reason` distinguishes
@@ -862,18 +878,63 @@ pub func warnIfNugetUnresolved(
   }
 }
 
-pub func resolveNugetAssets(mfDir: in String): List[String] {
+/// A successfully read + parsed `project.assets.json`, together with the
+/// resolved NuGet global-packages directory its package-relative asset
+/// paths are rooted under.  Shared by `resolveNugetAssets` (managed runtime
+/// DLLs) and `resolveNugetNativeAssets` (native runtime assets, #5573) so
+/// the file-read/parse/packages-dir-resolution work happens once per call
+/// site instead of twice.
+record ParsedNugetAssets {
+  parsed: Yaml.YamlValue
+  pkgsDir: String
+}
+
+// Read and parse `mfDir`/obj/project.assets.json, then resolve the NuGet
+// global-packages directory it references: `NUGET_PACKAGES` env var first,
+// then `project.restore.packagesPath` from the assets file itself, then the
+// conventional `~/.nuget/packages` (`%USERPROFILE%` on Windows) fallback.
+// `None` covers every miss uniformly — no assets file, an unreadable or
+// malformed one, or no resolvable packages directory — so callers fall back
+// to an empty asset list exactly as before this was split out.
+func loadNugetAssets(mfDir: in String): Option[ParsedNugetAssets] {
   val assetsPath = Path.join(Path.join(mfDir, "obj"), "project.assets.json")
   if not File.fileExists(assetsPath) {
-    return newList()
+    return None
   }
 
-  val contentOpt = match File.readText(assetsPath) { case Ok(text) -> Some(value = text); case Err(_) -> None }
-
-  val content = match contentOpt { case Some(text) -> text; case None -> return newList() }
+  // Avoids binding a `match`-as-expression whose arm both yields a plain
+  // value AND early-`return`s a DIFFERENT (union-typed) value from this
+  // `Option[ParsedNugetAssets]`-returning function — that shape has a known
+  // self-hosted MSIL emitter miscompile (StackUnexpected on the shared
+  // return-value slot; see docs/10-bootstrap-progress.md's "deeply-nested
+  // match-as-expression emitter bug" entry for the same class of issue).
+  // Statement-position match + an explicit follow-up `if` sidesteps it.
+  var content = ""
+  var haveContent = false
+  match File.readText(assetsPath) {
+    case Ok(text) -> {
+      content = text
+      haveContent = true
+    }
+    case Err(_) -> ()
+  }
+  if not haveContent {
+    return None
+  }
 
   // Parse the JSON using AOT-safe pure-Lyric parser
-  val parseResult = match Yaml.parseJson(content) { case Ok(value) -> value; case Err(_) -> return newList() }
+  var parseResult: Yaml.YamlValue = Yaml.YMapping(pairs = newList())
+  var haveParseResult = false
+  match Yaml.parseJson(content) {
+    case Ok(value) -> {
+      parseResult = value
+      haveParseResult = true
+    }
+    case Err(_) -> ()
+  }
+  if not haveParseResult {
+    return None
+  }
 
   // Resolve NuGet packages folder
   var pkgsDir = Environment.getVarOrDefault("NUGET_PACKAGES", "")
@@ -891,11 +952,66 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
   }
 
   if pkgsDir.length == 0 {
-    return newList()
+    return None
   }
 
-  // Extract DLL paths from parsed YAML structure
-  extractDllPathsFromYaml(parseResult, pkgsDir)
+  Some(value = ParsedNugetAssets(parsed = parseResult, pkgsDir = pkgsDir))
+}
+
+pub func resolveNugetAssets(mfDir: in String): List[String] {
+  match loadNugetAssets(mfDir) {
+    case None -> newList()
+    case Some(la) -> extractDllPathsFromYaml(la.parsed, la.pkgsDir)
+  }
+}
+
+/// Resolve NuGet-restored native runtime assets (e.g.
+/// `runtimes/linux-x64/native/libe_sqlite3.so`, required by
+/// `Microsoft.Data.Sqlite` via `SQLitePCLRaw.provider.e_sqlite3`) for the
+/// CURRENT host RID.  `lyric build`/`lyric test` compile and immediately run
+/// on the same machine, so the build machine's own RID
+/// (`Environment.runtimeIdentifier()`) is the only one that matters — there
+/// is no cross-compilation target to choose between (#5573).  Mirrors
+/// `resolveNugetAssets`'s discovery exactly and returns an empty list in
+/// every case it would (no restore yet, a malformed assets file, or no
+/// resolvable packages directory), plus when the host RID itself is unknown
+/// (empty, e.g. under the JVM CLI host — see `Environment.runtimeIdentifier`'s
+/// doc comment).
+pub func resolveNugetNativeAssets(mfDir: in String): List[String] {
+  val hostRid = Environment.runtimeIdentifier()
+  if hostRid.length == 0 {
+    return newList()
+  }
+  match loadNugetAssets(mfDir) {
+    case None -> newList()
+    case Some(la) -> extractNativeAssetPathsFromYaml(la.parsed, la.pkgsDir, hostRid)
+  }
+}
+
+/// Both `resolveNugetAssets`'s managed DLLs and `resolveNugetNativeAssets`'s
+/// native assets in a single `project.assets.json` read + parse (#5742) —
+/// every call site that needs both (`resolveManifestDependencies`,
+/// `cmdTestManifest`) previously called the two independent resolvers
+/// back-to-back, each re-running `loadNugetAssets` and so re-reading/
+/// re-parsing the same file.
+pub record ResolvedNugetAssets {
+  dllPaths: List[String]
+  nativePaths: List[String]
+}
+
+pub func resolveAllNugetAssets(mfDir: in String): ResolvedNugetAssets {
+  match loadNugetAssets(mfDir) {
+    case None -> ResolvedNugetAssets(dllPaths = newList(), nativePaths = newList())
+    case Some(la) -> {
+      val dllPaths = extractDllPathsFromYaml(la.parsed, la.pkgsDir)
+      val hostRid = Environment.runtimeIdentifier()
+      var nativePaths: List[String] = newList()
+      if hostRid.length > 0 {
+        nativePaths = extractNativeAssetPathsFromYaml(la.parsed, la.pkgsDir, hostRid)
+      }
+      ResolvedNugetAssets(dllPaths = dllPaths, nativePaths = nativePaths)
+    }
+  }
 }
 
 /// Split `resolveNugetAssets`'s output into Lyric-package restored-dep
@@ -1036,6 +1152,144 @@ func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String): List[
                                           }
                                         }
                                         dIdx += 1
+                                      }
+                                    }
+                                    case _ -> ()
+                                  }
+                                }
+                                j += 1
+                              }
+                            }
+                          }
+                          case _ -> ()
+                        }
+                      }
+                      pIdx += 1
+                    }
+                  }
+                  case _ -> ()
+                }
+                fIdx += 1
+              }
+            }
+            case _ -> ()
+          }
+        }
+        i += 1
+      }
+    }
+    case _ -> ()
+  }
+  result
+}
+
+// Extract native runtime asset paths (e.g.
+// `runtimes/linux-x64/native/libe_sqlite3.so`) restricted to `hostRid` from a
+// parsed `project.assets.json`.  Unlike managed runtime DLLs (`extractDllPathsFromYaml`,
+// keyed under a package's `runtime` map), NuGet records RID-specific assets
+// under a sibling `runtimeTargets` map — same package-entry shape, same
+// package-typed-entry filter — keyed by the asset's package-relative path,
+// with each entry carrying its own `assetType` ("native" for a P/Invoke
+// library, "runtime" for a RID-specific managed assembly — only the former
+// is wanted here) and `rid` (which RID it targets).  An empty `hostRid`
+// yields no matches: there is no meaningful "default" RID to fall back to
+// (#5573).
+func extractNativeAssetPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String, hostRid: in String): List[String] {
+  var result: List[String] = newList()
+  if hostRid.length == 0 {
+    return result
+  }
+  match root {
+    case Yaml.YMapping(rootPairs) -> {
+      var i = 0
+      while i < rootPairs.count {
+        val pair = rootPairs[i]
+        if pair.key == "targets" {
+          match pair.value {
+            case Yaml.YMapping(frameworks) -> {
+              var fIdx = 0
+              while fIdx < frameworks.count {
+                val fmwkPair = frameworks[fIdx]
+                match fmwkPair.value {
+                  case Yaml.YMapping(packages) -> {
+                    var pIdx = 0
+                    while pIdx < packages.count {
+                      val pkgPair = packages[pIdx]
+                      val pkgKey = pkgPair.key
+                      val slashPos = pkgKey.indexOf("/")
+                      if slashPos > 0 and slashPos < pkgKey.length - 1 {
+                        match pkgPair.value {
+                          case Yaml.YMapping(pkgFields) -> {
+                            var typeMatch = false
+                            var j = 0
+                            while j < pkgFields.count {
+                              val field = pkgFields[j]
+                              if field.key == "type" {
+                                match field.value {
+                                  case Yaml.YString(t) -> {
+                                    if t == "package" {
+                                      typeMatch = true
+                                    }
+                                  }
+                                  case _ -> ()
+                                }
+                              }
+                              j += 1
+                            }
+                            if typeMatch {
+                              j = 0
+                              while j < pkgFields.count {
+                                val field = pkgFields[j]
+                                if field.key == "runtimeTargets" {
+                                  match field.value {
+                                    case Yaml.YMapping(rtEntries) -> {
+                                      var rIdx = 0
+                                      while rIdx < rtEntries.count {
+                                        val rtEntry = rtEntries[rIdx]
+                                        val assetPath = rtEntry.key
+                                        var isNative = false
+                                        var ridMatch = false
+                                        match rtEntry.value {
+                                          case Yaml.YMapping(assetFields) -> {
+                                            var k = 0
+                                            while k < assetFields.count {
+                                              val af = assetFields[k]
+                                              if af.key == "assetType" {
+                                                match af.value {
+                                                  case Yaml.YString(at) -> {
+                                                    if at.toLower() == "native" {
+                                                      isNative = true
+                                                    }
+                                                  }
+                                                  case _ -> ()
+                                                }
+                                              }
+                                              if af.key == "rid" {
+                                                match af.value {
+                                                  case Yaml.YString(r) -> {
+                                                    if r == hostRid {
+                                                      ridMatch = true
+                                                    }
+                                                  }
+                                                  case _ -> ()
+                                                }
+                                              }
+                                              k += 1
+                                            }
+                                          }
+                                          case _ -> ()
+                                        }
+                                        if isNative and ridMatch {
+                                          val pkgName = pkgKey.substring(0, slashPos)
+                                          val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
+                                          val lowerPkgName = pkgName.toLower()
+                                          val fullPath =
+                                            Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), assetPath))
+                                          if File.fileExists(fullPath) {
+                                            result.add(fullPath)
+                                          }
+                                        }
+                                        rIdx += 1
                                       }
                                     }
                                     case _ -> ()
