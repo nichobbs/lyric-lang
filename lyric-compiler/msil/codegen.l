@@ -3951,10 +3951,10 @@ func isSimpleListElemMsil(t: in MsilType): Bool {
 // local/param name (via `listLiteralElemTypeMsil`).  Returns None for an empty
 // list, any element whose type can't be peeked (calls, member access, …; #5690),
 // a non-simple element type, or a heterogeneous mix — those keep falling back to
-// the legacy `List<object>` path.  When Some(e) is returned and
-// `collElemConcrete(e)` holds, the literal can be built as a genuine `List<e>`
-// so indexed reads recover the real element type instead of a boxed `object`
-// (which downstream arithmetic/println then mis-read as garbage).
+// the legacy `List<object>` path.  When Some(e) is returned, the no-hint `EList`
+// arm builds a genuine `e[]` array (a bare literal is typed `slice[e]` by the
+// checker) so indexed reads recover the real element type instead of a boxed
+// `object` (which downstream arithmetic/println then mis-read as garbage).
 func inferHomogeneousListElemTypeMsil(fctx: in FuncCtx, exprs: in List[Expr]): Option[MsilType] {
   if exprs.count == 0 {
     return None
@@ -7222,40 +7222,51 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case _ -> {
-          // No surrounding type hint.  If the literal is homogeneous over a
-          // single simple element type — from literals (`[9, 7]`) or bare
-          // local/param names (`[a, b]`) — build a genuine `List<e>` (the same
-          // construction as the MConcreteList arm above) so an indexed read
-          // (`xs[0]`) recovers `e` instead of a boxed `object` that downstream
-          // `+`/`println` mis-read as garbage (#5620).  A heterogeneous mix, or
-          // any element whose type can't be peeked (calls, member access, …;
-          // residual tracked in #5690), keeps the legacy `List<object>` fallback.
+          // No surrounding type hint.  A bare list literal is typed `slice[T]`
+          // by the checker (EList -> TySlice), so when the literal is
+          // homogeneous over a single simple element type — from literals
+          // (`[9, 7]`) or bare local/param names (`[a, b]`) — build a genuine
+          // `T[]` (the same construction as the `case MArray` arm above),
+          // matching that slice type so an indexed read (`xs[0]`) recovers `T`
+          // instead of a boxed `object` that downstream `+`/`println` mis-read
+          // as garbage (#5620).  Building `T[]` here (not `List<T>`) is what
+          // keeps a bare literal passed to a `slice`-typed parameter — e.g.
+          // `xs.concat([4, 5])` — representation-correct.  A heterogeneous mix,
+          // an element whose type can't be peeked (calls, member access, …;
+          // residual #5690), or an element type with no array token keeps the
+          // legacy `List<object>` fallback.
           match inferHomogeneousListElemTypeMsil(fctx, exprs) {
             case Some(e) -> {
-              if collElemConcrete(e) {
-                insns.add(MListOp(op = LoCtor, elemTy = e))
-                var celc = 0
-                while celc < exprs.count {
-                  insns.add(MDup)
-                  pushCollExpect(fctx, e)
-                  val ceTy = lowerExprMsil(cctx, fctx, insns, exprs[celc])
-                  popCollExpect(fctx)
-                  collBoxIfNeeded(cctx, insns, ceTy, MConcreteList(elemTy = e))
-                  insns.add(MListOp(op = LoAdd, elemTy = e))
-                  celc = celc + 1
+              match arrayElemTokenOpt(cctx, e) {
+                case Some(elemTok) -> {
+                  insns.add(MLdcI4(v = exprs.count))
+                  insns.add(MNewarr(typeToken = elemTok))
+                  var ali4 = 0
+                  while ali4 < exprs.count {
+                    insns.add(MDup)
+                    insns.add(MLdcI4(v = ali4))
+                    pushCollExpect(fctx, e)
+                    val aeTy4 = lowerExprMsil(cctx, fctx, insns, exprs[ali4])
+                    popCollExpect(fctx)
+                    // e is a simple type (never MObject) so `stelem <T>` stores
+                    // the element unboxed — no box needed.
+                    insns.add(MStelem(typeToken = elemTok))
+                    ali4 = ali4 + 1
+                  }
+                  MArray(elemTy = e)
                 }
-                MConcreteList(elemTy = e)
-              } else {
-                insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-                var eli3 = 0
-                while eli3 < exprs.count {
-                  insns.add(MDup)
-                  val eTy3 = lowerExprMsil(cctx, fctx, insns, exprs[eli3])
-                  boxIfNeededMsil(cctx, insns, eTy3)
-                  insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
-                  eli3 = eli3 + 1
+                case None -> {
+                  insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+                  var eli3 = 0
+                  while eli3 < exprs.count {
+                    insns.add(MDup)
+                    val eTy3 = lowerExprMsil(cctx, fctx, insns, exprs[eli3])
+                    boxIfNeededMsil(cctx, insns, eTy3)
+                    insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+                    eli3 = eli3 + 1
+                  }
+                  MObject
                 }
-                MObject
               }
             }
             case None -> {
