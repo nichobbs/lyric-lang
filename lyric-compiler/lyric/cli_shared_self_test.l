@@ -389,10 +389,20 @@ test "isDotnetStdlibSource: .NET-relevant sources included, JVM/native-only excl
     Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/_kernel_native/file.l"),
     "_kernel_native file is excluded"
   )
-  // The two JVM-only files inside the shared _kernel dir are also excluded.
+  // Any `jvm*.l` file inside the shared _kernel dir is excluded (prefix match,
+  // mirroring the loader — so a future `jvm_*.l` kernel is covered too).
   assertFalse(Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/_kernel/jvm.l"), "_kernel/jvm.l is excluded")
   assertFalse(
     Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/_kernel/jvm_exception.l"),
     "_kernel/jvm_exception.l is excluded"
+  )
+  assertFalse(
+    Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/_kernel/jvm_future_host.l"),
+    "a future _kernel/jvm_*.l file is excluded by the prefix match"
+  )
+  // A non-jvm host file whose name merely contains "jvm" mid-string is kept.
+  assertTrue(
+    Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/_kernel/webjvm_host.l"),
+    "mid-name 'jvm' does not trip the prefix skip"
   )
 }

@@ -663,8 +663,10 @@ pub func isDotnetStdlibSource(path: in String): Bool {
   if Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") {
     return false
   }
-  val base = Path.basename(path)
-  not (base == "jvm.l" or base == "jvm_exception.l")
+  // Any `jvm*.l` file in the shared `_kernel/` dir (today `jvm.l` /
+  // `jvm_exception.l`) is JVM-only — mirror the loader's `startsWith("jvm")`
+  // prefix skip (`emitter.l`) so a future `jvm_*.l` kernel is excluded too.
+  not Str.startsWith(Path.basename(path), "jvm")
 }
 
 // True iff any `.NET`-relevant `.l` file under `dir` (recursive) is newer than
