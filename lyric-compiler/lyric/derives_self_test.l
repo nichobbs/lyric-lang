@@ -181,8 +181,9 @@ test "generate json record" {
   val src = "package P\n@generate(Json)\nrecord Point { x: Int; y: Int }\n"
   val pr = parse(src)
   val sf = deriveFile(pr.file)
-  assertEqualInt(sf.items.count, 2, "json-rec: 1 record + 1 synth (toJson)")
+  assertEqualInt(sf.items.count, 3, "json-rec: 1 record + 2 synths (toJson, fromJson)")
   assertTrue(parseDeriveAndFindFunc(src, "Point.toJson"), "json-rec: Point.toJson synthesised")
+  assertTrue(parseDeriveAndFindFunc(src, "Point.fromJson"), "json-rec: Point.fromJson synthesised")
 }
 
 // Regression for #992: the synthesised `toJson` for a record with a

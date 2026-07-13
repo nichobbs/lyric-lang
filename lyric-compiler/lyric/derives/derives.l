@@ -722,17 +722,19 @@ func jsonSliceDecodeBlock(fieldName: in String, elemTy: in TypeExpr, restExpr: i
   loopStmts.add(stmtVal("__json_elem", None, jsonCall1("arrayCurrent", pathExpr("__json_cur"))))
   if jsonScalarOrNone(elemTypeName) {
     loopStmts.add(
-      stmtExprOnly(methodCall1(pathExpr(fieldName), "append", jsonDecodeScalarExpr("__json_elem", elemTypeName)))
+      stmtAssign(pathExpr(fieldName), methodCall1(pathExpr(fieldName), "append", jsonDecodeScalarExpr("__json_elem", elemTypeName)))
     )
   } else {
     // Nested record element: recursively parse via its own `fromJson` from
     // the element's raw JSON text. Decoded via match-as-statement: the `Err`
     // arm returns out of the whole `fromJson` function immediately; the `Ok`
     // arm appends the decoded element and falls through to the next
-    // iteration.
+    // iteration. `slice[T].append` is non-mutating (returns a new slice,
+    // docs/01-language-reference.md §2.7) — must reassign `fieldName`, not
+    // discard the call's result (#5725).
     val appendArm = mkArmBlock(
       ctorPat("Ok", oneList(bindingPat("__json_ev"))),
-      blockOf(oneStmtList(stmtExprOnly(methodCall1(pathExpr(fieldName), "append", pathExpr("__json_ev")))))
+      blockOf(oneStmtList(stmtAssign(pathExpr(fieldName), methodCall1(pathExpr(fieldName), "append", pathExpr("__json_ev")))))
     )
     val returnErrArm = mkArmBlock(
       ctorPat("Err", oneList(bindingPat("__json_em"))),
