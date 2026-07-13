@@ -1676,7 +1676,21 @@ func inferReturnFromName(
   val declOpt: Option[FunctionDecl] = mapGet(state.funcDecls, fname)
   match declOpt {
     case None -> None
-    case Some(decl) -> {
+    case Some(decl) -> if decl.isAsync {
+      // #5xxx: an un-awaited call to an `async func` evaluates to the
+      // physical Task/Task<T> the codegen backend produces for it, not
+      // to `decl.ret` (the function's logical Lyric return type). Feeding
+      // `decl.ret` into generic-parameter unification here mis-inferred
+      // `T=Unit` for `taskWaitMs(asyncGreet(name), ms)` (asyncGreet's
+      // logical return is Unit), producing a specialisation whose
+      // parameter type lowers to the illegal MSIL `ELEMENT_TYPE_VOID` in
+      // a parameter position (`TypeLoadException: The signature is
+      // incorrect.` at type-load time, unconditionally). Fall back to the
+      // same `None` degradation already used for lambdas, BCL returns,
+      // and impl-block dispatch — the call stays generic/erased instead
+      // of miscompiling.
+      None
+    } else {
       val typeParams = extractTypeParamNames(decl.generics)
       val subst: Map[String, TypeExpr] = newMap()
       val valueSubst: Map[String, Expr] = newMap()
