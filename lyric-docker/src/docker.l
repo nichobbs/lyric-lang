@@ -243,13 +243,30 @@ func jsonStringArray(items: in slice[String]): String {
   return acc + "]"
 }
 
-/// Build the JSON body for POST /containers/create.
+/// Build the JSON body for POST /containers/create, optionally pinning the
+/// container's NetworkMode (e.g. "none" for full isolation, or a named
+/// Docker network). NetworkMode is only emitted when set, so callers that
+/// don't care keep the Docker default (bridge) — an empty networkMode omits
+/// the field entirely rather than emitting `"NetworkMode":""`.
 /// Public so tests can exercise `jsonEscapeValue`'s control-character and
 /// named-escape branches without a live Docker daemon (#4535).
-pub func createContainerBody(image: in String, env: in slice[String], binds: in slice[String]): String {
-  return "{\"Image\":\"" + jsonEscapeValue(image) + "\",\"Env\":" + jsonStringArray(env) + ",\"HostConfig\":{\"Binds\":" +
-    jsonStringArray(binds) +
+pub func createContainerBodyWithNetwork(
+  image: in String, env: in slice[String], binds: in slice[String], networkMode: in String
+): String {
+  var hostConfig = "\"Binds\":" + jsonStringArray(binds)
+  if networkMode.length > 0 {
+    hostConfig = hostConfig + ",\"NetworkMode\":\"" + jsonEscapeValue(networkMode) + "\""
+  }
+  return "{\"Image\":\"" + jsonEscapeValue(image) + "\",\"Env\":" + jsonStringArray(env) + ",\"HostConfig\":{" +
+    hostConfig +
     "}}"
+}
+
+/// Build the JSON body for POST /containers/create with the Docker default
+/// network. Public so tests can exercise `jsonEscapeValue`'s control-character
+/// and named-escape branches without a live Docker daemon (#4535).
+pub func createContainerBody(image: in String, env: in slice[String], binds: in slice[String]): String {
+  return createContainerBodyWithNetwork(image, env, binds, "")
 }
 
 /// Unescape a JSON string value (reverse of RFC 8259 escape sequences).
@@ -569,14 +586,19 @@ async func sendExpectSuccess(
   }
 }
 
-/// Create a container from an image with environment variables and volume binds.
-/// Returns the new container id.
-pub async func createContainer(
-  client: in DockerClient, image: in String, env: in slice[String], binds: in slice[String]
+/// Create a container from an image with environment variables and volume
+/// binds, additionally pinning the container's NetworkMode (e.g. "none" for
+/// full isolation, or a named Docker network). An empty networkMode keeps
+/// the Docker default (bridge). Returns the new container id.
+pub async func createContainerWithNetwork(
+  client: in DockerClient, image: in String, env: in slice[String], binds: in slice[String], networkMode: in String
 ): Result[String, DockerError] {
   val urlStr = dockerApiBase + "/containers/create"
   val url = resolveDockerUrl(urlStr)?
-  val request = Std.Http.withJsonBody(Std.Http.request(Std.Http.POST, url), createContainerBody(image, env, binds))
+  val request = Std.Http.withJsonBody(
+    Std.Http.request(Std.Http.POST, url),
+    createContainerBodyWithNetwork(image, env, binds, networkMode)
+  )
   match await sendAndReadBody(client, request, urlStr, "Create container failed") {
     case Ok(body) -> {
       val id = extractJsonField(body, "Id")
@@ -588,6 +610,14 @@ pub async func createContainer(
     }
     case Err(e) -> Err(error = e)
   }
+}
+
+/// Create a container from an image with environment variables and volume
+/// binds, using the Docker default network. Returns the new container id.
+pub async func createContainer(
+  client: in DockerClient, image: in String, env: in slice[String], binds: in slice[String]
+): Result[String, DockerError] {
+  await createContainerWithNetwork(client, image, env, binds, "")
 }
 
 /// Start a created container.

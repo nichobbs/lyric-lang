@@ -325,3 +325,31 @@ test "jsonFieldObjectStart returns None when the field is absent" {
   val body = "{\"StatusCode\":0}"
   assertTrue(isNone(Lyric.Docker.jsonFieldObjectStart(body, "Error")), "Expected None for a missing field")
 }
+
+// ─── NetworkMode Tests ──────────────────────────────────────────────────────
+// createContainerBodyWithNetwork backs createContainerWithNetwork, which
+// cloud-agents needs to pin a container's network (e.g. "none" for full
+// isolation, or a named egress-restricted network) at create time.
+test "createContainerBodyWithNetwork omits NetworkMode when networkMode is empty" {
+  val body = Lyric.Docker.createContainerBodyWithNetwork("alpine", [], [], "")
+  assertEqual(body, Lyric.Docker.createContainerBody("alpine", [], []), "Empty networkMode matches the no-network body builder")
+  assertFalse(body.contains("NetworkMode"), "No NetworkMode field is emitted when networkMode is empty")
+}
+
+test "createContainerBodyWithNetwork emits NetworkMode when set" {
+  val body = Lyric.Docker.createContainerBodyWithNetwork("alpine", [], [], "none")
+  val expected = "{\"Image\":\"alpine\",\"Env\":[],\"HostConfig\":{\"Binds\":[],\"NetworkMode\":\"none\"}}"
+  assertEqual(body, expected, "NetworkMode is embedded in HostConfig when set")
+}
+
+test "createContainerBodyWithNetwork escapes a named network containing special characters" {
+  val body = Lyric.Docker.createContainerBodyWithNetwork("alpine", [], [], "my\"network")
+  val extracted = Lyric.Docker.extractJsonField(body, "NetworkMode")
+  assertEqual(extracted, "my\"network", "NetworkMode value round-trips through escape + decode unchanged")
+}
+
+test "createContainerBodyWithNetwork preserves Binds and Env alongside NetworkMode" {
+  val body = Lyric.Docker.createContainerBodyWithNetwork("alpine", ["FOO=bar"], ["vol:/data"], "restricted-net")
+  val expected = "{\"Image\":\"alpine\",\"Env\":[\"FOO=bar\"],\"HostConfig\":{\"Binds\":[\"vol:/data\"],\"NetworkMode\":\"restricted-net\"}}"
+  assertEqual(body, expected, "Env and Binds are unaffected by the added NetworkMode field")
+}
