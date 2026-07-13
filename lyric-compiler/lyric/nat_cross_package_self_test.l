@@ -36,6 +36,19 @@
 //! from (and out of scope for) the MSIL/JVM signature-encoding crash this
 //! file regression-tests.
 //!
+//! `Type.from(x)` / `.tryFrom(x)` calls stay entirely inside the PRODUCER
+//! package in every test below: these static factories resolve through a
+//! per-package registry (`cctx.distinctFromTokens`/`distinctTryFromTokens`,
+//! `msil/codegen.l`) populated only for types the CURRENT package declares
+//! itself — calling `Score.from(...)` from a CONSUMER on a `Score` imported
+//! from a restored dependency fails at runtime ("unsupported method 'from'
+//! on the receiver type"). That is a real, separate, pre-existing gap
+//! (discovered while authoring this test's first draft, which called
+//! `Score.from` from the consumer and crashed exactly that way) — out of
+//! scope for this file, which instead has the producer expose plain wrapper
+//! functions so the consumer only ever passes the opaque `Score` value
+//! through ordinary cross-package calls.
+//!
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1 (required because
 //! the test imports `Lyric.Emitter`, a compiler package):
 //!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/nat_cross_package_self_test.l
@@ -170,13 +183,28 @@ func buildAndRunConsumer(
 // A restored `func bumpScore(s: in Score): Score` — Score = `Nat range 0 ..=
 // 1000000` — parameter/return round-trip. Before the fix this crashed the
 // consumer at the call site with InvalidProgramException.
+//
+// `Score.from(...)`/`.toInt()` calls stay entirely inside the PRODUCER
+// package: `Type.from`/`.tryFrom` static factories resolve through a
+// per-package registry (`cctx.distinctFromTokens`/`distinctTryFromTokens` in
+// `msil/codegen.l`) populated only for that package's OWN locally-declared
+// distinct types — a restored (imported) distinct type has no entry, so
+// `Score.from(...)` called from the CONSUMER fails at runtime ("unsupported
+// method 'from' on the receiver type"). That is a real, separate,
+// pre-existing gap (cross-package `.from`/`.tryFrom` resolution), out of
+// scope here; the producer exposes plain wrapper functions
+// (`makeScore`/`scoreToInt`) so the consumer only ever passes the opaque
+// `Score` value through ordinary cross-package calls — exactly the
+// MSIL-signature-encoding path this test targets.
 test "cross-package Nat-backed range-subtype parameter and return round-trip" {
   val tmpDir = freshTempDir("nat-score")
   val producerSrc = "package NatXp.Lib\n" + "\n" + "pub type Score = Nat range 0 ..= 1000000\n" + "\n" +
+    "pub func makeScore(n: Int): Score {\n" + "  Score.from(n)\n" + "}\n" + "\n" +
+    "pub func scoreToInt(s: in Score): Int {\n" + "  s.toInt()\n" + "}\n" + "\n" +
     "pub func bumpScore(s: in Score): Score {\n" + "  Score.from(s.toInt() + 1)\n" + "}\n"
   val producerDll = buildDll(tmpDir, "NatXp.Lib", producerSrc, "NatXp.Lib")
   val consumerSrc = "package NatXp.App\n" + "\n" + "import NatXp.Lib\n" + "\n" + "func main(): Unit {\n" +
-    "  val s = Score.from(41)\n" + "  val s2 = bumpScore(s)\n" + "  println(s2.toInt())\n" + "}\n"
+    "  val s = makeScore(41)\n" + "  val s2 = bumpScore(s)\n" + "  println(scoreToInt(s2))\n" + "}\n"
   val captured = buildAndRunConsumer(tmpDir, "NatXp.App", consumerSrc, "NatXp.App", "NatXp.Lib", producerDll)
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "natxp_score: exit 0 (stderr=" + captured.stderr + ")")
@@ -186,17 +214,20 @@ test "cross-package Nat-backed range-subtype parameter and return round-trip" {
 // A restored record with a `Nat range`-typed field, constructed and read
 // across the package boundary — the same "field/param signature encoded as a
 // bogus in-package class" shape as the Web.Request InvalidProgramException
-// crash.
+// crash. As above, `Score.from`/`.toInt`/`Counter(...)` construction stay
+// inside the producer for the same cross-package `.from` resolution reason.
 test "cross-package record with Nat-backed range field construct and read" {
   val tmpDir = freshTempDir("nat-rec")
   val producerSrc = "package NatXp.RecLib\n" + "\n" + "pub type Score = Nat range 0 ..= 1000000\n" + "\n" +
     "pub record Counter { score: Score }\n" + "\n" +
+    "pub func makeCounter(n: Int): Counter {\n" + "  Counter(score = Score.from(n))\n" + "}\n" + "\n" +
+    "pub func counterScoreToInt(c: in Counter): Int {\n" + "  c.score.toInt()\n" + "}\n" + "\n" +
     "pub func bumpCounter(c: in Counter): Counter {\n" +
     "  Counter(score = Score.from(c.score.toInt() + 1))\n" + "}\n"
   val producerDll = buildDll(tmpDir, "NatXp.RecLib", producerSrc, "NatXp.RecLib")
   val consumerSrc = "package NatXp.RecApp\n" + "\n" + "import NatXp.RecLib\n" + "\n" + "func main(): Unit {\n" +
-    "  val c = Counter(score = Score.from(9))\n" + "  val c2 = bumpCounter(c)\n" +
-    "  println(c2.score.toInt())\n" + "}\n"
+    "  val c = makeCounter(9)\n" + "  val c2 = bumpCounter(c)\n" +
+    "  println(counterScoreToInt(c2))\n" + "}\n"
   val captured = buildAndRunConsumer(tmpDir, "NatXp.RecApp", consumerSrc, "NatXp.RecApp", "NatXp.RecLib", producerDll)
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "natxp_rec: exit 0 (stderr=" + captured.stderr + ")")

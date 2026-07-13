@@ -15456,6 +15456,24 @@ forgot it" pattern, and it means `docs/02-worked-examples.md`'s own
 not actually type-check before this fix. Fixed by adding `"Nat"` to
 `isNumericPrimitiveName`.
 
+**Third correction (found by CI, not review):** with `T0091` fixed, the
+test's *first draft* compiled but crashed the consumer at runtime with
+`Unhandled exception. System.Exception: unsupported method 'from' on
+the receiver type at this call site`. Root cause (unrelated to `Nat`):
+`Type.from(x)`/`Type.tryFrom(x)` static factories resolve through a
+per-package registry (`cctx.distinctFromTokens`/`distinctTryFromTokens`,
+`msil/codegen.l`) populated only for distinct types the *current*
+package declares itself; a consumer calling `.from`/`.tryFrom` on a
+distinct type imported from a restored dependency has no registry
+entry and hits the "unsupported method" runtime throw. This is a real,
+pre-existing gap in cross-package `.from`/`.tryFrom` resolution — not
+fixed here (out of scope; not exercised by `range_subtype_self_test.l`,
+which is single-package). Worked around in the test by having the
+producer expose plain wrapper functions (`makeScore`/`scoreToInt`,
+`makeCounter`/`counterScoreToInt`) so the consumer only ever passes the
+opaque `Score`/`Counter` value through ordinary cross-package calls,
+never calling `.from`/`.tryFrom` itself.
+
 Regression coverage:
 `nat_cross_package_self_test.l` (mirrors
 `cross_package_generics_self_test.l`'s producer/consumer-DLL harness):
