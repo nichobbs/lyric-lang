@@ -24,6 +24,7 @@ import Std.Core
 import Std.Encoding
 import Std.Format
 import Std.Http
+import Std.Parse
 import Std.String
 
 /// Docker Engine API version this client targets. All request paths are
@@ -204,7 +205,7 @@ func jsonEscapeValue(s: in String): String {
   var i = 0
   while i < s.length {
     val c = s.substring(i, 1)
-    val code = c.codePointAt(0)
+    val code = Std.Char.toInt(s[i])
     if c == "\"" {
       parts.add("\\\"")
     } else if c == "\\" {
@@ -251,7 +252,10 @@ func jsonStringArray(items: in slice[String]): String {
 /// Public so tests can exercise `jsonEscapeValue`'s control-character and
 /// named-escape branches without a live Docker daemon (#4535).
 pub func createContainerBodyWithNetwork(
-  image: in String, env: in slice[String], binds: in slice[String], networkMode: in String
+  image: in String,
+  env: in slice[String],
+  binds: in slice[String],
+  networkMode: in String,
 ): String {
   var hostConfig = "\"Binds\":" + jsonStringArray(binds)
   if networkMode.length > 0 {
@@ -267,6 +271,28 @@ pub func createContainerBodyWithNetwork(
 /// and named-escape branches without a live Docker daemon (#4535).
 pub func createContainerBody(image: in String, env: in slice[String], binds: in slice[String]): String {
   return createContainerBodyWithNetwork(image, env, binds, "")
+}
+
+/// Parse a 4-character hexadecimal string into its integer value, or
+/// `None` if any character isn't a valid hex digit. Decodes a `\uXXXX`
+/// JSON escape's payload; Lyric's stdlib has no radix-aware integer
+/// parser, so this composes `Std.Char.hexDigitValue` per digit.
+func parseHex4Digits(hex: in String): Option[Int] {
+  if hex.length != 4 {
+    return None
+  }
+  var value = 0
+  var i = 0
+  while i < 4 {
+    match Std.Char.hexDigitValue(hex[i]) {
+      case Some(d) -> {
+        value = value * 16 + d
+      }
+      case None -> return None
+    }
+    i = i + 1
+  }
+  Some(value = value)
 }
 
 /// Unescape a JSON string value (reverse of RFC 8259 escape sequences).
@@ -303,7 +329,7 @@ func jsonUnescapeValue(s: in String): String {
         i = i + 2
       } else if next == "u" and i + 5 < s.length {
         val hexStr = s.substring(i + 2, 4)
-        val codeOpt = Int.parse(hexStr, 16)
+        val codeOpt = parseHex4Digits(hexStr)
         match codeOpt {
           case Some(code) -> {
             parts.add("" + Std.Char.fromInt(code))
@@ -481,7 +507,10 @@ pub func extractJsonIntField(json: in String, field: in String): Option[Int] {
       if digits.length == 0 or digits == "-" {
         return None
       }
-      return Int.parse(digits, 10)
+      match Std.Parse.tryParseInt(digits) {
+        case Ok(n) -> return Some(value = n)
+        case Err(_) -> return None
+      }
     }
     searchFrom = pos + 1
   }
@@ -591,7 +620,11 @@ async func sendExpectSuccess(
 /// full isolation, or a named Docker network). An empty networkMode keeps
 /// the Docker default (bridge). Returns the new container id.
 pub async func createContainerWithNetwork(
-  client: in DockerClient, image: in String, env: in slice[String], binds: in slice[String], networkMode: in String
+  client: in DockerClient,
+  image: in String,
+  env: in slice[String],
+  binds: in slice[String],
+  networkMode: in String,
 ): Result[String, DockerError] {
   val urlStr = dockerApiBase + "/containers/create"
   val url = resolveDockerUrl(urlStr)?
