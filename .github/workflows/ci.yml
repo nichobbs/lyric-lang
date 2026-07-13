@@ -5554,17 +5554,21 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_tests.l
 
-      # Stdlib runtime suites on dotnet (#5604): these five `func main`-shaped
-      # suites (run via `lyric run`, not `lyric test` — they predate
-      # @test_module) were CI-wired nowhere on dotnet, which let a whole
-      # family of silent miscompiles ship invisibly: generic stdlib calls
-      # dropped when the monomorphizer could not infer type args
-      # (core/iter), open-generic isinst from tuple-pattern tests
-      # (encoding), wrong-union case construction under a cross-package
-      # case-name collision (regex_safe), and object-degraded union-ctor
-      # MemberRef signatures (rest).  Each suite exits non-zero on any
-      # assertion failure or runtime fault.
-      - name: Stdlib runtime suites on dotnet (core, iter, encoding, regex_safe, rest)
+      # Stdlib runtime suites on dotnet (#5604, expanded in D-progress-670 /
+      # #5710): these `func main`-shaped suites (run via `lyric run`, not
+      # `lyric test` — they predate @test_module) exercise the FFI kernels and
+      # core stdlib but were CI-wired nowhere on dotnet, which let a family of
+      # silent miscompiles ship invisibly — monomorphizer-dropped generic calls
+      # (core/iter), open-generic isinst from tuple patterns (encoding),
+      # wrong-union construction under a cross-package case-name collision
+      # (regex_safe), object-degraded union-ctor MemberRefs (rest), and, more
+      # recently, the D-progress-669 auto-FFI migration breakage.  Every suite
+      # here is verified to pass via `lyric run`; suites that currently crash
+      # (`set_tests` #5711, `sort_tests` #5712, `xml_tests` #5713 — pre-existing
+      # emitter / stdlib bugs) are deliberately NOT listed and are tracked as
+      # issues, not silenced.  Each suite exits non-zero on any assertion
+      # failure or runtime fault.
+      - name: Stdlib runtime suites on dotnet (kernels + core stdlib)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -5573,7 +5577,12 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping stdlib runtime suites"
             exit 1
           fi
-          for suite in core_tests iter_tests encoding_tests regex_safe_tests rest_tests; do
+          for suite in \
+            core_tests iter_tests encoding_tests regex_safe_tests rest_tests \
+            process_capture_tests process_tests format_tests json_tests \
+            collections_tests char_tests math_tests hash_tests path_tests \
+            errors_tests environment_tests string_tests string_methods_tests \
+            regex_tests yaml_tests testing_tests mocking_tests; do
             echo "--- lyric run lyric-stdlib/tests/$suite.l"
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done

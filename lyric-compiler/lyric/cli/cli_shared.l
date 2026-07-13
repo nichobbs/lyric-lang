@@ -645,6 +645,86 @@ func findCompiledLibDir(): String {
   ""
 }
 
+// ── Stdlib bundle freshness guard (D-progress-670) ─────────────────────────
+// `lyric run` / `lyric test` link the PRECOMPILED `Lyric.Stdlib.dll` bundle
+// for runtime execution; kernel source is read only for compile-time type
+// checking.  So editing `lyric-stdlib/std/**` and re-running a test WITHOUT
+// rebuilding the bundle silently exercises the stale bundle and reports
+// results that don't reflect the edit — the exact trap that produced a false
+// "all green" during the D-progress-669 auto-FFI migration.  This guard
+// surfaces that staleness.
+// True iff a `.l` source file is one that the `.NET` `Lyric.Stdlib.dll` bundle
+// is built from.  Mirrors `findStdlibSourcesForTarget(false)`: the JVM- and
+// native-only kernels — the whole `_kernel_jvm/` and `_kernel_native/` trees,
+// plus the two JVM-only `_kernel/jvm*.l` files — never contribute to the .NET
+// bundle, so editing one must NOT flag the bundle stale on a `--target dotnet`
+// run (which would break the guard's "never fires spuriously" invariant).
+pub func isDotnetStdlibSource(path: in String): Bool {
+  if Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") {
+    return false
+  }
+  // Any `jvm*.l` file in the shared `_kernel/` dir (today `jvm.l` /
+  // `jvm_exception.l`) is JVM-only — mirror the loader's `startsWith("jvm")`
+  // prefix skip (`emitter.l`) so a future `jvm_*.l` kernel is excluded too.
+  not Str.startsWith(Path.basename(path), "jvm")
+}
+
+// True iff any `.NET`-relevant `.l` file under `dir` (recursive) is newer than
+// `ref`.  Stats the bundle ONCE up front and passes it in so we can early-exit
+// at the first newer source rather than computing the newest of the whole tree
+// — the common (fresh) case still walks every file to confirm none are newer,
+// but that is a bounded one-time `stat` sweep of the ~100-file stdlib source
+// dir, dwarfed by the compile that always follows, and it only runs in a dev
+// tree.
+func anyLyricSourceNewerThan(dir: in String, ref: in File.FileStat): Bool {
+  match File.listFilesRecursive(dir) {
+    case Err(_) -> false
+    case Ok(files) -> {
+      for f in files.toArray() {
+        if Str.endsWith(f, ".l") and isDotnetStdlibSource(f) {
+          match File.stat(f) {
+            case Ok(st) -> {
+              if File.fileStatIsNewer(st, ref) {
+                return true
+              }
+            }
+            case Err(_) -> ()
+          }
+        }
+      }
+      false
+    }
+  }
+}
+
+// Warn (to stderr) when the compiled stdlib bundle at `libDir` is older than
+// any `lyric-stdlib/std/**` source file — i.e. a dev edited a kernel but hasn't
+// re-run `make lyric`, so this run links a stale bundle.  Dev-tree only: a
+// silent no-op when the source tree isn't found (installed toolchains) or no
+// bundle is present, so it never fires for shipped SDKs or a CI job that
+// freshly rebuilt the bundle.
+pub func warnIfStdlibBundleStale(libDir: in String): Unit {
+  if libDir.length == 0 {
+    return
+  }
+  val srcDir = Emitter.locateStdlibDir()
+  if srcDir.length == 0 {
+    return
+  }
+  val bundlePath = Path.join(libDir, "Lyric.Stdlib.dll")
+  match File.stat(bundlePath) {
+    case Err(_) -> ()
+    case Ok(bundleStat) -> {
+      if anyLyricSourceNewerThan(srcDir, bundleStat) {
+        Console.error("warning: stdlib source under '" + srcDir + "' is newer than the compiled bundle at")
+        Console.error("         '" + bundlePath + "'.")
+        Console.error("         `lyric run` / `lyric test` link the prebuilt bundle for runtime, so this run")
+        Console.error("         may not reflect your source edits — run `make lyric` to rebuild the stdlib.")
+      }
+    }
+  }
+}
+
 // Co-locate the stdlib runtime assemblies (the single `Lyric.Stdlib.dll` bundle
 // plus the per-package HTTP/async DLLs not yet bundleable, #4030) from the
 // SDK/publish lib dir `srcDir` next to the assembly at `outPath`, so `dotnet

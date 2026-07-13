@@ -1212,7 +1212,9 @@ pub func perPackageAssemblyName(pkg: in String, target: in CompileTarget): Strin
 
 // Locate `lyric-stdlib/std/` the same way `findStdlibSources` does: explicit
 // `$LYRIC_STD_PATH`, else walk up from the binary's base dir, else from the CWD.
-func locateStdlibDir(): String {
+// Exposed (`pub`) so the CLI's stdlib-bundle freshness guard can compare the
+// source tree's newest mtime against the compiled bundle (D-progress-670).
+pub func locateStdlibDir(): String {
   val envOverride = Environment.getVarOrDefault("LYRIC_STD_PATH", "")
   if envOverride.length > 0 and File.dirExists(envOverride) {
     return envOverride

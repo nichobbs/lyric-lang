@@ -192,6 +192,14 @@ func cmdTest(argv: in slice[String]): Int {
     }
   }
 
+  // Dev-loop guard: warn once if the compiled stdlib bundle is older than the
+  // stdlib source (a no-op outside a source tree / for a fresh bundle, and only
+  // for the .NET target — JVM/native don't link the .NET bundle).  Skipped for
+  // `--list`, which only prints test titles and never links the runtime bundle.
+  if not targetJvm and not targetNative and not listMode {
+    warnIfStdlibBundleStale(findCompiledLibDir())
+  }
+
   // `lyric test --manifest <toml>` reads `[project.tests]` and runs
   // each test file bundled with the manifest's `[project.packages]`
   // (#465).  Each test contributes one synthesised executable; the

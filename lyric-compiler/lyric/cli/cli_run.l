@@ -361,6 +361,13 @@ func cmdRun(argv: in slice[String]): Int {
     }
   }
 
+  // Dev-loop guard: warn once if the compiled stdlib bundle is older than the
+  // stdlib source (a no-op outside a source tree / for a fresh bundle).
+  match runTarget {
+    case Dotnet -> warnIfStdlibBundleStale(findCompiledLibDir())
+    case _ -> ()
+  }
+
   // Project-mode: no explicit source file — discover or use --manifest.
   if not haveSource {
     val mfPath = match discoverManifest(manifestArg) {
