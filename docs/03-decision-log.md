@@ -15389,6 +15389,159 @@ before it can be turned on without breaking builds.
 
 ---
 
+## D-progress-668 — `Nat` MSIL/JVM signature encoding: fixed the `Web.Request`-class `InvalidProgramException` for `Nat`-typed values crossing a restored-package boundary
+
+`typeExprToMsilCtx` (`msil/codegen.l`) and `typeExprToJvm`
+(`jvm/codegen/01_types.l`) had no arm for the `Nat` primitive: the `TRef`
+branch matches `"Int"`/`"Long"`/`"Double"`/… by name and falls through to
+the generic case for anything unrecognised, encoding `Nat` as
+`MClass("<pkg>.Nat")` / `JRef("<pkg>/Nat")` — an in-package
+reference-type class — instead of its real representation (a
+non-negative `Long`, docs/01 §2 "Nat"; the type checker already models
+it as a full numeric primitive, `typechecker_types.l:19,96,125-126`).
+`Nat range A ..= B` refinements hit the identical bug: the `TRefined`
+arm recurses into the same function against the refinement's
+*underlying* `TRef` (`"Nat"`), so a `Nat`-backed distinct/range type's
+value carried the same bogus class encoding.
+
+Inside a single compilation unit this wrong-but-consistent encoding
+can silently build and even run — caller and callee IL both come from
+the same buggy pass — which is why this went unnoticed; docs/59 §3.3
+had already flagged it as a MINOR audit finding
+("`UInt`/`ULong`/`Nat` fall through to `MClass(...)`... erased to
+`object` downstream") without a filed crash report. Across a restored
+(pre-compiled) package boundary the consumer instead decodes the
+producer's *real* signature from CLI metadata (`I8`, the same encoding
+`Long` uses — `Nat` has no distinct metadata representation), so the
+consumer's independently-guessed `MClass`/`JRef` reference and the
+producer's real `int64` field/param diverge and the call crashes with
+`InvalidProgramException` — the same failure shape reported for
+`Web.Request` construction (D-progress-663 is a *different* root cause
+in the same failure family: instance-method parameter slots resolved
+via the plain in-package guess while descriptors/registration resolved
+through the extern/imported-type seed).
+
+Fix: `Nat` now maps to `MLong` (MSIL) / `JLong` (JVM) — its only
+possible representation, since `Nat` has no distinct CLR/JVM
+counterpart. `isPrimitiveTypeKeyword` (JVM, used by
+`eagerlyResolveGenericArg` to leave primitive keywords bare rather than
+rewriting them to a package-qualified marker) gained the same `"Nat"`
+case for consistency.
+
+**Correction (found during PR review, #5699):** the initial version of
+this fix claimed JVM parity for `Nat range A..=B` via the same
+`TRefined`-recurses-into-underlying-`TRef` mechanism MSIL uses
+(`msil/codegen.l:5378`), but JVM's `typeExprToJvm` `TRefined` arm
+(`jvm/codegen/01_types.l`) was a flat `case TRefined(_, _) -> JInt` —
+it never recursed into the underlying type at all, so a `Nat`-backed
+(or any non-`Int`-backed, e.g. `Long`-backed) range subtype was still
+silently mis-encoded as `JInt` on JVM regardless of the `Nat` TRef arm
+added above. Fixed the same way as MSIL: `TRefined(underlying, _)`
+now recurses into `typeExprToJvm` against a synthetic `TRef` built
+from `underlying`. `nat_cross_package_self_test.l` remains MSIL-only
+(`target = Emitter.Dotnet`, matching `cross_package_generics_self_test.l`'s
+established scope) — this JVM fix has no dedicated regression test in
+this PR; tracked in #5701 (add a `--target jvm` case exercising a
+`Long`-backed range subtype crossing a restored-package boundary).
+
+**Second correction (found by CI, not review):** `nat_cross_package_self_test.l`
+initially failed to even compile — `isNumericPrimitiveName`
+(`typechecker_checker.l`, gates `T0091` for `type X = <underlying>
+range A..=B` distinct-type declarations) never listed `"Nat"`, so
+`Nat range A..=B` was rejected outright, independent of and prior to
+the MSIL/JVM encoding bug above. This is the same "`Nat` is a real
+`PtNat` primitive elsewhere in the checker but a name-based gate simply
+forgot it" pattern, and it means `docs/02-worked-examples.md`'s own
+`Nat range 1 ..= 100` / `dbPoolSize: Nat range 1 ..= 100` examples did
+not actually type-check before this fix. Fixed by adding `"Nat"` to
+`isNumericPrimitiveName`.
+
+**Third correction (found by CI, not review):** with `T0091` fixed, the
+test's *first draft* compiled but crashed the consumer at runtime with
+`Unhandled exception. System.Exception: unsupported method 'from' on
+the receiver type at this call site`. Root cause (unrelated to `Nat`):
+`Type.from(x)`/`Type.tryFrom(x)` static factories resolve through a
+per-package registry (`cctx.distinctFromTokens`/`distinctTryFromTokens`,
+`msil/codegen.l`) populated only for distinct types the *current*
+package declares itself; a consumer calling `.from`/`.tryFrom` on a
+distinct type imported from a restored dependency has no registry
+entry and hits the "unsupported method" runtime throw. This is a real,
+pre-existing gap in cross-package `.from`/`.tryFrom` resolution — not
+fixed here (out of scope; not exercised by `range_subtype_self_test.l`,
+which is single-package). Worked around in the test by having the
+producer expose plain wrapper functions (`makeScore`/`scoreToLong`,
+`makeCounter`/`counterScoreToLong`) so the consumer only ever passes the
+opaque `Score`/`Counter` value through ordinary cross-package calls,
+never calling `.from`/`.tryFrom` itself.
+
+**Fourth correction (found by CI, not review):** with that worked
+around, the test's *second* draft still failed — now inside the
+PRODUCER itself, at `s.toInt()`: `unsupported method 'toInt' on the
+receiver type`. Root cause: this PR's `Nat` fix was in fact working
+correctly, and the test's own method name was wrong. A distinct type's
+inherent conversion method is named by `distinctConvName(innerTy)`
+(`msil/lowering.l:3097`), keyed off the underlying MSIL type — `MInt`
+→ `"toInt"`, `MLong` → `"toLong"`, etc. — and `Score`'s `innerTy` is
+correctly `MLong` post-fix (`Nat` → `MLong`), so `Score` only gets a
+synthesised `.toLong()` projection, never `.toInt()`; likewise
+`Score.from(x)`'s real MSIL parameter is `Long`
+(`msil/lowering.l:3225-3226`), not `Int`. This is exactly the expected,
+correct behaviour of the fix in this PR working as intended — not a new
+gap — and confirms the `Nat` → `MLong` mapping is flowing correctly
+into the distinct-type-construction machinery (`msil/codegen.l:3304`'s
+`typeExprToMsilCtx(cctx, decl.underlying, pkgName)` call, which uses the
+exact function this PR patches). Fixed by using `Long`/`.toLong()`
+throughout the test instead of `Int`/`.toInt()`.
+
+Regression coverage:
+`nat_cross_package_self_test.l` (mirrors
+`cross_package_generics_self_test.l`'s producer/consumer-DLL harness):
+a `Nat range 0 ..= 1000000` distinct type used as a restored function's
+parameter/return, and as a restored record's field, both round-tripping
+correctly post-fix.
+
+**Scope note (separate, larger gap — not fixed here):** constructing a
+*bare* `Nat`-typed value from an integer literal does not type-check
+today outside of a binary operator or an if/match branch —
+`adoptIntLiteralType` (`typechecker_exprs.l:600`), the Rust-style
+literal-adopts-context mechanism, is wired only into `inferBinop`
+(and branch reconciliation), never into `inferExprExpected` (bindings,
+call arguments, record-field initialisers) or `SReturn`/trailing-block
+typing (both use `typeAssignable`, which has no numeric-widening case
+at all). `unsignedIntRank` (`typechecker_exprs.l:135`) also omits
+`PtNat` from its family, so `Nat` never widens against `Int` even
+inside a binop. The regression test above sidesteps this by
+constructing values via the already-working `Type.from(x)` /
+`Type.tryFrom(x)` / `.toInt()` distinct/range-subtype intrinsics
+(`range_subtype_self_test.l`'s proven pattern), which resolve through a
+codegen-level name match rather than the ordinary call-argument
+type-check path. A genuinely bare `Nat` (or `UInt`/`ULong`) parameter,
+binding, or return populated from a literal remains unconstructible;
+closing that gap (either widening `Nat`/`UInt`/`ULong` into the
+existing literal-adoption/widening machinery, or shipping the `.toNat()`
+family tracked by D-progress-405/#2050) is tracked as follow-up work,
+out of scope for this signature-encoding fix.
+
+**Correction (found during PR review, #5700):** this entry originally
+also claimed a `lyric-web/src/web.l` `routeDispatch` fix as a
+neighbouring `Web.Request` crash under issue #5364. That attribution
+was wrong and the change has been reverted: #5364's actual root cause
+(D-progress-624) is narrowly a `.indexOf`/`.lastIndexOf`-sourced raw
+unboxed `Int` match scrutinee mis-slotted as `MObject`; `routeDispatch`'s
+`case Some(params) -> ...` scrutinee comes from `matchPattern(...):
+Option[Map[String,String]]`, a reference type that never touches that
+code path, and `lyric-web/tests/dispatch_tests.l` already exercises
+this exact construction site. This entry (the `Nat` signature-encoding
+fix above) — together with the pre-existing, already-landed
+D-progress-663 (JVM cross-package param-slot resolution) — is itself
+the explanation for the originally reported "`Web.Request` construction
+crashes with `InvalidProgramException`": both produce the identical
+failure shape without any change needed to `routeDispatch`.
+
+**Related:** D-progress-663, D-progress-405, docs/59 §3.3, docs/01 §2 "Nat".
+
+---
+
 ## Decisions deferred to v2 or later
 
 

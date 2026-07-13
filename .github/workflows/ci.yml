@@ -1849,6 +1849,35 @@ jobs:
           fi
           LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cross_package_generics_self_test.l
 
+      # Cross-package Nat-backed range-subtype self-test (docs/59 §3.3 MINOR
+      # finding).  `typeExprToMsilCtx` had no arm for `Nat`, so a `Nat`-typed
+      # (or `Nat range A..=B`-typed) parameter/return/field fell through to
+      # `MClass("<pkg>.Nat")` — an in-package reference-type guess — instead
+      # of its real `int64` representation.  Self-consistent within one
+      # compilation unit, but a restored-package consumer decodes the real
+      # `I8` signature from metadata and the two encodings diverge:
+      # InvalidProgramException at the call site, the same failure shape as
+      # the Web.Request crash.  Builds a PRODUCER DLL (a `Nat range` distinct
+      # type used as a function parameter/return and as a record field) via
+      # `Lyric.Emitter.emitProject`, then compiles a CONSUMER that imports it
+      # as a restored dep and runs it.  Uses `Lyric.Emitter`, so
+      # LYRIC_LOAD_COMPILER=1 is needed.
+      - name: Cross-package Nat self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping cross-package Nat self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping cross-package Nat self-test"
+            exit 1
+          fi
+          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/nat_cross_package_self_test.l
+
       # Cross-assembly restored async funcs self-test (#5561).  Builds a
       # PRODUCER DLL of `pub async func`s in-process via
       # `Lyric.Emitter.emitProject`, then compiles a CONSUMER that awaits them
