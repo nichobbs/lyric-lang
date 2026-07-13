@@ -190,6 +190,11 @@ func testFindFirst(): Unit {
           }
         }
       }
+      // Note: this call site DOES use generic `isNone[XmlNode]` and compiles
+      // fine — the #5735 monomorphizer bug that forced `Std.Xml.findFirst` off
+      // `isNone` is context-specific (it manifested only for findFirst's own
+      // recursive, bundle-compiled call site), not universal to
+      // `isNone[reference-type]`.  See #5735.
       assertTrue(isNone(findFirst(documentRoot(doc), "z")), "findFirst missing tag")
     }
   }
