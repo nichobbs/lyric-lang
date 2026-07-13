@@ -199,7 +199,10 @@ pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task {
 /// `() -> Unit` closures lower to `System.Action`, so the BCL
 /// `Task.Run(Action, CancellationToken)` overload is targeted.
 /// stays @externTarget: delegate-typed parameters are only bridged
-/// through @externTarget declarations (D122).
+/// through @externTarget declarations (D122).  Explicitly `@externStatic`:
+/// the delegate parameter can't be metadata-scored, so without a hint the
+/// convention is only right by luck of the static default (F0027).
+@externStatic
 @externTarget("System.Threading.Tasks.Task.Run")
 func taskRunWithCancel(action: in () -> Unit, token: in CancellationToken): Task = ()
 
