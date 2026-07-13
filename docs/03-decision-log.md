@@ -15704,6 +15704,39 @@ half of #5704.
 
 ---
 
+## D-progress-672 — `Std.Xml`: reject invalid numeric character entities (#5713) and unblock `xml_tests` in CI
+
+Wiring `xml_tests` into CI (D-progress-670) surfaced `#5713`: `parseXml`
+accepted an out-of-range numeric character reference (`&#x110000;`) it should
+reject.  The validation was actually correct — `xEmitCodePoint` returns `Err`
+for `cp > 1114111` — but `xCollectText` **swallowed** that `Err`, appending a
+`"?"` and returning `Ok`, so the invalid document parsed successfully.  Fixed
+by propagating the entity `Err` from `xCollectText` instead of swallowing it;
+because both text content and attribute values route through `xCollectText`,
+the one change fixes both, and no test relied on the lenient `"?"` recovery.
+
+Fixing that unmasked a **second, unrelated** crash further down `xml_tests`
+(`testFindFirst`): `findFirst` called the generic `Std.Core.isNone[T]`, and
+monomorphizing it at `T = XmlNode` (a reference type erased to `Object`)
+mis-compiled to a "match not exhaustive" stub in the stdlib bundle build
+(`Msil.Codegen: match not exhaustive in Std.Xml.isNone__Object … arms=2`).
+This is a **monomorphizer/codegen bug** in the same family as #5711 / #5712 —
+a monomorphized `Option`-matching function over a reference type — not an
+`Std.Xml` defect.  Worked around stdlib-side by replacing the generic
+`isNone(result)` loop guard with a local `Bool` set from an inline
+`match result { … }` in the non-generic `findFirst` (whose own concrete
+`Option[XmlNode]` match compiles correctly); the underlying monomorphizer bug
+is filed as #5735 for a proper compiler fix.
+
+With both fixed, `xml_tests` passes and is moved from the D-progress-670
+"deliberately-excluded crashers" list into the wired dotnet runtime-suite loop.
+`set_tests` (#5711) and `sort_tests` (#5712) remain excluded pending their
+emitter fixes.
+
+**Related:** D-progress-670, #5713, #5711, #5712, #5735.
+
+---
+
 ## Decisions deferred to v2 or later
 
 

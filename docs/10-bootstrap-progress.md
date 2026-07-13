@@ -30203,11 +30203,13 @@ CI bundles, and writes to stderr so TAP stdout stays clean
 (`Lyric.Cli.warnIfStdlibBundleStale`; `Lyric.Emitter.locateStdlibDir` is now
 `pub`). Alongside it, 17 previously local-only stdlib runtime suites were
 wired into the dotnet CI step; doing so surfaced three pre-existing silent
-breakages no CI covered — `set_tests` (#5711), `sort_tests` (#5712),
-`xml_tests` (#5713) — which are filed (not silenced) rather than added while
-red.
+breakages no CI covered — `set_tests` (#5711), `sort_tests` (#5712), and
+`xml_tests` (#5713) — which were filed (not silenced) rather than added while
+red. (`xml_tests` #5713 was subsequently fixed and wired in — D-progress-672;
+`set_tests`/`sort_tests` remain excluded pending their emitter fixes.)
 
-**Related:** `docs/03-decision-log.md` D-progress-670; #5710–#5713.
+**Related:** `docs/03-decision-log.md` D-progress-670, D-progress-672;
+#5710–#5713.
 
 ## F0027 warning: hint-less `@externTarget` externs that can't be metadata-verified (2026-07-13)
 

@@ -298,8 +298,14 @@ func xCollectText(st: inout XmlState, hasStop: in Bool, stopCh: in Char): Result
       st.pos = st.pos + 1
       match xParseEntity(st) {
         case Err(e) -> {
-          scanning = false
-          result = result + "?"
+          // Propagate the entity error (malformed reference, unknown named
+          // entity, or an out-of-range / surrogate numeric character
+          // reference) instead of swallowing it as a "?" and continuing —
+          // the latter made `parseXml` return `Ok` for invalid input such as
+          // `&#x110000;`, which callers must be able to reject (#5713).  Both
+          // text content and attribute values route through here, so this one
+          // change fixes both.
+          return Err(error = e)
         }
         case Ok(s) -> {
           result = result + s
@@ -802,10 +808,23 @@ pub func findFirst(node: in XmlNode, tag: in String): Option[XmlNode] {
       if t == tag {
         Some(value = node)
       } else {
+        // Track found-ness with a local Bool + an inline `match` rather than
+        // the generic `isNone(result)`: monomorphizing `isNone[T]` at
+        // `T = XmlNode` (a reference type erased to Object) mis-compiles to a
+        // "match not exhaustive" stub in the stdlib bundle build.  This
+        // non-generic function's own `match` over `Option[XmlNode]` is fine;
+        // the monomorphizer bug is tracked separately.
         var result: Option[XmlNode] = None
+        var found = false
         var i = 0
-        while i < children.count and isNone(result) {
+        while i < children.count and not found {
           result = findFirst(children[i], tag)
+          match result {
+            case Some(_) -> {
+              found = true
+            }
+            case None -> ()
+          }
           i += 1
         }
         result
