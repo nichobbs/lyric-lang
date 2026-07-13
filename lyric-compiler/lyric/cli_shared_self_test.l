@@ -327,6 +327,63 @@ test "resolveNugetNativeAssets: host-RID entry with no file on disk is skipped" 
   assertEqualInt(paths.count, 0, "resolveNugetNativeAssets: declared asset absent on disk yields no paths")
 }
 
+// Regression for #5742: `resolveAllNugetAssets` must resolve both the
+// managed DLL and the host-RID native asset from a single fixture in one
+// call, matching what `resolveNugetAssets` + `resolveNugetNativeAssets`
+// resolve independently for the same inputs.
+test "resolveAllNugetAssets: resolves both managed DLL and host-RID native asset together" {
+  val hostRid = Environment.runtimeIdentifier()
+  if hostRid.length == 0 {
+    return
+  }
+  val mfDir = freshTempDir("all-assets")
+  defer {
+    cleanup(mfDir)
+  }
+  val pkgsDir = freshTempDir("all-assets-pkgs")
+  defer {
+    cleanup(pkgsDir)
+  }
+  val objDir = Path.join(mfDir, "obj")
+  match File.createDir(objDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + objDir + ": " + IOError.message(e))
+  }
+
+  val dllRelPath = "lib/netstandard2.0/SQLitePCLRaw.lib.e_sqlite3.dll"
+  val nativeRelPath = "runtimes/" + hostRid + "/native/libe_sqlite3.so"
+  val dllPath = touchNugetDll(pkgsDir, "SQLitePCLRaw.lib.e_sqlite3", "2.1.6", dllRelPath)
+  val nativePath = touchNugetDll(pkgsDir, "SQLitePCLRaw.lib.e_sqlite3", "2.1.6", nativeRelPath)
+
+  val assetsJson = "{\n" + "  \"targets\": {\n" + "    \".NETCoreApp,Version=v10.0\": {\n" +
+    "      \"SQLitePCLRaw.lib.e_sqlite3/2.1.6\": {\n" +
+    "        \"type\": \"package\",\n" +
+    "        \"runtime\": {\n" +
+    "          \"" + dllRelPath + "\": {}\n" +
+    "        },\n" +
+    "        \"runtimeTargets\": {\n" +
+    "          \"" + nativeRelPath + "\": { \"assetType\": \"native\", \"rid\": \"" + hostRid + "\" }\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  },\n" +
+    "  \"project\": {\n" +
+    "    \"restore\": {\n" +
+    "      \"packagesPath\": \"" +
+    Str.replace(pkgsDir, "\\", "\\\\") +
+    "\"\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
+  writeFileOrPanic(Path.join(objDir, "project.assets.json"), assetsJson)
+
+  val all = Cli.resolveAllNugetAssets(mfDir)
+  assertEqualInt(all.dllPaths.count, 1, "resolveAllNugetAssets: one managed DLL resolved")
+  assertTrue(listContains(all.dllPaths, dllPath), "resolveAllNugetAssets: managed DLL path matches fixture")
+  assertEqualInt(all.nativePaths.count, 1, "resolveAllNugetAssets: one native asset resolved")
+  assertTrue(listContains(all.nativePaths, nativePath), "resolveAllNugetAssets: native asset path matches fixture")
+}
+
 func oneEntryNugetSection(): Mf.NugetSection {
   val entries: List[Mf.NugetEntry] = newList()
   entries.add(Mf.NugetEntry(name = "Widget", version = "1.0.0"))

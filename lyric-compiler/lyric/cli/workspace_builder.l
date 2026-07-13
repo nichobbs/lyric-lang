@@ -698,13 +698,14 @@ pub func resolveManifestDependencies(
     di += 1
   }
 
-  val nugetPaths = resolveNugetAssets(mfDir)
+  val allNugetAssets = resolveAllNugetAssets(mfDir)
+  val nugetPaths = allNugetAssets.dllPaths
   warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
   val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
   for entry in nugetLyricEntries {
     restoredDlls.add(entry)
   }
-  val nativeAssetPaths = resolveNugetNativeAssets(mfDir)
+  val nativeAssetPaths = allNugetAssets.nativePaths
 
   ResolvedManifestDeps(
     restoredDlls = restoredDlls,

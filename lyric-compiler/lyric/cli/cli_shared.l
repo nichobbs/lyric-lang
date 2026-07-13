@@ -902,12 +902,39 @@ func loadNugetAssets(mfDir: in String): Option[ParsedNugetAssets] {
     return None
   }
 
-  val contentOpt = match File.readText(assetsPath) { case Ok(text) -> Some(value = text); case Err(_) -> None }
-
-  val content = match contentOpt { case Some(text) -> text; case None -> return None }
+  // Avoids binding a `match`-as-expression whose arm both yields a plain
+  // value AND early-`return`s a DIFFERENT (union-typed) value from this
+  // `Option[ParsedNugetAssets]`-returning function — that shape has a known
+  // self-hosted MSIL emitter miscompile (StackUnexpected on the shared
+  // return-value slot; see docs/10-bootstrap-progress.md's "deeply-nested
+  // match-as-expression emitter bug" entry for the same class of issue).
+  // Statement-position match + an explicit follow-up `if` sidesteps it.
+  var content = ""
+  var haveContent = false
+  match File.readText(assetsPath) {
+    case Ok(text) -> {
+      content = text
+      haveContent = true
+    }
+    case Err(_) -> ()
+  }
+  if not haveContent {
+    return None
+  }
 
   // Parse the JSON using AOT-safe pure-Lyric parser
-  val parseResult = match Yaml.parseJson(content) { case Ok(value) -> value; case Err(_) -> return None }
+  var parseResult: Yaml.YamlValue = Yaml.YMapping(pairs = newList())
+  var haveParseResult = false
+  match Yaml.parseJson(content) {
+    case Ok(value) -> {
+      parseResult = value
+      haveParseResult = true
+    }
+    case Err(_) -> ()
+  }
+  if not haveParseResult {
+    return None
+  }
 
   // Resolve NuGet packages folder
   var pkgsDir = Environment.getVarOrDefault("NUGET_PACKAGES", "")
@@ -958,6 +985,32 @@ pub func resolveNugetNativeAssets(mfDir: in String): List[String] {
   match loadNugetAssets(mfDir) {
     case None -> newList()
     case Some(la) -> extractNativeAssetPathsFromYaml(la.parsed, la.pkgsDir, hostRid)
+  }
+}
+
+/// Both `resolveNugetAssets`'s managed DLLs and `resolveNugetNativeAssets`'s
+/// native assets in a single `project.assets.json` read + parse (#5742) —
+/// every call site that needs both (`resolveManifestDependencies`,
+/// `cmdTestManifest`) previously called the two independent resolvers
+/// back-to-back, each re-running `loadNugetAssets` and so re-reading/
+/// re-parsing the same file.
+pub record ResolvedNugetAssets {
+  dllPaths: List[String]
+  nativePaths: List[String]
+}
+
+pub func resolveAllNugetAssets(mfDir: in String): ResolvedNugetAssets {
+  match loadNugetAssets(mfDir) {
+    case None -> ResolvedNugetAssets(dllPaths = newList(), nativePaths = newList())
+    case Some(la) -> {
+      val dllPaths = extractDllPathsFromYaml(la.parsed, la.pkgsDir)
+      val hostRid = Environment.runtimeIdentifier()
+      var nativePaths: List[String] = newList()
+      if hostRid.length > 0 {
+        nativePaths = extractNativeAssetPathsFromYaml(la.parsed, la.pkgsDir, hostRid)
+      }
+      ResolvedNugetAssets(dllPaths = dllPaths, nativePaths = nativePaths)
+    }
   }
 }
 
