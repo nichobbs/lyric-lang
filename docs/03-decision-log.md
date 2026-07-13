@@ -15389,7 +15389,7 @@ before it can be turned on without breaking builds.
 
 ---
 
-## D-progress-666 — `Nat` MSIL/JVM signature encoding: fixed the `Web.Request`-class `InvalidProgramException` for `Nat`-typed values crossing a restored-package boundary
+## D-progress-668 — `Nat` MSIL/JVM signature encoding: fixed the `Web.Request`-class `InvalidProgramException` for `Nat`-typed values crossing a restored-package boundary
 
 `typeExprToMsilCtx` (`msil/codegen.l`) and `typeExprToJvm`
 (`jvm/codegen/01_types.l`) had no arm for the `Nat` primitive: the `TRef`
