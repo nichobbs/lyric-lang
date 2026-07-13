@@ -1560,8 +1560,12 @@ jobs:
           func annotatedTaskRun(action: in () -> Unit): BclTask = ()
           func main(): Int { 0 }
           LYR
-          ( cd "$work" && "$bin_abs" build f0027_neg.l ) > "$work/f0027_neg.out" 2>&1 || true
-          echo "--- F0027 negative fixture ---"; cat "$work/f0027_neg.out"
+          rc=0
+          ( cd "$work" && "$bin_abs" build f0027_neg.l ) > "$work/f0027_neg.out" 2>&1 || rc=$?
+          echo "--- F0027 negative fixture (rc=$rc) ---"; cat "$work/f0027_neg.out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::annotated @externStatic fixture failed to build"; exit 1
+          fi
           if grep -q "F0027" "$work/f0027_neg.out"; then
             echo "::error::explicit @externStatic did not silence F0027"; exit 1
           fi
