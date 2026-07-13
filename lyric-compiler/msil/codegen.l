@@ -3114,6 +3114,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           // Register opaque field tokens so same-package ldfld (e.g. via a
           // @projectionBoundary view field returning the raw opaque) resolves correctly.
           var fi = 0
+          var fpos = 0
           while fi < decl.members.count {
             match decl.members[fi] {
               case OMField(f2) -> {
@@ -3137,6 +3138,21 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 if not cctx.fieldMsilTypes.containsKey(ofByNameKey) {
                   cctx.fieldMsilTypes.add(ofByNameKey, ofTy)
                 }
+                // Positional field-name registration, mirroring record
+                // (codegen.l:~2644) and protected type (~3186).  Without it the
+                // ctor-argument type-hint recovery at the construction site
+                // (~11695) cannot recover an opaque field's declared type from
+                // its position, so a bare `None`/nullary-generic-case field
+                // initializer erased to `Option_None<object>`, and a later
+                // `match` on the field's closed instantiation panicked as
+                // non-exhaustive (#5576).  `fpos` (not the member index `fi`)
+                // is the field ordinal, so interleaved OMInvariant members
+                // don't skew it.
+                val byPosKey = className + "/field" + toString(fpos)
+                if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
+                  cctx.fieldDeclaredNames.add(byPosKey, f2.name)
+                }
+                fpos = fpos + 1
                 fieldDefRow = fieldDefRow + 1
               }
               case OMInvariant(_) -> {
@@ -3883,6 +3899,96 @@ func inferUntypedStaticValMsilType(e: in Expr): MsilType {
   }
 }
 
+// Structural equality over the simple MsilTypes that
+// `inferUntypedStaticValMsilType` can produce (MInt/MLong/MDouble/MBool/
+// MChar/MString).  Sufficient for the homogeneous-literal-list check below;
+// not a general MsilType equality.
+func msilSimpleTypeEq(a: in MsilType, b: in MsilType): Bool {
+  match a {
+    case MInt -> match b { case MInt -> true; case _ -> false }
+    case MLong -> match b { case MLong -> true; case _ -> false }
+    case MDouble -> match b { case MDouble -> true; case _ -> false }
+    case MBool -> match b { case MBool -> true; case _ -> false }
+    case MChar -> match b { case MChar -> true; case _ -> false }
+    case MByte -> match b { case MByte -> true; case _ -> false }
+    case MString -> match b { case MString -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// The static element type of one list-literal element for the homogeneity
+// check: a simple literal's type, or — for a bare 1-segment name — the tracked
+// MsilType of the local/param it binds (`fctx.types`), so `[a, b]` with Int
+// locals recovers `MInt`, not just `[9, 7]`.  Function calls, member access,
+// and other complex element expressions still resolve to `MObject` here (their
+// type needs call/name resolution the peek doesn't do), so a literal with any
+// such element keeps the legacy `List<object>` fallback — a residual of #5620
+// tracked in #5690.
+func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
+  match e.kind {
+    case EPath(p) -> if p.segments.count == 1 { match mapGet(fctx.types, p.segments[0]) { case Some(t) -> t; case None -> MObject } } else { MObject }
+    // A literal takes the concrete-array path only with the element type the
+    // checker would infer for it (`typeOfLiteral`), so the built array matches
+    // the literal's `slice[e]` type.  `i8`/`u8` are `Byte` (not `Int`, #5703);
+    // `i64` is `Long`; the unsigned (`u16`/`u32`/`u64`) and `f32` suffixes have
+    // no simple-array element type here, and a no-suffix value that overflows
+    // Int32 is ambiguous, so those fall back to the legacy `List<object>` path.
+    case ELiteral(lit) -> match lit { case LInt(v, suffix, _) -> match suffix { case I8 -> MByte; case U8 -> MByte; case NoIntSuffix -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MObject }; case I16 -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MObject }; case I32 -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MObject }; case I64 -> MLong; case _ -> MObject }; case LFloat(_, floatSuffix, _) -> match floatSuffix { case NoFloatSuffix -> MDouble; case F64 -> MDouble; case _ -> MObject }; case LString(_) -> MString; case LTripleString(_) -> MString; case LRawString(_) -> MString; case LBool(_) -> MBool; case LChar(_) -> MChar; case _ -> MObject }
+    case EParen(inner) -> listLiteralElemTypeMsil(fctx, inner)
+    case EPrefix(op, inner) -> match op { case PreNeg -> listLiteralElemTypeMsil(fctx, inner); case _ -> MObject }
+    case _ -> MObject
+  }
+}
+
+// True for the value/String element types whose boxing was the #5620 miscompile
+// (a value element stored boxed and read back mis-typed).  Reference/record
+// element types are deliberately excluded — they don't garbage-read the same
+// way, so a `[record, record]` literal keeps the conservative legacy path.
+func isSimpleListElemMsil(t: in MsilType): Bool {
+  match t {
+    case MInt -> true
+    case MLong -> true
+    case MDouble -> true
+    case MBool -> true
+    case MChar -> true
+    case MByte -> true
+    case MString -> true
+    case _ -> false
+  }
+}
+
+// Infer a single concrete element MsilType for an unannotated list literal when
+// every element shares one simple static type (#5620) — a literal, or a bare
+// local/param name (via `listLiteralElemTypeMsil`).  Returns None for an empty
+// list, any element whose type can't be peeked (calls, member access, …; #5690),
+// a non-simple element type, or a heterogeneous mix — those keep falling back to
+// the legacy `List<object>` path.  When Some(e) is returned, the no-hint `EList`
+// arm builds a genuine `e[]` array (a bare literal is typed `slice[e]` by the
+// checker) so indexed reads recover the real element type instead of a boxed
+// `object` (which downstream arithmetic/println then mis-read as garbage).
+func inferHomogeneousListElemTypeMsil(fctx: in FuncCtx, exprs: in List[Expr]): Option[MsilType] {
+  if exprs.count == 0 {
+    return None
+  }
+  val firstTy = listLiteralElemTypeMsil(fctx, exprs[0])
+  if not isSimpleListElemMsil(firstTy) {
+    return None
+  }
+  var i = 1
+  var homogeneous = true
+  while i < exprs.count {
+    if not msilSimpleTypeEq(listLiteralElemTypeMsil(fctx, exprs[i]), firstTy) {
+      homogeneous = false
+    }
+    i = i + 1
+  }
+  if homogeneous {
+    Some(value = firstTy)
+  } else {
+    None
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Per-function codegen context.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4612,15 +4718,10 @@ func emitCompoundCombineMsil(
       case MString -> {
       }
       case MBool -> {
-        // Lowercase "true"/"false", not "True"/"False" (#5552). Currently
-        // unreachable in practice: `SAssign` type-checking rejects
-        // `s += true` with T0063 today regardless of RHS type (a separate,
-        // pre-existing gap tracked in #5657), so no program can reach this
-        // arm with `rTy == MBool` yet. Kept here
-        // rather than deleted so this call site doesn't silently regress to
-        // the wrong (uppercase) spelling the moment that type-checker gap
-        // is fixed — matching the other three now-reachable Bool
-        // stringification call sites' discipline.
+        // Lowercase "true"/"false", not "True"/"False" (#5552).  Reachable
+        // since #5657: `s += true` onto a String plain variable now
+        // type-checks, so this arm runs (covered by
+        // compound_string_assign_self_test.l on dotnet).
         emitBoolToStringMsil(cctx, fctx, insns)
       }
       case _ -> {
@@ -7132,16 +7233,66 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case _ -> {
-          insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-          var eli = 0
-          while eli < exprs.count {
-            insns.add(MDup)
-            val eTy = lowerExprMsil(cctx, fctx, insns, exprs[eli])
-            boxIfNeededMsil(cctx, insns, eTy)
-            insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
-            eli = eli + 1
+          // No surrounding type hint.  A bare list literal is typed `slice[T]`
+          // by the checker (EList -> TySlice), so when the literal is
+          // homogeneous over a single simple element type — from literals
+          // (`[9, 7]`) or bare local/param names (`[a, b]`) — build a genuine
+          // `T[]` (the same construction as the `case MArray` arm above),
+          // matching that slice type so an indexed read (`xs[0]`) recovers `T`
+          // instead of a boxed `object` that downstream `+`/`println` mis-read
+          // as garbage (#5620).  Building `T[]` here (not `List<T>`) is what
+          // keeps a bare literal passed to a `slice`-typed parameter — e.g.
+          // `xs.concat([4, 5])` — representation-correct.  A heterogeneous mix,
+          // an element whose type can't be peeked (calls, member access, …;
+          // residual #5690), or an element type with no array token keeps the
+          // legacy `List<object>` fallback.
+          match inferHomogeneousListElemTypeMsil(fctx, exprs) {
+            case Some(e) -> {
+              match arrayElemTokenOpt(cctx, e) {
+                case Some(elemTok) -> {
+                  insns.add(MLdcI4(v = exprs.count))
+                  insns.add(MNewarr(typeToken = elemTok))
+                  var ali4 = 0
+                  while ali4 < exprs.count {
+                    insns.add(MDup)
+                    insns.add(MLdcI4(v = ali4))
+                    pushCollExpect(fctx, e)
+                    val aeTy4 = lowerExprMsil(cctx, fctx, insns, exprs[ali4])
+                    popCollExpect(fctx)
+                    // e is a simple type (never MObject) so `stelem <T>` stores
+                    // the element unboxed — no box needed.
+                    insns.add(MStelem(typeToken = elemTok))
+                    ali4 = ali4 + 1
+                  }
+                  MArray(elemTy = e)
+                }
+                case None -> {
+                  insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+                  var eli3 = 0
+                  while eli3 < exprs.count {
+                    insns.add(MDup)
+                    val eTy3 = lowerExprMsil(cctx, fctx, insns, exprs[eli3])
+                    boxIfNeededMsil(cctx, insns, eTy3)
+                    insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+                    eli3 = eli3 + 1
+                  }
+                  MObject
+                }
+              }
+            }
+            case None -> {
+              insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+              var eli = 0
+              while eli < exprs.count {
+                insns.add(MDup)
+                val eTy = lowerExprMsil(cctx, fctx, insns, exprs[eli])
+                boxIfNeededMsil(cctx, insns, eTy)
+                insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+                eli = eli + 1
+              }
+              MObject
+            }
           }
-          MObject
         }
       }
     }

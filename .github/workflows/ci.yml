@@ -992,6 +992,102 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Extra barrier (batch 1a-split): the batch above the batch-1a barrier had
+      # grown to ~21 concurrent in-process compilations — well over the ~14-step
+      # cap the header comment documents as the point where the runner's
+      # parallel-step status collection starts misreporting a passing step as
+      # failed (the four wave-7 self-tests below pushed it from ~17 to ~21).
+      # This barrier splits it into ~11 + ~10 so each sub-batch stays under the
+      # cap.  Per the header note: split, don't serialize.
+      - name: Wait for parallel tests (batch 1a-split)
+        wait-all: true
+
+      # Compound-assign String self-test (#5657).  `s += <rhs>` onto a String
+      # plain variable now type-checks for any RHS (mirroring binary `+`), and
+      # lowers to the same lowercase-Bool / no-trailing-`.0`-Double
+      # stringification.  Both targets; the JVM half runs in
+      # `compiler-self-tests-jvm`.  Imports only `Std.*`.
+      - name: Compound-assign String self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping compound-assign self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping compound-assign self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/compound_string_assign_self_test.l
+
+      # UFCS self-field self-test (#5565).  An out-of-body UFCS method
+      # (`func Outer.m(self: in Outer)`) reading a `self` field now resolves the
+      # receiver type on JVM via `ctx.types["self"]` instead of erasing to
+      # Object.  Both targets; the JVM half runs in `compiler-self-tests-jvm`.
+      # Imports only `Std.*`.
+      - name: UFCS self-field self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping UFCS self-field self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping UFCS self-field self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/ufcs_self_field_self_test.l
+
+      # Opaque Option-field match self-test (#5576, MSIL).  Matching an
+      # `Option[T]` field stored in an opaque type no longer panics as
+      # non-exhaustive (the field's declared name is now registered so the ctor
+      # type-hint recovery builds the closed instantiation).  dotnet-only — the
+      # JVM backend has a separate, tracked gap for the same shape.  Imports
+      # only `Std.*`.
+      - name: Opaque Option-field self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping opaque Option-field self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping opaque Option-field self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/opaque_option_field_self_test.l
+
+      # List-literal indexed-read self-test (#5620, MSIL).  An unannotated list
+      # literal (`val xs = [9, 7]`) now builds a genuine `List<e>` when
+      # homogeneous, so `xs[0]` recovers the element type instead of a boxed
+      # `object` that downstream `+`/comparison mis-read as garbage.  dotnet-only
+      # — the JVM backend has the same root cause in a separate path, tracked as
+      # a parity follow-up.  Imports only `Std.*`.
+      - name: List-literal index self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping list-literal index self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping list-literal index self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/list_literal_index_self_test.l
+
       # Enum/closure/pattern-bind self-test (D-progress-623 / #5361, #5364).
       # Pins two self-hosted MSIL backend bugs: a payload-free `enum`
       # co-compiled with a closure crashing `Msil.Lowering` (#5361), and a
@@ -3521,6 +3617,47 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
 
+      # JVM half of the compound-assign String self-test (#5657).  The JVM
+      # `s += <Double>` path spills the rhs to a slot before the (branching)
+      # Double `.0`-normalization so the stringification is verifiable — before
+      # the fix this was a class-load VerifyError.  dotnet half runs in
+      # compiler-self-tests-dotnet-a.
+      - name: Compound-assign String self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping compound-assign JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping compound-assign JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/compound_string_assign_self_test.l
+
+      # JVM half of the UFCS self-field self-test (#5565) — the load-bearing
+      # target: before the fix, an out-of-body UFCS method reading a `self` field
+      # panicked on JVM ("erased receiver").  dotnet half runs in
+      # compiler-self-tests-dotnet-a.
+      - name: UFCS self-field self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping UFCS self-field JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping UFCS self-field JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/ufcs_self_field_self_test.l
+
       # JVM half of the Bool stringification cross-target parity check
       # (#5552) — see the dotnet-side step above for the full rationale.
       - name: Bool stringification self-test on JVM (native lyric test --target jvm)
@@ -3673,6 +3810,15 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-stdlib/tests/http_async_tests.l
           echo "Std.Http async-surface test ran: http_async_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Extra barrier (JVM batch 1-split): the JVM batch-1 group had grown to
+      # ~21 concurrent in-process JVM compilations — well over the ~14-step cap
+      # (see the dotnet-a header comment) at which the runner's parallel-step
+      # status collection starts misreporting a passing step as failed (the two
+      # wave-7 JVM self-tests above pushed it from ~19 to ~21).  Split into
+      # ~11 + ~10 so each sub-batch stays under the cap.
+      - name: Wait for parallel tests (JVM batch 1-split)
+        wait-all: true
 
       # Map-key self-test on JVM (#1480 MSIL / #4982 Finding 1 JVM) — the JVM
       # half of the dotnet-job step of the same name.  Records with
@@ -4100,6 +4246,13 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/defer_self_test.l
+
+      # Extra barrier (JVM batch 3-split): keeps this group under the ~14-step
+      # cap (was 15) so the runner's parallel-step status collection doesn't
+      # misreport a passing step as failed.
+      - name: Wait for parallel tests (JVM batch 3-split)
+        wait-all: true
+
       # Range-for self-test on JVM (#4878 follow-up, band J4).  Range-driven `for`
       # (`for i in lo ..< hi` / `lo ..= hi`) reached MSIL parity via
       # `emitCountingForJvm` (previously `ERange not supported in JVM codegen`).
@@ -4748,6 +4901,13 @@ jobs:
           out="$(java -jar "$work/task_tests.jar")"
           echo "$out" | tail -3
           grep -q "task tests: ok" <<< "$out" || { echo "::error::Std.Task JVM suite did not report success"; exit 1; }
+
+      # Extra barrier (JVM batch 5-split): keeps this group under the ~14-step
+      # cap (was 15) so the runner's parallel-step status collection doesn't
+      # misreport a passing step as failed.
+      - name: Wait for parallel tests (JVM batch 5-split)
+        wait-all: true
+
       # Std.Task ambient-cancellation-slot regression coverage (#5342):
       # installToken/currentToken/restoreToken/hasAmbient, JVM-only (the
       # .NET twin crashes on its first call today, a separate pre-existing

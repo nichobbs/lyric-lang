@@ -53,12 +53,9 @@ test "string interpolation of a Bool renders lowercase true/false" {
   assertEqual("${ok} and ${bad}", "true and false", "two interpolation holes")
 }
 
-// NOTE: a `s += true`-shaped compound-assignment case is deliberately NOT
-// covered here. `SAssign` type-checking (typechecker_stmts.l) requires the
-// RHS to satisfy the target's exact type for EVERY assignment op, including
-// `+=` — it doesn't special-case `+=`'s "any operand + String = String"
-// semantics the way the binary `+` operator's inference does. So `s +=
-// true` (and equally `s += 3.5`, `s += 42`, for any String-typed `s`) is
-// currently rejected by the type checker with T0063 on both targets, a
-// pre-existing gap unrelated to this issue's Bool-stringification scope.
-// Tracked separately as #5657; not fixed here.
+// NOTE: `s += true`-shaped compound-assignment onto a String *plain variable*
+// is covered by `compound_string_assign_self_test.l` (#5657, fixed): the type
+// checker now special-cases `+=` onto a String plain-var target to accept any
+// RHS, mirroring binary `+`. Field (`obj.f += x`) and indexed (`xs[i] += x`)
+// String targets with a non-String RHS remain rejected by T0063 pending a
+// codegen fix, tracked as #5688.

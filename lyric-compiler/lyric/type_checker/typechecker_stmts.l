@@ -169,10 +169,15 @@ pub func checkStatement(
     // unannotated bindings take the plain-inference path exactly as before.
     case SLocal(binding) -> match binding { case LBVal(pat, tyOpt, init) -> match tyOpt { case None -> bindPattern(sc, pat, inferExpr(sc, tbl, sigs, diag, init)); case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0060", "val binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); bindPattern(sc, pat, declT) } }; case LBVar(name, tyOpt, initOpt) -> match tyOpt { case None -> { val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }; scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = true)) }; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); match initOpt { case Some(initE) -> { val initType = inferExprExpected(sc, tbl, sigs, diag, initE, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0061", "var binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, initE, diag) }; case None -> {  } }; scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = true)) } }; case LBLet(name, tyOpt, init) -> match tyOpt { case None -> scopeAdd(sc, LocalBinding(name = name, ty = inferExpr(sc, tbl, sigs, diag, init), isMutable = false)); case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0062", "let binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = false)) } } }
 
-    case SAssign(target, _, value) -> {
+    case SAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExpr(sc, tbl, sigs, diag, value)
-      if not argSatisfiesParam(tbl, targetType, valueType) {
+      // `s += <rhs>` onto a String plain-variable target accepts any RHS type
+      // (mirroring binary `+`); field/indexed String targets stay strict.  See
+      // `isStringPlusVarAssign` (typechecker_exprs.l) for the full rationale
+      // and the #5688 follow-up (#5657).
+      val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
+      if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(
             "T0063",

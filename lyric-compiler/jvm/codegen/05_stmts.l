@@ -586,15 +586,24 @@ func emitCompoundCombineJvm(
       if cls == "java/lang/String" {
         match op {
           case AssPlus -> {
-            // Stringify the rhs first (no branches are emitted by any of the
-            // conversions, so values already on the stack stay verifiable),
-            // then spill both operands and build via StringBuilder — the same
-            // shape the BAdd String path emits.
+            // Stack on entry: [target String, rhs value (vTy)].  Spill the raw
+            // rhs to a typed slot BEFORE stringifying it: coerceToStringForConcat
+            // can emit a branch (Double `.0` normalization, emitNormalizeDoubleString),
+            // which is unverifiable while the target String still sits beneath
+            // the rhs on the stack — that produced a JVM VerifyError
+            // ("inconsistent stackmap frames at branch target") for `s += 3.5`
+            // once the type checker began accepting it (#5657).  Draining the
+            // stack to locals first lets the (possibly branching) stringification
+            // run with nothing underneath, then we build via StringBuilder — the
+            // same shape the BAdd String path emits.
+            val rawSlot = allocSlot(ctx, "__compcat_rawrhs_" + freshLabel(ctx), vTy)
+            emitStore(insns, rawSlot, vTy)
+            val lSlot = allocSlot(ctx, "__compcat_lhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
+            emitStore(insns, lSlot, JRef(className = "java/lang/String"))
+            emitLoad(insns, rawSlot, vTy)
             coerceToStringForConcat(ctx, insns, vTy)
             val rSlot = allocSlot(ctx, "__compcat_rhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
             emitStore(insns, rSlot, JRef(className = "java/lang/String"))
-            val lSlot = allocSlot(ctx, "__compcat_lhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
-            emitStore(insns, lSlot, JRef(className = "java/lang/String"))
             insns.add(LNew(className = "java/lang/StringBuilder"))
             insns.add(LDup)
             val sbPs: List[JvmType] = newList()

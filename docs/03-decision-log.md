@@ -15301,6 +15301,57 @@ case.
 
 ---
 
+## D-progress-666 — Wave-7 correctness batch: four self-hosted codegen/checker fixes (#5565, #5576, #5620, #5657)
+
+Four independent, root-caused correctness fixes across the type checker and both backends, each with a runtime regression `@test_module` wired into CI.
+
+- **#5620 (MSIL, silent miscompile):** an unannotated homogeneous list literal
+  (`val xs = [9, 7]`) with no surrounding type hint lowered to a legacy
+  `List<object>` tracked as bare `MObject`; the indexed read returned the boxed
+  element without unboxing, so downstream `+`/`println` read it as garbage. The
+  `EList` fallback now peeks the literal's elements
+  (`inferHomogeneousListElemTypeMsil`) and, when they share one simple type,
+  builds a genuine `e[]` array — the checker types a bare list literal as
+  `slice[e]` (`EList` → `TySlice`), so the array is the representation-correct
+  form (this also keeps `xs.concat([4, 5])` working, where the literal must be a
+  slice, not a `List`). Element types are peeked for literals and bare
+  local/param names (`[a, b]`), covering the common shapes; elements whose type
+  needs call/name resolution (`[f(), g()]`, member access) still fall back to
+  the legacy path — a disclosed residual tracked in **#5690**. dotnet-only; JVM
+  has the same root cause in a separate path (#5686).
+- **#5576 (MSIL, runtime panic):** matching an `Option[T]` field stored in an
+  opaque type panicked as non-exhaustive because the opaque field-registration
+  loop never recorded the positional `fieldDeclaredNames` entry the ctor
+  type-hint recovery needs, so a bare `None` erased to `Option_None<object>`.
+  The loop now registers it (mirroring the record/protected-type paths), keyed
+  by field ordinal (`fpos`) so interleaved invariants don't skew it. dotnet-only;
+  JVM has a structurally separate VerifyError gap (#5687).
+- **#5565 (JVM, runtime panic):** an out-of-body UFCS method
+  (`func Outer.m(self: in Outer)`) reading a `self` field panicked on JVM
+  because `self` parses to `ESelf`, whose JVM lowering only consulted
+  `ctx.selfClass` (set for true instance methods) and erased a top-level
+  self-param to `Object`. It now falls back to `ctx.types["self"]` before
+  Object, mirroring the MSIL emitter. Both targets.
+- **#5657 (type checker + JVM codegen):** `s += <rhs>` onto a `String` target
+  was rejected by T0063 for any non-String RHS because `SAssign` discarded the
+  assignment operator. The checker now special-cases `+=` onto a String
+  **plain-variable** target to accept any RHS (mirroring binary `+`). Scoped to
+  plain variables deliberately: field/indexed String targets infer the
+  element/field type from the RHS in codegen and would miscompile a non-String
+  RHS, so widening them is deferred (#5688) rather than turned into a runtime
+  crash. The JVM `s += <Double>` path additionally had to spill the rhs to a
+  slot before the branching `.0`-normalization (`emitNormalizeDoubleString`),
+  which the type-checker change newly exposed as a class-load VerifyError
+  ("inconsistent stackmap frames"). Both targets.
+
+The #5621 "codegen must fail loudly on unresolved calls" meta-defect was
+deliberately **not** bundled — it requires a full-tree/ecosystem audit with wide
+blast radius and belongs in its own effort.
+
+**Related:** #5565, #5576, #5620, #5657; follow-ups #5686, #5687, #5688.
+
+---
+
 ## Decisions deferred to v2 or later
 
 
