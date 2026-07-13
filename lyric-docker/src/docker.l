@@ -27,15 +27,21 @@ import Std.Http
 import Std.Parse
 import Std.String
 
-/// Docker Engine API version this client targets. All request paths are
-/// built from this constant so upgrading the API version is a single-place
-/// edit instead of a grep-and-replace across every URL literal.
-val dockerApiBase: String = "http://docker/v1.40"
+/// Docker Engine API version this client targets, without a host. Unix-socket
+/// clients use this directly with the placeholder host "docker" (ignored by
+/// the socket ConnectCallback); TCP clients (`makeDockerClientTcp`) build
+/// their own `apiBase` against the real host:port instead, since a
+/// real-transport HttpClient DOES resolve/connect to the URL's host.
+val dockerApiVersion: String = "/v1.40"
 
 /// Opaque handle to a Docker daemon connection. Wraps the underlying HTTP
-/// client so callers never touch the extern transport type.
+/// client so callers never touch the extern transport type. `apiBase` is
+/// per-client (not a shared constant) because a TCP-connected client needs
+/// requests addressed to its real host:port, unlike a Unix-socket client
+/// whose placeholder host is ignored by the socket ConnectCallback.
 pub opaque type DockerClient {
   handle: Std.Http.HttpClient
+  apiBase: String
 }
 
 /// Docker error type — encapsulates HTTP errors with Docker-specific context.
@@ -76,13 +82,13 @@ pub func makeDockerClient(): DockerClient {
     case Some(p) -> p
     case None -> Lyric.Docker.Sockets.unixSocketPath()
   }
-  DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath))
+  DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath), apiBase = "http://docker" + dockerApiVersion)
 }
 
 /// Connect to the Docker daemon in rootless mode ($XDG_RUNTIME_DIR/docker.sock).
 pub func makeRootlessDockerClient(): Result[DockerClient, DockerError] {
   match Lyric.Docker.Sockets.resolveRootlessSocket() {
-    case Ok(socketPath) -> Ok(value = DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath)))
+    case Ok(socketPath) -> Ok(value = DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath), apiBase = "http://docker" + dockerApiVersion))
     case Err(message) -> Err(error = DockerError(statusCode = None, message = message, details = ""))
   }
 }
@@ -91,7 +97,32 @@ pub func makeRootlessDockerClient(): Result[DockerClient, DockerError] {
 pub func makeDockerClientAt(socketPath: in String): DockerClient
   requires: socketPath.length > 0
 {
-  DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath))
+  DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath), apiBase = "http://docker" + dockerApiVersion)
+}
+
+/// Connect to the Docker daemon over plain TCP (`host:port`, e.g.
+/// `"127.0.0.1:2375"`) instead of a Unix socket. Unlike the Unix-socket
+/// constructors, this uses `Std.Http.defaultClient()` — a real HttpClient
+/// that resolves and connects to `hostPort` directly — since there is no
+/// socket ConnectCallback to hide the host behind.
+///
+/// Exists because the Unix-socket transport (`Std.Http.clientWithUnixSocket`,
+/// used by every other constructor here) depends on
+/// `Lyric.Cli.Aot.UnixSocketHttpClient`, a class that lives only in the
+/// `lyric` CLI's own AOT binary (see `lyric-stdlib/std/_kernel/http_host.l`'s
+/// header comment) — it is absent from any standalone compiled program's
+/// output, so `Std.Http.clientWithUnixSocket` faults at runtime outside the
+/// `lyric` process itself (`TypeLoadException` from a bad extern assembly
+/// reference `assemblyForTypeMsil` falls back to when the metadata index has
+/// no entry for a non-BCL, non-`Lyric.Emitter`/`Lyric.Stdlib` type; tracked
+/// upstream as a MAJOR gap, docs/59-compiler-stdlib-deep-review.md §7.3,
+/// partially covered by #5304). Point the Docker daemon at a TCP listener
+/// (`dockerd -H tcp://host:port`) and use this constructor instead until
+/// that's fixed.
+pub func makeDockerClientTcp(hostPort: in String): DockerClient
+  requires: hostPort.length > 0
+{
+  DockerClient(handle = Std.Http.defaultClient(), apiBase = "http://" + hostPort + dockerApiVersion)
 }
 
 /// Send a request and return the response body text on success, or a
@@ -172,7 +203,7 @@ async func sendAndReadBytes(
 /// Docker's tiny `/ping` payload, and arguably the more honest behavior
 /// (a response whose body can't be read isn't a clean success either way).
 pub async func ping(client: in DockerClient): Result[String, DockerError] {
-  match await fetchBodyText(client, dockerApiBase + "/ping", "Ping failed") {
+  match await fetchBodyText(client, client.apiBase + "/ping", "Ping failed") {
     case Ok(_) -> Ok(value = "connected")
     case Err(e) -> Err(error = e)
   }
@@ -180,17 +211,17 @@ pub async func ping(client: in DockerClient): Result[String, DockerError] {
 
 /// Get Docker system information (JSON-formatted).
 pub async func systemInfo(client: in DockerClient): Result[String, DockerError] {
-  await fetchBodyText(client, dockerApiBase + "/info", "System info failed")
+  await fetchBodyText(client, client.apiBase + "/info", "System info failed")
 }
 
 /// List all containers (Phase 1 placeholder: returns the JSON array).
 pub async func listContainers(client: in DockerClient): Result[String, DockerError] {
-  await fetchBodyText(client, dockerApiBase + "/containers/json", "List containers failed")
+  await fetchBodyText(client, client.apiBase + "/containers/json", "List containers failed")
 }
 
 /// List all images (Phase 1 placeholder: returns the JSON array).
 pub async func listImages(client: in DockerClient): Result[String, DockerError] {
-  await fetchBodyText(client, dockerApiBase + "/images/json", "List images failed")
+  await fetchBodyText(client, client.apiBase + "/images/json", "List images failed")
 }
 
 // ─── Container lifecycle ──────────────────────────────────────────────────────
@@ -626,7 +657,7 @@ pub async func createContainerWithNetwork(
   binds: in slice[String],
   networkMode: in String,
 ): Result[String, DockerError] {
-  val urlStr = dockerApiBase + "/containers/create"
+  val urlStr = client.apiBase + "/containers/create"
   val url = resolveDockerUrl(urlStr)?
   val request = Std.Http.withJsonBody(
     Std.Http.request(Std.Http.POST, url),
@@ -658,7 +689,7 @@ pub async func startContainer(client: in DockerClient, containerId: in String): 
   if not isValidContainerId(containerId) {
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
-  await sendExpectSuccess(client, dockerApiBase + "/containers/" + containerId + "/start", Std.Http.POST, "Start container failed")
+  await sendExpectSuccess(client, client.apiBase + "/containers/" + containerId + "/start", Std.Http.POST, "Start container failed")
 }
 
 /// Block until a container exits, then return its exit code.
@@ -680,7 +711,7 @@ pub async func waitContainer(client: in DockerClient, containerId: in String): R
   if not isValidContainerId(containerId) {
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
-  val urlStr = dockerApiBase + "/containers/" + containerId + "/wait"
+  val urlStr = client.apiBase + "/containers/" + containerId + "/wait"
   val url = resolveDockerUrl(urlStr)?
   match await sendAndReadBody(client, Std.Http.request(Std.Http.POST, url), urlStr, "Wait for container failed") {
     case Ok(body) -> match jsonFieldObjectStart(body, "Error") {
@@ -711,7 +742,7 @@ pub async func stopContainer(client: in DockerClient, containerId: in String): R
   if not isValidContainerId(containerId) {
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
-  await sendExpectSuccess(client, dockerApiBase + "/containers/" + containerId + "/stop", Std.Http.POST, "Stop container failed")
+  await sendExpectSuccess(client, client.apiBase + "/containers/" + containerId + "/stop", Std.Http.POST, "Stop container failed")
 }
 
 /// Remove a container.
@@ -719,7 +750,7 @@ pub async func removeContainer(client: in DockerClient, containerId: in String):
   if not isValidContainerId(containerId) {
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
-  await sendExpectSuccess(client, dockerApiBase + "/containers/" + containerId + "?force=true", Std.Http.DELETE, "Remove container failed")
+  await sendExpectSuccess(client, client.apiBase + "/containers/" + containerId + "?force=true", Std.Http.DELETE, "Remove container failed")
 }
 
 /// Demultiplex a raw Docker multiplexed stream into a UTF-8 String.
@@ -782,7 +813,7 @@ pub async func getContainerLogs(client: in DockerClient, containerId: in String)
   if not isValidContainerId(containerId) {
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
-  val urlStr = dockerApiBase + "/containers/" + containerId + "/logs?stdout=true&stderr=true"
+  val urlStr = client.apiBase + "/containers/" + containerId + "/logs?stdout=true&stderr=true"
   val url = resolveDockerUrl(urlStr)?
   val responseResult = await sendAndReadBytes(client, Std.Http.request(Std.Http.GET, url), urlStr, "Get container logs failed")
   val response = match responseResult { case Err(e) -> return Err(error = e); case Ok(r) -> r }
