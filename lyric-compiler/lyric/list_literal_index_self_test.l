@@ -68,10 +68,18 @@ func litChars(): Bool {
 }
 
 func litLongs(): Bool {
-  // Magnitudes beyond Int32 range infer as Long, so this exercises the MLong
-  // element path.
-  val xs = [10000000000, 20000000000]
-  xs[0] + xs[1] == 30000000000
+  // Explicit `i64` suffix so the checker types the literal `slice[Long]` (a
+  // bare no-suffix literal is `slice[Int]` regardless of magnitude), exercising
+  // the MLong element path.
+  val xs = [10000000000i64, 20000000000i64]
+  xs[0] + xs[1] == 30000000000i64
+}
+
+func litBytes(): Bool {
+  // `i8`-suffixed literals are `Byte`, so this must build `Byte[]`, not
+  // `Int32[]` (#5703).
+  val xs = [1i8, 2i8, 3i8]
+  xs[0] + xs[1] + xs[2] == 6i8
 }
 
 // Element type recovered from a bare local variable, not a syntactic literal
@@ -100,11 +108,12 @@ test "unannotated String list literal indexes as String" {
   assertEqual(litStrings(), "ab", "xs[0] + xs[1] == \"ab\"")
 }
 
-test "unannotated list literals recover Double/Bool/Char/Long element types" {
+test "unannotated list literals recover Double/Bool/Char/Long/Byte element types" {
   assertTrue(litDoubles(), "Double: xs[0] + xs[1] == 4.0")
   assertTrue(litBools(), "Bool: xs[0] and not xs[1]")
   assertTrue(litChars(), "Char: xs[0] == 'a' and xs[1] == 'b'")
-  assertTrue(litLongs(), "Long: xs[0] + xs[1] == 30000000000")
+  assertTrue(litLongs(), "Long (i64): xs[0] + xs[1] == 30000000000")
+  assertTrue(litBytes(), "Byte (i8): builds Byte[], not Int32[] (#5703)")
 }
 
 test "list literal over local variables recovers the element type (#5690)" {

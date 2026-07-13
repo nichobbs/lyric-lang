@@ -3910,6 +3910,7 @@ func msilSimpleTypeEq(a: in MsilType, b: in MsilType): Bool {
     case MDouble -> match b { case MDouble -> true; case _ -> false }
     case MBool -> match b { case MBool -> true; case _ -> false }
     case MChar -> match b { case MChar -> true; case _ -> false }
+    case MByte -> match b { case MByte -> true; case _ -> false }
     case MString -> match b { case MString -> true; case _ -> false }
     case _ -> false
   }
@@ -3926,7 +3927,16 @@ func msilSimpleTypeEq(a: in MsilType, b: in MsilType): Bool {
 func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
   match e.kind {
     case EPath(p) -> if p.segments.count == 1 { match mapGet(fctx.types, p.segments[0]) { case Some(t) -> t; case None -> MObject } } else { MObject }
-    case _ -> inferUntypedStaticValMsilType(e)
+    // A literal takes the concrete-array path only with the element type the
+    // checker would infer for it (`typeOfLiteral`), so the built array matches
+    // the literal's `slice[e]` type.  `i8`/`u8` are `Byte` (not `Int`, #5703);
+    // `i64` is `Long`; the unsigned (`u16`/`u32`/`u64`) and `f32` suffixes have
+    // no simple-array element type here, and a no-suffix value that overflows
+    // Int32 is ambiguous, so those fall back to the legacy `List<object>` path.
+    case ELiteral(lit) -> match lit { case LInt(v, suffix, _) -> match suffix { case I8 -> MByte; case U8 -> MByte; case NoIntSuffix -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MObject }; case I16 -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MObject }; case I32 -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MObject }; case I64 -> MLong; case _ -> MObject }; case LFloat(_, floatSuffix, _) -> match floatSuffix { case NoFloatSuffix -> MDouble; case F64 -> MDouble; case _ -> MObject }; case LString(_) -> MString; case LTripleString(_) -> MString; case LRawString(_) -> MString; case LBool(_) -> MBool; case LChar(_) -> MChar; case _ -> MObject }
+    case EParen(inner) -> listLiteralElemTypeMsil(fctx, inner)
+    case EPrefix(op, inner) -> match op { case PreNeg -> listLiteralElemTypeMsil(fctx, inner); case _ -> MObject }
+    case _ -> MObject
   }
 }
 
@@ -3941,6 +3951,7 @@ func isSimpleListElemMsil(t: in MsilType): Bool {
     case MDouble -> true
     case MBool -> true
     case MChar -> true
+    case MByte -> true
     case MString -> true
     case _ -> false
   }
