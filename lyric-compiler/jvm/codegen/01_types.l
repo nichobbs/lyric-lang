@@ -955,7 +955,13 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
     case TTuple(_) -> JRef(className = "java/lang/Object")
     case TFunction(_, _) -> JRef(className = "java/lang/Object")
     case TArray(_, _) -> JRef(className = "java/lang/Object")
-    case TRefined(_, _) -> JInt
+    // A range subtype's runtime representation is its underlying primitive
+    // (e.g. `Nat range 0 ..= 1000000` is really a `long`, a `Long`-backed
+    // range is a `long`) — recurse into the underlying `TRef` rather than
+    // hardcoding `JInt`, which silently mis-encoded any non-`Int`-backed
+    // range subtype's parameter/return/field (mirrors the MSIL
+    // `typeExprToMsilCtx` `TRefined` arm, `msil/codegen.l:5378`).
+    case TRefined(underlying, _) -> typeExprToJvm(TypeExpr(kind = TRef(path = underlying), span = te.span), pkgName)
     case TParen(inner) -> typeExprToJvm(inner, pkgName)
     case TSelf -> JRef(className = "java/lang/Object")
     case TError -> JRef(className = "java/lang/Object")

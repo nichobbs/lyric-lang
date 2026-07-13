@@ -15426,7 +15426,24 @@ possible representation, since `Nat` has no distinct CLR/JVM
 counterpart. `isPrimitiveTypeKeyword` (JVM, used by
 `eagerlyResolveGenericArg` to leave primitive keywords bare rather than
 rewriting them to a package-qualified marker) gained the same `"Nat"`
-case for consistency. Regression coverage:
+case for consistency.
+
+**Correction (found during PR review, #5699):** the initial version of
+this fix claimed JVM parity for `Nat range A..=B` via the same
+`TRefined`-recurses-into-underlying-`TRef` mechanism MSIL uses
+(`msil/codegen.l:5378`), but JVM's `typeExprToJvm` `TRefined` arm
+(`jvm/codegen/01_types.l`) was a flat `case TRefined(_, _) -> JInt` —
+it never recursed into the underlying type at all, so a `Nat`-backed
+(or any non-`Int`-backed, e.g. `Long`-backed) range subtype was still
+silently mis-encoded as `JInt` on JVM regardless of the `Nat` TRef arm
+added above. Fixed the same way as MSIL: `TRefined(underlying, _)`
+now recurses into `typeExprToJvm` against a synthetic `TRef` built
+from `underlying`. `nat_cross_package_self_test.l` remains MSIL-only
+(`target = Emitter.Dotnet`, matching `cross_package_generics_self_test.l`'s
+established scope) — this JVM fix has no dedicated regression test in
+this PR; tracked as a coverage gap.
+
+Regression coverage:
 `nat_cross_package_self_test.l` (mirrors
 `cross_package_generics_self_test.l`'s producer/consumer-DLL harness):
 a `Nat range 0 ..= 1000000` distinct type used as a restored function's
