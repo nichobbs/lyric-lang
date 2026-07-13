@@ -15389,6 +15389,78 @@ before it can be turned on without breaking builds.
 
 ---
 
+## D-progress-666 — `Nat` MSIL/JVM signature encoding: fixed the `Web.Request`-class `InvalidProgramException` for `Nat`-typed values crossing a restored-package boundary
+
+`typeExprToMsilCtx` (`msil/codegen.l`) and `typeExprToJvm`
+(`jvm/codegen/01_types.l`) had no arm for the `Nat` primitive: the `TRef`
+branch matches `"Int"`/`"Long"`/`"Double"`/… by name and falls through to
+the generic case for anything unrecognised, encoding `Nat` as
+`MClass("<pkg>.Nat")` / `JRef("<pkg>/Nat")` — an in-package
+reference-type class — instead of its real representation (a
+non-negative `Long`, docs/01 §2 "Nat"; the type checker already models
+it as a full numeric primitive, `typechecker_types.l:19,96,125-126`).
+`Nat range A ..= B` refinements hit the identical bug: the `TRefined`
+arm recurses into the same function against the refinement's
+*underlying* `TRef` (`"Nat"`), so a `Nat`-backed distinct/range type's
+value carried the same bogus class encoding.
+
+Inside a single compilation unit this wrong-but-consistent encoding
+can silently build and even run — caller and callee IL both come from
+the same buggy pass — which is why this went unnoticed; docs/59 §3.3
+had already flagged it as a MINOR audit finding
+("`UInt`/`ULong`/`Nat` fall through to `MClass(...)`... erased to
+`object` downstream") without a filed crash report. Across a restored
+(pre-compiled) package boundary the consumer instead decodes the
+producer's *real* signature from CLI metadata (`I8`, the same encoding
+`Long` uses — `Nat` has no distinct metadata representation), so the
+consumer's independently-guessed `MClass`/`JRef` reference and the
+producer's real `int64` field/param diverge and the call crashes with
+`InvalidProgramException` — the same failure shape reported for
+`Web.Request` construction (D-progress-663 is a *different* root cause
+in the same failure family: instance-method parameter slots resolved
+via the plain in-package guess while descriptors/registration resolved
+through the extern/imported-type seed).
+
+Fix: `Nat` now maps to `MLong` (MSIL) / `JLong` (JVM) — its only
+possible representation, since `Nat` has no distinct CLR/JVM
+counterpart. `isPrimitiveTypeKeyword` (JVM, used by
+`eagerlyResolveGenericArg` to leave primitive keywords bare rather than
+rewriting them to a package-qualified marker) gained the same `"Nat"`
+case for consistency. Regression coverage:
+`nat_cross_package_self_test.l` (mirrors
+`cross_package_generics_self_test.l`'s producer/consumer-DLL harness):
+a `Nat range 0 ..= 1000000` distinct type used as a restored function's
+parameter/return, and as a restored record's field, both round-tripping
+correctly post-fix.
+
+**Scope note (separate, larger gap — not fixed here):** constructing a
+*bare* `Nat`-typed value from an integer literal does not type-check
+today outside of a binary operator or an if/match branch —
+`adoptIntLiteralType` (`typechecker_exprs.l:600`), the Rust-style
+literal-adopts-context mechanism, is wired only into `inferBinop`
+(and branch reconciliation), never into `inferExprExpected` (bindings,
+call arguments, record-field initialisers) or `SReturn`/trailing-block
+typing (both use `typeAssignable`, which has no numeric-widening case
+at all). `unsignedIntRank` (`typechecker_exprs.l:135`) also omits
+`PtNat` from its family, so `Nat` never widens against `Int` even
+inside a binop. The regression test above sidesteps this by
+constructing values via the already-working `Type.from(x)` /
+`Type.tryFrom(x)` / `.toInt()` distinct/range-subtype intrinsics
+(`range_subtype_self_test.l`'s proven pattern), which resolve through a
+codegen-level name match rather than the ordinary call-argument
+type-check path. A genuinely bare `Nat` (or `UInt`/`ULong`) parameter,
+binding, or return populated from a literal remains unconstructible;
+closing that gap (either widening `Nat`/`UInt`/`ULong` into the
+existing literal-adoption/widening machinery, or shipping the `.toNat()`
+family tracked by D-progress-405/#2050) is tracked as follow-up work,
+out of scope for this signature-encoding fix.
+
+**Related:** #5364 (the neighbouring `Web.Request` match-arm-bound-value
+fix, `lyric-web/src/web.l`'s `routeDispatch`, landed alongside this),
+D-progress-663, D-progress-405, docs/59 §3.3, docs/01 §2 "Nat".
+
+---
+
 ## Decisions deferred to v2 or later
 
 

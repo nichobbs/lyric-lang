@@ -5210,6 +5210,15 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         MInt
       } else if seg == "Long" {
         MLong
+      } else if seg == "Nat" {
+        // `Nat` (non-negative Long, docs/01 §2 "Nat") has no distinct CLR
+        // representation — it erases to the same `int64` as `Long`. Without
+        // this arm a `Nat`-typed parameter/return/field fell through to the
+        // generic `MClass(...)` case below, treating it as an in-package
+        // reference-type class named "Nat"; a cross-package call against the
+        // real (int64) signature the metadata reader decodes then mismatched
+        // and crashed with InvalidProgramException.
+        MLong
       } else if seg == "Double" {
         MDouble
       } else if seg == "Float" {

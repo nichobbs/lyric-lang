@@ -248,6 +248,7 @@ pub func isPrimitiveTypeKeyword(seg: in String): Bool {
   seg == "Int" or seg == "Long" or seg == "Double" or seg == "Float" or seg == "Bool" or seg == "String" or
     seg == "Char" or
     seg == "Byte" or
+    seg == "Nat" or
     seg == "Unit"
 }
 
@@ -898,6 +899,13 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
       if seg == "Int" {
         JInt
       } else if seg == "Long" {
+        JLong
+      } else if seg == "Nat" {
+        // `Nat` (non-negative Long, docs/01 §2 "Nat") has no distinct JVM
+        // representation — it erases to `long`, same as `Long`. Without this
+        // arm a `Nat`-typed parameter/return/field fell through to "user
+        // type in the same package" (`JRef(pkgName + "/Nat")`), mismatching
+        // any real consumer signature at a package boundary.
         JLong
       } else if seg == "Double" {
         JDouble

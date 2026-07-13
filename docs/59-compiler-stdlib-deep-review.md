@@ -253,12 +253,25 @@ parameter (none exists, which is why this is latent).
   `:5017`). The `else if isValueType` branch at `:4928-4929` is dead (its
   cases all joined `collElemConcrete`) and its comment documents a
   superseded design.
-- MINOR: `UInt`/`ULong`/`Nat` fall through to `MClass("<pkg>.UInt")` and get
-  erased to `object` downstream (`codegen.l:4820-4839` has no arms; the
-  checker models them as primitives, `typechecker_types.l:94-96`) — should
-  be an explicit "unsupported on this backend" diagnostic. `SItem` (nested
-  item declarations) is silently dropped with a surviving "(skip in
-  bootstrap)" comment (`codegen.l:13668-13670`).
+- MINOR (Nat slice **fixed**, UInt/ULong still open): `UInt`/`ULong`/`Nat`
+  fell through to `MClass("<pkg>.UInt")` in `typeExprToMsilCtx`
+  (`msil/codegen.l`) / `typeExprToJvm` (`jvm/codegen/01_types.l`), treating
+  the type as an in-package reference class instead of its real
+  representation — the checker models them as primitives
+  (`typechecker_types.l:94-96`), so a restored-dependency caller decoding the
+  real (`I8`) signature from metadata mismatched the guessed `MClass`
+  encoding and crashed with `InvalidProgramException` at the call site. `Nat`
+  now maps to `MLong`/`JLong` (it has no distinct CLR/JVM representation —
+  it's `Long` restricted to `0 ..= 2^63 - 1`) on both backends, closing the
+  cross-package-boundary crash for `Nat`-typed parameters/returns/fields.
+  `UInt`/`ULong` still fall through and should get an explicit "unsupported
+  on this backend" diagnostic (or the same treatment) — tracked separately.
+  Numeric *conversion* methods to/from `Nat` (`.toNat()` etc.) remain
+  unimplemented by design (#2050; docs/10-bootstrap-progress.md
+  D-progress-405, "conversion support for them must land with real backend
+  support, not a checker-only claim") — only signature/field encoding is
+  fixed here. `SItem` (nested item declarations) is silently dropped with a
+  surviving "(skip in bootstrap)" comment (`codegen.l:13668-13670`).
 
 ### 3.4 Performance
 
