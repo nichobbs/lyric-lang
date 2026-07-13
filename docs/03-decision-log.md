@@ -15472,9 +15472,23 @@ existing literal-adoption/widening machinery, or shipping the `.toNat()`
 family tracked by D-progress-405/#2050) is tracked as follow-up work,
 out of scope for this signature-encoding fix.
 
-**Related:** #5364 (the neighbouring `Web.Request` match-arm-bound-value
-fix, `lyric-web/src/web.l`'s `routeDispatch`, landed alongside this),
-D-progress-663, D-progress-405, docs/59 §3.3, docs/01 §2 "Nat".
+**Correction (found during PR review, #5700):** this entry originally
+also claimed a `lyric-web/src/web.l` `routeDispatch` fix as a
+neighbouring `Web.Request` crash under issue #5364. That attribution
+was wrong and the change has been reverted: #5364's actual root cause
+(D-progress-624) is narrowly a `.indexOf`/`.lastIndexOf`-sourced raw
+unboxed `Int` match scrutinee mis-slotted as `MObject`; `routeDispatch`'s
+`case Some(params) -> ...` scrutinee comes from `matchPattern(...):
+Option[Map[String,String]]`, a reference type that never touches that
+code path, and `lyric-web/tests/dispatch_tests.l` already exercises
+this exact construction site. This entry (the `Nat` signature-encoding
+fix above) — together with the pre-existing, already-landed
+D-progress-663 (JVM cross-package param-slot resolution) — is itself
+the explanation for the originally reported "`Web.Request` construction
+crashes with `InvalidProgramException`": both produce the identical
+failure shape without any change needed to `routeDispatch`.
+
+**Related:** D-progress-663, D-progress-405, docs/59 §3.3, docs/01 §2 "Nat".
 
 ---
 
