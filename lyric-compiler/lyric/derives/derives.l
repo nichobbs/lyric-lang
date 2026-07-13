@@ -16,6 +16,10 @@
 //!   - @derive(Hash)    → `TypeName.hash(self): Int`
 //!   - @derive(Show)    → `TypeName.show(self): String`
 //!   - @generate(Json)  → `TypeName.toJson(self): String`
+//!                        `TypeName.fromJson(json: String): Result[TypeName, String]`
+//!                        (`toJson`/`fromJson` inject an `import Std.Json` into
+//!                        the file if it isn't already present — see
+//!                        `deriveFileWithImports`'s `usedJson` tracking)
 //!
 //!   Distinct types (via `derives` list on DistinctTypeDecl):
 //!   - derives Equals   → `TypeName.equals(self, other): Bool`
@@ -148,6 +152,47 @@ func binop(op: in BinOp, lhs: in Expr, rhs: in Expr): Expr {
   mkExpr(EBinop(op = op, lhs = lhs, rhs = rhs), sp())
 }
 
+func notExpr(e: in Expr): Expr {
+  mkExpr(EPrefix(op = PreNot, operand = e), sp())
+}
+
+// `recv.methodName()` — zero-arg UFCS call.
+func methodCall0(recv: in Expr, methodName: in String): Expr {
+  val args: List[CallArg] = newList()
+  val callee = mkExpr(EMember(receiver = recv, memberName = methodName), sp())
+  mkExpr(ECall(fn = callee, args = args), sp())
+}
+
+// `recv.methodName(a1)` — one-arg UFCS call.
+func methodCall1(recv: in Expr, methodName: in String, a1: in Expr): Expr {
+  val args: List[CallArg] = newList()
+  args.add(CAPositional(expr = a1))
+  val callee = mkExpr(EMember(receiver = recv, memberName = methodName), sp())
+  mkExpr(ECall(fn = callee, args = args), sp())
+}
+
+// `Std.Json.<fn>` as a qualified path expression.
+func jsonPath(fn: in String): Expr {
+  val segs: List[String] = newList()
+  segs.add("Std")
+  segs.add("Json")
+  segs.add(fn)
+  mkExpr(EPath(path = ModulePath(segments = segs, span = sp())), sp())
+}
+
+func jsonCall1(fn: in String, a1: in Expr): Expr {
+  val args: List[CallArg] = newList()
+  args.add(CAPositional(expr = a1))
+  mkExpr(ECall(fn = jsonPath(fn), args = args), sp())
+}
+
+func jsonCall2(fn: in String, a1: in Expr, a2: in Expr): Expr {
+  val args: List[CallArg] = newList()
+  args.add(CAPositional(expr = a1))
+  args.add(CAPositional(expr = a2))
+  mkExpr(ECall(fn = jsonPath(fn), args = args), sp())
+}
+
 func strLit(s: in String): Expr {
   mkExpr(ELiteral(lit = LString(text = s)), sp())
 }
@@ -160,6 +205,12 @@ func stmtLocal(name: in String, ty: in Option[TypeExpr], initExpr: in Expr): Sta
   mkStmt(SLocal(binding = LBVar(name = name, ty = ty, init = Some(initExpr))), sp())
 }
 
+// Immutable `val name[: ty] = initExpr` — used where the binding is never
+// reassigned (e.g. a decoded `fromJson` field), unlike `stmtLocal`'s `var`.
+func stmtVal(name: in String, ty: in Option[TypeExpr], initExpr: in Expr): Statement {
+  mkStmt(SLocal(binding = LBVal(pat = bindingPat(name), ty = ty, init = initExpr)), sp())
+}
+
 func stmtAssign(target: in Expr, value: in Expr): Statement {
   mkStmt(SAssign(target = target, op = AssEq, value = value), sp())
 }
@@ -168,10 +219,52 @@ func stmtReturn(value: in Expr): Statement {
   mkStmt(SReturn(value = Some(value)), sp())
 }
 
+// A bare expression statement (e.g. a `match` used only for its `return`
+// side effects in each arm).
+func stmtExprOnly(e: in Expr): Statement {
+  mkStmt(SExpr(expr = e), sp())
+}
+
+// `for name in iter { body }`.
+func stmtForEach(name: in String, iter: in Expr, body: in Block): Statement {
+  mkStmt(SFor(label = None, pat = bindingPat(name), iter = iter, body = body), sp())
+}
+
 func typeRef(name: in String): TypeExpr {
   val segs: List[String] = newList()
   segs.add(name)
   mkType(TRef(path = ModulePath(segments = segs, span = sp())), sp())
+}
+
+func sliceTypeRef(elem: in TypeExpr): TypeExpr {
+  mkType(TSlice(element = elem), sp())
+}
+
+func oneList(p: in Pattern): List[Pattern] {
+  val ps: List[Pattern] = newList()
+  ps.add(p)
+  ps
+}
+
+// A `Block` whose single statement list is exactly `stmts` (no implicit
+// trailing return) — used for loop bodies and `if`-statement thens.
+func blockOf(stmts: in List[Statement]): Block {
+  Block(statements = stmts, span = sp())
+}
+
+// A `Block` usable in expression position (`EBlock`): `stmts` run in order,
+// then `trailing` — a bare expression statement, NOT a `return` — supplies
+// the block's value. Unlike `blockStmtsReturn`, this must be used only where
+// the block is a sub-expression (e.g. spliced into a larger `+` chain);
+// `return`ing there would exit the whole synthesised function early instead
+// of yielding a value to the enclosing expression.
+func blockValue(stmts: in List[Statement], trailing: in Expr): Block {
+  stmts.add(stmtExprOnly(trailing))
+  Block(statements = stmts, span = sp())
+}
+
+func blockValueExpr(stmts: in List[Statement], trailing: in Expr): Expr {
+  mkExpr(EBlock(block = blockValue(stmts, trailing)), sp())
 }
 
 func blockReturn(expr: in Expr): Block {
@@ -467,9 +560,17 @@ func synthesizeShowDistinct(typeName: in String, vis: in Option[Visibility]): It
 // sequence per remaining control byte.  Strings that happen to
 // contain those bytes today produce technically-invalid JSON but
 // the common chat/HTTP-message corpus avoids them.
-// Primitive types use `toString`.
-func jsonFieldExpr(fieldExpr: in Expr, ty: in TypeExpr): Expr {
-  val typeName = match ty.kind {
+// Primitive types use `toString`. A `slice[T]` field renders as a JSON
+// array, element-by-element, recursing into this same function per element
+// (#5xxx — the previous version fell through to `toString` for ANY
+// non-`String` type, including `slice[T]`, producing the BCL's
+// `System.Collections.Generic.List\`1[...]` debug dump instead of a JSON
+// array; e.g. `GET /api/prompts`'s `slice[Prompt]` field). A bare
+// non-primitive `TRef` is assumed to be another `@generate(Json)` record and
+// dispatches to its own synthesised `.toJson()` rather than `toString`
+// (which would likewise dump the CLR type name).
+func jsonTypeNameOf(ty: in TypeExpr): String {
+  match ty.kind {
     case TRef(path) -> {
       if path.segments.count > 0 {
         path.segments[path.segments.count - 1]
@@ -479,22 +580,66 @@ func jsonFieldExpr(fieldExpr: in Expr, ty: in TypeExpr): Expr {
     }
     case _ -> ""
   }
-  if typeName == "String" {
-    // self.field
-    //   .replace("\\", "\\\\")   // must be first so the \\ introduced
-    //   .replace("\"", "\\\"")   //   by the next step isn't doubled
-    //   .replace("\n", "\\n")
-    //   .replace("\r", "\\r")
-    //   .replace("\t", "\\t")
-    val esc1 = methodCall2(fieldExpr, "replace", strLit("\\"), strLit("\\\\"))
-    val esc2 = methodCall2(esc1, "replace", strLit("\""), strLit("\\\""))
-    val esc3 = methodCall2(esc2, "replace", strLit("\n"), strLit("\\n"))
-    val esc4 = methodCall2(esc3, "replace", strLit("\r"), strLit("\\r"))
-    val esc5 = methodCall2(esc4, "replace", strLit("\t"), strLit("\\t"))
-    strCat(strCat(strLit("\""), esc5), strLit("\""))
-  } else {
-    call1("toString", fieldExpr)
+}
+
+func isJsonScalarPrimitiveName(name: in String): Bool {
+  name == "Int" or name == "Long" or name == "Bool" or name == "Double" or name == "Float" or name == "Byte" or name == "Char"
+}
+
+func jsonFieldExpr(fieldExpr: in Expr, ty: in TypeExpr): Expr {
+  match ty.kind {
+    case TSlice(elem) -> jsonArraySerializeExpr(fieldExpr, elem)
+    case _ -> {
+      val typeName = jsonTypeNameOf(ty)
+      if typeName == "String" {
+        // self.field
+        //   .replace("\\", "\\\\")   // must be first so the \\ introduced
+        //   .replace("\"", "\\\"")   //   by the next step isn't doubled
+        //   .replace("\n", "\\n")
+        //   .replace("\r", "\\r")
+        //   .replace("\t", "\\t")
+        val esc1 = methodCall2(fieldExpr, "replace", strLit("\\"), strLit("\\\\"))
+        val esc2 = methodCall2(esc1, "replace", strLit("\""), strLit("\\\""))
+        val esc3 = methodCall2(esc2, "replace", strLit("\n"), strLit("\\n"))
+        val esc4 = methodCall2(esc3, "replace", strLit("\r"), strLit("\\r"))
+        val esc5 = methodCall2(esc4, "replace", strLit("\t"), strLit("\\t"))
+        strCat(strCat(strLit("\""), esc5), strLit("\""))
+      } else if isJsonScalarPrimitiveName(typeName) or typeName == "" {
+        call1("toString", fieldExpr)
+      } else {
+        // Non-primitive named type: assume a record carrying its own
+        // @generate(Json)-synthesised toJson.
+        methodCall0(fieldExpr, "toJson")
+      }
+    }
   }
+}
+
+// `"[" + item0Json + "," + item1Json + ... + "]"`, built as a loop over
+// `fieldExpr` rather than unrolled per-element (the slice length is only
+// known at runtime). Spliced into the larger toJson expression as a
+// block-expression (`EBlock`) rather than a `return`-terminated block —
+// see `blockValue`'s doc comment.
+func jsonArraySerializeExpr(fieldExpr: in Expr, elemTy: in TypeExpr): Expr {
+  val stmts: List[Statement] = newList()
+  stmts.add(stmtLocal("__json_acc", Some(typeRef("String")), strLit("[")))
+  stmts.add(stmtLocal("__json_first", Some(typeRef("Bool")), boolLit(true)))
+  val loopStmts: List[Statement] = newList()
+  loopStmts.add(
+    stmtIf(notExpr(pathExpr("__json_first")), blockOf(oneStmtList(stmtAssign(pathExpr("__json_acc"), strCat(pathExpr("__json_acc"), strLit(","))))))
+  )
+  loopStmts.add(stmtAssign(pathExpr("__json_first"), boolLit(false)))
+  loopStmts.add(
+    stmtAssign(pathExpr("__json_acc"), strCat(pathExpr("__json_acc"), jsonFieldExpr(pathExpr("__json_it"), elemTy)))
+  )
+  stmts.add(stmtForEach("__json_it", fieldExpr, blockOf(loopStmts)))
+  blockValueExpr(stmts, strCat(pathExpr("__json_acc"), strLit("]")))
+}
+
+func oneStmtList(s: in Statement): List[Statement] {
+  val ss: List[Statement] = newList()
+  ss.add(s)
+  ss
 }
 
 // `"{\"f1\":<val1>,\"f2\":<val2>,...}"`
@@ -522,6 +667,171 @@ func synthesizeToJsonRecord(typeName: in String, decl: in RecordDecl, vis: in Op
   val params: List[Param] = newList()
   params.add(makeParam("self", typeRef(typeName)))
   funcItem(makeFuncDecl(typeName + ".toJson", params, typeRef("String"), body, vis), vis)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §7c. @generate(Json) fromJson synthesis.
+// ─────────────────────────────────────────────────────────────────────────────
+// `Err("missing field '<name>'")` — the `None` arm of a `tryGetProperty` match.
+func jsonMissingFieldArm(name: in String): MatchArm {
+  mkArm(mkPat(PBinding(name = "None", inner = None), sp()), call1("Err", strLit("missing field '" + name + "'")))
+}
+
+// Maps a scalar field's declared type name to the `Std.Json.get*` accessor
+// that decodes it from a `JsonElement`; `""` if `typeName` isn't one of the
+// scalar primitives this synthesiser understands (the caller treats that as
+// "nested record").
+func jsonScalarGetterFor(typeName: in String): String {
+  if typeName == "String" {
+    "getString"
+  } else if typeName == "Int" {
+    "getInt32"
+  } else if typeName == "Long" {
+    "getInt64"
+  } else if typeName == "Bool" {
+    "getBoolean"
+  } else if typeName == "Double" or typeName == "Float" {
+    "getDouble"
+  } else {
+    ""
+  }
+}
+
+// Decode a single element already bound to `elemVarName` (a `JsonElement`)
+// into a value of type `elemTy`. For a nested record type this yields a
+// `Result[T, String]`-typed expression the caller must unwrap; for a scalar
+// it's a bare value.
+func jsonScalarOrNone(typeName: in String): Bool {
+  jsonScalarGetterFor(typeName).length > 0
+}
+
+func jsonDecodeScalarExpr(elemVarName: in String, typeName: in String): Expr {
+  jsonCall1(jsonScalarGetterFor(typeName), pathExpr(elemVarName))
+}
+
+// Build `var __json_slice: slice[ElemTy] = []` + a `for` loop over
+// `Std.Json.enumerateArray(__e)` that decodes and appends each element,
+// followed by `restExpr` — used as the `Some(__e)` arm body for a
+// `slice[ElemTy]`-typed field.
+func jsonSliceDecodeBlock(fieldName: in String, elemTy: in TypeExpr, restExpr: in Expr): Block {
+  val elemTypeName = jsonTypeNameOf(elemTy)
+  val stmts: List[Statement] = newList()
+  stmts.add(stmtLocal(fieldName, Some(sliceTypeRef(elemTy)), mkExpr(EList(exprs = newList()), sp())))
+  stmts.add(stmtLocal("__json_cur", None, jsonCall1("enumerateArray", pathExpr("__e"))))
+  val loopStmts: List[Statement] = newList()
+  loopStmts.add(stmtVal("__json_elem", None, jsonCall1("arrayCurrent", pathExpr("__json_cur"))))
+  if jsonScalarOrNone(elemTypeName) {
+    loopStmts.add(
+      stmtExprOnly(methodCall1(pathExpr(fieldName), "append", jsonDecodeScalarExpr("__json_elem", elemTypeName)))
+    )
+  } else {
+    // Nested record element: recursively parse via its own `fromJson` from
+    // the element's raw JSON text. Decoded via match-as-statement: the `Err`
+    // arm returns out of the whole `fromJson` function immediately; the `Ok`
+    // arm appends the decoded element and falls through to the next
+    // iteration.
+    val appendArm = mkArmBlock(
+      ctorPat("Ok", oneList(bindingPat("__json_ev"))),
+      blockOf(oneStmtList(stmtExprOnly(methodCall1(pathExpr(fieldName), "append", pathExpr("__json_ev")))))
+    )
+    val returnErrArm = mkArmBlock(
+      ctorPat("Err", oneList(bindingPat("__json_em"))),
+      blockOf(oneStmtList(stmtReturn(call1("Err", pathExpr("__json_em")))))
+    )
+    val decodeMatch = mkMatchExpr(
+      methodCall1(pathExpr(elemTypeName), "fromJson", jsonCall1("getRawText", pathExpr("__json_elem"))),
+      matchArmPair(returnErrArm, appendArm)
+    )
+    loopStmts.add(stmtExprOnly(decodeMatch))
+  }
+  val whileLoop = mkStmt(SWhile(label = None, cond = jsonCall1("arrayMoveNext", pathExpr("__json_cur")), body = blockOf(loopStmts)), sp())
+  stmts.add(whileLoop)
+  blockValue(stmts, restExpr)
+}
+
+func matchArmPair(a: in MatchArm, b: in MatchArm): List[MatchArm] {
+  val arms: List[MatchArm] = newList()
+  arms.add(a)
+  arms.add(b)
+  arms
+}
+
+// Build the `Some(__e) -> { ... }` arm body for one field, ending with
+// `restExpr` (the rest of the field chain, or the final `Ok(...)` construction).
+func jsonFieldDecodeBlock(fieldName: in String, ty: in TypeExpr, restExpr: in Expr): Block {
+  match ty.kind {
+    case TSlice(elem) -> jsonSliceDecodeBlock(fieldName, elem, restExpr)
+    case _ -> {
+      val typeName = jsonTypeNameOf(ty)
+      val getter = jsonScalarGetterFor(typeName)
+      if getter.length > 0 {
+        blockValue(oneStmtList(stmtVal(fieldName, None, jsonDecodeScalarExpr("__e", typeName))), restExpr)
+      } else {
+        // Nested record: `TypeName.fromJson(Std.Json.getRawText(__e))` returns
+        // `Result[TypeName, String]`; unwrap via a nested match, propagating a
+        // decode failure with an early `Err(...)` return.
+        val okArm = mkArmBlock(ctorPat("Ok", oneList(bindingPat(fieldName))), blockValue(newList(), restExpr))
+        val errArm = mkArm(ctorPat("Err", oneList(bindingPat("__json_em"))), call1("Err", pathExpr("__json_em")))
+        blockValue(
+          newList(),
+          mkMatchExpr(methodCall1(pathExpr(typeName), "fromJson", jsonCall1("getRawText", pathExpr("__e"))), matchArmPair(errArm, okArm))
+        )
+      }
+    }
+  }
+}
+
+// `Ok(TypeName(f1 = v1, f2 = v2, ...))` — the base case once every field has
+// been decoded into a same-named local.
+func jsonFinalOkExpr(typeName: in String, fields: in List[FieldDecl]): Expr {
+  val args: List[CallArg] = newList()
+  var i = 0
+  while i < fields.count {
+    args.add(CANamed(name = fields[i].name, value = pathExpr(fields[i].name), span = sp()))
+    i = i + 1
+  }
+  call1("Ok", mkExpr(ECall(fn = pathExpr(typeName), args = args), sp()))
+}
+
+// Recursively build: for each field, `match Std.Json.tryGetProperty(__root,
+// "name") { None -> Err(...); Some(__e) -> <decode field, then recurse> }`,
+// bottoming out at `jsonFinalOkExpr` once every field is bound.
+func jsonBuildFieldChain(typeName: in String, fields: in List[FieldDecl], idx: in Int): Expr {
+  if idx >= fields.count {
+    return jsonFinalOkExpr(typeName, fields)
+  }
+  val f = fields[idx]
+  val rest = jsonBuildFieldChain(typeName, fields, idx + 1)
+  val someArm = mkArmBlock(ctorPat("Some", oneList(bindingPat("__e"))), jsonFieldDecodeBlock(f.name, f.ty, rest))
+  val noneArm = jsonMissingFieldArm(f.name)
+  mkMatchExpr(jsonCall2("tryGetProperty", pathExpr("__root"), strLit(f.name)), matchArmPair(noneArm, someArm))
+}
+
+// `pub func TypeName.fromJson(json: in String): Result[TypeName, String]`
+func synthesizeFromJsonRecord(typeName: in String, decl: in RecordDecl, vis: in Option[Visibility]): Item {
+  val fields = collectFields(decl)
+  val stmts: List[Statement] = newList()
+  stmts.add(stmtVal("__doc", None, jsonCall1("parseJson", pathExpr("json"))))
+  stmts.add(mkStmt(SDefer(body = blockOf(oneStmtList(stmtExprOnly(jsonCall1("disposeJson", pathExpr("__doc")))))), sp()))
+  stmts.add(stmtVal("__root", None, jsonCall1("rootElement", pathExpr("__doc"))))
+  val body = blockStmtsReturn(stmts, jsonBuildFieldChain(typeName, fields, 0))
+  val params: List[Param] = newList()
+  params.add(makeParam("json", typeRef("String")))
+  val retTy = mkType(TGenericApp(head = ModulePath(segments = oneStrList("Result"), span = sp()), args = resultTypeArgs(typeName)), sp())
+  funcItem(makeFuncDecl(typeName + ".fromJson", params, retTy, body, vis), vis)
+}
+
+func oneStrList(s: in String): List[String] {
+  val ss: List[String] = newList()
+  ss.add(s)
+  ss
+}
+
+func resultTypeArgs(typeName: in String): List[TypeArg] {
+  val args: List[TypeArg] = newList()
+  args.add(TAType(ty = typeRef(typeName)))
+  args.add(TAType(ty = typeRef("String")))
+  args
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -959,6 +1269,7 @@ func deriveItem(
       }
       if hasGenerateMarker(anns, "Json") {
         addIfNew(synths, existingItems, synthesizeToJsonRecord(decl.name, decl, vis), decl.name + ".toJson")
+        addIfNew(synths, existingItems, synthesizeFromJsonRecord(decl.name, decl, vis), decl.name + ".fromJson")
       }
     }
     case IExposedRec(decl) -> {
@@ -976,6 +1287,7 @@ func deriveItem(
       }
       if hasGenerateMarker(anns, "Json") {
         addIfNew(synths, existingItems, synthesizeToJsonRecord(decl.name, decl, vis), decl.name + ".toJson")
+        addIfNew(synths, existingItems, synthesizeFromJsonRecord(decl.name, decl, vis), decl.name + ".fromJson")
       }
     }
     case IDistinctType(decl) -> {
@@ -1098,6 +1410,58 @@ pub func deriveFile(file: in SourceFile): SourceFile {
 /// `self.field.subfield` read in a UFCS method body to invalid IL — a
 /// pre-existing codegen defect that affects hand-written methods too and is
 /// orthogonal to this AST transform (tracked in #3353).
+// True if any synthesised item is a `.fromJson`/`.toJson` helper — both are
+// always added together by `deriveItem`, so checking one name suffix suffices.
+func synthsUseJson(synths: in List[Item]): Bool {
+  var i = 0
+  while i < synths.count {
+    match synths[i].kind {
+      case IFunc(decl) -> {
+        if strEndsWith(decl.name, ".fromJson") {
+          return true
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+func strEndsWith(s: in String, suffix: in String): Bool {
+  if suffix.length > s.length {
+    false
+  } else {
+    s.substring(s.length - suffix.length, suffix.length) == suffix
+  }
+}
+
+func importsStdJson(imports: in List[ImportDecl]): Bool {
+  var i = 0
+  while i < imports.count {
+    val segs = imports[i].path.segments
+    if segs.count == 2 and segs[0] == "Std" and segs[1] == "Json" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func stdJsonImportDecl(): ImportDecl {
+  val segs: List[String] = newList()
+  segs.add("Std")
+  segs.add("Json")
+  ImportDecl(
+    path = ModulePath(segments = segs, span = sp()),
+    selector = None,
+    asAlias = None,
+    isPubUse = false,
+    isExtern = false,
+    span = sp()
+  )
+}
+
 pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]): SourceFile {
   // Distinct-type declarations (name -> underlying type's head name).  Same-file
   // declarations win over imported ones on name collision because
@@ -1126,11 +1490,24 @@ pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]
     newItems.add(synths[k])
     k = k + 1
   }
+  // `fromJson`/`toJson` call `Std.Json.*` — inject the import if the file
+  // doesn't already have it, since the synthesiser has no way to ask the
+  // user to add it themselves (#5xxx: every `@generate(Json)` consumer file
+  // in cloud-agents predates this and none imports Std.Json).
+  val newImports: List[ImportDecl] = newList()
+  var m = 0
+  while m < file.imports.count {
+    newImports.add(file.imports[m])
+    m = m + 1
+  }
+  if synthsUseJson(synths) and not importsStdJson(file.imports) {
+    newImports.add(stdJsonImportDecl())
+  }
   SourceFile(
     moduleDoc = file.moduleDoc,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
-    imports = file.imports,
+    imports = newImports,
     items = newItems,
     span = file.span
   )
