@@ -1076,6 +1076,7 @@ func cmdTestManifest(
   for entry in nugetLyricEntries {
     restoredDlls.add(entry)
   }
+  val nativeAssetPaths = resolveNugetNativeAssets(mfDir)
 
   // For a JVM manifest suite, inject the resolved Maven classpath into
   // LYRIC_FFI_JARS (mirroring `buildProject`'s `injectMavenClasspathForJvm`
@@ -1249,6 +1250,7 @@ func cmdTestManifest(
       // dep-DLL copy the CI ecosystem step used to do by hand.
       copyRestoredDepDlls(outPath, restoredDlls)
       copyNugetAssembliesBeside(outPath, nugetThirdPartyPaths)
+      copyNugetNativeAssetsBeside(outPath, nativeAssetPaths)
       writeRuntimeConfigWithProbing(outPath, depBinDirs)
 
       val execArgs: List[String] = newList()

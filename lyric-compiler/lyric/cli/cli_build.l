@@ -136,6 +136,7 @@ record NonNativeEmitOutcome {
   emitResult: EmitResult
   restoredDlls: List[String]
   nugetThirdPartyPaths: List[String]
+  nativeAssetPaths: List[String]
 }
 
 // Discover the nearest lyric.toml for a SINGLE-FILE build by walking up from
@@ -293,7 +294,12 @@ func collectImportedOwnPackages(
 }
 
 func noContributionOutcome(req: in EmitRequest): NonNativeEmitOutcome {
-  NonNativeEmitOutcome(emitResult = Emitter.emit(req), restoredDlls = newList(), nugetThirdPartyPaths = newList())
+  NonNativeEmitOutcome(
+    emitResult = Emitter.emit(req),
+    restoredDlls = newList(),
+    nugetThirdPartyPaths = newList(),
+    nativeAssetPaths = newList()
+  )
 }
 
 func failedEmitOutcome(msg: in String): NonNativeEmitOutcome {
@@ -302,7 +308,8 @@ func failedEmitOutcome(msg: in String): NonNativeEmitOutcome {
   NonNativeEmitOutcome(
     emitResult = EmitResult(outputPath = None, diagnostics = noDiags),
     restoredDlls = newList(),
-    nugetThirdPartyPaths = newList()
+    nugetThirdPartyPaths = newList(),
+    nativeAssetPaths = newList()
   )
 }
 
@@ -385,6 +392,7 @@ func emitSingleFileOrProject(
   val jvmNeedsMaven = match req.target { case Jvm -> hasMavenEntries; case _ -> false }
 
   val hasContribution = resolvedDeps.restoredDlls.count > 0 or resolvedDeps.nugetThirdPartyPaths.count > 0 or
+    resolvedDeps.nativeAssetPaths.count > 0 or
     activeFeatures.count > 0 or
     declaredFeatures.count > 0 or
     resolvedDeps.depTemplateSrcs.count > 0 or
@@ -437,7 +445,8 @@ func emitSingleFileOrProject(
   NonNativeEmitOutcome(
     emitResult = emitResult,
     restoredDlls = resolvedDeps.restoredDlls,
-    nugetThirdPartyPaths = resolvedDeps.nugetThirdPartyPaths
+    nugetThirdPartyPaths = resolvedDeps.nugetThirdPartyPaths,
+    nativeAssetPaths = resolvedDeps.nativeAssetPaths
   )
 }
 
@@ -555,12 +564,14 @@ pub func buildOneNativeWithFeatures(
   }
   var resolvedRestoredDlls: List[String] = newList()
   var resolvedNugetPaths: List[String] = newList()
+  var resolvedNativePaths: List[String] = newList()
   val result = if isNativeTarget {
     Emitter.emitNative(req, effTriple, effOpt, effLibs)
   } else {
     val outcome = emitSingleFileOrProject(req, sourcePath, manifestPath, cliFeatures, noDefaultFeatures, allFeatures)
     resolvedRestoredDlls = outcome.restoredDlls
     resolvedNugetPaths = outcome.nugetThirdPartyPaths
+    resolvedNativePaths = outcome.nativeAssetPaths
     outcome.emitResult
   }
   var hadError = false
@@ -614,6 +625,7 @@ pub func buildOneNativeWithFeatures(
         copyRuntimeDepsBeside(outPath, findCompiledLibDir())
         copyRestoredDepDlls(outPath, resolvedRestoredDlls)
         copyNugetAssembliesBeside(outPath, resolvedNugetPaths)
+        copyNugetNativeAssetsBeside(outPath, resolvedNativePaths)
       }
     }
     case Jvm -> ()
@@ -1546,6 +1558,7 @@ func buildProject(
   val restoredDlls = resolved.restoredDlls
   val depTemplatePkgsList = resolved.depTemplateSrcs
   val nugetThirdPartyPaths = resolved.nugetThirdPartyPaths
+  val nativeAssetPaths = resolved.nativeAssetPaths
 
   val asmName = stemOf(Path.basename(outPath), 4)
   val projReq = EmitProjectRequest(
@@ -1628,6 +1641,7 @@ func buildProject(
       copyRuntimeDepsBeside(outPath, findCompiledLibDir())
       copyRestoredDepDlls(outPath, restoredDlls)
       copyNugetAssembliesBeside(outPath, nugetThirdPartyPaths)
+      copyNugetNativeAssetsBeside(outPath, nativeAssetPaths)
       // `kind = "exe"`: emit a native apphost launcher beside the managed DLL
       // so the program runs directly (`./<name>`) without a `dotnet` prefix.
       if buildKind == "exe" {

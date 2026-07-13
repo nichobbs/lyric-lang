@@ -42,22 +42,16 @@ only. Standing up a real `--target jvm` path (JDBC-backed, dropping the
 fictional helper) is out of scope for #5407 and tracked as follow-up
 work — see `docs/33-platform-parity-remediation.md`.
 
-### Known limitation: native SQLite asset deployment
+### Native SQLite asset deployment
 
 Microsoft.Data.Sqlite depends on `SQLitePCLRaw.lib.e_sqlite3`, which ships
 a native shared library (`libe_sqlite3.so` on Linux) under a
-`runtimes/<rid>/native/` NuGet asset folder. **The Lyric CLI's `single`-output
-bundler does not copy this native asset** (or emit a `.deps.json` that would
-let the .NET runtime's default probing find it) into the build/test output
-directory, so a plain `lyric build`/`lyric test` run may fail at first
-SQLite connection with `System.Exception: The type initializer for
-'Microsoft.Data.Sqlite.SqliteConnection' threw an exception.` unless the
-native library is independently reachable — e.g. via
-`LD_LIBRARY_PATH=<nuget-cache>/sqlitepclraw.lib.e_sqlite3/<version>/runtimes/linux-x64/native`
-pointed at the restored package. This is a build-tooling gap (the CLI
-bundler, not this library's `.l` source), out of scope for #5407 and
-tracked as follow-up work; it does not affect Npgsql, which has no native
-asset dependency.
+`runtimes/<rid>/native/` NuGet asset folder. The Lyric CLI's `single`-output
+bundler now copies this native asset (for the current build machine's host
+RID) beside the build/test output, alongside the managed assemblies it
+already co-located (#5573) — a plain `lyric build`/`lyric test` run resolves
+it without any `LD_LIBRARY_PATH` workaround. It does not affect Npgsql,
+which has no native asset dependency.
 
 ## Packages
 
