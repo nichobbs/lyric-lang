@@ -15441,7 +15441,8 @@ now recurses into `typeExprToJvm` against a synthetic `TRef` built
 from `underlying`. `nat_cross_package_self_test.l` remains MSIL-only
 (`target = Emitter.Dotnet`, matching `cross_package_generics_self_test.l`'s
 established scope) — this JVM fix has no dedicated regression test in
-this PR; tracked as a coverage gap.
+this PR; tracked in #5701 (add a `--target jvm` case exercising a
+`Long`-backed range subtype crossing a restored-package boundary).
 
 **Second correction (found by CI, not review):** `nat_cross_package_self_test.l`
 initially failed to even compile — `isNumericPrimitiveName`
