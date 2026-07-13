@@ -427,7 +427,13 @@ func isNumericPrimitiveName(name: in String): Bool {
     name == "UShort" or
     name == "UByte" or
     name == "Float" or
-    name == "Double"
+    name == "Double" or
+    // `Nat` is a full numeric primitive (`PtNat`, `typechecker_types.l`) and
+    // docs/02's worked examples declare `Nat range A..=B` distinct types
+    // (e.g. `dbPoolSize: Nat range 1 ..= 100`) — this name-based gate simply
+    // never listed it, rejecting every `Nat`-backed range subtype with T0091
+    // regardless of the underlying type actually being numeric.
+    name == "Nat"
 }
 
 func describeFoldError(fe: in FoldError): String {
