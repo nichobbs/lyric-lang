@@ -910,16 +910,10 @@ func routeDispatch(routes: in slice[Route], req: in Request): Response {
     if route.method == req.method {
       match matchPattern(route.pattern, req.path) {
         case Some(params) -> {
-          // Copy the match-bound value into a fresh local before using it as a
-          // call argument in the same arm: passing a match-arm-bound variable
-          // straight into a call from inside its own arm crashes with
-          // InvalidProgramException on this backend (issue #5364). See the
-          // identical workaround in parseQueryPair above.
-          val boundParams: Map[String, String] = params
           val bound = Request(
             method = req.method,
             path = req.path,
-            pathParams = boundParams,
+            pathParams = params,
             queryParams = req.queryParams,
             headers = req.headers,
             body = req.body
