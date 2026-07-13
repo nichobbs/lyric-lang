@@ -29341,8 +29341,8 @@ func registerRestoredInterface(cctx: in CodegenCtx, packageName: in String, decl
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
-      case IMSig(sig) -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow, packageName, sig.name, sig.params, sig.ret)
-      case IMFunc(fn) -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow, packageName, fn.name, fn.params, fn.ret)
+      case IMSig(sig) -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow, packageName, sig.name, sig.params, sig.ret, sig.isAsync)
+      case IMFunc(fn) -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow, packageName, fn.name, fn.params, fn.ret, fn.isAsync)
       case IMAssoc(_) -> ()
     }
     mi = mi + 1
@@ -29360,6 +29360,7 @@ func registerRestoredIfaceMethod(
   methodName: in String,
   params: in List[Param],
   ret: in Option[TypeExpr],
+  isAsync: in Bool,
 ): Unit {
   val key = ifaceFqn + "/" + methodName
   if cctx.methodTokens.containsKey(key) {
@@ -29394,8 +29395,30 @@ func registerRestoredIfaceMethod(
   // Record the fully-resolved return type (ctx-aware, so `Result[T, E]` keeps
   // its `MGenericInst` identity) for the call site.  This is what the
   // consumer's `match` on the call result needs to emit correct isinst tests.
+  // Bare (not Task-wrapped): the producer's own interface-slot MethodDef
+  // signature also declares the bare logical return (`lowerMInterface`,
+  // lowering.l ~2798, `buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)`)
+  // — an async interface method's physical ABI is its declared return type,
+  // not Task<T>, so this stays correct for the callvirt/match paths.
   if not cctx.methodRetTypes.containsKey(key) {
     cctx.methodRetTypes.add(key, sigRetType)
+  }
+  // Also seed the PRE-SCAN's method-return registry, Task-wrapped when async
+  // (#5xxx). `pbMethodCallRetPB` (the await-counting pre-scan's receiver-typed
+  // resolver) never consults `cctx.methodRetTypes` — only `pbMethodRetTypes` —
+  // so without this a restored/stdlib async interface method's await went
+  // completely untyped in the pre-scan (MObject, uncounted), corrupting the
+  // async state machine's resume-label/awaiter-field bookkeeping relative to
+  // whatever emission's `EAwait` handler actually resolves.
+  if isAsync {
+    val taskRetType = asyncKickoffReturnMsil(cctx, sigRetType)
+    val arityKey = key + "/" + toString(realParams.count)
+    if not cctx.pbMethodRetTypes.containsKey(arityKey) {
+      cctx.pbMethodRetTypes.add(arityKey, taskRetType)
+    }
+    if not cctx.pbMethodRetTypes.containsKey(key) {
+      cctx.pbMethodRetTypes.add(key, taskRetType)
+    }
   }
   // Cache the param types/modes the call site needs, exactly as the
   // local-interface (same-assembly) pre-scan does.  Without these,
