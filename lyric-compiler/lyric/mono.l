@@ -1698,7 +1698,15 @@ func inferReturnFromName(
       // instead of guessing at a shape that might not resolve.
       val isUnitRet = match decl.ret {
         case None -> true
-        case Some(r) -> match r.kind { case TUnit -> true; case _ -> false }
+        case Some(r) -> match r.kind {
+          case TUnit -> true
+          // `: Unit` written explicitly parses as `TRef(["Unit"])` — only the
+          // `()` spelling produces `TUnit` (see parser_exprs.l's
+          // parseTypeExpr/parseTypeExprNoArrow); `async func f(): Unit` is the
+          // common spelling, so both must count as Unit here.
+          case TRef(path) -> path.segments.count == 1 and path.segments[0] == "Unit"
+          case _ -> false
+        }
       }
       if isUnitRet {
         Some(value = TypeExpr(kind = TRef(path = singleSegPath("Task")), span = decl.span))
