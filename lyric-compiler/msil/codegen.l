@@ -16802,6 +16802,32 @@ func emitExternTargetBody(
         }
       }
 
+      // F0027 (warning, #5704): a hint-less `@externTarget` (no
+      // `@externInstance` / `@externStatic`) whose calling convention the
+      // metadata reader could NOT confirm falls back to the default STATIC
+      // guess — the D-progress-667 landmine that throws MissingMethodException
+      // at runtime if the member is actually an instance method.  "Confirmed"
+      // means either the property-getter probe fired (it rewrote `emitMember`
+      // to `get_<M>`) or metadata method resolution succeeded (it populated
+      // `resolvedMethodParams`).  Warn only when the declaring type IS present
+      // in the reference-assembly index: a type absent from the index is either
+      // a non-BCL Lyric host (legitimately hint-less-static) or an SDK-less
+      // build (W0007 already covers that), and warning on those is noise.
+      // Ctors always use `newobj` regardless of hint, so they are exempt.
+      // Emitted as a warning, not a build error, so the ecosystem can be
+      // annotated incrementally before this ever gates a build.
+      val f0027HintLess = match hint { case RHEither -> true; case _ -> false }
+      if f0027HintLess and not r.isCtor {
+        val f0027Verified = emitMember != r.memberName or
+          (match resolvedMethodParams { case Some(_) -> true; case None -> false })
+        if not f0027Verified {
+          match Mdr.assemblyForType(cctx.metadataTypeIndex, resolvedFqn) {
+            case Some(_) -> warnHintlessExternUnverifiedMsil(target, decl.name)
+            case None -> ()
+          }
+        }
+      }
+
       // Build the method signature blob, encoding class-typed params/return
       // against their resolved TypeRefs.
       //
@@ -27415,6 +27441,23 @@ func checkOneInterfaceMethodMsil(
 // extern types at all.  The notice is non-fatal and matches the silent-skip
 // convention F0015 (auto-FFI signature validation) uses for the same
 // reference-pack-absent case.
+// F0027 (warning): a hint-less `@externTarget` whose static/instance calling
+// convention could not be verified against reference-assembly metadata, so it
+// defaults to a STATIC call (the D-progress-667 / #5704 landmine).  Emitted
+// once per offending extern declaration (emitExternTargetBody runs once per
+// wrapper).  Warning-first: this does not fail the build, so the ecosystem's
+// hint-less externs can be annotated incrementally before it is ever promoted
+// to an error.
+func warnHintlessExternUnverifiedMsil(target: in String, funcName: in String): Unit {
+  Console.error(
+    "F0027: warning: @externTarget '" + target + "' on '" + funcName + "' is hint-less " +
+      "(no @externInstance / @externStatic) and its calling convention could not be verified " +
+      "against .NET reference-assembly metadata, so it defaults to a STATIC call.  If the member " +
+      "is actually an instance method this faults at run time with MissingMethodException.  Add " +
+      "@externInstance or @externStatic to make the convention explicit."
+  )
+}
+
 func warnFfiIndexEmptyOnceMsil(cctx: in CodegenCtx): Unit {
   if cctx.ffiIndexEmptyWarned.count > 0 {
     return

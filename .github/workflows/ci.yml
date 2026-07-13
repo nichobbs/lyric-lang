@@ -1532,6 +1532,45 @@ jobs:
             echo "::error::build failed but did not report F0015"; exit 1; }
           echo "F0015 signature-mismatch negative test passed (rc=$rc)"
 
+          # F0027 (#5704, D-progress-671): a hint-less @externTarget whose
+          # calling convention can't be metadata-verified must WARN (not fail —
+          # option A is warning-first), and an explicit @externStatic/
+          # @externInstance must silence it.  Task.Run's delegate parameter is
+          # unscoreable, so it is a stable unverifiable case.
+          cat > "$work/f0027_pos.l" <<'LYR'
+          package F0027Pos
+          extern type BclTask = "System.Threading.Tasks.Task"
+          @externTarget("System.Threading.Tasks.Task.Run")
+          func hintlessTaskRun(action: in () -> Unit): BclTask = ()
+          func main(): Int { 0 }
+          LYR
+          rc=0
+          ( cd "$work" && "$bin_abs" build f0027_pos.l ) > "$work/f0027_pos.out" 2>&1 || rc=$?
+          echo "--- F0027 positive fixture (rc=$rc) ---"; cat "$work/f0027_pos.out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::F0027 is warning-first (option A) but the hint-less fixture failed the build"; exit 1
+          fi
+          grep -q "F0027" "$work/f0027_pos.out" || {
+            echo "::error::hint-less unverifiable @externTarget did not warn F0027"; exit 1; }
+          cat > "$work/f0027_neg.l" <<'LYR'
+          package F0027Neg
+          extern type BclTask = "System.Threading.Tasks.Task"
+          @externStatic
+          @externTarget("System.Threading.Tasks.Task.Run")
+          func annotatedTaskRun(action: in () -> Unit): BclTask = ()
+          func main(): Int { 0 }
+          LYR
+          rc=0
+          ( cd "$work" && "$bin_abs" build f0027_neg.l ) > "$work/f0027_neg.out" 2>&1 || rc=$?
+          echo "--- F0027 negative fixture (rc=$rc) ---"; cat "$work/f0027_neg.out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::annotated @externStatic fixture failed to build"; exit 1
+          fi
+          if grep -q "F0027" "$work/f0027_neg.out"; then
+            echo "::error::explicit @externStatic did not silence F0027"; exit 1
+          fi
+          echo "F0027 hint-less-extern warning test passed"
+
       # D105 Phase 2: F0020–F0023 external-interface impl conformance negative
       # tests.  Phase 1 (PR #3851) wired `impl ExternInterface for Record` end
       # to end at the codegen layer; this phase adds metadata-direct signature

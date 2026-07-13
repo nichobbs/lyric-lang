@@ -15663,6 +15663,47 @@ comment so the omission is explicit, not invisible.
 
 ---
 
+## D-progress-671 — F0027: warn (not fail) on hint-less `@externTarget` externs whose calling convention can't be metadata-verified (#5704, option A)
+
+D-progress-667 annotated the stdlib kernel's hint-less instance externs with
+explicit `@externInstance` to remove their reliance on the emitter's
+"default-to-static, then correct from metadata" guess, and flagged the
+*enforcement* half — a build-gating diagnostic that catches *new* landmines —
+as deferred to #5704 pending a full ecosystem audit, because a hard error
+would break builds across ~25 ecosystem kernels (~574 `@externTarget`
+declarations, many hint-less).
+
+This entry ships the **warning-first** slice (option A).
+`emitExternTargetBody` (`msil/codegen.l`) now emits `F0027` (a stderr warning,
+build still succeeds) when an `@externTarget` is **hint-less** (no
+`@externInstance` / `@externStatic`), is **not** a constructor, and its
+static/instance convention was **not** confirmed by metadata — "confirmed"
+meaning the property-getter probe fired or metadata method resolution
+populated the resolved param list.  It is gated on the declaring type being
+present in the reference-assembly index, so it never fires for non-BCL Lyric
+host types (legitimately hint-less-static) or SDK-less builds (already covered
+by W0007).  `F0027` reuses the diagnostic code freed by an unrelated reverted
+experiment (the "unresolved-name-matches-a-function" check whose theory was
+wrong) and is the code D-progress-667 already named for this purpose.
+
+Calibration: recompiling the whole stdlib with the F0027-aware emitter fired
+**exactly once** — on `taskRunWithCancel` (`Task.Run`), whose `() -> Unit`
+delegate parameter is unscoreable so it can't be metadata-verified.  It is a
+static method, so the default guess was right by luck; this entry annotates it
+`@externStatic` to make the convention explicit and keep the stdlib
+F0027-clean.  Verified by a CI negative/positive fixture pair (hint-less
+`Task.Run` warns and still builds; `@externStatic` silences it) folded into
+the existing Auto-FFI F0015 step.
+
+Warning-first is deliberate: the ecosystem kernels can be annotated
+incrementally as F0027 surfaces each hint-less extern, and only once the tree
+is clean should F0027 be promoted to a hard error — tracked as the remaining
+half of #5704.
+
+**Related:** D-progress-667, #5704, #5577.
+
+---
+
 ## Decisions deferred to v2 or later
 
 

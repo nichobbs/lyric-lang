@@ -30208,3 +30208,20 @@ breakages no CI covered — `set_tests` (#5711), `sort_tests` (#5712),
 red.
 
 **Related:** `docs/03-decision-log.md` D-progress-670; #5710–#5713.
+
+## F0027 warning: hint-less `@externTarget` externs that can't be metadata-verified (2026-07-13)
+
+Warning-first slice of #5704 (the enforcement half D-progress-667 deferred).
+The MSIL emitter now warns (`F0027`, stderr, build still succeeds) when an
+`@externTarget` has no `@externInstance` / `@externStatic` hint, is not a
+constructor, and its calling convention could not be confirmed against
+reference-assembly metadata — the D-progress-667 landmine where the codegen
+silently defaults to a STATIC call that throws `MissingMethodException` at run
+time if the member is actually an instance method. Gated on the declaring type
+being in the reference-assembly index, so it stays silent for non-BCL Lyric
+host types and SDK-less builds. Recompiling the stdlib fired it exactly once
+(`taskRunWithCancel` / `Task.Run`, whose delegate arg is unscoreable), now
+annotated `@externStatic`. Warning-first by design: the ecosystem kernels are
+annotated incrementally before F0027 is ever promoted to a hard error.
+
+**Related:** `docs/03-decision-log.md` D-progress-671, D-progress-667; #5704.
