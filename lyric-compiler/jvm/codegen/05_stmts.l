@@ -1458,6 +1458,130 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
   resultTy
 }
 
+// Try/catch/**finally** in *expression* position (#2043): the try body's (or
+// a matching catch arm's) trailing value must survive the finally block, so
+// the value-join machinery of `lowerTryCatchExpr` is combined with the
+// catch-all-handler + duplicated-finally strategy of `lowerTryCatch`'s
+// statement-mode finally lowering.  `lowerBlockExprInner` previously fell
+// back to statement-mode lowering for this shape (value discarded, #1683
+// follow-up comment) whenever a finally block was present — which did not
+// merely leave the shape unhandled, it silently replaced the try's real
+// result with `retTy`'s zero/default value instead of failing loudly: a
+// genuine miscompile (a `func f(): Int { try { 42 } finally { cleanup() } }`
+// returned 0), not just an unhandled/uncommon shape.
+//
+// Strategy: lower the try body (and any catch arms) exactly like
+// `lowerTryCatchExpr`, storing the produced value in a result slot.  On the
+// normal-completion path (`afterL`), run the finally block for its side
+// effects (its own trailing value, if any, is discarded — a `finally` block
+// is a Unit-typed cleanup block, mirroring `lowerTryCatch`), THEN reload the
+// stashed result.  A catch-all handler covering the try body and every catch
+// arm ([startL, finallyExL)) runs the finally block on the exceptional path
+// too, before rethrowing — the finally must run on every exit, matching
+// `lowerTryCatch`'s statement-mode contract.
+func lowerTryCatchFinallyExpr(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  body: in Block,
+  catches: in List[CatchClause],
+  fb: in Block,
+): JvmType {
+  val startL = freshLabel(ctx)
+  val endL = freshLabel(ctx)
+  val afterL = freshLabel(ctx)
+  val rslotName = "__tryf_r_" + afterL
+  var rslot = -1
+
+  insns.add(LLabel(name = startL))
+  val resultTy = lowerBlockExpr(ctx, insns, body)
+  match resultTy {
+    case JVoid -> ()
+    case _ -> {
+      rslot = allocSlot(ctx, rslotName, resultTy)
+      emitStore(insns, rslot, resultTy)
+    }
+  }
+  insns.add(LGoto(label = afterL))
+  insns.add(LLabel(name = endL))
+
+  var i = 0
+  while i < catches.count {
+    val c = catches[i]
+    val handlerL = freshLabel(ctx)
+    insns.add(LLabel(name = handlerL))
+    val exTy = JRef(className = "java/lang/Throwable")
+    match c.bindName {
+      case Some(bname) -> {
+        val exSlot = allocSlot(ctx, bname, exTy)
+        emitStore(insns, exSlot, exTy)
+      }
+      case None -> insns.add(LPop)
+    }
+    val catchBodyTy = lowerBlockExpr(ctx, insns, c.body)
+    val catchTerminated = lastInsnIsTerminator(insns)
+    match resultTy {
+      case JVoid -> ()
+      case _ -> {
+        if rslot < 0 {
+          rslot = allocSlot(ctx, rslotName, resultTy)
+        }
+        match catchBodyTy {
+          case JVoid -> {
+            if not catchTerminated {
+              val pos = c.span.startPos
+              panic(
+                "error[J004]: " + pos.line.toString() + ":" + pos.column.toString() +
+                  ": try-catch-finally used as an expression, but this catch arm yields Unit while the " +
+                  "try body yields a value; the JVM backend cannot route an absent value through " +
+                  "the result slot. Give the catch arm a trailing value of the try body's type, or " +
+                  "annotate the try-catch result type explicitly (type-checker gap #2042)."
+              )
+            }
+          }
+          case _ -> {
+            if not catchTerminated {
+              emitStore(insns, rslot, catchBodyTy)
+            }
+          }
+        }
+      }
+    }
+    if not catchTerminated {
+      insns.add(LGoto(label = afterL))
+    }
+    val catchClass = if c.typeName == "Bug" { "java/lang/Throwable" } else { lyricNameToJvm(c.typeName) }
+    insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = handlerL, catchClass = catchClass))
+    i = i + 1
+  }
+
+  // Catch-all: runs the finally block then rethrows, covering the try body
+  // and every catch arm ([startL, finallyExL)); self-excludes the handler.
+  val finallyExL = freshLabel(ctx)
+  insns.add(LLabel(name = finallyExL))
+  val exTy2 = JRef(className = "java/lang/Throwable")
+  val tmpName = "__tryf_ex_" + finallyExL
+  val tmpSlot = allocSlot(ctx, tmpName, exTy2)
+  emitStore(insns, tmpSlot, exTy2)
+  lowerBlock(ctx, insns, fb)
+  emitLoad(insns, tmpSlot, exTy2)
+  insns.add(LAthrow)
+  insns.add(LTryCatch(startLabel = startL, endLabel = finallyExL, handlerLabel = finallyExL, catchClass = ""))
+
+  // Normal path: run the finally block for its side effects, then reload the
+  // stashed try/catch result.
+  insns.add(LLabel(name = afterL))
+  lowerBlock(ctx, insns, fb)
+  match resultTy {
+    case JVoid -> ()
+    case _ -> {
+      if rslot >= 0 {
+        emitResultLoad(insns, rslot, resultTy)
+      }
+    }
+  }
+  resultTy
+}
+
 func lowerTryCatch(
   ctx: in FuncCtx,
   insns: in List[LInsn],

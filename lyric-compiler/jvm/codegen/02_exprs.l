@@ -2246,7 +2246,9 @@ func lowerBlockExprInner(ctx: in FuncCtx, insns: in List[LInsn], block: in Block
   // position is `try { … } catch … ` used as an expression (e.g.
   // `return try { … } catch … `, which the parser wraps as EBlock([STry])):
   // lower it so its arms' values become the block value instead of being
-  // popped as a statement.
+  // popped as a statement.  A `finally` block (#2043) does not change this —
+  // `lowerTryCatchFinallyExpr` stashes the try/catch result across the
+  // finally's side effects instead of discarding it.
   val last = block.statements[n - 1]
   match last.kind {
     case SExpr(e) -> {
@@ -2255,12 +2257,7 @@ func lowerBlockExprInner(ctx: in FuncCtx, insns: in List[LInsn], block: in Block
     case STry(body, catches, finally_) -> {
       match finally_ {
         case None -> lowerTryCatchExpr(ctx, insns, body, catches)
-        case Some(_) -> {
-          // try/finally in value position is uncommon; fall back to statement
-          // lowering (value discarded) rather than mis-handling the finally.
-          lowerStmt(ctx, insns, last)
-          JVoid
-        }
+        case Some(fb) -> lowerTryCatchFinallyExpr(ctx, insns, body, catches, fb)
       }
     }
     case _ -> {

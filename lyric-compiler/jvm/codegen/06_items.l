@@ -918,13 +918,16 @@ pub func lowerFunc(
                   // for the synthesised `ireturn` (VerifyError: operand stack
                   // underflow).
                   val tailTy = lowerBlockExpr(ctx, insns, block)
-                  // `try { … } finally { … }` in tail position falls back to
-                  // statement-mode lowering inside `lowerBlockExpr` and reports
-                  // `JVoid` (value discarded by the fallback, #1683); a bare
-                  // tail-position call to a `: Never`-declared function reports
-                  // `JVoid` the same way, since `Never` erases to `JVoid` just
-                  // like `Unit` (#5378).  Either way nothing is left on the
-                  // operand stack here, so `emitNeverTailReturn` pushes
+                  // `try { … } finally { … }` in tail position now correctly
+                  // propagates the try/catch result through the finally block
+                  // via `lowerTryCatchFinallyExpr` (#2043; previously fell back
+                  // to statement-mode lowering and silently discarded the
+                  // value, returning `retTy`'s zero/default instead of the
+                  // real result — a genuine miscompile, not just an unhandled
+                  // shape).  A bare tail-position call to a `: Never`-declared
+                  // function still reports `JVoid`, since `Never` erases to
+                  // `JVoid` just like `Unit` (#5378): nothing is left on the
+                  // operand stack there, so `emitNeverTailReturn` pushes
                   // `retTy`'s zero/default value before returning instead of
                   // emitting a value-less `return` that fails class-load
                   // verification ("Method expects a return value") against

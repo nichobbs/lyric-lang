@@ -23,6 +23,16 @@
 //!     `JVoid` just like `Unit`, which previously produced a stray void
 //!     `return` and a class-load `VerifyError`), in both the block-tail
 //!     (`FBBlock`) and `= expr` (`FBExpr`, #5651) function-body forms.
+//!   - #2043: a non-void function whose body is a bare `try { … } finally
+//!     { … }` (no explicit `return` inside the try) — the try body's tail
+//!     VALUE must survive the finally block and become the function's real
+//!     return value on both the normal-completion and exceptional paths.
+//!     Before the fix (`lowerTryCatchFinallyExpr`, jvm/codegen/05_stmts.l),
+//!     `lowerBlockExprInner` fell back to statement-mode lowering for this
+//!     shape whenever a `finally` was present, silently discarding the
+//!     try's value and returning the declared return type's zero/default
+//!     instead — a genuine miscompile (returned 0 instead of 42), not a
+//!     VerifyError.
 //!
 //! Run by native `lyric test --target jvm`, which compiles this module in-process
 //! through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs it under
@@ -110,6 +120,32 @@ protected type Counter {
   }
   entry get(): Int {
     return count
+  }
+}
+
+// ── #2043: value-producing `try { … } finally { … }`, no explicit `return` ───
+// The try body's tail expression (42) must become the function's return
+// value; the counter proves the finally block actually ran (once on the
+// normal-completion path).
+func computeWithFinally(c: in Counter): Int {
+  try {
+    c.increment()
+    42
+  } finally {
+    c.increment()
+  }
+}
+
+// Exceptional-path companion: the try body panics before producing a value.
+// The finally block must still run (observed via the counter) before the
+// panic propagates out of the function — pins the catch-all + rethrow half
+// of `lowerTryCatchFinallyExpr`, not just the normal-completion join.
+func computeWithFinallyThrows(c: in Counter): Int {
+  try {
+    c.increment()
+    panic("computeWithFinallyThrows: deliberate failure")
+  } finally {
+    c.increment()
   }
 }
 
@@ -277,4 +313,27 @@ test "#5651: `= expr` (FBExpr) body form of a Never-tail record method" {
   }
   assertTrue(caught, "alwaysDiverges' panic must propagate out of an `= expr` record method")
   assertEqualInt(c.get(), 1, "side effect ran exactly once")
+}
+
+test "#2043: non-void function body is a bare try/finally — the try's tail value survives the finally" {
+  val c = Counter(count = 0)
+  val result = computeWithFinally(c)
+  assertEqualInt(
+    result,
+    42,
+    "the try body's tail value (42) must be the function's return value, not retTy's zero/default"
+  )
+  assertEqualInt(c.get(), 2, "both the try body and the finally block ran exactly once each")
+}
+
+test "#2043: non-void try/finally still runs the finally block and propagates a panic from the try body" {
+  val c = Counter(count = 0)
+  var caught = false
+  try {
+    computeWithFinallyThrows(c)
+  } catch Bug as _ {
+    caught = true
+  }
+  assertTrue(caught, "the panic inside the try body must still propagate out of the function")
+  assertEqualInt(c.get(), 2, "the finally block ran (via the catch-all handler) before the panic propagated")
 }
