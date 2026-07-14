@@ -19,6 +19,8 @@
 package Lyric.EnumMsilSelfTest
 
 import Std.Core
+import Std.Http
+import Std.Rest
 import Std.Testing
 
 enum Color {
@@ -158,4 +160,24 @@ test "record field tokens are correct after a preceding enum" {
   assertEqual(fmt(xs), " a=1 b=2", "formatFields shape")
   val ys: slice[KV] = []
   assertEqual(fmt(ys), "", "empty slice early return")
+}
+
+// #5737: `Std.Http.GET` is a PACKAGE-qualified restored enum-case reference
+// (package `Std.Http`, case `GET` of `HttpMethod`) — Lyric enum cases are
+// referenced through their declaring package, never an explicit
+// `<EnumType>.` segment.  `Std.Rest.RestError` independently declares an
+// unrelated union case also named `Http` (`case Http(error: HttpError)`).
+// Before the fix, `tryQualifiedEnumOrdinalMsil` only recognized a receiver
+// chain ending in a literal enum TYPE name, so this fell through to the
+// `EMember` arm's union-case-construction heuristic, mis-resolving as a
+// `RestError.Http(...)` construction and emitting invalid IL.
+test "#5737: package-qualified enum case does not collide with an unrelated union case name" {
+  val m = Std.Http.GET
+  match m {
+    case GET -> assertTrue(true, "Std.Http.GET resolves to the enum ordinal")
+    case _ -> panic("Std.Http.GET resolved to the wrong case")
+  }
+  val url = match Url.tryFrom("http://127.0.0.1:1/") { case Ok(u) -> u; case Err(_) -> panic("test URL should parse") }
+  val req = Std.Http.request(Std.Http.GET, url)
+  assertTrue(true, "request() with a package-qualified HttpMethod argument compiles")
 }
