@@ -139,6 +139,46 @@ func runEmitProjectWithFeatures(
   runEmitProjectOpts(label, projectPkgs, assemblyName, features, declared)
 }
 
+// JVM counterpart of `runEmitProjectOpts` (#3253): `emitProject` merges
+// multi-file packages via `mergePackageSources` BEFORE dispatching on
+// `req.target` (see `Lyric.Emitter.emitProject`), so the merge itself is
+// target-agnostic — but only the `--target dotnet` path above was ever
+// exercised by a runtime test. Routes through `emitProjectJvmInProcess`
+// (`req.target = Emitter.Jvm`, `outputPath` ending in `.jar`) and runs the
+// produced JAR with `java -jar` instead of `dotnet exec`.
+func runEmitProjectJvmOpts(
+  label: in String, projectPkgs: in List[Emitter.ProjectPackage], assemblyName: in String
+): Capture.CaptureResult {
+  val dir = freshTempDir(label)
+  val jarPath = Path.join(dir, assemblyName + ".jar")
+  val req = Emitter.EmitProjectRequest(
+    packages = projectPkgs,
+    assemblyName = assemblyName,
+    outputPath = jarPath,
+    target = Emitter.Jvm,
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList()
+  )
+  val result = Emitter.emitProject(req)
+  match result.outputPath {
+    case None -> {
+      cleanup(dir)
+      panic(label + ": emitProject (jvm) produced no output (diagnostics on stderr)")
+    }
+    case Some(_) -> ()
+  }
+  val args: List[String] = newList()
+  args.add("-jar")
+  args.add(jarPath)
+  val captured = Capture.runCaptureWithDiagnostics("java", args, "")
+  cleanup(dir)
+  captured
+}
+
 // ─── In-process routing: basic cases ─────────────────────────────────────────
 // Two independent packages: pins the in-process routing path
 // (canInProc=true) end-to-end.
@@ -275,6 +315,46 @@ test "emitProject multi-file directory package" {
   cleanup(fixtureDir)
   assertEqualInt(result.exitCode, 0, "multi_file_dir_package: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "42", "multi_file_dir_package: stdout matches expected")
+}
+
+// JVM variant of the above (#3253): the identical two-file directory-package
+// shape, but routed through `emitProjectJvmInProcess` and run under `java`
+// instead of `dotnet exec`. Guards that a future change re-introducing the
+// #2575 bug on the JVM-specific merge/dispatch path (rather than the
+// dotnet-only path the test above exercises) is caught by CI too.
+test "emitProject multi-file directory package (JVM)" {
+  val fixtureDir = freshTempDir("mdir-2575-jvm")
+  val srcDir = Path.join(fixtureDir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("multi_file_dir_package_jvm: cannot create src dir: " + IOError.message(e))
+  }
+  val helperSrc = "package MDirJvm\n" + "import Std.Core\n" + "\n" + "pub func helper(): Int { 42 }\n"
+  val mainSrc = "package MDirJvm\n" + "import Std.Core\n" + "\n" + "func main(): Unit {\n" + "  println(helper())\n" +
+    "}\n"
+  match File.writeText(Path.join(srcDir, "a_helper.l"), helperSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("multi_file_dir_package_jvm: cannot write helper: " + IOError.message(e))
+  }
+  match File.writeText(Path.join(srcDir, "b_main.l"), mainSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("multi_file_dir_package_jvm: cannot write main: " + IOError.message(e))
+  }
+  val sources: List[String] = newList()
+  match File.readText(Path.join(srcDir, "a_helper.l")) {
+    case Ok(s) -> sources.add(s)
+    case Err(e) -> panic("multi_file_dir_package_jvm: cannot read helper: " + IOError.message(e))
+  }
+  match File.readText(Path.join(srcDir, "b_main.l")) {
+    case Ok(s) -> sources.add(s)
+    case Err(e) -> panic("multi_file_dir_package_jvm: cannot read main: " + IOError.message(e))
+  }
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(Emitter.ProjectPackage(name = "MDirJvm", sources = sources))
+  val result = runEmitProjectJvmOpts("mdir-2575-jvm-build", pkgs, "MDirJvm")
+  cleanup(fixtureDir)
+  assertEqualInt(result.exitCode, 0, "multi_file_dir_package_jvm: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "multi_file_dir_package_jvm: stdout matches expected")
 }
 
 // Multi-file merge edge cases: `//!` module-doc headers and file-level
