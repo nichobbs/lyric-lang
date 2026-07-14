@@ -25636,7 +25636,11 @@ func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilTyp
   }
   val pb = Mdr.sigPrimByte(sig)
   if pb >= 0 {
-    elemByteToMsil(pb)
+    if pb == 0x0C {
+      internValueTypeRef(cctx, "System.Single")
+    } else {
+      elemByteToMsil(pb)
+    }
   } else {
     val fqn = Mdr.sigNamedFqn(sig)
     if fqn.length == 0 {
