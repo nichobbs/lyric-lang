@@ -1273,7 +1273,7 @@ func buildConfigPrelude(aspect: in AspectDecl, body: in Block): (List[Statement]
   // honoured (#3543) so the prelude materialises the locals the body
   // actually reads under either spelling.
   val refs: Map[String, Bool] = newMap()
-  collectMemberRefsBlock(body, "config", refs)
+  collectRefsBlock(body, RMMember(receiver = "config"), refs)
   val fieldNames: Map[String, Bool] = newMap()
   var fnI = 0
   while fnI < aspect.config.count {
@@ -1282,7 +1282,7 @@ func buildConfigPrelude(aspect: in AspectDecl, body: in Block): (List[Statement]
     }
     fnI = fnI + 1
   }
-  collectBareRefsBlock(body, fieldNames, refs)
+  collectRefsBlock(body, RMBareFields(fields = fieldNames), refs)
   if refs.count == 0 {
     return (stmts, materialised, noDefault)
   }
@@ -1324,152 +1324,178 @@ func mkPanicCall(text: in String): Expr {
   Expr(kind = ECall(fn = singleSegPathExpr("panic"), args = args), span = synSpan())
 }
 
+/// Discriminates the leaf check `collectRefsExpr` applies: either
+/// `<receiver>.<field>` member access (the `config`/`call`/`args` ambient
+/// locals) or a bare single-segment path whose name is a known field (the
+/// bare `<field>` spelling every shipped template also uses, #3543).
+/// Folding both traversal families into one walker parameterised over this
+/// mode eliminates the `collectBareRefs*`/`collectMemberRefs*` duplication
+/// tracked in #3594 — the leaf check is the only mode-dependent branch;
+/// every recursive case is shared between both modes.
+union RefMatchMode {
+  case RMMember(receiver: String)
+  case RMBareFields(fields: Map[String, Bool])
+}
+
 /// Walk an Expr (and any nested Block / EOB) collecting the set of
-/// `<receiver>.<field>` member-access names that appear anywhere
-/// inside.  Used by `buildCallPrelude` and `buildConfigPrelude` to
-/// skip materialising locals the body never reads (#1196, #1307).
-func collectMemberRefsBlock(blk: in Block, receiver: in String, into: in Map[String, Bool]): Unit {
+/// reference names that appear anywhere inside, per `mode`:
+///   - `RMMember(receiver)`: `<receiver>.<field>` member-access names.
+///   - `RMBareFields(fields)`: bare single-segment path names that are
+///     keys of `fields`.
+/// Used by `buildCallPrelude` and `buildConfigPrelude` to skip
+/// materialising locals the body never reads (#1196, #1307, #3543).
+func collectRefsBlock(blk: in Block, mode: in RefMatchMode, into: in Map[String, Bool]): Unit {
   var i = 0
   while i < blk.statements.count {
-    collectMemberRefsStmt(blk.statements[i], receiver, into)
+    collectRefsStmt(blk.statements[i], mode, into)
     i = i + 1
   }
 }
 
-func collectMemberRefsStmt(s: in Statement, receiver: in String, into: in Map[String, Bool]): Unit {
+func collectRefsStmt(s: in Statement, mode: in RefMatchMode, into: in Map[String, Bool]): Unit {
   match s.kind {
-    case SExpr(e) -> collectMemberRefsExpr(e, receiver, into)
-    case SReturn(o) -> match o { case Some(e) -> collectMemberRefsExpr(e, receiver, into); case None -> () }
+    case SExpr(e) -> collectRefsExpr(e, mode, into)
+    case SReturn(o) -> match o { case Some(e) -> collectRefsExpr(e, mode, into); case None -> () }
     case SLocal(b) -> {
       match b {
-        case LBVal(_, _, init) -> collectMemberRefsExpr(init, receiver, into)
-        case LBLet(_, _, init) -> collectMemberRefsExpr(init, receiver, into)
-        case LBVar(_, _, init) -> match init { case Some(e) -> collectMemberRefsExpr(e, receiver, into); case None -> () }
+        case LBVal(_, _, init) -> collectRefsExpr(init, mode, into)
+        case LBLet(_, _, init) -> collectRefsExpr(init, mode, into)
+        case LBVar(_, _, init) -> match init { case Some(e) -> collectRefsExpr(e, mode, into); case None -> () }
       }
     }
     case SAssign(t, _, v) -> {
-      collectMemberRefsExpr(t, receiver, into)
-      collectMemberRefsExpr(v, receiver, into)
+      collectRefsExpr(t, mode, into)
+      collectRefsExpr(v, mode, into)
     }
-    case SThrow(e) -> collectMemberRefsExpr(e, receiver, into)
+    case SThrow(e) -> collectRefsExpr(e, mode, into)
     case SFor(_, _, iter, body) -> {
-      collectMemberRefsExpr(iter, receiver, into)
-      collectMemberRefsBlock(body, receiver, into)
+      collectRefsExpr(iter, mode, into)
+      collectRefsBlock(body, mode, into)
     }
     case SWhile(_, cond, body) -> {
-      collectMemberRefsExpr(cond, receiver, into)
-      collectMemberRefsBlock(body, receiver, into)
+      collectRefsExpr(cond, mode, into)
+      collectRefsBlock(body, mode, into)
     }
-    case SLoop(_, body) -> collectMemberRefsBlock(body, receiver, into)
-    case SScope(_, body) -> collectMemberRefsBlock(body, receiver, into)
+    case SLoop(_, body) -> collectRefsBlock(body, mode, into)
+    case SScope(_, body) -> collectRefsBlock(body, mode, into)
     case STry(body, catches, finally_) -> {
-      collectMemberRefsBlock(body, receiver, into)
+      collectRefsBlock(body, mode, into)
       var i = 0
       while i < catches.count {
-        collectMemberRefsBlock(catches[i].body, receiver, into)
+        collectRefsBlock(catches[i].body, mode, into)
         i = i + 1
       }
       match finally_ {
-        case Some(fb) -> collectMemberRefsBlock(fb, receiver, into)
+        case Some(fb) -> collectRefsBlock(fb, mode, into)
         case None -> ()
       }
     }
-    case SDefer(body) -> collectMemberRefsBlock(body, receiver, into)
+    case SDefer(body) -> collectRefsBlock(body, mode, into)
     case _ -> ()
   }
 }
 
-func collectMemberRefsExpr(e: in Expr, receiver: in String, into: in Map[String, Bool]): Unit {
-  // Top-level: `<receiver>.<field>` member access.  Guard `add` with
+func collectRefsExpr(e: in Expr, mode: in RefMatchMode, into: in Map[String, Bool]): Unit {
+  // Leaf check: the only mode-dependent branch.  Guard `add` with
   // `containsKey` so duplicate references in a body (e.g.
   // `log(call.shortName); ...; log(call.shortName + " end")`) don't
   // trip `Dictionary<K,V>.Add`'s ArgumentException.
-  match matchBareMemberAccess(e, receiver) {
-    case Some(name) -> if not into.containsKey(name) { into.add(name, true) }
-    case None -> ()
+  match mode {
+    case RMMember(receiver) -> {
+      match matchBareMemberAccess(e, receiver) {
+        case Some(name) -> if not into.containsKey(name) { into.add(name, true) }
+        case None -> ()
+      }
+    }
+    case RMBareFields(fields) -> {
+      match e.kind {
+        case EPath(p) -> if p.segments.count == 1 and fields.containsKey(p.segments[0]) and not into.containsKey(p.segments[0]) { into.add(p.segments[0], true) }
+        case _ -> ()
+      }
+    }
   }
-  // Recurse into sub-expressions.
+  // Recurse into sub-expressions (shared traversal shape for both modes).
   match e.kind {
     case ECall(f, args) -> {
-      collectMemberRefsExpr(f, receiver, into)
+      collectRefsExpr(f, mode, into)
       var i = 0
       while i < args.count {
         match args[i] {
-          case CAPositional(v) -> collectMemberRefsExpr(v, receiver, into)
-          case CANamed(_, v, _) -> collectMemberRefsExpr(v, receiver, into)
+          case CAPositional(v) -> collectRefsExpr(v, mode, into)
+          case CANamed(_, v, _) -> collectRefsExpr(v, mode, into)
         }
         i = i + 1
       }
     }
-    case EParen(inner) -> collectMemberRefsExpr(inner, receiver, into)
+    case EParen(inner) -> collectRefsExpr(inner, mode, into)
     case ETuple(xs) -> {
       var i = 0
       while i < xs.count {
-        collectMemberRefsExpr(xs[i], receiver, into)
+        collectRefsExpr(xs[i], mode, into)
         i = i + 1
       }
     }
     case EList(xs) -> {
       var i = 0
       while i < xs.count {
-        collectMemberRefsExpr(xs[i], receiver, into)
+        collectRefsExpr(xs[i], mode, into)
         i = i + 1
       }
     }
-    case EAwait(inner) -> collectMemberRefsExpr(inner, receiver, into)
-    case EYield(inner) -> collectMemberRefsExpr(inner, receiver, into)
-    case ESpawn(inner) -> collectMemberRefsExpr(inner, receiver, into)
-    case ETry(inner) -> collectMemberRefsExpr(inner, receiver, into)
-    case EOld(inner) -> collectMemberRefsExpr(inner, receiver, into)
-    case EPropagate(inner) -> collectMemberRefsExpr(inner, receiver, into)
-    case EPrefix(_, operand) -> collectMemberRefsExpr(operand, receiver, into)
+    case EAwait(inner) -> collectRefsExpr(inner, mode, into)
+    case EYield(inner) -> collectRefsExpr(inner, mode, into)
+    case ESpawn(inner) -> collectRefsExpr(inner, mode, into)
+    case ETry(inner) -> collectRefsExpr(inner, mode, into)
+    case EOld(inner) -> collectRefsExpr(inner, mode, into)
+    case EPropagate(inner) -> collectRefsExpr(inner, mode, into)
+    case EPrefix(_, operand) -> collectRefsExpr(operand, mode, into)
     case EBinop(_, l, r) -> {
-      collectMemberRefsExpr(l, receiver, into)
-      collectMemberRefsExpr(r, receiver, into)
+      collectRefsExpr(l, mode, into)
+      collectRefsExpr(r, mode, into)
     }
     case EAssign(t, _, v) -> {
-      collectMemberRefsExpr(t, receiver, into)
-      collectMemberRefsExpr(v, receiver, into)
+      collectRefsExpr(t, mode, into)
+      collectRefsExpr(v, mode, into)
     }
-    case EMember(recv, _) -> collectMemberRefsExpr(recv, receiver, into)
+    case EMember(recv, _) -> collectRefsExpr(recv, mode, into)
     case EIndex(recv, idxs) -> {
-      collectMemberRefsExpr(recv, receiver, into)
+      collectRefsExpr(recv, mode, into)
       var i = 0
       while i < idxs.count {
-        collectMemberRefsExpr(idxs[i], receiver, into)
+        collectRefsExpr(idxs[i], mode, into)
         i = i + 1
       }
     }
-    case ETypeApp(f, _) -> collectMemberRefsExpr(f, receiver, into)
+    case ETypeApp(f, _) -> collectRefsExpr(f, mode, into)
     case EIf(c, t, el, _) -> {
-      collectMemberRefsExpr(c, receiver, into)
-      collectMemberRefsEOB(t, receiver, into)
+      collectRefsExpr(c, mode, into)
+      collectRefsEOB(t, mode, into)
       match el {
-        case Some(e2) -> collectMemberRefsEOB(e2, receiver, into)
+        case Some(e2) -> collectRefsEOB(e2, mode, into)
         case None -> ()
       }
     }
     case EMatch(scrut, arms) -> {
-      collectMemberRefsExpr(scrut, receiver, into)
+      collectRefsExpr(scrut, mode, into)
       var i = 0
       while i < arms.count {
         match arms[i].guard {
-          case Some(g) -> collectMemberRefsExpr(g, receiver, into)
+          case Some(g) -> collectRefsExpr(g, mode, into)
           case None -> ()
         }
-        collectMemberRefsEOB(arms[i].body, receiver, into)
+        collectRefsEOB(arms[i].body, mode, into)
         i = i + 1
       }
     }
-    case ELambda(_, body) -> collectMemberRefsBlock(body, receiver, into)
-    case EBlock(blk) -> collectMemberRefsBlock(blk, receiver, into)
-    case EUnsafe(blk) -> collectMemberRefsBlock(blk, receiver, into)
+    case ELambda(_, body) -> collectRefsBlock(body, mode, into)
+    case EBlock(blk) -> collectRefsBlock(blk, mode, into)
+    case EUnsafe(blk) -> collectRefsBlock(blk, mode, into)
     case EInterpolated(segs) -> {
       var i = 0
       while i < segs.count {
         match segs[i] {
           case ISText(_, _) -> ()
-          case ISExpr(inner) -> collectMemberRefsExpr(inner, receiver, into)
+          case ISExpr(inner) -> collectRefsExpr(inner, mode, into)
         }
         i = i + 1
       }
@@ -1478,179 +1504,18 @@ func collectMemberRefsExpr(e: in Expr, receiver: in String, into: in Map[String,
   }
 }
 
-func collectMemberRefsEOB(eob: in ExprOrBlock, receiver: in String, into: in Map[String, Bool]): Unit {
+func collectRefsEOB(eob: in ExprOrBlock, mode: in RefMatchMode, into: in Map[String, Bool]): Unit {
   match eob {
-    case EOBExpr(e) -> collectMemberRefsExpr(e, receiver, into)
-    case EOBBlock(b) -> collectMemberRefsBlock(b, receiver, into)
+    case EOBExpr(e) -> collectRefsExpr(e, mode, into)
+    case EOBBlock(b) -> collectRefsBlock(b, mode, into)
   }
 }
 
-// Collect bare single-segment path references whose name is in `fields`
-// (the aspect's config field names).  Mirrors `collectMemberRefsExpr`'s
-// traversal exactly so every shipped template's bare config references
-// (e.g. `minLen`, `enabled`) are materialised by `buildConfigPrelude`, not
-// just the documented `config.<field>` qualified form (#3543).
-//
-// MAINTENANCE: this family duplicates the `collectMemberRefs*` traversal
-// structure and must stay in lockstep with it when new `Expr`/`Statement`
-// kinds are added.  Folding the two into one parameterised walker (so the
-// config-prelude pre-scan collects both `config.<field>` and bare `<field>`
-// in a single pass) is tracked as #3594; deferred to keep the #3592 fix
-// turnaround off the shared `call`/`config` collection path.
-func collectBareRefsBlock(blk: in Block, fields: in Map[String, Bool], into: in Map[String, Bool]): Unit {
-  var i = 0
-  while i < blk.statements.count {
-    collectBareRefsStmt(blk.statements[i], fields, into)
-    i = i + 1
-  }
-}
-
-func collectBareRefsStmt(s: in Statement, fields: in Map[String, Bool], into: in Map[String, Bool]): Unit {
-  match s.kind {
-    case SExpr(e) -> collectBareRefsExpr(e, fields, into)
-    case SReturn(o) -> match o { case Some(e) -> collectBareRefsExpr(e, fields, into); case None -> () }
-    case SLocal(b) -> {
-      match b {
-        case LBVal(_, _, init) -> collectBareRefsExpr(init, fields, into)
-        case LBLet(_, _, init) -> collectBareRefsExpr(init, fields, into)
-        case LBVar(_, _, init) -> match init { case Some(e) -> collectBareRefsExpr(e, fields, into); case None -> () }
-      }
-    }
-    case SAssign(t, _, v) -> {
-      collectBareRefsExpr(t, fields, into)
-      collectBareRefsExpr(v, fields, into)
-    }
-    case SThrow(e) -> collectBareRefsExpr(e, fields, into)
-    case SFor(_, _, iter, body) -> {
-      collectBareRefsExpr(iter, fields, into)
-      collectBareRefsBlock(body, fields, into)
-    }
-    case SWhile(_, cond, body) -> {
-      collectBareRefsExpr(cond, fields, into)
-      collectBareRefsBlock(body, fields, into)
-    }
-    case SLoop(_, body) -> collectBareRefsBlock(body, fields, into)
-    case SScope(_, body) -> collectBareRefsBlock(body, fields, into)
-    case STry(body, catches, finally_) -> {
-      collectBareRefsBlock(body, fields, into)
-      var i = 0
-      while i < catches.count {
-        collectBareRefsBlock(catches[i].body, fields, into)
-        i = i + 1
-      }
-      match finally_ {
-        case Some(fb) -> collectBareRefsBlock(fb, fields, into)
-        case None -> ()
-      }
-    }
-    case SDefer(body) -> collectBareRefsBlock(body, fields, into)
-    case _ -> ()
-  }
-}
-
-func collectBareRefsExpr(e: in Expr, fields: in Map[String, Bool], into: in Map[String, Bool]): Unit {
-  match e.kind {
-    case EPath(p) -> if p.segments.count == 1 and fields.containsKey(p.segments[0]) and not into.containsKey(p.segments[0]) { into.add(p.segments[0], true) }
-    case ECall(f, args) -> {
-      collectBareRefsExpr(f, fields, into)
-      var i = 0
-      while i < args.count {
-        match args[i] {
-          case CAPositional(v) -> collectBareRefsExpr(v, fields, into)
-          case CANamed(_, v, _) -> collectBareRefsExpr(v, fields, into)
-        }
-        i = i + 1
-      }
-    }
-    case EParen(inner) -> collectBareRefsExpr(inner, fields, into)
-    case ETuple(xs) -> {
-      var i = 0
-      while i < xs.count {
-        collectBareRefsExpr(xs[i], fields, into)
-        i = i + 1
-      }
-    }
-    case EList(xs) -> {
-      var i = 0
-      while i < xs.count {
-        collectBareRefsExpr(xs[i], fields, into)
-        i = i + 1
-      }
-    }
-    case EAwait(inner) -> collectBareRefsExpr(inner, fields, into)
-    case EYield(inner) -> collectBareRefsExpr(inner, fields, into)
-    case ESpawn(inner) -> collectBareRefsExpr(inner, fields, into)
-    case ETry(inner) -> collectBareRefsExpr(inner, fields, into)
-    case EOld(inner) -> collectBareRefsExpr(inner, fields, into)
-    case EPropagate(inner) -> collectBareRefsExpr(inner, fields, into)
-    case EPrefix(_, operand) -> collectBareRefsExpr(operand, fields, into)
-    case EBinop(_, l, r) -> {
-      collectBareRefsExpr(l, fields, into)
-      collectBareRefsExpr(r, fields, into)
-    }
-    case EAssign(t, _, v) -> {
-      collectBareRefsExpr(t, fields, into)
-      collectBareRefsExpr(v, fields, into)
-    }
-    case EMember(recv, _) -> collectBareRefsExpr(recv, fields, into)
-    case EIndex(recv, idxs) -> {
-      collectBareRefsExpr(recv, fields, into)
-      var i = 0
-      while i < idxs.count {
-        collectBareRefsExpr(idxs[i], fields, into)
-        i = i + 1
-      }
-    }
-    case ETypeApp(f, _) -> collectBareRefsExpr(f, fields, into)
-    case EIf(c, t, el, _) -> {
-      collectBareRefsExpr(c, fields, into)
-      collectBareRefsEOB(t, fields, into)
-      match el {
-        case Some(e2) -> collectBareRefsEOB(e2, fields, into)
-        case None -> ()
-      }
-    }
-    case EMatch(scrut, arms) -> {
-      collectBareRefsExpr(scrut, fields, into)
-      var i = 0
-      while i < arms.count {
-        match arms[i].guard {
-          case Some(g) -> collectBareRefsExpr(g, fields, into)
-          case None -> ()
-        }
-        collectBareRefsEOB(arms[i].body, fields, into)
-        i = i + 1
-      }
-    }
-    case ELambda(_, body) -> collectBareRefsBlock(body, fields, into)
-    case EBlock(blk) -> collectBareRefsBlock(blk, fields, into)
-    case EUnsafe(blk) -> collectBareRefsBlock(blk, fields, into)
-    case EInterpolated(segs) -> {
-      var i = 0
-      while i < segs.count {
-        match segs[i] {
-          case ISText(_, _) -> ()
-          case ISExpr(inner) -> collectBareRefsExpr(inner, fields, into)
-        }
-        i = i + 1
-      }
-    }
-    case _ -> ()
-  }
-}
-
-func collectBareRefsEOB(eob: in ExprOrBlock, fields: in Map[String, Bool], into: in Map[String, Bool]): Unit {
-  match eob {
-    case EOBExpr(e) -> collectBareRefsExpr(e, fields, into)
-    case EOBBlock(b) -> collectBareRefsBlock(b, fields, into)
-  }
-}
-
-// Back-compat aliases for the original `collectCallRefs*` surface,
+// Back-compat alias for the original `collectCallRefs*` surface,
 // kept narrow so existing call sites read naturally.  New code
-// should call `collectMemberRefs*` directly with the receiver name.
+// should call `collectRefsBlock` directly with `RMMember(receiver = ...)`.
 func collectCallRefsBlock(blk: in Block, into: in Map[String, Bool]): Unit {
-  collectMemberRefsBlock(blk, "call", into)
+  collectRefsBlock(blk, RMMember(receiver = "call"), into)
 }
 
 /// Build the `call` ambient prelude for an aspect.  Only emits a
@@ -2921,7 +2786,7 @@ func aspectTemplateIsCMode(decl: in AspectDecl): Bool {
     case None -> false
     case Some(a) -> {
       val refs: Map[String, Bool] = newMap()
-      collectMemberRefsBlock(a.body, "args", refs)
+      collectRefsBlock(a.body, RMMember(receiver = "args"), refs)
       refs.count > 0
     }
   }
@@ -2951,7 +2816,7 @@ func aspectArgsFullyRowCovered(decl: in AspectDecl): Bool {
             i = i + 1
           }
           val refs: Map[String, Bool] = newMap()
-          collectMemberRefsBlock(a.body, "args", refs)
+          collectRefsBlock(a.body, RMMember(receiver = "args"), refs)
           var allCovered = true
           for name in mapKeys(refs) {
             if not declared.containsKey(name) {
@@ -3484,7 +3349,7 @@ func bmodeTemplateKey(fromPath: in ModulePath): String {
 /// each instance overrides.
 func computeReferencedConfigFields(aspect: in AspectDecl, body: in Block): List[ConfigField] {
   val refs: Map[String, Bool] = newMap()
-  collectMemberRefsBlock(body, "config", refs)
+  collectRefsBlock(body, RMMember(receiver = "config"), refs)
   val fieldNames: Map[String, Bool] = newMap()
   var fnI = 0
   while fnI < aspect.config.count {
@@ -3493,7 +3358,7 @@ func computeReferencedConfigFields(aspect: in AspectDecl, body: in Block): List[
     }
     fnI = fnI + 1
   }
-  collectBareRefsBlock(body, fieldNames, refs)
+  collectRefsBlock(body, RMBareFields(fields = fieldNames), refs)
   val result: List[ConfigField] = newList()
   var i = 0
   while i < aspect.config.count {
