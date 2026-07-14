@@ -15988,6 +15988,57 @@ are wired in.
 
 **Related:** D-progress-670, D-progress-672, #5711, #5712, #5735, #5756.
 
+## D-progress-675 — JVM `error[J004]` diagnostic now names its owning package, not just `line:col` (#3310)
+
+`lowerTryCatchExpr` (`lyric-compiler/jvm/codegen/05_stmts.l`) aborts JVM
+codegen under `error[J004]` when a try-catch used in expression position
+has a catch arm that yields `Unit` while the try body yields a value (the
+JVM backend cannot route an absent value through the shared result slot;
+documented type-checker gap #2042, shipped in D-progress-509). The panic
+message carried only a bare `line:col` prefix — with no source-file path
+threaded anywhere in the JVM codegen pipeline (`Span`/`Position` in
+`lyric-compiler/lyric/lexer.l` carry only offset/line/column; `SourceFile`
+in `lyric-compiler/lyric/parser/parser_ast.l` carries no path field at
+all), a multi-file build gave the user no way to tell which package's
+catch arm the failure named.
+
+- **`lyric-compiler/jvm/codegen/05_stmts.l`.** The message now splices the
+  dotted form of `ctx.pkgName` — the JVM slash-path of the package
+  currently being lowered, already threaded through every `FuncCtx` in
+  this file — in right after the `error[J004]` code and ahead of
+  `line:col`: `error[J004]: <dotted pkgName>:<line>:<col>: …`. This names
+  the same package identifier `Jvm.Bridge`'s `error[J002]` wrapper already
+  reports for a referenced-package codegen failure. The code stays at the
+  very front of the message so `Jvm.Bridge`'s
+  `b.message.startsWith("error[J0")` passthrough guard (added to avoid
+  double-wrapping under `error[J002]`, #3311) still recognises it
+  untouched.
+- **Test.** `lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l`
+  (`@test_module`, mirroring `jvm_auto_ffi_bridge_self_test.l`'s pattern
+  for `error[J005]`) drives `Jvm.Bridge.compileToJarBundled` in-process
+  against a synthetic source string and asserts on the caught `Bug`
+  message. A plain non-generic Unit-catch-arm/value-body mismatch no
+  longer reaches codegen at all — T0067 (#2355/#3262, D-progress-504)
+  already rejects it at type-check time whenever the `try` is genuinely
+  in value position, closing gap #2042 for that shape. The repro instead
+  uses a **generic** function (`wrap[T](n: Int, v: T): T`) whose try body
+  yields the still-abstract type parameter and whose catch arm yields
+  `Unit`: the type checker absorbs the mismatch (a type variable unifies
+  with anything), and only `Lyric.Mono`'s monomorphized copy for a
+  concrete call-site argument (`Int`) reaches the JVM codegen with a
+  genuine mismatch — confirming J004's abort is still real, reachable
+  code, not dead defensive logic. The positive case confirms the dotted
+  package name lands right after the code, and a negative case (matching
+  arms) confirms no false-positive. Wired into the "Compiler self-tests
+  (native lyric test)" CI step and `Makefile`'s `TEST_EMITTER_FILES`.
+- **Docs.** `docs/44-jvm-production-readiness-plan.md` m-13 updated to
+  describe the new message shape.
+
+**Related:** #3310, #3193 (original J004), #3311 (double-wrap guard),
+#2042 (type-checker gap).
+
+---
+
 ## Decisions deferred to v2 or later
 
 

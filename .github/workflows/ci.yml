@@ -765,7 +765,8 @@ jobs:
             lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
             lyric-compiler/lyric/app_host_self_test.l \
             lyric-compiler/lyric/deflate_zip_self_test.l \
-            lyric-compiler/lyric/generator/generator_self_test.l ; do
+            lyric-compiler/lyric/generator/generator_self_test.l \
+            lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l ; do
             echo "=== $t ==="
             "$lyric_bin" test "$t"
             ran="$ran $t"

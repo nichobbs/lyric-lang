@@ -1402,23 +1402,27 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
               // prefix below name the offending catch arm precisely.  Code
               // is threaded through the panic message because the codegen
               // tree returns `JvmType`, not a diagnostic-collecting Result.
-              // #3310: this message's prefix is `line:col` only, unlike the
-              // `path:line:col:` convention other compiler diagnostics use —
-              // unhelpful in a multi-file project.  Not fixed here: no
-              // source-file path is threaded anywhere in the JVM codegen
-              // pipeline to reach this point.  `Span`/`Position`
-              // (`lyric-compiler/lyric/lexer.l`) carry only offset/line/column,
-              // `SourceFile` (`lyric-compiler/lyric/parser/parser_ast.l`)
-              // carries no path, and `FuncCtx` (`01_types.l`) — threaded
-              // through every call in this file — has no path field either
-              // (adding one means touching all ~10 `FuncCtx`/`makeFuncCtx*`
-              // construction sites across `02_exprs.l`/`06_items.l`, per the
-              // record's own "no defaulted fields" discipline, plus the
-              // driver that knows the path in the first place). That is a
-              // real plumbing item, not a one-line fix; tracked in #3310.
+              // #3310: the message used to carry only a `line:col` prefix,
+              // with no way to name which package the offending catch arm
+              // lives in — unhelpful once dozens of files are bundled into
+              // one build.  No raw source-file path is threaded anywhere in
+              // the JVM codegen pipeline (`Span`/`Position` in
+              // `lyric-compiler/lyric/lexer.l` carry only offset/line/column
+              // and `SourceFile` in `lyric-compiler/lyric/parser/parser_ast.l`
+              // carries no path field at all), but `ctx.pkgName` — the JVM
+              // slash-path of the package currently being lowered, threaded
+              // through every `FuncCtx` in this file — names the same
+              // package `Jvm.Bridge`'s `error[J002]` wrapper already
+              // reports for a referenced-package codegen failure, so it is
+              // spliced in right after the code, before `line:col`, keeping
+              // the message `error[J004]`-prefixed so `Jvm.Bridge`'s
+              // `b.message.startsWith("error[J0")` passthrough guard (which
+              // exists precisely to avoid re-wrapping this message under
+              // `error[J002]`, #3311) still recognises it untouched.
               val pos = c.span.startPos
+              val dottedPkgName = ctx.pkgName.replace("/", ".")
               panic(
-                "error[J004]: " + pos.line.toString() + ":" + pos.column.toString() +
+                "error[J004]: " + dottedPkgName + ":" + pos.line.toString() + ":" + pos.column.toString() +
                   ": try-catch used as an expression, but this catch arm yields Unit while the " +
                   "try body yields a value; the JVM backend cannot route an absent value through " +
                   "the result slot. Give the catch arm a trailing value of the try body's type, or " +
