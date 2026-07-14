@@ -5071,10 +5071,6 @@ func tryQualifiedEnumOrdinalMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in
       if segs.count == 0 {
         return -1
       }
-      val enumTy = segs[segs.count - 1]
-      if not cctx.enumTypeNames.containsKey(enumTy) {
-        return -1
-      }
       // A receiver whose first segment names a local is a value member-access
       // chain (`x.Color.Red`, or a bare `Color.Red` shadowed by a local
       // `Color`), not a package-qualified enum reference — even if a middle
@@ -5083,7 +5079,27 @@ func tryQualifiedEnumOrdinalMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in
       if fctx.slots.containsKey(segs[0]) {
         return -1
       }
-      match mapGet(cctx.enumCaseOrdinals, enumTy + "." + memberName) {
+      val enumTy = segs[segs.count - 1]
+      if cctx.enumTypeNames.containsKey(enumTy) {
+        match mapGet(cctx.enumCaseOrdinals, enumTy + "." + memberName) {
+          case Some(ord) -> return ord
+          case None -> {
+          }
+        }
+      }
+      // Package-qualified case reference (`Std.Http.GET`): Lyric enum cases
+      // are conventionally referenced through the declaring PACKAGE, not an
+      // explicit `<EnumType>.` segment (`registerEnumDeclMsil` keys the
+      // ordinal as `pkgName + "." + case`, e.g. "Std.Http.GET" for
+      // `pub enum HttpMethod { case GET ... }` in package `Std.Http`).  The
+      // check above only matches when some segment literally names the enum
+      // TYPE; without this fallback, a package-qualified case reference whose
+      // trailing package segment happens to collide with an unrelated
+      // union's case name elsewhere in the bundle (e.g. `Std.Http` colliding
+      // with `Std.Rest.RestError`'s `Http` case) falls through to the
+      // `EMember` arm's union-case-construction heuristic and mis-resolves,
+      // emitting garbage IL (#5737).
+      match mapGet(cctx.enumCaseOrdinals, joinSegsMsil(segs, ".") + "." + memberName) {
         case Some(ord) -> ord
         case None -> -1
       }

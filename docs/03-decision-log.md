@@ -15988,6 +15988,8 @@ are wired in.
 
 **Related:** D-progress-670, D-progress-672, #5711, #5712, #5735, #5756.
 
+---
+
 ## D-progress-675 — JVM `error[J004]` diagnostic now names its owning package, not just `line:col` (#3310)
 
 `lowerTryCatchExpr` (`lyric-compiler/jvm/codegen/05_stmts.l`) aborts JVM
@@ -16175,6 +16177,89 @@ alias in one of its fixtures) re-verified unaffected: 33/33 pass.
 **Related:** #5374.
 
 ---
+
+## D-progress-680 — Fix `#5737`: package-qualified restored enum-case reference mis-resolves as an unrelated union case, emitting invalid IL
+
+`Std.Http.HttpClient.send` (issue #5737's original title) turned out to be
+a red herring — the crash reproduces with zero async/interface machinery
+involved. The minimal repro is a fully synchronous, non-async function
+that merely evaluates `Std.Http.GET` (a bare package-qualified enum-case
+reference), or passes it to `Std.Http.request(Std.Http.GET, url)`. Both
+crash with `System.InvalidProgramException` at run time, with no `await`
+in sight.
+
+### Root cause
+
+`Std.Http.GET` parses as `EMember(EMember(EPath(["Std"]), "Http"), "GET")`
+(a 3-segment package-qualified path is nested `EMember`s over an `EPath`,
+not a flat multi-segment `EPath`). `tryQualifiedEnumOrdinalMsil`
+(`lyric-compiler/msil/codegen.l`) is the short-circuit meant to lower
+exactly this shape to `ldc.i4 <ordinal>` — but it only recognised the
+*type-qualified* form (`HttpMethod.GET`, where the flattened receiver's
+**last segment literally names a registered enum type**). Lyric enum
+cases are conventionally referenced through their **declaring package**
+instead (`Std.Http.GET`, no `HttpMethod.` segment at all), and for that
+form the receiver's last segment is `"Http"` — not a registered enum type
+name — so the short-circuit returned "not an enum reference" and control
+fell through to `lowerExprMsil`'s `EMember` arm.
+
+That arm's own fallback recurses into evaluating the receiver
+(`EMember(EPath(["Std"]), "Http")`) as an ordinary value. For *that* inner
+call, the receiver **is** a single-segment `EPath` (`["Std"]`), so a
+different heuristic fires: "does `unionCaseCtorByName[memberName]` have a
+single unambiguous candidate?" (added to unblock `RegexOptions.None`-style
+extern-enum access without a real qualifier match). `memberName` here is
+`"Http"` — and `Std.Rest.RestError` independently declares an unrelated
+union case `case Http(error: HttpError)`. With only one registered
+candidate, the qualifier ("Std") is never actually checked against it, so
+the heuristic mis-fires and emits a `newobj RestError_Http::.ctor(HttpError)`
+against whatever happened to be on the stack — followed by the outer
+`EMember` arm's generic "field not found" fallback (`pop` and claim
+`MObject` with nothing pushed back), producing a genuine stack-shape
+violation the JIT rejects at `MoveNext`/method entry as
+`InvalidProgramException`. None of this is specific to `Std.Http` or
+`Std.Rest` — any package whose name's trailing component collides with an
+unrelated union's case name anywhere in the same compiled closure would
+trigger it, and the collision predates this issue (`Std.Rest`'s `Http`
+case has presumably always coexisted with `Std.Http`'s `GET`/`POST`/etc.
+cases; it simply had never been exercised by a package-qualified access
+in one compilation unit before).
+
+Verified via `ilspycmd`-disassembling the crashing repro's IL directly
+(the fastest way to actually see the malformed bytecode instead of
+guessing from source): the `newobj Std.Rest.RestError_Http::.ctor` +
+`pop` + `unbox.any System.Int32` sequence in the crash was the exact
+tell, once cross-referenced against `Std.Rest.RestError`'s `Http` case.
+
+### Fix
+
+Extended `tryQualifiedEnumOrdinalMsil` with a second check: when the
+type-qualified form doesn't match, try the flattened receiver-plus-member
+path against `cctx.enumCaseOrdinals` using the **package-qualified** key
+format `registerEnumDeclMsil` already populates (`pkgName + "." + case`,
+e.g. `"Std.Http.GET"`) — reusing the existing local-shadowing guard
+(`fctx.slots.containsKey(segs[0])`) so a real value receiver still falls
+through to the normal `EMember` arm. No changes to registration
+(`registerEnumDeclMsil`/`registerStdlibTypeItemRefs` already seed both key
+forms correctly for both in-bundle and restored/stdlib enums) — the gap
+was purely in the qualified-value *lookup* short-circuit missing the
+package-qualified form.
+
+### Verification
+
+- The three original repro shapes (bare `Std.Http.GET` reference, a
+  synchronous `request(GET, url)` build, and the full async
+  `await client.send(...)` scenario from the issue) all now run cleanly.
+- Added a dedicated regression case to `enum_msil_self_test.l` exercising
+  the exact `Std.Http.GET` / `Std.Rest.RestError.Http` collision.
+- `lyric-stdlib/tests/http_tests.l`, `http_async_tests.l`, and
+  `lyric-stdlib/tests/rest_tests.l` (the real-world code paths that
+  exercise both colliding symbols together) all still pass.
+- Full `make lyric` rebuild plus the "Compiler self-tests" CI step's file
+  list (lexer/parser/typechecker/mono/enum/async-SM/etc., 40+ files) run
+  clean — no regressions from broadening the short-circuit.
+
+**Related:** #5737.
 
 ## Decisions deferred to v2 or later
 
