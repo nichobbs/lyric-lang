@@ -251,6 +251,7 @@ pub record CodegenCtx {
   pbFieldTypes: Map[String, MsilType]
   pbMethodRetTypes: Map[String, MsilType]
   pbFuncRetTypes: Map[String, MsilType]
+  pbGenerics: List[String]
   funcRetTypes: Map[String, MsilType]  // funcName → MsilType of declared return
   // funcName → declared parameter MsilTypes (same arity-qualified + bare keys
   // as funcTokens).  Used to thread a call argument's expected type into
@@ -314,6 +315,7 @@ pub record CodegenCtx {
   // each captured name to `__caps[i]` (unboxed).  Captured values are bound into
   // the array at the capture site and the array is the delegate's (closed) target.
   lambdaCaptureNames: Map[String, List[String]]
+  lambdaGenerics: Map[String, List[String]]
   lambdaCaptureTypes: Map[String, List[MsilType]]
   // Subset of lambdaCaptureNames[name] that are by-reference cells (a hoisted
   // enclosing `var`): the `object[] __caps` slot holds the `List[object]` cell
@@ -1823,6 +1825,7 @@ pub func newCodegenCtx(
     pbFieldTypes = newMap(),
     pbMethodRetTypes = newMap(),
     pbFuncRetTypes = newMap(),
+    pbGenerics = newList(),
     funcRetTypes = newMap(),
     funcParamTypes = newMap(),
     funcParamModes = newMap(),
@@ -1836,6 +1839,7 @@ pub func newCodegenCtx(
     lambdaExternDelegateParamTypes = newMap(),
     lambdaExternDelegateRetType = newMap(),
     lambdaCaptureNames = newMap(),
+    lambdaGenerics = newMap(),
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
     lambdaClosureClasses = newMap(),
@@ -5335,6 +5339,9 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
     case TNever -> MVoid
     case TRef(path) -> {
       val seg = lastSegmentMsil(path)
+      if nameListContains(cctx.pbGenerics, seg) {
+        return MObject
+      }
       if seg == "Int" {
         MInt
       } else if seg == "Long" {
@@ -7892,6 +7899,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // silent cross-package delegate corruption (#5363).  Mirrors the same
       // fix already applied to `lambdaExternDelegateParamTypes` for #5309.
       val lambdaKey = fctx.pkgName + "." + lname
+      cctx.lambdaGenerics.add(lambdaKey, fctx.generics)
       // Record the capture set so lowerFuncMsil's `__lambda_*` path prepends the
       // `object[] __caps` parameter and resolves captured reads (#1479).
       if caps.count > 0 {
@@ -18894,6 +18902,14 @@ func collectSpawnBindingsBlockMsil(
 }
 
 func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: in FunctionDecl): List[MsilType] {
+  cctx.pbGenerics.clear()
+  val fnGenerics = genericNamesOf(decl.generics)
+  var fgi = 0
+  while fgi < fnGenerics.count {
+    cctx.pbGenerics.add(fnGenerics[fgi])
+    fgi = fgi + 1
+  }
+
   val result: List[MsilType] = newList()
   val spawnNms: List[String] = newList()
   val spawnTys: List[MsilType] = newList()
@@ -18928,6 +18944,7 @@ func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: 
     }
     case Some(body) -> match body { case FBBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, result, spawnNms, spawnTys, localNms, localTys); case FBExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, result, spawnNms, spawnTys, localNms, localTys) }
   }
+  cctx.pbGenerics.clear()
   result
 }
 
@@ -21442,7 +21459,14 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // bare-`T` parameter, return, and local must use the erased List-backed
   // representation (see typeExprToMsilGenBody / typeExprToMsilGenSig) instead of
   // a bogus `MClass(pkg + ".T")` that names no real CLR type.
-  val fnGenerics = genericNamesOf(decl.generics)
+  val fnGenerics = if startsWith(decl.name, "__lambda_") {
+    match mapGet(cctx.lambdaGenerics, pkgName + "." + decl.name) {
+      case Some(g) -> g
+      case None -> newList()
+    }
+  } else {
+    genericNamesOf(decl.generics)
+  }
   val retTy = if startsWith(decl.name, "__lambda_") {
     // Uniform Func ABI (#1877): synthetic lambdas return `object` (a boxed
     // value, or `null` for a void body — coerced in the return path below).
@@ -25510,9 +25534,9 @@ func isClrDateTimeMsil(t: in MsilType): Bool {
 
 // Resolve a CLR FQN to its owning assembly's simple name via the metadata
 // type-index (built once over the reference pack and cached on `cctx`).
-// Falls back to "Lyric.Emitter" for Lyric host types (F# shims that are
-// compiled into Lyric.Emitter.dll and never appear in the reference pack),
-// and to "System.Runtime" for any remaining System.* types (core types that
+// Falls back to "Lyric.Emitter" for Lyric host types compiled into Lyric.Emitter.dll
+// (which never appear in the reference pack), to "Lyric.Stdlib" for Std.* standard library
+// types, and to "System.Runtime" for any remaining System.* types (core types that
 // are type-forwarded from System.Private.CoreLib via the System.Runtime
 // facade).  The call to ensureMetadataIndex is a no-op after the first use.
 func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
