@@ -500,6 +500,46 @@ test "buildOneNative: a manifest with [maven] entries near a single file compile
   assertTrue(File.fileExists(outPath), "single-file JVM build produces the output JAR")
 }
 
+// ─── #2762: JVM builds must not emit a .runtimeconfig.json ──────────────────
+// `.runtimeconfig.json` is a .NET-only artifact `dotnet exec` reads to pick a
+// framework version; a JVM build produces a self-contained runnable JAR run
+// directly via `java -jar`, so emitting one there is stray .NET tooling
+// cruft left behind by shared build-pipeline code (`cli_build.l`'s target
+// match at the `writeRuntimeConfig` call site).  Builds the identical source
+// into two SEPARATE fresh directories (one per target) so the JVM directory's
+// absence check can never be satisfied by a runtimeconfig.json left behind by
+// a different build.
+test "buildOneNative: --target jvm does not emit a .runtimeconfig.json (contrasted with --target dotnet)" {
+  val dotnetDir = freshTempDir("runtimeconfig-dotnet")
+  defer {
+    cleanup(dotnetDir)
+  }
+  val dotnetSrcPath = Path.join(dotnetDir, "prog.l")
+  writeFileOrPanic(dotnetSrcPath, "package RuntimeConfigDotnetFixture\n\nfunc main(): Unit {\n  println(1)\n}\n")
+  val dotnetOutPath = Path.join(dotnetDir, "prog.dll")
+  val dotnetExit = Cli.buildOneNative(dotnetSrcPath, dotnetOutPath, Emitter.Dotnet, None, "", "")
+  assertEqualInt(dotnetExit, 0, "dotnet build of the fixture compiles cleanly")
+  assertTrue(
+    File.fileExists(Path.join(dotnetDir, "prog.runtimeconfig.json")),
+    "positive control: a --target dotnet build DOES emit prog.runtimeconfig.json"
+  )
+
+  val jvmDir = freshTempDir("runtimeconfig-jvm")
+  defer {
+    cleanup(jvmDir)
+  }
+  val jvmSrcPath = Path.join(jvmDir, "prog.l")
+  writeFileOrPanic(jvmSrcPath, "package RuntimeConfigJvmFixture\n\nfunc main(): Unit {\n  println(1)\n}\n")
+  val jvmOutPath = Path.join(jvmDir, "prog.jar")
+  val jvmExit = Cli.buildOneNative(jvmSrcPath, jvmOutPath, Emitter.Jvm, None, "", "")
+  assertEqualInt(jvmExit, 0, "jvm build of the fixture compiles cleanly")
+  assertTrue(File.fileExists(jvmOutPath), "jvm build produces the output JAR")
+  assertTrue(
+    not File.fileExists(Path.join(jvmDir, "prog.runtimeconfig.json")),
+    "a --target jvm build must NOT emit a .runtimeconfig.json beside the JAR"
+  )
+}
+
 // #5353: `hasContribution`'s `activeFeatures.count > 0 or declaredFeatures.count
 // > 0` term routes a single-file build through the synthetic project path even
 // when a manifest declares nothing else — no `[dependencies]`, no `[maven]`, no

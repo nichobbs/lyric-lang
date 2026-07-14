@@ -32,6 +32,10 @@
 //!   13. Whole-valued Double stringification matches .NET (#4688, docs/44
 //!       m-21: Java's Double.toString() always renders a fractional digit
 //!       where .NET's default ToString() omits it for whole values).
+//!   14. `emitArrayLoad`'s typed-dispatch (#3541 follow-up): every reachable
+//!       hoisted-holder-cell element type (Float/Long/Int/Byte/Double/Bool/
+//!       Char, plus the default JRef branch via String) gets a real
+//!       regression test; `JShort` has no reachable Lyric surface type.
 @test_module
 package Lyric.SilentMiscompileGuardJvmSelfTest
 
@@ -314,16 +318,39 @@ test "compound assignment on hoisted (captured) vars of each shape" {
   var hl: Long = 10i64
   var hi = 3
   var hb: Byte = 200.toByte()
-  val bump = { -> hf += 0.5f32; hs += "y"; hl += 2i64; hi += 4; hb *= 2.toByte() }
+  var hd: Double = 1.0
+  val bump = { -> hf += 0.5f32; hs += "y"; hl += 2i64; hi += 4; hb *= 2.toByte(); hd += 0.5 }
   bump()
   assertTrue(hf == 1.5f32, "hoisted Float +=")
   assertEqual(hs, "xy", "hoisted String +=")
   assertEqualLong(hl, 12i64, "hoisted Long +=")
   assertEqualInt(hi, 7, "hoisted Int +=")
   assertEqualInt(hb.toInt(), 144, "hoisted Byte *= wraps unsigned")
+  assertTrue(hd == 1.5, "hoisted Double +=")
   bump()
   assertTrue(hf == 2.0f32, "hoisted Float += (second call)")
   assertEqual(hs, "xyy", "hoisted String += (second call)")
+  assertTrue(hd == 2.0, "hoisted Double += (second call)")
+}
+
+// `emitArrayLoad`'s (`lyric-compiler/jvm/codegen/05_stmts.l`) typed-dispatch
+// covers every JVM array-load opcode a hoisted holder cell can carry
+// (#3541 follow-up): the compound-assignment cases above already exercise
+// JFloat/JLong/JInt/JByte/JDouble (plus the default JRef branch via String);
+// this case rounds out JBoolean and JChar, which a hoisted var reaches on
+// every READ (`Jvm.Codegen`'s `EPath` hoisted-cell arm), not just compound
+// writes.  `JShort` is the one variant with no reachable test: no Lyric
+// surface type erases to it (`typeExprToJvm` never produces `JShort`), so it
+// is permanently dead code from any `.l` program, not a J4-blocked gap.
+test "hoisted Bool and Char vars read/write correctly through closures" {
+  var hFlag = true
+  var hChar = 'a'
+  val flip = { -> hFlag = not hFlag; hChar = 'b' }
+  flip()
+  assertFalse(hFlag, "hoisted Bool flipped to false")
+  assertTrue(hChar == 'b', "hoisted Char written to 'b'")
+  flip()
+  assertTrue(hFlag, "hoisted Bool flipped back to true")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

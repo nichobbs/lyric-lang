@@ -443,6 +443,15 @@ pub record FuncCtx {
   // lambdas append to the same list) and overwrites it with the finished
   // closure.
   closureAcc: List[LClosure]
+  // Lazy-emission flag for the synthesised `__lyricCount(Object)I` helper
+  // (#4803): empty until the erased-receiver `.count`/`.length` dispatch path
+  // (`02_exprs.l`) actually emits a call to it, at which point a marker is
+  // appended.  `codegenPackageWithSigsSeeded` only adds the helper method to
+  // the package's functions class when this is non-empty, avoiding ~40 bytes
+  // of dead code per package class that never calls `.count`/`.length` on an
+  // erased receiver.  The same list object is threaded through every `FuncCtx`
+  // of the package, mirroring `closureAcc`.
+  usesLyricCount: List[Bool]
   // `out`/`inout` parameter holder bindings (#1763), keyed by the parameter's
   // *value* slot (the slot `ctx.slots` maps the parameter name to after the
   // entry-prologue unwrap).  An assignment to a value slot present in

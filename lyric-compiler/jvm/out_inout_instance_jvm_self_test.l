@@ -14,6 +14,12 @@
 //! calls inside an impl body route through `lowerVirtualCallWithHolders` when the
 //! callee has holder params.
 //!
+//! Also covers the generic-record erasure path (#3606, follow-up to #1763):
+//! `Box[T].swap` has an `out`/`inout` parameter of the record's own type
+//! variable `T`, which `setupInstanceParamSlotsAndHolders` must erase to
+//! `Object` via `typeExprToJvmErasedExtern` so the holder array matches the
+//! erased method descriptor.
+//!
 //! Run via the native test runner on the JVM target:
 //!
 //!   lyric test --target jvm lyric-compiler/jvm/out_inout_instance_jvm_self_test.l
@@ -96,6 +102,23 @@ record Vec2 {
   }
 }
 
+// ── generic record method with out/inout T-typed params (#3606) ──────────────
+// `setupInstanceParamSlotsAndHolders` erases a type-variable-typed out/inout
+// parameter to `Object` (`typeExprToJvmErasedExtern`, keyed off the record's
+// `typeParams`) so the holder array element type matches the erased method
+// descriptor `lowerRecordMethod` registers.  Vec2 above is non-generic and
+// never exercises this path.  `swap` takes both an `inout T` (read the
+// incoming holder into a value slot, then write back) and an `out T`
+// (write-only) so a wrong erasure surfaces as a `NoSuchMethodError` at
+// runtime rather than a silently-passing test.
+record Box[T] {
+  value: T
+  func swap(dst: inout T, prior: out T): Unit {
+    prior = dst
+    dst = value
+  }
+}
+
 // ── protected-type entry case ─────────────────────────────────────────────────
 protected type Accumulator {
   var total: Int
@@ -168,4 +191,22 @@ test "protected-type entry with out param drains value to caller" {
   a.drain(dst)
   assertEqualInt(dst, 12, "drain should write total to out param")
   assertEqualInt(a.getTotal(), 0, "drain should reset total to 0")
+}
+
+test "generic record out/inout params erase T to Object correctly (Int, #3606)" {
+  val b = Box(value = 42)
+  var dst: Int = 100
+  var prior: Int = 0
+  b.swap(dst, prior)
+  assertEqualInt(prior, 100, "swap should read the incoming inout value into prior")
+  assertEqualInt(dst, 42, "swap should write Box[Int].value into dst")
+}
+
+test "generic record out/inout params erase T to Object correctly (String, #3606)" {
+  val b = Box(value = "new")
+  var dst: String = "orig"
+  var prior: String = ""
+  b.swap(dst, prior)
+  assertEqual(prior, "orig", "swap should read the incoming inout value into prior")
+  assertEqual(dst, "new", "swap should write Box[String].value into dst")
 }

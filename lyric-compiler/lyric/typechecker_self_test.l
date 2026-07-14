@@ -1099,6 +1099,26 @@ test "visibility private func rejected" {
   assertTrue(hasDiagCode(cr, "T0097"), "package-private imported func referenced cross-package: T0097")
 }
 
+// #5374: `symbolToType`'s `DKTypeAlias` arm followed an alias to its RHS
+// without ever calling `checkImportedVisibility` on the alias symbol itself
+// (only the eventually-resolved concrete type got the check, via
+// `concreteAliasTarget`/`resolveAliasPath`) — so a package-private `alias`
+// was silently resolvable cross-package with no T0097, unlike every other
+// item kind.
+test "visibility pub type alias allowed" {
+  val imp = importedItemsOf("package Lib\npub alias Handler = (Int) -> Int\n")
+  val pr = parse("package App\nfunc f(h: in Handler): Int { 0 }\n")
+  val cr = checkWithImports(pr.file, imp)
+  assertTrue(not hasDiagCode(cr, "T0097"), "pub imported type alias: no T0097")
+}
+
+test "visibility private type alias rejected" {
+  val imp = importedItemsOf("package Lib\nalias Handler = (Int) -> Int\n")
+  val pr = parse("package App\nfunc f(h: in Handler): Int { 0 }\n")
+  val cr = checkWithImports(pr.file, imp)
+  assertTrue(hasDiagCode(cr, "T0097"), "package-private imported type alias referenced cross-package: T0097")
+}
+
 test "visibility extern type allowed" {
   // Extern types are FFI-boundary bindings (no `pub`), but are referenced
   // directly across packages (e.g. `List`/`Map`).  They must not be flagged.

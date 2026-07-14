@@ -285,6 +285,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/inbundle_generics_self_test.l \
 	lyric-compiler/lyric/init_self_test.l \
 	lyric-compiler/lyric/jvm_auto_ffi_bridge_self_test.l \
+	lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l \
 	lyric-compiler/lyric/lexer_self_test.l \
 	lyric-compiler/lyric/list_value_compare_self_test.l \
 	lyric-compiler/lyric/llvm_ir_self_test.l \

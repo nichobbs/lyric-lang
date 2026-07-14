@@ -100,6 +100,65 @@ test "inout Int read-modify-write propagates" {
   assertEqualInt(pos, 115, "inout accumulates across calls")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Compound assignment (#3321): `05_stmts.l` routes `+=`/`-=`/`*=`/`/=`/`%=`
+// through `emitStoreLocalWriteThrough` exactly like plain `=`, but until now
+// no test exercised that path for an `out`/`inout` holder-backed parameter —
+// only plain `pos = pos + by`-style simple assignment was covered above.
+// One function per operator, each read-modify-writing an `inout Int` param.
+// ─────────────────────────────────────────────────────────────────────────────
+func advancePlusEq(by: in Int, pos: inout Int): Unit {
+  pos += by
+}
+
+func advanceMinusEq(by: in Int, pos: inout Int): Unit {
+  pos -= by
+}
+
+func advanceStarEq(factor: in Int, pos: inout Int): Unit {
+  pos *= factor
+}
+
+func advanceSlashEq(divisor: in Int, pos: inout Int): Unit {
+  pos /= divisor
+}
+
+func advancePercentEq(divisor: in Int, pos: inout Int): Unit {
+  pos %= divisor
+}
+
+test "inout Int += (compound-assignment write-through)" {
+  var pos: Int = 10
+  advancePlusEq(5, pos)
+  assertEqualInt(pos, 15, "+= must read 10 then write 15 through the inout holder")
+  advancePlusEq(100, pos)
+  assertEqualInt(pos, 115, "+= accumulates across calls")
+}
+
+test "inout Int -= (compound-assignment write-through)" {
+  var pos: Int = 20
+  advanceMinusEq(5, pos)
+  assertEqualInt(pos, 15, "-= must read 20 then write 15 through the inout holder")
+}
+
+test "inout Int *= (compound-assignment write-through)" {
+  var pos: Int = 6
+  advanceStarEq(7, pos)
+  assertEqualInt(pos, 42, "*= must read 6 then write 42 through the inout holder")
+}
+
+test "inout Int /= (compound-assignment write-through)" {
+  var pos: Int = 84
+  advanceSlashEq(2, pos)
+  assertEqualInt(pos, 42, "/= must read 84 then write 42 through the inout holder")
+}
+
+test "inout Int %= (compound-assignment write-through)" {
+  var pos: Int = 45
+  advancePercentEq(43, pos)
+  assertEqualInt(pos, 2, "%= must read 45 then write 2 through the inout holder")
+}
+
 func appendBang(s: inout String): Unit {
   s = s + "!"
 }
@@ -160,6 +219,16 @@ test "inout argument that is a record field reads and writes the field" {
   val c = Counter(hits = 40, label = "x")
   advance(2, c.hits)
   assertEqualInt(c.hits, 42, "inout RMW through obj.field must reach the record")
+}
+
+// #3321: a record field passed as an inout argument, compound-assigned
+// (rather than simple-assigned like the test just above) inside the callee —
+// exercises `emitStoreLocalWriteThrough`'s field-argument putfield write-back
+// path for the `+=` compound-assignment branch specifically.
+test "inout argument that is a record field, compound-assigned with +=" {
+  val c = Counter(hits = 40, label = "x")
+  advancePlusEq(2, c.hits)
+  assertEqualInt(c.hits, 42, "field += RMW must reach the record through the holder")
 }
 
 test "inout String field argument" {

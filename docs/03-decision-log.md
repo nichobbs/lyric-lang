@@ -15988,6 +15988,194 @@ are wired in.
 
 **Related:** D-progress-670, D-progress-672, #5711, #5712, #5735, #5756.
 
+## D-progress-675 — JVM `error[J004]` diagnostic now names its owning package, not just `line:col` (#3310)
+
+`lowerTryCatchExpr` (`lyric-compiler/jvm/codegen/05_stmts.l`) aborts JVM
+codegen under `error[J004]` when a try-catch used in expression position
+has a catch arm that yields `Unit` while the try body yields a value (the
+JVM backend cannot route an absent value through the shared result slot;
+documented type-checker gap #2042, shipped in D-progress-509). The panic
+message carried only a bare `line:col` prefix — with no source-file path
+threaded anywhere in the JVM codegen pipeline (`Span`/`Position` in
+`lyric-compiler/lyric/lexer.l` carry only offset/line/column; `SourceFile`
+in `lyric-compiler/lyric/parser/parser_ast.l` carries no path field at
+all), a multi-file build gave the user no way to tell which package's
+catch arm the failure named.
+
+- **`lyric-compiler/jvm/codegen/05_stmts.l`.** The message now splices the
+  dotted form of `ctx.pkgName` — the JVM slash-path of the package
+  currently being lowered, already threaded through every `FuncCtx` in
+  this file — in right after the `error[J004]` code and ahead of
+  `line:col`: `error[J004]: <dotted pkgName>:<line>:<col>: …`. This names
+  the same package identifier `Jvm.Bridge`'s `error[J002]` wrapper already
+  reports for a referenced-package codegen failure. The code stays at the
+  very front of the message so `Jvm.Bridge`'s
+  `b.message.startsWith("error[J0")` passthrough guard (added to avoid
+  double-wrapping under `error[J002]`, #3311) still recognises it
+  untouched.
+- **Test.** `lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l`
+  (`@test_module`, mirroring `jvm_auto_ffi_bridge_self_test.l`'s pattern
+  for `error[J005]`) drives `Jvm.Bridge.compileToJarBundled` in-process
+  against a synthetic source string and asserts on the caught `Bug`
+  message. A plain non-generic Unit-catch-arm/value-body mismatch no
+  longer reaches codegen at all — T0067 (#2355/#3262, D-progress-504)
+  already rejects it at type-check time whenever the `try` is genuinely
+  in value position, closing gap #2042 for that shape. The repro instead
+  uses a **generic** function (`wrap[T](n: Int, v: T): T`) whose try body
+  yields the still-abstract type parameter and whose catch arm yields
+  `Unit`: the type checker absorbs the mismatch (a type variable unifies
+  with anything), and only `Lyric.Mono`'s monomorphized copy for a
+  concrete call-site argument (`Int`) reaches the JVM codegen with a
+  genuine mismatch — confirming J004's abort is still real, reachable
+  code, not dead defensive logic. The positive case confirms the dotted
+  package name lands right after the code, and a negative case (matching
+  arms) confirms no false-positive. Wired into the "Compiler self-tests
+  (native lyric test)" CI step and `Makefile`'s `TEST_EMITTER_FILES`.
+- **Docs.** `docs/44-jvm-production-readiness-plan.md` m-13 updated to
+  describe the new message shape.
+
+**Related:** #3310, #3193 (original J004), #3311 (double-wrap guard),
+#2042 (type-checker gap).
+
+---
+
+## D-progress-676 — JVM interface default-method dispatch: `IMFunc` static-vs-instance codegen, and `invokevirtual`/`invokeinterface` selection on the `out`/`inout` holder-call path (#3604)
+
+Two distinct, independently-reachable bugs, both throwing
+`IncompatibleClassChangeError` at class-load time:
+
+1. **`IMFunc` (an interface member with a body — a "default method")
+   lowered via `lowerFunc`**, which emits `ACC_STATIC` and slot-0-as-first-
+   param codegen. `registerIfaceSig` marks every interface member
+   `isIface = true` regardless, so every call site always emits
+   `invokeinterface` against it — `IncompatibleClassChangeError: Expected
+   instance not static method`.
+2. **The `out`/`inout` holder-call path (`lowerVirtualCallWithHolders`,
+   `codegen/04_calls.l`) hard-coded `invokevirtual` unconditionally**,
+   never checking `sig.isIface` — so *any* interface method with a
+   holder-array parameter (abstract-then-`impl`'d too, not just a default
+   body) called through an interface-typed binding crashed the same way.
+   The pre-existing `out_inout_instance_jvm_self_test.l` never caught this
+   because it only dispatches through the concrete record type, never
+   through the interface.
+
+**Fix:** `IMFunc` now routes through `lowerImplMethod` (the same
+instance-method codegen path `impl` methods already use, `codegen/06_items.l`).
+`lowerVirtualCallWithHolders` and the newly-reachable bare-sibling-call path
+in `lowerGeneralStaticCall` branch on `sig.isIface` to select
+`invokeinterface`, mirroring the non-holder call site's existing pattern
+(`04_calls.l:3398`).
+
+**Verification:** reproduced both failure modes via a standalone repro
+before fixing (confirmed the exact `IncompatibleClassChangeError` messages),
+then added `iface_default_method_out_inout_jvm_self_test.l` (4 cases:
+default-method `inout`, default-method `out`, abstract-then-`impl`'d
+`inout` through an interface binding, and a plain no-holder default method)
+— all 4 pass against the fixed build. Zero regressions across the adjacent
+JVM interface/dispatch self-test sweep (`iface_dispatch_jvm_self_test.l`,
+`auto_ffi_jvm_self_test.l`, `bitwise_self_test.l`, `aspect_weave_self_test.l`).
+
+**Related:** #3604, docs/44 m-91, m-17b (#3687, the sibling non-default-
+method interface-dispatch fix this bug's `IMFunc` half resembles).
+
+---
+
+## D-progress-677 — JVM value-producing `try { } finally { }` silently discarded its result (#2043)
+
+A non-`Unit` function whose body is a bare tail-position
+`try { } finally { }` (no explicit `return` inside the `try`) silently
+returned the wrong value on the JVM backend: `lowerBlockExprInner` fell
+back to statement-mode lowering whenever a tail-position `STry` carried a
+`finally` block, discarding the try body's real value entirely.
+`lowerFunc` then saw `JVoid` from that fallback and pushed the return
+type's zero/default via `emitNeverTailReturn` instead of failing loudly —
+so `func f(): Int { try { 42 } finally { cleanup() } }` returned `0`, not
+`42`. Confirmed via direct repro (`java -jar` printed `0`) before writing
+the fix; this is a genuine silent miscompile, not merely an unhandled
+shape, and was found while writing the regression test #2043 originally
+asked for (a coverage-gap ticket that turned out to guard a real bug).  The
+MSIL backend already handles this shape correctly via
+`lowerTryCatchExprMsil`'s value-join.
+
+**Fix:** new `lowerTryCatchFinallyExpr` (`codegen/05_stmts.l`) combines
+`lowerTryCatchExpr`'s value-join machinery (stash the try body's — or a
+matching catch arm's — value to a result slot) with the catch-all-handler
++ duplicated-finally strategy of `lowerTryCatch`'s statement-mode finally
+lowering: on the normal-completion path the finally block runs for its
+side effects (its own trailing value discarded, mirroring `finally`'s
+Unit-typed-cleanup-block semantics elsewhere), then the stashed result
+reloads; a catch-all handler covering the try body and every catch arm
+runs the finally block on the exceptional path too, before rethrowing, so
+finally runs on every exit. Wired into `lowerBlockExprInner` in place of
+the value-discarding fallback.
+
+**Verification:** two new cases in `control_flow_jvm_self_test.l`
+(normal-completion value survival, and exceptional-path value survival
+with a bound exception arm) — both pass against the fixed build. Zero
+regressions across `try_catch_expr_jvm_self_test.l`,
+`jvm_trycatch_bridge_self_test.l`, and the broader JVM control-flow sweep.
+
+**Related:** #2043, docs/44 m-92, m-13 (#3193/#3310, the sibling
+`lowerTryCatchExpr` value-join this fix's `try`/`finally` combination
+draws from).
+
+---
+
+## D-progress-678 — JVM `__lyricCount` helper emitted unconditionally; now gated behind real usage (#4803)
+
+The synthesized erased-receiver `.count`/`.length` dispatch helper
+(`__lyricCount`) was emitted into every compiled JVM package regardless of
+whether anything in the compilation unit actually called it — dead
+bytecode inflating every JAR's method count for no benefit.
+
+**Fix:** a new `usesLyricCount: List[Bool]` flag threads through `FuncCtx`
+(mirroring the existing `closureAcc` mutable-flag pattern already used
+elsewhere in the JVM codegen context), set by the erased-receiver
+`.count`/`.length` dispatch site; `codegenPackageWithSigsSeeded` only
+emits the helper when the flag is set for that compilation.
+
+**Verification:** confirmed both directions by unzipping a compiled JAR
+and grepping its class list with `strings` — a package with no
+`.count`/`.length` usage carries zero `__lyricCount` occurrences, a
+package that uses it carries exactly one. `lazy_lyric_count_jvm_self_test.l`
+(4 cases: Map `.count`, String `.length`, an Err-sentinel path that must
+NOT touch the helper, and a positive-usage confirmation) verifies the
+gating end-to-end.
+
+**Related:** #4803, docs/44 m-93.
+
+---
+
+## D-progress-679 — Type-checker: `DKTypeAlias` resolution skipped cross-package visibility enforcement (#5374)
+
+`symbolToType`'s `DKTypeAlias` arm (`type_checker/typechecker_resolver.l`)
+resolved a type alias symbol straight to its RHS via `resolveAliasRhs`
+without ever calling `checkImportedVisibility` on the alias symbol
+itself — the one `DK*` arm in this function that skipped the check every
+sibling arm applies (records, unions, interfaces, and the general
+`symbolTypeIdOpt` fallback all call `checkImportedVisibility` before
+building the resulting `Type`). A package-private (non-`pub`) type alias
+was therefore silently resolvable when referenced from another package,
+with no `T0097` diagnostic — the one declaration kind visibility checking
+missed. Since this is a type-checker fix (both `--target dotnet` and
+`--target jvm` share the same self-hosted type checker), it is not a
+JVM-specific bug and has no docs/44 entry.
+
+**Fix:** the `DKTypeAlias` arm now calls `checkImportedVisibility(sym,
+span, diag)` before resolving the alias RHS, matching every sibling arm.
+
+**Verification:** two new cases in `typechecker_self_test.l`
+("visibility pub type alias allowed", "visibility private type alias
+rejected") — a `pub alias` referenced cross-package resolves cleanly with
+no `T0097`; a non-`pub` alias referenced cross-package is correctly
+rejected with `T0097`. Full `typechecker_self_test.l` suite: 283/283 pass.
+`msil_project_bridge_self_test.l` (which exercises a cosmetic non-`pub`
+alias in one of its fixtures) re-verified unaffected: 33/33 pass.
+
+**Related:** #5374.
+
+---
+
 ## Decisions deferred to v2 or later
 
 

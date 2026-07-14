@@ -331,6 +331,34 @@ call site) — not a tool artifact as first assumed. All four are fixed;
 D-progress-543 addendum documents the wrong initial conclusion this
 session retracted.
 
+**Update 3 (issue #5435):** `lyric-stdlib/std/_kernel/http_server.l`
+(`Std.HttpServer`, the `.NET` kernel underneath the server side of
+`http.l`) went through an auto-FFI refactor in PR #5354 with no
+dedicated regression test at the time — a gap this section didn't
+separately enumerate above because that scan cross-checked `std/*.l`
+against `tests/*.l`, and `Std.HttpServer`'s public surface lives
+directly in `_kernel/http_server.l`, not a `std/http_server.l` wrapper.
+That gap is now closed, incidentally, by
+`lyric-compiler/lyric/http_roundtrip_self_test.l` (added for #5560/
+#5561, `docs/03-decision-log.md` D-progress-649): it drives real
+GET/POST/`sendAsync` round trips against a live `Std.HttpServer`
+listener in a child process and asserts server-observed method/path/
+headers/body on every call, which exercises exactly the refactored
+auto-FFI chain PR #5354 introduced (`startListener`'s
+`l.get_Prefixes().Add(prefix)` / `l.Start()`, `nextContext`'s
+`l.GetContext()`, `requestMethod`'s `c.get_Request().get_HttpMethod()`,
+`requestPath`'s `c.get_Request().get_Url().get_AbsolutePath()`,
+`requestBody`'s `req.get_InputStream()`/`get_ContentEncoding()` read,
+and `stopListener`'s `l.Stop()`). It is wired into CI
+(`.github/workflows/ci.yml`, "Std.Http round-trip self-test" step,
+`--target dotnet`) and was re-run as part of #5435's triage
+(`lyric test --target dotnet lyric-compiler/lyric/http_roundtrip_self_test.l`
+against a freshly built stage-1 + full stdlib): 3/3 passing (GET
+round-trip, POST round-trip, `sendAsync` round-trip with a custom
+request header). No new test was added for #5435 — one already
+existed and covers the named surface; adding a second live-listener
+test would be redundant.
+
 ### 5.2 Ecosystem libraries — untested public APIs behind "requires live service" comments
 
 A recurring pattern: a public function's only test coverage is

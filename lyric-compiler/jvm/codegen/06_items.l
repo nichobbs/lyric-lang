@@ -40,6 +40,7 @@ func makeFuncCtx(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -73,6 +74,7 @@ func makeFuncCtx(
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
+    usesLyricCount = usesLyricCount,
     holderArraySlot = newMap(),
     holderElemType = newMap(),
     hoistedVarNames = newList(),
@@ -117,6 +119,7 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     moduleVals = ctx.moduleVals,
     opaqueTypes = ctx.opaqueTypes,
     closureAcc = ctx.closureAcc,
+    usesLyricCount = ctx.usesLyricCount,
     holderArraySlot = ctx.holderArraySlot,
     holderElemType = ctx.holderElemType,
     hoistedVarNames = ctx.hoistedVarNames,
@@ -145,6 +148,7 @@ func makeFuncCtxForGenerator(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -179,6 +183,7 @@ func makeFuncCtxForGenerator(
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
+    usesLyricCount = usesLyricCount,
     holderArraySlot = newMap(),
     holderElemType = newMap(),
     hoistedVarNames = newList(),
@@ -209,6 +214,7 @@ func makeFuncCtxInstance(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -243,6 +249,7 @@ func makeFuncCtxInstance(
     moduleVals = moduleVals,
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
+    usesLyricCount = usesLyricCount,
     holderArraySlot = newMap(),
     holderElemType = newMap(),
     hoistedVarNames = newList(),
@@ -838,6 +845,7 @@ pub func lowerFunc(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
 ): LFunc {
   val retTy = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
 
@@ -852,7 +860,8 @@ pub func lowerFunc(
     retTy,
     moduleVals,
     opaqueTypes,
-    closureAcc
+    closureAcc,
+    usesLyricCount
   )
 
   // Hoisting pre-pass: detect `var` bindings referenced inside lambdas.
@@ -918,13 +927,16 @@ pub func lowerFunc(
                   // for the synthesised `ireturn` (VerifyError: operand stack
                   // underflow).
                   val tailTy = lowerBlockExpr(ctx, insns, block)
-                  // `try { … } finally { … }` in tail position falls back to
-                  // statement-mode lowering inside `lowerBlockExpr` and reports
-                  // `JVoid` (value discarded by the fallback, #1683); a bare
-                  // tail-position call to a `: Never`-declared function reports
-                  // `JVoid` the same way, since `Never` erases to `JVoid` just
-                  // like `Unit` (#5378).  Either way nothing is left on the
-                  // operand stack here, so `emitNeverTailReturn` pushes
+                  // `try { … } finally { … }` in tail position now correctly
+                  // propagates the try/catch result through the finally block
+                  // via `lowerTryCatchFinallyExpr` (#2043; previously fell back
+                  // to statement-mode lowering and silently discarded the
+                  // value, returning `retTy`'s zero/default instead of the
+                  // real result — a genuine miscompile, not just an unhandled
+                  // shape).  A bare tail-position call to a `: Never`-declared
+                  // function still reports `JVoid`, since `Never` erases to
+                  // `JVoid` just like `Unit` (#5378): nothing is left on the
+                  // operand stack there, so `emitNeverTailReturn` pushes
                   // `retTy`'s zero/default value before returning instead of
                   // emitting a value-less `return` that fails class-load
                   // verification ("Method expects a return value") against
@@ -1176,6 +1188,7 @@ pub func lowerRecord(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
 ): LRecord {
   val className = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (docs/44 M-1 / Q-J001) so a `T`-typed
@@ -1241,7 +1254,8 @@ pub func lowerRecord(
                 autoFfi,
                 moduleVals,
                 opaqueTypes,
-                closureAcc
+                closureAcc,
+                usesLyricCount
               )
             )
           }
@@ -1374,6 +1388,7 @@ func lowerProtectedMethod(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
 ): LFunc {
   val retTy = match retOpt { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
   // Lambdas inside a protected-type entry/helper register their synthesised
@@ -1391,7 +1406,8 @@ func lowerProtectedMethod(
     retTy,
     moduleVals,
     opaqueTypes,
-    closureAcc
+    closureAcc,
+    usesLyricCount
   )
   val insns: List[LInsn] = newList()
   val noTps: List[String] = newList()
@@ -1440,6 +1456,7 @@ func lowerRecordMethod(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
 ): LFunc {
   // Extern/import-resolving on ret + params (#5610): the registered
   // `<class>#<method>` sig (`registerInstanceSigErased`, #5051) resolves
@@ -1462,7 +1479,8 @@ func lowerRecordMethod(
     retTy,
     moduleVals,
     opaqueTypes,
-    closureAcc
+    closureAcc,
+    usesLyricCount
   )
   val insns: List[LInsn] = newList()
   val filteredParams = stripLeadingSelfParam(fn.params)
@@ -1489,6 +1507,7 @@ func lowerImplMethod(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
 ): LFunc {
   val body = match fn.body {
     case Some(b) -> b
@@ -1510,7 +1529,8 @@ func lowerImplMethod(
     retTy,
     moduleVals,
     opaqueTypes,
-    closureAcc
+    closureAcc,
+    usesLyricCount
   )
   val insns: List[LInsn] = newList()
   val noTpsImpl: List[String] = newList()
@@ -1545,6 +1565,7 @@ func buildProtected(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
 ): LPackageItem {
   val className = pkgName + "/" + decl.name
   val fields: List[LField] = newList()
@@ -1576,7 +1597,8 @@ func buildProtected(
             autoFfi,
             moduleVals,
             opaqueTypes,
-            closureAcc
+            closureAcc,
+            usesLyricCount
           )
         )
       }
@@ -1599,7 +1621,8 @@ func buildProtected(
                 autoFfi,
                 moduleVals,
                 opaqueTypes,
-                closureAcc
+                closureAcc,
+                usesLyricCount
               )
             )
           }
@@ -1987,6 +2010,7 @@ func buildWire(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
 ): LWire {
   val className = pkgName + "/" + decl.name
   val bindings: List[LWireBinding] = newList()
@@ -2051,6 +2075,7 @@ func buildWire(
           moduleVals,
           opaqueTypes,
           closureAcc,
+          usesLyricCount,
           initInsns,
           init,
           bty
@@ -2075,6 +2100,7 @@ func buildWire(
           moduleVals,
           opaqueTypes,
           closureAcc,
+          usesLyricCount,
           initInsns,
           init,
           bty
@@ -2102,6 +2128,7 @@ func buildWire(
           moduleVals,
           opaqueTypes,
           closureAcc,
+          usesLyricCount,
           initInsns,
           provider,
           bty
@@ -2146,6 +2173,7 @@ func lowerWireBindingInit(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
   insns: in List[LInsn],
   init: in Expr,
   expectedTy: in JvmType,
@@ -2179,7 +2207,8 @@ func lowerWireBindingInit(
       expectedTy,
       moduleVals,
       opaqueTypes,
-      closureAcc
+      closureAcc,
+      usesLyricCount
     )
     // #5013: an earlier binding referenced from a *nested* expression position
     // (e.g. `contents = widget` as a named constructor argument, not the bare
@@ -2414,6 +2443,7 @@ func lowerGeneratorBody(
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
 ): List[LInsn] {
   val insns: List[LInsn] = newList()
   // #2856: thread the real `moduleVals` / `opaqueTypes` maps into the generator
@@ -2429,7 +2459,8 @@ func lowerGeneratorBody(
     autoFfi,
     moduleVals,
     opaqueTypes,
-    closureAcc
+    closureAcc,
+    usesLyricCount
   )
 
   // `out`/`inout` parameters on an async generator are not supported on the
@@ -4041,6 +4072,13 @@ pub func codegenPackageWithSigsSeeded(
   // FuncCtx so that an `ELambda` anywhere on those paths registers its synthesised
   // inner class here.  Drained into `LPClosureClass` items after the item loop.
   val closureAcc: List[LClosure] = newList()
+  // Lazy-emission flag for `__lyricCount` (#4803): non-empty iff some function
+  // in this package actually dispatches `.count`/`.length` on an erased
+  // receiver (`02_exprs.l` appends a marker at the one call site that emits
+  // `invokestatic __lyricCount`).  Threaded through every FuncCtx of the
+  // package alongside `closureAcc`; checked below to decide whether the
+  // helper method is worth emitting at all.
+  val usesLyricCount: List[Bool] = newList()
   val valInitCtx = makeFuncCtx(
     pkgName,
     funcsClass,
@@ -4052,7 +4090,8 @@ pub func codegenPackageWithSigsSeeded(
     JVoid,
     moduleVals,
     opaqueTypes,
-    closureAcc
+    closureAcc,
+    usesLyricCount
   )
   // #2853: lower every module-level `val` once, now, and overwrite `moduleVals`
   // with the real field type before any function (or the `<clinit>` itself) is
@@ -4104,7 +4143,8 @@ pub func codegenPackageWithSigsSeeded(
                   autoFfi,
                   moduleVals,
                   opaqueTypes,
-                  closureAcc
+                  closureAcc,
+                  usesLyricCount
                 )
               )
             }
@@ -4140,7 +4180,8 @@ pub func codegenPackageWithSigsSeeded(
             autoFfi,
             moduleVals,
             opaqueTypes,
-            closureAcc
+            closureAcc,
+            usesLyricCount
           )
           val genParams: List[LGenParam] = newList()
           var pi = 0
@@ -4178,7 +4219,8 @@ pub func codegenPackageWithSigsSeeded(
               autoFfi,
               moduleVals,
               opaqueTypes,
-              closureAcc
+              closureAcc,
+              usesLyricCount
             )
           )
           if isMainFunc(decl) {
@@ -4218,7 +4260,8 @@ pub func codegenPackageWithSigsSeeded(
           autoFfi,
           moduleVals,
           opaqueTypes,
-          closureAcc
+          closureAcc,
+          usesLyricCount
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -4272,7 +4315,8 @@ pub func codegenPackageWithSigsSeeded(
           autoFfi,
           moduleVals,
           opaqueTypes,
-          closureAcc
+          closureAcc,
+          usesLyricCount
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -4392,7 +4436,8 @@ pub func codegenPackageWithSigsSeeded(
             autoFfi,
             moduleVals,
             opaqueTypes,
-            closureAcc
+            closureAcc,
+            usesLyricCount
           )
         )
       }
@@ -4421,11 +4466,32 @@ pub func codegenPackageWithSigsSeeded(
               abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
             case IMFunc(fn) -> {
+              // #3604: an interface default method (a body-bearing `IMFunc`,
+              // as opposed to the abstract `IMSig` case above) must be emitted
+              // as a true non-static instance method (slot 0 = `this`, flags
+              // 0x0001) via `lowerImplMethod` — exactly as an `impl` method is
+              // — because `registerIfaceSig` registers it under
+              // `<ifClass>#<method>` with `isIface = true`, so every call site
+              // dispatches via `invokeinterface` (#3687).  `invokeinterface`
+              // requires the target to be a non-static instance method;
+              // `lowerFunc` (the static/free-function codegen path, flags
+              // 0x0009, `setupStaticParamSlotsAndHolders` with slot 0 = the
+              // first parameter) produced a static method here, so any call
+              // through the interface-typed dispatch path threw
+              // `IncompatibleClassChangeError` at class load — most visibly
+              // for `out`/`inout` params (`setupInstanceParamSlotsAndHolders`
+              // vs `setupStaticParamSlotsAndHolders` differ in slot 0
+              // semantics), but the static/instance mismatch itself is
+              // unconditional. `lowerImplMethod` also strips a leading
+              // explicit `self: in Self` receiver — the same
+              // `stripLeadingSelfParam` discipline `registerIfaceSig` already
+              // applies (#5607) — so the emitted descriptor stays in lockstep
+              // with the registered call-site descriptor.
               concreteFuncs.add(
-                lowerFunc(
+                lowerImplMethod(
+                  ifClassName,
                   fn,
                   pkgName,
-                  ifClassName,
                   funcSigs,
                   caseFields,
                   ctors,
@@ -4433,7 +4499,8 @@ pub func codegenPackageWithSigsSeeded(
                   autoFfi,
                   moduleVals,
                   opaqueTypes,
-                  closureAcc
+                  closureAcc,
+                  usesLyricCount
                 )
               )
             }
@@ -4468,7 +4535,8 @@ pub func codegenPackageWithSigsSeeded(
               autoFfi,
               moduleVals,
               opaqueTypes,
-              closureAcc
+              closureAcc,
+              usesLyricCount
             )
           )
         )
@@ -4583,56 +4651,61 @@ pub func codegenPackageWithSigsSeeded(
   // StackMapTable declares an empty stack at every branch target).  A
   // static call is branch-free at the call site; the helper's own frames
   // start from an empty stack.  Every arm returns directly, so there is
-  // no join.  Unconditionally emitted: ~40 bytes per package class.
-  val lcInsns: List[LInsn] = newList()
-  lcInsns.add(LAload(slot = 0))
-  lcInsns.add(LInstanceof(className = "java/util/Collection"))
-  lcInsns.add(LIfeq(label = "__lc_map"))
-  lcInsns.add(LAload(slot = 0))
-  lcInsns.add(LCheckcast(className = "java/util/Collection"))
-  val lcColPs: List[JvmType] = newList()
-  lcInsns.add(
-    LInvokeinterface(owner = "java/util/Collection", name = "size", params = lcColPs, ret = JInt, argCount = 1)
-  )
-  lcInsns.add(LIreturn)
-  lcInsns.add(LLabel(name = "__lc_map"))
-  lcInsns.add(LAload(slot = 0))
-  lcInsns.add(LInstanceof(className = "java/util/Map"))
-  lcInsns.add(LIfeq(label = "__lc_str"))
-  lcInsns.add(LAload(slot = 0))
-  lcInsns.add(LCheckcast(className = "java/util/Map"))
-  val lcMapPs: List[JvmType] = newList()
-  lcInsns.add(LInvokeinterface(owner = "java/util/Map", name = "size", params = lcMapPs, ret = JInt, argCount = 1))
-  lcInsns.add(LIreturn)
-  lcInsns.add(LLabel(name = "__lc_str"))
-  lcInsns.add(LAload(slot = 0))
-  lcInsns.add(LInstanceof(className = "java/lang/String"))
-  lcInsns.add(LIfeq(label = "__lc_arr"))
-  lcInsns.add(LAload(slot = 0))
-  lcInsns.add(LCheckcast(className = "java/lang/String"))
-  val lcLenPs: List[JvmType] = newList()
-  lcInsns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = lcLenPs, ret = JInt))
-  lcInsns.add(LIreturn)
-  // Last resort: a boxed slice (`Object[]`).  Anything else fails the
-  // checkcast loudly rather than yielding a wrong value.
-  lcInsns.add(LLabel(name = "__lc_arr"))
-  lcInsns.add(LAload(slot = 0))
-  lcInsns.add(LCheckcast(className = "[Ljava/lang/Object;"))
-  lcInsns.add(LArraylength)
-  lcInsns.add(LIreturn)
-  val lcParams: List[JvmType] = newList()
-  lcParams.add(JRef(className = "java/lang/Object"))
-  fns.add(
-    LFunc(
-      flags = 0x0009,
-      name = "__lyricCount",
-      params = lcParams,
-      ret = JInt,
-      insns = lcInsns,
-      maxStack = 2,
-      maxLocals = 1
+  // no join.  Lazily emitted (#4803): `usesLyricCount` is only non-empty
+  // when some function in this package actually emitted a call to it
+  // (`02_exprs.l`'s erased-receiver `.count`/`.length` dispatch), so a
+  // package that never exercises that path carries no dead ~40-byte helper.
+  if usesLyricCount.count > 0 {
+    val lcInsns: List[LInsn] = newList()
+    lcInsns.add(LAload(slot = 0))
+    lcInsns.add(LInstanceof(className = "java/util/Collection"))
+    lcInsns.add(LIfeq(label = "__lc_map"))
+    lcInsns.add(LAload(slot = 0))
+    lcInsns.add(LCheckcast(className = "java/util/Collection"))
+    val lcColPs: List[JvmType] = newList()
+    lcInsns.add(
+      LInvokeinterface(owner = "java/util/Collection", name = "size", params = lcColPs, ret = JInt, argCount = 1)
     )
-  )
+    lcInsns.add(LIreturn)
+    lcInsns.add(LLabel(name = "__lc_map"))
+    lcInsns.add(LAload(slot = 0))
+    lcInsns.add(LInstanceof(className = "java/util/Map"))
+    lcInsns.add(LIfeq(label = "__lc_str"))
+    lcInsns.add(LAload(slot = 0))
+    lcInsns.add(LCheckcast(className = "java/util/Map"))
+    val lcMapPs: List[JvmType] = newList()
+    lcInsns.add(LInvokeinterface(owner = "java/util/Map", name = "size", params = lcMapPs, ret = JInt, argCount = 1))
+    lcInsns.add(LIreturn)
+    lcInsns.add(LLabel(name = "__lc_str"))
+    lcInsns.add(LAload(slot = 0))
+    lcInsns.add(LInstanceof(className = "java/lang/String"))
+    lcInsns.add(LIfeq(label = "__lc_arr"))
+    lcInsns.add(LAload(slot = 0))
+    lcInsns.add(LCheckcast(className = "java/lang/String"))
+    val lcLenPs: List[JvmType] = newList()
+    lcInsns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = lcLenPs, ret = JInt))
+    lcInsns.add(LIreturn)
+    // Last resort: a boxed slice (`Object[]`).  Anything else fails the
+    // checkcast loudly rather than yielding a wrong value.
+    lcInsns.add(LLabel(name = "__lc_arr"))
+    lcInsns.add(LAload(slot = 0))
+    lcInsns.add(LCheckcast(className = "[Ljava/lang/Object;"))
+    lcInsns.add(LArraylength)
+    lcInsns.add(LIreturn)
+    val lcParams: List[JvmType] = newList()
+    lcParams.add(JRef(className = "java/lang/Object"))
+    fns.add(
+      LFunc(
+        flags = 0x0009,
+        name = "__lyricCount",
+        params = lcParams,
+        ret = JInt,
+        insns = lcInsns,
+        maxStack = 2,
+        maxLocals = 1
+      )
+    )
+  }
 
   // `__lyricUnwrapOr(Object, Object)Object` — Std.Core's generic
   // `unwrapOr(Option[T], T): T` as a synthesised helper.  Generic

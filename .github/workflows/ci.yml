@@ -765,7 +765,8 @@ jobs:
             lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
             lyric-compiler/lyric/app_host_self_test.l \
             lyric-compiler/lyric/deflate_zip_self_test.l \
-            lyric-compiler/lyric/generator/generator_self_test.l ; do
+            lyric-compiler/lyric/generator/generator_self_test.l \
+            lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l ; do
             echo "=== $t ==="
             "$lyric_bin" test "$t"
             ran="$ran $t"
@@ -2500,6 +2501,11 @@ jobs:
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1  # v5.4.0
         with:
           global-json-file: bootstrap/global.json
+      - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a  # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -5204,6 +5210,60 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/wire_templates_self_test.l
           echo "wire-templates self-test ran: wire_templates_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Interface default-method out/inout dispatch self-test on JVM (#3604) —
+      # pins invokeinterface-vs-invokevirtual selection for IMFunc default
+      # bodies and holder-call sites through an interface-typed binding.
+      - name: Interface default-method out/inout self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping interface default-method JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping interface default-method JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/iface_default_method_out_inout_jvm_self_test.l
+
+      # Lazy __lyricCount emission self-test on JVM (#4803) — pins that the
+      # helper is only emitted when an erased-receiver .count/.length call
+      # actually needs it.
+      - name: Lazy __lyricCount self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping lazy __lyricCount JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lazy __lyricCount JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/lazy_lyric_count_jvm_self_test.l
+
+      # Union-case-name collision self-test on JVM (#2535) — pins
+      # collectFileCtors' own-package-scoped and union-qualified collision
+      # keys via a real runtime construction/match.
+      - name: Union-case collision self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping union-case collision JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping union-case collision JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/union_case_collision_jvm_self_test.l
 
   # Numbered backend self-test corpus (docs/59 §9.5, H8) — the ~215 plain
   # `func main` regression programs (`lyric-compiler/msil/msil_self_test_m1..m84`

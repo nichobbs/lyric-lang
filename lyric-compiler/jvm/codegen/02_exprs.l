@@ -1244,14 +1244,19 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                         // `case Ok(rb)` on `Result[List[Byte], _]`): the precise
                         // class is unknown statically, so dispatch on the runtime
                         // class via the synthesised `__lyricCount(Object)I`
-                        // helper every package class carries.  The call is
-                        // branch-free HERE — the dispatch's branches live in the
-                        // helper, whose frames start from an empty stack — so
-                        // this is safe even mid-expression with values already
-                        // stacked (`i < pairs.count` in a while condition).
+                        // helper.  The call is branch-free HERE — the dispatch's
+                        // branches live in the helper, whose frames start from an
+                        // empty stack — so this is safe even mid-expression with
+                        // values already stacked (`i < pairs.count` in a while
+                        // condition).  Mark the package-shared flag (#4803) so
+                        // `codegenPackageWithSigsSeeded` knows to actually emit
+                        // the helper method — most packages never reach this
+                        // erased-receiver path and would otherwise carry ~40
+                        // bytes of dead code per class.
                         val lcPs: List[JvmType] = newList()
                         lcPs.add(JRef(className = "java/lang/Object"))
                         insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricCount", params = lcPs, ret = JInt))
+                        ctx.usesLyricCount.add(true)
                         JInt
                       } else {
                         // The RECEIVER itself used to become the "field value"
@@ -2246,7 +2251,9 @@ func lowerBlockExprInner(ctx: in FuncCtx, insns: in List[LInsn], block: in Block
   // position is `try { … } catch … ` used as an expression (e.g.
   // `return try { … } catch … `, which the parser wraps as EBlock([STry])):
   // lower it so its arms' values become the block value instead of being
-  // popped as a statement.
+  // popped as a statement.  A `finally` block (#2043) does not change this —
+  // `lowerTryCatchFinallyExpr` stashes the try/catch result across the
+  // finally's side effects instead of discarding it.
   val last = block.statements[n - 1]
   match last.kind {
     case SExpr(e) -> {
@@ -2255,12 +2262,7 @@ func lowerBlockExprInner(ctx: in FuncCtx, insns: in List[LInsn], block: in Block
     case STry(body, catches, finally_) -> {
       match finally_ {
         case None -> lowerTryCatchExpr(ctx, insns, body, catches)
-        case Some(_) -> {
-          // try/finally in value position is uncommon; fall back to statement
-          // lowering (value discarded) rather than mis-handling the finally.
-          lowerStmt(ctx, insns, last)
-          JVoid
-        }
+        case Some(fb) -> lowerTryCatchFinallyExpr(ctx, insns, body, catches, fb)
       }
     }
     case _ -> {
@@ -3158,7 +3160,8 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     JRef(className = "java/lang/Object"),
     ctx.moduleVals,
     ctx.opaqueTypes,
-    ctx.closureAcc
+    ctx.closureAcc,
+    ctx.usesLyricCount
   )
   // Propagate the enclosing scope's recorded generic instantiations into the
   // closure body so a captured var-bound `match`/`?` scrutinee still unboxes its
@@ -3519,7 +3522,8 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
     objTy,
     ctx.moduleVals,
     ctx.opaqueTypes,
-    ctx.closureAcc
+    ctx.closureAcc,
+    ctx.usesLyricCount
   )
   // Carry the enclosing scope's recorded generic instantiations so a captured
   // var-bound `match`/`?` scrutinee still unboxes its erased payload (#4945).
