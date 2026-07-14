@@ -4485,6 +4485,12 @@ func msilTypeIdentical(a: in MsilType, b: in MsilType): Bool {
         case other -> false
       }
     }
+    case MSetOf(ae) -> {
+      match b {
+        case MSetOf(be) -> msilTypeIdentical(ae, be)
+        case other -> false
+      }
+    }
     case MTuple(aelems) -> {
       match b {
         case MTuple(belems) -> msilTypeListIdentical(aelems, belems)
