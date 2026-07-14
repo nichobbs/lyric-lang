@@ -3067,44 +3067,7 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
   match stmt.kind {
     case SLocal(binding) -> Statement(kind = SLocal(binding = rewriteBinding(state, env, binding)), span = s)
 
-    case SAssign(target, op, value) -> {
-      // Refine `env` on plain reassignment (`x = ...`) of a bare local so a
-      // later generic call site sees the narrowed type instead of whatever
-      // (or nothing) the original binding inferred — otherwise a `var`
-      // declared untyped from an uninferable initializer (e.g. `None`) never
-      // gets an env entry, and a generic call using the reassigned value
-      // falls back to the imported-generic Object-default path and
-      // mis-specializes. Compound ops (`+=` etc.) don't change the value's
-      // type, so only `AssEq` refines; a failed inference leaves any
-      // existing (e.g. annotation-derived) env entry untouched rather than
-      // clobbering it.
-      match op {
-        case AssEq -> {
-          match target.kind {
-            case EPath(path) -> {
-              if path.segments.count == 1 {
-                match inferExprTE(state, env, value) {
-                  case Some(te) -> {
-                    val name = path.segments[0]
-                    if env.containsKey(name) {
-                      env.remove(name)
-                    }
-                    env.add(name, te)
-                  }
-                  case None -> ()
-                }
-              }
-            }
-            case _ -> ()
-          }
-        }
-        case _ -> ()
-      }
-      Statement(
-        kind = SAssign(target = rewriteExpr(state, env, target), op = op, value = rewriteExpr(state, env, value)),
-        span = s
-      )
-    }
+    case SAssign(target, op, value) -> Statement(kind = SAssign(target = rewriteExpr(state, env, target), op = op, value = rewriteExpr(state, env, value)), span = s)
 
     case SReturn(opt) -> {
       // Typed `var` + assignment, not a two-arm `None`/`Some` match — see the

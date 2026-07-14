@@ -15943,19 +15943,42 @@ any other named parameter), `EPath(["result"])` — an ordinary identifier
 lookup — everywhere else. `Std.Xml.findFirst` was reverted to the
 idiomatic `isNone(result)` guard it always should have been able to use.
 
-An independent, narrower correctness fix landed alongside this (found
-during the investigation, kept because it's still a real gap even though
-it wasn't the root cause here): `Lyric.Mono`'s `SAssign` rewrite didn't
-refine `env`'s tracked type on a plain reassignment (`x = expr`), so a
-`var` declared from an uninferable initializer (bare `None`, no
-annotation) could never recover a concrete type from a later assignment
-whose right-hand side *is* inferable (e.g. a call to a function with a
-known return type). Fixed by having `rewriteStmt`'s `SAssign` case
-`inferExprTE` the assigned value and update `env` accordingly (mirroring
-the existing `LBVar`/`LBLet` env-refinement pattern), only for plain `=`
-(compound ops like `+=` don't change the value's type) and only
-overwriting when inference actually succeeds (a failed inference leaves
-any existing, e.g. annotation-derived, entry untouched).
+A tempting independent fix — refining `env`'s tracked type in
+`Lyric.Mono`'s `SAssign` rewrite on a plain reassignment (`x = expr`), so
+a `var` declared from an uninferable initializer (bare `None`, no
+annotation) could recover a concrete type from a later, inferable
+assignment — was tried and **reverted** after a three-way interaction was
+found in CI, not reproducible with any one or two of this PR's changes in
+isolation: it required this `SAssign` refinement *and* the `#5711` `Set[T]`
+codegen additions together (the parser fix played no part — bisection
+confirmed the combination reproduces with `parser_*.l` reverted to `main`).
+The interaction surfaced specifically in the self-hosted-emitter-closure
+build paths (`Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`, used
+by both `scripts/stage-selfhosted-compiler.sh`'s `Lyric.Compiler.dll` bundle
+and `scripts/ilverify-selfhosted.sh`'s per-package closure emission) —
+never in a plain single-file `lyric build/test`, which is why the
+first local verification pass (stage-1 CLI + `dotnet build
+Lyric.Cli.Aot`, no `make lyric`) missed it entirely. Symptom:
+`Lyric.Manifest.assembleFeatures`'s `unwrapOr(defaults, newList())`
+specialised to an Object-erased `unwrapOr__Object` whose `Option[Object]`
+match is not exhaustive at runtime — the same failure shape as #5735,
+but in a function with no `result`-named binding at all, confirming it
+was a different bug. The exact three-way mechanism (why `SAssign`
+refinement + the new `MSetOf` codegen path corrupts an unrelated
+`Option[List[String]]` specialisation only when the whole `Lyric.Cli`
+import closure is compiled as one linked unit) was not root-caused
+further given the two other changes are independently required and
+verified correct; dropping the `SAssign` refinement removes the
+interaction entirely (confirmed: `manifest_self_test.l` 44/44,
+`ilverify-selfhosted.sh` 0 IL-validity errors across 113 DLLs, both via
+the exact `make lyric` pipeline CI uses) without touching #5711/#5712/#5735.
+None of the three target issues need this refinement. Filed as
+[#5756](https://github.com/nichobbs/lyric-lang/issues/5756) for follow-up:
+the interaction likely points at a real (if narrow) gap in how the
+project-build path's cross-package generic collection
+(`collectStdlibGenericFuncs` / `collectInBundleGenericFuncs`) composes
+with per-statement `env` refinement, worth understanding before either
+this `SAssign` refinement or a similar one is attempted again.
 
 ### CI
 
@@ -15963,7 +15986,7 @@ any existing, e.g. annotation-derived, entry untouched).
 runtime-suite loop since D-progress-670/672 pending exactly these fixes —
 are wired in.
 
-**Related:** D-progress-670, D-progress-672, #5711, #5712, #5735.
+**Related:** D-progress-670, D-progress-672, #5711, #5712, #5735, #5756.
 
 ## Decisions deferred to v2 or later
 
