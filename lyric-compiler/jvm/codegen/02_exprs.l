@@ -1244,14 +1244,19 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                         // `case Ok(rb)` on `Result[List[Byte], _]`): the precise
                         // class is unknown statically, so dispatch on the runtime
                         // class via the synthesised `__lyricCount(Object)I`
-                        // helper every package class carries.  The call is
-                        // branch-free HERE — the dispatch's branches live in the
-                        // helper, whose frames start from an empty stack — so
-                        // this is safe even mid-expression with values already
-                        // stacked (`i < pairs.count` in a while condition).
+                        // helper.  The call is branch-free HERE — the dispatch's
+                        // branches live in the helper, whose frames start from an
+                        // empty stack — so this is safe even mid-expression with
+                        // values already stacked (`i < pairs.count` in a while
+                        // condition).  Mark the package-shared flag (#4803) so
+                        // `codegenPackageWithSigsSeeded` knows to actually emit
+                        // the helper method — most packages never reach this
+                        // erased-receiver path and would otherwise carry ~40
+                        // bytes of dead code per class.
                         val lcPs: List[JvmType] = newList()
                         lcPs.add(JRef(className = "java/lang/Object"))
                         insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricCount", params = lcPs, ret = JInt))
+                        ctx.usesLyricCount.add(true)
                         JInt
                       } else {
                         // The RECEIVER itself used to become the "field value"
@@ -3155,7 +3160,8 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     JRef(className = "java/lang/Object"),
     ctx.moduleVals,
     ctx.opaqueTypes,
-    ctx.closureAcc
+    ctx.closureAcc,
+    ctx.usesLyricCount
   )
   // Propagate the enclosing scope's recorded generic instantiations into the
   // closure body so a captured var-bound `match`/`?` scrutinee still unboxes its
@@ -3516,7 +3522,8 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
     objTy,
     ctx.moduleVals,
     ctx.opaqueTypes,
-    ctx.closureAcc
+    ctx.closureAcc,
+    ctx.usesLyricCount
   )
   // Carry the enclosing scope's recorded generic instantiations so a captured
   // var-bound `match`/`?` scrutinee still unboxes its erased payload (#4945).

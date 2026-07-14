@@ -2356,12 +2356,25 @@ func holderTempSlotFor(hArgIdx: in List[Int], hTempSlot: in List[Int], argIdx: i
   panic("Jvm.Codegen: holder temp slot not found for argument index " + toString(argIdx))
 }
 
-// Emit a virtual method call whose callee has one or more `out`/`inout` parameters
-// (#1763).  Mirrors `lowerStaticCallWithHolders` but emits `invokevirtual` instead
-// of `invokestatic`.  The receiver must already be on the operand stack when this
-// is called (pushed by the caller via `lowerExpr` or `LAload(0)` for sibling calls).
-// `args` are the user-level arguments (not including `this`); `sig.params` are the
-// declared JVM param types (also not including `this`).
+// Emit a virtual (or interface) method call whose callee has one or more
+// `out`/`inout` parameters (#1763).  Mirrors `lowerStaticCallWithHolders` but
+// emits `invokevirtual`/`invokeinterface` instead of `invokestatic`.  The
+// receiver must already be on the operand stack when this is called (pushed by
+// the caller via `lowerExpr` or `LAload(0)` for sibling calls).  `args` are the
+// user-level arguments (not including `this`); `sig.params` are the declared
+// JVM param types (also not including `this`).
+//
+// `sig.isIface` selects the opcode exactly as the non-holder call path already
+// does (see the `lowerMethodCall` `sig.isIface` branch): when the receiver's
+// static type is an interface, `sig` was registered by `registerIfaceSig`
+// under `<ifaceClass>#<method>`, and `invokevirtual` against an interface
+// owner is illegal per the JVM spec — it either fails class-load verification
+// or, in the milder case, throws `IncompatibleClassChangeError` at the call
+// site (#3604).  This function used to hard-code `invokevirtual`
+// unconditionally, so ANY `out`/`inout`-parameter interface method dispatched
+// through an interface-typed binding or parameter (abstract, `impl`-overridden
+// or a default `IMFunc` body alike) crashed at runtime — the holder path is
+// reached before the non-holder path's `isIface` check ever runs.
 func lowerVirtualCallWithHolders(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -2412,7 +2425,19 @@ func lowerVirtualCallWithHolders(
     }
     ai = ai + 1
   }
-  insns.add(LInvokevirtual(owner = owner, name = methodName, params = sig.params, ret = sig.ret))
+  if sig.isIface {
+    insns.add(
+      LInvokeinterface(
+        owner = owner,
+        name = methodName,
+        params = sig.params,
+        ret = sig.ret,
+        argCount = 1 + jvmArgSlotCount(sig.params)
+      )
+    )
+  } else {
+    insns.add(LInvokevirtual(owner = owner, name = methodName, params = sig.params, ret = sig.ret))
+  }
   var ri = 0
   while ri < hArgIdx.count {
     writeBackHolderArg(ctx, insns, hTempSlot[ri], hElemTy[ri], hBackName[ri], hRecvSlot[ri], hRecvCls[ri])
@@ -2461,7 +2486,26 @@ func lowerGeneralStaticCall(
             }
             ai = ai + 1
           }
-          insns.add(LInvokevirtual(owner = selfCls, name = funcName, params = sig.params, ret = sig.ret))
+          // A bare sibling call from inside an interface default method
+          // (`lowerImplMethod` sets `selfClass = Some(ifClassName)` for an
+          // `IMFunc` body, #3604) to another interface member — abstract or
+          // default — is registered under `<ifClassName>#<method>` with
+          // `isIface = true`; `invokevirtual` against an interface owner
+          // throws `IncompatibleClassChangeError`, mirroring the holder-arg
+          // fix in `lowerVirtualCallWithHolders` just above.
+          if sig.isIface {
+            insns.add(
+              LInvokeinterface(
+                owner = selfCls,
+                name = funcName,
+                params = sig.params,
+                ret = sig.ret,
+                argCount = 1 + jvmArgSlotCount(sig.params)
+              )
+            )
+          } else {
+            insns.add(LInvokevirtual(owner = selfCls, name = funcName, params = sig.params, ret = sig.ret))
+          }
           return sig.ret
         }
         case None -> ()
