@@ -11678,7 +11678,7 @@ func lowerBuiltinOrStaticCallMsil(
     // `collExpect`-style concrete-instantiation tracking (unlike List/Map),
     // so this always erases to `object`.
     insns.add(MNewobj(ctorToken = cctx.tokSetObjCtor))
-    MObject
+    MSetOf(elemTy = MObject)
   } else if (not hasQualifiedOverride) and funcName == "mapGet" {
     // `mapGet(m, key): Option[V]` — emit `if m.ContainsKey(key) {
     // Some(value = m[key]) } else { None }` with the concrete `Option[V]`
