@@ -4281,6 +4281,7 @@ pub record FuncCtx {
   // `conv.u1`.  Keyed by slot index (not name) so shadowing stays precise.
   // Initialised `newMap()` at the construction site.
   byteSlots: Map[Int, Bool]
+  var generics: List[String]
 }
 
 // A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a
@@ -5316,6 +5317,14 @@ func internFfiTypeRefNested(cctx: in CodegenCtx, clrFqn: in String): Int {
       cctx.ffiTypeRefs.add(cacheKey, row)
       row
     }
+  }
+}
+
+pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in TypeExpr): MsilType {
+  if fctx.generics.count > 0 {
+    typeExprToMsilGenBody(cctx, te, fctx.pkgName, fctx.generics)
+  } else {
+    typeExprToMsilCtx(cctx, te, fctx.pkgName)
   }
 }
 
@@ -10510,7 +10519,7 @@ func lowerPatternTestMsil(
       }
     }
     case PTypeTest(_, ty) -> {
-      val testTy = typeExprToMsilCtx(cctx, ty, fctx.pkgName)
+      val testTy = typeExprToMsilBodyCtx(cctx, fctx, ty)
       match testTy {
         case MClass(cls) -> {
           emitLoadSlot(insns, scrutSlot, fctx.paramCount)
@@ -10914,7 +10923,7 @@ func lowerPatternBindMsil(
     }
     case PTypeTest(inner, ty) -> {
       // Narrow to the tested type, then bind the inner pattern at that type.
-      val testTy = typeExprToMsilCtx(cctx, ty, fctx.pkgName)
+      val testTy = typeExprToMsilBodyCtx(cctx, fctx, ty)
       match testTy {
         case MClass(cls) -> {
           emitLoadSlot(insns, scrutSlot, fctx.paramCount)
@@ -14372,7 +14381,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     case SLocal(binding) -> {
       match binding {
         case LBVal(pat, tyOpt, init) -> {
-          val annoTy = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MObject }
+          val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
           // Establish a fresh hint scope from this binding's annotation: a
           // generic annotation (`val m: Option[List[String]] = None`) threads its
           // concrete args so a nullary `None` instantiates closed (#2362), and
@@ -14410,7 +14419,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case LBLet(name, tyOpt, init) -> {
-          val annoTy = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MObject }
+          val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
           // Fresh hint scope from the annotation (see LBVal above).
           val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
           pushCollExpect(fctx, annoTy)
@@ -14485,7 +14494,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           val isHoisted = nameListContains(fctx.hoistedVarNames, name)
           match initOpt {
             case Some(init) -> {
-              val annoTy = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MObject }
+              val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
               // Stage 4: Prepare to create typed cell if hoisted.
               if isHoisted {
                 match arrayElemTokenOpt(cctx, annoTy) {
@@ -14525,7 +14534,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               }
             }
             case None -> {
-              val ty = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MInt }
+              val ty = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MInt }
               if isHoisted and ty != MVoid {
                 // Stage 4: Create typed array for hoisted cell instead of List[object].
                 // Check if we can use a typed array for this type.
@@ -14777,7 +14786,7 @@ func lowerLocalPatBindMsil(
 ): Unit {
   match pat.kind {
     case PBinding(name, _) -> {
-      val ty = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> initTy }
+      val ty = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> initTy }
       match ty {
         case MVoid -> {
           // A Unit-typed named binding (`val u = <void-producing expr>`): there
@@ -15223,7 +15232,8 @@ func makeFuncCtxMsil(
     asyncFuncFlag = newList(),
     scopeBaseMsil = 0,
     scopeUndoMsil = newList(),
-    byteSlots = newMap()
+    byteSlots = newMap(),
+    generics = newList()
   )
 }
 
@@ -21494,6 +21504,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   val hasCaps = lambdaCaps.count > 0
   val effectiveParamCount = if hasCaps { decl.params.count + 1 } else { decl.params.count }
   val fctx = makeFuncCtxMsil(pkgName, className, decl.name, effectiveParamCount, retTy)
+  fctx.generics = fnGenerics
   val insns: List[MInsn] = newList()
 
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
@@ -25508,7 +25519,9 @@ func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
     case Some(asm) -> asm
-    case None -> if startsWith(clrFqn, "Lyric.Emitter") or startsWith(clrFqn, "Lyric.Stdlib") { "Lyric.Emitter" } else { "System.Runtime" }
+    case None -> if startsWith(clrFqn, "Lyric.") { "Lyric.Emitter" }
+                 else if startsWith(clrFqn, "Std.") { "Lyric.Stdlib" }
+                 else { "System.Runtime" }
   }
 }
 

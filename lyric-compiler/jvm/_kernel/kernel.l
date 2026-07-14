@@ -552,9 +552,11 @@ pub func poolInteger(pool: in Pool, v: in Int): Int {
 }
 
 @externTarget("System.Convert.ToSingle")
+@externStatic
 func dblToSingle(v: in Double): Single = ()
 
 @externTarget("System.BitConverter.SingleToInt32Bits")
+@externStatic
 func singleToInt32Bits(v: in Single): Int = ()
 
 @externTarget("System.BitConverter.DoubleToInt64Bits")

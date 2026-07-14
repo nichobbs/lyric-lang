@@ -164,9 +164,11 @@ pub func bufF8Le(w: in ByteWriter, v: in Double): Unit {
 // CLR's `(float)v` -> `SingleToInt32Bits`, matching the former host's
 // `BitConverter.GetBytes(single v)`.
 @externTarget("System.Convert.ToSingle")
+@externStatic
 func dblToSingle(v: in Double): Single = ()
 
 @externTarget("System.BitConverter.SingleToInt32Bits")
+@externStatic
 func singleToInt32Bits(v: in Single): Int = ()
 
 pub func bufF4Le(w: in ByteWriter, v: in Double): Unit {
@@ -177,14 +179,17 @@ pub func bufF4Le(w: in ByteWriter, v: in Double): Unit {
 // of `f8GetBytes`; used to inline R8 literal constants decoded from the
 // Constant table (`Msil.MetadataReader.ECVR8Bits`) into `ldc.r8` operands.
 @externTarget("System.BitConverter.Int64BitsToDouble")
+@externStatic
 pub func int64BitsToDouble(bits: in Long): Double = ()
 
 // Reinterpret a 32-bit IEEE 754 binary32 bit pattern as a Double (via Single).
 // `Single` flows only between the two BCL calls, mirroring `bufF4Le` above.
 @externTarget("System.BitConverter.Int32BitsToSingle")
+@externStatic
 func int32BitsToSingle(bits: in Int): Single = ()
 
 @externTarget("System.Convert.ToDouble")
+@externStatic
 func singleToDouble(v: in Single): Double = ()
 
 pub func int32BitsToDouble(bits: in Int): Double {
