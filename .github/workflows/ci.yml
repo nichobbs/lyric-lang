@@ -5609,7 +5609,7 @@ jobs:
       # unresolved-call fallback) and `sort_tests` (#5712 — a `pub` generic's
       # private same-package helper wasn't imported alongside it for cross-
       # package monomorphisation) are both fixed and wired in here under
-      # D-progress-673.  Each suite exits non-zero on any assertion failure
+      # D-progress-674.  Each suite exits non-zero on any assertion failure
       # or runtime fault.
       - name: Stdlib runtime suites on dotnet (kernels + core stdlib)
         working-directory: ${{ github.workspace }}
