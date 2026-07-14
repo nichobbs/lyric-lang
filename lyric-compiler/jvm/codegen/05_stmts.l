@@ -1529,8 +1529,9 @@ func lowerTryCatchFinallyExpr(
           case JVoid -> {
             if not catchTerminated {
               val pos = c.span.startPos
+              val dottedPkgName = ctx.pkgName.replace("/", ".")
               panic(
-                "error[J004]: " + pos.line.toString() + ":" + pos.column.toString() +
+                "error[J004]: " + dottedPkgName + ":" + pos.line.toString() + ":" + pos.column.toString() +
                   ": try-catch-finally used as an expression, but this catch arm yields Unit while the " +
                   "try body yields a value; the JVM backend cannot route an absent value through " +
                   "the result slot. Give the catch arm a trailing value of the try body's type, or " +
