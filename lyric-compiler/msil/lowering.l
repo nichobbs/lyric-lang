@@ -76,6 +76,13 @@ pub union MsilType {
   // so that `.count` dispatch uses Dictionary.get_Count rather than
   // List.get_Count.
   case MMapOf(keyTy: MsilType, valTy: MsilType)
+  // Lyric Set[T] — runtime representation is HashSet<object>, serialises as
+  // MObject (0x1C).  Carried so `.count` dispatch uses HashSet.get_Count
+  // rather than List.get_Count: HashSet<T> implements neither the
+  // non-generic IList nor ICollection that the List/slice `.count` path
+  // casts through, so a Set falling through that path faults with
+  // InvalidCastException (#5711).
+  case MSetOf(elemTy: MsilType)
   // Lyric List[T] with a CONCRETE runtime instance — a genuine
   // `List`1<elemTy>` (not the legacy `List<object>` that `MListOf` tracks).
   // Stage 2 of the F#-compatible object model: when the element type
@@ -186,6 +193,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MGenericInst(_, _, _) -> 0x15  // prefix only; full encoding via bufMsilType
     case MListOf(_) -> 0x1C  // same as Object: runtime rep is List<object>
     case MMapOf(_, _) -> 0x1C  // same as Object: runtime rep is Dictionary<object,object>
+    case MSetOf(_) -> 0x1C  // same as Object: runtime rep is HashSet<object>
     case MConcreteList(_) -> 0x15  // GENERICINST prefix; full List`1<elem> via bufMsilType
     case MConcreteMap(_, _) -> 0x15  // GENERICINST prefix; full Dictionary`2<k,v> via bufMsilType
     case MByte -> 0x05  // ELEMENT_TYPE_U1
@@ -1607,6 +1615,7 @@ pub func msilTypeKey(t: in MsilType): String {
     }
     case MListOf(e) -> "LIST[" + msilTypeKey(e) + "]"
     case MMapOf(k, v) -> "MAP[" + msilTypeKey(k) + "," + msilTypeKey(v) + "]"
+    case MSetOf(e) -> "SET[" + msilTypeKey(e) + "]"
     case MConcreteList(e) -> "CLIST[" + msilTypeKey(e) + "]"
     case MConcreteMap(k, v) -> "CMAP[" + msilTypeKey(k) + "," + msilTypeKey(v) + "]"
     case MByte -> "B"

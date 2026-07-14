@@ -30205,11 +30205,13 @@ CI bundles, and writes to stderr so TAP stdout stays clean
 wired into the dotnet CI step; doing so surfaced three pre-existing silent
 breakages no CI covered — `set_tests` (#5711), `sort_tests` (#5712), and
 `xml_tests` (#5713) — which were filed (not silenced) rather than added while
-red. (`xml_tests` #5713 was subsequently fixed and wired in — D-progress-672;
-`set_tests`/`sort_tests` remain excluded pending their emitter fixes.)
+red. All three are now fixed and wired into the dotnet runtime-suite loop:
+`xml_tests` under D-progress-672, `set_tests`/`sort_tests` (plus the related
+monomorphizer `result`-keyword bug, #5735, surfaced by the `xml_tests` fix)
+under D-progress-674.
 
-**Related:** `docs/03-decision-log.md` D-progress-670, D-progress-672;
-#5710–#5713.
+**Related:** `docs/03-decision-log.md` D-progress-670, D-progress-672,
+D-progress-674; #5710–#5713, #5735.
 
 ## F0027 warning: hint-less `@externTarget` externs that can't be metadata-verified (2026-07-13)
 
@@ -30256,3 +30258,33 @@ follow-up added `resolveAllNugetAssets` so the two call sites needing both
 managed and native assets parse `project.assets.json` once instead of twice.
 
 **Related:** `docs/03-decision-log.md` D-progress-673, D-progress-592; #5573, #5407, #5066.
+
+## `Std.Set`, generic `sort`, and the monomorphizer `result`-keyword bug: `set_tests`/`sort_tests` wired into CI (2026-07-14)
+
+The three D-progress-670 follow-up crashers are fixed. `#5711` (`Std.Set`)
+was not a broken TypeSpec/MemberRef as originally suspected — `newSet[T]()`
+compiles a correct `MethodDef`, but `registerStdlibFunc` never registers a
+cross-assembly-callable token for *any* generic stdlib function, so a
+"kept generic `@externTarget`" wrapper like `newSet` (excluded from
+copy-specialization) is uncallable from outside its own assembly. Fixed
+with a `newList`/`newMap`-style by-name call-site interception plus a new
+tracked `MsilType` (`MSetOf`) so `.count`/`.add`/`.contains`/`.remove` and
+`for`-loop iteration route to `HashSet`-correct dispatch instead of
+`List`'s (which faults — `HashSet<T>` implements neither `IList` nor
+`ICollection`). `#5712` (generic `sort`) was a cross-package
+monomorphizer gap: a `pub` generic's *private* same-package helper
+(`sliceCopy`/`mergeSorted`) never travelled with it into a consumer
+package's copy. `#5735` (originally filed as a monomorphizer
+type-inference bug) turned out to be a parser bug: `result` was an
+unconditional global keyword, so a local variable literally named
+`result` could be declared but never referenced by name again — every
+subsequent mention silently became the reserved contract-postcondition
+expression instead of a lookup of the local. Fixed by making `result`
+context-sensitive (`ParseState.inContractClauseExpr`, mirroring
+`suppressArrowLambda`'s scoped-flag convention): `EResult` only inside a
+`requires:`/`ensures:`/`when:` clause's own expression, `EPath(["result"])`
+(an ordinary identifier) everywhere else. `set_tests` and `sort_tests` are
+wired into the dotnet stdlib runtime-suite CI step alongside these fixes.
+
+**Related:** `docs/03-decision-log.md` D-progress-674, D-progress-670,
+D-progress-672; #5711, #5712, #5735.

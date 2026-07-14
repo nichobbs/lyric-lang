@@ -152,6 +152,28 @@ pub record CodegenCtx {
   tokDictObjSetItem: Int  // Dictionary<object,object>::set_Item(object,object): void  callvirt
   tokDictObjTypeSpec: Int  // TypeSpec token for Dictionary<object,object>  castclass
   tokDictObjGetCount: Int  // Dictionary<object,object>::get_Count(): int32  callvirt
+  // HashSet<object> via TypeSpec (for newSet()) — mirrors tokListObjCtor /
+  // tokDictObjCtor.  `Std.Set`'s other operations (add/contains/remove/count)
+  // dispatch through the extern-type method-call path on the `Set[T]` value
+  // itself, not through a free function, so only the constructor needs this
+  // by-name interception (#5711): `newSet[T]()` is a generic `@externTarget`
+  // wrapper, and `registerStdlibFunc` deliberately never registers a
+  // cross-assembly MemberRef for ANY generic stdlib function (a raw type
+  // variable in the signature has no CLR representation) — so a caller
+  // outside the stdlib bundle (or another stdlib package's own copy-
+  // specialised body, e.g. `Std.Set.setFromSlice`) has no valid way to
+  // reference the compiled `newSet` MethodDef at all, and the call falls
+  // through the unresolved-cross-package-call fallback, which lowers the
+  // call's (zero) arguments and emits no `newobj`/`call` — an unbalanced-
+  // stack `InvalidProgramException` at the *caller*.  Intercepting the bare
+  // `newSet()` call by name and building `HashSet<object>` directly (exactly
+  // as `newList`/`newMap` already do for `List<object>`/`Dictionary<object,
+  // object>`) sidesteps the cross-assembly generic-call gap entirely.
+  tokSetObjCtor: Int  // HashSet<object>::.ctor()  newobj
+  tokSetObjGetCount: Int  // HashSet<object>::get_Count(): int32  callvirt
+  tokSetObjAdd: Int  // HashSet<object>::Add(object): bool  callvirt
+  tokSetObjContains: Int  // HashSet<object>::Contains(object): bool  callvirt
+  tokSetObjRemove: Int  // HashSet<object>::Remove(object): bool  callvirt
   tokDictObjContainsKey: Int  // Dictionary<object,object>::ContainsKey(object): bool  callvirt
   tokDictObjRemove: Int  // Dictionary<object,object>::Remove(object): bool  callvirt
   // Intra-package pre-computed tokens
@@ -1097,6 +1119,67 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(dictCntPs, MInt)
     )
 
+  // HashSet<object>::.ctor(): void  instance HASTHIS — mirrors the
+  // List<object> / Dictionary<object,object> setup above (#5711).
+  val trHashSet1 = ctxAddTypeRef(lctx, "System.Collections.Generic", "HashSet`1", arCollections)
+  val hashSetArgTypes: List[MsilType] = newList()
+  hashSetArgTypes.add(MObject)
+  val hashSetObjBlob = buildGenericInstBlob(tdrTypeRef(trHashSet1), hashSetArgTypes)
+  val tsHashSetObj = ctxAddTypeSpec(lctx, "ts_hashset_obj", hashSetObjBlob)
+  val hashSetCtorPs: List[MsilType] = newList()
+  val tokSetObjCtor = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsHashSetObj,
+      ".ctor",
+      "hashset_obj_ctor",
+      buildInstanceMethodSig(hashSetCtorPs, MVoid)
+    )
+  val hashSetCntPs: List[MsilType] = newList()
+  val tokSetObjGetCount = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsHashSetObj,
+      "get_Count",
+      "hashset_obj_count",
+      buildInstanceMethodSig(hashSetCntPs, MInt)
+    )
+  // `Add`/`Contains`/`Remove` take the set's element type — a MemberRef on a
+  // TypeSpec must reference it as `!0` (MTypeVar), not a literal `object`, or
+  // the CLR can't match the open generic method's real parameter and faults
+  // with `MissingMethodException` at the call site (mirrors tokDictObjAdd /
+  // tokDictObjContainsKey's `MTypeVar(0)`/`MTypeVar(1)` params above).
+  val hashSetAddPs: List[MsilType] = newList()
+  hashSetAddPs.add(MTypeVar(0))
+  val tokSetObjAdd = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsHashSetObj,
+      "Add",
+      "hashset_obj_add",
+      buildInstanceMethodSig(hashSetAddPs, MBool)
+    )
+  val hashSetContainsPs: List[MsilType] = newList()
+  hashSetContainsPs.add(MTypeVar(0))
+  val tokSetObjContains = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsHashSetObj,
+      "Contains",
+      "hashset_obj_contains",
+      buildInstanceMethodSig(hashSetContainsPs, MBool)
+    )
+  val hashSetRemovePs: List[MsilType] = newList()
+  hashSetRemovePs.add(MTypeVar(0))
+  val tokSetObjRemove = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsHashSetObj,
+      "Remove",
+      "hashset_obj_remove",
+      buildInstanceMethodSig(hashSetRemovePs, MBool)
+    )
+
   // 22. Dictionary<object,object>::ContainsKey(!0): bool  — key param is type var !0
   val dictCkPs: List[MsilType] = newList()
   dictCkPs.add(MTypeVar(0))
@@ -1716,6 +1799,11 @@ pub func newCodegenCtx(
     tokDictObjSetItem = tokDictObjSetItem,
     tokDictObjTypeSpec = 0x1B000000 + tsDictObj,
     tokDictObjGetCount = tokDictObjGetCount,
+    tokSetObjCtor = tokSetObjCtor,
+    tokSetObjGetCount = tokSetObjGetCount,
+    tokSetObjAdd = tokSetObjAdd,
+    tokSetObjContains = tokSetObjContains,
+    tokSetObjRemove = tokSetObjRemove,
     tokDictObjContainsKey = tokDictObjContainsKey,
     tokDictObjRemove = tokDictObjRemove,
     recordCtorTokens = recCtorToks,
@@ -4397,6 +4485,12 @@ func msilTypeIdentical(a: in MsilType, b: in MsilType): Bool {
         case other -> false
       }
     }
+    case MSetOf(ae) -> {
+      match b {
+        case MSetOf(be) -> msilTypeIdentical(ae, be)
+        case other -> false
+      }
+    }
     case MTuple(aelems) -> {
       match b {
         case MTuple(belems) -> msilTypeListIdentical(aelems, belems)
@@ -5360,6 +5454,20 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         }
       } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
+      } else if headSeg == "Set" and args.count == 1 {
+        // Set[T] — legacy erased `HashSet<object>`, tracked so `.count`
+        // dispatch can distinguish it from `List`/`Map`, and so a value-type
+        // T (e.g. `Set[Int]`) is unboxed back on iteration read (#5711):
+        // elements are always boxed in the erased `HashSet<object>` storage,
+        // but the loop variable of `for x in s` must come out as a genuine
+        // unboxed `Int` for consumers like `List[Int].add(x)` (a concrete
+        // list, which expects the value already unboxed) to accept it.
+        val setElemTyRaw = match args[0] {
+          case TAType(ete) -> sliceElemMsilCtx(cctx, ete, pkgName)
+          case TAValue(_) -> MObject
+        }
+        val setElemTy = if isValueType(setElemTyRaw) { setElemTyRaw } else { MObject }
+        MSetOf(elemTy = setElemTy)
       } else if headSeg == "MapKeyCollection" and args.count == 2 {
         // Extern key-collection view — implements IEnumerable<K>, not IList.
         // Use IEnumerator protocol in emitCollectionForMsil (#3511).
@@ -6233,6 +6341,15 @@ func emitListCastRecv(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in Msi
 func emitListAdd(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
     case MConcreteList(e) -> insns.add(MListOp(op = LoAdd, elemTy = e))
+    // `HashSet<object>::Add(object): bool` — unlike `List<object>::Add`
+    // (void), Add reports whether the item was newly inserted; the caller
+    // (`memberName == "add"`, below) always treats this call as `Unit`-
+    // returning, so the bool must be popped or the stack is unbalanced at
+    // the next sequence point (#5711).
+    case MSetOf(_) -> {
+      insns.add(MCallvirt(methodToken = cctx.tokSetObjAdd))
+      insns.add(MPop)
+    }
     case _ -> insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
   }
 }
@@ -6267,6 +6384,7 @@ func emitListGetCount(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in Msi
 func emitListContains(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
     case MConcreteList(e) -> insns.add(MListOp(op = LoContains, elemTy = e))
+    case MSetOf(_) -> insns.add(MCallvirt(methodToken = cctx.tokSetObjContains))
     case _ -> insns.add(MCallvirt(methodToken = cctx.tokListObjContains))
   }
 }
@@ -6974,6 +7092,23 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 // throw so the failure is loud rather than a silent miscompile.
                 insns.add(MPop)
                 val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: unimplemented Map member access: " + memberName)
+                insns.add(MLdStr(token = msgTok))
+                insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+                insns.add(MThrow)
+                MObject
+              }
+            }
+            case MSetOf(_) -> {
+              // Set[T] receiver: dispatch to HashSet<object> members.  Only
+              // `.count` is reachable here — `.add`/`.contains`/`.remove` are
+              // METHOD CALLS (`ECall(EMember(...), args)`), lowered on a
+              // different path, not this bare-EMember property read (#5711).
+              if memberName == "count" {
+                insns.add(MCallvirt(methodToken = cctx.tokSetObjGetCount))
+                MInt
+              } else {
+                insns.add(MPop)
+                val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: unimplemented Set member access: " + memberName)
                 insns.add(MLdStr(token = msgTok))
                 insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
                 insns.add(MThrow)
@@ -11528,6 +11663,22 @@ func lowerBuiltinOrStaticCallMsil(
         MMapOf(keyTy = MObject, valTy = MObject)
       }
     }
+  } else if (not hasQualifiedOverride) and funcName == "newSet" {
+    // `Std.CollectionsHost.newSet[T]()` is a generic `@externTarget` kernel
+    // wrapper; `registerStdlibFunc` never registers a cross-assembly
+    // MemberRef for a generic stdlib function (its signature would need an
+    // unrepresentable raw type variable), so a caller outside the bundle —
+    // or another stdlib function's own copy-specialised body, e.g.
+    // `Std.Set.setFromSlice` — has no valid token to call it through and
+    // falls into the unresolved-call fallback, producing unbalanced-stack
+    // `InvalidProgramException` at the *caller* (#5711).  Intercepting the
+    // bare call by name and building `HashSet<object>` directly sidesteps
+    // the gap entirely, exactly as `newList` / `newMap` already do for
+    // `List<object>` / `Dictionary<object,object>`.  `Std.Set` has no
+    // `collExpect`-style concrete-instantiation tracking (unlike List/Map),
+    // so this always erases to `object`.
+    insns.add(MNewobj(ctorToken = cctx.tokSetObjCtor))
+    MSetOf(elemTy = MObject)
   } else if (not hasQualifiedOverride) and funcName == "mapGet" {
     // `mapGet(m, key): Option[V]` — emit `if m.ContainsKey(key) {
     // Some(value = m[key]) } else { None }` with the concrete `Option[V]`
@@ -13287,9 +13438,21 @@ func lowerMethodCallMsil(
         emitDictRemove(cctx, insns, recvTy)
         MBool
       }
+      case MSetOf(_) -> {
+        // `set.remove(item)` -> HashSet<object>::Remove(object): bool (#5711).
+        // Was previously silently swallowed by the pop-only fallback below —
+        // `setRemove` always returned `false` regardless of the item's real
+        // presence.
+        if args.count > 0 {
+          val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+          boxIfNeededMsil(cctx, insns, aTy)
+        }
+        insns.add(MCallvirt(methodToken = cctx.tokSetObjRemove))
+        MBool
+      }
       case _ -> {
         // Non-Map receiver: retain the conservative pop-only behaviour until a
-        // real List/Set removal lowering lands.
+        // real List removal lowering lands.
         var i = 0
         while i < args.count {
           lowerCallArgMsil(cctx, fctx, insns, args[i])
@@ -13677,6 +13840,135 @@ func emitCountingForMsil(
   insns.add(MLabel(id = afterL))
 }
 
+// IEnumerator protocol for extern types that implement IEnumerable but not
+// IList (e.g. MapKeyCollection, MapValueCollection, Set[T]).  Protocol:
+//   castclass IEnumerable
+//   GetEnumerator() → IEnumerator (non-generic)
+//   try { while MoveNext() { elem = get_Current(); body } }
+//   finally { if (enum is IDisposable) ((IDisposable)enum).Dispose(); }
+// Shared by the `MExternEnumerable` and `MSetOf` arms of the `for`-loop
+// dispatch in `emitCollectionForMsil` (#5711 factored this out of a single
+// `MExternEnumerable` arm so `Set[T]` iteration could reuse it verbatim).
+func emitIEnumerableProtocolForMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  pat: in Pattern,
+  body: in Block,
+  eeElemTy: in MsilType,
+): Unit {
+  // Cast the collection to System.Collections.IEnumerable and call GetEnumerator.
+  insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIEnumerable))
+  insns.add(MCallvirt(methodToken = cctx.tokIEnumerableGetEnumerator))
+  // GetEnumerator() returns IEnumerator; the slot must be declared with that
+  // exact type (not MObject) so ILVerify's static stack tracking matches the
+  // IEnumerator-typed callvirt receivers below (MoveNext/get_Current).
+  val eeEnumTy = MClassRef(typeRefCode = tdrTypeRef(cctx.trIEnumerator), clrFqn = "System.Collections.IEnumerator")
+  val eeEnumSlot = allocSlotMsil(fctx, "__ee_enum_" + toString(fctx.slotTicker.count), eeEnumTy)
+  emitStoreSlot(insns, eeEnumSlot, fctx.paramCount)
+
+  // The loop body is wrapped in a try/finally so the enumerator is disposed
+  // (ECMA-334 §13.9.5) whether the loop runs to exhaustion or exits via
+  // `break` (#4594).  `eeAfterL` is the target for both — it sits outside
+  // the protected region, so `break` (via emitLoopJumpMsil) correctly emits
+  // `leave`, which runs the finally handler on its way out.  Not every
+  // non-generic IEnumerator implementation is disposable (the static
+  // System.Collections.IEnumerator type doesn't require it), so the finally
+  // handler does a runtime `isinst IDisposable` check before calling Dispose.
+  val eeAfterL = freshLabelMsil(fctx)
+  val eeTryStartL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = eeTryStartL))
+  // Capture the try-nesting depth *before* this loop's own protected region
+  // is pushed below, matching every other loop construct's `loopTryDepth`
+  // convention (the ambient depth from the loop's enclosing scope, not
+  // including any region the loop sets up around its own body).  Using
+  // `fctx.tryRegionStack.count` *after* the push here would make a `break`
+  // emitted directly in the loop body compare equal to `loopTryDepth`
+  // (since both would already include this region), so `emitLoopJumpMsil`
+  // would wrongly emit `br` instead of `leave` to exit this try/finally —
+  // invalid MSIL (a branch out of a protected region) that fails
+  // verification at load time (#4769).
+  val eeOuterTryDepth = fctx.tryRegionStack.count
+  fctx.tryRegionStack.add(0)
+
+  val eeLoopL = freshLabelMsil(fctx)
+  val eeContL = freshLabelMsil(fctx)
+  val eeDoneL = freshLabelMsil(fctx)
+
+  insns.add(MLabel(id = eeLoopL))
+  // IEnumerator.MoveNext() → bool; false → exit loop (still inside the
+  // protected region; a plain conditional branch to a same-region label
+  // is legal, unlike a branch straight out of the region).
+  emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
+  insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorMoveNext))
+  insns.add(MBrFalse(label = eeDoneL))
+
+  // IEnumerator.get_Current() → object; cast to elemTy if concrete
+  emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
+  insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorGetCurrent))
+  castObjectToMsil(cctx, insns, eeElemTy)
+  val eeElemSlot = allocSlotMsil(fctx, "__ee_elem_" + toString(fctx.slotTicker.count), eeElemTy)
+  emitStoreSlot(insns, eeElemSlot, fctx.paramCount)
+  // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
+  // (#5191 follow-up).
+  val eeLoopScope = enterBlockScopeMsil(fctx)
+  bindForPatternMsil(cctx, fctx, insns, pat, eeElemSlot, eeElemTy)
+
+  fctx.loopBreak.add(eeAfterL)
+  fctx.loopCont.add(eeContL)
+  fctx.loopTryDepth.add(eeOuterTryDepth)
+  lowerBlockMsil(cctx, fctx, insns, body)
+  fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
+  fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
+  fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+  exitBlockScopeMsil(fctx, eeLoopScope)
+
+  insns.add(MLabel(id = eeContL))
+  insns.add(MBr(label = eeLoopL))
+  insns.add(MLabel(id = eeDoneL))
+  insns.add(MLeave(label = eeAfterL))
+  fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+
+  val eeTryEndL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = eeTryEndL))
+
+  val eeFinallyStartL = freshLabelMsil(fctx)
+  val eeFinallyEndL = freshLabelMsil(fctx)
+  val eeSkipDisposeL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = eeFinallyStartL))
+  emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
+  insns.add(MIsinst(typeToken = 0x01000000 + cctx.trIDisposable))
+  val eeDisposableSlot = allocSlotMsil(fctx, "__ee_disposable_" + toString(fctx.slotTicker.count), MObject)
+  emitStoreSlot(insns, eeDisposableSlot, fctx.paramCount)
+  emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
+  insns.add(MBrFalse(label = eeSkipDisposeL))
+  emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
+  // `eeDisposableSlot` is `MObject`-typed (it holds the `isinst`
+  // result), but `callvirt` requires the stack value to be
+  // assignment-compatible with the declaring type of the called
+  // method — an `object` reference is not compatible with
+  // `IDisposable` (#4772).  `castclass` is safe here: `isinst` above
+  // already confirmed the runtime type implements `IDisposable`, and
+  // the `brfalse` just above confirmed it's non-null.
+  insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIDisposable))
+  insns.add(MCallvirt(methodToken = cctx.tokIDisposableDispose))
+  insns.add(MLabel(id = eeSkipDisposeL))
+  insns.add(MEndfinally)
+  insns.add(MLabel(id = eeFinallyEndL))
+  insns.add(
+    MEHClause(
+      flags = 2,
+      tryStart = eeTryStartL,
+      tryEnd = eeTryEndL,
+      handlerStart = eeFinallyStartL,
+      handlerEnd = eeFinallyEndL,
+      catchToken = 0
+    )
+  )
+
+  insns.add(MLabel(id = eeAfterL))
+}
+
 // Emit an index-based loop for `for <pat> in <collection>`, modelling the
 // collection as `List<object>` (the bootstrap representation shared with the
 // `EIndex` read path).  When the iterator expression's type is
@@ -13872,122 +14164,15 @@ func emitCollectionForMsil(
       insns.add(MStloc(slot = dispVtSlot - fctx.paramCount))  // discard ValueTask by storing to unused local
     }
     case MExternEnumerable(eeElemTy) -> {
-      // IEnumerator protocol for extern types that implement IEnumerable but
-      // not IList (e.g. MapKeyCollection, MapValueCollection).  Protocol:
-      //   castclass IEnumerable
-      //   GetEnumerator() → IEnumerator (non-generic)
-      //   try { while MoveNext() { elem = get_Current(); body } }
-      //   finally { if (enum is IDisposable) ((IDisposable)enum).Dispose(); }
-      // Cast the collection to System.Collections.IEnumerable and call GetEnumerator.
-      insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIEnumerable))
-      insns.add(MCallvirt(methodToken = cctx.tokIEnumerableGetEnumerator))
-      // GetEnumerator() returns IEnumerator; the slot must be declared with that
-      // exact type (not MObject) so ILVerify's static stack tracking matches the
-      // IEnumerator-typed callvirt receivers below (MoveNext/get_Current).
-      val eeEnumTy = MClassRef(typeRefCode = tdrTypeRef(cctx.trIEnumerator), clrFqn = "System.Collections.IEnumerator")
-      val eeEnumSlot = allocSlotMsil(fctx, "__ee_enum_" + toString(fctx.slotTicker.count), eeEnumTy)
-      emitStoreSlot(insns, eeEnumSlot, fctx.paramCount)
-
-      // The loop body is wrapped in a try/finally so the enumerator is disposed
-      // (ECMA-334 §13.9.5) whether the loop runs to exhaustion or exits via
-      // `break` (#4594).  `eeAfterL` is the target for both — it sits outside
-      // the protected region, so `break` (via emitLoopJumpMsil) correctly emits
-      // `leave`, which runs the finally handler on its way out.  Not every
-      // non-generic IEnumerator implementation is disposable (the static
-      // System.Collections.IEnumerator type doesn't require it), so the finally
-      // handler does a runtime `isinst IDisposable` check before calling Dispose.
-      val eeAfterL = freshLabelMsil(fctx)
-      val eeTryStartL = freshLabelMsil(fctx)
-      insns.add(MLabel(id = eeTryStartL))
-      // Capture the try-nesting depth *before* this loop's own protected region
-      // is pushed below, matching every other loop construct's `loopTryDepth`
-      // convention (the ambient depth from the loop's enclosing scope, not
-      // including any region the loop sets up around its own body).  Using
-      // `fctx.tryRegionStack.count` *after* the push here would make a `break`
-      // emitted directly in the loop body compare equal to `loopTryDepth`
-      // (since both would already include this region), so `emitLoopJumpMsil`
-      // would wrongly emit `br` instead of `leave` to exit this try/finally —
-      // invalid MSIL (a branch out of a protected region) that fails
-      // verification at load time (#4769).
-      val eeOuterTryDepth = fctx.tryRegionStack.count
-      fctx.tryRegionStack.add(0)
-
-      val eeLoopL = freshLabelMsil(fctx)
-      val eeContL = freshLabelMsil(fctx)
-      val eeDoneL = freshLabelMsil(fctx)
-
-      insns.add(MLabel(id = eeLoopL))
-      // IEnumerator.MoveNext() → bool; false → exit loop (still inside the
-      // protected region; a plain conditional branch to a same-region label
-      // is legal, unlike a branch straight out of the region).
-      emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
-      insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorMoveNext))
-      insns.add(MBrFalse(label = eeDoneL))
-
-      // IEnumerator.get_Current() → object; cast to elemTy if concrete
-      emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
-      insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorGetCurrent))
-      castObjectToMsil(cctx, insns, eeElemTy)
-      val eeElemSlot = allocSlotMsil(fctx, "__ee_elem_" + toString(fctx.slotTicker.count), eeElemTy)
-      emitStoreSlot(insns, eeElemSlot, fctx.paramCount)
-      // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
-      // (#5191 follow-up).
-      val eeLoopScope = enterBlockScopeMsil(fctx)
-      bindForPatternMsil(cctx, fctx, insns, pat, eeElemSlot, eeElemTy)
-
-      fctx.loopBreak.add(eeAfterL)
-      fctx.loopCont.add(eeContL)
-      fctx.loopTryDepth.add(eeOuterTryDepth)
-      lowerBlockMsil(cctx, fctx, insns, body)
-      fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
-      fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
-      fctx.loopCont.removeAt(fctx.loopCont.count - 1)
-      exitBlockScopeMsil(fctx, eeLoopScope)
-
-      insns.add(MLabel(id = eeContL))
-      insns.add(MBr(label = eeLoopL))
-      insns.add(MLabel(id = eeDoneL))
-      insns.add(MLeave(label = eeAfterL))
-      fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
-
-      val eeTryEndL = freshLabelMsil(fctx)
-      insns.add(MLabel(id = eeTryEndL))
-
-      val eeFinallyStartL = freshLabelMsil(fctx)
-      val eeFinallyEndL = freshLabelMsil(fctx)
-      val eeSkipDisposeL = freshLabelMsil(fctx)
-      insns.add(MLabel(id = eeFinallyStartL))
-      emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
-      insns.add(MIsinst(typeToken = 0x01000000 + cctx.trIDisposable))
-      val eeDisposableSlot = allocSlotMsil(fctx, "__ee_disposable_" + toString(fctx.slotTicker.count), MObject)
-      emitStoreSlot(insns, eeDisposableSlot, fctx.paramCount)
-      emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
-      insns.add(MBrFalse(label = eeSkipDisposeL))
-      emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
-      // `eeDisposableSlot` is `MObject`-typed (it holds the `isinst`
-      // result), but `callvirt` requires the stack value to be
-      // assignment-compatible with the declaring type of the called
-      // method — an `object` reference is not compatible with
-      // `IDisposable` (#4772).  `castclass` is safe here: `isinst` above
-      // already confirmed the runtime type implements `IDisposable`, and
-      // the `brfalse` just above confirmed it's non-null.
-      insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIDisposable))
-      insns.add(MCallvirt(methodToken = cctx.tokIDisposableDispose))
-      insns.add(MLabel(id = eeSkipDisposeL))
-      insns.add(MEndfinally)
-      insns.add(MLabel(id = eeFinallyEndL))
-      insns.add(
-        MEHClause(
-          flags = 2,
-          tryStart = eeTryStartL,
-          tryEnd = eeTryEndL,
-          handlerStart = eeFinallyStartL,
-          handlerEnd = eeFinallyEndL,
-          catchToken = 0
-        )
-      )
-
-      insns.add(MLabel(id = eeAfterL))
+      emitIEnumerableProtocolForMsil(cctx, fctx, insns, pat, body, eeElemTy)
+    }
+    case MSetOf(eeElemTy) -> {
+      // `Set[T]` has no indexer (`HashSet<T>` implements neither `IList` nor
+      // `ICollection`), so it needs the same non-generic-`IEnumerable`
+      // protocol as `MExternEnumerable` (e.g. MapKeyCollection) rather than
+      // the index-loop fallback below, which would `castclass IList` and
+      // fault with `InvalidCastException` (#5711).
+      emitIEnumerableProtocolForMsil(cctx, fctx, insns, pat, body, eeElemTy)
     }
     case _ -> {
       // ── List<object> / Array index-loop protocol (existing path) ─────────────
@@ -15823,6 +16008,7 @@ func msilTypeKeyStr(t: in MsilType): String {
     case MByRef(inner) -> "byref_" + msilTypeKeyStr(inner)
     case MListOf(elem) -> "list_" + msilTypeKeyStr(elem)
     case MMapOf(k, v) -> "map_" + msilTypeKeyStr(k) + "_" + msilTypeKeyStr(v)
+    case MSetOf(elem) -> "set_" + msilTypeKeyStr(elem)
     case MConcreteList(elem) -> "clist_" + msilTypeKeyStr(elem)
     case MConcreteMap(k, v) -> "cmap_" + msilTypeKeyStr(k) + "_" + msilTypeKeyStr(v)
     case MIAsyncEnumerable(e) -> "iasyncen_" + msilTypeKeyStr(e)
@@ -16093,7 +16279,9 @@ func emitGenericExternMember(
     }
   }
   match sigOpt {
-    case None -> false
+    case None -> {
+      false
+    }
     case Some(sig) -> {
       // Convert the BCL param/return SigTypes to MsilType, preserving VARs.
       val memberParams: List[MsilType] = newList()
@@ -22018,6 +22206,20 @@ func typeExprToMsilGenBody(
         }
       } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
+      } else if headSeg == "Set" and args.count == 1 {
+        // Set[T] — legacy erased `HashSet<object>`, tracked so `.count`
+        // dispatch can distinguish it from `List`/`Map`, and so a value-type
+        // T (e.g. `Set[Int]`) is unboxed back on iteration read (#5711):
+        // elements are always boxed in the erased `HashSet<object>` storage,
+        // but the loop variable of `for x in s` must come out as a genuine
+        // unboxed `Int` for consumers like `List[Int].add(x)` (a concrete
+        // list, which expects the value already unboxed) to accept it.
+        val setElemTyRaw = match args[0] {
+          case TAType(ete) -> sliceElemMsilGenBody(cctx, ete, pkgName, generics)
+          case TAValue(_) -> MObject
+        }
+        val setElemTy = if isValueType(setElemTyRaw) { setElemTyRaw } else { MObject }
+        MSetOf(elemTy = setElemTy)
       } else if headSeg == "MapKeyCollection" and args.count == 2 {
         // Extern key-collection view — implements IEnumerable<K>, not IList.
         // Use IEnumerator protocol in emitCollectionForMsil (#3511).
@@ -29704,6 +29906,16 @@ pub record StdlibPkg {
   /// same-named sibling type through its declared imports (tier 2) instead of
   /// last-registered-wins (#2282).
   imports: List[String]
+  /// Private (non-`pub`) generic funcs with a body, kept separate from
+  /// `items` (whose pub-only filter `registerStdlibArtifactTokens` depends
+  /// on for token registration) purely so `Msil.Bridge.collectStdlibGenericFuncs`
+  /// can pull them into cross-package monomorphization.  A `pub` generic
+  /// (e.g. `Std.Sort.sort[T]`) whose body calls a private same-package
+  /// generic helper (`sliceCopy[T]`) needs that helper specialised
+  /// alongside it when the pub generic is copied into a consumer package —
+  /// otherwise the copy's call to the helper is left unresolved and MSIL
+  /// codegen's cross-package-call fallback emits unbalanced IL (#5712).
+  privateGenericItems: List[Item]
 }
 
 /// Walk every `StdlibPkg` and register its `pub func`s as

@@ -5602,12 +5602,15 @@ jobs:
       # wrong-union construction under a cross-package case-name collision
       # (regex_safe), object-degraded union-ctor MemberRefs (rest), and, more
       # recently, the D-progress-669 auto-FFI migration breakage.  Every suite
-      # here is verified to pass via `lyric run`; suites that currently crash
-      # (`set_tests` #5711, `sort_tests` #5712 — pre-existing emitter bugs) are
-      # deliberately NOT listed and are tracked as issues, not silenced.
-      # (`xml_tests` was in that list under #5713; it is fixed and now wired in
-      # below.)  Each suite exits non-zero on any assertion failure or runtime
-      # fault.
+      # here is verified to pass via `lyric run`.  `xml_tests` (#5713) was
+      # fixed and wired in under D-progress-672; `set_tests` (#5711 — a
+      # generic `@externTarget` kernel constructor never gets a cross-
+      # assembly-callable token, so `newSet()`'s call site fell through the
+      # unresolved-call fallback) and `sort_tests` (#5712 — a `pub` generic's
+      # private same-package helper wasn't imported alongside it for cross-
+      # package monomorphisation) are both fixed and wired in here under
+      # D-progress-674.  Each suite exits non-zero on any assertion failure
+      # or runtime fault.
       - name: Stdlib runtime suites on dotnet (kernels + core stdlib)
         working-directory: ${{ github.workspace }}
         run: |
@@ -5622,7 +5625,8 @@ jobs:
             process_capture_tests process_tests format_tests json_tests \
             collections_tests char_tests math_tests hash_tests path_tests \
             errors_tests environment_tests string_tests string_methods_tests \
-            regex_tests yaml_tests testing_tests mocking_tests xml_tests; do
+            regex_tests yaml_tests testing_tests mocking_tests xml_tests \
+            set_tests sort_tests; do
             echo "--- lyric run lyric-stdlib/tests/$suite.l"
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done

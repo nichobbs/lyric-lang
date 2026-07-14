@@ -785,6 +785,21 @@ func isContractKeyword(k: in Keyword): Bool {
   }
 }
 
+// Bare `result` names the function's return value only inside a contract
+// clause's own expression body — everywhere else (including a plain local
+// `var`/`val` bound to the name `result`) it must resolve as an ordinary
+// identifier (#5735).  `ParseState.inContractClauseExpr` is the signal the
+// primary-expression parser's `KwResult` case reads to decide between
+// `EResult` and `EPath(["result"])`; this wrapper is the sole place that
+// flips it on for a clause body and always flips it back off afterward,
+// mirroring `suppressArrowLambda`'s scoped on/off discipline.
+func parseContractClauseExpr(st: inout ParseState): Expr {
+  st.inContractClauseExpr = true
+  val e = parseExpr(st)
+  st.inContractClauseExpr = false
+  e
+}
+
 func parseContractClauseOpt(st: inout ParseState): Option[ContractClause] {
   // Peek before opening the CST node — only emit `SkContractClause`
   // when we know we're committing to a clause; otherwise leave the
@@ -813,7 +828,7 @@ func parseContractClauseOptInner(st: inout ParseState): Option[ContractClause] {
               emitErr(st, "P0170", "expected ':' after 'requires'", peekSpan(st))
             }
           }
-          val e = parseExpr(st)
+          val e = parseContractClauseExpr(st)
           Some(CCRequires(expr = e, span = joinSpans(startSpan, e.span)))
         }
         case KwEnsures -> {
@@ -825,7 +840,7 @@ func parseContractClauseOptInner(st: inout ParseState): Option[ContractClause] {
               emitErr(st, "P0170", "expected ':' after 'ensures'", peekSpan(st))
             }
           }
-          val e = parseExpr(st)
+          val e = parseContractClauseExpr(st)
           Some(CCEnsures(expr = e, span = joinSpans(startSpan, e.span)))
         }
         case KwWhen -> {
@@ -837,7 +852,7 @@ func parseContractClauseOptInner(st: inout ParseState): Option[ContractClause] {
               emitErr(st, "P0170", "expected ':' after 'when'", peekSpan(st))
             }
           }
-          val e = parseExpr(st)
+          val e = parseContractClauseExpr(st)
           Some(CCWhen(expr = e, span = joinSpans(startSpan, e.span)))
         }
         case _ -> None
