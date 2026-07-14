@@ -1172,6 +1172,7 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
     }
     val pkgName = segmentsToString(stdPr.file.packageDecl.path.segments)
     val items: List[Item] = newList()
+    val privateGenericItems: List[Item] = newList()
     var ii = 0
     while ii < stdPr.file.items.count {
       val it = stdPr.file.items[ii]
@@ -1198,10 +1199,36 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
       }
       if include {
         items.add(it)
+      } else {
+        // A private generic func with a body never gets a real MemberRef
+        // (unlike the `include` case above): it is only ever copy-
+        // specialised into a consumer package's own file by the
+        // monomorphizer, never referenced directly, so it carries none of
+        // the "foreign DLL public method table" restriction that gates
+        // `items`.  Collected separately so `collectStdlibGenericFuncs` can
+        // import it alongside any `pub` generic in the same package that
+        // calls it (#5712).
+        match it.kind {
+          case IFunc(decl) -> {
+            val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+            val hasBody = match decl.body { case Some(_) -> true; case None -> false }
+            if isGeneric and hasBody {
+              privateGenericItems.add(it)
+            }
+          }
+          case _ -> ()
+        }
       }
       ii = ii + 1
     }
-    pkgs.add(StdlibPkg(name = pkgName, items = items, imports = collectImportNames(stdPr.file.imports)))
+    pkgs.add(
+      StdlibPkg(
+        name = pkgName,
+        items = items,
+        imports = collectImportNames(stdPr.file.imports),
+        privateGenericItems = privateGenericItems
+      )
+    )
     si = si + 1
   }
   pkgs
@@ -1222,6 +1249,10 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
   while pi < pkgs.count {
     val pkg: StdlibPkg = pkgs[pi]
     pipeAddGenericFuncs(pkg.items, pkg.name, false, true, genFuncs)
+    // Private same-package generic helpers (e.g. Std.Sort.sliceCopy[T])
+    // travel alongside any pub generic that calls them (#5712) — see
+    // `StdlibPkg.privateGenericItems`.
+    pipeAddGenericFuncs(pkg.privateGenericItems, pkg.name, false, true, genFuncs)
     pi = pi + 1
   }
   genFuncs

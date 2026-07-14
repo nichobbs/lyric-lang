@@ -1171,7 +1171,24 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
         }
         case KwResult -> {
           val _ = advance(st)
-          mkExpr(EResult, tok.span)
+          // Bare `result` only means the reserved contract-result value
+          // inside a `requires:`/`ensures:`/`when:` clause's own expression
+          // body (`ParseState.inContractClauseExpr`, set by
+          // `parseContractClauseExpr`).  Everywhere else it is a plain
+          // identifier reference — a local `var`/`val` bound to the name
+          // `result` (already accepted as a binding name by
+          // `tryEatIdentOrContextual` / pattern parsing) must resolve back
+          // to that binding, not silently become `EResult` (#5735: doing so
+          // let a local named `result` be declared but never referenced by
+          // name again, since every later mention miscompiled as the
+          // contract keyword).
+          if st.inContractClauseExpr {
+            mkExpr(EResult, tok.span)
+          } else {
+            val segs: List[String] = newList()
+            segs.add("result")
+            mkExpr(EPath(path = ModulePath(segments = segs, span = tok.span)), tok.span)
+          }
         }
         case KwIf -> parseIfExpr(st)
         case KwMatch -> parseMatchExpr(st)

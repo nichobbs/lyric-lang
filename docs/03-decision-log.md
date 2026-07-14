@@ -15787,6 +15787,184 @@ for the managed-DLL case.
 
 ---
 
+## D-progress-674 — Fix the remaining D-progress-670 emitter crashers: `#5711` (`Std.Set`), `#5712` (generic `sort`), `#5735` (monomorphizer `result`/keyword collision); wire `set_tests`/`sort_tests` into CI
+
+Closes out the three emitter-fix follow-ups D-progress-670/672 left tracked
+as issues. All three turned out to have different, more specific root
+causes than their original filings guessed.
+
+### #5711 — `Std.Set`: `newSet[T]()` never gets a cross-assembly-callable token
+
+The original filing suspected a broken TypeSpec/MemberRef parenting in
+`emitGenericExternMember`'s constructor-emission path. That path is
+actually correct — instrumentation confirmed `newSet`'s own `MethodDef`
+compiles to exactly the same shape as `newList`/`newMap`
+(`static object newSet()`). The real bug: `registerStdlibFunc`
+(`msil/codegen.l`) unconditionally skips registering a cross-assembly
+`MemberRef` for *any* generic stdlib function (a raw type variable has no
+CLR representation in an external signature). `newSet[T]()` is a
+`@externTarget`-annotated generic — a "kept generic extern" per
+`Lyric.Mono.annsKeepGenericExternMono` — which mono.l deliberately excludes
+from copy-specialization (`pipeAnnsBlockSpecialization`), so it never
+becomes a same-assembly copy either. A caller outside the stdlib bundle
+assembly (`set_tests.l`, or `Std.Set`'s own `setFromSlice`/`setUnion`/etc.,
+whose copy-specialized bodies call `newSet()` internally) has no valid way
+to reference it, and the call falls through the unresolved-cross-package-
+call fallback: arguments lowered for side effects, no `call`/`newobj`
+emitted, an unbalanced-stack `InvalidProgramException` **at the caller**
+(matching the reported stack trace — `at Set2.Program.main()`, not inside
+`newSet`).
+
+Fixed by adding a dedicated by-name call-site interception for `newSet`
+in the MSIL codegen's `ECall` lowering, mirroring the *existing*
+`newList`/`newMap` interceptions exactly: build `HashSet<object>` directly
+via a pre-built TypeSpec + MemberRef (`tokSetObjCtor`), sidestepping the
+cross-assembly generic-call gap entirely rather than trying to make
+generic cross-assembly calls work in general.
+
+Fixing the constructor surfaced three further gaps, all from `Set[T]`
+never having had `List`/`Map`-style call-site tracking at all:
+
+- `.count` (`setSize`/`setIsEmpty`) fell through the same generic
+  "cast to non-generic `IList`" path `List`/`slice` use — `HashSet<T>`
+  implements neither `IList` nor the non-generic `ICollection`, so this
+  faulted with `InvalidCastException`.
+- `.add`/`.contains` fell through the `List<object>` member dispatch
+  (wrong declaring type — `MissingMethodException`/`NullReferenceException`
+  depending on which slot the mismatched `callvirt` happened to hit) and,
+  once corrected, `HashSet<T>.Add(T): bool` still needed its return value
+  popped (`Std.Set.setAdd` treats the call as `Unit`-returning, unlike
+  `List.Add`, which is genuinely `void`).
+- `.remove` was **silently swallowed** by a pre-existing "non-Map receiver"
+  catch-all that popped the arguments and unconditionally returned `false`
+  — `setRemove` always reported "not found" regardless of the item's real
+  presence, a silent miscompile rather than a crash.
+- `for x in aSet` (iteration — `setToSlice`, `setUnion`, `setIntersection`,
+  …) fell through the index-based `List`/`Array` loop protocol (`castclass
+  IList`), which also faults on `HashSet<T>`.
+
+Fixed by adding `Std.Collections`-parallel `HashSet<object>` TypeSpec +
+MemberRef tokens (`tokSetObjGetCount`/`tokSetObjAdd`/`tokSetObjContains`/
+`tokSetObjRemove`) and a new tracked `MsilType` case, `MSetOf(elemTy)`
+(mirroring `MMapOf`'s "legacy erased, tracked purely for dispatch"
+shape), threaded through `typeExprToMsilCtx`/`typeExprToMsilGenBody`'s
+`Set[T]` mapping so `.count`/`.add`/`.contains`/`.remove` route to the
+`HashSet`-correct tokens instead of the `List`/`Map` ones. Iteration
+reuses the existing `MExternEnumerable` non-generic-`IEnumerable` for-loop
+protocol (`GetEnumerator`/`MoveNext`/`get_Current` in a try/finally,
+already used for `MapKeyCollection`/`MapValueCollection`) — refactored out
+of its single `MExternEnumerable` call site into a shared
+`emitIEnumerableProtocolForMsil` helper so `MSetOf` reuses it verbatim,
+since `HashSet<T>` implements plain `IEnumerable` just as well.
+`MSetOf`'s `elemTy` tracks the real (unboxed) element type for a
+value-type `T` (e.g. `Set[Int]`) — not just a bare `MObject` placeholder —
+so the loop variable comes out of the erased `HashSet<object>` storage
+correctly unboxed; a `Set[Int]`'s elements are boxed on insertion (`Add`
+takes `object`, erased) and must be unboxed again on read, or a concrete
+`List[Int].add(x)` inside the loop body rejects the still-boxed value.
+
+### #5712 — `Std.Sort`: a `pub` generic's private same-package helper isn't imported alongside it cross-package
+
+`Std.Sort.sort[T]`'s body calls two **private** (non-`pub`) same-package
+generic helpers, `sliceCopy[T]`/`mergeSorted[T]`. Calling `sort` from
+*within* `Std.Sort` works fine (the whole package monomorphizes together).
+Calling it from a different package (`sort_tests.l`) goes through
+`Msil.Bridge.collectStdlibGenericFuncs`, which — for the stdlib bundle
+build specifically — draws from `StdlibPkg.items`, a list *already
+pub-filtered* at `collectStdlibPackages` time (non-`pub` functions get
+internal accessibility and would need real MemberRefs that can't bind
+across assemblies, so filtering them out of the general item set is
+correct for token registration). That same filtered list is also the
+*only* source `collectStdlibGenericFuncs` draws generic decls from, so
+`sliceCopy`/`mergeSorted` never enter the cross-package monomorphizer's
+`genDecls` at all. The specialized `sort__Int` copied into
+`Std.Sort.Tests` still calls the bare (never-imported) `sliceCopy`/
+`mergeSorted` names, which `Lyric.Mono`'s `ECall` rewrite leaves
+unresolved — the same unresolved-cross-package-call fallback as #5711,
+producing the same unbalanced-stack `InvalidProgramException` shape, this
+time inside `sort__Int` itself.
+
+Fixed by adding a second, separate collection to `StdlibPkg`
+(`privateGenericItems`) capturing private generic functions with a body
+from the *unfiltered* per-package parse — these never need real
+cross-assembly MemberRefs (they only ever travel as copy-specialized
+bodies, exactly like their `pub` caller), so there is no `registerStdlibFunc`-
+style visibility concern in feeding them to `collectStdlibGenericFuncs`.
+JVM's `collectStdlibGenericFuncsJvm` already operates on unfiltered parsed
+`SourceFile`s directly and was never affected.
+
+### #5735 — the monomorphizer inference gap that wasn't: `result` is a global keyword, not context-sensitive
+
+The original filing (and its own extensive investigation) assumed this was
+a `Lyric.Mono` type-inference robustness gap: an imported generic
+(`Std.Core.isNone[T]`) failing to bind `T` from a reassigned local used in
+a compound `while`-condition, defaulting to the erased `Object`
+specialization, whose `Option[Object]` match then mis-compiles (a `"match
+not exhaustive"` runtime trap). Careful empirical isolation (minimal
+standalone repros, bisecting away every candidate variable — reassignment,
+compound conditions, annotated vs. unannotated bindings, reference vs.
+value-type `T`) falsified every one of those hypotheses: even the
+simplest possible case (`val result: Option[Int] = Some(value = 5);
+isNone(result)`, no loop, no reassignment) reproduces the crash, while the
+*exact* same shape under a different variable name does not.
+
+The actual root cause: `result` is a **global reserved keyword**
+(`KwResult`) at the lexer level — used everywhere, not only inside
+`ensures:`/`requires:`/`when:` contract clauses. The parser's binding-name
+path (`tryEatIdentOrContextual`, pattern parsing) already special-cases
+`result` as a legitimate identifier for *declaring* a local — matching
+that function's own doc comment, "`result` is a contextual keyword: valid
+as an identifier everywhere except inside `ensures:` expression
+position" — but the **expression**-position parser
+(`parsePrimaryExpr`'s `KwResult` case) unconditionally built `EResult`
+regardless of context, contradicting that stated design. So a local
+literally named `result` could be *declared* (`var result: Option[T] =
+...`) but never *referenced* again by name: every subsequent bare
+`result` token silently became the reserved contract-postcondition
+expression instead of a lookup of the local, and `Lyric.Mono`'s
+`inferExprTE` has no defined meaning for `EResult` outside a function's
+own `ensures:` elaboration, so it fell through to `None` — hence the
+`Object`-defaulted specialization and the runtime trap. `Std.Xml.findFirst`
+happened to use `result` as its guard variable's name (`getAttribute`, in
+the same file, uses `found` for the identical pattern and was never
+affected) — a naming coincidence that made this look like a monomorphizer
+bug specific to reference-type erasure.
+
+Fixed at the actual layer: `ParseState` gained `inContractClauseExpr`
+(mirroring the existing `suppressArrowLambda` scoped-flag convention), set
+only around a `requires:`/`ensures:`/`when:` clause's own expression parse
+(a new `parseContractClauseExpr` wrapper in `parser_items.l`). The
+`KwResult` primary-expression case now checks the flag: `EResult` inside a
+contract clause (unchanged behaviour there — including the documented
+`result: out Int` parameter idiom, which no longer needs its dedicated
+`EResult`-credits-an-out-param carve-out in the type checker's `T0086`
+collector, since it now resolves through the ordinary `EPath` path like
+any other named parameter), `EPath(["result"])` — an ordinary identifier
+lookup — everywhere else. `Std.Xml.findFirst` was reverted to the
+idiomatic `isNone(result)` guard it always should have been able to use.
+
+An independent, narrower correctness fix landed alongside this (found
+during the investigation, kept because it's still a real gap even though
+it wasn't the root cause here): `Lyric.Mono`'s `SAssign` rewrite didn't
+refine `env`'s tracked type on a plain reassignment (`x = expr`), so a
+`var` declared from an uninferable initializer (bare `None`, no
+annotation) could never recover a concrete type from a later assignment
+whose right-hand side *is* inferable (e.g. a call to a function with a
+known return type). Fixed by having `rewriteStmt`'s `SAssign` case
+`inferExprTE` the assigned value and update `env` accordingly (mirroring
+the existing `LBVar`/`LBLet` env-refinement pattern), only for plain `=`
+(compound ops like `+=` don't change the value's type) and only
+overwriting when inference actually succeeds (a failed inference leaves
+any existing, e.g. annotation-derived, entry untouched).
+
+### CI
+
+`set_tests` and `sort_tests` — excluded from the dotnet stdlib
+runtime-suite loop since D-progress-670/672 pending exactly these fixes —
+are wired in.
+
+**Related:** D-progress-670, D-progress-672, #5711, #5712, #5735.
+
 ## Decisions deferred to v2 or later
 
 

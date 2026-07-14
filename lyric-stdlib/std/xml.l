@@ -808,23 +808,10 @@ pub func findFirst(node: in XmlNode, tag: in String): Option[XmlNode] {
       if t == tag {
         Some(value = node)
       } else {
-        // Track found-ness with a local Bool + an inline `match` rather than
-        // the generic `isNone(result)`: monomorphizing `isNone[T]` at
-        // `T = XmlNode` (a reference type erased to Object) mis-compiles to a
-        // "match not exhaustive" stub in the stdlib bundle build.  This
-        // non-generic function's own `match` over `Option[XmlNode]` is fine;
-        // the monomorphizer bug is tracked separately.
         var result: Option[XmlNode] = None
-        var found = false
         var i = 0
-        while i < children.count and not found {
+        while i < children.count and isNone(result) {
           result = findFirst(children[i], tag)
-          match result {
-            case Some(_) -> {
-              found = true
-            }
-            case None -> ()
-          }
           i += 1
         }
         result

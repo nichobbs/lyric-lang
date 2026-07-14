@@ -40,11 +40,30 @@ pub record ParseState {
   /// e.g. `flag and (cond) -> 1`). Plain callers of `parseExpr` elsewhere
   /// should never touch this field directly.
   suppressArrowLambda: Bool
+  /// True while parsing a `requires:`/`ensures:`/`when:` contract clause's
+  /// expression body — the only position where bare `result` legitimately
+  /// names the function's return value.  `parseContractClauseOptInner`
+  /// (`parser_items.l`) sets this before its `parseExpr` call and restores
+  /// the previous value after, mirroring `suppressArrowLambda`'s
+  /// save/restore discipline.  `result` used as a plain identifier
+  /// everywhere else — including a local `var`/`val` bound to the name
+  /// `result` — must resolve as `EPath(["result"])`, not the reserved
+  /// `EResult` node; unconditionally treating bare `result` as `EResult`
+  /// broke exactly that case (#5735: a local named `result` could be
+  /// declared but never referenced again by name).
+  inContractClauseExpr: Bool
 }
 
 pub func makeParseState(tokens: in List[SpannedToken], diags: in List[Diagnostic]): ParseState {
   val events: List[CstEvent] = newList()
-  ParseState(tokens = tokens, pos = 0, diags = diags, cstEvents = events, suppressArrowLambda = false)
+  ParseState(
+    tokens = tokens,
+    pos = 0,
+    diags = diags,
+    cstEvents = events,
+    suppressArrowLambda = false,
+    inContractClauseExpr = false
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
