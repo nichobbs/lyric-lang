@@ -140,7 +140,10 @@ func symbolToType(
   span: in Span,
 ): Type {
   match sym.kind {
-    case DKTypeAlias(decl) -> resolveAliasRhs(tbl, ctx, diag, decl, 0, args, span)
+    case DKTypeAlias(decl) -> {
+      checkImportedVisibility(sym, span, diag)
+      resolveAliasRhs(tbl, ctx, diag, decl, 0, args, span)
+    }
     case _ -> match symbolTypeIdOpt(sym) { case Some(tid) -> { checkImportedVisibility(sym, span, diag); TyUser(id = tid, name = sym.name, args = args) }; case None -> { diag.add(errorDiagnostic("T0013", "'" + sym.name + "' is not a type", span)); TyError } }
   }
 }

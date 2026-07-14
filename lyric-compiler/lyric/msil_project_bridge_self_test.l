@@ -308,7 +308,7 @@ test "two packages each defining their own lambda index 0 do not corrupt each ot
   packages.add(
     mkPkg(
       "XPkgLambda0.A",
-      "package XPkgLambda0.A\n" + "import Std.Core\n" + "alias Handler = (Int) -> Int\n" + "\n" +
+      "package XPkgLambda0.A\n" + "import Std.Core\n" + "pub alias Handler = (Int) -> Int\n" + "\n" +
         "pub func adder(n: in Int): Handler {\n" +
         "  return { x: Int -> x + n }\n" +
         "}\n"
