@@ -16285,6 +16285,105 @@ Resolves three targeted backend warnings on the self-hosted MSIL backend (``W000
 
 ---
 
+## D-progress-682 — `Lyric.Docker.ping` targeted Docker's non-existent `/ping` endpoint instead of `/_ping`
+
+Discovered while independently verifying `Lyric.Docker`'s live-daemon
+container lifecycle end-to-end against a real `dockerd` (as part of
+confirming nichobbs/cloud-agents' server can genuinely create runner
+containers, not just compile). `ping(client)` built its request URL as
+`client.apiBase + "/ping"`; the real Docker Engine API endpoint is
+`/_ping` (leading underscore) — Docker's own OpenAPI spec and every other
+official client use `_ping`. The plain `/ping` path 404s
+(`{"message":"page not found"}`) against a real daemon, so `ping()`
+always returned `Err` regardless of daemon health.
+
+**Root cause**: a typo introduced when `ping()` was ported from the
+inline pre-#4503 implementation to route through the shared
+`fetchBodyText`/`sendAndReadBody` helpers — the endpoint string was never
+verified against a live daemon at the time (no test in
+`lyric-docker/tests/` exercises a live connection; `ping()` isn't called
+by `createContainer`/`startContainer`/`stopContainer`/`removeContainer`,
+so this was invisible to any consumer that only manages containers).
+
+**Fix**: `client.apiBase + "/_ping"`.
+
+**Verification**: manually confirmed against a real `dockerd` (TCP
+transport, `127.0.0.1:2375`) that `GET /v1.40/ping` returns 404 and
+`GET /v1.40/_ping` returns `200 OK`; `lyric-docker`'s existing 44-case
+offline test suite (`lyric test --manifest lyric-docker/lyric.toml`)
+still passes unchanged (none of it exercises a live daemon). While
+verifying this, also confirmed the full container lifecycle
+(`createContainerWithNetwork`/`startContainer`/`stopContainer`/
+`removeContainer`) already works correctly end-to-end against a live
+daemon when built from current `main` — an `InvalidProgramException`
+previously observed against the *published* `Lyric.Docker` 0.4.29 NuGet
+package on any live-daemon call (`ping`, `createContainerWithNetwork`,
+etc.) does not reproduce when rebuilt from this source with the current
+compiler, confirming 0.4.29 was a stale artifact predating an unrelated
+async-codegen fix rather than a live source defect; NuGet already carries
+a fixed 0.4.31 build.
+
+**Related:** nichobbs/cloud-agents (Lyric.Docker version bump from 0.4.29
+to 0.4.31 tracked in that repo).
+
+## D-progress-683 — `Lyric.Docker.getContainerLogs` misdetected raw-vs-multiplexed streams: `/logs`'s `Content-Type` header is not a valid signal
+
+Discovered immediately after D-progress-682, in the same live-daemon
+verification pass, once `nichobbs/cloud-agents` actually created a real
+runner container and tried to read its output: every call failed with
+`"Failed to decode container logs as UTF-8"`.
+
+**Root cause**: `getContainerLogs` decided whether to run
+`demultiplexDockerStream` on the response bytes based on the `/logs`
+response's own `Content-Type` header, treating
+`application/vnd.docker.raw-stream` as "the container has a TTY, decode
+the bytes as UTF-8 directly" and anything else as "framed multiplexed,
+demultiplex first." Verified against a live daemon (Docker Engine 29.3):
+this header reads `application/vnd.docker.raw-stream` **unconditionally**
+for every container's `/logs` response, TTY or not — it is not a
+per-container signal at all for this endpoint (unlike `/attach`, which
+this project's header comment appears to have generalized from). A
+non-TTY container's body is genuinely framed-multiplexed (confirmed by
+inspecting the raw bytes: `\x02\x00\x00\x00\x00\x00\x00\x33` — stream
+type 2 (stderr), length 0x33 — followed by the payload), so trusting the
+header fed the 8-byte frame headers straight into UTF-8 decoding, which
+correctly fails (frame-header bytes are not valid UTF-8) on every
+non-TTY container — the overwhelmingly common case, since neither
+`createContainer` nor `createContainerWithNetwork` ever sets `Tty`. No
+existing test caught this (lyric-docker's suite is entirely offline; a
+hand-built response body can encode whatever `Content-Type` the test
+wants, so nothing exercised the *actual* header Docker sends).
+
+**Fix**: added `containerIsTty(client, containerId)`, which queries `GET
+/containers/{id}/json` and reads `Config.Tty` (the authoritative source)
+instead of the `/logs` response header. `getContainerLogs` now calls this
+before fetching logs and decides raw-vs-multiplexed from that. Added
+`extractJsonBoolField` (mirroring the existing `extractJsonIntField`) to
+read the boolean field, reusing `jsonFieldObjectStart` to scope the
+lookup to the nested `Config` object.
+
+**Verification**: against a live daemon, confirmed both directions —
+a container created without `Tty` now correctly demultiplexes its logs
+(previously always failed), and a container created with `Tty: true`
+still decodes correctly as a raw UTF-8 stream (no regression). The
+existing 44-case offline test suite still passes unchanged.
+
+**Review follow-ups (same PR, #5773):** added 7 offline unit tests for
+`extractJsonBoolField` covering true/false extraction, an absent field,
+a non-bare (quoted) value, whitespace tolerance, a non-key-position
+false match, and the nested-`Config`-object scoping `containerIsTty`
+actually uses — mirroring `extractJsonIntField`'s existing coverage.
+Also removed the now-dead `BytesWithContentType.contentType` field and
+its stale doc comment: `getContainerLogs` was the type's only consumer
+and no longer reads the header at all now that `containerIsTty` is
+authoritative, so `sendAndReadBytes` returns plain `slice[Byte]`
+instead. Fixed a stale `/ping` reference left in `ping()`'s own doc
+comment by the D-progress-682 fix.
+
+**Related:** D-progress-682; nichobbs/cloud-agents (this was found while
+verifying that repo's runner-container output retrieval genuinely works
+end-to-end, not just compiles).
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
