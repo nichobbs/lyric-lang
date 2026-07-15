@@ -25638,7 +25638,9 @@ func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
     case Some(asm) -> asm
-    case None -> if startsWith(clrFqn, "Lyric.Emitter") { "Lyric.Emitter" } else if startsWith(clrFqn, "Std.") { "Lyric.Stdlib" } else { "System.Runtime" }
+    case None -> if startsWith(clrFqn, "Lyric.Emitter") { "Lyric.Emitter" }
+                 else if startsWith(clrFqn, "Std.") { "Lyric.Stdlib" }
+                 else { "System.Runtime" }
   }
 }
 
