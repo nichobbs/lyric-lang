@@ -25536,9 +25536,10 @@ func isClrDateTimeMsil(t: in MsilType): Bool {
 // type-index (built once over the reference pack and cached on `cctx`).
 // Falls back to "Lyric.Emitter" for Lyric host types compiled into Lyric.Emitter.dll
 // (which never appear in the reference pack), to "Lyric.Stdlib" for Std.* standard library
-// types, and to "System.Runtime" for any remaining System.* types (core types that
-// are type-forwarded from System.Private.CoreLib via the System.Runtime
-// facade).  The call to ensureMetadataIndex is a no-op after the first use.
+// types, and to "System.Runtime" for anything else not covered by the metadata
+// index (in practice, System.* core types that are type-forwarded from
+// System.Private.CoreLib via the System.Runtime facade).  The call to
+// ensureMetadataIndex is a no-op after the first use.
 func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {

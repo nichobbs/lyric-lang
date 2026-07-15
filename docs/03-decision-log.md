@@ -16287,8 +16287,6 @@ Resolves three targeted backend warnings on the self-hosted MSIL backend (``W000
 
 ## Decisions deferred to v2 or later
 
-
-
 - Package generics (Ada-style module-level parameterization)
 - JVM backend
 - Self-hosting
