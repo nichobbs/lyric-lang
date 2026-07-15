@@ -16261,7 +16261,32 @@ package-qualified form.
 
 **Related:** #5737.
 
+## D-progress-681 — Resolve MSIL Backend Warnings W0005, W0003, and F0027 (#5746)
+
+Resolves three targeted backend warnings on the self-hosted MSIL backend (``W0005``, ``W0003``, and ``F0027``).
+
+1. **Warning W0005 (Std.* assembly-mapping fallback)**:
+   - **Root Cause**: The auto-FFI type resolution did not map Lyric's native standard library namespace (`"Std."`) to the compiled standard library assembly (`"Lyric.Stdlib"`), causing CLR TypeRef fallback errors when resolving types like ``Std.Core.Result`2``.
+   - **Solution**: Modernized and expanded `assemblyForTypeMsil` in `lyric-compiler/msil/codegen.l` to explicitly map any CLR fully-qualified name starting with `"Std."` to `"Lyric.Stdlib"`. This closes the follow-up investigation noted in the prior ``Result`2`` entry in this log (~line 9235).
+
+2. **Warning W0003 (Generic parameter metadata resolution fallback)**:
+   - **Root Cause**: During lowering of method bodies (local bindings, pattern matching) and Phase B pre-scan / await-typing, the compiler generated metadata-load attempts for generic type parameters (e.g., `V` in `Std.CollectionsHost.V`). Since generic parameters are variable types rather than nominal types, the metadata index lacks them, triggering fallback.
+   - **Solution**:
+     - Added a `generics: List[String]` field to the method lowering context `FuncCtx` to track active generic type/method parameter names.
+     - Implemented `typeExprToMsilBodyCtx(cctx, fctx, ty)` to dynamically detect when a referenced class name matches an active generic parameter, erasing the reference to `MObject`.
+     - Updated lowering and codegen sites (`LBVal`, `LBLet`, `LBVar`, `PTypeTest`, and `lowerLocalPatBindMsil`) to use `typeExprToMsilBodyCtx`.
+     - Added `pbGenerics` and `lambdaGenerics` fields to `CodegenCtx` to track generic parameter names during Phase B pre-scan and propagate them correctly to synthesized `__lambda_*` methods.
+
+3. **Warning F0027 (Hint-less externs)**:
+   - **Root Cause**: Floating-point kernel conversion helpers in `msil/_kernel/kernel.l` and `jvm/_kernel/kernel.l` lacked calling-convention hints, triggering warnings.
+   - **Solution**: Annotated the five conversion helpers (`dblToSingle`, `singleToInt32Bits`, `int64BitsToDouble`, `int32BitsToSingle`, and `singleToDouble`) with `@externStatic`, satisfying the verification requirements introduced in D-progress-671 / #5704.
+
+**Related:** D-progress-671, D-progress-667, #2494, #5746, #5747, #5748, #5749, #5750, #5751.
+
+---
+
 ## Decisions deferred to v2 or later
+
 
 
 - Package generics (Ada-style module-level parameterization)

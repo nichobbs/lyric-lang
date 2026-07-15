@@ -30288,3 +30288,25 @@ wired into the dotnet stdlib runtime-suite CI step alongside these fixes.
 
 **Related:** `docs/03-decision-log.md` D-progress-674, D-progress-670,
 D-progress-672; #5711, #5712, #5735.
+
+## Resolve MSIL Backend Warnings W0005, W0003, and F0027 (2026-07-14)
+
+The self-hosted MSIL backend has been successfully resolved of three targeted compilation warnings (`W0005`, `W0003`, and `F0027`), resulting in a completely warning-free Stage 1 -> Stage 2 self-hosting compilation bootstrap of all 136 compiler packages and standard library assemblies.
+
+1. **Warning W0005 (Std.* assembly-mapping fallback)**:
+   - **Root Cause**: The auto-FFI type resolution did not map Lyric's native standard library namespace (`"Std."`) to the compiled standard library assembly (`"Lyric.Stdlib"`), causing fallback degradation to `System.Object` when resolving types like ``Std.Core.Result`2``.
+   - **Solution**: Expanded `assemblyForTypeMsil` in `codegen.l` to explicitly map any CLR fully-qualified name starting with `"Std."` to `"Lyric.Stdlib"`. This completes the follow-up investigation left open in the prior ``Result`2`` entry of `docs/03-decision-log.md`.
+
+2. **Warning W0003 (Generic parameter metadata resolution fallback)**:
+   - **Root Cause**: During lowering of method bodies (local bindings, pattern matching) and Phase B pre-scan / await-typing, the compiler generated metadata-load attempts for generic type parameters (e.g., `V` in `Std.CollectionsHost.V`). Since generic parameters are variable types rather than nominal types, the metadata index lacks them, triggering fallback.
+   - **Solution**:
+     - Added a `generics: List[String]` field to `FuncCtx` to track active generic type/method parameter names.
+     - Implemented `typeExprToMsilBodyCtx(cctx, fctx, ty)` to dynamically detect when a referenced class name matches an active generic parameter, erasing the reference to `MObject`.
+     - Updated lowering and codegen sites (`LBVal`, `LBLet`, `LBVar`, `PTypeTest`, and `lowerLocalPatBindMsil`) to use `typeExprToMsilBodyCtx`.
+     - Tracked pre-scan Phase B generic parameters via `pbGenerics` and propagated them to synthesized lambdas via `lambdaGenerics` in `CodegenCtx` to prevent any warnings during the pre-scan/lambda-codegen phases.
+
+3. **Warning F0027 (Hint-less externs)**:
+   - **Root Cause**: Floating-point kernel conversion helpers in `msil/_kernel/kernel.l` and `jvm/_kernel/kernel.l` lacked calling-convention hints, triggering warnings.
+   - **Solution**: Annotated the five conversion helpers (`dblToSingle`, `singleToInt32Bits`, `int64BitsToDouble`, `int32BitsToSingle`, and `singleToDouble`) with `@externStatic`, satisfying the incremental verification requirements.
+
+**Related:** `docs/03-decision-log.md` D-progress-681, D-progress-671, D-progress-667; #5746, #5747, #5748, #5749, #5750, #5751.
