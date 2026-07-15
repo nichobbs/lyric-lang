@@ -178,3 +178,15 @@ test "#5401: System.Single argument/return round-trips through the @externTarget
   val d = singleToDoubleM88(sqrtSingleM88(toSingleM88(16.0)))
   assertTrue(d > 3.99 and d < 4.01, "MathF.Sqrt(Single(16.0)) ~= 4.0 via @externTarget wrapper (bufMsilType)")
 }
+
+// Regression coverage for the FuncCtx.generics / typeExprToMsilBodyCtx W0003 fix.
+// Generates a local variable of the function's own type parameter `T`.
+func exerciseGenericsW0003[T](valVal: T): T {
+  val x: T = valVal
+  x
+}
+
+test "W0003: generic function with locally-annotated variable of its own type parameter compiles cleanly" {
+  assertEqualInt(exerciseGenericsW0003[Int](42), 42, "roundtrip Int through generic local-variable assignment")
+}
+

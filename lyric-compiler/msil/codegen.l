@@ -251,6 +251,7 @@ pub record CodegenCtx {
   pbFieldTypes: Map[String, MsilType]
   pbMethodRetTypes: Map[String, MsilType]
   pbFuncRetTypes: Map[String, MsilType]
+  pbGenerics: List[String]
   funcRetTypes: Map[String, MsilType]  // funcName → MsilType of declared return
   // funcName → declared parameter MsilTypes (same arity-qualified + bare keys
   // as funcTokens).  Used to thread a call argument's expected type into
@@ -314,6 +315,7 @@ pub record CodegenCtx {
   // each captured name to `__caps[i]` (unboxed).  Captured values are bound into
   // the array at the capture site and the array is the delegate's (closed) target.
   lambdaCaptureNames: Map[String, List[String]]
+  lambdaGenerics: Map[String, List[String]]
   lambdaCaptureTypes: Map[String, List[MsilType]]
   // Subset of lambdaCaptureNames[name] that are by-reference cells (a hoisted
   // enclosing `var`): the `object[] __caps` slot holds the `List[object]` cell
@@ -1823,6 +1825,7 @@ pub func newCodegenCtx(
     pbFieldTypes = newMap(),
     pbMethodRetTypes = newMap(),
     pbFuncRetTypes = newMap(),
+    pbGenerics = newList(),
     funcRetTypes = newMap(),
     funcParamTypes = newMap(),
     funcParamModes = newMap(),
@@ -1836,6 +1839,7 @@ pub func newCodegenCtx(
     lambdaExternDelegateParamTypes = newMap(),
     lambdaExternDelegateRetType = newMap(),
     lambdaCaptureNames = newMap(),
+    lambdaGenerics = newMap(),
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
     lambdaClosureClasses = newMap(),
@@ -4281,6 +4285,7 @@ pub record FuncCtx {
   // `conv.u1`.  Keyed by slot index (not name) so shadowing stays precise.
   // Initialised `newMap()` at the construction site.
   byteSlots: Map[Int, Bool]
+  var generics: List[String]
 }
 
 // A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a
@@ -5319,6 +5324,14 @@ func internFfiTypeRefNested(cctx: in CodegenCtx, clrFqn: in String): Int {
   }
 }
 
+pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in TypeExpr): MsilType {
+  if fctx.generics.count > 0 {
+    typeExprToMsilGenBody(cctx, te, fctx.pkgName, fctx.generics)
+  } else {
+    typeExprToMsilCtx(cctx, te, fctx.pkgName)
+  }
+}
+
 // type references via the codegen context (#1183 codegen port).
 pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): MsilType {
   match te.kind {
@@ -5326,6 +5339,9 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
     case TNever -> MVoid
     case TRef(path) -> {
       val seg = lastSegmentMsil(path)
+      if nameListContains(cctx.pbGenerics, seg) {
+        return MObject
+      }
       if seg == "Int" {
         MInt
       } else if seg == "Long" {
@@ -7883,6 +7899,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // silent cross-package delegate corruption (#5363).  Mirrors the same
       // fix already applied to `lambdaExternDelegateParamTypes` for #5309.
       val lambdaKey = fctx.pkgName + "." + lname
+      cctx.lambdaGenerics.add(lambdaKey, fctx.generics)
       // Record the capture set so lowerFuncMsil's `__lambda_*` path prepends the
       // `object[] __caps` parameter and resolves captured reads (#1479).
       if caps.count > 0 {
@@ -10510,7 +10527,7 @@ func lowerPatternTestMsil(
       }
     }
     case PTypeTest(_, ty) -> {
-      val testTy = typeExprToMsilCtx(cctx, ty, fctx.pkgName)
+      val testTy = typeExprToMsilBodyCtx(cctx, fctx, ty)
       match testTy {
         case MClass(cls) -> {
           emitLoadSlot(insns, scrutSlot, fctx.paramCount)
@@ -10914,7 +10931,7 @@ func lowerPatternBindMsil(
     }
     case PTypeTest(inner, ty) -> {
       // Narrow to the tested type, then bind the inner pattern at that type.
-      val testTy = typeExprToMsilCtx(cctx, ty, fctx.pkgName)
+      val testTy = typeExprToMsilBodyCtx(cctx, fctx, ty)
       match testTy {
         case MClass(cls) -> {
           emitLoadSlot(insns, scrutSlot, fctx.paramCount)
@@ -14372,7 +14389,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     case SLocal(binding) -> {
       match binding {
         case LBVal(pat, tyOpt, init) -> {
-          val annoTy = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MObject }
+          val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
           // Establish a fresh hint scope from this binding's annotation: a
           // generic annotation (`val m: Option[List[String]] = None`) threads its
           // concrete args so a nullary `None` instantiates closed (#2362), and
@@ -14410,7 +14427,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case LBLet(name, tyOpt, init) -> {
-          val annoTy = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MObject }
+          val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
           // Fresh hint scope from the annotation (see LBVal above).
           val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
           pushCollExpect(fctx, annoTy)
@@ -14485,7 +14502,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           val isHoisted = nameListContains(fctx.hoistedVarNames, name)
           match initOpt {
             case Some(init) -> {
-              val annoTy = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MObject }
+              val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
               // Stage 4: Prepare to create typed cell if hoisted.
               if isHoisted {
                 match arrayElemTokenOpt(cctx, annoTy) {
@@ -14525,7 +14542,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               }
             }
             case None -> {
-              val ty = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> MInt }
+              val ty = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MInt }
               if isHoisted and ty != MVoid {
                 // Stage 4: Create typed array for hoisted cell instead of List[object].
                 // Check if we can use a typed array for this type.
@@ -14777,7 +14794,7 @@ func lowerLocalPatBindMsil(
 ): Unit {
   match pat.kind {
     case PBinding(name, _) -> {
-      val ty = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName); case None -> initTy }
+      val ty = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> initTy }
       match ty {
         case MVoid -> {
           // A Unit-typed named binding (`val u = <void-producing expr>`): there
@@ -15223,7 +15240,8 @@ func makeFuncCtxMsil(
     asyncFuncFlag = newList(),
     scopeBaseMsil = 0,
     scopeUndoMsil = newList(),
-    byteSlots = newMap()
+    byteSlots = newMap(),
+    generics = newList()
   )
 }
 
@@ -18884,6 +18902,14 @@ func collectSpawnBindingsBlockMsil(
 }
 
 func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: in FunctionDecl): List[MsilType] {
+  cctx.pbGenerics.clear()
+  val fnGenerics = genericNamesOf(decl.generics)
+  var fgi = 0
+  while fgi < fnGenerics.count {
+    cctx.pbGenerics.add(fnGenerics[fgi])
+    fgi = fgi + 1
+  }
+
   val result: List[MsilType] = newList()
   val spawnNms: List[String] = newList()
   val spawnTys: List[MsilType] = newList()
@@ -18918,6 +18944,7 @@ func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: 
     }
     case Some(body) -> match body { case FBBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, result, spawnNms, spawnTys, localNms, localTys); case FBExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, result, spawnNms, spawnTys, localNms, localTys) }
   }
+  cctx.pbGenerics.clear()
   result
 }
 
@@ -21432,7 +21459,14 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // bare-`T` parameter, return, and local must use the erased List-backed
   // representation (see typeExprToMsilGenBody / typeExprToMsilGenSig) instead of
   // a bogus `MClass(pkg + ".T")` that names no real CLR type.
-  val fnGenerics = genericNamesOf(decl.generics)
+  val fnGenerics = if startsWith(decl.name, "__lambda_") {
+    match mapGet(cctx.lambdaGenerics, pkgName + "." + decl.name) {
+      case Some(g) -> g
+      case None -> newList()
+    }
+  } else {
+    genericNamesOf(decl.generics)
+  }
   val retTy = if startsWith(decl.name, "__lambda_") {
     // Uniform Func ABI (#1877): synthetic lambdas return `object` (a boxed
     // value, or `null` for a void body — coerced in the return path below).
@@ -21494,6 +21528,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   val hasCaps = lambdaCaps.count > 0
   val effectiveParamCount = if hasCaps { decl.params.count + 1 } else { decl.params.count }
   val fctx = makeFuncCtxMsil(pkgName, className, decl.name, effectiveParamCount, retTy)
+  fctx.generics = fnGenerics
   val insns: List[MInsn] = newList()
 
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
@@ -25499,16 +25534,27 @@ func isClrDateTimeMsil(t: in MsilType): Bool {
 
 // Resolve a CLR FQN to its owning assembly's simple name via the metadata
 // type-index (built once over the reference pack and cached on `cctx`).
-// Falls back to "Lyric.Emitter" for Lyric host types (F# shims that are
-// compiled into Lyric.Emitter.dll and never appear in the reference pack),
-// and to "System.Runtime" for any remaining System.* types (core types that
-// are type-forwarded from System.Private.CoreLib via the System.Runtime
-// facade).  The call to ensureMetadataIndex is a no-op after the first use.
+// Falls back to "Lyric.Emitter" for Lyric host types compiled into Lyric.Emitter.dll
+// (which never appear in the reference pack), to "Lyric.Stdlib" for Std.* standard library
+// types, and to "System.Runtime" for anything else not covered by the metadata
+// index (in practice, System.* core types that are type-forwarded from
+// System.Private.CoreLib via the System.Runtime facade).  The call to
+// ensureMetadataIndex is a no-op after the first use.
+//
+// The "Lyric.Emitter" branch is keyed on the exact "Lyric.Emitter" prefix, not
+// a broader "Lyric." prefix: the stage-1 self-hosted DLLs (including
+// Lyric.Stdlib.dll) must never carry an AssemblyRef to Lyric.Emitter (Band 5
+// invariant, docs/23-fsharp-shim-elimination.md, enforced by
+// scripts/check_assembly_refs.sh), and a broader match would misroute any
+// other unresolved "Lyric.*"-namespaced CLR FQN encountered while compiling
+// the stdlib bundle itself into a forbidden reference.
 func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
     case Some(asm) -> asm
-    case None -> if startsWith(clrFqn, "Lyric.Emitter") or startsWith(clrFqn, "Lyric.Stdlib") { "Lyric.Emitter" } else { "System.Runtime" }
+    case None -> if startsWith(clrFqn, "Lyric.Emitter") { "Lyric.Emitter" }
+                 else if startsWith(clrFqn, "Std.") { "Lyric.Stdlib" }
+                 else { "System.Runtime" }
   }
 }
 
@@ -25623,7 +25669,11 @@ func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilTyp
   }
   val pb = Mdr.sigPrimByte(sig)
   if pb >= 0 {
-    elemByteToMsil(pb)
+    if pb == 0x0C {
+      internValueTypeRef(cctx, "System.Single")
+    } else {
+      elemByteToMsil(pb)
+    }
   } else {
     val fqn = Mdr.sigNamedFqn(sig)
     if fqn.length == 0 {
