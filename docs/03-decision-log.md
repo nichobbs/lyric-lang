@@ -16326,9 +16326,9 @@ a fixed 0.4.31 build.
 **Related:** nichobbs/cloud-agents (Lyric.Docker version bump from 0.4.29
 to 0.4.31 tracked in that repo).
 
-## D-progress-682 — `Lyric.Docker.getContainerLogs` misdetected raw-vs-multiplexed streams: `/logs`'s `Content-Type` header is not a valid signal
+## D-progress-683 — `Lyric.Docker.getContainerLogs` misdetected raw-vs-multiplexed streams: `/logs`'s `Content-Type` header is not a valid signal
 
-Discovered immediately after D-progress-681, in the same live-daemon
+Discovered immediately after D-progress-682, in the same live-daemon
 verification pass, once `nichobbs/cloud-agents` actually created a real
 runner container and tried to read its output: every call failed with
 `"Failed to decode container logs as UTF-8"`.
@@ -16378,9 +16378,9 @@ its stale doc comment: `getContainerLogs` was the type's only consumer
 and no longer reads the header at all now that `containerIsTty` is
 authoritative, so `sendAndReadBytes` returns plain `slice[Byte]`
 instead. Fixed a stale `/ping` reference left in `ping()`'s own doc
-comment by the D-progress-681 fix.
+comment by the D-progress-682 fix.
 
-**Related:** D-progress-681; nichobbs/cloud-agents (this was found while
+**Related:** D-progress-682; nichobbs/cloud-agents (this was found while
 verifying that repo's runner-container output retrieval genuinely works
 end-to-end, not just compiles).
 
