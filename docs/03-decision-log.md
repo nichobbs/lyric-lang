@@ -16285,6 +16285,47 @@ Resolves three targeted backend warnings on the self-hosted MSIL backend (``W000
 
 ---
 
+## D-progress-682 — `Lyric.Docker.ping` targeted Docker's non-existent `/ping` endpoint instead of `/_ping`
+
+Discovered while independently verifying `Lyric.Docker`'s live-daemon
+container lifecycle end-to-end against a real `dockerd` (as part of
+confirming nichobbs/cloud-agents' server can genuinely create runner
+containers, not just compile). `ping(client)` built its request URL as
+`client.apiBase + "/ping"`; the real Docker Engine API endpoint is
+`/_ping` (leading underscore) — Docker's own OpenAPI spec and every other
+official client use `_ping`. The plain `/ping` path 404s
+(`{"message":"page not found"}`) against a real daemon, so `ping()`
+always returned `Err` regardless of daemon health.
+
+**Root cause**: a typo introduced when `ping()` was ported from the
+inline pre-#4503 implementation to route through the shared
+`fetchBodyText`/`sendAndReadBody` helpers — the endpoint string was never
+verified against a live daemon at the time (no test in
+`lyric-docker/tests/` exercises a live connection; `ping()` isn't called
+by `createContainer`/`startContainer`/`stopContainer`/`removeContainer`,
+so this was invisible to any consumer that only manages containers).
+
+**Fix**: `client.apiBase + "/_ping"`.
+
+**Verification**: manually confirmed against a real `dockerd` (TCP
+transport, `127.0.0.1:2375`) that `GET /v1.40/ping` returns 404 and
+`GET /v1.40/_ping` returns `200 OK`; `lyric-docker`'s existing 44-case
+offline test suite (`lyric test --manifest lyric-docker/lyric.toml`)
+still passes unchanged (none of it exercises a live daemon). While
+verifying this, also confirmed the full container lifecycle
+(`createContainerWithNetwork`/`startContainer`/`stopContainer`/
+`removeContainer`) already works correctly end-to-end against a live
+daemon when built from current `main` — an `InvalidProgramException`
+previously observed against the *published* `Lyric.Docker` 0.4.29 NuGet
+package on any live-daemon call (`ping`, `createContainerWithNetwork`,
+etc.) does not reproduce when rebuilt from this source with the current
+compiler, confirming 0.4.29 was a stale artifact predating an unrelated
+async-codegen fix rather than a live source defect; NuGet already carries
+a fixed 0.4.31 build.
+
+**Related:** nichobbs/cloud-agents (Lyric.Docker version bump from 0.4.29
+to 0.4.31 tracked in that repo).
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
