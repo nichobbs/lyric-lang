@@ -30310,3 +30310,9 @@ The self-hosted MSIL backend has been successfully resolved of three targeted co
    - **Solution**: Annotated the five conversion helpers (`dblToSingle`, `singleToInt32Bits`, `int64BitsToDouble`, `int32BitsToSingle`, and `singleToDouble`) with `@externStatic`, satisfying the incremental verification requirements.
 
 **Related:** `docs/03-decision-log.md` D-progress-681, D-progress-671, D-progress-667; #5746, #5747, #5748, #5749, #5750, #5751.
+
+## `lyric build --release` (manifest mode) ignored `[nuget]` dependencies as ILC references (2026-07-15)
+
+`buildReleaseProject` — the `lyric build --release` code path for manifest/multi-package projects — only ever collected ILC managed references from `[dependencies]` `path = "..."` entries, never from `[nuget]`-resolved assemblies (neither restored Lyric packages published via NuGet like `Lyric.Web`/`Lyric.Docker`, nor genuine third-party assemblies). Any Native AOT binary built from a project that declares its dependencies via `[nuget]` (no `[dependencies]` table at all, a common shape) crashed instantly with `System.IO.FileNotFoundException`. Fixed by reusing `resolveManifestDependencies` (`cli/workspace_builder.l`) — the same dependency resolution `buildProject` already relies on for the managed staging build — merging its `restoredDlls` and `nugetThirdPartyPaths` into `extraRefs`. Verified with a new CI regression (`aot-smoke`'s "manifest project with [nuget] dep" step) and against `nichobbs/cloud-agents`' real multi-package `lyric.toml`.
+
+**Related:** `docs/03-decision-log.md` D-progress-682; #5782, #5783, #5784.

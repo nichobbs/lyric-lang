@@ -16283,6 +16283,21 @@ Resolves three targeted backend warnings on the self-hosted MSIL backend (``W000
 
 **Related:** D-progress-671, D-progress-667, #2494, #5746, #5747, #5748, #5749, #5750, #5751.
 
+## D-progress-682 — `lyric build --release` (manifest mode) silently dropped every `[nuget]` dependency from the ILC reference list (#5782)
+
+`buildReleaseProject` (`lyric-compiler/lyric/cli/cli_build.l`, the manifest/multi-package `lyric build --release` path) computed `extraRefs` — the additional managed DLLs passed to `Lyric.Release.buildReleaseDotnet` as ILC references — from a bespoke walk over `[dependencies]` entries with a local `path = "..."` source only. It never consulted `[nuget]`-resolved assemblies at all, whether a restored Lyric package published via NuGet (e.g. `Lyric.Web`, `Lyric.Docker`) or a genuine third-party .NET assembly (e.g. `Microsoft.Data.Sqlite`, `Newtonsoft.Json`).
+
+**Root cause**: the managed staging build (`buildProject`, called earlier in the same function to produce the DLL ILC then compiles) already resolves this correctly via `resolveManifestDependencies` (`cli/workspace_builder.l`) — workspace deps, local path deps (with transitive deps), and `[nuget]` assets split into `restoredDlls` (Lyric packages) vs. `nugetThirdPartyPaths` (third-party) — so the managed DLL runs fine under the JIT (which resolves references via normal probing). `buildReleaseProject` never reused that result for its own `extraRefs`, so ILC — which has no equivalent runtime probing — never saw those assemblies as reference inputs. Found while building a Native AOT release pipeline for `nichobbs/cloud-agents`, whose `lyric.toml` declares every dependency via `[nuget]` (no `[dependencies]` entries at all): every reference was silently dropped, and the resulting binary crashed instantly with `System.IO.FileNotFoundException: Could not find file 'Web'`.
+
+**Solution**: `buildReleaseProject` now calls `resolveManifestDependencies` — the same function `buildProject` already relies on — and merges its `restoredDlls` (path-extracted from the `"depName\tdllPath"` shape the emitter already uses) and `nugetThirdPartyPaths` into `extraRefs`, replacing the old `[dependencies]`-only loop. This also fixes two latent gaps the old loop had: workspace dependencies and *transitive* local-path dependencies were never added to `extraRefs` either.
+
+### Verification
+
+- A minimal two-package manifest project with a `[nuget]` dependency on `Newtonsoft.Json` (not part of the shared framework, so a real restore + reference is required) now builds, links, and runs correctly under `lyric build --release --rid linux-x64`. Added as a CI regression (`aot-smoke` job, "Release Native AOT smoke test — manifest project with [nuget] dep").
+- `nichobbs/cloud-agents`' real `lyric.toml` (17 packages, `[nuget]`-only deps on `Lyric.Web`/`Lyric.Docker`/`Std.Logging`/`Microsoft.Data.Sqlite`) no longer crashes with `FileNotFoundException`; the produced binary now runs substantially further before hitting two separate, already-tracked issues (#5783 — NuGet-restored *native* runtime assets like `libe_sqlite3.so` aren't staged beside a `--release` output; #5784 — an async-func state-machine ILC "Invalid IL or CLR metadata" failure inside `lyric-docker`, distinct from #5781's `slice[Record]`+`for-in` miscompile).
+
+**Related:** #5782, #5783, #5784, #5781.
+
 ---
 
 ## D-progress-682 — `Lyric.Docker.ping` targeted Docker's non-existent `/ping` endpoint instead of `/_ping`

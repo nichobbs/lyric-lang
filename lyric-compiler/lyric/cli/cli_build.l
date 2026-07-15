@@ -1218,55 +1218,33 @@ func buildReleaseProject(
     return buildExit
   }
 
-  // Collect the pre-built DLL paths of local-path dependencies.  These are not
-  // embedded in the bundle — the AOT linker needs them as managed references.
+  // Collect every managed reference the AOT linker needs but the staging DLL
+  // above doesn't embed: workspace deps, local `path = "..."` deps (and
+  // their transitive deps), and `[nuget]`-resolved assets — both restored
+  // Lyric packages (e.g. `Lyric.Web`, `Lyric.Docker`) and genuine
+  // third-party .NET assemblies (e.g. `Microsoft.Data.Sqlite`).  Reuses
+  // `resolveManifestDependencies` — the exact same resolution `buildProject`
+  // already ran to build the staging DLL above — instead of a bespoke
+  // `[dependencies]`-only walk that silently dropped every `[nuget]` entry,
+  // which crashed ILC at runtime with `FileNotFoundException` for any
+  // NuGet-restored assembly the program actually calls into (#5782).
+  val resolved = resolveManifestDependencies(manifest, mfPath, Dotnet, cliFeatures, noDefaultFeatures)
+  if resolved.hadWorkspaceError {
+    return 1
+  }
   val extraRefs: List[String] = newList()
-  var di = 0
-  while di < manifest.deps.count {
-    val dep = manifest.deps[di]
-    match dep.source {
-      case Path(dir) -> {
-        val depDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
-        val depToml = Path.join(depDir, "lyric.toml")
-        val depBinDir = Path.join(depDir, "bin")
-        if not File.fileExists(depToml) {
-          printErr(
-            "build: --release: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml +
-              "'; check the path = \"...\" entry in your lyric.toml"
-          )
-          return 1
-        }
-        match File.readText(depToml) {
-          case Ok(depMfText) -> {
-            match Mf.parseManifest(depMfText, depToml) {
-              case Ok(depMf) -> {
-                val dllName = match depMf.project {
-                  case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
-                  case None -> depMf.packageSection.name + ".dll"
-                }
-                val dllPath = Path.join(depBinDir, dllName)
-                if File.fileExists(dllPath) {
-                  extraRefs.add(dllPath)
-                } else {
-                  printErr("build: --release: " + Release.localDepNotBuiltMessage(dep.name, dllPath, depToml))
-                  return 1
-                }
-              }
-              case Err(e) -> {
-                printErr("build: --release: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
-                return 1
-              }
-            }
-          }
-          case Err(e) -> {
-            printErr("build: --release: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
-            return 1
-          }
-        }
-      }
-      case _ -> ()
-    }
-    di += 1
+  var rdi = 0
+  while rdi < resolved.restoredDlls.count {
+    val entry = resolved.restoredDlls[rdi]
+    val tabPos = entry.indexOf("\t")
+    val dllPath = if tabPos >= 0 { entry.substring(tabPos + 1, entry.length - tabPos - 1) } else { entry }
+    extraRefs.add(dllPath)
+    rdi += 1
+  }
+  var npi = 0
+  while npi < resolved.nugetThirdPartyPaths.count {
+    extraRefs.add(resolved.nugetThirdPartyPaths[npi])
+    npi += 1
   }
 
   val stem = stemOf(dllBase, 4)
