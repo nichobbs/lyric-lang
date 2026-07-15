@@ -25540,11 +25540,19 @@ func isClrDateTimeMsil(t: in MsilType): Bool {
 // index (in practice, System.* core types that are type-forwarded from
 // System.Private.CoreLib via the System.Runtime facade).  The call to
 // ensureMetadataIndex is a no-op after the first use.
+//
+// The "Lyric.Emitter" branch is keyed on the exact "Lyric.Emitter" prefix, not
+// a broader "Lyric." prefix: the stage-1 self-hosted DLLs (including
+// Lyric.Stdlib.dll) must never carry an AssemblyRef to Lyric.Emitter (Band 5
+// invariant, docs/23-fsharp-shim-elimination.md, enforced by
+// scripts/check_assembly_refs.sh), and a broader match would misroute any
+// other unresolved "Lyric.*"-namespaced CLR FQN encountered while compiling
+// the stdlib bundle itself into a forbidden reference.
 func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
     case Some(asm) -> asm
-    case None -> if startsWith(clrFqn, "Lyric.") { "Lyric.Emitter" }
+    case None -> if startsWith(clrFqn, "Lyric.Emitter") { "Lyric.Emitter" }
                  else if startsWith(clrFqn, "Std.") { "Lyric.Stdlib" }
                  else { "System.Runtime" }
   }
