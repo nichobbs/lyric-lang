@@ -157,34 +157,28 @@ async func fetchBodyText(client: in DockerClient, urlStr: in String, failMsg: in
   await sendAndReadBody(client, Std.Http.request(Std.Http.GET, url), urlStr, failMsg)
 }
 
-/// Raw response bytes paired with the response's `Content-Type` header (if
-/// present). `getContainerLogs` uses the header to distinguish a TTY-mode
-/// raw byte stream (`application/vnd.docker.raw-stream`) from the framed
-/// multiplexed format (`application/vnd.docker.multiplexed-stream`) before
-/// deciding whether to run `demultiplexDockerStream`.
-record BytesWithContentType {
-  bytes: slice[Byte]
-  contentType: Option[String]
-}
-
-/// Send a request and return the response body bytes (and Content-Type
-/// header) on success, or a `DockerError` (carrying the status code and
-/// body text) on failure. Mirrors `sendAndReadBody` for endpoints (like
-/// `getContainerLogs`) that need the raw byte stream on success but the
-/// same text-body error-wrapping on failure.
+/// Send a request and return the response body bytes on success, or a
+/// `DockerError` (carrying the status code and body text) on failure.
+/// Mirrors `sendAndReadBody` for endpoints (like `getContainerLogs`) that
+/// need the raw byte stream on success but the same text-body error-wrapping
+/// on failure. Does not surface the response's `Content-Type` header: it was
+/// previously used by `getContainerLogs` to guess raw-vs-multiplexed, but
+/// that header is not a reliable signal for that decision (see
+/// `getContainerLogs`'s doc comment) and every current caller only needs the
+/// bytes.
 async func sendAndReadBytes(
   client: in DockerClient,
   request: in Std.Http.HttpRequest,
   urlStr: in String,
   failMsg: in String,
-): Result[BytesWithContentType, DockerError] {
+): Result[slice[Byte], DockerError] {
   val sent = await client.handle.send(request)
   val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
 
   if response.isSuccess() {
     val bodyResult = await response.bodyBytes()
     match bodyResult {
-      case Ok(bytes) -> Ok(value = BytesWithContentType(bytes = bytes, contentType = response.header("Content-Type")))
+      case Ok(bytes) -> Ok(value = bytes)
       case Err(_) -> Err(error = fromHttpError(ConnectionFailed(url = urlStr, message = "IO error reading response"), ""))
     }
   } else {
@@ -200,7 +194,7 @@ async func sendAndReadBytes(
 /// body unconditionally. A body-read IO failure on an otherwise-successful
 /// (200) response therefore now surfaces as `Err` instead of the prior
 /// `Ok("connected")` -- an edge case that's effectively unreachable against
-/// Docker's tiny `/ping` payload, and arguably the more honest behavior
+/// Docker's tiny `/_ping` payload, and arguably the more honest behavior
 /// (a response whose body can't be read isn't a clean success either way).
 pub async func ping(client: in DockerClient): Result[String, DockerError] {
   match await fetchBodyText(client, client.apiBase + "/_ping", "Ping failed") {
@@ -888,16 +882,16 @@ pub async func getContainerLogs(client: in DockerClient, containerId: in String)
 
   val urlStr = client.apiBase + "/containers/" + containerId + "/logs?stdout=true&stderr=true"
   val url = resolveDockerUrl(urlStr)?
-  val responseResult = await sendAndReadBytes(client, Std.Http.request(Std.Http.GET, url), urlStr, "Get container logs failed")
-  val response = match responseResult { case Err(e) -> return Err(error = e); case Ok(r) -> r }
+  val bytesResult = await sendAndReadBytes(client, Std.Http.request(Std.Http.GET, url), urlStr, "Get container logs failed")
+  val bytes = match bytesResult { case Err(e) -> return Err(error = e); case Ok(b) -> b }
 
   if isTty {
-    match Std.Encoding.tryDecodeUtf8(response.bytes) {
+    match Std.Encoding.tryDecodeUtf8(bytes) {
       case Some(s) -> Ok(value = s)
       case None -> Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = ""))
     }
   } else {
-    match demultiplexDockerStream(response.bytes) {
+    match demultiplexDockerStream(bytes) {
       case Ok(s) -> Ok(value = s)
       case Err(reason) -> Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = reason))
     }

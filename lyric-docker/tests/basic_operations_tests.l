@@ -280,6 +280,63 @@ test "extractJsonIntField tolerates a tab and newline after the colon" {
   assertEqual(toString(unwrapOr(extracted, -1)), "42", "StatusCode extracted despite tab/newline whitespace")
 }
 
+// ─── Boolean field extraction Tests ─────────────────────────────────────────
+// extractJsonBoolField backs containerIsTty's Config.Tty read: getContainerLogs
+// (#5773) needs an authoritative source for raw-vs-multiplexed log detection,
+// since the /logs response's own Content-Type header always claims
+// "application/vnd.docker.raw-stream" regardless of the container's actual
+// Tty setting.
+test "extractJsonBoolField extracts a true value" {
+  val body = "{\"Config\":{\"Tty\":true}}"
+  val extracted = Lyric.Docker.extractJsonBoolField(body, "Tty")
+  assertTrue(isSome(extracted), "Expected Some")
+  assertTrue(unwrapOr(extracted, false), "Tty true extracted")
+}
+
+test "extractJsonBoolField extracts a false value" {
+  val body = "{\"Config\":{\"Tty\":false}}"
+  val extracted = Lyric.Docker.extractJsonBoolField(body, "Tty")
+  assertTrue(isSome(extracted), "Expected Some")
+  assertTrue(not unwrapOr(extracted, true), "Tty false extracted")
+}
+
+test "extractJsonBoolField returns None when the field is absent" {
+  val body = "{\"Config\":{}}"
+  val extracted = Lyric.Docker.extractJsonBoolField(body, "Tty")
+  assertTrue(isNone(extracted), "Expected None for a missing field")
+}
+
+test "extractJsonBoolField returns None when the field's value is neither true nor false" {
+  val body = "{\"Tty\":\"true\"}"
+  val extracted = Lyric.Docker.extractJsonBoolField(body, "Tty")
+  assertTrue(isNone(extracted), "Expected None for a quoted (non-bare) value")
+}
+
+test "extractJsonBoolField tolerates whitespace after the colon" {
+  val body = "{\"Tty\":\n\t true}"
+  val extracted = Lyric.Docker.extractJsonBoolField(body, "Tty")
+  assertTrue(isSome(extracted), "Expected Some")
+  assertTrue(unwrapOr(extracted, false), "Tty extracted despite whitespace")
+}
+
+test "extractJsonBoolField skips a matching quoted token that isn't a key position" {
+  val body = "{\"Note\":\"Tty is unrelated text here\",\"Tty\":true}"
+  val extracted = Lyric.Docker.extractJsonBoolField(body, "Tty")
+  assertTrue(isSome(extracted), "Expected Some")
+  assertTrue(unwrapOr(extracted, false), "Real Tty key found past the non-key occurrence")
+}
+
+test "extractJsonBoolField scoped to a nested Config object via jsonFieldObjectStart matches containerIsTty's real usage" {
+  val body = "{\"Id\":\"abc\",\"Config\":{\"Tty\":false,\"Image\":\"alpine\"},\"Tty\":true}"
+  val configStart = Lyric.Docker.jsonFieldObjectStart(body, "Config")
+  assertTrue(isSome(configStart), "Expected Some")
+  val pos = unwrapOr(configStart, -1)
+  val configJson = body.substring(pos, body.length - pos)
+  val extracted = Lyric.Docker.extractJsonBoolField(configJson, "Tty")
+  assertTrue(isSome(extracted), "Expected Some")
+  assertTrue(not unwrapOr(extracted, true), "Nested Config.Tty (false) read, not the outer top-level Tty (true)")
+}
+
 // ─── Error-object detection Tests ───────────────────────────────────────────
 // jsonFieldIsObject backs waitContainer's daemon-error detection: Docker's
 // /wait response is {"StatusCode":int,"Error":{"Message":string}|null}, and
@@ -332,7 +389,11 @@ test "jsonFieldObjectStart returns None when the field is absent" {
 // isolation, or a named egress-restricted network) at create time.
 test "createContainerBodyWithNetwork omits NetworkMode when networkMode is empty" {
   val body = Lyric.Docker.createContainerBodyWithNetwork("alpine", [], [], "")
-  assertEqual(body, Lyric.Docker.createContainerBody("alpine", [], []), "Empty networkMode matches the no-network body builder")
+  assertEqual(
+    body,
+    Lyric.Docker.createContainerBody("alpine", [], []),
+    "Empty networkMode matches the no-network body builder"
+  )
   assertFalse(body.contains("NetworkMode"), "No NetworkMode field is emitted when networkMode is empty")
 }
 

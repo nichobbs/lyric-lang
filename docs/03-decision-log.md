@@ -16368,6 +16368,18 @@ a container created without `Tty` now correctly demultiplexes its logs
 still decodes correctly as a raw UTF-8 stream (no regression). The
 existing 44-case offline test suite still passes unchanged.
 
+**Review follow-ups (same PR, #5773):** added 7 offline unit tests for
+`extractJsonBoolField` covering true/false extraction, an absent field,
+a non-bare (quoted) value, whitespace tolerance, a non-key-position
+false match, and the nested-`Config`-object scoping `containerIsTty`
+actually uses — mirroring `extractJsonIntField`'s existing coverage.
+Also removed the now-dead `BytesWithContentType.contentType` field and
+its stale doc comment: `getContainerLogs` was the type's only consumer
+and no longer reads the header at all now that `containerIsTty` is
+authoritative, so `sendAndReadBytes` returns plain `slice[Byte]`
+instead. Fixed a stale `/ping` reference left in `ping()`'s own doc
+comment by the D-progress-681 fix.
+
 **Related:** D-progress-681; nichobbs/cloud-agents (this was found while
 verifying that repo's runner-container output retrieval genuinely works
 end-to-end, not just compiles).
