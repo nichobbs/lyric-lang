@@ -16399,6 +16399,117 @@ comment by the D-progress-682 fix.
 verifying that repo's runner-container output retrieval genuinely works
 end-to-end, not just compiles).
 
+## D-progress-684 — Fix #5774: un-annotated closure-typed locals bound from a HOF call silently miscompiled (found while investigating #5304)
+
+Investigating #5304 (the pre-existing bug blocking the `UnixSocketHttpClient.cs`
+→ Lyric migration, D-progress-609) surfaced a more serious defect than #5304's
+original description ("a non-last package's closure `.ctor` fails to
+resolve", a build-time panic).  The actual defect, filed as #5774, is a
+**silent, non-deterministic miscompile** that reproduces in a plain
+**single-file** build — no multi-package bundle or cross-package call
+required, despite #5304's original framing:
+
+```
+pub func makeAdder(x: in Int): (Int) -> Int { { y: Int -> x + y } }
+pub func useIt(): Int {
+  val f = makeAdder(5)   // no type annotation
+  f(10)                  // directly returned as useIt(): Int's result
+}
+```
+
+Before the fix this returned a **different garbage integer on every run of
+the same compiled binary**, and `ilverify` confirmed genuinely invalid IL
+(`[StackUnexpected] found object, expected Int32`) — the closure-invoke's
+boxed `object` result was never unboxed because `fctx.funcValRetTypes` had no
+entry for the un-annotated local `f`.  That map was only ever populated for
+an **explicit** `(Int) -> Int` annotation on the binding, or for the #5511
+"function-typed record field" fallback (`val fld = h.f`) — never inferred
+from a plain call whose *callee's own declared return type* is itself
+function-shaped.
+
+**Fix** (`msil/codegen.l`): extended the #5511 machinery
+(`cctx.fieldFuncRetTypes`/`fieldFuncParamTypes`, `recordFieldFuncKeyMsil`) to
+also recognise this shape — `addPackageTokens`'s `IFunc` pass now registers a
+plain (non-async/generator/generic) function's `TFunction`-shaped return type
+under a `"func:" + pkgName + "." + funcName` key, and
+`recordFieldFuncKeyMsil` gained an `ECall(EPath([funcName]), _)` arm that
+resolves the same key for a bare same-package call.  No new call sites were
+needed — `registerFieldFuncValTypesMsil` already runs at every `val` binding.
+
+**#5790 (review finding on this fix, addressed in the same PR before merge):**
+the initial landing keyed the registration by bare package-qualified name
+only, first-registration-wins.  Same-name function overloading by arity is a
+shipped, tested feature (D-progress-324/#1536), so a second overload at a
+different arity — if it *also* returned a function-shaped type — would
+silently steal the first overload's registration, reproducing the exact
+miscompile class this fix exists to close.  Fixed by arity-qualifying the key
+(`"func:" + fqn + "/" + toString(decl.params.count)`, mirroring the
+`arityKey`/bare-name dual registration `funcRetTypes` already uses two blocks
+above) with the bare key retained only as a fallback, and by making
+`recordFieldFuncKeyMsil`'s `ECall` lookup try the arity-qualified key (built
+from the call site's actual `args.count`) before falling back to bare —
+mirroring the arity-qualified-then-bare lookup precedence `funcRetTypes`
+consumers already use elsewhere (e.g. the `c + "/" + toString(cnt)` pattern in
+the cross-package return-type resolver).  A new self-test case
+(`makeOp`/`makeOp` — two same-name overloads at different arities, each
+returning a *different* function-shaped type) covers the regression.
+
+**Verification:** the repro is fixed (5/5 correct runs) and `ilverify`-clean;
+the #5790 overload repro also resolves both overloads correctly (`ilverify`-
+clean); the self-test `func_val_local_rettype_self_test.l` (now 7 cases,
+including the overload regression) is wired into CI; a full stdlib rebuild
+plus a regression sweep (`core`/`iter`/`encoding`/`regex_safe`/`rest`/
+`format`/`collections`/`string_tests`, `closure_correctness_self_test.l` 8/8,
+`typed_ffi_delegate_self_test.l` 1/1, `aspect_weave_self_test.l` 7/7) all
+pass.  Verified end-to-end against a from-scratch stage-1 build (including
+the CLI bundle — `SKIP_CLI_BUNDLE`/`make stage1-fast` does **not** rebuild the
+compiler's own `Lyric.Msil.Codegen.dll`, so validating a `msil/codegen.l`
+change requires the full `stage1_cli_bundle` step, not the front-end-only
+fast loop) plus a direct AOT rebuild against it.
+
+**Correction relative to this issue's own first-pass investigation notes:**
+#5774 was initially suspected to be the same underlying defect as #5735
+(`Std.Xml.findFirst`'s `isNone[XmlNode]` crash) — both looked like a
+monomorphizer `Object`-fallback for an under-inferred generic.  D-progress-674
+(landed independently, in parallel with this fix) found #5735's *actual* root
+cause was unrelated to monomorphizer inference at all: `result` is a global
+reserved keyword at the lexer/parser level, and `findFirst`'s guard variable
+happened to be named `result` — every reference after its declaration silently
+resolved to the reserved `EResult` contract-postcondition expression instead
+of the local, which `Lyric.Mono` has no defined meaning for outside `ensures:`
+elaboration.  Fixed at the parser layer (a scoped `inContractClauseExpr` flag),
+with `findFirst` reverted to the idiomatic `isNone(result)` it should have
+been able to use all along.  #5774's fix is unrelated to and independent of
+that one — confirmed by re-testing #5735's repro against #5774's fix alone
+(still crashed, before D-progress-674 landed) — two genuinely distinct defects
+that happened to look similar from their shared `Object`-fallback/"match not
+exhaustive" symptom.
+
+**#5304 itself remains open but is likely resolved by this fix.**  Every
+repro attempt against #5304's original description (a build-time panic on a
+non-last bundle package) instead reproduced as this issue's silent
+miscompile, in both package orders, with or without a multi-package bundle —
+the original panic-specific repro shape could not be reconstructed.  Re-testing
+#5304's own exact 8-package repro (real `http_host.l`/`http.l` content, a
+capturing lambda added to the non-last `Std.HttpHost` package) against this
+fix now builds clean with no panic — encouraging, though not fully conclusive,
+since the original repro's extern-delegate-typed lambda shape (a
+`SocketsHttpHandler.ConnectCallback`-bound closure via D122) was not
+separately re-verified.  #5304 is left open pending that; if the original
+panic recurs post-fix on that specific shape, that is real evidence of a
+second, distinct residual defect rather than reason to reopen this one.
+
+**Unblocks:** the Unix Socket migration (`UnixSocketHttpClient.cs` →
+`Std.HttpHost`, D-progress-609) is no longer blocked on the silent-miscompile
+risk #5774 found — the migration's target shape (a capturing lambda inside
+`Std.HttpHost`, consumed as a typed value) is exactly what this fix covers
+and regression-tests.
+
+**Related:** #5774, #5790, #5304, D-progress-609, D-progress-674,
+docs/50-ffi-delegates-proposal.md, #5511, #5735.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
