@@ -16326,6 +16326,52 @@ a fixed 0.4.31 build.
 **Related:** nichobbs/cloud-agents (Lyric.Docker version bump from 0.4.29
 to 0.4.31 tracked in that repo).
 
+## D-progress-682 — `Lyric.Docker.getContainerLogs` misdetected raw-vs-multiplexed streams: `/logs`'s `Content-Type` header is not a valid signal
+
+Discovered immediately after D-progress-681, in the same live-daemon
+verification pass, once `nichobbs/cloud-agents` actually created a real
+runner container and tried to read its output: every call failed with
+`"Failed to decode container logs as UTF-8"`.
+
+**Root cause**: `getContainerLogs` decided whether to run
+`demultiplexDockerStream` on the response bytes based on the `/logs`
+response's own `Content-Type` header, treating
+`application/vnd.docker.raw-stream` as "the container has a TTY, decode
+the bytes as UTF-8 directly" and anything else as "framed multiplexed,
+demultiplex first." Verified against a live daemon (Docker Engine 29.3):
+this header reads `application/vnd.docker.raw-stream` **unconditionally**
+for every container's `/logs` response, TTY or not — it is not a
+per-container signal at all for this endpoint (unlike `/attach`, which
+this project's header comment appears to have generalized from). A
+non-TTY container's body is genuinely framed-multiplexed (confirmed by
+inspecting the raw bytes: `\x02\x00\x00\x00\x00\x00\x00\x33` — stream
+type 2 (stderr), length 0x33 — followed by the payload), so trusting the
+header fed the 8-byte frame headers straight into UTF-8 decoding, which
+correctly fails (frame-header bytes are not valid UTF-8) on every
+non-TTY container — the overwhelmingly common case, since neither
+`createContainer` nor `createContainerWithNetwork` ever sets `Tty`. No
+existing test caught this (lyric-docker's suite is entirely offline; a
+hand-built response body can encode whatever `Content-Type` the test
+wants, so nothing exercised the *actual* header Docker sends).
+
+**Fix**: added `containerIsTty(client, containerId)`, which queries `GET
+/containers/{id}/json` and reads `Config.Tty` (the authoritative source)
+instead of the `/logs` response header. `getContainerLogs` now calls this
+before fetching logs and decides raw-vs-multiplexed from that. Added
+`extractJsonBoolField` (mirroring the existing `extractJsonIntField`) to
+read the boolean field, reusing `jsonFieldObjectStart` to scope the
+lookup to the nested `Config` object.
+
+**Verification**: against a live daemon, confirmed both directions —
+a container created without `Tty` now correctly demultiplexes its logs
+(previously always failed), and a container created with `Tty: true`
+still decodes correctly as a raw UTF-8 stream (no regression). The
+existing 44-case offline test suite still passes unchanged.
+
+**Related:** D-progress-681; nichobbs/cloud-agents (this was found while
+verifying that repo's runner-container output retrieval genuinely works
+end-to-end, not just compiles).
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
