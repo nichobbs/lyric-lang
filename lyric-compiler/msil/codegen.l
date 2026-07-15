@@ -3719,24 +3719,37 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // value is then used somewhere requiring the real value type (e.g.
         // returned directly as a function's own typed result).  Scoped to the
         // plain (non-async, non-generator, non-generic) case only, mirroring
-        // the `else` arm above that computed `retTy` for `decl.ret`; keyed by
-        // the BARE package-qualified name (not arity) — first-wins, matching
-        // every other bare-key registration in this pass.
+        // the `else` arm above that computed `retTy` for `decl.ret`.
+        // #5790 (review finding on the original #5774 fix): keyed by BOTH the
+        // arity-qualified name (`"func:" + fqn + "/" + arity`, first-choice at
+        // the lookup site) and the bare name (fallback only) — mirroring the
+        // `arityKey`/`fqn` dual registration for `funcRetTypes` two blocks
+        // above.  A bare-only key would let a same-name overload (D-progress-
+        // 324/#1536: overloading by arity is a shipped, tested feature) whose
+        // OTHER arity also returns a function type silently steal this one's
+        // registration — reproducing the exact miscompile class this fix
+        // exists to close.
         if not isGen and not isSm and declGenerics.count == 0 {
           match decl.ret {
             case Some(te) -> {
               match te.kind {
                 case TFunction(fParamTes, fRetTe) -> {
-                  val funcValKey = "func:" + fqn
-                  if not cctx.fieldFuncRetTypes.containsKey(funcValKey) {
-                    cctx.fieldFuncRetTypes.add(funcValKey, typeExprToMsilCtx(cctx, fRetTe, pkgName))
-                    val fParamMsilTys: List[MsilType] = newList()
-                    var fvpi = 0
-                    while fvpi < fParamTes.count {
-                      fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[fvpi], pkgName))
-                      fvpi = fvpi + 1
-                    }
-                    cctx.fieldFuncParamTypes.add(funcValKey, fParamMsilTys)
+                  val funcValRetTy = typeExprToMsilCtx(cctx, fRetTe, pkgName)
+                  val fParamMsilTys: List[MsilType] = newList()
+                  var fvpi = 0
+                  while fvpi < fParamTes.count {
+                    fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[fvpi], pkgName))
+                    fvpi = fvpi + 1
+                  }
+                  val funcValArityKey = "func:" + fqn + "/" + toString(decl.params.count)
+                  if not cctx.fieldFuncRetTypes.containsKey(funcValArityKey) {
+                    cctx.fieldFuncRetTypes.add(funcValArityKey, funcValRetTy)
+                    cctx.fieldFuncParamTypes.add(funcValArityKey, fParamMsilTys)
+                  }
+                  val funcValBareKey = "func:" + fqn
+                  if not cctx.fieldFuncRetTypes.containsKey(funcValBareKey) {
+                    cctx.fieldFuncRetTypes.add(funcValBareKey, funcValRetTy)
+                    cctx.fieldFuncParamTypes.add(funcValBareKey, fParamMsilTys)
                   }
                 }
                 case _ -> ()
@@ -14404,13 +14417,21 @@ func recordFieldFuncKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr
         case _ -> ""
       }
     }
-    case ECall(callee, _) -> {
+    case ECall(callee, args) -> {
       match callee.kind {
         case EPath(path) -> {
           if path.segments.count == 1 {
-            val key = "func:" + fctx.pkgName + "." + path.segments[0]
-            if cctx.fieldFuncRetTypes.containsKey(key) {
-              key
+            // #5790: try the arity-qualified key first — the same overload-
+            // safety precedence `funcRetTypes` call-site lookups use
+            // elsewhere (arity-qualified, then bare-name fallback) — so a
+            // same-name overload at a different arity can't steal this call
+            // site's registration.
+            val bareKey = "func:" + fctx.pkgName + "." + path.segments[0]
+            val arityKey = bareKey + "/" + toString(args.count)
+            if cctx.fieldFuncRetTypes.containsKey(arityKey) {
+              arityKey
+            } else if cctx.fieldFuncRetTypes.containsKey(bareKey) {
+              bareKey
             } else {
               ""
             }
@@ -25617,9 +25638,7 @@ func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
     case Some(asm) -> asm
-    case None -> if startsWith(clrFqn, "Lyric.Emitter") { "Lyric.Emitter" }
-                 else if startsWith(clrFqn, "Std.") { "Lyric.Stdlib" }
-                 else { "System.Runtime" }
+    case None -> if startsWith(clrFqn, "Lyric.Emitter") { "Lyric.Emitter" } else if startsWith(clrFqn, "Std.") { "Lyric.Stdlib" } else { "System.Runtime" }
   }
 }
 

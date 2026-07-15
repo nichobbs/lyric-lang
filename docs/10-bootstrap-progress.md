@@ -30331,7 +30331,7 @@ bundle as #5304's description implied.  Fixed in `msil/codegen.l` by
 extending the existing #5511 function-typed-record-field inference machinery
 to also cover a plain same-package function call whose declared return type
 is `TFunction`.  Verified: the repro is fixed and `ilverify`-clean; new
-self-test `func_val_local_rettype_self_test.l` (6 cases) wired into CI.
+self-test `func_val_local_rettype_self_test.l` (7 cases) wired into CI.
 Initially suspected to be the same defect as #5735 (`Std.Xml.findFirst`), but
 that issue's actual root cause (landed independently in parallel, the entry
 above) was the unrelated `result`-keyword parser bug — the two looked similar
@@ -30339,5 +30339,21 @@ only because both produced the same `Object`-fallback/"match not exhaustive"
 symptom.  Unblocks the Unix Socket migration (D-progress-609) previously held
 up by the risk of this silent-corruption class of bug.
 
-**Related:** `docs/03-decision-log.md` D-progress-684; #5774, #5304,
+**#5790** (review finding, fixed pre-merge in the same PR): the initial
+registration key was bare-name-only, so a same-name function overload at a
+different arity (arity overloading is shipped/tested, D-progress-324/#1536)
+could silently steal another overload's function-value return/param types.
+Fixed by arity-qualifying both the registration and lookup keys, mirroring
+the `funcRetTypes` arity-first/bare-fallback pattern already used elsewhere
+in the same file; a new overload regression case covers it.
+
+**Note:** validating a `msil/codegen.l` change requires a full stage-1 build
+including the CLI bundle (`./scripts/bootstrap.sh --stage 1`, *not*
+`SKIP_CLI_BUNDLE=1`/`make stage1-fast`) — the CLI bundle step is what rebuilds
+the compiler's own per-package DLLs (`Lyric.Msil.Codegen.dll` etc.); the
+`stage1-fast` inner loop only refreshes the stdlib bundle and is safe for
+front-end-only (lexer/parser/type-checker) iteration, not backend-codegen
+changes.
+
+**Related:** `docs/03-decision-log.md` D-progress-684; #5774, #5790, #5304,
 D-progress-609, D-progress-674, #5511, #5735.

@@ -16436,12 +16436,36 @@ under a `"func:" + pkgName + "." + funcName` key, and
 resolves the same key for a bare same-package call.  No new call sites were
 needed — `registerFieldFuncValTypesMsil` already runs at every `val` binding.
 
+**#5790 (review finding on this fix, addressed in the same PR before merge):**
+the initial landing keyed the registration by bare package-qualified name
+only, first-registration-wins.  Same-name function overloading by arity is a
+shipped, tested feature (D-progress-324/#1536), so a second overload at a
+different arity — if it *also* returned a function-shaped type — would
+silently steal the first overload's registration, reproducing the exact
+miscompile class this fix exists to close.  Fixed by arity-qualifying the key
+(`"func:" + fqn + "/" + toString(decl.params.count)`, mirroring the
+`arityKey`/bare-name dual registration `funcRetTypes` already uses two blocks
+above) with the bare key retained only as a fallback, and by making
+`recordFieldFuncKeyMsil`'s `ECall` lookup try the arity-qualified key (built
+from the call site's actual `args.count`) before falling back to bare —
+mirroring the arity-qualified-then-bare lookup precedence `funcRetTypes`
+consumers already use elsewhere (e.g. the `c + "/" + toString(cnt)` pattern in
+the cross-package return-type resolver).  A new self-test case
+(`makeOp`/`makeOp` — two same-name overloads at different arities, each
+returning a *different* function-shaped type) covers the regression.
+
 **Verification:** the repro is fixed (5/5 correct runs) and `ilverify`-clean;
-a new self-test `func_val_local_rettype_self_test.l` (6 cases) is wired into
-CI; a full stdlib rebuild plus a regression sweep (`core`/`iter`/`encoding`/
-`regex_safe`/`rest`/`format`/`collections`/`string_tests`,
-`closure_correctness_self_test.l` 8/8, `typed_ffi_delegate_self_test.l` 1/1,
-`aspect_weave_self_test.l` 7/7) all pass.
+the #5790 overload repro also resolves both overloads correctly (`ilverify`-
+clean); the self-test `func_val_local_rettype_self_test.l` (now 7 cases,
+including the overload regression) is wired into CI; a full stdlib rebuild
+plus a regression sweep (`core`/`iter`/`encoding`/`regex_safe`/`rest`/
+`format`/`collections`/`string_tests`, `closure_correctness_self_test.l` 8/8,
+`typed_ffi_delegate_self_test.l` 1/1, `aspect_weave_self_test.l` 7/7) all
+pass.  Verified end-to-end against a from-scratch stage-1 build (including
+the CLI bundle — `SKIP_CLI_BUNDLE`/`make stage1-fast` does **not** rebuild the
+compiler's own `Lyric.Msil.Codegen.dll`, so validating a `msil/codegen.l`
+change requires the full `stage1_cli_bundle` step, not the front-end-only
+fast loop) plus a direct AOT rebuild against it.
 
 **Correction relative to this issue's own first-pass investigation notes:**
 #5774 was initially suspected to be the same underlying defect as #5735
@@ -16481,7 +16505,7 @@ risk #5774 found — the migration's target shape (a capturing lambda inside
 `Std.HttpHost`, consumed as a typed value) is exactly what this fix covers
 and regression-tests.
 
-**Related:** #5774, #5304, D-progress-609, D-progress-674,
+**Related:** #5774, #5790, #5304, D-progress-609, D-progress-674,
 docs/50-ffi-delegates-proposal.md, #5511, #5735.
 
 ---

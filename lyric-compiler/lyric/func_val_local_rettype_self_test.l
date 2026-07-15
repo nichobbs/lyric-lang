@@ -21,6 +21,16 @@
 //! `TFunction`, registered once per function in `addPackageTokens`'s IFunc
 //! pass under a `"func:" + pkgName + "." + funcName` key.
 //!
+//! #5790 (review finding on the original #5774 fix): the initial landing
+//! keyed this registration by BARE name only, first-registration-wins — which
+//! let a same-name overload at a DIFFERENT arity (D-progress-324/#1536:
+//! overloading by arity is a shipped, tested feature) silently steal another
+//! overload's function-value return/param types, reproducing the same
+//! miscompile class this fix exists to close.  Fixed by arity-qualifying the
+//! key (mirroring `funcRetTypes`' `arityKey`/bare-name dual registration and
+//! its call-site arity-first lookup precedence); the bare-name key remains as
+//! a fallback only.  See the last test below for the regression case.
+//!
 //! Run in CI via native `lyric test --target dotnet`:
 //!
 //!   lyric test lyric-compiler/lyric/func_val_local_rettype_self_test.l
@@ -81,4 +91,23 @@ test "un-annotated closure local, two-parameter" {
 test "explicitly-annotated closure local still works (pre-existing path, no regression)" {
   val f: (Int) -> Int = makeAdder(5)
   assertEqualInt(f(10), 15, "annotated makeAdder(5)(10) == 15")
+}
+
+// Two same-name overloads (D-progress-324/#1536) at different arities, each
+// returning a DIFFERENT function-shaped type.  #5790: a bare-name-only key
+// would let the second overload's call site silently inherit the first
+// overload's return/param types.
+func makeOp(x: in Int): (Int) -> Int {
+  { y: Int -> x + y }
+}
+
+func makeOp(x: in Int, label: in String): () -> String {
+  { -> label + toString(x) }
+}
+
+test "overloaded HOF-returning functions at different arities resolve independently (#5790)" {
+  val f = makeOp(5)
+  assertEqualInt(f(10), 15, "makeOp(5)(10) == 15 (1-arity overload)")
+  val g = makeOp(7, "n=")
+  assertEqual(g(), "n=7", "makeOp(7, \"n=\")() == \"n=7\" (2-arity overload)")
 }
