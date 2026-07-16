@@ -298,9 +298,12 @@ pub func hostClientNoRedirects(): HttpClientHandle {
 // Native Lyric via a `SocketsHttpHandler.ConnectCallback` typed-delegate
 // binding (D122/docs/50-ffi-delegates-proposal.md) — no host-assembly
 // dependency, unlike the retired `Lyric.Cli.Aot.UnixSocketHttpClient` this
-// replaced (D-progress-609/684; docs/59-compiler-stdlib-deep-review.md §7.3).
+// replaced (D-progress-685; docs/59-compiler-stdlib-deep-review.md §7.3).
 // ---------------------------------------------------------------------------
-pub func hostClientWithUnixSocket(socketPath: in String): HttpClientHandle {
+// Shared construction for every `hostClientWithUnixSocket*` variant below —
+// a `SocketsHttpHandler` whose `ConnectCallback` dials `socketPath` on every
+// connection.
+func newUnixSocketHandler(socketPath: in String): SocketsHttpHandler {
   val handler = newSocketsHandler()
   socketsSetConnectCallback(
     handler,
@@ -308,30 +311,22 @@ pub func hostClientWithUnixSocket(socketPath: in String): HttpClientHandle {
       newValueTaskOfStream(connectUnixSocket(socketPath))
     }
   )
-  newClientFromSocketsHandler(handler)
+  handler
+}
+
+pub func hostClientWithUnixSocket(socketPath: in String): HttpClientHandle {
+  newClientFromSocketsHandler(newUnixSocketHandler(socketPath))
 }
 
 pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClientHandle {
-  val handler = newSocketsHandler()
-  socketsSetConnectCallback(
-    handler,
-    { context: SocketsHttpConnectionContext, ct: CancellationToken ->
-      newValueTaskOfStream(connectUnixSocket(socketPath))
-    }
-  )
+  val handler = newUnixSocketHandler(socketPath)
   socketsSetAllowAutoRedirect(handler, true)
   socketsSetMaxAutomaticRedirections(handler, maxRedirects)
   newClientFromSocketsHandler(handler)
 }
 
 pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClientHandle {
-  val handler = newSocketsHandler()
-  socketsSetConnectCallback(
-    handler,
-    { context: SocketsHttpConnectionContext, ct: CancellationToken ->
-      newValueTaskOfStream(connectUnixSocket(socketPath))
-    }
-  )
+  val handler = newUnixSocketHandler(socketPath)
   socketsSetAllowAutoRedirect(handler, false)
   newClientFromSocketsHandler(handler)
 }
