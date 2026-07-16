@@ -3009,6 +3009,16 @@ pub func collectFileSigsSeeded(
         // `public static final` singleton field `lowerEnum` emits, read via
         // `getstatic` and pattern-tested by reference identity.
         val enumCls = owner + "/" + decl.name
+        // Package-qualified key (`enum:<dotted package>.<Case>`, e.g.
+        // "enum:Std.Http.GET"), alongside the type-scoped `enum:<Enum>.<Case>`
+        // key above: Lyric enum cases are conventionally referenced through
+        // their declaring PACKAGE, not an explicit `<EnumType>.` segment
+        // (`Std.Http.GET`, not `Std.Http.HttpMethod.GET`) — mirrors MSIL's
+        // `registerEnumDeclMsil` `qn = pkgName + "." + cn` key (#5769, JVM
+        // parity for MSIL's #5737 fix). `owner` is the JVM slash-path
+        // (`Std/Http`); the source-level dotted package name is the same
+        // segments joined with `.` instead.
+        val dottedPkg = owner.replace("/", ".")
         var eci = 0
         while eci < decl.cases.count {
           val ecn = decl.cases[eci].name
@@ -3025,6 +3035,10 @@ pub func collectFileSigsSeeded(
           val etkey = "enum:" + decl.name + "." + ecn
           if not into.containsKey(etkey) {
             into.add(etkey, esig)
+          }
+          val epkey = "enum:" + dottedPkg + "." + ecn
+          if not into.containsKey(epkey) {
+            into.add(epkey, esig)
           }
           val ebkey = "enumcase:" + ecn
           if not into.containsKey(ebkey) {

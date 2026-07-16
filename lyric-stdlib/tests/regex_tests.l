@@ -1,6 +1,7 @@
 //! Tests for Std.Regex (#330) — the public Result-based regex wrapper.
-//! Uses the `func main(): Unit` + `println "ok"` shape discovered by
-//! StdlibLyricTests.fs.
+//! Uses the `func main(): Unit` + `println "ok"` shape run via `lyric run`
+//! in the "Stdlib runtime suites on dotnet" CI step
+//! (.github/workflows/ci.yml).
 package Std.Regex.Tests
 
 import Std.Core

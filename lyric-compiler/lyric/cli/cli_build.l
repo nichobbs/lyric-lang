@@ -1408,7 +1408,10 @@ func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, m
 // extra-references list, #5786), pass it here instead of letting
 // `buildProject` resolve (and, transitively, rebuild every workspace dep)
 // a second time. `None` re-resolves as before — every other caller.
-func buildProject(
+// `pub` so `cli_build_self_test.l` can drive the `preResolvedDeps` seam
+// directly, proving it is actually honored rather than silently re-resolved
+// (#5819's regression guard for the #5786 double-resolution fix).
+pub func buildProject(
   mfPath: in String,
   explicitOut: in Option[String],
   target: in CompileTarget,

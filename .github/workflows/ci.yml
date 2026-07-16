@@ -758,10 +758,13 @@ jobs:
             lyric-compiler/lyric/version_self_test.l \
             lyric-compiler/lyric/cli_workspace_builder_self_test.l \
             lyric-compiler/lyric/cli_build_self_test.l \
+            lyric-compiler/lyric/cli_shared_self_test.l \
+            lyric-compiler/lyric/cli_copydll_self_test.l \
             lyric-compiler/lyric/cli_publish_self_test.l \
             lyric-compiler/lyric/verifier_self_test.l \
             lyric-compiler/lyric/closure_correctness_self_test.l \
             lyric-compiler/lyric/func_val_local_rettype_self_test.l \
+            lyric-compiler/lyric/qualified_enum_case_self_test.l \
             lyric-compiler/lyric/slice_append_widening_self_test.l \
             lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
             lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
@@ -3963,6 +3966,46 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Qualified enum-case self-test on JVM (#5769) — package-qualified
+      # restored/bundled enum-case value references (Std.Http.GET shape) via
+      # flattenPathExprSegsJvm/tryQualifiedEnumClassJvm; the dotnet half runs
+      # in compiler-self-tests-dotnet-a.
+      - name: Qualified enum-case self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping qualified enum-case JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping qualified enum-case JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/qualified_enum_case_self_test.l
+
+      # HOF-returned-closure local self-test on JVM (#5796) — the JVM parity
+      # control for the MSIL #5774 fix (un-annotated closure-typed locals
+      # bound from a HOF call); verified immune by design (context-based
+      # unbox in lowerLambdaInvoke), this pins it.
+      - name: Func-val local rettype self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping func-val rettype JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping func-val rettype JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/func_val_local_rettype_self_test.l
+
       # Never-tail self-test on JVM (#5652) — the JVM half of the dotnet-job
       # step of the same name.  Pins the Never-in-tail-position default-value
       # push (emitNeverTailReturn parity) on the JVM backend.
@@ -5840,8 +5883,15 @@ jobs:
       # unresolved-call fallback) and `sort_tests` (#5712 — a `pub` generic's
       # private same-package helper wasn't imported alongside it for cross-
       # package monomorphisation) are both fixed and wired in here under
-      # D-progress-674.  Each suite exits non-zero on any assertion failure
-      # or runtime fault.
+      # D-progress-674.  The #5077 audit (2026-07-16) wired the passing
+      # remainder: book_ch01/03/05/07, book_ch13_ffi, kernel_bcl_tests, and
+      # xml_viability_tests.  Deliberately still excluded (tracked, not
+      # silent): book_ch02_tests (#5841 range-subtype isOk mono miscompile),
+      # book_ch04_tests (#5842 inout slice[Int] cast), book_ch12_tests
+      # (#5843 generic-HOF-lambda InvalidProgramException), and
+      # metadata_reader_tests (#5624 placeholder Param rows; also needs
+      # LYRIC_LOAD_COMPILER=1).  Each suite exits non-zero on any assertion
+      # failure or runtime fault.
       - name: Stdlib runtime suites on dotnet (kernels + core stdlib)
         working-directory: ${{ github.workspace }}
         run: |
@@ -5857,7 +5907,9 @@ jobs:
             collections_tests char_tests math_tests hash_tests path_tests \
             errors_tests environment_tests string_tests string_methods_tests \
             regex_tests yaml_tests testing_tests mocking_tests xml_tests \
-            set_tests sort_tests; do
+            set_tests sort_tests \
+            book_ch01_tests book_ch03_tests book_ch05_tests book_ch07_tests \
+            book_ch13_ffi_tests kernel_bcl_tests xml_viability_tests; do
             echo "--- lyric run lyric-stdlib/tests/$suite.l"
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done

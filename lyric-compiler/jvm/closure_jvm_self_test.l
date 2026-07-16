@@ -18,7 +18,11 @@
 //!     through the closure ABI — payload boxing + checkcast/unbox round-trip);
 //!   • a multi-argument lambda and a String-payload capture;
 //!   • a lambda nested inside a list literal whose param shadows an enclosing
-//!     local (#3191 — the param must be bound, not spuriously captured).
+//!     local (#3191 — the param must be bound, not spuriously captured);
+//!   • #5563 item 2: `not <lambda call>` — a lambda-invoke result is always
+//!     erased `Object`, and applying `ixor`/`ifeq`/`ifne` to it directly
+//!     (without unboxing) failed JVM verification, both in a plain `not`
+//!     expression and when the negated call feeds an `if` condition directly.
 //!
 //! Each lambda lowers to a `<pkg>$Lambda$<n>` inner class implementing the
 //! package-shared `<pkg>/Lyric$Lambda` functional interface (uniform
@@ -184,4 +188,31 @@ test "lambda param inside list literal shadows outer local" {
 test "lambda inside protected entry captures field" {
   val a = Adder(amount = 10)
   assertEqualInt(a.bump(5), 15, "Adder(10).bump(5) -> lambda y+10 applied to 5 == 15")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5563 item 2: `not <lambda call>` — `lowerLambdaInvoke` always returns an
+// erased `Object` from a direct closure invoke, so applying `ixor` (or the
+// `ifeq`/`ifne` boolean-condition tests) directly to that unboxed reference
+// failed JVM verification ("Bad type on operand stack ... not assignable to
+// integer"). Fixed by coercing to the JVM primitive `boolean` first, both in
+// the general `not` expression lowering (`EPrefix(PreNot, _)`) and in the
+// `lowerBoolCond`/`lowerBoolCondTrue` boolean-condition fallback arms an
+// `if`/`while` condition goes through.
+// ─────────────────────────────────────────────────────────────────────────────
+test "not applied to a lambda-invoke result" {
+  val isPositive: (Int) -> Bool = { x: Int -> x > 0 }
+  assertTrue(not isPositive(-1), "not isPositive(-1) is true")
+  assertFalse(not isPositive(5), "not isPositive(5) is false")
+}
+
+test "not applied to a lambda-invoke result used directly as an if condition" {
+  val isPositive: (Int) -> Bool = { x: Int -> x > 0 }
+  var branch = ""
+  if not isPositive(-1) {
+    branch = "not-taken-true"
+  } else {
+    branch = "not-taken-false"
+  }
+  assertEqual(branch, "not-taken-true", "if not isPositive(-1) takes the true branch")
 }

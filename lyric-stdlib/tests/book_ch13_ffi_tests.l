@@ -6,8 +6,11 @@
 //!
 //! This file is a regression suite ensuring the examples in chapter 13 compile
 //! and produce correct results. It mirrors the coverage of auto_ffi_self_test.l
-//! but written as a standalone stdlib test (not a @test_module) so that it is
-//! discovered by the Expecto runner in StdlibLyricTests.fs.
+//! but written as a standalone stdlib test (not a @test_module) using the
+//! plain `func main(): Unit` + `println "ok"` convention shared by the other
+//! `lyric-stdlib/tests/*_tests.l` suites run via `lyric run`.  Passes locally
+//! (`./bin/lyric run lyric-stdlib/tests/book_ch13_ffi_tests.l`) but is not yet
+//! wired into the "Stdlib runtime suites on dotnet" CI step (#5077).
 package Book.Ch13.Ffi.Tests
 
 import Std.Core

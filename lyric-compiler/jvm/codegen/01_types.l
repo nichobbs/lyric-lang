@@ -1204,6 +1204,67 @@ pub func enumCaseClassBare(ctx: in FuncCtx, caseName: in String): Option[String]
   enumSigOwner(mapGet(ctx.funcSigs, "enumcase:" + caseName))
 }
 
+// Flatten a chain of nested `EMember`s over an `EPath` root into its full
+// segment list (mirrors MSIL's `flattenPathExprSegs`, #5769). A package-
+// qualified value reference (`Std.Http.GET`) parses as `EMember(EMember(
+// EPath(["Std"]), "Http"), "GET")` — the parser can't tell at parse time
+// whether each dotted segment names a package or a value member, so only a
+// CALL target gets a flat multi-segment `EPath`. Returns an empty list when
+// `e` isn't a pure path/member chain (e.g. its root is a call or index
+// expression).
+pub func flattenPathExprSegsJvm(e: in Expr): List[String] {
+  match e.kind {
+    case EPath(path) -> path.segments
+    case EMember(receiver, memberName) -> {
+      val pre = flattenPathExprSegsJvm(receiver)
+      if pre.count == 0 {
+        return newList()
+      }
+      val segs: List[String] = newList()
+      var i = 0
+      while i < pre.count {
+        segs.add(pre[i])
+        i = i + 1
+      }
+      segs.add(memberName)
+      segs
+    }
+    case _ -> newList()
+  }
+}
+
+// Resolve a qualified enum-case VALUE reference (`Color.Red`, or the
+// package-qualified `Std.Http.GET`) to the declaring enum's JVM class, or
+// `None` when `expr` isn't such a reference (docs/59 §4.4; #5769 is the JVM
+// parity fix for MSIL's `tryQualifiedEnumOrdinalMsil`/#5737). A receiver
+// whose first segment names a local is a real value member-access chain,
+// not an enum reference, and is left to the normal `EMember` lowering.
+pub func tryQualifiedEnumClassJvm(ctx: in FuncCtx, expr: in Expr): Option[String] {
+  match expr.kind {
+    case EMember(recv, memberName) -> {
+      val segs = flattenPathExprSegsJvm(recv)
+      if segs.count == 0 {
+        return None
+      }
+      match lookupSlot(ctx, segs[0]) {
+        case Some(_) -> return None
+        case None -> ()
+      }
+      val enumTy = segs[segs.count - 1]
+      match enumVariantClass(ctx, enumTy, memberName) {
+        case Some(cls) -> return Some(value = cls)
+        case None -> ()
+      }
+      // Package-qualified case reference (`Std.Http.GET`): Lyric enum cases
+      // are conventionally referenced through the declaring PACKAGE, not an
+      // explicit `<EnumType>.` segment — `collectFileSigsSeeded` registers
+      // each case under `"enum:" + <dotted package> + "." + <case>` too.
+      enumSigOwner(mapGet(ctx.funcSigs, "enum:" + joinSegments(segs, ".") + "." + memberName))
+    }
+    case _ -> None
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4d. Declared slice/List element types (docs/59 §4.3 #5439 class).
 // ─────────────────────────────────────────────────────────────────────────────

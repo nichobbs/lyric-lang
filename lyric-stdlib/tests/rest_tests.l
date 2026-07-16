@@ -14,7 +14,8 @@
 //! constructing an `HttpResponse`, which is `pub opaque` in `Std.Http`
 //! and has no test-stub constructor.  Spinning up a loopback
 //! `HttpListener` from a stdlib test is currently out of scope for the
-//! `StdlibLyricTests` harness (it lacks the task-runtime priming the
+//! flat `lyric run` invocation this suite gets in the "Stdlib runtime
+//! suites on dotnet" CI step (it lacks the task-runtime priming the
 //! in-process server needs), and a direct `import Std.Rest` trips a
 //! pre-existing emitter limitation when `Std.Rest` is the first ever
 //! importer of certain payload-bearing union pattern shapes — none of
@@ -156,4 +157,3 @@ func main(): Int {
   println("rest_tests: ok")
   return 0
 }
-

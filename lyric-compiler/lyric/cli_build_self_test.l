@@ -8,6 +8,12 @@
 //!     and asserts `Lyric.Stdlib.dll` is colocated beside the output DLL
 //!     for a runnable program (declares `func main()`) and is NOT for a
 //!     library (no `main`).
+//!   - `hasContribution`'s `nativeAssetPaths` branch and
+//!     `copyNugetNativeAssetsBeside` wiring (#5744) — a manifest whose only
+//!     contribution is a NuGet-resolved native runtime asset.
+//!   - `buildProject`'s `preResolvedDeps` seam (#5786, regression test
+//!     #5819) — a sentinel resolution proves the passed-in value is
+//!     actually read rather than silently re-resolved internally.
 //!
 //! Run in CI via:
 //!
@@ -660,6 +666,91 @@ test "buildOneNative: a manifest with a genuine [nuget]-resolved third-party DLL
   assertTrue(File.fileExists(outPath), "single-file build produces the output DLL")
 }
 
+// #5744: `hasContribution`'s `resolvedDeps.nativeAssetPaths.count > 0` term is
+// the sibling of the #5352 test above — that one exercised
+// `nugetThirdPartyPaths` (a genuine *managed* third-party DLL); this one
+// resolves a `runtimeTargets`-only entry (no sibling `runtime` map for the
+// package, so `nugetThirdPartyPaths`/`restoredDlls` both stay empty and only
+// the native-asset branch of the OR-chain can route the build through the
+// synthetic project path).  Also uses a runnable program (declares `main`)
+// so `copyNugetNativeAssetsBeside`'s own end-to-end wiring — not just the
+// pure resolver `cli_shared_self_test.l` already covers — is exercised: the
+// fake native asset must actually land beside the compiled output.
+test "buildOneNative: a manifest with only a NuGet-resolved native asset (no managed DLL) near a runnable program compiles and colocates it" {
+  val hostRid = Environment.runtimeIdentifier()
+  if hostRid.length == 0 {
+    // No host RID (e.g. under a JVM CLI host) — nothing to assert against.
+    return
+  }
+  val appDir = freshTempDir("app-native-only")
+  defer {
+    cleanup(appDir)
+  }
+  val pkgsDir = freshTempDir("app-native-only-pkgs")
+  defer {
+    cleanup(pkgsDir)
+  }
+  val objDir = Path.join(appDir, "obj")
+  match File.createDir(objDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + objDir + ": " + IOError.message(e))
+  }
+
+  val nativeRelPath = "runtimes/" + hostRid + "/native/libfakenative.so"
+  val fixtureFullPath = Path.join(pkgsDir, Path.join(Path.join("fake.native.pkg", "1.0.0"), nativeRelPath))
+  val fixtureDir = Path.dirname(fixtureFullPath)
+  match File.createDir(fixtureDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + fixtureDir + ": " + IOError.message(e))
+  }
+  writeFileOrPanic(fixtureFullPath, "fake native asset bytes")
+
+  val assetsJson = "{\n" + "  \"targets\": {\n" + "    \".NETCoreApp,Version=v10.0\": {\n" +
+    "      \"Fake.Native.Pkg/1.0.0\": {\n" +
+    "        \"type\": \"package\",\n" +
+    "        \"runtimeTargets\": {\n" +
+    "          \"" +
+    nativeRelPath +
+    "\": { \"assetType\": \"native\", \"rid\": \"" +
+    hostRid +
+    "\" }\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  },\n" +
+    "  \"project\": {\n" +
+    "    \"restore\": {\n" +
+    "      \"packagesPath\": \"" +
+    Str.replace(pkgsDir, "\\", "\\\\") +
+    "\"\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
+  writeFileOrPanic(Path.join(objDir, "project.assets.json"), assetsJson)
+
+  writeManifestOrPanic(
+    Path.join(appDir, "lyric.toml"),
+    "[package]\n" + "name = \"AppSfNativeOnly\"\n" + "version = \"0.1.0\"\n"
+  )
+  val looseSrcPath = Path.join(appDir, "loose.l")
+  writeFileOrPanic(looseSrcPath, "package AppSfNativeOnly.Loose\n\nfunc main(): Unit {\n  println(1)\n}\n")
+  val outPath = Path.join(appDir, "loose.dll")
+
+  val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Dotnet, None, "", "")
+  assertEqualInt(
+    exitCode,
+    0,
+    "single-file build with a native-only-resolved manifest (no [nuget]/[features]/deps) routes through the synthetic path and compiles"
+  )
+  assertTrue(File.fileExists(outPath), "single-file build produces the output DLL")
+
+  val copiedPath = Path.join(Path.dirname(outPath), Path.basename(fixtureFullPath))
+  assertTrue(
+    File.fileExists(copiedPath),
+    "copyNugetNativeAssetsBeside actually ran end-to-end and colocated the native asset beside the output"
+  )
+}
+
 test "buildOneNative: a manifest with no dependencies/features near a single file is byte-identical to no manifest" {
   val noManifestDir = freshTempDir("nomanifest")
   defer {
@@ -696,5 +787,103 @@ test "buildOneNative: a manifest with no dependencies/features near a single fil
   assertTrue(
     bytesEqual(bytesA, bytesB),
     "a manifest with nothing dependency/feature-relevant does not change the compiled output (byte-for-byte)"
+  )
+}
+
+// ─── buildProject's preResolvedDeps seam (#5786, regression test #5819) ────
+// `buildReleaseProject` resolves manifest dependencies once and threads the
+// result into `buildProject` via `preResolvedDeps` instead of letting
+// `buildProject` re-resolve internally — the #5786 fix for a duplicated
+// `checkDllIsStale`/`resolveAllNugetAssets` pass (and duplicated
+// `warnIfNugetUnresolved` output) on every `--release` build. Exercises the
+// seam directly rather than through a full `--release` (ILC) build: a
+// dependency-free manifest can never produce a genuine
+// `hadWorkspaceError = true` from an internal re-resolution, so handing
+// `buildProject` a `preResolvedDeps` SENTINEL with `hadWorkspaceError = true`
+// only fails the build if `buildProject` actually reads the value it was
+// given — a regression that silently discarded `preResolvedDeps` and always
+// re-resolved internally would flip this from a build failure back to a
+// clean build, an easily observable divergence via the exit code alone.
+test "buildProject: a preResolvedDeps sentinel's hadWorkspaceError is honored, not silently re-resolved" {
+  val dir = freshTempDir("preresolved-sentinel")
+  defer {
+    cleanup(dir)
+  }
+  writeManifestOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\n" + "name = \"PreResolvedSentinelApp\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"PreResolvedSentinelApp\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"PreResolvedSentinelApp.Main\" = \"main.l\"\n"
+  )
+  writeFileOrPanic(
+    Path.join(dir, "main.l"),
+    "package PreResolvedSentinelApp.Main\n\nfunc main(): Unit {\n  println(1)\n}\n"
+  )
+
+  val sentinel = Cli.ResolvedManifestDeps(
+    restoredDlls = newList(),
+    depTemplateSrcs = newList(),
+    nugetThirdPartyPaths = newList(),
+    nativeAssetPaths = newList(),
+    hadWorkspaceError = true,
+    hadUnbuiltLocalDep = false
+  )
+  val noCliFeatures: List[String] = newList()
+  val exitCode = Cli.buildProject(
+    Path.join(dir, "lyric.toml"),
+    None,
+    Emitter.Dotnet,
+    noCliFeatures,
+    false,
+    false,
+    true,
+    None,
+    Some(value = sentinel)
+  )
+  assertEqualInt(
+    exitCode,
+    1,
+    "a preResolvedDeps sentinel with hadWorkspaceError = true must short-circuit the build to a failure — " +
+      "proves buildProject reads the handed-in resolution rather than silently re-resolving it (#5786/#5819)"
+  )
+}
+
+test "buildProject: preResolvedDeps = None re-resolves internally and a dependency-free manifest still builds" {
+  val dir = freshTempDir("preresolved-none")
+  defer {
+    cleanup(dir)
+  }
+  writeManifestOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\n" + "name = \"PreResolvedNoneApp\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"PreResolvedNoneApp\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"PreResolvedNoneApp.Main\" = \"main.l\"\n"
+  )
+  writeFileOrPanic(
+    Path.join(dir, "main.l"),
+    "package PreResolvedNoneApp.Main\n\nfunc main(): Unit {\n  println(1)\n}\n"
+  )
+
+  val noCliFeatures: List[String] = newList()
+  val exitCode = Cli.buildProject(
+    Path.join(dir, "lyric.toml"),
+    None,
+    Emitter.Dotnet,
+    noCliFeatures,
+    false,
+    false,
+    true,
+    None,
+    None
+  )
+  assertEqualInt(
+    exitCode,
+    0,
+    "with preResolvedDeps = None, buildProject re-resolves internally; a dependency-free manifest has no real " +
+      "workspace error so the build succeeds — the sibling test's failure is the sentinel, not a broken fixture"
   )
 }

@@ -35,9 +35,21 @@
 //!
 //!   lyric test lyric-compiler/lyric/func_val_local_rettype_self_test.l
 //!
-//! MSIL target only — the fix lives in `msil/codegen.l`; #5304's original
-//! panic-based repro was also MSIL/`Msil.Lowering`-specific.  Imports only
-//! `Std.*`.
+//! Verified (but not yet CI-wired) on `--target jvm` too — see the #5796 note
+//! below; a `ci.yml` "on JVM" step alongside this file's existing dotnet
+//! step (mirroring e.g. the `Bool stringification self-test on JVM` step)
+//! would close that gap.
+//!
+//! The fix itself lives in `msil/codegen.l` (MSIL-only; #5304's original
+//! panic-based repro was also MSIL/`Msil.Lowering`-specific), but this test
+//! module imports only `Std.*` and runs unmodified on both targets. #5796
+//! (review finding) checked JVM parity: the JVM backend's `lowerLambdaInvoke`
+//! always returns a raw `Object` and relies on the surrounding expression's
+//! context to narrow/unbox (a different strategy from MSIL's per-local
+//! `fctx.funcValRetTypes` registry), so it is architecturally unaffected by
+//! this defect class — all 7 cases here (including the #5790 arity-overload
+//! regression) already pass against `--target jvm` with no JVM-side code
+//! change. See D-progress-684's `#5796` addendum in `docs/03-decision-log.md`.
 @test_module
 package Lyric.FuncValLocalRetTypeSelfTest
 
