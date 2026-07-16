@@ -1034,3 +1034,17 @@ test "specialisation budget exhaustion raises M0003 instead of panicking" {
   val res = runMono(src)
   assertEqualInt(diagCountCode(res.diagnostics, "M0003"), 1, "budget exhaustion surfaces as a single M0003 diagnostic")
 }
+
+// #5754: a local variable literally named `result` (legal outside a
+// contract clause since the #5735 parser fix — see parser_self_test.l)
+// must still flow through call-site inference and specialise like any
+// other identifier reference, not silently resolve as the reserved
+// `EResult` contract keyword.
+test "local named result specialises correctly through a generic call (#5754)" {
+  val src = "package P\n" + "func id[T](x: in T): T { x }\n" +
+    "func caller(): Int {\n  val result: Int = 7\n  id(result)\n}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "id__Int"), "id__Int specialisation emitted for a local named result")
+  assertTrue(not hasFunc(res.file, "id"), "generic id removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}

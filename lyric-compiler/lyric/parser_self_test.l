@@ -1751,3 +1751,103 @@ test "protected type doc before non-first var field" {
   assertEqual(protectedMemberName(decl.members[1]), "total", "doc-before-var-field: field name is total")
   assertEqualInt(protectedMemberDocCount(decl.members[1]), 1, "doc-before-var-field: doc attached to total field")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5754: dedicated coverage for the #5735 result-as-identifier parser fix.
+// Bare `result` outside a contract clause must parse as an ordinary
+// identifier (`EPath`); `result` inside `requires:`/`ensures:`/`when:`
+// must still resolve to the reserved `EResult` node.
+// ─────────────────────────────────────────────────────────────────────────────
+func exprKindName(e: in Expr): String {
+  match e.kind {
+    case EPath(_) -> "path"
+    case EResult -> "result"
+    case ESelf -> "self"
+    case _ -> "other"
+  }
+}
+
+// The Nth statement's expression kind in the first item's function-body
+// block (mirrors firstFuncBodyStmtCount's shape conventions).
+func firstFuncBodyStmtExprKind(pr: in ParseResult, idx: in Int): String {
+  if pr.file.items.count == 0 {
+    return "<none>"
+  }
+  match pr.file.items[0].kind {
+    case IFunc(fd) -> {
+      match fd.body {
+        case Some(b) -> {
+          match b {
+            case FBBlock(blk) -> {
+              if idx < 0 or idx >= blk.statements.count {
+                "<none>"
+              } else {
+                match blk.statements[idx].kind {
+                  case SExpr(e) -> exprKindName(e)
+                  case _ -> "<not-expr-stmt>"
+                }
+              }
+            }
+            case FBExpr(e) -> exprKindName(e)
+          }
+        }
+        case None -> "<none>"
+      }
+    }
+    case _ -> "<none>"
+  }
+}
+
+// `ensures: result > 0` parses to `EBinop(op, EResult, ELiteral(0))` — peel
+// off the comparison to classify the `result` operand itself.
+func unwrapEnsuresOperand(e: in Expr): Expr {
+  match e.kind {
+    case EBinop(_, lhs, _) -> lhs
+    case _ -> e
+  }
+}
+
+// The expr kind of the first item's first `ensures:` contract clause's
+// `result` operand.
+func firstFuncFirstEnsuresExprKind(pr: in ParseResult): String {
+  if pr.file.items.count == 0 {
+    return "<none>"
+  }
+  match pr.file.items[0].kind {
+    case IFunc(fd) -> {
+      var i = 0
+      var found = "<none>"
+      var stop = false
+      while i < fd.contracts.count and not stop {
+        match fd.contracts[i] {
+          case CCEnsures(e, _) -> {
+            found = exprKindName(unwrapEnsuresOperand(e))
+            stop = true
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+      found
+    }
+    case _ -> "<none>"
+  }
+}
+
+test "bare result outside contract clause parses as ordinary identifier (#5754)" {
+  val pr = parse("package P\nfunc f(): Int {\n  val result: Int = 5\n  result\n}\n")
+  assertEqualInt(diagCount(pr), 0, "bare-result: no diagnostics")
+  assertEqual(
+    firstFuncBodyStmtExprKind(pr, 1),
+    "path",
+    "bare-result: trailing 'result' reference is EPath, not EResult"
+  )
+}
+
+test "result inside ensures clause still resolves to EResult (#5754)" {
+  val src = "package P\nfunc f(): Int\n  ensures: result > 0\n  { 5 }\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "ensures-result: no diagnostics")
+  assertEqual(firstFuncFirstEnsuresExprKind(pr), "result", "ensures-result: bare 'result' inside ensures: is EResult")
+}
