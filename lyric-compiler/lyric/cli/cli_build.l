@@ -921,7 +921,8 @@ func cmdBuild(argv: in slice[String]): Int {
       noDefaultFeatures,
       allFeatures,
       noRestore,
-      packageVersionArg
+      packageVersionArg,
+      None
     )
   }
 
@@ -1204,6 +1205,20 @@ func buildReleaseProject(
   val stagingDir = Path.join(mfDir, ".lyric-release")
   val stagingDll = Path.join(stagingDir, dllBase)
 
+  // Resolve every dependency (workspace, path, and NuGet-as-Lyric-package)
+  // ONCE, up front: `buildProject` needs it to build the staging DLL below,
+  // and the AOT linker's extra-references list (collected after) needs the
+  // exact same resolution again — `resolveManifestDependencies` transitively
+  // rebuilds every workspace dep, so running it twice per `--release` build
+  // doubled that work (checkDllIsStale + resolveAllNugetAssets per dep,
+  // warnIfNugetUnresolved printing up to twice) for no behavioral difference
+  // (#5786).  Passed into `buildProject` via `preResolvedDeps` instead of
+  // letting it re-resolve internally.
+  val resolved = resolveManifestDependencies(manifest, mfPath, Dotnet, cliFeatures, noDefaultFeatures)
+  if resolved.hadWorkspaceError {
+    return 1
+  }
+
   val buildExit = buildProject(
     mfPath,
     Some(value = stagingDll),
@@ -1212,7 +1227,8 @@ func buildReleaseProject(
     noDefaultFeatures,
     allFeatures,
     noRestore,
-    packageVersionOverride
+    packageVersionOverride,
+    Some(value = resolved)
   )
   if buildExit != 0 {
     return buildExit
@@ -1222,16 +1238,12 @@ func buildReleaseProject(
   // above doesn't embed: workspace deps, local `path = "..."` deps (and
   // their transitive deps), and `[nuget]`-resolved assets — both restored
   // Lyric packages (e.g. `Lyric.Web`, `Lyric.Docker`) and genuine
-  // third-party .NET assemblies (e.g. `Microsoft.Data.Sqlite`).  Reuses
-  // `resolveManifestDependencies` — the exact same resolution `buildProject`
-  // already ran to build the staging DLL above — instead of a bespoke
+  // third-party .NET assemblies (e.g. `Microsoft.Data.Sqlite`).  Reuses the
+  // `resolved` resolution computed above (and threaded through
+  // `buildProject` via `preResolvedDeps`) instead of a bespoke
   // `[dependencies]`-only walk that silently dropped every `[nuget]` entry,
   // which crashed ILC at runtime with `FileNotFoundException` for any
   // NuGet-restored assembly the program actually calls into (#5782).
-  val resolved = resolveManifestDependencies(manifest, mfPath, Dotnet, cliFeatures, noDefaultFeatures)
-  if resolved.hadWorkspaceError {
-    return 1
-  }
   val extraRefs: List[String] = newList()
   var rdi = 0
   while rdi < resolved.restoredDlls.count {
@@ -1390,6 +1402,12 @@ func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, m
 
 // Project-mode build: reads [project.packages] from lyric.toml and
 // bundles every package's .l files into a single DLL.
+// `preResolvedDeps`: when the caller already ran `resolveManifestDependencies`
+// against this exact manifest/target/feature-set (e.g. `buildReleaseProject`,
+// which needs the same resolution again afterward for the AOT linker's
+// extra-references list, #5786), pass it here instead of letting
+// `buildProject` resolve (and, transitively, rebuild every workspace dep)
+// a second time. `None` re-resolves as before — every other caller.
 func buildProject(
   mfPath: in String,
   explicitOut: in Option[String],
@@ -1399,6 +1417,7 @@ func buildProject(
   allFeatures: in Bool,
   noRestore: in Bool,
   packageVersionOverride: in Option[String],
+  preResolvedDeps: in Option[ResolvedManifestDeps],
 ): Int {
   val buildStart = Time.now()
   val mfText = match File.readText(mfPath) {
@@ -1529,7 +1548,12 @@ func buildProject(
   // workspace-error-vs-unbuilt-local-dep distinction this function preserves
   // verbatim (a workspace failure has always been an immediate `return 1`
   // here; an unbuilt local `path` dep has always been a non-fatal warning).
-  val resolved = resolveManifestDependencies(manifest, mfPath, target, cliFeatures, noDefaultFeatures)
+  // `preResolvedDeps` (#5786) skips this resolution — and the workspace
+  // rebuild it triggers — when the caller already ran it.
+  val resolved = match preResolvedDeps {
+    case Some(r) -> r
+    case None -> resolveManifestDependencies(manifest, mfPath, target, cliFeatures, noDefaultFeatures)
+  }
   if resolved.hadWorkspaceError {
     return 1
   }

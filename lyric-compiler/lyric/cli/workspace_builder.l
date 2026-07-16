@@ -343,6 +343,9 @@ func buildWorkspaceDep(
     // --package-version X` that also needs to rebuild a stale workspace dep
     // (#4428) — not a regression, since that was always the emitted-version
     // behaviour before --package-version existed.
+    None,
+    // preResolvedDeps: this dep's own manifest hasn't been resolved yet by
+    // this call site, so let buildProject resolve it internally as before.
     None
   )
 
