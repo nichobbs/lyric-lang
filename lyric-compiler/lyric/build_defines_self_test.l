@@ -157,3 +157,9 @@ test "F0030 accepts a triple-quoted fallback on an unannotated @build_const val 
   val res = BD.applyBuildDefines(newList(), pr.file)
   assertTrue(not hasDiagCode(res.diagnostics, "F0030"), "a triple-quoted string is a valid String fallback")
 }
+
+test "applyBuildDefines emits F0032 for a malformed (no-key) @build_const (#5923)" {
+  val pr = parse("package T\n@build_const()\npub val V: String = \"x\"\n")
+  val res = BD.applyBuildDefines(newList(), pr.file)
+  assertTrue(hasDiagCode(res.diagnostics, "F0032"), "@build_const with no string-literal key is rejected (F0032)")
+}
