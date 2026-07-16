@@ -19,37 +19,96 @@ import Std.File as File
 import Std.Path as Path
 import Lyric.Manifest as Mf
 
-// parseManifest(text, filePath) -> Result[Manifest, ManifestError]
+/// Outcome of `findNearestManifestDetailed`'s upward walk.  Distinguishes
+/// "nothing looked like a package manifest anywhere above `startDir`" from
+/// "found an existing lyric.toml that failed to parse as one" (#4881) — the
+/// latter is a signal worth surfacing, not silently swallowing: a project's
+/// own lyric.toml with a typo'd `[native] opt_level` or a malformed
+/// `[dependencies]` entry should not quietly behave as if there were no
+/// manifest at all.
+pub union FindManifestResult {
+  /// Found a lyric.toml that parsed successfully as a package manifest.
+  case FoundManifest(path: String)
+  /// Found a lyric.toml that exists and is readable but failed to parse as
+  /// a package manifest with a real error (`ParseError` / `InvalidField` —
+  /// as opposed to `MissingField`, which just means "not a package manifest,
+  /// e.g. a virtual workspace root", and does not stop the walk).  The walk
+  /// stops here rather than continuing past it to some unrelated ancestor
+  /// manifest: silently adopting a grandparent's config while ignoring a
+  /// real error in the nearest candidate would be worse than reporting "no
+  /// manifest found".
+  case FoundBrokenManifest(path: String, error: ManifestError)
+  /// No lyric.toml (broken or otherwise) was found before the filesystem root.
+  case NoManifestFound
+}
+
 /// Walk up from startDir looking for the nearest lyric.toml that parses as a
-/// package manifest (i.e. has a `[package]` section).  Returns the absolute
-/// path to that lyric.toml, or None when none is found before the filesystem
-/// root.
+/// package manifest (i.e. has a `[package]` section), reporting the outcome
+/// as a `FindManifestResult` rather than collapsing every non-success case
+/// into "not found".
 ///
 /// Unlike `Lyric.Workspace.findWorkspaceRoot`, this matches an ordinary
 /// project/package manifest rather than only a `[workspace]` root — it is the
 /// discovery primitive that lets the CLI run a command from any subdirectory
-/// of a project.  A pure `[workspace]` root (no `[package]`) does not parse
-/// via `parseManifest` and is skipped, so the walk continues past it.
-pub func findNearestManifest(startDir: in String): Option[String] {
+/// of a project.  A pure `[workspace]` root (no `[package]`) fails to parse
+/// with `MissingField` and is skipped, so the walk continues past it exactly
+/// as before; a `ParseError`/`InvalidField` (an existing lyric.toml that is
+/// genuinely broken) stops the walk and is reported via `FoundBrokenManifest`
+/// instead of being skipped.
+pub func findNearestManifestDetailed(startDir: in String): FindManifestResult {
   var current = startDir
   var keepWalking = true
+  var result: FindManifestResult = NoManifestFound
   while keepWalking {
     val tomlPath = Path.join(current, "lyric.toml")
     if File.fileExists(tomlPath) {
       match File.readText(tomlPath) {
         case Err(_) -> ()
         // unreadable; keep walking up
-        case Ok(text) -> match Mf.parseManifest(text, tomlPath) { case Err(_) -> (); case Ok(_) -> return Some(value = tomlPath) }
+        case Ok(text) -> match Mf.parseManifest(text, tomlPath) {
+          case Ok(_) -> {
+            result = FoundManifest(path = tomlPath)
+            keepWalking = false
+          }
+          case Err(e) -> match e {
+            // Not a package manifest (e.g. a virtual workspace root without
+            // `[package]`) — the pre-#4881 behavior, keep walking.
+            case MissingField(_, _) -> ()
+            case ParseError(_, _, _, _) -> {
+              result = FoundBrokenManifest(path = tomlPath, error = e)
+              keepWalking = false
+            }
+            case InvalidField(_, _, _) -> {
+              result = FoundBrokenManifest(path = tomlPath, error = e)
+              keepWalking = false
+            }
+          }
+        }
       }
-      // not a package manifest (e.g. virtual workspace root); keep walking
     }
-    // Advance to parent directory; stop when we reach the filesystem root.
-    val parent = Path.dirname(current)
-    if parent == current or parent == "." {
-      keepWalking = false
-    } else {
-      current = parent
+    if keepWalking {
+      // Advance to parent directory; stop when we reach the filesystem root.
+      val parent = Path.dirname(current)
+      if parent == current or parent == "." {
+        keepWalking = false
+      } else {
+        current = parent
+      }
     }
   }
-  None
+  result
+}
+
+/// Backward-compatible `Option[String]` view of `findNearestManifestDetailed`
+/// for callers that only care about "did we find a usable manifest" — a
+/// `FoundBrokenManifest` collapses to `None` here (same fallback shape every
+/// existing caller already handles for "no manifest found"), but callers
+/// that want to warn the user about the broken manifest should call
+/// `findNearestManifestDetailed` directly (see `Lyric.Cli.discoverManifest`).
+pub func findNearestManifest(startDir: in String): Option[String] {
+  match findNearestManifestDetailed(startDir) {
+    case FoundManifest(path) -> Some(value = path)
+    case FoundBrokenManifest(_, _) -> None
+    case NoManifestFound -> None
+  }
 }

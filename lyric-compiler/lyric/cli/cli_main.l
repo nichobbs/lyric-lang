@@ -10,6 +10,7 @@ import Std.Errors
 import Std.String as Str
 import Lyric.Emitter as Emitter
 import Lyric.Lexer
+import Lyric.Manifest as Mf
 import Lyric.Discovery as Disc
 import Lyric.Lsp as Lsp
 import Lyric.CliSuggest as Suggest
@@ -21,8 +22,8 @@ pub func main(argv: in slice[String]): Int {
   // Bare `lyric` builds the discovered project (the project-aware default).
   // Outside a project it is still a usage error, not a silent no-op.
   if argv.length == 0 {
-    match Disc.findNearestManifest(Environment.currentDirectory()) {
-      case Some(p) -> {
+    match Disc.findNearestManifestDetailed(Environment.currentDirectory()) {
+      case FoundManifest(p) -> {
         // Forward the discovered path so cmdBuild doesn't walk the tree again.
         val buildArgv: List[String] = newList()
         buildArgv.add("build")
@@ -30,7 +31,14 @@ pub func main(argv: in slice[String]): Int {
         buildArgv.add(p)
         return cmdBuild(buildArgv.toArray())
       }
-      case None -> {
+      case FoundBrokenManifest(p, error) -> {
+        printErr(
+          "warning: ignoring lyric.toml at '" + p + "': " + ManifestError.message(error) + " (treating as no manifest found)"
+        )
+        printUsage()
+        return 1
+      }
+      case NoManifestFound -> {
         printUsage()
         return 1
       }

@@ -27,6 +27,7 @@ import Std.Testing
 import Lyric.Cli as Cli
 import Lyric.Manifest as Mf
 import Lyric.Workspace as Ws
+import Lyric.Discovery as Disc
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -670,5 +671,99 @@ test "discoverManifest fix unblocks Ws.findWorkspaceRoot from a relative --manif
   match Ws.findWorkspaceRoot(fixedAbsoluteDir) {
     case Some(ctx) -> assertEqual(ctx.rootDir, root, "absolutized dir walks up to the fixture's workspace root")
     case None -> panic("expected the absolutized dir to find the fixture's workspace root")
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lyric.Discovery.findNearestManifestDetailed / findNearestManifest (#4881):
+// an existing-but-unparseable lyric.toml must stop the upward walk and be
+// reported, not be silently skipped as if it were "not a manifest".
+// ─────────────────────────────────────────────────────────────────────────────
+// A corrupt (unparseable-as-TOML) lyric.toml nearer to the start dir than a
+// perfectly valid one further up: before #4881's fix, `findNearestManifest`
+// silently walked past the corrupt file and returned the ancestor's valid
+// manifest instead — adopting the WRONG project's configuration with no
+// diagnostic at all.  `findNearestManifestDetailed` must instead stop at the
+// corrupt file and report it, never falling through to the ancestor.
+test "findNearestManifestDetailed: a corrupt lyric.toml nearer than a valid ancestor is reported, not skipped" {
+  val root = freshTempDir("corrupt-above-valid")
+  defer {
+    cleanup(root)
+  }
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[package]\nname = \"Root\"\nversion = \"0.1.0\"\n")
+  val childDir = Path.join(root, "child")
+  val grandchildDir = Path.join(childDir, "grandchild")
+  match File.createDir(grandchildDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dir " + grandchildDir + ": " + IOError.message(e))
+  }
+  // Malformed TOML: an unterminated section header.
+  writeFileOrPanic(Path.join(childDir, "lyric.toml"), "[package\nname = \"Child\"\n")
+
+  match Disc.findNearestManifestDetailed(grandchildDir) {
+    case FoundBrokenManifest(path, error) -> {
+      assertEqual(path, Path.join(childDir, "lyric.toml"), "reports the nearer, corrupt manifest's path")
+      match error {
+        case ParseError(_, _, _, _) -> assertTrue(true, "corrupt TOML syntax surfaces as ParseError")
+        case _ -> panic("expected ParseError for malformed TOML, got a different ManifestError variant")
+      }
+    }
+    case FoundManifest(path) -> panic("expected FoundBrokenManifest, but silently found " + path + " (walked past the corrupt manifest)")
+    case NoManifestFound -> panic("expected FoundBrokenManifest, got NoManifestFound")
+  }
+
+  // The Option-returning wrapper collapses FoundBrokenManifest to None
+  // (never to the ancestor's path) — same fallback shape every existing
+  // caller already handles for "no manifest found".
+  match Disc.findNearestManifest(grandchildDir) {
+    case None -> assertTrue(true, "findNearestManifest collapses a broken nearer manifest to None")
+    case Some(path) -> panic("findNearestManifest should not fall through to the ancestor manifest, got " + path)
+  }
+}
+
+// A lyric.toml that exists and parses as valid TOML but has no `[package]`
+// section (e.g. a virtual workspace root) is `MissingField`, not a real
+// error — the walk must continue past it exactly as before #4881, finding a
+// valid `[package]` manifest further up.
+test "findNearestManifestDetailed: a workspace-root-only lyric.toml (no [package]) is skipped, not reported" {
+  val root = freshTempDir("missingfield-above-valid")
+  defer {
+    cleanup(root)
+  }
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[package]\nname = \"Root\"\nversion = \"0.1.0\"\n")
+  val childDir = Path.join(root, "child")
+  val grandchildDir = Path.join(childDir, "grandchild")
+  match File.createDir(grandchildDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dir " + grandchildDir + ": " + IOError.message(e))
+  }
+  // Valid TOML, but no [package] section — parses with MissingField.
+  writeFileOrPanic(Path.join(childDir, "lyric.toml"), "[workspace]\nexclude = []\n")
+
+  match Disc.findNearestManifestDetailed(grandchildDir) {
+    case FoundManifest(path) -> assertEqual(path, Path.join(root, "lyric.toml"), "walks past the workspace-root-only manifest to the valid ancestor")
+    case FoundBrokenManifest(path, _) -> panic("MissingField should not be reported as broken, got FoundBrokenManifest at " + path)
+    case NoManifestFound -> panic("expected to find the valid ancestor manifest")
+  }
+}
+
+test "findNearestManifestDetailed: no lyric.toml anywhere reports NoManifestFound" {
+  val root = freshTempDir("nothing-found")
+  defer {
+    cleanup(root)
+  }
+  val leafDir = Path.join(root, "leaf")
+  match File.createDir(leafDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dir " + leafDir + ": " + IOError.message(e))
+  }
+  // Temp dirs live outside the repo checkout (`tempBase()` is $TMPDIR/$TEMP/
+  // $TMP or "/tmp"), so no ancestor of `leafDir` up to the filesystem root
+  // carries a lyric.toml at all — same isolation assumption the workspace
+  // fixture tests above already rely on.
+  match Disc.findNearestManifestDetailed(leafDir) {
+    case NoManifestFound -> assertTrue(true, "no manifest found anywhere above the fixture")
+    case FoundManifest(path) -> panic("unexpected manifest found at " + path)
+    case FoundBrokenManifest(path, _) -> panic("unexpected corrupt manifest found at " + path)
   }
 }

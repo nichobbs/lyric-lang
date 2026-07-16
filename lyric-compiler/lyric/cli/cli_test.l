@@ -231,9 +231,16 @@ func cmdTest(argv: in slice[String]): Int {
       printErr("test: --target native requires an explicit source file (auto-discovered manifests are not yet supported)")
       return 1
     }
-    match Disc.findNearestManifest(Environment.currentDirectory()) {
-      case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, cliFeatures, noDefaultFeatures, allFeatures)
-      case None -> {
+    match Disc.findNearestManifestDetailed(Environment.currentDirectory()) {
+      case FoundManifest(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, cliFeatures, noDefaultFeatures, allFeatures)
+      case FoundBrokenManifest(p, error) -> {
+        printErr(
+          "warning: ignoring lyric.toml at '" + p + "': " + ManifestError.message(error) + " (treating as no manifest found)"
+        )
+        printErr("test: missing source file and no lyric.toml found")
+        return 1
+      }
+      case NoManifestFound -> {
         printErr("test: missing source file and no lyric.toml found")
         return 1
       }
