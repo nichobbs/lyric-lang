@@ -55,6 +55,7 @@ import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.Propagate
 import Lyric.Cfg as Cfg
+import Lyric.BuildDefines as BD
 import Lyric.AwaitHoist as AwaitHoist
 import Lyric.AliasRewriter as Aliases
 import Lyric.Stubbable as Stubbable
@@ -96,15 +97,24 @@ pub func pipeParseAndErase(
   targetName: in String,
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
+  defines: in List[BD.Define],
 ): Option[SourceFile] {
   val parseResult = parse(source)
   if gate("", parseResult.diagnostics) {
     return None
   }
+  // Build-define substitution runs before @cfg erasure (docs/60 §5): a
+  // define can never be read from an item cfg is about to erase, and cfg
+  // predicates cannot observe a define. Both are pure SourceFile -> SourceFile
+  // AST transforms; substitution only ever inserts String-literal nodes.
+  val bdRes = BD.applyBuildDefines(defines, parseResult.file)
+  if gate("", bdRes.diagnostics) {
+    return None
+  }
   val cfgRes = Cfg.applyCfgErasure(
     Cfg.withTargetFeature(activeFeatures, targetName),
     declaredFeatures,
-    parseResult.file
+    bdRes.file
   )
   if gate("", cfgRes.diagnostics) {
     return None

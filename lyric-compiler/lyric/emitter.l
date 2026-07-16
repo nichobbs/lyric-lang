@@ -47,6 +47,7 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 import Lyric.Lexer
+import Lyric.BuildDefines as BD
 import Lyric.CliShell as CliShell
 import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages as RP
@@ -76,6 +77,12 @@ pub record EmitRequest {
   /// the REPL / direct API use), and the bridge falls back to the
   /// legacy default.  See #1364.
   packageVersion: String
+  /// Resolved build defines (docs/60): well-known (version/target/
+  /// build_profile) merged with manifest `[build.define]` and CLI
+  /// `--define`, precedence-resolved by the caller. Consumed by the
+  /// `@build_const` substitution pass in `pipeParseAndErase`. Defaults
+  /// to empty for ad-hoc compiles (REPL / direct API) with no defines.
+  defines: List[BD.Define] = newList()
 }
 
 pub record EmitResult {
@@ -2424,7 +2431,7 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
       }
     }
   }
-  val ok = MsilBridge.compileToMsilWithVersion(req.source, req.outputPath, stdlibSources, req.packageVersion)
+  val ok = MsilBridge.compileToMsilWithVersion(req.source, req.outputPath, stdlibSources, req.packageVersion, req.defines)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)

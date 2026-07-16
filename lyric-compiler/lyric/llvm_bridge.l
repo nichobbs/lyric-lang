@@ -26,6 +26,7 @@ import Std.Core
 import Std.Collections
 import Std.Console as Console
 import Std.String as Str
+import Lyric.BuildDefines as BD
 import Std.File as File
 import Std.Path as Path
 import Std.Process as Process
@@ -344,7 +345,8 @@ pub func compileToNativeWithFlags(
   // after parse, before anything indexes the items).
   val noFeatures: List[String] = newList()
   val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
-  val cfgFile = match pipeParseAndErase(source, "native", noFeatures, noFeatures) {
+  val nativeDefines: List[BD.Define] = newList()
+  val cfgFile = match pipeParseAndErase(source, "native", noFeatures, noFeatures, nativeDefines) {
     case Some(f) -> f
     case None -> return false
   }

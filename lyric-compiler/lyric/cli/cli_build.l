@@ -6,6 +6,7 @@ import Std.Console as Console
 import Std.File as File
 import Std.String as Str
 import Std.Path as Path
+import Lyric.BuildDefines as BD
 import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
@@ -477,6 +478,7 @@ pub func buildOneNative(
   nativeOpt: in String,
 ): Int {
   val noCliFeatures: List[String] = newList()
+  val noCliDefines: List[BD.Define] = newList()
   buildOneNativeWithFeatures(
     sourcePath,
     outPath,
@@ -486,7 +488,8 @@ pub func buildOneNative(
     nativeOpt,
     noCliFeatures,
     false,
-    false
+    false,
+    noCliDefines
   )
 }
 
@@ -500,6 +503,7 @@ pub func buildOneNativeWithFeatures(
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
+  cliDefines: in List[BD.Define],
 ): Int {
   val buildStart = Time.now()
   var source = match File.readText(sourcePath) {
@@ -534,7 +538,8 @@ pub func buildOneNativeWithFeatures(
     assemblyName = asmName,
     outputPath = outPath,
     target = target,
-    packageVersion = ""
+    packageVersion = "",
+    defines = cliDefines
   )
 
   // var-mutation shape (stage-0 value-position-match lowering gap,
@@ -654,6 +659,9 @@ func cmdBuild(argv: in slice[String]): Int {
   val cliFeatures: List[String] = newList()
   var noDefaultFeatures: Bool = false
   var allFeatures: Bool = false
+  // docs/60 build defines: `--define K=V` (repeatable). Precedence-merged
+  // with well-known defines inside `buildOneNativeWithFeatures`.
+  val cliDefines: List[BD.Define] = newList()
   var release: Bool = false
   var ridArg: Option[String] = None
   var noRestore: Bool = false
@@ -710,6 +718,29 @@ func cmdBuild(argv: in slice[String]): Int {
     } else if arg == "--release" {
       release = true
       i += 1
+    } else if arg == "--define" {
+      if i + 1 < argv.length {
+        val kv = argv[i + 1]
+        match Str.indexOf(kv, "=") {
+          case Some(eq) -> {
+            val k = Str.substring(kv, 0, eq)
+            val v = Str.substring(kv, eq + 1)
+            if k.length == 0 {
+              printErr("build: --define requires KEY=VALUE (empty key): " + kv)
+              return 1
+            }
+            cliDefines.add(BD.Define(key = k, value = v))
+          }
+          case None -> {
+            printErr("build: --define requires KEY=VALUE, got: " + kv)
+            return 1
+          }
+        }
+        i += 2
+      } else {
+        printErr("build: --define requires a KEY=VALUE argument")
+        return 1
+      }
     } else if arg == "--rid" {
       if i + 1 < argv.length {
         ridArg = Some(value = argv[i + 1])
@@ -997,7 +1028,8 @@ func cmdBuild(argv: in slice[String]): Int {
     optArg,
     cliFeatures,
     noDefaultFeatures,
-    allFeatures
+    allFeatures,
+    cliDefines
   )
 }
 
