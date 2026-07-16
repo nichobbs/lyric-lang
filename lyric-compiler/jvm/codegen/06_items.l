@@ -1575,8 +1575,8 @@ func buildProtected(
     match decl.members[mi] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, ty, _, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
-          case PFLet(name, ty, _, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
+          case PFVar(name, ty, _, _, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
+          case PFLet(name, ty, _, _, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
           case PFImmutable(f) -> fields.add(LField(flags = 0x0001, name = f.name, fieldType = typeExprToJvmExtern(f.ty, pkgName, externTypes)))
         }
       }
@@ -2794,8 +2794,8 @@ pub func collectFileSigsSeeded(
             }
             case PMField(pf) -> {
               match pf {
-                case PFVar(name, ty, _, _, _) -> registerFieldElemSig(into, protClass, name, ty, owner, protTps, externTypes)
-                case PFLet(name, ty, _, _, _) -> registerFieldElemSig(into, protClass, name, ty, owner, protTps, externTypes)
+                case PFVar(name, ty, _, _, _, _) -> registerFieldElemSig(into, protClass, name, ty, owner, protTps, externTypes)
+                case PFLet(name, ty, _, _, _, _) -> registerFieldElemSig(into, protClass, name, ty, owner, protTps, externTypes)
                 case PFImmutable(f) -> registerFieldElemSig(into, protClass, f.name, f.ty, owner, protTps, externTypes)
               }
             }
@@ -3414,8 +3414,8 @@ pub func collectFileCasesExtern(
             match decl.members[mi] {
               case PMField(pf) -> {
                 match pf {
-                  case PFVar(name, ty, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1))
-                  case PFLet(name, ty, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1))
+                  case PFVar(name, ty, _, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1))
+                  case PFLet(name, ty, _, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1))
                   case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmExtern(f.ty, owner, externTypes), paramIdx = -1))
                 }
               }

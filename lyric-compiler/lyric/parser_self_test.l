@@ -1664,8 +1664,8 @@ func protectedMemberDocCount(pm: in ProtectedMember): Int {
   match pm {
     case PMField(pf) -> {
       match pf {
-        case PFVar(_, _, _, docs, _) -> docs.count
-        case PFLet(_, _, _, docs, _) -> docs.count
+        case PFVar(_, _, _, docs, _, _) -> docs.count
+        case PFLet(_, _, _, docs, _, _) -> docs.count
         case PFImmutable(fd) -> fd.docComments.count
       }
     }
@@ -1679,14 +1679,48 @@ func protectedMemberName(pm: in ProtectedMember): String {
   match pm {
     case PMField(pf) -> {
       match pf {
-        case PFVar(n, _, _, _, _) -> n
-        case PFLet(n, _, _, _, _) -> n
+        case PFVar(n, _, _, _, _, _) -> n
+        case PFLet(n, _, _, _, _, _) -> n
         case PFImmutable(fd) -> fd.name
       }
     }
     case PMEntry(ed) -> ed.name
     case PMFunc(fn) -> fn.name
     case PMInvariant(_) -> "<invariant>"
+  }
+}
+
+// #5815: a leading `@annotation` before a protected-type member has the
+// same dispatch-blinding gap `///` doc comments did before #5574 — these
+// mirror protectedMemberDocCount/protectedMemberName above, but for the
+// annotation list.
+func protectedMemberAnnCount(pm: in ProtectedMember): Int {
+  match pm {
+    case PMField(pf) -> {
+      match pf {
+        case PFVar(_, _, _, _, anns, _) -> anns.count
+        case PFLet(_, _, _, _, anns, _) -> anns.count
+        case PFImmutable(fd) -> fd.annotations.count
+      }
+    }
+    case PMEntry(ed) -> ed.annotations.count
+    case PMFunc(fn) -> fn.annotations.count
+    case PMInvariant(_) -> 0
+  }
+}
+
+func protectedMemberFirstAnnName(pm: in ProtectedMember): String {
+  match pm {
+    case PMField(pf) -> {
+      match pf {
+        case PFVar(_, _, _, _, anns, _) -> if anns.count > 0 { modulePathJoin(anns[0].name.segments) } else { "<none>" }
+        case PFLet(_, _, _, _, anns, _) -> if anns.count > 0 { modulePathJoin(anns[0].name.segments) } else { "<none>" }
+        case PFImmutable(fd) -> if fd.annotations.count > 0 { modulePathJoin(fd.annotations[0].name.segments) } else { "<none>" }
+      }
+    }
+    case PMEntry(ed) -> if ed.annotations.count > 0 { modulePathJoin(ed.annotations[0].name.segments) } else { "<none>" }
+    case PMFunc(fn) -> if fn.annotations.count > 0 { modulePathJoin(fn.annotations[0].name.segments) } else { "<none>" }
+    case PMInvariant(_) -> "<none>"
   }
 }
 
@@ -1750,6 +1784,131 @@ test "protected type doc before non-first var field" {
   assertEqual(protectedMemberKindName(decl.members[1]), "field", "doc-before-var-field: second member is a field")
   assertEqual(protectedMemberName(decl.members[1]), "total", "doc-before-var-field: field name is total")
   assertEqualInt(protectedMemberDocCount(decl.members[1]), 1, "doc-before-var-field: doc attached to total field")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5815: same dispatch-blinding bug class as #5574 above, but for a leading
+// `@annotation` instead of a `///` doc comment.  Before the fix, `@something`
+// before a protected-type member (entry/func/pub entry/var field, at any
+// position) was never skipped by the member-dispatch lookahead, so it fell
+// through to the field-parser catch-all and cascaded into P0240-class
+// diagnostics instead of attaching to the member that actually follows it.
+// ─────────────────────────────────────────────────────────────────────────────
+test "protected type annotation before non-first entry (#5815)" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  entry push(): Unit { n = n + 1 }\n" +
+    "\n" +
+    "  @something\n" +
+    "  entry count(): Int { n }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "ann-before-2nd-entry: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "ann-before-2nd-entry: three members")
+  assertEqual(protectedMemberKindName(decl.members[2]), "entry", "ann-before-2nd-entry: third member is an entry")
+  assertEqual(protectedMemberName(decl.members[2]), "count", "ann-before-2nd-entry: third member is count")
+  assertEqualInt(protectedMemberAnnCount(decl.members[2]), 1, "ann-before-2nd-entry: annotation attached to count()")
+  assertEqual(
+    protectedMemberFirstAnnName(decl.members[2]),
+    "something",
+    "ann-before-2nd-entry: annotation name is something"
+  )
+}
+
+test "protected type annotation before non-first func member (#5815)" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  entry push(): Unit { n = n + 1 }\n" +
+    "\n" +
+    "  @something\n" +
+    "  func peek(): Int { n }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "ann-before-func: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "ann-before-func: three members")
+  assertEqual(protectedMemberKindName(decl.members[2]), "func", "ann-before-func: third member is a func")
+  assertEqual(protectedMemberName(decl.members[2]), "peek", "ann-before-func: third member is peek")
+  assertEqualInt(protectedMemberAnnCount(decl.members[2]), 1, "ann-before-func: annotation attached to peek()")
+  assertEqual(
+    protectedMemberFirstAnnName(decl.members[2]),
+    "something",
+    "ann-before-func: annotation name is something"
+  )
+}
+
+test "protected type annotation before non-first pub entry (#5815)" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  entry push(): Unit { n = n + 1 }\n" +
+    "\n" +
+    "  @something\n" +
+    "  pub entry count(): Int { n }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "ann-before-pub-entry: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "ann-before-pub-entry: three members")
+  assertEqual(protectedMemberKindName(decl.members[2]), "entry", "ann-before-pub-entry: third member is an entry")
+  assertEqual(protectedMemberName(decl.members[2]), "count", "ann-before-pub-entry: third member is count")
+  assertEqualInt(protectedMemberAnnCount(decl.members[2]), 1, "ann-before-pub-entry: annotation attached to count()")
+  assertEqual(
+    protectedMemberFirstAnnName(decl.members[2]),
+    "something",
+    "ann-before-pub-entry: annotation name is something"
+  )
+}
+
+test "protected type annotation before non-first var field (#5815)" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  @something\n" +
+    "  var total: Int = 0\n" +
+    "\n" +
+    "  entry push(): Unit { n = n + 1 }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "ann-before-var-field: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "ann-before-var-field: three members")
+  assertEqual(protectedMemberKindName(decl.members[1]), "field", "ann-before-var-field: second member is a field")
+  assertEqual(protectedMemberName(decl.members[1]), "total", "ann-before-var-field: field name is total")
+  assertEqualInt(
+    protectedMemberAnnCount(decl.members[1]),
+    1,
+    "ann-before-var-field: annotation attached to total field"
+  )
+  assertEqual(
+    protectedMemberFirstAnnName(decl.members[1]),
+    "something",
+    "ann-before-var-field: annotation name is something"
+  )
+}
+
+test "protected type annotation before non-first let field (#5839)" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  @frozen\n" + "  let cap: Int = 64\n" +
+    "\n" +
+    "  entry push(): Unit { n = n + 1 }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "ann-before-let-field: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "ann-before-let-field: three members")
+  assertEqual(protectedMemberKindName(decl.members[1]), "field", "ann-before-let-field: second member is a field")
+  assertEqual(protectedMemberName(decl.members[1]), "cap", "ann-before-let-field: field name is cap")
+  assertEqualInt(protectedMemberAnnCount(decl.members[1]), 1, "ann-before-let-field: annotation attached to cap field")
+  assertEqual(protectedMemberFirstAnnName(decl.members[1]), "frozen", "ann-before-let-field: annotation name is frozen")
+}
+
+test "protected type stacked annotations before non-first entry (#5839)" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  @inline_template\n" +
+    "  @cfg(feature = \"fast\")\n" +
+    "  entry bump(): Unit { n = n + 1 }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "stacked-anns-entry: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 2, "stacked-anns-entry: two members")
+  assertEqual(protectedMemberKindName(decl.members[1]), "entry", "stacked-anns-entry: second member is an entry")
+  assertEqualInt(protectedMemberAnnCount(decl.members[1]), 2, "stacked-anns-entry: both stacked annotations attached")
+  assertEqual(
+    protectedMemberFirstAnnName(decl.members[1]),
+    "inline_template",
+    "stacked-anns-entry: first annotation name"
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1583,3 +1583,35 @@ test "protected type doc before second entry round trips (#5574)" {
   val twice = format(parse(once))
   assertEqual(once, twice, "protected type doc-before-2nd-entry: idempotent")
 }
+
+// #5815 repro: a leading `@annotation` before a protected-type member had
+// the same dispatch-blinding gap `///` doc comments did before #5574.
+// Beyond the parser fix, `PFVar`/`PFLet` gained a new `annotations` field
+// that `lyric/fmt/fmt_items.l` must render back out (otherwise
+// `formatSourceChecked`'s own re-parse loses the annotation and the
+// loss-check refuses to write) — this exercises both an annotated var
+// field and an annotated entry in the same protected type.
+test "protected type annotated entry and var field round trip (#5815)" {
+  val src = "package P\n\nprotected type Buf {\n" + "  @something\n" + "  var total: Int = 0\n\n" + "  var n: Int\n\n" +
+    "  @somethingElse\n" +
+    "  entry count(): Int {\n    n\n  }\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "protected type annotated members: round-trips")
+  val acc = format(parse(src))
+  // Adjacency assertions (#5840): a bare contains("@something") is also
+  // satisfied by "@somethingElse", and neither would catch an annotation
+  // rendered against the wrong member — assert each annotation sits on
+  // its own line directly above the member it belongs to.
+  assertTrue(
+    Str.contains(acc, "@something\n  var total: Int = 0"),
+    "protected type: field annotation on its own line above the var field"
+  )
+  assertTrue(
+    Str.contains(acc, "@somethingElse\n  entry count(): Int"),
+    "protected type: entry annotation on its own line above the entry"
+  )
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "protected type annotated members: idempotent")
+}
