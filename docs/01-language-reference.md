@@ -1798,7 +1798,16 @@ directory and runs `lyric build` against it. All eight dev-loop commands —
 same discovery when given no source file or `--manifest`, so they work from
 any subdirectory of a project. Each command also accepts `--manifest <lyric.toml>`
 to override discovery with an explicit path. Outside a project (no `lyric.toml`
-in the directory tree) bare `lyric` prints help and exits non-zero.
+in the directory tree) bare `lyric` prints help and exits non-zero. The upward
+walk skips a `lyric.toml` that is merely not a package manifest (e.g. a pure
+`[workspace]` root, which fails to parse with a missing-`[package]` error) and
+keeps climbing; a `lyric.toml` that exists but is genuinely broken (a TOML
+parse error or invalid field) stops the walk instead of being silently
+skipped — the command prints
+`warning: ignoring lyric.toml at '<path>': <error> (treating as no manifest found)`
+to stderr and then behaves as if no manifest were found, so a typo in the
+nearest manifest can never silently route the build to an unrelated ancestor
+project.
 `lyric --help` (also `-h`, `help`) prints the grouped command list and exits 0;
 an unrecognised command prints a "did you mean …?" suggestion when a close
 match exists.
