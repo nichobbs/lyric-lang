@@ -16507,7 +16507,26 @@ risk #5774 found — the migration's target shape (a capturing lambda inside
 `Std.HttpHost`, consumed as a typed value) is exactly what this fix covers
 and regression-tests.
 
-**Related:** #5774, #5790, #5304, D-progress-686, D-progress-674,
+**#5796 (review finding, JVM parity check):** the fix above, its self-test
+(`func_val_local_rettype_self_test.l`), and this entry were all scoped to
+MSIL only, with no documented check of whether the JVM backend has the
+identical defect class. Checked: the exact #5774 repro (`makeAdder(5)`
+returning `(Int) -> Int`, `val f = makeAdder(5)` with no annotation, `f(10)`
+returned directly) run 5/5 times against `--target jvm` prints the correct
+`result: 15` every time — no non-determinism, matching the architectural
+prediction in #5796 that the JVM backend's `lowerLambdaInvoke` (which always
+returns a raw `Object` and relies on the surrounding expression's context —
+e.g. an enclosing function's declared return type — to narrow/unbox at the
+point of use, rather than a per-local return-type registry like MSIL's
+`fctx.funcValRetTypes`) is architecturally unaffected by this specific defect
+class. `func_val_local_rettype_self_test.l` itself (all 7 cases, including
+the #5790 arity-overload regression) already passes unmodified against
+`--target jvm` with no code changes required — its header still says "MSIL
+target only" because the fix that made it necessary lives in
+`msil/codegen.l`, but the test module itself imports only `Std.*` and runs
+identically on both targets. No JVM-side change was needed.
+
+**Related:** #5774, #5790, #5304, #5796, D-progress-686, D-progress-674,
 docs/50-ffi-delegates-proposal.md, #5511, #5735.
 
 ## D-progress-685 — `Lyric.Derives` synthesises `fromJson`; `toJson`/`fromJson` gain `slice[T]` and nested-record support; MSIL async pre-scan/emission mismatches fixed (#5723)
