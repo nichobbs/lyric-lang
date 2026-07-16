@@ -782,6 +782,32 @@ test "findNearestManifestDetailed: an incomplete [package] table nearer than a v
   }
 }
 
+// #5865: a bare `[package]` header with ZERO key/value lines produces no
+// Entry rows at all, so an entries-based `hasSection` check cannot see it —
+// the walk silently continued to the ancestor. The textual header-line scan
+// must classify it as a broken package manifest.
+test "findNearestManifestDetailed: a bare zero-field [package] header is reported, not skipped (#5865)" {
+  val root = freshTempDir("bare-pkg-above-valid")
+  defer {
+    cleanup(root)
+  }
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[package]\nname = \"Root\"\nversion = \"0.1.0\"\n")
+  val childDir = Path.join(root, "child")
+  val grandchildDir = Path.join(childDir, "grandchild")
+  match File.createDir(grandchildDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dir " + grandchildDir + ": " + IOError.message(e))
+  }
+  // Nothing but the section header — no fields at all.
+  writeFileOrPanic(Path.join(childDir, "lyric.toml"), "[package]\n")
+
+  match Disc.findNearestManifestDetailed(grandchildDir) {
+    case FoundBrokenManifest(path, _) -> assertEqual(path, Path.join(childDir, "lyric.toml"), "reports the nearer, zero-field [package] manifest's path")
+    case FoundManifest(path) -> panic("expected FoundBrokenManifest, but silently found " + path + " (walked past the bare [package] manifest)")
+    case NoManifestFound -> panic("expected FoundBrokenManifest, got NoManifestFound")
+  }
+}
+
 test "findNearestManifestDetailed: no lyric.toml anywhere reports NoManifestFound" {
   val root = freshTempDir("nothing-found")
   defer {

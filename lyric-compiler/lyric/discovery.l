@@ -86,7 +86,7 @@ pub func findNearestManifestDetailed(startDir: in String): FindManifestResult {
             // always mean a real-but-broken package manifest. Disambiguate
             // on whether the file has a [package] header at all.
             case MissingField(_, _) -> {
-              if Mf.textHasPackageSection(text, tomlPath) {
+              if Mf.textHasPackageSection(text) {
                 result = FoundBrokenManifest(path = tomlPath, error = e)
                 keepWalking = false
               }

@@ -114,9 +114,12 @@ record NeverTailHolder {
   func exprTailMethod(): String = neverString()
 }
 
-// ── #5854: interface `impl` method Never-tail form ──────────────────────────
+// ── #5854: interface `impl` method Never-tail forms ─────────────────────────
+// Both function-body forms (FBBlock and, per #5867, `= expr`/FBExpr) route
+// through lowerImplMethodMsil's tail-return path and need the default push.
 interface NeverTailIface {
   func divergeMethod(): Long
+  func divergeExprMethod(): Long
 }
 
 record NeverTailImplHolder {
@@ -126,6 +129,7 @@ impl NeverTailIface for NeverTailImplHolder {
   func divergeMethod(): Long {
     neverLong()
   }
+  func divergeExprMethod(): Long = neverLong()
 }
 
 test "block-tail Never call in an Int-returning function panics with the real message" {
@@ -259,4 +263,15 @@ test "#5854: block-tail Never call in a non-void interface impl method panics wi
     msg = e.message
   }
   assertTrue(msg.contains("never-tail-long"), "divergeMethod panic message: " + msg)
+}
+
+test "#5867: '= expr' Never call in a non-void interface impl method panics with the real message" {
+  val i: NeverTailIface = NeverTailImplHolder()
+  var msg = ""
+  try {
+    i.divergeExprMethod()
+  } catch Bug as e {
+    msg = e.message
+  }
+  assertTrue(msg.contains("never-tail-long"), "divergeExprMethod panic message: " + msg)
 }
