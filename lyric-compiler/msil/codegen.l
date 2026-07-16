@@ -7573,16 +7573,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   MArray(elemTy = e)
                 }
                 case None -> {
-                  insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-                  var eli3 = 0
-                  while eli3 < exprs.count {
-                    insns.add(MDup)
-                    val eTy3 = lowerExprMsil(cctx, fctx, insns, exprs[eli3])
-                    boxIfNeededMsil(cctx, insns, eTy3)
-                    insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
-                    eli3 = eli3 + 1
-                  }
-                  MObject
+                  // Unreachable (#5696): `inferHomogeneousListElemTypeMsil` only
+                  // returns `Some(e)` when `e` passed `isSimpleListElemMsil` —
+                  // exactly MInt/MLong/MDouble/MBool/MChar/MByte/MString — and
+                  // `arrayElemTokenOpt` returns `Some` for every one of those
+                  // (plus MObject).  This arm is kept only so the `Option` match
+                  // above stays exhaustive.
+                  panic(
+                    "unreachable: arrayElemTokenOpt returned None for a type " +
+                      "inferHomogeneousListElemTypeMsil already validated as simple"
+                  )
                 }
               }
             }
