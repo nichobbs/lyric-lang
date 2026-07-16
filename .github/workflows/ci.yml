@@ -768,6 +768,7 @@ jobs:
             lyric-compiler/lyric/contract_elaborator_self_test.l \
             lyric-compiler/lyric/cfg_self_test.l \
             lyric-compiler/lyric/cfg_single_file_self_test.l \
+            lyric-compiler/lyric/build_defines_self_test.l \
             lyric-compiler/lyric/derives_self_test.l \
             lyric-compiler/lyric/mono_self_test.l \
             lyric-compiler/lyric/result_generic_specialization_self_test.l \
