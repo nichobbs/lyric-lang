@@ -220,6 +220,12 @@ lyric-stdlib/std/_kernel_native/
   mutex.l       — pthread_mutex_init, lock, unlock, destroy (for protected types)
 ```
 
+TLS on native is specced separately in `docs/61-https-tls-http-versions.md`
+§7 (D128): OpenSSL 3.x dynamically linked behind a narrow `lyric_tls_*` seam
+in `lyric-rt`, feeding the same sans-IO HTTP engine as the managed targets —
+the `net.l` socket boundary above is its transport substrate (epic #5874
+phase 5).
+
 Each file declares:
 1. `extern func` symbols for the underlying C API.
 2. A thin safe Lyric wrapper that maps the C API to Lyric types (e.g., returns
