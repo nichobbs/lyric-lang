@@ -61,6 +61,11 @@ extern type SocketsHttpConnectionContext = "System.Net.Http.SocketsHttpConnectio
 
 extern type ValueTaskOfStream = "System.Threading.Tasks.ValueTask`1[System.IO.Stream]"
 
+// HTTP-version knob (docs/61 §5.1, D128 decision 4; #5879).
+extern type Version = "System.Version"
+
+extern type HttpVersionPolicy = "System.Net.Http.HttpVersionPolicy"
+
 // =====================================================================
 // Primitive externs (private to this kernel file).  These bind the
 // individual BCL members; the public `host*` helpers compose them.
@@ -89,11 +94,16 @@ func newStringContent(body: in String, encoding: in Encoding, mediaType: in Stri
 @externTarget("System.Net.Http.HttpRequestMessage.set_Content")
 func setRequestContent(req: in HttpRequestMessage, content: in StringContent): Unit = ()
 
+// Raw ctors (private): every public `newClient*` wrapper below applies
+// `applyHttp2OrLower` before handing the client back, so D128 decision 4's
+// "every constructed client, including the singleton" default is
+// impossible to bypass at a call site — see the wrappers just after the
+// version-policy primitives.
 @externTarget("System.Net.Http.HttpClient..ctor")
-func newClient(): HttpClientHandle = ()
+func rawNewClient(): HttpClientHandle = ()
 
 @externTarget("System.Net.Http.HttpClient..ctor")
-func newClientFromHandler(handler: in HttpClientHandler): HttpClientHandle = ()
+func rawNewClientFromHandler(handler: in HttpClientHandler): HttpClientHandle = ()
 
 @externTarget("System.Net.Http.HttpClientHandler..ctor")
 func newHandler(): HttpClientHandler = ()
@@ -121,7 +131,65 @@ func socketsSetAllowAutoRedirect(h: in SocketsHttpHandler, v: in Bool): Unit = (
 func socketsSetMaxAutomaticRedirections(h: in SocketsHttpHandler, n: in Int): Unit = ()
 
 @externTarget("System.Net.Http.HttpClient..ctor")
-func newClientFromSocketsHandler(handler: in SocketsHttpHandler): HttpClientHandle = ()
+func rawNewClientFromSocketsHandler(handler: in SocketsHttpHandler): HttpClientHandle = ()
+
+// ---------------------------------------------------------------------------
+// HTTP-version knob (docs/61 §5.1, D128 decision 4; #5879).
+//
+// `HttpClient.DefaultRequestVersion`/`DefaultVersionPolicy` are plain
+// mutable instance properties (unlike the JVM twin's immutable-at-build
+// `HttpClient`, see `_kernel_jvm/http_host.l`), so every construction path
+// converges on the two `apply*` helpers below applied once, right after
+// construction, before the client is ever used.
+// ---------------------------------------------------------------------------
+@externInstance
+@externTarget("System.Net.Http.HttpClient.set_DefaultRequestVersion")
+func setDefaultRequestVersion(c: in HttpClientHandle, v: in Version): Unit = ()
+
+@externInstance
+@externTarget("System.Net.Http.HttpClient.set_DefaultVersionPolicy")
+func setDefaultVersionPolicy(c: in HttpClientHandle, p: in HttpVersionPolicy): Unit = ()
+
+@externTarget("System.Version..ctor")
+func newVersion(major: in Int, minor: in Int): Version = ()
+
+@externTarget("System.Net.Http.HttpVersionPolicy.RequestVersionOrLower")
+func versionPolicyOrLower(): HttpVersionPolicy = ()
+
+@externTarget("System.Net.Http.HttpVersionPolicy.RequestVersionExact")
+func versionPolicyExact(): HttpVersionPolicy = ()
+
+// h2-or-lower (docs/61 default): request HTTP/2, but negotiate down to
+// HTTP/1.1 rather than fail if the peer doesn't support h2.  This only
+// takes effect when ALPN is available (TLS) — a plaintext peer has no
+// ALPN to negotiate with, so the connection stays HTTP/1.1 regardless.
+func applyHttp2OrLower(c: in HttpClientHandle): HttpClientHandle {
+  setDefaultRequestVersion(c, newVersion(2, 0))
+  setDefaultVersionPolicy(c, versionPolicyOrLower())
+  c
+}
+
+// Exact HTTP/1.1 pin: never attempt an h2 upgrade.
+func applyHttp11Exact(c: in HttpClientHandle): HttpClientHandle {
+  setDefaultRequestVersion(c, newVersion(1, 1))
+  setDefaultVersionPolicy(c, versionPolicyExact())
+  c
+}
+
+// Public `newClient*` wrappers — the ONLY constructors `hostDefaultClient`/
+// `hostClient*` below call, so every constructed `HttpClientHandle`
+// (including the process-wide singleton) defaults to h2-or-lower.
+func newClient(): HttpClientHandle {
+  applyHttp2OrLower(rawNewClient())
+}
+
+func newClientFromHandler(handler: in HttpClientHandler): HttpClientHandle {
+  applyHttp2OrLower(rawNewClientFromHandler(handler))
+}
+
+func newClientFromSocketsHandler(handler: in SocketsHttpHandler): HttpClientHandle {
+  applyHttp2OrLower(rawNewClientFromSocketsHandler(handler))
+}
 
 @externTarget("System.Net.Sockets.AddressFamily.Unix")
 func addressFamilyUnix(): SocketAddressFamily = ()
@@ -334,6 +402,40 @@ pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClientH
   newClientFromSocketsHandler(handler)
 }
 
+// ---------------------------------------------------------------------------
+// HTTP/1.1 exact-pin variants (docs/61 §5.1, D128 decision 4; #5879).
+//
+// Every construction path above already defaults to h2-or-lower via
+// `newClient*`; these mirror each one, re-applying `applyHttp11Exact` to
+// override that default. `hostClientHttp11` builds a FRESH client (never
+// `processClient`, the shared singleton `hostDefaultClient` returns) — the
+// singleton's version must stay at the process-wide h2-or-lower default for
+// every other caller.
+// ---------------------------------------------------------------------------
+pub func hostClientHttp11(): HttpClientHandle {
+  applyHttp11Exact(newClient())
+}
+
+pub func hostClientWithRedirectsHttp11(maxRedirects: in Int): HttpClientHandle {
+  applyHttp11Exact(hostClientWithRedirects(maxRedirects))
+}
+
+pub func hostClientNoRedirectsHttp11(): HttpClientHandle {
+  applyHttp11Exact(hostClientNoRedirects())
+}
+
+pub func hostClientWithUnixSocketHttp11(socketPath: in String): HttpClientHandle {
+  applyHttp11Exact(hostClientWithUnixSocket(socketPath))
+}
+
+pub func hostClientWithUnixSocketAndRedirectsHttp11(socketPath: in String, maxRedirects: in Int): HttpClientHandle {
+  applyHttp11Exact(hostClientWithUnixSocketAndRedirects(socketPath, maxRedirects))
+}
+
+pub func hostClientWithUnixSocketNoRedirectsHttp11(socketPath: in String): HttpClientHandle {
+  applyHttp11Exact(hostClientWithUnixSocketNoRedirects(socketPath))
+}
+
 // `ResponseHeader` (#5568): native Lyric over `HttpHeaders.Contains` +
 // `HttpHeaders.GetValues`, plus a NON-GENERIC `System.Collections.IEnumerator`
 // walk to take the first value.  The previous shape —
@@ -433,6 +535,23 @@ pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): 
   } catch Bug as _ {
     ""
   }
+}
+
+// `negotiatedVersion` (docs/61 §5.1; #5879): `HttpResponseMessage.Version`
+// carries the wire protocol version the response actually used. Only the
+// major component distinguishes HTTP/1.1 from h2/h3, so `Std.Http` maps
+// this raw major int onto `HttpVersion` (1 -> Http11, 2 -> Http2, 3 ->
+// Http3).
+@externInstance
+@externTarget("System.Net.Http.HttpResponseMessage.Version")
+func responseVersionOf(response: in HttpResponseMessage): Version = ()
+
+@externInstance
+@externTarget("System.Version.Major")
+func versionMajorOf(v: in Version): Int = ()
+
+pub func hostResponseVersionMajor(response: in HttpResponseMessage): Int {
+  versionMajorOf(responseVersionOf(response))
 }
 
 // ---------------------------------------------------------------------------

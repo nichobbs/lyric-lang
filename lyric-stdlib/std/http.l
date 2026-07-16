@@ -24,6 +24,28 @@ pub enum HttpMethod {
   case OPTIONS
 }
 
+/// Negotiated (or requested) HTTP protocol version (docs/61 §5.1, D128
+/// decision 4).
+///
+/// `Http2` is the default on both targets: it negotiates h2-or-lower via
+/// ALPN over TLS and falls back to HTTP/1.1 automatically. Plaintext
+/// (`http://`) connections have no ALPN to negotiate with, so they stay
+/// HTTP/1.1 regardless of this setting — this default only changes
+/// behaviour for HTTPS peers that advertise h2. `Http11` pins the
+/// connection to HTTP/1.1 exactly, never attempting an upgrade. `Http3`
+/// is reserved: neither target has a usable HTTP/3 story yet (the JDK
+/// has none; the .NET msquic distribution/detection story is open, see
+/// docs/61 Q-TLS-002). A builder configured with `Http3` still
+/// `build()`s successfully — builder construction stays infallible by
+/// design — but every operation on the resulting client fails with a
+/// typed `HttpError.ConnectionFailed` naming this limitation.
+@stable(since = "1.2")
+pub enum HttpVersion {
+  case Http11
+  case Http2
+  case Http3
+}
+
 /// Opaque validated URL wrapper.
 ///
 /// URLs enter the stdlib as strings and are validated once at the
@@ -124,12 +146,29 @@ pub interface HttpClient {
 
 // Private concrete implementation backed by a kernel HttpClientHandle.
 // Constructed only by the factory functions and HttpClientBuilder.build().
+//
+// `unsupportedReason`: set only for a builder configured with
+// `withHttpVersion(Http3)`. Builder construction stays infallible (docs/61
+// §3.2's `build()`-never-fails contract), so the typed failure is deferred
+// to first use here instead: every trait method below checks this field
+// FIRST and returns `ConnectionFailed` without ever touching `handle` or the
+// kernel. `handle` still holds an ordinary (never-used) client in that case
+// so this record's shape doesn't need an `Option`.
 record HttpClientImpl {
   handle: HostHttp.HttpClientHandle
+  unsupportedReason: Option[String]
+}
+
+func unsupportedClientError(url: in String, reason: in String): HttpError {
+  ConnectionFailed(url = url, message = reason)
 }
 
 impl HttpClient for HttpClientImpl {
   async func send(request: in HttpRequest): Result[HttpResponse, HttpError] {
+    match self.unsupportedReason {
+      case Some(reason) -> return Err(error = unsupportedClientError(request.url, reason))
+      case None -> ()
+    }
     val result = await HostHttp.hostSendSafe(self.handle, request.handle)
     match result {
       case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
@@ -138,6 +177,10 @@ impl HttpClient for HttpClientImpl {
   }
 
   async func sendWithCancel(request: in HttpRequest, token: in CancellationToken): Result[HttpResponse, HttpError] {
+    match self.unsupportedReason {
+      case Some(reason) -> return Err(error = unsupportedClientError(request.url, reason))
+      case None -> ()
+    }
     val result = await HostHttp.hostSendWithCancelSafe(self.handle, request.handle, token)
     match result {
       case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
@@ -149,6 +192,10 @@ impl HttpClient for HttpClientImpl {
     match Url.tryFrom(url) {
       case Err(e) -> return Err(error = e)
       case Ok(parsed) -> {
+        match self.unsupportedReason {
+          case Some(reason) -> return Err(error = unsupportedClientError(parsed.value, reason))
+          case None -> ()
+        }
         val result = await HostHttp.hostGetSafe(self.handle, parsed.value)
         match result {
           case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
@@ -162,6 +209,10 @@ impl HttpClient for HttpClientImpl {
     match Url.tryFrom(url) {
       case Err(e) -> return Err(error = e)
       case Ok(parsed) -> {
+        match self.unsupportedReason {
+          case Some(reason) -> return Err(error = unsupportedClientError(parsed.value, reason))
+          case None -> ()
+        }
         val result = await HostHttp.hostPostStringSafe(self.handle, parsed.value, body, "text/plain")
         match result {
           case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
@@ -175,6 +226,10 @@ impl HttpClient for HttpClientImpl {
     match Url.tryFrom(url) {
       case Err(e) -> return Err(error = e)
       case Ok(parsed) -> {
+        match self.unsupportedReason {
+          case Some(reason) -> return Err(error = unsupportedClientError(parsed.value, reason))
+          case None -> ()
+        }
         val req = HttpRequest(
           handle = HostHttp.hostWithStringBody(
             HostHttp.hostMakeRequest("PUT", parsed.value),
@@ -196,6 +251,10 @@ impl HttpClient for HttpClientImpl {
     match Url.tryFrom(url) {
       case Err(e) -> return Err(error = e)
       case Ok(parsed) -> {
+        match self.unsupportedReason {
+          case Some(reason) -> return Err(error = unsupportedClientError(parsed.value, reason))
+          case None -> ()
+        }
         val req = HttpRequest(handle = HostHttp.hostMakeRequest("DELETE", parsed.value), url = parsed.value)
         val result = await HostHttp.hostSendSafe(self.handle, req.handle)
         match result {
@@ -210,6 +269,10 @@ impl HttpClient for HttpClientImpl {
     match Url.tryFrom(url) {
       case Err(e) -> return Err(error = e)
       case Ok(parsed) -> {
+        match self.unsupportedReason {
+          case Some(reason) -> return Err(error = unsupportedClientError(parsed.value, reason))
+          case None -> ()
+        }
         val req = HttpRequest(
           handle = HostHttp.hostWithStringBody(
             HostHttp.hostMakeRequest("PATCH", parsed.value),
@@ -248,12 +311,13 @@ pub record HttpClientBuilder {
   socketPath: Option[String]
   maxRedirects: Option[Int]
   noRedirects: Bool
+  httpVersion: Option[HttpVersion]
 }
 
 /// Construct a default builder (TCP transport, redirect-following, process-wide singleton).
 @stable(since = "1.1")
 pub func HttpClientBuilder.new(): HttpClientBuilder {
-  HttpClientBuilder(socketPath = None, maxRedirects = None, noRedirects = false)
+  HttpClientBuilder(socketPath = None, maxRedirects = None, noRedirects = false, httpVersion = None)
 }
 
 /// Route all requests through the Unix domain socket at `path`.
@@ -264,7 +328,12 @@ pub func HttpClientBuilder.new(): HttpClientBuilder {
 pub func HttpClientBuilder.withUnixSocket(b: in HttpClientBuilder, path: in String): HttpClientBuilder
   requires: path.length > 0
 {
-  HttpClientBuilder(socketPath = Some(value = path), maxRedirects = b.maxRedirects, noRedirects = b.noRedirects)
+  HttpClientBuilder(
+    socketPath = Some(value = path),
+    maxRedirects = b.maxRedirects,
+    noRedirects = b.noRedirects,
+    httpVersion = b.httpVersion
+  )
 }
 
 /// Follow up to `max` redirects automatically.
@@ -272,39 +341,114 @@ pub func HttpClientBuilder.withUnixSocket(b: in HttpClientBuilder, path: in Stri
 pub func HttpClientBuilder.withRedirects(b: in HttpClientBuilder, max: in Int): HttpClientBuilder
   requires: max >= 0
 {
-  HttpClientBuilder(socketPath = b.socketPath, maxRedirects = Some(value = max), noRedirects = false)
+  HttpClientBuilder(
+    socketPath = b.socketPath,
+    maxRedirects = Some(value = max),
+    noRedirects = false,
+    httpVersion = b.httpVersion
+  )
 }
 
 /// Do not follow redirects.  3xx responses are returned to the caller as-is.
 @stable(since = "1.1")
 pub func HttpClientBuilder.withNoRedirects(b: in HttpClientBuilder): HttpClientBuilder {
-  HttpClientBuilder(socketPath = b.socketPath, maxRedirects = None, noRedirects = true)
+  HttpClientBuilder(socketPath = b.socketPath, maxRedirects = None, noRedirects = true, httpVersion = b.httpVersion)
+}
+
+/// Set the negotiated HTTP protocol version. See `HttpVersion` for the
+/// per-case semantics (default `Http2`, exact `Http11` pin, reserved
+/// `Http3`).
+@stable(since = "1.2")
+pub func HttpClientBuilder.withHttpVersion(b: in HttpClientBuilder, version: in HttpVersion): HttpClientBuilder {
+  HttpClientBuilder(
+    socketPath = b.socketPath,
+    maxRedirects = b.maxRedirects,
+    noRedirects = b.noRedirects,
+    httpVersion = Some(value = version)
+  )
 }
 
 /// Build the configured `HttpClient`.
+///
+/// Stays infallible even when `httpVersion` is `Http3` (see
+/// `HttpVersion`'s doc comment): the returned client is fully
+/// constructed, but every operation on it fails with a typed
+/// `ConnectionFailed` naming the unsupported version.
 @stable(since = "1.1")
 pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
+  // Unwrap `Option[HttpVersion]` to a plain `HttpVersion` (defaulting the
+  // unset case to `Http2`, the documented default) BEFORE matching its
+  // cases: matching a nested union case directly inside `Some(...)` (e.g.
+  // `case Some(Http11) -> ...`) is avoided here on purpose — matching the
+  // already-unwrapped value one level down keeps every case match a plain
+  // top-level `HttpVersion` match, the same shape used everywhere else in
+  // this file.
+  val version = match b.httpVersion {
+    case Some(v) -> v
+    case None -> Http2
+  }
+  val pinHttp11 = match version {
+    case Http11 -> true
+    case Http2 -> false
+    case Http3 -> false
+  }
   val handle = match b.socketPath {
     case Some(path) ->
       if b.noRedirects {
-        HostHttp.hostClientWithUnixSocketNoRedirects(path)
+        if pinHttp11 {
+          HostHttp.hostClientWithUnixSocketNoRedirectsHttp11(path)
+        } else {
+          HostHttp.hostClientWithUnixSocketNoRedirects(path)
+        }
       } else {
         match b.maxRedirects {
-          case Some(n) -> HostHttp.hostClientWithUnixSocketAndRedirects(path, n)
-          case None -> HostHttp.hostClientWithUnixSocket(path)
+          case Some(n) ->
+            if pinHttp11 {
+              HostHttp.hostClientWithUnixSocketAndRedirectsHttp11(path, n)
+            } else {
+              HostHttp.hostClientWithUnixSocketAndRedirects(path, n)
+            }
+          case None ->
+            if pinHttp11 {
+              HostHttp.hostClientWithUnixSocketHttp11(path)
+            } else {
+              HostHttp.hostClientWithUnixSocket(path)
+            }
         }
       }
     case None ->
       if b.noRedirects {
-        HostHttp.hostClientNoRedirects()
+        if pinHttp11 {
+          HostHttp.hostClientNoRedirectsHttp11()
+        } else {
+          HostHttp.hostClientNoRedirects()
+        }
       } else {
         match b.maxRedirects {
-          case Some(n) -> HostHttp.hostClientWithRedirects(n)
-          case None -> HostHttp.hostDefaultClient()
+          case Some(n) ->
+            if pinHttp11 {
+              HostHttp.hostClientWithRedirectsHttp11(n)
+            } else {
+              HostHttp.hostClientWithRedirects(n)
+            }
+          case None ->
+            if pinHttp11 {
+              HostHttp.hostClientHttp11()
+            } else {
+              HostHttp.hostDefaultClient()
+            }
         }
       }
   }
-  HttpClientImpl(handle = handle)
+  val unsupportedReason = match version {
+    case Http3 ->
+      Some(
+        value = "HTTP/3 is not supported on this target yet (see #5874 / docs/61-https-tls-http-versions.md Q-TLS-002)"
+      )
+    case Http11 -> None
+    case Http2 -> None
+  }
+  HttpClientImpl(handle = handle, unsupportedReason = unsupportedReason)
 }
 
 @pure
@@ -682,6 +826,21 @@ pub func HttpResponse.header(response: in HttpResponse, name: in String): Option
   }
 }
 
+/// The HTTP protocol version this response was actually negotiated over
+/// (docs/61 §5.1). A plaintext (`http://`) response is always `Http11` —
+/// h2 only upgrades via ALPN, which requires TLS — regardless of the
+/// requesting client's `HttpVersion` default or pin.
+@stable(since = "1.2")
+pub func HttpResponse.negotiatedVersion(response: in HttpResponse): HttpVersion {
+  val major = HostHttp.hostResponseVersionMajor(response.handle)
+  match major {
+    case 1 -> Http11
+    case 2 -> Http2
+    case 3 -> Http3
+    case _ -> panic("Std.Http: unexpected negotiated HTTP major version " + toString(major))
+  }
+}
+
 // ---------------------------------------------------------------------------
 // HttpClient factory convenience functions.
 //
@@ -694,7 +853,7 @@ pub func HttpResponse.header(response: in HttpResponse, name: in String): Option
 /// handle avoids TCP socket-pool exhaustion from repeated construction.
 @stable(since = "1.1")
 pub func defaultClient(): HttpClient {
-  HttpClientImpl(handle = HostHttp.hostDefaultClient())
+  HttpClientImpl(handle = HostHttp.hostDefaultClient(), unsupportedReason = None)
 }
 
 /// Construct an `HttpClient` that follows up to `maxRedirects`
@@ -703,7 +862,7 @@ pub func defaultClient(): HttpClient {
 pub func clientWithRedirects(maxRedirects: in Int): HttpClient
   requires: maxRedirects >= 0
 {
-  HttpClientImpl(handle = HostHttp.hostClientWithRedirects(maxRedirects))
+  HttpClientImpl(handle = HostHttp.hostClientWithRedirects(maxRedirects), unsupportedReason = None)
 }
 
 /// Construct an `HttpClient` that does NOT follow redirects.
@@ -712,7 +871,7 @@ pub func clientWithRedirects(maxRedirects: in Int): HttpClient
 /// `HttpResponse.header(...)`).
 @stable(since = "1.0")
 pub func clientNoRedirects(): HttpClient {
-  HttpClientImpl(handle = HostHttp.hostClientNoRedirects())
+  HttpClientImpl(handle = HostHttp.hostClientNoRedirects(), unsupportedReason = None)
 }
 
 // ---------------------------------------------------------------------------
@@ -732,7 +891,7 @@ pub func clientNoRedirects(): HttpClient {
 pub func clientWithUnixSocket(socketPath: in String): HttpClient
   requires: socketPath.length > 0
 {
-  HttpClientImpl(handle = HostHttp.hostClientWithUnixSocket(socketPath))
+  HttpClientImpl(handle = HostHttp.hostClientWithUnixSocket(socketPath), unsupportedReason = None)
 }
 
 /// Construct an `HttpClient` connected to a Unix domain socket with redirect following.
@@ -745,7 +904,10 @@ pub func clientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: i
   requires: socketPath.length > 0
   requires: maxRedirects >= 0
 {
-  HttpClientImpl(handle = HostHttp.hostClientWithUnixSocketAndRedirects(socketPath, maxRedirects))
+  HttpClientImpl(
+    handle = HostHttp.hostClientWithUnixSocketAndRedirects(socketPath, maxRedirects),
+    unsupportedReason = None
+  )
 }
 
 /// Construct an `HttpClient` connected to a Unix domain socket without redirect following.
@@ -758,7 +920,7 @@ pub func clientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: i
 pub func clientWithUnixSocketNoRedirects(socketPath: in String): HttpClient
   requires: socketPath.length > 0
 {
-  HttpClientImpl(handle = HostHttp.hostClientWithUnixSocketNoRedirects(socketPath))
+  HttpClientImpl(handle = HostHttp.hostClientWithUnixSocketNoRedirects(socketPath), unsupportedReason = None)
 }
 
 // Future: scoped HttpClient (per-Scope cancellation flow) needs the

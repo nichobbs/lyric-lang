@@ -17240,6 +17240,86 @@ native/plan/04+05, D065 (pure-Lyric parser precedent), D119/D120
 
 ---
 
+## D-progress-688 — TLS phase 1.4: `HttpClientBuilder.withHttpVersion`, h2-or-lower client default parity, `HttpResponse.negotiatedVersion()` (docs/61 §5.1, D128 decision 3/4, #5879)
+
+**Context.** D128 decision 3/4 called for a new `HttpVersion` builder knob
+plus a deliberate dotnet default change: every constructed `HttpClient`
+(including the process-wide singleton `Std.Http` reuses across calls)
+should default to h2-or-lower via ALPN, matching the JVM's existing JDK
+default, instead of the dotnet kernel's previous silent HTTP/1.1-only
+behaviour (the cross-target divergence docs/59 and docs/61 §1 both flag).
+
+**Shipped.**
+
+- `Std.Http` (`lyric-stdlib/std/http.l`): `pub enum HttpVersion { Http11,
+  Http2, Http3 }`; `HttpClientBuilder.httpVersion: Option[HttpVersion]`
+  threaded through every existing `with*` method; `withHttpVersion(b, v)`;
+  `HttpResponse.negotiatedVersion(): HttpVersion`.
+- `Http3` (reserved, unimplemented on both targets — Q-TLS-002) is refused
+  entirely inside `Std.Http` rather than at the kernel boundary:
+  `HttpClientImpl` gained an `unsupportedReason: Option[String]` field, set
+  only when `httpVersion = Some(Http3)`; every `HttpClient` trait method
+  checks it first and returns a typed `ConnectionFailed` without ever
+  calling into `HostHttp`/touching the network. `build()` therefore stays
+  infallible (docs/61 §3.2's contract) and the failure is fully
+  deterministic — no dependence on how a real connection happens to fail.
+  This was chosen over a kernel-level "poisoned handle" because it needs no
+  new kernel surface on either target and keeps the two kernels' `HttpVersion`
+  handling limited to what each target can actually express (dotnet:
+  mutable-post-construction; JVM: immutable-at-build, no `Http3` case in
+  the JDK's own `HttpClient.Version` enum at all).
+- `_kernel/http_host.l` (dotnet): every `HttpClientHandle` constructor
+  (`newClient`/`newClientFromHandler`/`newClientFromSocketsHandler`,
+  including the `processClient` singleton) now applies
+  `DefaultRequestVersion = 2.0` + `DefaultVersionPolicy =
+  RequestVersionOrLower` via a shared `applyHttp2OrLower` helper — the
+  default change is structurally impossible to bypass at a call site. A
+  parallel `hostClient*Http11` family (mirroring every existing
+  `hostClient*` combinator) re-applies `RequestVersionExact` 1.1 on a
+  freshly-constructed client, never on the shared singleton.
+  `hostResponseVersionMajor` reads `HttpResponseMessage.Version.Major`.
+- `_kernel_jvm/http_host.l`: `buildClient` takes an explicit
+  `HttpClient.Version` (the JDK's own default already is h2-or-lower;
+  explicit per docs/61 §5.1 for clarity), plus the same `hostClient*Http11`
+  family. `HttpResponseMessage` gained a `version` field captured at send
+  time; `hostResponseVersionMajor` maps `HTTP_2`/anything-else onto 2/1 (no
+  `HTTP_3` case exists in JDK 21's enum).
+- Self-tests: `lyric-stdlib/tests/http_version_tests.l` (both targets,
+  deterministic — no live listener, `Http3` gate only) plus two live-listener
+  round-trip self-tests proving `negotiatedVersion()` is `Http11` over
+  plaintext for both the default and an explicit `Http11` pin (plaintext
+  never upgrades — h2 needs ALPN/TLS): `lyric-compiler/lyric/http_version_self_test.l`
+  (dotnet, child-process listener harness, mirrors
+  `http_roundtrip_self_test.l` — same #5329 concurrency constraint) and
+  `lyric-compiler/lyric/http_version_jvm_self_test.l` (jvm, in-process
+  `scope`/`spawn`, genuinely concurrent on this target per D120).
+
+**A real self-hosted-compiler bug found and worked around while writing
+these tests:** matching a nested union case directly inside `Some(...)`
+(e.g. `case Some(Http11) -> ...`) on `--target jvm` did not discriminate on
+the inner case at all — `Some(Http2)` and `Some(Http11)` both matched
+`case Some(Http3) -> ...` in `HttpClientBuilder.build()`'s original draft,
+silently mis-selecting the `Http3` typed-error path for every non-`None`
+`httpVersion`. Isolated to the nested-pattern shape specifically: unwrapping
+the `Option` first and matching the plain `HttpVersion` value in a second,
+top-level `match` (the shape used everywhere else in this file) resolves
+correctly on both targets. `HttpClientBuilder.build()` uses the two-step
+form for exactly this reason; no other nested-union-in-`Option` pattern
+exists elsewhere in `Std.Http`. Not independently re-filed as a compiler
+issue here — flagging for whoever next hits `case Some(<UnionCase>) -> ...`
+on the JVM backend.
+
+**Verification:** hand-verified end-to-end against the published NuGet
+`lyric` global tool (`LYRIC_STD_PATH`/`LYRIC_STDLIB_BIN` overrides) on both
+targets — this session's sandbox could not build `./bin/lyric` from source
+(GitHub release-download blocked, same profile as D-progress-543/687); CI
+runs the real self-hosted-compiler-under-test build.
+
+**Related:** docs/61 §5.1, D128, #5874, #5879, D-progress-543 (sandbox
+formatter/build exception), http_roundtrip_self_test.l, http_async_tests.l.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

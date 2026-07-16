@@ -57,6 +57,13 @@ extern type JHttpClientBuilder = "java.net.http.HttpClient$Builder"
 
 extern type JRedirect = "java.net.http.HttpClient$Redirect"
 
+// HTTP-version knob (docs/61 §5.1, D128 decision 4; #5879).  JDK 21 has no
+// `HTTP_3` case — the JDK's own `HttpClient.Version` enum only distinguishes
+// `HTTP_1_1`/`HTTP_2` — so `Std.Http.HttpVersion.Http3` has no dotnet-style
+// "pin" here at all; it is refused entirely at the `Std.Http` layer before
+// any kernel call is made (see `HttpClientImpl.unsupportedReason`).
+extern type JHttpVersion = "java.net.http.HttpClient$Version"
+
 extern type JHttpRequest = "java.net.http.HttpRequest"
 
 extern type JHttpRequestBuilder = "java.net.http.HttpRequest$Builder"
@@ -96,30 +103,41 @@ pub record HttpRequestMessage {
   timeoutNanos: Long
 }
 
-/// Response, fully buffered at send time (module header).
+/// Response, fully buffered at send time (module header).  `version` is
+/// the negotiated wire protocol (docs/61 §5.1; #5879).
 pub record HttpResponseMessage {
   status: Int
   jheaders: JHttpHeaders
   bodyBytes: slice[Byte]
+  version: JHttpVersion
 }
 
 // =====================================================================
 // Client construction.
 // =====================================================================
-func buildClient(followRedirects: in Bool): HttpClientHandle {
+// `version` (docs/61 §5.1, D128 decision 4; #5879): `HttpClient` is built
+// immutably on this target — unlike the .NET twin's mutable
+// `DefaultRequestVersion`/`DefaultVersionPolicy` properties, there is no
+// post-construction way to change it — so every construction path takes the
+// desired version up front rather than patching an already-built client.
+func buildClient(followRedirects: in Bool, version: in JHttpVersion): HttpClientHandle {
   val b: JHttpClientBuilder = HttpClientHandle.newBuilder()
-  val configured: JHttpClientBuilder = if followRedirects {
+  val withRedirect: JHttpClientBuilder = if followRedirects {
     b.followRedirects(JRedirect.NORMAL)
   } else {
     b.followRedirects(JRedirect.NEVER)
   }
-  configured.build()
+  val withVersion: JHttpClientBuilder = withRedirect.version(version)
+  withVersion.build()
 }
 
 // #333 parity with the .NET twin: process-wide client singleton,
 // initialised once in the package `.cctor` and reused on every request.
 // Redirect-following by default, matching .NET's HttpClientHandler.
-val processClient: HttpClientHandle = buildClient(true)
+// `HTTP_2` matches the JDK's own out-of-the-box default (h2-or-lower,
+// falling back to HTTP/1.1) — explicit here per docs/61 §5.1 for clarity
+// rather than relying on the builder's implicit default.
+val processClient: HttpClientHandle = buildClient(true, JHttpVersion.HTTP_2)
 
 pub func hostDefaultClient(): HttpClientHandle {
   processClient
@@ -132,11 +150,29 @@ pub func hostDefaultClient(): HttpClientHandle {
 /// (positive) and not following (zero or negative) rather than setting
 /// an exact hop count.
 pub func hostClientWithRedirects(maxRedirects: in Int): HttpClientHandle {
-  buildClient(maxRedirects > 0)
+  buildClient(maxRedirects > 0, JHttpVersion.HTTP_2)
 }
 
 pub func hostClientNoRedirects(): HttpClientHandle {
-  buildClient(false)
+  buildClient(false, JHttpVersion.HTTP_2)
+}
+
+// ---------------------------------------------------------------------------
+// HTTP/1.1 exact-pin variants (docs/61 §5.1, D128 decision 4; #5879) —
+// mirrors `_kernel/http_host.l`'s `hostClient*Http11` family so `Std.Http`'s
+// `HttpClientBuilder.build()` calls the same-named function on either
+// kernel.
+// ---------------------------------------------------------------------------
+pub func hostClientHttp11(): HttpClientHandle {
+  buildClient(true, JHttpVersion.HTTP_1_1)
+}
+
+pub func hostClientWithRedirectsHttp11(maxRedirects: in Int): HttpClientHandle {
+  buildClient(maxRedirects > 0, JHttpVersion.HTTP_1_1)
+}
+
+pub func hostClientNoRedirectsHttp11(): HttpClientHandle {
+  buildClient(false, JHttpVersion.HTTP_1_1)
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +180,8 @@ pub func hostClientNoRedirects(): HttpClientHandle {
 // `java.net.http.HttpClient` exposes no Unix-socket transport; until the
 // JDK grows one, constructing such a client fails loudly rather than
 // returning a client that silently dials TCP.  Tracked with the JVM
-// parity umbrella, #2663.
+// parity umbrella, #2663.  Unsupported regardless of HTTP version, so the
+// `*Http11` variants below fail the same way as their plain counterparts.
 // ---------------------------------------------------------------------------
 func unixSocketUnsupported(): HttpClientHandle {
   panic(
@@ -162,6 +199,18 @@ pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirect
 }
 
 pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClientHandle {
+  unixSocketUnsupported()
+}
+
+pub func hostClientWithUnixSocketHttp11(socketPath: in String): HttpClientHandle {
+  unixSocketUnsupported()
+}
+
+pub func hostClientWithUnixSocketAndRedirectsHttp11(socketPath: in String, maxRedirects: in Int): HttpClientHandle {
+  unixSocketUnsupported()
+}
+
+pub func hostClientWithUnixSocketNoRedirectsHttp11(socketPath: in String): HttpClientHandle {
   unixSocketUnsupported()
 }
 
@@ -259,7 +308,7 @@ func doSend(client: in HttpClientHandle, request: in HttpRequestMessage): HttpRe
   val resp: JHttpResponse = client.send(jreq, JBodyHandlers.ofInputStream())
   val ins: JInputStream = resp.body()
   val bytes = readAllAndClose(ins)
-  HttpResponseMessage(status = resp.statusCode(), jheaders = resp.headers(), bodyBytes = bytes)
+  HttpResponseMessage(status = resp.statusCode(), jheaders = resp.headers(), bodyBytes = bytes, version = resp.version())
 }
 
 // Apply a `makeCancelSourceTimeout` deadline as the JDK request timeout
@@ -293,6 +342,20 @@ func doPostString(
 // =====================================================================
 pub func hostStatusCode(response: in HttpResponseMessage): Int {
   response.status
+}
+
+/// `negotiatedVersion` (docs/61 §5.1; #5879): maps the JDK's
+/// `HttpClient.Version` enum to the major-version int `Std.Http` matches
+/// against `HttpVersion` (mirrors `_kernel/http_host.l`'s
+/// `hostResponseVersionMajor`). JDK 21's enum has exactly two cases
+/// (`HTTP_1_1`/`HTTP_2` — no `HTTP_3`), so anything that isn't `HTTP_2`
+/// is `HTTP_1_1`.
+pub func hostResponseVersionMajor(response: in HttpResponseMessage): Int {
+  if response.version.equals(JHttpVersion.HTTP_2) {
+    2
+  } else {
+    1
+  }
 }
 
 /// First value of the named response header, or `""` if absent.

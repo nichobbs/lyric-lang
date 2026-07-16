@@ -400,7 +400,16 @@ items marked ∥ are independent and can proceed in parallel.
 3. JVM client TLS: `SSLContext` wiring, same surface/policy, self-test.
    (After 1; ∥ with 2.)
 4. HTTP-version knob + h2-or-lower default parity + `negotiatedVersion`
-   accessor + self-tests on both targets. ∥ with 1.
+   accessor + self-tests on both targets. ∥ with 1. _Shipped
+   (D-progress-688, #5879): `HttpVersion` enum + `HttpClientBuilder.withHttpVersion`
+   + `HttpResponse.negotiatedVersion()`; every constructed dotnet
+   `HttpClientHandle` (including the process-wide singleton) now defaults
+   to h2-or-lower; `Http3` refused with a typed `ConnectionFailed` before
+   any kernel call. Coverage boundary: real h2-over-TLS negotiation is not
+   asserted in CI (no server TLS yet) — only "plaintext stays 1.1" is
+   proven against a live listener, per-target (dotnet child-process,
+   jvm in-process `scope`/`spawn`) for the same #5329 reason
+   `http_roundtrip_self_test.l` already documents._
 
 **Phase 2 — JVM server TLS**
 5. `Std.HttpServer` JVM kernel: `HttpsServer` + `SSLContext` from

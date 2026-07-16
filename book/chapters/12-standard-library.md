@@ -260,6 +260,17 @@ pub interface HttpClient {
 
 The real `HttpClient` implementation wraps `System.Net.Http.HttpClient`. In production you wire it through your `wire` block. In tests you inject a stub that returns canned responses. Chapter 13 covers the FFI aspect of this wrapping; Chapter 15 covers the test stub pattern.
 
+For custom transport configuration (redirect policy, Unix sockets, HTTP version), build a client with `HttpClientBuilder` instead of the plain factory functions:
+
+```lyric
+val client = HttpClientBuilder.new()
+    .withRedirects(5)
+    .withHttpVersion(Http11)
+    .build()
+```
+
+`HttpVersion` has three cases: `Http2` (the default on both targets — h2-or-lower negotiated via ALPN over TLS, falling back to HTTP/1.1; a plaintext `http://` connection has no ALPN to negotiate with and always stays HTTP/1.1), `Http11` (pins the connection to HTTP/1.1 exactly), and `Http3` (reserved — neither target can speak it yet, so a client built with `Http3` fails every request with a typed `ConnectionFailed` rather than refusing to build). Call `response.negotiatedVersion()` to see which version a given response actually used. Note that the h2-or-lower default is a deliberate behavior change on the .NET target (previously HTTP/1.1-only) made to match the JVM's existing JDK default — it only changes behavior against HTTPS peers that advertise h2.
+
 There is also a server-side surface in `Std.Http` for handling inbound requests, but it is `@experimental` and its shape is still being settled. For production HTTP service code, the current recommendation is to use the `Std.Http.HttpClient` interface for outbound calls and the `lyric-web` library (`Web` package) for server-side routing and handler dispatch — see chapter 24.
 
 ## §12.9 `Std.Rest`
