@@ -159,6 +159,9 @@ jobs:
       # and j3_lowering_self_test.l — the three tests that actually caught
       # the v0.4.14 dblToSingle regression this workflow exists to catch
       # earlier next time.
+      - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
+        run: sudo apt-get update && sudo apt-get install -y z3
+
       - name: Self-tests against the download-seeded stage 1 (--target dotnet)
         id: selftest_dotnet
         working-directory: ${{ github.workspace }}
