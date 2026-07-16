@@ -1534,6 +1534,44 @@ func parseProtectedField(st: inout ParseState): ProtectedField {
   }
 }
 
+// Shared rebuild for the `func` / `async func` protected-member arms
+// (`KwFunc`, `KwAsync`, and their `pub`-prefixed counterparts): harvest
+// doc comments and annotations, optionally consume a leading `pub` token
+// (recording its span as the member's visibility), parse the function
+// body, then rebuild the `FunctionDecl` with the harvested docs/
+// annotations/visibility layered over `parseFunctionDeclBody`'s result.
+// `consumePub` mirrors the `KwPub` arms' `val visTok = advance(st) // pub`
+// step; when false, `fn0.visibility` (always `None`, since no `pub` was
+// consumed) is used as-is.
+func parseProtectedFuncMember(st: inout ParseState, consumePub: Bool): ProtectedMember {
+  val docs = parseItemDocComments(st)
+  val anns = parseItemAnnotations(st)
+  val visOverride = if consumePub {
+    val visTok = advance(st)
+    // pub
+    Some(VisPub(span = visTok.span))
+  } else {
+    None
+  }
+  val fn0 = parseFunctionDeclBody(st, None)
+  val vis = match visOverride { case Some(v) -> Some(v); case None -> fn0.visibility }
+  val fn = FunctionDecl(
+    docComments = docs,
+    annotations = anns,
+    visibility = vis,
+    isAsync = fn0.isAsync,
+    name = fn0.name,
+    generics = fn0.generics,
+    params = fn0.params,
+    ret = fn0.ret,
+    whereClause = fn0.whereClause,
+    contracts = fn0.contracts,
+    body = fn0.body,
+    span = fn0.span
+  )
+  PMFunc(fn = fn)
+}
+
 func parseProtectedMember(st: inout ParseState): ProtectedMember {
   val _ = skipStmtEnds(st)
   val k0 = skipDocTriviaOffset(st, 0)
@@ -1555,48 +1593,10 @@ func parseProtectedMember(st: inout ParseState): ProtectedMember {
                   PMEntry(entryDecl = parseEntryDecl(st))
                 }
                 case KwFunc -> {
-                  val docs = parseItemDocComments(st)
-                  val anns = parseItemAnnotations(st)
-                  val visTok = advance(st)
-                  // pub
-                  val fn0 = parseFunctionDeclBody(st, None)
-                  val fn = FunctionDecl(
-                    docComments = docs,
-                    annotations = anns,
-                    visibility = Some(VisPub(span = visTok.span)),
-                    isAsync = fn0.isAsync,
-                    name = fn0.name,
-                    generics = fn0.generics,
-                    params = fn0.params,
-                    ret = fn0.ret,
-                    whereClause = fn0.whereClause,
-                    contracts = fn0.contracts,
-                    body = fn0.body,
-                    span = fn0.span
-                  )
-                  PMFunc(fn = fn)
+                  parseProtectedFuncMember(st, true)
                 }
                 case KwAsync -> {
-                  val docs = parseItemDocComments(st)
-                  val anns = parseItemAnnotations(st)
-                  val visTok = advance(st)
-                  // pub
-                  val fn0 = parseFunctionDeclBody(st, None)
-                  val fn = FunctionDecl(
-                    docComments = docs,
-                    annotations = anns,
-                    visibility = Some(VisPub(span = visTok.span)),
-                    isAsync = fn0.isAsync,
-                    name = fn0.name,
-                    generics = fn0.generics,
-                    params = fn0.params,
-                    ret = fn0.ret,
-                    whereClause = fn0.whereClause,
-                    contracts = fn0.contracts,
-                    body = fn0.body,
-                    span = fn0.span
-                  )
-                  PMFunc(fn = fn)
+                  parseProtectedFuncMember(st, true)
                 }
                 case _ -> {
                   PMField(field = parseProtectedField(st))
@@ -1609,44 +1609,10 @@ func parseProtectedMember(st: inout ParseState): ProtectedMember {
           }
         }
         case KwFunc -> {
-          val docs = parseItemDocComments(st)
-          val anns = parseItemAnnotations(st)
-          val fn0 = parseFunctionDeclBody(st, None)
-          val fn = FunctionDecl(
-            docComments = docs,
-            annotations = anns,
-            visibility = fn0.visibility,
-            isAsync = fn0.isAsync,
-            name = fn0.name,
-            generics = fn0.generics,
-            params = fn0.params,
-            ret = fn0.ret,
-            whereClause = fn0.whereClause,
-            contracts = fn0.contracts,
-            body = fn0.body,
-            span = fn0.span
-          )
-          PMFunc(fn = fn)
+          parseProtectedFuncMember(st, false)
         }
         case KwAsync -> {
-          val docs = parseItemDocComments(st)
-          val anns = parseItemAnnotations(st)
-          val fn0 = parseFunctionDeclBody(st, None)
-          val fn = FunctionDecl(
-            docComments = docs,
-            annotations = anns,
-            visibility = fn0.visibility,
-            isAsync = fn0.isAsync,
-            name = fn0.name,
-            generics = fn0.generics,
-            params = fn0.params,
-            ret = fn0.ret,
-            whereClause = fn0.whereClause,
-            contracts = fn0.contracts,
-            body = fn0.body,
-            span = fn0.span
-          )
-          PMFunc(fn = fn)
+          parseProtectedFuncMember(st, false)
         }
         case KwVar -> {
           PMField(field = parseProtectedField(st))
