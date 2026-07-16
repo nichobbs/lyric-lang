@@ -17,5 +17,16 @@ namespace Lyric.Cli.Aot;
 
 public static class Program
 {
-    public static int Main(string[] args) => Lyric.Cli.Program.main(args);
+    // LyricBuildVersion.Value is generated at compile time from MSBuild's
+    // $(Version) property (see the GenerateLyricBuildVersion target in
+    // Lyric.Cli.Aot.csproj) — a plain `ldstr` constant, not a runtime
+    // attribute lookup, so it survives Native AOT trimming. Forwarding it as
+    // an env var (rather than a new argv flag) keeps this file a pure
+    // trampoline per the #1082 contract: no path-discovery or domain logic,
+    // just relaying build metadata the self-hosted CLI can't otherwise see.
+    public static int Main(string[] args)
+    {
+        System.Environment.SetEnvironmentVariable("LYRIC_BUILD_VERSION", LyricBuildVersion.Value);
+        return Lyric.Cli.Program.main(args);
+    }
 }

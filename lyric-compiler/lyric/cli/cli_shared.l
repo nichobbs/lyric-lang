@@ -92,9 +92,10 @@ import Lyric.Lockfile as LF
 import Lyric.Discovery as Disc
 import Lyric.Emitter as Emitter
 import Lyric.ContractMeta as Meta
+import Lyric.Version as Ver
 
 func VERSION(): String {
-  "0.1.0"
+  Ver.VERSION()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

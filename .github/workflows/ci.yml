@@ -755,6 +755,7 @@ jobs:
             lyric-compiler/lyric/manifest_self_test.l \
             lyric-compiler/lyric/cli_restore_self_test.l \
             lyric-compiler/lyric/cli_version_self_test.l \
+            lyric-compiler/lyric/version_self_test.l \
             lyric-compiler/lyric/cli_workspace_builder_self_test.l \
             lyric-compiler/lyric/cli_build_self_test.l \
             lyric-compiler/lyric/cli_publish_self_test.l \

@@ -19,6 +19,11 @@
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
     <NoWarn>$(NoWarn);NU1510</NoWarn>
+    <!-- Dev-checkout default: a `make lyric` / `dotnet build` with no
+         `-p:Version=` override reports the same placeholder the self-hosted
+         source tree has always reported (docs/22 §5). The release workflow
+         overrides this with the resolved release tag via `-p:Version=`. -->
+    <Version Condition="'$(Version)' == ''">0.1.0</Version>
     <!-- Directory holding the stage-1 compiler+stdlib DLLs the AOT linker
          references.  Defaults to the repo's `.bootstrap/stage1`, but can be
          overridden (`-p:StageDir=/abs/path`) so a caller can AOT-link a
@@ -71,6 +76,29 @@
   <ItemGroup Condition="Exists('$(ResolverJarPath)')">
     <None Include="$(ResolverJarPath)" Pack="true" PackagePath="tools/$(TargetFramework)/any/lyric-resolver.jar" />
   </ItemGroup>
+
+  <!-- Bakes $(Version) into a compile-time C# constant (LyricBuildVersion.g.cs)
+       instead of reflecting on assembly attributes at runtime: an `ldstr`
+       literal survives Native AOT trimming unconditionally, where attribute
+       reflection on a trimmed/self-contained publish is not guaranteed to.
+       Program.cs forwards the constant into the self-hosted CLI as
+       LYRIC_BUILD_VERSION so `Lyric.Version.VERSION()` (lyric-compiler/lyric/
+       version.l) reads the real release version with no source-file
+       stamping step (docs/22 §5). -->
+  <Target Name="GenerateLyricBuildVersion" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <LyricBuildVersionFile>$(IntermediateOutputPath)LyricBuildVersion.g.cs</LyricBuildVersionFile>
+    </PropertyGroup>
+    <ItemGroup>
+      <Compile Include="$(LyricBuildVersionFile)" />
+      <FileWrites Include="$(LyricBuildVersionFile)" />
+    </ItemGroup>
+    <WriteLinesToFile
+      File="$(LyricBuildVersionFile)"
+      Lines="namespace Lyric.Cli.Aot%3B internal static class LyricBuildVersion { internal const string Value = &quot;$(Version)&quot;%3B }"
+      Overwrite="true"
+      WriteOnlyWhenDifferent="true" />
+  </Target>
 
   <!-- Post-build: copy all Lyric.*.dll files from StageDir to the output directory
        so the AOT binary can find its dependencies when run from arbitrary working
