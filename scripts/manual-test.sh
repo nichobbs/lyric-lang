@@ -3,23 +3,37 @@
 #
 # Pipeline:
 #   1.  env-check              — record SDK / runtime versions (advisory)
-#   2.  bootstrap-build        — `dotnet build bootstrap/Bootstrap.sln`
-#   3.  bootstrap-tests        — Expecto suites (lexer/parser/tc/emitter/cli)
-#   4.  bootstrap-publish      — publish a `lyric` binary used by later stages
-#   5.  repro-bootstrap        — scripts/bootstrap.sh --stage 2 (byte-equal)
-#   6.  stdlib-build           — `lyric build` over lyric-stdlib/lyric.toml
-#   7.  stdlib-tests           — `lyric test` on every lyric-stdlib/tests/*_tests.l
-#   8.  ecosystem-build-dotnet — every other lyric-*/lyric.toml (--target dotnet)
-#   9.  ecosystem-build-jvm    — same with --target jvm
-#  10.  ecosystem-tests        — `lyric test` on every lyric-*/tests/*_tests.l
-#  11.  examples-build-dotnet  — single-file .l + multi-file examples/*/lyric.toml
-#  12.  examples-build-jvm     — same with --target jvm
-#  13.  examples-tests         — `lyric test` on every examples/*/tests/*_tests.l
-#  14.  fmt-check              — `lyric fmt --check` over every tracked .l file
-#  15.  lint                   — `lyric lint` over every tracked .l file
-#  16.  prove                  — `lyric prove` on verifier-marked examples
-#  17.  gap-analysis           — examples without tests, kernel stub no-ops,
+#   2.  bootstrap-build        — `make lyric` (self-hosted stage-1 DLL bundle
+#                                 + AOT entry point build), producing ./bin/lyric
+#   3.  repro-bootstrap        — scripts/bootstrap.sh --stage 2 (byte-equal)
+#   4.  stdlib-build           — `lyric build` over lyric-stdlib/lyric.toml
+#   5.  stdlib-tests           — every lyric-stdlib/tests/*_tests.l: `lyric test`
+#                                 for the @test_module files, `lyric run`
+#                                 (LYRIC_LOAD_COMPILER=1 for the handful that
+#                                 import a compiler package) for the legacy
+#                                 `func main(): Unit` + `println "ok"` files
+#   6.  ecosystem-build-dotnet — every other lyric-*/lyric.toml (--target dotnet)
+#   7.  ecosystem-build-jvm    — same with --target jvm
+#   8.  ecosystem-tests        — `lyric test` on every lyric-*/tests/*_tests.l
+#   9.  examples-build-dotnet  — single-file .l + multi-file examples/*/lyric.toml
+#  10.  examples-build-jvm     — same with --target jvm
+#  11.  examples-tests         — `lyric test` on every examples/*/tests/*_tests.l
+#  12.  fmt-check              — `lyric fmt --check` over every tracked .l file
+#  13.  lint                   — `lyric lint` over every tracked .l file
+#  14.  prove                  — `lyric prove` on verifier-marked examples
+#  15.  gap-analysis           — examples without tests, kernel stub no-ops,
 #                                libraries without tests/manifest, TODO/FIXME
+#
+# The self-hosted compiler's own regression suite (`*_self_test.l` under
+# lyric-compiler/) is not re-run stage-by-stage here: each package's
+# self-tests run individually via native `lyric test` in CI
+# (.github/workflows/ci.yml), and the numbered backend self-test corpus has
+# its own runner, scripts/run-numbered-self-tests.sh. There is no F#
+# Expecto suite anymore — `bootstrap/Bootstrap.sln` and `bootstrap/tests/`
+# were deleted along with the F# bootstrap compiler; `bootstrap/src/` now
+# holds only the AOT entry-point project. The self-hosted compiler under
+# lyric-compiler/lyric/ is still exercised transitively by every stage
+# below, since `bootstrap-build` builds `lyric` from it.
 #
 # Output: .manual-test-report/
 #   report.md          human-readable summary
@@ -56,8 +70,6 @@ LIST_STAGES=0
 STAGES=(
   env-check
   bootstrap-build
-  bootstrap-tests
-  bootstrap-publish
   repro-bootstrap
   stdlib-build
   stdlib-tests
@@ -153,7 +165,7 @@ run_stage() {
   local log="$LOG_DIR/${name}.log"
   rc=0
   # Braces (not a subshell) so stages can export state (notably LYRIC_BIN
-  # from bootstrap-publish) to later stages.  Internal `cd`s inside each
+  # from bootstrap-build) to later stages.  Internal `cd`s inside each
   # stage use their own `(  )` subshells to stay isolated.
   { "$@"; } >"$log" 2>&1 || rc=$?
   end_ts=$(date +%s)
@@ -174,12 +186,17 @@ run_stage() {
 }
 
 # ── Lyric invocation helper ──────────────────────────────────────────────────
-# `bootstrap-publish` sets LYRIC_BIN; until then we run the AOT CLI via dotnet.
+# `bootstrap-build` sets LYRIC_BIN to the `make lyric`-produced ./bin/lyric;
+# if that stage was skipped (e.g. `--only`) but a prior run already built the
+# binary, reuse it. Only as a last resort fall back to `dotnet run` against
+# the AOT project directly (requires it to already be built out-of-band).
 
 LYRIC_BIN=""
 lyric() {
   if [ -n "$LYRIC_BIN" ]; then
     "$LYRIC_BIN" "$@"
+  elif [ -x "$REPO_ROOT/bin/lyric" ]; then
+    "$REPO_ROOT/bin/lyric" "$@"
   else
     dotnet run --project "$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj" -c Release --no-build -- "$@"
   fi
@@ -202,48 +219,13 @@ stage_env_check() {
 }
 
 stage_bootstrap_build() {
-  dotnet build "$REPO_ROOT/bootstrap/Bootstrap.sln" -c Release --nologo -v m
-}
-
-stage_bootstrap_tests() {
-  local rc=0
-  local proj
-  for proj in Lyric.Lexer.Tests Lyric.Parser.Tests Lyric.TypeChecker.Tests Lyric.Emitter.Tests Lyric.Cli.Tests; do
-    local path="$REPO_ROOT/bootstrap/tests/$proj"
-    if [ ! -d "$path" ]; then
-      echo "[bootstrap-tests] missing project: $proj — skipping"
-      continue
-    fi
-    echo
-    echo "--- $proj ---"
-    if ! dotnet run --project "$path" -c Release --no-build; then
-      rc=1
-    fi
-  done
-  return $rc
-}
-
-stage_bootstrap_publish() {
-  local out="$REPORT_DIR/lyric-bin"
-  rm -rf "$out"
-  mkdir -p "$out"
-  dotnet publish "$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj" \
-    -c Release -o "$out" --nologo -v q
-  if [ -f "$out/lyric" ]; then
-    chmod +x "$out/lyric"
-    LYRIC_BIN="$out/lyric"
-  elif [ -f "$out/lyric.dll" ]; then
-    cat > "$out/lyric" <<WRAPPER
-#!/usr/bin/env bash
-exec dotnet "$out/lyric.dll" "\$@"
-WRAPPER
-    chmod +x "$out/lyric"
-    LYRIC_BIN="$out/lyric"
-  else
-    echo "publish produced no lyric binary" >&2
+  ( cd "$REPO_ROOT" && make lyric )
+  if [ ! -x "$REPO_ROOT/bin/lyric" ]; then
+    echo "make lyric did not produce an executable $REPO_ROOT/bin/lyric" >&2
     return 1
   fi
-  echo "[bootstrap-publish] LYRIC_BIN=$LYRIC_BIN"
+  LYRIC_BIN="$REPO_ROOT/bin/lyric"
+  echo "[bootstrap-build] LYRIC_BIN=$LYRIC_BIN"
   "$LYRIC_BIN" --version
 }
 
@@ -268,14 +250,28 @@ stage_stdlib_build() {
 }
 
 stage_stdlib_tests() {
+  # Most lyric-stdlib/tests/*_tests.l files predate @test_module and are
+  # plain `func main(): Unit` + `println "ok"` programs — `lyric test`
+  # rejects those outright ("not a @test_module"), so they run via
+  # `lyric run` instead (matching the "Stdlib runtime suites on dotnet" CI
+  # step). Only the files actually annotated `@test_module` use `lyric test`.
+  # A couple of the legacy files import a compiler package (`Msil.*`) rather
+  # than only `Std.*`, which needs LYRIC_LOAD_COMPILER=1 to recompile it
+  # in-process instead of resolving it as a restored dependency.
   local rc=0
   local tf
   while IFS= read -r tf; do
     echo
     echo "--- $tf ---"
-    if ! lyric test "$tf"; then
-      rc=1
+    local stage_rc=0
+    if grep -q '^@test_module' "$tf"; then
+      lyric test "$tf" || stage_rc=$?
+    elif grep -qE '^import (Msil|Jvm|Lyric)\.' "$tf"; then
+      LYRIC_LOAD_COMPILER=1 lyric run "$tf" || stage_rc=$?
+    else
+      lyric run "$tf" || stage_rc=$?
     fi
+    [ "$stage_rc" -ne 0 ] && rc=1
   done < <(find "$REPO_ROOT/lyric-stdlib/tests" -maxdepth 1 -name '*_tests.l' | sort)
   return $rc
 }
@@ -694,12 +690,10 @@ generate_reports() {
 # ── Pipeline ─────────────────────────────────────────────────────────────────
 
 run_stage env-check              "Environment snapshot"                    stage_env_check
-run_stage bootstrap-build        "F# bootstrap compiler (dotnet build)"    stage_bootstrap_build
-run_stage bootstrap-tests        "Expecto test suites"                     stage_bootstrap_tests
-run_stage bootstrap-publish      "Publish lyric binary"                    stage_bootstrap_publish
+run_stage bootstrap-build        "Build lyric (make lyric)"                stage_bootstrap_build
 run_stage repro-bootstrap        "3-stage reproducibility bootstrap"       stage_repro_bootstrap
 run_stage stdlib-build           "Build Lyric.Stdlib end-to-end"           stage_stdlib_build
-run_stage stdlib-tests           "Run stdlib *_tests.l via lyric test"     stage_stdlib_tests
+run_stage stdlib-tests           "Run stdlib *_tests.l (lyric test/run)"   stage_stdlib_tests
 run_stage ecosystem-build-dotnet "Build every lyric-*/ for --target dotnet" stage_ecosystem_build_dotnet
 run_stage ecosystem-build-jvm    "Build every lyric-*/ for --target jvm"   stage_ecosystem_build_jvm
 run_stage ecosystem-tests        "Run lyric test for every lyric-*/tests/" stage_ecosystem_tests
