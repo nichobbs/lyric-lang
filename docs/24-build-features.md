@@ -367,6 +367,14 @@ is erased without warning).
   diagnostics ("which build of the binary am I looking at?"), but
   conflicts with the "compile-time only" framing. Lean toward "yes,
   read-only, via stdlib".
+- **Q-features-004:** Compile-time *value* injection (the substitution
+  counterpart to `@cfg`'s erasure) — baking a build-time `String` such as
+  the release version or git SHA into a source literal. `@cfg` only
+  gates presence/absence; there is no `#[cfg]`-analog for values.
+  Sketched in `docs/60-build-defines.md` (`@build_const` annotation +
+  `[build.define]` / `--define`, substituted in the `pipeParseAndErase`
+  stage beside `applyCfgErasure`); resolves Q-BD-001 – Q-BD-009. Unbacked
+  pending a decision-log entry.
 
 ---
 
