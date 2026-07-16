@@ -16259,7 +16259,42 @@ package-qualified form.
   list (lexer/parser/typechecker/mono/enum/async-SM/etc., 40+ files) run
   clean — no regressions from broadening the short-circuit.
 
-**Related:** #5737.
+**#5769 (review finding, JVM parity check):** the fix above and its
+regression test were MSIL-only, with no documented check of the JVM
+backend's equivalent lowering (`jvm/codegen/02_exprs.l`'s `EMember` arm).
+Checked and confirmed the SAME gap exists there: it only special-cased a
+receiver that is a bare single-segment `EPath`, so `Std.Http.GET`'s
+immediate receiver (`Std.Http`, itself multi-segment) recursed into
+evaluating `Std` alone and hit a compile-time panic (a different failure
+mode than MSIL's silent bad-IL, but the same underlying "package-qualified
+enum-case reference doesn't resolve" gap #5769 predicted). Fixed by adding
+`flattenPathExprSegsJvm`/`tryQualifiedEnumClassJvm`
+(`jvm/codegen/01_types.l`, mirroring `flattenPathExprSegs`/
+`tryQualifiedEnumOrdinalMsil`) plus a package-qualified
+`"enum:" + <dotted package> + "." + <case>` registration key alongside the
+existing type-scoped key (`jvm/codegen/06_items.l`'s `IEnum` registration).
+Verified with a new dual-target regression test
+(`qualified_enum_case_self_test.l`), which exercises the exact `Std.Http.GET`
+shape (bare reference, match scrutinee, and passed as an ordinary call
+argument) alongside an in-bundle enum/union case-name collision mirroring
+this entry's own repro.
+
+Two adjacent, pre-existing, genuinely separate JVM gaps were found
+during this check and deliberately left unfixed (out of #5769's scope):
+(1) a qualified FREE-FUNCTION call whose callee has a 3+-segment
+package-qualified name (`Std.Http.request(...)`) fails on JVM regardless
+of restore — `lowerMethodCall` does not flatten a nested-`EMember`
+receiver the way the flat-`EPath` call path does; reproduces even in a
+single-file build, unrelated to enum cases specifically; and (2) a
+genuinely path-restored (pre-built, `[dependencies] path = ...`)
+non-stdlib Lyric package dependency does not get its declared symbols
+registered for JVM codegen/type-checking at all (no JVM equivalent of
+`Lyric.RestoredPackages`' contract-metadata reconstruction) — stdlib
+itself is unaffected because it is always bundled via source (not a
+genuinely restored binary) on both targets in this repo's build. Both are
+tracked as follow-up work, not fixed here.
+
+**Related:** #5737, #5769.
 
 ## D-progress-681 — Resolve MSIL Backend Warnings W0005, W0003, and F0027 (#5746)
 
