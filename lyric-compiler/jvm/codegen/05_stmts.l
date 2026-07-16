@@ -1360,6 +1360,14 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
     val c = catches[i]
     val handlerL = freshLabel(ctx)
     insns.add(LLabel(name = handlerL))
+    // A catch handler is a lexical scope of its own (#5522, same shape as the
+    // #5191/#5515 match-arm fix): its exception binding shadows an enclosing
+    // local like a nested block's `val`, but the bare `allocSlot` below has no
+    // scope bracket — a same-named outer binding's slot was reused (clobbering
+    // the outer value) or, across a slot-type mismatch, the remapped
+    // name→slot binding leaked past the handler.  Bracket bind + handler body
+    // so a shadow gets a fresh slot and the outer mapping is restored on exit.
+    val handlerScope = enterBlockScope(ctx)
     val exTy = JRef(className = "java/lang/Throwable")
     match c.bindName {
       case Some(bname) -> {
@@ -1369,6 +1377,7 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
       case None -> insns.add(LPop)
     }
     val catchBodyTy = lowerBlockExpr(ctx, insns, c.body)
+    exitBlockScope(ctx, handlerScope)
     // A catch arm that unconditionally transfers control (a trailing
     // `panic(...)` → athrow, a `return`) never produces a value and never
     // reaches the join: skip the result store AND the fall-through `goto`
@@ -1509,6 +1518,9 @@ func lowerTryCatchFinallyExpr(
     val c = catches[i]
     val handlerL = freshLabel(ctx)
     insns.add(LLabel(name = handlerL))
+    // Bracket bind + handler body as its own lexical scope (#5522) — see the
+    // matching comment in `lowerTryCatchExpr` above.
+    val handlerScope = enterBlockScope(ctx)
     val exTy = JRef(className = "java/lang/Throwable")
     match c.bindName {
       case Some(bname) -> {
@@ -1518,6 +1530,7 @@ func lowerTryCatchFinallyExpr(
       case None -> insns.add(LPop)
     }
     val catchBodyTy = lowerBlockExpr(ctx, insns, c.body)
+    exitBlockScope(ctx, handlerScope)
     val catchTerminated = lastInsnIsTerminator(insns)
     match resultTy {
       case JVoid -> ()
@@ -1604,6 +1617,9 @@ func lowerTryCatch(
     val c = catches[i]
     val handlerL = freshLabel(ctx)
     insns.add(LLabel(name = handlerL))
+    // Bracket bind + handler body as its own lexical scope (#5522) — see the
+    // matching comment in `lowerTryCatchExpr` above.
+    val handlerScope = enterBlockScope(ctx)
     // The exception is on the stack.
     val exTy = JRef(className = "java/lang/Throwable")
     match c.bindName {
@@ -1616,6 +1632,7 @@ func lowerTryCatch(
       }
     }
     lowerBlock(ctx, insns, c.body)
+    exitBlockScope(ctx, handlerScope)
     insns.add(LGoto(label = afterL))
     // Register exception table entry for this catch arm.
     // Specific catches only cover the try body ([startL, endL)).

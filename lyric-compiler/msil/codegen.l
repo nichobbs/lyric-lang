@@ -15092,6 +15092,15 @@ func lowerTryCatchMsil(
     val c = catches[i]
     val handlerStartL = freshLabelMsil(fctx)
     insns.add(MLabel(id = handlerStartL))
+    // A catch handler is a lexical scope of its own (#5522, same shape as the
+    // #5191/#5515 match-arm fix): its exception binding shadows an enclosing
+    // local like a nested block's `val`, but the bare `allocSlotMsil` below
+    // has no scope bracket — a same-named outer binding's slot was reused
+    // (clobbering the outer value) or, across a slot-type mismatch, the
+    // remapped name→slot binding leaked past the handler.  Bracket bind +
+    // handler body so a shadow gets a fresh slot and the outer mapping is
+    // restored on handler exit.
+    val handlerScope = enterBlockScopeMsil(fctx)
     match c.bindName {
       case Some(bname) -> {
         val exSlot = allocSlotMsil(fctx, bname, MObject)
@@ -15106,6 +15115,7 @@ func lowerTryCatchMsil(
     fctx.tryRegionStack.add(0)
     lowerBlockMsil(cctx, fctx, insns, c.body)
     fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+    exitBlockScopeMsil(fctx, handlerScope)
     insns.add(MLeave(label = afterL))
     val handlerEndL = freshLabelMsil(fctx)
     insns.add(MLabel(id = handlerEndL))
@@ -15203,6 +15213,9 @@ func lowerTryCatchExprMsil(
     val c = catches[i]
     val handlerStartL = freshLabelMsil(fctx)
     insns.add(MLabel(id = handlerStartL))
+    // Bracket bind + handler body as its own lexical scope, exactly like the
+    // statement-form `lowerTryCatchMsil` above (#5522 / #5191 / #5515).
+    val handlerScope = enterBlockScopeMsil(fctx)
     match c.bindName {
       case Some(bname) -> {
         val exSlot = allocSlotMsil(fctx, bname, MObject)
@@ -15250,6 +15263,7 @@ func lowerTryCatchExprMsil(
         emitStoreSlot(insns, resultSlot, fctx.paramCount)
       }
     }
+    exitBlockScopeMsil(fctx, handlerScope)
     fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
     insns.add(MLeave(label = afterL))
     val handlerEndL = freshLabelMsil(fctx)
