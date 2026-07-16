@@ -691,6 +691,18 @@ pub func isDotnetStdlibSource(path: in String): Bool {
 // but that is a bounded one-time `stat` sweep of the ~100-file stdlib source
 // dir, dwarfed by the compile that always follows, and it only runs in a dev
 // tree.
+// NOTE (#5716): tried making this `pub` for direct self-testing (the
+// codebase's usual "split for testability" precedent, e.g.
+// `nugetUnresolvedReason`/`warnIfNugetUnresolved`) but a `pub` signature
+// exposing `File.FileStat` — an aliased cross-package type — as a parameter
+// breaks `Lyric.ContractMetaEmit`'s contract synthesis for the WHOLE
+// self-hosted compiler bundle ("unknown qualified type 'Std.File.FileStat'
+// ('FileStat' not found in scope)"), which in turn breaks every `lyric test`
+// invocation that restores the compiler DLLs as a dependency — a
+// pre-existing, unrelated compiler bug, not something to fix as part of a
+// test-coverage task.  Left package-private; see `cli_shared_self_test.l`
+// for the classification-only (`isDotnetStdlibSource`) coverage this
+// limitation reduced to.
 func anyLyricSourceNewerThan(dir: in String, ref: in File.FileStat): Bool {
   match File.listFilesRecursive(dir) {
     case Err(_) -> false
