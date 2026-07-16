@@ -114,16 +114,22 @@ pub func TlsError.message(e: in TlsError): String {
 /// TLS configuration for a server listener, including mTLS (D128 decision
 /// 5: mutual TLS ships from v1, not as a later add-on).
 ///
-/// Omitting a defaulted field at construction (e.g. `TlsServerConfig(identity
-/// = id)`) is correct on `--target dotnet`. On `--target jvm`, a consumer in
-/// a DIFFERENT package that omits a defaulted field currently gets an
-/// incorrectly-populated value for it — a pre-existing, general JVM backend
-/// gap in cross-package record-default construction, not specific to this
-/// type (filed as #5908, found while testing this module;
-/// `tls_server_config_tests.l` gates its defaults assertion to dotnet
-/// accordingly). Pass every field
-/// explicitly at the construction site until that lands if the consumer is
-/// in a different package and targets JVM. See `tls_server_config_tests.l`.
+/// Construction note: a consumer in a DIFFERENT package that omits a
+/// defaulted field (e.g. `TlsServerConfig(identity = id)`, leaning on
+/// `minVersion`/`clientCa`/`requireClientCert`'s declared defaults)
+/// currently miscompiles on BOTH targets — a pre-existing, general
+/// compiler gap in cross-package record-default construction, not specific
+/// to this type: `--target jvm` produces an incorrectly-populated field
+/// value (#5908), and `--target dotnet` throws
+/// `System.InvalidProgramException` for the identical construction shape
+/// under the source-built toolchain (#5920, the MSIL sibling of #5908).
+/// **Pass every field explicitly at every construction site** (`identity`,
+/// `minVersion`, `clientCa`, `requireClientCert`) until both land — the
+/// declared defaults are correct as documentation of intent, but relying on
+/// omission to fill them in is not yet safe on either target. See
+/// `tls_server_config_tests.l` (which, per the same reasoning, has no test
+/// for the omitted-defaults shape — only the explicit-fields construction
+/// is covered).
 @stable(since = "1.2")
 pub record TlsServerConfig {
   identity: Identity

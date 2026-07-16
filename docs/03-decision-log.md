@@ -17005,12 +17005,51 @@ neither fixed here — out of this PR's scope):**
    constructed from the second package with the field omitted). Failure
    mode varies from a hard `RuntimeException: Jvm.Codegen: match not
    exhaustive` crash to a silently-wrong `==` comparison depending on how
-   the field is read back. `TlsServerConfig`'s defaults-omission test is
-   therefore split into its own file
+   the field is read back. `TlsServerConfig`'s defaults-omission test was
+   initially split into its own file
    (`lyric-stdlib/tests/tls_server_config_tests.l`, dotnet-only, same
    established precedent as `Std.Log`'s dotnet-only CI step) rather than
    asserting something JVM cannot currently honor; constructing with every
-   field explicit is unaffected and dual-target.
+   field explicit was (and remains) unaffected and dual-target. **Superseded
+   by the addendum below** — the same construction shape also miscompiles
+   on dotnet under the real, source-built toolchain, so the defaults-omission
+   test was removed outright rather than kept dotnet-only.
+
+**Addendum (same day, CI evidence against `main`'s source-built toolchain,
+not this sandbox's published-tool substitute).** PR #5909's `stdlib-builds`
+job — running a genuine `./bin/lyric` built from this repo's own source,
+not the NuGet fallback tool the implementing session used — reported:
+
+```
+lyric test --target dotnet lyric-stdlib/tests/tls_server_config_tests.l
+not ok 1 - TlsServerConfig defaults minVersion to Tls12, ...
+  Common Language Runtime detected an invalid program.
+ok 2 - TlsServerConfig accepts explicit non-default values
+```
+
+The defaults-omission construction (`TlsServerConfig(identity = identity)`,
+cross-package) throws `System.InvalidProgramException` on `--target dotnet`
+too — the MSIL sibling of #5908, filed as **#5920**. This was not caught by
+the sandbox verification above because the published NuGet 0.4.32 tool's
+own MSIL codegen for this shape happens to differ from `main`'s current
+self-hosted MSIL backend; the sandbox's `lyric run --manifest` recipe
+correctly exercised the *real* stdlib source through the *published tool's*
+codegen, which is not the same as `main`'s codegen for every construct
+(the published tool lags `main` by design — it is a released snapshot).
+This is the second time in this entry a "clean in the substitute tool"
+result turned out to hide a real `main`-only gap (see D-progress-543's own
+correction for the general pattern), and generalizes the lesson: a
+published-tool substitute verifies the *logic*, not byte-for-byte codegen
+parity with `main`'s own backend, for constructs that are still evolving.
+
+Per CLAUDE.md's "no skipped/known-failing tests" rule, `tls_server_config_tests.l`'s
+defaults-omission test was **deleted** (not gated to either target — there
+is no target where it currently passes), leaving only the explicit-fields
+construction test, which is confirmed unaffected on both targets. The file
+now runs on both `--target dotnet` and `--target jvm` in CI. `tls.l`'s
+`TlsServerConfig` doc comment now tells consumers to pass every field
+explicitly until both #5908 and #5920 land, rather than leaning on the
+declared defaults cross-package.
 
 **Verification.** No source-buildable `./bin/lyric` was available in the
 implementing session's sandbox (GitHub release download blocked by network
@@ -17031,7 +17070,7 @@ CI, which builds a genuine `./bin/lyric` from this repo's source, runs the
 real `lyric test` invocations as normal.
 
 **Related:** #5876, #5874, docs/61-https-tls-http-versions.md §3.1, D128,
-#5903, #5908, D-progress-543.
+#5903, #5908, #5920, D-progress-543.
 
 ---
 
