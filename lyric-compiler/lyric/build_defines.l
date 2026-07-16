@@ -43,23 +43,23 @@ pub func wellKnownDefines(version: in String, target: in String, buildProfile: i
   ds
 }
 
-/// Merge two define lists; entries in `override` win over same-key entries in
-/// `base`. Used to layer CLI over manifest over well-known.
-pub func mergeDefines(base: in List[Define], override: in List[Define]): List[Define] {
-  val out: List[Define] = newList()
+/// Merge two define lists; entries in `overrides` win over same-key entries
+/// in `base`. Used to layer CLI over manifest over well-known.
+pub func mergeDefines(base: in List[Define], overrides: in List[Define]): List[Define] {
+  val merged: List[Define] = newList()
   var i = 0
   while i < base.count {
-    if not hasKey(override, base[i].key) {
-      out.add(base[i])
+    if not hasKey(overrides, base[i].key) {
+      merged.add(base[i])
     }
     i = i + 1
   }
   var j = 0
-  while j < override.count {
-    out.add(override[j])
+  while j < overrides.count {
+    merged.add(overrides[j])
     j = j + 1
   }
-  out
+  merged
 }
 
 // ── Private helpers ─────────────────────────────────────────────────────────
@@ -158,8 +158,8 @@ pub func applyBuildDefines(defines: in List[Define], sf: in SourceFile): BuildDe
         hasAnn = true
         annSpan = a.span
         match buildConstKey(a) {
-          case Some(k) -> keyOpt = Some(value = k)
-          case None -> malformed = true
+          case Some(k) -> { keyOpt = Some(value = k) }
+          case None -> { malformed = true }
         }
       }
       ai = ai + 1
