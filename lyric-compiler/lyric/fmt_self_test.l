@@ -1599,10 +1599,18 @@ test "protected type annotated entry and var field round trip (#5815)" {
   val c = formatSourceChecked(src)
   assertTrue(fmtCheckIsOk(c), "protected type annotated members: round-trips")
   val acc = format(parse(src))
-  assertTrue(Str.contains(acc, "@something"), "protected type: field annotation preserved")
-  assertTrue(Str.contains(acc, "@somethingElse"), "protected type: entry annotation preserved")
-  assertTrue(Str.contains(acc, "var total: Int"), "protected type: annotated field preserved")
-  assertTrue(Str.contains(acc, "entry count(): Int"), "protected type: annotated entry preserved")
+  // Adjacency assertions (#5840): a bare contains("@something") is also
+  // satisfied by "@somethingElse", and neither would catch an annotation
+  // rendered against the wrong member — assert each annotation sits on
+  // its own line directly above the member it belongs to.
+  assertTrue(
+    Str.contains(acc, "@something\n  var total: Int = 0"),
+    "protected type: field annotation on its own line above the var field"
+  )
+  assertTrue(
+    Str.contains(acc, "@somethingElse\n  entry count(): Int"),
+    "protected type: entry annotation on its own line above the entry"
+  )
   val once = format(parse(src))
   val twice = format(parse(once))
   assertEqual(once, twice, "protected type annotated members: idempotent")
