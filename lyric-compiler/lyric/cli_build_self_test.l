@@ -11,6 +11,9 @@
 //!   - `hasContribution`'s `nativeAssetPaths` branch and
 //!     `copyNugetNativeAssetsBeside` wiring (#5744) — a manifest whose only
 //!     contribution is a NuGet-resolved native runtime asset.
+//!   - `buildProject`'s `preResolvedDeps` seam (#5786, regression test
+//!     #5819) — a sentinel resolution proves the passed-in value is
+//!     actually read rather than silently re-resolved internally.
 //!
 //! Run in CI via:
 //!
@@ -784,5 +787,103 @@ test "buildOneNative: a manifest with no dependencies/features near a single fil
   assertTrue(
     bytesEqual(bytesA, bytesB),
     "a manifest with nothing dependency/feature-relevant does not change the compiled output (byte-for-byte)"
+  )
+}
+
+// ─── buildProject's preResolvedDeps seam (#5786, regression test #5819) ────
+// `buildReleaseProject` resolves manifest dependencies once and threads the
+// result into `buildProject` via `preResolvedDeps` instead of letting
+// `buildProject` re-resolve internally — the #5786 fix for a duplicated
+// `checkDllIsStale`/`resolveAllNugetAssets` pass (and duplicated
+// `warnIfNugetUnresolved` output) on every `--release` build. Exercises the
+// seam directly rather than through a full `--release` (ILC) build: a
+// dependency-free manifest can never produce a genuine
+// `hadWorkspaceError = true` from an internal re-resolution, so handing
+// `buildProject` a `preResolvedDeps` SENTINEL with `hadWorkspaceError = true`
+// only fails the build if `buildProject` actually reads the value it was
+// given — a regression that silently discarded `preResolvedDeps` and always
+// re-resolved internally would flip this from a build failure back to a
+// clean build, an easily observable divergence via the exit code alone.
+test "buildProject: a preResolvedDeps sentinel's hadWorkspaceError is honored, not silently re-resolved" {
+  val dir = freshTempDir("preresolved-sentinel")
+  defer {
+    cleanup(dir)
+  }
+  writeManifestOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\n" + "name = \"PreResolvedSentinelApp\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"PreResolvedSentinelApp\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"PreResolvedSentinelApp.Main\" = \"main.l\"\n"
+  )
+  writeFileOrPanic(
+    Path.join(dir, "main.l"),
+    "package PreResolvedSentinelApp.Main\n\nfunc main(): Unit {\n  println(1)\n}\n"
+  )
+
+  val sentinel = Cli.ResolvedManifestDeps(
+    restoredDlls = newList(),
+    depTemplateSrcs = newList(),
+    nugetThirdPartyPaths = newList(),
+    nativeAssetPaths = newList(),
+    hadWorkspaceError = true,
+    hadUnbuiltLocalDep = false
+  )
+  val noCliFeatures: List[String] = newList()
+  val exitCode = Cli.buildProject(
+    Path.join(dir, "lyric.toml"),
+    None,
+    Emitter.Dotnet,
+    noCliFeatures,
+    false,
+    false,
+    true,
+    None,
+    Some(value = sentinel)
+  )
+  assertEqualInt(
+    exitCode,
+    1,
+    "a preResolvedDeps sentinel with hadWorkspaceError = true must short-circuit the build to a failure — " +
+      "proves buildProject reads the handed-in resolution rather than silently re-resolving it (#5786/#5819)"
+  )
+}
+
+test "buildProject: preResolvedDeps = None re-resolves internally and a dependency-free manifest still builds" {
+  val dir = freshTempDir("preresolved-none")
+  defer {
+    cleanup(dir)
+  }
+  writeManifestOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\n" + "name = \"PreResolvedNoneApp\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"PreResolvedNoneApp\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"PreResolvedNoneApp.Main\" = \"main.l\"\n"
+  )
+  writeFileOrPanic(
+    Path.join(dir, "main.l"),
+    "package PreResolvedNoneApp.Main\n\nfunc main(): Unit {\n  println(1)\n}\n"
+  )
+
+  val noCliFeatures: List[String] = newList()
+  val exitCode = Cli.buildProject(
+    Path.join(dir, "lyric.toml"),
+    None,
+    Emitter.Dotnet,
+    noCliFeatures,
+    false,
+    false,
+    true,
+    None,
+    None
+  )
+  assertEqualInt(
+    exitCode,
+    0,
+    "with preResolvedDeps = None, buildProject re-resolves internally; a dependency-free manifest has no real " +
+      "workspace error so the build succeeds — the sibling test's failure is the sentinel, not a broken fixture"
   )
 }
