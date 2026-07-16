@@ -14572,6 +14572,15 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             }
             case _ -> lowerExprMsil(cctx, fctx, insns, init)
           }
+          // A value-typed annotation (`val r: Int = g()`) with an erased-`object`
+          // init (a closure/HOF call result) needs an `unbox.any` before the
+          // value binds into the value-typed slot below — otherwise the raw
+          // boxed reference is stored where an Int32/Int64/etc. is expected,
+          // which the CLR does not verify against and silently corrupts the
+          // value at read time (#5519).
+          if annoTy != MObject and initTy == MObject {
+            coerceCallArgMsil(cctx, insns, initTy, annoTy)
+          }
           popCollExpect(fctx)
           restoreHintTyArgs(fctx, savedAnnoHint)
           val effectiveTy = if annoTy != MObject { annoTy } else { initTy }
@@ -14591,6 +14600,11 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
           pushCollExpect(fctx, annoTy)
           val initTy = lowerExprMsil(cctx, fctx, insns, init)
+          // Unbox a closure/HOF call result before it binds into a
+          // value-typed slot (#5519) — see the matching LBVal comment above.
+          if annoTy != MObject and initTy == MObject {
+            coerceCallArgMsil(cctx, insns, initTy, annoTy)
+          }
           popCollExpect(fctx)
           restoreHintTyArgs(fctx, savedAnnoHint)
           val ty = if annoTy != MObject { annoTy } else { initTy }
@@ -14682,6 +14696,14 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
               pushCollExpect(fctx, annoTy)
               val initTy = lowerExprMsil(cctx, fctx, insns, init)
+              // Unbox a closure/HOF call result before it binds into a
+              // value-typed slot/cell (#5519) — see the matching LBVal comment
+              // above.  Safe for the hoisted-cell branch too: MUnboxAny only
+              // replaces the top-of-stack value (the init value), leaving the
+              // cell array/dup beneath it untouched.
+              if annoTy != MObject and initTy == MObject {
+                coerceCallArgMsil(cctx, insns, initTy, annoTy)
+              }
               popCollExpect(fctx)
               restoreHintTyArgs(fctx, savedAnnoHint)
               val ty = if annoTy != MObject { annoTy } else { initTy }
