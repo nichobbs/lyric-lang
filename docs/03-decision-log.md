@@ -16283,6 +16283,231 @@ Resolves three targeted backend warnings on the self-hosted MSIL backend (``W000
 
 **Related:** D-progress-671, D-progress-667, #2494, #5746, #5747, #5748, #5749, #5750, #5751.
 
+## D-progress-682 — `lyric build --release` (manifest mode) silently dropped every `[nuget]` dependency from the ILC reference list (#5782)
+
+`buildReleaseProject` (`lyric-compiler/lyric/cli/cli_build.l`, the manifest/multi-package `lyric build --release` path) computed `extraRefs` — the additional managed DLLs passed to `Lyric.Release.buildReleaseDotnet` as ILC references — from a bespoke walk over `[dependencies]` entries with a local `path = "..."` source only. It never consulted `[nuget]`-resolved assemblies at all, whether a restored Lyric package published via NuGet (e.g. `Lyric.Web`, `Lyric.Docker`) or a genuine third-party .NET assembly (e.g. `Microsoft.Data.Sqlite`, `Newtonsoft.Json`).
+
+**Root cause**: the managed staging build (`buildProject`, called earlier in the same function to produce the DLL ILC then compiles) already resolves this correctly via `resolveManifestDependencies` (`cli/workspace_builder.l`) — workspace deps, local path deps (with transitive deps), and `[nuget]` assets split into `restoredDlls` (Lyric packages) vs. `nugetThirdPartyPaths` (third-party) — so the managed DLL runs fine under the JIT (which resolves references via normal probing). `buildReleaseProject` never reused that result for its own `extraRefs`, so ILC — which has no equivalent runtime probing — never saw those assemblies as reference inputs. Found while building a Native AOT release pipeline for `nichobbs/cloud-agents`, whose `lyric.toml` declares every dependency via `[nuget]` (no `[dependencies]` entries at all): every reference was silently dropped, and the resulting binary crashed instantly with `System.IO.FileNotFoundException: Could not find file 'Web'`.
+
+**Solution**: `buildReleaseProject` now calls `resolveManifestDependencies` — the same function `buildProject` already relies on — and merges its `restoredDlls` (path-extracted from the `"depName\tdllPath"` shape the emitter already uses) and `nugetThirdPartyPaths` into `extraRefs`, replacing the old `[dependencies]`-only loop. This also fixes two latent gaps the old loop had: workspace dependencies and *transitive* local-path dependencies were never added to `extraRefs` either.
+
+### Verification
+
+- A minimal two-package manifest project with a `[nuget]` dependency on `Newtonsoft.Json` (not part of the shared framework, so a real restore + reference is required) now builds, links, and runs correctly under `lyric build --release --rid linux-x64`. Added as a CI regression (`aot-smoke` job, "Release Native AOT smoke test — manifest project with [nuget] dep").
+- `nichobbs/cloud-agents`' real `lyric.toml` (17 packages, `[nuget]`-only deps on `Lyric.Web`/`Lyric.Docker`/`Std.Logging`/`Microsoft.Data.Sqlite`) no longer crashes with `FileNotFoundException`; the produced binary now runs substantially further before hitting two separate, already-tracked issues (#5783 — NuGet-restored *native* runtime assets like `libe_sqlite3.so` aren't staged beside a `--release` output; #5784 — an async-func state-machine ILC "Invalid IL or CLR metadata" failure inside `lyric-docker`, distinct from #5781's `slice[Record]`+`for-in` miscompile).
+
+**Related:** #5782, #5783, #5784, #5781.
+
+---
+
+## D-progress-682 — `Lyric.Docker.ping` targeted Docker's non-existent `/ping` endpoint instead of `/_ping`
+
+Discovered while independently verifying `Lyric.Docker`'s live-daemon
+container lifecycle end-to-end against a real `dockerd` (as part of
+confirming nichobbs/cloud-agents' server can genuinely create runner
+containers, not just compile). `ping(client)` built its request URL as
+`client.apiBase + "/ping"`; the real Docker Engine API endpoint is
+`/_ping` (leading underscore) — Docker's own OpenAPI spec and every other
+official client use `_ping`. The plain `/ping` path 404s
+(`{"message":"page not found"}`) against a real daemon, so `ping()`
+always returned `Err` regardless of daemon health.
+
+**Root cause**: a typo introduced when `ping()` was ported from the
+inline pre-#4503 implementation to route through the shared
+`fetchBodyText`/`sendAndReadBody` helpers — the endpoint string was never
+verified against a live daemon at the time (no test in
+`lyric-docker/tests/` exercises a live connection; `ping()` isn't called
+by `createContainer`/`startContainer`/`stopContainer`/`removeContainer`,
+so this was invisible to any consumer that only manages containers).
+
+**Fix**: `client.apiBase + "/_ping"`.
+
+**Verification**: manually confirmed against a real `dockerd` (TCP
+transport, `127.0.0.1:2375`) that `GET /v1.40/ping` returns 404 and
+`GET /v1.40/_ping` returns `200 OK`; `lyric-docker`'s existing 44-case
+offline test suite (`lyric test --manifest lyric-docker/lyric.toml`)
+still passes unchanged (none of it exercises a live daemon). While
+verifying this, also confirmed the full container lifecycle
+(`createContainerWithNetwork`/`startContainer`/`stopContainer`/
+`removeContainer`) already works correctly end-to-end against a live
+daemon when built from current `main` — an `InvalidProgramException`
+previously observed against the *published* `Lyric.Docker` 0.4.29 NuGet
+package on any live-daemon call (`ping`, `createContainerWithNetwork`,
+etc.) does not reproduce when rebuilt from this source with the current
+compiler, confirming 0.4.29 was a stale artifact predating an unrelated
+async-codegen fix rather than a live source defect; NuGet already carries
+a fixed 0.4.31 build.
+
+**Related:** nichobbs/cloud-agents (Lyric.Docker version bump from 0.4.29
+to 0.4.31 tracked in that repo).
+
+## D-progress-683 — `Lyric.Docker.getContainerLogs` misdetected raw-vs-multiplexed streams: `/logs`'s `Content-Type` header is not a valid signal
+
+Discovered immediately after D-progress-682, in the same live-daemon
+verification pass, once `nichobbs/cloud-agents` actually created a real
+runner container and tried to read its output: every call failed with
+`"Failed to decode container logs as UTF-8"`.
+
+**Root cause**: `getContainerLogs` decided whether to run
+`demultiplexDockerStream` on the response bytes based on the `/logs`
+response's own `Content-Type` header, treating
+`application/vnd.docker.raw-stream` as "the container has a TTY, decode
+the bytes as UTF-8 directly" and anything else as "framed multiplexed,
+demultiplex first." Verified against a live daemon (Docker Engine 29.3):
+this header reads `application/vnd.docker.raw-stream` **unconditionally**
+for every container's `/logs` response, TTY or not — it is not a
+per-container signal at all for this endpoint (unlike `/attach`, which
+this project's header comment appears to have generalized from). A
+non-TTY container's body is genuinely framed-multiplexed (confirmed by
+inspecting the raw bytes: `\x02\x00\x00\x00\x00\x00\x00\x33` — stream
+type 2 (stderr), length 0x33 — followed by the payload), so trusting the
+header fed the 8-byte frame headers straight into UTF-8 decoding, which
+correctly fails (frame-header bytes are not valid UTF-8) on every
+non-TTY container — the overwhelmingly common case, since neither
+`createContainer` nor `createContainerWithNetwork` ever sets `Tty`. No
+existing test caught this (lyric-docker's suite is entirely offline; a
+hand-built response body can encode whatever `Content-Type` the test
+wants, so nothing exercised the *actual* header Docker sends).
+
+**Fix**: added `containerIsTty(client, containerId)`, which queries `GET
+/containers/{id}/json` and reads `Config.Tty` (the authoritative source)
+instead of the `/logs` response header. `getContainerLogs` now calls this
+before fetching logs and decides raw-vs-multiplexed from that. Added
+`extractJsonBoolField` (mirroring the existing `extractJsonIntField`) to
+read the boolean field, reusing `jsonFieldObjectStart` to scope the
+lookup to the nested `Config` object.
+
+**Verification**: against a live daemon, confirmed both directions —
+a container created without `Tty` now correctly demultiplexes its logs
+(previously always failed), and a container created with `Tty: true`
+still decodes correctly as a raw UTF-8 stream (no regression). The
+existing 44-case offline test suite still passes unchanged.
+
+**Review follow-ups (same PR, #5773):** added 7 offline unit tests for
+`extractJsonBoolField` covering true/false extraction, an absent field,
+a non-bare (quoted) value, whitespace tolerance, a non-key-position
+false match, and the nested-`Config`-object scoping `containerIsTty`
+actually uses — mirroring `extractJsonIntField`'s existing coverage.
+Also removed the now-dead `BytesWithContentType.contentType` field and
+its stale doc comment: `getContainerLogs` was the type's only consumer
+and no longer reads the header at all now that `containerIsTty` is
+authoritative, so `sendAndReadBytes` returns plain `slice[Byte]`
+instead. Fixed a stale `/ping` reference left in `ping()`'s own doc
+comment by the D-progress-682 fix.
+
+**Related:** D-progress-682; nichobbs/cloud-agents (this was found while
+verifying that repo's runner-container output retrieval genuinely works
+end-to-end, not just compiles).
+
+## D-progress-684 — Fix #5774: un-annotated closure-typed locals bound from a HOF call silently miscompiled (found while investigating #5304)
+
+Investigating #5304 (the pre-existing bug blocking the `UnixSocketHttpClient.cs`
+→ Lyric migration, D-progress-609) surfaced a more serious defect than #5304's
+original description ("a non-last package's closure `.ctor` fails to
+resolve", a build-time panic).  The actual defect, filed as #5774, is a
+**silent, non-deterministic miscompile** that reproduces in a plain
+**single-file** build — no multi-package bundle or cross-package call
+required, despite #5304's original framing:
+
+```
+pub func makeAdder(x: in Int): (Int) -> Int { { y: Int -> x + y } }
+pub func useIt(): Int {
+  val f = makeAdder(5)   // no type annotation
+  f(10)                  // directly returned as useIt(): Int's result
+}
+```
+
+Before the fix this returned a **different garbage integer on every run of
+the same compiled binary**, and `ilverify` confirmed genuinely invalid IL
+(`[StackUnexpected] found object, expected Int32`) — the closure-invoke's
+boxed `object` result was never unboxed because `fctx.funcValRetTypes` had no
+entry for the un-annotated local `f`.  That map was only ever populated for
+an **explicit** `(Int) -> Int` annotation on the binding, or for the #5511
+"function-typed record field" fallback (`val fld = h.f`) — never inferred
+from a plain call whose *callee's own declared return type* is itself
+function-shaped.
+
+**Fix** (`msil/codegen.l`): extended the #5511 machinery
+(`cctx.fieldFuncRetTypes`/`fieldFuncParamTypes`, `recordFieldFuncKeyMsil`) to
+also recognise this shape — `addPackageTokens`'s `IFunc` pass now registers a
+plain (non-async/generator/generic) function's `TFunction`-shaped return type
+under a `"func:" + pkgName + "." + funcName` key, and
+`recordFieldFuncKeyMsil` gained an `ECall(EPath([funcName]), _)` arm that
+resolves the same key for a bare same-package call.  No new call sites were
+needed — `registerFieldFuncValTypesMsil` already runs at every `val` binding.
+
+**#5790 (review finding on this fix, addressed in the same PR before merge):**
+the initial landing keyed the registration by bare package-qualified name
+only, first-registration-wins.  Same-name function overloading by arity is a
+shipped, tested feature (D-progress-324/#1536), so a second overload at a
+different arity — if it *also* returned a function-shaped type — would
+silently steal the first overload's registration, reproducing the exact
+miscompile class this fix exists to close.  Fixed by arity-qualifying the key
+(`"func:" + fqn + "/" + toString(decl.params.count)`, mirroring the
+`arityKey`/bare-name dual registration `funcRetTypes` already uses two blocks
+above) with the bare key retained only as a fallback, and by making
+`recordFieldFuncKeyMsil`'s `ECall` lookup try the arity-qualified key (built
+from the call site's actual `args.count`) before falling back to bare —
+mirroring the arity-qualified-then-bare lookup precedence `funcRetTypes`
+consumers already use elsewhere (e.g. the `c + "/" + toString(cnt)` pattern in
+the cross-package return-type resolver).  A new self-test case
+(`makeOp`/`makeOp` — two same-name overloads at different arities, each
+returning a *different* function-shaped type) covers the regression.
+
+**Verification:** the repro is fixed (5/5 correct runs) and `ilverify`-clean;
+the #5790 overload repro also resolves both overloads correctly (`ilverify`-
+clean); the self-test `func_val_local_rettype_self_test.l` (now 7 cases,
+including the overload regression) is wired into CI; a full stdlib rebuild
+plus a regression sweep (`core`/`iter`/`encoding`/`regex_safe`/`rest`/
+`format`/`collections`/`string_tests`, `closure_correctness_self_test.l` 8/8,
+`typed_ffi_delegate_self_test.l` 1/1, `aspect_weave_self_test.l` 7/7) all
+pass.  Verified end-to-end against a from-scratch stage-1 build (including
+the CLI bundle — `SKIP_CLI_BUNDLE`/`make stage1-fast` does **not** rebuild the
+compiler's own `Lyric.Msil.Codegen.dll`, so validating a `msil/codegen.l`
+change requires the full `stage1_cli_bundle` step, not the front-end-only
+fast loop) plus a direct AOT rebuild against it.
+
+**Correction relative to this issue's own first-pass investigation notes:**
+#5774 was initially suspected to be the same underlying defect as #5735
+(`Std.Xml.findFirst`'s `isNone[XmlNode]` crash) — both looked like a
+monomorphizer `Object`-fallback for an under-inferred generic.  D-progress-674
+(landed independently, in parallel with this fix) found #5735's *actual* root
+cause was unrelated to monomorphizer inference at all: `result` is a global
+reserved keyword at the lexer/parser level, and `findFirst`'s guard variable
+happened to be named `result` — every reference after its declaration silently
+resolved to the reserved `EResult` contract-postcondition expression instead
+of the local, which `Lyric.Mono` has no defined meaning for outside `ensures:`
+elaboration.  Fixed at the parser layer (a scoped `inContractClauseExpr` flag),
+with `findFirst` reverted to the idiomatic `isNone(result)` it should have
+been able to use all along.  #5774's fix is unrelated to and independent of
+that one — confirmed by re-testing #5735's repro against #5774's fix alone
+(still crashed, before D-progress-674 landed) — two genuinely distinct defects
+that happened to look similar from their shared `Object`-fallback/"match not
+exhaustive" symptom.
+
+**#5304 itself remains open but is likely resolved by this fix.**  Every
+repro attempt against #5304's original description (a build-time panic on a
+non-last bundle package) instead reproduced as this issue's silent
+miscompile, in both package orders, with or without a multi-package bundle —
+the original panic-specific repro shape could not be reconstructed.  Re-testing
+#5304's own exact 8-package repro (real `http_host.l`/`http.l` content, a
+capturing lambda added to the non-last `Std.HttpHost` package) against this
+fix now builds clean with no panic — encouraging, though not fully conclusive,
+since the original repro's extern-delegate-typed lambda shape (a
+`SocketsHttpHandler.ConnectCallback`-bound closure via D122) was not
+separately re-verified.  #5304 is left open pending that; if the original
+panic recurs post-fix on that specific shape, that is real evidence of a
+second, distinct residual defect rather than reason to reopen this one.
+
+**Unblocks:** the Unix Socket migration (`UnixSocketHttpClient.cs` →
+`Std.HttpHost`, D-progress-609) is no longer blocked on the silent-miscompile
+risk #5774 found — the migration's target shape (a capturing lambda inside
+`Std.HttpHost`, consumed as a typed value) is exactly what this fix covers
+and regression-tests.
+
+**Related:** #5774, #5790, #5304, D-progress-609, D-progress-674,
+docs/50-ffi-delegates-proposal.md, #5511, #5735.
+
 ---
 
 ## Decisions deferred to v2 or later

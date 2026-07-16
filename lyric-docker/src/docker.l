@@ -157,34 +157,28 @@ async func fetchBodyText(client: in DockerClient, urlStr: in String, failMsg: in
   await sendAndReadBody(client, Std.Http.request(Std.Http.GET, url), urlStr, failMsg)
 }
 
-/// Raw response bytes paired with the response's `Content-Type` header (if
-/// present). `getContainerLogs` uses the header to distinguish a TTY-mode
-/// raw byte stream (`application/vnd.docker.raw-stream`) from the framed
-/// multiplexed format (`application/vnd.docker.multiplexed-stream`) before
-/// deciding whether to run `demultiplexDockerStream`.
-record BytesWithContentType {
-  bytes: slice[Byte]
-  contentType: Option[String]
-}
-
-/// Send a request and return the response body bytes (and Content-Type
-/// header) on success, or a `DockerError` (carrying the status code and
-/// body text) on failure. Mirrors `sendAndReadBody` for endpoints (like
-/// `getContainerLogs`) that need the raw byte stream on success but the
-/// same text-body error-wrapping on failure.
+/// Send a request and return the response body bytes on success, or a
+/// `DockerError` (carrying the status code and body text) on failure.
+/// Mirrors `sendAndReadBody` for endpoints (like `getContainerLogs`) that
+/// need the raw byte stream on success but the same text-body error-wrapping
+/// on failure. Does not surface the response's `Content-Type` header: it was
+/// previously used by `getContainerLogs` to guess raw-vs-multiplexed, but
+/// that header is not a reliable signal for that decision (see
+/// `getContainerLogs`'s doc comment) and every current caller only needs the
+/// bytes.
 async func sendAndReadBytes(
   client: in DockerClient,
   request: in Std.Http.HttpRequest,
   urlStr: in String,
   failMsg: in String,
-): Result[BytesWithContentType, DockerError] {
+): Result[slice[Byte], DockerError] {
   val sent = await client.handle.send(request)
   val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
 
   if response.isSuccess() {
     val bodyResult = await response.bodyBytes()
     match bodyResult {
-      case Ok(bytes) -> Ok(value = BytesWithContentType(bytes = bytes, contentType = response.header("Content-Type")))
+      case Ok(bytes) -> Ok(value = bytes)
       case Err(_) -> Err(error = fromHttpError(ConnectionFailed(url = urlStr, message = "IO error reading response"), ""))
     }
   } else {
@@ -200,10 +194,10 @@ async func sendAndReadBytes(
 /// body unconditionally. A body-read IO failure on an otherwise-successful
 /// (200) response therefore now surfaces as `Err` instead of the prior
 /// `Ok("connected")` -- an edge case that's effectively unreachable against
-/// Docker's tiny `/ping` payload, and arguably the more honest behavior
+/// Docker's tiny `/_ping` payload, and arguably the more honest behavior
 /// (a response whose body can't be read isn't a clean success either way).
 pub async func ping(client: in DockerClient): Result[String, DockerError] {
-  match await fetchBodyText(client, client.apiBase + "/ping", "Ping failed") {
+  match await fetchBodyText(client, client.apiBase + "/_ping", "Ping failed") {
     case Ok(_) -> Ok(value = "connected")
     case Err(e) -> Err(error = e)
   }
@@ -548,6 +542,45 @@ pub func extractJsonIntField(json: in String, field: in String): Option[Int] {
   None
 }
 
+/// Extract a boolean field's value from a JSON object, or `None` if the
+/// field is absent or its value is neither the bare literal `true` nor
+/// `false`. Mirrors `extractJsonIntField`'s key-position disambiguation and
+/// whitespace handling. Public for the same testability reason as
+/// `extractJsonIntField`.
+pub func extractJsonBoolField(json: in String, field: in String): Option[Bool] {
+  val target = "\"" + field + "\""
+  val jsonLen = json.length
+  var searchFrom = 0
+  while searchFrom < jsonLen {
+    val pos = indexOfFrom(json, target, searchFrom)
+    if pos < 0 {
+      return None
+    }
+    if isFieldKeyPosition(json, pos) {
+      var i = pos + target.length
+      while i < jsonLen and json.substring(i, 1) != ":" {
+        i = i + 1
+      }
+      if i >= jsonLen {
+        return None
+      }
+      i = i + 1
+      while i < jsonLen and isJsonWhitespace(json.substring(i, 1)) {
+        i = i + 1
+      }
+      if i + 4 <= jsonLen and json.substring(i, 4) == "true" {
+        return Some(value = true)
+      }
+      if i + 5 <= jsonLen and json.substring(i, 5) == "false" {
+        return Some(value = false)
+      }
+      return None
+    }
+    searchFrom = pos + 1
+  }
+  None
+}
+
 /// `true` iff `field`'s value in `json` begins with `{` (a JSON object).
 /// Used to detect a non-null `Error` object in Docker's `/wait` response
 /// (`{"StatusCode":0,"Error":{"Message":"..."}|null}`) without a full JSON
@@ -800,41 +833,65 @@ pub func demultiplexDockerStream(bytes: in slice[Byte]): Result[String, String] 
   }
 }
 
+/// Whether `containerId` was created with an interactive pseudo-TTY
+/// (`Config.Tty`), read from `GET /containers/{id}/json`. This is the only
+/// reliable way to know whether `/logs` returns a raw byte stream or the
+/// framed multiplexed stdout/stderr format — see `getContainerLogs`'s doc
+/// comment for why the `/logs` response's own `Content-Type` header cannot
+/// be used for this. Defaults to `false` (multiplexed) if `Config.Tty` is
+/// absent or malformed, matching the Docker API's own default when a
+/// container is created without an explicit `Tty` field.
+async func containerIsTty(client: in DockerClient, containerId: in String): Result[Bool, DockerError] {
+  val bodyResult = await fetchBodyText(client, client.apiBase + "/containers/" + containerId + "/json", "Inspect container failed")
+  val body = match bodyResult { case Err(e) -> return Err(error = e); case Ok(b) -> b }
+  match jsonFieldObjectStart(body, "Config") {
+    case None -> Ok(value = false)
+    case Some(pos) -> {
+      val configJson = body.substring(pos, body.length - pos)
+      match extractJsonBoolField(configJson, "Tty") {
+        case Some(v) -> Ok(value = v)
+        case None -> Ok(value = false)
+      }
+    }
+  }
+}
+
 /// Fetch a container's combined stdout/stderr logs.
 ///
-/// Docker sets the response `Content-Type` to
-/// `application/vnd.docker.raw-stream` when the container was started with
-/// a pseudo-TTY (`Tty: true`) and to
-/// `application/vnd.docker.multiplexed-stream` otherwise. A TTY-mode
-/// response is a raw byte stream and must not be run through
-/// `demultiplexDockerStream`, which would misinterpret the bytes as
-/// 8-byte framing headers; it is decoded as UTF-8 directly instead.
+/// A container started with a pseudo-TTY (`Tty: true`) gets a raw byte
+/// stream from `/logs`; otherwise the stream is framed (an 8-byte header
+/// per chunk identifying stdout/stderr and length) and must be run through
+/// `demultiplexDockerStream` first. The `/logs` response's own
+/// `Content-Type` header cannot be used to distinguish these: verified
+/// against a live daemon (Docker Engine 29.3), it reports
+/// `application/vnd.docker.raw-stream` unconditionally for every
+/// container, TTY or not, while the body is genuinely framed-multiplexed
+/// whenever `Config.Tty` is false. Trusting that header (as a prior version
+/// of this function did) silently fed the 8-byte frame headers into UTF-8
+/// decoding for every non-TTY container — the overwhelmingly common case,
+/// since `createContainer`/`createContainerWithNetwork` never set `Tty` —
+/// producing a "Failed to decode container logs as UTF-8" error on every
+/// call. `containerIsTty` queries the container's actual `Config.Tty`
+/// setting instead, which is authoritative.
 pub async func getContainerLogs(client: in DockerClient, containerId: in String): Result[String, DockerError] {
   if not isValidContainerId(containerId) {
     return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
   }
+  val isTtyResult = await containerIsTty(client, containerId)
+  val isTty = match isTtyResult { case Err(e) -> return Err(error = e); case Ok(v) -> v }
+
   val urlStr = client.apiBase + "/containers/" + containerId + "/logs?stdout=true&stderr=true"
   val url = resolveDockerUrl(urlStr)?
-  val responseResult = await sendAndReadBytes(client, Std.Http.request(Std.Http.GET, url), urlStr, "Get container logs failed")
-  val response = match responseResult { case Err(e) -> return Err(error = e); case Ok(r) -> r }
+  val bytesResult = await sendAndReadBytes(client, Std.Http.request(Std.Http.GET, url), urlStr, "Get container logs failed")
+  val bytes = match bytesResult { case Err(e) -> return Err(error = e); case Ok(b) -> b }
 
-  // A prefix match rather than exact equality (#4767): a future Docker
-  // Engine API version could add media-type parameters (e.g. "; version=1.41")
-  // to this Content-Type header, and an exact match would silently fall
-  // through to demultiplexDockerStream, misinterpreting a raw TTY byte
-  // stream as framed multiplexed data.
-  val isRawStream = match response.contentType {
-    case Some(ct) -> ct.startsWith("application/vnd.docker.raw-stream")
-    case None -> false
-  }
-
-  if isRawStream {
-    match Std.Encoding.tryDecodeUtf8(response.bytes) {
+  if isTty {
+    match Std.Encoding.tryDecodeUtf8(bytes) {
       case Some(s) -> Ok(value = s)
       case None -> Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = ""))
     }
   } else {
-    match demultiplexDockerStream(response.bytes) {
+    match demultiplexDockerStream(bytes) {
       case Ok(s) -> Ok(value = s)
       case Err(reason) -> Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = reason))
     }

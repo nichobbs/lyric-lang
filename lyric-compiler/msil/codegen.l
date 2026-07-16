@@ -3702,6 +3702,62 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           }
           cctx.funcRetTypes.add(fqn, retTy)
         }
+        // #5774: a plain top-level function whose OWN declared return type is
+        // itself function-shaped (`func makeAdder(x: Int): (Int) -> Int`) is
+        // registered the same way a function-typed RECORD FIELD already is
+        // (#5511, `cctx.fieldFuncRetTypes`/`fieldFuncParamTypes`) — reusing
+        // that registry under a `"func:" + fqn` key (a `/`-free prefix that
+        // can never collide with a `className/fieldName` field key) lets
+        // `recordFieldFuncKeyMsil` recognise `val f = makeAdder(5)` (no type
+        // annotation on the binding) as a function-value source, so
+        // `registerFieldFuncValTypesMsil` can populate `f`'s real return type
+        // in `fctx.funcValRetTypes` at the LOCAL-BINDING site.  Without this,
+        // an un-annotated local bound from such a call keeps no return-type
+        // tracking at all, so invoking it later (`f(10)`) leaves the boxed
+        // `object` un-unboxed — verified by `ilverify` as invalid IL
+        // (`StackUnexpected: found object, expected Int32`) when that boxed
+        // value is then used somewhere requiring the real value type (e.g.
+        // returned directly as a function's own typed result).  Scoped to the
+        // plain (non-async, non-generator, non-generic) case only, mirroring
+        // the `else` arm above that computed `retTy` for `decl.ret`.
+        // #5790 (review finding on the original #5774 fix): keyed by BOTH the
+        // arity-qualified name (`"func:" + fqn + "/" + arity`, first-choice at
+        // the lookup site) and the bare name (fallback only) — mirroring the
+        // `arityKey`/`fqn` dual registration for `funcRetTypes` two blocks
+        // above.  A bare-only key would let a same-name overload (D-progress-
+        // 324/#1536: overloading by arity is a shipped, tested feature) whose
+        // OTHER arity also returns a function type silently steal this one's
+        // registration — reproducing the exact miscompile class this fix
+        // exists to close.
+        if not isGen and not isSm and declGenerics.count == 0 {
+          match decl.ret {
+            case Some(te) -> {
+              match te.kind {
+                case TFunction(fParamTes, fRetTe) -> {
+                  val funcValRetTy = typeExprToMsilCtx(cctx, fRetTe, pkgName)
+                  val fParamMsilTys: List[MsilType] = newList()
+                  var fvpi = 0
+                  while fvpi < fParamTes.count {
+                    fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[fvpi], pkgName))
+                    fvpi = fvpi + 1
+                  }
+                  val funcValArityKey = "func:" + fqn + "/" + toString(decl.params.count)
+                  if not cctx.fieldFuncRetTypes.containsKey(funcValArityKey) {
+                    cctx.fieldFuncRetTypes.add(funcValArityKey, funcValRetTy)
+                    cctx.fieldFuncParamTypes.add(funcValArityKey, fParamMsilTys)
+                  }
+                  val funcValBareKey = "func:" + fqn
+                  if not cctx.fieldFuncRetTypes.containsKey(funcValBareKey) {
+                    cctx.fieldFuncRetTypes.add(funcValBareKey, funcValRetTy)
+                    cctx.fieldFuncParamTypes.add(funcValBareKey, fParamMsilTys)
+                  }
+                }
+                case _ -> ()
+              }
+            }
+            case None -> ()
+          }
+        }
         // Record the declared parameter MsilTypes so call sites can thread an
         // argument's expected type into `contextHintTyArgs` (see funcParamTypes).
         // A generic function's `slice[T]` / bare-`T` parameter is recorded in the
@@ -14318,14 +14374,19 @@ func lowerForMsil(
   }
 }
 
-// #5511: when `expr` is a plain record-field read (`h.f`, receiver a
-// single-segment local/param whose tracked type — `fctx.types` — is a
-// record class) and that class's field was registered as function-typed
-// (`cctx.fieldFuncRetTypes`, populated at record-field registration time),
-// return the "ClassName/fieldName" key so a caller can pull the field's
-// real return/param types and register them for a local bound directly
-// from this read. Returns "" for any other shape (multi-segment/complex
-// receiver, a receiver whose type isn't tracked, or a field that isn't
+// #5511/#5774: when `expr` is either
+//   (a) a plain record-field read (`h.f`, receiver a single-segment
+//       local/param whose tracked type — `fctx.types` — is a record class)
+//       whose field was registered as function-typed, or
+//   (b) a plain call to a known SAME-PACKAGE top-level function
+//       (`makeAdder(5)`) whose OWN declared return type is itself
+//       function-shaped,
+// return the matching `cctx.fieldFuncRetTypes` key so a caller can pull the
+// real return/param types and register them for a local bound directly from
+// this expression, even though the binding itself carries no literal
+// `(A,...) -> R` annotation.  Returns "" for any other shape (multi-segment/
+// complex receiver or callee, a receiver whose type isn't tracked, a callee
+// that isn't a known function, or a field/return type that isn't
 // function-typed) — callers guard on a non-empty result.
 func recordFieldFuncKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr): String {
   match expr.kind {
@@ -14348,6 +14409,31 @@ func recordFieldFuncKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr
                 }
               }
               case None -> ""
+            }
+          } else {
+            ""
+          }
+        }
+        case _ -> ""
+      }
+    }
+    case ECall(callee, args) -> {
+      match callee.kind {
+        case EPath(path) -> {
+          if path.segments.count == 1 {
+            // #5790: try the arity-qualified key first — the same overload-
+            // safety precedence `funcRetTypes` call-site lookups use
+            // elsewhere (arity-qualified, then bare-name fallback) — so a
+            // same-name overload at a different arity can't steal this call
+            // site's registration.
+            val bareKey = "func:" + fctx.pkgName + "." + path.segments[0]
+            val arityKey = bareKey + "/" + toString(args.count)
+            if cctx.fieldFuncRetTypes.containsKey(arityKey) {
+              arityKey
+            } else if cctx.fieldFuncRetTypes.containsKey(bareKey) {
+              bareKey
+            } else {
+              ""
             }
           } else {
             ""

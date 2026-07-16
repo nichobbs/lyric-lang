@@ -760,6 +760,7 @@ jobs:
             lyric-compiler/lyric/cli_publish_self_test.l \
             lyric-compiler/lyric/verifier_self_test.l \
             lyric-compiler/lyric/closure_correctness_self_test.l \
+            lyric-compiler/lyric/func_val_local_rettype_self_test.l \
             lyric-compiler/lyric/slice_append_widening_self_test.l \
             lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
             lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
@@ -3310,6 +3311,79 @@ jobs:
             exit 1
           fi
           echo "OK: native AOT binary produced and executed correctly." >> "$GITHUB_STEP_SUMMARY"
+
+      # Regression test for #5782: `buildReleaseProject` (the manifest/
+      # multi-package `lyric build --release` path, as opposed to the
+      # single-file smoke test above) silently dropped every `[nuget]`
+      # dependency from the ILC reference list, so any Native AOT binary
+      # touching a `[nuget]`-resolved type crashed at runtime with
+      # `FileNotFoundException`. This builds a two-package manifest project
+      # with a genuine third-party NuGet dependency (Newtonsoft.Json — not
+      # part of the shared framework, so it must actually be restored and
+      # passed to ILC as a reference) and asserts the produced binary can
+      # call into it correctly.
+      - name: Release Native AOT smoke test — manifest project with [nuget] dep (#5782)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; native AOT smoke test cannot run"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          mkdir -p "$dir/src/app" "$dir/src/helper"
+          cat > "$dir/lyric.toml" <<'TOML'
+          [package]
+          name = "ReleaseNugetSmoke"
+          version = "0.1.0"
+          [project]
+          name = "ReleaseNugetSmoke"
+          output = "single"
+          output_assembly = "ReleaseNugetSmoke.dll"
+          [project.packages]
+          "ReleaseNugetSmoke" = "src/app/main.l"
+          "ReleaseNugetSmoke.Helper" = "src/helper/helper.l"
+          [nuget]
+          "Newtonsoft.Json" = "13.0.3"
+          TOML
+          cat > "$dir/src/helper/helper.l" <<'LYRIC'
+          package ReleaseNugetSmoke.Helper
+          pub func addOne(x: Int): Int {
+            x + 1
+          }
+          LYRIC
+          cat > "$dir/src/app/main.l" <<'LYRIC'
+          package ReleaseNugetSmoke
+          import Std.Core
+          import ReleaseNugetSmoke.Helper
+          extern type JsonConvert = "Newtonsoft.Json.JsonConvert"
+          pub func main(): Int {
+            println(JsonConvert.SerializeObject("hi"))
+            println(addOne(41).toString())
+            0
+          }
+          LYRIC
+          (cd "$dir" && "$OLDPWD/$lyric_bin" restore)
+          (cd "$dir" && "$OLDPWD/$lyric_bin" build --release --rid linux-x64)
+          native_bin="$dir/ReleaseNugetSmoke"
+          if [ ! -x "$native_bin" ]; then
+            echo "::error::native binary not produced at $native_bin"
+            exit 1
+          fi
+          out="$("$native_bin" 2>&1)"
+          echo "native AOT output: $out"
+          expected='"hi"
+          42'
+          if [ "$out" != "$expected" ]; then
+            echo "::error::manifest+[nuget] native AOT smoke test produced unexpected output: '$out'"
+            exit 1
+          fi
+          echo "OK: manifest project with a [nuget] dependency built and ran correctly under Native AOT." >> "$GITHUB_STEP_SUMMARY"
 
       # Native AOT publish of the `lyric` CLI itself (#1494 / Band 5).
       # `dotnet publish` honours the csproj's `<PublishAot>true</PublishAot>`,
