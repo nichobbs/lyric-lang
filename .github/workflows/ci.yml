@@ -4148,6 +4148,15 @@ jobs:
           "$lyric_bin" test --target jvm lyric-stdlib/tests/http_async_tests.l
           echo "Std.Http async-surface test ran: http_async_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
+      # Extra barrier (JVM batch 1-split): the JVM batch-1 group had grown to
+      # ~21 concurrent in-process JVM compilations — well over the ~14-step cap
+      # (see the dotnet-a header comment) at which the runner's parallel-step
+      # status collection starts misreporting a passing step as failed (the two
+      # wave-7 JVM self-tests above pushed it from ~19 to ~21).  Split into
+      # ~11 + ~10 so each sub-batch stays under the cap.
+      - name: Wait for parallel tests (JVM batch 1-split)
+        wait-all: true
+
       # Std.Tls test coverage on JVM (#5876) — the JVM half of the
       # dotnet-job step of the same name (stdlib-builds). Certificate/
       # identity loading against real PEM fixtures, including the
@@ -4155,6 +4164,9 @@ jobs:
       # via a sign/verify round-trip; docs/03-decision-log.md
       # D-progress-688). TlsServerConfig's defaults-omission coverage is
       # dotnet-only (#5908) and lives in a separate file, not run here.
+      # Placed in this second sub-batch (not the pre-split batch above, which
+      # has drifted back over the ~14-concurrent-step cap; #5913) to keep the
+      # runner's parallel-step status collection reliable.
       - name: Std.Tls test coverage on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
@@ -4167,15 +4179,6 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-stdlib/tests/tls_tests.l
           echo "Std.Tls test ran: tls_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
-
-      # Extra barrier (JVM batch 1-split): the JVM batch-1 group had grown to
-      # ~21 concurrent in-process JVM compilations — well over the ~14-step cap
-      # (see the dotnet-a header comment) at which the runner's parallel-step
-      # status collection starts misreporting a passing step as failed (the two
-      # wave-7 JVM self-tests above pushed it from ~19 to ~21).  Split into
-      # ~11 + ~10 so each sub-batch stays under the cap.
-      - name: Wait for parallel tests (JVM batch 1-split)
-        wait-all: true
 
       # Map-key self-test on JVM (#1480 MSIL / #4982 Finding 1 JVM) — the JVM
       # half of the dotnet-job step of the same name.  Records with

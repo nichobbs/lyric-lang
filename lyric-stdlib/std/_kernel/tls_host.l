@@ -29,15 +29,16 @@
 //! `X509Certificate2.CopyWithPrivateKey`'s key-construction side) is
 //! `ReadOnlySpan<byte>` + `out int`-shaped too — also unreachable. Until the
 //! compiler gains span-parameter binding, `hostIdentityFromPemBytes` bridges
-//! by writing both PEM blocks to per-call, randomly-named temp files
-//! (`Path.GetRandomFileName()`, not sequential) and delegating to
-//! `CreateFromPemFile`, deleting both files immediately after (success or
-//! failure) so the exposure window is as short as a `WriteAllBytes` +
-//! `CreateFromPemFile` pair. The temp files inherit the OS temp directory's
-//! default permissions for that window — callers with stricter requirements
-//! should prefer `Std.Tls.Identity.fromPemFiles` (loads real file paths,
-//! whose permissions are entirely the caller's own choice) over
-//! `Identity.fromPem` (in-memory content) when that matters. `Std.Tls`
+//! by writing both PEM blocks into a per-call private temp subdirectory
+//! (`Directory.CreateTempSubdirectory`, created mode 700 on Unix per its
+//! documented contract, so the key bytes are unreadable by other users for
+//! the whole window; on Windows the user temp directory is per-user-ACL'd)
+//! and delegating to `CreateFromPemFile`, deleting the directory recursively
+//! immediately after (success or failure) so the exposure window is as
+//! short as a `WriteAllBytes` + `CreateFromPemFile` pair. Callers with
+//! stricter requirements should prefer `Std.Tls.Identity.fromPemFiles`
+//! (loads real file paths, whose permissions are entirely the caller's own
+//! choice) over `Identity.fromPem` (in-memory content) when that matters. `Std.Tls`
 //! funnels every entry point (`fromPemFile` and `fromPem`) through the same
 //! bytes-taking kernel functions below for symmetry: `hostCertFromPemBytes`
 //! never needs the bridge (cert-only has no span-blocked API), and unifying
@@ -70,6 +71,10 @@ extern type NetFile = "System.IO.File"
 
 extern type NetPath = "System.IO.Path"
 
+extern type NetDirectory = "System.IO.Directory"
+
+extern type NetDirectoryInfo = "System.IO.DirectoryInfo"
+
 /// Kernel-local classification of a load failure. `Std.Tls` maps
 /// `HostMalformed` to `TlsError.PemMalformed` and `HostMismatch` to
 /// `TlsError.KeyMismatch`; see the module header for what this target can
@@ -79,13 +84,16 @@ pub union HostLoadError {
   case HostMismatch(message: String)
 }
 
-func newTempPath(): String {
-  NetPath.Combine(NetPath.GetTempPath(), NetPath.GetRandomFileName())
+// Mode-700 (Unix) per-call private directory; see the module header for why
+// the key bytes must never sit in a world-readable location (#5911).
+func newSecureTempDir(): String {
+  val info: NetDirectoryInfo = NetDirectory.CreateTempSubdirectory("lyric-tls-")
+  info.FullName
 }
 
-func deleteTempQuietly(path: in String): Unit {
+func deleteTempDirQuietly(path: in String): Unit {
   try {
-    NetFile.Delete(path)
+    NetDirectory.Delete(path, true)
   } catch Bug as _ {
     ()
   }
@@ -114,22 +122,21 @@ pub func hostCertFromPemBytes(bytes: in slice[Byte]): Result[CertHandle, HostLoa
 
 /// Combine a certificate and private key from raw PEM bytes into one
 /// identity handle. Bridges the `ReadOnlySpan<char>`-only
-/// `CreateFromPem(certPem, keyPem)` overload via per-call temp files (module
-/// header); both are deleted immediately after this call returns, on every
-/// path.
+/// `CreateFromPem(certPem, keyPem)` overload via a per-call mode-700 temp
+/// subdirectory (module header); the directory and both files are deleted
+/// immediately after this call returns, on every path.
 pub func hostIdentityFromPemBytes(certBytes: in slice[Byte], keyBytes: in slice[Byte]): Result[CertHandle, HostLoadError] {
-  val certPath = newTempPath()
-  val keyPath = newTempPath()
+  val dir = newSecureTempDir()
+  val certPath = NetPath.Combine(dir, "cert.pem")
+  val keyPath = NetPath.Combine(dir, "key.pem")
   try {
     NetFile.WriteAllBytes(certPath, certBytes)
     NetFile.WriteAllBytes(keyPath, keyBytes)
     val handle = CertHandle.CreateFromPemFile(certPath, keyPath)
-    deleteTempQuietly(certPath)
-    deleteTempQuietly(keyPath)
+    deleteTempDirQuietly(dir)
     Ok(value = handle)
   } catch Bug as b {
-    deleteTempQuietly(certPath)
-    deleteTempQuietly(keyPath)
+    deleteTempDirQuietly(dir)
     Err(error = classifyIdentityError(b.message))
   }
 }

@@ -180,7 +180,21 @@ func certFromBytes(path: in String, bytes: in slice[Byte]): Result[Certificate, 
   }
 }
 
-func identityFromBytes(keyPath: in String, certBytes: in slice[Byte], keyBytes: in slice[Byte]): Result[Identity, TlsError] {
+func identityFromBytes(
+  certPath: in String, keyPath: in String, certBytes: in slice[Byte], keyBytes: in slice[Byte]
+): Result[Identity, TlsError] {
+  // Parse the certificate side alone first, so a malformed *certificate* is
+  // reported against certPath instead of blaming the key file (#5912). The
+  // pairing call below re-parses it; the double parse is the price of
+  // correct error attribution, since the host pairing APIs on both targets
+  // surface one undifferentiated failure for the pair.
+  match Host.hostCertFromPemBytes(certBytes) {
+    case Ok(_) -> ()
+    case Err(certHostError) -> match certHostError {
+      case Host.HostMalformed(msg) -> return Err(error = PemMalformed(path = certPath, message = msg))
+      case Host.HostMismatch(msg) -> return Err(error = PemMalformed(path = certPath, message = msg))
+    }
+  }
   match tryDecodeUtf8(keyBytes) {
     case Some(keyText) -> match checkKeyPemSupported(keyText) {
       case Some(reason) -> return Err(error = Unsupported(path = keyPath, message = reason))
@@ -235,7 +249,10 @@ pub func Certificate.fromPem(pem: in String): Result[Certificate, TlsError]
 /// - `CertFileNotFound`: either file does not exist or could not be read.
 /// - `Unsupported`: the key is PKCS1/SEC1 or encrypted PKCS8 (module header).
 /// - `PemMalformed`: malformed PEM, or (on .NET only) a same-algorithm
-///   certificate/key mismatch — see the module header.
+///   certificate/key mismatch — see the module header. The error's `path`
+///   names the file at fault: a certificate that fails to parse on its own
+///   is reported against `certPath`; key and pairing failures against
+///   `keyPath`.
 /// - `KeyMismatch`: a detected certificate/key mismatch (always on JVM;
 ///   cross-algorithm mismatches only on .NET — module header).
 @stable(since = "1.2")
@@ -247,7 +264,7 @@ pub func Identity.fromPemFiles(certPath: in String, keyPath: in String): Result[
     case Err(e) -> Err(error = e)
     case Ok(certBytes) -> match readBytesOrTls(keyPath) {
       case Err(e) -> Err(error = e)
-      case Ok(keyBytes) -> identityFromBytes(keyPath, certBytes, keyBytes)
+      case Ok(keyBytes) -> identityFromBytes(certPath, keyPath, certBytes, keyBytes)
     }
   }
 }
@@ -260,5 +277,5 @@ pub func Identity.fromPem(certPem: in String, keyPem: in String): Result[Identit
   requires: certPem.length > 0
   requires: keyPem.length > 0
 {
-  identityFromBytes("<memory>", encodeUtf8(certPem), encodeUtf8(keyPem))
+  identityFromBytes("<memory>", "<memory>", encodeUtf8(certPem), encodeUtf8(keyPem))
 }

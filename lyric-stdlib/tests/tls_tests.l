@@ -39,8 +39,10 @@
 package Std.Tls.Tests
 
 import Std.Core
+import Std.File
 import Std.Tls
 import Std.Testing
+import Std.Uuid
 
 // Self-signed RSA 2048 certificate, CN=test-rsa, valid 2026-07-16..2036-07-13.
 val rsaCert = """
@@ -167,12 +169,80 @@ test "Certificate.fromPemFile rejects a missing file as CertFileNotFound" {
   }
 }
 
-test "Identity.fromPemFiles rejects a missing key file as CertFileNotFound" {
-  match Identity.fromPemFiles("/nonexistent/cert.pem", "/nonexistent/key.pem") {
-    case Ok(_) -> panic("expected CertFileNotFound for missing paths")
-    case Err(CertFileNotFound(_)) -> assertTrue(true, "missing identity files are CertFileNotFound")
-    case Err(e) -> panic("expected CertFileNotFound, got: " + TlsError.message(e))
+// Per-test unique /tmp paths, following hash_tests.l's uuid-suffix
+// precedent (#833) so parallel CI runs can't collide.
+func freshTmpPath(stem: in String): String {
+  "/tmp/lyric-tls-test-" + stem + "-" + Uuid.uuidToString(Uuid.newUuid()) + ".pem"
+}
+
+func writeFixtureOrPanic(path: in String, content: in String): Unit {
+  match File.writeText(path, content) {
+    case Ok(_) -> ()
+    case Err(_) -> panic("could not write test fixture: " + path)
   }
+}
+
+func deleteQuietly(path: in String): Unit {
+  val _ = File.deleteFile(path)
+}
+
+test "Certificate.fromPemFile loads a certificate from a real file" {
+  val certFile = freshTmpPath("cert-ok")
+  writeFixtureOrPanic(certFile, rsaCert)
+  match Certificate.fromPemFile(certFile) {
+    case Ok(_) -> assertTrue(true, "file-based certificate load succeeds")
+    case Err(e) -> panic("expected Ok, got: " + TlsError.message(e))
+  }
+  deleteQuietly(certFile)
+}
+
+test "Identity.fromPemFiles loads a matched pair from real files" {
+  val certFile = freshTmpPath("id-cert-ok")
+  val keyFile = freshTmpPath("id-key-ok")
+  writeFixtureOrPanic(certFile, rsaCert)
+  writeFixtureOrPanic(keyFile, rsaKey)
+  match Identity.fromPemFiles(certFile, keyFile) {
+    case Ok(_) -> assertTrue(true, "file-based identity load succeeds")
+    case Err(e) -> panic("expected Ok, got: " + TlsError.message(e))
+  }
+  deleteQuietly(certFile)
+  deleteQuietly(keyFile)
+}
+
+test "Identity.fromPemFiles rejects a missing key file as CertFileNotFound" {
+  // The cert file genuinely exists, so this exercises the missing-KEY
+  // path specifically (#5915), not the missing-cert path.
+  val certFile = freshTmpPath("missing-key-cert")
+  writeFixtureOrPanic(certFile, rsaCert)
+  val missingKey = freshTmpPath("no-such-key")
+  match Identity.fromPemFiles(certFile, missingKey) {
+    case Ok(_) -> panic("expected CertFileNotFound for a missing key file")
+    case Err(e) -> match e {
+      case CertFileNotFound(path) ->
+        assertEqual(path, missingKey, "the missing KEY path is the one reported")
+      case _ -> panic("expected CertFileNotFound, got: " + TlsError.message(e))
+    }
+  }
+  deleteQuietly(certFile)
+}
+
+test "Identity.fromPemFiles blames the certificate file when the cert is malformed" {
+  // Regression for #5912: a malformed CERTIFICATE with a perfectly good key
+  // must be reported against the cert path, not the key path.
+  val certFile = freshTmpPath("malformed-cert")
+  val keyFile = freshTmpPath("good-key")
+  writeFixtureOrPanic(certFile, "-----BEGIN CERTIFICATE-----\nnot base64!!\n-----END CERTIFICATE-----\n")
+  writeFixtureOrPanic(keyFile, rsaKey)
+  match Identity.fromPemFiles(certFile, keyFile) {
+    case Ok(_) -> panic("expected PemMalformed for a malformed certificate")
+    case Err(e) -> match e {
+      case PemMalformed(path, _) ->
+        assertEqual(path, certFile, "the CERT path is the one reported for a malformed cert")
+      case _ -> panic("expected PemMalformed, got: " + TlsError.message(e))
+    }
+  }
+  deleteQuietly(certFile)
+  deleteQuietly(keyFile)
 }
 
 test "Identity.fromPem rejects a PKCS1 private key as Unsupported" {

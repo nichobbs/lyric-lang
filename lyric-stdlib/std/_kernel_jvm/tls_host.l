@@ -85,10 +85,6 @@ func parseCert(bytes: in slice[Byte]): JCertificate {
 // `tryDecodeBase64`'s `None`, panicking here so the caller's `try`/`catch`
 // maps it to `HostMalformed`.
 func pkcs8DerBytes(keyPem: in String): slice[Byte] {
-  match tryDecodeUtf8(encodeUtf8(keyPem)) {
-    case None -> panic("Std.TlsHost: private key PEM is not valid UTF-8")
-    case Some(_) -> ()
-  }
   var body = ""
   var inBlock = false
   for line in keyPem.split("\n") {
