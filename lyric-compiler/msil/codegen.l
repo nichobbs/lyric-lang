@@ -16458,6 +16458,19 @@ func emitGenericExternMember(
   val cleanTypeName = stripBracketSuffix(r.typeName)
   val cleanFqn = stripBracketSuffix(resolvedFqn)
   val concreteArgs = parseBracketArgFqns(r.typeName)
+  // Whether the declaring generic type itself is a struct (e.g.
+  // `ValueTask`1`) rather than a class (e.g. `ConcurrentDictionary`2`).
+  // Drives the GENERICINST tag further down and, for an INSTANCE call, an
+  // early bail-out below (#5797/#5809): the receiver-loading code always
+  // emits `MLdarg` + `MCastclass`, which is only valid against a reference
+  // type (ECMA-335 §III.4.6) — casting a value-type-tagged TypeSpec would
+  // compile clean but fault at runtime/verification instead of surfacing a
+  // normal build-time "extern member could not be resolved" diagnostic.
+  // Value-type receiver marshaling (`unbox` + spill-to-local + `call`) is
+  // unimplemented, so this function declines the shape entirely rather than
+  // emit invalid IL for it.
+  ensureMetadataIndex(cctx)
+  val isValType = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, cleanFqn)
   // Resolve the BCL member's true signature (hasThis + exact VAR positions).
   // Build `sigOpt` via a typed `var` + assignment rather than a `match`
   // expression: the bootstrap F# emitter unifies a `match`'s `None` arm with the
@@ -16552,6 +16565,26 @@ func emitGenericExternMember(
       if not convOk or expectedDeclParams != decl.params.count {
         return false
       }
+      // Instance calls on a value-type declaring generic are unsupported:
+      // the receiver arrives `object`-boxed with no marshaling path back to
+      // a managed pointer implemented here, and the receiver-loading code
+      // below unconditionally emits `MCastclass` — valid only for a
+      // reference type (ECMA-335 §III.4.6). Returning `false` here would
+      // only hand the call to the "legacy" (non-generic-member) resolution
+      // path below, which has no TypeSpec-parent concept either and could
+      // just as easily emit a different runtime-faulting shape instead of a
+      // genuine build-time error. Panic instead, so this unsupported shape
+      // fails loudly at compile time rather than producing a binary that
+      // compiles clean and faults at runtime/verification (#5809).
+      if isValType and isInstance {
+        panic(
+          "Msil.Codegen: FFI extern '" + resolvedFqn + "." + r.memberName + "' on '" + decl.name +
+            "' is an INSTANCE call on a value-type generic-declaring type — unsupported (the receiver " +
+            "arrives object-boxed with no marshaling path to the managed pointer an instance call on a " +
+            "struct requires). Only constructor calls and static members are currently supported for " +
+            "value-type generic-declaring externs; see D-progress-685 / #5809."
+        )
+      }
 
       // Closed GENERICINST TypeSpec.  A bracketed concrete instantiation supplies
       // the real type args (so a generic-invariant receiver `castclass` matches
@@ -16616,11 +16649,6 @@ func emitGenericExternMember(
           }
         }
       }
-      // Whether the declaring generic type itself is a struct (e.g.
-      // `ValueTask`1`) rather than a class (e.g. `ConcurrentDictionary`2`).
-      // Drives both the GENERICINST tag below and how an instance receiver
-      // is loaded/dispatched further down (#5797).
-      val isValType = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, cleanFqn)
       // The concrete type args (whether from an explicit bracket suffix or
       // the ctor return-type reuse above) must be part of the cache key:
       // `ctxAddTypeSpec`/`ctxAddMemberRefForTypeSpec` dedupe purely by the

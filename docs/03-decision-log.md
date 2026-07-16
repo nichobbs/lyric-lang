@@ -16715,10 +16715,15 @@ a fix that only works by coincidence; the self-test was simplified to cover
 the construct-and-return shape only. Extending parameter types to the same
 `resolveValueTaskGenericMsilType`-style special-casing bug 1 gave return
 types (or a more general value-type-receiver marshaling scheme) is separate,
-larger-scope follow-up work.
+larger-scope follow-up work, tracked in #5809. Rather than leave this an
+unguarded gap where an `@externInstance` wrapper on this shape would compile
+clean and only fault at runtime, `emitGenericExternMember` now explicitly
+declines (panics with a clear diagnostic) an `isValType and isInstance`
+combination instead of emitting a guaranteed-invalid `castclass` against a
+VALUETYPE-tagged TypeSpec.
 
 **Related:** docs/50-ffi-delegates-proposal.md, D122, D-progress-684, #5774,
-docs/59-compiler-stdlib-deep-review.md §7.3.
+docs/59-compiler-stdlib-deep-review.md §7.3, #5809.
 
 ---
 
