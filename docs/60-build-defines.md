@@ -398,9 +398,87 @@ Both gaps are **pre-existing** and independent of this sketch — build
 defines do not depend on them and are not blocked by them — but they are
 the natural companion work: once `version` is a first-class well-known
 define (§3.3), a single resolved value feeds the runtime constant *and*
-both platform metadata slots. The JVM hardcode in particular is a tracked
-bug candidate (silent one-platform version drop), not something this
-docs-only change fixes.
+both platform metadata slots. The JVM hardcode is tracked as **#5834**
+(silent one-platform version drop); the .NET
+`AssemblyInformationalVersionAttribute` refinement is a sibling candidate.
+Neither is fixed by this docs-only change.
+
+### 9.2 The `Std.BuildInfo` layer — one type for all build metadata
+
+Build defines are the *primitive*; a standardized **`BuildInfo`** surface
+is the curated layer a program actually reads. Rather than each program
+hand-declaring `@build_const` constants for version / git hash / build
+time, the toolchain exposes them through one blessed type. This is the
+Lyric analog of Go's `runtime/debug.ReadBuildInfo()` and Rust's `built`
+crate — the *toolchain* provides the values; you don't declare them.
+
+**The type lives in stdlib; the values are synthesized into your build.**
+
+```lyric
+// lyric-stdlib/std/buildinfo.l  — the TYPE is shared; the VALUES are not.
+package Std.BuildInfo
+
+pub record BuildInfo {
+  version:        String          // always present — deterministic (§3.3)
+  target:         String          // "dotnet" | "jvm" | "native"
+  profile:        String          // "debug" | "release"
+  gitHash:        Option[String]  // None unless supplied (§8 reproducibility)
+  buildTimestamp: Option[String]  // None unless supplied
+  features:       List[String]    // active feature set — unifies docs/24 Q-features-003
+}
+```
+
+A program reads it by importing the module and calling the accessor the
+compiler wires into the program's own root package:
+
+```lyric
+import Std.BuildInfo
+
+func startupBanner(): String {
+  val bi = buildInfo()
+  "myapp " + bi.version + " (" + bi.target + "/" + bi.profile + ")"
+}
+```
+
+**Why synthesized into the *root* package, not a stdlib function reading a
+baked constant.** A define is baked at the compile of the package that
+declares it (§7). If `buildInfo()` were a stdlib function returning
+stdlib-declared `@build_const` values, every program would report the
+*stdlib's* build metadata (`0.1.0`, no git hash), not its own — the same
+cross-package staleness `version.l` would hit if its constant lived in the
+wrong package. Synthesizing the accessor into the **consumer's** root
+package (the AST-synthesis pattern already used by `test_synth.l` and
+`stubbable.l`, which also inject the imports they need) captures the
+consumer's resolved defines. The `BuildInfo` *type* is safe to share from
+stdlib because a type carries no per-build value; only the accessor's body
+is per-build, and it is generated where the build happens.
+
+**Reproducibility is why `gitHash` / `buildTimestamp` are `Option`.**
+`version` / `target` / `profile` are deterministic functions of the build
+configuration (§8), so they are always-present `String` fields. `gitHash`
+and `buildTimestamp` are *not* pure functions of the config — baking them
+by default would break the three-stage byte-compare — so they are
+`Option[String]`, `None` unless the build explicitly supplies the
+`git_hash` / `build_timestamp` defines. The default (reproducible) build
+yields `None`; a release build opts in. The type is the same either way,
+so consumers written against it don't change.
+
+**`features` unifies Q-features-003.** docs/24 Q-features-003 asked whether
+the active feature set should be visible to running code (it floated a
+hypothetical `Std.BuildInfo.features`). Since no `Std.BuildInfo` existed,
+this makes it real and folds the feature set into the one build-metadata
+type rather than a separate surface — resolving Q-features-003 as "yes,
+read-only, via `BuildInfo.features`".
+
+**Relationship to `@build_const`.** The two are independent consumers of
+the same resolved-defines map (§5): `@build_const` substitutes one value
+into one `val` initializer; the `BuildInfo` synthesis pass reads the
+well-known keys (`version`, `target`, `build_profile`, `git_hash`,
+`build_timestamp`) plus the active feature list and emits one populated
+record constructor. Neither depends on the other — `BuildInfo` can ship
+first from the parameters that already flow through the pipeline (version,
+target, profile, features), with `gitHash` / `buildTimestamp` wired when a
+define *source* (`--define` / `[build.define]`) lands.
 
 ---
 
@@ -454,6 +532,16 @@ docs-only change fixes.
   `String`-literal AST nodes post-parse, never re-parsed as source — no
   grammar surface, categorically safer than text-stamping or generated
   `.l` (§8).
+- **Q-BD-009 — a standardized `BuildInfo` surface?** *Resolved:* yes —
+  a stdlib `Std.BuildInfo.BuildInfo` record plus a compiler-synthesized
+  `buildInfo()` accessor injected into the consumer's **root** package
+  (Go `debug.ReadBuildInfo()` model), so it captures the consumer's build,
+  not the stdlib's (§9.2). `version` / `target` / `profile` are always-
+  present deterministic `String` fields; `gitHash` / `buildTimestamp` are
+  `Option[String]` (`None` unless supplied, preserving reproducibility);
+  `features` folds in and resolves docs/24 Q-features-003. `BuildInfo`
+  ships from the parameters already flowing through the pipeline; the two
+  `Option` fields wire up when a define source lands.
 
 ---
 
@@ -468,3 +556,6 @@ docs-only change fixes.
   const-fold surface a future `Int`/`Bool` define could reach (Q-BD-005).
 - Rust `env!` / Cargo `cargo:rustc-env`: the intrinsic-spelling prior art
   weighed in §2.2.
+- Go `runtime/debug.ReadBuildInfo()` and Rust's `built` crate: the
+  toolchain-provides-the-values `BuildInfo` prior art (§9.2, Q-BD-009).
+- #5834 — the tracked JVM manifest version-hardcode bug surfaced in §9.1.
