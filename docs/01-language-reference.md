@@ -1574,6 +1574,17 @@ unaffected. Verified against `System.Net.Http.SocketsHttpHandler`'s
 ValueTask<Stream>>`). See D122 in `docs/03-decision-log.md` and
 `docs/50-ffi-delegates-proposal.md`.
 
+`Std.Http.clientWithUnixSocket` (`lyric-stdlib/std/_kernel/http_host.l`,
+D-progress-686) is this mechanism's stdlib consumer, but its
+`ConnectCallback` implementation dials the socket synchronously and does
+not read the `CancellationToken` parameter — a deliberate, narrower
+contract than the general async cancellation semantics `Std.Http`
+otherwise supports for requests: a local Unix-socket connect (Docker,
+systemd) is treated as effectively instantaneous, so there is no
+meaningful in-flight connect attempt to cancel. A caller that cancels the
+surrounding HTTP request cannot abort an in-flight Unix-socket connect
+call; the connect runs to completion (or OS-level timeout) regardless.
+
 ### 11.4 Auto-FFI and import extern
 
 External types can be imported directly using the `import extern` syntax. This is the preferred mechanism for interacting with host runtime APIs (such as the .NET BCL or Java JDK) as it unifies package imports and external imports under one cohesive model.

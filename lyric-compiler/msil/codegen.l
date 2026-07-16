@@ -1987,7 +1987,19 @@ pub func newCodegenCtx(
   // 'System.Threading.Tasks.ValueTask`1' from assembly '<CurrentAssembly>'`
   // at the exact moment `SocketsHttpHandler` invoked the constructed
   // `ConnectCallback` delegate.
-  ctx.ffiTypeRefs.add("System.Runtime/System.Threading.Tasks.ValueTask`1", trValueTask1)
+  //
+  // The seed key must be built the SAME way `internFfiTypeRef` computes its
+  // own lookup key (`asmName + "/" + ns + "." + typeName`), via
+  // `assemblyForTypeMsil` — not a hardcoded `"System.Runtime"` literal — so
+  // the seed can never silently stop matching if the metadata index ever
+  // resolves this FQN to a different assembly name (e.g. a different
+  // reference-pack layout in a future .NET version), which would
+  // reintroduce this exact duplicate-TypeRef defect with no build-time
+  // signal (#5824). `restoredArtifacts`/`nugetAssemblyPaths` are
+  // constructor args already stored on `ctx` above, so the metadata index
+  // this seeds against is already fully assembled at this point.
+  val vt1Fqn = "System.Threading.Tasks.ValueTask`1"
+  ctx.ffiTypeRefs.add(assemblyForTypeMsil(ctx, vt1Fqn) + "/" + vt1Fqn, trValueTask1)
   ctx
 }
 
@@ -3717,32 +3729,15 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               if declGenerics.count > 0 {
                 typeExprToMsilGenBody(cctx, te, pkgName, declGenerics)
               } else {
-                // A `System.Threading.Tasks.ValueTask`1[...]`-shaped `extern type`
-                // return (e.g. `newValueTaskOfStream(...)`, D122/docs/50) must use
-                // the SAME `resolveValueTaskGenericMsilType` construction that
-                // `emitExternTargetBody` already uses for the function's OWN body
-                // (the retTy computed there, ~line 16816) — otherwise this
-                // call-site-facing registry (consulted by every CALLER of the
-                // extern function, e.g. a `SocketsHttpHandler.ConnectCallback`
-                // lambda that constructs and returns a `ValueTask<Stream>`) still
-                // gets `typeExprToMsilCtx`'s bracket-erased/mis-resolved MsilType,
-                // while the function's own compiled body returns the correctly
-                // resolved one. That TypeRef-assembly mismatch between "what the
-                // callee returns" and "what the caller thinks it returns" is
-                // invisible at build time and only surfaces as a runtime
-                // `TypeLoadException` ("Could not load type 'ValueTask`1' from
-                // assembly 'Lyric.Stdlib'") the first time the value crosses that
-                // boundary — found migrating `UnixSocketHttpClient.cs` to pure
-                // Lyric (docs/50), whose `ConnectCallback` lambda is exactly this
-                // shape and is the first caller-side consumer of a `ValueTask`1`
-                // extern-type return in the whole codebase.  Harmless no-op for
-                // every other function: `resolveValueTaskGenericMsilType` only
-                // returns `Some` when `te`'s extern-declared CLR FQN literally
-                // matches the `ValueTask`1[...]` shape.
-                match resolveValueTaskGenericMsilType(cctx, te) {
-                  case Some(rt) -> rt
-                  case None -> typeExprToMsilCtx(cctx, te, pkgName)
-                }
+                // See `resolveFuncRetTypeMsil` — this call-site-facing registry
+                // (consulted by every CALLER of the extern function, e.g. a
+                // `SocketsHttpHandler.ConnectCallback` lambda that constructs
+                // and returns a `ValueTask<Stream>`) must agree with
+                // `lowerFuncMsil`'s own `.method` signature computation below,
+                // or the mismatch is invisible at build time and only surfaces
+                // as a runtime `TypeLoadException` the first time the value
+                // crosses that boundary (D-progress-686/#5823).
+                resolveFuncRetTypeMsil(cctx, te, pkgName)
               }
             }
             case None -> MVoid
@@ -16180,6 +16175,25 @@ func resolveValueTaskGenericMsilType(cctx: in CodegenCtx, te: in TypeExpr): Opti
   }
 }
 
+// Shared non-generic-function return-type resolution: a
+// `System.Threading.Tasks.ValueTask`1[...]`-shaped `extern type` return uses
+// the real closed-generic MsilType `resolveValueTaskGenericMsilType` builds;
+// every other return type falls back to the ordinary bracket-erasing
+// `typeExprToMsilCtx`. Two independent call sites — `addPackageTokens`'s
+// call-site return-type registry and `lowerFuncMsil`'s own `.method`
+// signature return type — used to hand-duplicate this exact match
+// expression and once silently drifted out of sync (one kept the
+// ValueTask special-case, the other didn't), producing a callee/caller
+// TypeRef-assembly mismatch invisible at build time and surfacing only as
+// a runtime `TypeLoadException` (D-progress-686/#5823). Both now call this
+// single shared helper so they cannot diverge again.
+func resolveFuncRetTypeMsil(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): MsilType {
+  match resolveValueTaskGenericMsilType(cctx, te) {
+    case Some(rt) -> rt
+    case None -> typeExprToMsilCtx(cctx, te, pkgName)
+  }
+}
+
 // Build a callvirt token for a strongly-typed System.Func<T1,...,Tn,TReturn>::Invoke(T1,...,Tn): TReturn.
 // This is the Phase 3 variant that emits typed parameters and return type instead of object-based.
 // Used for lambda invocation when parameter and return types are known at the call site.
@@ -21920,27 +21934,14 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
         val resolved = if fnGenerics.count > 0 {
           typeExprToMsilGenSig(cctx, te, pkgName, fnGenerics)
         } else {
-          // A `System.Threading.Tasks.ValueTask`1[...]`-shaped `extern type`
-          // return needs the same real closed-generic MsilType
-          // `resolveValueTaskGenericMsilType` builds elsewhere (D122/docs/50) —
-          // this is the METHOD'S OWN SIGNATURE return type (what `.method`
-          // actually declares), a separate computation from the call-site
-          // registry (`addPackageTokens`'s `cctx.funcRetTypes`, which has its
-          // own matching fix). Without this, `typeExprToMsilCtx`'s bracket
-          // erasure declares the method `object`-returning while its BODY
-          // (`emitExternTargetBody`, which already resolves this correctly)
-          // pushes the real unboxed value type and `ret`s — signature says
-          // `object`, stack has a bare value-type struct, no box in between.
-          // That mismatch is invisible to both the build and `ilverify` (ret
-          // type checking here is lax enough not to flag it) and only surfaces
-          // as a runtime `TypeLoadException` ("Could not load type 'ValueTask`1'
-          // from assembly 'Lyric.Stdlib'") the first time a caller actually
-          // invokes the method — found migrating `UnixSocketHttpClient.cs`'s
-          // `newValueTaskOfStream` ctor wrapper to pure Lyric.
-          match resolveValueTaskGenericMsilType(cctx, te) {
-            case Some(rt) -> rt
-            case None -> typeExprToMsilCtx(cctx, te, pkgName)
-          }
+          // See `resolveFuncRetTypeMsil` — this is the METHOD'S OWN SIGNATURE
+          // return type (what `.method` actually declares), a separate
+          // computation from `addPackageTokens`'s call-site registry above
+          // that must agree with it or the mismatch is invisible to both the
+          // build and `ilverify` and only surfaces as a runtime
+          // `TypeLoadException` the first time a caller invokes the method
+          // (D-progress-686/#5823).
+          resolveFuncRetTypeMsil(cctx, te, pkgName)
         }
         if elementTypeByte(resolved) == 0 {
           MVoid
