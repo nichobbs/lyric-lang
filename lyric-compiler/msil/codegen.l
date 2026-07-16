@@ -3710,9 +3710,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = kfRetArgs)
           }
         } else if startsWith(decl.name, "__lambda_") {
-          // For synthetic lambdas: the return type was set during lambda lifting based on
-          // whether the body ends with an expression (implicit return) or not.
-          // If ret is Some(...), use that; otherwise default to MVoid.
+          // For synthetic lambdas: `collectLambdasBfsExpr` (lambda lifting)
+          // unconditionally sets `decl.ret = Some(Object)` for every lambda (the
+          // Uniform Func ABI, #1877) — the `case None -> MVoid` arm below is
+          // therefore dead for synthetic lambdas; this registry entry is ALWAYS
+          // `MObject`. Do NOT use this map (`funcRetTypes[lambdaKey]`) to decide
+          // Func-vs-Action delegate construction for a delegate-bridged lambda —
+          // that decision must come from `lambdaExternDelegateRetType[lambdaKey]`
+          // instead, which carries the callee's REAL declared return type (#5853).
           match decl.ret {
             case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
             case None -> MVoid
@@ -8080,8 +8085,23 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         case Some(tok) -> {
           // Determine delegate type based on lambda return type.
           // Lambdas that return void use System.Action; those with non-void returns use System.Func.
-          val retType = mapGet(cctx.funcRetTypes, lambdaKey)
-          val returnsVoid = match retType { case Some(MVoid) -> true; case None -> true; case _ -> false }
+          // #5853: for a lambda passed directly to an `@externTarget` function's
+          // TFunction-typed parameter (delegate-bridging target), `lambdaExternDelegateRetType`
+          // carries the REAL declared delegate return type — that must win over
+          // `funcRetTypes[lambdaKey]`, which is ALWAYS `MObject` for every lambda
+          // (the Uniform Func ABI unconditionally synthesizes every lambda's own
+          // FunctionDecl with `ret = Some(Object)`; see `collectLambdasBfsExpr`).
+          // Without this override, a `Unit`-returning delegate-bridged lambda always
+          // built a `Func`N<...,object>` ctor token instead of `Action`N<...>`, even
+          // though the callee's own signature declares `Action`N<...>` — an
+          // `InvalidProgramException`/`InvalidCastException` at the call site
+          // (masked for `Task.ContinueWith`-style targets because the mismatched
+          // delegate is only invoked asynchronously and unobserved).
+          val returnsVoid = match mapGet(cctx.lambdaExternDelegateRetType, lambdaKey) {
+            case Some(MVoid) -> true
+            case Some(_) -> false
+            case None -> match mapGet(cctx.funcRetTypes, lambdaKey) { case Some(MVoid) -> true; case None -> true; case _ -> false }
+          }
           // Lambdas default to an all-object delegate TypeSpec so the ctor, castclass,
           // and callvirt Invoke all reference the same TypeSpec row (#4266). The one
           // exception: a lambda passed directly to an `@externTarget` function's
@@ -16908,9 +16928,15 @@ func emitGenericExternMember(
           case _ -> {
             insns.add(MLdarg(slot = lyIdx))
             // Box a value-type argument when the BCL position is a type
-            // parameter (erased to `object`).
+            // parameter (erased to `object`). Gated on `objArgsErased`
+            // (#5853): when the receiver's TypeSpec/MemberRef is a real
+            // closed instantiation instead (e.g. `Action`1<Int32>` via the
+            // D-progress-687 receiver-reuse fix), the `!0`-substituted slot
+            // genuinely expects the unboxed value type directly — boxing
+            // here would push an `object` where the closed signature
+            // declares `int32`, an `InvalidProgramException` at load time.
             val isVarPos = match mTy { case MTypeVar(_) -> true; case MObject -> true; case _ -> false }
-            if isVarPos and isValueType(paramTypes[lyIdx]) {
+            if isVarPos and objArgsErased and isValueType(paramTypes[lyIdx]) {
               boxIfNeededMsil(cctx, insns, paramTypes[lyIdx])
             }
           }

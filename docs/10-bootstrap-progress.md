@@ -29862,12 +29862,30 @@ assumed every generic-member receiver is always object-erased and mis-fired
 instantiation. `typed_ffi_delegate_self_test.l` now covers a
 `Func`2.Invoke` call in addition to the construct-and-pass-onward shapes.
 
+**Shipped in D-progress-688:** #5853 — a `Unit`-returning delegate-bridged
+lambda's CALLER always built a `Func`N<...,object>` ctor token instead of
+`Action`N<...>`, because the ctorTok-selection code read
+`funcRetTypes[lambdaKey]` (ALWAYS `MObject` for every lambda under the
+Uniform Func ABI) instead of `lambdaExternDelegateRetType[lambdaKey]` (the
+callee's real declared delegate return type). Masked until now — the one
+existing void-return test (`Task.ContinueWith`, binding-only) never
+observes its own mismatched delegate because `ContinueWith` invokes it
+asynchronously and the continuation is never awaited; disassembly confirmed
+that test's "PASS" was a false negative. Fixing this exposed a second,
+independent bug: once the receiver TypeSpec is a real closed instantiation
+(e.g. `Action`1<Int32>`), `emitGenericExternMember`'s argument-loading loop
+still unconditionally boxed a value-type argument meant for a `!0`-typed
+BCL parameter — correct only for the erased-`<object>` case. Fixed by
+gating that boxing on the same `objArgsErased` flag D-progress-687
+introduced. `typed_ffi_delegate_self_test.l` now covers an
+`Action`1<Int32>`-at-receiver invocation.
+
 **Related:** D122, docs/50-ffi-delegates-proposal.md, #1877, #3923 (updated
 to reflect this bounded slice), #4077/#4084/#4089/#4091 (prior PR #3885
 cleanup this slice's typed-ctor work supersedes), #4025, #4601/#5206
 (investigated, confirmed not triggered by this slice), #5304 (blocks the
 Unix-socket migration itself), D-progress-684, D-progress-686, D-progress-687,
-#5833.
+D-progress-688, #5833, #5851, #5853.
 
 ### D-progress-610 — Single-file `lyric build <source.l>` gains manifest-driven dependency resolution (D123)
 

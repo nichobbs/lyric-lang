@@ -136,6 +136,15 @@ test "#5315: a lambda binds to Task.ContinueWith's Action<Task> parameter (non-g
   // continuation is a separate, already-documented gap (D-progress-621 item
   // 3: closures passed as Action-typed arguments to Task's own APIs never
   // fire on this backend) — out of scope here and not asserted.
+  //
+  // #5853: until that fix, this test's "PASS" was a false negative — the
+  // caller actually constructed `Func`1<Task, object>` here (not
+  // `Action<Task>`), a genuine type mismatch that only escaped detection
+  // because `ContinueWith` schedules the mismatched delegate for
+  // *asynchronous* invocation, and the continuation above is never awaited
+  // or observed. The `Action<Int>`-at-receiver test further down (which
+  // invokes synchronously) caught it for real. Construction here is now
+  // genuinely correct, not just unobserved-broken.
   assertTrue(true, "typed Action<Task> delegate bound to Task.ContinueWith without a signature mismatch")
 }
 
@@ -307,5 +316,47 @@ test "invoking a Func<MemoryStream, ValueTask<Stream>> delegate runs the ValueTa
   assertTrue(
     true,
     "Func<MemoryStream, ValueTask<Stream>> constructed, actually invoked via Func`2.Invoke (not just constructed/bound), and its body's ValueTask`1..ctor call did not crash"
+  )
+}
+
+// #5851/#5853: an Action`N-typed receiver-position counterpart to the
+// Func`2.Invoke test above — the D-progress-687 receiver-reuse fix's
+// void-return branch was untested until now. Attempting exactly this shape
+// surfaced a second, distinct bug (#5853, fixed alongside), unrelated to
+// D-progress-687's receiver-reuse mechanism itself (which is correct):
+//
+//   1. Caller-side ctorTok selection: a `Unit`-returning delegate-bridged
+//      lambda always built `Func`N<...,object>` instead of `Action`N<...>`,
+//      because it read `funcRetTypes[lambdaKey]` (ALWAYS `MObject` for every
+//      lambda under the Uniform Func ABI — `collectLambdasBfsExpr`
+//      unconditionally synthesizes `ret = Some(Object)`) instead of
+//      `lambdaExternDelegateRetType[lambdaKey]` (the real declared delegate
+//      return type, correctly `MVoid` here). The existing `Task.ContinueWith`
+//      test below happened to keep "passing" despite this — it never
+//      observes the mismatch because `ContinueWith` invokes the delegate
+//      asynchronously and the continuation is never awaited.
+//   2. Argument marshaling: once (1) is fixed and the receiver TypeSpec is a
+//      real closed `Action`1<Int32>` instantiation (not the erased
+//      `<object>` default), `emitGenericExternMember`'s argument-loading
+//      loop still unconditionally boxed the value-type argument for a
+//      `!0`-typed BCL parameter position — correct only when the TypeSpec
+//      is erased (an `Int32` argument going into a still-`<object>` slot),
+//      but wrong once the slot is genuinely `Int32`: pushing a boxed
+//      `object` there is a stack-type mismatch, `InvalidProgramException`
+//      at load time. Not caught by the Func`2.Invoke test above because
+//      `MemoryStream` is a reference type — boxing never applied there.
+//
+// Both are gated on the same `objArgsErased` flag D-progress-687 introduced
+// for the VAR-typed-return unboxing dance, extended to this argument-boxing
+// site too.
+@externInstance
+@externTarget("System.Action`1.Invoke")
+func invokeActionOfInt(cb: in (Int) -> Unit, arg: Int): Unit = ()
+
+test "invoking an Action<Int> delegate at the receiver position works (#5851/#5853)" {
+  invokeActionOfInt({ x: Int -> () }, 42)
+  assertTrue(
+    true,
+    "Action<Int> constructed as a real closed Action`1<Int32> (not the erased Func`2<Int32,object>), invoked via Action`1.Invoke at the receiver position, and the value-type argument was passed unboxed to match the closed instantiation's !0 slot without crashing"
   )
 }
