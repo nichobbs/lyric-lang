@@ -320,7 +320,10 @@ test "extractJsonBoolField tolerates whitespace after the colon" {
 }
 
 test "extractJsonBoolField skips a matching quoted token that isn't a key position" {
-  val body = "{\"Note\":\"Tty is unrelated text here\",\"Tty\":true}"
+  // The exact quoted token "Tty" first appears as a string *value*
+  // (preceded by ':', not '{'/',' — isFieldKeyPosition rejects it) before
+  // the real key, mirroring extractJsonIntField's equivalent test above.
+  val body = "{\"Note\":\"Tty\",\"Tty\":true}"
   val extracted = Lyric.Docker.extractJsonBoolField(body, "Tty")
   assertTrue(isSome(extracted), "Expected Some")
   assertTrue(unwrapOr(extracted, false), "Real Tty key found past the non-key occurrence")
@@ -335,6 +338,63 @@ test "extractJsonBoolField scoped to a nested Config object via jsonFieldObjectS
   val extracted = Lyric.Docker.extractJsonBoolField(configJson, "Tty")
   assertTrue(isSome(extracted), "Expected Some")
   assertTrue(not unwrapOr(extracted, true), "Nested Config.Tty (false) read, not the outer top-level Tty (true)")
+}
+
+// jsonObjectEnd bounds jsonFieldObjectStart's slice to the matching closing
+// brace, so containerIsTty's real usage (an unbounded slice to end-of-body
+// before this fix) can't pick up a same-named field from a later sibling
+// section (#5780). These mirror containerIsTty's own lookup sequence
+// (jsonFieldObjectStart then a bounded slice then extractJsonBoolField)
+// rather than calling containerIsTty directly, since it isn't `pub`.
+test "jsonObjectEnd bounds the Config slice so a same-named field after Config's close isn't picked up (#5780)" {
+  // Config has no Tty of its own here; only a decoy top-level Tty:true
+  // appears after Config's closing brace.
+  val body = "{\"Id\":\"abc\",\"Config\":{\"Image\":\"alpine\"},\"Tty\":true}"
+  val configStart = Lyric.Docker.jsonFieldObjectStart(body, "Config")
+  assertTrue(isSome(configStart), "Expected Some")
+  val pos = unwrapOr(configStart, -1)
+
+  val configEnd = Lyric.Docker.jsonObjectEnd(body, pos)
+  assertTrue(isSome(configEnd), "Expected Some closing brace position")
+  val closePos = unwrapOr(configEnd, -1)
+  val boundedConfigJson = body.substring(pos, closePos + 1 - pos)
+  val extracted = Lyric.Docker.extractJsonBoolField(boundedConfigJson, "Tty")
+  assertTrue(
+    isNone(extracted),
+    "Config has no Tty; the decoy top-level Tty:true after Config's close must not be picked up"
+  )
+
+  // Sanity check that this is a real regression guard: an unbounded slice
+  // to the end of the document (the pre-fix behavior) incorrectly picks up
+  // the decoy.
+  val unboundedConfigJson = body.substring(pos, body.length - pos)
+  val unboundedExtracted = Lyric.Docker.extractJsonBoolField(unboundedConfigJson, "Tty")
+  assertTrue(isSome(unboundedExtracted), "Sanity: an unbounded slice would incorrectly pick up the decoy Tty")
+  assertTrue(unwrapOr(unboundedExtracted, false), "Sanity: the incorrectly-picked-up decoy value is true")
+}
+
+test "jsonObjectEnd skips braces and escaped quotes inside string values when bounding Config (#5780)" {
+  // Config.Image's string value contains an escaped quote followed by an
+  // UNBALANCED literal '}'. A depth counter that doesn't skip string
+  // contents would treat that stray '}' as closing Config immediately,
+  // truncating the slice before the real Tty field and before Config's
+  // actual closing brace. Also carries a decoy "Other":{"Tty":false} after
+  // Config's real close, so an over-wide slice would be caught too.
+  val body = "{\"Config\":{\"Image\":\"al\\\"pine}\",\"Tty\":true},\"Other\":{\"Tty\":false}}"
+  val configStart = Lyric.Docker.jsonFieldObjectStart(body, "Config")
+  assertTrue(isSome(configStart), "Expected Some")
+  val pos = unwrapOr(configStart, -1)
+
+  val configEnd = Lyric.Docker.jsonObjectEnd(body, pos)
+  assertTrue(isSome(configEnd), "Expected Some closing brace position")
+  val closePos = unwrapOr(configEnd, -1)
+  val configJson = body.substring(pos, closePos + 1 - pos)
+  val extracted = Lyric.Docker.extractJsonBoolField(configJson, "Tty")
+  assertTrue(isSome(extracted), "Expected Some — the stray '}' inside the string must not truncate the slice early")
+  assertTrue(
+    unwrapOr(extracted, false),
+    "Config.Tty (true) read correctly despite an escaped quote and an unbalanced brace inside Image's string value"
+  )
 }
 
 // ─── Error-object detection Tests ───────────────────────────────────────────
@@ -413,4 +473,19 @@ test "createContainerBodyWithNetwork preserves Binds and Env alongside NetworkMo
   val body = Lyric.Docker.createContainerBodyWithNetwork("alpine", ["FOO=bar"], ["vol:/data"], "restricted-net")
   val expected = "{\"Image\":\"alpine\",\"Env\":[\"FOO=bar\"],\"HostConfig\":{\"Binds\":[\"vol:/data\"],\"NetworkMode\":\"restricted-net\"}}"
   assertEqual(body, expected, "Env and Binds are unaffected by the added NetworkMode field")
+}
+
+// ─── TCP Constructor Tests ──────────────────────────────────────────────────
+// makeDockerClientTcp (#5732) has no reachable-daemon test infrastructure in
+// CI, so DockerClient's opaque internals can't be asserted directly. Instead,
+// exercise the constructor's real behavioral difference from the Unix-socket
+// constructors: it wires an actual dispatching HttpClient that resolves and
+// connects to the given host:port. Port 1 is in the reserved range and never
+// has a listener, so the connection fails fast and deterministically without
+// a live Docker daemon (same rationale as lyric-stdlib/tests/http_async_tests.l's
+// deadUrl).
+test "makeDockerClientTcp constructs a client whose ping fails against an unreachable TCP host (#5732)" {
+  val client = Lyric.Docker.makeDockerClientTcp("127.0.0.1:1")
+  val failed = match await Lyric.Docker.ping(client) { case Ok(_) -> false; case Err(_) -> true }
+  assertTrue(failed, "Expected ping to fail against an unreachable TCP host")
 }
