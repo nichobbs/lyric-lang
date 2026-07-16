@@ -24,6 +24,11 @@
 //! cross-package test-accessor pattern) specifically so this package can
 //! construct byte blobs directly, without a real DLL fixture carrying a
 //! negative I2 literal/enum field.
+//!
+//! Also covers, at the resolution level against the real reference pack, the
+//! `ExternParamDefault` kinds the #5605 test above doesn't reach: `EPDZero`
+//! (a zeroed-struct default, `JsonDocument.Parse`) and `EPDConst` enum-int /
+//! Long numeric constants (`File.OpenHandle`) (#5632).
 @test_module
 package Msil.MetadataReaderSelfTest
 
@@ -248,6 +253,91 @@ test "resolveExtern: trailing-default admission and exact-arity ranking (#5605)"
       match resolveExtern(typeIndex, pathIndex, "System.IO.StreamReader", ".ctor", ctorArgs) {
         case None -> assertTrue(false, ".ctor(MemoryStream) must resolve via the Extends-chain upcast")
         case Some(ctorRe) -> assertEqualInt(ctorRe.sig.paramTypes.count, 1, "the exact-arity .ctor(Stream) outranks the defaulted 5-param ctor")
+      }
+    }
+  }
+}
+
+// #5632: the other `ExternParamDefault` kinds `paramDefaultAt` decodes —
+// `EPDZero` (a zeroed struct default) and `EPDConst` numeric/enum constants —
+// were only exercised end-to-end via `auto_ffi_self_test.l`'s
+// `JsonDoc.Parse`/`File.OpenHandle` cases; neither had a resolution-level
+// assertion in this file pinning the Constant-table type-byte branch
+// `paramDefaultAt` took to produce them. Same real-reference-pack skeleton as
+// the #5605 test above.
+test "resolveExtern: JsonDocument.Parse(string) synthesizes an EPDZero struct default (#5632)" {
+  match refPackDir() {
+    case None -> assertTrue(true, "no reference pack on this host; nothing to pin")
+    case Some(dir) -> {
+      val paths = enumRefAssemblies(dir)
+      val typeIndex = buildTypeIndex(paths)
+      val pathIndex = buildPathIndex(paths)
+      // JsonDocument.Parse(String, JsonDocumentOptions = default): the
+      // unfilled options struct is a zeroed default (typeVal 0x12 with a
+      // value-shaped param type), NOT EPDNull — pins the EPDZero branch of
+      // `paramDefaultAt` (#5605's own comment: "the shapes a bare
+      // type-default guess would get wrong").
+      val args: List[SigType] = newList()
+      args.add(mkPrimSig(0x0E))
+      match resolveExtern(typeIndex, pathIndex, "System.Text.Json.JsonDocument", "Parse", args) {
+        case None -> assertTrue(false, "Parse(string) must resolve via the defaulted JsonDocumentOptions overload")
+        case Some(re) -> {
+          assertEqualInt(re.sig.paramTypes.count, 2, "bound Parse(String, JsonDocumentOptions)")
+          match re.sig.paramDefaults[1] {
+            case EPDZero -> assertTrue(true, "the unfilled JsonDocumentOptions default is the zeroed-struct kind")
+            case _ -> assertTrue(false, "expected EPDZero for the unfilled JsonDocumentOptions default")
+          }
+        }
+      }
+    }
+  }
+}
+
+test "resolveExtern: File.OpenHandle(string) synthesizes enum and Long numeric EPDConst defaults (#5632)" {
+  match refPackDir() {
+    case None -> assertTrue(true, "no reference pack on this host; nothing to pin")
+    case Some(dir) -> {
+      val paths = enumRefAssemblies(dir)
+      val typeIndex = buildTypeIndex(paths)
+      val pathIndex = buildPathIndex(paths)
+      // File.OpenHandle(String, FileMode = Open, FileAccess = Read,
+      // FileShare = Read, FileOptions = None, Long preallocationSize = 0):
+      // five unfilled defaults — four enum-int constants (two of them
+      // non-zero: FileMode.Open = 3, FileAccess.Read = 1, FileShare.Read = 1,
+      // FileOptions.None = 0) decoded from the Constant table's int-typed
+      // branch, plus an I8 constant — pins both the enum/int `EPDConst`
+      // branch and the Long-constant branch of `paramDefaultAt`.
+      val args: List[SigType] = newList()
+      args.add(mkPrimSig(0x0E))
+      match resolveExtern(typeIndex, pathIndex, "System.IO.File", "OpenHandle", args) {
+        case None -> assertTrue(false, "OpenHandle(string) must resolve via the five-trailing-default overload")
+        case Some(re) -> {
+          assertEqualInt(
+            re.sig.paramTypes.count,
+            6,
+            "bound OpenHandle(String, FileMode, FileAccess, FileShare, FileOptions, Int64)"
+          )
+          match re.sig.paramDefaults[1] {
+            case EPDConst(v) -> match v { case ECVInt(iv) -> assertEqualInt(iv, 3, "FileMode default decodes as the enum-int constant Open (3)"); case _ -> assertTrue(false, "expected ECVInt for the FileMode default") }
+            case _ -> assertTrue(false, "expected EPDConst for the FileMode default")
+          }
+          match re.sig.paramDefaults[2] {
+            case EPDConst(v) -> match v { case ECVInt(iv) -> assertEqualInt(iv, 1, "FileAccess default decodes as the enum-int constant Read (1)"); case _ -> assertTrue(false, "expected ECVInt for the FileAccess default") }
+            case _ -> assertTrue(false, "expected EPDConst for the FileAccess default")
+          }
+          match re.sig.paramDefaults[3] {
+            case EPDConst(v) -> match v { case ECVInt(iv) -> assertEqualInt(iv, 1, "FileShare default decodes as the enum-int constant Read (1)"); case _ -> assertTrue(false, "expected ECVInt for the FileShare default") }
+            case _ -> assertTrue(false, "expected EPDConst for the FileShare default")
+          }
+          match re.sig.paramDefaults[4] {
+            case EPDConst(v) -> match v { case ECVInt(iv) -> assertEqualInt(iv, 0, "FileOptions default decodes as the enum-int constant None (0)"); case _ -> assertTrue(false, "expected ECVInt for the FileOptions default") }
+            case _ -> assertTrue(false, "expected EPDConst for the FileOptions default")
+          }
+          match re.sig.paramDefaults[5] {
+            case EPDConst(v) -> match v { case ECVLong(lv) -> assertEqualLong(lv, 0i64, "preallocationSize default decodes as the Long numeric constant 0"); case _ -> assertTrue(false, "expected ECVLong for the preallocationSize default") }
+            case _ -> assertTrue(false, "expected EPDConst for the preallocationSize default")
+          }
+        }
       }
     }
   }
