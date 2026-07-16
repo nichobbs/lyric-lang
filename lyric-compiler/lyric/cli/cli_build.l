@@ -6,7 +6,6 @@ import Std.Console as Console
 import Std.File as File
 import Std.String as Str
 import Std.Path as Path
-import Lyric.BuildDefines as BD
 import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
@@ -478,7 +477,7 @@ pub func buildOneNative(
   nativeOpt: in String,
 ): Int {
   val noCliFeatures: List[String] = newList()
-  val noCliDefines: List[BD.Define] = newList()
+  val noCliDefines: List[String] = newList()
   buildOneNativeWithFeatures(
     sourcePath,
     outPath,
@@ -503,7 +502,7 @@ pub func buildOneNativeWithFeatures(
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
-  cliDefines: in List[BD.Define],
+  cliDefines: in List[String],
 ): Int {
   val buildStart = Time.now()
   var source = match File.readText(sourcePath) {
@@ -661,7 +660,7 @@ func cmdBuild(argv: in slice[String]): Int {
   var allFeatures: Bool = false
   // docs/60 build defines: `--define K=V` (repeatable). Precedence-merged
   // with well-known defines inside `buildOneNativeWithFeatures`.
-  val cliDefines: List[BD.Define] = newList()
+  val cliDefines: List[String] = newList()
   var release: Bool = false
   var ridArg: Option[String] = None
   var noRestore: Bool = false
@@ -724,12 +723,13 @@ func cmdBuild(argv: in slice[String]): Int {
         match Str.indexOf(kv, "=") {
           case Some(eq) -> {
             val k = Str.substring(kv, 0, eq)
-            val v = Str.substring(kv, eq + 1)
             if k.length == 0 {
               printErr("build: --define requires KEY=VALUE (empty key): " + kv)
               return 1
             }
-            cliDefines.add(BD.Define(key = k, value = v))
+            // Carry the raw "KEY=VALUE" string; decoded to a Define at the
+            // MSIL bridge (keeps EmitRequest free of a cross-package field).
+            cliDefines.add(kv)
           }
           case None -> {
             printErr("build: --define requires KEY=VALUE, got: " + kv)
@@ -876,14 +876,15 @@ func cmdBuild(argv: in slice[String]): Int {
   // docs/60 build defines: `--define` is currently applied only on the
   // single-file `--target dotnet` compile path (`EmitRequest.defines`).
   // Reject it up front on the paths where it would otherwise be silently
-  // dropped — project builds and JVM/native — rather than mislead the user
+  // dropped — project builds, JVM/native, and `--watch` (whose rebuild
+  // action carries no defines) — rather than mislead the user
   // (project-path + JVM/native parity tracked in #5852).
   if cliDefines.count > 0 {
     val singleFileDotnet = match target { case Dotnet -> positional.count > 0; case _ -> false }
     val hasManifest = match manifestArg { case Some(_) -> true; case None -> false }
-    if (not singleFileDotnet) or hasManifest {
+    if (not singleFileDotnet) or hasManifest or watch {
       printErr(
-        "build: --define is currently supported only for single-file --target dotnet builds (project/JVM/native parity tracked in #5852)"
+        "build: --define is currently supported only for single-file --target dotnet builds without --watch (project/JVM/native/watch parity tracked in #5852)"
       )
       return 1
     }

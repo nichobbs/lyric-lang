@@ -345,7 +345,7 @@ pub func compileToNativeWithFlags(
   // after parse, before anything indexes the items).
   val noFeatures: List[String] = newList()
   val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
-  val nativeDefines: List[BD.Define] = newList()
+  val nativeDefines = BD.decodeDefines(newList())
   val cfgFile = match pipeParseAndErase(source, "native", noFeatures, noFeatures, nativeDefines) {
     case Some(f) -> f
     case None -> return false

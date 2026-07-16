@@ -10,7 +10,6 @@ import Std.Errors
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Emitter as Emitter
-import Lyric.BuildDefines as BD
 import Lyric.Discovery as Disc
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +113,8 @@ func cmdCheck(argv: in slice[String]): Int {
       assemblyName = stem,
       outputPath = outPath,
       target = checkTarget,
-      packageVersion = ""
+      packageVersion = "",
+      defines = newList()
     )
     val result = Emitter.emit(req)
     var hadError = false

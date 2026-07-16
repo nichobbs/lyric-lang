@@ -40,7 +40,7 @@ import Msil.Heaps
 /// returns.  The package name and assembly name are taken from the parsed
 /// `package` declaration in the source.
 pub func compileToMsil(source: in String, outputPath: in String, stdlibSources: in List[String]): Bool {
-  val noDefines: List[BD.Define] = newList()
+  val noDefines: List[String] = newList()
   compileToMsilWithVersion(source, outputPath, stdlibSources, "", noDefines)
 }
 
@@ -81,7 +81,7 @@ pub func compileToMsilWithVersion(
   outputPath: in String,
   stdlibSources: in List[String],
   packageVersion: in String,
-  defines: in List[BD.Define],
+  defines: in List[String],
 ): Bool {
   // Parse + `@cfg` erasure with an empty active set (plus the
   // `target.dotnet` pseudo-feature, D-N-013) — the same semantics a
@@ -90,7 +90,8 @@ pub func compileToMsilWithVersion(
   // stays empty so the F0013 typo guard is off, matching a manifest with
   // no `[features]` table).
   val noCfgFeatures: List[String] = newList()
-  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, defines) {
+  val decodedDefines = BD.decodeDefines(defines)
+  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines) {
     case Some(f) -> f
     case None -> return false
   }
@@ -475,7 +476,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]
-    val projDefines: List[BD.Define] = newList()
+    val projDefines = BD.decodeDefines(newList())
     val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines) {
       case Some(f) -> f
       case None -> return false

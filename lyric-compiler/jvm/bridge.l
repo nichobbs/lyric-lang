@@ -89,7 +89,7 @@ pub func compileToJar(
   // (docs/59 §5.4; the declared set stays empty so the F0013 typo guard is
   // off, matching a manifest with no `[features]` table).
   val noFeatures: List[String] = newList()
-  val jvmDefines: List[BD.Define] = newList()
+  val jvmDefines = BD.decodeDefines(newList())
   val cfgFile = match pipeParseAndErase(source, "jvm", noFeatures, noFeatures, jvmDefines) {
     case Some(f) -> f
     case None -> return false
@@ -1025,7 +1025,7 @@ pub func compileProjectToJarBundledWithFeatures(
   var sawMain = false
   var psi = 0
   while psi < pkgSrcs.count {
-    val jvmProjDefines: List[BD.Define] = newList()
+    val jvmProjDefines = BD.decodeDefines(newList())
     val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", activeFeatures, declaredFeatures, jvmProjDefines) {
       case Some(f) -> f
       case None -> return false

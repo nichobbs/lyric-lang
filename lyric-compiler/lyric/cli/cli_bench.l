@@ -13,7 +13,6 @@ import Std.Parse
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Emitter as Emitter
-import Lyric.BuildDefines as BD
 import Lyric.BenchSynth as BenchSynth
 import Lyric.Discovery as Disc
 
@@ -62,7 +61,8 @@ func runBenchOnSource(
         assemblyName = stem,
         outputPath = outPath,
         target = benchTarget,
-        packageVersion = ""
+        packageVersion = "",
+        defines = newList()
       )
       val result = Emitter.emit(req)
       var hadError = false

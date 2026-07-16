@@ -13,6 +13,7 @@ package Lyric.BuildDefines
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 
@@ -116,7 +117,23 @@ func buildConstKey(a: in Annotation): Option[String] {
 func valTypeOkForString(decl: in ValDecl): Bool {
   match decl.ty {
     case Some(t) -> isStringTypeExpr(t)
-    case None -> true
+    // No explicit annotation: the fallback initializer must itself be a
+    // `String` literal, else substitution would flip the val's inferred type
+    // (e.g. `@build_const("port") val PORT = 8080` is `Int` on the fallback
+    // but `String` after substitution) — F0030 (docs/60 §4).
+    case None -> isStringLiteralInit(decl.init)
+  }
+}
+
+func isStringLiteralInit(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> {
+      match lit {
+        case LString(_) -> true
+        case _ -> false
+      }
+    }
+    case _ -> false
   }
 }
 
@@ -125,6 +142,28 @@ func isStringTypeExpr(t: in TypeExpr): Bool {
     case TRef(path) -> path.segments.count == 1 and path.segments[0] == "String"
     case _ -> false
   }
+}
+
+/// Decode a `["KEY=VALUE", ...]` list (the request-carried, cross-package-safe
+/// `List[String]` representation) into `Define`s. Later entries override
+/// earlier same-key entries (last-wins, matching conventional repeatable-flag
+/// precedence). Entries without `=` are skipped (the CLI validates the form).
+pub func decodeDefines(kvs: in List[String]): List[Define] {
+  val decoded: List[Define] = newList()
+  var i = kvs.count - 1
+  while i >= 0 {
+    match Str.indexOf(kvs[i], "=") {
+      case Some(eq) -> {
+        val k = Str.substring(kvs[i], 0, eq)
+        if k.length > 0 and not hasKey(decoded, k) {
+          decoded.add(Define(key = k, value = Str.substring(kvs[i], eq + 1)))
+        }
+      }
+      case None -> ()
+    }
+    i = i - 1
+  }
+  decoded
 }
 
 func stringLiteralExpr(text: in String, sp: in Span): Expr {
