@@ -348,6 +348,7 @@ lyric-web/
     rate_limit_tests.l            Web.Kernel.Runtime.checkRateLimit
     security_aspect_weaving_tests.l  Web.Aspects templates, woven
     jvm_server_smoke.l            real Undertow HTTP round trip (jvm; blocked on #5444/#5458, see Known gaps)
+    serve_failure_tests.l         Web.serve() failure-observability path (#5260); CI-orchestrated, see file header
 ```
 
 ## See also
