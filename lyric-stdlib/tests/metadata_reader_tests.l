@@ -2,19 +2,24 @@
 //! running test PE itself.  The test DLL is a real .NET assembly emitted by
 //! the compiler's own metadata *writer*, so parsing it back is a
 //! reader-vs-writer round-trip oracle that needs no version-specific
-//! reference-pack path.  Auto-discovered by
-//! `bootstrap/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs`.
-//! Exit 0 + "ok" in stdout means every assertion held.
+//! reference-pack path.  Run manually via
+//! `LYRIC_LOAD_COMPILER=1 ./bin/lyric run lyric-stdlib/tests/metadata_reader_tests.l`
+//! (the `LYRIC_LOAD_COMPILER=1` recompile is needed because this file imports
+//! the compiler package `Msil.MetadataReader`, which plain `lyric run` does
+//! not resolve).  Exit 0 + "ok" in stdout means every assertion held; not
+//! currently wired into any CI step, and `testTableRows`'s Param-row
+//! sequence/name assertions currently fail — `Msil.Lowering` still emits
+//! placeholder Param rows (`sequence = 0`) rather than the real per-parameter
+//! sequence numbers this test expects, tracked in #5624.
 //!
 //! Placement note: this test lives here, not under `lyric-compiler/`, because
 //! it must compile *and run* a program that emits a real PE (then parse that
-//! PE back) — and the `*_tests.l` auto-discovery harness is the only mechanism
-//! that does so without adding a per-test F# runner (which the project
-//! disallows).  The import direction (a stdlib-tests file depending on a
-//! compiler package) is a test-harness artefact, not a library dependency:
-//! the stdlib library itself does not import `Msil.*`.  Moving this test
-//! under `lyric-compiler/tests/` is a follow-up once that directory exists
-//! and gains a parallel auto-discovery hook.
+//! PE back), and there is no per-test discovery mechanism under
+//! `lyric-compiler/` for that shape of test.  The import direction (a
+//! stdlib-tests file depending on a compiler package) is a test-harness
+//! artefact, not a library dependency: the stdlib library itself does not
+//! import `Msil.*`.  Moving this test under `lyric-compiler/tests/` is a
+//! follow-up once that directory exists and gains a parallel discovery hook.
 package Msil.MetadataReader.Tests
 
 import Std.Core
@@ -28,9 +33,9 @@ import Msil.MetadataReader
 
 // ── Locate + load the running test DLL ───────────────────────────────────────
 //
-// `StdlibLyricTests.fs::assemblyNameOf` emits this program as
-// `metadata_reader_tests.dll` (filename stem, hyphens/dots → underscores).
-// `Std.Environment.appBaseDirectory()` reports the load directory.
+// `lyric run` emits this program as `metadata_reader_tests.dll` (the source
+// filename stem). `Std.Environment.appBaseDirectory()` reports the load
+// directory.
 func selfBytes(): slice[Byte] {
   val p = Path.join(Environment.appBaseDirectory(), "metadata_reader_tests.dll")
   File.readBytesOrPanic(p)
@@ -958,8 +963,7 @@ func containsStr(xs: in List[String], s: in String): Bool {
 }
 
 // Walk ancestor directories from `start` looking for the repo's
-// `lyric-stdlib/std/_kernel` directory (mirrors the F# harness's
-// repo-root discovery in StdlibLyricTests.fs).
+// `lyric-stdlib/std/_kernel` directory.
 func findKernelDirFrom(start: in String): Option[String] {
   var dir = start
   var depth = 0
@@ -978,10 +982,10 @@ func findKernelDirFrom(start: in String): Option[String] {
   None
 }
 
-// The emitted test PE runs from a temp directory but inherits the test
-// process's working directory (the repo's `bootstrap/`), so the cwd walk
-// finds the repo root; the app-base walk is a fallback for direct runs
-// of the PE from inside the repo tree.
+// `lyric run` compiles and executes this program with the repo root as the
+// current working directory, so the cwd walk finds the repo root directly;
+// the app-base walk is a fallback for direct runs of the emitted PE from
+// elsewhere in the repo tree.
 func findKernelDir(): String {
   match findKernelDirFrom(Environment.currentDirectory()) {
     case Some(d) -> d

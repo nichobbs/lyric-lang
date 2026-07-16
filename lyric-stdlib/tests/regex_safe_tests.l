@@ -1,7 +1,8 @@
 //! Tests for Std.RegexSafe (#330) and Std.Regex (#632).  Uses the
-//! `func main(): Unit` + `println "ok"` shape that `StdlibLyricTests.fs`
-//! runs (the `test "..." {}` block syntax is for `lyric test`, not this
-//! runner).
+//! `func main(): Unit` + `println "ok"` shape run via `lyric run` in the
+//! "Stdlib runtime suites on dotnet" CI step (.github/workflows/ci.yml),
+//! not `lyric test` (the `test "..." {}` block syntax is for `lyric test`,
+//! not this convention).
 package Std.RegexSafe.Tests
 
 import Std.Core
