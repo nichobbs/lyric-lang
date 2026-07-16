@@ -764,6 +764,7 @@ jobs:
             lyric-compiler/lyric/verifier_self_test.l \
             lyric-compiler/lyric/closure_correctness_self_test.l \
             lyric-compiler/lyric/func_val_local_rettype_self_test.l \
+            lyric-compiler/lyric/qualified_enum_case_self_test.l \
             lyric-compiler/lyric/slice_append_widening_self_test.l \
             lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
             lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
@@ -3964,6 +3965,46 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+
+      # Qualified enum-case self-test on JVM (#5769) — package-qualified
+      # restored/bundled enum-case value references (Std.Http.GET shape) via
+      # flattenPathExprSegsJvm/tryQualifiedEnumClassJvm; the dotnet half runs
+      # in compiler-self-tests-dotnet-a.
+      - name: Qualified enum-case self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping qualified enum-case JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping qualified enum-case JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/qualified_enum_case_self_test.l
+
+      # HOF-returned-closure local self-test on JVM (#5796) — the JVM parity
+      # control for the MSIL #5774 fix (un-annotated closure-typed locals
+      # bound from a HOF call); verified immune by design (context-based
+      # unbox in lowerLambdaInvoke), this pins it.
+      - name: Func-val local rettype self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping func-val rettype JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping func-val rettype JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/func_val_local_rettype_self_test.l
 
       # Never-tail self-test on JVM (#5652) — the JVM half of the dotnet-job
       # step of the same name.  Pins the Never-in-tail-position default-value
