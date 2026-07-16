@@ -652,6 +652,12 @@ and J4 (async), and the J2→J4 logical dependency holds — so Track A
   not block the v1.0 release train and continues shipping on its own cadence.
 - **Generics on JVM:** accept erased + `checkcast` for v1 (recommended; matches
   `docs/18`), or invest in specialised helpers / await Valhalla (Q-J001/Q-J003)?
+- **Server TLS / h2 on JVM: SPECCED (D128, `docs/61-https-tls-http-versions.md`).**
+  The `_kernel_jvm/http_server.l` `https://` rejection (tracked with #2663) and
+  lyric-web's plaintext-only Undertow listener are remediated under epic #5874
+  phase 2 (`HttpsServer` + `SSLContext`, Undertow `addHttpsListener` +
+  `ENABLE_HTTP2`); longer-term the JVM converges onto the pure-Lyric sans-IO
+  HTTP engine once it has parity + performance evidence on dotnet (docs/61 §6.5).
 - **Maven resolver: RESOLVED (M-7).** The Java `resolver/` was revived — it is
   the live Maven resolution path (`cli_restore.l` executes `lyric-resolver.jar`,
   built by `make maven-resolver` and bundled with every distribution). A

@@ -16925,6 +16925,99 @@ release artifacts).
 
 ---
 
+## D128 — HTTPS/TLS across client and server, sans-IO HTTP engine, and a unified h2-or-lower default (docs/61)
+
+**Context.** Client-side HTTPS already worked on both managed targets
+(platform-default trust in `System.Net.Http.HttpClient` and
+`java.net.http.HttpClient`) but exposed zero TLS configuration: no custom
+CA, no client certificates, no minimum-version pin, no development escape
+hatch. Server-side TLS existed nowhere — the managed `HttpListener` backing
+`Std.HttpServer`/`lyric-web` on dotnet has no TLS off-Windows and can never
+do h2, and the JVM kernel explicitly rejected `https://` prefixes for lack
+of a keystore surface. The two clients also silently negotiated different
+protocol versions for identical source: JVM h2-with-fallback (JDK default),
+dotnet pinned 1.1 (BCL default, never overridden) — a docs/59-class
+cross-target divergence. Full audit: `docs/61-https-tls-http-versions.md` §1.
+
+**Decisions** (owner-resolved 2026-07-16; details and API sketches in
+docs/61):
+
+1. **Client TLS config on `HttpClientBuilder`** backed by a new `Std.Tls`
+   stdlib module (PEM-only file format on every target; additive
+   `withCaCertificate` vs trust-replacing `withExclusiveCaCertificate`;
+   `withClientIdentity` for mTLS; `withMinTlsVersion`, floor TLS 1.2).
+   Cert/key *paths* are runtime-configurable via `config { }` blocks at the
+   library layer.
+2. **Dual-key insecure policy**: disabling verification requires both
+   `withInsecureSkipVerify()` in code and `LYRIC_TLS_ALLOW_INSECURE=1` in
+   the environment. Env-only is a no-op; code-only stays secure and emits a
+   one-time stderr warning naming the missing variable (legitimate flow:
+   opt-in kept in code, the env var simply absent in production keeps the
+   deployment secure with no rebuild); neither is the secure default.
+3. **Client default HTTP version = h2-or-lower via ALPN on both targets** —
+   the dotnet kernel now sets `DefaultRequestVersion` 2.0 +
+   `RequestVersionOrLower`, aligning up to the JVM default. Deliberate
+   default change: upgrades only when the server negotiates h2 over TLS,
+   plaintext stays 1.1. New `withHttpVersion` knob; `Http3` enum case
+   reserved but unimplemented (typed error).
+4. **`TlsServerConfig` includes mTLS from v1** (`clientCa` +
+   `requireClientCert`) — cheap on all three targets, needed for
+   service-mesh/internal-API deployments.
+5. **JVM server TLS ships first on the existing stacks** (`HttpsServer` for
+   the `Std.HttpServer` kernel; Undertow `addHttpsListener` +
+   `ENABLE_HTTP2` and `Web.serveTls` + `WebTls` config template for
+   lyric-web).
+6. **The dotnet server is replaced by a pure-Lyric sans-IO HTTP protocol
+   engine** (`Std.HttpEngine`: parser/serializer/connection FSM as pure
+   byte-slice computation, no externs) plus a thin
+   `TcpListener`/`SslStream` transport kernel with a `scope`/`spawn`
+   structured-concurrency accept loop. `HttpListener` retires — it can
+   never do TLS-on-Linux or h2, and its single-threaded loop was
+   bootstrap-grade. `SslStream` keeps TLS itself at the BCL boundary (this
+   is not the hand-rolled-TLS docs/23 rejected).
+7. **h2 is TLS-only (ALPN), implemented once in the engine** — HPACK, frame
+   codec, stream FSM, flow control are target-independent pure Lyric —
+   shipping on the dotnet server first. No h2c, no server push, no RFC 7540
+   priority tree.
+8. **JVM converges onto the engine later, evidence-gated** (parity + h2
+   self-tests + documented performance comparison on dotnet first);
+   Undertow/`com.sun` retirement becomes a tracked issue at that point, not
+   a promise now.
+9. **HTTP/3 deferred** end-to-end (msquic opt-in on the dotnet client
+   later; absent from JDK 21; server h3 not a goal).
+10. **Native TLS backend: OpenSSL 3.x dynamically linked** behind a narrow
+    `lyric_tls_*` seam in `lyric-rt` (mbedTLS can substitute for static
+    builds later). Hostname verification + SNI hard-wired on; trust
+    discovery via `SSL_CTX_set_default_verify_paths` +
+    `SSL_CERT_FILE`/`SSL_CERT_DIR`; `SSL_CTX`/`SSL` handles are ARC-managed
+    `NativePtr` resources under the existing ASan self-test discipline.
+
+**Rejected alternatives.** Kestrel-via-extern for the dotnet server
+(production TLS/h2 immediately, but a large ASP.NET Core dependency in the
+stdlib, a callback hosting model that fights the kernel's pull contract,
+and AOT-trim risk); PKCS#12/JKS as the cert container (two formats to
+document, PEM is what ACME and meshes emit; PKCS#12 revisitable as
+Q-TLS-006); h2c cleartext upgrade (browsers never use it; a whole
+negotiation surface for no consumer); failing loudly when
+`withInsecureSkipVerify()` lacks the env var (would turn the
+"drop-the-env-var-in-prod" hardening flow into an outage); rustls-ffi and
+mbedTLS as the primary native backend (Rust toolchain dependency /
+self-owned CA discovery respectively — mbedTLS stays the static-build
+escape hatch behind the seam).
+
+**Implementation:** epic #5874, one sub-issue per PR across five phases
+(client TLS + versions; JVM server TLS; dotnet engine; h2; native).
+Phase-2 `serveTls` on dotnet returns a typed `Unsupported` error naming the
+phase-3 issue until the engine lands — a loud tracked gap, not a silent
+skip.
+
+**Related:** docs/61, docs/59 §cross-target divergences, docs/44 (JVM
+`https://` rejection), docs/23 §TLS, docs/14 §HTTP transport,
+native/plan/04+05, D065 (pure-Lyric parser precedent), D119/D120
+(`scope`/`spawn`), D122 (delegate-valued extern properties), #2663, #5874.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

@@ -89,7 +89,7 @@ The kernel is the floor. Every language has one (Rust's `std` calls
 | Regex engine | A correct, performant regex implementation is a multi-year project. Vendor BCL `System.Text.RegularExpressions`. | ~10 methods |
 | JSON tokenizer | Implementable in Lyric eventually, but `System.Text.Json`'s SIMD-tuned tokenizer is a perf cliff we don't want to fall off. Source generators (`@generate(Json)`) keep most users out of the tokenizer anyway. | ~15 methods |
 | Cryptography primitives | Audit cost. Use BCL `System.Security.Cryptography`. | ~10 methods |
-| HTTP transport (TLS, connection pool) | Same. Use BCL `System.Net.Http`. | ~15 methods |
+| HTTP transport (TLS, connection pool) | Same. Use BCL `System.Net.Http`. On the native target, TLS is OpenSSL 3.x behind a narrow `lyric_tls_*` seam in `lyric-rt`, and HTTP framing moves to the pure-Lyric sans-IO engine — see `docs/61-https-tls-http-versions.md` §6–§7 (D128). | ~15 methods |
 | Threading / Task scheduler | Lyric uses .NET TPL by D001. The scheduler stays. | ~10 methods |
 | String parsing of `Double` / `Decimal` | Correct float parsing is a research-grade problem (Bellerophon, Eisel-Lemire). Use BCL `Double.TryParse`. | 5 methods |
 
