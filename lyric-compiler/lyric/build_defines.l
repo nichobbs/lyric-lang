@@ -18,8 +18,8 @@ import Lyric.Lexer
 import Lyric.Parser
 
 // ── Public surface ──────────────────────────────────────────────────────────
-/// One resolved build define (key/value). The caller precedence-resolves the
-/// set before handing it here (CLI over manifest over the well-known defines).
+/// One resolved build define (key/value), decoded from the CLI's
+/// `"KEY=VALUE"` strings by `decodeDefines` (last-wins on repeats).
 pub record Define {
   key: String
   value: String
@@ -86,9 +86,9 @@ func buildConstKey(a: in Annotation): Option[String] {
   }
 }
 
-// Pre-typecheck String check: an explicit non-`String` annotation is rejected
-// (F0030); an inferred (None) type is accepted because the fallback
-// initializer is always a `String` literal, which the substitution preserves.
+// Pre-typecheck String check (F0030): an explicit annotation must be `String`;
+// with no annotation, the fallback initializer must itself be a `String`
+// literal (see the `None` arm).
 func valTypeOkForString(decl: in ValDecl): Bool {
   match decl.ty {
     case Some(t) -> isStringTypeExpr(t)
