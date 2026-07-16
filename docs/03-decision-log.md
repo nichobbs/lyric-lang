@@ -16923,6 +16923,116 @@ release artifacts).
 
 **Related:** docs/22-distribution-and-tooling.md §5, D109, D059, #1082.
 
+## D-progress-688 — `Std.Tls` module ships (PEM certificate/private-key loading, docs/61 §3.1 phase 1.1); two pre-existing JVM backend bugs found and worked around
+
+Ships `lyric-stdlib/std/tls.l` (`Std.Tls`) plus its kernel twins
+(`_kernel/tls_host.l`, `_kernel_jvm/tls_host.l`) — issue #5876, phase 1.1 of
+the HTTPS/TLS epic (#5874, docs/61-https-tls-http-versions.md §3.1, D128,
+not yet merged to `main` as of this entry). `Certificate`/`Identity` opaque
+types, `TlsVersion` enum, `TlsServerConfig` record (mTLS from v1 per D128
+decision 5), and a `TlsError` union load exclusively from PEM (D128: PEM is
+the only v1 format).
+
+**dotnet kernel.** Uses `X509CertificateLoader.LoadCertificateFromFile`/
+`LoadCertificate(byte[])` (the non-obsolete .NET 9+ replacement for the
+`X509Certificate2` byte[]/string constructors) for cert-only loading — both
+accept PEM bytes directly, auto-detecting format, and resolve cleanly
+through the auto-FFI metadata binder. Identity (cert+key) loading has no
+such convenience: `X509Certificate2.CreateFromPem(ReadOnlySpan<char>,
+ReadOnlySpan<char>)`, the only PEM-pair combinator, is the sole gap point —
+every modern .NET key-import/PEM-combine API (`CreateFromPem`'s content
+form, `RSA.ImportPkcs8PrivateKey`, `AsymmetricAlgorithm.ImportPkcs8PrivateKey`)
+is `ReadOnlySpan<T>` + (for the key-import path) `out int`-shaped, verified
+empirically (throwaway `dotnet run` harness, reflection-enumerated every
+candidate overload) to have no plain byte[]/string form the current
+auto-FFI metadata binder (`lyric-compiler/msil/metadata_reader.l`'s
+`scoreSigType`) can resolve. `hostIdentityFromPemBytes` bridges by writing
+both PEM blocks to per-call, randomly-named (`Path.GetRandomFileName()`)
+temp files and delegating to `CreateFromPemFile` (whose file-path
+parameters ARE plain strings), deleting both immediately after on every
+path. This is a real, if minor, disclosure-window caveat (temp files
+inherit the OS temp directory's default permissions briefly) documented
+honestly in the kernel's header rather than hidden; `Identity.fromPemFiles`
+(real file paths, permissions the caller already controls) is unaffected
+and preferred when that matters.
+
+**JVM kernel.** `java.security.cert.CertificateFactory` also accepts PEM
+bytes directly for certs. Private keys have no equivalent: PEM armor is
+stripped and the base64 body decoded in pure Lyric
+(`Std.Encoding.tryDecodeBase64`) before handing DER bytes to
+`PKCS8EncodedKeySpec`/`KeyFactory` (RSA-then-EC probe) — only unencrypted
+PKCS8 ("PRIVATE KEY") blocks are supported; `Std.Tls` itself rejects
+PKCS1/SEC1/encrypted labels identically on both targets before calling in
+(`checkKeyPemSupported`), since the dotnet host API would otherwise
+silently accept PKCS1 where the hand-rolled JVM path cannot, an
+undocumented one-target divergence the module deliberately avoids.
+
+**Mismatch-detection asymmetry (accepted, documented — not a gap).**
+Verified empirically that .NET's `CreateFromPemFile` throws the *identical*
+`CryptographicException` message for a missing key section, a malformed key
+file, AND a same-algorithm wrong-key pairing — there is no way to
+distinguish "malformed" from "mismatched" from that message, so
+`Std.Tls` conservatively classifies that case as `PemMalformed` on dotnet.
+A *cross-algorithm* pairing (e.g. an EC key with an RSA certificate) raises
+a distinct, reliably-matchable message and correctly maps to `KeyMismatch`.
+The JVM kernel has no such ambiguity: a sign/verify round-trip against the
+parsed key and the certificate's public key (`java.security.Signature`)
+reliably detects both same-algorithm and cross-algorithm mismatches. The
+self-test exercises only the cross-algorithm shape (the one both targets
+classify identically), rather than asserting a same-algorithm-mismatch
+expectation that would need to differ by target — chosen deliberately per
+the module's stated honesty policy over faking parity.
+
+**Two pre-existing JVM backend bugs found during testing (both filed,
+neither fixed here — out of this PR's scope):**
+
+1. **#5903** — a `match` arm's bare/qualified union case pattern nested
+   inside another constructor's argument position (`Err(Host.HostMismatch(msg))`)
+   mis-dispatches to the FIRST listed nested pattern regardless of the
+   scrutinee's actual runtime case, throwing `ClassCastException` — verified
+   with a minimal two-case-union repro unrelated to TLS. `Std.Tls` works
+   around its own instances by unwrapping the outer `Result` first and
+   matching the inner error in a separate `match` expression (no nested
+   pattern shape). A companion, more targeted collision (`TlsError`'s
+   originally-specced `FileNotFound` case colliding by bare name with
+   `Std.Errors.IOError.FileNotFound`, transitively pulled in via `Std.File`)
+   is the reason the shipped case is named `CertFileNotFound` instead —
+   `Std.Tls`'s own header documents this rename.
+2. **#5908** — constructing a record cross-package while omitting a
+   default-valued field produces an incorrectly-populated value for it on
+   `--target jvm` (verified with a minimal, TLS-unrelated repro: a
+   two-package project, a record with a default-valued enum field,
+   constructed from the second package with the field omitted). Failure
+   mode varies from a hard `RuntimeException: Jvm.Codegen: match not
+   exhaustive` crash to a silently-wrong `==` comparison depending on how
+   the field is read back. `TlsServerConfig`'s defaults-omission test is
+   therefore split into its own file
+   (`lyric-stdlib/tests/tls_server_config_tests.l`, dotnet-only, same
+   established precedent as `Std.Log`'s dotnet-only CI step) rather than
+   asserting something JVM cannot currently honor; constructing with every
+   field explicit is unaffected and dual-target.
+
+**Verification.** No source-buildable `./bin/lyric` was available in the
+implementing session's sandbox (GitHub release download blocked by network
+policy, matching D-progress-543's documented sandbox exception); the
+published NuGet `lyric` 0.4.32 global tool was used instead. Its `lyric
+run`/`lyric test` single-file and `--manifest` modes were found to link a
+stale prebuilt `Lyric.Stdlib.dll` for runtime resolution in ways that don't
+reflect freshly-built stdlib source (a sandbox-tool limitation, not a
+`Std.Tls` bug — confirmed by building a small multi-package manifest
+project containing only `Std.Tls`'s own transitive closure via `lyric run
+--manifest`, which correctly recompiles everything into one fresh
+assembly). All `tls_tests.l`/`tls_server_config_tests.l` assertions were
+verified this way against real self-signed RSA/EC certificate and
+unencrypted PKCS8 key fixtures on both `--target dotnet` and `--target
+jvm`, including the temp-file identity bridge, the cross-algorithm
+mismatch detection on both targets, and the PKCS1/encrypted-key rejection.
+CI, which builds a genuine `./bin/lyric` from this repo's source, runs the
+real `lyric test` invocations as normal.
+
+**Related:** #5876, #5874, docs/61-https-tls-http-versions.md §3.1, D128,
+#5903, #5908, D-progress-543.
+
 ---
 
 ## D128 — HTTPS/TLS across client and server, sans-IO HTTP engine, and a unified h2-or-lower default (docs/61)

@@ -4148,6 +4148,26 @@ jobs:
           "$lyric_bin" test --target jvm lyric-stdlib/tests/http_async_tests.l
           echo "Std.Http async-surface test ran: http_async_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
+      # Std.Tls test coverage on JVM (#5876) — the JVM half of the
+      # dotnet-job step of the same name (stdlib-builds). Certificate/
+      # identity loading against real PEM fixtures, including the
+      # cross-algorithm KeyMismatch case (detected reliably on this target
+      # via a sign/verify round-trip; docs/03-decision-log.md
+      # D-progress-688). TlsServerConfig's defaults-omission coverage is
+      # dotnet-only (#5908) and lives in a separate file, not run here.
+      - name: Std.Tls test coverage on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Tls JVM tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-stdlib/tests/tls_tests.l
+          echo "Std.Tls test ran: tls_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
       # Extra barrier (JVM batch 1-split): the JVM batch-1 group had grown to
       # ~21 concurrent in-process JVM compilations — well over the ~14-step cap
       # (see the dotnet-a header comment) at which the runner's parallel-step
@@ -5930,6 +5950,40 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_tests.l
+
+      # Std.Tls test coverage (#5876, docs/61 §3.1 phase 1.1): PEM
+      # certificate/private-key loading (Certificate/Identity opaque types,
+      # TlsError classification, cross-algorithm KeyMismatch detection).
+      # Runs on both targets in this job (dotnet) and the JVM batch job
+      # below — see that step's comment for why.
+      - name: Std.Tls test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Tls tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-stdlib/tests/tls_tests.l
+
+      # TlsServerConfig default-field-omission coverage — dotnet-only
+      # (#5908): a record constructed cross-package while omitting a
+      # default-valued field gets an incorrectly-populated value for it on
+      # --target jvm, a pre-existing general JVM backend gap unrelated to
+      # Std.Tls specifically (see docs/03-decision-log.md D-progress-688
+      # and this test file's own header). Same precedent as the Std.Log
+      # dotnet-only step below.
+      - name: Std.Tls TlsServerConfig defaults test coverage (native lyric test, dotnet-only per #5908)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Tls TlsServerConfig tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-stdlib/tests/tls_server_config_tests.l
 
       # Stdlib runtime suites on dotnet (#5604, expanded in D-progress-670 /
       # #5710): these `func main`-shaped suites (run via `lyric run`, not

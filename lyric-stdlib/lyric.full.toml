@@ -100,6 +100,8 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Http"             = "std/http.l"
 "Std.HttpServer"       = "std/_kernel/http_server.l"
 "Std.Rest"             = "std/rest.l"
+"Std.TlsHost"          = "std/_kernel/tls_host.l"
+"Std.Tls"              = "std/tls.l"
 
 # Tier 6 — regex compatibility shim.
 "Std.RegexSafe"        = "std/regex_safe.l"

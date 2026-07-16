@@ -30424,3 +30424,25 @@ async call's generic-parameter unification reports the call's real physical
 
 **Related:** `docs/03-decision-log.md` D-progress-686; #5723, #5725, #5730,
 #5733, #5734.
+
+## `Std.Tls` module ships — PEM certificate/private-key loading with dotnet + JVM kernel twins (2026-07-16)
+
+New `lyric-stdlib/std/tls.l` (`Std.Tls`) plus `_kernel/tls_host.l` /
+`_kernel_jvm/tls_host.l` kernel twins: `Certificate`/`Identity` opaque
+types, `TlsVersion` enum, `TlsServerConfig` record (mTLS-ready from v1),
+`TlsError` union, and PEM-only cert/key constructors — docs/61
+§3.1's phase 1.1 (epic #5874, issue #5876). dotnet uses
+`X509CertificateLoader` for certs and bridges the one
+`ReadOnlySpan<char>`-only identity-combine API via per-call temp files;
+JVM uses `CertificateFactory` for certs and a pure-Lyric PEM→DER→
+`PKCS8EncodedKeySpec` path for keys, with a sign/verify round-trip for
+mismatch detection. Testing surfaced two pre-existing, general JVM backend
+bugs unrelated to TLS specifically (filed, not fixed here): #5903 (nested
+union-case pattern-match mis-dispatch) and #5908 (cross-package
+record-default-field construction silently wrong on `--target jvm`);
+`Std.Tls` works around both (a case rename plus splitting
+`TlsServerConfig`'s defaults test into a dotnet-only file) and documents
+both honestly in its own doc comments.
+
+**Related:** `docs/03-decision-log.md` D-progress-688; #5876, #5874, #5903,
+#5908.
