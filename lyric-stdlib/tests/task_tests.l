@@ -74,20 +74,42 @@ func testMakeCancelSourceTimeoutEventuallyCancels(): Unit {
   assertTrue(isCancelled(tok), "the token reports cancelled once the deadline has passed")
 }
 
-// A regression test for #5320 (the JVM ambient slot dropped
-// makeCancelSourceTimeout's deadlineMs) belongs here in principle, but
-// installToken/currentToken crash on .NET on their very first call in a
-// process (NullReferenceException in a minimal repro, a JIT segfault in
-// a larger one) — a separate, pre-existing, .NET-only bug this
-// investigation surfaced, filed as #5330. Since #5320 was JVM-only (the
-// .NET kernel already stores the whole CancellationToken, deadlineMs
-// included, in its AsyncLocal), the fix is verified directly against
-// _kernel_jvm/task.l instead — see the #5320 writeup in
-// docs/03-decision-log.md (D-progress-621) for the verification command
-// and output.  Do not add an installToken/currentToken call to this
-// CI-wired file until #5330 is fixed.
+// Regression test for #5330: installToken/currentToken crashed on .NET on
+// their very first call in a process (NullReferenceException) because the
+// ambient `AsyncLocal<object>` erasure reads `null` before anything is ever
+// installed, and the MSIL backend's STVar-return unboxing
+// (`emitGenericExternMember` in `msil/codegen.l`) unconditionally emitted
+// `unbox.any` against that `null` reference. This MUST be the first ambient-
+// token call in the file (and process) to exercise the original crash: prior
+// to the fix, this call panicked with NullReferenceException on .NET before
+// ever reaching `assertFalse`.  See `docs/03-decision-log.md` D-progress-621
+// for the related #5320 (JVM-only) writeup this test was withheld pending.
+func testInstallTokenFirstCallDoesNotCrash(): Unit {
+  val previous = installToken(noCancellation())
+  assertFalse(
+    isCancelled(previous),
+    "the ambient slot's initial (never-installed) value is the never-cancelled default"
+  )
+  restoreToken(previous)
+}
+
+func testInstallTokenRoundTripsAndRestores(): Unit {
+  val outer = installToken(noCancellation())
+  assertFalse(hasAmbient(), "installing noCancellation() leaves the ambient slot at its non-cancellable default")
+  val src = makeCancelSource()
+  val tok = sourceToken(src)
+  val previous = installToken(tok)
+  assertTrue(hasAmbient(), "installToken sets the ambient slot to a cancellable token")
+  assertFalse(isCancelled(previous), "installToken returns the slot's PRIOR value, unchanged by the new install")
+  restoreToken(previous)
+  assertFalse(hasAmbient(), "restoreToken puts the prior (non-cancellable) token back")
+  restoreToken(outer)
+}
+
 func main(): Int {
   testNoCancellationNeverCancelled()
+  testInstallTokenFirstCallDoesNotCrash()
+  testInstallTokenRoundTripsAndRestores()
   testCancelSourcePropagatesToPriorToken()
   testCancelSourceIsIdempotent()
   testThrowIfCancelledPanicsOnceCancelled()

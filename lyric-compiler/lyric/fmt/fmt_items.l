@@ -536,19 +536,29 @@ pub func enumDoc(visStr: in String, ed: in EnumDecl, ctx: inout FmtCtx): List[St
 // ─────────────────────────────────────────────────────────────────────────────
 func protectedFieldStr(pf: in ProtectedField): List[String] {
   match pf {
-    case PFVar(n, ty, init, _) -> {
+    case PFVar(n, ty, init, docs, _) -> {
       val initStr = match init { case Some(e) -> " = " + exprInline(0, e); case None -> "" }
-      singleLineDoc("var " + n + ": " + typeStr(ty) + initStr)
+      val acc = docLines(docs)
+      acc.add("var " + n + ": " + typeStr(ty) + initStr)
+      acc
     }
-    case PFLet(n, ty, init, _) -> {
+    case PFLet(n, ty, init, docs, _) -> {
       val initStr = match init { case Some(e) -> " = " + exprInline(0, e); case None -> "" }
-      singleLineDoc("let " + n + ": " + typeStr(ty) + initStr)
+      val acc = docLines(docs)
+      acc.add("let " + n + ": " + typeStr(ty) + initStr)
+      acc
     }
     case PFImmutable(field) -> fieldMemberLines(field)
   }
 }
 
+// Render an entry with its leading `///` doc comments (`entryDoc` used to
+// drop `ed.docComments` entirely — the parser attaches them fine, but
+// nothing here ever printed them back out, so `lyric fmt` silently lost
+// per-entry documentation on every pass; #5574's fmt round-trip test
+// caught this once doc-before-non-first-entry could parse at all).
 func entryDoc(ed: in EntryDecl, ctx: inout FmtCtx): List[String] {
+  val docLs = docLines(ed.docComments)
   val vStr = match ed.visibility { case Some(_) -> "pub "; case None -> "" }
   val params = paramsStr(ed.params)
   val retStr = match ed.ret { case Some(t) -> ": " + typeStr(t); case None -> "" }
@@ -573,9 +583,14 @@ func entryDoc(ed: in EntryDecl, ctx: inout FmtCtx): List[String] {
   }
   if conLines.count == 0 {
     val head = singleLineDoc(sig + " {")
-    concatDoc3(head, indentDoc(2, bodyLines), singleLineDoc("}"))
+    concatDoc(docLs, concatDoc3(head, indentDoc(2, bodyLines), singleLineDoc("}")))
   } else {
     val acc: List[String] = newList()
+    i = 0
+    while i < docLs.count {
+      acc.add(docLs[i])
+      i = i + 1
+    }
     acc.add(sig)
     i = 0
     while i < conLines.count {
@@ -734,8 +749,8 @@ func typeAliasDoc(visStr: in String, ta: in TypeAliasDecl): List[String] {
 @pure
 func protectedFieldStartOffset(pf: in ProtectedField): Int {
   match pf {
-    case PFVar(_, _, _, sp) -> sp.startPos.offset
-    case PFLet(_, _, _, sp) -> sp.startPos.offset
+    case PFVar(_, _, _, _, sp) -> sp.startPos.offset
+    case PFLet(_, _, _, _, sp) -> sp.startPos.offset
     case PFImmutable(fd) -> fd.span.startPos.offset
   }
 }

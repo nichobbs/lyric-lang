@@ -1633,3 +1633,221 @@ test "dot-chain continuation across a newline still extends the expression" {
   assertEqualInt(diagCount(pr), 0, "dot-chain: no diagnostics")
   assertEqualInt(firstFuncBodyStmtCount(pr), 1, "dot-chain: one statement")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5574: a `///` doc comment before a non-first entry/func member in a
+// protected type body used to cascade into P0201/P0075/P0202 — the member
+// dispatch (`parseProtectedMember`) matched on the raw next token, so a
+// leading doc comment (not a keyword) always fell through to the field
+// parser, which then tried to read `entry`/`func` as a field name.
+// ─────────────────────────────────────────────────────────────────────────────
+func firstItemAsProtected(pr: in ParseResult): ProtectedTypeDecl {
+  if pr.file.items.count == 0 {
+    panic("no items")
+  }
+  match pr.file.items[0].kind {
+    case IProtected(decl) -> decl
+    case _ -> panic("first item is not a protected type")
+  }
+}
+
+func protectedMemberKindName(pm: in ProtectedMember): String {
+  match pm {
+    case PMField(_) -> "field"
+    case PMInvariant(_) -> "invariant"
+    case PMEntry(_) -> "entry"
+    case PMFunc(_) -> "func"
+  }
+}
+
+func protectedMemberDocCount(pm: in ProtectedMember): Int {
+  match pm {
+    case PMField(pf) -> {
+      match pf {
+        case PFVar(_, _, _, docs, _) -> docs.count
+        case PFLet(_, _, _, docs, _) -> docs.count
+        case PFImmutable(fd) -> fd.docComments.count
+      }
+    }
+    case PMEntry(ed) -> ed.docComments.count
+    case PMFunc(fn) -> fn.docComments.count
+    case PMInvariant(_) -> 0
+  }
+}
+
+func protectedMemberName(pm: in ProtectedMember): String {
+  match pm {
+    case PMField(pf) -> {
+      match pf {
+        case PFVar(n, _, _, _, _) -> n
+        case PFLet(n, _, _, _, _) -> n
+        case PFImmutable(fd) -> fd.name
+      }
+    }
+    case PMEntry(ed) -> ed.name
+    case PMFunc(fn) -> fn.name
+    case PMInvariant(_) -> "<invariant>"
+  }
+}
+
+test "protected type doc before second entry (#5574)" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" +
+    "  /// works fine here (first member position is OK)\n" +
+    "  entry push(): Unit { n = n + 1 }\n" +
+    "\n" +
+    "  /// this one breaks the parse (change /// to // and it parses)\n" +
+    "  entry count(): Int { n }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "doc-before-2nd-entry: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "doc-before-2nd-entry: three members")
+  assertEqual(protectedMemberKindName(decl.members[2]), "entry", "doc-before-2nd-entry: third member is an entry")
+  assertEqual(protectedMemberName(decl.members[2]), "count", "doc-before-2nd-entry: third member is count")
+  assertEqualInt(protectedMemberDocCount(decl.members[2]), 1, "doc-before-2nd-entry: doc attached to count()")
+}
+
+test "protected type doc before non-first func member" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  entry push(): Unit { n = n + 1 }\n" +
+    "\n" +
+    "  /// helper\n" +
+    "  func peek(): Int { n }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "doc-before-func: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "doc-before-func: three members")
+  assertEqual(protectedMemberKindName(decl.members[2]), "func", "doc-before-func: third member is a func")
+  assertEqual(protectedMemberName(decl.members[2]), "peek", "doc-before-func: third member is peek")
+  assertEqualInt(protectedMemberDocCount(decl.members[2]), 1, "doc-before-func: doc attached to peek()")
+}
+
+test "protected type doc before non-first pub entry" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  entry push(): Unit { n = n + 1 }\n" +
+    "\n" +
+    "  /// public accessor\n" +
+    "  pub entry count(): Int { n }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "doc-before-pub-entry: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "doc-before-pub-entry: three members")
+  assertEqual(protectedMemberKindName(decl.members[2]), "entry", "doc-before-pub-entry: third member is an entry")
+  assertEqual(protectedMemberName(decl.members[2]), "count", "doc-before-pub-entry: third member is count")
+  assertEqualInt(protectedMemberDocCount(decl.members[2]), 1, "doc-before-pub-entry: doc attached to count()")
+}
+
+test "protected type doc before non-first var field" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  /// running total\n" +
+    "  var total: Int = 0\n" +
+    "\n" +
+    "  entry push(): Unit { n = n + 1 }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "doc-before-var-field: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "doc-before-var-field: three members")
+  assertEqual(protectedMemberKindName(decl.members[1]), "field", "doc-before-var-field: second member is a field")
+  assertEqual(protectedMemberName(decl.members[1]), "total", "doc-before-var-field: field name is total")
+  assertEqualInt(protectedMemberDocCount(decl.members[1]), 1, "doc-before-var-field: doc attached to total field")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5754: dedicated coverage for the #5735 result-as-identifier parser fix.
+// Bare `result` outside a contract clause must parse as an ordinary
+// identifier (`EPath`); `result` inside `requires:`/`ensures:`/`when:`
+// must still resolve to the reserved `EResult` node.
+// ─────────────────────────────────────────────────────────────────────────────
+func exprKindName(e: in Expr): String {
+  match e.kind {
+    case EPath(_) -> "path"
+    case EResult -> "result"
+    case ESelf -> "self"
+    case _ -> "other"
+  }
+}
+
+// The Nth statement's expression kind in the first item's function-body
+// block (mirrors firstFuncBodyStmtCount's shape conventions).
+func firstFuncBodyStmtExprKind(pr: in ParseResult, idx: in Int): String {
+  if pr.file.items.count == 0 {
+    return "<none>"
+  }
+  match pr.file.items[0].kind {
+    case IFunc(fd) -> {
+      match fd.body {
+        case Some(b) -> {
+          match b {
+            case FBBlock(blk) -> {
+              if idx < 0 or idx >= blk.statements.count {
+                "<none>"
+              } else {
+                match blk.statements[idx].kind {
+                  case SExpr(e) -> exprKindName(e)
+                  case _ -> "<not-expr-stmt>"
+                }
+              }
+            }
+            case FBExpr(e) -> exprKindName(e)
+          }
+        }
+        case None -> "<none>"
+      }
+    }
+    case _ -> "<none>"
+  }
+}
+
+// `ensures: result > 0` parses to `EBinop(op, EResult, ELiteral(0))` — peel
+// off the comparison to classify the `result` operand itself.
+func unwrapEnsuresOperand(e: in Expr): Expr {
+  match e.kind {
+    case EBinop(_, lhs, _) -> lhs
+    case _ -> e
+  }
+}
+
+// The expr kind of the first item's first `ensures:` contract clause's
+// `result` operand.
+func firstFuncFirstEnsuresExprKind(pr: in ParseResult): String {
+  if pr.file.items.count == 0 {
+    return "<none>"
+  }
+  match pr.file.items[0].kind {
+    case IFunc(fd) -> {
+      var i = 0
+      var found = "<none>"
+      var stop = false
+      while i < fd.contracts.count and not stop {
+        match fd.contracts[i] {
+          case CCEnsures(e, _) -> {
+            found = exprKindName(unwrapEnsuresOperand(e))
+            stop = true
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+      found
+    }
+    case _ -> "<none>"
+  }
+}
+
+test "bare result outside contract clause parses as ordinary identifier (#5754)" {
+  val pr = parse("package P\nfunc f(): Int {\n  val result: Int = 5\n  result\n}\n")
+  assertEqualInt(diagCount(pr), 0, "bare-result: no diagnostics")
+  assertEqual(
+    firstFuncBodyStmtExprKind(pr, 1),
+    "path",
+    "bare-result: trailing 'result' reference is EPath, not EResult"
+  )
+}
+
+test "result inside ensures clause still resolves to EResult (#5754)" {
+  val src = "package P\nfunc f(): Int\n  ensures: result > 0\n  { 5 }\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "ensures-result: no diagnostics")
+  assertEqual(firstFuncFirstEnsuresExprKind(pr), "result", "ensures-result: bare 'result' inside ensures: is EResult")
+}

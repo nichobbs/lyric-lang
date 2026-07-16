@@ -571,12 +571,6 @@ func hasConflictingExternHints(anns: in List[Annotation]): Bool {
 func addAssignedTarget(target: in Expr, acc: in List[String]): Unit {
   match target.kind {
     case EPath(p) -> if p.segments.count == 1 { acc.add(p.segments[0]) }
-    // An out param NAMED `result` lexes as the contract-result keyword in
-    // expression position, so `result = x` carries an EResult target, not an
-    // EPath — without this arm every such function false-flags T0086
-    // (`Auth.Kernel.Jvm.tryFromBase64Url` was the first casualty once jvm
-    // gating became fatal).
-    case EResult -> acc.add("result")
     case EParen(inner) -> addAssignedTarget(inner, acc)
     case _ -> {
     }

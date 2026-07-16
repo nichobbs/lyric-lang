@@ -1004,6 +1004,49 @@ jobs:
       - name: Wait for parallel tests (batch 1a-split)
         wait-all: true
 
+      # Never-tail self-test (#5652).  A Never-returning callee in tail
+      # position of a differently-typed function must not leave `ret` with an
+      # empty stack (InvalidProgramException): the MSIL backend now pushes the
+      # return type's default before MRet when the tail lowers to MVoid,
+      # mirroring the JVM emitNeverTailReturn.  Both targets; the JVM half runs
+      # in `compiler-self-tests-jvm`.  Imports only `Std.*`.
+      - name: Never-tail self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping never-tail self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping never-tail self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/never_tail_self_test.l
+
+      # Annotated-binding unbox self-test (#5519).  A closure-call result bound
+      # to a primitive-annotated local (`val r: Int = g()`) must unbox the
+      # erased object result instead of storing the raw boxed reference into
+      # the value-typed slot (silent garbage values).  Both targets; the JVM
+      # half runs in `compiler-self-tests-jvm`.  Imports only `Std.*`.
+      - name: Annotated-binding unbox self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping annotated-binding unbox self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping annotated-binding unbox self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/annotated_binding_unbox_self_test.l
+
       # Compound-assign String self-test (#5657).  `s += <rhs>` onto a String
       # plain variable now type-checks for any RHS (mirroring binary `+`), and
       # lowers to the same lowercase-Bool / no-trailing-`.0`-Double
@@ -3918,6 +3961,44 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+
+      # Never-tail self-test on JVM (#5652) — the JVM half of the dotnet-job
+      # step of the same name.  Pins the Never-in-tail-position default-value
+      # push (emitNeverTailReturn parity) on the JVM backend.
+      - name: Never-tail self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping never-tail JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping never-tail JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/never_tail_self_test.l
+
+      # Annotated-binding unbox self-test on JVM (#5519) — the JVM half of the
+      # dotnet-job step of the same name (JVM acts as the parity control for
+      # the MSIL unbox fix).
+      - name: Annotated-binding unbox self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping annotated-binding unbox JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping annotated-binding unbox JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/annotated_binding_unbox_self_test.l
 
       # Async spawn/scope/await self-test on JVM (D119 S4 / D120,
       # D-progress-602) — the JVM half of the dotnet-job step of the same name.

@@ -839,10 +839,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       // Otherwise fall back to an uninterpreted `$field.<memberName>` symbol
       // — the SMT renderer will declare it as a uninterpreted function (#3843).
       val recvSort = sortOf(rR.term)
-      val recvRecName: String = match recvSort {
-        case SDatatype(rName, _) -> rName
-        case _ -> ""
-      }
+      val recvRecName: String = match recvSort { case SDatatype(rName, _) -> rName; case _ -> "" }
       val recordFieldHit: Option[Sort] = if recvRecName.length > 0 {
         findRecordFieldSort(env, recvRecName, memberName)
       } else {
@@ -1967,7 +1964,9 @@ pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], Li
 // bounds (#3854, #3855), which aren't reachable from `decl.params` since
 // the fields are bound directly into the caller's `env0`/`fnEnv`, not
 // declared as parameters of the synthesized entry/func `decl`.
-pub func goalsForFunctionWithExtraHyps(env0: in VEnv, decl: in FunctionDecl, extraHyps: in List[Term]): (List[Goal], List[Diagnostic]) {
+pub func goalsForFunctionWithExtraHyps(
+  env0: in VEnv, decl: in FunctionDecl, extraHyps: in List[Term]
+): (List[Goal], List[Diagnostic]) {
   // Soundness guard: WP/SP has no suspend/resume model; reject contract-bearing async/yield rather than opaquing (#3298).
   if decl.contracts.count > 0 and (decl.isAsync or funcBodyContainsYield(decl)) {
     val asyncDiags: List[Diagnostic] = newList()
@@ -2286,7 +2285,7 @@ func goalsForProtectedEntry(
       match protMembers[mfi] {
         case PMField(pf) -> {
           match pf {
-            case PFVar(fname, fty, _, _) -> {
+            case PFVar(fname, fty, _, _, _) -> {
               val fInfo = sortOfTypeExprE(env0, fty)
               val args1: List[Term] = newList()
               args1.add(selfTerm)
@@ -2294,7 +2293,7 @@ func goalsForProtectedEntry(
               fnEnv = envBindTerm(fname, fTerm, fInfo, fnEnv)
               appendTermList(fieldRangeHyps, rangeHypothesesForTerm(fTerm, fInfo))
             }
-            case PFLet(fname, fty, _, _) -> {
+            case PFLet(fname, fty, _, _, _) -> {
               val fInfo = sortOfTypeExprE(env0, fty)
               val args2: List[Term] = newList()
               args2.add(selfTerm)
@@ -2492,7 +2491,12 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
           while fi < recDecl.members.count {
             match recDecl.members[fi] {
               case RMField(fld) -> {
-                dtFields.add(DatatypeField(name = recDecl.name + "__" + fld.name, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fld.ty)).sort))
+                dtFields.add(
+                  DatatypeField(
+                    name = recDecl.name + "__" + fld.name,
+                    sort = sortOfTypeExpr(resolveDistinct(distinctMap, fld.ty)).sort
+                  )
+                )
               }
               case _ -> ()
             }
@@ -2513,14 +2517,20 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
           match pdecl.members[pfi] {
             case PMField(pf) -> {
               match pf {
-                case PFVar(fname, fty, _, _) -> {
-                  dtFields.add(DatatypeField(name = pdecl.name + "__" + fname, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fty)).sort))
+                case PFVar(fname, fty, _, _, _) -> {
+                  dtFields.add(
+                    DatatypeField(name = pdecl.name + "__" + fname, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fty)).sort)
+                  )
                 }
-                case PFLet(fname, fty, _, _) -> {
-                  dtFields.add(DatatypeField(name = pdecl.name + "__" + fname, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fty)).sort))
+                case PFLet(fname, fty, _, _, _) -> {
+                  dtFields.add(
+                    DatatypeField(name = pdecl.name + "__" + fname, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fty)).sort)
+                  )
                 }
                 case PFImmutable(fd) -> {
-                  dtFields.add(DatatypeField(name = pdecl.name + "__" + fd.name, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fd.ty)).sort))
+                  dtFields.add(
+                    DatatypeField(name = pdecl.name + "__" + fd.name, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fd.ty)).sort)
+                  )
                 }
               }
             }

@@ -26,6 +26,7 @@ import Std.Uuid
 import Std.Testing
 import Lyric.Cli as Cli
 import Lyric.Manifest as Mf
+import Lyric.Workspace as Ws
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -241,16 +242,32 @@ test "resolveNugetNativeAssets: happy path resolves only the host-RID native ass
   val nativePath = touchNugetDll(pkgsDir, "SQLitePCLRaw.lib.e_sqlite3", "2.1.6", nativeRelPath)
   // Also materialise the decoy assets so a bug that ignores the assetType/rid
   // filters entirely would still find files on disk to resolve.
-  val _ = touchNugetDll(pkgsDir, "SQLitePCLRaw.lib.e_sqlite3", "2.1.6", "runtimes/some-other-rid/native/libe_sqlite3.so")
-  val _ = touchNugetDll(pkgsDir, "SQLitePCLRaw.lib.e_sqlite3", "2.1.6", "lib/netstandard2.0/SQLitePCLRaw.lib.e_sqlite3.dll")
+  val _ = touchNugetDll(
+    pkgsDir,
+    "SQLitePCLRaw.lib.e_sqlite3",
+    "2.1.6",
+    "runtimes/some-other-rid/native/libe_sqlite3.so"
+  )
+  val _ = touchNugetDll(
+    pkgsDir,
+    "SQLitePCLRaw.lib.e_sqlite3",
+    "2.1.6",
+    "lib/netstandard2.0/SQLitePCLRaw.lib.e_sqlite3.dll"
+  )
 
   val assetsJson = "{\n" + "  \"targets\": {\n" + "    \".NETCoreApp,Version=v10.0\": {\n" +
     "      \"SQLitePCLRaw.lib.e_sqlite3/2.1.6\": {\n" +
     "        \"type\": \"package\",\n" +
     "        \"runtimeTargets\": {\n" +
-    "          \"" + nativeRelPath + "\": { \"assetType\": \"native\", \"rid\": \"" + hostRid + "\" },\n" +
+    "          \"" +
+    nativeRelPath +
+    "\": { \"assetType\": \"native\", \"rid\": \"" +
+    hostRid +
+    "\" },\n" +
     "          \"runtimes/some-other-rid/native/libe_sqlite3.so\": { \"assetType\": \"native\", \"rid\": \"some-other-rid\" },\n" +
-    "          \"lib/netstandard2.0/SQLitePCLRaw.lib.e_sqlite3.dll\": { \"assetType\": \"runtime\", \"rid\": \"" + hostRid + "\" }\n" +
+    "          \"lib/netstandard2.0/SQLitePCLRaw.lib.e_sqlite3.dll\": { \"assetType\": \"runtime\", \"rid\": \"" +
+    hostRid +
+    "\" }\n" +
     "        }\n" +
     "      }\n" +
     "    }\n" +
@@ -267,7 +284,10 @@ test "resolveNugetNativeAssets: happy path resolves only the host-RID native ass
 
   val paths = Cli.resolveNugetNativeAssets(mfDir)
   assertEqualInt(paths.count, 1, "resolveNugetNativeAssets: only the host-RID native asset is resolved")
-  assertTrue(listContains(paths, nativePath), "resolveNugetNativeAssets: resolved path matches the fixture native asset on disk")
+  assertTrue(
+    listContains(paths, nativePath),
+    "resolveNugetNativeAssets: resolved path matches the fixture native asset on disk"
+  )
 }
 
 test "resolveNugetNativeAssets: no obj/project.assets.json yields an empty list" {
@@ -308,7 +328,11 @@ test "resolveNugetNativeAssets: host-RID entry with no file on disk is skipped" 
     "      \"Widget.Native/1.0.0\": {\n" +
     "        \"type\": \"package\",\n" +
     "        \"runtimeTargets\": {\n" +
-    "          \"" + nativeRelPath + "\": { \"assetType\": \"native\", \"rid\": \"" + hostRid + "\" }\n" +
+    "          \"" +
+    nativeRelPath +
+    "\": { \"assetType\": \"native\", \"rid\": \"" +
+    hostRid +
+    "\" }\n" +
     "        }\n" +
     "      }\n" +
     "    }\n" +
@@ -359,10 +383,16 @@ test "resolveAllNugetAssets: resolves both managed DLL and host-RID native asset
     "      \"SQLitePCLRaw.lib.e_sqlite3/2.1.6\": {\n" +
     "        \"type\": \"package\",\n" +
     "        \"runtime\": {\n" +
-    "          \"" + dllRelPath + "\": {}\n" +
+    "          \"" +
+    dllRelPath +
+    "\": {}\n" +
     "        },\n" +
     "        \"runtimeTargets\": {\n" +
-    "          \"" + nativeRelPath + "\": { \"assetType\": \"native\", \"rid\": \"" + hostRid + "\" }\n" +
+    "          \"" +
+    nativeRelPath +
+    "\": { \"assetType\": \"native\", \"rid\": \"" +
+    hostRid +
+    "\" }\n" +
     "        }\n" +
     "      }\n" +
     "    }\n" +
@@ -580,4 +610,65 @@ test "isDotnetStdlibSource: .NET-relevant sources included, JVM/native-only excl
     Cli.isDotnetStdlibSource("/repo/lyric-stdlib/std/_kernel/webjvm_host.l"),
     "mid-name 'jvm' does not trip the prefix skip"
   )
+}
+
+// discoverManifest: a relative explicit `--manifest` path must be
+// absolutized (#5626 item 2) so a caller like `runRestore` can
+// `Path.dirname` it and walk up to a workspace root — `Path.dirname` of a
+// bare relative path (e.g. "lyric-web/lyric.toml" -> "lyric-web") can never
+// climb above the process's current directory.
+test "discoverManifest: relative explicit manifest is absolutized" {
+  val rel = "some/nested/lyric.toml"
+  match Cli.discoverManifest(Some(value = rel)) {
+    case Some(p) -> {
+      assertTrue(Path.isAbsolute(p), "discoverManifest: absolutized relative path is absolute")
+      assertEqual(p, Path.join(Environment.currentDirectory(), rel), "discoverManifest: matches cwd-joined path")
+    }
+    case None -> panic("discoverManifest: expected Some for an explicit manifest")
+  }
+}
+
+test "discoverManifest: absolute explicit manifest passes through unchanged" {
+  val abs = Path.join(Environment.currentDirectory(), "already/absolute/lyric.toml")
+  match Cli.discoverManifest(Some(value = abs)) {
+    case Some(p) -> assertEqual(p, abs, "discoverManifest: absolute path is returned unchanged")
+    case None -> panic("discoverManifest: expected Some for an explicit manifest")
+  }
+}
+
+// End-to-end proof that the absolutization actually unblocks the
+// workspace-root walk-up `runRestore` does next (#5626 item 2): before
+// this fix, `runRestore`'s `Path.dirname(mfPath)` on a RELATIVE explicit
+// `--manifest` produced a relative directory that `Ws.findWorkspaceRoot`
+// could never walk up from to find a workspace root above it — this test
+// builds the exact absolute directory `discoverManifest` now produces
+// (join(cwd, relativePath), the same shape a caller can't otherwise get
+// from a bare relative dirname) and confirms `Ws.findWorkspaceRoot` finds
+// the workspace root from it.
+test "discoverManifest fix unblocks Ws.findWorkspaceRoot from a relative --manifest's absolutized dir" {
+  val root = freshTempDir("restore-relative-manifest")
+  defer {
+    cleanup(root)
+  }
+  writeFileOrPanic(
+    Path.join(root, "lyric.toml"),
+    "[workspace]\nmembers = [\"member\"]\n\n[package]\nname = \"Root\"\nversion = \"0.1.0\"\n"
+  )
+  val memberDir = Path.join(root, "member")
+  match File.createDir(memberDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dir " + memberDir + ": " + IOError.message(e))
+  }
+  writeFileOrPanic(Path.join(memberDir, "lyric.toml"), "[package]\nname = \"Member\"\nversion = \"0.1.0\"\n")
+
+  // The fix: `discoverManifest` absolutizes the explicit manifest path
+  // before returning it, so `Path.dirname` yields an absolute directory
+  // that CAN walk up to the workspace root — reproduced here directly
+  // against the fixture root (join(root, relativeManifestPath)) since the
+  // test process's own cwd isn't controllable from within a `lyric test` run.
+  val fixedAbsoluteDir = Path.dirname(Path.join(root, "member/lyric.toml"))
+  match Ws.findWorkspaceRoot(fixedAbsoluteDir) {
+    case Some(ctx) -> assertEqual(ctx.rootDir, root, "absolutized dir walks up to the fixture's workspace root")
+    case None -> panic("expected the absolutized dir to find the fixture's workspace root")
+  }
 }

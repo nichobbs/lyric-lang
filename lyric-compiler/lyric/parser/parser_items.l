@@ -1360,12 +1360,42 @@ func parseEntryDecl(st: inout ParseState): EntryDecl {
   )
 }
 
+// Look ahead past `///` doc-comment / statement-end trivia starting at
+// offset `start`, returning the offset of the first substantive token
+// (never consuming anything).  Mirrors wireOrderingClauseAhead's
+// non-consuming lookahead pattern: a `///` doc comment preceding a
+// protected-type member must not blind the dispatch below to the keyword
+// that actually follows it (#5574) — leaving the docs unconsumed lets
+// whichever member parser ultimately claims the tokens harvest them
+// itself (parseEntryDecl, parseFunctionDeclBody's caller, parseFieldDecl,
+// or the PFVar/PFLet branches below).
+func skipDocTriviaOffset(st: in ParseState, start: in Int): Int {
+  var k = start
+  var scanning = true
+  while scanning {
+    match peekAt(st, k).token {
+      case TDocComment(_) -> {
+        k = k + 1
+      }
+      case TStmtEnd -> {
+        k = k + 1
+      }
+      case _ -> {
+        scanning = false
+      }
+    }
+  }
+  k
+}
+
 func parseProtectedField(st: inout ParseState): ProtectedField {
   val startSpan = peekSpan(st)
-  match peekToken(st) {
+  val k0 = skipDocTriviaOffset(st, 0)
+  match peekAt(st, k0).token {
     case TKeyword(k) -> {
       match k {
         case KwVar -> {
+          val docs = parseItemDocComments(st)
           val _ = advance(st)
           val ns = readIdent(st, "field")
           match tryEatPunct(st, Colon) {
@@ -1378,9 +1408,10 @@ func parseProtectedField(st: inout ParseState): ProtectedField {
           val ty = parseTypeExpr(st)
           val init = match tryEatPunct(st, Eq) { case Some(_) -> Some(parseExpr(st)); case None -> None }
           val endSpan = match init { case Some(e) -> e.span; case None -> ty.span }
-          PFVar(name = ns.name, ty = ty, init = init, span = joinSpans(startSpan, endSpan))
+          PFVar(name = ns.name, ty = ty, init = init, docComments = docs, span = joinSpans(startSpan, endSpan))
         }
         case KwLet -> {
+          val docs = parseItemDocComments(st)
           val _ = advance(st)
           val ns = readIdent(st, "field")
           match tryEatPunct(st, Colon) {
@@ -1400,7 +1431,7 @@ func parseProtectedField(st: inout ParseState): ProtectedField {
             case None -> {
             }
           }
-          PFLet(name = ns.name, ty = ty, init = init, span = joinSpans(startSpan, endSpan))
+          PFLet(name = ns.name, ty = ty, init = init, docComments = docs, span = joinSpans(startSpan, endSpan))
         }
         case _ -> {
           PFImmutable(field = parseFieldDecl(st))
@@ -1415,7 +1446,8 @@ func parseProtectedField(st: inout ParseState): ProtectedField {
 
 func parseProtectedMember(st: inout ParseState): ProtectedMember {
   val _ = skipStmtEnds(st)
-  match peekToken(st) {
+  val k0 = skipDocTriviaOffset(st, 0)
+  match peekAt(st, k0).token {
     case TKeyword(k) -> {
       match k {
         case KwInvariant -> {
@@ -1425,8 +1457,8 @@ func parseProtectedMember(st: inout ParseState): ProtectedMember {
           PMEntry(entryDecl = parseEntryDecl(st))
         }
         case KwPub -> {
-          val next1 = peekAt(st, 1)
-          match next1.token {
+          val k1 = skipDocTriviaOffset(st, k0 + 1)
+          match peekAt(st, k1).token {
             case TKeyword(k2) -> {
               match k2 {
                 case KwEntry -> {
@@ -1487,10 +1519,44 @@ func parseProtectedMember(st: inout ParseState): ProtectedMember {
           }
         }
         case KwFunc -> {
-          PMFunc(fn = parseFunctionDeclBody(st, None))
+          val docs = parseItemDocComments(st)
+          val anns = parseItemAnnotations(st)
+          val fn0 = parseFunctionDeclBody(st, None)
+          val fn = FunctionDecl(
+            docComments = docs,
+            annotations = anns,
+            visibility = fn0.visibility,
+            isAsync = fn0.isAsync,
+            name = fn0.name,
+            generics = fn0.generics,
+            params = fn0.params,
+            ret = fn0.ret,
+            whereClause = fn0.whereClause,
+            contracts = fn0.contracts,
+            body = fn0.body,
+            span = fn0.span
+          )
+          PMFunc(fn = fn)
         }
         case KwAsync -> {
-          PMFunc(fn = parseFunctionDeclBody(st, None))
+          val docs = parseItemDocComments(st)
+          val anns = parseItemAnnotations(st)
+          val fn0 = parseFunctionDeclBody(st, None)
+          val fn = FunctionDecl(
+            docComments = docs,
+            annotations = anns,
+            visibility = fn0.visibility,
+            isAsync = fn0.isAsync,
+            name = fn0.name,
+            generics = fn0.generics,
+            params = fn0.params,
+            ret = fn0.ret,
+            whereClause = fn0.whereClause,
+            contracts = fn0.contracts,
+            body = fn0.body,
+            span = fn0.span
+          )
+          PMFunc(fn = fn)
         }
         case KwVar -> {
           PMField(field = parseProtectedField(st))

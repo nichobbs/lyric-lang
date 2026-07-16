@@ -446,8 +446,8 @@ pub record OpaqueTypeDecl {
 }
 
 pub union ProtectedField {
-  case PFVar(name: String, ty: TypeExpr, init: Option[Expr], span: Span)
-  case PFLet(name: String, ty: TypeExpr, init: Option[Expr], span: Span)
+  case PFVar(name: String, ty: TypeExpr, init: Option[Expr], docComments: List[DocComment], span: Span)
+  case PFLet(name: String, ty: TypeExpr, init: Option[Expr], docComments: List[DocComment], span: Span)
   case PFImmutable(field: FieldDecl)
 }
 

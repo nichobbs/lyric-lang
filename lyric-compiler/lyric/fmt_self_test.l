@@ -1558,3 +1558,28 @@ test "pub wire template with overridable and wire-body config round trips" {
   assertTrue(Str.contains(acc, "config Files from Web.StaticFiles {"), "pub wire: config-inst preserved")
   assertTrue(Str.contains(acc, "overridable Files, router"), "pub wire: overridable preserved")
 }
+
+// #5574 repro: a `///` doc comment before a non-first entry member in a
+// protected type body used to cascade the parser into P0201/P0075/P0202,
+// which made `formatSourceChecked` fail (its own re-parse of the input
+// hit the same cascade) before the fix landed.
+test "protected type doc before second entry round trips (#5574)" {
+  val src = "package P\n\nprotected type Buf {\n" + "  var n: Int\n\n" +
+    "  /// works fine here (first member position is OK)\n" +
+    "  entry push(): Unit {\n    n = n + 1\n  }\n\n" +
+    "  /// this one used to break the parse\n" +
+    "  entry count(): Int {\n    n\n  }\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "protected type doc-before-2nd-entry: round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "/// works fine here (first member position is OK)"),
+    "protected type: first doc preserved"
+  )
+  assertTrue(Str.contains(acc, "/// this one used to break the parse"), "protected type: second doc preserved")
+  assertTrue(Str.contains(acc, "entry count(): Int"), "protected type: second entry preserved")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "protected type doc-before-2nd-entry: idempotent")
+}

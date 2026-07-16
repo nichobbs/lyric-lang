@@ -1303,9 +1303,10 @@ test "out assigned in branches ok" {
   assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "out assigned in if-branches: no T0086")
 }
 
-// An out param NAMED `result` lexes as the contract-result keyword in
-// expression position, so its assignment target is EResult, not EPath —
-// the collector must still credit it (Auth.Kernel.Jvm regression).
+// An out param NAMED `result` parses as an ordinary EPath identifier
+// outside contract clauses (#5735), so the T0086 collector's EPath arm
+// credits it directly (Auth.Kernel.Jvm regression; the old EResult
+// carve-out this comment once described was removed in #5753).
 test "out param named result assigned ok" {
   val src = "package P\nfunc f(x: in Int, result: out Int): Unit { result = x }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "out param named result assigned: no T0086")

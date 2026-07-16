@@ -3327,7 +3327,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               val fieldTok = 0x04000000 + fieldDefRow
               val byPosKey = className + "/field" + toString(fpos)
               match pf {
-                case PFVar(fname, fty, initOpt, _) -> {
+                case PFVar(fname, fty, initOpt, _, _) -> {
                   val fKey = className + "/" + fname
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
@@ -3349,7 +3349,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                     case None -> ()
                   }
                 }
-                case PFLet(fname, fty, initOpt, _) -> {
+                case PFLet(fname, fty, initOpt, _, _) -> {
                   val fKey = className + "/" + fname
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
@@ -4913,11 +4913,62 @@ func materializeBoxedElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy
 // delegate, and a void-bodied lambda return `null` (#1877).  Concrete value-type
 // or reference returns are left untouched (the body already produced a matching
 // value).
-func coerceTrailingToRetMsil(cctx: in CodegenCtx, insns: in List[MInsn], valTy: in MsilType, retTy: in MsilType): Unit {
+//
+// Also handles a non-`object` declared return whose trailing value erased to
+// `MVoid`: `TNever` erases to `MVoid` exactly like `Unit` (typeExprToMsilCtx),
+// so a tail call to a `: Never`-declared function (e.g. one that always
+// panics) leaves nothing on the stack even when the ENCLOSING function's
+// return type is `Int`/`Long`/`Double`/`Bool`/`String`/etc.  Emitting `ret`
+// there with an empty stack faults the JIT with `InvalidProgramException`
+// (#5652).  Mirrors the JVM `emitNeverTailReturn` (jvm/codegen/05_stmts.l):
+// push `retTy`'s zero/default value first — this is dead code whenever the
+// `Never` contract holds.
+func coerceTrailingToRetMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  valTy: in MsilType,
+  retTy: in MsilType,
+): Unit {
   match retTy {
     case MObject -> match valTy { case MVoid -> insns.add(MLdNull); case MObject -> {  }; case MString -> {  }; case _ -> if isValueType(valTy) { boxIfNeededMsil(cctx, insns, valTy) } }
-    case _ -> {
+    case _ -> match valTy { case MVoid -> pushDefaultValueMsil(cctx, fctx, insns, retTy); case _ -> {  } }
+  }
+}
+
+// Push the MSIL zero/default value for `retTy` — used by `coerceTrailingToRetMsil`
+// when a `: Never`-typed tail call (erased to `MVoid`) reaches a non-`object`,
+// non-`void` return position (#5652).  Primitives push their literal zero;
+// reference-erased shapes (String/Object/List/Map/…) push `null`; a genuine
+// BCL value-type return (`extern type ... = "System.Guid"`-style) zero-inits a
+// scratch local via `initobj` and loads it back, the same idiom
+// `emitAutoFfiDefaultLoad`'s `EPDZero` arm uses for an unsupplied struct
+// default argument.
+func pushDefaultValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], retTy: in MsilType): Unit {
+  match retTy {
+    case MBool -> insns.add(MLdcI4(v = 0))
+    case MChar -> insns.add(MLdcI4(v = 0))
+    case MByte -> insns.add(MLdcI4(v = 0))
+    case MInt -> insns.add(MLdcI4(v = 0))
+    case MLong -> insns.add(MLdcI8(v = 0i64))
+    case MDouble -> insns.add(MLdcR8(v = 0.0))
+    case MValueTypeRef(_, clrFqn) -> {
+      val refRow = internFfiTypeRefNested(cctx, clrFqn)
+      val slot = allocSlotMsil(fctx, "__never_default_" + toString(fctx.slotTicker.count), retTy)
+      insns.add(MLdloca(slot = slot - fctx.paramCount))
+      insns.add(MInitobj(typeToken = 0x01000000 + refRow))
+      emitLoadSlot(insns, slot, fctx.paramCount)
     }
+    case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
+      val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
+      val tsKey = "never_default_vtgi_" + msilTypeKeyStr(retTy)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+      val slot = allocSlotMsil(fctx, "__never_default_" + toString(fctx.slotTicker.count), retTy)
+      insns.add(MLdloca(slot = slot - fctx.paramCount))
+      insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
+      emitLoadSlot(insns, slot, fctx.paramCount)
+    }
+    case _ -> insns.add(MLdNull)
   }
 }
 
@@ -7570,16 +7621,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   MArray(elemTy = e)
                 }
                 case None -> {
-                  insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-                  var eli3 = 0
-                  while eli3 < exprs.count {
-                    insns.add(MDup)
-                    val eTy3 = lowerExprMsil(cctx, fctx, insns, exprs[eli3])
-                    boxIfNeededMsil(cctx, insns, eTy3)
-                    insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
-                    eli3 = eli3 + 1
-                  }
-                  MObject
+                  // Unreachable (#5696): `inferHomogeneousListElemTypeMsil` only
+                  // returns `Some(e)` when `e` passed `isSimpleListElemMsil` —
+                  // exactly MInt/MLong/MDouble/MBool/MChar/MByte/MString — and
+                  // `arrayElemTokenOpt` returns `Some` for every one of those
+                  // (plus MObject).  This arm is kept only so the `Option` match
+                  // above stays exhaustive.
+                  panic(
+                    "unreachable: arrayElemTokenOpt returned None for a type " +
+                      "inferHomogeneousListElemTypeMsil already validated as simple"
+                  )
                 }
               }
             }
@@ -14569,6 +14620,15 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             }
             case _ -> lowerExprMsil(cctx, fctx, insns, init)
           }
+          // A value-typed annotation (`val r: Int = g()`) with an erased-`object`
+          // init (a closure/HOF call result) needs an `unbox.any` before the
+          // value binds into the value-typed slot below — otherwise the raw
+          // boxed reference is stored where an Int32/Int64/etc. is expected,
+          // which the CLR does not verify against and silently corrupts the
+          // value at read time (#5519).
+          if annoTy != MObject and initTy == MObject {
+            coerceCallArgMsil(cctx, insns, initTy, annoTy)
+          }
           popCollExpect(fctx)
           restoreHintTyArgs(fctx, savedAnnoHint)
           val effectiveTy = if annoTy != MObject { annoTy } else { initTy }
@@ -14588,6 +14648,11 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
           pushCollExpect(fctx, annoTy)
           val initTy = lowerExprMsil(cctx, fctx, insns, init)
+          // Unbox a closure/HOF call result before it binds into a
+          // value-typed slot (#5519) — see the matching LBVal comment above.
+          if annoTy != MObject and initTy == MObject {
+            coerceCallArgMsil(cctx, insns, initTy, annoTy)
+          }
           popCollExpect(fctx)
           restoreHintTyArgs(fctx, savedAnnoHint)
           val ty = if annoTy != MObject { annoTy } else { initTy }
@@ -14679,6 +14744,14 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
               pushCollExpect(fctx, annoTy)
               val initTy = lowerExprMsil(cctx, fctx, insns, init)
+              // Unbox a closure/HOF call result before it binds into a
+              // value-typed slot/cell (#5519) — see the matching LBVal comment
+              // above.  Safe for the hoisted-cell branch too: MUnboxAny only
+              // replaces the top-of-stack value (the init value), leaving the
+              // cell array/dup beneath it untouched.
+              if annoTy != MObject and initTy == MObject {
+                coerceCallArgMsil(cctx, insns, initTy, annoTy)
+              }
               popCollExpect(fctx)
               restoreHintTyArgs(fctx, savedAnnoHint)
               val ty = if annoTy != MObject { annoTy } else { initTy }
@@ -15067,6 +15140,15 @@ func lowerTryCatchMsil(
     val c = catches[i]
     val handlerStartL = freshLabelMsil(fctx)
     insns.add(MLabel(id = handlerStartL))
+    // A catch handler is a lexical scope of its own (#5522, same shape as the
+    // #5191/#5515 match-arm fix): its exception binding shadows an enclosing
+    // local like a nested block's `val`, but the bare `allocSlotMsil` below
+    // has no scope bracket — a same-named outer binding's slot was reused
+    // (clobbering the outer value) or, across a slot-type mismatch, the
+    // remapped name→slot binding leaked past the handler.  Bracket bind +
+    // handler body so a shadow gets a fresh slot and the outer mapping is
+    // restored on handler exit.
+    val handlerScope = enterBlockScopeMsil(fctx)
     match c.bindName {
       case Some(bname) -> {
         val exSlot = allocSlotMsil(fctx, bname, MObject)
@@ -15081,6 +15163,7 @@ func lowerTryCatchMsil(
     fctx.tryRegionStack.add(0)
     lowerBlockMsil(cctx, fctx, insns, c.body)
     fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+    exitBlockScopeMsil(fctx, handlerScope)
     insns.add(MLeave(label = afterL))
     val handlerEndL = freshLabelMsil(fctx)
     insns.add(MLabel(id = handlerEndL))
@@ -15178,6 +15261,9 @@ func lowerTryCatchExprMsil(
     val c = catches[i]
     val handlerStartL = freshLabelMsil(fctx)
     insns.add(MLabel(id = handlerStartL))
+    // Bracket bind + handler body as its own lexical scope, exactly like the
+    // statement-form `lowerTryCatchMsil` above (#5522 / #5191 / #5515).
+    val handlerScope = enterBlockScopeMsil(fctx)
     match c.bindName {
       case Some(bname) -> {
         val exSlot = allocSlotMsil(fctx, bname, MObject)
@@ -15225,6 +15311,7 @@ func lowerTryCatchExprMsil(
         emitStoreSlot(insns, resultSlot, fctx.paramCount)
       }
     }
+    exitBlockScopeMsil(fctx, handlerScope)
     fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
     insns.add(MLeave(label = afterL))
     val handlerEndL = freshLabelMsil(fctx)
@@ -16818,7 +16905,24 @@ func emitGenericExternMember(
       // leaves a reference on the stack (#2972).
       val retIsTypeVar = match memberRet { case MTypeVar(_) -> true; case _ -> false }
       if retIsTypeVar and isValueTypeReceiverMsil(lyricRetTy) {
+        // The erased `object` can be null — e.g. `AsyncLocal<object>.Value`
+        // before the ambient slot is ever set (`Std.Task.installToken`'s
+        // FIRST call, #5330).  An unconditional `unbox.any` on a null
+        // reference throws NullReferenceException.  Guard it: a non-null
+        // boxed value unboxes normally; null produces the value type's
+        // zero/default instead — the same "null AsyncLocal reads as
+        // default(T)" semantics `AsyncLocal<T>.Value` itself has for a
+        // genuine `T`, which this erased-`object` getter otherwise breaks.
+        val haveLabel = freshLabelMsil(fctx)
+        val endLabel = freshLabelMsil(fctx)
+        insns.add(MDup)
+        insns.add(MBrTrue(label = haveLabel))
+        insns.add(MPop)
+        pushDefaultValueMsil(cctx, fctx, insns, lyricRetTy)
+        insns.add(MBr(label = endLabel))
+        insns.add(MLabel(id = haveLabel))
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, lyricRetTy)))
+        insns.add(MLabel(id = endLabel))
       }
       true
     }
@@ -20195,7 +20299,7 @@ func synthesizeAsyncSmMsil(
             }
             if not lastWasPatchedRet {
               // Trailing-expression path: value still on stack — coerce and stash.
-              coerceTrailingToRetMsil(cctx, mnInsns, trailTy, retTy)
+              coerceTrailingToRetMsil(cctx, mnFctx, mnInsns, trailTy, retTy)
               mnInsns.add(MStloc(slot = rSlot - 1))
             }
             // SM epilogue — always reached (fall-through or patched branch).
@@ -20249,7 +20353,7 @@ func synthesizeAsyncSmMsil(
             pushCollExpect(mnFctx, retTy)
             val eTy = lowerExprMsil(cctx, mnFctx, mnInsns, e)
             popCollExpect(mnFctx)
-            coerceTrailingToRetMsil(cctx, mnInsns, eTy, retTy)
+            coerceTrailingToRetMsil(cctx, mnFctx, mnInsns, eTy, retTy)
             val rSlot2 = allocSlotMsil(mnFctx, "__sm_result2", retTy)
             mnInsns.add(MStloc(slot = rSlot2 - 1))
             mnInsns.add(MLdarg(slot = 0))
@@ -20723,7 +20827,7 @@ func synthesizeAsyncSmPhaseBMsil(
               pbi = pbi + 1
             }
             if not lastWasPatchedRet {
-              coerceTrailingToRetMsil(cctx, mnInsns, trailTy, retTy)
+              coerceTrailingToRetMsil(cctx, mnFctx, mnInsns, trailTy, retTy)
               mnInsns.add(MStloc(slot = rSlot - 1))
             }
           } else {
@@ -20744,7 +20848,7 @@ func synthesizeAsyncSmPhaseBMsil(
             pushCollExpect(mnFctx, retTy)
             val eTy = lowerExprMsil(cctx, mnFctx, mnInsns, e)
             popCollExpect(mnFctx)
-            coerceTrailingToRetMsil(cctx, mnInsns, eTy, retTy)
+            coerceTrailingToRetMsil(cctx, mnFctx, mnInsns, eTy, retTy)
             mnInsns.add(MStloc(slot = rSlot - 1))
           } else {
             lowerExprMsil(cctx, mnFctx, mnInsns, e)
@@ -22039,8 +22143,10 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
               if not endsWithReturnMsil(insns) {
                 // Coerce the trailing value to the declared return type — boxes a
                 // value-type result when the declared return is `object` (a
-                // lifted lambda), or pushes `null` for a void body (#1877).
-                coerceTrailingToRetMsil(cctx, insns, trailTy, retTy)
+                // lifted lambda), pushes `null` for a void body (#1877), or
+                // pushes retTy's zero/default value when the tail is a `: Never`
+                // -typed tail call erased to MVoid (#5652).
+                coerceTrailingToRetMsil(cctx, fctx, insns, trailTy, retTy)
                 insns.add(MRet)
               }
             } else {
@@ -22053,9 +22159,20 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
           case FBExpr(e) -> {
             pushCollExpect(fctx, retTy)
             val savedExprHint = pushRetHintTyArgs(fctx, retTy)
-            lowerExprMsil(cctx, fctx, insns, e)
+            val exprTailTy = lowerExprMsil(cctx, fctx, insns, e)
             restoreHintTyArgs(fctx, savedExprHint)
             popCollExpect(fctx)
+            // A `: Never`-typed tail call erases to MVoid (`Never` unifies with
+            // any declared return type) and leaves nothing on the stack; push
+            // retTy's zero/default value before `ret` so the JIT doesn't fault
+            // with InvalidProgramException on an empty-stack `ret` (#5652).
+            // Mirrors the FBBlock arm above via the same helper, but skips its
+            // MObject-boxing arm (unreachable here: this arm previously never
+            // coerced anything, so widening it beyond the MVoid case is out of
+            // scope for this fix).
+            if exprTailTy == MVoid and retTy != MVoid {
+              pushDefaultValueMsil(cctx, fctx, insns, retTy)
+            }
             insns.add(MRet)
           }
         }
@@ -23786,8 +23903,8 @@ func makeProtectedFieldNames(decl: in ProtectedTypeDecl): Map[String, Bool] {
     match decl.members[i] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, _, _, _) -> result.add(name, true)
-          case PFLet(name, _, _, _) -> result.add(name, true)
+          case PFVar(name, _, _, _, _) -> result.add(name, true)
+          case PFLet(name, _, _, _, _) -> result.add(name, true)
           case PFImmutable(f) -> result.add(f.name, true)
         }
       }
@@ -23840,10 +23957,10 @@ func lowerProtectedMsil(
     match decl.members[mi] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, ty, _, _) -> {
+          case PFVar(name, ty, _, _, _) -> {
             recFields.add(MField(flags = FDA_PUBLIC, name = name, fieldType = typeExprToMsilCtx(cctx, ty, pkgName)))
           }
-          case PFLet(name, ty, _, _) -> {
+          case PFLet(name, ty, _, _, _) -> {
             recFields.add(
               MField(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = name, fieldType = typeExprToMsilCtx(cctx, ty, pkgName))
             )

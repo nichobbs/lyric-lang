@@ -8928,7 +8928,8 @@ func substSelfInFn(fn: in FunctionDecl, recordName: in String): FunctionDecl {
 // ─────────────────────────────────────────────────────────────────────────────
 /// Protected-type fields (`PMField` members) as a uniform `FieldDecl` list,
 /// mirroring `recFieldsOf` for records.  `PFVar`/`PFLet` synthesise a
-/// `FieldDecl` (docs/annotations/visibility are unused by codegen);
+/// `FieldDecl` (annotations/visibility are unused by codegen; docComments
+/// carry through for consistency but are likewise not read here);
 /// `PFImmutable` already wraps one.
 func protFieldsOf(decl: in ProtectedTypeDecl): List[FieldDecl] {
   val fields: List[FieldDecl] = newList()
@@ -8937,10 +8938,10 @@ func protFieldsOf(decl: in ProtectedTypeDecl): List[FieldDecl] {
     match decl.members[i] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, ty, initOpt, span) -> {
+          case PFVar(name, ty, initOpt, docs, span) -> {
             fields.add(
               FieldDecl(
-                docComments = newList(),
+                docComments = docs,
                 annotations = newList(),
                 visibility = None,
                 isMutable = true,
@@ -8951,10 +8952,10 @@ func protFieldsOf(decl: in ProtectedTypeDecl): List[FieldDecl] {
               )
             )
           }
-          case PFLet(name, ty, initOpt, span) -> {
+          case PFLet(name, ty, initOpt, docs, span) -> {
             fields.add(
               FieldDecl(
-                docComments = newList(),
+                docComments = docs,
                 annotations = newList(),
                 visibility = None,
                 isMutable = false,
@@ -8985,8 +8986,8 @@ func makeProtectedFieldNames(decl: in ProtectedTypeDecl): Map[String, Bool] {
     match decl.members[i] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, _, _, _) -> names.add(name, true)
-          case PFLet(name, _, _, _) -> names.add(name, true)
+          case PFVar(name, _, _, _, _) -> names.add(name, true)
+          case PFLet(name, _, _, _, _) -> names.add(name, true)
           case PFImmutable(fd) -> names.add(fd.name, true)
         }
       }

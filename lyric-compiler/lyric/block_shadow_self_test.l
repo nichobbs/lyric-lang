@@ -358,3 +358,50 @@ test "paren boolean-chain tail after a binding is its own statement" {
   assertFalse(isHexCode(58), "between digits and uppercase")
   assertFalse(isHexCode(200), "above hex range")
 }
+
+// 18. #5522: a `catch` exception binding shadowing an outer binding of the
+//     SAME frame type — the slot-REUSE path.  Both the outer and inner
+//     bindings are catch-exception bindings (always erased-object typed on
+//     both backends), so before the fix `allocSlot(fctx/ctx, bname, exTy)`
+//     had no scope bracket and reused the outer `e`'s slot for the inner
+//     catch, clobbering it: reading `e` after the inner catch returned the
+//     INNER exception's message instead of the outer one's.
+func catchBindShadowSameType(): String {
+  var outerSeen = "unset"
+  try {
+    panic("outer-boom")
+  } catch Bug as e {
+    outerSeen = e.message
+    try {
+      panic("inner-boom")
+    } catch Bug as e {
+      assertTrue(e.message.contains("inner-boom"), "inner e reads the inner exception")
+    }
+    assertTrue(e.message.contains("outer-boom"), "outer e survives the inner catch")
+  }
+  outerSeen
+}
+
+// 19. #5522: a `catch` exception binding shadowing an outer binding of a
+//     DIFFERENT frame type (Int outer vs erased-object exception) — the
+//     remap-LEAK path.  Pre-fix, the catch's fresh slot was allocated (types
+//     differ so no reuse), but with no scope bracket the name→slot remap for
+//     `e` leaked past the catch handler, so reading `e` afterward resolved to
+//     the exception's slot instead of the outer Int.
+func catchBindShadowDifferentType(): Int {
+  val e = 42
+  try {
+    panic("boom")
+  } catch Bug as e {
+    assertTrue(e.message.contains("boom"), "catch binding reads the exception")
+  }
+  e
+}
+
+test "catch binding shadow of the same frame type leaves the outer binding intact" {
+  assertTrue(catchBindShadowSameType().contains("outer-boom"), "catchBindShadowSameType")
+}
+
+test "catch binding shadow of a different frame type leaves the outer binding intact" {
+  assertEqualInt(catchBindShadowDifferentType(), 42, "catchBindShadowDifferentType")
+}
