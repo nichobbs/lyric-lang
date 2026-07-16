@@ -16845,6 +16845,79 @@ bundle's live-`dockerd` Unix-socket HTTP round trip still succeeds.
 
 ---
 
+## D-progress-688 — Fix #5853: void-returning delegate-bridged lambdas always built `Func`N<...,object>` instead of `Action`N<...>`; a second `emitGenericExternMember` argument-boxing bug found alongside
+
+**Context:** while investigating claude-review SUGGESTION #5851 (add
+`Action`N`-at-receiver-position invocation coverage for the D-progress-687
+fix) by writing exactly that test, the attempt deterministically crashed
+with `InvalidProgramException` — a genuine, separate, pre-existing bug,
+unrelated to D-progress-687's receiver-reuse mechanism itself (which is
+correct and symmetric with the tested `Func`N` case).
+
+**Bug 1 — caller-side ctorTok selection always chose `Func`N`, never
+`Action`N`.** `collectLambdasBfsExpr` (lambda lifting) unconditionally
+synthesizes every lambda's own `FunctionDecl` with `ret = Some(Object)` —
+the Uniform Func ABI (#1877). `addPackageTokens`'s lambda return-type
+registration therefore always registers `funcRetTypes[lambdaKey] = MObject`
+for any lambda, regardless of the lambda body's actual return shape (a
+stale comment there claimed the return type varied by whether the body
+"ends with an expression," describing an earlier, since-removed design).
+The ELambda codegen site that selects the delegate ctor token (`~line
+8083`, `msil/codegen.l`) read `funcRetTypes[lambdaKey]` (always `MObject`)
+to decide `returnsVoid`, so it always built a `Func`N<...,object>` ctor
+token — even for a lambda passed to a `Unit`-returning delegate-bridged
+parameter, whose callee signature declares `Action`N<...>`. Fixed by
+preferring `lambdaExternDelegateRetType[lambdaKey]` (the delegate-bridging
+map that correctly carries the callee's real declared return type) over
+`funcRetTypes[lambdaKey]` whenever an entry is present.
+
+**Why this was never caught.** The one existing test exercising a
+`Unit`-returning delegate-bridged parameter —
+`"#5315: a lambda binds to Task.ContinueWith's Action<Task> parameter
+(non-generic receiver, binding only)"` — is explicitly binding-only:
+`Task.ContinueWith` schedules the delegate for *asynchronous* invocation,
+and the continuation is never awaited, so the mismatched-delegate-type
+fault at actual invocation time never surfaced. That test's "PASS" was a
+false negative — disassembling its output confirmed it was constructing
+`Func`1<Task, object>` instead of `Action<Task>` all along.
+
+**Bug 2 — argument marshaling still boxed a value-type argument once the
+receiver TypeSpec was a real closed instantiation.** Fixing bug 1 alone
+still crashed the new `Action<Int>`-at-receiver test with
+`InvalidProgramException`. `emitGenericExternMember`'s argument-loading
+loop (`~line 16928`) boxes a Lyric value-type argument whenever the BCL
+member's OWN metadata parameter type is a type variable (`!0`) or `object`
+(`isVarPos`) — correct when the receiver's TypeSpec is erased to
+`<object>` (the pre-D-progress-687 default, where the runtime slot really
+is boxed `object`), but wrong once D-progress-687 lets the TypeSpec be a
+real closed instantiation like `Action`1<Int32>`: the `!0`-substituted
+slot is genuinely `Int32`, and pushing a boxed `object` there is a
+stack-type mismatch, `InvalidProgramException` at load time. Not caught by
+the existing `Func`2.Invoke` test (D-progress-687's own regression test)
+because its argument type (`MemoryStream`) is a reference type — boxing
+never applied there, so this path was untested for a value-type argument
+until now. Fixed by gating the same `objArgsErased` flag D-progress-687
+introduced for the VAR-typed-return unboxing dance around this boxing
+site too — boxing only fires when the receiver TypeSpec is genuinely
+erased.
+
+**Verification.** Added
+`"invoking an Action<Int> delegate at the receiver position works
+(#5851/#5853)"` to `typed_ffi_delegate_self_test.l`, which fails without
+either fix and passes with both. Re-verified: the `#5833`/`Func`2.Invoke`
+receiver-position repro, the original `#2972`/`AsyncLocal` shape, the
+`#5809` value-type-instance-call build-time panic guard (unaffected — its
+shape is a build-time panic before either changed code path runs), the
+`Task.ContinueWith` binding-only test (now genuinely constructs
+`Action<Task>`, confirmed via disassembly — no longer a masked false
+negative), and the full 65-package stdlib bundle's live-`dockerd`
+Unix-socket HTTP round trip.
+
+**Related:** docs/50-ffi-delegates-proposal.md, D122, D-progress-687,
+#5833, #5848, #5849, #5851, #5853.
+
+---
+
 ## D127 — Compiler's own release version is a build-time constant, not a source-stamped literal (docs/22 §5)
 
 **Context.** `lyric --version` (and the `lyric repl` banner, and the LSP

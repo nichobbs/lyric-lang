@@ -17,7 +17,20 @@ correctly resolved a `TFunction`-typed parameter's own real closed `Func`/
 call (e.g. binding straight to `System.Func`N.Invoke`) fell back to the
 erased `Func<object,...,object>` ABI when building the receiver `castclass`
 target, throwing `InvalidCastException` against the real closed delegate the
-lambda itself had correctly bound to. See #5833._
+lambda itself had correctly bound to. See #5833.
+D-progress-688 closed two further gaps found investigating #5851 (test
+coverage for the void-return side of D-progress-687's fix): a
+`Unit`-returning delegate-bridged lambda's CALLER always built a
+`Func`N<...,object>` ctor token instead of `Action`N<...>` (reading the
+wrong "return type" registry — every lambda's own registered return type is
+always `Object` under the Uniform Func ABI, unrelated to the callee's
+declared delegate return type), masked until now because the one existing
+void-return test (`Task.ContinueWith`) never observes its own asynchronous,
+unawaited invocation failing; and once that was fixed, a real closed
+value-type receiver instantiation (e.g. `Action`1<Int32>`) exposed a second
+bug where `emitGenericExternMember` still unconditionally boxed a
+value-type argument meant for a `!0`-typed BCL parameter, correct only for
+the erased-`<object>` case. See #5853._
 
 Provide a way to pass Lyric lambdas or method references to .NET methods expecting strongly typed delegates via auto FFI.
 
