@@ -35,6 +35,13 @@
 //! change's concern). Calling the never-returning helper directly inside a
 //! plain `try` (no intervening closure) sidesteps that gap entirely.
 //!
+//! #5854 extends coverage to the record-in-body-method (D037) and
+//! interface-`impl`-method lowering paths (`lowerRecordMethodMsil` /
+//! `lowerImplMethodMsil` in `msil/codegen.l`), which routed a `: Never`-tailed
+//! body through their own FBBlock/FBExpr arms and did not apply the #5652
+//! default-value push — a non-void record/impl method whose tail was a bare
+//! `: Never` call still emitted `ret` on an empty stack on MSIL.
+//!
 //! Run via `lyric test lyric-compiler/lyric/never_tail_self_test.l` on both
 //! `--target dotnet` and `--target jvm` (mirrors `bitwise_self_test.l`).
 //! Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.
@@ -95,6 +102,35 @@ func exprTailDouble(): Double = neverDouble()
 func exprTailBool(): Bool = neverBool()
 
 func exprTailString(): String = neverString()
+
+// ── #5854: record in-body method (D037) Never-tail forms ───────────────────
+record NeverTailHolder {
+  marker: Int
+
+  func blockTailMethod(): Int {
+    neverInt()
+  }
+
+  func exprTailMethod(): String = neverString()
+}
+
+// ── #5854: interface `impl` method Never-tail forms ─────────────────────────
+// Both function-body forms (FBBlock and, per #5867, `= expr`/FBExpr) route
+// through lowerImplMethodMsil's tail-return path and need the default push.
+interface NeverTailIface {
+  func divergeMethod(): Long
+  func divergeExprMethod(): Long
+}
+
+record NeverTailImplHolder {
+}
+
+impl NeverTailIface for NeverTailImplHolder {
+  func divergeMethod(): Long {
+    neverLong()
+  }
+  func divergeExprMethod(): Long = neverLong()
+}
 
 test "block-tail Never call in an Int-returning function panics with the real message" {
   var msg = ""
@@ -194,4 +230,48 @@ test "'= expr' Never call in a String-returning function panics with the real me
     msg = e.message
   }
   assertTrue(msg.contains("never-tail-string"), "exprTailString panic message: " + msg)
+}
+
+test "#5854: block-tail Never call in a non-void record method panics with the real message" {
+  val h = NeverTailHolder(marker = 0)
+  var msg = ""
+  try {
+    h.blockTailMethod()
+  } catch Bug as e {
+    msg = e.message
+  }
+  assertTrue(msg.contains("never-tail-int"), "blockTailMethod panic message: " + msg)
+}
+
+test "#5854: '= expr' Never call in a non-void record method panics with the real message" {
+  val h = NeverTailHolder(marker = 0)
+  var msg = ""
+  try {
+    h.exprTailMethod()
+  } catch Bug as e {
+    msg = e.message
+  }
+  assertTrue(msg.contains("never-tail-string"), "exprTailMethod panic message: " + msg)
+}
+
+test "#5854: block-tail Never call in a non-void interface impl method panics with the real message" {
+  val i: NeverTailIface = NeverTailImplHolder()
+  var msg = ""
+  try {
+    i.divergeMethod()
+  } catch Bug as e {
+    msg = e.message
+  }
+  assertTrue(msg.contains("never-tail-long"), "divergeMethod panic message: " + msg)
+}
+
+test "#5867: '= expr' Never call in a non-void interface impl method panics with the real message" {
+  val i: NeverTailIface = NeverTailImplHolder()
+  var msg = ""
+  try {
+    i.divergeExprMethod()
+  } catch Bug as e {
+    msg = e.message
+  }
+  assertTrue(msg.contains("never-tail-long"), "divergeExprMethod panic message: " + msg)
 }

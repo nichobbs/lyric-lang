@@ -394,13 +394,23 @@ func checkSdkVersion(): Int {
 //
 // `pub` so `cli_shared_self_test.l` can drive it directly (same precedent
 // as `resolveProjectSources`, #5333).
+//
+// An existing-but-unparseable discovered lyric.toml (#4881) is surfaced as a
+// warning rather than silently treated as "no manifest found": every
+// manifest-consuming command routes through here (or `findNearestManifest`
+// directly), so this is the one place that can warn once regardless of
+// which command triggered discovery.  The resolved value still degrades to
+// `None` in that case — every caller already has well-defined "no manifest"
+// fallback behavior, and adopting a broken manifest's path wholesale would
+// just push the same silent-Err-swallowing bug one layer down (e.g.
+// `resolveNativeConfig`'s documented "degrade to no config" policy).
 pub func discoverManifest(explicit: in Option[String]): Option[String] {
   match explicit {
     case Some(p) -> {
       val absP = if Path.isAbsolute(p) { p } else { Path.join(Environment.currentDirectory(), p) }
       Some(value = absP)
     }
-    case None -> Disc.findNearestManifest(Environment.currentDirectory())
+    case None -> match Disc.findNearestManifestDetailed(Environment.currentDirectory()) { case FoundManifest(path) -> Some(value = path); case FoundBrokenManifest(path, error) -> { printErr(Disc.brokenManifestWarning(path, error)); None }; case NoManifestFound -> None }
   }
 }
 

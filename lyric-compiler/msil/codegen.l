@@ -22417,32 +22417,13 @@ pub func lowerImplMethodMsil(
 
   // Lower the body — mirrors `lowerFuncMsil`'s logic but always non-extern.
   match decl.body {
-    case Some(body) -> {
-      match body {
-        case FBBlock(block) -> {
-          if retTy != MVoid {
-            // The tail expression is the implicit return: expect the CTX-aware
-            // return type (`declaredRetTyCtx`), not the erased signature `retTy`,
-            // so a tail `newList()` builds the concrete `List<Foo>` the caller
-            // (which tracks the return type concretely) expects to read.
-            pushCollExpect(fctx, declaredRetTyCtx)
-            val _ = lowerBlockExprMsil(cctx, fctx, insns, block)
-            popCollExpect(fctx)
-          } else {
-            lowerBlockMsil(cctx, fctx, insns, block)
-          }
-          if not endsWithReturnMsil(insns) {
-            insns.add(MRet)
-          }
-        }
-        case FBExpr(e) -> {
-          pushCollExpect(fctx, declaredRetTyCtx)
-          lowerExprMsil(cctx, fctx, insns, e)
-          popCollExpect(fctx)
-          insns.add(MRet)
-        }
-      }
-    }
+    // The tail expression is the implicit return: expect the CTX-aware return
+    // type (`declaredRetTyCtx`), not the erased signature `retTy`, so a tail
+    // `newList()` builds the concrete `List<Foo>` the caller (which tracks the
+    // return type concretely) expects to read.  `lowerMethodBodyTailMsil` also
+    // pushes `retTy`'s zero/default value when the tail is a `: Never`-typed
+    // tail call erased to `MVoid` (#5652/#5854).
+    case Some(body) -> lowerMethodBodyTailMsil(cctx, fctx, insns, body, declaredRetTyCtx, retTy)
     case None -> insns.add(MRet)
   }
 
@@ -22474,6 +22455,51 @@ pub func lowerImplMethodMsil(
     maxStack = computeMaxStackMsil(insns),
     locals = fctx.locals
   )
+}
+
+// Lower a record/impl method's `FBBlock`/`FBExpr` body form, applying the
+// same tail-return coercion `lowerFuncMsil` applies (#5652): a `: Never`
+// -typed tail call erases to `MVoid` and would otherwise leave `ret` with an
+// empty stack when the method's own declared return is non-void.  Shared by
+// `lowerImplMethodMsil` and `lowerRecordMethodMsil` (#4963, #5854) — the only
+// difference between the two call sites is which type the tail expression's
+// `collExpect` hint is pushed as (`declaredRetTyCtx` for impl methods vs the
+// plain `retTy` for in-body methods), passed in as `collExpectTy`.
+func lowerMethodBodyTailMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  body: in FunctionBody,
+  collExpectTy: in MsilType,
+  retTy: in MsilType,
+): Unit {
+  match body {
+    case FBBlock(block) -> {
+      if retTy != MVoid {
+        pushCollExpect(fctx, collExpectTy)
+        val trailTy = lowerBlockExprMsil(cctx, fctx, insns, block)
+        popCollExpect(fctx)
+        if not endsWithReturnMsil(insns) {
+          coerceTrailingToRetMsil(cctx, fctx, insns, trailTy, retTy)
+          insns.add(MRet)
+        }
+      } else {
+        lowerBlockMsil(cctx, fctx, insns, block)
+        if not endsWithReturnMsil(insns) {
+          insns.add(MRet)
+        }
+      }
+    }
+    case FBExpr(e) -> {
+      pushCollExpect(fctx, collExpectTy)
+      val exprTailTy = lowerExprMsil(cctx, fctx, insns, e)
+      popCollExpect(fctx)
+      if exprTailTy == MVoid and retTy != MVoid {
+        pushDefaultValueMsil(cctx, fctx, insns, retTy)
+      }
+      insns.add(MRet)
+    }
+  }
 }
 
 // Lower an in-body method (D037 methods-in-types: a bare `func` directly
@@ -22538,28 +22564,9 @@ pub func lowerRecordMethodMsil(
   fctx.epilogueLabel = freshLabelMsil(fctx)
 
   match decl.body {
-    case Some(body) -> {
-      match body {
-        case FBBlock(block) -> {
-          if retTy != MVoid {
-            pushCollExpect(fctx, retTy)
-            val _ = lowerBlockExprMsil(cctx, fctx, insns, block)
-            popCollExpect(fctx)
-          } else {
-            lowerBlockMsil(cctx, fctx, insns, block)
-          }
-          if not endsWithReturnMsil(insns) {
-            insns.add(MRet)
-          }
-        }
-        case FBExpr(e) -> {
-          pushCollExpect(fctx, retTy)
-          lowerExprMsil(cctx, fctx, insns, e)
-          popCollExpect(fctx)
-          insns.add(MRet)
-        }
-      }
-    }
+    // `lowerMethodBodyTailMsil` also pushes `retTy`'s zero/default value when
+    // the tail is a `: Never`-typed tail call erased to `MVoid` (#5652/#5854).
+    case Some(body) -> lowerMethodBodyTailMsil(cctx, fctx, insns, body, retTy, retTy)
     case None -> insns.add(MRet)
   }
 

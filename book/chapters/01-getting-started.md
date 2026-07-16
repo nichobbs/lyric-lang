@@ -131,6 +131,14 @@ from any subdirectory. All eight dev-loop commands (`build`, `run`, `fmt`,
 from any subdirectory without arguments. Run `lyric --help` for the grouped
 command list.
 
+If the nearest `lyric.toml` exists but is broken — a TOML syntax error, an
+invalid field, or a `[package]` table missing a required field — the command
+prints `warning: ignoring lyric.toml at '<path>': <error> (treating as no
+manifest found)` and stops there rather than silently adopting a manifest
+further up the tree; fix the file the warning names. A `lyric.toml` with no
+`[package]` section at all (such as a workspace root) is not an error — the
+walk simply continues past it.
+
 ### Scaffolding a project — `lyric init`
 
 Rather than hand-writing `lyric.toml` and the source layout, `lyric init`

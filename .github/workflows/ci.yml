@@ -243,6 +243,38 @@ jobs:
             exit 1
           fi
           echo "PASS"
+          # Web.serve() failure-observability path (#5260): the server's
+          # /crash route panics during request handling; serve()'s catch-Bug
+          # arm must log the [lyric-web] failure line, stop the listener,
+          # and exit non-zero — not swallow the crash.
+          echo "=== smoke lyric-web/tests/serve_failure_tests.l ==="
+          "$lyric_bin" run lyric-web/tests/serve_failure_tests.l > /tmp/serve_failure.run.log 2>&1 &
+          sf_pid=$!
+          for _ in $(seq 1 20); do
+            if curl -s --max-time 1 http://127.0.0.1:8199/health >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.5
+          done
+          if ! kill -0 "$sf_pid" 2>/dev/null; then
+            echo "FAIL: serve_failure server exited before serving"
+            tail -20 /tmp/serve_failure.run.log
+            exit 1
+          fi
+          curl -s --max-time 3 http://127.0.0.1:8199/crash >/dev/null 2>&1 || true
+          sf_rc=0
+          wait "$sf_pid" || sf_rc=$?
+          if [ "$sf_rc" -eq 0 ]; then
+            echo "FAIL: serve_failure exited 0 after a request-handler panic (#5260)"
+            tail -20 /tmp/serve_failure.run.log
+            exit 1
+          fi
+          if ! grep -q "\[lyric-web\] request handling failed" /tmp/serve_failure.run.log; then
+            echo "FAIL: missing [lyric-web] failure line in serve_failure log (#5260)"
+            tail -20 /tmp/serve_failure.run.log
+            exit 1
+          fi
+          echo "PASS"
 
       # Test multi-package examples with `lyric test --manifest`.
       - name: Test multi-package examples
@@ -1014,6 +1046,27 @@ jobs:
       # return type's default before MRet when the tail lowers to MVoid,
       # mirroring the JVM emitNeverTailReturn.  Both targets; the JVM half runs
       # in `compiler-self-tests-jvm`.  Imports only `Std.*`.
+      # Control-flow terminator self-test on dotnet (#5854) — historically a
+      # jvm-only file (its jvm step lives in compiler-self-tests-jvm), but the
+      # record/impl-method Never-tail fix makes it pass 17/17 on dotnet too;
+      # running it on both targets is the cross-target parity guard that
+      # would have caught #5854 pre-emptively.
+      - name: Control-flow self-test on dotnet (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping control-flow dotnet self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping control-flow dotnet self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/jvm/control_flow_jvm_self_test.l
+
       - name: Never-tail self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -1136,6 +1189,17 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/list_literal_index_self_test.l
+
+      # Extra barrier (batch 1a-split-2, #5859): the sub-batch below the
+      # 1a-split barrier had grown to 13 concurrent steps — one below the
+      # ~14-step cap the header documents, and the exit-135 SIGBUS flake
+      # #4975 (4 hits on 2026-07-16 alone) correlates with concurrent-step
+      # load well before that cap.  This barrier splits the group into 7 + 6
+      # rather than serializing, per the header note.  (The first placement
+      # of this barrier sat directly after the 1a-split barrier and waited
+      # on nothing — this position actually splits the batch.)
+      - name: Wait for parallel tests (batch 1a-split-2)
+        wait-all: true
 
       # Enum/closure/pattern-bind self-test (D-progress-623 / #5361, #5364).
       # Pins two self-hosted MSIL backend bugs: a payload-free `enum`
