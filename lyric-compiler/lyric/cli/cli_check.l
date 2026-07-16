@@ -10,6 +10,7 @@ import Std.Errors
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Emitter as Emitter
+import Lyric.BuildDefines as BD
 import Lyric.Discovery as Disc
 
 // ─────────────────────────────────────────────────────────────────────────────

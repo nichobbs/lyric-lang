@@ -13,6 +13,7 @@ import Std.Parse
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Emitter as Emitter
+import Lyric.BuildDefines as BD
 import Lyric.BenchSynth as BenchSynth
 import Lyric.Discovery as Disc
 

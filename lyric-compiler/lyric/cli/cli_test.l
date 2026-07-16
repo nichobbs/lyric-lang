@@ -13,6 +13,7 @@ import Std.ProcessCapture as ProcessCapture
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Emitter as Emitter
+import Lyric.BuildDefines as BD
 import Lyric.TestSynth as TestSynth
 import Lyric.Repl as Repl
 import Lyric.Discovery as Disc
