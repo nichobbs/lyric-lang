@@ -9,7 +9,15 @@ See `lyric-compiler/lyric/typed_ffi_delegate_self_test.l` for the verification
 case and `CodegenCtx.funcParamIsExternTargetDelegate`'s doc comment in
 `lyric-compiler/msil/codegen.l` for the exact trigger condition. The proposal
 below is kept as-is for historical context on the fully general form, which
-remains unimplemented._
+remains unimplemented.
+D-progress-687 closed a gap found investigating #5801/#5803: the mechanism
+correctly resolved a `TFunction`-typed parameter's own real closed `Func`/
+`Action` type at every ordinary (non-receiver) position from the start, but a
+`TFunction`-typed parameter at the RECEIVER position of an `@externInstance`
+call (e.g. binding straight to `System.Func`N.Invoke`) fell back to the
+erased `Func<object,...,object>` ABI when building the receiver `castclass`
+target, throwing `InvalidCastException` against the real closed delegate the
+lambda itself had correctly bound to. See #5833._
 
 Provide a way to pass Lyric lambdas or method references to .NET methods expecting strongly typed delegates via auto FFI.
 

@@ -29830,11 +29830,25 @@ previously-latent `emitGenericExternMember` bugs constructing/returning a
 value-type generic extern (`ValueTask`1`) are fixed. Verified end-to-end
 against a real local `dockerd` over a Unix socket.
 
+**Shipped in D-progress-687:** #5833 — a `TFunction`-typed parameter at the
+RECEIVER position of an `@externInstance` call (e.g. binding straight to
+`System.Func`N.Invoke`) fell back to the erased `Func<object,...,object>`
+ABI when `emitGenericExternMember` built the receiver `castclass` target,
+throwing `InvalidCastException` against the real closed delegate the lambda
+itself had correctly bound to. Fixed by extending D-progress-686's
+`retArgs`-reuse mechanism to also cover an instance call's receiver type,
+plus a follow-on fix to a `#2972`/`AsyncLocal`1.Value` unboxing dance that
+assumed every generic-member receiver is always object-erased and mis-fired
+`InvalidProgramException` once the receiver could be a real closed
+instantiation. `typed_ffi_delegate_self_test.l` now covers a
+`Func`2.Invoke` call in addition to the construct-and-pass-onward shapes.
+
 **Related:** D122, docs/50-ffi-delegates-proposal.md, #1877, #3923 (updated
 to reflect this bounded slice), #4077/#4084/#4089/#4091 (prior PR #3885
 cleanup this slice's typed-ctor work supersedes), #4025, #4601/#5206
 (investigated, confirmed not triggered by this slice), #5304 (blocks the
-Unix-socket migration itself), D-progress-684, D-progress-686.
+Unix-socket migration itself), D-progress-684, D-progress-686, D-progress-687,
+#5833.
 
 ### D-progress-610 — Single-file `lyric build <source.l>` gains manifest-driven dependency resolution (D123)
 
