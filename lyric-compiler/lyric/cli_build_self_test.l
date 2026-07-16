@@ -8,6 +8,9 @@
 //!     and asserts `Lyric.Stdlib.dll` is colocated beside the output DLL
 //!     for a runnable program (declares `func main()`) and is NOT for a
 //!     library (no `main`).
+//!   - `hasContribution`'s `nativeAssetPaths` branch and
+//!     `copyNugetNativeAssetsBeside` wiring (#5744) — a manifest whose only
+//!     contribution is a NuGet-resolved native runtime asset.
 //!
 //! Run in CI via:
 //!
@@ -658,6 +661,91 @@ test "buildOneNative: a manifest with a genuine [nuget]-resolved third-party DLL
   val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Dotnet, None, "", "")
   assertEqualInt(exitCode, 0, "single-file build with a [nuget]-only third-party-resolved manifest compiles cleanly")
   assertTrue(File.fileExists(outPath), "single-file build produces the output DLL")
+}
+
+// #5744: `hasContribution`'s `resolvedDeps.nativeAssetPaths.count > 0` term is
+// the sibling of the #5352 test above — that one exercised
+// `nugetThirdPartyPaths` (a genuine *managed* third-party DLL); this one
+// resolves a `runtimeTargets`-only entry (no sibling `runtime` map for the
+// package, so `nugetThirdPartyPaths`/`restoredDlls` both stay empty and only
+// the native-asset branch of the OR-chain can route the build through the
+// synthetic project path).  Also uses a runnable program (declares `main`)
+// so `copyNugetNativeAssetsBeside`'s own end-to-end wiring — not just the
+// pure resolver `cli_shared_self_test.l` already covers — is exercised: the
+// fake native asset must actually land beside the compiled output.
+test "buildOneNative: a manifest with only a NuGet-resolved native asset (no managed DLL) near a runnable program compiles and colocates it" {
+  val hostRid = Environment.runtimeIdentifier()
+  if hostRid.length == 0 {
+    // No host RID (e.g. under a JVM CLI host) — nothing to assert against.
+    return
+  }
+  val appDir = freshTempDir("app-native-only")
+  defer {
+    cleanup(appDir)
+  }
+  val pkgsDir = freshTempDir("app-native-only-pkgs")
+  defer {
+    cleanup(pkgsDir)
+  }
+  val objDir = Path.join(appDir, "obj")
+  match File.createDir(objDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + objDir + ": " + IOError.message(e))
+  }
+
+  val nativeRelPath = "runtimes/" + hostRid + "/native/libfakenative.so"
+  val fixtureFullPath = Path.join(pkgsDir, Path.join(Path.join("fake.native.pkg", "1.0.0"), nativeRelPath))
+  val fixtureDir = Path.dirname(fixtureFullPath)
+  match File.createDir(fixtureDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + fixtureDir + ": " + IOError.message(e))
+  }
+  writeFileOrPanic(fixtureFullPath, "fake native asset bytes")
+
+  val assetsJson = "{\n" + "  \"targets\": {\n" + "    \".NETCoreApp,Version=v10.0\": {\n" +
+    "      \"Fake.Native.Pkg/1.0.0\": {\n" +
+    "        \"type\": \"package\",\n" +
+    "        \"runtimeTargets\": {\n" +
+    "          \"" +
+    nativeRelPath +
+    "\": { \"assetType\": \"native\", \"rid\": \"" +
+    hostRid +
+    "\" }\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  },\n" +
+    "  \"project\": {\n" +
+    "    \"restore\": {\n" +
+    "      \"packagesPath\": \"" +
+    Str.replace(pkgsDir, "\\", "\\\\") +
+    "\"\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
+  writeFileOrPanic(Path.join(objDir, "project.assets.json"), assetsJson)
+
+  writeManifestOrPanic(
+    Path.join(appDir, "lyric.toml"),
+    "[package]\n" + "name = \"AppSfNativeOnly\"\n" + "version = \"0.1.0\"\n"
+  )
+  val looseSrcPath = Path.join(appDir, "loose.l")
+  writeFileOrPanic(looseSrcPath, "package AppSfNativeOnly.Loose\n\nfunc main(): Unit {\n  println(1)\n}\n")
+  val outPath = Path.join(appDir, "loose.dll")
+
+  val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Dotnet, None, "", "")
+  assertEqualInt(
+    exitCode,
+    0,
+    "single-file build with a native-only-resolved manifest (no [nuget]/[features]/deps) routes through the synthetic path and compiles"
+  )
+  assertTrue(File.fileExists(outPath), "single-file build produces the output DLL")
+
+  val copiedPath = Path.join(Path.dirname(outPath), Path.basename(fixtureFullPath))
+  assertTrue(
+    File.fileExists(copiedPath),
+    "copyNugetNativeAssetsBeside actually ran end-to-end and colocated the native asset beside the output"
+  )
 }
 
 test "buildOneNative: a manifest with no dependencies/features near a single file is byte-identical to no manifest" {
