@@ -972,6 +972,12 @@ func loadNugetAssets(mfDir: in String): Option[ParsedNugetAssets] {
   Some(value = ParsedNugetAssets(parsed = parseResult, pkgsDir = pkgsDir))
 }
 
+// A thin managed-DLLs-only view over the same `loadNugetAssets` discovery
+// `resolveAllNugetAssets` does in one pass; kept `pub` for direct
+// self-testing (`cli_shared_self_test.l`) rather than for production use —
+// production call sites (`resolveManifestDependencies`, `cmdTestManifest`)
+// use `resolveAllNugetAssets` so a single `project.assets.json` read yields
+// both the managed DLLs and the native assets (#5742).
 pub func resolveNugetAssets(mfDir: in String): List[String] {
   match loadNugetAssets(mfDir) {
     case None -> newList()
@@ -991,6 +997,11 @@ pub func resolveNugetAssets(mfDir: in String): List[String] {
 /// resolvable packages directory), plus when the host RID itself is unknown
 /// (empty, e.g. under the JVM CLI host — see `Environment.runtimeIdentifier`'s
 /// doc comment).
+///
+/// Like `resolveNugetAssets`, this is a thin single-kind (native-assets-only)
+/// view over the same discovery `resolveAllNugetAssets` does in one pass;
+/// kept `pub` for direct self-testing rather than for production use —
+/// production call sites use `resolveAllNugetAssets` (#5742).
 pub func resolveNugetNativeAssets(mfDir: in String): List[String] {
   val hostRid = Environment.runtimeIdentifier()
   if hostRid.length == 0 {
