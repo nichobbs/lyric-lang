@@ -414,3 +414,54 @@ test "#5805: try body's value join with finally, matched catch arm's value wins"
   )
   assertEqualInt(c.get(), 3, "the try body, the catch arm, and the finally block each ran once")
 }
+
+// #5850: multi-catch value joins.  The #5805 join-type fix accumulated the
+// join type in emission order, so with two or more catch arms the outcome
+// depended on clause order (a Unit arm before the value arm silently
+// skipped its result store; after it, the same program was a J004 compile
+// error).  The fix pre-lowers every arm into its own buffer and computes
+// the join from the complete set, so mixed Unit/value fall-through edges
+// are now a J004 in BOTH orders (verified out-of-band — a compile failure
+// can't live in a @test_module) and all-value multi-arm joins lower
+// consistently; these two functions pin the multi-arm lowering itself.
+func multiCatchFirstArmWins(c: in Counter): Int {
+  try {
+    c.increment()
+    panic("multiCatchFirstArmWins: deliberate failure")
+  } catch Bug as _ {
+    c.increment()
+    5
+  } catch Bug as _ {
+    c.increment()
+    7
+  }
+}
+
+func multiCatchWithFinally(c: in Counter): Int {
+  try {
+    c.increment()
+    panic("multiCatchWithFinally: deliberate failure")
+  } catch Bug as _ {
+    11
+  } catch Bug as _ {
+    13
+  } finally {
+    c.increment()
+  }
+}
+
+test "#5850: two value-producing catch arms join consistently (first matching arm wins)" {
+  val c = Counter(count = 0)
+  assertEqualInt(
+    multiCatchFirstArmWins(c),
+    5,
+    "the first matching arm's value (5) must be the join value; the second arm must not run"
+  )
+  assertEqualInt(c.get(), 2, "the try body and the first catch arm each ran once")
+}
+
+test "#5850: two value-producing catch arms with finally join consistently" {
+  val c = Counter(count = 0)
+  assertEqualInt(multiCatchWithFinally(c), 11, "the first matching arm's value (11) must survive the finally block")
+  assertEqualInt(c.get(), 2, "the try body and the finally block each ran once")
+}

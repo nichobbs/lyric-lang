@@ -1330,6 +1330,148 @@ func lowerLocalPatBind(
 // ─────────────────────────────────────────────────────────────────────────────
 // §6b. Try/catch lowering.
 // ─────────────────────────────────────────────────────────────────────────────
+// A catch arm pre-lowered into its own instruction buffer (#5850).  The
+// #5805 fix tracked the expression join type as a first-value-wins mutable
+// accumulator updated WHILE arm bytecode was being emitted, which made the
+// outcome depend on catch-clause order: a Unit-typed, non-terminating arm
+// processed before the value-producing arm silently skipped its result-slot
+// store and jumped to the join — where the shared epilogue loads a slot
+// that edge never wrote (VerifyError, or stale-slot garbage).  Swapping the
+// clause order turned the same program into a J004 compile error.  Buffering
+// each arm first lets the join type be computed from the try body plus ALL
+// arms, and every Unit edge be validated, before a single store/goto
+// decision is emitted.
+record LoweredCatchArm {
+  insns: List[LInsn]
+  bodyTy: JvmType
+  terminated: Bool
+  handlerLabel: String
+}
+
+// Pass 1 of try/catch-expression lowering: lower every catch arm (handler
+// label, exception binding, body — bracketed as its own lexical scope,
+// #5522) into a private buffer, recording the arm's produced type and
+// whether its tail unconditionally transfers control.
+func lowerCatchArmsBuffered(ctx: in FuncCtx, catches: in List[CatchClause]): List[LoweredCatchArm] {
+  val arms: List[LoweredCatchArm] = newList()
+  var i = 0
+  while i < catches.count {
+    val c = catches[i]
+    val buf: List[LInsn] = newList()
+    val handlerL = freshLabel(ctx)
+    buf.add(LLabel(name = handlerL))
+    val handlerScope = enterBlockScope(ctx)
+    val exTy = JRef(className = "java/lang/Throwable")
+    match c.bindName {
+      case Some(bname) -> {
+        val exSlot = allocSlot(ctx, bname, exTy)
+        emitStore(buf, exSlot, exTy)
+      }
+      case None -> buf.add(LPop)
+    }
+    val catchBodyTy = lowerBlockExpr(ctx, buf, c.body)
+    exitBlockScope(ctx, handlerScope)
+    val terminated = lastInsnIsTerminator(buf)
+    arms.add(LoweredCatchArm(insns = buf, bodyTy = catchBodyTy, terminated = terminated, handlerLabel = handlerL))
+    i = i + 1
+  }
+  arms
+}
+
+func appendLInsns(dst: in List[LInsn], src: in List[LInsn]): Unit {
+  var i = 0
+  while i < src.count {
+    dst.add(src[i])
+    i = i + 1
+  }
+}
+
+func firstValueArmIndex(arms: in List[LoweredCatchArm]): Int {
+  var i = 0
+  while i < arms.count {
+    match arms[i].bodyTy {
+      case JVoid -> ()
+      case _ -> return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
+// The try-catch expression's effective join type: the try body's own type
+// when it produces one, else the first value-producing arm's type — computed
+// from the COMPLETE set of pre-lowered arms, never accumulated in emission
+// order (#5850).
+func effectiveCatchJoinTy(resultTy: in JvmType, arms: in List[LoweredCatchArm]): JvmType {
+  match resultTy {
+    case JVoid -> {
+      val idx = firstValueArmIndex(arms)
+      if idx >= 0 {
+        arms[idx].bodyTy
+      } else {
+        JVoid
+      }
+    }
+    case _ -> resultTy
+  }
+}
+
+// Order-independent J004 validation (#5850): when the join type demands a
+// value, EVERY edge that can fall through to the join must produce one —
+// the try body's own fall-through included, not just catch arms.  Emitting
+// a store on a valueless edge would pop a value that isn't on the stack;
+// skipping it leaves the join loading an unwritten slot.  Neither is
+// recoverable at this layer (the codegen tree returns `JvmType`, not a
+// diagnostic-collecting Result), so abort with a source-located,
+// `error[J004]`-prefixed message — `Jvm.Bridge`'s `startsWith("error[J0")`
+// passthrough re-emits it verbatim rather than wrapping it under
+// `error[J002]` (#3193, #3310, #3311).  Mixed Unit/value arms in expression
+// position are reachable pending type-checker gap #2042.
+func validateCatchJoinEdges(
+  ctx: in FuncCtx,
+  formName: in String,
+  resultTy: in JvmType,
+  tryTerminated: in Bool,
+  arms: in List[LoweredCatchArm],
+  catches: in List[CatchClause],
+): Unit {
+  val joinTy = effectiveCatchJoinTy(resultTy, arms)
+  match joinTy {
+    case JVoid -> ()
+    case _ -> {
+      val dottedPkgName = ctx.pkgName.replace("/", ".")
+      val tryYieldsUnit = match resultTy { case JVoid -> true; case _ -> false }
+      if tryYieldsUnit and not tryTerminated {
+        val vIdx = firstValueArmIndex(arms)
+        val pos = catches[vIdx].span.startPos
+        panic(
+          "error[J004]: " + dottedPkgName + ":" + pos.line.toString() + ":" + pos.column.toString() + ": " + formName +
+            " used as an expression, but the try body falls through yielding " +
+            "Unit while this catch arm yields a value; the JVM backend cannot route an absent " +
+            "value through the result slot. Give the try body a trailing value of the catch " +
+            "arm's type, or annotate the try-catch result type explicitly (type-checker gap #2042)."
+        )
+      }
+      var i = 0
+      while i < arms.count {
+        val unitArm = match arms[i].bodyTy { case JVoid -> true; case _ -> false }
+        if unitArm and not arms[i].terminated {
+          val pos = catches[i].span.startPos
+          panic(
+            "error[J004]: " + dottedPkgName + ":" + pos.line.toString() + ":" + pos.column.toString() + ": " + formName +
+              " used as an expression, but this catch arm yields Unit while " +
+              "another arm or the try body yields a value; the JVM backend cannot route an " +
+              "absent value through the result slot. Give the catch arm a trailing value of " +
+              "the join type, or annotate the try-catch result type explicitly (type-checker " +
+              "gap #2042)."
+          )
+        }
+        i = i + 1
+      }
+    }
+  }
+}
+
 // Try/catch in *expression* position: `try { … } catch … ` whose value is the
 // trailing expression of the try body or of a matching catch body.  Each arm's
 // value is routed through a result local so the operand stack is empty at the
@@ -1345,135 +1487,51 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
 
   insns.add(LLabel(name = startL))
   val resultTy = lowerBlockExpr(ctx, insns, body)
-  // The try-catch expression's effective value type is normally the try
-  // body's own type, but a try body whose tail unconditionally transfers
-  // control (an unguarded `panic(...)` or `return`) erases to JVoid even
-  // when a matched catch arm still produces a real value (#5805) — gating
-  // every catch arm's store on `resultTy` alone left a value-producing
-  // catch arm's value on the operand stack when jumping to `afterL`,
-  // mismatching the empty-stack frame every other path establishes there
-  // ("Inconsistent stackmap frames at branch target"). Track the effective
-  // join type separately and let the first value-producing arm (try body
-  // or catch) establish it.
-  var joinTy = resultTy
-  match resultTy {
+  // #5805/#5850: the expression's effective join type is the try body's own
+  // type when it produces one, else the first value-producing catch arm's —
+  // computed by `effectiveCatchJoinTy` over the COMPLETE set of pre-lowered
+  // arms (never accumulated in emission order, which made J004 vs a
+  // silent-miscompile depend on catch-clause order), then every
+  // fall-through-to-join Unit edge is rejected up front by
+  // `validateCatchJoinEdges`.  A terminated edge (trailing `panic(...)` →
+  // athrow, `return`) never reaches the join: skip its result store AND its
+  // fall-through `goto` (dead code after `athrow` breaks verification) —
+  // the `readTextOrPanic` shape.
+  val tryTerminated = lastInsnIsTerminator(insns)
+  val arms = lowerCatchArmsBuffered(ctx, catches)
+  val joinTy = effectiveCatchJoinTy(resultTy, arms)
+  validateCatchJoinEdges(ctx, "try-catch", resultTy, tryTerminated, arms, catches)
+  match joinTy {
     case JVoid -> ()
     case _ -> {
-      rslot = allocSlot(ctx, rslotName, resultTy)
-      emitStore(insns, rslot, resultTy)
+      rslot = allocSlot(ctx, rslotName, joinTy)
     }
+  }
+  match resultTy {
+    case JVoid -> ()
+    case _ -> emitStore(insns, rslot, resultTy)
   }
   insns.add(LGoto(label = afterL))
   insns.add(LLabel(name = endL))
 
   var i = 0
-  while i < catches.count {
+  while i < arms.count {
+    val a = arms[i]
     val c = catches[i]
-    val handlerL = freshLabel(ctx)
-    insns.add(LLabel(name = handlerL))
-    // A catch handler is a lexical scope of its own (#5522, same shape as the
-    // #5191/#5515 match-arm fix): its exception binding shadows an enclosing
-    // local like a nested block's `val`, but the bare `allocSlot` below has no
-    // scope bracket — a same-named outer binding's slot was reused (clobbering
-    // the outer value) or, across a slot-type mismatch, the remapped
-    // name→slot binding leaked past the handler.  Bracket bind + handler body
-    // so a shadow gets a fresh slot and the outer mapping is restored on exit.
-    val handlerScope = enterBlockScope(ctx)
-    val exTy = JRef(className = "java/lang/Throwable")
-    match c.bindName {
-      case Some(bname) -> {
-        val exSlot = allocSlot(ctx, bname, exTy)
-        emitStore(insns, exSlot, exTy)
+    appendLInsns(insns, a.insns)
+    if not a.terminated {
+      // Store with THIS arm's own produced kind so an arm whose actual
+      // type differs from the join type (documented type-checker gap
+      // #2042) emits the matching `istore`/`astore` variant and the JVM
+      // verifier doesn't reject a mismatched store (#1681).
+      match a.bodyTy {
+        case JVoid -> ()
+        case _ -> emitStore(insns, rslot, a.bodyTy)
       }
-      case None -> insns.add(LPop)
-    }
-    val catchBodyTy = lowerBlockExpr(ctx, insns, c.body)
-    exitBlockScope(ctx, handlerScope)
-    // A catch arm that unconditionally transfers control (a trailing
-    // `panic(...)` → athrow, a `return`) never produces a value and never
-    // reaches the join: skip the result store AND the fall-through `goto`
-    // (dead code after `athrow` breaks verification).  This is the
-    // `readTextOrPanic` shape — a value-yielding try body whose catch arm
-    // re-panics with a decorated message.
-    val catchTerminated = lastInsnIsTerminator(insns)
-    // Gate on THIS arm's own produced type, not `resultTy` (#5805): a
-    // value-producing catch arm must always be routed through the result
-    // slot, even when the try body's own tail (e.g. an unguarded `panic`)
-    // never reaches the join and erases `resultTy` to JVoid.
-    match catchBodyTy {
-      case JVoid -> {
-        match joinTy {
-          case JVoid -> ()
-          case _ -> {
-            if not catchTerminated {
-              // The catch body produced nothing (statement mode) but the
-              // try-catch expression's join type demands a value —
-              // emitting a store here would pop a value that isn't on the
-              // stack and produce a VerifyError. Abort codegen with a
-              // source-located diagnostic so the user sees a pointed
-              // compile error rather than an untyped crash with no line
-              // number (#3193, supersedes the bare panic from #2690). The
-              // Jvm.Bridge `Bug` catch re-emits this message under
-              // `error[J002]`; the `error[J004]` code and `line:col`
-              // prefix below name the offending catch arm precisely. Code
-              // is threaded through the panic message because the codegen
-              // tree returns `JvmType`, not a diagnostic-collecting
-              // Result. #3310: the message used to carry only a
-              // `line:col` prefix, with no way to name which package the
-              // offending catch arm lives in — unhelpful once dozens of
-              // files are bundled into one build. No raw source-file path
-              // is threaded anywhere in the JVM codegen pipeline
-              // (`Span`/`Position` in `lyric-compiler/lyric/lexer.l`
-              // carry only offset/line/column and `SourceFile` in
-              // `lyric-compiler/lyric/parser/parser_ast.l` carries no
-              // path field at all), but `ctx.pkgName` — the JVM
-              // slash-path of the package currently being lowered,
-              // threaded through every `FuncCtx` in this file — names the
-              // same package `Jvm.Bridge`'s `error[J002]` wrapper already
-              // reports for a referenced-package codegen failure, so it
-              // is spliced in right after the code, before `line:col`,
-              // keeping the message `error[J004]`-prefixed so
-              // `Jvm.Bridge`'s `b.message.startsWith("error[J0")`
-              // passthrough guard (which exists precisely to avoid
-              // re-wrapping this message under `error[J002]`, #3311)
-              // still recognises it untouched.
-              val pos = c.span.startPos
-              val dottedPkgName = ctx.pkgName.replace("/", ".")
-              panic(
-                "error[J004]: " + dottedPkgName + ":" + pos.line.toString() + ":" + pos.column.toString() +
-                  ": try-catch used as an expression, but this catch arm yields Unit while the " +
-                  "try body yields a value; the JVM backend cannot route an absent value through " +
-                  "the result slot. Give the catch arm a trailing value of the try body's type, or " +
-                  "annotate the try-catch result type explicitly (type-checker gap #2042)."
-              )
-            }
-          }
-        }
-      }
-      case _ -> {
-        // Use the lowered catch-body type for the store so an arm whose
-        // actual produced kind differs from the try-body type (a documented
-        // type-checker gap) emits the matching `istore`/`astore` variant
-        // and the JVM verifier doesn't reject a mismatched store (#1681).
-        if rslot < 0 {
-          rslot = allocSlot(ctx, rslotName, catchBodyTy)
-        }
-        match joinTy {
-          case JVoid -> {
-            joinTy = catchBodyTy
-          }
-          case _ -> ()
-        }
-        if not catchTerminated {
-          emitStore(insns, rslot, catchBodyTy)
-        }
-      }
-    }
-    if not catchTerminated {
       insns.add(LGoto(label = afterL))
     }
     val catchClass = if c.typeName == "Bug" { "java/lang/Throwable" } else { lyricNameToJvm(c.typeName) }
-    insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = handlerL, catchClass = catchClass))
+    insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = a.handlerLabel, catchClass = catchClass))
     i = i + 1
   }
 
@@ -1525,87 +1583,43 @@ func lowerTryCatchFinallyExpr(
 
   insns.add(LLabel(name = startL))
   val resultTy = lowerBlockExpr(ctx, insns, body)
-  // Same fix as `lowerTryCatchExpr` above (#5805): the try body's tail can
-  // unconditionally transfer control (an unguarded `panic(...)`, `return`)
-  // and erase `resultTy` to JVoid even when a matched catch arm still
-  // produces a real value. Track the effective join type separately so the
-  // catch-arm join below isn't gated on `resultTy` alone — the prior gate
-  // left a value-producing catch arm's value on the operand stack when
-  // jumping to `afterL`, mismatching the empty-stack frame every other path
-  // establishes there ("Inconsistent stackmap frames at branch target").
-  var joinTy = resultTy
-  match resultTy {
+  // Same structure as `lowerTryCatchExpr` above (#5805/#5850): pre-lower
+  // every catch arm into its own buffer, compute the effective join type
+  // from the try body plus ALL arms (never in emission order), and reject
+  // every fall-through-to-join Unit edge up front.
+  val tryTerminated = lastInsnIsTerminator(insns)
+  val arms = lowerCatchArmsBuffered(ctx, catches)
+  val joinTy = effectiveCatchJoinTy(resultTy, arms)
+  validateCatchJoinEdges(ctx, "try-catch-finally", resultTy, tryTerminated, arms, catches)
+  match joinTy {
     case JVoid -> ()
     case _ -> {
-      rslot = allocSlot(ctx, rslotName, resultTy)
-      emitStore(insns, rslot, resultTy)
+      rslot = allocSlot(ctx, rslotName, joinTy)
     }
+  }
+  match resultTy {
+    case JVoid -> ()
+    case _ -> emitStore(insns, rslot, resultTy)
   }
   insns.add(LGoto(label = afterL))
   insns.add(LLabel(name = endL))
 
   var i = 0
-  while i < catches.count {
+  while i < arms.count {
+    val a = arms[i]
     val c = catches[i]
-    val handlerL = freshLabel(ctx)
-    insns.add(LLabel(name = handlerL))
-    // Bracket bind + handler body as its own lexical scope (#5522) — see the
-    // matching comment in `lowerTryCatchExpr` above.
-    val handlerScope = enterBlockScope(ctx)
-    val exTy = JRef(className = "java/lang/Throwable")
-    match c.bindName {
-      case Some(bname) -> {
-        val exSlot = allocSlot(ctx, bname, exTy)
-        emitStore(insns, exSlot, exTy)
+    appendLInsns(insns, a.insns)
+    if not a.terminated {
+      // Store with THIS arm's own produced kind (#1681) — see the matching
+      // comment in `lowerTryCatchExpr` above.
+      match a.bodyTy {
+        case JVoid -> ()
+        case _ -> emitStore(insns, rslot, a.bodyTy)
       }
-      case None -> insns.add(LPop)
-    }
-    val catchBodyTy = lowerBlockExpr(ctx, insns, c.body)
-    exitBlockScope(ctx, handlerScope)
-    val catchTerminated = lastInsnIsTerminator(insns)
-    // Gate on THIS arm's own produced type, not `resultTy` (#5805): a
-    // value-producing catch arm must always be routed through the result
-    // slot, even when the try body's own tail (e.g. an unguarded `panic`)
-    // never reaches the join and erases `resultTy` to JVoid.
-    match catchBodyTy {
-      case JVoid -> {
-        match joinTy {
-          case JVoid -> ()
-          case _ -> {
-            if not catchTerminated {
-              val pos = c.span.startPos
-              val dottedPkgName = ctx.pkgName.replace("/", ".")
-              panic(
-                "error[J004]: " + dottedPkgName + ":" + pos.line.toString() + ":" + pos.column.toString() +
-                  ": try-catch-finally used as an expression, but this catch arm yields Unit while the " +
-                  "try body yields a value; the JVM backend cannot route an absent value through " +
-                  "the result slot. Give the catch arm a trailing value of the try body's type, or " +
-                  "annotate the try-catch result type explicitly (type-checker gap #2042)."
-              )
-            }
-          }
-        }
-      }
-      case _ -> {
-        if rslot < 0 {
-          rslot = allocSlot(ctx, rslotName, catchBodyTy)
-        }
-        match joinTy {
-          case JVoid -> {
-            joinTy = catchBodyTy
-          }
-          case _ -> ()
-        }
-        if not catchTerminated {
-          emitStore(insns, rslot, catchBodyTy)
-        }
-      }
-    }
-    if not catchTerminated {
       insns.add(LGoto(label = afterL))
     }
     val catchClass = if c.typeName == "Bug" { "java/lang/Throwable" } else { lyricNameToJvm(c.typeName) }
-    insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = handlerL, catchClass = catchClass))
+    insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = a.handlerLabel, catchClass = catchClass))
     i = i + 1
   }
 
