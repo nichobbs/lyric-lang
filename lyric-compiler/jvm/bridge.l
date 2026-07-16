@@ -1023,9 +1023,11 @@ pub func compileProjectToJarBundledWithFeatures(
   val userFiles: List[SourceFile] = newList()
   var mainIdx = 0
   var sawMain = false
+  // Empty until the project path threads --define (#5852); hoisted out of the
+  // per-package loop since it never varies (#5906).
+  val jvmProjDefines = BD.decodeDefines(newList())
   var psi = 0
   while psi < pkgSrcs.count {
-    val jvmProjDefines = BD.decodeDefines(newList())
     val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", activeFeatures, declaredFeatures, jvmProjDefines) {
       case Some(f) -> f
       case None -> return false

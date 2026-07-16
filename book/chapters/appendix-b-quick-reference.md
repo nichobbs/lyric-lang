@@ -931,8 +931,8 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
                                        # module-level val (docs/60). Repeatable. Substituted before
                                        # type-check as a String literal (no source re-parse). An
                                        # unsupplied key keeps the val's in-source fallback literal.
-                                       # v1: single-file --target dotnet only; project builds and
-                                       # --target jvm/native are rejected (parity tracked in #5852).
+                                       # v1: single-file --target dotnet only; project builds,
+                                       # --target jvm/native, and --watch are rejected (parity #5852).
 
 # Build kind (manifest [build] kind, .NET target; default "lib")
 #   kind = "lib"     -> managed foo.dll + foo.runtimeconfig.json (run via `dotnet exec`)

@@ -473,10 +473,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // "per-package symbol tables" recommendation; the old flat
   // accumulation was a known gap tracked as #1195.
   val parsedPkgs: List[ParsedUserPkg] = newList()
+  // Empty until the project path threads --define (#5852); hoisted out of the
+  // per-package loop since it never varies (#5906).
+  val projDefines = BD.decodeDefines(newList())
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]
-    val projDefines = BD.decodeDefines(newList())
     val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines) {
       case Some(f) -> f
       case None -> return false

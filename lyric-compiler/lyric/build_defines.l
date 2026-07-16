@@ -103,8 +103,12 @@ func valTypeOkForString(decl: in ValDecl): Bool {
 func isStringLiteralInit(e: in Expr): Bool {
   match e.kind {
     case ELiteral(lit) -> {
+      // Every String-literal spelling counts: plain, triple-quoted, and raw
+      // are all `String` at the type level (#5904).
       match lit {
         case LString(_) -> true
+        case LTripleString(_) -> true
+        case LRawString(_) -> true
         case _ -> false
       }
     }

@@ -145,3 +145,15 @@ test "applyBuildDefines emits F0031 for @build_const on a non-val item" {
   val res = BD.applyBuildDefines(newList(), pr.file)
   assertTrue(hasDiagCode(res.diagnostics, "F0031"), "@build_const on a func is rejected (F0031)")
 }
+
+test "F0030 accepts a raw-string fallback on an unannotated @build_const val (#5904)" {
+  val pr = parse("package T\n@build_const(\"k\")\npub val V = r\"raw-fallback\"\n")
+  val res = BD.applyBuildDefines(newList(), pr.file)
+  assertTrue(not hasDiagCode(res.diagnostics, "F0030"), "a raw string is a valid String fallback")
+}
+
+test "F0030 accepts a triple-quoted fallback on an unannotated @build_const val (#5904)" {
+  val pr = parse("package T\n@build_const(\"k\")\npub val V = \"\"\"triple\"\"\"\n")
+  val res = BD.applyBuildDefines(newList(), pr.file)
+  assertTrue(not hasDiagCode(res.diagnostics, "F0030"), "a triple-quoted string is a valid String fallback")
+}
