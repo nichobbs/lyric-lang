@@ -1878,6 +1878,39 @@ test "protected type annotation before non-first var field (#5815)" {
   )
 }
 
+test "protected type annotation before non-first let field (#5839)" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  @frozen\n" + "  let cap: Int = 64\n" +
+    "\n" +
+    "  entry push(): Unit { n = n + 1 }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "ann-before-let-field: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "ann-before-let-field: three members")
+  assertEqual(protectedMemberKindName(decl.members[1]), "field", "ann-before-let-field: second member is a field")
+  assertEqual(protectedMemberName(decl.members[1]), "cap", "ann-before-let-field: field name is cap")
+  assertEqualInt(protectedMemberAnnCount(decl.members[1]), 1, "ann-before-let-field: annotation attached to cap field")
+  assertEqual(protectedMemberFirstAnnName(decl.members[1]), "frozen", "ann-before-let-field: annotation name is frozen")
+}
+
+test "protected type stacked annotations before non-first entry (#5839)" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  @inline_template\n" +
+    "  @cfg(feature = \"fast\")\n" +
+    "  entry bump(): Unit { n = n + 1 }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "stacked-anns-entry: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 2, "stacked-anns-entry: two members")
+  assertEqual(protectedMemberKindName(decl.members[1]), "entry", "stacked-anns-entry: second member is an entry")
+  assertEqualInt(protectedMemberAnnCount(decl.members[1]), 2, "stacked-anns-entry: both stacked annotations attached")
+  assertEqual(
+    protectedMemberFirstAnnName(decl.members[1]),
+    "inline_template",
+    "stacked-anns-entry: first annotation name"
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #5754: dedicated coverage for the #5735 result-as-identifier parser fix.
 // Bare `result` outside a contract clause must parse as an ordinary
