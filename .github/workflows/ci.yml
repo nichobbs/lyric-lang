@@ -243,6 +243,38 @@ jobs:
             exit 1
           fi
           echo "PASS"
+          # Web.serve() failure-observability path (#5260): the server's
+          # /crash route panics during request handling; serve()'s catch-Bug
+          # arm must log the [lyric-web] failure line, stop the listener,
+          # and exit non-zero — not swallow the crash.
+          echo "=== smoke lyric-web/tests/serve_failure_tests.l ==="
+          "$lyric_bin" run lyric-web/tests/serve_failure_tests.l > /tmp/serve_failure.run.log 2>&1 &
+          sf_pid=$!
+          for _ in $(seq 1 20); do
+            if curl -s --max-time 1 http://127.0.0.1:8199/health >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.5
+          done
+          if ! kill -0 "$sf_pid" 2>/dev/null; then
+            echo "FAIL: serve_failure server exited before serving"
+            tail -20 /tmp/serve_failure.run.log
+            exit 1
+          fi
+          curl -s --max-time 3 http://127.0.0.1:8199/crash >/dev/null 2>&1 || true
+          sf_rc=0
+          wait "$sf_pid" || sf_rc=$?
+          if [ "$sf_rc" -eq 0 ]; then
+            echo "FAIL: serve_failure exited 0 after a request-handler panic (#5260)"
+            tail -20 /tmp/serve_failure.run.log
+            exit 1
+          fi
+          if ! grep -q "\[lyric-web\] request handling failed" /tmp/serve_failure.run.log; then
+            echo "FAIL: missing [lyric-web] failure line in serve_failure log (#5260)"
+            tail -20 /tmp/serve_failure.run.log
+            exit 1
+          fi
+          echo "PASS"
 
       # Test multi-package examples with `lyric test --manifest`.
       - name: Test multi-package examples
