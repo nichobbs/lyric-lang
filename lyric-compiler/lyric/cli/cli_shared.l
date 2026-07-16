@@ -382,9 +382,23 @@ func checkSdkVersion(): Int {
 // Resolve the manifest a manifest-consuming command should use: an explicit
 // --manifest wins; otherwise discover the nearest lyric.toml by walking up
 // from the current directory (the project-aware default).
-func discoverManifest(explicit: in Option[String]): Option[String] {
+//
+// An explicit relative path is absolutized against the current directory
+// before being returned (mirroring `discoverManifestForSourceFile` in
+// cli_build.l / D123): a bare relative manifest path like "lyric-web/lyric.toml"
+// has `Path.dirname` == "lyric-web", and workspace-root walk-up
+// (`Ws.findWorkspaceRoot`) from that relative directory can never reach any
+// parent above the current directory — the walk needs an absolute starting
+// point to climb past it (#5626 item 2).
+//
+// `pub` so `cli_shared_self_test.l` can drive it directly (same precedent
+// as `resolveProjectSources`, #5333).
+pub func discoverManifest(explicit: in Option[String]): Option[String] {
   match explicit {
-    case Some(p) -> Some(value = p)
+    case Some(p) -> {
+      val absP = if Path.isAbsolute(p) { p } else { Path.join(Environment.currentDirectory(), p) }
+      Some(value = absP)
+    }
     case None -> Disc.findNearestManifest(Environment.currentDirectory())
   }
 }
@@ -1283,8 +1297,7 @@ func extractNativeAssetPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String
                                           val pkgName = pkgKey.substring(0, slashPos)
                                           val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
                                           val lowerPkgName = pkgName.toLower()
-                                          val fullPath =
-                                            Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), assetPath))
+                                          val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), assetPath))
                                           if File.fileExists(fullPath) {
                                             result.add(fullPath)
                                           }
