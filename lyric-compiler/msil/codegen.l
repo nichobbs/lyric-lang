@@ -16702,7 +16702,24 @@ func emitGenericExternMember(
       // leaves a reference on the stack (#2972).
       val retIsTypeVar = match memberRet { case MTypeVar(_) -> true; case _ -> false }
       if retIsTypeVar and isValueTypeReceiverMsil(lyricRetTy) {
+        // The erased `object` can be null — e.g. `AsyncLocal<object>.Value`
+        // before the ambient slot is ever set (`Std.Task.installToken`'s
+        // FIRST call, #5330).  An unconditional `unbox.any` on a null
+        // reference throws NullReferenceException.  Guard it: a non-null
+        // boxed value unboxes normally; null produces the value type's
+        // zero/default instead — the same "null AsyncLocal reads as
+        // default(T)" semantics `AsyncLocal<T>.Value` itself has for a
+        // genuine `T`, which this erased-`object` getter otherwise breaks.
+        val haveLabel = freshLabelMsil(fctx)
+        val endLabel = freshLabelMsil(fctx)
+        insns.add(MDup)
+        insns.add(MBrTrue(label = haveLabel))
+        insns.add(MPop)
+        pushDefaultValueMsil(cctx, fctx, insns, lyricRetTy)
+        insns.add(MBr(label = endLabel))
+        insns.add(MLabel(id = haveLabel))
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, lyricRetTy)))
+        insns.add(MLabel(id = endLabel))
       }
       true
     }
