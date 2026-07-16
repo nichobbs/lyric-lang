@@ -78,6 +78,7 @@ pub record CodegenCtx {
   tokObjToString: Int  // Object.ToString() instance HASTHIS
   tokExcGetMessage: Int  // Exception.get_Message(): string  instance HASTHIS
   tokObjGetType: Int  // Object.GetType(): Type  instance HASTHIS
+  tokObjGetHashCode: Int  // Object.GetHashCode(): int32  instance HASTHIS
   tokTypeGetName: Int  // Type.get_Name: string  instance HASTHIS
   // List<object> via TypeSpec (for newList() and list operations)
   tokListObjCtor: Int  // List<object>::.ctor()  newobj
@@ -842,6 +843,17 @@ pub func newCodegenCtx(
         objGetTypePs,
         MClassRef(typeRefCode = tdrTypeRef(trType), clrFqn = "System.Type")
       )
+    )
+
+  // Object.GetHashCode(): int32  instance HASTHIS
+  val objGetHashCodePs: List[MsilType] = newList()
+  val tokObjGetHashCode = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      lctx.trObject,
+      "GetHashCode",
+      "obj_gethashcode",
+      buildInstanceMethodSig(objGetHashCodePs, MInt)
     )
 
   // Type.get_Name: string  instance HASTHIS  (Type is reference type; return MString)
@@ -1778,6 +1790,7 @@ pub func newCodegenCtx(
     tokObjToString = tokObjToStr,
     tokExcGetMessage = tokExcGetMessage,
     tokObjGetType = tokObjGetType,
+    tokObjGetHashCode = tokObjGetHashCode,
     tokTypeGetName = tokTypeGetName,
     tokInvariantCulture = tokInvariantCulture,
     tokDateTimeToStringO = tokDateTimeToStringO,
@@ -11564,6 +11577,15 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLabel(id = skipL))
     }
     MVoid
+  } else if (not hasQualifiedOverride) and funcName == "hashCode" {
+    if args.count > 0 {
+      val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      boxIfNeededMsil(cctx, insns, argTy)
+      insns.add(MCallvirt(methodToken = cctx.tokObjGetHashCode))
+    } else {
+      insns.add(MLdcI4(v = 0))
+    }
+    MInt
   } else if (not hasQualifiedOverride) and funcName == "toString" {
     if args.count > 0 {
       val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -16734,6 +16756,20 @@ func emitExternTargetConstMsil(
   }
 }
 
+
+func typeExprToMsilGenBodyOrCtx(
+  cctx: in CodegenCtx,
+  te: in TypeExpr,
+  pkgName: in String,
+  generics: in List[String],
+): MsilType {
+  if generics.count > 0 {
+    typeExprToMsilGenBody(cctx, te, pkgName, generics)
+  } else {
+    typeExprToMsilCtx(cctx, te, pkgName)
+  }
+}
+
 func emitExternTargetBody(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -16780,6 +16816,7 @@ func emitExternTargetBody(
       // (e.g. `func describe(m: in Maybe[Int])` where `Maybe` lives in
       // an imported package) resolve to the correct FQN instead of the
       // legacy `<currentPkg>.<seg>` placeholder.
+      val declGenerics = genericNamesOf(decl.generics)
       val paramTypes: List[MsilType] = newList()
       var pi = 0
       while pi < decl.params.count {
@@ -16794,23 +16831,23 @@ func emitExternTargetBody(
             val innerParamTys: List[MsilType] = newList()
             var ipi2 = 0
             while ipi2 < fnParams.count {
-              innerParamTys.add(typeExprToMsilCtx(cctx, fnParams[ipi2], pkgName))
+              innerParamTys.add(typeExprToMsilGenBodyOrCtx(cctx, fnParams[ipi2], pkgName, declGenerics))
               ipi2 = ipi2 + 1
             }
             val innerRetTy = match resolveValueTaskGenericMsilType(cctx, fnRetTe) {
               case Some(rt) -> rt
-              case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
+              case None -> typeExprToMsilGenBodyOrCtx(cctx, fnRetTe, pkgName, declGenerics)
             }
             buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy)
           }
-          case _ -> typeExprToMsilCtx(cctx, decl.params[pi].ty, pkgName)
+          case _ -> typeExprToMsilGenBodyOrCtx(cctx, decl.params[pi].ty, pkgName, declGenerics)
         }
         val finalTy = if isByrefMode(decl.params[pi].mode) { MByRef(inner = baseTy) } else { baseTy }
         paramTypes.add(finalTy)
         pi = pi + 1
       }
       val retTy = match decl.ret {
-        case Some(te) -> match resolveValueTaskGenericMsilType(cctx, te) { case Some(rt) -> rt; case None -> typeExprToMsilCtx(cctx, te, pkgName) }
+        case Some(te) -> match resolveValueTaskGenericMsilType(cctx, te) { case Some(rt) -> rt; case None -> typeExprToMsilGenBodyOrCtx(cctx, te, pkgName, declGenerics) }
         case None -> MVoid
       }
       // For the FFI/BCL MemberRef signature a nullable *reference* return
@@ -16821,7 +16858,7 @@ func emitExternTargetBody(
       // and the call mis-binds with MissingMethodException.  The Lyric MethodDef
       // return stays `object` (assignable from the reference type on `ret`).
       val ffiRetTy = match decl.ret {
-        case Some(te) -> match te.kind { case TNullable(inner) -> typeExprToMsilCtx(cctx, inner, pkgName); case _ -> retTy }
+        case Some(te) -> match te.kind { case TNullable(inner) -> typeExprToMsilGenBodyOrCtx(cctx, inner, pkgName, declGenerics); case _ -> retTy }
         case None -> MVoid
       }
 

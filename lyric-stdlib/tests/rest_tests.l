@@ -123,6 +123,26 @@ func testJsonDocMissingFieldNotPresent(): Unit {
   disposeJson(doc)
 }
 
+func testMalformedJsonThrowsBug(): Unit {
+  try {
+    val doc = parseJson("{ malformed }")
+    disposeJson(doc)
+    assertTrue(false, "malformed JSON should have thrown Bug")
+  } catch Bug as b {
+    assertTrue(b.message.length > 0, "caught Bug with message: " + b.message)
+  }
+}
+
+func testEmptyJsonThrowsBug(): Unit {
+  try {
+    val doc = parseJson("")
+    disposeJson(doc)
+    assertTrue(false, "empty JSON should have thrown Bug")
+  } catch Bug as b {
+    assertTrue(b.message.length > 0, "caught Bug with message: " + b.message)
+  }
+}
+
 func main(): Int {
   testTransportMessageEmbedsUrl()
   testInvalidUrlMessageEmbedsUrl()
@@ -131,6 +151,9 @@ func main(): Int {
   testDisposeJsonAfterRoot()
   testJsonDocSimpleArray()
   testJsonDocMissingFieldNotPresent()
+  testMalformedJsonThrowsBug()
+  testEmptyJsonThrowsBug()
   println("rest_tests: ok")
   return 0
 }
+

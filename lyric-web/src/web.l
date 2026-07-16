@@ -65,6 +65,7 @@ import Std.Environment as Env
 import Std.Parse
 import Std.Collections
 import Std.String
+import Std.Json
 import Std.HttpServer
 import Std.File
 import Std.Encoding as Enc
@@ -275,16 +276,27 @@ func utf8Encode(s: in String): slice[Byte] {
 }
 
 /// A `application/json; charset=utf-8` response with the given raw JSON body.
+/// Automatically quote-escapes the body string if it is not already a valid JSON structure.
 @stable(since = "0.2")
 pub func json(status: in Int, body: in String): Response {
   val empty: Map[String, String] = newMap()
+  var finalBody = body
+  match tryParseJson(body) {
+    case Ok(doc) -> {
+      disposeJson(doc)
+    }
+    case Err(_) -> {
+      finalBody = encodeString(body)
+    }
+  }
   return Response(
     status = status,
     contentType = "application/json; charset=utf-8",
-    bodyBytes = utf8Encode(body),
+    bodyBytes = utf8Encode(finalBody),
     headers = empty
   )
 }
+
 
 /// A `text/plain; charset=utf-8` response.
 @stable(since = "0.2")

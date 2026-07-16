@@ -156,6 +156,40 @@ func testTryGetLong(): Unit {
   }
 }
 
+func testTryParseJson(): Unit {
+  // Valid JSON
+  match tryParseJson("{\"x\":1}") {
+    case Ok(doc) -> {
+      val root = rootElement(doc)
+      assertEqualInt(getInt32(getProperty(root, "x")), 1, "tryParseJson parses valid JSON")
+      disposeJson(doc)
+    }
+    case Err(msg) -> assertTrue(false, "tryParseJson failed on valid JSON: " + msg)
+  }
+
+  // Malformed JSON
+  match tryParseJson("{ malformed }") {
+    case Ok(doc) -> {
+      disposeJson(doc)
+      assertTrue(false, "tryParseJson should have failed on malformed JSON")
+    }
+    case Err(msg) -> {
+      assertTrue(msg.length > 0, "tryParseJson returned error for malformed JSON: " + msg)
+    }
+  }
+
+  // Empty JSON
+  match tryParseJson("") {
+    case Ok(doc) -> {
+      disposeJson(doc)
+      assertTrue(false, "tryParseJson should have failed on empty string")
+    }
+    case Err(msg) -> {
+      assertTrue(msg.length > 0, "tryParseJson returned error for empty string: " + msg)
+    }
+  }
+}
+
 func main(): Unit {
   testParseString()
   testParseInt()
@@ -169,5 +203,7 @@ func main(): Unit {
   testGetRawText()
   testTryGetInt()
   testTryGetLong()
+  testTryParseJson()
   println("json_tests: ok")
 }
+
