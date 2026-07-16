@@ -111,11 +111,7 @@ pub func pipeParseAndErase(
   if gate("", bdRes.diagnostics) {
     return None
   }
-  val cfgRes = Cfg.applyCfgErasure(
-    Cfg.withTargetFeature(activeFeatures, targetName),
-    declaredFeatures,
-    bdRes.file
-  )
+  val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(activeFeatures, targetName), declaredFeatures, bdRes.file)
   if gate("", cfgRes.diagnostics) {
     return None
   }

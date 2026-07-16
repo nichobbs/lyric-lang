@@ -17,7 +17,6 @@ import Lyric.Lexer
 import Lyric.Parser
 
 // ── Public surface ──────────────────────────────────────────────────────────
-
 /// One resolved build define (key/value). The caller precedence-resolves the
 /// set before handing it here (CLI over manifest over the well-known defines).
 pub record Define {
@@ -63,7 +62,6 @@ pub func mergeDefines(base: in List[Define], overrides: in List[Define]): List[D
 }
 
 // ── Private helpers ─────────────────────────────────────────────────────────
-
 func hasKey(defines: in List[Define], key: in String): Bool {
   var i = 0
   while i < defines.count {
@@ -134,7 +132,6 @@ func stringLiteralExpr(text: in String, sp: in Span): Expr {
 }
 
 // ── Pass ────────────────────────────────────────────────────────────────────
-
 /// Apply `@build_const` substitution to a parsed file. A module-level `val`
 /// annotated `@build_const("K")` has its initializer replaced with a
 /// `String`-literal node holding define `K`'s value, or is left untouched
@@ -158,8 +155,12 @@ pub func applyBuildDefines(defines: in List[Define], sf: in SourceFile): BuildDe
         hasAnn = true
         annSpan = a.span
         match buildConstKey(a) {
-          case Some(k) -> { keyOpt = Some(value = k) }
-          case None -> { malformed = true }
+          case Some(k) -> {
+            keyOpt = Some(value = k)
+          }
+          case None -> {
+            malformed = true
+          }
         }
       }
       ai = ai + 1
@@ -170,7 +171,13 @@ pub func applyBuildDefines(defines: in List[Define], sf: in SourceFile): BuildDe
       match it.kind {
         case IVal(decl) -> {
           if malformed {
-            diags.add(errorDiagnostic("F0032", "@build_const requires a single string-literal key, e.g. @build_const(\"version\")", annSpan))
+            diags.add(
+              errorDiagnostic(
+                "F0032",
+                "@build_const requires a single string-literal key, e.g. @build_const(\"version\")",
+                annSpan
+              )
+            )
             outItems.add(it)
           } else if not valTypeOkForString(decl) {
             diags.add(errorDiagnostic("F0030", "@build_const may only annotate a String val (docs/60 §4)", annSpan))
@@ -180,8 +187,19 @@ pub func applyBuildDefines(defines: in List[Define], sf: in SourceFile): BuildDe
               case Some(k) -> {
                 match lookupDefine(defines, k) {
                   case Some(v) -> {
-                    val newDecl = ValDecl(pattern = decl.pattern, ty = decl.ty, init = stringLiteralExpr(v, decl.init.span), span = decl.span)
-                    val newItem = Item(docComments = it.docComments, annotations = it.annotations, visibility = it.visibility, kind = IVal(decl = newDecl), span = it.span)
+                    val newDecl = ValDecl(
+                      pattern = decl.pattern,
+                      ty = decl.ty,
+                      init = stringLiteralExpr(v, decl.init.span),
+                      span = decl.span
+                    )
+                    val newItem = Item(
+                      docComments = it.docComments,
+                      annotations = it.annotations,
+                      visibility = it.visibility,
+                      kind = IVal(decl = newDecl),
+                      span = it.span
+                    )
                     outItems.add(newItem)
                   }
                   case None -> outItems.add(it)

@@ -873,6 +873,21 @@ func cmdBuild(argv: in slice[String]): Int {
   if noRestore and positional.count > 0 {
     printErr("build: warning: --no-restore has no effect without a project manifest")
   }
+  // docs/60 build defines: `--define` is currently applied only on the
+  // single-file `--target dotnet` compile path (`EmitRequest.defines`).
+  // Reject it up front on the paths where it would otherwise be silently
+  // dropped — project builds and JVM/native — rather than mislead the user
+  // (project-path + JVM/native parity tracked in #5852).
+  if cliDefines.count > 0 {
+    val singleFileDotnet = match target { case Dotnet -> positional.count > 0; case _ -> false }
+    val hasManifest = match manifestArg { case Some(_) -> true; case None -> false }
+    if (not singleFileDotnet) or hasManifest {
+      printErr(
+        "build: --define is currently supported only for single-file --target dotnet builds (project/JVM/native parity tracked in #5852)"
+      )
+      return 1
+    }
+  }
   // Project-mode: `lyric build --manifest lyric.toml`, or no positional source
   // at all (discover the nearest lyric.toml by walking up from the cwd).
   if positional.count == 0 {

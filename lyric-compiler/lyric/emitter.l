@@ -2431,7 +2431,13 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
       }
     }
   }
-  val ok = MsilBridge.compileToMsilWithVersion(req.source, req.outputPath, stdlibSources, req.packageVersion, req.defines)
+  val ok = MsilBridge.compileToMsilWithVersion(
+    req.source,
+    req.outputPath,
+    stdlibSources,
+    req.packageVersion,
+    req.defines
+  )
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
