@@ -1046,6 +1046,14 @@ jobs:
       # return type's default before MRet when the tail lowers to MVoid,
       # mirroring the JVM emitNeverTailReturn.  Both targets; the JVM half runs
       # in `compiler-self-tests-jvm`.  Imports only `Std.*`.
+      # Extra barrier (batch 1a-split-2, #5859): the sub-batch below the
+      # 1a-split barrier had grown to 13 concurrent steps — one below the
+      # ~14-step cap the header documents (and the exit-135 SIGBUS flake
+      # #4975 correlates with concurrent-step load well before that cap).
+      # Split again rather than serialize, per the header note.
+      - name: Wait for parallel tests (batch 1a-split-2)
+        wait-all: true
+
       # Control-flow terminator self-test on dotnet (#5854) — historically a
       # jvm-only file (its jvm step lives in compiler-self-tests-jvm), but the
       # record/impl-method Never-tail fix makes it pass 17/17 on dotnet too;

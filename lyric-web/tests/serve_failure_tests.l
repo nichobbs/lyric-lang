@@ -38,21 +38,15 @@
 //! precedent of a hardcoded port for a single-purpose CI smoke program;
 //! 8199 avoids both of those already-claimed ports.
 //!
-//! CI wiring needed (not yet added — this repo's policy is that CI workflow
-//! edits are called out for the session driving CI, not made inline here):
-//! a step in `.github/workflows/ci.yml`, alongside "Run single-file
-//! examples" (which smoke-tests `examples/rest_service.l` the same way),
-//! that:
-//!   1. `lyric build lyric-web/tests/serve_failure_tests.l -o <dll>`
-//!   2. Runs it in the background, redirecting stdout+stderr to a log file.
-//!   3. Polls `curl -s --max-time 1 -o /dev/null http://127.0.0.1:8199/health`
-//!      in a bounded loop (as the existing rest_service / jvm_server_smoke
-//!      steps do) until it succeeds or the process has already exited.
-//!   4. `curl -s --max-time 3 http://127.0.0.1:8199/crash` (response may be
-//!      truncated/reset — not asserted; the crash happens while handling it).
-//!   5. `wait` on the background PID, assert the exit code is non-zero.
-//!   6. Assert the log file contains `"[lyric-web] request handling failed
-//!      on http://127.0.0.1:8199/: intentional crash for Web.serve() failure-path test"`.
+//! CI wiring: driven by the "Run single-file examples" step in
+//! `.github/workflows/ci.yml` (the `=== smoke
+//! lyric-web/tests/serve_failure_tests.l ===` block beside the
+//! `examples/rest_service.l` smoke): the step runs this program in the
+//! background via `lyric run`, polls `/health` in a bounded loop, hits
+//! `/crash` (response may be truncated/reset — not asserted; the crash
+//! happens while handling it), waits on the PID asserting a non-zero exit
+//! code, and asserts the log contains
+//! `"[lyric-web] request handling failed"`.
 package Web.ServeFailureTest
 
 import Std.Core

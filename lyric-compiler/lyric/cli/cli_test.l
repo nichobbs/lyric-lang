@@ -234,9 +234,7 @@ func cmdTest(argv: in slice[String]): Int {
     match Disc.findNearestManifestDetailed(Environment.currentDirectory()) {
       case FoundManifest(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, cliFeatures, noDefaultFeatures, allFeatures)
       case FoundBrokenManifest(p, error) -> {
-        printErr(
-          "warning: ignoring lyric.toml at '" + p + "': " + ManifestError.message(error) + " (treating as no manifest found)"
-        )
+        printErr(Disc.brokenManifestWarning(p, error))
         printErr("test: missing source file and no lyric.toml found")
         return 1
       }

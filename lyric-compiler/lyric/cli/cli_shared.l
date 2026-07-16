@@ -410,7 +410,7 @@ pub func discoverManifest(explicit: in Option[String]): Option[String] {
       val absP = if Path.isAbsolute(p) { p } else { Path.join(Environment.currentDirectory(), p) }
       Some(value = absP)
     }
-    case None -> match Disc.findNearestManifestDetailed(Environment.currentDirectory()) { case FoundManifest(path) -> Some(value = path); case FoundBrokenManifest(path, error) -> { printErr("warning: ignoring lyric.toml at '" + path + "': " + ManifestError.message(error) + " (treating as no manifest found)"); None }; case NoManifestFound -> None }
+    case None -> match Disc.findNearestManifestDetailed(Environment.currentDirectory()) { case FoundManifest(path) -> Some(value = path); case FoundBrokenManifest(path, error) -> { printErr(Disc.brokenManifestWarning(path, error)); None }; case NoManifestFound -> None }
   }
 }
 

@@ -32,9 +32,7 @@ pub func main(argv: in slice[String]): Int {
         return cmdBuild(buildArgv.toArray())
       }
       case FoundBrokenManifest(p, error) -> {
-        printErr(
-          "warning: ignoring lyric.toml at '" + p + "': " + ManifestError.message(error) + " (treating as no manifest found)"
-        )
+        printErr(Disc.brokenManifestWarning(p, error))
         printUsage()
         return 1
       }
