@@ -770,9 +770,10 @@ All are provisional pending weaver integration.
 | `Std.SecureRandomHost`   | `secure_random_host.l`       | 1      | 0           |
 | `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
+| `Std.TlsHost`            | `tls_host.l`                 | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
-| **Total**                |                              | **23** | **2**       |
+| **Total**                |                              | **24** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -801,16 +802,19 @@ recorded in the §19 baseline.
 | `Std.RandomHost`         | `random_host.l`              | 1      | 0           |
 | `Std.SecureRandomHost`   | `secure_random_host.l`       | 1      | 0           |
 | `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
+| `Std.TlsHost`            | `tls_host.l`                 | 1      | 0           |
 | `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
 | `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
-| **Total**                |                              | **21** | **0**       |
+| **Total**                |                              | **22** | **0**       |
 
 ### Combined total
 
-.NET (23 stable + 2 provisional = 25) + JVM (21 stable + 0 provisional =
-21) = **46** `@axiom` annotations covering the entire extern boundary
-across both targets.  The JVM `Std.HttpHost` axiom was re-scoped from the
+.NET (24 stable + 2 provisional = 26) + JVM (22 stable + 0 provisional =
+22) = **48** `@axiom` annotations covering the entire extern boundary
+across both targets.  `Std.TlsHost` (both targets) joined the boundary
+with the `Std.Tls` PEM certificate/key loading module (docs/61 phase 1,
+epic #5874).  The JVM `Std.HttpHost` axiom was re-scoped from the
 retired phantom `lyric.stdlib.jvm.HttpClientHost` shim to the real
 `java.net.http.HttpClient` boundary, and `Std.HttpServer` gained its own
 axiom when its kernel was rewritten onto `com.sun.net.httpserver.HttpServer`
@@ -871,6 +875,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.RegexHost` | `regex_host.l` | System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts |
 | `dotnet` | `Std.SecureRandomHost` | `secure_random_host.l` | System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output |
 | `dotnet` | `Std.TimeHost` | `time_host.l` | System.DateTime / System.TimeSpan / System.DateTimeOffset / System.Threading.Thread conform to their documented .NET contracts |
+| `dotnet` | `Std.TlsHost` | `tls_host.l` | System.Security.Cryptography.X509Certificates operations conform to their documented .NET contracts |
 | `dotnet` | `Std.UnicodeHost` | `unicode_host.l` | System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32 |
 | `dotnet` | `Std.UuidHost` | `uuid_host.l` | System.Guid conforms to its documented .NET contract |
 | `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
@@ -892,6 +897,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.RegexHost` | `regex_host.l` | java.util.regex.Pattern and java.util.regex.Matcher conform to their documented JVM contracts |
 | `jvm` | `Std.SecureRandomHost` | `secure_random_host.l` | java.security.SecureRandom conforms to its documented JDK contracts and produces cryptographically strong output |
 | `jvm` | `Std.TimeHost` | `time_host.l` | java.time.* / java.lang.Math.round / java.lang.System.nanoTime / java.lang.Thread.sleep conform to their documented JVM / ISO 8601 contracts |
+| `jvm` | `Std.TlsHost` | `tls_host.l` | java.security.cert / java.security.KeyFactory / java.security.Signature operations conform to their documented JVM contracts |
 | `jvm` | `Std.UnicodeHost` | `unicode_host.l` | java.lang.Character.getType conforms to its documented JVM contract; jvmCategoryToNetConvention correctly cross-references it to the .NET UnicodeCategory convention via Unicode General_Category |
 | `jvm` | `Std.UuidHost` | `uuid_host.l` | java.util.UUID conforms to its documented JVM contract |
 
