@@ -30,9 +30,12 @@ pub union FindManifestResult {
   /// Found a lyric.toml that parsed successfully as a package manifest.
   case FoundManifest(path: String)
   /// Found a lyric.toml that exists and is readable but failed to parse as
-  /// a package manifest with a real error (`ParseError` / `InvalidField` —
-  /// as opposed to `MissingField`, which just means "not a package manifest,
-  /// e.g. a virtual workspace root", and does not stop the walk).  The walk
+  /// a package manifest with a real error: a `ParseError`/`InvalidField`,
+  /// or a `MissingField` on a file that DOES carry a `[package]` header
+  /// (#5862 — an incomplete `[package]` table, or a broken other section
+  /// like `[nuget]`, is a real manifest with an error, not a workspace
+  /// root).  Only a `MissingField` on a file with no `[package]` header at
+  /// all (e.g. a virtual workspace root) keeps the walk climbing.  The walk
   /// stops here rather than continuing past it to some unrelated ancestor
   /// manifest: silently adopting a grandparent's config while ignoring a
   /// real error in the nearest candidate would be worse than reporting "no
@@ -71,9 +74,23 @@ pub func findNearestManifestDetailed(startDir: in String): FindManifestResult {
             keepWalking = false
           }
           case Err(e) -> match e {
-            // Not a package manifest (e.g. a virtual workspace root without
-            // `[package]`) — the pre-#4881 behavior, keep walking.
-            case MissingField(_, _) -> ()
+            // `MissingField` alone is ambiguous (#5862): `assemblePackage`
+            // emits the same MissingField("package", "name") for "no
+            // [package] table at all" (e.g. a virtual workspace root — the
+            // pre-#4881 keep-walking case) and "a [package] table that
+            // exists but is missing a required field" (a real, broken
+            // package manifest — walking past it silently misroutes the
+            // build to an ancestor, the exact bug class #4881 fixed for
+            // ParseError). Other sections' MissingField errors (e.g. a
+            // [nuget] entry missing a field) can also surface here and
+            // always mean a real-but-broken package manifest. Disambiguate
+            // on whether the file has a [package] header at all.
+            case MissingField(_, _) -> {
+              if Mf.textHasPackageSection(text, tomlPath) {
+                result = FoundBrokenManifest(path = tomlPath, error = e)
+                keepWalking = false
+              }
+            }
             case ParseError(_, _, _, _) -> {
               result = FoundBrokenManifest(path = tomlPath, error = e)
               keepWalking = false

@@ -1261,6 +1261,22 @@ func assembleRegistry(entries: in List[Entry]): Option[RegistryConfig] {
 ///
 /// `text` is the raw UTF-8 source; `filePath` is used only for error messages.
 ///
+/// True when the TOML text contains a `[package]` section header, regardless
+/// of whether the section's required fields are complete (#5862).  Used by
+/// `Lyric.Discovery`'s upward walk to distinguish "not a package manifest at
+/// all" (e.g. a virtual `[workspace]` root — keep walking) from "a package
+/// manifest that is present but incomplete" (stop and report):
+/// `assemblePackage` emits the identical `MissingField("package", "name")`
+/// for both shapes, so the error alone cannot make that distinction.  A text
+/// that does not even tokenize returns false — the caller sees a
+/// `ParseError` from `parseManifest` on that path, never this predicate.
+pub func textHasPackageSection(text: in String, filePath: in String): Bool {
+  match collectEntries(text, filePath) {
+    case Err(_) -> false
+    case Ok(entries) -> hasSection(entries, "package")
+  }
+}
+
 /// Returns `Ok(manifest)` on success or `Err(ManifestError)` on the first
 /// fatal parse or validation error.  Unknown keys in recognised sections are
 /// silently ignored in this bootstrap-grade parser.

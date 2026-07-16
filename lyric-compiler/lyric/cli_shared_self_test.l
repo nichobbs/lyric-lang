@@ -747,6 +747,41 @@ test "findNearestManifestDetailed: a workspace-root-only lyric.toml (no [package
   }
 }
 
+// #5862: a `[package]` table that EXISTS but is missing a required field
+// emits the same `MissingField("package", "name")` as "no [package] table
+// at all" — before the fix the walk treated both as "not a package manifest"
+// and silently adopted the valid ancestor, reproducing the exact misroute
+// #4881 fixed for ParseError via a different malformed-manifest shape.
+test "findNearestManifestDetailed: an incomplete [package] table nearer than a valid ancestor is reported, not skipped (#5862)" {
+  val root = freshTempDir("incomplete-pkg-above-valid")
+  defer {
+    cleanup(root)
+  }
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[package]\nname = \"Root\"\nversion = \"0.1.0\"\n")
+  val childDir = Path.join(root, "child")
+  val grandchildDir = Path.join(childDir, "grandchild")
+  match File.createDir(grandchildDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dir " + grandchildDir + ": " + IOError.message(e))
+  }
+  // Valid TOML with a [package] header, but the required `name` field is
+  // missing — parses with MissingField("package", "name"), same as a file
+  // with no [package] at all.
+  writeFileOrPanic(Path.join(childDir, "lyric.toml"), "[package]\nversion = \"1.0.0\"\n")
+
+  match Disc.findNearestManifestDetailed(grandchildDir) {
+    case FoundBrokenManifest(path, error) -> {
+      assertEqual(path, Path.join(childDir, "lyric.toml"), "reports the nearer, incomplete manifest's path")
+      match error {
+        case MissingField(_, _) -> assertTrue(true, "incomplete [package] surfaces as MissingField")
+        case _ -> panic("expected MissingField for the incomplete [package] table")
+      }
+    }
+    case FoundManifest(path) -> panic("expected FoundBrokenManifest, but silently found " + path + " (walked past the incomplete [package] manifest)")
+    case NoManifestFound -> panic("expected FoundBrokenManifest, got NoManifestFound")
+  }
+}
+
 test "findNearestManifestDetailed: no lyric.toml anywhere reports NoManifestFound" {
   val root = freshTempDir("nothing-found")
   defer {
