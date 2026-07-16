@@ -16404,7 +16404,7 @@ end-to-end, not just compiles).
 ## D-progress-684 — Fix #5774: un-annotated closure-typed locals bound from a HOF call silently miscompiled (found while investigating #5304)
 
 Investigating #5304 (the pre-existing bug blocking the `UnixSocketHttpClient.cs`
-→ Lyric migration, D-progress-609) surfaced a more serious defect than #5304's
+→ Lyric migration, D-progress-686) surfaced a more serious defect than #5304's
 original description ("a non-last package's closure `.ctor` fails to
 resolve", a build-time panic).  The actual defect, filed as #5774, is a
 **silent, non-deterministic miscompile** that reproduces in a plain
@@ -16502,12 +16502,12 @@ panic recurs post-fix on that specific shape, that is real evidence of a
 second, distinct residual defect rather than reason to reopen this one.
 
 **Unblocks:** the Unix Socket migration (`UnixSocketHttpClient.cs` →
-`Std.HttpHost`, D-progress-609) is no longer blocked on the silent-miscompile
+`Std.HttpHost`, D-progress-686) is no longer blocked on the silent-miscompile
 risk #5774 found — the migration's target shape (a capturing lambda inside
 `Std.HttpHost`, consumed as a typed value) is exactly what this fix covers
 and regression-tests.
 
-**Related:** #5774, #5790, #5304, D-progress-609, D-progress-674,
+**Related:** #5774, #5790, #5304, D-progress-686, D-progress-674,
 docs/50-ffi-delegates-proposal.md, #5511, #5735.
 
 ## D-progress-685 — `Lyric.Derives` synthesises `fromJson`; `toJson`/`fromJson` gain `slice[T]` and nested-record support; MSIL async pre-scan/emission mismatches fixed (#5723)
@@ -16605,6 +16605,125 @@ like `Std.Json.getDouble(...)`); minimal repros for both the
 
 **Related:** #5723, #5725, #5730, #5733, #5734, docs/10-bootstrap-progress.md
 D-progress-030, D-progress-060.
+
+---
+
+## D-progress-686 — Migrate `UnixSocketHttpClient.cs` (F# host assembly) to pure Lyric (`Std.HttpHost`); three latent `emitGenericExternMember` bugs found and fixed
+
+**Context:** docs/50-ffi-delegates-proposal.md (D122) shipped typed FFI
+delegate bridging bounded to `@externTarget` functions' own parameters, with
+`UnixSocketHttpClient.cs`'s migration to pure Lyric called out as the
+concrete follow-up that would exercise it end-to-end. That C# file
+(`bootstrap/src/Lyric.Cli.Aot/UnixSocketHttpClient.cs`) implemented
+`hostClientWithUnixSocket`/`hostClientWithUnixSocketAndRedirects`/
+`hostClientWithUnixSocketNoRedirects` by constructing a `SocketsHttpHandler`
+with a `ConnectCallback` that dials a raw `Socket`/`NetworkStream` over
+`UnixDomainSocketEndPoint` — the one remaining `Std.HttpHost` code path with a
+CLI-host-assembly dependency (docs/59 §7.3's MAJOR finding). D-progress-684
+(#5774) removed the closure-miscompile risk blocking this migration.
+
+**What shipped:** `lyric-stdlib/std/_kernel/http_host.l` now implements all
+three `hostClientWithUnixSocket*` functions natively — `Socket`/
+`NetworkStream`/`UnixDomainSocketEndPoint` externs plus a `ConnectCallback`
+lambda (`(SocketsHttpConnectionContext, CancellationToken) ->
+ValueTask<Stream>`) constructed via D122's typed-delegate binding. The C#
+file is deleted; `Lyric.Cli.Aot` no longer carries any HTTP/socket logic.
+Verified end-to-end against a real local `dockerd` over a Unix socket (both
+the 7-package minimal slice and the full 65-package stdlib bundle) and via a
+new `typed_ffi_delegate_self_test.l` regression case.
+
+**Three separate, previously-latent bugs in `emitGenericExternMember`
+(`msil/codegen.l`'s auto-FFI path for members of a generic BCL declaring
+type, e.g. `ConcurrentDictionary`2`) surfaced constructing and returning a
+`System.Threading.Tasks.ValueTask`1[System.IO.Stream]`-shaped extern value —
+none previously exercised because no prior `@externTarget` in the codebase
+returned a *value-type* generic instantiation from a constructor call:**
+
+1. **Return-type erasure (two separate computations).**
+   `addPackageTokens`'s call-site return-type registry (consulted by every
+   CALLER of an extern function) and `lowerFuncMsil`'s own `.method` SIGNATURE
+   return-type computation both used the bracket-erasing `typeExprToMsilCtx`
+   for a `ValueTask`1[...]`-shaped `extern type` return, instead of the
+   `resolveValueTaskGenericMsilType` construction `emitExternTargetBody`
+   already used for the function's own body. With the signature fix alone
+   missing, the `.method` itself was declared to return `object` while its
+   body pushed a bare unboxed value-type struct and `ret`'d — invalid at the
+   metadata level, invisible to `ilverify`, surfacing only as
+   `System.TypeLoadException: Could not load type '...ValueTask`1' from
+   assembly '<CurrentAssembly>'` the moment a caller invoked the method.
+2. **Ctor overload ambiguity resolved by table order, not argument type.**
+   `ValueTask`1` has three constructors, two of them same-arity —
+   `.ctor(TResult result)` and `.ctor(Task<TResult> task)`. `emitGenericExternMember`
+   resolved the declaring generic type's member by `(name, arity)` alone
+   (`Mdr.decodeExternMethodSig`), which cannot distinguish the two and
+   silently binds whichever comes first in the Method table; picking
+   `.ctor(Task<TResult>)` leaked the caller's concrete (non-`Task`) argument
+   type into that ctor's `!0` slot instead of the real BCL `!0`. Fixed by
+   trying `Mdr.resolveExternMethodScored` (argument-type-scored resolution)
+   first, falling back to the arity-only decode only when scoring is
+   unavailable. Scoring itself needed a new `metadata_reader.l` `scoreSigType`
+   arm: a parameter that is the declaring type's own `STVar` (`!0`) now
+   scores as a match (1) for any concrete argument — previously every `STVar`
+   param scored `-1` (hard reject) against every argument, so
+   `resolveExternMethodScored` could never disambiguate ANY overload set
+   involving the declaring type's own type parameter, silently making it dead
+   code for exactly this shape. (`resolvedSigToMsil`, a sibling conversion
+   function on a different — non-generic-declaring-type — resolution path,
+   had the same missing-`STVar`-case gap; fixed defensively even though not on
+   this bug's hot path, so that OTHER path doesn't regress the same way.)
+3. **GENERICINST TypeSpec tagged CLASS instead of VALUETYPE.**
+   `emitGenericExternMember`'s TypeSpec-building code always used
+   `buildGenericInstBlobWithCtx` (ECMA-335 §II.23.2.12 `ELEMENT_TYPE_CLASS`
+   head tag) — correct for the reference-type generics
+   (`ConcurrentDictionary`2`, `List`1`, …) the function was originally written
+   for, but wrong for a value-type declaring generic like `ValueTask`1`: the
+   resulting `TypeSpec` disagreed with the real struct's kind, faulting at
+   load time with `TypeLoadException: ... due to value type mismatch` even
+   though the TypeRef and type-argument encoding were otherwise byte-correct.
+   Root-caused via a raw `System.Reflection.Metadata` dump of the failing
+   assembly (`ilverify` and `ilspycmd`'s decompiled text view both missed it —
+   the malformed byte lives in a single GENERICINST tag bit, invisible at that
+   level of inspection) after confirming the failure was Lyric-specific (a
+   hand-written equivalent C# program worked). Fixed by checking
+   `Mdr.isValueTypeFqn` and picking `buildValueTypeGenericInstBlobWithCtx`
+   accordingly — also fixes the `ctor` return-type-args reuse in bug 1's
+   codepath (the TypeSpec that both the `newobj` and the function's declared
+   return type must agree on).
+   A companion fourth issue (duplicate `ValueTask`1` TypeRef rows registered
+   by two mutually-unaware interning paths — `cctx.trValueTask1`'s direct
+   registration vs. `internFfiTypeRef`'s own cache) was found and fixed
+   alongside (`buildValueTaskGenericMsilTypeFromClrFqn` now reuses
+   `cctx.trValueTask1` directly; `newCodegenCtx` seeds `ffiTypeRefs`' cache
+   with it). Verified via metadata dump to be real (two distinct TypeRef rows
+   both nominally `ValueTask`1`) but NOT sufficient alone to fix the runtime
+   fault — bugs 1–3 above were still required.
+
+**Scope boundary — instance-method calls on a value-type generic-declaring
+extern receiver remain unsupported.** An attempt to add a self-test probing
+`ValueTask`1.get_IsCompletedSuccessfully()` (an INSTANCE call, as opposed to
+the `.ctor`/return-value shape bugs 1–3 fix) hit a fourth, structurally
+different gap: the receiver parameter arrives `object`-boxed (no
+parameter-type analog of bug 1's return-type special-casing exists), so
+`unbox`/`unbox.any` cannot in general target the correct closed
+instantiation — and even a value that happens to be correct for one call site
+(via `ctxAddTypeSpec`'s key-based dedup coincidentally reusing an
+already-registered closed TypeSpec from an unrelated ctor call in the same
+compilation unit) is not a reliable fix for the general case. Not exercised
+by the Unix Socket migration (which only constructs and returns `ValueTask`1`,
+never calls an instance method on one), so left unfixed rather than shipping
+a fix that only works by coincidence; the self-test was simplified to cover
+the construct-and-return shape only. Extending parameter types to the same
+`resolveValueTaskGenericMsilType`-style special-casing bug 1 gave return
+types (or a more general value-type-receiver marshaling scheme) is separate,
+larger-scope follow-up work, tracked in #5809. Rather than leave this an
+unguarded gap where an `@externInstance` wrapper on this shape would compile
+clean and only fault at runtime, `emitGenericExternMember` now explicitly
+declines (panics with a clear diagnostic) an `isValType and isInstance`
+combination instead of emitting a guaranteed-invalid `castclass` against a
+VALUETYPE-tagged TypeSpec.
+
+**Related:** docs/50-ffi-delegates-proposal.md, D122, D-progress-684, #5774,
+docs/59-compiler-stdlib-deep-review.md §7.3, #5809.
 
 ---
 

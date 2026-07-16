@@ -47,6 +47,20 @@ extern type SocketsHttpHandler = "System.Net.Http.SocketsHttpHandler"
 
 extern type UnixDomainSocketEndPoint = "System.Net.Sockets.UnixDomainSocketEndPoint"
 
+extern type Socket = "System.Net.Sockets.Socket"
+
+extern type SocketAddressFamily = "System.Net.Sockets.AddressFamily"
+
+extern type SocketKind = "System.Net.Sockets.SocketType"
+
+extern type SocketProtocolType = "System.Net.Sockets.ProtocolType"
+
+extern type NetworkStream = "System.Net.Sockets.NetworkStream"
+
+extern type SocketsHttpConnectionContext = "System.Net.Http.SocketsHttpConnectionContext"
+
+extern type ValueTaskOfStream = "System.Threading.Tasks.ValueTask`1[System.IO.Stream]"
+
 // =====================================================================
 // Primitive externs (private to this kernel file).  These bind the
 // individual BCL members; the public `host*` helpers compose them.
@@ -105,6 +119,73 @@ func socketsSetAllowAutoRedirect(h: in SocketsHttpHandler, v: in Bool): Unit = (
 @externInstance
 @externTarget("System.Net.Http.SocketsHttpHandler.set_MaxAutomaticRedirections")
 func socketsSetMaxAutomaticRedirections(h: in SocketsHttpHandler, n: in Int): Unit = ()
+
+@externTarget("System.Net.Http.HttpClient..ctor")
+func newClientFromSocketsHandler(handler: in SocketsHttpHandler): HttpClientHandle = ()
+
+@externTarget("System.Net.Sockets.AddressFamily.Unix")
+func addressFamilyUnix(): SocketAddressFamily = ()
+
+@externTarget("System.Net.Sockets.SocketType.Stream")
+func socketKindStream(): SocketKind = ()
+
+@externTarget("System.Net.Sockets.ProtocolType.Unspecified")
+func protocolTypeUnspecified(): SocketProtocolType = ()
+
+@externTarget("System.Net.Sockets.Socket..ctor")
+func newSocket(family: in SocketAddressFamily, kind: in SocketKind, protocolType: in SocketProtocolType): Socket = ()
+
+@externInstance
+@externTarget("System.Net.Sockets.Socket.Connect")
+func socketConnect(s: in Socket, endpoint: in UnixDomainSocketEndPoint): Unit = ()
+
+@externInstance
+@externTarget("System.Net.Sockets.Socket.Dispose")
+func socketDispose(s: in Socket): Unit = ()
+
+@externTarget("System.Net.Sockets.NetworkStream..ctor")
+func newNetworkStream(s: in Socket, ownsSocket: in Bool): NetworkStream = ()
+
+// `ValueTask`1` has no implicit-conversion operator — the C# compiler's
+// `return value;` sugar inside an `async ValueTask<T>` method lowers directly
+// to `newobj ValueTask`1::.ctor(!0)`, not an `op_Implicit` call (there isn't
+// one on this type; only `ValueTask`, the non-generic sibling, defines
+// `FromResult`/no implicit operators either). `ValueTask`1` has THREE
+// constructors — `(TResult result)`, `(Task<TResult> task)`, and
+// `(IValueTaskSource<TResult>, short)` — so arity-only `@externTarget`
+// resolution alone cannot tell the first two apart (compiler W0008). The
+// metadata-direct resolver now scores candidates against the declared Lyric
+// argument type, and a `!0`-typed parameter position scores as a match for
+// any concrete argument (`scoreSigType`'s `STVar` arm, metadata_reader.l),
+// which correctly picks `.ctor(TResult)` over `.ctor(Task<TResult>)` for a
+// `NetworkStream` argument (D-progress-686).
+@externTarget("System.Threading.Tasks.ValueTask`1..ctor")
+func newValueTaskOfStream(stream: in NetworkStream): ValueTaskOfStream = ()
+
+@externInstance
+@externTarget("System.Net.Http.SocketsHttpHandler.set_ConnectCallback")
+func socketsSetConnectCallback(
+  h: in SocketsHttpHandler,
+  cb: in (SocketsHttpConnectionContext, CancellationToken) -> ValueTaskOfStream,
+): Unit = ()
+
+// Opens a raw Unix domain socket connected to `socketPath` and wraps it in a
+// `NetworkStream`, disposing the socket (not just leaking the handle) if the
+// connect itself fails.  Local Unix-socket connects (Docker, systemd, …) are
+// effectively instantaneous, so this dials synchronously rather than binding
+// `Socket.ConnectAsync`/honouring the delegate's `CancellationToken` — unlike
+// the network-facing async connect the retired `UnixSocketHttpClient.cs` used,
+// there is no meaningful wait to cancel here.
+func connectUnixSocket(socketPath: in String): NetworkStream {
+  val socket = newSocket(addressFamilyUnix(), socketKindStream(), protocolTypeUnspecified())
+  try {
+    socketConnect(socket, newUnixDomainSocketEndPoint(socketPath))
+    newNetworkStream(socket, true)
+  } catch Bug as b {
+    socketDispose(socket)
+    panic(b.message)
+  }
+}
 
 @externInstance
 @externTarget("System.Net.Http.HttpClient.SendAsync")
@@ -214,16 +295,41 @@ pub func hostClientNoRedirects(): HttpClientHandle {
 
 // ---------------------------------------------------------------------------
 // Unix domain socket support for local protocol access (Docker, systemd, etc).
-// Infrastructure bridge to Lyric.Cli.Aot.UnixSocketHttpClient (in AOT entry-point).
+// Native Lyric via a `SocketsHttpHandler.ConnectCallback` typed-delegate
+// binding (D122/docs/50-ffi-delegates-proposal.md) — no host-assembly
+// dependency, unlike the retired `Lyric.Cli.Aot.UnixSocketHttpClient` this
+// replaced (D-progress-686; docs/59-compiler-stdlib-deep-review.md §7.3).
 // ---------------------------------------------------------------------------
-@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocket")
-pub func hostClientWithUnixSocket(socketPath: in String): HttpClientHandle = ()
+// Shared construction for every `hostClientWithUnixSocket*` variant below —
+// a `SocketsHttpHandler` whose `ConnectCallback` dials `socketPath` on every
+// connection.
+func newUnixSocketHandler(socketPath: in String): SocketsHttpHandler {
+  val handler = newSocketsHandler()
+  socketsSetConnectCallback(
+    handler,
+    { context: SocketsHttpConnectionContext, ct: CancellationToken ->
+      newValueTaskOfStream(connectUnixSocket(socketPath))
+    }
+  )
+  handler
+}
 
-@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocketAndRedirects")
-pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClientHandle = ()
+pub func hostClientWithUnixSocket(socketPath: in String): HttpClientHandle {
+  newClientFromSocketsHandler(newUnixSocketHandler(socketPath))
+}
 
-@externTarget("Lyric.Cli.Aot.UnixSocketHttpClient.CreateWithUnixSocketNoRedirects")
-pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClientHandle = ()
+pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClientHandle {
+  val handler = newUnixSocketHandler(socketPath)
+  socketsSetAllowAutoRedirect(handler, true)
+  socketsSetMaxAutomaticRedirections(handler, maxRedirects)
+  newClientFromSocketsHandler(handler)
+}
+
+pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClientHandle {
+  val handler = newUnixSocketHandler(socketPath)
+  socketsSetAllowAutoRedirect(handler, false)
+  newClientFromSocketsHandler(handler)
+}
 
 // `ResponseHeader` (#5568): native Lyric over `HttpHeaders.Contains` +
 // `HttpHeaders.GetValues`, plus a NON-GENERIC `System.Collections.IEnumerator`

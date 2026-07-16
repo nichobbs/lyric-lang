@@ -752,10 +752,14 @@ insertion-order vs `HashMap` unordered key enumeration).
 - **BLOCKER**: `Std.Task.scopeSpawn` on `--target dotnet` never executes the
   spawned closure — documented in-file (`_kernel/task.l:57-68`) with no
   tracking issue. A silently-not-concurrent public primitive.
-- **MAJOR**: the stdlib depends on the CLI host assembly —
-  `_kernel/http_host.l:247-254` binds `Lyric.Cli.Aot.UnixSocketHttpClient`;
-  standalone deployments of `Lyric.Stdlib.dll` fail at runtime (#5304
-  partially tracks this; the deployment coupling deserves its own issue).
+- **RESOLVED** (D-progress-686): the stdlib no longer depends on the CLI
+  host assembly. `_kernel/http_host.l`'s Unix-socket `hostClientWithUnixSocket*`
+  functions previously bound `Lyric.Cli.Aot.UnixSocketHttpClient` (a
+  `bootstrap/src/Lyric.Cli.Aot/` C# type), so standalone deployments of
+  `Lyric.Stdlib.dll` without the CLI's AOT entry-point assembly present would
+  fail at runtime. Migrated to pure Lyric via a `SocketsHttpHandler.
+  ConnectCallback` typed-delegate binding (D122/docs/50); `UnixSocketHttpClient.cs`
+  is deleted.
 - **MAJOR**: six error-signaling conventions coexist (`Result[T, IOError]`,
   `Result[T, String]`, `Option` seams, `Bool + out`, magic sentinels —
   `http_server.l:170-186` returns `"GET"`/`"/"` on error;

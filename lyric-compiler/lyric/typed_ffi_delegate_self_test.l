@@ -187,3 +187,75 @@ test "#5315: a lambda binds to Task.ContinueWith's Action<Task> parameter (non-g
 // `MissingMethodException`). Invoking the bound continuation still does not
 // work on this backend (a separate, pre-existing gap — D-progress-621 item
 // 3 — unrelated to #5525), so invocation remains untested here.
+// ---------------------------------------------------------------------------
+// D-progress-686: a `ValueTask`1[...]`-shaped `extern type` RETURN value —
+// as opposed to the delegate PARAMETER shape the test above covers — was
+// also broken, in two separate spots. `newValueTaskOfStream`-style calls
+// compile and even pass `ilverify` clean, but crash at runtime the first
+// time a caller actually *consumes* the returned value: found migrating
+// `UnixSocketHttpClient.cs`'s `ConnectCallback` construction to pure Lyric
+// (docs/50), where the callback lambda must construct-and-return a real
+// `ValueTask<Stream>`.
+//
+//   1. `addPackageTokens`'s call-site return-type registry (`cctx.
+//      funcRetTypes`, consulted by every CALLER of the extern function) used
+//      the same bracket-erasing `typeExprToMsilCtx` as any ordinary function,
+//      instead of the `resolveValueTaskGenericMsilType` construction
+//      `emitExternTargetBody` already used for the function's own BODY.
+//   2. `lowerFuncMsil`'s own return-type computation (what the `.method`
+//      SIGNATURE itself declares) had the identical gap — a SEPARATE
+//      computation from `addPackageTokens`, so fixing only one left the
+//      other still declaring `object`.
+//
+// With #2 present alone: the METHOD ITSELF is declared to return `object`
+// while its body pushes a bare (unboxed) value-type struct and `ret`s —
+// invalid at the metadata level, invisible to `ilverify`, surfacing only as
+// `System.TypeLoadException: Could not load type 'System.Threading.Tasks.
+// ValueTask`1' from assembly '<CurrentAssembly>'` the moment any caller
+// invokes the method. Both are fixed in `msil/codegen.l` (D122/docs/50).
+//
+// A third, independent bug surfaced constructing the `ValueTask`1` argument
+// itself: `ValueTask`1` has no implicit-conversion operator (unlike the
+// non-generic `ValueTask`) — only THREE constructors, two of which share
+// arity 1 (`(TResult result)` vs `(Task<TResult> task)`). `emitGenericExternMember`
+// resolved the declaring generic type's member by arity alone, which cannot
+// distinguish those two ctors and silently bound whichever came first in the
+// Method table; when it picked `.ctor(Task<TResult>)`, the caller's concrete
+// (non-Task) argument type leaked into that parameter position instead of
+// the real `!0`. Fixed by scoring candidates against the declared Lyric
+// argument type first (`Mdr.resolveExternMethodScored`), with `scoreSigType`
+// (metadata_reader.l) extended so a `!0`-typed parameter matches any
+// concrete argument.
+//
+// `MemoryStream` (not `NetworkStream`) so this test needs no live socket —
+// it exercises the exact "construct and return a `ValueTask`1[...]`-shaped
+// extern value" chain that was broken, without any I/O. Calling an INSTANCE
+// method on a value-type generic-declaring extern receiver (e.g. `ValueTask
+// `1.get_IsCompletedSuccessfully()`) is a separate, out-of-scope gap: the
+// receiver arrives `object`-boxed (no parameter-type analog of the return-
+// type special-casing above exists yet), so `unbox`/`unbox.any` cannot
+// target the right closed instantiation in general. `emitGenericExternMember`
+// now declines this shape outright (a clear build-time panic) rather than
+// emitting a `castclass` that would compile clean and fault at runtime; not
+// exercised here — tracked as follow-up work in #5809.
+extern type MemoryStream = "System.IO.MemoryStream"
+
+extern type ValueTaskOfMemStream = "System.Threading.Tasks.ValueTask`1[System.IO.Stream]"
+
+@externTarget("System.IO.MemoryStream..ctor")
+func newMemoryStream(): MemoryStream = ()
+
+@externTarget("System.Threading.Tasks.ValueTask`1..ctor")
+func newValueTaskOfMemStream(stream: in MemoryStream): ValueTaskOfMemStream = ()
+
+test "constructing and returning a ValueTask`1[...]-shaped extern value does not crash at runtime (D-progress-686)" {
+  val vt = newValueTaskOfMemStream(newMemoryStream())
+  // Reaching here without a `TypeLoadException` (invalid metadata: erased
+  // `object` return / mismatched CLASS-vs-VALUETYPE TypeSpec / a
+  // `.ctor(Task<TResult>)` mis-bind that leaked the argument's concrete type
+  // into the ctor's `!0` slot) is the test.
+  assertTrue(
+    true,
+    "ValueTask<Stream> constructed via .ctor(TResult), disambiguated from .ctor(Task<TResult>) by argument-type scoring"
+  )
+}

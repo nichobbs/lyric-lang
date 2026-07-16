@@ -29820,11 +29820,20 @@ follows it. `UnixSocketHttpClient.cs` stays in place pending that fix.
 General Predicate/Comparison/custom-named-delegate FFI support also remains
 unimplemented.
 
+**Shipped in D-progress-684/D-progress-686:** #5774 (found while
+investigating #5304) removed the closure-miscompile risk blocking this
+migration, and D-progress-686 completed it — `UnixSocketHttpClient.cs` is
+deleted, `Std.HttpHost` implements the Unix-socket `hostClientWithUnixSocket*`
+functions natively via this slice's typed-delegate binding, and three
+previously-latent `emitGenericExternMember` bugs constructing/returning a
+value-type generic extern (`ValueTask`1`) are fixed. Verified end-to-end
+against a real local `dockerd` over a Unix socket.
+
 **Related:** D122, docs/50-ffi-delegates-proposal.md, #1877, #3923 (updated
 to reflect this bounded slice), #4077/#4084/#4089/#4091 (prior PR #3885
 cleanup this slice's typed-ctor work supersedes), #4025, #4601/#5206
 (investigated, confirmed not triggered by this slice), #5304 (blocks the
-Unix-socket migration itself).
+Unix-socket migration itself), D-progress-684, D-progress-686.
 
 ### D-progress-610 — Single-file `lyric build <source.l>` gains manifest-driven dependency resolution (D123)
 
@@ -30336,7 +30345,7 @@ Initially suspected to be the same defect as #5735 (`Std.Xml.findFirst`), but
 that issue's actual root cause (landed independently in parallel, the entry
 above) was the unrelated `result`-keyword parser bug — the two looked similar
 only because both produced the same `Object`-fallback/"match not exhaustive"
-symptom.  Unblocks the Unix Socket migration (D-progress-609) previously held
+symptom.  Unblocks the Unix Socket migration (D-progress-686) previously held
 up by the risk of this silent-corruption class of bug.
 
 **#5790** (review finding, fixed pre-merge in the same PR): the initial
@@ -30356,7 +30365,7 @@ front-end-only (lexer/parser/type-checker) iteration, not backend-codegen
 changes.
 
 **Related:** `docs/03-decision-log.md` D-progress-684; #5774, #5790, #5304,
-D-progress-609, D-progress-674, #5511, #5735.
+D-progress-686, D-progress-674, #5511, #5735.
 
 ## Self-hosted `Lyric.Derives` synthesises `@generate(Json)` `fromJson`; MSIL async pre-scan/emission mismatches fixed (2026-07-13)
 
@@ -30379,5 +30388,5 @@ resume-label/awaiter-field count), and a `Lyric.Mono` fix so an un-awaited
 async call's generic-parameter unification reports the call's real physical
 `Task` type instead of the function's logical return type.
 
-**Related:** `docs/03-decision-log.md` D-progress-685; #5723, #5725, #5730,
+**Related:** `docs/03-decision-log.md` D-progress-686; #5723, #5725, #5730,
 #5733, #5734.
