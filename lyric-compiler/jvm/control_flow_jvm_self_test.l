@@ -35,13 +35,21 @@
 //!     VerifyError.
 //!   - #5764: the try/catch/finally variant with a `catch` clause present
 //!     but not taken (the try body's own value must still win over the
-//!     untaken catch arm's). A companion case where the join value instead
-//!     comes from a MATCHED catch arm (`try { panic } catch E as _ { 7 }
-//!     finally { … }`) was attempted here and reproduces a real, previously
-//!     undetected `VerifyError: Inconsistent stackmap frames` in
-//!     `lowerTryCatchFinallyExpr`'s catch-arm join path — exactly the risk
-//!     #5764 called out. It is not shipped as a test (a failing case is a
-//!     bug report, not a regression guard); see the issue for the repro.
+//!     untaken catch arm's).
+//!   - #5805: the sibling shape where the join value instead comes from a
+//!     MATCHED catch arm (`try { panic } catch E as _ { 7 } finally { … }`) —
+//!     the try body's tail is an unconditional `panic`, whose `Never` type
+//!     erases to `JVoid` exactly like `Unit`, so the catch-arm value join in
+//!     `lowerTryCatchFinallyExpr` (and the sibling `lowerTryCatchExpr`, the
+//!     no-`finally` variant) was gated on the TRY BODY's erased-to-`JVoid`
+//!     type instead of the catch arm's own (real) produced type, leaving the
+//!     caught arm's value on the operand stack when jumping to the join —
+//!     `VerifyError: Inconsistent stackmap frames at branch target` at class
+//!     load (#5764 flagged this exact path as shipped-untested; this was the
+//!     bug the first attempt at testing it found). Both lowering functions now
+//!     track the join's effective type separately from the try body's own
+//!     type, letting the first value-producing arm (try body OR a matched
+//!     catch) establish it.
 //!
 //! Run by native `lyric test --target jvm`, which compiles this module in-process
 //! through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs it under
@@ -170,6 +178,26 @@ func computeWithCatchNotTaken(c: in Counter): Int {
   } catch Bug as _ {
     c.increment()
     2
+  } finally {
+    c.increment()
+  }
+}
+
+// #5805: the sibling shape where the catch clause IS taken and its own tail
+// value must win — the try body's tail is an unconditional `panic`, whose
+// `Never` type erases to `JVoid` on the JVM backend (exactly like `Unit`),
+// so `lowerTryCatchFinallyExpr` never routed the caught arm's value (7)
+// through the join's result slot; it left it on the operand stack when
+// jumping to the join label, which every other path (an empty stack)
+// disagreed with — `VerifyError: Inconsistent stackmap frames at branch
+// target`.  Before the fix this failed at CLASS LOAD, not at runtime.
+func computeWithCatchTaken(c: in Counter): Int {
+  try {
+    c.increment()
+    panic("computeWithCatchTaken: deliberate failure")
+  } catch Bug as _ {
+    c.increment()
+    7
   } finally {
     c.increment()
   }
@@ -373,4 +401,16 @@ test "#5764: try body's value survives finally when a catch clause is present bu
     "the try body's tail value (1) must be the join value; the untaken catch arm's value (2) must not win"
   )
   assertEqualInt(c.get(), 2, "the try body and the finally block each ran once; the catch arm did not run")
+}
+
+test "#5805: try body's value join with finally, matched catch arm's value wins" {
+  val c = Counter(count = 0)
+  val result = computeWithCatchTaken(c)
+  assertEqualInt(
+    result,
+    7,
+    "the matched catch arm's tail value (7) must be the join value, even though the try body's own tail " +
+      "(an unconditional panic) never reaches the join"
+  )
+  assertEqualInt(c.get(), 3, "the try body, the catch arm, and the finally block each ran once")
 }
