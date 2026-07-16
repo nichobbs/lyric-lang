@@ -29820,11 +29820,20 @@ follows it. `UnixSocketHttpClient.cs` stays in place pending that fix.
 General Predicate/Comparison/custom-named-delegate FFI support also remains
 unimplemented.
 
+**Shipped in D-progress-684/D-progress-685:** #5774 (found while
+investigating #5304) removed the closure-miscompile risk blocking this
+migration, and D-progress-685 completed it — `UnixSocketHttpClient.cs` is
+deleted, `Std.HttpHost` implements the Unix-socket `hostClientWithUnixSocket*`
+functions natively via this slice's typed-delegate binding, and three
+previously-latent `emitGenericExternMember` bugs constructing/returning a
+value-type generic extern (`ValueTask`1`) are fixed. Verified end-to-end
+against a real local `dockerd` over a Unix socket.
+
 **Related:** D122, docs/50-ffi-delegates-proposal.md, #1877, #3923 (updated
 to reflect this bounded slice), #4077/#4084/#4089/#4091 (prior PR #3885
 cleanup this slice's typed-ctor work supersedes), #4025, #4601/#5206
 (investigated, confirmed not triggered by this slice), #5304 (blocks the
-Unix-socket migration itself).
+Unix-socket migration itself), D-progress-684, D-progress-685.
 
 ### D-progress-610 — Single-file `lyric build <source.l>` gains manifest-driven dependency resolution (D123)
 

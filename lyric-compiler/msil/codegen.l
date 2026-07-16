@@ -1764,7 +1764,7 @@ pub func newCodegenCtx(
   val fieldToks: Map[String, Int] = newMap()
   val funcToks: Map[String, Int] = newMap()
 
-  CodegenCtx(
+  val ctx = CodegenCtx(
     lctx = lctx,
     trConsole = trConsole,
     trString = trString,
@@ -1966,6 +1966,29 @@ pub func newCodegenCtx(
     tokCfgInt64Parse = tokCfgInt64Parse,
     tokCfgDoubleParse = tokCfgDoubleParse
   )
+  // Seed `ffiTypeRefs`' cache with the `ValueTask`1` TypeRef already
+  // registered above (`trValueTask1`) so every `internFfiTypeRef` caller —
+  // not just the ones that route through `resolveValueTaskGenericMsilType`
+  // — reuses this ONE row instead of interning a second, DUPLICATE TypeRef
+  // for the same nominal type. Two structurally-valid-but-distinct TypeRef
+  // rows for `System.Threading.Tasks.ValueTask`1` (both correctly resolving
+  // to `System.Runtime` in isolation) is legal per ECMA-335, but the CLR's
+  // generic type-identity resolution does not reliably treat them as
+  // interchangeable when they appear as a generic type ARGUMENT inside
+  // different closed instantiations that must later be treated as the SAME
+  // instantiated type — e.g. a delegate's `Invoke` return type vs. the value
+  // an auto-FFI generic-member call (`emitGenericExternMember`, used for any
+  // member of a generic BCL type such as `ValueTask`1..ctor`) actually
+  // produces via its OWN, separate `internFfiTypeRef` call.  Found via a raw
+  // `System.Reflection.Metadata` dump of a failing assembly (confirmed not a
+  // CLR limitation by a hand-written equivalent C# program working
+  // correctly) while migrating `UnixSocketHttpClient.cs` to pure Lyric
+  // (D122/docs/50): `System.TypeLoadException: Could not load type
+  // 'System.Threading.Tasks.ValueTask`1' from assembly '<CurrentAssembly>'`
+  // at the exact moment `SocketsHttpHandler` invoked the constructed
+  // `ConnectCallback` delegate.
+  ctx.ffiTypeRefs.add("System.Runtime/System.Threading.Tasks.ValueTask`1", trValueTask1)
+  ctx
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3694,7 +3717,32 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               if declGenerics.count > 0 {
                 typeExprToMsilGenBody(cctx, te, pkgName, declGenerics)
               } else {
-                typeExprToMsilCtx(cctx, te, pkgName)
+                // A `System.Threading.Tasks.ValueTask`1[...]`-shaped `extern type`
+                // return (e.g. `newValueTaskOfStream(...)`, D122/docs/50) must use
+                // the SAME `resolveValueTaskGenericMsilType` construction that
+                // `emitExternTargetBody` already uses for the function's OWN body
+                // (the retTy computed there, ~line 16816) — otherwise this
+                // call-site-facing registry (consulted by every CALLER of the
+                // extern function, e.g. a `SocketsHttpHandler.ConnectCallback`
+                // lambda that constructs and returns a `ValueTask<Stream>`) still
+                // gets `typeExprToMsilCtx`'s bracket-erased/mis-resolved MsilType,
+                // while the function's own compiled body returns the correctly
+                // resolved one. That TypeRef-assembly mismatch between "what the
+                // callee returns" and "what the caller thinks it returns" is
+                // invisible at build time and only surfaces as a runtime
+                // `TypeLoadException` ("Could not load type 'ValueTask`1' from
+                // assembly 'Lyric.Stdlib'") the first time the value crosses that
+                // boundary — found migrating `UnixSocketHttpClient.cs` to pure
+                // Lyric (docs/50), whose `ConnectCallback` lambda is exactly this
+                // shape and is the first caller-side consumer of a `ValueTask`1`
+                // extern-type return in the whole codebase.  Harmless no-op for
+                // every other function: `resolveValueTaskGenericMsilType` only
+                // returns `Some` when `te`'s extern-declared CLR FQN literally
+                // matches the `ValueTask`1[...]` shape.
+                match resolveValueTaskGenericMsilType(cctx, te) {
+                  case Some(rt) -> rt
+                  case None -> typeExprToMsilCtx(cctx, te, pkgName)
+                }
               }
             }
             case None -> MVoid
@@ -15990,8 +16038,29 @@ func buildValueTaskGenericMsilTypeFromClrFqn(cctx: in CodegenCtx, declaredClrFqn
   val innerAsm = assemblyForTypeMsil(cctx, innerFqn)
   val innerRow = internFfiTypeRef(cctx, innerAsm, innerSp.ns, innerSp.name)
   val innerTy = MClassRef(typeRefCode = (innerRow * 4) + 1, clrFqn = innerFqn)
-  val vtAsm = assemblyForTypeMsil(cctx, "System.Threading.Tasks.ValueTask`1")
-  val vtRow = internFfiTypeRef(cctx, vtAsm, "System.Threading.Tasks", "ValueTask`1")
+  // Reuse the ALREADY-REGISTERED `cctx.trValueTask1` row (added once at
+  // CodegenCtx init via `ctxAddTypeRef`, ~line 1638, for the
+  // IAsyncEnumerator/MoveNextAsync interop path) instead of interning a
+  // SECOND, separate TypeRef row for the same nominal type via
+  // `internFfiTypeRef`'s own cache.  The two caches don't know about each
+  // other, so every prior call here produced a genuine DUPLICATE TypeRef —
+  // both correctly resolving to `System.Runtime` in isolation, but two
+  // DIFFERENT row numbers used INCONSISTENTLY across the assembly's
+  // `Func<...,ValueTask<Stream>>` TypeSpecs depending on which code path
+  // built them.  ECMA-335 permits duplicate TypeRefs, but the CLR's generic
+  // type-identity resolution does not always treat two such rows as
+  // interchangeable when they appear as a generic type ARGUMENT inside
+  // different closed instantiations that must later be treated as the SAME
+  // instantiated type (e.g. a delegate's `Invoke` return type vs. the value
+  // a `.ctor` call actually produces) — found via a raw
+  // `System.Reflection.Metadata` dump of a failing assembly (confirmed by a
+  // hand-written equivalent C# program working correctly, isolating this to
+  // Lyric's own metadata emission) while migrating `UnixSocketHttpClient.cs`
+  // to pure Lyric (D122/docs/50): `System.TypeLoadException: Could not load
+  // type 'System.Threading.Tasks.ValueTask`1' from assembly
+  // '<CurrentAssembly>'` at the exact moment `SocketsHttpHandler` invoked the
+  // constructed `ConnectCallback` delegate.
+  val vtRow = cctx.trValueTask1
   val args: List[MsilType] = newList()
   args.add(innerTy)
   MValueTypeGenericInst(typeRefCode = (vtRow * 4) + 1, headFqn = "System.Threading.Tasks.ValueTask`1", typeArgs = args)
@@ -16404,7 +16473,37 @@ func emitGenericExternMember(
     case None -> {
     }
     case Some(path) -> {
-      sigOpt = Mdr.decodeExternMethodSig(path, cleanFqn, r.memberName, decl.params.count)
+      // Prefer argument-type-scored resolution when every declared Lyric
+      // param converts to a `SigType`: it is the only mechanism that can
+      // disambiguate a same-arity overload set on the declaring generic
+      // type — e.g. `ValueTask`1..ctor(TResult)` vs
+      // `.ctor(Task<TResult>)` — since `scoreSigType`'s `STVar` arm lets a
+      // concrete Lyric argument match the type's own type-parameter slot
+      // without also matching an unrelated `Task<TResult>`-shaped overload
+      // (#5797).  Arity-only `decodeExternMethodSig` below cannot tell
+      // those apart and silently binds whichever candidate is first in the
+      // Method table.
+      var argSigsOk = true
+      val argSigs: List[Mdr.SigType] = newList()
+      var asi = 0
+      while asi < paramTypes.count {
+        match argTyToSig(paramTypes[asi]) {
+          case Some(s) -> argSigs.add(s)
+          case None -> {
+            argSigsOk = false
+          }
+        }
+        asi = asi + 1
+      }
+      if argSigsOk {
+        sigOpt = Mdr.resolveExternMethodScored(path, cleanFqn, r.memberName, argSigs)
+      }
+      match sigOpt {
+        case Some(_) -> ()
+        case None -> {
+          sigOpt = Mdr.decodeExternMethodSig(path, cleanFqn, r.memberName, decl.params.count)
+        }
+      }
       match sigOpt {
         case Some(_) -> ()
         case None -> {
@@ -16468,14 +16567,75 @@ func emitGenericExternMember(
           cai = cai + 1
         }
       } else {
-        var ai = 0
-        while ai < arity {
-          objArgs.add(MObject)
-          ai = ai + 1
+        // A ctor wrapper's own declared RETURN type may already carry the
+        // real closed instantiation even though the `@externTarget` target
+        // string itself has no bracket suffix — e.g. `func newValueTaskOfStream
+        // (...): ValueTaskOfStream` where `ValueTaskOfStream = "...ValueTask`1
+        // [System.IO.Stream]"` resolves (upstream, via
+        // `resolveValueTaskGenericMsilType`) to a real `ValueTask`1<Stream>`
+        // MsilType. Reusing those type args here — instead of erasing to
+        // `<object,…>` — is required: the `newobj`'s TypeSpec parent must
+        // match the function's declared return type exactly, or the two
+        // disagree at the metadata level and construction faults with
+        // `TypeLoadException: ... due to value type mismatch` the moment the
+        // value is returned (#5797). Scoped to ctors only — a non-ctor
+        // generic-member call's return type is unrelated to the receiver's
+        // own instantiation, so every other case keeps the object-erasure
+        // default (valid because Lyric constructs those instances
+        // object-erased).
+        var retArgs: Option[List[MsilType]] = None
+        if r.isCtor {
+          match lyricRetTy {
+            case MValueTypeGenericInst(_, headFqn, targs) -> {
+              if headFqn == cleanFqn and targs.count == arity {
+                retArgs = Some(value = targs)
+              }
+            }
+            case MGenericInst(_, headFqn, targs) -> {
+              if headFqn == cleanFqn and targs.count == arity {
+                retArgs = Some(value = targs)
+              }
+            }
+            case _ -> ()
+          }
+        }
+        match retArgs {
+          case Some(targs) -> {
+            var tai = 0
+            while tai < targs.count {
+              objArgs.add(targs[tai])
+              tai = tai + 1
+            }
+          }
+          case None -> {
+            var ai = 0
+            while ai < arity {
+              objArgs.add(MObject)
+              ai = ai + 1
+            }
+          }
         }
       }
+      // Whether the declaring generic type itself is a struct (e.g.
+      // `ValueTask`1`) rather than a class (e.g. `ConcurrentDictionary`2`).
+      // Drives both the GENERICINST tag below and how an instance receiver
+      // is loaded/dispatched further down (#5797).
+      val isValType = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, cleanFqn)
       val tsKey = "ts_genextern_" + resolvedFqn
-      val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(typeRefRow), objArgs)
+      // The GENERICINST blob must tag its head type CLASS or VALUETYPE to
+      // match the real BCL type's kind (ECMA-335 §II.23.2.12) — a struct
+      // generic tagged CLASS mismatches at load time with
+      // `TypeLoadException: ... due to value type mismatch`, even though
+      // the rest of the signature (TypeRef, type args) is otherwise byte-
+      // correct. `emitGenericExternMember` previously always used the
+      // CLASS-flavored builder, which is right for the reference-type
+      // generics this function was originally written for, but wrong for a
+      // value-type declaring generic.
+      val tsBlob = if isValType {
+        buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(typeRefRow), objArgs)
+      } else {
+        buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(typeRefRow), objArgs)
+      }
       val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
       val tsTok = 0x1B000000 + tsRow
 
@@ -21617,7 +21777,27 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
         val resolved = if fnGenerics.count > 0 {
           typeExprToMsilGenSig(cctx, te, pkgName, fnGenerics)
         } else {
-          typeExprToMsilCtx(cctx, te, pkgName)
+          // A `System.Threading.Tasks.ValueTask`1[...]`-shaped `extern type`
+          // return needs the same real closed-generic MsilType
+          // `resolveValueTaskGenericMsilType` builds elsewhere (D122/docs/50) —
+          // this is the METHOD'S OWN SIGNATURE return type (what `.method`
+          // actually declares), a separate computation from the call-site
+          // registry (`addPackageTokens`'s `cctx.funcRetTypes`, which has its
+          // own matching fix). Without this, `typeExprToMsilCtx`'s bracket
+          // erasure declares the method `object`-returning while its BODY
+          // (`emitExternTargetBody`, which already resolves this correctly)
+          // pushes the real unboxed value type and `ret`s — signature says
+          // `object`, stack has a bare value-type struct, no box in between.
+          // That mismatch is invisible to both the build and `ilverify` (ret
+          // type checking here is lax enough not to flag it) and only surfaces
+          // as a runtime `TypeLoadException` ("Could not load type 'ValueTask`1'
+          // from assembly 'Lyric.Stdlib'") the first time a caller actually
+          // invokes the method — found migrating `UnixSocketHttpClient.cs`'s
+          // `newValueTaskOfStream` ctor wrapper to pure Lyric.
+          match resolveValueTaskGenericMsilType(cctx, te) {
+            case Some(rt) -> rt
+            case None -> typeExprToMsilCtx(cctx, te, pkgName)
+          }
         }
         if elementTypeByte(resolved) == 0 {
           MVoid
@@ -25675,9 +25855,7 @@ func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
     case Some(asm) -> asm
-    case None -> if startsWith(clrFqn, "Lyric.Emitter") { "Lyric.Emitter" }
-                 else if startsWith(clrFqn, "Std.") { "Lyric.Stdlib" }
-                 else { "System.Runtime" }
+    case None -> if startsWith(clrFqn, "Lyric.Emitter") { "Lyric.Emitter" } else if startsWith(clrFqn, "Std.") { "Lyric.Stdlib" } else { "System.Runtime" }
   }
 }
 
@@ -25730,6 +25908,28 @@ func internClassRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
 // (reference) types via an interned CLASS TypeRef.  None for anything else (or
 // when the type's assembly isn't indexed) — the caller falls back to legacy.
 func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilType] {
+  // A type-level generic parameter (`!0` on a generic BCL type such as
+  // `ValueTask`1..ctor(!0 value)`) maps to `MTypeVar(index)`, mirroring
+  // `genericMemberSigToMsil`'s handling.  Without this arm, `sigNamedFqn`
+  // below returns "" for a bare STVar, `resolvedSigToMsil` returns `None`,
+  // `convOk` goes false, and the caller silently discards the metadata-
+  // resolved signature — falling back to the Lyric-declared argument type in
+  // that parameter position instead of `!0`.  That produces a MemberRef
+  // signature pinned to the CALLER's concrete type rather than the BCL
+  // method's own open type parameter: legal-looking IL that `ilverify`
+  // accepts but that faults with `TypeLoadException` at first invocation.
+  // Not on the hot path `emitGenericExternMember` takes for #5797 (it
+  // converts via `genericMemberSigToMsil`, which already preserved `STVar`) —
+  // added defensively so this OTHER metadata-scored resolution path (used by
+  // non-generic-declaring-type externs, `emitExternTargetBody`'s "plain
+  // method" branch below) doesn't regress the same way if it ever resolves a
+  // signature carrying a bare `!0` (D122/docs/50).
+  match Mdr.sigVarIndex(sig) {
+    case Some(i) -> {
+      return Some(value = MTypeVar(index = i))
+    }
+    case None -> ()
+  }
   // A by-ref resolved param (`out`/`ref`) maps to `MByRef(inner)` so the
   // MemberRef signature encodes `T&` — otherwise a metadata-resolved instance
   // method with an out-param can't be expressed and resolution discards it
