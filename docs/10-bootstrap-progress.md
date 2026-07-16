@@ -19662,18 +19662,24 @@ runs); bare `lyric` outside any project prints help and exits 1; `lyric restore`
 and explicit single-file `lyric build src/main.l` still work.  Stage-1 build
 clean (cli.l compiles), AOT entry-point clean.  MSIL target.
 
-**Addendum (2026-07-16, #4881 / PR #5856):** the walk no longer silently skips
-an existing-but-unparseable `lyric.toml`.  `Lyric.Discovery` gained
+**Addendum (2026-07-16, #4881 + #5862 / PR #5856):** the walk no longer
+silently skips an existing-but-broken `lyric.toml`.  `Lyric.Discovery` gained
 `findNearestManifestDetailed` (union `FoundManifest` /
-`FoundBrokenManifest(path, error)` / `NoManifestFound`): a `MissingField`
-manifest (e.g. a virtual `[workspace]` root) still keeps the walk climbing as
-before, but a `ParseError`/`InvalidField` manifest stops it, and the
-auto-discovery call sites (`discoverManifest`, bare `lyric`, `lyric test`)
-print the canonical `Lyric.Discovery.brokenManifestWarning` to stderr before
-behaving as "no manifest found" — a typo'd nearest manifest can no longer
-silently route the build to an unrelated ancestor.  The plain
-`findNearestManifest` keeps its `Option[String]` shape for callers that don't
-warn.  docs/01 §"Project-aware defaults" documents the warning.
+`FoundBrokenManifest(path, error)` / `NoManifestFound`): only a `MissingField`
+on a file with **no `[package]` section header at all** (e.g. a virtual
+`[workspace]` root) keeps the walk climbing as before.  A
+`ParseError`/`InvalidField` stops it, and — per the #5862 follow-up, since
+`assemblePackage` emits the identical `MissingField("package", "name")` for
+"no `[package]` table" and "a `[package]` table missing a required field" —
+a `MissingField` on a file that *does* carry a `[package]` header (incomplete
+`[package]`, or a broken other section such as `[nuget]`) also stops it,
+disambiguated via the new `Mf.textHasPackageSection`.  The auto-discovery
+call sites (`discoverManifest`, bare `lyric`, `lyric test`) print the
+canonical `Lyric.Discovery.brokenManifestWarning` to stderr before behaving
+as "no manifest found" — a typo'd nearest manifest can no longer silently
+route the build to an unrelated ancestor.  The plain `findNearestManifest`
+keeps its `Option[String]` shape for callers that don't warn.  docs/01
+§"Project-aware defaults" documents the warning.
 
 ### D-progress-397 — self-hosted: `lyric test --manifest` co-locates split stdlib DLLs so ecosystem tests run unaided (#1468 / #1841)
 

@@ -848,7 +848,12 @@ lyric --help                           # grouped command list (also -h / help); 
                                        # build / restore / run / fmt / lint / prove / doc / test /
                                        # bench all discover the nearest lyric.toml by walking up
                                        # from the cwd when no source file is given; each also
-                                       # accepts --manifest <lyric.toml> to override discovery
+                                       # accepts --manifest <lyric.toml> to override discovery.
+                                       # A broken nearest manifest (TOML error, invalid field,
+                                       # or [package] missing a required field) stops the walk
+                                       # with "warning: ignoring lyric.toml at ..." instead of
+                                       # silently adopting an ancestor; a [workspace]-only file
+                                       # (no [package]) is skipped and the walk continues
 
 # Build
 lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
