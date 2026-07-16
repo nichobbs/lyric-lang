@@ -365,6 +365,43 @@ that survives AOT trimming with no attribute-reflection caveat. Every
 other consumer of a build value — git SHA in a diagnostic banner, target
 triple in an error message — uses the same one annotation.
 
+### 9.1 Relationship to platform-native version metadata
+
+Neither .NET nor the JVM offers a *source-level* compile-time
+value-injection intrinsic Lyric could lower to (C#'s `ThisAssembly.*`
+constants come from a third-party source generator; Java has no analog) —
+so build defines remain the right general mechanism. But for the
+`version` define **specifically**, both targets have a standard *metadata*
+slot the resolved value should **also** be written to, so external tooling
+(`dotnet` / NuGet / `ildasm`, `unzip META-INF/MANIFEST.MF`, IDEs,
+SBOM/dependency scanners) can discover it the conventional way. The define
+and the metadata slot are **complementary sinks of one source**, not
+alternatives:
+
+- **Define → baked `ldstr` constant** is what the *running program* reads
+  (`lyric --version`). It is the trim-safe source: on .NET Native AOT,
+  reading an assembly attribute back via reflection is not guaranteed
+  (the exact D127 rationale), so a runtime read cannot rely on the
+  metadata slot.
+- **Same value → platform metadata slot** is what *external tooling*
+  reads, without running the program.
+
+Current state (verified against the emitters), and the small gaps this
+exposes:
+
+| Target | Standard slot | Today | Gap |
+|---|---|---|---|
+| .NET | Assembly row version + `AssemblyInformationalVersionAttribute` | `msil/bridge.l` parses `packageVersion` (`--package-version` / manifest `[package].version`) into the Assembly row's major/minor (`bridge.l:701`) and the contract-meta resource | The Assembly row is numeric only, so a pre-release semver (`1.4.2-rc1`) truncates; emitting `AssemblyInformationalVersionAttribute` (a free-form string) would preserve the full version. |
+| JVM | `META-INF/MANIFEST.MF` `Implementation-Version` | `jvm/manifest.l` writes a **non-standard** `Lyric-Version:` header, and the single-file bridge path **hardcodes `"0.1.0"`** (`jvm/bridge.l:219`, `:1573`) — `packageVersion` is not threaded through | `lyric build --target jvm --package-version X` produces a jar whose manifest reports `0.1.0`, a one-platform inconsistency vs. MSIL. Fix: thread `packageVersion` through, and emit the standard `Implementation-Version:` alongside (or instead of) `Lyric-Version:`. |
+
+Both gaps are **pre-existing** and independent of this sketch — build
+defines do not depend on them and are not blocked by them — but they are
+the natural companion work: once `version` is a first-class well-known
+define (§3.3), a single resolved value feeds the runtime constant *and*
+both platform metadata slots. The JVM hardcode in particular is a tracked
+bug candidate (silent one-platform version drop), not something this
+docs-only change fixes.
+
 ---
 
 ## 10. Out of scope (v1)
