@@ -311,10 +311,10 @@ byte-compare.
 `--define x='"; drop table --'` yields a constant whose runtime value is
 that exact string; it cannot introduce tokens, close a string early, or
 add an item. This is the categorical improvement over both D127's rejected
-`scripts/stamp_version.py` regex-rewrite (which edited source text) and
-Option D's generated-`.l`-file approach (which emits source): substitution
-happens *post-parse, in the AST*, so the grammar is never a value's
-concern.
+`scripts/stamp_version.py` regex-rewrite (which edited source text) and a
+`build.rs`-style generated-`.l`-file approach (which emits source):
+substitution happens *post-parse, in the AST*, so the grammar is never a
+value's concern.
 
 ---
 
