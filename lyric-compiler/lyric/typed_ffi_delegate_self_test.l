@@ -298,8 +298,6 @@ test "constructing and returning a ValueTask`1[...]-shaped extern value does not
 // that assumed every generic-member receiver is always object-erased and
 // mis-fired `InvalidProgramException` (`brtrue` on a value-type stack slot)
 // once the receiver could be a real closed instantiation.
-extern type MemStreamFunc = "System.Func`2"
-
 @externInstance
 @externTarget("System.Func`2.Invoke")
 func invokeMemStreamFunc(cb: in (MemoryStream) -> ValueTaskOfMemStream, arg: in MemoryStream): ValueTaskOfMemStream = ()

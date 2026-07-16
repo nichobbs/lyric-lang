@@ -16766,12 +16766,11 @@ func emitGenericExternMember(
             case _ -> ()
           }
         } else if isInstance and paramTypes.count > 0 {
+          // No `MValueTypeGenericInst` arm here: the `isValType and isInstance`
+          // panic guard above already excludes every path that reaches this
+          // branch from a value-type declaring type, so a matching receiver
+          // instantiation can only ever surface as `MGenericInst` (#5848).
           match paramTypes[0] {
-            case MValueTypeGenericInst(_, headFqn, targs) -> {
-              if headFqn == cleanFqn and targs.count == arity {
-                retArgs = Some(value = targs)
-              }
-            }
             case MGenericInst(_, headFqn, targs) -> {
               if headFqn == cleanFqn and targs.count == arity {
                 retArgs = Some(value = targs)
