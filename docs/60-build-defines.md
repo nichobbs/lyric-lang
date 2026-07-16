@@ -192,9 +192,11 @@ them:
 | `target` | active backend: `dotnet` / `jvm` / `native` |
 | `build_profile` | `debug` / `release` |
 
-`git_sha`, `build_timestamp`, etc. are **not** auto-injected —
-reproducibility (§8 / Q-BD-006) makes timestamps a deliberate opt-in, not
-a default.
+`git_sha`, `build_timestamp`, etc. are **not** auto-injected: they are the
+values that are *not* a pure function of the build configuration, so
+auto-injecting them would break the bootstrap byte-compare (§8 / Q-BD-006).
+The three that *are* auto-injected are each deterministic for a given build
+invocation, which is what keeps reproducibility intact.
 
 ---
 
@@ -286,14 +288,23 @@ If a library wants a *consumer*-supplied value, that is runtime config
 
 ## 8. Reproducibility, security
 
-**Bootstrap byte-identity (Q-BD-006).** The three-stage reproducibility
-bootstrap (`scripts/bootstrap.sh`, F#-free self-compile compare) runs with
-**no defines supplied**, so every `@build_const` takes its in-source
-fallback literal — the stage-2 and stage-3 outputs are byte-identical by
-construction, because the substitution pass is a no-op when `defines` is
-empty. A *release* build (`--define version=X`) is a distinct artifact and
-is not part of the byte-compare. Timestamp-style defines are opt-in
-precisely so the default build stays reproducible.
+**Bootstrap byte-identity (Q-BD-006).** Reproducibility does not require an
+*empty* define set — the well-known defines of §3.3 (`version`, `target`,
+`build_profile`) are auto-injected on every build, including the bootstrap.
+It requires the resolved define set to be a **deterministic function of the
+build configuration**, which those three are: `version` comes from the
+manifest (`0.1.0` in a dev checkout, absent a `-p:Version=` override),
+`target` and `build_profile` are fixed for a given build invocation. The
+three-stage reproducibility bootstrap (`scripts/bootstrap.sh`, F#-free
+self-compile compare) runs stage-2 and stage-3 with **identical**
+configuration, so both receive identical injected defines and every
+`@build_const` substitutes the same literal — the outputs are byte-identical
+by construction. The values that are *not* a pure function of the build
+inputs — `git_sha`, `build_timestamp` — are deliberately **not**
+auto-injected (§3.3); supplying one via `--define` produces a distinct,
+intentionally non-bootstrap-comparable artifact. A release build
+(`--define version=X`) is likewise a distinct artifact outside the
+byte-compare.
 
 **No source injection (Q-BD-008).** A define value is inserted **only as a
 `String`-literal AST node** — never re-lexed or re-parsed as Lyric source.
@@ -320,14 +331,25 @@ pub func VERSION(): String {
 }
 ```
 
-On build defines (compile-time, self-hosted, no trampoline hop):
+On build defines (compile-time, self-hosted, no trampoline hop). The
+annotation attaches to a `val`, but every existing call site spells it
+`Ver.VERSION()` (a function call — see `cli_shared.l`, `lsp.l`, `repl.l`
+in D127), so the public surface stays a zero-argument `func` wrapping the
+annotated constant. No call site changes:
 
 ```lyric
 package Lyric.Version
 
 @build_const("version")
-pub val VERSION: String = "0.1.0"
+val VERSION_CONST: String = "0.1.0"
+
+pub func VERSION(): String { VERSION_CONST }
 ```
+
+(Migrating the public surface to a bare `pub val VERSION` would be
+cleaner but would break those call sites — dropping the `()` at each — so
+the wrapper is the mechanical, no-churn form. A follow-up could collapse
+the wrapper and update the three call sites in one pass if desired.)
 
 `Program.cs` drops its `SetEnvironmentVariable("LYRIC_BUILD_VERSION", …)`
 line and returns to a pure trampoline; `version` becomes the first
@@ -375,9 +397,13 @@ triple in an error message — uses the same one annotation.
   substitution it is a plain literal and const-folds wherever a literal
   does, but v1 forbids a define feeding a `@cfg` predicate (pass ordering,
   §5); cfg value-atoms are a separate future design.
-- **Q-BD-006 — bootstrap reproducibility?** *Resolved:* the byte-compare
-  runs with no defines, so every `@build_const` takes its fallback and the
-  substitution pass is a no-op — reproducible by construction (§8).
+- **Q-BD-006 — bootstrap reproducibility?** *Resolved:* reproducibility
+  requires the resolved define set to be a deterministic function of the
+  build configuration, not to be empty. The auto-injected well-known
+  defines (`version` from the manifest, `target`, `build_profile`) are each
+  deterministic per invocation, so stage-2 and stage-3 substitute identical
+  literals and stay byte-identical; non-deterministic values (`git_sha`,
+  `build_timestamp`) are deliberately never auto-injected (§8).
 - **Q-BD-007 — cross-package leakage?** *Resolved:* build-private, exactly
   like features; published DLLs bake defines at publish, consumers cannot
   override, workspace deps resolve their own (§7).
