@@ -1138,6 +1138,21 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         }
         case _ -> ()
       }
+      // Package-qualified enum-case value reference whose multi-segment
+      // package prefix the parser left as nested `EMember`s (`Std.Http.GET`,
+      // #5769 — JVM parity for MSIL's `tryQualifiedEnumOrdinalMsil`/#5737).
+      // The `EPath` branch above only catches a single-segment receiver
+      // (`Color.Red`); a deeper qualified reference needs the receiver
+      // chain flattened first, so it's tried here regardless of what shape
+      // `recv` is (a real local-rooted chain is still ruled out inside
+      // `tryQualifiedEnumClassJvm`, mirroring the guard above).
+      match tryQualifiedEnumClassJvm(ctx, expr) {
+        case Some(qcls) -> {
+          insns.add(LGetstatic(owner = qcls, name = memberName, t = JRef(className = qcls)))
+          return JRef(className = qcls)
+        }
+        case None -> ()
+      }
       val recvTy = lowerExpr(ctx, insns, recv)
       match recvTy {
         case JRef(cls) -> {
