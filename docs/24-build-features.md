@@ -373,7 +373,7 @@ is erased without warning).
   gates presence/absence; there is no `#[cfg]`-analog for values.
   Sketched in `docs/60-build-defines.md` (`@build_const` annotation +
   `[build.define]` / `--define`, substituted in the `pipeParseAndErase`
-  stage beside `applyCfgErasure`); resolves Q-BD-001 – Q-BD-008. Unbacked
+  stage beside `applyCfgErasure`); resolves Q-BD-001 – Q-BD-009. Unbacked
   pending a decision-log entry.
 
 ---

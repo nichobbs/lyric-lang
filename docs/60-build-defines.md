@@ -2,7 +2,7 @@
 
 **Status:** Unbacked sketch. Pressure-tests a compile-time
 *value-injection* mechanism for the self-hosted compiler. Q-BD-001 –
-Q-BD-008 below are resolved in this draft; a decision-log entry codifies
+Q-BD-009 below are resolved in this draft; a decision-log entry codifies
 them before implementation.
 **Builds on:** `docs/24-build-features.md` (D045 — the `[features]` /
 `@cfg` compile-time *erasure* mechanism this parallels for *substitution*;
@@ -258,7 +258,7 @@ Namespaced `F003x` to sit under docs/24's `F001x`/`F000x` build family:
 
 | Code | Meaning |
 |---|---|
-| `F0030` | `@build_const` on a `val` whose declared type is not `String`. |
+| `F0030` | `@build_const` on a `val` whose *resolved* type is not `String` (whether written explicitly or inferred from the fallback literal, per §4). |
 | `F0031` | `@build_const` on an item that is not a module-level `val` (e.g. a `func`, a local `val`). |
 | `F0032` | `@build_const("")` / missing or non-string-literal key argument. |
 | `F0033` | `--define`/manifest key is not a valid define name (bad chars). |
