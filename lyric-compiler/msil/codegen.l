@@ -3304,7 +3304,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               val fieldTok = 0x04000000 + fieldDefRow
               val byPosKey = className + "/field" + toString(fpos)
               match pf {
-                case PFVar(fname, fty, initOpt, _) -> {
+                case PFVar(fname, fty, initOpt, _, _) -> {
                   val fKey = className + "/" + fname
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
@@ -3326,7 +3326,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                     case None -> ()
                   }
                 }
-                case PFLet(fname, fty, initOpt, _) -> {
+                case PFLet(fname, fty, initOpt, _, _) -> {
                   val fKey = className + "/" + fname
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
@@ -23567,8 +23567,8 @@ func makeProtectedFieldNames(decl: in ProtectedTypeDecl): Map[String, Bool] {
     match decl.members[i] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, _, _, _) -> result.add(name, true)
-          case PFLet(name, _, _, _) -> result.add(name, true)
+          case PFVar(name, _, _, _, _) -> result.add(name, true)
+          case PFLet(name, _, _, _, _) -> result.add(name, true)
           case PFImmutable(f) -> result.add(f.name, true)
         }
       }
@@ -23621,10 +23621,10 @@ func lowerProtectedMsil(
     match decl.members[mi] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, ty, _, _) -> {
+          case PFVar(name, ty, _, _, _) -> {
             recFields.add(MField(flags = FDA_PUBLIC, name = name, fieldType = typeExprToMsilCtx(cctx, ty, pkgName)))
           }
-          case PFLet(name, ty, _, _) -> {
+          case PFLet(name, ty, _, _, _) -> {
             recFields.add(
               MField(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = name, fieldType = typeExprToMsilCtx(cctx, ty, pkgName))
             )
@@ -25675,9 +25675,7 @@ func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
     case Some(asm) -> asm
-    case None -> if startsWith(clrFqn, "Lyric.Emitter") { "Lyric.Emitter" }
-                 else if startsWith(clrFqn, "Std.") { "Lyric.Stdlib" }
-                 else { "System.Runtime" }
+    case None -> if startsWith(clrFqn, "Lyric.Emitter") { "Lyric.Emitter" } else if startsWith(clrFqn, "Std.") { "Lyric.Stdlib" } else { "System.Runtime" }
   }
 }
 

@@ -1633,3 +1633,121 @@ test "dot-chain continuation across a newline still extends the expression" {
   assertEqualInt(diagCount(pr), 0, "dot-chain: no diagnostics")
   assertEqualInt(firstFuncBodyStmtCount(pr), 1, "dot-chain: one statement")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5574: a `///` doc comment before a non-first entry/func member in a
+// protected type body used to cascade into P0201/P0075/P0202 — the member
+// dispatch (`parseProtectedMember`) matched on the raw next token, so a
+// leading doc comment (not a keyword) always fell through to the field
+// parser, which then tried to read `entry`/`func` as a field name.
+// ─────────────────────────────────────────────────────────────────────────────
+func firstItemAsProtected(pr: in ParseResult): ProtectedTypeDecl {
+  if pr.file.items.count == 0 {
+    panic("no items")
+  }
+  match pr.file.items[0].kind {
+    case IProtected(decl) -> decl
+    case _ -> panic("first item is not a protected type")
+  }
+}
+
+func protectedMemberKindName(pm: in ProtectedMember): String {
+  match pm {
+    case PMField(_) -> "field"
+    case PMInvariant(_) -> "invariant"
+    case PMEntry(_) -> "entry"
+    case PMFunc(_) -> "func"
+  }
+}
+
+func protectedMemberDocCount(pm: in ProtectedMember): Int {
+  match pm {
+    case PMField(pf) -> {
+      match pf {
+        case PFVar(_, _, _, docs, _) -> docs.count
+        case PFLet(_, _, _, docs, _) -> docs.count
+        case PFImmutable(fd) -> fd.docComments.count
+      }
+    }
+    case PMEntry(ed) -> ed.docComments.count
+    case PMFunc(fn) -> fn.docComments.count
+    case PMInvariant(_) -> 0
+  }
+}
+
+func protectedMemberName(pm: in ProtectedMember): String {
+  match pm {
+    case PMField(pf) -> {
+      match pf {
+        case PFVar(n, _, _, _, _) -> n
+        case PFLet(n, _, _, _, _) -> n
+        case PFImmutable(fd) -> fd.name
+      }
+    }
+    case PMEntry(ed) -> ed.name
+    case PMFunc(fn) -> fn.name
+    case PMInvariant(_) -> "<invariant>"
+  }
+}
+
+test "protected type doc before second entry (#5574)" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" +
+    "  /// works fine here (first member position is OK)\n" +
+    "  entry push(): Unit { n = n + 1 }\n" +
+    "\n" +
+    "  /// this one breaks the parse (change /// to // and it parses)\n" +
+    "  entry count(): Int { n }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "doc-before-2nd-entry: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "doc-before-2nd-entry: three members")
+  assertEqual(protectedMemberKindName(decl.members[2]), "entry", "doc-before-2nd-entry: third member is an entry")
+  assertEqual(protectedMemberName(decl.members[2]), "count", "doc-before-2nd-entry: third member is count")
+  assertEqualInt(protectedMemberDocCount(decl.members[2]), 1, "doc-before-2nd-entry: doc attached to count()")
+}
+
+test "protected type doc before non-first func member" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  entry push(): Unit { n = n + 1 }\n" +
+    "\n" +
+    "  /// helper\n" +
+    "  func peek(): Int { n }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "doc-before-func: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "doc-before-func: three members")
+  assertEqual(protectedMemberKindName(decl.members[2]), "func", "doc-before-func: third member is a func")
+  assertEqual(protectedMemberName(decl.members[2]), "peek", "doc-before-func: third member is peek")
+  assertEqualInt(protectedMemberDocCount(decl.members[2]), 1, "doc-before-func: doc attached to peek()")
+}
+
+test "protected type doc before non-first pub entry" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  entry push(): Unit { n = n + 1 }\n" +
+    "\n" +
+    "  /// public accessor\n" +
+    "  pub entry count(): Int { n }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "doc-before-pub-entry: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "doc-before-pub-entry: three members")
+  assertEqual(protectedMemberKindName(decl.members[2]), "entry", "doc-before-pub-entry: third member is an entry")
+  assertEqual(protectedMemberName(decl.members[2]), "count", "doc-before-pub-entry: third member is count")
+  assertEqualInt(protectedMemberDocCount(decl.members[2]), 1, "doc-before-pub-entry: doc attached to count()")
+}
+
+test "protected type doc before non-first var field" {
+  val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  /// running total\n" +
+    "  var total: Int = 0\n" +
+    "\n" +
+    "  entry push(): Unit { n = n + 1 }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "doc-before-var-field: no diagnostics")
+  val decl = firstItemAsProtected(pr)
+  assertEqualInt(decl.members.count, 3, "doc-before-var-field: three members")
+  assertEqual(protectedMemberKindName(decl.members[1]), "field", "doc-before-var-field: second member is a field")
+  assertEqual(protectedMemberName(decl.members[1]), "total", "doc-before-var-field: field name is total")
+  assertEqualInt(protectedMemberDocCount(decl.members[1]), 1, "doc-before-var-field: doc attached to total field")
+}
