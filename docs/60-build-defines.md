@@ -208,8 +208,12 @@ wants an `Int` parses it (`Std.Core` int-parse) at the use site. `Int` /
 `Bool` defines are deferred (Q-BD-002) — they invite const-fold-into-`@cfg`
 scope creep (Q-BD-005) that v1 explicitly excludes.
 
-The annotated `val` **must** be declared `String`; a `@build_const` on a
-non-`String` `val` is `F0030` (§6).
+The annotated `val`'s type **must resolve to `String`** — whether written
+explicitly (`val VERSION: String = "0.1.0"`) or inferred from the fallback
+literal (`val VERSION = "0.1.0"`); both are accepted since the fallback is
+always a `String` literal. `F0030` (§6) fires on the *resolved* type, so a
+`@build_const` on a `val` whose type resolves to anything other than
+`String` is rejected regardless of whether the annotation was present.
 
 ---
 
@@ -220,10 +224,12 @@ Substitution is a new AST pass in `pipeParseAndErase`
 ordered **before** — `Cfg.applyCfgErasure`:
 
 ```
-pipeParseAndErase(source, activeFeatures, declaredFeatures, defines, targetName):
+# real signature today: (source, targetName, activeFeatures, declaredFeatures);
+# this proposal appends one `defines` parameter, preserving the existing order.
+pipeParseAndErase(source, targetName, activeFeatures, declaredFeatures, defines):
     parse
     → applyBuildDefines(defines, ast)        # NEW: overwrite @build_const initializers
-    → Cfg.applyCfgErasure(withTargetFeature(activeFeatures, targetName), declared, ast)
+    → Cfg.applyCfgErasure(withTargetFeature(activeFeatures, targetName), declaredFeatures, ast)
 ```
 
 `applyBuildDefines` walks top-level items; for each `val` carrying a
