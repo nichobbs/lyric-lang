@@ -188,7 +188,7 @@ test "#5315: a lambda binds to Task.ContinueWith's Action<Task> parameter (non-g
 // work on this backend (a separate, pre-existing gap — D-progress-621 item
 // 3 — unrelated to #5525), so invocation remains untested here.
 // ---------------------------------------------------------------------------
-// D-progress-685: a `ValueTask`1[...]`-shaped `extern type` RETURN value —
+// D-progress-686: a `ValueTask`1[...]`-shaped `extern type` RETURN value —
 // as opposed to the delegate PARAMETER shape the test above covers — was
 // also broken, in two separate spots. `newValueTaskOfStream`-style calls
 // compile and even pass `ilverify` clean, but crash at runtime the first
@@ -248,7 +248,7 @@ func newMemoryStream(): MemoryStream = ()
 @externTarget("System.Threading.Tasks.ValueTask`1..ctor")
 func newValueTaskOfMemStream(stream: in MemoryStream): ValueTaskOfMemStream = ()
 
-test "constructing and returning a ValueTask`1[...]-shaped extern value does not crash at runtime (D-progress-685)" {
+test "constructing and returning a ValueTask`1[...]-shaped extern value does not crash at runtime (D-progress-686)" {
   val vt = newValueTaskOfMemStream(newMemoryStream())
   // Reaching here without a `TypeLoadException` (invalid metadata: erased
   // `object` return / mismatched CLASS-vs-VALUETYPE TypeSpec / a

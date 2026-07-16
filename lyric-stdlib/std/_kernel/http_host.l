@@ -158,7 +158,7 @@ func newNetworkStream(s: in Socket, ownsSocket: in Bool): NetworkStream = ()
 // argument type, and a `!0`-typed parameter position scores as a match for
 // any concrete argument (`scoreSigType`'s `STVar` arm, metadata_reader.l),
 // which correctly picks `.ctor(TResult)` over `.ctor(Task<TResult>)` for a
-// `NetworkStream` argument (D-progress-685).
+// `NetworkStream` argument (D-progress-686).
 @externTarget("System.Threading.Tasks.ValueTask`1..ctor")
 func newValueTaskOfStream(stream: in NetworkStream): ValueTaskOfStream = ()
 
@@ -298,7 +298,7 @@ pub func hostClientNoRedirects(): HttpClientHandle {
 // Native Lyric via a `SocketsHttpHandler.ConnectCallback` typed-delegate
 // binding (D122/docs/50-ffi-delegates-proposal.md) — no host-assembly
 // dependency, unlike the retired `Lyric.Cli.Aot.UnixSocketHttpClient` this
-// replaced (D-progress-685; docs/59-compiler-stdlib-deep-review.md §7.3).
+// replaced (D-progress-686; docs/59-compiler-stdlib-deep-review.md §7.3).
 // ---------------------------------------------------------------------------
 // Shared construction for every `hostClientWithUnixSocket*` variant below —
 // a `SocketsHttpHandler` whose `ConnectCallback` dials `socketPath` on every

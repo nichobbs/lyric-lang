@@ -16502,12 +16502,12 @@ panic recurs post-fix on that specific shape, that is real evidence of a
 second, distinct residual defect rather than reason to reopen this one.
 
 **Unblocks:** the Unix Socket migration (`UnixSocketHttpClient.cs` →
-`Std.HttpHost`, D-progress-685) is no longer blocked on the silent-miscompile
+`Std.HttpHost`, D-progress-686) is no longer blocked on the silent-miscompile
 risk #5774 found — the migration's target shape (a capturing lambda inside
 `Std.HttpHost`, consumed as a typed value) is exactly what this fix covers
 and regression-tests.
 
-**Related:** #5774, #5790, #5304, D-progress-685, D-progress-674,
+**Related:** #5774, #5790, #5304, D-progress-686, D-progress-674,
 docs/50-ffi-delegates-proposal.md, #5511, #5735.
 
 ## D-progress-685 — `Lyric.Derives` synthesises `fromJson`; `toJson`/`fromJson` gain `slice[T]` and nested-record support; MSIL async pre-scan/emission mismatches fixed (#5723)
@@ -16608,7 +16608,7 @@ D-progress-030, D-progress-060.
 
 ---
 
-## D-progress-685 — Migrate `UnixSocketHttpClient.cs` (F# host assembly) to pure Lyric (`Std.HttpHost`); three latent `emitGenericExternMember` bugs found and fixed
+## D-progress-686 — Migrate `UnixSocketHttpClient.cs` (F# host assembly) to pure Lyric (`Std.HttpHost`); three latent `emitGenericExternMember` bugs found and fixed
 
 **Context:** docs/50-ffi-delegates-proposal.md (D122) shipped typed FFI
 delegate bridging bounded to `@externTarget` functions' own parameters, with

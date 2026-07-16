@@ -752,7 +752,7 @@ insertion-order vs `HashMap` unordered key enumeration).
 - **BLOCKER**: `Std.Task.scopeSpawn` on `--target dotnet` never executes the
   spawned closure — documented in-file (`_kernel/task.l:57-68`) with no
   tracking issue. A silently-not-concurrent public primitive.
-- **RESOLVED** (D-progress-685): the stdlib no longer depends on the CLI
+- **RESOLVED** (D-progress-686): the stdlib no longer depends on the CLI
   host assembly. `_kernel/http_host.l`'s Unix-socket `hostClientWithUnixSocket*`
   functions previously bound `Lyric.Cli.Aot.UnixSocketHttpClient` (a
   `bootstrap/src/Lyric.Cli.Aot/` C# type), so standalone deployments of

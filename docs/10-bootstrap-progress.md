@@ -29820,9 +29820,9 @@ follows it. `UnixSocketHttpClient.cs` stays in place pending that fix.
 General Predicate/Comparison/custom-named-delegate FFI support also remains
 unimplemented.
 
-**Shipped in D-progress-684/D-progress-685:** #5774 (found while
+**Shipped in D-progress-684/D-progress-686:** #5774 (found while
 investigating #5304) removed the closure-miscompile risk blocking this
-migration, and D-progress-685 completed it — `UnixSocketHttpClient.cs` is
+migration, and D-progress-686 completed it — `UnixSocketHttpClient.cs` is
 deleted, `Std.HttpHost` implements the Unix-socket `hostClientWithUnixSocket*`
 functions natively via this slice's typed-delegate binding, and three
 previously-latent `emitGenericExternMember` bugs constructing/returning a
@@ -29833,7 +29833,7 @@ against a real local `dockerd` over a Unix socket.
 to reflect this bounded slice), #4077/#4084/#4089/#4091 (prior PR #3885
 cleanup this slice's typed-ctor work supersedes), #4025, #4601/#5206
 (investigated, confirmed not triggered by this slice), #5304 (blocks the
-Unix-socket migration itself), D-progress-684, D-progress-685.
+Unix-socket migration itself), D-progress-684, D-progress-686.
 
 ### D-progress-610 — Single-file `lyric build <source.l>` gains manifest-driven dependency resolution (D123)
 
@@ -30388,5 +30388,5 @@ resume-label/awaiter-field count), and a `Lyric.Mono` fix so an un-awaited
 async call's generic-parameter unification reports the call's real physical
 `Task` type instead of the function's logical return type.
 
-**Related:** `docs/03-decision-log.md` D-progress-685; #5723, #5725, #5730,
+**Related:** `docs/03-decision-log.md` D-progress-686; #5723, #5725, #5730,
 #5733, #5734.
