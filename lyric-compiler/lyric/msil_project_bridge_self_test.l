@@ -1205,3 +1205,49 @@ test "stdlib types reconstruct from compiled bundle contract metadata" {
   assertTrue(foundOption, "stdlib_from_compiled_bundle: Std.Core.Option reconstructed")
   assertTrue(foundResult, "stdlib_from_compiled_bundle: Std.Core.Result reconstructed")
 }
+
+// Regression for #5809/#5825 (D-progress-686): `emitGenericExternMember`
+// declines an INSTANCE-method call on a value-type generic-declaring
+// extern receiver (e.g. `ValueTask`1.get_IsCompletedSuccessfully()`) with
+// an explicit build-time `panic`, rather than emitting an invalid
+// `castclass` against a VALUETYPE-tagged TypeSpec that would compile clean
+// and only fault at runtime/verification. `compileProjectToMsil` runs
+// in-process in the same call stack as this test, so the panic surfaces
+// as a normal catchable `Bug` here — asserting BOTH that the build fails
+// AND that it fails with this specific diagnostic guards against a future
+// `emitGenericExternMember` refactor silently reordering the `isValType`/
+// `isInstance` check past the point where invalid IL would already have
+// been emitted.
+test "instance call on a value-type generic-declaring extern panics at build time, not silently" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "ValueTypeInstanceCall.Bad",
+      "package ValueTypeInstanceCall.Bad\n" +
+        "extern type ValueTaskOfObj = \"System.Threading.Tasks.ValueTask`1[System.Object]\"\n" +
+        "@externInstance\n" +
+        "@externTarget(\"System.Threading.Tasks.ValueTask`1.get_IsCompletedSuccessfully\")\n" +
+        "func checkCompleted(vt: in ValueTaskOfObj): Bool = ()\n" +
+        "func main(): Unit {\n" +
+        "  println(0)\n" +
+        "}\n"
+    )
+  )
+  val dir = freshTempDir("valuetype_instance_call")
+  val dllPath = Path.join(dir, "ValueTypeInstanceCall.dll")
+  val stdlibSources: List[String] = newList()
+  var panicked = false
+  var panicMsg = ""
+  try {
+    compileProjectToMsil(packages, "ValueTypeInstanceCall", dllPath, stdlibSources)
+  } catch Bug as b {
+    panicked = true
+    panicMsg = b.message
+  }
+  cleanup(dir)
+  assertTrue(panicked, "value-type instance-call extern: compileProjectToMsil panics instead of returning")
+  assertTrue(
+    Str.contains(panicMsg, "INSTANCE call on a value-type generic-declaring type"),
+    "value-type instance-call extern: panic message names the unsupported shape (got: " + panicMsg + ")"
+  )
+}

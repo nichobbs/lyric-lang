@@ -175,7 +175,10 @@ func socketsSetConnectCallback(
 // effectively instantaneous, so this dials synchronously rather than binding
 // `Socket.ConnectAsync`/honouring the delegate's `CancellationToken` — unlike
 // the network-facing async connect the retired `UnixSocketHttpClient.cs` used,
-// there is no meaningful wait to cancel here.
+// there is no meaningful wait to cancel here.  A caller that cancels the
+// surrounding HTTP request cannot abort an in-flight connect call; see
+// `docs/01-language-reference.md` §11.3's D122 paragraph for the documented
+// contract (#5804).
 func connectUnixSocket(socketPath: in String): NetworkStream {
   val socket = newSocket(addressFamilyUnix(), socketKindStream(), protocolTypeUnspecified())
   try {

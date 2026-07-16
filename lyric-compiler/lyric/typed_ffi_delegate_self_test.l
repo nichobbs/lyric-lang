@@ -259,3 +259,45 @@ test "constructing and returning a ValueTask`1[...]-shaped extern value does not
     "ValueTask<Stream> constructed via .ctor(TResult), disambiguated from .ctor(Task<TResult>) by argument-type scoring"
   )
 }
+
+// #5803: the test above only calls `newValueTaskOfMemStream` from a plain
+// function body — it never wraps the ctor-return inside a lambda bound to a
+// BCL delegate parameter and then has that delegate actually *invoked*. The
+// production shape this migration ships (`hostClientWithUnixSocket*` in
+// `http_host.l`) is exactly that combined shape: a closure passed as
+// `SocketsHttpHandler.ConnectCallback`, invoked by the BCL itself, whose
+// body constructs and returns a `ValueTask`1[...]`-shaped extern value —
+// verified only manually against a live `dockerd` (not reproducible in CI)
+// because `SocketsHttpHandler` only invokes `ConnectCallback` when a real
+// HTTP request actually attempts a connection.
+//
+// An attempt was made to sidestep needing real I/O via `System.Func`2.
+// Invoke` — letting the TEST itself invoke the constructed delegate
+// synchronously, with `cb` bound to `Func`2.Invoke`'s own RECEIVER
+// (`@externInstance`) rather than a plain parameter:
+//
+//   @externInstance
+//   @externTarget("System.Func`2.Invoke")
+//   func invokeMemStreamFunc(cb: in (MemoryStream) -> ValueTaskOfMemStream, arg: in MemoryStream): ValueTaskOfMemStream = ()
+//
+// This surfaced a NEW, previously-unknown gap, distinct from #5525
+// (generic-RECEIVER TypeRef corruption, documented above) and D-progress-621
+// item 3 (Task.ContinueWith continuations never firing): the lambda DOES
+// bind to the real closed `Func<MemoryStream, ValueTask<Stream>>` (confirmed
+// via the runtime exception naming that exact closed type), but the WRAPPER
+// FUNCTION's own parameter signature for `cb` still erases to the old
+// uniform `Func<object,object>` ABI — `System.InvalidCastException: Unable
+// to cast object of type 'Func`2[MemoryStream,ValueTask`1[Stream]]' to type
+// 'Func`2[Object,Object]'` at the `Func`2.Invoke` call site. D122's typed-
+// delegate mechanism (docs/50-ffi-delegates-proposal.md) evidently does not
+// (yet) apply when the `TFunction`-typed parameter is the RECEIVER of an
+// `@externInstance` call, only when it is an ordinary (non-receiver)
+// parameter — every proven-working typed-delegate test in this file,
+// including `SocketsHttpHandler.set_ConnectCallback` above, has `cb` at a
+// non-receiver position. Filed as #5833 rather than shipped as a silently
+// broken or skipped test; #5803 itself remains open pending either that fix
+// or a different BCL API that invokes a Func/Action parameter synchronously
+// without hitting an already-documented, unrelated gap (#5525,
+// D-progress-621 item 3, or generic-method delegate-parameter resolution —
+// see the #5319/#5315/#5312 block above, all of which were also tried and
+// rejected for this exact purpose).
