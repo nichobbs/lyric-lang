@@ -16404,7 +16404,7 @@ end-to-end, not just compiles).
 ## D-progress-684 — Fix #5774: un-annotated closure-typed locals bound from a HOF call silently miscompiled (found while investigating #5304)
 
 Investigating #5304 (the pre-existing bug blocking the `UnixSocketHttpClient.cs`
-→ Lyric migration, D-progress-609) surfaced a more serious defect than #5304's
+→ Lyric migration, D-progress-686) surfaced a more serious defect than #5304's
 original description ("a non-last package's closure `.ctor` fails to
 resolve", a build-time panic).  The actual defect, filed as #5774, is a
 **silent, non-deterministic miscompile** that reproduces in a plain

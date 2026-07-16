@@ -106,19 +106,14 @@ pub func makeDockerClientAt(socketPath: in String): DockerClient
 /// that resolves and connects to `hostPort` directly — since there is no
 /// socket ConnectCallback to hide the host behind.
 ///
-/// Exists because the Unix-socket transport (`Std.Http.clientWithUnixSocket`,
-/// used by every other constructor here) depends on
-/// `Lyric.Cli.Aot.UnixSocketHttpClient`, a class that lives only in the
-/// `lyric` CLI's own AOT binary (see `lyric-stdlib/std/_kernel/http_host.l`'s
-/// header comment) — it is absent from any standalone compiled program's
-/// output, so `Std.Http.clientWithUnixSocket` faults at runtime outside the
-/// `lyric` process itself (`TypeLoadException` from a bad extern assembly
-/// reference `assemblyForTypeMsil` falls back to when the metadata index has
-/// no entry for a non-BCL, non-`Lyric.Emitter`/`Lyric.Stdlib` type; tracked
-/// upstream as a MAJOR gap, docs/59-compiler-stdlib-deep-review.md §7.3,
-/// partially covered by #5304). Point the Docker daemon at a TCP listener
-/// (`dockerd -H tcp://host:port`) and use this constructor instead until
-/// that's fixed.
+/// A general alternative for daemons exposed over TCP (`dockerd -H
+/// tcp://host:port`), not a workaround: `Std.Http.clientWithUnixSocket`
+/// (used by every other constructor here) is pure Lyric (D-progress-686,
+/// `lyric-stdlib/std/_kernel/http_host.l`) and works the same in any
+/// standalone compiled program, not only inside the `lyric` CLI's own
+/// process — the earlier CLI-host-assembly dependency this doc comment used
+/// to describe (docs/59-compiler-stdlib-deep-review.md §7.3) no longer
+/// applies.
 pub func makeDockerClientTcp(hostPort: in String): DockerClient
   requires: hostPort.length > 0
 {

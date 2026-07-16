@@ -30345,7 +30345,7 @@ Initially suspected to be the same defect as #5735 (`Std.Xml.findFirst`), but
 that issue's actual root cause (landed independently in parallel, the entry
 above) was the unrelated `result`-keyword parser bug — the two looked similar
 only because both produced the same `Object`-fallback/"match not exhaustive"
-symptom.  Unblocks the Unix Socket migration (D-progress-609) previously held
+symptom.  Unblocks the Unix Socket migration (D-progress-686) previously held
 up by the risk of this silent-corruption class of bug.
 
 **#5790** (review finding, fixed pre-merge in the same PR): the initial
@@ -30365,7 +30365,7 @@ front-end-only (lexer/parser/type-checker) iteration, not backend-codegen
 changes.
 
 **Related:** `docs/03-decision-log.md` D-progress-684; #5774, #5790, #5304,
-D-progress-609, D-progress-674, #5511, #5735.
+D-progress-686, D-progress-674, #5511, #5735.
 
 ## Self-hosted `Lyric.Derives` synthesises `@generate(Json)` `fromJson`; MSIL async pre-scan/emission mismatches fixed (2026-07-13)
 

@@ -2490,16 +2490,17 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     // A parameter that is the declaring generic type's OWN type parameter
     // (`!0`, e.g. `ValueTask`1..ctor(!0 value)`) accepts any non-byref
     // argument: the CLR permits any type in that position once the type is
-    // closed over a concrete instantiation.  Scored below an exact (2) or
-    // widening (1) match so an unambiguous non-generic overload still wins
-    // when one exists, but ABOVE the `-1` reject every other param case
-    // falls to — without this, `scoreSigType` cannot disambiguate a
-    // same-arity overload set where one candidate takes the type's own VAR
-    // (e.g. `ValueTask`1.ctor(TResult)`) and another takes a concrete
-    // generic instantiation of it (`ValueTask`1.ctor(Task<TResult>)`): both
-    // scored -1 and `resolveExternMethodScoredIn` silently fell back to
+    // closed over a concrete instantiation. Scored 0 — strictly below both
+    // an exact (2) and a widening (1) match, since an unconstrained VAR slot
+    // is weaker evidence of the right overload than a concrete numeric
+    // conversion — but still non-negative, so `scoreParamsLenient`'s `s < 0`
+    // reject test does not discard it. Without this, `scoreSigType` cannot
+    // disambiguate a same-arity overload set where one candidate takes the
+    // type's own VAR (e.g. `ValueTask`1.ctor(TResult)`) and another takes a
+    // concrete generic instantiation of it (`ValueTask`1.ctor(Task<TResult>)`):
+    // both scored -1 and `resolveExternMethodScoredIn` silently fell back to
     // whichever ctor happened to sit first in the Method table (D-progress-686).
-    case STVar(_) -> 1
+    case STVar(_) -> 0
     case _ -> -1
   }
 }
