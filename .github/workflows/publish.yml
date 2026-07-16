@@ -500,6 +500,7 @@ jobs:
         run: |
           dotnet pack src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
+            -p:Version=${{ needs.create-release.outputs.version }} \
             -p:PackageVersion=${{ needs.create-release.outputs.version }} \
             -p:PackAsTool=true \
             -p:ToolCommandName=lyric \
@@ -523,7 +524,12 @@ jobs:
           dotnet tool install --tool-path /tmp/lyric-tool \
             --add-source bootstrap/nupkgs \
             lyric --version "${{ needs.create-release.outputs.version }}"
-          /tmp/lyric-tool/lyric --version
+          # Assert the printed CLI version matches the release, not just that
+          # the command exits 0 — catches a stamping step that silently
+          # no-ops (docs/22 §5).
+          ver_out="$(/tmp/lyric-tool/lyric --version)"
+          echo "$ver_out"
+          echo "$ver_out" | grep -qx "lyric ${{ needs.create-release.outputs.version }}"
           # References (not just imports) Std.Core's Option/Result so a
           # regression like #4980 — where a bare `import Std.Core` never
           # errored even though every declared type failed to resolve —

@@ -135,7 +135,8 @@ for diagnostics.
 
 ## 5. Versioning
 
-**Decision log:** D109 (Q-dist-007). **Status:** Shipped (PR #3960).
+**Decision log:** D109 (Q-dist-007), D127. **Status:** Shipped (PR #3960;
+real per-release version embedding shipped in D127).
 
 The compiler and stdlib carry a shared version file. `make lyric` writes
 `sdk-version.json` into the stage-1 lib directory:
@@ -149,11 +150,38 @@ The compiler and stdlib carry a shared version file. `make lyric` writes
 }
 ```
 
-`lyric --version` (or `lyric -v`) prints the compiler version and exits 0:
+(`compiler_version` above shows the dev-checkout placeholder; a build from
+a release tag carries the real released version instead — see below.)
+
+`lyric --version` (or `lyric -v`) prints the compiler version and exits 0.
+For a dev checkout (no release override):
 
 ```
 lyric 0.1.0
 ```
+
+For a binary built from a release tag, e.g. `v1.4.2`:
+
+```
+lyric 1.4.2
+```
+
+**Where the version comes from (D127).** `Lyric.Version.VERSION()`
+(`lyric-compiler/lyric/version.l`) reads the `LYRIC_BUILD_VERSION`
+environment variable, falling back to `"0.1.0"` when unset. That env var is
+set once, in-process, by the AOT entry-point trampoline
+(`bootstrap/src/Lyric.Cli.Aot/Program.cs`) immediately before its call into
+`Lyric.Cli.Program.main` — from a compile-time C# constant an MSBuild
+target (`GenerateLyricBuildVersion` in `Lyric.Cli.Aot.csproj`) bakes from
+the `$(Version)` MSBuild property. `.github/workflows/publish.yml` sets
+`-p:Version=<resolved release version>` on both the AOT-publish step and
+the NuGet-pack step, so every distribution channel embeds the same real
+version with no separate stamping step and no mutation of any `.l` source
+file. A plain `make lyric` / `dotnet build` with no `-p:Version=` override
+leaves `$(Version)` at the csproj's own `0.1.0` default, matching the
+historical placeholder. The constant is a plain `ldstr` literal rather
+than an assembly-attribute reflection lookup so it survives Native AOT
+trimming on the standalone binary.
 
 `lyric version` (the subcommand) reads the nearest `lyric.toml` and prints
 the package name and version, then exits 0:

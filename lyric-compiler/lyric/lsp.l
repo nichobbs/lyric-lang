@@ -31,6 +31,7 @@ import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.Verifier
+import Lyric.Version as Ver
 import Msil.MetadataReader as Mdr
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -966,7 +967,7 @@ func initResult(): String {
   caps.add(jPair("renameProvider", jBool(true)))
   val info: List[String] = newList()
   info.add(jPair("name", jStr("lyric-lsp")))
-  info.add(jPair("version", jStr("0.1.0")))
+  info.add(jPair("version", jStr(Ver.VERSION())))
   val r: List[String] = newList()
   r.add(jPair("capabilities", jObj(caps)))
   r.add(jPair("serverInfo", jObj(info)))

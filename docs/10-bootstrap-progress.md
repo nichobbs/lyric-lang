@@ -207,6 +207,7 @@ deferred to Phase 3 by design.
 | M5.3 — `bench --target jvm`; `fmt --stdin` + multi-file variadic; `lint` project-mode summary + exit-code fix; `test` `@test_module` fallback scan; `check`, `clean`, `update`, `deps` new commands; `bench` double-read optimization | **Shipped** (PR #3102) | — |
 | D109 / Q-dist-007 — `lyric version` command + `checkSdkVersion()` SDK mismatch guard; `sdk-version.json` side-file written by `make lyric`; `[nuget]` allowed in all manifest types (Q-W-001) | **Shipped** (PR #3960) | — |
 | self-upgrade CLI — `lyric upgrade` command supporting NuGet global tool update, raw GitHub Release installer script, target version, custom directory, and dry-run mode | **Shipped** (PR #4569) | — |
+| D127 — `lyric --version` / REPL banner / LSP `serverInfo.version` embed the real per-release version (`LYRIC_BUILD_VERSION` env var, set from an MSBuild-generated build-time constant) instead of a permanently-hardcoded `"0.1.0"`; `--package-version` already correctly versioned ecosystem-library build artifacts | **Shipped** | D127 |
 
 ### Phase 2 — type system completion (complete)
 

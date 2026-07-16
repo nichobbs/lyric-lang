@@ -92,9 +92,10 @@ import Lyric.Lockfile as LF
 import Lyric.Discovery as Disc
 import Lyric.Emitter as Emitter
 import Lyric.ContractMeta as Meta
+import Lyric.Version as Ver
 
 func VERSION(): String {
-  "0.1.0"
+  Ver.VERSION()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1283,8 +1284,7 @@ func extractNativeAssetPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String
                                           val pkgName = pkgKey.substring(0, slashPos)
                                           val pkgVersion = pkgKey.substring(slashPos + 1, pkgKey.length - slashPos - 1)
                                           val lowerPkgName = pkgName.toLower()
-                                          val fullPath =
-                                            Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), assetPath))
+                                          val fullPath = Path.join(pkgsDir, Path.join(Path.join(lowerPkgName, pkgVersion), assetPath))
                                           if File.fileExists(fullPath) {
                                             result.add(fullPath)
                                           }

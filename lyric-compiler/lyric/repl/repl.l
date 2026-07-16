@@ -30,12 +30,13 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 import Lyric.Emitter as Emitter
+import Lyric.Version as Ver
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 func BANNER(): String {
-  "lyric repl 0.1.0  —  :help for help, :quit to exit"
+  "lyric repl " + Ver.VERSION() + "  —  :help for help, :quit to exit"
 }
 
 func PROMPT(): String {
