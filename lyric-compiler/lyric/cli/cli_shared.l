@@ -796,7 +796,8 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
 // Copy a single dependency DLL beside `outPath`.  Best-effort: a missing or
 // unreadable source, or a write failure, is silently skipped — the eventual
 // `dotnet exec` surfaces the original assembly-load error instead.
-func copyDllBeside(outPath: in String, dllPath: in String): Unit {
+// `pub` so `cli_copydll_self_test.l` can drive it directly (#5078).
+pub func copyDllBeside(outPath: in String, dllPath: in String): Unit {
   if dllPath.length == 0 or not File.fileExists(dllPath) {
     return
   }
