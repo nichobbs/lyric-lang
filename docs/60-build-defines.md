@@ -1,9 +1,12 @@
 # 60 — Build defines (compile-time value injection)
 
-**Status:** Unbacked sketch. Pressure-tests a compile-time
-*value-injection* mechanism for the self-hosted compiler. Q-BD-001 –
-Q-BD-009 below are resolved in this draft; a decision-log entry codifies
-them before implementation.
+**Status:** Design sketch; **M1a shipped** — the `@build_const("KEY")`
+substitution pass (`Lyric.BuildDefines`) + `lyric build --define KEY=VALUE`
+for single-file `--target dotnet` builds (diagnostics F0030–F0032). Project-
+path threading, JVM/native, manifest `[build.define]`, the auto-injected
+well-known defines, and the `Std.BuildInfo` layer remain follow-ups (#5852).
+Q-BD-001 – Q-BD-009 below are resolved in this draft; a decision-log entry
+still codifies the full design.
 **Builds on:** `docs/24-build-features.md` (D045 — the `[features]` /
 `@cfg` compile-time *erasure* mechanism this parallels for *substitution*;
 the "compile-time vs runtime" boundary in §1.1 governs both),

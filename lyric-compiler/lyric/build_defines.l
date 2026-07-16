@@ -32,36 +32,11 @@ pub record BuildDefinesResult {
   diagnostics: List[Diagnostic]
 }
 
-/// Construct the well-known defines the toolchain auto-injects on every build
-/// (docs/60 §3.3). `version` / `target` / `build_profile` are deterministic
-/// functions of the build configuration, so they preserve reproducibility.
-pub func wellKnownDefines(version: in String, target: in String, buildProfile: in String): List[Define] {
-  val ds: List[Define] = newList()
-  ds.add(Define(key = "version", value = version))
-  ds.add(Define(key = "target", value = target))
-  ds.add(Define(key = "build_profile", value = buildProfile))
-  ds
-}
-
-/// Merge two define lists; entries in `overrides` win over same-key entries
-/// in `base`. Used to layer CLI over manifest over well-known.
-pub func mergeDefines(base: in List[Define], overrides: in List[Define]): List[Define] {
-  val merged: List[Define] = newList()
-  var i = 0
-  while i < base.count {
-    if not hasKey(overrides, base[i].key) {
-      merged.add(base[i])
-    }
-    i = i + 1
-  }
-  var j = 0
-  while j < overrides.count {
-    merged.add(overrides[j])
-    j = j + 1
-  }
-  merged
-}
-
+// (Well-known-define construction and precedence merging — for the
+// auto-injected `version`/`target`/`build_profile` defines and manifest
+// `[build.define]` layering — land with the project-path parity follow-up
+// that actually consumes them, #5852. Kept out of this slice to avoid
+// shipping unused code.)
 // ── Private helpers ─────────────────────────────────────────────────────────
 func hasKey(defines: in List[Define], key: in String): Bool {
   var i = 0

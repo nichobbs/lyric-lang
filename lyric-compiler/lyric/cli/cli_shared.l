@@ -243,7 +243,8 @@ func usageText(): String {
     "Project:\n" +
     "  lyric init    [<dir>] [--name <Name>] [--lib] [--force]\n" +
     "                (scaffold a new app (or --lib library) package: lyric.toml + src + .gitignore)\n" +
-    "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--triple <llvm-triple>] [--opt 0|1|2|3|s] [--no-restore] [--watch]\n" +
+    "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--triple <llvm-triple>] [--opt 0|1|2|3|s] [--no-restore] [--watch] [--define KEY=VALUE]\n" +
+    "                 (--define injects a compile-time String into a @build_const val; single-file --target dotnet only, docs/60)\n" +
     "                (no source: builds the discovered project's [project.packages] into one DLL;\n" +
     "                 auto-restores deps when lyric.lock is missing or stale unless --no-restore)\n" +
     "  lyric build   --release [<source.l>] [--manifest <lyric.toml>] [--rid <rid>] [-o <bin>]\n" +

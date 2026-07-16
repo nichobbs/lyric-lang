@@ -403,6 +403,18 @@ func emitSingleFileOrProject(
     return noContributionOutcome(req)
   }
 
+  // docs/60: this build has routed to the project path (a nearby lyric.toml
+  // contributes dependencies/features), which uses EmitProjectRequest and does
+  // not yet thread `--define`. The cmdBuild gate only catches an *explicit*
+  // --manifest / non-dotnet target; an *auto-discovered* manifest reaches here.
+  // Fail rather than silently drop the defines (#5894; parity tracked in #5852).
+  if req.defines.count > 0 {
+    return failedEmitOutcome(
+      sourcePath +
+        ": --define is not applied on a project build (a nearby lyric.toml contributes dependencies/features, routing this through the project path); project-path --define parity is tracked in #5852"
+    )
+  }
+
   val srcs: List[String] = newList()
   srcs.add(req.source)
   val pkgs: List[ProjectPackage] = newList()
