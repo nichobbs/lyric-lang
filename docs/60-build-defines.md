@@ -13,7 +13,9 @@ the "compile-time vs runtime" boundary in §1.1 governs both),
 `docs/22-distribution-and-tooling.md` §5 + D127 (the version-embedding
 workaround this generalizes), `docs/25-config-blocks.md` (D046 — the
 runtime-config axis a define is explicitly *not*).
-**Decision-log entry:** none yet.
+**Decision-log entry:** none yet — M1a shipped ahead of a formal entry; the
+entry that codifies the full design lands with the project-path/JVM/native +
+`Std.BuildInfo` follow-up (#5852).
 
 ---
 
