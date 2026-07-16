@@ -1064,7 +1064,15 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           }
         }
         case PreNot -> {
-          lowerExpr(ctx, insns, operand)
+          // `lowerExpr` may return an erased `Object` (e.g. a lambda-invoke
+          // result — `lowerLambdaInvoke` always returns raw `Object`, #5563
+          // item 2) rather than the JVM primitive `boolean` the `ixor` below
+          // requires; coerce first so the unboxing checkcast/`Boolean.
+          // booleanValue()` runs before the xor instead of leaving a bare
+          // reference on the stack ("Bad type on operand stack ... not
+          // assignable to integer").
+          val operandTy = lowerExpr(ctx, insns, operand)
+          coerceArgTo(insns, operandTy, JBoolean)
           insns.add(LIconst(v = 1))
           insns.add(LIxor)
           JBoolean
@@ -1980,7 +1988,12 @@ func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLa
           lowerCmpFail(insns, BGte, lhsTy, failLabel)
         }
         case _ -> {
-          lowerExpr(ctx, insns, cond)
+          // Coerce before the test (#5563 item 2): `cond` may lower to an
+          // erased `Object` (e.g. a lambda-invoke result) rather than the
+          // JVM primitive `boolean` `ifeq` requires — a no-op when `cond`
+          // is already unboxed.
+          val condTy = lowerExpr(ctx, insns, cond)
+          coerceArgTo(insns, condTy, JBoolean)
           insns.add(LIfeq(label = failLabel))
         }
       }
@@ -1989,14 +2002,22 @@ func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLa
       match op {
         case PreNot -> lowerBoolCondTrue(ctx, insns, operand, failLabel)
         case _ -> {
-          lowerExpr(ctx, insns, cond)
+          // Coerce before the test (#5563 item 2): `cond` may lower to an
+          // erased `Object` (e.g. a lambda-invoke result) rather than the
+          // JVM primitive `boolean` `ifeq` requires — a no-op when `cond`
+          // is already unboxed.
+          val condTy = lowerExpr(ctx, insns, cond)
+          coerceArgTo(insns, condTy, JBoolean)
           insns.add(LIfeq(label = failLabel))
         }
       }
     }
     case EParen(inner) -> lowerBoolCond(ctx, insns, inner, failLabel)
     case _ -> {
-      lowerExpr(ctx, insns, cond)
+      // Coerce before the test (#5563 item 2): see the matching comment
+      // above.
+      val condTy = lowerExpr(ctx, insns, cond)
+      coerceArgTo(insns, condTy, JBoolean)
       insns.add(LIfeq(label = failLabel))
     }
   }
@@ -2056,7 +2077,10 @@ func lowerBoolCondTrue(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, su
           lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "")
         }
         case _ -> {
-          lowerExpr(ctx, insns, cond)
+          // Coerce before the test (#5563 item 2): see the matching comment
+          // in `lowerBoolCond` above.
+          val condTy = lowerExpr(ctx, insns, cond)
+          coerceArgTo(insns, condTy, JBoolean)
           insns.add(LIfne(label = succeedLabel))
         }
       }
@@ -2065,14 +2089,20 @@ func lowerBoolCondTrue(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, su
       match op {
         case PreNot -> lowerBoolCond(ctx, insns, operand, succeedLabel)
         case _ -> {
-          lowerExpr(ctx, insns, cond)
+          // Coerce before the test (#5563 item 2): see the matching comment
+          // in `lowerBoolCond` above.
+          val condTy = lowerExpr(ctx, insns, cond)
+          coerceArgTo(insns, condTy, JBoolean)
           insns.add(LIfne(label = succeedLabel))
         }
       }
     }
     case EParen(inner) -> lowerBoolCondTrue(ctx, insns, inner, succeedLabel)
     case _ -> {
-      lowerExpr(ctx, insns, cond)
+      // Coerce before the test (#5563 item 2): see the matching comment
+      // above.
+      val condTy = lowerExpr(ctx, insns, cond)
+      coerceArgTo(insns, condTy, JBoolean)
       insns.add(LIfne(label = succeedLabel))
     }
   }
