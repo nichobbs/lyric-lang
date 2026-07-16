@@ -30357,3 +30357,27 @@ changes.
 
 **Related:** `docs/03-decision-log.md` D-progress-684; #5774, #5790, #5304,
 D-progress-609, D-progress-674, #5511, #5735.
+
+## Self-hosted `Lyric.Derives` synthesises `@generate(Json)` `fromJson`; MSIL async pre-scan/emission mismatches fixed (2026-07-13)
+
+The self-hosted `Lyric.Derives` (`lyric-compiler/lyric/derives/derives.l`) now
+synthesises `TypeName.fromJson(json: String): Result[TypeName, String]` for
+every `@generate(Json)`-annotated record, alongside the existing `toJson`
+synthesis — completing the scope the F#-era "Inverse `fromJson` synthesis"
+deferred item (D-progress-030 above) and its later slice/nested-record
+follow-up (D-progress-060 above) left open for the self-hosted port.
+`toJson` also gains real `slice[T]` and nested-record field support (it
+previously fell through to a `toString` debug dump for both shapes); two
+field shapes `fromJson` cannot safely decode (`Option`/`Result`/generic/tuple
+fields, and `Float` pending a narrowing conversion) now report a diagnostic
+(`D0002`) with a safe fallback instead of synthesizing a broken call.  Landed
+alongside three MSIL async-codegen fixes needed to verify the above
+end-to-end against a real HTTP server: a pre-scan/emission mismatch for
+3+-segment qualified async calls and for restored/stdlib async interface
+methods (both previously able to corrupt the async state machine's
+resume-label/awaiter-field count), and a `Lyric.Mono` fix so an un-awaited
+async call's generic-parameter unification reports the call's real physical
+`Task` type instead of the function's logical return type.
+
+**Related:** `docs/03-decision-log.md` D-progress-685; #5723, #5725, #5730,
+#5733, #5734.

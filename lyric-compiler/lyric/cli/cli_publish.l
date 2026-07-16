@@ -67,7 +67,7 @@ pub func buildPublishNuspec(
   }
   match repository {
     case Some(r) -> {
-      nuspec = nuspec + "    <repository url=\"" + Pack.xmlEscape(r) + "\" />\n"
+      nuspec = nuspec + "    <repository type=\"git\" url=\"" + Pack.xmlEscape(r) + "\" />\n"
     }
     case None -> ()
   }

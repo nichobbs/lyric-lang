@@ -33,6 +33,15 @@
 //!     try's value and returning the declared return type's zero/default
 //!     instead — a genuine miscompile (returned 0 instead of 42), not a
 //!     VerifyError.
+//!   - #5764: the try/catch/finally variant with a `catch` clause present
+//!     but not taken (the try body's own value must still win over the
+//!     untaken catch arm's). A companion case where the join value instead
+//!     comes from a MATCHED catch arm (`try { panic } catch E as _ { 7 }
+//!     finally { … }`) was attempted here and reproduces a real, previously
+//!     undetected `VerifyError: Inconsistent stackmap frames` in
+//!     `lowerTryCatchFinallyExpr`'s catch-arm join path — exactly the risk
+//!     #5764 called out. It is not shipped as a test (a failing case is a
+//!     bug report, not a regression guard); see the issue for the repro.
 //!
 //! Run by native `lyric test --target jvm`, which compiles this module in-process
 //! through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs it under
@@ -144,6 +153,23 @@ func computeWithFinallyThrows(c: in Counter): Int {
   try {
     c.increment()
     panic("computeWithFinallyThrows: deliberate failure")
+  } finally {
+    c.increment()
+  }
+}
+
+// #5764: a `catch` clause is present but never taken (the try body does not
+// throw) — the try body's own tail value (1) must still be the join value,
+// not the catch arm's (2), and the catch arm's side effect must not run.
+// Pins the "value from the try body" path of `lowerTryCatchFinallyExpr`
+// specifically in the try/catch/finally (not just try/finally) variant.
+func computeWithCatchNotTaken(c: in Counter): Int {
+  try {
+    c.increment()
+    1
+  } catch Bug as _ {
+    c.increment()
+    2
   } finally {
     c.increment()
   }
@@ -336,4 +362,15 @@ test "#2043: non-void try/finally still runs the finally block and propagates a 
   }
   assertTrue(caught, "the panic inside the try body must still propagate out of the function")
   assertEqualInt(c.get(), 2, "the finally block ran (via the catch-all handler) before the panic propagated")
+}
+
+test "#5764: try body's value survives finally when a catch clause is present but not taken" {
+  val c = Counter(count = 0)
+  val result = computeWithCatchNotTaken(c)
+  assertEqualInt(
+    result,
+    1,
+    "the try body's tail value (1) must be the join value; the untaken catch arm's value (2) must not win"
+  )
+  assertEqualInt(c.get(), 2, "the try body and the finally block each ran once; the catch arm did not run")
 }

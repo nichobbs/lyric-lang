@@ -16283,6 +16283,8 @@ Resolves three targeted backend warnings on the self-hosted MSIL backend (``W000
 
 **Related:** D-progress-671, D-progress-667, #2494, #5746, #5747, #5748, #5749, #5750, #5751.
 
+**Addendum — `resolvedSigToMsil`'s `ELEMENT_TYPE_R4` (`0x0C`, `Single`) special case (#5772):** the same PR also changed `resolvedSigToMsil` (`msil/codegen.l` ~line 25756) to intern `System.Single` as a value-type ref whenever the decoded signature's prim byte is `0x0C`, instead of delegating to `elemByteToMsil` like every other primitive byte. **Root cause:** `elemByteToMsil` (~line 25568) has no `0x0C` arm — it falls straight to its `None` default — so before this fix *any* BCL member signature involving a `Single` parameter or return type failed metadata-direct resolution entirely (`resolvedSigToMsil` returned `None`), forcing the caller onto the degraded guess-based fallback rather than the real MemberRef. The five `@externStatic` kernel conversion helpers this entry's W0003/F0027 fixes touch (`dblToSingle`, `singleToInt32Bits`, `int32BitsToSingle`, `singleToDouble`) needed this fix as a prerequisite to resolve correctly via the metadata-direct path, which is why it landed in the same PR even though the PR description only enumerates W0005/W0003/F0027. **Residual:** `genericMemberSigToMsil` (~line 25788), the sibling resolver used for members of a generic declaring type, still routes `Mdr.STPrim` through bare `elemByteToMsil` with no equivalent `0x0C` special case — a `Single`-typed member of a generic BCL type therefore remains unresolvable via that path.
+
 ## D-progress-682 — `lyric build --release` (manifest mode) silently dropped every `[nuget]` dependency from the ILC reference list (#5782)
 
 `buildReleaseProject` (`lyric-compiler/lyric/cli/cli_build.l`, the manifest/multi-package `lyric build --release` path) computed `extraRefs` — the additional managed DLLs passed to `Lyric.Release.buildReleaseDotnet` as ILC references — from a bespoke walk over `[dependencies]` entries with a local `path = "..."` source only. It never consulted `[nuget]`-resolved assemblies at all, whether a restored Lyric package published via NuGet (e.g. `Lyric.Web`, `Lyric.Docker`) or a genuine third-party .NET assembly (e.g. `Microsoft.Data.Sqlite`, `Newtonsoft.Json`).
@@ -16507,6 +16509,102 @@ and regression-tests.
 
 **Related:** #5774, #5790, #5304, D-progress-609, D-progress-674,
 docs/50-ffi-delegates-proposal.md, #5511, #5735.
+
+## D-progress-685 — `Lyric.Derives` synthesises `fromJson`; `toJson`/`fromJson` gain `slice[T]` and nested-record support; MSIL async pre-scan/emission mismatches fixed (#5723)
+
+Found while getting `cloud-agents`' HTTP server to survive a real request.
+Two independent gaps landed together, plus a follow-on MSIL async fix needed
+to unblock verifying them end-to-end.
+
+**`@generate(Json)` — `fromJson` synthesis (`lyric-compiler/lyric/derives/derives.l`):**
+`fromJson` was never implemented — only `toJson` existed (the file's own
+header comment documented this as the shipped scope, mirroring the
+`D-progress-030`/`D-progress-060` history below).  Every handler decoding a
+JSON request body via `SomeRequest.fromJson(req.body)` crashed the whole
+server process with "unsupported method 'fromJson' on the receiver type" on
+the first real request.  `synthesizeFromJsonRecord` now emits
+`TypeName.fromJson(json: String): Result[TypeName, String]`, parsing the
+input via `Std.Json`'s `JsonElement` API and decoding each field (`String`/
+`Int`/`Long`/`Bool`/`Double` scalars, `slice[T]` of those or of another
+`@generate(Json)` record, and nested `@generate(Json)` records themselves)
+via a recursive continuation-passing match chain (`jsonBuildFieldChain`/
+`jsonFieldDecodeBlock`), returning `Err` on a missing field and
+short-circuiting propagation of nested decode failures.  A companion gap in
+`toJson`'s `jsonFieldExpr` — which fell through to `toString` for any
+non-primitive field, so a `slice[T]` field serialized as the BCL's
+`System.Collections.Generic.List`1[...]` debug dump instead of a JSON array —
+is fixed the same way: `slice[T]` fields now loop-build a real JSON array,
+and nested-record fields dispatch to the field type's own synthesized
+`.toJson()`.  Both `toJson` and `fromJson` now auto-inject `import Std.Json`
+into the consuming file if it isn't already present.
+
+Two REQUIRED review findings landed in the same PR before merge: `jsonTypeNameOf`
+only names `TRef`-shaped types, so an `Option[T]`/`Result[T,E]`/tuple/generic
+field resolved to an empty type name and `jsonFieldDecodeBlock`'s nested-record
+fallback synthesized a call to `.fromJson` on that empty name (#5730);
+`jsonScalarGetterFor` routed `Float` fields through `Std.Json.getDouble` with
+no narrowing conversion, since there is no `.toFloat()` yet (#5733). Both
+shapes now report a new diagnostic, **D0002** ("field has a type `fromJson`
+decoding doesn't support"), with a safe `Err(...)` fallback instead of a
+broken call. This supersedes the "Inverse `fromJson` synthesis" deferred item
+recorded against `D-progress-030` (`docs/10-bootstrap-progress.md` ~line
+8545) for the self-hosted compiler.
+
+**MSIL async pre-scan/emission mismatch (`lyric-compiler/msil/codegen.l`):**
+found while verifying the above against a real standalone server. Two related
+gaps in the async state-machine pre-scan (Phase A) vs. emission (Phase B)
+disagreeing on whether an awaited call returns a `Task`, corrupting the state
+machine's resume-label/awaiter-field count: (1) a 3+-segment qualified callee
+(`Std.Http.sendAsync(...)`) parses as nested `EMember`-over-`EPath`, not a
+flat multi-segment `EPath`; the pre-scan's `ECall`/`EMember` branch only
+handled a direct `EPath` receiver, so it fell through to the
+value-receiver fallback and returned `MObject` — fixed via
+`resolveQualifiedFreeCallRetTypePB` and `flattenPureQualifierPB`, which
+flatten a pure qualifier chain of any depth (guarded by `isKnownValueNamePB`
+so a value-receiver chain like `client.conn.readAsync(args)` is never
+misread as a package qualifier). (2) Async interface/record methods seeded
+into the pre-scan's method-return registries from a restored/stdlib package
+(`pbSeedTypeInfoItemsMsil`/`pbSeedTypeInfoRecordMsil`) carried their bare
+declared return type instead of the physical `Task`/`Task<T>` the kickoff
+method actually returns — fixed by threading `isAsync` through `pbSeedRetTy`
+and Task-wrapping via the existing `asyncKickoffReturnMsil` helper.  A
+broader attempt to also Task-wrap the bundle-stable `pbFuncRetTypes`/
+`pbMethodRetTypes`/`registerRestoredIfaceMethod` registries for every
+`isAsync` item was tried and reverted in the same PR — it corrupted
+receiver-chain typing for blocking-`@externTarget`-async methods, producing
+a confirmed `SIGSEGV` in `lyric-stdlib/tests/http_tests.l`; the original
+`Std.Http.HttpClient.send` `InvalidProgramException` this broader attempt
+targeted remains open.
+
+**`Lyric.Mono` — async return inference (`mono.l`):** `inferReturnFromName`
+fed a callee's `decl.ret` into generic-parameter unification even when the
+call was an un-awaited async call, whose runtime value is the physical
+`Task`/`Task<T>` the codegen backend produces, not the function's logical
+Lyric return type — `taskWaitMs(asyncGreet(x), ms)` inferred `T=Unit`
+(`asyncGreet`'s logical return), producing a specialization whose parameter
+type lowers to the illegal MSIL `ELEMENT_TYPE_VOID` in a parameter position
+(`TypeLoadException: The signature is incorrect`).  Fixed by reporting `Task`
+(the same extern type `Std.Task` exposes) for a `Unit`-returning async call
+instead of falling back to `None` outright — keeping same-package generic
+callers like `taskWaitMs[T]` correctly specialized rather than hitting a hard
+`M0002` monomorphisation error; a non-`Unit` async return (physically
+`Task<T>`, with no public Lyric generic type name to construct safely) still
+falls back to `None`, matching the pre-existing degradation for lambdas, BCL
+returns, and impl-block dispatch.  The `isUnitRet` check also now recognises
+both AST spellings of `Unit` (bare `TUnit` for the `()` spelling, and
+`TRef(path=["Unit"])` for the common `async func f(): Unit` spelling) — the
+first landing only matched `TUnit` and silently never fired for the
+real-world `docker_manager.l`-style case.
+
+**Verification:** `derives_self_test.l` extended (fromJson synthesis,
+slice/nested-record `toJson`, both D0002 triggers, and a
+`countLocalBindingsNamed` helper to see calls through a bare qualified path
+like `Std.Json.getDouble(...)`); minimal repros for both the
+`taskWaitMs(asyncGreet(x), ms)` `TypeLoadException` and the
+`Std.Http.HttpClient.send` await path build and run clean post-fix.
+
+**Related:** #5723, #5725, #5730, #5733, #5734, docs/10-bootstrap-progress.md
+D-progress-030, D-progress-060.
 
 ---
 

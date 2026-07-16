@@ -17,6 +17,13 @@
 //! shape the erasure bug corrupted and Predicate/Comparison special-casing
 //! never covered.
 //!
+//! #5315: a second test covers the parallel `Action`N`-typed path
+//! (`buildActionNTypedCtorTok`/`buildActionNTypedTypeSpec`) via
+//! `System.Threading.Tasks.Task.ContinueWith(Action<Task>)` — `Task` is a
+//! non-generic receiver, so it sidesteps #5525 (generic-receiver TypeRef
+//! corruption). It is BINDING-only: invoking the bound continuation is a
+//! separate, pre-existing gap (D-progress-621 item 3), not asserted here.
+//!
 //! Run via native `lyric test` (compiled in-process through the self-hosted
 //! `Msil.Bridge`, `--target dotnet`); imports only `Std.*`, no
 //! `LYRIC_LOAD_COMPILER=1` needed.
@@ -79,6 +86,21 @@ func socketsSetConnectCallback(
   cb: in (SocketsHttpConnectionContext, CancellationToken) -> ValueTaskOfStream,
 ): Unit = ()
 
+// #5315: the Action`N-typed path (`buildActionNTypedCtorTok`/
+// `buildActionNTypedTypeSpec`), zero coverage until now. `Task` (imported
+// from `Std.Task`, already in scope via the `import Std.Task` above) is a
+// NON-generic receiver, so this candidate is unaffected by #5525 (the
+// generic-RECEIVER TypeRef-corruption bug that blocks List`1/
+// ConcurrentDictionary`2/ThreadLocal`1 carriers). `Action<Task>`'s type
+// argument (`Task`) is a plain reference type, not `System.Object`, so
+// binding it correctly requires the real typed erasure this PR added —
+// the pre-existing uniform `Action<object>` ABI would mismatch every
+// `Task.ContinueWith` overload and throw `MissingMethodException` at the
+// call below.
+@externInstance
+@externTarget("System.Threading.Tasks.Task.ContinueWith")
+func taskContinueWithUnit(t: in Task, action: in (Task) -> Unit): Task = ()
+
 test "a lambda closing over a value binds to a real closed Func<RefType, ValueType, ValueType> BCL delegate parameter" {
   val socketPath = "/tmp/lyric_typed_ffi_delegate_self_test.sock"
   val handler = newSocketsHandler()
@@ -101,6 +123,20 @@ test "a lambda closing over a value binds to a real closed Func<RefType, ValueTy
   // (real closed types throughout, no `object` erasure) to bind to the real
   // BCL property setter at all.
   assertTrue(true, "typed delegate bound to the real SocketsHttpHandler.ConnectCallback setter")
+}
+
+test "#5315: a lambda binds to Task.ContinueWith's Action<Task> parameter (non-generic receiver, binding only)" {
+  val t = delay(1)
+  val continuation = taskContinueWithUnit(t, { finished: Task -> () })
+  // This is a BINDING-only test: reaching here without a build-time
+  // signature-verification failure or a runtime `MissingMethodException` on
+  // the `ContinueWith` call above is the test — the constructed delegate
+  // must be exactly `Action<Task>` (not the uniform `Action<object>`) to
+  // bind to any `Task.ContinueWith` overload at all. Actually *invoking* the
+  // continuation is a separate, already-documented gap (D-progress-621 item
+  // 3: closures passed as Action-typed arguments to Task's own APIs never
+  // fire on this backend) — out of scope here and not asserted.
+  assertTrue(true, "typed Action<Task> delegate bound to Task.ContinueWith without a signature mismatch")
 }
 
 // #5319/#5315/#5312: an attempt was made to add tests here that actually
@@ -139,6 +175,15 @@ test "a lambda closing over a value binds to a real closed Func<RefType, ValueTy
 // `Std.CollectionsHost` `List[T]` declaration) rather than shipped as a
 // failing/skipped test. No BCL API combining an invokable Func/Action
 // delegate parameter with a non-generic receiver AND a non-generic method
-// was found to substitute, so this file's original single test (which only
-// exercises the delegate CONSTRUCTION/BINDING half, not invocation) is left
-// unchanged; see the outer task report for full repro details.
+// was found to substitute, so the file's original single test (which only
+// exercises the delegate CONSTRUCTION/BINDING half, not invocation) was left
+// unchanged for a long time; see the outer task report for full repro
+// details.
+//
+// #5315 follow-up: a BINDING-only test (no invocation) for the Action`N-
+// typed path was added above (`Task.ContinueWith(Action<Task>)`) — `Task` is
+// a non-generic receiver, so #5525's generic-receiver TypeRef corruption
+// does not apply, and the bind call itself succeeds (no
+// `MissingMethodException`). Invoking the bound continuation still does not
+// work on this backend (a separate, pre-existing gap — D-progress-621 item
+// 3 — unrelated to #5525), so invocation remains untested here.

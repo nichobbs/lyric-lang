@@ -4776,6 +4776,8 @@ jobs:
 
           func main(): Int {
             println("hello from lyric run --target jvm")
+            println(1500.0)
+            println(0.5)
             0
           }
           LYR
@@ -4784,6 +4786,19 @@ jobs:
           echo "$out"
           if ! grep -qx "hello from lyric run --target jvm" <<< "$out"; then
             echo "::error::lyric run --target jvm produced unexpected output"
+            exit 1
+          fi
+          # #5661: println Double normalization (normalizeDoublePrintArg,
+          # jvm/codegen/04_calls.l) — whole doubles render "1500" not "1500.0"
+          # (matching .NET Double.ToString()) and fractional values keep their
+          # digits. (`print` shares the same codegen path but only accepts
+          # String at the checker level, so println is the reachable surface.)
+          if ! grep -qx "1500" <<< "$out"; then
+            echo "::error::println(1500.0) on jvm did not normalize to 1500 (#5661)"
+            exit 1
+          fi
+          if ! grep -qx "0.5" <<< "$out"; then
+            echo "::error::println(0.5) on jvm did not print 0.5 (#5661)"
             exit 1
           fi
       # `lyric bench --target dotnet` end-to-end smoke (#680 companion) — the

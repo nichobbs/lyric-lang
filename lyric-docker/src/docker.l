@@ -596,13 +596,12 @@ pub func jsonFieldIsObject(json: in String, field: in String): Bool {
 }
 
 /// Position of the `{` beginning `field`'s object value in `json`, or
-/// `None` if the field is absent or its value isn't an object. Lets a
-/// caller slice `json.substring(pos, json.length - pos)` to scope a
-/// subsequent `extractJsonField`/`extractJsonIntField` call to just that
-/// nested object instead of re-scanning the whole (possibly much larger)
-/// enclosing document, where a same-named field elsewhere could otherwise
-/// be picked up by mistake. Public for the same testability reason as
-/// `extractJsonIntField`.
+/// `None` if the field is absent or its value isn't an object. Pair with
+/// `jsonObjectEnd(json, pos)` (or the `scopeJsonObject` helper) to bound the
+/// resulting slice to just that nested object instead of re-scanning the
+/// whole (possibly much larger) enclosing document, where a same-named
+/// field elsewhere could otherwise be picked up by mistake (#5780). Public
+/// for the same testability reason as `extractJsonIntField`.
 pub func jsonFieldObjectStart(json: in String, field: in String): Option[Int] {
   val target = "\"" + field + "\""
   val jsonLen = json.length
@@ -632,6 +631,67 @@ pub func jsonFieldObjectStart(json: in String, field: in String): Option[Int] {
     searchFrom = pos + 1
   }
   None
+}
+
+/// Position of the `}` matching the `{` at `openPos` in `json` (as returned
+/// by `jsonFieldObjectStart`), or `None` if `json` has no balanced closing
+/// brace at or after `openPos`. Tracks brace depth and skips over string
+/// contents (so a `{`/`}` or an escaped `"` inside a string *value* doesn't
+/// perturb the count), unlike `jsonFieldObjectStart`'s own doc comment,
+/// which already flags "no depth tracking / no closing-brace bound" as a
+/// known limitation. Lets a caller scope a nested-object slice to exactly
+/// `json.substring(openPos, closePos + 1 - openPos)` instead of an
+/// unbounded slice to the end of the document, where a same-named field in
+/// a later sibling section could otherwise be picked up by mistake (#5780).
+pub func jsonObjectEnd(json: in String, openPos: in Int): Option[Int] {
+  val jsonLen = json.length
+  var i = openPos
+  var depth = 0
+  var inString = false
+  while i < jsonLen {
+    val c = json.substring(i, 1)
+    if inString {
+      if c == "\\" {
+        i = i + 2
+      } else if c == "\"" {
+        inString = false
+        i = i + 1
+      } else {
+        i = i + 1
+      }
+    } else {
+      if c == "\"" {
+        inString = true
+        i = i + 1
+      } else if c == "{" {
+        depth = depth + 1
+        i = i + 1
+      } else if c == "}" {
+        depth = depth - 1
+        i = i + 1
+        if depth == 0 {
+          return Some(value = i - 1)
+        }
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  None
+}
+
+/// Slice `json` to just the object beginning at `pos` (a position returned
+/// by `jsonFieldObjectStart`), bounded by `jsonObjectEnd`'s matching closing
+/// brace. Falls back to a slice through the end of `json` if the object is
+/// unbalanced (defensive; should not happen against well-formed API
+/// responses). Shared by `waitContainer`'s `Error` lookup and
+/// `containerIsTty`'s `Config` lookup so a same-named field in a later
+/// sibling section can't be picked up by mistake (#5780).
+func scopeJsonObject(json: in String, pos: in Int): String {
+  match jsonObjectEnd(json, pos) {
+    case Some(closePos) -> json.substring(pos, closePos + 1 - pos)
+    case None -> json.substring(pos, json.length - pos)
+  }
 }
 
 /// Validate a Docker container ID: must be a lowercase hex string of length 12
@@ -753,7 +813,7 @@ pub async func waitContainer(client: in DockerClient, containerId: in String): R
         // whole response body — a same-named field elsewhere in the body
         // (unlikely in this response shape today, but not guaranteed by the
         // API contract) must not be picked up by mistake (#4929).
-        val errorObj = body.substring(errStart, body.length - errStart)
+        val errorObj = scopeJsonObject(body, errStart)
         val message = extractJsonField(errorObj, "Message")
         val details = if message.length > 0 { message } else { body }
         Err(
@@ -847,7 +907,7 @@ async func containerIsTty(client: in DockerClient, containerId: in String): Resu
   match jsonFieldObjectStart(body, "Config") {
     case None -> Ok(value = false)
     case Some(pos) -> {
-      val configJson = body.substring(pos, body.length - pos)
+      val configJson = scopeJsonObject(body, pos)
       match extractJsonBoolField(configJson, "Tty") {
         case Some(v) -> Ok(value = v)
         case None -> Ok(value = false)

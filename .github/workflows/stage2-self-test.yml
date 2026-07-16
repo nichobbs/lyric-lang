@@ -164,6 +164,9 @@ jobs:
       # Expanding this list is a reasonable low-risk follow-up (tracked
       # alongside #5099); this comment is the explicit record of what is
       # deliberately left out rather than a silent cap.
+      - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
+        run: sudo apt-get update && sudo apt-get install -y z3
+
       - name: Compiler self-tests against stage 2 (--target dotnet)
         id: selftest_dotnet
         working-directory: ${{ github.workspace }}

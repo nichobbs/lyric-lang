@@ -107,3 +107,31 @@ test "record with Long/Double fields works as a Map key (#4993)" {
     case None -> assertTrue(false, "should find via structurally-equal Long/Double key")
   }
 }
+
+// A `Float`-field record (#5002): pins the `JFloat` arms of
+// `buildDeriveEqualsFunc`/`buildDeriveHashCodeFunc` (`Fcmpl`+`ifeq` for
+// equals; `Float.hashCode(float)` for hashCode) — structurally identical to
+// the `WideKey` fix above but not independently exercised until now.
+@derive(Equals)
+@derive(Hash)
+record FloatKey {
+  f: Float
+}
+
+test "record with a Float field is structurally equal (#5002)" {
+  val a = FloatKey(f = 3.5f32)
+  val b = FloatKey(f = 3.5f32)
+  val c = FloatKey(f = 2.5f32)
+  assertTrue(a.equals(b), "field-equal float keys are equal")
+  assertTrue(not a.equals(c), "field-different float keys are not equal")
+}
+
+test "record with a Float field works as a Map key (#5002)" {
+  val m: Map[FloatKey, String] = newMap()
+  m[FloatKey(f = 3.5f32)] = "hit"
+  val fresh = FloatKey(f = 3.5f32)
+  match mapGet(m, fresh) {
+    case Some(v) -> assertEqual(v, "hit", "fresh field-equal float key finds the Map entry")
+    case None -> assertTrue(false, "should find via structurally-equal Float key")
+  }
+}
