@@ -61,6 +61,10 @@ func fillBool(v: Bool): Slot[Bool] {
   Filled(item = v)
 }
 
+func fillFloat(v: Float): Slot[Float] {
+  Filled(item = v)
+}
+
 // Extract-and-add through a match: the headline #4877 shape.
 func addTwoIntResults(a: String, b: String): Int {
   val x = match makeIntResult(a) { case Ok(v) -> v; case Err(_) -> 0 }
@@ -233,6 +237,15 @@ test "Bool payload unboxes to a real boolean (#4932)" {
   assertTrue(t, "unboxed true payload is true")
   assertFalse(f, "unboxed false payload is false")
   assertTrue(t and not f, "unboxed booleans combine in a boolean expression")
+}
+
+test "Float payload unboxes to a real float for arithmetic (#4932)" {
+  val v = match fillFloat(2.5f32) { case Filled(x) -> x; case Blank -> 0.0f32 }
+  // A boxed `Object` payload here would fail the `floatValue` unbox / string-
+  // concatenate instead of adding as a primitive float.
+  assertTrue(v + 1.0f32 == 3.5f32, "unboxed float payload adds as a primitive float")
+  assertTrue(v * 2.0f32 == 5.0f32, "unboxed float payload multiplies as a primitive float")
+  assertTrue(v > 2.0f32, "unboxed float payload compares as a primitive float")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

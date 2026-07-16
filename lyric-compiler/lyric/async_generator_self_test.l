@@ -264,3 +264,62 @@ test "#5582: generator with val bindings builds and yields, record after it is c
   assertEqualInt(r.p, 5, "RecordAfterValGen.p reads correctly after a val-using generator")
   assertEqual(r.q, "ok", "RecordAfterValGen.q reads correctly after a val-using generator")
 }
+
+// ── #5102: lazy-producer interleaving probe ──────────────────────────────────
+// The header documents the lazy-producer model (one value materialised at a
+// time via a fresh `TaskCompletionSource` per `MoveNextAsync`), but every test
+// above only collects-then-asserts, which passes identically under the old
+// eager "RunBody collects all yields" model too. This probe records producer
+// and consumer steps into a shared log BEFORE each yield / AFTER each
+// consume: under eager buffering the producer would run to completion first,
+// so the log would read P0,P1,P2,C0,C1,C2 instead of the interleaved order
+// asserted below.
+async func genWithProbe(log: in List[String]): Int {
+  var i = 0
+  while i < 3 {
+    log.add("P${i}")
+    yield i
+    i = i + 1
+  }
+}
+
+test "#5102: producer and consumer steps interleave under the lazy model" {
+  val log: List[String] = newList()
+  for x in genWithProbe(log) {
+    log.add("C${x}")
+  }
+  assertEqualInt(log.count, 6, "3 produce + 3 consume entries")
+  assertEqual(log[0], "P0", "producer runs its first step before any consume")
+  assertEqual(log[1], "C0", "consumer processes 0 before the producer resumes")
+  assertEqual(log[2], "P1", "producer resumes only after the consumer's step")
+  assertEqual(log[3], "C1", "consumer processes 1 before the producer resumes")
+  assertEqual(log[4], "P2", "producer resumes only after the consumer's step")
+  assertEqual(log[5], "C2", "consumer processes 2 last")
+}
+
+// A very-large `genUpTo` upper bound with an early `break` after 3 items:
+// under eager buffering this would attempt to materialise the whole (huge)
+// sequence before the consumer ever ran; under the lazy model the producer
+// only advances as far as the consumer pulls, so it must have logged at most
+// one step past what the consumer observed.
+async func genUpToLarge(n: in Int, log: in List[Int]): Int {
+  var i = 1
+  while i <= n {
+    log.add(i)
+    yield i
+    i = i + 1
+  }
+}
+
+test "#5102: early break stops the producer instead of draining a huge sequence" {
+  val log: List[Int] = newList()
+  var count = 0
+  for x in genUpToLarge(1000000, log) {
+    count = count + 1
+    if count >= 3 {
+      break
+    }
+  }
+  assertEqualInt(count, 3, "consumer stops after observing 3 items")
+  assertTrue(log.count <= 4, "producer ran at most 4 times before the break took effect")
+}
