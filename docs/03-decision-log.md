@@ -16727,6 +16727,70 @@ docs/59-compiler-stdlib-deep-review.md §7.3, #5809.
 
 ---
 
+## D-progress-687 — Fix #5833: D122 typed-delegate binding didn't apply at the receiver position of an `@externInstance` call
+
+**Context:** D-progress-686's `Std.HttpHost` migration closed #5803 by
+adding a `typed_ffi_delegate_self_test.l` case that invokes a constructed
+`Func<MemoryStream, ValueTask<Stream>>` via `System.Func`2.Invoke` — the one
+shape none of the migration's own call sites exercised (they only construct
+and pass the delegate onward, never invoke it directly from Lyric). That
+attempt failed with `System.InvalidCastException`, was filed as #5833
+(a genuinely new, previously-unknown gap, distinct from #5809's
+already-tracked value-type-receiver limitation — `Func`2` is a reference
+type), and the test was temporarily replaced with a note documenting the
+failed attempt pending a fix.
+
+**Root cause.** `emitExternTargetBody`'s own parameter-type-resolution loop
+(`buildTypedFuncOrActionMsilType`) always correctly resolved a
+`TFunction`-typed parameter's real closed `Func`/`Action` `MsilType` — at
+every position, including position 0 (the receiver of an `@externInstance`
+call). That correctly-resolved type was passed into
+`emitGenericExternMember` as `paramTypes[0]`, but `emitGenericExternMember`
+builds its OWN, independent TypeSpec (`objArgs`) for the receiver
+`castclass`/`newobj` target, and never consulted it — only the `r.isCtor`
+case (added in D-progress-686 for constructor RETURN types) reused an
+already-resolved real closed type; the `isInstance`-non-ctor RECEIVER case
+had no equivalent, so it always fell back to the erased
+`Func<object,...,object>` TypeSpec. `Func`2.Invoke`'s receiver `castclass`
+against that erased type then threw `InvalidCastException` against the real
+closed delegate the lambda itself had correctly bound to.
+
+**Fix.** Extended the same `retArgs`-reuse mechanism D-progress-686
+introduced for `r.isCtor` to also cover `isInstance`: when `paramTypes[0]`
+is already a closed `MValueTypeGenericInst`/`MGenericInst` matching the
+extern's declaring type (by FQN and arity), reuse it instead of erasing to
+`object`. Fixing this surfaced a second, independently-latent bug in the
+same function: the `#2972`/`AsyncLocal`1.Value` null-check/unbox dance
+(`dup; brtrue; pop; pushDefault; br; unbox.any`, for a `MTypeVar`-typed BCL
+return materialized as a value-type Lyric return) unconditionally assumed
+`objArgs` is always the object-erasure default — once the receiver TypeSpec
+could be a real closed instantiation, `callvirt` already produces the
+correctly-typed value directly, and the null-check dance applied `brtrue`
+to a value-type stack slot, which is invalid per ECMA-335 §III.3.5
+(`brtrue` requires an object-ref/native-int operand) and faulted with
+`InvalidProgramException` at load time. Found by disassembling the failing
+DLL (`ilspycmd -il`) and reading the exact generated IL. Fixed with a new
+`objArgsErased` flag threaded through both branches of the `objArgs`
+construction, gating the unboxing dance on `objArgsErased` being true.
+
+**Verification.** `typed_ffi_delegate_self_test.l`'s documented-failed-
+attempt note was replaced with a real passing test
+(`invoking a Func<MemoryStream, ValueTask<Stream>> delegate runs the
+ValueTask ctor inside the invoked body`) that constructs the delegate,
+invokes it via `Func`2.Invoke`, and asserts the invocation runs the
+constructed body (exercising typed-delegate construction, delegate
+invocation, and the D-progress-686 `ValueTask`1` ctor-return fix together
+in one call). Confirmed no regression in the original `#2972`/`AsyncLocal`
+shape (a new minimal repro) and in the `#5809` value-type-instance-call
+build-time panic guard (unaffected — `Func`2` is a reference type, so
+`isValType` stays false). Also re-verified the full 65-package stdlib
+bundle's live-`dockerd` Unix-socket HTTP round trip still succeeds.
+
+**Related:** docs/50-ffi-delegates-proposal.md, D122, D-progress-686, #5801,
+#5803, #5809, #5833.
+
+---
+
 ## D127 — Compiler's own release version is a build-time constant, not a source-stamped literal (docs/22 §5)
 
 **Context.** `lyric --version` (and the `lyric repl` banner, and the LSP
