@@ -1818,10 +1818,12 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       } else {
         // Compiler diagnostics belong on stderr, not stdout, so build tooling
         // and CI log parsers that capture stdout don't pick up warning text (#4703).
-        Console.error(
-          "W0005: bufMsilTypeWithCtx: TypeRef/TypeDef not found for MGenericInstByName '" + headFqn +
-            "' — signature degraded to System.Object (#2494)"
-        )
+        if ctx.discovering.count == 0 {
+          Console.error(
+            "W0005: bufMsilTypeWithCtx: TypeRef/TypeDef not found for MGenericInstByName '" + headFqn +
+              "' — signature degraded to System.Object (#2494)"
+          )
+        }
         bufU1(w, 0x1C)
       }
     }
@@ -2011,10 +2013,12 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
           // (the value already has the target type at every castclass site) —
           // warn rather than panic, unlike the `isinst` arms below where the
           // Object fallback silently changes which match arm runs.
-          Console.error(
-            "W0003: MCastclassByName: could not resolve type '" + name +
-              "' — falling back to System.Object (the narrowing check is dropped; check for a misspelled type name or a missing restored-package registration)"
-          )
+          if ctx.discovering.count == 0 {
+            Console.error(
+              "W0003: MCastclassByName: could not resolve type '" + name +
+                "' — falling back to System.Object (the narrowing check is dropped; check for a misspelled type name or a missing restored-package registration)"
+            )
+          }
           0x01000000 + ctx.trObject             // Last resort: System.Object (no-op cast)
         }
       }
@@ -2117,10 +2121,12 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
           // W0003 (stderr, #4703): same rationale as MCastclassByName — the
           // Object fallback drops the narrowing check but preserves behaviour
           // for a well-typed program, so warn rather than panic.
-          Console.error(
-            "W0003: MCastclassGeneric: could not resolve TypeDef/TypeRef for '" + name +
-              "' — falling back to System.Object (the narrowing check is dropped; check for a missing restored-package registration)"
-          )
+          if ctx.discovering.count == 0 {
+            Console.error(
+              "W0003: MCastclassGeneric: could not resolve TypeDef/TypeRef for '" + name +
+                "' — falling back to System.Object (the narrowing check is dropped; check for a missing restored-package registration)"
+            )
+          }
           0x01000000 + ctx.trObject
         }
       }
@@ -3958,7 +3964,14 @@ pub func recordPredictedFieldRow(ctx: in LoweringCtx, classFqn: in String, field
 pub func resolveSigTypeDefRow(ctx: in LoweringCtx, fqn: in String): Int {
   match mapGet(ctx.typeDefRowByFqn, fqn) {
     case Some(row) -> row
-    case None -> findTypeDefRowByName(ctx, fqn)
+    case None -> {
+      val row2 = findTypeDefRowByName(ctx, fqn)
+      if row2 > 0 {
+        row2
+      } else {
+        0
+      }
+    }
   }
 }
 

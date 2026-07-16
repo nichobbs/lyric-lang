@@ -188,6 +188,7 @@ pub func compileToMsilWithVersion(
   val emptyNugetPaths: List[String] = newList()
   val verParts = parseSemverMajorMinor(packageVersion)
   val cctx = newCodegenCtx(pkgName, emptyArtifacts, emptyNugetPaths, verParts[0], verParts[1])
+  cctx.lctx.discovering.add(true)
   // Allocate cross-assembly MemberRef rows for every stdlib `pub func`
   // so that user code calling `Std.X.foo(...)` emits a real
   // `call <memberref>` instead of falling through to the `MObject`
@@ -259,6 +260,7 @@ pub func compileToMsilWithVersion(
   embedLyricContract(cctx.lctx, liftedFile, "Lyric.Contract", resourceVersion)
 
   // Lower the package IR to raw PE bytes using the pre-seeded context.
+  cctx.lctx.discovering.clear()
   val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)
 
   // Write the PE to disk.
@@ -700,6 +702,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // falls back to 0.0.0.0.
   val pvParts = parseSemverMajorMinor(packageVersion)
   val cctx = newCodegenCtx(assemblyName, restoredArtifacts, nugetAssemblyPaths, pvParts[0], pvParts[1])
+  cctx.lctx.discovering.add(true)
   // Allocate cross-assembly AssemblyRef / TypeRef / MemberRef rows for
   // every `pub func` declared in the stdlib so that user code which
   // calls `Std.X.foo(...)` (e.g. `Std.Encoding.tryDecodeBase64`)
@@ -894,6 +897,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   val entryToken = resolveEntryToken(cctx)
 
   // Phase 6: lower all MPackages into a single PE against the shared lctx.
+  cctx.lctx.discovering.clear()
   val bytes = lowerMPackagesWithCtx(mpkgs, cctx.lctx, entryToken)
 
   val result = writeBytes(outputPath, bytes)
