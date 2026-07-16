@@ -758,6 +758,8 @@ jobs:
             lyric-compiler/lyric/version_self_test.l \
             lyric-compiler/lyric/cli_workspace_builder_self_test.l \
             lyric-compiler/lyric/cli_build_self_test.l \
+            lyric-compiler/lyric/cli_shared_self_test.l \
+            lyric-compiler/lyric/cli_copydll_self_test.l \
             lyric-compiler/lyric/cli_publish_self_test.l \
             lyric-compiler/lyric/verifier_self_test.l \
             lyric-compiler/lyric/closure_correctness_self_test.l \
@@ -5840,8 +5842,15 @@ jobs:
       # unresolved-call fallback) and `sort_tests` (#5712 — a `pub` generic's
       # private same-package helper wasn't imported alongside it for cross-
       # package monomorphisation) are both fixed and wired in here under
-      # D-progress-674.  Each suite exits non-zero on any assertion failure
-      # or runtime fault.
+      # D-progress-674.  The #5077 audit (2026-07-16) wired the passing
+      # remainder: book_ch01/03/05/07, book_ch13_ffi, kernel_bcl_tests, and
+      # xml_viability_tests.  Deliberately still excluded (tracked, not
+      # silent): book_ch02_tests (#5841 range-subtype isOk mono miscompile),
+      # book_ch04_tests (#5842 inout slice[Int] cast), book_ch12_tests
+      # (#5843 generic-HOF-lambda InvalidProgramException), and
+      # metadata_reader_tests (#5624 placeholder Param rows; also needs
+      # LYRIC_LOAD_COMPILER=1).  Each suite exits non-zero on any assertion
+      # failure or runtime fault.
       - name: Stdlib runtime suites on dotnet (kernels + core stdlib)
         working-directory: ${{ github.workspace }}
         run: |
@@ -5857,7 +5866,9 @@ jobs:
             collections_tests char_tests math_tests hash_tests path_tests \
             errors_tests environment_tests string_tests string_methods_tests \
             regex_tests yaml_tests testing_tests mocking_tests xml_tests \
-            set_tests sort_tests; do
+            set_tests sort_tests \
+            book_ch01_tests book_ch03_tests book_ch05_tests book_ch07_tests \
+            book_ch13_ffi_tests kernel_bcl_tests xml_viability_tests; do
             echo "--- lyric run lyric-stdlib/tests/$suite.l"
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done
