@@ -239,6 +239,10 @@ test "buildPublishNuspec: escapes XML metacharacters in its own fields" {
   assertTrue(strContains(ns, "<description>desc &quot;q&quot; &amp; &lt;tag&gt;</description>"), "description escaped")
   assertTrue(strContains(ns, "MIT &amp; Apache"), "license ampersand escaped")
   assertTrue(strContains(ns, "url=\"https://ex.com/?a=1&amp;b=2\""), "repository url ampersand escaped")
+  assertTrue(
+    strContains(ns, "<repository type=\"git\" url=\"https://ex.com/?a=1&amp;b=2\" />"),
+    "repository element declares type=\"git\" (#5685 — all ecosystem manifests are git-hosted)"
+  )
   assertTrue(strContains(ns, "target=\"lib/net10.0/A&amp;B.dll\""), "dll basename escaped")
   assertFalse(strContains(ns, "<id>A&B</id>"), "raw unescaped ampersand never appears in id")
 }

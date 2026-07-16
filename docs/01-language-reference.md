@@ -381,7 +381,7 @@ exposed record TransferRequest @generate(Json) {
 
 `exposed` types are flat, host-visible, and may be inspected by reflection. They compile to plain .NET `record class` types. They cannot have invariants beyond what the type system enforces structurally (no `invariant:` clause). They are intended for wire-level shapes — DTOs, log payloads, config records.
 
-`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)` invoke built-in source generators that emit serializers at compile time. No runtime serialization library is needed. Third-party generators are invoked with dotted names (`@generate(Pkg.Name)`); see `docs/40-source-generators.md` and D075.
+`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)` invoke built-in source generators that emit serializers at compile time — `@generate(Json)` synthesises both `toJson(self): String` and `fromJson(json: String): Result[TypeName, String]`. No runtime serialization library is needed. Third-party generators are invoked with dotted names (`@generate(Pkg.Name)`); see `docs/40-source-generators.md` and D075.
 
 An `opaque` type cannot have an `exposed` field. An `exposed` type may hold an opaque field, but only as an opaque handle — the inner representation remains hidden.
 
