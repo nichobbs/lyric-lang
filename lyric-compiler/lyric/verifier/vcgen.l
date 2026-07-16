@@ -2285,7 +2285,7 @@ func goalsForProtectedEntry(
       match protMembers[mfi] {
         case PMField(pf) -> {
           match pf {
-            case PFVar(fname, fty, _, _, _) -> {
+            case PFVar(fname, fty, _, _, _, _) -> {
               val fInfo = sortOfTypeExprE(env0, fty)
               val args1: List[Term] = newList()
               args1.add(selfTerm)
@@ -2293,7 +2293,7 @@ func goalsForProtectedEntry(
               fnEnv = envBindTerm(fname, fTerm, fInfo, fnEnv)
               appendTermList(fieldRangeHyps, rangeHypothesesForTerm(fTerm, fInfo))
             }
-            case PFLet(fname, fty, _, _, _) -> {
+            case PFLet(fname, fty, _, _, _, _) -> {
               val fInfo = sortOfTypeExprE(env0, fty)
               val args2: List[Term] = newList()
               args2.add(selfTerm)
@@ -2517,12 +2517,12 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
           match pdecl.members[pfi] {
             case PMField(pf) -> {
               match pf {
-                case PFVar(fname, fty, _, _, _) -> {
+                case PFVar(fname, fty, _, _, _, _) -> {
                   dtFields.add(
                     DatatypeField(name = pdecl.name + "__" + fname, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fty)).sort)
                   )
                 }
-                case PFLet(fname, fty, _, _, _) -> {
+                case PFLet(fname, fty, _, _, _, _) -> {
                   dtFields.add(
                     DatatypeField(name = pdecl.name + "__" + fname, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fty)).sort)
                   )

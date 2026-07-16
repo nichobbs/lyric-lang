@@ -1360,15 +1360,79 @@ func parseEntryDecl(st: inout ParseState): EntryDecl {
   )
 }
 
-// Look ahead past `///` doc-comment / statement-end trivia starting at
-// offset `start`, returning the offset of the first substantive token
-// (never consuming anything).  Mirrors wireOrderingClauseAhead's
-// non-consuming lookahead pattern: a `///` doc comment preceding a
-// protected-type member must not blind the dispatch below to the keyword
-// that actually follows it (#5574) — leaving the docs unconsumed lets
-// whichever member parser ultimately claims the tokens harvest them
-// itself (parseEntryDecl, parseFunctionDeclBody's caller, parseFieldDecl,
-// or the PFVar/PFLet branches below).
+// Look ahead past a single `@name(...)` annotation starting at offset
+// `start` (which must be the `@` token), returning the offset of the
+// first token past the annotation (never consuming anything).  Mirrors
+// parseAnnotation's token shape (`At`, a dotted module path, then an
+// optional balanced `( ... )` argument list) without materializing an
+// `Annotation` value — this is dispatch-only lookahead.  Always advances
+// by at least one token (past the `@`), so callers can't loop forever
+// even when the annotation is malformed.
+func skipAnnotationOffset(st: in ParseState, start: in Int): Int {
+  var k = start + 1
+  match peekAt(st, k).token {
+    case TIdent(_) -> {
+      k = k + 1
+    }
+    case _ -> {
+    }
+  }
+  var keepGoing = true
+  while keepGoing {
+    val nextIsDotIdent = isPunct(peekAt(st, k).token, Dot) and
+      (match peekAt(st, k + 1).token { case TIdent(_) -> true; case _ -> false })
+    if nextIsDotIdent {
+      k = k + 2
+    } else {
+      keepGoing = false
+    }
+  }
+  if isPunct(peekAt(st, k).token, LParen) {
+    k = k + 1
+    var depth = 1
+    var scanning = true
+    while scanning {
+      match peekAt(st, k).token {
+        case TEof -> {
+          scanning = false
+        }
+        case TPunct(p) -> {
+          match p {
+            case LParen -> {
+              depth = depth + 1
+              k = k + 1
+            }
+            case RParen -> {
+              depth = depth - 1
+              k = k + 1
+              if depth == 0 {
+                scanning = false
+              }
+            }
+            case _ -> {
+              k = k + 1
+            }
+          }
+        }
+        case _ -> {
+          k = k + 1
+        }
+      }
+    }
+  }
+  k
+}
+
+// Look ahead past `///` doc-comment / statement-end trivia / leading
+// `@annotation`s starting at offset `start`, returning the offset of the
+// first substantive token (never consuming anything).  Mirrors
+// wireOrderingClauseAhead's non-consuming lookahead pattern: a `///` doc
+// comment or `@annotation` preceding a protected-type member must not
+// blind the dispatch below to the keyword that actually follows it
+// (#5574, #5815) — leaving the docs/annotations unconsumed lets whichever
+// member parser ultimately claims the tokens harvest them itself
+// (parseEntryDecl, parseFunctionDeclBody's caller, parseFieldDecl, or the
+// PFVar/PFLet branches below).
 func skipDocTriviaOffset(st: in ParseState, start: in Int): Int {
   var k = start
   var scanning = true
@@ -1379,6 +1443,16 @@ func skipDocTriviaOffset(st: in ParseState, start: in Int): Int {
       }
       case TStmtEnd -> {
         k = k + 1
+      }
+      case TPunct(p) -> {
+        match p {
+          case At -> {
+            k = skipAnnotationOffset(st, k)
+          }
+          case _ -> {
+            scanning = false
+          }
+        }
       }
       case _ -> {
         scanning = false
@@ -1396,6 +1470,7 @@ func parseProtectedField(st: inout ParseState): ProtectedField {
       match k {
         case KwVar -> {
           val docs = parseItemDocComments(st)
+          val anns = parseItemAnnotations(st)
           val _ = advance(st)
           val ns = readIdent(st, "field")
           match tryEatPunct(st, Colon) {
@@ -1408,10 +1483,18 @@ func parseProtectedField(st: inout ParseState): ProtectedField {
           val ty = parseTypeExpr(st)
           val init = match tryEatPunct(st, Eq) { case Some(_) -> Some(parseExpr(st)); case None -> None }
           val endSpan = match init { case Some(e) -> e.span; case None -> ty.span }
-          PFVar(name = ns.name, ty = ty, init = init, docComments = docs, span = joinSpans(startSpan, endSpan))
+          PFVar(
+            name = ns.name,
+            ty = ty,
+            init = init,
+            docComments = docs,
+            annotations = anns,
+            span = joinSpans(startSpan, endSpan)
+          )
         }
         case KwLet -> {
           val docs = parseItemDocComments(st)
+          val anns = parseItemAnnotations(st)
           val _ = advance(st)
           val ns = readIdent(st, "field")
           match tryEatPunct(st, Colon) {
@@ -1431,7 +1514,14 @@ func parseProtectedField(st: inout ParseState): ProtectedField {
             case None -> {
             }
           }
-          PFLet(name = ns.name, ty = ty, init = init, docComments = docs, span = joinSpans(startSpan, endSpan))
+          PFLet(
+            name = ns.name,
+            ty = ty,
+            init = init,
+            docComments = docs,
+            annotations = anns,
+            span = joinSpans(startSpan, endSpan)
+          )
         }
         case _ -> {
           PFImmutable(field = parseFieldDecl(st))

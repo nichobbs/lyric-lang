@@ -975,18 +975,20 @@ func rewriteOpaqueTypeDecl(aliases: in List[String], d: in OpaqueTypeDecl): Opaq
 // IProtected ────────────────────────────────────────────────────────────────────
 func rewriteProtectedField(aliases: in List[String], pf: in ProtectedField): ProtectedField {
   match pf {
-    case PFVar(name, ty, init, docComments, span) -> return PFVar(
+    case PFVar(name, ty, init, docComments, annotations, span) -> return PFVar(
       name = name,
       ty = rewriteTypeExpr(aliases, ty),
       init = rewriteOptExpr(aliases, init),
       docComments = docComments,
+      annotations = annotations,
       span = span
     )
-    case PFLet(name, ty, init, docComments, span) -> return PFLet(
+    case PFLet(name, ty, init, docComments, annotations, span) -> return PFLet(
       name = name,
       ty = rewriteTypeExpr(aliases, ty),
       init = rewriteOptExpr(aliases, init),
       docComments = docComments,
+      annotations = annotations,
       span = span
     )
     case PFImmutable(field) -> return PFImmutable(field = rewriteFieldDecl(aliases, field))

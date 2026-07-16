@@ -8938,11 +8938,11 @@ func protFieldsOf(decl: in ProtectedTypeDecl): List[FieldDecl] {
     match decl.members[i] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, ty, initOpt, docs, span) -> {
+          case PFVar(name, ty, initOpt, docs, anns, span) -> {
             fields.add(
               FieldDecl(
                 docComments = docs,
-                annotations = newList(),
+                annotations = anns,
                 visibility = None,
                 isMutable = true,
                 name = name,
@@ -8952,11 +8952,11 @@ func protFieldsOf(decl: in ProtectedTypeDecl): List[FieldDecl] {
               )
             )
           }
-          case PFLet(name, ty, initOpt, docs, span) -> {
+          case PFLet(name, ty, initOpt, docs, anns, span) -> {
             fields.add(
               FieldDecl(
                 docComments = docs,
-                annotations = newList(),
+                annotations = anns,
                 visibility = None,
                 isMutable = false,
                 name = name,
@@ -8986,8 +8986,8 @@ func makeProtectedFieldNames(decl: in ProtectedTypeDecl): Map[String, Bool] {
     match decl.members[i] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, _, _, _, _) -> names.add(name, true)
-          case PFLet(name, _, _, _, _) -> names.add(name, true)
+          case PFVar(name, _, _, _, _, _) -> names.add(name, true)
+          case PFLet(name, _, _, _, _, _) -> names.add(name, true)
           case PFImmutable(fd) -> names.add(fd.name, true)
         }
       }

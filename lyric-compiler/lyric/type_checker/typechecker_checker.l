@@ -1438,10 +1438,10 @@ func checkProtectedDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], dec
     match decl.members[i] {
       case PMField(field) -> {
         match field {
-          case PFVar(_, ty, _, _, _) -> {
+          case PFVar(_, ty, _, _, _, _) -> {
             val _ = resolveType(tbl, ctx, diag, ty)
           }
-          case PFLet(_, ty, _, _, _) -> {
+          case PFLet(_, ty, _, _, _, _) -> {
             val _ = resolveType(tbl, ctx, diag, ty)
           }
           case PFImmutable(fd) -> {
