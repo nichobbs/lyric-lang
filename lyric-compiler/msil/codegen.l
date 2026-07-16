@@ -16621,7 +16621,22 @@ func emitGenericExternMember(
       // Drives both the GENERICINST tag below and how an instance receiver
       // is loaded/dispatched further down (#5797).
       val isValType = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, cleanFqn)
-      val tsKey = "ts_genextern_" + resolvedFqn
+      // The concrete type args (whether from an explicit bracket suffix or
+      // the ctor return-type reuse above) must be part of the cache key:
+      // `ctxAddTypeSpec`/`ctxAddMemberRefForTypeSpec` dedupe purely by the
+      // STRING key, not by the blob bytes, so two different closed
+      // instantiations of the same open generic (e.g. two
+      // `ValueTask`1..ctor`-style wrappers returning `ValueTask<Stream>` and
+      // `ValueTask<String>` in the same compile unit) would otherwise
+      // silently collide on `resolvedFqn` alone and reuse whichever
+      // TypeSpec/MemberRef row was registered first (#5797/#5802).
+      var objArgsKey = ""
+      var oaki = 0
+      while oaki < objArgs.count {
+        objArgsKey = objArgsKey + "_" + msilTypeKeyStr(objArgs[oaki])
+        oaki = oaki + 1
+      }
+      val tsKey = "ts_genextern_" + resolvedFqn + objArgsKey
       // The GENERICINST blob must tag its head type CLASS or VALUETYPE to
       // match the real BCL type's kind (ECMA-335 §II.23.2.12) — a struct
       // generic tagged CLASS mismatches at load time with
@@ -16650,7 +16665,7 @@ func emitGenericExternMember(
       // member name: two overloads of the same name on the same generic type
       // (e.g. distinct-arity `TryGetValue`s, or a `.ctor()` vs `.ctor(int,int)`)
       // would otherwise alias to the first-registered MemberRef (#3429).
-      var mrKey = "mr_genextern_" + resolvedFqn + "." + emitMemberName + "/" + toString(memberParams.count)
+      var mrKey = "mr_genextern_" + resolvedFqn + objArgsKey + "." + emitMemberName + "/" + toString(memberParams.count)
       var mki = 0
       while mki < memberParams.count {
         mrKey = mrKey + "_" + msilTypeKeyStr(memberParams[mki])
