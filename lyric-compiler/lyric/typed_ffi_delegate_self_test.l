@@ -271,33 +271,43 @@ test "constructing and returning a ValueTask`1[...]-shaped extern value does not
 // because `SocketsHttpHandler` only invokes `ConnectCallback` when a real
 // HTTP request actually attempts a connection.
 //
-// An attempt was made to sidestep needing real I/O via `System.Func`2.
-// Invoke` — letting the TEST itself invoke the constructed delegate
-// synchronously, with `cb` bound to `Func`2.Invoke`'s own RECEIVER
-// (`@externInstance`) rather than a plain parameter:
+// `System.Func`2.Invoke` sidesteps needing real I/O: it lets the TEST
+// itself invoke the constructed delegate synchronously (rather than the BCL
+// invoking it internally), exercising all three pieces together — typed
+// delegate CONSTRUCTION (the lambda binds directly to an `@externTarget`
+// function's own `TFunction`-typed parameter, D122), delegate INVOCATION
+// (`Func`2.Invoke` is a real `callvirt` through the bound delegate, not a
+// direct call to the lambda body), and the `ValueTask`1[...]` ctor-return
+// bug from D-progress-686 running INSIDE that invoked body.
 //
-//   @externInstance
-//   @externTarget("System.Func`2.Invoke")
-//   func invokeMemStreamFunc(cb: in (MemoryStream) -> ValueTaskOfMemStream, arg: in MemoryStream): ValueTaskOfMemStream = ()
-//
-// This surfaced a NEW, previously-unknown gap, distinct from #5525
-// (generic-RECEIVER TypeRef corruption, documented above) and D-progress-621
-// item 3 (Task.ContinueWith continuations never firing): the lambda DOES
-// bind to the real closed `Func<MemoryStream, ValueTask<Stream>>` (confirmed
-// via the runtime exception naming that exact closed type), but the WRAPPER
-// FUNCTION's own parameter signature for `cb` still erases to the old
-// uniform `Func<object,object>` ABI — `System.InvalidCastException: Unable
-// to cast object of type 'Func`2[MemoryStream,ValueTask`1[Stream]]' to type
-// 'Func`2[Object,Object]'` at the `Func`2.Invoke` call site. D122's typed-
-// delegate mechanism (docs/50-ffi-delegates-proposal.md) evidently does not
-// (yet) apply when the `TFunction`-typed parameter is the RECEIVER of an
-// `@externInstance` call, only when it is an ordinary (non-receiver)
-// parameter — every proven-working typed-delegate test in this file,
-// including `SocketsHttpHandler.set_ConnectCallback` above, has `cb` at a
-// non-receiver position. Filed as #5833 rather than shipped as a silently
-// broken or skipped test; #5803 itself remains open pending either that fix
-// or a different BCL API that invokes a Func/Action parameter synchronously
-// without hitting an already-documented, unrelated gap (#5525,
-// D-progress-621 item 3, or generic-method delegate-parameter resolution —
-// see the #5319/#5315/#5312 block above, all of which were also tried and
-// rejected for this exact purpose).
+// `cb` is BOTH the `TFunction`-typed lambda argument AND the `@externInstance`
+// receiver for `Func`2.Invoke` — a shape every OTHER typed-delegate test in
+// this file avoids (`cb` is always a non-receiver parameter elsewhere, e.g.
+// `SocketsHttpHandler.set_ConnectCallback` above). That combination
+// previously hit a distinct, now-fixed gap (#5833): the lambda bound to the
+// real closed `Func<MemoryStream, ValueTask<Stream>>` correctly, but
+// `emitGenericExternMember`'s receiver-loading code built the `castclass`
+// target from the bare extern-target string alone (no bracket suffix, not a
+// ctor) and fell back to the erased `Func<object,object>` TypeSpec instead
+// of reusing the wrapper's own already-resolved real closed parameter type —
+// `System.InvalidCastException` at the `Invoke` call site. Fixed by
+// extending the same "reuse an already-resolved real closed type instead of
+// erasing" mechanism D-progress-686's ctor-return fix introduced to also
+// cover an instance call's RECEIVER type (`paramTypes[0]`), plus a follow-on
+// fix to the VAR-typed-return unboxing dance (#2972, `AsyncLocal`1.Value`)
+// that assumed every generic-member receiver is always object-erased and
+// mis-fired `InvalidProgramException` (`brtrue` on a value-type stack slot)
+// once the receiver could be a real closed instantiation.
+extern type MemStreamFunc = "System.Func`2"
+
+@externInstance
+@externTarget("System.Func`2.Invoke")
+func invokeMemStreamFunc(cb: in (MemoryStream) -> ValueTaskOfMemStream, arg: in MemoryStream): ValueTaskOfMemStream = ()
+
+test "invoking a Func<MemoryStream, ValueTask<Stream>> delegate runs the ValueTask ctor inside the invoked body (#5803/#5833)" {
+  val vt = invokeMemStreamFunc({ s: MemoryStream -> newValueTaskOfMemStream(s) }, newMemoryStream())
+  assertTrue(
+    true,
+    "Func<MemoryStream, ValueTask<Stream>> constructed, actually invoked via Func`2.Invoke (not just constructed/bound), and its body's ValueTask`1..ctor call did not crash"
+  )
+}

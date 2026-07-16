@@ -16694,29 +16694,62 @@ func emitGenericExternMember(
       val ns = r.namespaceStr
       val typeRefRow = internFfiTypeRef(cctx, asmName, ns, cleanTypeName)
       val objArgs: List[MsilType] = newList()
+      // Whether `objArgs` ended up as the `<object,…>` erasure default
+      // (true) or a real closed instantiation (false, from either an
+      // explicit bracket suffix or the ctor/instance-receiver `retArgs`
+      // reuse below). Drives the VAR-typed-return unboxing dance further
+      // down: that dance exists because a member call through an
+      // object-erased TypeSpec ALWAYS returns a boxed `object` for a `!N`
+      // return position, which must be unboxed back to the real value type
+      // (#2972) — but once `objArgs` is a real closed instantiation, the
+      // CLR's `callvirt` through that TypeSpec already produces the exact
+      // instantiated type on the stack (a value-type struct directly, not a
+      // boxed reference), so re-applying that same dance operates on a
+      // value-type stack slot with `brtrue` (an object-ref/native-int-only
+      // opcode per ECMA-335 §III.3.5) — `InvalidProgramException` at load
+      // time (#5833).
+      var objArgsErased = true
       if concreteArgs.count == arity {
+        objArgsErased = false
         var cai = 0
         while cai < concreteArgs.count {
           objArgs.add(argFqnToMsil(cctx, concreteArgs[cai]))
           cai = cai + 1
         }
       } else {
-        // A ctor wrapper's own declared RETURN type may already carry the
-        // real closed instantiation even though the `@externTarget` target
-        // string itself has no bracket suffix — e.g. `func newValueTaskOfStream
-        // (...): ValueTaskOfStream` where `ValueTaskOfStream = "...ValueTask`1
-        // [System.IO.Stream]"` resolves (upstream, via
-        // `resolveValueTaskGenericMsilType`) to a real `ValueTask`1<Stream>`
-        // MsilType. Reusing those type args here — instead of erasing to
-        // `<object,…>` — is required: the `newobj`'s TypeSpec parent must
-        // match the function's declared return type exactly, or the two
-        // disagree at the metadata level and construction faults with
-        // `TypeLoadException: ... due to value type mismatch` the moment the
-        // value is returned (D-progress-686). Scoped to ctors only — a non-ctor
-        // generic-member call's return type is unrelated to the receiver's
-        // own instantiation, so every other case keeps the object-erasure
-        // default (valid because Lyric constructs those instances
-        // object-erased).
+        // A ctor wrapper's own declared RETURN type, or an instance-call
+        // wrapper's own declared RECEIVER type, may already carry the real
+        // closed instantiation even though the `@externTarget` target string
+        // itself has no bracket suffix:
+        //
+        //  - ctor: `func newValueTaskOfStream(...): ValueTaskOfStream` where
+        //    `ValueTaskOfStream = "...ValueTask`1[System.IO.Stream]"`
+        //    resolves (upstream, via `resolveValueTaskGenericMsilType`) to a
+        //    real `ValueTask`1<Stream>` MsilType — reusing it is required so
+        //    the `newobj`'s TypeSpec parent matches the function's declared
+        //    return type exactly, or the two disagree at the metadata level
+        //    and construction faults with `TypeLoadException: ... due to
+        //    value type mismatch` the moment the value is returned
+        //    (D-progress-686).
+        //  - instance call: a `TFunction`-typed `@externTarget` parameter at
+        //    the RECEIVER position (e.g. `func invokeMemStreamFunc(cb: in
+        //    (MemoryStream) -> ValueTaskOfMemStream, ...)` bound to
+        //    `System.Func`2.Invoke`) is resolved by
+        //    `emitExternTargetBody`'s own param-type loop (D122/docs/50,
+        //    `buildTypedFuncOrActionMsilType`) to a real closed
+        //    `MGenericInst("System.Func`2", [MemoryStream, ValueTaskOfMemStream])`
+        //    in `paramTypes[0]` *before* this function is ever called —
+        //    reusing it here is required so the receiver `castclass` target
+        //    matches what was actually constructed, or the CLR throws
+        //    `InvalidCastException` casting the real closed `Func<...>` to
+        //    the erased `Func<object,object>` TypeSpec this function would
+        //    otherwise build (#5833).
+        //
+        // Neither case applies to a non-ctor, non-instance (static) call or
+        // to an instance call whose receiver type doesn't match this
+        // member's declaring type — every other case keeps the
+        // object-erasure default (valid because Lyric constructs those
+        // instances object-erased).
         var retArgs: Option[List[MsilType]] = None
         if r.isCtor {
           match lyricRetTy {
@@ -16732,9 +16765,24 @@ func emitGenericExternMember(
             }
             case _ -> ()
           }
+        } else if isInstance and paramTypes.count > 0 {
+          match paramTypes[0] {
+            case MValueTypeGenericInst(_, headFqn, targs) -> {
+              if headFqn == cleanFqn and targs.count == arity {
+                retArgs = Some(value = targs)
+              }
+            }
+            case MGenericInst(_, headFqn, targs) -> {
+              if headFqn == cleanFqn and targs.count == arity {
+                retArgs = Some(value = targs)
+              }
+            }
+            case _ -> ()
+          }
         }
         match retArgs {
           case Some(targs) -> {
+            objArgsErased = false
             var tai = 0
             while tai < targs.count {
               objArgs.add(targs[tai])
@@ -16916,9 +16964,14 @@ func emitGenericExternMember(
       // (e.g. `CancellationToken` from `AsyncLocal`1.get_Value()`), the erased
       // `object` on the stack must be unboxed back to the concrete value type before
       // `ret` — otherwise the CLR would refuse a valuetype-returning MethodDef that
-      // leaves a reference on the stack (#2972).
+      // leaves a reference on the stack (#2972). Gated on `objArgsErased`: when
+      // `objArgs` is a REAL closed instantiation instead (#5833), `callvirt`
+      // already produces the exact instantiated type directly (a value-type
+      // struct, not a boxed reference) — re-running this dance would apply
+      // `brtrue` (object-ref/native-int only, ECMA-335 §III.3.5) to a
+      // value-type stack slot, an `InvalidProgramException` at load time.
       val retIsTypeVar = match memberRet { case MTypeVar(_) -> true; case _ -> false }
-      if retIsTypeVar and isValueTypeReceiverMsil(lyricRetTy) {
+      if retIsTypeVar and objArgsErased and isValueTypeReceiverMsil(lyricRetTy) {
         // The erased `object` can be null — e.g. `AsyncLocal<object>.Value`
         // before the ambient slot is ever set (`Std.Task.installToken`'s
         // FIRST call, #5330).  An unconditional `unbox.any` on a null
