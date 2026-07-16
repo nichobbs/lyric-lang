@@ -158,7 +158,7 @@ func newNetworkStream(s: in Socket, ownsSocket: in Bool): NetworkStream = ()
 // argument type, and a `!0`-typed parameter position scores as a match for
 // any concrete argument (`scoreSigType`'s `STVar` arm, metadata_reader.l),
 // which correctly picks `.ctor(TResult)` over `.ctor(Task<TResult>)` for a
-// `NetworkStream` argument (#5797).
+// `NetworkStream` argument (D-progress-685).
 @externTarget("System.Threading.Tasks.ValueTask`1..ctor")
 func newValueTaskOfStream(stream: in NetworkStream): ValueTaskOfStream = ()
 

@@ -2498,7 +2498,7 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     // (e.g. `ValueTask`1.ctor(TResult)`) and another takes a concrete
     // generic instantiation of it (`ValueTask`1.ctor(Task<TResult>)`): both
     // scored -1 and `resolveExternMethodScoredIn` silently fell back to
-    // whichever ctor happened to sit first in the Method table (#5797).
+    // whichever ctor happened to sit first in the Method table (D-progress-685).
     case STVar(_) -> 1
     case _ -> -1
   }

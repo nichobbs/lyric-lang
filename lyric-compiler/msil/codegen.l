@@ -16461,7 +16461,7 @@ func emitGenericExternMember(
   // Whether the declaring generic type itself is a struct (e.g.
   // `ValueTask`1`) rather than a class (e.g. `ConcurrentDictionary`2`).
   // Drives the GENERICINST tag further down and, for an INSTANCE call, an
-  // early bail-out below (#5797/#5809): the receiver-loading code always
+  // early bail-out below (D-progress-685/#5809): the receiver-loading code always
   // emits `MLdarg` + `MCastclass`, which is only valid against a reference
   // type (ECMA-335 §III.4.6) — casting a value-type-tagged TypeSpec would
   // compile clean but fault at runtime/verification instead of surfacing a
@@ -16493,7 +16493,7 @@ func emitGenericExternMember(
       // `.ctor(Task<TResult>)` — since `scoreSigType`'s `STVar` arm lets a
       // concrete Lyric argument match the type's own type-parameter slot
       // without also matching an unrelated `Task<TResult>`-shaped overload
-      // (#5797).  Arity-only `decodeExternMethodSig` below cannot tell
+      // (D-progress-685).  Arity-only `decodeExternMethodSig` below cannot tell
       // those apart and silently binds whichever candidate is first in the
       // Method table.
       var argSigsOk = true
@@ -16611,7 +16611,7 @@ func emitGenericExternMember(
         // match the function's declared return type exactly, or the two
         // disagree at the metadata level and construction faults with
         // `TypeLoadException: ... due to value type mismatch` the moment the
-        // value is returned (#5797). Scoped to ctors only — a non-ctor
+        // value is returned (D-progress-685). Scoped to ctors only — a non-ctor
         // generic-member call's return type is unrelated to the receiver's
         // own instantiation, so every other case keeps the object-erasure
         // default (valid because Lyric constructs those instances
@@ -16657,7 +16657,7 @@ func emitGenericExternMember(
       // `ValueTask`1..ctor`-style wrappers returning `ValueTask<Stream>` and
       // `ValueTask<String>` in the same compile unit) would otherwise
       // silently collide on `resolvedFqn` alone and reuse whichever
-      // TypeSpec/MemberRef row was registered first (#5797/#5802).
+      // TypeSpec/MemberRef row was registered first (D-progress-685/#5802).
       var objArgsKey = ""
       var oaki = 0
       while oaki < objArgs.count {
@@ -16959,12 +16959,8 @@ func emitExternTargetConstMsil(
   }
 }
 
-
 func typeExprToMsilGenBodyOrCtx(
-  cctx: in CodegenCtx,
-  te: in TypeExpr,
-  pkgName: in String,
-  generics: in List[String],
+  cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]
 ): MsilType {
   if generics.count > 0 {
     typeExprToMsilGenBody(cctx, te, pkgName, generics)
@@ -25961,7 +25957,7 @@ func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilTyp
   // signature pinned to the CALLER's concrete type rather than the BCL
   // method's own open type parameter: legal-looking IL that `ilverify`
   // accepts but that faults with `TypeLoadException` at first invocation.
-  // Not on the hot path `emitGenericExternMember` takes for #5797 (it
+  // Not on the hot path `emitGenericExternMember` takes for D-progress-685 (it
   // converts via `genericMemberSigToMsil`, which already preserved `STVar`) —
   // added defensively so this OTHER metadata-scored resolution path (used by
   // non-generic-declaring-type externs, `emitExternTargetBody`'s "plain
