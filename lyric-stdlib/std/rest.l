@@ -246,11 +246,15 @@ pub async func RestClient.jsonString(response: in HttpResponse, field: in String
   match await HttpResponse.bodyText(response) {
     case Err(e) -> return Err(error = Http(error = Transport(url = url, error = e)))
     case Ok(text) -> {
-      var value: String = ""
-      if lyricJsonGetString(text, field, value) {
-        return Ok(value = value)
+      try {
+        var value: String = ""
+        if lyricJsonGetString(text, field, value) {
+          return Ok(value = value)
+        }
+        return Err(error = Deserialize(url = url, reason = "field '" + field + "' missing or not a string"))
+      } catch Bug as b {
+        return Err(error = Deserialize(url = url, reason = "Failed to parse JSON response: " + b.message))
       }
-      return Err(error = Deserialize(url = url, reason = "field '" + field + "' missing or not a string"))
     }
   }
 }
@@ -265,11 +269,15 @@ pub async func RestClient.jsonInt(response: in HttpResponse, field: in String): 
   match await HttpResponse.bodyText(response) {
     case Err(e) -> return Err(error = Http(error = Transport(url = url, error = e)))
     case Ok(text) -> {
-      var value: Int = 0
-      if lyricJsonGetInt(text, field, value) {
-        return Ok(value = value)
+      try {
+        var value: Int = 0
+        if lyricJsonGetInt(text, field, value) {
+          return Ok(value = value)
+        }
+        return Err(error = Deserialize(url = url, reason = "field '" + field + "' missing or not an integer"))
+      } catch Bug as b {
+        return Err(error = Deserialize(url = url, reason = "Failed to parse JSON response: " + b.message))
       }
-      return Err(error = Deserialize(url = url, reason = "field '" + field + "' missing or not an integer"))
     }
   }
 }
@@ -284,11 +292,15 @@ pub async func RestClient.jsonBool(response: in HttpResponse, field: in String):
   match await HttpResponse.bodyText(response) {
     case Err(e) -> return Err(error = Http(error = Transport(url = url, error = e)))
     case Ok(text) -> {
-      var value: Bool = false
-      if lyricJsonGetBool(text, field, value) {
-        return Ok(value = value)
+      try {
+        var value: Bool = false
+        if lyricJsonGetBool(text, field, value) {
+          return Ok(value = value)
+        }
+        return Err(error = Deserialize(url = url, reason = "field '" + field + "' missing or not a boolean"))
+      } catch Bug as b {
+        return Err(error = Deserialize(url = url, reason = "Failed to parse JSON response: " + b.message))
       }
-      return Err(error = Deserialize(url = url, reason = "field '" + field + "' missing or not a boolean"))
     }
   }
 }
@@ -319,26 +331,14 @@ pub async func RestClient.jsonBody(response: in HttpResponse): Result[String, Re
 /// `Ok` case.  Leaking the document keeps the buffer out of the array
 /// pool until the next GC cycle.
 ///
-/// # Malformed input (limitation, #984)
-/// The underlying `Std.Json.parseJson` ultimately calls
-/// `System.Text.Json.JsonDocument.Parse`, which **throws** on syntactically
-/// invalid input.  This function does *not* yet wrap that exception into
-/// an `Err` variant — a malformed body propagates as a panic from the
-/// host boundary, not as a `Result.Err`.  Callers handling potentially-
-/// untrusted JSON should validate up front (e.g. by reading the body via
-/// `jsonBody` and running their own pre-flight check) until a
-/// `tryParseJson` host helper lands.  The same caveat applies to every
-/// other `Std.Json` helper in this file (`jsonString`, `jsonInt`, etc.),
-/// so this function is not a regression — the limitation is documented
-/// here so the API contract is honest about it.
+/// # Malformed input
+/// A malformed JSON body or empty response (such as from 204 No Content)
+/// is handled gracefully: any parsing or empty-input exceptions are
+/// caught and wrapped as an `Err(Deserialize)` variant.
 ///
 /// # Errors
 /// - `Http`: transport / status failure (body could not be read).
-///
-/// Note: a malformed JSON body propagates as a panic from the underlying
-/// `System.Text.Json.JsonDocument.Parse` host call, matching the
-/// behaviour of `Std.Json.parseJson` itself.  Validate the body upstream
-/// if untrusted input is a concern.
+/// - `Deserialize`: the response body is not valid JSON or a requested field is missing/mismatched.
 ///
 /// # Usage
 /// ```
@@ -358,6 +358,12 @@ pub async func RestClient.json(response: in HttpResponse): Result[JsonDoc, RestE
   val url = ""
   match await HttpResponse.bodyText(response) {
     case Err(e) -> return Err(error = Http(error = Transport(url = url, error = e)))
-    case Ok(text) -> return Ok(value = parseJson(text))
+    case Ok(text) -> {
+      try {
+        Ok(value = parseJson(text))
+      } catch Bug as b {
+        Err(error = Deserialize(url = url, reason = "Failed to parse JSON response: " + b.message))
+      }
+    }
   }
 }

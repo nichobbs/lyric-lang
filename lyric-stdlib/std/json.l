@@ -21,6 +21,19 @@ pub func parseJson(s: in String): JsonDoc {
   hostParseJson(s)
 }
 
+/// Try to parse a string as a JSON document.
+/// Returns `Ok(JsonDoc)` if successful, or `Err(String)` containing the parsing
+/// failure message if parsing throws a host-level exception.
+@stable(since = "1.0")
+pub func tryParseJson(s: in String): Result[JsonDoc, String] {
+  try {
+    Ok(value = hostParseJson(s))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+
 /// Release the unmanaged memory held by a `JsonDoc`.  Call this when you
 /// are done walking the document — typically via `defer { disposeJson(doc) }`.
 /// The `lyricJsonGet*` helpers do this automatically; only needed for code
