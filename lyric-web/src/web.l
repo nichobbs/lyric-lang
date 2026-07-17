@@ -297,7 +297,6 @@ pub func json(status: in Int, body: in String): Response {
   )
 }
 
-
 /// A `text/plain; charset=utf-8` response.
 @stable(since = "0.2")
 pub func text(status: in Int, body: in String): Response {
@@ -992,6 +991,261 @@ pub func dispatch(router: in Router, req: in Request): Response {
   return chain.handle(req)
 }
 
+// ─── Streaming (chunked) responses ─────────────────────────────────────────────
+// lyric-lang#5979: a handler that needs to send bytes before it has finished
+// producing the whole body (SSE, log tailing, progress reporting) implements
+// `StreamingHandler` and registers with `addStreamingGet`/`addStreamingPost`
+// instead of `Handler`/`addGet`/`addPost`. This is a wholly separate,
+// opt-in-per-route table — it does not touch `Router`, `Route`, `Handler`,
+// `dispatch`, or `serve`/`start`, so every existing non-streaming handler
+// compiles and behaves exactly as before.
+//
+// dotnet-only for now: the JVM `serve` delegates entirely to
+// `Web.Kernel.Runtime`'s Undertow server (a different I/O model), which
+// doesn't yet expose a streaming path — a tracked gap, not a silent skip
+// (lyric-lang#5979's follow-up).
+@cfg(feature = "dotnet")
+pub interface StreamingHandler {
+  func handleStream(req: in Request, w: in ResponseWriter): Unit
+}
+
+/// A handle for writing a chunked response body incrementally. Obtained by
+/// the framework and passed to a `StreamingHandler`; not constructible
+/// directly. `writeStatus`/`writeHeader` may only be called before the
+/// first `writeChunk` — the underlying HTTP response is committed
+/// (status + headers sent, `Transfer-Encoding: chunked` engaged) on that
+/// first write, and mutating them after that point is a contract
+/// violation, not silent.
+@cfg(feature = "dotnet")
+pub record ResponseWriter {
+  ctx: HttpContext
+  var status: Int
+  var headers: Map[String, String]
+  var committed: Bool
+  var stream: Option[Stream]
+}
+
+@cfg(feature = "dotnet")
+func newResponseWriter(ctx: in HttpContext): ResponseWriter {
+  val noHeaders: Map[String, String] = newMap()
+  return ResponseWriter(ctx = ctx, status = 200, headers = noHeaders, committed = false, stream = None)
+}
+
+/// Set the response status code. Must be called before the first
+/// `writeChunk` (default: 200).
+@cfg(feature = "dotnet")
+pub func writeStatus(w: in ResponseWriter, code: in Int): Unit
+  requires: not w.committed
+{
+  w.status = code
+}
+
+/// Set a response header, e.g. `writeHeader(w, "Content-Type",
+/// "text/event-stream")`. Must be called before the first `writeChunk`.
+/// `Content-Type` is special-cased at commit time (the BCL response type
+/// exposes it as a dedicated property, not a regular header).
+@cfg(feature = "dotnet")
+pub func writeHeader(w: in ResponseWriter, name: in String, value: in String): Unit
+  requires: not w.committed
+{
+  w.headers[name] = value
+}
+
+// Apply `w`'s status/headers to the underlying response and switch it
+// into chunked-transfer-encoding mode, returning the now-open stream.
+// Idempotent: a second call returns the same stream without re-applying
+// headers (mutating writeStatus/writeHeader after commit is already
+// rejected by their `requires:` clause, so this only runs once in
+// practice, but writeChunk calls it unconditionally for simplicity).
+@cfg(feature = "dotnet")
+func commitStream(w: in ResponseWriter): Stream {
+  match w.stream {
+    case Some(s) -> return s
+    case None -> ()
+  }
+  var contentType = "text/plain"
+  val extra: Map[String, String] = newMap()
+  val names = mapKeys(w.headers).toArray()
+  var i = 0
+  while i < names.length {
+    val name = names[i]
+    match mapGet(w.headers, name) {
+      case Some(value) -> {
+        if name.toLower() == "content-type" {
+          contentType = value
+        } else {
+          extra[name] = value
+        }
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  val s = beginChunkedResponse(w.ctx, w.status, contentType, extra)
+  w.committed = true
+  w.stream = Some(s)
+  return s
+}
+
+/// Write one chunk of the response body and flush it immediately, so it
+/// reaches the client before the next `writeChunk` call. Commits the
+/// response (status/headers/chunked mode) on the first call. `Err`
+/// surfaces a broken connection (e.g. the client disconnected) instead of
+/// failing silently — stop producing more output when this returns `Err`.
+@cfg(feature = "dotnet")
+pub func writeChunk(w: in ResponseWriter, data: in String): Result[Unit, String] {
+  val s = commitStream(w)
+  val bytes = utf8Encode(data)
+  return streamWriteChunk(s, bytes, 0, bytes.length)
+}
+
+// Commit (if the handler never wrote a chunk — still a well-formed,
+// empty chunked body) and close the response. Called once per request by
+// the streaming accept loop after the handler returns, regardless of
+// whether the handler itself already stopped writing.
+@cfg(feature = "dotnet")
+func finishStream(w: in ResponseWriter): Unit {
+  val s = commitStream(w)
+  endChunkedResponse(w.ctx, s)
+}
+
+/// A single registered streaming route binding a method + URL pattern to
+/// a `StreamingHandler`. Mirrors `Route`, but kept as a separate table
+/// (see the section header above for why).
+@cfg(feature = "dotnet")
+pub record StreamRoute {
+  method: String
+  pattern: String
+  handler: StreamingHandler
+}
+
+/// A collection of streaming routes, analogous to `Router` for regular
+/// `Handler`s. Build one with `emptyStreamingRoutes()` then
+/// `addStreamingGet`/`addStreamingPost`, and pass it to
+/// `serveStreaming`/`startStreaming` alongside a regular `Router`.
+@cfg(feature = "dotnet")
+pub record StreamingRoutes {
+  routes: slice[StreamRoute]
+}
+
+/// Empty streaming route table.
+@cfg(feature = "dotnet")
+pub func emptyStreamingRoutes(): StreamingRoutes {
+  val noRoutes: slice[StreamRoute] = []
+  return StreamingRoutes(routes = noRoutes)
+}
+
+@cfg(feature = "dotnet")
+func addStreamingRoute(
+  sr: in StreamingRoutes, method: in String, pattern: in String, handler: in StreamingHandler
+): StreamingRoutes {
+  val route = StreamRoute(method = method, pattern = pattern, handler = handler)
+  return StreamingRoutes(routes = concat(sr.routes, [route]))
+}
+
+/// Register a streaming GET route.
+@cfg(feature = "dotnet")
+pub func addStreamingGet(sr: in StreamingRoutes, pattern: in String, handler: in StreamingHandler): StreamingRoutes
+  requires: pattern.length > 0
+{
+  return addStreamingRoute(sr, "GET", pattern, handler)
+}
+
+/// Register a streaming POST route.
+@cfg(feature = "dotnet")
+pub func addStreamingPost(sr: in StreamingRoutes, pattern: in String, handler: in StreamingHandler): StreamingRoutes
+  requires: pattern.length > 0
+{
+  return addStreamingRoute(sr, "POST", pattern, handler)
+}
+
+// Match `req` against the streaming route table; if a route matches,
+// bind path params, run the handler against a fresh `ResponseWriter`,
+// finish the stream, and report handled = true. `false` means the
+// caller should fall through to the ordinary `dispatch`/`writeResponse`
+// path.
+@cfg(feature = "dotnet")
+func dispatchStreaming(routes: in slice[StreamRoute], req: in Request, ctx: in HttpContext): Bool {
+  var i = 0
+  while i < routes.length {
+    val route = routes[i]
+    if route.method == req.method {
+      match matchPattern(route.pattern, req.path) {
+        case Some(params) -> {
+          val bound = Request(
+            method = req.method,
+            path = req.path,
+            pathParams = params,
+            queryParams = req.queryParams,
+            headers = req.headers,
+            body = req.body
+          )
+          val w = newResponseWriter(ctx)
+          val h = route.handler
+          h.handleStream(bound, w)
+          finishStream(w)
+          return true
+        }
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  return false
+}
+
+// A sentinel `Response` meaning "already streamed to the wire — do not
+// call writeResponse". `status = -1` is unambiguous: real HTTP status
+// codes are 100-599, so no handler-constructed Response ever collides
+// with it. Needed because `StreamingAwareDispatchHandler` (below) has to
+// return *some* `Response` to satisfy `Handler`'s signature so it can
+// run inside the same `MiddlewareChain` regular routes use.
+@cfg(feature = "dotnet")
+func streamedResponseSentinel(): Response {
+  val empty: Map[String, String] = newMap()
+  val noBytes: slice[Byte] = []
+  return Response(status = -1, contentType = "", bodyBytes = noBytes, headers = empty)
+}
+
+@cfg(feature = "dotnet")
+func isStreamedResponse(resp: in Response): Bool {
+  return resp.status == -1
+}
+
+// The route-matching tail of a streaming-aware middleware chain: tries
+// the streaming route table first (actually running the matched
+// `StreamingHandler` and returning the sentinel above), falling back to
+// the ordinary `Route` table otherwise. A `Handler` — not a bespoke
+// dispatch function called directly — specifically so it composes with
+// `MiddlewareChain` exactly like `RouteDispatchHandler` does: CORS,
+// logging, auth, and any other registered `router.middlewares` run for
+// streaming requests exactly as they do for ordinary ones (including
+// short-circuiting them outright before a byte is streamed) instead of
+// being silently bypassed (lyric-lang#5979 review: `serveStreaming`
+// previously called `dispatchStreaming` directly, never going through
+// `router.middlewares` at all). A middleware that *post-processes* the
+// response `next.handle` returns (CORS's `Access-Control-Allow-Origin`
+// header, e.g.) has nothing to attach that to once the real bytes are
+// already on the wire — this only fixes pre-processing/short-circuiting
+// middleware (which is what provides actual protection); the residual
+// gap is called out in the README.
+@cfg(feature = "dotnet")
+record StreamingAwareDispatchHandler {
+  routes: slice[Route]
+  streamingRoutes: slice[StreamRoute]
+  ctx: HttpContext
+}
+
+@cfg(feature = "dotnet")
+impl Handler for StreamingAwareDispatchHandler {
+  func handle(req: in Request): Response {
+    if dispatchStreaming(self.streamingRoutes, req, self.ctx) {
+      return streamedResponseSentinel()
+    }
+    return routeDispatch(self.routes, req)
+  }
+}
+
 // ─── CORS configuration guard ─────────────────────────────────────────────────
 /// Validate the CORS configuration that `start()` reads from the environment.
 /// Returns `Some(error)` when the configuration is unsafe to bind a server with,
@@ -1143,11 +1397,55 @@ pub func serve(router: in Router, host: in String, port: in Int): Unit
   HttpKernel.serve(host, port, router)
 }
 
-/// Start the HTTP server with the given router.
-/// Blocks until the process receives a shutdown signal.
-/// Reads server and CORS configuration from environment variables at startup.
-@stable(since = "0.1")
-pub func start(router: in Router): Unit {
+/// Run the accept loop for `router`/`streaming` on `host`:`port`, exactly
+/// like `serve`, except each request is first tried against `streaming`'s
+/// route table; a match runs the matched `StreamingHandler` against a
+/// fresh `ResponseWriter` instead of buffering a `Response`. A request
+/// that matches no streaming route falls through to the ordinary
+/// `dispatch`/`writeResponse` path unchanged — see the "Streaming
+/// (chunked) responses" section above for why this is a separate table
+/// rather than a change to `Router`/`dispatch`/`serve`.
+///
+/// dotnet-only (see `StreamingHandler`'s doc comment).
+@stable(since = "0.3")
+@cfg(feature = "dotnet")
+pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: in String, port: in Int): Unit
+  requires: host.length > 0
+  requires: port >= 1
+  requires: port <= 65535
+{
+  val bindHost = if host == "0.0.0.0" or host == "+" or host == "*" { "+" } else { host }
+  val prefixStr = "http://" + bindHost + ":" + port.toString() + "/"
+  val listener = startListener(prefixStr)
+  Console.println("[lyric-web] Listening on " + prefixStr + " (streaming enabled)")
+  while true {
+    try {
+      val ctx = nextContext(listener)
+      val req = buildRequest(ctx)
+      val inner: Handler = StreamingAwareDispatchHandler(
+        routes = router.routes,
+        streamingRoutes = streaming.routes,
+        ctx = ctx
+      )
+      val chain: Handler = MiddlewareChain(mws = router.middlewares, idx = 0, inner = inner)
+      val resp = chain.handle(req)
+      if not isStreamedResponse(resp) {
+        writeResponse(ctx, resp)
+      }
+    } catch Bug as e {
+      Console.error("[lyric-web] request handling failed on " + prefixStr + ": " + e.message)
+      stopListener(listener)
+      Env.exitCode(1)
+    }
+  }
+}
+
+// Shared by start()/startStreaming(): read server + CORS config from the
+// environment, fail closed on an invalid port or an unsafe CORS
+// configuration, and return the router with CORS middleware applied (if
+// enabled) plus the bind host/port. Pure config resolution, no I/O — kept
+// target-independent so both the dotnet and jvm `start()` can use it.
+func resolveStartConfig(router: in Router): (Router, String, Int) {
   val host = Env.getVarOrDefault("LYRIC_CONFIG_WEB_SERVER_HOST", "0.0.0.0")
   val portStr = Env.getVarOrDefault("LYRIC_CONFIG_WEB_SERVER_PORT", "8080")
   val corsEnabledStr = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_ENABLED", "false")
@@ -1175,5 +1473,23 @@ pub func start(router: in Router): Unit {
     router
   }
 
+  return (routerWithCors, host, port)
+}
+
+/// Start the HTTP server with the given router.
+/// Blocks until the process receives a shutdown signal.
+/// Reads server and CORS configuration from environment variables at startup.
+@stable(since = "0.1")
+pub func start(router: in Router): Unit {
+  val (routerWithCors, host, port) = resolveStartConfig(router)
   serve(routerWithCors, host, port)
+}
+
+/// Like `start`, but also serves `streaming`'s routes — see
+/// `serveStreaming`. dotnet-only (see `StreamingHandler`'s doc comment).
+@stable(since = "0.3")
+@cfg(feature = "dotnet")
+pub func startStreaming(router: in Router, streaming: in StreamingRoutes): Unit {
+  val (routerWithCors, host, port) = resolveStartConfig(router)
+  serveStreaming(routerWithCors, streaming, host, port)
 }

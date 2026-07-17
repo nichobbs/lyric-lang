@@ -24,6 +24,19 @@
 //! the F# `Lyric.Stdlib.HttpServerHost` shim retires entirely.
 //! Direct-extern primitives + Lyric-level orchestration live below.
 //!
+//! Chunked (streaming) responses: `beginChunkedResponse` commits
+//! status/content-type/headers and switches the response into
+//! `Transfer-Encoding: chunked` mode, returning the still-open output
+//! stream; `streamWriteChunk` writes-and-flushes one chunk at a time
+//! (surfacing a broken connection as `Err` rather than failing
+//! silently); `endChunkedResponse` closes it. `lyric-web`
+//! (`Web.serveStreaming`) builds its opt-in `StreamingHandler` route
+//! table on top of these three (lyric-lang#5979). dotnet-only for now
+//! — the JVM twin (`_kernel_jvm/http_server.l`) has no equivalent of
+//! these three functions at all, so `Web.serveStreaming` is
+//! `@cfg(feature = "dotnet")`-gated in `lyric-web` rather than falling
+//! back to a broken JVM call.
+//!
 //! dotnet-only: the JVM twin (`_kernel_jvm/http_server.l`) routes
 //! through an out-of-repo prebuilt JAR (`lyric.stdlib.jvm.HttpServerHost`)
 //! and does not yet expose query string / header / byte-body support —
@@ -47,7 +60,7 @@ extern type HttpListenerRequest = "System.Net.HttpListenerRequest"
 
 extern type HttpListenerResponse = "System.Net.HttpListenerResponse"
 
-extern type Stream = "System.IO.Stream"
+pub extern type Stream = "System.IO.Stream"
 
 extern type StreamReader = "System.IO.StreamReader"
 
@@ -316,4 +329,79 @@ pub func respondBytesWithHeaders(
   headers: in Map[String, String],
 ): Unit {
   respondBytesWith(c, status, contentType, body, headers)
+}
+
+// =====================================================================
+// Chunked (streaming) responses.
+//
+// A streaming response commits its status/content-type/headers up
+// front — via `beginChunkedResponse` — instead of relying on the
+// first `Stream.Write` to implicitly finalise them (the BCL permits
+// mutating `HttpListenerResponse` up until the first write, but
+// giving callers an explicit commit point is simpler to reason about
+// than "committed by whichever write happens first"). No
+// `Content-Length` is ever set: `SendChunked = true` puts the
+// listener into `Transfer-Encoding: chunked` mode, which is what lets
+// the body be of unknown/unbounded length.
+// =====================================================================
+func setResponseChunked(resp: in HttpListenerResponse): Unit {
+  resp.SendChunked = true
+}
+
+func streamFlush(s: in Stream): Unit {
+  s.Flush()
+}
+
+/// Set status + content-type + extra headers on `c`'s response, switch
+/// it into chunked-transfer-encoding mode, and return the (still open)
+/// output stream for the caller to write to repeatedly. No
+/// `Content-Length` is set — chunked responses do not need one.
+pub func beginChunkedResponse(
+  c: in HttpContext, status: in Int, contentType: in String, headers: in Map[String, String]
+): Stream {
+  val resp = ctxResponse(c)
+  setResponseStatus(resp, status)
+  setResponseContentType(resp, contentType)
+  val names = mapKeys(headers).toArray()
+  var i = 0
+  while i < names.length {
+    val name = names[i]
+    match mapGet(headers, name) {
+      case Some(value) -> responseAddHeader(resp, name, value)
+      case None -> ()
+    }
+    i = i + 1
+  }
+  setResponseChunked(resp)
+  return responseOutputStream(resp)
+}
+
+/// Write `bytes[offset..offset+count)` to a chunked-response stream and
+/// flush it immediately, so the bytes are visible to the client before
+/// the caller writes the next chunk. `Err` surfaces a broken connection
+/// (e.g. the client disconnected mid-stream) instead of failing
+/// silently — the message is the underlying BCL exception's `message`.
+pub func streamWriteChunk(s: in Stream, bytes: in slice[Byte], offset: in Int, count: in Int): Result[Unit, String] {
+  return try {
+    streamWrite(s, bytes, offset, count)
+    streamFlush(s)
+    Ok(())
+  } catch Bug as e {
+    Err(e.message)
+  }
+}
+
+/// Close a chunked-response stream and its underlying response, ending
+/// the chunked body (a zero-length terminating chunk). Guarded: closing
+/// an already-broken connection (the exact case `streamWriteChunk`'s
+/// `Err` return signals) can throw, and disconnects are routine for a
+/// long-lived stream — letting that propagate would crash the whole
+/// accept loop over one client going away, not just that connection.
+pub func endChunkedResponse(c: in HttpContext, s: in Stream): Unit {
+  try {
+    streamClose(s)
+    responseClose(ctxResponse(c))
+  } catch Bug as _ {
+    ()
+  }
 }
