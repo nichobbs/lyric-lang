@@ -327,7 +327,8 @@ pub func compileToNative(
   optLevel: in String,
 ): Bool {
   val noFlags: List[String] = newList()
-  compileToNativeWithFlags(source, outputPath, stdlibSources, triple, optLevel, noFlags)
+  val noDefines: List[String] = newList()
+  compileToNativeWithFlags(source, outputPath, stdlibSources, triple, optLevel, noFlags, noDefines)
 }
 
 /// `compileToNative` with extra clang driver flags (e.g.
@@ -339,13 +340,14 @@ pub func compileToNativeWithFlags(
   triple: in String,
   optLevel: in String,
   extraClangFlags: in List[String],
+  defines: in List[String],
 ): Bool {
   // Parse + `@cfg` erasure with the `target.native` pseudo-feature
   // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
   // after parse, before anything indexes the items).
   val noFeatures: List[String] = newList()
   val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
-  val nativeDefines = BD.decodeDefines(newList())
+  val nativeDefines = BD.decodeDefines(defines)
   val cfgFile = match pipeParseAndErase(source, "native", noFeatures, noFeatures, nativeDefines) {
     case Some(f) -> f
     case None -> return false

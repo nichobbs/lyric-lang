@@ -60,7 +60,7 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   if sanitize {
     flags.add("-fsanitize=address")
   }
-  if not compileToNativeWithFlags(source, stem, stdlib, "", "0", flags) {
+  if not compileToNativeWithFlags(source, stem, stdlib, "", "0", flags, newList()) {
     panic("native compilation failed for a defer self-test program")
   }
   val noArgs: List[String] = newList()

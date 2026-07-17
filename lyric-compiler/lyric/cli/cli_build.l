@@ -885,18 +885,24 @@ func cmdBuild(argv: in slice[String]): Int {
   if noRestore and positional.count > 0 {
     printErr("build: warning: --no-restore has no effect without a project manifest")
   }
-  // docs/60 build defines: `--define` is currently applied only on the
-  // single-file `--target dotnet` compile path (`EmitRequest.defines`).
-  // Reject it up front on the paths where it would otherwise be silently
-  // dropped — project builds, JVM/native, and `--watch` (whose rebuild
-  // action carries no defines) — rather than mislead the user
-  // (project-path + JVM/native parity tracked in #5852).
+  // docs/60 build defines: `--define` is applied on the single-file compile
+  // path for `--target dotnet` and `--target jvm` — `EmitRequest.defines` is
+  // threaded to the MSIL and JVM bridges (#5852). It is threaded to the native
+  // bridge too, but native `--define` stays gated: native codegen cannot yet
+  // *consume* a define (module-level `val` references block `@build_const`, and
+  // list literals block `Std.BuildInfo`), so it would crash rather than
+  // substitute — tracked in #5977. Reject `--define` up front where it would be
+  // silently dropped or crash: `--target native`, a project build (explicit
+  // `--manifest`, or an auto-discovered nearby `lyric.toml` — the latter caught
+  // by the `emitSingleFileOrProject` gate), and `--watch` (whose rebuild action
+  // carries no defines). Project-path parity is tracked in #5852.
   if cliDefines.count > 0 {
-    val singleFileDotnet = match target { case Dotnet -> positional.count > 0; case _ -> false }
+    val consumableTarget = match target { case Dotnet -> true; case Jvm -> true; case Native -> false }
+    val singleFile = positional.count > 0
     val hasManifest = match manifestArg { case Some(_) -> true; case None -> false }
-    if (not singleFileDotnet) or hasManifest or watch {
+    if (not singleFile) or (not consumableTarget) or hasManifest or watch {
       printErr(
-        "build: --define is currently supported only for single-file --target dotnet builds without --watch (project/JVM/native/watch parity tracked in #5852)"
+        "build: --define is currently supported only for single-file --target dotnet/jvm builds without --watch (native --define blocked by native codegen gaps, tracked in #5977; project-path parity tracked in #5852)"
       )
       return 1
     }
