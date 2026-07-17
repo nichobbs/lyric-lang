@@ -2816,10 +2816,10 @@ jobs:
       # dotnet-a job's exit-135 random-step kills (SIGBUS-class, memory
       # pressure from concurrent in-process compilations) reached this job on
       # 2026-07-17 — the Propagate self-test died mid-batch on PR #5953's run
-      # (a comment-only diff). This first group ran 13 background steps, 12
-      # of them in-process compilations (the 13th is the chmod-only "Restore
-      # executable permissions" step); split 7 + 6 steps (6 + 6 compilations).
-      # Precise counts per #5958/#5959.
+      # (a comment-only diff). This first group ran 12 concurrent in-process
+      # compilations; split 6 + 6 (counts per #5959/#5965 — beware that the
+      # MSIL step's INVARIANT comment contains the literal text
+      # "background: true", which fools naive greps into counting 13).
       - name: Wait for parallel tests (dotnet-b batch 1a-split)
         wait-all: true
 
