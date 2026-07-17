@@ -142,6 +142,13 @@ record MonoState {
   /// interface-typed value, after substituting the interface's generic
   /// parameters with the receiver's concrete type arguments (#3813).
   ifaceDecls: Map[String, InterfaceDecl]
+  /// Same-package distinct/range-subtype decls (`type Age = Int range 0
+  /// ..= 150`), keyed by simple name.  Used by `inferCallReturnTE` to
+  /// recognise the compiler-synthesised static factories `Type.from(x)` /
+  /// `Type.tryFrom(x)` (#1501) — these dispatch directly on the type NAME
+  /// rather than through normal method resolution, so `recv` never
+  /// resolves to a value the general inferer can see through (#5841).
+  distinctDecls: Map[String, DistinctTypeDecl]
   /// Simple names of top-level generic functions declared in THIS file
   /// that Phase 2 will drop from the output (neither `@externTarget`-kept
   /// nor `@axiom`).  A call site still referencing one of these after the
@@ -159,6 +166,7 @@ func newMonoState(
   funcDecls: in Map[String, FunctionDecl],
   recordDecls: in Map[String, RecordDecl],
   ifaceDecls: in Map[String, InterfaceDecl],
+  distinctDecls: in Map[String, DistinctTypeDecl],
   droppedLocalGenerics: in Map[String, Bool],
 ): MonoState {
   MonoState(
@@ -166,6 +174,7 @@ func newMonoState(
     funcDecls = funcDecls,
     recordDecls = recordDecls,
     ifaceDecls = ifaceDecls,
+    distinctDecls = distinctDecls,
     droppedLocalGenerics = droppedLocalGenerics,
     seenSpecs = newMap(),
     allSpecs = newList(),
@@ -1089,6 +1098,42 @@ func inferIndexTE(state: in MonoState, env: in Map[String, TypeExpr], recv: in E
   }
 }
 
+// Recognise a call to a distinct/range-subtype's compiler-synthesised
+// static factory — `Type.from(x): Type` or `Type.tryFrom(x): Result[Type,
+// String]` (#1501, codegen.l's `lowerMethodCallMsil`) — and return its real
+// instantiated return type.  `recv` must be a bare single-segment path
+// naming a same-package distinct type; any other receiver shape (a value,
+// an imported/cross-package type, a qualified path) yields `None` so the
+// caller falls through to the general inference paths (#5841).
+func inferDistinctStaticFactoryTE(
+  state: in MonoState, recv: in Expr, methodName: in String, span: in Span
+): Option[TypeExpr] {
+  match recv.kind {
+    case EPath(rp) -> {
+      if rp.segments.count == 1 {
+        match mapGet(state.distinctDecls, rp.segments[0]) {
+          case Some(dt) -> {
+            if methodName == "from" {
+              Some(value = TypeExpr(kind = TRef(path = singleSegPath(dt.name)), span = span))
+            } else if methodName == "tryFrom" {
+              val targs: List[TypeArg] = newList()
+              targs.add(TAType(ty = TypeExpr(kind = TRef(path = singleSegPath(dt.name)), span = span)))
+              targs.add(TAType(ty = TypeExpr(kind = TRef(path = singleSegPath("String")), span = span)))
+              Some(value = TypeExpr(kind = TGenericApp(head = singleSegPath("Result"), args = targs), span = span))
+            } else {
+              None
+            }
+          }
+          case None -> None
+        }
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
 // Infer the return type of `fn(args)` when `fn` is a same-package
 // function reference.  Record literals share Lyric's call syntax
 // (`Box(value = 11)`) — when the name resolves to a record decl the
@@ -1134,6 +1179,22 @@ func inferCallReturnTE(
     // infer its argument type, so the generic `isOk` stayed type-erased and
     // failed at runtime (#3813, same failure mode as #3705).
     case EMember(recv, methodName) -> {
+      // Distinct/range-subtype static factories (#1501) dispatch directly on
+      // the type NAME (`Age.tryFrom(x)`), not through normal method
+      // resolution — `recv` is a bare type reference that never resolves to
+      // a value, so none of the general inference paths below can see
+      // through it. Recognise `Type.from`/`Type.tryFrom` up front against
+      // the real synthesised return type so a caller like
+      // `isOk(Age.tryFrom(x))` monomorphises against the concrete
+      // `Result[Age, String]` instantiation instead of leaving `T`/`E`
+      // unbound (which previously defaulted the specialisation to `Object`
+      // and mismatched the real runtime instantiation at the match site,
+      // #5841).
+      match inferDistinctStaticFactoryTE(state, recv, methodName, fn.span) {
+        case Some(te) -> return Some(value = te)
+        case None -> {
+        }
+      }
       // Detect when the EMember chain flattens to a pure dotted path
       // (e.g. `JobQueue.Domain.jobStatusFromString`) the parser left as
       // nested `EMember(EMember(EPath["Pkg"], "Sub"), "fn")` rather than a
@@ -3422,6 +3483,9 @@ pub func monoFileWithImportsAndTypeDecls(
   val recordDecls: Map[String, RecordDecl] = newMap()
   // #3813: interface decls keyed by simple name, for method-return inference.
   val ifaceDecls: Map[String, InterfaceDecl] = newMap()
+  // #5841: same-package distinct/range-subtype decls, for the
+  // `Type.from`/`Type.tryFrom` static-factory return-type special case.
+  val distinctDecls: Map[String, DistinctTypeDecl] = newMap()
   // Same-file generic functions that Phase 2 will erase from the output —
   // an unrewritten call site to one of these is a dangling reference and
   // must raise M0002 (docs/59 §5.2 B2).  `@externTarget`-kept generics
@@ -3466,6 +3530,11 @@ pub func monoFileWithImportsAndTypeDecls(
         collectIfaceGenerics(decl, genDecls, funcDecls)
       }
       case IImpl(decl) -> collectImplGenerics(decl, genDecls, funcDecls)
+      case IDistinctType(decl) -> {
+        if not distinctDecls.containsKey(decl.name) {
+          distinctDecls.add(decl.name, decl)
+        }
+      }
       case _ -> ()
     }
     i = i + 1
@@ -3549,7 +3618,7 @@ pub func monoFileWithImportsAndTypeDecls(
     return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags)
   }
 
-  val state = newMonoState(genDecls, funcDecls, recordDecls, ifaceDecls, droppedLocalGenerics)
+  val state = newMonoState(genDecls, funcDecls, recordDecls, ifaceDecls, distinctDecls, droppedLocalGenerics)
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────
   val rewrittenItems: List[Item] = newList()

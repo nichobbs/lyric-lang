@@ -517,6 +517,40 @@ test "lambda argument binds imported generic's type params (#5604)" {
   )
 }
 
+// #5841: `Type.tryFrom(x)` / `Type.from(x)` are compiler-synthesised static
+// factories on a distinct/range-subtype (#1501) — `recv` is a bare type NAME
+// that never resolves to a value, so before this fix `inferCallReturnTE`
+// could not see through the call at all.  A generic caller inferring its
+// type argument from the result (`isOkLike(Age.tryFrom(25))`) then fell back
+// to defaulting BOTH `T` and `E` to `Object`, producing a specialisation
+// (`Object`/`Object`) that does not match the real `Result[Age, String]`
+// instantiation the codegen backend actually constructs — a runtime
+// mismatch at the union-match site (#5841).
+test "distinct-type tryFrom feeds imported generic specialisation with the real payload type (#5841)" {
+  val callerSrc = "package Caller\n" + "type Age = Int range 0 ..= 150\n" +
+    "func caller(): Bool { isOkLike(Age.tryFrom(25)) }\n"
+  val libSrc = "package Lib\n" +
+    "pub func isOkLike[T, E](r: in Result[T, E]): Bool { match r { case Ok(_) -> true\n case Err(_) -> false } }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(
+    hasFunc(res.file, "isOkLike__Age__String"),
+    "Age.tryFrom(...) infers Result[Age, String] — not the Object/Object default"
+  )
+  assertFalse(hasFunc(res.file, "isOkLike__Object__Object"), "must not fall back to the Object/Object default")
+}
+
+test "distinct-type from feeds imported generic specialisation with the real payload type (#5841)" {
+  val callerSrc = "package Caller\n" + "type Age = Int range 0 ..= 150\n" +
+    "func caller(): Bool { isLike(Age.from(5)) }\n"
+  val libSrc = "package Lib\n" + "pub func isLike[T](x: in T): Bool { true }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(hasFunc(res.file, "isLike__Age"), "Age.from(...) infers Age, not the Object default")
+}
+
 test "lambda-only argument binds type param when no other source exists (#5604)" {
   val callerSrc = "package Caller\n" + "func caller(): Int { eachLike({ z: Int -> () }) }\n"
   val libSrc = "package Lib\n" + "pub func eachLike[T](f: (T) -> Unit): Int { 0 }\n"

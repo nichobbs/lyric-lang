@@ -14,12 +14,24 @@
 //!
 //!   lyric test lyric-compiler/lyric/range_subtype_self_test.l
 //!
-//! Consumption uses `match` rather than the `isOk`/`isErr` stdlib helpers: a
-//! generic stdlib function applied to a `Result` over a *user* type still
-//! erases its type arguments in the self-hosted backend (the cross-package
-//! generic-function monomorphization gap, #1498), which is orthogonal to the
-//! construction API this test covers.  Imports only `Std.*`, so no
-//! `LYRIC_LOAD_COMPILER=1` is needed.
+//! Most cases below consume `match` rather than the `isOk`/`isErr` stdlib
+//! helpers: a generic stdlib function applied to a `Result` over a *user*
+//! type still erases its type arguments in the self-hosted backend (the
+//! cross-package generic-function monomorphization gap, #1498), which is
+//! orthogonal to the construction API this test covers.  Imports only
+//! `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.
+//!
+//! The final section (`isOk`/`isErr`/`unwrapResult` directly over a
+//! `Result[Age, String]`/`Result[DiceRoll, String]`) exercises the #5841
+//! slice of #1498: `Lyric.Mono` now recognises `Type.tryFrom(x)` /
+//! `Type.from(x)` as returning the real `Result[Type, String]` /  `Type`
+//! instantiation (rather than defaulting the unresolved type argument(s) to
+//! `Object`), so these calls monomorphise correctly instead of throwing
+//! "match not exhaustive" at runtime.  MSIL only: the JVM backend does not
+//! yet emit the distinct/range-subtype construction API at all (`Age.tryFrom`
+//! fails to compile under `--target jvm` with "reference 'Age' resolves to
+//! no local, parameter, ..."), a separate, pre-existing JVM gap tracked
+//! under docs/44.
 @test_module
 package Lyric.RangeSubtypeSelfTest
 
@@ -145,4 +157,39 @@ func halveRatio(x: in Double): Double {
 test "inline Double range binding preserves the floating-point value" {
   val h = halveRatio(0.5)
   assertTrue(h > 0.2499 and h < 0.2501, "inline Double-range local must stay a Double (0.25)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5841 — the stdlib `isOk`/`isErr`/`unwrapResult` generics applied DIRECTLY to
+// `Age.tryFrom(...)` / a second, differently-shaped range subtype
+// (`DiceRoll`).  Before the fix, `Lyric.Mono` could not infer `Age.tryFrom`'s
+// return type and defaulted both `T` and `E` to `Object`, producing an
+// `isOk__Object__Object` specialisation whose match arms did not match the
+// real `Result[Age, String]` runtime value ("match not exhaustive").  Two
+// distinct range subtypes (`Age`, `DiceRoll`) confirm each call site
+// specialises against its OWN payload type rather than colliding.
+// ─────────────────────────────────────────────────────────────────────────────
+type DiceRoll = Int range 1 ..= 6
+
+test "isOk/isErr over Age.tryFrom specialise against the real payload type (#5841)" {
+  val ok = Age.tryFrom(25)
+  assertTrue(isOk(ok), "Age.tryFrom(25) is Ok")
+  assertFalse(isErr(ok), "Age.tryFrom(25) is not Err")
+  assertEqualInt(unwrapResult(ok).toInt(), 25, "unwrapResult(ok).toInt() round-trips")
+
+  val tooOld = Age.tryFrom(200)
+  assertTrue(isErr(tooOld), "Age.tryFrom(200) is Err")
+  assertFalse(isOk(tooOld), "Age.tryFrom(200) is not Ok")
+
+  val neg = Age.tryFrom(-1)
+  assertTrue(isErr(neg), "Age.tryFrom(-1) is Err")
+}
+
+test "isOk/isErr over a second range subtype specialise independently (#5841)" {
+  val ok = DiceRoll.tryFrom(6)
+  assertTrue(isOk(ok), "DiceRoll.tryFrom(6) is Ok")
+  assertEqualInt(unwrapResult(ok).toInt(), 6, "unwrapResult(ok).toInt() round-trips")
+
+  val zero = DiceRoll.tryFrom(0)
+  assertTrue(isErr(zero), "DiceRoll.tryFrom(0) is Err")
 }
