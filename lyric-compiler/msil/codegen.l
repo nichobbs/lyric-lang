@@ -2601,6 +2601,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   // IConst names are registered too: a subsequent IVal `val b = SomeConst` can
   // then be recognised as literal without a .cctor row (#1508).
   val constEnv: Map[String, Bool] = newMap()
+  // #5955: mirrors `constEnv` but tracks each module-level `const`/`val`'s
+  // MSIL runtime type (not just literal-foldability), in declaration order.
+  // A later untyped `val`'s initializer that reads an earlier `val`/`const`
+  // by bare name (e.g. `val derived = base + 2`) needs `base`'s already-known
+  // type to predict `derived`'s field type correctly — see
+  // `inferUntypedStaticValMsilType` below for why the divergence crashed.
+  val valTypeEnv: Map[String, MsilType] = newMap()
   var hasValCctor = false
   var pi = 0
   while pi < file.items.count {
@@ -2616,6 +2623,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           cctx.constBareClaimed.add(decl.name, true)
         }
         constEnv.add(decl.name, isLit)
+        if not valTypeEnv.containsKey(decl.name) {
+          valTypeEnv.add(decl.name, typeExprToMsilCtx(cctx, decl.ty, pkgName))
+        }
       }
       case IVal(decl) -> {
         // @asyncLocal vals require a .cctor (new AsyncLocal<object>()) even though
@@ -2642,6 +2652,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               }
             }
             constEnv.add(valName, isLit)
+            if not valTypeEnv.containsKey(valName) {
+              val predictedTy = match decl.ty {
+                case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
+                case None -> inferUntypedStaticValMsilType(decl.init, valTypeEnv)
+              }
+              valTypeEnv.add(valName, predictedTy)
+            }
           }
           case _ -> {
           }
@@ -3640,7 +3657,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           val fieldTok = 0x04000000 + fieldDefRow
           val valTy = match decl.ty {
             case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
-            case None -> inferUntypedStaticValMsilType(decl.init)
+            case None -> inferUntypedStaticValMsilType(decl.init, valTypeEnv)
           }
           cctx.staticValTokens.add(valName, fieldTok)
           cctx.staticValMsilTypes.add(valName, valTy)
@@ -4127,9 +4144,27 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 // fallback (`InvalidCastException: String -> IList`).  Anything else
 // (calls, records, collections, …) still falls back to `MObject`; an
 // explicit type annotation is required to type those precisely.
-func inferUntypedStaticValMsilType(e: in Expr): MsilType {
+//
+// `env` (#5955) maps every earlier same-package `val`/`const`'s bare name to
+// its already-predicted MSIL type (built by the caller in declaration order —
+// see `valTypeEnv` above).  This function's result is registered into
+// `cctx.staticValMsilTypes`, which every *other* function's `EPath` lowering
+// trusts to type its `ldsfld` read of this field (the fast-path inline via
+// `cctx.constValues` only covers literal-foldable vals read from a function
+// processed *after* this one in the same file — see the codegen ctx pass
+// that populates `constValues`).  The actual field's MSIL type, though, is
+// whatever `lowerExprMsil` infers when Phase 4 really lowers `decl.init` —
+// so an expression form unhandled here (previously: `EPath`, `EBinop`) that
+// `lowerExprMsil` DOES resolve to a concrete type produces a predicted type
+// that silently diverges from the real field signature. A `ldsfld` read
+// under the wrong predicted type crashes at runtime (observed as
+// `InvalidProgramException`/`NullReferenceException` depending on the JIT):
+// e.g. `pub val base = 40; pub val derived = base + 2` used to predict
+// `derived: MObject` (the `EBinop` catch-all) while the field was actually
+// emitted as `Int32`.
+func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): MsilType {
   match e.kind {
-    case EParen(inner) -> inferUntypedStaticValMsilType(inner)
+    case EParen(inner) -> inferUntypedStaticValMsilType(inner, env)
     // LBool/LChar/LUnit are unreachable here in practice: the caller only
     // reaches this function when isLiteralI4ExprMsilWithEnv(decl.init, ...)
     // returned false, and that function unconditionally returns true for
@@ -4146,7 +4181,62 @@ func inferUntypedStaticValMsilType(e: in Expr): MsilType {
     // emitting `neg` — negation never changes the field's runtime type.
     // PreNot always produces MBool regardless of operand type; PreRef is a
     // bare passthrough of the operand's type. Both mirror lowerExprMsil too.
-    case EPrefix(op, inner) -> match op { case PreNeg -> inferUntypedStaticValMsilType(inner); case PreNot -> MBool; case PreRef -> inferUntypedStaticValMsilType(inner) }
+    case EPrefix(op, inner) -> match op { case PreNeg -> inferUntypedStaticValMsilType(inner, env); case PreNot -> MBool; case PreRef -> inferUntypedStaticValMsilType(inner, env) }
+    // A bare reference to an earlier module-level `val`/`const` (#5955):
+    // resolve through `env` — mirrors `isLiteralI4ExprMsilWithEnv`'s EPath
+    // arm, but for the runtime type rather than literal-foldability.
+    // Multi-segment paths (cross-package qualified refs) are out of scope —
+    // MObject is a safe fallback there, matching prior behaviour.
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(env, path.segments[0]) {
+          case Some(t) -> t
+          case None -> MObject
+        }
+      } else {
+        MObject
+      }
+    }
+    // Arithmetic/comparison over earlier module-level vals (#5955), e.g.
+    // `val derived = base + 2` or `val c = a + b`.  Mirrors the result-type
+    // rules `lowerBinopMsil` actually applies (MLong/MDouble widen through,
+    // MString only from BAdd's string-concat arm, comparisons/booleans are
+    // always MBool) without re-lowering the expression to instructions.
+    case EBinop(op, lhs, rhs) -> {
+      match op {
+        case BEq | BNeq | BLt | BLte | BGt | BGte | BAnd | BOr | BImplies -> MBool
+        case BAdd -> {
+          match inferUntypedStaticValMsilType(lhs, env) {
+            case MString -> MString
+            case MLong -> MLong
+            case MDouble -> MDouble
+            case _ -> MInt
+          }
+        }
+        case BSub | BMul -> {
+          match inferUntypedStaticValMsilType(lhs, env) {
+            case MLong -> MLong
+            case MDouble -> MDouble
+            case _ -> MInt
+          }
+        }
+        case BDiv | BMod -> {
+          match inferUntypedStaticValMsilType(lhs, env) {
+            case MLong -> MLong
+            case MDouble -> MDouble
+            case MByte -> MByte
+            case _ -> MInt
+          }
+        }
+        case BXor -> MInt
+        case BCoalesce -> {
+          match inferUntypedStaticValMsilType(lhs, env) {
+            case MObject -> inferUntypedStaticValMsilType(rhs, env)
+            case t -> t
+          }
+        }
+      }
+    }
     case _ -> MObject
   }
 }
@@ -28853,6 +28943,16 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   val items: List[MPackageItem] = newList()
   var hasMain = false
 
+  // #5955: ONE shared FuncCtx for every IConst/IVal field initializer, so
+  // slot numbers accumulate across the whole `.cctor` (matching how the
+  // concatenated `cctorInsns` share one method body) instead of each field
+  // restarting at slot 0 in its own throwaway ctx — the latter let two
+  // different fields' temps alias the same physical slot with different
+  // (and incompatible) LocalVarSig types.  `cctorInitFctx.locals` is threaded
+  // into `MPFuncs` below so `lowerMFuncsToHostClass` can build the `.cctor`'s
+  // LocalVarSig from it.
+  val cctorInitFctx = makeFuncCtxMsil(pkgName, pkgName, "__cctor_init", 0, MVoid)
+
   // ── Band-2: aspect pre-pass ───────────────────────────────────────────────
   //
   // **Pre-condition:** every caller of `codegenMPackage` is expected to
@@ -28948,9 +29048,8 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         // Int-range literals use FDA_LITERAL so .NET tools see a compile-time
         // constant; other types (Float, String, etc.) use FDA_INIT_ONLY with
         // .cctor initialisation — same observable semantics, simpler blob format.
-        val initFctx = makeFuncCtxMsil(pkgName, pkgName, "__const_" + decl.name, 0, MVoid)
         val initInsns: List[MInsn] = newList()
-        lowerExprMsil(cctx, initFctx, initInsns, decl.init)
+        lowerExprMsil(cctx, cctorInitFctx, initInsns, decl.init)
         val fieldTy = typeExprToMsilCtx(cctx, decl.ty, pkgName)
         if isLiteralI4ExprMsil(decl.init) {
           val constVal = match initInsns.count {
@@ -28998,7 +29097,6 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           case PBinding(name, _) -> name
           case _ -> "__val_" + toString(staticFields.count)
         }
-        val initFctx = makeFuncCtxMsil(pkgName, pkgName, "__val_init", 0, MVoid)
         val initInsns: List[MInsn] = newList()
         val valTy = if isAsyncLocalVal {
           // @asyncLocal: synthesise `new AsyncLocal<object>()` instead of running
@@ -29019,7 +29117,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           initInsns.add(MNewobj(ctorToken = 0x0A000000 + alMrRow))
           MObject
         } else {
-          lowerExprMsil(cctx, initFctx, initInsns, decl.init)
+          lowerExprMsil(cctx, cctorInitFctx, initInsns, decl.init)
         }
         val fieldTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> valTy }
         // When the init is a single ldc.i4 (literal Int), inline into constValues
@@ -29293,7 +29391,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
 
   // Emit the host class: functions + static fields (IConst/IVal).
   if fns.count > 0 or staticFields.count > 0 {
-    items.add(MPFuncs(hostClass = pkgName, funcs = fns, staticFields = staticFields))
+    items.add(MPFuncs(hostClass = pkgName, funcs = fns, staticFields = staticFields, cctorLocals = cctorInitFctx.locals))
   }
 
   // ── #878: MPImpl emission ─────────────────────────────────────────────────
