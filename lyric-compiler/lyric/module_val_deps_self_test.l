@@ -63,7 +63,14 @@ pub val greetingPrefix = "Hello, "
 
 pub val greetingFull = greetingPrefix + "Lyric"
 
-// 5. Control: independent vals with no cross-references must keep working.
+// 5. A dependent val using each arithmetic BMod/BDiv arm (#5988): the field-type
+//    predictor must agree with `lowerBinopMsil`'s real result type for `%` and
+//    `/` (both are MInt for Int operands) or a consumer's `ldsfld` diverges.
+pub val modResult = derivedInt % 5
+
+pub val divResult = derivedInt / 6
+
+// 6. Control: independent vals with no cross-references must keep working.
 pub val independentOne = 100
 
 pub val independentTwo = 200
@@ -88,6 +95,11 @@ test "derived val reading two earlier vals" {
 test "String-typed dependent module val" {
   assertEqual(greetingPrefix, "Hello, ", "greetingPrefix")
   assertEqual(greetingFull, "Hello, Lyric", "greetingFull")
+}
+
+test "BMod/BDiv dependent module vals predict the right field type (#5988)" {
+  assertEqualInt(modResult, 2, "modResult (42 % 5)")
+  assertEqualInt(divResult, 7, "divResult (42 / 6)")
 }
 
 test "independent module vals still work" {

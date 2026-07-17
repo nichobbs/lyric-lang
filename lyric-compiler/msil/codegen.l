@@ -4220,10 +4220,22 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
             case _ -> MInt
           }
         }
-        case BDiv | BMod -> {
+        case BDiv -> {
           match inferUntypedStaticValMsilType(lhs, env) {
             case MLong -> MLong
             case MDouble -> MDouble
+            case MByte -> MByte
+            case _ -> MInt
+          }
+        }
+        // BMod's real `lowerBinopMsil` arm has NO MDouble case (#5988): a
+        // Double lhs emits `rem` and is claimed as MInt (a pre-existing
+        // latent lowering quirk, tracked separately) — so the predictor must
+        // NOT widen to MDouble here, or it reintroduces the exact
+        // predicted-vs-actual `ldsfld` divergence #5955 eliminates.
+        case BMod -> {
+          match inferUntypedStaticValMsilType(lhs, env) {
+            case MLong -> MLong
             case MByte -> MByte
             case _ -> MInt
           }
