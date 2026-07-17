@@ -881,6 +881,16 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/bool_tostring_self_test.l
 
+      # Extra barrier (batch 1-pre-split, #5933): this first background group
+      # had grown to ~13 concurrent in-process compilations, and the runner
+      # began intermittently killing one random step with exit 135
+      # (SIGBUS-class, memory pressure) — four occurrences across three PRs
+      # on 2026-07-16/17, including one on a comment-only diff. Split into
+      # ~7 + ~6 so each sub-batch stays well under the pressure point.
+      # Per the header note: split, don't serialize.
+      - name: Wait for parallel tests (batch 1-pre-split)
+        wait-all: true
+
       # `println(Bool)` cross-target parity (#5666, a `bool_tostring_self_test.l`
       # gap since @test_module assertions can't capture stdout): `println` is
       # a polymorphic codegen builtin (unlike `print`, which stays String-only
@@ -1523,6 +1533,13 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/conv_methods_self_test.l
+
+      # Extra barrier (batch 1b-split, #5933): same exit-135 saturation fix as
+      # the batch 1-pre-split barrier above — this group sat exactly at the
+      # ~14-step cap and produced two of the four observed random step kills
+      # (cross_package_generics, restored_async). Split into ~7 + ~7.
+      - name: Wait for parallel tests (batch 1b-split)
+        wait-all: true
 
       - name: Pattern-lowering self-test (native lyric test, dotnet)
         background: true
