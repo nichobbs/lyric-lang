@@ -460,6 +460,7 @@ Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or
 | `Std.RegexSafe` (`regex_safe.l`) | `@stable` | Backward-compatible Result wrappers around `Std.RegexHost` (`tryCompile`, `tryIsMatch`, `tryMatchOne`, `tryReplace`) returning `Result[T, RegexError]` where `RegexError` carries `TimedOut` / `RegexBug`.  Retained for existing callers; new code should prefer `Std.Regex` which provides the same surface with a cleaner `CompiledRegex` opaque type. |
 | `Std.Random` (`_kernel/random.l`) | `@stable` | Cryptographically-seeded RNG (`randomInt`, `randomDouble`, `randomBool`); kernel-only — no `lyric-stdlib/std/random.l` shim (package opens as `Std.Random` directly from `_kernel/`). |
 | `Std.Testing.Mocking` (`testing_mocking.l`) | `@experimental` | Lightweight mock-object helpers for unit tests; surface expected to grow before stabilisation. |
+| `Std.BuildInfo` (`buildinfo.l`) | `@experimental` | Build-metadata `BuildInfo` record (docs/60 §9.2, M1b). The record shape (`version`/`target`/`profile`/`gitHash`/`buildTimestamp`/`features`) is not expected to change, but the value-population half — auto-injecting the well-known defines so `version`/`profile` populate on every build rather than only on the single-file dotnet `--define` path — is deferred to #5852, so it ships `@experimental` until that lands. |
 
 ### Enforcement summary
 

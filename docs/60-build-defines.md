@@ -1,21 +1,28 @@
 # 60 — Build defines (compile-time value injection)
 
-**Status:** Design sketch; **M1a shipped** — the `@build_const("KEY")`
+**Status:** Design sketch; **M1a + M1b shipped**. M1a — the `@build_const("KEY")`
 substitution pass (`Lyric.BuildDefines`) + `lyric build --define KEY=VALUE`
-for single-file `--target dotnet` builds (diagnostics F0030–F0032). Project-
-path threading, JVM/native, manifest `[build.define]`, the auto-injected
-well-known defines, and the `Std.BuildInfo` layer remain follow-ups (#5852).
-Q-BD-001 – Q-BD-009 below are resolved in this draft; a decision-log entry
-still codifies the full design.
+for single-file `--target dotnet` builds (diagnostics F0030–F0032). M1b — the
+`Std.BuildInfo` layer (§9.2): the `Std.BuildInfo.BuildInfo` type plus the
+compiler-synthesized `buildInfo()` accessor injected into a consumer file that
+imports `Std.BuildInfo`, running in the shared `pipeParseAndErase` so it works
+on all three targets; its `version` / `profile` / `gitHash` / `buildTimestamp`
+come from the resolved defines (deterministic fallbacks otherwise) and `target`
+/ `features` from the build's own parameters. Project-path threading, JVM/native
+`--define` parity, manifest `[build.define]`, and the auto-injected well-known
+defines (which would populate `BuildInfo.version` from the manifest and
+`profile` from `--release` without an explicit `--define`) remain follow-ups
+(#5852). Q-BD-001 – Q-BD-009 below are resolved in this draft; a decision-log
+entry still codifies the full design.
 **Builds on:** `docs/24-build-features.md` (D045 — the `[features]` /
 `@cfg` compile-time *erasure* mechanism this parallels for *substitution*;
 the "compile-time vs runtime" boundary in §1.1 governs both),
 `docs/22-distribution-and-tooling.md` §5 + D127 (the version-embedding
 workaround this generalizes), `docs/25-config-blocks.md` (D046 — the
 runtime-config axis a define is explicitly *not*).
-**Decision-log entry:** none yet — M1a shipped ahead of a formal entry; the
-entry that codifies the full design lands with the project-path/JVM/native +
-`Std.BuildInfo` follow-up (#5852).
+**Decision-log entry:** none yet — M1a and M1b shipped ahead of a formal
+entry; the entry that codifies the full design lands with the
+project-path/JVM/native + well-known-defines follow-up (#5852).
 
 ---
 
@@ -484,6 +491,26 @@ record constructor. Neither depends on the other — `BuildInfo` can ship
 first from the parameters that already flow through the pipeline (version,
 target, profile, features), with `gitHash` / `buildTimestamp` wired when a
 define *source* (`--define` / `[build.define]`) lands.
+
+**Shipped (M1b).** `Std.BuildInfo` (`lyric-stdlib/std/buildinfo.l`) declares
+the `BuildInfo` record; `Lyric.BuildDefines.synthesizeBuildInfo` appends the
+`pub func buildInfo(): BuildInfo` accessor to any file whose imports include a
+bare `import Std.BuildInfo` (and that does not already declare its own
+`buildInfo`). It runs in `pipeParseAndErase` right after `@cfg` erasure, so
+every target (`Msil.Bridge`, `Jvm.Bridge`, `Lyric.LlvmBridge`) gets it from one
+call site. `target` is the build's target name and `features` its active
+feature set (both already threaded); `version` / `profile` read the `version` /
+`build_profile` defines with deterministic `"0.0.0"` / `"debug"` fallbacks, and
+`gitHash` / `buildTimestamp` are `Some` only when the `git_hash` /
+`build_timestamp` defines are supplied (the reproducibility seam). Because the
+value source is the resolved-defines map, `version` / `profile` are populated on
+the single-file `--target dotnet --define` path today; the auto-injected
+well-known defines that would fill them in on every build (from the manifest
+version and `--release`) are the next #5852 slice. Verified by
+`build_defines_self_test.l` (AST-level: no-op without the import, one accessor
+appended with the import, per-field value/fallback/`Option` coverage,
+user-`buildInfo` deference) and `buildinfo_self_test.l` (runtime, both targets:
+the synthesized accessor's deterministic dev-checkout values).
 
 ---
 

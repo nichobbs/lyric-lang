@@ -858,7 +858,6 @@ jobs:
             exit 1
           fi
           bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
-
       # Bool stringification cross-target parity (#5552): toString(Bool),
       # Bool.toString(), string concatenation, and string interpolation all
       # render lowercase "true"/"false" on both targets — the BCL's
@@ -891,6 +890,97 @@ jobs:
       # and no diagnostic under memory pressure. Split into 5 + 6.
       # Per the header note: split, don't serialize.
       - name: Wait for parallel tests (batch 1-pre-split)
+        wait-all: true
+
+      # Std.BuildInfo self-tests (docs/60 §9.2) run as their OWN small batch,
+      # deliberately kept out of the "batch 1-pre-split" group above so that
+      # group stays at its #5933 5-step size (the 5 + 6 split that avoids the
+      # exit-135 SIGBUS concurrency kill is preserved).
+      # Std.BuildInfo synthesis (docs/60 §9.2): the compiler synthesizes a
+      # `buildInfo()` accessor into a file that imports Std.BuildInfo. Asserts
+      # the deterministic dev-checkout defaults at runtime (no `--define` under
+      # `lyric test`). Imports only `Std.*`. The JVM twin runs in the JVM
+      # self-tests job below.
+      - name: BuildInfo self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping BuildInfo self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping BuildInfo self-test"
+            exit 1
+          fi
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/buildinfo_self_test.l
+
+      # BuildInfo `--define` runtime path (docs/60 §9.2): asserts that
+      # `--define`-supplied `version` / `build_profile` / `git_hash` actually
+      # flow through the synthesized `buildInfo()` accessor to runtime values.
+      # `buildinfo_self_test.l` covers only the default-fallback path (`lyric
+      # test` threads no `--define`); this closes the gap for the supplied
+      # path. dotnet-only: M1a gates `--define` to the single-file dotnet build
+      # path (rejected on JVM/native/project), so the JVM twin is deliberately
+      # absent — the JVM default-fallback path is covered by the self-test above.
+      #
+      # The fixture deliberately imports ONLY `Std.BuildInfo` (+ `Std.Console`
+      # for `println`) and NOT `Std.Core`, so it also guards #5949: the
+      # synthesized body's `Some`/`None` are core-prelude builtins (resolved via
+      # `symTableTryFindOne`, not the file's own import scope), so no `import
+      # Std.Core` injection is needed. The `--define git_hash` forces the `Some`
+      # branch into the synthesized body, exercising exactly that resolution.
+      - name: BuildInfo --define runtime path (native lyric build --define)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping BuildInfo --define runtime test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping BuildInfo --define runtime test"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          fixture="$work/bi_define_fixture.l"
+          cat > "$fixture" <<'LYR'
+          package BiDefineFixture
+
+          import Std.Console
+          import Std.BuildInfo
+
+          func fmtOpt(o: in Option[String]): String {
+            match o {
+              case Some(s) -> s
+              case None -> "<none>"
+            }
+          }
+
+          func main(): Int {
+            val bi = buildInfo()
+            println("V=" + bi.version)
+            println("P=" + bi.profile)
+            println("G=" + fmtOpt(bi.gitHash))
+            0
+          }
+          LYR
+          out="$work/bi_define_fixture.dll"
+          "$lyric_bin" build --define version=7.7.7 --define build_profile=release --define git_hash=abcdef "$fixture" -o "$out" --force
+          result="$(dotnet "$out")"
+          echo "$result"
+          echo "$result" | grep -qx "V=7.7.7"  || { echo "::error::version define not injected into BuildInfo"; exit 1; }
+          echo "$result" | grep -qx "P=release" || { echo "::error::build_profile define not injected into BuildInfo"; exit 1; }
+          echo "$result" | grep -qx "G=abcdef" || { echo "::error::git_hash define not wrapped into BuildInfo.gitHash"; exit 1; }
+          echo "BuildInfo --define runtime path OK (V=7.7.7 P=release G=abcdef)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Extra barrier (BuildInfo dotnet batch): keeps the two BuildInfo steps
+      # above off the adjacent already-at-cap batches (#5933/#5967).
+      - name: Wait for parallel tests (BuildInfo dotnet batch)
         wait-all: true
 
       # `println(Bool)` cross-target parity (#5666, a `bool_tostring_self_test.l`
@@ -4262,8 +4352,31 @@ jobs:
       # status collection starts misreporting a passing step as failed (the two
       # wave-7 JVM self-tests above pushed it from ~19 to ~21).  Split into
       # ~11 + ~10 so each sub-batch stays under the cap.
+      # The BuildInfo JVM self-test (#5942) is placed in the SECOND (lighter,
+      # post-barrier) sub-batch below rather than the first group, so it does
+      # not add to the already-heavy pre-barrier batch (#5967).
       - name: Wait for parallel tests (JVM batch 1-split)
         wait-all: true
+
+      # JVM twin of the BuildInfo synthesis self-test (docs/60 §9.2): the
+      # `buildInfo()` accessor is synthesized and its BuildInfo record is
+      # constructed cross-package on the JVM target too. dotnet half runs in
+      # the dotnet self-tests job above.
+      - name: BuildInfo self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping BuildInfo JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping BuildInfo JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/buildinfo_self_test.l
 
       # Std.Tls test coverage on JVM (#5876) — the JVM half of the
       # dotnet-job step of the same name (stdlib-builds). Certificate/

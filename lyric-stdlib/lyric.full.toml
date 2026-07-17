@@ -58,6 +58,9 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Collections"      = "std/collections.l"
 "Std.ProcessCapture"   = "std/process_capture.l"
 "Std.Process"          = "std/process.l"
+# Build metadata surface (docs/60 §9.2) — type only; compiler synthesizes
+# the per-build `buildInfo()` accessor into the consumer's root package.
+"Std.BuildInfo"        = "std/buildinfo.l"
 
 # Tier 2 — numeric, text, stream, char.
 "Std.Math"             = "std/math.l"

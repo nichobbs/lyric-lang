@@ -163,3 +163,219 @@ test "applyBuildDefines emits F0032 for a malformed (no-key) @build_const (#5923
   val res = BD.applyBuildDefines(newList(), pr.file)
   assertTrue(hasDiagCode(res.diagnostics, "F0032"), "@build_const with no string-literal key is rejected (F0032)")
 }
+
+// ── Std.BuildInfo synthesis (docs/60 §9.2) ───────────────────────────────────
+// Locate the synthesized `buildInfo()` accessor's returned `BuildInfo(...)`
+// constructor expression, if present.
+func findBuildInfoCtor(sf: in SourceFile): Option[Expr] {
+  var i = 0
+  while i < sf.items.count {
+    match sf.items[i].kind {
+      case IFunc(decl) -> {
+        if decl.name == "buildInfo" {
+          match decl.body {
+            case Some(FBBlock(block)) -> {
+              if block.statements.count > 0 {
+                match block.statements[0].kind {
+                  case SReturn(Some(e)) -> return Some(value = e)
+                  case _ -> ()
+                }
+              }
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+func hasBuildInfoFunc(sf: in SourceFile): Bool {
+  match findBuildInfoCtor(sf) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// The value expression of a named constructor argument.
+func ctorArg(ctor: in Expr, name: in String): Option[Expr] {
+  match ctor.kind {
+    case ECall(_, args) -> {
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(n, value, _) -> if n == name { return Some(value = value) }
+          case CAPositional(_) -> ()
+        }
+        i = i + 1
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+// String-literal text of a constructor argument named `name` (or a marker).
+func argStr(sf: in SourceFile, name: in String): String {
+  match findBuildInfoCtor(sf) {
+    case Some(ctor) -> {
+      match ctorArg(ctor, name) {
+        case Some(e) -> {
+          match e.kind {
+            case ELiteral(LString(t)) -> t
+            case _ -> "<non-str>"
+          }
+        }
+        case None -> "<no-arg>"
+      }
+    }
+    case None -> "<no-ctor>"
+  }
+}
+
+// Rendered `Option[String]` arg: the inner string for `Some("x")`, "<none>" for
+// `None`.
+func optArgStr(sf: in SourceFile, name: in String): String {
+  match findBuildInfoCtor(sf) {
+    case Some(ctor) -> {
+      match ctorArg(ctor, name) {
+        case Some(e) -> {
+          match e.kind {
+            case EPath(p) -> if p.segments.count == 1 and p.segments[0] == "None" { "<none>" } else { "<path>" }
+            case ECall(_, args) -> {
+              if args.count == 1 {
+                match args[0] {
+                  case CANamed(_, value, _) -> {
+                    match value.kind {
+                      case ELiteral(LString(t)) -> t
+                      case _ -> "<non-str>"
+                    }
+                  }
+                  case CAPositional(_) -> "<pos>"
+                }
+              } else {
+                "<call>"
+              }
+            }
+            case _ -> "<other>"
+          }
+        }
+        case None -> "<no-arg>"
+      }
+    }
+    case None -> "<no-ctor>"
+  }
+}
+
+// Element count of the `List[String]` literal in the `features` arg.
+func featuresCount(sf: in SourceFile): Int {
+  match findBuildInfoCtor(sf) {
+    case Some(ctor) -> {
+      match ctorArg(ctor, "features") {
+        case Some(e) -> match e.kind { case EList(exprs) -> exprs.count; case _ -> -1 }
+        case None -> -2
+      }
+    }
+    case None -> -3
+  }
+}
+
+func noDefines(): List[BD.Define] {
+  newList()
+}
+
+test "synthesizeBuildInfo is a no-op without import Std.BuildInfo" {
+  val pr = parse("package T\nfunc other(): Int { 1 }\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertFalse(hasBuildInfoFunc(synthd), "no accessor synthesized when Std.BuildInfo is not imported")
+  assertEqualInt(synthd.items.count, pr.file.items.count, "item list unchanged")
+}
+
+test "synthesizeBuildInfo appends buildInfo() when Std.BuildInfo is imported" {
+  val pr = parse("package T\nimport Std.BuildInfo\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertTrue(hasBuildInfoFunc(synthd), "accessor synthesized on import")
+  assertEqualInt(synthd.items.count, pr.file.items.count + 1, "exactly one item appended")
+}
+
+test "synthesizeBuildInfo uses the target parameter for the target field" {
+  val pr = parse("package T\nimport Std.BuildInfo\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "jvm", newList(), noDefines())
+  assertEqual(argStr(synthd, "target"), "jvm", "target field is the build's target name")
+}
+
+test "synthesizeBuildInfo falls back to 0.0.0 / debug without version/profile defines" {
+  val pr = parse("package T\nimport Std.BuildInfo\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertEqual(argStr(synthd, "version"), "0.0.0", "version falls back")
+  assertEqual(argStr(synthd, "profile"), "debug", "profile falls back")
+}
+
+test "synthesizeBuildInfo reads version/profile from the well-known defines" {
+  val pr = parse("package T\nimport Std.BuildInfo\n")
+  val kvs: List[String] = newList()
+  kvs.add("version=1.2.3")
+  kvs.add("build_profile=release")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), BD.decodeDefines(kvs))
+  assertEqual(argStr(synthd, "version"), "1.2.3", "version from define")
+  assertEqual(argStr(synthd, "profile"), "release", "profile from build_profile define")
+}
+
+test "synthesizeBuildInfo leaves gitHash/buildTimestamp None without their defines" {
+  val pr = parse("package T\nimport Std.BuildInfo\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertEqual(optArgStr(synthd, "gitHash"), "<none>", "gitHash None by default (reproducibility)")
+  assertEqual(optArgStr(synthd, "buildTimestamp"), "<none>", "buildTimestamp None by default")
+}
+
+test "synthesizeBuildInfo wraps supplied git_hash/build_timestamp in Some" {
+  val pr = parse("package T\nimport Std.BuildInfo\n")
+  val kvs: List[String] = newList()
+  kvs.add("git_hash=abc123")
+  kvs.add("build_timestamp=2026-07-17T00:00:00Z")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), BD.decodeDefines(kvs))
+  assertEqual(optArgStr(synthd, "gitHash"), "abc123", "gitHash Some when supplied")
+  assertEqual(optArgStr(synthd, "buildTimestamp"), "2026-07-17T00:00:00Z", "buildTimestamp Some when supplied")
+}
+
+test "synthesizeBuildInfo emits the active feature set as a list literal" {
+  val pr = parse("package T\nimport Std.BuildInfo\n")
+  val feats: List[String] = newList()
+  feats.add("metrics")
+  feats.add("tracing")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", feats, noDefines())
+  assertEqualInt(featuresCount(synthd), 2, "both active features appear in the features list")
+}
+
+test "synthesizeBuildInfo defers to a user-defined buildInfo" {
+  val pr = parse("package T\nimport Std.BuildInfo\nfunc buildInfo(): Int { 7 }\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertEqualInt(synthd.items.count, pr.file.items.count, "no accessor synthesized over a user buildInfo")
+}
+
+test "synthesizeBuildInfo does not trigger on an aliased import" {
+  val pr = parse("package T\nimport Std.BuildInfo as BI\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertFalse(hasBuildInfoFunc(synthd), "aliased import is not the opt-in spelling (no synthesis)")
+}
+
+test "synthesizeBuildInfo does not trigger on a selector-aliased import (#5969)" {
+  val pr = parse("package T\nimport Std.BuildInfo.{BuildInfo as BI}\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertFalse(hasBuildInfoFunc(synthd), "an aliased selector leaves bare BuildInfo out of scope (no synthesis)")
+}
+
+test "synthesizeBuildInfo does not trigger on a selector-group import (#5969)" {
+  val pr = parse("package T\nimport Std.BuildInfo.{BuildInfo}\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertFalse(hasBuildInfoFunc(synthd), "only the bare `import Std.BuildInfo` is the opt-in spelling (no synthesis)")
+}
+
+test "synthesizeBuildInfo defers to a user-defined val buildInfo (#5968)" {
+  val pr = parse("package T\nimport Std.BuildInfo\nval buildInfo = 7\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertEqualInt(synthd.items.count, pr.file.items.count, "a user `val buildInfo` is not overridden")
+}

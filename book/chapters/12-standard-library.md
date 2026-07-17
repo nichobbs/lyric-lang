@@ -49,6 +49,7 @@ Here is the full module inventory:
 | `Std.Testing.Property` | Property-based testing: `forAllIntRange`, `forAllBool`, `forAllDouble` |
 | `Std.Testing.Snapshot` | `snapshot(label, actual)`, `snapshotMatch` |
 | `Std.Testing.Mocking` | `StubCounter`, `makeStubCounter`, `stubCounterIncrement` |
+| `Std.BuildInfo` | `BuildInfo` build-metadata record; the compiler synthesizes `buildInfo(): BuildInfo` into any file that imports it (docs/60 §9.2) |
 
 The `Std.Core` module is special: `println`, `panic`, `assert`, `toString`, and a few others are codegen builtins — the compiler emits calls to them directly, so they are available without an explicit import. Everything else in the table requires an explicit `import`.
 

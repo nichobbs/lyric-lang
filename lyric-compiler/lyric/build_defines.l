@@ -149,6 +149,198 @@ func stringLiteralExpr(text: in String, sp: in Span): Expr {
   Expr(kind = ELiteral(lit = LString(text = text)), span = sp)
 }
 
+// ── Std.BuildInfo synthesis (docs/60 §9.2) ───────────────────────────────────
+// The build-metadata surface. `import Std.BuildInfo` opts a file in; the
+// compiler synthesizes a `buildInfo()` accessor into that file (the consumer's
+// own package), so each program reports *its own* resolved build metadata, not
+// the stdlib's (docs/60 §9.2). The values come from the same resolved-defines
+// map plus the target/feature parameters already flowing through
+// `pipeParseAndErase`; nothing new is threaded through the backends.
+// True iff the file has a bare, unaliased, unselective `import Std.BuildInfo`.
+// Both an aliased import (`import Std.BuildInfo as BI`) and a selector-group
+// import (`import Std.BuildInfo.{BuildInfo as BI}` or `.{BuildInfo}`) are
+// deliberately NOT matched: the synthesized accessor references `BuildInfo`
+// unqualified, so it only resolves when the plain import brings the whole
+// package's public surface into scope. Under an alias or an aliased selector
+// the bare `BuildInfo` name is not in scope, so triggering there would surface
+// a confusing error on code the user never wrote. The documented spelling is
+// the bare `import Std.BuildInfo` (docs/60 §9.2).
+func importsStdBuildInfo(imports: in List[ImportDecl]): Bool {
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    val p = imp.path
+    val unaliased = match imp.asAlias { case Some(_) -> false; case None -> true }
+    val unselective = match imp.selector { case Some(_) -> false; case None -> true }
+    if unaliased and unselective and p.segments.count == 2 and p.segments[0] == "Std" and p.segments[1] == "BuildInfo" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// True iff a module-level `buildInfo` binding already exists — a `func` or a
+// `val` — meaning the user opted to define their own, so we leave it untouched
+// (no duplicate, no override). The `IConst` arm is defensive AST completeness:
+// a module-level `const` item is not producible by the current grammar, but the
+// AST variant exists, so it is handled for free rather than silently ignored.
+func hasUserBuildInfoDecl(items: in List[Item]): Bool {
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IFunc(decl) -> if decl.name == "buildInfo" { return true }
+      case IConst(decl) -> if decl.name == "buildInfo" { return true }
+      case IVal(decl) -> {
+        match decl.pattern.kind {
+          case PBinding(name, _) -> if name == "buildInfo" { return true }
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+func biPath(name: in String, sp: in Span): ModulePath {
+  val segs: List[String] = newList()
+  segs.add(name)
+  ModulePath(segments = segs, span = sp)
+}
+
+// `Some("v")` for a supplied define, `None` otherwise — the reproducibility
+// seam for `gitHash` / `buildTimestamp` (docs/60 §9.2).
+func optStringExpr(v: in Option[String], sp: in Span): Expr {
+  match v {
+    case Some(s) -> {
+      val args: List[CallArg] = newList()
+      args.add(CANamed(name = "value", value = stringLiteralExpr(s, sp), span = sp))
+      val callee = Expr(kind = EPath(path = biPath("Some", sp)), span = sp)
+      Expr(kind = ECall(fn = callee, args = args), span = sp)
+    }
+    case None -> Expr(kind = EPath(path = biPath("None", sp)), span = sp)
+  }
+}
+
+// `["f1", "f2", ...]` — the active feature set as a `List[String]` literal.
+func featuresListExpr(features: in List[String], sp: in Span): Expr {
+  val elems: List[Expr] = newList()
+  var i = 0
+  while i < features.count {
+    elems.add(stringLiteralExpr(features[i], sp))
+    i = i + 1
+  }
+  Expr(kind = EList(exprs = elems), span = sp)
+}
+
+// The `BuildInfo(version = ..., ...)` constructor call. Every field is set
+// explicitly (no reliance on record defaults) — the cross-package construction
+// the emitter must lower correctly.
+func buildInfoCtorExpr(
+  version: in String,
+  target: in String,
+  profile: in String,
+  gitHash: in Option[String],
+  buildTs: in Option[String],
+  features: in List[String],
+  sp: in Span,
+): Expr {
+  val args: List[CallArg] = newList()
+  args.add(CANamed(name = "version", value = stringLiteralExpr(version, sp), span = sp))
+  args.add(CANamed(name = "target", value = stringLiteralExpr(target, sp), span = sp))
+  args.add(CANamed(name = "profile", value = stringLiteralExpr(profile, sp), span = sp))
+  args.add(CANamed(name = "gitHash", value = optStringExpr(gitHash, sp), span = sp))
+  args.add(CANamed(name = "buildTimestamp", value = optStringExpr(buildTs, sp), span = sp))
+  args.add(CANamed(name = "features", value = featuresListExpr(features, sp), span = sp))
+  val callee = Expr(kind = EPath(path = biPath("BuildInfo", sp)), span = sp)
+  Expr(kind = ECall(fn = callee, args = args), span = sp)
+}
+
+// `pub func buildInfo(): BuildInfo { return BuildInfo(...) }` — `pub` so an
+// uncalled accessor never trips an unused-binding diagnostic.
+func buildInfoFuncItem(
+  version: in String,
+  target: in String,
+  profile: in String,
+  gitHash: in Option[String],
+  buildTs: in Option[String],
+  features: in List[String],
+  sp: in Span,
+): Item {
+  val ctor = buildInfoCtorExpr(version, target, profile, gitHash, buildTs, features, sp)
+  val stmts: List[Statement] = newList()
+  stmts.add(Statement(kind = SReturn(value = Some(value = ctor)), span = sp))
+  val body = FBBlock(block = Block(statements = stmts, span = sp))
+  val retTy = TypeExpr(kind = TRef(path = biPath("BuildInfo", sp)), span = sp)
+  val noDoc: List[DocComment] = newList()
+  val noAnn: List[Annotation] = newList()
+  val noParams: List[Param] = newList()
+  val noContracts: List[ContractClause] = newList()
+  val fn = FunctionDecl(
+    docComments = noDoc,
+    annotations = noAnn,
+    visibility = Some(value = VisPub(span = sp)),
+    isAsync = false,
+    name = "buildInfo",
+    generics = None,
+    params = noParams,
+    ret = Some(value = retTy),
+    whereClause = None,
+    contracts = noContracts,
+    body = Some(value = body),
+    span = sp
+  )
+  Item(
+    docComments = newList(),
+    annotations = newList(),
+    visibility = Some(value = VisPub(span = sp)),
+    kind = IFunc(decl = fn),
+    span = sp
+  )
+}
+
+/// Synthesize the `buildInfo()` accessor into a file that imports
+/// `Std.BuildInfo` (docs/60 §9.2). No-op for a file that does not import it, or
+/// that already declares its own `buildInfo`. The record's `version` / `profile`
+/// come from the well-known `version` / `build_profile` defines (deterministic
+/// fallbacks otherwise); `target` and `features` are the build's own parameters;
+/// `gitHash` / `buildTimestamp` are `Some` only when the `git_hash` /
+/// `build_timestamp` defines are supplied (reproducibility seam, docs/60 §9.2).
+pub func synthesizeBuildInfo(
+  sf: in SourceFile,
+  targetName: in String,
+  features: in List[String],
+  defines: in List[Define],
+): SourceFile {
+  if not importsStdBuildInfo(sf.imports) {
+    return sf
+  }
+  if hasUserBuildInfoDecl(sf.items) {
+    return sf
+  }
+  val version = match lookupDefine(defines, "version") { case Some(v) -> v; case None -> "0.0.0" }
+  val profile = match lookupDefine(defines, "build_profile") { case Some(v) -> v; case None -> "debug" }
+  val gitHash = lookupDefine(defines, "git_hash")
+  val buildTs = lookupDefine(defines, "build_timestamp")
+  val outItems: List[Item] = newList()
+  var i = 0
+  while i < sf.items.count {
+    outItems.add(sf.items[i])
+    i = i + 1
+  }
+  outItems.add(buildInfoFuncItem(version, targetName, profile, gitHash, buildTs, features, sf.span))
+  SourceFile(
+    moduleDoc = sf.moduleDoc,
+    fileAnnotations = sf.fileAnnotations,
+    packageDecl = sf.packageDecl,
+    imports = sf.imports,
+    items = outItems,
+    span = sf.span
+  )
+}
+
 // ── Pass ────────────────────────────────────────────────────────────────────
 /// Apply `@build_const` substitution to a parsed file. A module-level `val`
 /// annotated `@build_const("K")` has its initializer replaced with a

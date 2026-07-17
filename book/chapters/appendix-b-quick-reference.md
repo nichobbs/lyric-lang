@@ -758,6 +758,7 @@ output_assembly = "myapp.dll"
 | `Std.Environment` | Process environment | `getVar`, `getVarOrDefault`, `args`, `exitCode` |
 | `Std.Log` | Structured logging | `LogLevel` enum, `Logger` interface, `LogField`, `log`, `debug`, `info`, `warn`, `error`, `field` |
 | `Std.Path` | Pure path manipulation | `join`, `extension`, `basename`, `dirname`, `isAbsolute`, `isRelative` |
+| `Std.BuildInfo` | Build metadata (docs/60) | `BuildInfo` record; the compiler synthesizes `buildInfo(): BuildInfo` into any file that imports it |
 
 **External libraries** (separate packages; add to `[dependencies]` in `lyric.toml`):
 
