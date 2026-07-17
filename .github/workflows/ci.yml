@@ -881,6 +881,16 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/bool_tostring_self_test.l
 
+      # Extra barrier (batch 1-pre-split, #5933): this first background group
+      # ran 11 concurrent in-process compilations and produced one of the four
+      # observed exit-135 random step kills (docs/58 wire/config-template, on
+      # PR #5926's re-run — a comment-only diff, so not code-caused): the
+      # runner kills one concurrent step mid-run with SIGBUS-class exit 135
+      # and no diagnostic under memory pressure. Split into 5 + 6.
+      # Per the header note: split, don't serialize.
+      - name: Wait for parallel tests (batch 1-pre-split)
+        wait-all: true
+
       # `println(Bool)` cross-target parity (#5666, a `bool_tostring_self_test.l`
       # gap since @test_module assertions can't capture stdout): `println` is
       # a polymorphic codegen builtin (unlike `print`, which stays String-only
@@ -1524,6 +1534,14 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/conv_methods_self_test.l
 
+      # Extra barrier (batch 1b-split, #5933): prophylactic — this group sat
+      # exactly at the documented ~14-step cap. It has produced no observed
+      # exit-135 kills itself (those hit batch 1, a 7-step batch, and batch 2a
+      # — see the other #5933 barriers), but 14 concurrent in-process
+      # compilations is the same pressure profile. Split into 7 + 7.
+      - name: Wait for parallel tests (batch 1b-split)
+        wait-all: true
+
       - name: Pattern-lowering self-test (native lyric test, dotnet)
         background: true
         working-directory: ${{ github.workspace }}
@@ -1975,6 +1993,15 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/inbundle_generics_self_test.l
+
+      # Extra barrier (batch 2a-split, #5933): THIS group produced two of the
+      # four observed exit-135 random step kills (cross_package_generics on
+      # PR #5910's run, restored_async on PR #5909's) — the runner killed one
+      # concurrent step mid-run with SIGBUS-class exit 135 and no diagnostic,
+      # under the memory pressure of 10 simultaneous in-process compilations.
+      # Split into 5 + 5. Per the header note: split, don't serialize.
+      - name: Wait for parallel tests (batch 2a-split)
+        wait-all: true
 
       # Cross-package generic records/unions self-test (#1496, D-progress-494).
       # Builds a PRODUCER DLL (generic record / union) in-process via
