@@ -19,6 +19,7 @@ package Lyric.StdlibGenericMonoSelfTest
 
 import Std.Core
 import Std.Collections
+import Std.String
 import Std.Testing
 
 // ── Free-function call sites ────────────────────────────────────────────────
@@ -141,4 +142,43 @@ test "Map[String, Option[Int]].add(Some) and mapGet roundtrips" {
   val got: Option[Int] = match outer { case None -> None; case Some(v) -> v }
   val v = match got { case None -> -1; case Some(n) -> n }
   assertEqualInt(v, 42, "map value Some(42) roundtrips")
+}
+
+// ── #5843: generic HOF + lambda argument whose body calls an AMBIGUOUS
+//    cross-package name ─────────────────────────────────────────────────────
+//
+// `mapOption[T, U](o: in Option[T], f: in (T) -> U): Option[U]` is a stdlib
+// generic HOF; the lambda body calls `toUpper`, a name declared BOTH by
+// `Std.String` (`toUpper(String): String`) and `Std.Char`
+// (`toUpper(Char): Char`) — the bridges collect every stdlib package's
+// non-generic `pub func`s into one flat inference pool regardless of what
+// this file imports, so both land in `Lyric.Mono`'s name-keyed inference
+// table.  Before the original #5843 fix the monomorphizer picked whichever
+// `toUpper` happened to be collected first (an arbitrary package-iteration-
+// order artefact) and specialised `mapOption` against ITS return type — e.g.
+// `mapOption__String__Char` — producing an `InvalidCastException` /
+// `InvalidProgramException` when the closure's real `String` return value
+// hit the wrongly-typed specialisation at runtime.  #5843 fixed this by
+// evicting an ambiguous cross-package name from the inference surface
+// entirely — safe, but overly blunt for common code (a real regression when
+// generalised further, see `Lyric.Mono`'s `ambiguousFuncOverloads` doc
+// comment).  Call-site overload resolution now supersedes that eviction:
+// the lambda's ANNOTATED `s: String` param uniquely matches
+// `Std.String.toUpper(String): String` (not `Std.Char.toUpper(Char): Char`),
+// so `U` resolves to the correct `String` instead of the erased `Object`
+// default — `mapOption` specialises against the RIGHT overload's return
+// type and the call returns the correct (uppercased) value.
+test "mapOption + lambda calling an ambiguous cross-package name (#5843)" {
+  val opt: Option[String] = Some(value = "hello")
+  val upper = mapOption(opt, { s: String -> toUpper(s) })
+  assertTrue(isSome(upper), "mapOption(Some, toUpper) stays Some")
+  assertEqual(
+    unwrapOr(upper, ""),
+    "HELLO",
+    "mapOption uppercases via the real Std.String.toUpper, not Std.Char.toUpper"
+  )
+
+  val none: Option[String] = None
+  val upperNone = mapOption(none, { s: String -> toUpper(s) })
+  assertTrue(isNone(upperNone), "mapOption(None, toUpper) stays None")
 }

@@ -25,11 +25,20 @@
 //!
 //! This test exercises the SAME real-world repro as `enum_msil_self_test.l`'s
 //! `#5737` case (`Std.Http.GET`, a genuine stdlib enum bundled alongside user
-//! code the same way on both targets) but does NOT call `Std.Http.request`
-//! (a separate, pre-existing, unrelated JVM gap in qualified FREE-FUNCTION
-//! call resolution for a 3-segment callee — `Std.Http.request(...)` parses
-//! with a nested-`EMember` receiver that `lowerMethodCall` does not flatten;
-//! tracked separately, not part of this fix).
+//! code the same way on both targets).
+//!
+//! #5845 closed the sibling gap noted above: a fully-qualified FREE-FUNCTION
+//! call whose callee has a multi-segment package prefix (`Std.Http.request(
+//! ...)` — package `Std.Http`, function `request`) also parses with a
+//! nested-`EMember` receiver (`EMember(EMember(EPath["Std"], "Http"),
+//! "request")`), which `lowerMethodCall` (`jvm/codegen/04_calls.l`) did not
+//! flatten before falling through to `lowerExpr` on the receiver — evaluating
+//! the package prefix `Std.Http` as a VALUE panics ("reference 'Std' resolves
+//! to no local, ..."). Fixed by flattening the receiver via the existing
+//! `flattenPathExprSegsJvm` (#5769) and, when `<prefix>/<member>` names a
+//! registered free function in `ctx.funcSigs`, routing to the static-call
+//! lowering (`lowerBuiltinOrStaticCall`) instead — mirroring MSIL's
+//! `flattenPathExprSegs` fix in `lowerMethodCallMsil` (#3332).
 //!
 //! Run in CI via native `lyric test` on **both targets** (like
 //! `bitwise_self_test.l`): `--target dotnet` through `Msil.Bridge` (already
@@ -94,9 +103,7 @@ test "#5737/#5769: Std.Http.GET (package-qualified stdlib enum case) resolves on
     case GET -> assertTrue(true, "Std.Http.GET resolves to the enum value")
     case _ -> panic("Std.Http.GET resolved to the wrong case")
   }
-  // Passed as a call argument (an ordinary, unqualified call — the qualified
-  // FREE-FUNCTION call shape `Std.Http.request(...)` is the separate,
-  // tracked JVM gap noted in the file header).
+  // Passed as a call argument to an ordinary, unqualified call.
   assertTrue(httpMethodIsGet(Std.Http.GET), "Std.Http.GET as a qualified call argument")
 }
 
@@ -105,4 +112,22 @@ func httpMethodIsGet(m: in HttpMethod): Bool {
     case GET -> true
     case _ -> false
   }
+}
+
+// #5845: fully-qualified FREE-FUNCTION calls whose callee has a multi-segment
+// package prefix (`Std.Http.request(...)`, `Std.Http.withHeader(...)`) — the
+// call-form sibling of the #5769 enum-case-value fix above, now closed.
+test "#5845: Std.Http.request(...) and Std.Http.withHeader(...) (fully-qualified free-function calls) resolve and run on both targets" {
+  val u = match Url.tryFrom("http://example.com") {
+    case Ok(value) -> value
+    case Err(_) -> panic("test setup: Url.tryFrom(\"http://example.com\") unexpectedly failed")
+  }
+  // 2-argument fully-qualified call: `EMember(EMember(EPath["Std"], "Http"),
+  // "request")` as the callee, receiver `Std.Http` itself an `EMember`, not a
+  // bare `EPath` — the exact shape `lowerMethodCall` used to mis-lower.
+  val req = Std.Http.request(Std.Http.GET, u)
+  // 3-argument fully-qualified call on the resulting request — exercises a
+  // second arity through the same qualified-call path.
+  val _ = Std.Http.withHeader(req, "X-Test", "1")
+  assertTrue(true, "Std.Http.request/withHeader (3-segment qualified free-function calls) executed without panicking")
 }

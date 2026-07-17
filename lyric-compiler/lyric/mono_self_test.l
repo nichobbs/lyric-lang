@@ -74,6 +74,29 @@ func findFunc(file: in SourceFile, name: in String): Option[FunctionDecl] {
   None
 }
 
+// Pull the trailing (implicit-return or explicit `return`) expression out of
+// a func's body — mirrors `Lyric.Mono.lambdaBodyResultTE`'s statement-kind
+// match.  Used to inspect what a call site's callee looks like AFTER mono,
+// so a test can assert a call was left completely UNREWRITTEN (still names
+// the original bare function, not a `__`-suffixed specialisation).
+func lastStmtExprInFunc(file: in SourceFile, name: in String): Option[Expr] {
+  match findFunc(file, name) {
+    case None -> None
+    case Some(decl) -> match decl.body { case None -> None; case Some(fb) -> match fb { case FBExpr(e) -> Some(value = e); case FBBlock(blk) -> { if blk.statements.count == 0 { None } else { match blk.statements[blk.statements.count - 1].kind { case SExpr(e) -> Some(value = e); case SReturn(vOpt) -> vOpt; case _ -> None } } } } }
+  }
+}
+
+// The bare (single-segment) callee name of `e`, when `e` is a plain
+// `ECall(EPath([name]), args)` — `None` for anything else (a specialised
+// call site's callee is still a single-segment `EPath`, just under the
+// mangled `__`-suffixed name, so this only needs the single-segment case).
+func callFnBareName(e: in Expr): Option[String] {
+  match e.kind {
+    case ECall(fn, _) -> match fn.kind { case EPath(p) -> { if p.segments.count == 1 { Some(value = p.segments[0]) } else { None } }; case _ -> None }
+    case _ -> None
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Synthetic-AST helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -514,6 +537,420 @@ test "lambda argument binds imported generic's type params (#5604)" {
   assertTrue(
     hasFunc(res.file, "mapLike__Int__Bool"),
     "mapLike binds T from the lambda's annotated param and U from its body"
+  )
+}
+
+// #5841: `Type.tryFrom(x)` / `Type.from(x)` are compiler-synthesised static
+// factories on a distinct/range-subtype (#1501) — `recv` is a bare type NAME
+// that never resolves to a value, so before this fix `inferCallReturnTE`
+// could not see through the call at all.  A generic caller inferring its
+// type argument from the result (`isOkLike(Age.tryFrom(25))`) then fell back
+// to defaulting BOTH `T` and `E` to `Object`, producing a specialisation
+// (`Object`/`Object`) that does not match the real `Result[Age, String]`
+// instantiation the codegen backend actually constructs — a runtime
+// mismatch at the union-match site (#5841).
+test "distinct-type tryFrom feeds imported generic specialisation with the real payload type (#5841)" {
+  val callerSrc = "package Caller\n" + "type Age = Int range 0 ..= 150\n" +
+    "func caller(): Bool { isOkLike(Age.tryFrom(25)) }\n"
+  val libSrc = "package Lib\n" +
+    "pub func isOkLike[T, E](r: in Result[T, E]): Bool { match r { case Ok(_) -> true\n case Err(_) -> false } }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(
+    hasFunc(res.file, "isOkLike__Age__String"),
+    "Age.tryFrom(...) infers Result[Age, String] — not the Object/Object default"
+  )
+  assertFalse(hasFunc(res.file, "isOkLike__Object__Object"), "must not fall back to the Object/Object default")
+}
+
+test "distinct-type from feeds imported generic specialisation with the real payload type (#5841)" {
+  val callerSrc = "package Caller\n" + "type Age = Int range 0 ..= 150\n" +
+    "func caller(): Bool { isLike(Age.from(5)) }\n"
+  val libSrc = "package Lib\n" + "pub func isLike[T](x: in T): Bool { true }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(hasFunc(res.file, "isLike__Age"), "Age.from(...) infers Age, not the Object default")
+}
+
+// #5843: two DIFFERENT cross-package functions can share a bare name (the
+// bridges collect every stdlib package's non-generic `pub func`s into one
+// flat inference pool regardless of what the compiled file imports, e.g.
+// `Std.String.toUpper(String): String` vs `Std.Char.toUpper(Char): Char`).
+// A first fix (#5843) evicted the ambiguous name from inference entirely so
+// a generic caller could never guess the WRONG overload's return type and
+// mis-specialise into an instantiation the runtime value never has — but
+// that pushed EVERY ambiguous call onto the Object-fallback specialisation,
+// which doesn't just leave the call un-specialised, it CRASHES at runtime
+// against a real generic instantiation (the erased `Object`/`Object` arms
+// can never match).  This supersedes that eviction with call-site overload
+// resolution (#5961/#5962 preserved): when the call site's argument types
+// are known, they resolve the ambiguity instead of evicting it — here the
+// lambda's ANNOTATED `s: String` param uniquely matches `LibA.dup(String):
+// String` (not `LibB.dup(Char): Char`), so `U` correctly specialises to
+// `String`, not the erased `Object` default.
+test "ambiguous cross-package function name resolves via call-site argument-type matching (#5843, supersedes eviction)" {
+  val callerSrc = "package Caller\n" + "func caller(): String { mapLike2(\"hi\", { s: String -> dup(s) }) }\n"
+  val libSrc = "package Lib\n" + "pub func mapLike2[T, U](x: in T, f: (T) -> U): U { f(x) }\n"
+  val libASrc = "package LibA\n" + "pub func dup(s: in String): String { s + s }\n"
+  val libBSrc = "package LibB\n" + "pub func dup(c: in Char): Char { c }\n"
+
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val libAPr = parse(libASrc)
+  val libBPr = parse(libBSrc)
+
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var ja = 0
+  while ja < libAPr.file.items.count {
+    match libAPr.file.items[ja].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ja = ja + 1
+  }
+  var jb = 0
+  while jb < libBPr.file.items.count {
+    match libBPr.file.items[jb].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    jb = jb + 1
+  }
+
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(
+    hasFunc(res.file, "mapLike2__String__String"),
+    "the lambda's annotated 'String' param uniquely matches LibA.dup; U resolves to String, not the Object default"
+  )
+  assertFalse(
+    hasFunc(res.file, "mapLike2__String__Object"),
+    "a resolvable call site must not degrade to the Object fallback"
+  )
+  assertFalse(hasFunc(res.file, "mapLike2__String__Char"), "must never guess the wrong overload's return type")
+}
+
+// Counterpart of the above: when the call site's argument type is NOT
+// knowable (an unannotated lambda param with no other type source), overload
+// resolution has nothing to match against and correctly gives up — the
+// generic still safely defaults to Object instead of guessing, exactly the
+// #5843 degradation the eviction fix relied on.
+//
+// The lambda body calls `dup(w)` on a name that is never bound anywhere
+// (not a lambda param, not a local) rather than reusing the lambda's own
+// `T`-typed param: #5604 seeds an UNANNOTATED lambda param from the
+// declared parameter type once the caller's substitution already makes it
+// concrete, so `{ z -> dup(z) }` would actually still resolve `z: String`
+// via `T` (already pinned by the `"hi"` argument) — a genuinely
+// unresolvable argument needs a type source `T`'s pinning cannot reach.
+test "ambiguous cross-package function name with an unresolvable call site still defaults to Object (#5843)" {
+  val callerSrc = "package Caller\n" + "func caller(): Object { mapLike2(\"hi\", { z -> dup(w) }) }\n"
+  val libSrc = "package Lib\n" + "pub func mapLike2[T, U](x: in T, f: (T) -> U): U { f(x) }\n"
+  val libASrc = "package LibA\n" + "pub func dup(s: in String): String { s + s }\n"
+  val libBSrc = "package LibB\n" + "pub func dup(c: in Char): Char { c }\n"
+
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val libAPr = parse(libASrc)
+  val libBPr = parse(libBSrc)
+
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var ja = 0
+  while ja < libAPr.file.items.count {
+    match libAPr.file.items[ja].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ja = ja + 1
+  }
+  var jb = 0
+  while jb < libBPr.file.items.count {
+    match libBPr.file.items[jb].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    jb = jb + 1
+  }
+
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(
+    hasFunc(res.file, "mapLike2__String__Object"),
+    "an untyped lambda param gives overload resolution nothing to match; U safely defaults to Object instead of guessing"
+  )
+  assertFalse(hasFunc(res.file, "mapLike2__String__Char"), "must never guess the wrong overload's return type")
+  assertFalse(hasFunc(res.file, "mapLike2__String__String"), "must never guess either overload's return type")
+}
+
+// Regression pin for the real-world shape that motivated superseding blunt
+// eviction with call-site overload resolution: `lyric-storage`'s
+// `isOk(delete(bucket, key))` crashed at runtime because `delete` was
+// ambiguous across `Std.Directory.delete(String): Result[Unit, IOError]`
+// (arity 1), `Storage.delete(bucket, key): Result[Unit, StorageError]`
+// (arity 2), and `Cache.delete(store, key): Unit` (arity 2) — eviction
+// discarded the name entirely, so `isOk` degraded to the Object-defaulted
+// `isOk__Object__Object`, which then panicked (`match not exhaustive`)
+// against the real `Result[Unit, StorageError]` instance at runtime.  Here,
+// an arity-1 and an arity-2 overload share the bare name `del`; a
+// 2-argument call site can only mean the arity-2 overload, so ARITY ALONE
+// must resolve it (before any argument-type matching is even attempted) —
+// assert the resulting specialisation carries that overload's return type
+// (`Result[Unit, String]`), not the Object-defaulted fallback.
+test "arity alone disambiguates an ambiguous name at a 2-argument call site (storage delete shape)" {
+  val callerSrc = "package Caller\n" + "record SomeRecord { tag: Int }\n" +
+    "func mkRec(): SomeRecord { SomeRecord(tag = 1) }\n" +
+    "func caller(): Bool { isOkLike(del(mkRec(), \"k\")) }\n"
+  val libSrc = "package Lib\n" + "pub func isOkLike[T, E](r: in Result[T, E]): Bool { true }\n"
+  val libASrc = "package LibA\n" + "pub func del(s: in String): Result[Unit, String] { del(s) }\n"
+  val libBSrc = "package LibB\n" + "pub func del(b: in SomeRecord, k: in String): Result[Unit, String] { del(b, k) }\n"
+
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val libAPr = parse(libASrc)
+  val libBPr = parse(libBSrc)
+
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var ja = 0
+  while ja < libAPr.file.items.count {
+    match libAPr.file.items[ja].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ja = ja + 1
+  }
+  var jb = 0
+  while jb < libBPr.file.items.count {
+    match libBPr.file.items[jb].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    jb = jb + 1
+  }
+
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(
+    hasFunc(res.file, "isOkLike__Unit__String"),
+    "a 2-argument call site can only match the arity-2 'del' overload; isOkLike specialises over Result[Unit, String]"
+  )
+  assertFalse(
+    hasFunc(res.file, "isOkLike__Object__Object"),
+    "must not degrade to the Object fallback when arity alone resolves the ambiguity"
+  )
+}
+
+// Regression pin for the `lyric-validation`/`Std.Iter` shape found in a
+// round-6 follow-up review: `Validation.all(errors: in slice[slice[...]]):
+// slice[...]` (arity 1, NON-generic) and `Std.Iter.all[T](xs: in slice[T],
+// pred: (T) -> Bool): Bool` (arity 2, GENERIC) share the bare name `all`.
+// The INFERENCE-side ambiguity fix above (`resolveAmbiguousOverload`) does
+// not, by itself, protect the separate Phase-2 REWRITE path: `genDecls` is a
+// first-wins slot exactly like `funcDecls`, so if the GENERIC candidate
+// happens to be collected first, it occupies `genDecls["all"]` — and
+// `rewriteExpr`'s bare-`EPath` generic-call arm only rejected call sites with
+// MORE arguments than the generic's param count (the #3627/#3677 guard),
+// never FEWER, so the arity-1 `all(errors)` call slipped through, got
+// "specialised" against the arity-2 generic's signature, and was rewritten
+// with an argument list that doesn't match the specialisation it names —
+// invalid IL at runtime.  `genDeclResolvesForCallSite` closes this by
+// checking, for an ambiguous name, that THIS call site's arguments actually
+// resolve (via `resolveAmbiguousOverload`) to the specific candidate sitting
+// in `genDecls` before rewriting proceeds.  Feeds the GENERIC decl first so
+// it wins the first-wins `genDecls` slot, exactly reproducing the reported
+// collection order.
+test "non-generic arity-1 sharing a name with a generic arity-2 is left unspecialised (lyric-validation/Std.Iter shape)" {
+  val callerSrc = "package Caller\n" + "func caller(xs: in slice[slice[String]]): slice[String] { all(xs) }\n"
+  val genLibSrc = "package Iter\n" + "pub func all[T](xs: in slice[T], pred: in (T) -> Bool): Bool { true }\n"
+  val nonGenLibSrc = "package Validation\n" +
+    "pub func all(errors: in slice[slice[String]]): slice[String] { errors[0] }\n"
+
+  val callerPr = parse(callerSrc)
+  val genLibPr = parse(genLibSrc)
+  val nonGenLibPr = parse(nonGenLibSrc)
+
+  // Generic first, so it wins `genDecls`' first-wins slot under "all" —
+  // this ordering is exactly what exposed the bug.
+  val feed: List[FunctionDecl] = newList()
+  var gi = 0
+  while gi < genLibPr.file.items.count {
+    match genLibPr.file.items[gi].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    gi = gi + 1
+  }
+  var ni = 0
+  while ni < nonGenLibPr.file.items.count {
+    match nonGenLibPr.file.items[ni].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ni = ni + 1
+  }
+
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertFalse(hasFunc(res.file, "all__String"), "must not create a bogus specialisation of the generic 'all'")
+  assertFalse(hasFunc(res.file, "all__Slice_String"), "must not create a bogus specialisation of the generic 'all'")
+  match lastStmtExprInFunc(res.file, "caller") {
+    case None -> assertTrue(false, "caller's body must still be inspectable after mono")
+    case Some(bodyExpr) -> {
+      match callFnBareName(bodyExpr) {
+        case None -> assertTrue(false, "caller's call site must still be a plain single-segment call")
+        case Some(calleeName) -> {
+          assertEqual(
+            calleeName,
+            "all",
+            "the arity-1 call must survive completely unrewritten (still names 'all', not a '__'-suffixed specialisation) so it binds to the non-generic Validation.all at codegen"
+          )
+        }
+      }
+    }
+  }
+}
+
+// A duplicate REGISTRATION of the exact same decl (e.g. the same generic
+// collected via two overlapping collector passes) must not be treated as a
+// name collision — only a genuinely DIFFERENT signature under the same name
+// counts as ambiguous.
+test "identical duplicate cross-package registration is not ambiguous" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool { isSomeDup(dup2(5)) }\n"
+  val libSrc = "package Lib\n" + "pub func dup2(x: in Int): Int { x }\n" +
+    "pub func isSomeDup[T](x: in T): Bool { true }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> {
+        feed.add(decl)
+        // Simulate the same decl entering the pool twice (e.g. overlapping
+        // stdlib-package / private-generic collectors).
+        if decl.name == "dup2" {
+          feed.add(decl)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(hasFunc(res.file, "isSomeDup__Int"), "duplicate registration of the identical decl is not ambiguity")
+}
+
+// #5961: an ambiguity between two IMPORTS must never evict a SAME-PACKAGE
+// local function's entry — the local shadows every import ("same-package
+// wins"), so it is exactly what the type checker resolves at the call site
+// and inference must keep using it.  Before the fix, the eviction removed
+// whatever occupied the name, local included, silently degrading a
+// perfectly unambiguous local call to the Object fallback.
+test "local function survives imported-name ambiguity eviction (#5961)" {
+  val callerSrc = "package Caller\n" + "func dup(s: in String): String { s + s }\n" +
+    "func caller(): String { mapLike2(\"hi\", { s: String -> dup(s) }) }\n"
+  val libSrc = "package Lib\n" + "pub func mapLike2[T, U](x: in T, f: (T) -> U): U { f(x) }\n"
+  val libASrc = "package LibA\n" + "pub func dup(s: in String): String { s + s }\n"
+  val libBSrc = "package LibB\n" + "pub func dup(c: in Char): Char { c }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val libAPr = parse(libASrc)
+  val libBPr = parse(libBSrc)
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var ja = 0
+  while ja < libAPr.file.items.count {
+    match libAPr.file.items[ja].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ja = ja + 1
+  }
+  var jb = 0
+  while jb < libBPr.file.items.count {
+    match libBPr.file.items[jb].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    jb = jb + 1
+  }
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(
+    hasFunc(res.file, "mapLike2__String__String"),
+    "the local dup's String return drives inference; the imports' ambiguity must not evict the local"
+  )
+  assertFalse(hasFunc(res.file, "mapLike2__String__Object"), "the local call must not degrade to the Object fallback")
+}
+
+// #5962: two imported functions sharing a name whose signatures differ ONLY
+// in parameter mode are a genuine ambiguity, not a duplicate — the sig key
+// folds modes in, so they evict like any other conflicting pair.
+test "imported functions differing only in parameter mode are ambiguous (#5962)" {
+  val callerSrc = "package Caller\n" + "func caller(): String { mapLike2(\"hi\", { s: String -> dup(s) }) }\n"
+  val libSrc = "package Lib\n" + "pub func mapLike2[T, U](x: in T, f: (T) -> U): U { f(x) }\n"
+  val libASrc = "package LibA\n" + "pub func dup(s: in String): String { s + s }\n"
+  val libBSrc = "package LibB\n" + "pub func dup(s: inout String): String { s }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val libAPr = parse(libASrc)
+  val libBPr = parse(libBSrc)
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var ja = 0
+  while ja < libAPr.file.items.count {
+    match libAPr.file.items[ja].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ja = ja + 1
+  }
+  var jb = 0
+  while jb < libBPr.file.items.count {
+    match libBPr.file.items[jb].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    jb = jb + 1
+  }
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(
+    hasFunc(res.file, "mapLike2__String__Object"),
+    "mode-differing same-name imports are ambiguous; U safely defaults to Object"
   )
 }
 

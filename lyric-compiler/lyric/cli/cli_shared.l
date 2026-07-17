@@ -381,6 +381,22 @@ func checkSdkVersion(): Int {
   0
 }
 
+// Walk up from the current directory for the nearest lyric.toml, warning
+// once (via `printErr`) if the nearest candidate exists but fails to parse
+// (#4881) rather than silently treating it as "no manifest found". Split out
+// of `discoverManifest`'s `None` arm so the 3-arm match renders multi-line
+// under `lyric fmt` instead of collapsing onto one long line (#5868).
+func resolveDiscoveredManifest(): Option[String] {
+  match Disc.findNearestManifestDetailed(Environment.currentDirectory()) {
+    case FoundManifest(path) -> Some(value = path)
+    case FoundBrokenManifest(path, error) -> {
+      printErr(Disc.brokenManifestWarning(path, error))
+      None
+    }
+    case NoManifestFound -> None
+  }
+}
+
 // Resolve the manifest a manifest-consuming command should use: an explicit
 // --manifest wins; otherwise discover the nearest lyric.toml by walking up
 // from the current directory (the project-aware default).
@@ -411,7 +427,7 @@ pub func discoverManifest(explicit: in Option[String]): Option[String] {
       val absP = if Path.isAbsolute(p) { p } else { Path.join(Environment.currentDirectory(), p) }
       Some(value = absP)
     }
-    case None -> match Disc.findNearestManifestDetailed(Environment.currentDirectory()) { case FoundManifest(path) -> Some(value = path); case FoundBrokenManifest(path, error) -> { printErr(Disc.brokenManifestWarning(path, error)); None }; case NoManifestFound -> None }
+    case None -> resolveDiscoveredManifest()
   }
 }
 
