@@ -921,10 +921,10 @@ jobs:
       # `--define`-supplied `version` / `build_profile` / `git_hash` actually
       # flow through the synthesized `buildInfo()` accessor to runtime values.
       # `buildinfo_self_test.l` covers only the default-fallback path (`lyric
-      # test` threads no `--define`); this closes the gap for the supplied
-      # path. dotnet-only: M1a gates `--define` to the single-file dotnet build
-      # path (rejected on JVM/native/project), so the JVM twin is deliberately
-      # absent — the JVM default-fallback path is covered by the self-test above.
+      # test` threads no `--define`); this closes the gap for the supplied path
+      # on dotnet. The JVM twin of this step lives in the `compiler-self-tests-jvm`
+      # job (which has Java 21); native has no twin (native `--define` is gated —
+      # native codegen can't consume defines yet, #5977).
       #
       # The fixture deliberately imports ONLY `Std.BuildInfo` (+ `Std.Console`
       # for `println`) and NOT `Std.Core`, so it also guards #5949: the
