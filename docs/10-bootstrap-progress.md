@@ -208,6 +208,7 @@ deferred to Phase 3 by design.
 | D109 / Q-dist-007 — `lyric version` command + `checkSdkVersion()` SDK mismatch guard; `sdk-version.json` side-file written by `make lyric`; `[nuget]` allowed in all manifest types (Q-W-001) | **Shipped** (PR #3960) | — |
 | self-upgrade CLI — `lyric upgrade` command supporting NuGet global tool update, raw GitHub Release installer script, target version, custom directory, and dry-run mode | **Shipped** (PR #4569) | — |
 | D127 — `lyric --version` / REPL banner / LSP `serverInfo.version` embed the real per-release version (`LYRIC_BUILD_VERSION` env var, set from an MSBuild-generated build-time constant) instead of a permanently-hardcoded `"0.1.0"`; `--package-version` already correctly versioned ecosystem-library build artifacts | **Shipped** | D127 |
+| docs/60 build defines (M1a) — `@build_const("KEY")` compile-time `String` injection into a module-level `val`, fed by repeatable `lyric build --define KEY=VALUE`; substitution pass (`Lyric.BuildDefines`) runs in `pipeParseAndErase` beside `@cfg` erasure; diagnostics F0030–F0032. **v1: single-file `--target dotnet` only** — project/JVM/native `--define` rejected up front (parity #5852). Well-known defines, manifest `[build.define]`, and `Std.BuildInfo` are follow-ups | **Shipped (M1a)** | docs/60 |
 
 ### Phase 2 — type system completion (complete)
 

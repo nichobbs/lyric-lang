@@ -12,6 +12,7 @@ import Std.Collections
 import Std.File
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.BuildDefines as BD
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
@@ -39,7 +40,8 @@ import Msil.Heaps
 /// returns.  The package name and assembly name are taken from the parsed
 /// `package` declaration in the source.
 pub func compileToMsil(source: in String, outputPath: in String, stdlibSources: in List[String]): Bool {
-  compileToMsilWithVersion(source, outputPath, stdlibSources, "")
+  val noDefines: List[String] = newList()
+  compileToMsilWithVersion(source, outputPath, stdlibSources, "", noDefines)
 }
 
 // Seed lctx.stdCoreResultOk2Row / stdCoreResultErr2Row / stdCoreResultRow from
@@ -79,6 +81,7 @@ pub func compileToMsilWithVersion(
   outputPath: in String,
   stdlibSources: in List[String],
   packageVersion: in String,
+  defines: in List[String],
 ): Bool {
   // Parse + `@cfg` erasure with an empty active set (plus the
   // `target.dotnet` pseudo-feature, D-N-013) — the same semantics a
@@ -87,7 +90,8 @@ pub func compileToMsilWithVersion(
   // stays empty so the F0013 typo guard is off, matching a manifest with
   // no `[features]` table).
   val noCfgFeatures: List[String] = newList()
-  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures) {
+  val decodedDefines = BD.decodeDefines(defines)
+  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines) {
     case Some(f) -> f
     case None -> return false
   }
@@ -469,10 +473,13 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // "per-package symbol tables" recommendation; the old flat
   // accumulation was a known gap tracked as #1195.
   val parsedPkgs: List[ParsedUserPkg] = newList()
+  // Empty until the project path threads --define (#5852); hoisted out of the
+  // per-package loop since it never varies (#5906).
+  val projDefines = BD.decodeDefines(newList())
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]
-    val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures) {
+    val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines) {
       case Some(f) -> f
       case None -> return false
     }

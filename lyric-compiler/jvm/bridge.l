@@ -9,6 +9,7 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 import Std.Console as Console
+import Lyric.BuildDefines as BD
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.TypeChecker
@@ -88,7 +89,8 @@ pub func compileToJar(
   // (docs/59 §5.4; the declared set stays empty so the F0013 typo guard is
   // off, matching a manifest with no `[features]` table).
   val noFeatures: List[String] = newList()
-  val cfgFile = match pipeParseAndErase(source, "jvm", noFeatures, noFeatures) {
+  val jvmDefines = BD.decodeDefines(newList())
+  val cfgFile = match pipeParseAndErase(source, "jvm", noFeatures, noFeatures, jvmDefines) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1021,9 +1023,12 @@ pub func compileProjectToJarBundledWithFeatures(
   val userFiles: List[SourceFile] = newList()
   var mainIdx = 0
   var sawMain = false
+  // Empty until the project path threads --define (#5852); hoisted out of the
+  // per-package loop since it never varies (#5906).
+  val jvmProjDefines = BD.decodeDefines(newList())
   var psi = 0
   while psi < pkgSrcs.count {
-    val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", activeFeatures, declaredFeatures) {
+    val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", activeFeatures, declaredFeatures, jvmProjDefines) {
       case Some(f) -> f
       case None -> return false
     }

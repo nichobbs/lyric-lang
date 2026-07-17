@@ -239,7 +239,10 @@ func runWatchAction(a: in WatchAction): Int {
     case RunFile(sp, ua, t) -> runOnce(sp, ua, t)
     case RunProj(mp, ua, t) -> runProjectOnce(mp, ua, t)
     case BuildProj(mf, o, t, f, nd, af, nr, pv) -> buildProject(mf, o, t, f, nd, af, nr, pv, None)
-    case BuildFile(sp, o, t, m, tr, op, f, nd, af) -> buildOneNativeWithFeatures(sp, o, t, m, tr, op, f, nd, af)
+    case BuildFile(sp, o, t, m, tr, op, f, nd, af) -> {
+      val runDefines: List[String] = newList()
+      buildOneNativeWithFeatures(sp, o, t, m, tr, op, f, nd, af, runDefines)
+    }
   }
 }
 

@@ -49,7 +49,14 @@ func firstPackageNameOf(src: in String): String {
 func emitTestPlain(rewritten: in String, stem: in String, outPath: in String, targetJvm: in Bool): EmitResult {
   val tgt = if targetJvm { Jvm } else { Dotnet }
   Emitter.emit(
-    EmitRequest(source = rewritten, assemblyName = stem, outputPath = outPath, target = tgt, packageVersion = "")
+    EmitRequest(
+      source = rewritten,
+      assemblyName = stem,
+      outputPath = outPath,
+      target = tgt,
+      packageVersion = "",
+      defines = newList()
+    )
   )
 }
 
@@ -63,7 +70,14 @@ func emitTestPlain(rewritten: in String, stem: in String, outPath: in String, ta
 func emitTestNative(rewritten: in String, stem: in String, outPath: in String): EmitResult {
   val noLibs: List[String] = newList()
   Emitter.emitNative(
-    EmitRequest(source = rewritten, assemblyName = stem, outputPath = outPath, target = Native, packageVersion = ""),
+    EmitRequest(
+      source = rewritten,
+      assemblyName = stem,
+      outputPath = outPath,
+      target = Native,
+      packageVersion = "",
+      defines = newList()
+    ),
     "",
     "",
     noLibs

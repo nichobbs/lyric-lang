@@ -403,6 +403,18 @@ func emitSingleFileOrProject(
     return noContributionOutcome(req)
   }
 
+  // docs/60: this build has routed to the project path (a nearby lyric.toml
+  // contributes dependencies/features), which uses EmitProjectRequest and does
+  // not yet thread `--define`. The cmdBuild gate only catches an *explicit*
+  // --manifest / non-dotnet target; an *auto-discovered* manifest reaches here.
+  // Fail rather than silently drop the defines (#5894; parity tracked in #5852).
+  if req.defines.count > 0 {
+    return failedEmitOutcome(
+      sourcePath +
+        ": --define is not applied on a project build (a nearby lyric.toml contributes dependencies/features, routing this through the project path); project-path --define parity is tracked in #5852"
+    )
+  }
+
   val srcs: List[String] = newList()
   srcs.add(req.source)
   val pkgs: List[ProjectPackage] = newList()
@@ -477,6 +489,7 @@ pub func buildOneNative(
   nativeOpt: in String,
 ): Int {
   val noCliFeatures: List[String] = newList()
+  val noCliDefines: List[String] = newList()
   buildOneNativeWithFeatures(
     sourcePath,
     outPath,
@@ -486,7 +499,8 @@ pub func buildOneNative(
     nativeOpt,
     noCliFeatures,
     false,
-    false
+    false,
+    noCliDefines
   )
 }
 
@@ -500,6 +514,7 @@ pub func buildOneNativeWithFeatures(
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
+  cliDefines: in List[String],
 ): Int {
   val buildStart = Time.now()
   var source = match File.readText(sourcePath) {
@@ -534,7 +549,8 @@ pub func buildOneNativeWithFeatures(
     assemblyName = asmName,
     outputPath = outPath,
     target = target,
-    packageVersion = ""
+    packageVersion = "",
+    defines = cliDefines
   )
 
   // var-mutation shape (stage-0 value-position-match lowering gap,
@@ -654,6 +670,9 @@ func cmdBuild(argv: in slice[String]): Int {
   val cliFeatures: List[String] = newList()
   var noDefaultFeatures: Bool = false
   var allFeatures: Bool = false
+  // docs/60 build defines: `--define K=V` (repeatable). Precedence-merged
+  // with well-known defines inside `buildOneNativeWithFeatures`.
+  val cliDefines: List[String] = newList()
   var release: Bool = false
   var ridArg: Option[String] = None
   var noRestore: Bool = false
@@ -710,6 +729,30 @@ func cmdBuild(argv: in slice[String]): Int {
     } else if arg == "--release" {
       release = true
       i += 1
+    } else if arg == "--define" {
+      if i + 1 < argv.length {
+        val kv = argv[i + 1]
+        match Str.indexOf(kv, "=") {
+          case Some(eq) -> {
+            val k = Str.substring(kv, 0, eq)
+            if k.length == 0 {
+              printErr("build: --define requires KEY=VALUE (empty key): " + kv)
+              return 1
+            }
+            // Carry the raw "KEY=VALUE" string; decoded to a Define at the
+            // MSIL bridge (keeps EmitRequest free of a cross-package field).
+            cliDefines.add(kv)
+          }
+          case None -> {
+            printErr("build: --define requires KEY=VALUE, got: " + kv)
+            return 1
+          }
+        }
+        i += 2
+      } else {
+        printErr("build: --define requires a KEY=VALUE argument")
+        return 1
+      }
     } else if arg == "--rid" {
       if i + 1 < argv.length {
         ridArg = Some(value = argv[i + 1])
@@ -841,6 +884,22 @@ func cmdBuild(argv: in slice[String]): Int {
   // silently ignore it on a single-file build (#2048).
   if noRestore and positional.count > 0 {
     printErr("build: warning: --no-restore has no effect without a project manifest")
+  }
+  // docs/60 build defines: `--define` is currently applied only on the
+  // single-file `--target dotnet` compile path (`EmitRequest.defines`).
+  // Reject it up front on the paths where it would otherwise be silently
+  // dropped — project builds, JVM/native, and `--watch` (whose rebuild
+  // action carries no defines) — rather than mislead the user
+  // (project-path + JVM/native parity tracked in #5852).
+  if cliDefines.count > 0 {
+    val singleFileDotnet = match target { case Dotnet -> positional.count > 0; case _ -> false }
+    val hasManifest = match manifestArg { case Some(_) -> true; case None -> false }
+    if (not singleFileDotnet) or hasManifest or watch {
+      printErr(
+        "build: --define is currently supported only for single-file --target dotnet builds without --watch (project/JVM/native/watch parity tracked in #5852)"
+      )
+      return 1
+    }
   }
   // Project-mode: `lyric build --manifest lyric.toml`, or no positional source
   // at all (discover the nearest lyric.toml by walking up from the cwd).
@@ -997,7 +1056,8 @@ func cmdBuild(argv: in slice[String]): Int {
     optArg,
     cliFeatures,
     noDefaultFeatures,
-    allFeatures
+    allFeatures,
+    cliDefines
   )
 }
 

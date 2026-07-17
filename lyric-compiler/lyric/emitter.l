@@ -76,6 +76,14 @@ pub record EmitRequest {
   /// the REPL / direct API use), and the bridge falls back to the
   /// legacy default.  See #1364.
   packageVersion: String
+  /// Resolved build defines (docs/60) as `"KEY=VALUE"` strings. Decoded to
+  /// `Define`s at the MSIL bridge via `BD.decodeDefines` and consumed by
+  /// `@build_const` substitution in `pipeParseAndErase`. **No field default**:
+  /// the seed miscompiles an *omitted* defaulted field when the record is
+  /// constructed from another package (the injected default becomes invalid
+  /// IL at the cross-package call site), so every construction site MUST set
+  /// this explicitly — pass `newList()` when there are no defines.
+  defines: List[String]
 }
 
 pub record EmitResult {
@@ -2424,7 +2432,13 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
       }
     }
   }
-  val ok = MsilBridge.compileToMsilWithVersion(req.source, req.outputPath, stdlibSources, req.packageVersion)
+  val ok = MsilBridge.compileToMsilWithVersion(
+    req.source,
+    req.outputPath,
+    stdlibSources,
+    req.packageVersion,
+    req.defines
+  )
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
