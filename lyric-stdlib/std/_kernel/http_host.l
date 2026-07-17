@@ -11,11 +11,20 @@
 //!
 //! G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
 //! the F# `Lyric.Stdlib.HttpClientHost` shim retires entirely.
-@axiom("System.Net.Http operations conform to their documented .NET contracts")
+//!
+//! TLS client configuration (docs/61-https-tls-http-versions.md §3.2,
+//! D128; phase 1.2, #5877) widens the extern boundary this file audits to
+//! `System.Net.Security` (`SslClientAuthenticationOptions`) and the
+//! `System.Security.Cryptography.X509Certificates` chain-validation
+//! surface (`X509Chain`/`X509ChainPolicy`) — see the "TLS client
+//! configuration" section below for the design rationale.
+@axiom("System.Net.Http and System.Net.Security TLS configuration operations conform to their documented .NET contracts")
 package Std.HttpHost
 
 import Std.Core
 import Std.Task
+import Std.Tls as Tls
+import Std.TlsHost as TlsHost
 
 // =====================================================================
 // Extern types — BCL classes the helpers below reference.  Each one
@@ -450,6 +459,426 @@ pub func hostClientWithUnixSocketAndRedirectsHttp11(socketPath: in String, maxRe
 
 pub func hostClientWithUnixSocketNoRedirectsHttp11(socketPath: in String): HttpClientHandle {
   applyHttp11Exact(buildUnixSocketNonRedirectingClient(socketPath))
+}
+
+// ---------------------------------------------------------------------------
+// TLS client configuration (docs/61 §3.2, D128; phase 1.2, #5877).
+//
+// Real BCL constraint that shaped this section: the natural-looking design
+// — assembling one `SocketsHttpHandler.SslOptions` (`SslClientAuthentication
+// Options`), same as the Unix-socket path above uses `SocketsHttpHandler`
+// for its `ConnectCallback` — does NOT work for certificate validation.
+// `SslClientAuthenticationOptions.RemoteCertificateValidationCallback` is
+// typed as the CUSTOM delegate `System.Net.Security.
+// RemoteCertificateValidationCallback`, not a `Func<...>`. The delegate-
+// bridge FFI (Epic #1877/#3923, D122/docs/50) only constructs `System.Func`/
+// `System.Action` instances at a bridged call site — verified empirically
+// here: binding a Lyric lambda to that property compiles, but throws
+// `MissingMethodException` at run time because the constructed `Func`5`
+// does not match the real (non-`Func`) delegate parameter type. There is no
+// bitwise-OR workaround either (see `sslProtocolsTls13`'s comment on the
+// same class of gap for `SslProtocols`).
+//
+// The fix: `System.Net.Http.HttpClientHandler` (the plain handler this
+// file already uses for the ordinary redirect-only path above) exposes the
+// SAME capabilities as direct, non-nested members whose delegate-typed one
+// genuinely IS `Func<HttpRequestMessage, X509Certificate2, X509Chain,
+// SslPolicyErrors, bool>` — `ServerCertificateCustomValidationCallback` —
+// alongside plain `SslProtocols`/`ClientCertificates` properties with no
+// delegate involved at all. Every TLS option this file can honor routes
+// through `HttpClientHandler`, reusing the SAME `newHandler`/
+// `setAllowAutoRedirect`/`setMaxAutomaticRedirections`/`rawNewClientFromHandler`
+// primitives the plain path already declares above.
+//
+// The one combination this leaves unsupported: Unix domain sockets require
+// `SocketsHttpHandler` (the only handler exposing `ConnectCallback`), whose
+// only certificate-validation hook IS the blocked custom-delegate property.
+// `Std.Http.HttpClientBuilder.build()` treats "Unix socket + any TLS
+// option" as an unsupported combination for exactly this reason (a real
+// BCL/FFI limitation, not a design choice) — tracked in issue #5947 (custom-
+// delegate FFI bridging, an Epic #1877/#3923 follow-up); `minTlsVersion`/
+// `clientIdentity` are needlessly given up too in that combination (they
+// don't actually need the blocked callback) in exchange for a single,
+// simple, honest gate rather than a partially-applied TLS config silently
+// dropping just the CA/insecure-verify pieces.
+//
+// `Certificate`/`Identity` are opaque `Std.Tls` types; this file reaches
+// their underlying `Std.TlsHost.CertHandle` (= `X509Certificate2` on this
+// target) only through the `internal` `rawHandle()` accessors `Std.Tls`
+// itself provides (docs/01-language-reference.md §3.1) — the opaque
+// representation is never cracked from outside its own package.
+//
+// `hostSupportsTlsConfig()` is the capability probe `Std.Http` checks
+// before ever calling `hostClientWithTls`: on this target it is `true`
+// (this section is the real wiring); the JVM twin
+// (`_kernel_jvm/http_host.l`) returns `false` until #5878 ships JVM TLS
+// support, so a TLS-configured client on that target still builds (`build()`
+// stays infallible) but fails every request with a typed error naming
+// #5878 instead of silently connecting without the configured options.
+// ---------------------------------------------------------------------------
+pub func hostSupportsTlsConfig(): Bool {
+  true
+}
+
+extern type SslProtocols = "System.Security.Authentication.SslProtocols"
+
+extern type X509CertificateCollection = "System.Security.Cryptography.X509Certificates.X509CertificateCollection"
+
+extern type X509Certificate2Collection = "System.Security.Cryptography.X509Certificates.X509Certificate2Collection"
+
+extern type X509Chain = "System.Security.Cryptography.X509Certificates.X509Chain"
+
+extern type X509ChainPolicy = "System.Security.Cryptography.X509Certificates.X509ChainPolicy"
+
+extern type X509ChainTrustMode = "System.Security.Cryptography.X509Certificates.X509ChainTrustMode"
+
+extern type SslPolicyErrors = "System.Net.Security.SslPolicyErrors"
+
+extern type X509RevocationMode = "System.Security.Cryptography.X509Certificates.X509RevocationMode"
+
+@externInstance
+@externTarget("System.Net.Http.HttpClientHandler.set_SslProtocols")
+func handlerSetSslProtocols(h: in HttpClientHandler, p: in SslProtocols): Unit = ()
+
+// Only the `Tls13`-exact pin ever sets `SslProtocols` explicitly.
+// `SslProtocols` is a `[Flags]` enum with no bitwise-OR method in its
+// metadata (C#'s `|` on enums lowers straight to an IL `or` over the
+// underlying int with no callable member; there is no `Tls12AndTls13`
+// named constant to bind to instead), so combining `Tls12 | Tls13` via
+// this file's `@externTarget("Type.STATIC_FIELD")` idiom is not available
+// without a second, riskier FFI capability this change does not need:
+// leaving `SslProtocols` at its default (`SslProtocols.None`, "let the
+// platform decide") already means "TLS 1.2 or newer" on every current
+// .NET 10 target platform — there is no TLS version between 1.2 and 1.3
+// for the default to wrongly admit, and .NET has not negotiated below
+// TLS 1.2 by default since long before this module shipped. Explicitly
+// pinning `Tls12` alone would be WRONG (it would exclude 1.3), so the
+// floor case and the unset case both take the "leave it alone" branch.
+@externTarget("System.Security.Authentication.SslProtocols.Tls13")
+func sslProtocolsTls13(): SslProtocols = ()
+
+@externInstance
+@externTarget("System.Net.Http.HttpClientHandler.get_ClientCertificates")
+func handlerClientCertificates(h: in HttpClientHandler): X509CertificateCollection = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509CertificateCollection.Add")
+func certCollectionAdd(c: in X509CertificateCollection, cert: in TlsHost.CertHandle): Int = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509Certificate2Collection.Add")
+func x2CollectionAdd(c: in X509Certificate2Collection, cert: in TlsHost.CertHandle): Int = ()
+
+@externTarget("System.Security.Cryptography.X509Certificates.X509Chain..ctor")
+func newX509Chain(): X509Chain = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509Chain.get_ChainPolicy")
+func chainPolicyOf(c: in X509Chain): X509ChainPolicy = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509ChainPolicy.set_TrustMode")
+func chainPolicySetTrustMode(p: in X509ChainPolicy, m: in X509ChainTrustMode): Unit = ()
+
+@externTarget("System.Security.Cryptography.X509Certificates.X509ChainTrustMode.CustomRootTrust")
+func chainTrustModeCustomRoot(): X509ChainTrustMode = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509ChainPolicy.get_CustomTrustStore")
+func chainPolicyCustomTrustStoreOf(p: in X509ChainPolicy): X509Certificate2Collection = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509ChainPolicy.set_RevocationMode")
+func chainPolicySetRevocationMode(p: in X509ChainPolicy, m: in X509RevocationMode): Unit = ()
+
+// Matches `HttpClientHandler`'s own default (`CheckCertificateRevocationList
+// = false`, i.e. no revocation check) so configuring a TLS option does not
+// silently start an online OCSP/CRL check as a side effect (#5952) — that
+// would add unexpected latency, or hang outright, against a peer whose
+// revocation endpoint is unreachable (notably the air-gapped/restricted-
+// egress service-mesh case `withExclusiveCaCertificate` targets).
+@externTarget("System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck")
+func revocationModeNoCheck(): X509RevocationMode = ()
+
+// The two `SslPolicyErrors` values `applyTlsOptions`'s validation callback
+// checks against via plain `==` (a `ceq` over the enum's underlying int
+// representation — no FFI method call, so the no-bitwise-op-in-FFI gap
+// `sslProtocolsTls13`'s comment documents does not apply to equality
+// checks against a SPECIFIC known value, only to combining/decomposing
+// flags generically).
+@externTarget("System.Net.Security.SslPolicyErrors.None")
+func sslPolicyErrorsNone(): SslPolicyErrors = ()
+
+@externTarget("System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors")
+func sslPolicyErrorsChainErrorsOnly(): SslPolicyErrors = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509Chain.Build")
+func chainBuild(c: in X509Chain, cert: in TlsHost.CertHandle): Bool = ()
+
+// `X509Chain` implements `IDisposable` and holds a native certificate-chain-
+// engine handle; `Dispose()` releases it immediately instead of waiting for
+// GC finalization (#5972) — the same discipline `Std.Json`'s
+// `hostDisposeJson`/`Std.ProcessHost`'s `hostDisposeProc` already establish
+// for other `IDisposable` BCL resources reached through this kernel tree.
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509Chain.Dispose")
+func chainDispose(c: in X509Chain): Unit = ()
+
+@externInstance
+@externTarget("System.Net.Http.HttpClientHandler.set_ServerCertificateCustomValidationCallback")
+func handlerSetValidationCallback(
+  h: in HttpClientHandler,
+  cb: in (HttpRequestMessage, TlsHost.CertHandle, X509Chain, SslPolicyErrors) -> Bool,
+): Unit = ()
+
+// Builds a FRESH chain with `TrustMode = CustomRootTrust` (ONLY `ca` is a
+// trusted root — the platform trust store is not consulted),
+// `RevocationMode = NoCheck` (#5952), and validates `cert` against it.
+// Used directly for `withExclusiveCaCertificate` (replaces platform trust
+// unconditionally) and as the fallback for `withCaCertificate` (additive:
+// only reached once the platform's own chain validation, reported via
+// `sslPolicyErrors`, has already failed).
+//
+// `chain` is disposed via `defer` (#5972) so the native chain-engine handle
+// is released as soon as this function returns, on both the accept and
+// reject paths (`chainBuild`'s own result is what the function returns —
+// `defer` runs after that value is computed, before control actually
+// leaves the function, same as `Std.Json`'s `lyricJsonGet*` helpers).
+func buildCustomChain(cert: in TlsHost.CertHandle, ca: in Tls.Certificate): Bool {
+  val chain = newX509Chain()
+  defer {
+    chainDispose(chain)
+  }
+  val policy = chainPolicyOf(chain)
+  chainPolicySetTrustMode(policy, chainTrustModeCustomRoot())
+  chainPolicySetRevocationMode(policy, revocationModeNoCheck())
+  val _ = x2CollectionAdd(chainPolicyCustomTrustStoreOf(policy), ca.rawHandle())
+  chainBuild(chain, cert)
+}
+
+// Which CA-trust option (if any) is configured — the third input to
+// `resolveTlsValidationDecision` below. Kept as its own tiny enum rather
+// than passing `Option[Tls.Certificate]` twice into a pure function so
+// that function stays entirely extern-type-free (directly testable from
+// any package, no `Std.Tls` dependency needed for the test).
+pub enum TlsCaMode {
+  case NoCaConfigured
+  case AdditiveCa
+  case ExclusiveCa
+}
+
+/// Precedence rule when both `withCaCertificate` and
+/// `withExclusiveCaCertificate` are configured on the same builder
+/// (#5975): `exclusiveCaCertificate` always wins, unconditionally — the
+/// stricter, service-mesh intent takes priority over the additive one,
+/// and call-site order never matters (a builder's fields are set
+/// independently; whichever `with*` call happened last does not change
+/// this precedence). Documented on both `with*` methods' doc comments in
+/// `Std.Http`; extracted here (rather than left inline in
+/// `applyTlsOptions`) so the rule itself is directly testable.
+@pure
+pub func resolveCaMode(caCertificate: in Option[Tls.Certificate], exclusiveCaCertificate: in Option[Tls.Certificate]): TlsCaMode {
+  match exclusiveCaCertificate {
+    case Some(_) -> ExclusiveCa
+    case None -> match caCertificate {
+      case Some(_) -> AdditiveCa
+      case None -> NoCaConfigured
+    }
+  }
+}
+
+/// What the validation callback should do once it has decided whether the
+/// platform-reported result is even eligible for this callback to act on.
+pub enum TlsValidationDecision {
+  case RejectImmediately
+  case AcceptWithoutCustomChain
+  case TryCustomChain
+}
+
+/// Pure decision core for the `ServerCertificateCustomValidationCallback`
+/// installed below (docs/61 §3.2; #5877, MITM fix #5950).
+///
+/// `hostnameAndAvailabilityOk` must be `false` whenever the platform's own
+/// `SslPolicyErrors` carried `RemoteCertificateNameMismatch` or
+/// `RemoteCertificateNotAvailable`, in ANY combination — see
+/// `applyTlsOptions`'s call site for how that's derived. This function
+/// does not know or care WHY it's false, only that once it is,
+/// `RejectImmediately` is the only possible outcome regardless of
+/// `chainAlreadyOk` or `caMode`: no chain-trust configuration, however
+/// permissive, can ever paper over a hostname mismatch or an absent
+/// certificate. This is the exact property #5950 was filed against (the
+/// original callback re-ran ONLY a chain check and never looked at
+/// hostname at all) and the property `http_tls_client_tests.l`'s
+/// `resolveTlsValidationDecision` regression test asserts exhaustively.
+///
+/// Once hostname+availability are confirmed fine: an exclusive CA always
+/// re-validates against ONLY that CA (`TryCustomChain`), even when the
+/// platform already trusted the chain via the platform store — exclusive
+/// means the platform's own trust conclusion never counts. An additive CA
+/// accepts the platform's own verdict directly when the chain was already
+/// fine (`AcceptWithoutCustomChain`), and only asks for the custom-CA
+/// fallback when the platform's chain check failed
+/// (`TryCustomChain`). With no CA configured (only reachable when
+/// `insecureSkipVerify` installed this callback but its own short-circuit
+/// at the call site didn't fire — never in practice), this mirrors the
+/// platform's own chain verdict directly.
+@pure
+pub func resolveTlsValidationDecision(
+  hostnameAndAvailabilityOk: in Bool, chainAlreadyOk: in Bool, caMode: in TlsCaMode
+): TlsValidationDecision {
+  if not hostnameAndAvailabilityOk {
+    RejectImmediately
+  } else {
+    match caMode {
+      case ExclusiveCa -> TryCustomChain
+      case AdditiveCa ->
+        if chainAlreadyOk {
+          AcceptWithoutCustomChain
+        } else {
+          TryCustomChain
+        }
+      case NoCaConfigured ->
+        if chainAlreadyOk {
+          AcceptWithoutCustomChain
+        } else {
+          RejectImmediately
+        }
+    }
+  }
+}
+
+// Assembles TLS options directly on `handler` (module header: no separate
+// options object on this path — every property here is either a plain
+// `HttpClientHandler` property or, for the validation callback, a genuine
+// `Func<...>`-typed one). The validation callback is installed only when
+// it can change the outcome (`insecureSkipVerify`, or a configured CA) —
+// with neither, the platform's ordinary validation already applies and
+// needs no override.
+//
+// The callback itself is written as a lambda LITERAL directly at the
+// `handlerSetValidationCallback` call site, not built by a separate
+// function and passed in: the delegate-bridge FFI boundary (Epic #1877/
+// #3923, F0026) requires the argument bound to a real .NET delegate type
+// to be a lambda literal at the call site itself — binding it to a `val`
+// or returning it from a helper function first is rejected at compile
+// time. `insecureSkipVerify`/`caCertificate`/`exclusiveCaCertificate` are
+// ordinary closure captures (unaffected by that constraint, which is
+// specifically about the ARGUMENT EXPRESSION shape, not about capturing).
+// Calling a plain function FROM WITHIN the lambda body (as this one calls
+// `resolveTlsValidationDecision`) is unaffected too — F0026 is about what
+// the lambda ITSELF is bound to, not what its body does.
+//
+// #5950 (MITM fix): installing this callback disables .NET's OWN
+// hostname check entirely — the runtime still RUNS it (and its own chain
+// validation) before invoking the callback, but only reports the combined
+// result via `sslPolicyErrors`; it is this callback's job to honor that
+// result, not just the chain half of it. `hostnameAndAvailabilityOk`
+// below is `true` only for exactly `SslPolicyErrors.None` (everything
+// passed) or exactly `RemoteCertificateChainErrors` (ONLY the chain
+// failed — hostname and cert-presence were both fine); every other value
+// — `RemoteCertificateNameMismatch` or `RemoteCertificateNotAvailable`,
+// alone or combined with a chain error — makes it `false`, and
+// `resolveTlsValidationDecision` above then rejects unconditionally
+// before any CA logic runs, so a certificate valid-by-chain but issued
+// for the wrong host is never accepted. This is a plain `==` (`ceq` over
+// the enum's underlying int) against a SPECIFIC known value, not a
+// bitwise decompose/combine, so it needs no FFI capability beyond what
+// `sslPolicyErrorsNone`/`sslPolicyErrorsChainErrorsOnly`'s comment
+// already covers.
+//
+// `insecureSkipVerify` (already resolved through the dual-key policy by
+// `Std.Http` before this is ever called) short-circuits to `true`
+// unconditionally BEFORE any of the above runs — the "nuclear option,"
+// which deliberately skips the hostname check too, matching docs/61 §4
+// ("disables peer chain verification and hostname matching together").
+func applyTlsOptions(
+  handler: in HttpClientHandler,
+  caCertificate: in Option[Tls.Certificate],
+  exclusiveCaCertificate: in Option[Tls.Certificate],
+  clientIdentity: in Option[Tls.Identity],
+  minTlsVersion: in Option[Tls.TlsVersion],
+  insecureSkipVerify: in Bool,
+): Unit {
+  match minTlsVersion {
+    case Some(v) -> match v {
+      case Tls13 -> handlerSetSslProtocols(handler, sslProtocolsTls13())
+      case Tls12 -> ()
+    }
+    case None -> ()
+  }
+  match clientIdentity {
+    case Some(identity) -> {
+      val _ = certCollectionAdd(handlerClientCertificates(handler), identity.rawHandle())
+    }
+    case None -> ()
+  }
+  val caMode = resolveCaMode(caCertificate, exclusiveCaCertificate)
+  val needsCallback = insecureSkipVerify or isSome(caCertificate) or isSome(exclusiveCaCertificate)
+  if needsCallback {
+    handlerSetValidationCallback(
+      handler,
+      {
+        request: HttpRequestMessage, cert: TlsHost.CertHandle, chain: X509Chain, sslPolicyErrors: SslPolicyErrors ->
+          if insecureSkipVerify {
+            true
+          } else {
+            val hostnameAndAvailabilityOk =
+              sslPolicyErrors == sslPolicyErrorsNone() or sslPolicyErrors == sslPolicyErrorsChainErrorsOnly()
+            val chainAlreadyOk = sslPolicyErrors == sslPolicyErrorsNone()
+            match resolveTlsValidationDecision(hostnameAndAvailabilityOk, chainAlreadyOk, caMode) {
+              case RejectImmediately -> false
+              case AcceptWithoutCustomChain -> true
+              case TryCustomChain -> match exclusiveCaCertificate {
+                case Some(ca) -> buildCustomChain(cert, ca)
+                case None -> match caCertificate {
+                  case Some(ca) -> buildCustomChain(cert, ca)
+                  case None -> false
+                }
+              }
+            }
+          }
+      }
+    )
+  }
+}
+
+// The single entry point for every TLS-configured client — `Std.Http`
+// calls this only when `socketPath` is unset (module header: Unix sockets
+// and TLS options don't compose on this target today), so this always
+// builds through `HttpClientHandler`, never `SocketsHttpHandler`. Reuses
+// the existing `newHandler`/`setAllowAutoRedirect`/
+// `setMaxAutomaticRedirections`/`rawNewClientFromHandler` primitives and
+// the `applyHttp11Exact`/`applyHttp2OrLower` one-`apply*`-call discipline,
+// so a TLS-configured client is version-stamped exactly once, same as
+// every other client this file constructs.
+pub func hostClientWithTls(
+  maxRedirects: in Option[Int],
+  noRedirects: in Bool,
+  pinHttp11: in Bool,
+  caCertificate: in Option[Tls.Certificate],
+  exclusiveCaCertificate: in Option[Tls.Certificate],
+  clientIdentity: in Option[Tls.Identity],
+  minTlsVersion: in Option[Tls.TlsVersion],
+  insecureSkipVerify: in Bool,
+): HttpClientHandle {
+  val handler = newHandler()
+  if noRedirects {
+    setAllowAutoRedirect(handler, false)
+  } else {
+    setAllowAutoRedirect(handler, true)
+    match maxRedirects {
+      case Some(n) -> setMaxAutomaticRedirections(handler, n)
+      case None -> ()
+    }
+  }
+  applyTlsOptions(handler, caCertificate, exclusiveCaCertificate, clientIdentity, minTlsVersion, insecureSkipVerify)
+  val raw = rawNewClientFromHandler(handler)
+  if pinHttp11 {
+    applyHttp11Exact(raw)
+  } else {
+    applyHttp2OrLower(raw)
+  }
 }
 
 // `ResponseHeader` (#5568): native Lyric over `HttpHeaders.Contains` +

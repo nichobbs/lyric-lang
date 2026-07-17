@@ -6,9 +6,13 @@
 @runtime_checked
 package Std.Http
 
+import Std.Console
+import Std.Core
+import Std.Environment
 import Std.Errors
 import Std.HttpHost as HostHttp
 import Std.Task
+import Std.Tls
 
 // ---------------------------------------------------------------------------
 // HTTP request and response types.
@@ -312,12 +316,27 @@ pub record HttpClientBuilder {
   maxRedirects: Option[Int]
   noRedirects: Bool
   httpVersion: Option[HttpVersion]
+  caCertificate: Option[Certificate]
+  exclusiveCaCertificate: Option[Certificate]
+  clientIdentity: Option[Identity]
+  minTlsVersion: Option[TlsVersion]
+  insecureSkipVerify: Bool
 }
 
 /// Construct a default builder (TCP transport, redirect-following, process-wide singleton).
 @stable(since = "1.1")
 pub func HttpClientBuilder.new(): HttpClientBuilder {
-  HttpClientBuilder(socketPath = None, maxRedirects = None, noRedirects = false, httpVersion = None)
+  HttpClientBuilder(
+    socketPath = None,
+    maxRedirects = None,
+    noRedirects = false,
+    httpVersion = None,
+    caCertificate = None,
+    exclusiveCaCertificate = None,
+    clientIdentity = None,
+    minTlsVersion = None,
+    insecureSkipVerify = false
+  )
 }
 
 /// Route all requests through the Unix domain socket at `path`.
@@ -332,7 +351,12 @@ pub func HttpClientBuilder.withUnixSocket(b: in HttpClientBuilder, path: in Stri
     socketPath = Some(value = path),
     maxRedirects = b.maxRedirects,
     noRedirects = b.noRedirects,
-    httpVersion = b.httpVersion
+    httpVersion = b.httpVersion,
+    caCertificate = b.caCertificate,
+    exclusiveCaCertificate = b.exclusiveCaCertificate,
+    clientIdentity = b.clientIdentity,
+    minTlsVersion = b.minTlsVersion,
+    insecureSkipVerify = b.insecureSkipVerify
   )
 }
 
@@ -345,14 +369,29 @@ pub func HttpClientBuilder.withRedirects(b: in HttpClientBuilder, max: in Int): 
     socketPath = b.socketPath,
     maxRedirects = Some(value = max),
     noRedirects = false,
-    httpVersion = b.httpVersion
+    httpVersion = b.httpVersion,
+    caCertificate = b.caCertificate,
+    exclusiveCaCertificate = b.exclusiveCaCertificate,
+    clientIdentity = b.clientIdentity,
+    minTlsVersion = b.minTlsVersion,
+    insecureSkipVerify = b.insecureSkipVerify
   )
 }
 
 /// Do not follow redirects.  3xx responses are returned to the caller as-is.
 @stable(since = "1.1")
 pub func HttpClientBuilder.withNoRedirects(b: in HttpClientBuilder): HttpClientBuilder {
-  HttpClientBuilder(socketPath = b.socketPath, maxRedirects = None, noRedirects = true, httpVersion = b.httpVersion)
+  HttpClientBuilder(
+    socketPath = b.socketPath,
+    maxRedirects = None,
+    noRedirects = true,
+    httpVersion = b.httpVersion,
+    caCertificate = b.caCertificate,
+    exclusiveCaCertificate = b.exclusiveCaCertificate,
+    clientIdentity = b.clientIdentity,
+    minTlsVersion = b.minTlsVersion,
+    insecureSkipVerify = b.insecureSkipVerify
+  )
 }
 
 /// Set the negotiated HTTP protocol version. See `HttpVersion` for the
@@ -364,16 +403,217 @@ pub func HttpClientBuilder.withHttpVersion(b: in HttpClientBuilder, version: in 
     socketPath = b.socketPath,
     maxRedirects = b.maxRedirects,
     noRedirects = b.noRedirects,
-    httpVersion = Some(value = version)
+    httpVersion = Some(value = version),
+    caCertificate = b.caCertificate,
+    exclusiveCaCertificate = b.exclusiveCaCertificate,
+    clientIdentity = b.clientIdentity,
+    minTlsVersion = b.minTlsVersion,
+    insecureSkipVerify = b.insecureSkipVerify
+  )
+}
+
+/// Add `cert` as an ADDITIONAL trust root alongside the platform trust
+/// store (docs/61 §3.2) — the common "internal CA plus public internet"
+/// case. See `withExclusiveCaCertificate` for the trust-REPLACING variant;
+/// the two have distinct names precisely so the more dangerous semantics
+/// is visible at the call site.
+///
+/// **Precedence when both are configured on the same builder:**
+/// `withExclusiveCaCertificate` always wins — the stricter, service-mesh
+/// intent takes priority, and a `cert` passed here is silently discarded
+/// (call-site order does not matter either way). Configure only one of
+/// the two on a given builder; combining them is legal but the additive
+/// certificate never takes effect.
+///
+/// Not supported yet on `--target jvm` (tracked in #5878): `build()` still
+/// succeeds, but every request through the resulting client fails with a
+/// typed `ConnectionFailed` naming that issue. Check `tlsConfigSupported()`
+/// to detect this ahead of time.
+@stable(since = "1.2")
+pub func HttpClientBuilder.withCaCertificate(b: in HttpClientBuilder, cert: in Certificate): HttpClientBuilder {
+  HttpClientBuilder(
+    socketPath = b.socketPath,
+    maxRedirects = b.maxRedirects,
+    noRedirects = b.noRedirects,
+    httpVersion = b.httpVersion,
+    caCertificate = Some(value = cert),
+    exclusiveCaCertificate = b.exclusiveCaCertificate,
+    clientIdentity = b.clientIdentity,
+    minTlsVersion = b.minTlsVersion,
+    insecureSkipVerify = b.insecureSkipVerify
+  )
+}
+
+/// REPLACE the platform trust store entirely with `cert` (docs/61 §3.2) —
+/// the service-mesh case, where a peer's certificate is signed by a
+/// private CA and public-internet trust should not apply at all. See
+/// `withCaCertificate` for the additive variant.
+///
+/// **Precedence:** if `withCaCertificate` was also called on this
+/// builder, THIS wins unconditionally — see its doc comment for the full
+/// rule.
+///
+/// Same JVM support boundary as `withCaCertificate` (#5878).
+@stable(since = "1.2")
+pub func HttpClientBuilder.withExclusiveCaCertificate(b: in HttpClientBuilder, cert: in Certificate): HttpClientBuilder {
+  HttpClientBuilder(
+    socketPath = b.socketPath,
+    maxRedirects = b.maxRedirects,
+    noRedirects = b.noRedirects,
+    httpVersion = b.httpVersion,
+    caCertificate = b.caCertificate,
+    exclusiveCaCertificate = Some(value = cert),
+    clientIdentity = b.clientIdentity,
+    minTlsVersion = b.minTlsVersion,
+    insecureSkipVerify = b.insecureSkipVerify
+  )
+}
+
+/// Present `identity` as this client's own certificate for mutual TLS
+/// (docs/61 §3.2).
+///
+/// Same JVM support boundary as `withCaCertificate` (#5878).
+@stable(since = "1.2")
+pub func HttpClientBuilder.withClientIdentity(b: in HttpClientBuilder, identity: in Identity): HttpClientBuilder {
+  HttpClientBuilder(
+    socketPath = b.socketPath,
+    maxRedirects = b.maxRedirects,
+    noRedirects = b.noRedirects,
+    httpVersion = b.httpVersion,
+    caCertificate = b.caCertificate,
+    exclusiveCaCertificate = b.exclusiveCaCertificate,
+    clientIdentity = Some(value = identity),
+    minTlsVersion = b.minTlsVersion,
+    insecureSkipVerify = b.insecureSkipVerify
+  )
+}
+
+/// Set the minimum negotiated TLS protocol version (docs/61 §3.2).
+/// `Std.Tls.TlsVersion`'s floor is TLS 1.2 — there is no way to configure
+/// anything older.
+///
+/// Same JVM support boundary as `withCaCertificate` (#5878).
+@stable(since = "1.2")
+pub func HttpClientBuilder.withMinTlsVersion(b: in HttpClientBuilder, version: in TlsVersion): HttpClientBuilder {
+  HttpClientBuilder(
+    socketPath = b.socketPath,
+    maxRedirects = b.maxRedirects,
+    noRedirects = b.noRedirects,
+    httpVersion = b.httpVersion,
+    caCertificate = b.caCertificate,
+    exclusiveCaCertificate = b.exclusiveCaCertificate,
+    clientIdentity = b.clientIdentity,
+    minTlsVersion = Some(value = version),
+    insecureSkipVerify = b.insecureSkipVerify
+  )
+}
+
+/// Request that TLS certificate verification be disabled for this client
+/// (docs/61 §4, D128 decision 2).
+///
+/// **This alone does NOT disable verification.** Per the dual-key policy,
+/// the environment variable `LYRIC_TLS_ALLOW_INSECURE=1` must ALSO be set
+/// at `build()` time:
+///
+/// | This called? | Env var set? | Effect |
+/// |---|---|---|
+/// | no | no | Verification enabled (secure default) |
+/// | no | yes | Verification enabled — env var alone is a no-op |
+/// | yes | no | Verification enabled, plus a one-time stderr warning |
+/// | yes | yes | Verification disabled for this client only |
+///
+/// Never use in production. Same JVM support boundary as
+/// `withCaCertificate` (#5878).
+@stable(since = "1.2")
+pub func HttpClientBuilder.withInsecureSkipVerify(b: in HttpClientBuilder): HttpClientBuilder {
+  HttpClientBuilder(
+    socketPath = b.socketPath,
+    maxRedirects = b.maxRedirects,
+    noRedirects = b.noRedirects,
+    httpVersion = b.httpVersion,
+    caCertificate = b.caCertificate,
+    exclusiveCaCertificate = b.exclusiveCaCertificate,
+    clientIdentity = b.clientIdentity,
+    minTlsVersion = b.minTlsVersion,
+    insecureSkipVerify = true
+  )
+}
+
+/// Whether this compilation target's kernel can honor
+/// `HttpClientBuilder`'s TLS options (`withCaCertificate`,
+/// `withExclusiveCaCertificate`, `withClientIdentity`,
+/// `withMinTlsVersion`, `withInsecureSkipVerify`; docs/61 §3.2).
+///
+/// `true` on `--target dotnet`. `false` on `--target jvm` until #5878
+/// ships JVM TLS wiring — `build()` still succeeds on a TLS-configured
+/// builder either way (stays infallible), but on that target every
+/// request through the resulting client fails with a typed
+/// `ConnectionFailed` naming #5878 instead of silently connecting without
+/// the configured options.
+@stable(since = "1.2")
+pub func tlsConfigSupported(): Bool {
+  HostHttp.hostSupportsTlsConfig()
+}
+
+func hasTlsOptions(b: in HttpClientBuilder): Bool {
+  isSome(b.caCertificate)
+    or isSome(b.exclusiveCaCertificate)
+    or isSome(b.clientIdentity)
+    or isSome(b.minTlsVersion)
+    or b.insecureSkipVerify
+}
+
+/// Outcome of resolving the dual-key insecure-verify policy (docs/61 §4,
+/// D128 decision 2) from its two independent inputs. Exposed as `pub`
+/// (rather than kept an internal `build()` implementation detail) for two
+/// reasons: it makes the pure resolution logic directly unit-testable
+/// without mutating the process environment, and the same policy governs
+/// `Std.Tls.TlsServerConfig`'s future `insecureSkipClientVerify` (docs/61
+/// §4) — server-side TLS code can reuse this instead of re-deriving it.
+@stable(since = "1.2")
+pub enum InsecureVerifyPolicy {
+  case VerificationEnabled
+  case VerificationEnabledWarn
+  case VerificationDisabled
+}
+
+/// Pure resolution of the dual-key policy matrix (docs/61 §4 — the exact
+/// table `withInsecureSkipVerify`'s doc comment reproduces). Both inputs
+/// are read once, at `build()` time.
+@pure
+@stable(since = "1.2")
+pub func resolveInsecureVerifyPolicy(codeOptIn: in Bool, envAllows: in Bool): InsecureVerifyPolicy {
+  if not codeOptIn {
+    VerificationEnabled
+  } else if envAllows {
+    VerificationDisabled
+  } else {
+    VerificationEnabledWarn
+  }
+}
+
+val insecureAllowEnvVar: String = "LYRIC_TLS_ALLOW_INSECURE"
+
+// Read once, at build() time (docs/61 §4: "The env var is read at client
+// build time, not per request").
+func envAllowsInsecure(): Bool {
+  getVarOrDefault(insecureAllowEnvVar, "") == "1"
+}
+
+func warnInsecureVerifyRequestedWithoutEnv(): Unit {
+  error(
+    "[Std.Http] warning: withInsecureSkipVerify() requested but " + insecureAllowEnvVar +
+      " is not set; TLS certificate verification remains ENABLED."
   )
 }
 
 /// Build the configured `HttpClient`.
 ///
-/// Stays infallible even when `httpVersion` is `Http3` (see
-/// `HttpVersion`'s doc comment): the returned client is fully
-/// constructed, but every operation on it fails with a typed
-/// `ConnectionFailed` naming the unsupported version.
+/// Stays infallible even when `httpVersion` is `Http3`, or when TLS
+/// options are configured on a target that does not support them yet
+/// (see `HttpVersion`'s doc comment and `tlsConfigSupported()`): the
+/// returned client is fully constructed, but every operation on it fails
+/// with a typed `ConnectionFailed` naming the unsupported feature.
 @stable(since = "1.1")
 pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
   // Unwrap `Option[HttpVersion]` to a plain `HttpVersion` (defaulting the
@@ -392,61 +632,123 @@ pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
     case Http2 -> false
     case Http3 -> false
   }
-  val handle = match b.socketPath {
-    case Some(path) ->
-      if b.noRedirects {
-        if pinHttp11 {
-          HostHttp.hostClientWithUnixSocketNoRedirectsHttp11(path)
-        } else {
-          HostHttp.hostClientWithUnixSocketNoRedirects(path)
-        }
-      } else {
-        match b.maxRedirects {
-          case Some(n) ->
-            if pinHttp11 {
-              HostHttp.hostClientWithUnixSocketAndRedirectsHttp11(path, n)
-            } else {
-              HostHttp.hostClientWithUnixSocketAndRedirects(path, n)
-            }
-          case None ->
-            if pinHttp11 {
-              HostHttp.hostClientWithUnixSocketHttp11(path)
-            } else {
-              HostHttp.hostClientWithUnixSocket(path)
-            }
-        }
-      }
-    case None ->
-      if b.noRedirects {
-        if pinHttp11 {
-          HostHttp.hostClientNoRedirectsHttp11()
-        } else {
-          HostHttp.hostClientNoRedirects()
-        }
-      } else {
-        match b.maxRedirects {
-          case Some(n) ->
-            if pinHttp11 {
-              HostHttp.hostClientWithRedirectsHttp11(n)
-            } else {
-              HostHttp.hostClientWithRedirects(n)
-            }
-          case None ->
-            if pinHttp11 {
-              HostHttp.hostClientHttp11()
-            } else {
-              HostHttp.hostDefaultClient()
-            }
-        }
-      }
+
+  // Dual-key insecure-verify policy (docs/61 §4) — resolved once, here,
+  // before any kernel construction.
+  val insecurePolicy = resolveInsecureVerifyPolicy(b.insecureSkipVerify, envAllowsInsecure())
+  match insecurePolicy {
+    case VerificationEnabledWarn -> warnInsecureVerifyRequestedWithoutEnv()
+    case VerificationEnabled -> ()
+    case VerificationDisabled -> ()
   }
-  val unsupportedReason = match version {
+  val effectiveInsecureSkipVerify = match insecurePolicy {
+    case VerificationDisabled -> true
+    case VerificationEnabled -> false
+    case VerificationEnabledWarn -> false
+  }
+
+  val hasTls = hasTlsOptions(b)
+  val tlsSupported = HostHttp.hostSupportsTlsConfig()
+  // Unix sockets and TLS options don't compose on `--target dotnet` today
+  // (see `_kernel/http_host.l`'s TLS section header: Unix sockets require
+  // `SocketsHttpHandler`, whose only certificate-validation hook is a
+  // custom .NET delegate type the current FFI delegate-bridge cannot bind
+  // to). Gated on `tlsSupported` so this dotnet-specific reason never
+  // shadows the plain "unsupported on this target" (#5878) reason on a
+  // target (jvm) where TLS is unsupported regardless of Unix sockets.
+  // `hostClientWithTls` is therefore only ever called when there is no
+  // socket path at all.
+  val unixSocketBlocksTls = isSome(b.socketPath) and hasTls and tlsSupported
+  val tlsHandledByKernel = hasTls and tlsSupported and not unixSocketBlocksTls
+
+  val handle = if tlsHandledByKernel {
+    HostHttp.hostClientWithTls(
+      b.maxRedirects,
+      b.noRedirects,
+      pinHttp11,
+      b.caCertificate,
+      b.exclusiveCaCertificate,
+      b.clientIdentity,
+      b.minTlsVersion,
+      effectiveInsecureSkipVerify
+    )
+  } else {
+    match b.socketPath {
+      case Some(path) ->
+        if b.noRedirects {
+          if pinHttp11 {
+            HostHttp.hostClientWithUnixSocketNoRedirectsHttp11(path)
+          } else {
+            HostHttp.hostClientWithUnixSocketNoRedirects(path)
+          }
+        } else {
+          match b.maxRedirects {
+            case Some(n) ->
+              if pinHttp11 {
+                HostHttp.hostClientWithUnixSocketAndRedirectsHttp11(path, n)
+              } else {
+                HostHttp.hostClientWithUnixSocketAndRedirects(path, n)
+              }
+            case None ->
+              if pinHttp11 {
+                HostHttp.hostClientWithUnixSocketHttp11(path)
+              } else {
+                HostHttp.hostClientWithUnixSocket(path)
+              }
+          }
+        }
+      case None ->
+        if b.noRedirects {
+          if pinHttp11 {
+            HostHttp.hostClientNoRedirectsHttp11()
+          } else {
+            HostHttp.hostClientNoRedirects()
+          }
+        } else {
+          match b.maxRedirects {
+            case Some(n) ->
+              if pinHttp11 {
+                HostHttp.hostClientWithRedirectsHttp11(n)
+              } else {
+                HostHttp.hostClientWithRedirects(n)
+              }
+            case None ->
+              if pinHttp11 {
+                HostHttp.hostClientHttp11()
+              } else {
+                HostHttp.hostDefaultClient()
+              }
+          }
+        }
+    }
+  }
+
+  val http3UnsupportedReason = match version {
     case Http3 ->
       Some(
         value = "HTTP/3 is not supported on this target yet (see #5874 / docs/61-https-tls-http-versions.md Q-TLS-002)"
       )
     case Http11 -> None
     case Http2 -> None
+  }
+  val tlsUnsupportedReason = if unixSocketBlocksTls {
+    Some(
+      value = "TLS client configuration combined with withUnixSocket is not supported yet on this target " +
+        "(SslClientAuthenticationOptions.RemoteCertificateValidationCallback is a custom .NET delegate type " +
+        "the current FFI delegate-bridge cannot bind to); see issue #5947"
+    )
+  } else if hasTls and not tlsSupported {
+    Some(
+      value = "TLS client configuration (withCaCertificate/withExclusiveCaCertificate/withClientIdentity/" +
+        "withMinTlsVersion/withInsecureSkipVerify) is not supported yet on this target; see issue #5878 " +
+        "(docs/61-https-tls-http-versions.md phase 1.3)"
+    )
+  } else {
+    None
+  }
+  val unsupportedReason = match http3UnsupportedReason {
+    case Some(_) -> http3UnsupportedReason
+    case None -> tlsUnsupportedReason
   }
   HttpClientImpl(handle = handle, unsupportedReason = unsupportedReason)
 }

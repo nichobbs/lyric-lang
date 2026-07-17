@@ -99,12 +99,16 @@ output_assembly = "Lyric.Stdlib.dll"
 # binary resolves those tokens at compile time; reordering them breaks the
 # compiler-self-tests (contract_meta_self_test.l array-enumeration returns empty).
 "Std.Task"             = "std/_kernel/task.l"
+# Std.TlsHost/Std.Tls precede Std.HttpHost/Std.Http here (moved up from
+# after Std.Rest, #5877): Std.HttpHost's TLS client wiring imports
+# Std.TlsHost + Std.Tls directly (docs/61 §3.2), so both must already be
+# compiled by the time Std.HttpHost is processed.
+"Std.TlsHost"          = "std/_kernel/tls_host.l"
+"Std.Tls"              = "std/tls.l"
 "Std.HttpHost"         = "std/_kernel/http_host.l"
 "Std.Http"             = "std/http.l"
 "Std.HttpServer"       = "std/_kernel/http_server.l"
 "Std.Rest"             = "std/rest.l"
-"Std.TlsHost"          = "std/_kernel/tls_host.l"
-"Std.Tls"              = "std/tls.l"
 
 # Tier 6 — regex compatibility shim.
 "Std.RegexSafe"        = "std/regex_safe.l"

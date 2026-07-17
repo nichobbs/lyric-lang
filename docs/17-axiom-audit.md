@@ -315,20 +315,29 @@ is a deployment concern, not a precondition that the prover can check.
 ### `Std.HttpHost` — `lyric-stdlib/std/_kernel/http_host.l`
 
 ```
-@axiom("System.Net.Http operations conform to their documented .NET contracts")
+@axiom("System.Net.Http and System.Net.Security TLS configuration operations conform to their documented .NET contracts")
 ```
 
 **BCL surface**: `System.Net.Http.HttpClient` (GetStringAsync,
-PostAsync, etc.) and `System.Net.Http.HttpResponseMessage`, backing
-`Std.Http`.
+PostAsync, etc.), `System.Net.Http.HttpResponseMessage`, and
+`System.Net.Http.HttpClientHandler`'s TLS configuration surface
+(`SslProtocols`, `ClientCertificates`,
+`ServerCertificateCustomValidationCallback`) plus
+`System.Security.Cryptography.X509Certificates.X509Chain`/
+`X509ChainPolicy` (custom-CA trust validation, docs/61 §3.2, phase 1.2,
+#5877), backing `Std.Http`.
 
 **Gap**: Network I/O is non-deterministic; responses depend on
 external state.  Cancellation tokens, timeout policy, and redirect
 policy involve async state machines that are outside first-order scope.
+Certificate chain validation depends on the platform trust store and
+wall-clock validity windows, neither of which the prover models.
 
 **Caller obligation**: URLs must be well-formed (BCL throws `UriFormatException`
 otherwise).  In `@proof_required` code, URL construction must be
-validated before the kernel call.
+validated before the kernel call.  Callers configuring `withInsecureSkipVerify`
+must understand it disables both chain and hostname verification together
+(docs/61 §4).
 
 **Review**: Stable.
 
@@ -862,7 +871,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.FileHost` | `file_host.l` | System.IO.File / Directory operations conform to their documented .NET contracts |
 | `dotnet` | `Std.FormatHost` | `format_host.l` | System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts |
 | `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; all are pure functions |
-| `dotnet` | `Std.HttpHost` | `http_host.l` | System.Net.Http operations conform to their documented .NET contracts |
+| `dotnet` | `Std.HttpHost` | `http_host.l` | System.Net.Http and System.Net.Security TLS configuration operations conform to their documented .NET contracts |
 | `dotnet` | `Std.JsonHost` | `json_host.l` | System.Text.Json operations conform to their documented .NET contracts |
 | `dotnet` | `Std.Jvm` | `jvm.l` | Std.Jvm provides JVM-target escape hatches for interoperating with Java exception semantics per docs/31-maven-linking.md Q-J012 |
 | `dotnet` | `Std.JvmExceptionHost` | `jvm_exception.l` | java.lang.Exception is the Java checked-exception root; \n JvmException wraps it for Lyric callers at the FFI boundary \n per docs/31-maven-linking.md §5 |

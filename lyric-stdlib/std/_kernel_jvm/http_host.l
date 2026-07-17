@@ -47,6 +47,7 @@ package Std.HttpHost
 import Std.Core
 import Std.Collections
 import Std.Task
+import Std.Tls
 
 // =====================================================================
 // Extern types — JDK classes the helpers below reference.
@@ -212,6 +213,88 @@ pub func hostClientWithUnixSocketAndRedirectsHttp11(socketPath: in String, maxRe
 
 pub func hostClientWithUnixSocketNoRedirectsHttp11(socketPath: in String): HttpClientHandle {
   unixSocketUnsupported()
+}
+
+// ---------------------------------------------------------------------------
+// TLS client configuration: not implemented on this target yet — the JVM
+// slice is #5878 (docs/61 §3.2, D128; phase 1.2 dotnet-only in #5877).
+//
+// `Std.Http.HttpClientBuilder.build()` calls this capability probe BEFORE
+// ever attempting kernel-level TLS wiring; when it returns `false` (as it
+// does here), `build()` sets `HttpClientImpl.unsupportedReason` instead
+// (the same mechanism `Http3` already uses on both targets) rather than
+// calling a JVM `hostClientWithTls` this file has no reason to declare yet
+// — a TLS-configured client still builds successfully, but every request
+// through it fails with a typed `ConnectionFailed` naming this issue,
+// never a silent no-TLS-config connection (docs/61's no-silent-skip rule).
+// ---------------------------------------------------------------------------
+pub func hostSupportsTlsConfig(): Bool {
+  false
+}
+
+// The pure decision core the future JVM validation callback (#5878) will
+// drive, mirrored here identically from `_kernel/http_host.l`'s dotnet
+// twin (docs/61 §3.2; MITM fix #5950) — this logic is plain Lyric with no
+// BCL/extern dependency at all, so it is target-neutral and duplicated
+// verbatim rather than shared through a new package, matching this
+// directory's existing twin-kernel-file convention (each `_kernel*/`
+// file is self-contained per target). Not yet CALLED by anything on this
+// target (no JVM TLS wiring exists until #5878 ships), but declaring it
+// now means `http_tls_client_tests.l`'s `resolveTlsValidationDecision`
+// regression test — proving a hostname mismatch can never be overridden
+// by any CA configuration — runs identically on both targets today, and
+// #5878's callback can reuse this exact, already-tested function instead
+// of re-deriving it.
+pub enum TlsCaMode {
+  case NoCaConfigured
+  case AdditiveCa
+  case ExclusiveCa
+}
+
+// Precedence rule when both `withCaCertificate` and
+// `withExclusiveCaCertificate` are configured on the same builder
+// (#5975) — mirrored verbatim from the dotnet twin; see that file's doc
+// comment for the full rationale. Exclusive always wins.
+@pure
+pub func resolveCaMode(caCertificate: in Option[Certificate], exclusiveCaCertificate: in Option[Certificate]): TlsCaMode {
+  match exclusiveCaCertificate {
+    case Some(_) -> ExclusiveCa
+    case None -> match caCertificate {
+      case Some(_) -> AdditiveCa
+      case None -> NoCaConfigured
+    }
+  }
+}
+
+pub enum TlsValidationDecision {
+  case RejectImmediately
+  case AcceptWithoutCustomChain
+  case TryCustomChain
+}
+
+@pure
+pub func resolveTlsValidationDecision(
+  hostnameAndAvailabilityOk: in Bool, chainAlreadyOk: in Bool, caMode: in TlsCaMode
+): TlsValidationDecision {
+  if not hostnameAndAvailabilityOk {
+    RejectImmediately
+  } else {
+    match caMode {
+      case ExclusiveCa -> TryCustomChain
+      case AdditiveCa ->
+        if chainAlreadyOk {
+          AcceptWithoutCustomChain
+        } else {
+          TryCustomChain
+        }
+      case NoCaConfigured ->
+        if chainAlreadyOk {
+          AcceptWithoutCustomChain
+        } else {
+          RejectImmediately
+        }
+    }
+  }
 }
 
 // =====================================================================
