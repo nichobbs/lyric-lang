@@ -223,6 +223,16 @@ pub record CodegenCtx {
   // manifestation specifically).
   fieldFuncRetTypes: Map[String, MsilType]
   fieldFuncParamTypes: Map[String, List[MsilType]]
+  // Declaring arity (`decl.params.count`) of whichever same-name overload's
+  // registration first claimed a bare "func:<fqn>" key in fieldFuncRetTypes
+  // (#5795): a mixed-arity overload set only has ONE arity-qualified key per
+  // overload, but the bare key is a single first-registration-wins fallback
+  // shared by every arity. Recording the claiming arity here lets
+  // `recordFieldFuncKeyMsil`'s bare-key fallback verify the call site's own
+  // arity matches before trusting the bare key's metadata — otherwise a call
+  // to a DIFFERENT, non-function-returning overload at another arity could
+  // silently inherit the wrong overload's return/param types.
+  fieldFuncBareKeyArity: Map[String, Int]
   funcTokens: Map[String, Int]  // funcName → MethodDef token
   // Existence-only marker set: "pkgName.funcName" for EVERY function declared
   // anywhere in the bundle, pre-seeded bundle-wide (preSeedBundleAsyncRetTypesMsil)
@@ -1833,6 +1843,7 @@ pub func newCodegenCtx(
     fieldMsilTypes = newMap(),
     fieldFuncRetTypes = newMap(),
     fieldFuncParamTypes = newMap(),
+    fieldFuncBareKeyArity = newMap(),
     funcTokens = funcToks,
     bundleFuncFqns = newMap(),
     pbFieldTypes = newMap(),
@@ -3806,6 +3817,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   if not cctx.fieldFuncRetTypes.containsKey(funcValBareKey) {
                     cctx.fieldFuncRetTypes.add(funcValBareKey, funcValRetTy)
                     cctx.fieldFuncParamTypes.add(funcValBareKey, fParamMsilTys)
+                    // #5795: record which overload's arity claimed the bare
+                    // key, so a later call-site lookup can refuse to trust it
+                    // for a DIFFERENT arity's (non-function-returning) overload.
+                    cctx.fieldFuncBareKeyArity.add(funcValBareKey, decl.params.count)
                   }
                 }
                 case _ -> ()
@@ -14547,7 +14562,28 @@ func recordFieldFuncKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr
             if cctx.fieldFuncRetTypes.containsKey(arityKey) {
               arityKey
             } else if cctx.fieldFuncRetTypes.containsKey(bareKey) {
-              bareKey
+              // #5795: the bare key is a first-registration-wins fallback
+              // shared across every same-name overload, so it may have been
+              // claimed by a DIFFERENT, non-function-returning overload at a
+              // LARGER arity than this call site — reproducing exactly that
+              // overload's return/param types would be wrong. An exact-arity
+              // match isn't the right bound here: the bare key's whole reason
+              // to exist is calls that omit DEFAULTED trailing parameters
+              // (args.count < the claiming overload's full declared arity),
+              // which is legitimate. What can never be legitimate is
+              // args.count EXCEEDING the claiming overload's declared arity —
+              // that can only mean a different, higher-arity overload is
+              // being called, so fall through to not-found in that case.
+              match mapGet(cctx.fieldFuncBareKeyArity, bareKey) {
+                case Some(claimedArity) -> {
+                  if args.count <= claimedArity {
+                    bareKey
+                  } else {
+                    ""
+                  }
+                }
+                case None -> bareKey
+              }
             } else {
               ""
             }
