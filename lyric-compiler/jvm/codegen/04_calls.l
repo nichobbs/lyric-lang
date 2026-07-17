@@ -2187,6 +2187,67 @@ func prepareHolderArg(
   }
 }
 
+// Convert a genuine reference array (top of stack, e.g. the `Object[]` a
+// `slice[T]` value is passed as at a call boundary) into a fresh `ArrayList`
+// wrapping its elements, via `new ArrayList(Arrays.asList(arr))`.  Needs a
+// temp slot to reorder the stack for the `invokespecial <init>` call, so it
+// lives here (where `ctx` is available) rather than in `coerceArgTo` (which
+// has no `FuncCtx` to allocate one).  #5842 JVM parity: the write-back half
+// of the `out`/`inout` holder protocol re-reads the holder's `Object[]`
+// content after the callee wrote to it, but a `slice[T]` local is
+// `ArrayList`-backed at the value level (`TSlice` only erases to `JArray` at
+// the FFI/signature boundary, #4700) — storing the raw array back into an
+// `ArrayList`-typed local slot faulted at class-verification time
+// (`VerifyError` on the later `ArrayList.get(...)` call).
+func emitArrayToArrayListJvm(ctx: in FuncCtx, insns: in List[LInsn], label: in String): Unit {
+  val asListPs: List[JvmType] = newList()
+  asListPs.add(JArray(elem = JRef(className = "java/lang/Object")))
+  insns.add(
+    LInvokestatic(
+      owner = "java/util/Arrays",
+      name = "asList",
+      params = asListPs,
+      ret = JRef(className = "java/util/List")
+    )
+  )
+  val listSlot = allocSlot(ctx, "__holder_wb_list$" + label, JRef(className = "java/util/List"))
+  insns.add(LAstoreAs(slot = listSlot, className = "java/util/List"))
+  insns.add(LNew(className = "java/util/ArrayList"))
+  insns.add(LDup)
+  insns.add(LAload(slot = listSlot))
+  val alInitPs: List[JvmType] = newList()
+  alInitPs.add(JRef(className = "java/util/Collection"))
+  insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = alInitPs, ret = JVoid))
+}
+
+// Coerce a holder-loaded value (typed `fromTy`) into `toTy` for write-back,
+// routing an array-shaped value flowing into an `ArrayList`-typed target
+// through `emitArrayToArrayListJvm` (the direction `coerceArgTo` does not
+// handle, #5842) and falling back to `coerceArgTo` for every other shape.
+func coerceHolderWriteBack(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  fromTy: in JvmType,
+  toTy: in JvmType,
+  label: in String,
+): Unit {
+  match fromTy {
+    case JArray(_) -> {
+      match toTy {
+        case JRef(toCls) -> {
+          if toCls == "java/util/ArrayList" {
+            emitArrayToArrayListJvm(ctx, insns, label)
+          } else {
+            coerceArgTo(insns, fromTy, toTy)
+          }
+        }
+        case _ -> coerceArgTo(insns, fromTy, toTy)
+      }
+    }
+    case _ -> coerceArgTo(insns, fromTy, toTy)
+  }
+}
+
 // Copy a holder's element 0 back to its target after the call: the caller's
 // local (write-through so a forwarded out/inout parameter's own holder stays
 // in sync) or, for a field-access argument (#3628), `putfield` through the
@@ -2209,7 +2270,7 @@ func writeBackHolderArg(
     insns.add(LAload(slot = ts))
     insns.add(LIconst(v = 0))
     emitHolderElemLoad(insns, elemTy)
-    coerceArgTo(insns, elemTy, fty)
+    coerceHolderWriteBack(ctx, insns, elemTy, fty, name + "$" + toString(ts))
     insns.add(LPutfield(owner = recvCls, name = name, t = fty))
     return
   }
@@ -2219,7 +2280,7 @@ func writeBackHolderArg(
       insns.add(LAload(slot = ts))
       insns.add(LIconst(v = 0))
       emitHolderElemLoad(insns, elemTy)
-      coerceArgTo(insns, elemTy, destTy)
+      coerceHolderWriteBack(ctx, insns, elemTy, destTy, name + "$" + toString(ts))
       emitStoreLocalWriteThrough(ctx, insns, destSlot, destTy)
     }
     case None -> ()

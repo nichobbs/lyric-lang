@@ -99,6 +99,7 @@ pub record CodegenCtx {
   tokIListCast: Int  // castclass System.Collections.IList (TypeRef token)
   tokIListClear: Int  // IList.Clear(): void  callvirt
   tokIListGetItem: Int  // IList.get_Item(int32): object  callvirt
+  tokIListSetItem: Int  // IList.set_Item(int32, object): void  callvirt
   tokICollGetCount: Int  // ICollection.get_Count(): int32  callvirt
   // String intrinsic members (instance HASTHIS)
   tokStringGetChars: Int  // String.get_Chars(int32): char
@@ -1002,6 +1003,22 @@ pub func newCodegenCtx(
       "icoll_count",
       buildInstanceMethodSig(icollCntPs, MInt)
     )
+  // IList.set_Item(int32, object): void — the write-side counterpart of
+  // `tokIListGetItem`, used to store through a genuine `T[]` array (a
+  // `slice[T]` value that is a real CLI array rather than a `List`-backed
+  // slice) without a `castclass List<object>` that faults on an array
+  // receiver (#5842).
+  val ilistSetPs: List[MsilType] = newList()
+  ilistSetPs.add(MInt)
+  ilistSetPs.add(MObject)
+  val tokIListSetItem = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIList,
+      "set_Item",
+      "ilist_setitem",
+      buildInstanceMethodSig(ilistSetPs, MVoid)
+    )
   val tokIListCast = 0x01000000 + trIList
   // Non-generic IList::Clear(): void — clears a list regardless of element type,
   // so `xs.clear()` works whether `xs` is a concrete `List<Foo>` or an erased
@@ -1817,6 +1834,7 @@ pub func newCodegenCtx(
     tokIListCast = tokIListCast,
     tokIListClear = tokIListClear,
     tokIListGetItem = tokIListGetItem,
+    tokIListSetItem = tokIListSetItem,
     tokICollGetCount = tokICollGetCount,
     tokDictObjCtor = tokDictObjCtor,
     tokDictObjAdd = tokDictObjAdd,
@@ -6577,6 +6595,12 @@ func emitListGetItem(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in Msil
 func emitListSetItem(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
     case MConcreteList(e) -> insns.add(MListOp(op = LoSetItem, elemTy = e))
+    // `MArray` slice: store through `IList.set_Item` so a genuine array
+    // receiver (a primitive-element `slice[T]` value, encoded as a real
+    // CLI `T[]` — #2592) works alongside a `List`-backed slice, instead of
+    // faulting with `InvalidCastException` against the `List<object>`-
+    // specific TypeSpec (#5842).
+    case MArray(_) -> insns.add(MCallvirt(methodToken = cctx.tokIListSetItem))
     case _ -> insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
   }
 }
@@ -9550,6 +9574,20 @@ func lowerAssignExprMsil(
               case MConcreteList(_) -> {
                 // Concrete List store: set_Item(int32, !0); value stored
                 // unboxed.
+                emitListCastRecv(cctx, insns, recvTy)
+                lowerExprMsil(cctx, fctx, insns, indices[0])
+                val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                collBoxIfNeeded(cctx, insns, vTy, recvTy)
+                emitListSetItem(cctx, insns, recvTy)
+              }
+              case MArray(_) -> {
+                // `slice[T]` receiver store: a primitive-element slice value
+                // is a genuine CLI `T[]` at runtime (#2592), so `castclass
+                // List<object>` (the `case _` fallback below) faults with
+                // `InvalidCastException`.  Route through the non-generic
+                // `IList`, implemented by both a real array and a
+                // `List`-backed slice (mirrors the read-side EIndex `MArray`
+                // arm and `emitListCastRecv`/`emitListSetItem`).  #5842.
                 emitListCastRecv(cctx, insns, recvTy)
                 lowerExprMsil(cctx, fctx, insns, indices[0])
                 val vTy = lowerExprMsil(cctx, fctx, insns, value)
