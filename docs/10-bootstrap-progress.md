@@ -30473,3 +30473,55 @@ field explicitly until both bugs land.
 
 **Related:** `docs/03-decision-log.md` D-progress-689; #5876, #5874, #5903,
 #5908, #5920.
+
+## `HttpClientBuilder` TLS client configuration ships (phase 1.2) — dotnet trust/identity/min-version surface with the dual-key insecure policy (2026-07-17)
+
+`Std.Http`'s `HttpClientBuilder` (`lyric-stdlib/std/http.l`) gains
+`withCaCertificate` (additive trust root), `withExclusiveCaCertificate`
+(replaces platform trust), `withClientIdentity` (mTLS), `withMinTlsVersion`,
+and `withInsecureSkipVerify`, plus a `tlsConfigSupported()` capability
+probe — docs/61 §3.2's phase 1.2 (epic #5874, issue #5877), after
+`Std.Tls` (phase 1.1, above) and `withHttpVersion` (phase 1.4,
+D-progress-690). `build()` stays infallible: unsupported combinations set
+`HttpClientImpl.unsupportedReason` (the same mechanism `Http3` uses)
+instead of failing construction.
+
+The dual-key insecure-verify policy (docs/61 §4) is `pub enum
+InsecureVerifyPolicy` + a pure `resolveInsecureVerifyPolicy(codeOptIn,
+envAllows)`, read against `LYRIC_TLS_ALLOW_INSECURE` via
+`Std.Environment.getVarOrDefault` once at `build()` time.
+
+`_kernel/http_host.l` wires every option onto `System.Net.Http.
+HttpClientHandler` (not `SocketsHttpHandler.SslOptions` as first sketched —
+`SslClientAuthenticationOptions.RemoteCertificateValidationCallback` is a
+genuinely custom .NET delegate the delegate-bridge FFI cannot bind to,
+found empirically and filed as #5947; `HttpClientHandler`'s own
+`ServerCertificateCustomValidationCallback` genuinely IS `Func<...>`-typed
+in metadata). Consequence: Unix sockets + any TLS option is unsupported on
+this target until #5947 lands. `_kernel_jvm/http_host.l` gains only
+`hostSupportsTlsConfig() -> false` (the JVM slice is #5878).
+
+A REQUIRED review finding (#5950) caught a real MITM bypass in the first
+version of this PR's certificate-validation callback: it re-ran ONLY a
+chain-trust check and never consulted hostname verification at all, so
+setting `withCaCertificate`/`withExclusiveCaCertificate`/
+`withInsecureSkipVerify` silently disabled hostname matching for every
+TLS-configured client (installing `ServerCertificateCustomValidationCallback`
+hands .NET's own hostname result to the callback only via
+`sslPolicyErrors`, and the original code never inspected it). Fixed by
+extracting a pure decision core, `resolveTlsValidationDecision` (mirrored
+identically in both kernel twins, since it has no BCL dependency at all),
+that only ever permits a CA-trust override when the platform's own
+`SslPolicyErrors` was exactly `None` or exactly
+`RemoteCertificateChainErrors` — any other value (a hostname mismatch or
+absent certificate, alone or combined with a chain error) rejects
+unconditionally before any CA logic runs. Exhaustively regression-tested
+in `lyric-stdlib/tests/http_tls_client_tests.l` on both targets. A second
+SUGGESTION finding (#5952) was also folded in: `buildCustomChain` now sets
+`RevocationMode = NoCheck`, matching `HttpClientHandler`'s own default,
+so configuring a TLS option doesn't silently turn on online OCSP/CRL
+checking.
+
+**Related:** `docs/03-decision-log.md` D-progress-691; #5877, #5874,
+#5947, #5950, #5952, #5878, #5971 (a dotnet qualified-case-pattern-match
+compiler bug found while writing the #5950 regression test).

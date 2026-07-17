@@ -32,17 +32,36 @@
 //!     above already exercise the real wiring); on jvm it confirms a
 //!     TLS-configured client fails every request with a typed error
 //!     naming #5878, never a silent no-TLS-config connection.
+//!   - The MITM-bypass fix (#5950): `_kernel/http_host.l`'s certificate
+//!     validation callback (installed by `withCaCertificate`/
+//!     `withExclusiveCaCertificate`/`withInsecureSkipVerify`) is a pure
+//!     decision core, `resolveTlsValidationDecision`, exhaustively
+//!     tested here for every `(hostnameAndAvailabilityOk, chainAlreadyOk,
+//!     caMode)` combination. The property under test: whenever
+//!     `hostnameAndAvailabilityOk` is `false` (the platform's own hostname
+//!     check, or its cert-presence check, failed), the result is ALWAYS
+//!     `RejectImmediately` — no CA configuration, however permissive, and
+//!     no chain-already-fine signal can override that. This is exactly
+//!     the property whose absence made #5950 an MITM bypass (the original
+//!     callback only ever re-ran a chain check and never consulted
+//!     hostname at all).
 //!
 //! What this file deliberately does NOT try to prove: that a custom CA
 //! certificate is actually honored/rejected during a real TLS handshake,
 //! or that `withInsecureSkipVerify()` actually disables peer verification
-//! against a live server. Those require a real TLS listener trusting (or
-//! not) a real client-presented chain, which does not exist in CI yet on
-//! either target (dotnet: #5884; jvm: #5878/#5880 pending). The warning
-//! text `build()` prints via `Std.Console.error` is not captured/asserted
-//! either — there is no stdout/stderr-capture facility in `Std.Testing`
-//! today; the pure `resolveInsecureVerifyPolicy` result (which decides
-//! WHETHER the warning fires) is the testable proxy for that decision.
+//! against a live server, or that a REAL certificate issued for the wrong
+//! host is rejected over a REAL connection. Those require a real TLS
+//! listener trusting (or not) a real client-presented chain and/or
+//! presenting a real name-mismatched certificate, which does not exist in
+//! CI yet on either target (dotnet: #5884; jvm: #5878/#5880 pending) —
+//! `resolveTlsValidationDecision`'s exhaustive coverage above is the
+//! strongest CI-safe proof available today that the DECISION LOGIC itself
+//! can never accept a hostname mismatch, independent of a live peer. The
+//! warning text `build()` prints via `Std.Console.error` is not
+//! captured/asserted either — there is no stdout/stderr-capture facility
+//! in `Std.Testing` today; the pure `resolveInsecureVerifyPolicy` result
+//! (which decides WHETHER the warning fires) is the testable proxy for
+//! that decision.
 @test_module
 package Std.Http.TlsClientTests
 
@@ -50,6 +69,14 @@ import Std.Core
 import Std.Environment
 import Std.Errors
 import Std.Http
+// Unaliased deliberately: a qualified case pattern through an ALIASED
+// import (`import Std.HttpHost as HostHttp` + `case HostHttp.Foo -> ...`)
+// does not discriminate correctly on `--target dotnet` — verified with an
+// isolated repro, filed as #5971 (a dotnet-side sibling of the JVM
+// qualified-case-resolution family, #5769/#5845/#5943). Bare case names
+// after an unaliased import (the shape used everywhere else in this
+// codebase's test suite) are unaffected and used below instead.
+import Std.HttpHost
 import Std.String
 import Std.Testing
 import Std.Tls
@@ -224,5 +251,84 @@ test "tlsConfigSupported() capability probe matches this target's design" {
         case other -> panic("expected ConnectionFailed, got a different HttpError case")
       }
     }
+  }
+}
+
+// ─── #5950 regression: hostname mismatch is never overridable ──────────────
+// `resolveTlsValidationDecision` is `_kernel/http_host.l`'s pure decision
+// core for the certificate-validation callback — extracted specifically so
+// this property is testable without a live TLS peer (target-neutral, no
+// `Std.Tls`/extern types involved). Runs on both targets: the function
+// itself has no target-specific behavior (it's plain Lyric logic), so this
+// is not gated on `tlsConfigSupported()` the way the wired-client tests
+// above are.
+test "resolveTlsValidationDecision rejects a hostname mismatch regardless of CA mode or chain state" {
+  // The headline #5950 property: hostnameAndAvailabilityOk = false must
+  // ALWAYS reject, no matter what chainAlreadyOk or caMode say. This is
+  // the exact case the original buggy callback got wrong — it never
+  // looked at hostname at all, so a chain-valid cert for the WRONG host
+  // was silently accepted whenever a CA option was configured. All six
+  // combinations of (chainAlreadyOk, caMode) are asserted explicitly
+  // (rather than looped) so a failing case names itself directly.
+  match resolveTlsValidationDecision(false, false, NoCaConfigured) {
+    case RejectImmediately -> assertTrue(true, "hostname bad, chain bad, no CA: rejects")
+    case other -> panic("MITM bypass regression: hostname bad, chain bad, no CA did not reject")
+  }
+  match resolveTlsValidationDecision(false, false, AdditiveCa) {
+    case RejectImmediately -> assertTrue(true, "hostname bad, chain bad, additive CA: rejects")
+    case other -> panic("MITM bypass regression: hostname bad, chain bad, additive CA did not reject")
+  }
+  match resolveTlsValidationDecision(false, false, ExclusiveCa) {
+    case RejectImmediately -> assertTrue(true, "hostname bad, chain bad, exclusive CA: rejects")
+    case other -> panic("MITM bypass regression: hostname bad, chain bad, exclusive CA did not reject")
+  }
+  match resolveTlsValidationDecision(false, true, NoCaConfigured) {
+    case RejectImmediately -> assertTrue(true, "hostname bad, chain ALREADY OK, no CA: still rejects")
+    case other -> panic("MITM bypass regression: hostname bad, chain ok, no CA did not reject")
+  }
+  match resolveTlsValidationDecision(false, true, AdditiveCa) {
+    case RejectImmediately -> assertTrue(true, "hostname bad, chain ALREADY OK, additive CA: still rejects")
+    case other -> panic("MITM bypass regression: hostname bad, chain ok, additive CA did not reject — this is #5950 exactly")
+  }
+  match resolveTlsValidationDecision(false, true, ExclusiveCa) {
+    case RejectImmediately -> assertTrue(true, "hostname bad, chain ALREADY OK, exclusive CA: still rejects")
+    case other -> panic("MITM bypass regression: hostname bad, chain ok, exclusive CA did not reject — this is #5950 exactly")
+  }
+}
+
+test "resolveTlsValidationDecision: exclusive CA always re-checks, even when the platform already trusted the chain" {
+  // Exclusive mode must ignore the platform's own trust conclusion — a
+  // cert that chains via the public store but not via the configured CA
+  // must still be rejected, so `chainAlreadyOk = true` must NOT
+  // short-circuit to acceptance under ExclusiveCa.
+  match resolveTlsValidationDecision(true, true, ExclusiveCa) {
+    case TryCustomChain -> assertTrue(true, "exclusive CA re-checks even when chain already trusted")
+    case other -> panic("expected TryCustomChain for exclusive CA with chainAlreadyOk=true")
+  }
+  match resolveTlsValidationDecision(true, false, ExclusiveCa) {
+    case TryCustomChain -> assertTrue(true, "exclusive CA re-checks when chain failed via platform")
+    case other -> panic("expected TryCustomChain for exclusive CA with chainAlreadyOk=false")
+  }
+}
+
+test "resolveTlsValidationDecision: additive CA accepts platform trust directly, falls back only on chain failure" {
+  match resolveTlsValidationDecision(true, true, AdditiveCa) {
+    case AcceptWithoutCustomChain -> assertTrue(true, "additive CA accepts an already-trusted chain directly")
+    case other -> panic("expected AcceptWithoutCustomChain for additive CA with chainAlreadyOk=true")
+  }
+  match resolveTlsValidationDecision(true, false, AdditiveCa) {
+    case TryCustomChain -> assertTrue(true, "additive CA falls back to the custom chain on platform chain failure")
+    case other -> panic("expected TryCustomChain for additive CA with chainAlreadyOk=false")
+  }
+}
+
+test "resolveTlsValidationDecision: no CA configured mirrors the platform's own chain verdict" {
+  match resolveTlsValidationDecision(true, true, NoCaConfigured) {
+    case AcceptWithoutCustomChain -> assertTrue(true, "no CA + chain already ok: accept")
+    case other -> panic("expected AcceptWithoutCustomChain for NoCaConfigured with chainAlreadyOk=true")
+  }
+  match resolveTlsValidationDecision(true, false, NoCaConfigured) {
+    case RejectImmediately -> assertTrue(true, "no CA + chain not ok: reject (nothing to fall back to)")
+    case other -> panic("expected RejectImmediately for NoCaConfigured with chainAlreadyOk=false")
   }
 }

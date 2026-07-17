@@ -534,6 +534,8 @@ extern type X509ChainTrustMode = "System.Security.Cryptography.X509Certificates.
 
 extern type SslPolicyErrors = "System.Net.Security.SslPolicyErrors"
 
+extern type X509RevocationMode = "System.Security.Cryptography.X509Certificates.X509RevocationMode"
+
 @externInstance
 @externTarget("System.Net.Http.HttpClientHandler.set_SslProtocols")
 func handlerSetSslProtocols(h: in HttpClientHandler, p: in SslProtocols): Unit = ()
@@ -586,6 +588,31 @@ func chainTrustModeCustomRoot(): X509ChainTrustMode = ()
 func chainPolicyCustomTrustStoreOf(p: in X509ChainPolicy): X509Certificate2Collection = ()
 
 @externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509ChainPolicy.set_RevocationMode")
+func chainPolicySetRevocationMode(p: in X509ChainPolicy, m: in X509RevocationMode): Unit = ()
+
+// Matches `HttpClientHandler`'s own default (`CheckCertificateRevocationList
+// = false`, i.e. no revocation check) so configuring a TLS option does not
+// silently start an online OCSP/CRL check as a side effect (#5952) — that
+// would add unexpected latency, or hang outright, against a peer whose
+// revocation endpoint is unreachable (notably the air-gapped/restricted-
+// egress service-mesh case `withExclusiveCaCertificate` targets).
+@externTarget("System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck")
+func revocationModeNoCheck(): X509RevocationMode = ()
+
+// The two `SslPolicyErrors` values `applyTlsOptions`'s validation callback
+// checks against via plain `==` (a `ceq` over the enum's underlying int
+// representation — no FFI method call, so the no-bitwise-op-in-FFI gap
+// `sslProtocolsTls13`'s comment documents does not apply to equality
+// checks against a SPECIFIC known value, only to combining/decomposing
+// flags generically).
+@externTarget("System.Net.Security.SslPolicyErrors.None")
+func sslPolicyErrorsNone(): SslPolicyErrors = ()
+
+@externTarget("System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors")
+func sslPolicyErrorsChainErrorsOnly(): SslPolicyErrors = ()
+
+@externInstance
 @externTarget("System.Security.Cryptography.X509Certificates.X509Chain.Build")
 func chainBuild(c: in X509Chain, cert: in TlsHost.CertHandle): Bool = ()
 
@@ -596,33 +623,91 @@ func handlerSetValidationCallback(
   cb: in (HttpRequestMessage, TlsHost.CertHandle, X509Chain, SslPolicyErrors) -> Bool,
 ): Unit = ()
 
-// Builds a FRESH chain under the platform's ordinary (system-trust)
-// policy and validates `cert` against it. Deliberately re-runs the exact
-// validation the runtime already performed before invoking the callback,
-// rather than inspecting the callback's own `chain`/`sslPolicyErrors`
-// parameters: `SslPolicyErrors` is itself a `[Flags]` enum with the same
-// no-bitwise-OR-method gap `sslProtocolsTls13`'s comment documents, so
-// distinguishing "chain untrusted" from "hostname mismatch" bit-by-bit is
-// not available either. Re-running the default build sidesteps needing
-// that distinction entirely, at the cost of one extra chain build per
-// handshake (a one-time-per-connection cost, not a per-request one).
-func defaultChainValid(cert: in TlsHost.CertHandle): Bool {
-  val chain = newX509Chain()
-  chainBuild(chain, cert)
-}
-
 // Builds a FRESH chain with `TrustMode = CustomRootTrust` (ONLY `ca` is a
-// trusted root — the platform trust store is not consulted) and validates
-// `cert` against it. Used directly for `withExclusiveCaCertificate`
-// (replaces platform trust) and as the fallback for `withCaCertificate`
-// (additive: only reached once `defaultChainValid` above has already
-// failed).
+// trusted root — the platform trust store is not consulted),
+// `RevocationMode = NoCheck` (#5952), and validates `cert` against it.
+// Used directly for `withExclusiveCaCertificate` (replaces platform trust
+// unconditionally) and as the fallback for `withCaCertificate` (additive:
+// only reached once the platform's own chain validation, reported via
+// `sslPolicyErrors`, has already failed).
 func buildCustomChain(cert: in TlsHost.CertHandle, ca: in Tls.Certificate): Bool {
   val chain = newX509Chain()
   val policy = chainPolicyOf(chain)
   chainPolicySetTrustMode(policy, chainTrustModeCustomRoot())
+  chainPolicySetRevocationMode(policy, revocationModeNoCheck())
   val _ = x2CollectionAdd(chainPolicyCustomTrustStoreOf(policy), ca.rawHandle())
   chainBuild(chain, cert)
+}
+
+// Which CA-trust option (if any) is configured — the third input to
+// `resolveTlsValidationDecision` below. Kept as its own tiny enum rather
+// than passing `Option[Tls.Certificate]` twice into a pure function so
+// that function stays entirely extern-type-free (directly testable from
+// any package, no `Std.Tls` dependency needed for the test).
+pub enum TlsCaMode {
+  case NoCaConfigured
+  case AdditiveCa
+  case ExclusiveCa
+}
+
+/// What the validation callback should do once it has decided whether the
+/// platform-reported result is even eligible for this callback to act on.
+pub enum TlsValidationDecision {
+  case RejectImmediately
+  case AcceptWithoutCustomChain
+  case TryCustomChain
+}
+
+/// Pure decision core for the `ServerCertificateCustomValidationCallback`
+/// installed below (docs/61 §3.2; #5877, MITM fix #5950).
+///
+/// `hostnameAndAvailabilityOk` must be `false` whenever the platform's own
+/// `SslPolicyErrors` carried `RemoteCertificateNameMismatch` or
+/// `RemoteCertificateNotAvailable`, in ANY combination — see
+/// `applyTlsOptions`'s call site for how that's derived. This function
+/// does not know or care WHY it's false, only that once it is,
+/// `RejectImmediately` is the only possible outcome regardless of
+/// `chainAlreadyOk` or `caMode`: no chain-trust configuration, however
+/// permissive, can ever paper over a hostname mismatch or an absent
+/// certificate. This is the exact property #5950 was filed against (the
+/// original callback re-ran ONLY a chain check and never looked at
+/// hostname at all) and the property `http_tls_client_tests.l`'s
+/// `resolveTlsValidationDecision` regression test asserts exhaustively.
+///
+/// Once hostname+availability are confirmed fine: an exclusive CA always
+/// re-validates against ONLY that CA (`TryCustomChain`), even when the
+/// platform already trusted the chain via the platform store — exclusive
+/// means the platform's own trust conclusion never counts. An additive CA
+/// accepts the platform's own verdict directly when the chain was already
+/// fine (`AcceptWithoutCustomChain`), and only asks for the custom-CA
+/// fallback when the platform's chain check failed
+/// (`TryCustomChain`). With no CA configured (only reachable when
+/// `insecureSkipVerify` installed this callback but its own short-circuit
+/// at the call site didn't fire — never in practice), this mirrors the
+/// platform's own chain verdict directly.
+@pure
+pub func resolveTlsValidationDecision(
+  hostnameAndAvailabilityOk: in Bool, chainAlreadyOk: in Bool, caMode: in TlsCaMode
+): TlsValidationDecision {
+  if not hostnameAndAvailabilityOk {
+    RejectImmediately
+  } else {
+    match caMode {
+      case ExclusiveCa -> TryCustomChain
+      case AdditiveCa ->
+        if chainAlreadyOk {
+          AcceptWithoutCustomChain
+        } else {
+          TryCustomChain
+        }
+      case NoCaConfigured ->
+        if chainAlreadyOk {
+          AcceptWithoutCustomChain
+        } else {
+          RejectImmediately
+        }
+    }
+  }
 }
 
 // Assembles TLS options directly on `handler` (module header: no separate
@@ -642,13 +727,33 @@ func buildCustomChain(cert: in TlsHost.CertHandle, ca: in Tls.Certificate): Bool
 // time. `insecureSkipVerify`/`caCertificate`/`exclusiveCaCertificate` are
 // ordinary closure captures (unaffected by that constraint, which is
 // specifically about the ARGUMENT EXPRESSION shape, not about capturing).
+// Calling a plain function FROM WITHIN the lambda body (as this one calls
+// `resolveTlsValidationDecision`) is unaffected too — F0026 is about what
+// the lambda ITSELF is bound to, not what its body does.
+//
+// #5950 (MITM fix): installing this callback disables .NET's OWN
+// hostname check entirely — the runtime still RUNS it (and its own chain
+// validation) before invoking the callback, but only reports the combined
+// result via `sslPolicyErrors`; it is this callback's job to honor that
+// result, not just the chain half of it. `hostnameAndAvailabilityOk`
+// below is `true` only for exactly `SslPolicyErrors.None` (everything
+// passed) or exactly `RemoteCertificateChainErrors` (ONLY the chain
+// failed — hostname and cert-presence were both fine); every other value
+// — `RemoteCertificateNameMismatch` or `RemoteCertificateNotAvailable`,
+// alone or combined with a chain error — makes it `false`, and
+// `resolveTlsValidationDecision` above then rejects unconditionally
+// before any CA logic runs, so a certificate valid-by-chain but issued
+// for the wrong host is never accepted. This is a plain `==` (`ceq` over
+// the enum's underlying int) against a SPECIFIC known value, not a
+// bitwise decompose/combine, so it needs no FFI capability beyond what
+// `sslPolicyErrorsNone`/`sslPolicyErrorsChainErrorsOnly`'s comment
+// already covers.
+//
 // `insecureSkipVerify` (already resolved through the dual-key policy by
 // `Std.Http` before this is ever called) short-circuits to `true`
-// unconditionally — the "nuclear option" — regardless of any CA
-// configuration. Otherwise: an exclusive CA always re-validates against
-// ONLY that CA; an additive CA tries the platform default first and falls
-// back to the CA only on failure; with neither configured this closure is
-// never installed at all (see `needsCallback` below).
+// unconditionally BEFORE any of the above runs — the "nuclear option,"
+// which deliberately skips the hostname check too, matching docs/61 §4
+// ("disables peer chain verification and hostname matching together").
 func applyTlsOptions(
   handler: in HttpClientHandler,
   caCertificate: in Option[Tls.Certificate],
@@ -670,6 +775,13 @@ func applyTlsOptions(
     }
     case None -> ()
   }
+  val caMode = match exclusiveCaCertificate {
+    case Some(_) -> ExclusiveCa
+    case None -> match caCertificate {
+      case Some(_) -> AdditiveCa
+      case None -> NoCaConfigured
+    }
+  }
   val needsCallback = insecureSkipVerify or isSome(caCertificate) or isSome(exclusiveCaCertificate)
   if needsCallback {
     handlerSetValidationCallback(
@@ -679,16 +791,18 @@ func applyTlsOptions(
           if insecureSkipVerify {
             true
           } else {
-            match exclusiveCaCertificate {
-              case Some(ca) -> buildCustomChain(cert, ca)
-              case None -> match caCertificate {
-                case Some(ca) ->
-                  if defaultChainValid(cert) {
-                    true
-                  } else {
-                    buildCustomChain(cert, ca)
-                  }
-                case None -> defaultChainValid(cert)
+            val hostnameAndAvailabilityOk =
+              sslPolicyErrors == sslPolicyErrorsNone() or sslPolicyErrors == sslPolicyErrorsChainErrorsOnly()
+            val chainAlreadyOk = sslPolicyErrors == sslPolicyErrorsNone()
+            match resolveTlsValidationDecision(hostnameAndAvailabilityOk, chainAlreadyOk, caMode) {
+              case RejectImmediately -> false
+              case AcceptWithoutCustomChain -> true
+              case TryCustomChain -> match exclusiveCaCertificate {
+                case Some(ca) -> buildCustomChain(cert, ca)
+                case None -> match caCertificate {
+                  case Some(ca) -> buildCustomChain(cert, ca)
+                  case None -> false
+                }
               }
             }
           }

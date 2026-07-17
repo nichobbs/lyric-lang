@@ -17373,21 +17373,32 @@ and `withHttpVersion` in D-progress-690/#5879).
   below), `ClientCertificates` for `clientIdentity`, and a
   `ServerCertificateCustomValidationCallback` lambda literal installed
   only when a callback can change the outcome (`insecureSkipVerify` or
-  either CA option). The callback: `insecureSkipVerify` short-circuits to
-  `true` unconditionally; an exclusive CA always rebuilds a fresh
-  `X509Chain` with `TrustMode = CustomRootTrust` restricted to that one
-  CA; an additive CA tries the platform's ordinary trust first
-  (`defaultChainValid`, a fresh default-policy chain build) and falls
-  back to the custom-CA chain only on failure — deliberately re-running
-  chain validation from scratch rather than inspecting the callback's own
-  `chain`/`sslPolicyErrors` parameters, sidestepping a second
-  `[Flags]`-enum bitwise-composition gap (`SslPolicyErrors`, same class as
-  `SslProtocols` below) entirely, at the cost of one extra chain build per
-  handshake (once per connection, not per request).
-- `_kernel_jvm/http_host.l`: `hostSupportsTlsConfig() -> false` — the
-  entire JVM-side change for this PR. No new JDK surface, no new axiom.
+  either CA option). The callback delegates to a pure decision core,
+  `resolveTlsValidationDecision(hostnameAndAvailabilityOk, chainAlreadyOk,
+  caMode): TlsValidationDecision` (mirrored verbatim in
+  `_kernel_jvm/http_host.l` too, since it has no BCL dependency at all):
+  `insecureSkipVerify` short-circuits to `true` unconditionally before
+  this runs at all; otherwise `hostnameAndAvailabilityOk` is `true` only
+  when the platform's own `SslPolicyErrors` is exactly `None` or exactly
+  `RemoteCertificateChainErrors` (a plain `==`/`ceq` check against those
+  two specific values — not a bitwise decompose, so the flags gap below
+  doesn't block it), and `RejectImmediately` follows unconditionally
+  whenever it's `false` — a hostname mismatch or absent certificate can
+  never be overridden by any CA configuration. Only once that's confirmed
+  does CA mode matter: an exclusive CA always rebuilds a fresh `X509Chain`
+  with `TrustMode = CustomRootTrust` (and `RevocationMode = NoCheck`,
+  matching `HttpClientHandler`'s own default) restricted to that one CA,
+  even when the platform already trusted the chain via the public store;
+  an additive CA accepts the platform's own verdict directly when it was
+  `None`, falling back to the custom-CA chain only when the platform
+  reported `RemoteCertificateChainErrors`.
+- `_kernel_jvm/http_host.l`: `hostSupportsTlsConfig() -> false` (the JVM
+  TLS slice itself is #5878) plus the same `resolveTlsValidationDecision`
+  decision core mirrored verbatim (unused by this file today, but
+  exercised by `http_tls_client_tests.l` on both targets and ready for
+  #5878 to call directly instead of re-deriving it).
 
-**Two real gaps found while implementing this, both filed rather than
+**Three real gaps found while implementing this, all filed rather than
 worked around silently:**
 
 1. **`SslProtocols`/`SslPolicyErrors` have no bitwise-OR FFI path.** Both
@@ -17429,6 +17440,20 @@ worked around silently:**
    no-TLS-config connection), gated by `Std.Http.build()` itself (not
    silently dropped by the kernel) so the reason is never confused with
    the separate jvm-wide #5878 reason.
+3. **A qualified enum-case pattern through an ALIASED import does not
+   discriminate correctly on `--target dotnet`.** Found while writing the
+   #5950 regression test: `import Std.HttpHost as HostHttp` +
+   `case HostHttp.RejectImmediately -> ...` compiled cleanly but silently
+   fell through to the catch-all arm at runtime, regardless of the actual
+   value — reproduced in isolation with a two-package throwaway repro
+   (unrelated to TLS). The bare form after an UNALIASED import
+   (`import Std.HttpHost` + `case RejectImmediately -> ...`, the shape
+   used everywhere else in this codebase's test suite) discriminates
+   correctly and is what `http_tls_client_tests.l` uses. **Filed as
+   #5971** — likely the `--target dotnet` sibling of the JVM qualified-
+   case-resolution family (#5769 enum-case values, #5845 free-function
+   calls, #5943 case construction), but for case PATTERNS specifically
+   and on the MSIL backend rather than JVM.
 
 **Test coverage and its honest boundary.**
 `lyric-stdlib/tests/http_tls_client_tests.l` (both targets, fully
@@ -17437,23 +17462,33 @@ matrix (pure function, all 4 cells); the wired path via real
 `Std.Environment.setVar` mutation of the process environment, proving
 `build()` stays infallible across the matrix; every TLS `with*` method
 alone and combined with the pre-existing Unix-socket/redirect/version
-knobs (also infallible); and the per-target `tlsConfigSupported()`
+knobs (also infallible); the per-target `tlsConfigSupported()`
 capability-probe design — a single test file branches on the probe's own
 runtime value (not on which target compiled it), asserting the Unix-
 socket-blocks-TLS gate (#5947) on dotnet and the target-wide #5878 gate on
-jvm. **Not part of committed CI, but hand-verified end-to-end in the
-implementing sandbox against a real public HTTPS peer** (a public-endpoint
-test is not CI-acceptable per this repo's own standard): exclusive CA
-trust correctly rejects a wrong CA and correctly connects with a matching
-one; additive CA trust preserves platform validation when the extra CA
-doesn't match; the dual-key policy's "warn but still enabled" and "fully
-disabled" cells both proven against the real peer (a wrong exclusive CA is
-rejected until `LYRIC_TLS_ALLOW_INSECURE=1` is also set, at which point
-the same client connects); `withClientIdentity` and `withMinTlsVersion(Tls13)`
-both connect successfully against a real modern HTTPS endpoint. What
-remains genuinely untested end-to-end on either target: a live listener
-that itself requires/verifies a CLIENT certificate (mTLS from the server
-side) — no such listener exists in CI yet (dotnet server TLS: #5884; jvm:
+jvm; and (added responding to the #5950 review finding)
+`resolveTlsValidationDecision`'s full decision matrix, both targets — the
+headline property (`hostnameAndAvailabilityOk = false` always rejects
+regardless of `chainAlreadyOk`/`caMode`) asserted for all 6 relevant
+combinations, plus exclusive-always-rechecks, additive-accepts-then-falls-
+back, and no-CA-mirrors-platform-verdict. **Not part of committed CI, but
+hand-verified end-to-end in the implementing sandbox against a real public
+HTTPS peer** (a public-endpoint test is not CI-acceptable per this repo's
+own standard, and the honest boundary the #5950 fix could not close: no
+CI-safe live peer presenting a genuinely wrong-hostname certificate exists
+on either target yet): exclusive CA trust correctly rejects a wrong CA and
+correctly connects with a matching one; additive CA trust preserves
+platform validation when the extra CA doesn't match; the dual-key policy's
+"warn but still enabled" and "fully disabled" cells both proven against
+the real peer (a wrong exclusive CA is rejected until
+`LYRIC_TLS_ALLOW_INSECURE=1` is also set, at which point the same client
+connects); `withClientIdentity` and `withMinTlsVersion(Tls13)` both
+connect successfully against a real modern HTTPS endpoint. What remains
+genuinely untested end-to-end on either target: a live listener
+presenting a certificate valid-by-chain but issued for the wrong host
+(the literal #5950 attack shape), and a live listener that itself
+requires/verifies a CLIENT certificate (mTLS from the server side) — no
+such listeners exist in CI yet (dotnet server TLS: #5884; jvm:
 #5878/#5880).
 
 **Verification:** hand-verified end-to-end against the published NuGet
@@ -17465,8 +17500,9 @@ D-progress-543/687/690). Regression-verified the pre-existing
 `tls_server_config_tests.l` suites unaffected on both targets. CI runs the
 real self-hosted-compiler-under-test build.
 
-**Related:** docs/61 §3.2 + §4, D128, #5874, #5877, #5878, #5947,
-D-progress-688 (`Std.Tls`), D-progress-690 (`withHttpVersion`,
+**Related:** docs/61 §3.2 + §4, D128, #5874, #5877, #5878, #5947, #5950
+(MITM fix), #5952 (revocation mode), #5971 (qualified case-pattern
+match), D-progress-688 (`Std.Tls`), D-progress-690 (`withHttpVersion`,
 `unsupportedReason` precedent), D-progress-687 (D122 delegate-bridge
 receiver-position fix — the same FFI feature this entry's gap #2
 concerns), docs/50-ffi-delegates-proposal.md, docs/01-language-reference.md

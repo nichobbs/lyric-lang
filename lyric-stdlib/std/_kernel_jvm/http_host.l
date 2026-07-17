@@ -231,6 +231,56 @@ pub func hostSupportsTlsConfig(): Bool {
   false
 }
 
+// The pure decision core the future JVM validation callback (#5878) will
+// drive, mirrored here identically from `_kernel/http_host.l`'s dotnet
+// twin (docs/61 §3.2; MITM fix #5950) — this logic is plain Lyric with no
+// BCL/extern dependency at all, so it is target-neutral and duplicated
+// verbatim rather than shared through a new package, matching this
+// directory's existing twin-kernel-file convention (each `_kernel*/`
+// file is self-contained per target). Not yet CALLED by anything on this
+// target (no JVM TLS wiring exists until #5878 ships), but declaring it
+// now means `http_tls_client_tests.l`'s `resolveTlsValidationDecision`
+// regression test — proving a hostname mismatch can never be overridden
+// by any CA configuration — runs identically on both targets today, and
+// #5878's callback can reuse this exact, already-tested function instead
+// of re-deriving it.
+pub enum TlsCaMode {
+  case NoCaConfigured
+  case AdditiveCa
+  case ExclusiveCa
+}
+
+pub enum TlsValidationDecision {
+  case RejectImmediately
+  case AcceptWithoutCustomChain
+  case TryCustomChain
+}
+
+@pure
+pub func resolveTlsValidationDecision(
+  hostnameAndAvailabilityOk: in Bool, chainAlreadyOk: in Bool, caMode: in TlsCaMode
+): TlsValidationDecision {
+  if not hostnameAndAvailabilityOk {
+    RejectImmediately
+  } else {
+    match caMode {
+      case ExclusiveCa -> TryCustomChain
+      case AdditiveCa ->
+        if chainAlreadyOk {
+          AcceptWithoutCustomChain
+        } else {
+          TryCustomChain
+        }
+      case NoCaConfigured ->
+        if chainAlreadyOk {
+          AcceptWithoutCustomChain
+        } else {
+          RejectImmediately
+        }
+    }
+  }
+}
+
 // =====================================================================
 // Request construction.
 // =====================================================================
