@@ -896,7 +896,13 @@ pub union MPackageItem {
   case MPRecord(rec: MRecord)
   // MPFuncs: top-level functions + optional static fields (IConst / IVal).
   // staticFields is empty when there are no module-level constants or vals.
-  case MPFuncs(hostClass: String, funcs: List[MFunc], staticFields: List[MStaticField])
+  // cctorLocals (#5955) lists the local variable types every static field's
+  // `initInsns` needs (e.g. the spill temp a `String` concat allocates),
+  // accumulated across ALL IConst/IVal items from ONE shared FuncCtx during
+  // codegen so slot numbers never collide between two different fields'
+  // initializers — mirrors an ordinary MFunc's `locals`. Empty when no field
+  // initializer needs a local (the common case: literals, simple newobj).
+  case MPFuncs(hostClass: String, funcs: List[MFunc], staticFields: List[MStaticField], cctorLocals: List[MsilType])
   case MPUnion(u: MUnion)
   case MPDistinctType(d: MDistinctType)
   case MPRangeType(r: MRangeType)
@@ -5061,6 +5067,7 @@ pub func lowerMFuncsToHostClass(
   hostClass: in String,
   funcs: in List[MFunc],
   staticFields: in List[MStaticField],
+  cctorLocals: in List[MsilType],
   ctx: in LoweringCtx,
 ): Int {
   val sh = ctx.strings
@@ -5129,6 +5136,21 @@ pub func lowerMFuncsToHostClass(
     cctorInsns.add(MRet)
     val mbCctor = newMethodBody()
     mbCctor.maxStack = 8
+    // #5955: a field initializer that needs a temp (e.g. the spill local
+    // `String` concatenation's BAdd arm allocates before lowering the rhs)
+    // emits `stloc`/`ldloc` against a slot — without a matching LocalVarSig
+    // token those reference an undeclared local and the CLR verifier rejects
+    // the method with `InvalidProgramException`.  `cctorLocals` is the
+    // codegen side's single shared FuncCtx's accumulated local types across
+    // EVERY static field's initializer (so slot numbers never collide
+    // between two fields), mirroring how an ordinary `MFunc.locals` becomes
+    // its LocalVarSig in `lowerMFunc`.
+    if cctorLocals.count > 0 {
+      val lvSigCctor = buildLocalVarSigWithCtx(cctorLocals, ctx)
+      val lvBlobCctor = ctxInternBlob(ctx, buildLvSigKey(cctorLocals) + "_" + hostClass + "_cctor", lvSigCctor)
+      val lvRowCctor = addStandAloneSig(ctx.tables, StandAloneSigRow(signature = lvBlobCctor))
+      mbSetLocalSig(mbCctor, standaloneToken(lvRowCctor))
+    }
     var ci = 0
     while ci < cctorInsns.count {
       lowerMInsn(ctx, cctorInsns[ci], mbCctor)
@@ -5214,8 +5236,8 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
       case MPRecord(rec) -> {
         lowerMRecord(rec, ctx)
       }
-      case MPFuncs(hostClass, funcs, staticFields) -> {
-        lowerMFuncsToHostClass(hostClass, funcs, staticFields, ctx)
+      case MPFuncs(hostClass, funcs, staticFields, cctorLocals) -> {
+        lowerMFuncsToHostClass(hostClass, funcs, staticFields, cctorLocals, ctx)
       }
       case MPUnion(u) -> {
         lowerMUnion(u, ctx)
@@ -5446,8 +5468,8 @@ func lowerMPackageItem(item: in MPackageItem, ctx: in LoweringCtx): Unit {
     case MPRecord(rec) -> {
       val _ = lowerMRecord(rec, ctx)
     }
-    case MPFuncs(hostClass, funcs, sfields) -> {
-      val _ = lowerMFuncsToHostClass(hostClass, funcs, sfields, ctx)
+    case MPFuncs(hostClass, funcs, sfields, cctorLocals) -> {
+      val _ = lowerMFuncsToHostClass(hostClass, funcs, sfields, cctorLocals, ctx)
     }
     case MPUnion(u) -> {
       val _ = lowerMUnion(u, ctx)
