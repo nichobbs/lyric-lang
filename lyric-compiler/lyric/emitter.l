@@ -2227,6 +2227,9 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
       pkgSrcs.add(mergePackageSources(mp.name, mp.sources, req.activeFeatures, req.declaredFeatures))
       mpi = mpi + 1
     }
+    // Project-path `--define` is still gated in the CLI (#5852 follow-up), so
+    // the JVM project bridge receives an empty defines list for now.
+    val noProjDefinesJvm: List[String] = newList()
     val okP = JvmBridge.compileProjectToJarBundledWithFeatures(
       pkgSrcs,
       req.outputPath,
@@ -2234,7 +2237,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
       stdlibSources,
       req.activeFeatures,
       req.declaredFeatures,
-      depTemplateNames
+      depTemplateNames,
+      noProjDefinesJvm
     )
     if okP {
       return EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
@@ -2246,6 +2250,9 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   val pkgName = pkg.name
   val source = if pkg.sources.count > 0 { pkg.sources[0] } else { "" }
 
+  // Single-package project path — `--define` still gated in the CLI (#5852);
+  // pass empty defines for now.
+  val noProjDefinesJvm1: List[String] = newList()
   val ok = JvmBridge.compileToJarBundledWithFeatures(
     source,
     req.outputPath,
@@ -2253,7 +2260,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
     stdlibSources,
     req.activeFeatures,
     req.declaredFeatures,
-    depTemplateNames
+    depTemplateNames,
+    noProjDefinesJvm1
   )
 
   if ok {
@@ -2308,7 +2316,18 @@ func emitNativeInProcess(
   for lib in extraLibs {
     clangFlags.add("-l" + lib)
   }
-  val ok = LlvmBridge.compileToNativeWithFlags(req.source, req.outputPath, stdlibSources, triple, optLevel, clangFlags)
+  // Native `--define` plumbing is threaded (parity with MSIL/JVM), but the CLI
+  // gates native `--define` (native codegen can't consume defines yet — #5977),
+  // so `req.defines` is empty here in practice until that gate lifts.
+  val ok = LlvmBridge.compileToNativeWithFlags(
+    req.source,
+    req.outputPath,
+    stdlibSources,
+    triple,
+    optLevel,
+    clangFlags,
+    req.defines
+  )
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
@@ -2339,6 +2358,8 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
   // `emitProjectJvmInProcess`.
   val noFeatures: List[String] = newList()
   val noDepTemplateSrcsJvm: List[String] = newList()
+  // Single-file JVM threads `--define` (docs/60 §5, #5852) — parity with the
+  // single-file MSIL `compileToMsilWithVersion(..., req.defines)` path.
   val ok = JvmBridge.compileToJarBundledWithFeatures(
     req.source,
     req.outputPath,
@@ -2346,7 +2367,8 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
     stdlibSources,
     noFeatures,
     noFeatures,
-    noDepTemplateSrcsJvm
+    noDepTemplateSrcsJvm,
+    req.defines
   )
   if ok {
     val okDiags: List[Diagnostic] = newList()

@@ -921,6 +921,7 @@ pub func compileToJarBundled(
 ): Bool {
   val noFeatures: List[String] = newList()
   val noDepTemplateSrcs: List[String] = newList()
+  val noDefines: List[String] = newList()
   compileToJarBundledWithFeatures(
     source,
     outputPath,
@@ -928,7 +929,8 @@ pub func compileToJarBundled(
     stdlibSources,
     noFeatures,
     noFeatures,
-    noDepTemplateSrcs
+    noDepTemplateSrcs,
+    noDefines
   )
 }
 
@@ -950,6 +952,7 @@ pub func compileToJarBundledWithFeatures(
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   depTemplateSrcs: in List[String],
+  defines: in List[String],
 ): Bool {
   val one: List[String] = newList()
   one.add(source)
@@ -960,7 +963,8 @@ pub func compileToJarBundledWithFeatures(
     stdlibSources,
     activeFeatures,
     declaredFeatures,
-    depTemplateSrcs
+    depTemplateSrcs,
+    defines
   )
 }
 
@@ -1008,6 +1012,7 @@ pub func compileProjectToJarBundledWithFeatures(
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   depTemplateSrcs: in List[String],
+  defines: in List[String],
 ): Bool {
   if pkgSrcs.count == 0 {
     Console.error("error[J001]: JVM project build received no packages")
@@ -1023,9 +1028,11 @@ pub func compileProjectToJarBundledWithFeatures(
   val userFiles: List[SourceFile] = newList()
   var mainIdx = 0
   var sawMain = false
-  // Empty until the project path threads --define (#5852); hoisted out of the
-  // per-package loop since it never varies (#5906).
-  val jvmProjDefines = BD.decodeDefines(newList())
+  // Resolved `--define`s (docs/60), decoded once — hoisted out of the
+  // per-package loop since it never varies (#5906). Empty on the project path
+  // (which still passes `newList()`); populated for single-file JVM builds
+  // (#5852).
+  val jvmProjDefines = BD.decodeDefines(defines)
   var psi = 0
   while psi < pkgSrcs.count {
     val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", activeFeatures, declaredFeatures, jvmProjDefines) {

@@ -50,7 +50,7 @@ func compileAndRunNative(source: in String): RunOutcome {
   val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
-  if not compileToNativeWithFlags(source, stem, stdlib, "", "0", flags) {
+  if not compileToNativeWithFlags(source, stem, stdlib, "", "0", flags, newList()) {
     panic("native compilation failed for a stdlib self-test program")
   }
   val noArgs: List[String] = newList()
