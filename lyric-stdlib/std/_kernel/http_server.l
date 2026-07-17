@@ -42,10 +42,21 @@
 //! and does not yet expose query string / header / byte-body support —
 //! a pre-existing Phase-6 JVM-parity gap (see `docs/44`), not one this
 //! extension introduces.
+//!
+//! `startListenerTls` (docs/61 §6.3, phase 2.1 of epic #5874, issue
+//! #5880) is a loud, typed `NotSupportedOnTarget` stub on this target: real TLS
+//! server termination on dotnet needs a from-scratch listener over
+//! `SslStream` (`System.Net.HttpListener` has no TLS surface on
+//! Linux/macOS — see docs/61 §6 and its transport-kernel table), which
+//! is out of scope here and tracked as phase 3.3, issue #5884. The JVM
+//! twin ships real `HttpsServer`/`SSLContext` termination for the
+//! non-mTLS case; see `_kernel_jvm/http_server.l`'s module header for
+//! the mTLS boundary.
 package Std.HttpServer
 
 import Std.Core
 import Std.Collections
+import Std.Tls
 
 // =====================================================================
 // Extern types — BCL classes the helpers below reference.
@@ -158,6 +169,13 @@ func intToLong(n: in Int): Long {
   NetConvert.ToInt64(n)
 }
 
+/// Failure returned by `startListenerTls`. On this target every call
+/// returns `Err(NotSupportedOnTarget(...))` today (module header) — server TLS
+/// termination on dotnet is tracked as issue #5884.
+pub union TlsListenError {
+  case NotSupportedOnTarget(message: String)
+}
+
 // =====================================================================
 // Public host helpers.
 // =====================================================================
@@ -169,6 +187,23 @@ pub func startListener(prefix: in String): HttpListener {
   l.get_Prefixes().Add(prefix)
   l.Start()
   l
+}
+
+/// TLS twin of `startListener` (docs/61 §6.3, issue #5880). Always
+/// returns `Err(NotSupportedOnTarget(...))` on this target — see the module
+/// header for why (`System.Net.HttpListener` has no TLS surface on
+/// Linux/macOS; real dotnet server TLS needs an `SslStream`-backed
+/// listener, tracked as issue #5884) — and never constructs a
+/// listener, matching the "typed error, not a panic" no-silent-skip
+/// rule (docs/61 §6.3).
+pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig): Result[HttpListener, TlsListenError] {
+  Err(
+    error = NotSupportedOnTarget(
+      message = "TLS server termination is not yet supported on --target dotnet: " +
+        "System.Net.HttpListener has no TLS surface on Linux/macOS; a real listener needs an " +
+        "SslStream-backed transport kernel (tracked in #5884)"
+    )
+  )
 }
 
 /// Block until the next request lands.

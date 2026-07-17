@@ -747,6 +747,7 @@ output_assembly = "myapp.dll"
 | `Std.Json` | RFC 8259 JSON | `serialize`, `deserialize`, `JsonValue` |
 | `Std.Http` | HTTP client/server primitives | `get`, `post`, `HttpRequest`, `HttpResponse`, `statusCode`, `HttpClientBuilder`, `withHttpVersion`, `HttpVersion`, `negotiatedVersion`, `withCaCertificate`, `withExclusiveCaCertificate`, `withClientIdentity`, `withMinTlsVersion`, `withInsecureSkipVerify`, `tlsConfigSupported`, `resolveInsecureVerifyPolicy` |
 | `Std.Tls` | PEM certificate/private-key loading | `Certificate`, `Identity`, `TlsVersion`, `TlsServerConfig`, `Certificate.fromPemFile`/`fromPem`, `Identity.fromPemFiles`/`fromPem` |
+| `Std.HttpServer` | Low-level HTTP(S) server (`lyric-web` builds on this) | `startListener`, `startListenerTls` (real TLS on `--target jvm`; typed-`Unsupported` stub on `--target dotnet`, docs/61 §6.3), `nextContext`, `respondText`/`respondJson`/`respondBytesWithHeaders` |
 | `Std.Testing` | Test assertions | `assertTrue`, `assertEqual`, `assertEqualInt`, `assertPanics`, `assertPanicsWith` |
 | `Std.Testing.Snapshot` | Snapshot testing | `snapshot(label, actual)`, `snapshotMatch(label, actual)` |
 | `Std.Testing.Property` | Property-based testing | `forAllIntRange`, `forAllBool`, `forAllDouble`, `forAllIntPair` |

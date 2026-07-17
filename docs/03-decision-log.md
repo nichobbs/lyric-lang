@@ -17533,6 +17533,112 @@ precedence), D-progress-688 (`Std.Tls`), D-progress-690
 delegate-bridge receiver-position fix — the same FFI feature this entry's
 gap #2 concerns), docs/50-ffi-delegates-proposal.md,
 docs/01-language-reference.md §3.1 (`internal` visibility tier).
+## D-progress-692 — `Std.HttpServer.startListenerTls` ships on JVM (phase 2.1 of epic #5874, issue #5880): real `HttpsServer` + `SSLContext` termination, non-mTLS; mTLS and three JVM auto-FFI gaps found and worked around or filed
+
+Ships `startListenerTls(host, port, tls: TlsServerConfig): Result[HttpListener,
+TlsListenError]` on `--target jvm` (`_kernel_jvm/http_server.l`), lifting the
+`https://`-prefix rejection this kernel's header used to document as tracked
+against #2663 (docs/61 §6.3, D128; not yet merged to `main` as of this
+entry). Verified end-to-end by `tls_server_jvm_tests.l`: a real
+`SSLSocket`-based client, trusting the fixture certificate as its own CA,
+completes a genuine TLS handshake and receives a real HTTP/1.1 response
+through the identical `nextContext`/`respondText` pull-model bridge
+`startListener` already uses. The `--target dotnet` twin is an unchanged
+typed-`Unsupported`-style stub (issue #5884; case renamed to
+`NotSupportedOnTarget`, see below).
+
+**SSLContext construction.** `identity`'s certificate + private key feed a
+`java.security.KeyStore` (PKCS12, in-memory) via `KeyStore.setKeyEntry`,
+then a standard `javax.net.ssl.KeyManagerFactory` produces the
+`KeyManager[]` passed to `SSLContext.init`. `minVersion` selects the JDK
+protocol algorithm name (`"TLS"` for the `Tls12` floor — negotiates the
+JDK's full supported range, currently 1.2+1.3; `"TLSv1.3"` restricts to
+that version alone). No client-cert trust manager is configured (mTLS is
+not yet supported — see below); this is inert since nothing requests a
+client certificate without `HttpsParameters.setNeedClientAuth`.
+
+**Four real, verified JVM backend/FFI gaps surfaced building this — three
+worked around, one blocks mTLS entirely (all filed, none fixed here — out
+of this PR's scope):**
+
+1. **#5930** — `impl <ExternInterface> for Record` only implements genuine
+   interfaces; attempting it against a concrete or abstract JDK *class*
+   (`com.sun.net.httpserver.HttpsConfigurator`, needed to override
+   `configure(...)` and call `HttpsParameters.setNeedClientAuth` — the
+   *only* JDK hook for mutual TLS on `HttpsServer`) compiles and emits
+   `implements <Class>`, but throws `IncompatibleClassChangeError` at
+   class-load time (verified with a minimal repro; `javap` confirms the
+   emitted `implements` clause). `javax.net.ssl.X509ExtendedKeyManager`
+   (needed for a custom `KeyManager` under a modern `SSLEngine` — the plain
+   `X509KeyManager` interface triggers `SSLContextImpl`'s legacy
+   `AbstractKeyManagerWrapper` path and fails every handshake with "No
+   available authentication scheme", also verified) is blocked the same
+   way. This is why mTLS (`requireClientCert`/`clientCa`) does not ship:
+   `startListenerTls` returns `Err(NotSupportedOnTarget(...))` for either
+   field rather than silently ignoring them or shipping a broken
+   implementation.
+2. **#5931** — `impl <ExternInterface> for Record`'s codegen
+   (`jvm/codegen/06_items.l`'s `lowerImplMethod`) does not resolve a
+   `slice[ExternType]` parameter or return type through the file's
+   `externTypes` map, falling back to the generic `Object[]` erasure; the
+   emitted method's real descriptor then mismatches the interface's,
+   throwing `AbstractMethodError` the first time the JDK actually dispatches
+   through it (verified: a `javax.net.ssl.X509TrustManager` impl whose
+   `checkServerTrusted(X509Certificate[], String)` compiled fine but faulted
+   mid-handshake). Worked around by using the JDK's own
+   `KeyManagerFactory`/`TrustManagerFactory` (which return real,
+   correctly-typed arrays) instead of a custom `X509KeyManager`/
+   `X509TrustManager` `impl` — this also sidesteps #5930's
+   `X509ExtendedKeyManager` wall.
+3. Unfiled as its own issue (same root cause as #5931's fix direction): the
+   JVM auto-FFI cannot pass a reference-typed Java array
+   (`Certificate[]`, `KeyManager[]`) as a *call argument* at all — only
+   primitive arrays get `jvm/auto_ffi.l`'s erasure-aware coercion, verified
+   against `KeyStore.setKeyEntry`/`SSLContext.init`. Worked around with
+   `java.lang.reflect.{Array,Method}`: `Array.newInstance`/`Array.set`
+   build a genuinely-typed array one element at a time (single-object
+   calls, not arrays, so they score fine), and `Method.invoke(Object,
+   Object...)`'s varargs parameter erases to `Object[]` too — an exact
+   match for a Lyric `slice[JObject]` argument. The same
+   `Array.newInstance` + `Array.get` trick produces a genuine `null`
+   reference of any class, standing in for Lyric's lack of a null literal
+   (#4775) where the JDK API expects one (`KeyStore.load(null, password)`).
+4. **#5932** — a package assembled from both a top-level stdlib file
+   (`tls.l`, always loaded) and an additional, uniquely-named
+   `_kernel_jvm/`-only file (`package Std.Tls`, tried first for the
+   `SSLContext` construction so it could stay JVM-local while reading
+   `Identity`'s opaque `handle` field from inside its own package) compiles
+   cleanly but breaks static-call resolution for *unrelated* calls
+   elsewhere in the same package at JVM runtime
+   (`NoSuchMethodError: Std.Tls.fromPem(...)` on a call site untouched by
+   the new file) — every existing `_kernel_jvm/` split in the stdlib is
+   basename-exclusive (one file replaces another for the same package),
+   so this additive two-file-same-package shape had no precedent. Worked
+   around by NOT introducing the second file: the `SSLContext` construction
+   lives entirely in `_kernel_jvm/http_server.l` (package `Std.HttpServer`,
+   a single file, unaffected), reached through the existing `internal
+   Identity.rawHandle(id): Host.CertHandle` kernel-boundary accessor
+   already shipped on `tls.l` for phase 1.2's dotnet client TLS
+   (D-progress-691) — no new opacity crack needed; that accessor's own
+   module-header note already anticipated "the future server-side kernels
+   phase 2/3 add." `_kernel_jvm/tls_host.l`'s `CertHandle.cert`/`.key`
+   fields (and their `JCertificate`/`JPrivateKey` extern types) were made
+   `pub` so `rawHandle`'s `Host.CertHandle` result is actually usable from
+   `Std.HttpServer`.
+
+**Case-name collision avoided.** `TlsListenError`'s single case was named
+`NotSupportedOnTarget`, not `Unsupported` — the latter already exists as
+`Std.Tls.TlsError.Unsupported`, and #5903 (D-progress-689) means the JVM
+backend's bare-case-name pattern-match resolution is global, not
+scrutinee-type-scoped: a first attempt named it `Unsupported` and broke
+three previously-passing `tls_tests.l` assertions (`Err(Unsupported(_, _))`
+started mis-dispatching to `TlsListenError.Unsupported`) — caught by
+re-running that suite before landing, not by any static check.
+
+**Related:** docs/61 §6.3/§8, docs/44 §8, D128, D-progress-689 (#5903/#5908
+precedent), D-progress-691 (`Identity.rawHandle`/`Certificate.rawHandle`
+this entry reuses), docs/51 (impl-for-extern-interface), #5874, #5880,
+#5884, #5930, #5931, #5932.
 
 ---
 
