@@ -34,7 +34,7 @@
 //! `TlsServerConfig` is covered separately in `tls_server_config_tests.l`
 //! (both targets). Its default-field-omission behavior has no test on any
 //! target: omitted-default construction currently miscompiles on JVM
-//! (#5908) and dotnet (#5920) — see that file's header and D-progress-688.
+//! (#5908) and dotnet (#5920) — see that file's header and D-progress-689.
 @test_module
 package Std.Tls.Tests
 

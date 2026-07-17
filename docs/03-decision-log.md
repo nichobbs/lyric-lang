@@ -16996,7 +16996,7 @@ release artifacts).
 
 **Related:** docs/22-distribution-and-tooling.md §5, D109, D059, #1082.
 
-## D-progress-688 — `Std.Tls` module ships (PEM certificate/private-key loading, docs/61 §3.1 phase 1.1); two pre-existing JVM backend bugs found and worked around
+## D-progress-689 — `Std.Tls` module ships (PEM certificate/private-key loading, docs/61 §3.1 phase 1.1); two pre-existing JVM backend bugs found and worked around
 
 Ships `lyric-stdlib/std/tls.l` (`Std.Tls`) plus its kernel twins
 (`_kernel/tls_host.l`, `_kernel_jvm/tls_host.l`) — issue #5876, phase 1.1 of
