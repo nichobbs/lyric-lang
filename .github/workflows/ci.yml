@@ -888,6 +888,13 @@ jobs:
       # path. dotnet-only: M1a gates `--define` to the single-file dotnet build
       # path (rejected on JVM/native/project), so the JVM twin is deliberately
       # absent — the JVM default-fallback path is covered by the self-test above.
+      #
+      # The fixture deliberately imports ONLY `Std.BuildInfo` (+ `Std.Console`
+      # for `println`) and NOT `Std.Core`, so it also guards #5949: the
+      # synthesized body's `Some`/`None` are core-prelude builtins (resolved via
+      # `symTableTryFindOne`, not the file's own import scope), so no `import
+      # Std.Core` injection is needed. The `--define git_hash` forces the `Some`
+      # branch into the synthesized body, exercising exactly that resolution.
       - name: BuildInfo --define runtime path (native lyric build --define)
         background: true
         working-directory: ${{ github.workspace }}
@@ -907,7 +914,6 @@ jobs:
           cat > "$fixture" <<'LYR'
           package BiDefineFixture
 
-          import Std.Core
           import Std.Console
           import Std.BuildInfo
 
