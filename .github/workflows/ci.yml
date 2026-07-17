@@ -739,7 +739,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping weaver self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/weaver_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/weaver_self_test.l
 
       # Self-hosted compiler self-tests (native lyric test) — replaces the
       # deleted F# `SelfHosted*Tests.fs` Expecto wrappers (#2364).  Each
@@ -808,7 +808,7 @@ jobs:
             lyric-compiler/lyric/generator/generator_self_test.l \
             lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l ; do
             echo "=== $t ==="
-            "$lyric_bin" test "$t"
+            bash scripts/ci-retry-on-signal.sh "$lyric_bin" test "$t"
             ran="$ran $t"
           done
           echo "Compiler self-tests ran:$ran" >> "$GITHUB_STEP_SUMMARY"
@@ -832,7 +832,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping cfg_gate self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/cfg_gate_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/cfg_gate_self_test.l
 
       # Bitwise self-test — first executable regression test for a
       # self-hosted-only *language feature* (the `.and/.or/.xor/.shl/.shr`
@@ -857,7 +857,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping bitwise self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
       # Bool stringification cross-target parity (#5552): toString(Bool),
       # Bool.toString(), string concatenation, and string interpolation all
@@ -881,7 +881,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping bool_tostring self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/bool_tostring_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/bool_tostring_self_test.l
 
       # Extra barrier (batch 1-pre-split, #5933): this first background group
       # ran 11 concurrent in-process compilations and produced one of the four
@@ -945,7 +945,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping byte-arithmetic self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/byte_arithmetic_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/byte_arithmetic_self_test.l
 
       # Typed FFI delegate bridging (Epic #1877/#3923 FFI-boundary slice):
       # dotnet-only — the feature is MSIL-specific (SocketsHttpHandler is a
@@ -964,7 +964,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping typed FFI delegate self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/typed_ffi_delegate_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/typed_ffi_delegate_self_test.l
 
       # docs/58 (D121) self-tests, one step to keep this batch's background
       # concurrency where it was (#4486/#4841 corruption guidance): the
@@ -990,10 +990,10 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping docs/58 self-tests"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/wire_expand_self_test.l
-          "$lyric_bin" test lyric-compiler/lyric/wire_templates_self_test.l
-          "$lyric_bin" test lyric-compiler/lyric/config_templates_self_test.l
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/wire_di_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/wire_expand_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/wire_templates_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/config_templates_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/wire_di_self_test.l
           echo "docs/58 self-tests ran: wire_expand, wire_templates, config_templates, wire_di (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
       # Slice-ops self-test (#5244).  `slice[T].append`/`.concat`/`.slice` —
@@ -1020,7 +1020,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping slice-ops self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/slice_ops_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/slice_ops_self_test.l
 
       # Block-shadow self-test (#5191 / D-progress-603).  Runtime regression test
       # for general nested-block variable shadowing on the self-hosted backends:
@@ -1041,7 +1041,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping block-shadow self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/block_shadow_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/block_shadow_self_test.l
 
       # Extra barrier (batch 1a-split): the batch above the batch-1a barrier had
       # grown to ~21 concurrent in-process compilations — well over the ~14-step
@@ -1078,7 +1078,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping control-flow dotnet self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/jvm/control_flow_jvm_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/jvm/control_flow_jvm_self_test.l
 
       - name: Never-tail self-test (native lyric test)
         background: true
@@ -1094,7 +1094,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping never-tail self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/never_tail_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/never_tail_self_test.l
 
       # Annotated-binding unbox self-test (#5519).  A closure-call result bound
       # to a primitive-annotated local (`val r: Int = g()`) must unbox the
@@ -1115,7 +1115,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping annotated-binding unbox self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/annotated_binding_unbox_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/annotated_binding_unbox_self_test.l
 
       # Compound-assign String self-test (#5657).  `s += <rhs>` onto a String
       # plain variable now type-checks for any RHS (mirroring binary `+`), and
@@ -1136,7 +1136,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping compound-assign self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/compound_string_assign_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/compound_string_assign_self_test.l
 
       # UFCS self-field self-test (#5565).  An out-of-body UFCS method
       # (`func Outer.m(self: in Outer)`) reading a `self` field now resolves the
@@ -1157,7 +1157,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping UFCS self-field self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/ufcs_self_field_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/ufcs_self_field_self_test.l
 
       # Opaque Option-field match self-test (#5576, MSIL).  Matching an
       # `Option[T]` field stored in an opaque type no longer panics as
@@ -1179,7 +1179,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping opaque Option-field self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/opaque_option_field_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/opaque_option_field_self_test.l
 
       # List-literal indexed-read self-test (#5620, MSIL).  An unannotated list
       # literal (`val xs = [9, 7]`) now builds a genuine `List<e>` when
@@ -1201,7 +1201,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping list-literal index self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/list_literal_index_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/list_literal_index_self_test.l
 
       # Extra barrier (batch 1a-split-2, #5859): the sub-batch below the
       # 1a-split barrier had grown to 13 concurrent steps — one below the
@@ -1236,7 +1236,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping enum/closure/pattern-bind self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/enum_closure_pattern_bind_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/enum_closure_pattern_bind_self_test.l
 
       # Aspect-weave end-to-end self-test (#3402).  Runs real woven functions
       # (out-variable `ret = proceed()` advice, the `call.proceed()` library-
@@ -1261,7 +1261,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping aspect-weave self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/aspect_weave_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/aspect_weave_self_test.l
           echo "aspect-weave self-test ran: aspect_weave_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
       # Async structured-concurrency keyword self-test (D119 S4 / D120,
@@ -1286,7 +1286,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping async-spawn self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_spawn_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_spawn_self_test.l
           echo "async-spawn self-test ran: async_spawn_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
       # stdlib-generic-iface self-test (#3502).  Pins the fix for
@@ -1311,7 +1311,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping stdlib-generic-iface self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/stdlib_generic_iface_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/stdlib_generic_iface_self_test.l
           echo "stdlib-generic-iface self-test ran: stdlib_generic_iface_self_test.l" >> "$GITHUB_STEP_SUMMARY"
 
       # Map-enhancements self-test (#3511, #3512).  Exercises the IEnumerator
@@ -1335,7 +1335,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping map-enhancements self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_enhancements_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_enhancements_self_test.l
           echo "map-enhancements self-test ran: map_enhancements_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
       # Slice array-ABI self-test (#2592).  Verifies a self-hosted `slice[T]`
@@ -1359,7 +1359,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping slice array-ABI self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/slice_array_abi_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/slice_array_abi_self_test.l
 
       # Concurrency cap: this first parallel group had grown to 28 background
       # steps — well past the ~18 peak this job's header comment documents as
@@ -1389,7 +1389,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping toArray array-ABI self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/toarray_array_abi_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/toarray_array_abi_self_test.l
 
       # Per-package stdlib emit (#2592 stage-2).  Drives the self-hosted
       # `--internal-perpackage-build` to compile a `Std.Sort` driver's transitive
@@ -1412,7 +1412,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping slice/string self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/slice_string_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/slice_string_self_test.l
 
       # Generic-slice self-test (#2557).  Exercises user-defined generic
       # functions whose parameters / returns / typed locals mention `slice[T]`
@@ -1438,7 +1438,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping generic-slice self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/generic_slice_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/generic_slice_self_test.l
 
       # For-loop slice iteration self-test (#2563).  Verifies that `for x in xs`
       # works correctly when `xs` is a slice[T] parameter derived from List.toArray().
@@ -1457,7 +1457,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping for-loop slice self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/for_loop_slice_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/for_loop_slice_self_test.l
 
       # For-loop slice self-test stays dotnet-only (#2595): the JVM slice-iteration
       # erased-element path (auto-FFI on the element's method call) is not yet at
@@ -1488,7 +1488,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping range-for self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/jvm/range_for_jvm_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/jvm/range_for_jvm_self_test.l
 
       # Erased-generic-payload arithmetic self-test on the dotnet target (J4,
       # #4877).  The bug it guards is JVM-only (MSIL reifies the type-param field,
@@ -1510,7 +1510,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping erased-generic-arith self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/jvm/erased_generic_arith_jvm_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/jvm/erased_generic_arith_jvm_self_test.l
 
       # Bitwise self-test on the JVM target (#1611 JVM half).  Compiles the same
       # @test_module in-process through the self-hosted `Jvm.Bridge`
@@ -1534,7 +1534,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping conversion-method self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/conv_methods_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/conv_methods_self_test.l
 
       # Extra barrier (batch 1b-split, #5933): prophylactic — this group sat
       # exactly at the documented ~14-step cap. It has produced no observed
@@ -1558,7 +1558,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping pattern-lowering self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/pattern_lowering_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/pattern_lowering_self_test.l
 
       - name: Auto-FFI metadata self-test (native lyric test)
         background: true
@@ -1574,7 +1574,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping auto-FFI self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
       - name: Extern Option[T] null-coercion self-test (native lyric test)
         background: true
@@ -1590,7 +1590,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping extern-option self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/extern_option_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/extern_option_self_test.l
 
       - name: FFI interface impl self-test (D105, native lyric test)
         background: true
@@ -1606,7 +1606,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping FFI iface impl self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/ffi_iface_impl_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/ffi_iface_impl_self_test.l
 
       - name: Import extern self-test (D116, native lyric test)
         background: true
@@ -1622,7 +1622,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping import extern self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/import_extern_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/import_extern_self_test.l
 
       # Auto-FFI F0015 negative-compile test (#2945).  The auto-FFI self-test
       # above covers only the happy path (valid signatures resolve), so a
@@ -1894,7 +1894,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping synthesized-method-resolution self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/synthesized_method_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/synthesized_method_self_test.l
 
       # @projectable opaque-twin self-test (#1500 / PR #3015, wired per #3045).
       # Exercises the self-hosted MSIL lowering for `@projectable` opaque types:
@@ -1917,7 +1917,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping projectable self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m87.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m87.l
 
       # Nested if/match outer-var-mutation regression self-test (issue #5049).
       # Locks down a control-flow shape (a `var` of `Option[Record]` type
@@ -1943,7 +1943,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; aborting nested if/match outer-var mutation self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m89.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m89.l
 
       # Package-level class-typed val .cctor self-test (#1576, wired per #3024).
       # Exercises the self-hosted MSIL lowering for a package-level `val` whose
@@ -1967,7 +1967,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping class-typed val .cctor self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m86.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m86.l
 
       # In-bundle generic records self-test (#2362, docs/43, epic #2359 Stage 3).
       # Exercises the self-hosted MSIL backend emitting a `record Box[T]` as a
@@ -1994,7 +1994,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping in-bundle generics self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/inbundle_generics_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/inbundle_generics_self_test.l
 
       # Extra barrier (batch 2a-split, #5933): THIS group produced two of the
       # four observed exit-135 random step kills (cross_package_generics on
@@ -2029,7 +2029,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping cross-package generics self-test"
             exit 1
           fi
-          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cross_package_generics_self_test.l
+          LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/cross_package_generics_self_test.l
 
       # Cross-package Nat-backed range-subtype self-test (docs/59 §3.3 MINOR
       # finding).  `typeExprToMsilCtx` had no arm for `Nat`, so a `Nat`-typed
@@ -2058,7 +2058,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping cross-package Nat self-test"
             exit 1
           fi
-          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/nat_cross_package_self_test.l
+          LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/nat_cross_package_self_test.l
 
       # Cross-assembly restored async funcs self-test (#5561).  Builds a
       # PRODUCER DLL of `pub async func`s in-process via
@@ -2083,7 +2083,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping restored async self-test"
             exit 1
           fi
-          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/restored_async_self_test.l
+          LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/restored_async_self_test.l
 
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
@@ -2107,7 +2107,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping async extern self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_extern_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_extern_self_test.l
 
       # IAsyncStateMachine synthesis self-test — pins Phase B.0 (epic #2070, D086):
       # user-defined `async func` without EAwait nodes synthesises a sealed
@@ -2128,7 +2128,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping async SM self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_sm_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_sm_self_test.l
 
       # Auto-FFI metadata-resolution self-test on the JVM target (epic #1622,
       # JVM analog).  `extern type T = "java.lang.Math"` makes `T.method(args)`
@@ -2162,7 +2162,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping match/compound self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/match_compound_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/match_compound_self_test.l
 
       # Loop-EH + collection self-test — pins the remaining two #1481 (epic
       # #1470, Band 2) backend fixes: (3) `break`/`continue` whose target loop
@@ -2185,7 +2185,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping loop-EH/collection self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/loop_eh_collection_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/loop_eh_collection_self_test.l
 
       # Return-in-try self-test — pins the #1477 foundation (epic #1470, Band 2):
       # a `return` inside a `try`/`catch`/`finally` now routes through a function
@@ -2207,7 +2207,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping return-in-try self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/return_in_try_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/return_in_try_self_test.l
 
       # Defer self-test — pins `defer`-at-scope-exit (#1477, epic #1470, Band 2):
       # `defer { D }` runs D on scope exit on every path (fall-off, early return,
@@ -2230,7 +2230,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping defer self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/defer_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/defer_self_test.l
 
       # try/catch-as-value self-test — pins #1823 (epic #1470, Band 2): a
       # `try { … } catch … { … }` used as a value-producing expression now
@@ -2253,7 +2253,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping try-catch-expr self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/try_catch_expr_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/try_catch_expr_self_test.l
 
       # Loop-invariant self-test — pins that a loop `invariant:` clause is
       # checked at runtime (the contract elaborator lowers it to `assert(inv)`
@@ -2274,7 +2274,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping loop-invariant self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/loop_invariant_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/loop_invariant_self_test.l
 
       # Function-value invocation — pins #1877: invoking a function-typed value
       # (`f()` where f: () -> R) through the uniform Func ABI.  Zero-argument
@@ -2467,7 +2467,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping await-expr-forms self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_await_expr_forms_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_await_expr_forms_self_test.l
 
   # Native (LLVM) backend self-tests — N7.1 (docs/10 D-progress-540/545).
   # Split out into its own job (previously a `background: true` step inside
@@ -2707,7 +2707,7 @@ jobs:
             lyric-compiler/msil/lowering_token_self_test.l \
             lyric-compiler/msil/metadata_reader_self_test.l ; do
             echo "=== $t ==="
-            "$lyric_bin" test --target dotnet "$t"
+            bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet "$t"
             ran="$ran $t"
           done
           echo "MSIL backend self-tests ran:$ran" >> "$GITHUB_STEP_SUMMARY"
@@ -2730,7 +2730,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping out/inout self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/outparam_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/outparam_self_test.l
           echo "out/inout-parameter self-test ran: outparam_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
       # Named-arg/default-param self-test — pins call-site named-arg reorder and
@@ -2749,7 +2749,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping named-arg self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/func_default_args_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/func_default_args_self_test.l
           echo "named-arg/default-param self-test ran: func_default_args_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
       # Nested-generic self-test — pins #1687 on the MSIL target.  JVM-target
@@ -2769,7 +2769,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping nested-generic self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/nested_generic_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/nested_generic_self_test.l
 
       # Union-ctor return-context self-test — pins #3813 follow-up: a bare
       # `Some(...)` built in a function returning `Result[Rec, E]` must infer
@@ -2790,7 +2790,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping union-ctor return-context self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/union_ctor_return_context_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/union_ctor_return_context_self_test.l
 
       # Self-method-call self-test — pins #1715: intra-impl method calls
       # (`self.m()` and bare `m()`) were dropped by the self-hosted MSIL
@@ -2810,7 +2810,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping self-method-call self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/self_method_call_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/self_method_call_self_test.l
 
       # Extra barrier (batch 1b-split, #5933 pattern): the sibling dotnet-a
       # job's exit-135 random-step kills (SIGBUS-class, memory pressure from
@@ -2844,7 +2844,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping implicit-self record-method self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/implicit_self_msil_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/implicit_self_msil_self_test.l
 
       # Named-arg-order self-test — pins D-progress-357: record construction with
       # named arguments out of declaration order stored values into the wrong
@@ -2863,7 +2863,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping named-arg-order self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/named_arg_order_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/named_arg_order_self_test.l
 
       # Record-option-field self-test — pins #1731 / D-progress-359: a `None`
       # (or `Some`) value for a concrete `Option[T]` record field must carry the
@@ -2883,7 +2883,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping record-option-field self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/record_option_field_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/record_option_field_self_test.l
 
       # Generic-specialization self-test — pins #1730 / D-progress-360: a *called*
       # same-package generic NRE'd in lowerFuncMsil, and the monomorphizer's
@@ -2906,7 +2906,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping generic-specialization self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/generic_specialization_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/generic_specialization_self_test.l
 
       # Stdlib-generic monomorphization self-test — pins #1727 (inference slice):
       # the monomorphizer is fed the stdlib's pure-Lyric generic `pub func`s,
@@ -2928,7 +2928,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping stdlib-generic-mono self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/stdlib_generic_mono_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/stdlib_generic_mono_self_test.l
 
       # Map-option self-test — pins #1727 (codegen slice): `mapGet(m, key)` lowers
       # to a real `Option[V]` (`ContainsKey ? Some(get_Item) : None`) with `V` from
@@ -2954,7 +2954,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping map-option self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_option_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_option_self_test.l
 
       # Concurrency cap: this parallel group was 23 background steps, past the
       # ~18 safe peak; halve it to ~12 concurrent in-process compilations with
@@ -2982,7 +2982,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping propagate self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/propagate_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/propagate_self_test.l
 
       # List-value-compare self-test — #1779 bug A.  A comparison / arithmetic
       # on a `List[ValueType]` element-access result (`xs[i] <= 0`) miscompiled
@@ -3002,7 +3002,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping list-value-compare self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/list_value_compare_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/list_value_compare_self_test.l
 
       # Equality self-test — #1480 (partial).  `==`/`!=` on a record / distinct
       # type with `@derive(Equals)` now dispatches to the synthesised structural
@@ -3023,7 +3023,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping equality self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/equality_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/equality_self_test.l
 
       # Map-key self-test — #1480 (MSIL) / #4982 Finding 1 (JVM).  Records with
       # `@derive(Equals)` + `@derive(Hash)` now carry synthesised
@@ -3045,7 +3045,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping map-key self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_key_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_key_self_test.l
 
       # Map-value self-test — #1835.  `Map[K, ValueType]` values read correctly
       # in hint-less positions (`match mapGet(m, k)`, `m[k]`) — the value type
@@ -3065,7 +3065,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping map-value self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_value_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_value_self_test.l
 
       # Extra barrier (batch 2-split, #5933 pattern): the group that actually
       # contained the Propagate self-test kill (see the barrier above) ran 11
@@ -3091,7 +3091,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping impl-method self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/impl_method_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/impl_method_self_test.l
 
       # Alias-rewriter self-test — #1834.  The package-alias rewriter
       # (`Lyric.AliasRewriter`) now descends into the compound item kinds
@@ -3114,7 +3114,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping alias-rewriter self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/alias_rewriter_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/alias_rewriter_self_test.l
 
       # Ensures self-test — #1871.  `ensures:` contract clauses now compile and
       # run through the self-hosted MSIL path: the contract elaborator's
@@ -3136,7 +3136,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping ensures self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/ensures_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/ensures_self_test.l
 
       # Mono-shadow self-test — #1855.  A user-defined function now shadows an
       # imported generic of the same bare name in the monomorphizer, so calling
@@ -3159,7 +3159,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping mono-shadow self-test"
             exit 1
           fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/mono_shadow_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/mono_shadow_self_test.l
 
       # Mono-shadow self-test is dotnet-only (#2000).  Although the module
       # imports only Std.*, the JVM backend currently emits invalid stackmap
@@ -3187,7 +3187,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping cli-suggest self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/cli_suggest_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/cli_suggest_self_test.l
 
       - name: CLI-upgrade self-test (native lyric test)
         working-directory: ${{ github.workspace }}
@@ -3202,7 +3202,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping cli-upgrade self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/cli_upgrade_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/cli_upgrade_self_test.l
 
       # CLI project-aware-defaults end-to-end smoke test — exercises
       # findNearestManifest (Lyric.Discovery), the bare-`lyric` build default,
@@ -3226,7 +3226,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping release self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/release_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/release_self_test.l
 
       # Drain all earlier background steps before the heavy project self-tests,
       # which run heavy in-process multi-package builds and need
@@ -3255,7 +3255,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping MSIL project bridge self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/msil_project_bridge_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/msil_project_bridge_self_test.l
 
       # Emitter project self-test — exercises the Phase 4 in-process routing in
       # Lyric.Emitter.emitProject (multi-package DOTNET builds).  Covers aliased
@@ -3274,7 +3274,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping emitter project self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/emitter_project_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/emitter_project_self_test.l
 
       - name: Init self-test (native lyric test)
         background: true
@@ -3286,7 +3286,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping init self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/init_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/init_self_test.l
 
       - name: Union-in-list match self-test (native lyric test, #2126)
         background: true
@@ -3298,7 +3298,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping union-list-match self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/union_list_match_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/union_list_match_self_test.l
 
       # Module-level val self-test — exercises M5.2 stage 3 (non-constant `val`
       # at package scope emitted as a static readonly field initialized in .cctor).
@@ -3314,7 +3314,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping module-val self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/module_val_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/module_val_self_test.l
 
       # @stubbable + StubCounter self-test (#1776).  Verifies the full
       # @stubbable → synthesised Stub record + impl path combined with the
@@ -3332,7 +3332,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping stubbable self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/stubbable_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/stubbable_self_test.l
 
       # Culture-invariant toString(DateTime) self-test (#2184).  Pins the
       # self-hosted MSIL emitter's `toString` builtin to InvariantCulture for
@@ -3350,7 +3350,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping datetime-toString self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/datetime_tostring_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/datetime_tostring_self_test.l
 
       # Std.Console stdin/stdout/stderr round-trip on --target dotnet (#4816/
       # #4817) — the MSIL-target counterpart to the JVM job's
