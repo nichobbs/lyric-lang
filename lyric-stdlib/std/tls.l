@@ -288,3 +288,28 @@ pub func Identity.fromPem(certPem: in String, keyPem: in String): Result[Identit
 {
   identityFromBytes("<memory>", "<memory>", encodeUtf8(certPem), encodeUtf8(keyPem))
 }
+
+// ---------------------------------------------------------------------------
+// Kernel-boundary escape hatches (docs/61 §3.2, phase 1.2; #5877).
+//
+// `Certificate`/`Identity` are opaque so application code can never crack
+// their representation, but other kernel-boundary packages in THIS project
+// (e.g. `Std.HttpHost`'s TLS wiring, and the future server-side kernels
+// phase 2/3 add) need the raw host handle to assemble target-specific TLS
+// options. `internal` is the exact fit: visible across packages within the
+// project (docs/01-language-reference.md §3.1) but excluded from the
+// published `Lyric.Contract` surface, so these never appear as part of
+// Std.Tls's external API.
+// ---------------------------------------------------------------------------
+/// Kernel-boundary accessor for `Certificate`'s underlying host handle.
+/// Not part of the certificate-loading surface application code calls —
+/// see the module-header note above.
+internal func Certificate.rawHandle(c: in Certificate): Host.CertHandle {
+  c.handle
+}
+
+/// Kernel-boundary accessor for `Identity`'s underlying host handle. Same
+/// rationale as `Certificate.rawHandle`.
+internal func Identity.rawHandle(id: in Identity): Host.CertHandle {
+  id.handle
+}

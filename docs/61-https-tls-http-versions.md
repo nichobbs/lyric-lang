@@ -141,11 +141,21 @@ val client = HttpClientBuilder.new()
   *replaces* the platform store (the service-mesh case). Distinct names
   rather than a boolean so the more dangerous semantics is visible at the
   call site.
-- On .NET all of these lower to one `SocketsHttpHandler.SslOptions`
-  (`SslClientAuthenticationOptions`) assembly. The trust-callback property is
-  delegate-valued — the same FFI shape as `ConnectCallback`, which D122
-  already ships (typed `TFunction` → delegate at `@externTarget` boundaries),
-  so no new FFI capability is needed.
+- **Correction from implementation (§8 phase 1.2, #5877):** this
+  paragraph originally sketched one `SocketsHttpHandler.SslOptions`
+  (`SslClientAuthenticationOptions`) assembly, assuming the trust-callback
+  property's delegate-valued FFI shape was identical to `ConnectCallback`'s.
+  It is not: `SslClientAuthenticationOptions.RemoteCertificateValidationCallback`
+  is a genuinely custom .NET delegate type, whereas `ConnectCallback` is a
+  plain `Func<...>` alias in metadata — D122's delegate-bridge FFI only
+  constructs `Func`/`Action` instances, so it cannot bind to the former (found
+  empirically, filed as #5947). The shipped wiring instead routes through
+  `System.Net.Http.HttpClientHandler`'s own `Func<...>`-typed
+  `ServerCertificateCustomValidationCallback`/plain `ClientCertificates`/
+  `SslProtocols` properties, which need no new FFI capability. The one
+  casualty: Unix sockets (which require `SocketsHttpHandler` for
+  `ConnectCallback`) combined with any TLS option is unsupported on this
+  target until #5947 lands.
 - On JVM they lower to `HttpClient.Builder.sslContext(...)` +
   `sslParameters(...)` built from the §3.1 kernel pieces.
 - The builder's `build()` stays infallible: `Std.Tls` loading returns
@@ -396,7 +406,32 @@ items marked ∥ are independent and can proceed in parallel.
 **Phase 1 — client TLS + versions (both managed targets)**
 1. `Std.Tls` module: types, PEM loading, kernel twins, self-tests. ∥ with 4.
 2. .NET client TLS: `SslOptions` wiring, builder surface, dual-key insecure
-   policy, self-test. (After 1.)
+   policy, self-test. (After 1.) _Shipped (D-progress-691, #5877):
+   `HttpClientBuilder` gains `withCaCertificate`/`withExclusiveCaCertificate`/
+   `withClientIdentity`/`withMinTlsVersion`/`withInsecureSkipVerify` plus a
+   `tlsConfigSupported()` capability probe; `build()` stays infallible.
+   **Design deviation from the issue's literal wording**: wiring routes
+   through `System.Net.Http.HttpClientHandler`'s `Func<...>`-typed
+   `ServerCertificateCustomValidationCallback`/`ClientCertificates`/
+   `SslProtocols`, not `SocketsHttpHandler.SslOptions` as originally
+   sketched — `SslClientAuthenticationOptions.RemoteCertificateValidationCallback`
+   is a genuinely custom .NET delegate type, and the delegate-bridge FFI
+   (Epic #1877/#3923) only constructs `Func`/`Action` instances (found
+   empirically while implementing this; filed as #5947). Consequence:
+   Unix sockets (which require `SocketsHttpHandler` for `ConnectCallback`)
+   combined with any TLS option is not supported on this target until
+   #5947 lands — a typed `ConnectionFailed` naming it, never a silent
+   no-TLS-config connection. The dual-key insecure-verify policy
+   (`resolveInsecureVerifyPolicy`) is `pub` (not build()-internal) so it
+   doubles as the pure, directly-testable decision function and is
+   reusable by future server-side TLS config. Verified end-to-end against
+   a real HTTPS peer in the implementing sandbox (exclusive/additive CA
+   trust, both insecure-policy cells, mTLS identity, `Tls13` pin) —
+   not part of committed CI (a public-endpoint test is not CI-acceptable);
+   the committed suite (`http_tls_client_tests.l`) covers the policy
+   matrix, builder composition, and the per-target capability-probe
+   design deterministically, with no live TLS peer needed on either
+   target.
 3. JVM client TLS: `SSLContext` wiring, same surface/policy, self-test.
    (After 1; ∥ with 2.)
 4. HTTP-version knob + h2-or-lower default parity + `negotiatedVersion`

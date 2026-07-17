@@ -214,6 +214,23 @@ pub func hostClientWithUnixSocketNoRedirectsHttp11(socketPath: in String): HttpC
   unixSocketUnsupported()
 }
 
+// ---------------------------------------------------------------------------
+// TLS client configuration: not implemented on this target yet — the JVM
+// slice is #5878 (docs/61 §3.2, D128; phase 1.2 dotnet-only in #5877).
+//
+// `Std.Http.HttpClientBuilder.build()` calls this capability probe BEFORE
+// ever attempting kernel-level TLS wiring; when it returns `false` (as it
+// does here), `build()` sets `HttpClientImpl.unsupportedReason` instead
+// (the same mechanism `Http3` already uses on both targets) rather than
+// calling a JVM `hostClientWithTls` this file has no reason to declare yet
+// — a TLS-configured client still builds successfully, but every request
+// through it fails with a typed `ConnectionFailed` naming this issue,
+// never a silent no-TLS-config connection (docs/61's no-silent-skip rule).
+// ---------------------------------------------------------------------------
+pub func hostSupportsTlsConfig(): Bool {
+  false
+}
+
 // =====================================================================
 // Request construction.
 // =====================================================================

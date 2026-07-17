@@ -269,6 +269,29 @@ val client = HttpClientBuilder.new().withRedirects(5).withHttpVersion(Http11).bu
 
 `HttpVersion` has three cases: `Http2` (the default on both targets — h2-or-lower negotiated via ALPN over TLS, falling back to HTTP/1.1; a plaintext `http://` connection has no ALPN to negotiate with and always stays HTTP/1.1), `Http11` (pins the connection to HTTP/1.1 exactly), and `Http3` (reserved — neither target can speak it yet, so a client built with `Http3` fails every request with a typed `ConnectionFailed` rather than refusing to build). Call `response.negotiatedVersion()` to see which version a given response actually used. Note that the h2-or-lower default is a deliberate behavior change on the .NET target (previously HTTP/1.1-only) made to match the JVM's existing JDK default — it only changes behavior against HTTPS peers that advertise h2.
 
+`HttpClientBuilder` also carries the client-side TLS configuration surface (`Std.Tls`, backed by the PEM-only `Certificate`/`Identity` types):
+
+```lyric
+import Std.Http
+import Std.Tls
+
+val ca = match Certificate.fromPemFile("/etc/ssl/internal-ca.pem") { case Ok(c) -> c case Err(e) -> panic(TlsError.message(e)) }
+val client = HttpClientBuilder.new().withCaCertificate(ca).withMinTlsVersion(Tls13).build()
+```
+
+`withCaCertificate` adds `ca` as an ADDITIONAL trust root alongside the platform trust store — the common "internal CA plus public internet" case. `withExclusiveCaCertificate` REPLACES the platform store entirely instead — the service-mesh case where a peer's certificate is signed by a private CA and public-internet trust should not apply at all; the two have distinct names precisely so the more dangerous semantics is visible at the call site. `withClientIdentity` presents an `Identity` (certificate plus private key) for mutual TLS. `withMinTlsVersion` sets the floor protocol version (`Tls12` or `Tls13`; there is no way to go lower). `build()` stays infallible even with TLS options configured — all fallible work (PEM parsing) already happened at `Certificate`/`Identity` construction time.
+
+`withInsecureSkipVerify()` disables certificate verification, but only when paired with an environment variable — this is the **dual-key insecure policy**: calling `withInsecureSkipVerify()` in code is not enough by itself. The environment variable `LYRIC_TLS_ALLOW_INSECURE` must also be set to `"1"` at `build()` time:
+
+| `withInsecureSkipVerify()` in code | `LYRIC_TLS_ALLOW_INSECURE=1` in env | Effect |
+|---|---|---|
+| no | no | Verification enabled (secure default) |
+| no | yes | Verification enabled — the env var alone is a no-op |
+| yes | no | Verification enabled, plus a one-time stderr warning naming the missing variable |
+| yes | yes | Verification disabled for this client only |
+
+The rationale: keeping `withInsecureSkipVerify()` in code during development, with the environment variable set locally, and simply not setting it in production, makes the deployment secure by dropping one environment variable — no rebuild, no code change. Never use this in production. `tlsConfigSupported()` reports whether the current compilation target's kernel can honor these options at all — `--target dotnet` returns `true`; `--target jvm` does not support client TLS configuration yet, so a TLS-configured client still builds there but every request fails with a typed error instead of connecting without the configured options.
+
 There is also a server-side surface in `Std.Http` for handling inbound requests, but it is `@experimental` and its shape is still being settled. For production HTTP service code, the current recommendation is to use the `Std.Http.HttpClient` interface for outbound calls and the `lyric-web` library (`Web` package) for server-side routing and handler dispatch — see chapter 24.
 
 ## §12.9 `Std.Rest`
