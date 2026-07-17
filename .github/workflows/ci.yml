@@ -372,15 +372,17 @@ jobs:
       # Five `-ignore` patterns suppress known-benign findings rather than
       # failing on them forever silently; each is tracked in #5638 with the
       # condition under which it should be revisited:
-      #   1/2. `background:`/`wait-all:` are this repo's custom step keys for
-      #      concurrent execution on its extended runner (documented above,
-      #      empirically verified) -- actionlint validates against the
-      #      standard GitHub Actions schema and has no notion of them, so a
-      #      step using one always trips two separate findings: "unexpected
-      #      key" for the custom key itself, and "step must run script with"
-      #      because actionlint doesn't recognize the custom key as a valid
-      #      step body (in place of `run:`/`uses:`). Same root cause; not a
-      #      bug; permanent.
+      #   1/2. `background:`/`wait-all:` are official GitHub Actions step
+      #      keys (parallel steps, shipped 2026-06-25; see the changelog link
+      #      in the "Parallel step execution" comment further down, verified
+      #      in #5941 -- an earlier version of this comment wrongly called
+      #      them repo-custom extended-runner keys) -- actionlint validates
+      #      against a schema that predates the feature and has no notion of
+      #      them, so a step using one always trips two separate findings:
+      #      "unexpected key" for the key itself, and "step must run script
+      #      with" because actionlint doesn't recognize it as a valid step
+      #      body (in place of `run:`/`uses:`). Same root cause; not a bug;
+      #      revisit when actionlint's schema catches up.
       #   3. gemini-teammate.yaml's `on:` trigger is deliberately commented
       #      out (integration disabled) -- revisit if/when it's restored.
       #   4. publish.yml's `matrix.authenticode` is only defined on the
@@ -4204,7 +4206,7 @@ jobs:
       # identity loading against real PEM fixtures, including the
       # cross-algorithm KeyMismatch case (detected reliably on this target
       # via a sign/verify round-trip; docs/03-decision-log.md
-      # D-progress-688).
+      # D-progress-689).
       # Placed in this second sub-batch (not the pre-split batch above, which
       # has drifted back over the ~14-concurrent-step cap; #5913) to keep the
       # runner's parallel-step status collection reliable.
@@ -4227,7 +4229,7 @@ jobs:
       # construction) was removed rather than gated after CI evidence showed
       # it miscompiles on BOTH targets under the source-built toolchain
       # (#5908 JVM, #5920 dotnet/MSIL) — see the test file's own header and
-      # docs/03-decision-log.md D-progress-688. The remaining explicit-fields
+      # docs/03-decision-log.md D-progress-689. The remaining explicit-fields
       # test is unaffected by either bug.
       - name: Std.Tls TlsServerConfig test coverage on JVM (native lyric test --target jvm)
         background: true
@@ -6074,7 +6076,7 @@ jobs:
       # which miscompiled on JVM per #5908 AND, per later CI evidence
       # against this same toolchain, on dotnet too — the MSIL sibling
       # #5920) was removed rather than gated; see this test file's own
-      # header and docs/03-decision-log.md D-progress-688. The remaining
+      # header and docs/03-decision-log.md D-progress-689. The remaining
       # explicit-fields-only test is unaffected by either bug on either
       # target.
       - name: Std.Tls TlsServerConfig test coverage (native lyric test)

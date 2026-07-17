@@ -30470,5 +30470,5 @@ only the explicit-fields-construction test, which runs on both targets.
 `tls.l`'s `TlsServerConfig` doc comment tells consumers to pass every
 field explicitly until both bugs land.
 
-**Related:** `docs/03-decision-log.md` D-progress-688; #5876, #5874, #5903,
+**Related:** `docs/03-decision-log.md` D-progress-689; #5876, #5874, #5903,
 #5908, #5920.
