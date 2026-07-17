@@ -32,8 +32,10 @@
 //! silently); `endChunkedResponse` closes it. `lyric-web`
 //! (`Web.serveStreaming`) builds its opt-in `StreamingHandler` route
 //! table on top of these three (lyric-lang#5979). dotnet-only for now
-//! — the JVM twin does not yet expose a streaming path (tracked
-//! separately, see that twin's header).
+//! — the JVM twin (`_kernel_jvm/http_server.l`) has no equivalent of
+//! these three functions at all, so `Web.serveStreaming` is
+//! `@cfg(feature = "dotnet")`-gated in `lyric-web` rather than falling
+//! back to a broken JVM call.
 //!
 //! dotnet-only: the JVM twin (`_kernel_jvm/http_server.l`) routes
 //! through an out-of-repo prebuilt JAR (`lyric.stdlib.jvm.HttpServerHost`)
