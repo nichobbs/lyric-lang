@@ -156,6 +156,22 @@ record MonoState {
   /// longer exists at codegen; `M0002` fires instead of the former silent
   /// dangling-reference miscompile (docs/59 §5.2 B2).
   droppedLocalGenerics: Map[String, Bool]
+  /// Cross-package function names whose imported candidates have
+  /// genuinely differing signatures (#5843/#5961/#5962), keyed to every
+  /// distinct-signature candidate collected under that bare name.  Never
+  /// populated for a name a same-package local shadows (#5961 — the local
+  /// is what the type checker resolves at every call site, so the
+  /// ambiguity among imports of that name is moot).  Superseding the prior
+  /// "evict the name from `funcDecls`/`genDecls` entirely" degradation
+  /// (which pushed every ambiguous call onto the Object-fallback
+  /// specialisation path — a path that crashes at runtime against a real
+  /// generic instantiation, not just an inference dead end): inference
+  /// paths consult this table to resolve the correct candidate AT EACH
+  /// CALL SITE (by argument count, then by argument type), only falling
+  /// back to the Object-defaulted degradation when a call site is
+  /// genuinely irresolvable (e.g. an untyped argument).  See
+  /// `resolveAmbiguousOverload`.
+  ambiguousFuncOverloads: Map[String, List[FunctionDecl]]
   seenSpecs: Map[String, Bool]
   allSpecs: List[SpecRequest]
   diags: List[Diagnostic]
@@ -168,6 +184,7 @@ func newMonoState(
   ifaceDecls: in Map[String, InterfaceDecl],
   distinctDecls: in Map[String, DistinctTypeDecl],
   droppedLocalGenerics: in Map[String, Bool],
+  ambiguousFuncOverloads: in Map[String, List[FunctionDecl]],
 ): MonoState {
   MonoState(
     genDecls = genDecls,
@@ -176,6 +193,7 @@ func newMonoState(
     ifaceDecls = ifaceDecls,
     distinctDecls = distinctDecls,
     droppedLocalGenerics = droppedLocalGenerics,
+    ambiguousFuncOverloads = ambiguousFuncOverloads,
     seenSpecs = newMap(),
     allSpecs = newList(),
     diags = newList()
@@ -363,10 +381,24 @@ func flattenPathExprSegsMono(e: in Expr): List[String] {
 // count exactly matches `callArity`.  Used by `inferCallReturnTE`'s qualified-
 // call fall-through to guard against same-named functions in a different
 // package having an incompatible signature (issue #3852-adjacent).
+//
+// `name` ambiguous (#5843/#5961/#5962): `state.funcDecls` holds only a single
+// first-seen representative, which may have the WRONG arity for this call
+// site while a different overload matches — checking every overload catches
+// that case instead of spuriously blocking a resolvable qualified call.
 func funcDeclArityMatches(state: in MonoState, name: in String, callArity: in Int): Bool {
-  match mapGet(state.funcDecls, name) {
-    case None -> true
-    case Some(decl) -> decl.params.count == callArity
+  match mapGet(state.ambiguousFuncOverloads, name) {
+    case Some(cands) -> {
+      var i = 0
+      while i < cands.count {
+        if cands[i].params.count == callArity {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case None -> match mapGet(state.funcDecls, name) { case None -> true; case Some(decl) -> decl.params.count == callArity }
   }
 }
 
@@ -464,6 +496,35 @@ func funcSigKeyMono(decl: in FunctionDecl): String {
   }
   val retKey = match decl.ret { case Some(r) -> typeExprKey(r); case None -> "Unit" }
   "(" + acc + ")->" + retKey
+}
+
+// Append `decl` to `table[decl.name]`'s overload list, deduping against any
+// existing candidate with the same structural signature (`sigKey`) so a
+// name re-seeded across several loop iterations doesn't accumulate
+// duplicate entries.  See `MonoState.ambiguousFuncOverloads`.
+func addAmbiguousOverloadCandidate(
+  table: in Map[String, List[FunctionDecl]], decl: in FunctionDecl, sigKey: in String
+): Unit {
+  match mapGet(table, decl.name) {
+    case None -> {
+      val lst: List[FunctionDecl] = newList()
+      lst.add(decl)
+      table.add(decl.name, lst)
+    }
+    case Some(lst) -> {
+      var isDup = false
+      var i = 0
+      while i < lst.count {
+        if funcSigKeyMono(lst[i]) == sigKey {
+          isDup = true
+        }
+        i = i + 1
+      }
+      if not isDup {
+        lst.add(decl)
+      }
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1161,6 +1222,40 @@ func inferDistinctStaticFactoryTE(
   }
 }
 
+// Resolve a qualified call site by its trailing simple name (`methodName`)
+// against same-package record constructors, then the generic worklist
+// (skipped, to avoid a cross-package mis-specialisation), then the
+// non-generic inference surface (arity-guarded, #3852-adjacent).  Shared by
+// both AST shapes a qualified call can take at this point in the pipeline:
+// a nested `EMember` chain the parser produced directly, and a flattened
+// multi-segment `EPath` `Lyric.AliasRewriter` produces from `Alias.method(…)`
+// (`import X as Alias` + `Alias.method(...)` rewrites to the full dotted
+// `EPath([...,"method"])` — see `inferCallReturnTE`'s `EPath` arm below).
+// `None` when nothing on the inference surface resolves; callers with a
+// receiver expression (the `EMember` case) fall back further to
+// `inferMethodReturnTE` — a bare qualified `EPath` has no receiver value to
+// fall back through, so `None` is final there.
+func inferQualifiedFuncByTailNameTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  methodName: in String,
+  args: in List[CallArg],
+  span: in Span,
+): Option[TypeExpr] {
+  match inferRecordCtorTE(state, methodName, None, span) {
+    case Some(te) -> Some(value = te)
+    case None -> {
+      if state.genDecls.containsKey(methodName) {
+        None
+      } else if funcDeclArityMatches(state, methodName, args.count) {
+        inferReturnFromName(state, env, methodName, args, None)
+      } else {
+        None
+      }
+    }
+  }
+}
+
 // Infer the return type of `fn(args)` when `fn` is a same-package
 // function reference.  Record literals share Lyric's call syntax
 // (`Box(value = 11)`) — when the name resolves to a record decl the
@@ -1179,7 +1274,17 @@ func inferCallReturnTE(
           case None -> inferReturnFromName(state, env, name, args, None)
         }
       } else {
-        None
+        // A qualified call surviving to a multi-segment `EPath` at this
+        // point is a stdlib/package call `Lyric.AliasRewriter` flattened
+        // from `Alias.method(...)` (`import X as Alias`) into the full
+        // dotted path — resolve it by its trailing simple name exactly like
+        // the `EMember` qualified-call case below.  Without this, e.g.
+        // `File.writeText(...)` (imported `as File`) never fed its return
+        // type into inference, so a later `isOk(r)` on the untracked
+        // binding degraded to the Object-fallback specialisation and
+        // crashed against the real `Result[Unit, IOError]` instance.
+        val methodName = path.segments[path.segments.count - 1]
+        inferQualifiedFuncByTailNameTE(state, env, methodName, args, fn.span)
       }
     }
     case ETypeApp(innerFn, targs) -> {
@@ -1231,23 +1336,31 @@ func inferCallReturnTE(
       // (issue #3852-adjacent).  Two safety guards: skip when a same-named
       // generic exists (the rewriter would otherwise mis-specialise across
       // packages) and require an exact arity match against funcDecls.
+      //
+      // `recv`'s own method resolution is tried FIRST, not the qualified
+      // free-function guess: `flattenPathExprSegsMono` can't distinguish a
+      // genuine qualified package path (`Pkg.Sub.fn`, no receiver VALUE)
+      // from an ordinary `recv.method(args)` call whose single-segment
+      // receiver happens to flatten the same way (`bucket.exists(...)` — one
+      // segment for `bucket`, one for `exists`, `flatSegs.count == 2` too).
+      // `Lyric.AliasRewriter` already rewrites every genuine import-aliased
+      // qualified call into a multi-segment `EPath` before mono runs (see
+      // `inferCallReturnTE`'s `EPath` arm above), so by the time an `EMember`
+      // reaches here its head is never a real package alias — trying the
+      // real method call first (and only falling back to the qualified-name
+      // guess when `recv`'s type can't be resolved, or has no such method)
+      // avoids an unrelated same-named free function hijacking a genuine
+      // method call purely because their arities happen to coincide (e.g.
+      // `bucket.exists("k")`, one explicit arg, colliding by pure chance with
+      // arity-1 `Std.Directory.exists(path: String): Bool` while the real
+      // free-function counterpart `Storage.exists(bucket, key)` is arity 2 —
+      // the ambiguity table's arity-only fast path would otherwise resolve
+      // uniquely to the WRONG, unrelated `Directory.exists`).
       val flatSegs = flattenPathExprSegsMono(fn)
       if flatSegs.count >= 2 {
-        match inferRecordCtorTE(state, methodName, None, fn.span) {
+        match inferMethodReturnTE(state, env, recv, methodName, args) {
           case Some(te) -> Some(value = te)
-          case None -> {
-            val hit: Option[TypeExpr] = if state.genDecls.containsKey(methodName) {
-              None
-            } else if funcDeclArityMatches(state, methodName, args.count) {
-              inferReturnFromName(state, env, methodName, args, None)
-            } else {
-              None
-            }
-            match hit {
-              case Some(te) -> Some(value = te)
-              case None -> inferMethodReturnTE(state, env, recv, methodName, args)
-            }
-          }
+          case None -> inferQualifiedFuncByTailNameTE(state, env, methodName, args, fn.span)
         }
       } else {
         inferMethodReturnTE(state, env, recv, methodName, args)
@@ -1750,10 +1863,110 @@ func partialUnifyCtorArg(
   }
 }
 
+// True iff `argTE`'s structural key equals `paramTy`'s — used to match a
+// call argument's inferred type against one candidate overload's declared
+// parameter type.  Structural (not identity) comparison so e.g. two
+// `Result[Unit, IOError]` TypeExprs built from different AST nodes still
+// compare equal.
+func teKeysEqual(argTE: in TypeExpr, paramTy: in TypeExpr): Bool {
+  typeExprKey(argTE) == typeExprKey(paramTy)
+}
+
+// True iff `cand` is a plausible resolution of a call site's arguments:
+// no argument whose type IS inferable conflicts with `cand`'s declared
+// parameter type at that position, AND at least one argument's inferred
+// type positively matches — an all-unknown-argument call matches every
+// candidate equally and must not be treated as "resolved" (that would
+// silently guess, exactly the failure mode #5843 exists to prevent).
+func candidateArgsCompatible(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  cand: in FunctionDecl,
+  args: in List[CallArg],
+): Bool {
+  var matchCount = 0
+  var conflict = false
+  var i = 0
+  while i < cand.params.count and i < args.count {
+    match inferExprTE(state, env, callArgExpr(args[i])) {
+      case Some(argTE) -> {
+        if teKeysEqual(argTE, cand.params[i].ty) {
+          matchCount = matchCount + 1
+        } else {
+          conflict = true
+        }
+      }
+      case None -> {
+      }
+    }
+    i = i + 1
+  };
+  (not conflict) and matchCount > 0
+}
+
+// Resolve a call site against `fname`'s ambiguous overload set (see
+// `MonoState.ambiguousFuncOverloads`): filter by argument COUNT first
+// (`del1(s: String)` vs `del2(b: SomeRecord, k: String)` sharing the name
+// `del` — a 2-argument call site can only mean `del2`); if more than one
+// candidate still ties on arity, attempt to type the call's arguments via
+// the existing inference environment (an annotated lambda param, a
+// literal, a known local's tracked type) and keep only the candidate(s)
+// whose declared parameter types don't conflict with what's known.  A
+// UNIQUE surviving candidate resolves the call; zero or several surviving
+// candidates give up (`None`) rather than guess — the caller degrades to
+// the existing Object-defaulted behaviour, same as an unknown callee.
+func resolveAmbiguousOverload(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  fname: in String,
+  args: in List[CallArg],
+): Option[FunctionDecl] {
+  match mapGet(state.ambiguousFuncOverloads, fname) {
+    case None -> None
+    case Some(cands) -> {
+      val arityMatched: List[FunctionDecl] = newList()
+      var i = 0
+      while i < cands.count {
+        if cands[i].params.count == args.count {
+          arityMatched.add(cands[i])
+        }
+        i = i + 1
+      }
+      if arityMatched.count == 0 {
+        None
+      } else if arityMatched.count == 1 {
+        Some(value = arityMatched[0])
+      } else {
+        val compatible: List[FunctionDecl] = newList()
+        var j = 0
+        while j < arityMatched.count {
+          if candidateArgsCompatible(state, env, arityMatched[j], args) {
+            compatible.add(arityMatched[j])
+          }
+          j = j + 1
+        }
+        if compatible.count == 1 {
+          Some(value = compatible[0])
+        } else {
+          None
+        }
+      }
+    }
+  }
+}
+
 // Look up `fname` in funcDecls and return its return TypeExpr after
 // substituting either explicit type args or args inferred from
 // positional arguments.  None when the callee is unknown, has no
 // declared return type, or inference leaves any type param unbound.
+//
+// `fname` ambiguous (#5843/#5961/#5962): resolve the call site's specific
+// overload via `resolveAmbiguousOverload` instead of trusting
+// `state.funcDecls`' single first-seen representative (which may be the
+// WRONG overload for this call site) — and if the call site can't be
+// resolved, give up outright (`None`) rather than fall back to that
+// arbitrary representative, which is exactly the mis-specialisation
+// #5843 was written to prevent.
 func inferReturnFromName(
   state: in MonoState,
   env: in Map[String, TypeExpr],
@@ -1761,7 +1974,11 @@ func inferReturnFromName(
   args: in List[CallArg],
   explicitArgs: in Option[List[TypeArg]],
 ): Option[TypeExpr] {
-  val declOpt: Option[FunctionDecl] = mapGet(state.funcDecls, fname)
+  val declOpt: Option[FunctionDecl] = if state.ambiguousFuncOverloads.containsKey(fname) {
+    resolveAmbiguousOverload(state, env, fname, args)
+  } else {
+    mapGet(state.funcDecls, fname)
+  }
   match declOpt {
     case None -> None
     case Some(decl) -> if decl.isAsync {
@@ -3615,23 +3832,39 @@ pub func monoFileWithImportsAndTypeDecls(
   // specialising against `Char` instead of `String`) mis-specialises into a
   // real closed instantiation the runtime value never had, crashing with an
   // `InvalidCastException`/`InvalidProgramException` at the call site.
-  // Track the first-seen signature per name and, on a genuine conflict,
-  // evict the name from both maps entirely — `inferReturnFromName` then
-  // safely misses (falls through to `None`/`Object`-defaulted, the same
-  // degradation already used for lambdas and BCL returns) instead of
-  // silently guessing.  Inference-only union-ctor synths never participate:
-  // they are appended last specifically so a real function's entry always
-  // wins their name collision (see the comment below), not a queue of
-  // equally-weighted "real" candidates.
+  //
+  // A prior fix (#5843, superseded here) tracked the first-seen signature
+  // per name and, on a genuine conflict, evicted the name from both
+  // `funcDecls` and `genDecls` entirely so `inferReturnFromName` safely
+  // missed instead of guessing.  That is too blunt for common cross-package
+  // code: real programs routinely have several DIFFERENT functions sharing
+  // a name (`Std.Directory.delete(String)`, `Storage.delete(bucket, key)`,
+  // `Cache.delete(store, key)`) where the call site itself already
+  // disambiguates (argument count, argument types) — evicting the name
+  // outright threw away that information and pushed the call onto the
+  // Object-fallback specialisation path, which does not merely leave the
+  // call un-specialised — it CRASHES at runtime
+  // (`InvalidProgramException`/non-exhaustive match) against a real generic
+  // instantiation the erased `Object`/`Object` arms can never match.  Track
+  // every distinct-signature candidate per ambiguous name in
+  // `ambiguousFuncOverloads` instead, and resolve each CALL SITE against
+  // that table (`resolveAmbiguousOverload`) — only a call site that
+  // genuinely can't be resolved (e.g. an untyped argument) still degrades
+  // to the Object fallback, same as an unknown callee.  Inference-only
+  // union-ctor synths never participate: they are appended last
+  // specifically so a real function's entry always wins their name
+  // collision (see the comment below), not a queue of equally-weighted
+  // "real" candidates.
   val importedFuncSigKeys: Map[String, String] = newMap()
   val ambiguousImportedFuncNames: Map[String, Bool] = newMap()
+  val ambiguousFuncOverloads: Map[String, List[FunctionDecl]] = newMap()
   // Snapshot the names Phase 1 already registered from the SAME package
-  // before any imported decl is merged (#5961): eviction below must never
-  // delete a local function's entry — "same-package wins on name collision"
-  // means a user-local function shadows every import, so an ambiguity
-  // between two IMPORTS of that name is irrelevant to inference (the local
-  // is what the type checker resolves at every local call site) and must
-  // leave the local's entry intact.  During the loop,
+  // before any imported decl is merged (#5961): a same-package local always
+  // shadows every import ("same-package wins on name collision"), so an
+  // ambiguity between two IMPORTS of that name is irrelevant to inference
+  // (the local is what the type checker resolves at every local call site)
+  // — never build an overload table for it, and never let an import
+  // overwrite its `funcDecls`/`genDecls` entry.  During the loop,
   // `funcDecls.containsKey` alone can't make this distinction: an earlier
   // iteration may have added an IMPORTED decl under the same name.
   val localFuncNames: Map[String, Bool] = newMap()
@@ -3654,18 +3887,30 @@ pub func monoFileWithImportsAndTypeDecls(
               ambiguousImportedFuncNames.add(idecl.name, true)
             }
             if not localFuncNames.containsKey(idecl.name) {
-              if funcDecls.containsKey(idecl.name) {
-                funcDecls.remove(idecl.name)
+              // Seed the overload table with the first-seen representative
+              // (already sitting in `funcDecls`, added on this name's first
+              // iteration below) — `addAmbiguousOverloadCandidate` dedupes
+              // by signature, so re-seeding on a 3rd/4th distinct overload
+              // is a harmless no-op.
+              match mapGet(funcDecls, idecl.name) {
+                case Some(firstDecl) -> addAmbiguousOverloadCandidate(ambiguousFuncOverloads, firstDecl, funcSigKeyMono(firstDecl))
+                case None -> ()
               }
-              if genDecls.containsKey(idecl.name) {
-                genDecls.remove(idecl.name)
-              }
+              addAmbiguousOverloadCandidate(ambiguousFuncOverloads, idecl, sigKey)
             }
           }
         }
       }
     }
-    if not funcDecls.containsKey(idecl.name) and not ambiguousImportedFuncNames.containsKey(idecl.name) {
+    // First-seen representative wins (unconditionally kept, never evicted)
+    // so non-inference-precision-critical consumers — `funcDeclArityMatches`'
+    // fallback, `ctorSynthOfArg`, `bindingEnvTE`'s non-ctor-call check — see
+    // a real function under this name.  Every entry `ambiguousFuncOverloads`
+    // ever holds is a non-inference-only real function (inference-only
+    // union-ctor synths are excluded above from ambiguity detection
+    // entirely), so those consumers' `annsInferenceOnlyMono` checks are
+    // correct regardless of which representative they see.
+    if not funcDecls.containsKey(idecl.name) {
       funcDecls.add(idecl.name, idecl)
       // Inference-only union-ctor synths (see `annsInferenceOnlyMono`) join
       // the inference surface but must never become specialisation
@@ -3704,7 +3949,15 @@ pub func monoFileWithImportsAndTypeDecls(
     return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags)
   }
 
-  val state = newMonoState(genDecls, funcDecls, recordDecls, ifaceDecls, distinctDecls, droppedLocalGenerics)
+  val state = newMonoState(
+    genDecls,
+    funcDecls,
+    recordDecls,
+    ifaceDecls,
+    distinctDecls,
+    droppedLocalGenerics,
+    ambiguousFuncOverloads
+  )
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────
   val rewrittenItems: List[Item] = newList()

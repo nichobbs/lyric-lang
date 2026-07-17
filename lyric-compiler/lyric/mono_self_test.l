@@ -555,13 +555,19 @@ test "distinct-type from feeds imported generic specialisation with the real pay
 // bridges collect every stdlib package's non-generic `pub func`s into one
 // flat inference pool regardless of what the compiled file imports, e.g.
 // `Std.String.toUpper(String): String` vs `Std.Char.toUpper(Char): Char`).
-// Before this fix the first-registered decl won arbitrarily, so a generic
-// caller could infer its type argument from the WRONG overload's return
-// type and specialise into an instantiation the runtime value never has —
-// silently mis-specialising instead of just staying un-inferred.  Evicting
-// the ambiguous name is the safe degradation: the generic then falls back
-// to its existing Object-default behaviour instead of guessing.
-test "ambiguous cross-package function name is evicted from inference, not guessed (#5843)" {
+// A first fix (#5843) evicted the ambiguous name from inference entirely so
+// a generic caller could never guess the WRONG overload's return type and
+// mis-specialise into an instantiation the runtime value never has — but
+// that pushed EVERY ambiguous call onto the Object-fallback specialisation,
+// which doesn't just leave the call un-specialised, it CRASHES at runtime
+// against a real generic instantiation (the erased `Object`/`Object` arms
+// can never match).  This supersedes that eviction with call-site overload
+// resolution (#5961/#5962 preserved): when the call site's argument types
+// are known, they resolve the ambiguity instead of evicting it — here the
+// lambda's ANNOTATED `s: String` param uniquely matches `LibA.dup(String):
+// String` (not `LibB.dup(Char): Char`), so `U` correctly specialises to
+// `String`, not the erased `Object` default.
+test "ambiguous cross-package function name resolves via call-site argument-type matching (#5843, supersedes eviction)" {
   val callerSrc = "package Caller\n" + "func caller(): String { mapLike2(\"hi\", { s: String -> dup(s) }) }\n"
   val libSrc = "package Lib\n" + "pub func mapLike2[T, U](x: in T, f: (T) -> U): U { f(x) }\n"
   val libASrc = "package LibA\n" + "pub func dup(s: in String): String { s + s }\n"
@@ -600,11 +606,137 @@ test "ambiguous cross-package function name is evicted from inference, not guess
 
   val res = monoFileWithImports(callerPr.file, feed)
   assertTrue(
+    hasFunc(res.file, "mapLike2__String__String"),
+    "the lambda's annotated 'String' param uniquely matches LibA.dup; U resolves to String, not the Object default"
+  )
+  assertFalse(
     hasFunc(res.file, "mapLike2__String__Object"),
-    "ambiguous 'dup' across LibA/LibB is evicted; U safely defaults to Object instead of guessing"
+    "a resolvable call site must not degrade to the Object fallback"
+  )
+  assertFalse(hasFunc(res.file, "mapLike2__String__Char"), "must never guess the wrong overload's return type")
+}
+
+// Counterpart of the above: when the call site's argument type is NOT
+// knowable (an unannotated lambda param with no other type source), overload
+// resolution has nothing to match against and correctly gives up — the
+// generic still safely defaults to Object instead of guessing, exactly the
+// #5843 degradation the eviction fix relied on.
+//
+// The lambda body calls `dup(w)` on a name that is never bound anywhere
+// (not a lambda param, not a local) rather than reusing the lambda's own
+// `T`-typed param: #5604 seeds an UNANNOTATED lambda param from the
+// declared parameter type once the caller's substitution already makes it
+// concrete, so `{ z -> dup(z) }` would actually still resolve `z: String`
+// via `T` (already pinned by the `"hi"` argument) — a genuinely
+// unresolvable argument needs a type source `T`'s pinning cannot reach.
+test "ambiguous cross-package function name with an unresolvable call site still defaults to Object (#5843)" {
+  val callerSrc = "package Caller\n" + "func caller(): Object { mapLike2(\"hi\", { z -> dup(w) }) }\n"
+  val libSrc = "package Lib\n" + "pub func mapLike2[T, U](x: in T, f: (T) -> U): U { f(x) }\n"
+  val libASrc = "package LibA\n" + "pub func dup(s: in String): String { s + s }\n"
+  val libBSrc = "package LibB\n" + "pub func dup(c: in Char): Char { c }\n"
+
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val libAPr = parse(libASrc)
+  val libBPr = parse(libBSrc)
+
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var ja = 0
+  while ja < libAPr.file.items.count {
+    match libAPr.file.items[ja].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ja = ja + 1
+  }
+  var jb = 0
+  while jb < libBPr.file.items.count {
+    match libBPr.file.items[jb].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    jb = jb + 1
+  }
+
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(
+    hasFunc(res.file, "mapLike2__String__Object"),
+    "an untyped lambda param gives overload resolution nothing to match; U safely defaults to Object instead of guessing"
   )
   assertFalse(hasFunc(res.file, "mapLike2__String__Char"), "must never guess the wrong overload's return type")
   assertFalse(hasFunc(res.file, "mapLike2__String__String"), "must never guess either overload's return type")
+}
+
+// Regression pin for the real-world shape that motivated superseding blunt
+// eviction with call-site overload resolution: `lyric-storage`'s
+// `isOk(delete(bucket, key))` crashed at runtime because `delete` was
+// ambiguous across `Std.Directory.delete(String): Result[Unit, IOError]`
+// (arity 1), `Storage.delete(bucket, key): Result[Unit, StorageError]`
+// (arity 2), and `Cache.delete(store, key): Unit` (arity 2) — eviction
+// discarded the name entirely, so `isOk` degraded to the Object-defaulted
+// `isOk__Object__Object`, which then panicked (`match not exhaustive`)
+// against the real `Result[Unit, StorageError]` instance at runtime.  Here,
+// an arity-1 and an arity-2 overload share the bare name `del`; a
+// 2-argument call site can only mean the arity-2 overload, so ARITY ALONE
+// must resolve it (before any argument-type matching is even attempted) —
+// assert the resulting specialisation carries that overload's return type
+// (`Result[Unit, String]`), not the Object-defaulted fallback.
+test "arity alone disambiguates an ambiguous name at a 2-argument call site (storage delete shape)" {
+  val callerSrc = "package Caller\n" + "record SomeRecord { tag: Int }\n" +
+    "func mkRec(): SomeRecord { SomeRecord(tag = 1) }\n" +
+    "func caller(): Bool { isOkLike(del(mkRec(), \"k\")) }\n"
+  val libSrc = "package Lib\n" + "pub func isOkLike[T, E](r: in Result[T, E]): Bool { true }\n"
+  val libASrc = "package LibA\n" + "pub func del(s: in String): Result[Unit, String] { del(s) }\n"
+  val libBSrc = "package LibB\n" + "pub func del(b: in SomeRecord, k: in String): Result[Unit, String] { del(b, k) }\n"
+
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val libAPr = parse(libASrc)
+  val libBPr = parse(libBSrc)
+
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var ja = 0
+  while ja < libAPr.file.items.count {
+    match libAPr.file.items[ja].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ja = ja + 1
+  }
+  var jb = 0
+  while jb < libBPr.file.items.count {
+    match libBPr.file.items[jb].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    jb = jb + 1
+  }
+
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(
+    hasFunc(res.file, "isOkLike__Unit__String"),
+    "a 2-argument call site can only match the arity-2 'del' overload; isOkLike specialises over Result[Unit, String]"
+  )
+  assertFalse(
+    hasFunc(res.file, "isOkLike__Object__Object"),
+    "must not degrade to the Object fallback when arity alone resolves the ambiguity"
+  )
 }
 
 // A duplicate REGISTRATION of the exact same decl (e.g. the same generic

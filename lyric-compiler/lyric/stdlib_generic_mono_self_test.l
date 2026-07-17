@@ -153,16 +153,21 @@ test "Map[String, Option[Int]].add(Some) and mapGet roundtrips" {
 // (`toUpper(Char): Char`) — the bridges collect every stdlib package's
 // non-generic `pub func`s into one flat inference pool regardless of what
 // this file imports, so both land in `Lyric.Mono`'s name-keyed inference
-// table.  Before the fix the monomorphizer picked whichever `toUpper`
-// happened to be collected first (an arbitrary package-iteration-order
-// artefact) and specialised `mapOption` against ITS return type — e.g.
+// table.  Before the original #5843 fix the monomorphizer picked whichever
+// `toUpper` happened to be collected first (an arbitrary package-iteration-
+// order artefact) and specialised `mapOption` against ITS return type — e.g.
 // `mapOption__String__Char` — producing an `InvalidCastException` /
 // `InvalidProgramException` when the closure's real `String` return value
-// hit the wrongly-typed specialisation at runtime.  The fix evicts an
-// ambiguous cross-package name from the inference surface entirely, so `U`
-// safely falls back to the existing Object-default behaviour instead of
-// guessing — `mapOption` still specialises and the call still returns the
-// correct (uppercased) value.
+// hit the wrongly-typed specialisation at runtime.  #5843 fixed this by
+// evicting an ambiguous cross-package name from the inference surface
+// entirely — safe, but overly blunt for common code (a real regression when
+// generalised further, see `Lyric.Mono`'s `ambiguousFuncOverloads` doc
+// comment).  Call-site overload resolution now supersedes that eviction:
+// the lambda's ANNOTATED `s: String` param uniquely matches
+// `Std.String.toUpper(String): String` (not `Std.Char.toUpper(Char): Char`),
+// so `U` resolves to the correct `String` instead of the erased `Object`
+// default — `mapOption` specialises against the RIGHT overload's return
+// type and the call returns the correct (uppercased) value.
 test "mapOption + lambda calling an ambiguous cross-package name (#5843)" {
   val opt: Option[String] = Some(value = "hello")
   val upper = mapOption(opt, { s: String -> toUpper(s) })
