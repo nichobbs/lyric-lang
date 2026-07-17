@@ -2810,6 +2810,14 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/self_method_call_self_test.l
 
+      # Extra barrier (batch 1b-split, #5933 pattern): the sibling dotnet-a
+      # job's exit-135 random-step kills (SIGBUS-class, memory pressure from
+      # concurrent in-process compilations) reached this job on 2026-07-17 —
+      # the Propagate self-test died mid-batch on PR #5953's run (a
+      # comment-only diff). This first group ran 13 concurrent; split 7 + 6.
+      - name: Wait for parallel tests (dotnet-b batch 1a-split)
+        wait-all: true
+
       # Implicit-self record-method self-test on the MSIL target (mirrors
       # implicit_self_jvm_self_test.l, already wired below for --target jvm).
       # Pins #4947: a D037 in-body method (a bare `func` inside a record
@@ -3056,6 +3064,12 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_value_self_test.l
+
+      # Extra barrier (batch 2-split, #5933 pattern): the group that actually
+      # contained the Propagate self-test kill (see the barrier above) ran 11
+      # concurrent; split 5 + 6.
+      - name: Wait for parallel tests (dotnet-b batch 2-split)
+        wait-all: true
 
       # Impl-method self-test — #1784.  Interface/impl methods with value-type
       # parameters (`Int`/`Bool`/`Double`/`Char`) — and `?`/early-`return` in
