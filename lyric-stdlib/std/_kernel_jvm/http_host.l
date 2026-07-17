@@ -47,6 +47,7 @@ package Std.HttpHost
 import Std.Core
 import Std.Collections
 import Std.Task
+import Std.Tls
 
 // =====================================================================
 // Extern types — JDK classes the helpers below reference.
@@ -248,6 +249,21 @@ pub enum TlsCaMode {
   case NoCaConfigured
   case AdditiveCa
   case ExclusiveCa
+}
+
+// Precedence rule when both `withCaCertificate` and
+// `withExclusiveCaCertificate` are configured on the same builder
+// (#5975) — mirrored verbatim from the dotnet twin; see that file's doc
+// comment for the full rationale. Exclusive always wins.
+@pure
+pub func resolveCaMode(caCertificate: in Option[Certificate], exclusiveCaCertificate: in Option[Certificate]): TlsCaMode {
+  match exclusiveCaCertificate {
+    case Some(_) -> ExclusiveCa
+    case None -> match caCertificate {
+      case Some(_) -> AdditiveCa
+      case None -> NoCaConfigured
+    }
+  }
 }
 
 pub enum TlsValidationDecision {

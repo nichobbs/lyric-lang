@@ -136,11 +136,18 @@ test "resolveInsecureVerifyPolicy resolves the full dual-key matrix" {
 }
 
 // ─── Wired path: real setVar drives the real build() ───────────
-// Each case restores the variable to unset afterward so later tests (and
-// later runs sharing this process' environment under `lyric test`) don't
-// observe a leaked value.
+// Restores the variable to unset via `defer` (#5973) rather than a final
+// statement, so a panic partway through (e.g. a future regression that
+// makes build() itself panic instead of staying infallible — precisely
+// the property this test exists to guard) can't leak
+// `LYRIC_TLS_ALLOW_INSECURE=1` into the rest of this process, including
+// other tests in this same file or suite sharing the process.
 test "build() stays infallible across the full insecure-verify policy matrix" {
   setVar(insecureAllowVar, "")
+  defer {
+    setVar(insecureAllowVar, "")
+  }
+
   val neither = HttpClientBuilder.build(HttpClientBuilder.new())
   assertTrue(true, "neither configured: build() returned a client")
 
@@ -155,8 +162,6 @@ test "build() stays infallible across the full insecure-verify policy matrix" {
   setVar(insecureAllowVar, "1")
   val both = HttpClientBuilder.build(HttpClientBuilder.new().withInsecureSkipVerify())
   assertTrue(true, "both configured: build() returned a client")
-
-  setVar(insecureAllowVar, "")
 }
 
 // ─── Builder composition: every TLS with* method, alone and combined ───────
@@ -331,4 +336,46 @@ test "resolveTlsValidationDecision: no CA configured mirrors the platform's own 
     case RejectImmediately -> assertTrue(true, "no CA + chain not ok: reject (nothing to fall back to)")
     case other -> panic("expected RejectImmediately for NoCaConfigured with chainAlreadyOk=false")
   }
+}
+
+// ─── #5975 regression: withExclusiveCaCertificate always wins ──────────────
+// `resolveCaMode` is `_kernel/http_host.l`'s extracted precedence rule for
+// when both `withCaCertificate` and `withExclusiveCaCertificate` are
+// configured on the same builder — documented in both methods' doc
+// comments in `Std.Http`. Exclusive wins unconditionally, regardless of
+// which `Option` slot is populated with which certificate.
+test "resolveCaMode: withExclusiveCaCertificate always wins when both are configured" {
+  match resolveCaMode(Some(value = ca()), Some(value = ca())) {
+    case ExclusiveCa -> assertTrue(true, "both configured: exclusive wins")
+    case other -> panic("expected ExclusiveCa when both caCertificate and exclusiveCaCertificate are set")
+  }
+  match resolveCaMode(Some(value = ca()), None) {
+    case AdditiveCa -> assertTrue(true, "additive only: additive mode")
+    case other -> panic("expected AdditiveCa when only caCertificate is set")
+  }
+  match resolveCaMode(None, Some(value = ca())) {
+    case ExclusiveCa -> assertTrue(true, "exclusive only: exclusive mode")
+    case other -> panic("expected ExclusiveCa when only exclusiveCaCertificate is set")
+  }
+  match resolveCaMode(None, None) {
+    case NoCaConfigured -> assertTrue(true, "neither configured: no CA mode")
+    case other -> panic("expected NoCaConfigured when neither is set")
+  }
+}
+
+// Same precedence proven through the real public API: a builder with
+// BOTH CA options configured must build successfully (build() stays
+// infallible regardless of this combination) and, per the exclusive-wins
+// rule above, behaves as if only withExclusiveCaCertificate had been
+// called.
+test "build() accepts both CA options configured on the same builder without panicking" {
+  val bothConfigured = HttpClientBuilder.build(
+    HttpClientBuilder.new().withCaCertificate(ca()).withExclusiveCaCertificate(ca())
+  )
+  assertTrue(true, "withCaCertificate + withExclusiveCaCertificate together builds without panicking")
+
+  val reverseOrder = HttpClientBuilder.build(
+    HttpClientBuilder.new().withExclusiveCaCertificate(ca()).withCaCertificate(ca())
+  )
+  assertTrue(true, "call-site order does not change the outcome — also builds without panicking")
 }

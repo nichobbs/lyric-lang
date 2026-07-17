@@ -418,6 +418,13 @@ pub func HttpClientBuilder.withHttpVersion(b: in HttpClientBuilder, version: in 
 /// the two have distinct names precisely so the more dangerous semantics
 /// is visible at the call site.
 ///
+/// **Precedence when both are configured on the same builder:**
+/// `withExclusiveCaCertificate` always wins — the stricter, service-mesh
+/// intent takes priority, and a `cert` passed here is silently discarded
+/// (call-site order does not matter either way). Configure only one of
+/// the two on a given builder; combining them is legal but the additive
+/// certificate never takes effect.
+///
 /// Not supported yet on `--target jvm` (tracked in #5878): `build()` still
 /// succeeds, but every request through the resulting client fails with a
 /// typed `ConnectionFailed` naming that issue. Check `tlsConfigSupported()`
@@ -441,6 +448,10 @@ pub func HttpClientBuilder.withCaCertificate(b: in HttpClientBuilder, cert: in C
 /// the service-mesh case, where a peer's certificate is signed by a
 /// private CA and public-internet trust should not apply at all. See
 /// `withCaCertificate` for the additive variant.
+///
+/// **Precedence:** if `withCaCertificate` was also called on this
+/// builder, THIS wins unconditionally — see its doc comment for the full
+/// rule.
 ///
 /// Same JVM support boundary as `withCaCertificate` (#5878).
 @stable(since = "1.2")

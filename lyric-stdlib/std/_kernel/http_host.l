@@ -616,6 +616,15 @@ func sslPolicyErrorsChainErrorsOnly(): SslPolicyErrors = ()
 @externTarget("System.Security.Cryptography.X509Certificates.X509Chain.Build")
 func chainBuild(c: in X509Chain, cert: in TlsHost.CertHandle): Bool = ()
 
+// `X509Chain` implements `IDisposable` and holds a native certificate-chain-
+// engine handle; `Dispose()` releases it immediately instead of waiting for
+// GC finalization (#5972) — the same discipline `Std.Json`'s
+// `hostDisposeJson`/`Std.ProcessHost`'s `hostDisposeProc` already establish
+// for other `IDisposable` BCL resources reached through this kernel tree.
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509Chain.Dispose")
+func chainDispose(c: in X509Chain): Unit = ()
+
 @externInstance
 @externTarget("System.Net.Http.HttpClientHandler.set_ServerCertificateCustomValidationCallback")
 func handlerSetValidationCallback(
@@ -630,8 +639,17 @@ func handlerSetValidationCallback(
 // unconditionally) and as the fallback for `withCaCertificate` (additive:
 // only reached once the platform's own chain validation, reported via
 // `sslPolicyErrors`, has already failed).
+//
+// `chain` is disposed via `defer` (#5972) so the native chain-engine handle
+// is released as soon as this function returns, on both the accept and
+// reject paths (`chainBuild`'s own result is what the function returns —
+// `defer` runs after that value is computed, before control actually
+// leaves the function, same as `Std.Json`'s `lyricJsonGet*` helpers).
 func buildCustomChain(cert: in TlsHost.CertHandle, ca: in Tls.Certificate): Bool {
   val chain = newX509Chain()
+  defer {
+    chainDispose(chain)
+  }
   val policy = chainPolicyOf(chain)
   chainPolicySetTrustMode(policy, chainTrustModeCustomRoot())
   chainPolicySetRevocationMode(policy, revocationModeNoCheck())
@@ -648,6 +666,26 @@ pub enum TlsCaMode {
   case NoCaConfigured
   case AdditiveCa
   case ExclusiveCa
+}
+
+/// Precedence rule when both `withCaCertificate` and
+/// `withExclusiveCaCertificate` are configured on the same builder
+/// (#5975): `exclusiveCaCertificate` always wins, unconditionally — the
+/// stricter, service-mesh intent takes priority over the additive one,
+/// and call-site order never matters (a builder's fields are set
+/// independently; whichever `with*` call happened last does not change
+/// this precedence). Documented on both `with*` methods' doc comments in
+/// `Std.Http`; extracted here (rather than left inline in
+/// `applyTlsOptions`) so the rule itself is directly testable.
+@pure
+pub func resolveCaMode(caCertificate: in Option[Tls.Certificate], exclusiveCaCertificate: in Option[Tls.Certificate]): TlsCaMode {
+  match exclusiveCaCertificate {
+    case Some(_) -> ExclusiveCa
+    case None -> match caCertificate {
+      case Some(_) -> AdditiveCa
+      case None -> NoCaConfigured
+    }
+  }
 }
 
 /// What the validation callback should do once it has decided whether the
@@ -775,13 +813,7 @@ func applyTlsOptions(
     }
     case None -> ()
   }
-  val caMode = match exclusiveCaCertificate {
-    case Some(_) -> ExclusiveCa
-    case None -> match caCertificate {
-      case Some(_) -> AdditiveCa
-      case None -> NoCaConfigured
-    }
-  }
+  val caMode = resolveCaMode(caCertificate, exclusiveCaCertificate)
   val needsCallback = insecureSkipVerify or isSome(caCertificate) or isSome(exclusiveCaCertificate)
   if needsCallback {
     handlerSetValidationCallback(

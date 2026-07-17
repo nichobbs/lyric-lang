@@ -17491,22 +17491,48 @@ requires/verifies a CLIENT certificate (mTLS from the server side) — no
 such listeners exist in CI yet (dotnet server TLS: #5884; jvm:
 #5878/#5880).
 
+**A third review pass found and fixed three more issues.** REQUIRED
+**#5972**: `buildCustomChain`'s fresh `X509Chain` was never disposed —
+`X509Chain` is `IDisposable` and holds a native chain-engine handle, so
+every custom-CA validation leaked one, relying solely on GC finalization
+instead of the immediate-release discipline this kernel tree already
+establishes for other disposables (`Std.Json`'s `hostDisposeJson`,
+`Std.ProcessHost`'s `hostDisposeProc`, this same file's own
+`socketDispose`). Fixed with a `chainDispose` extern (`X509Chain.Dispose`,
+confirmed FFI-bindable) called via `defer` immediately after
+`newX509Chain()`, so it fires on both the accept and reject return paths.
+SUGGESTION **#5973**: `http_tls_client_tests.l`'s env-mutating test reset
+`LYRIC_TLS_ALLOW_INSECURE` only as its final statement — a panic partway
+through would leak the value into later tests sharing the process; now
+reset via `defer` right after the first `setVar`. SUGGESTION **#5975**:
+combining `withCaCertificate` and `withExclusiveCaCertificate` on the same
+builder had a real but undocumented/untested precedence (exclusive always
+won already, confirmed by inspection) — extracted the inline `caMode`
+match into a `pub` `resolveCaMode(caCertificate, exclusiveCaCertificate):
+TlsCaMode` (mirrored in both kernel twins, like
+`resolveTlsValidationDecision`), documented the exclusive-wins rule in
+both `with*` methods' doc comments in `Std.Http`, and added tests
+(`resolveCaMode`'s full 4-combination matrix, plus a real-`build()` test
+proving both-configured doesn't panic regardless of call-site order).
+
 **Verification:** hand-verified end-to-end against the published NuGet
 `lyric` global tool (`LYRIC_STDLIB_BIN`/`LYRIC_STD_PATH` overrides) on both
 targets — this session's sandbox could not build `./bin/lyric` from
 source (GitHub release-download blocked, same profile as
 D-progress-543/687/690). Regression-verified the pre-existing
 `http_tests.l`/`http_version_tests.l`/`http_async_tests.l`/`tls_tests.l`/
-`tls_server_config_tests.l` suites unaffected on both targets. CI runs the
-real self-hosted-compiler-under-test build.
+`tls_server_config_tests.l` suites unaffected on both targets, across all
+three review rounds. CI runs the real self-hosted-compiler-under-test
+build.
 
 **Related:** docs/61 §3.2 + §4, D128, #5874, #5877, #5878, #5947, #5950
 (MITM fix), #5952 (revocation mode), #5971 (qualified case-pattern
-match), D-progress-688 (`Std.Tls`), D-progress-690 (`withHttpVersion`,
-`unsupportedReason` precedent), D-progress-687 (D122 delegate-bridge
-receiver-position fix — the same FFI feature this entry's gap #2
-concerns), docs/50-ffi-delegates-proposal.md, docs/01-language-reference.md
-§3.1 (`internal` visibility tier).
+match), #5972 (chain disposal), #5973 (test env-var defer), #5975 (CA
+precedence), D-progress-688 (`Std.Tls`), D-progress-690
+(`withHttpVersion`, `unsupportedReason` precedent), D-progress-687 (D122
+delegate-bridge receiver-position fix — the same FFI feature this entry's
+gap #2 concerns), docs/50-ffi-delegates-proposal.md,
+docs/01-language-reference.md §3.1 (`internal` visibility tier).
 
 ---
 
