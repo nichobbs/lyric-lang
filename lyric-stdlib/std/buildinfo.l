@@ -32,7 +32,13 @@ package Std.BuildInfo
 import Std.Core
 import Std.Collections
 
-@stable(since = "1.0")
+// `@experimental` while the value-population half of the feature is still
+// in flight: the well-known-define auto-injection that fills `version` /
+// `profile` on every build (not only on the single-file dotnet `--define`
+// path) is deferred to #5852 (docs/60 §9.2). The record shape is not expected
+// to change, but per the docs/10-stdlib-plan.md cut convention a surface with
+// known pre-stabilization follow-up ships `@experimental` until it lands.
+@experimental
 pub record BuildInfo {
   version: String          // always present — deterministic (docs/60 §3.3)
   target: String          // "dotnet" | "jvm" | "native"
