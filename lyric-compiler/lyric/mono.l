@@ -439,23 +439,31 @@ func typeExprListKey(ts: in List[TypeExpr]): String {
   acc
 }
 
-// A structural signature key for a `FunctionDecl` — its parameter types
-// joined with its return type — used to tell apart two DIFFERENT functions
-// that merely share a bare name (#5843) from genuine duplicate collections
-// of the SAME declaration (which must keep comparing equal).  Generic type
-// parameters are folded in verbatim via `typeExprKey` (their names are part
-// of the structural shape, so `f[T](x: T): T` and `f[U](x: U): Bool` still
-// compare unequal on the return type) — this key is for name-collision
-// detection only, never for specialisation mangling.
+// A structural signature key for a `FunctionDecl` — its parameter modes and
+// types joined with its return type — used to tell apart two DIFFERENT
+// functions that merely share a bare name (#5843) from genuine duplicate
+// collections of the SAME declaration (which must keep comparing equal).
+// Generic type parameters are folded in verbatim via `typeExprKey` (their
+// names are part of the structural shape, so `f[T](x: T): T` and
+// `f[U](x: U): Bool` still compare unequal on the return type), and each
+// parameter's `in`/`out`/`inout` mode is part of the key too (#5962 — two
+// differently-moded overloads sharing a name are a genuine ambiguity, not a
+// duplicate) — this key is for name-collision detection only, never for
+// specialisation mangling.
 func funcSigKeyMono(decl: in FunctionDecl): String {
-  val paramTys: List[TypeExpr] = newList()
+  var acc = ""
   var i = 0
   while i < decl.params.count {
-    paramTys.add(decl.params[i].ty)
+    val p = decl.params[i]
+    val modeKey = match p.mode { case PMIn -> "in "; case PMOut -> "out "; case PMInout -> "inout " }
+    if i > 0 {
+      acc = acc + ","
+    }
+    acc = acc + modeKey + typeExprKey(p.ty)
     i = i + 1
   }
   val retKey = match decl.ret { case Some(r) -> typeExprKey(r); case None -> "Unit" }
-  typeExprListKey(paramTys) + "->" + retKey
+  "(" + acc + ")->" + retKey
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3617,6 +3625,22 @@ pub func monoFileWithImportsAndTypeDecls(
   // equally-weighted "real" candidates.
   val importedFuncSigKeys: Map[String, String] = newMap()
   val ambiguousImportedFuncNames: Map[String, Bool] = newMap()
+  // Snapshot the names Phase 1 already registered from the SAME package
+  // before any imported decl is merged (#5961): eviction below must never
+  // delete a local function's entry — "same-package wins on name collision"
+  // means a user-local function shadows every import, so an ambiguity
+  // between two IMPORTS of that name is irrelevant to inference (the local
+  // is what the type checker resolves at every local call site) and must
+  // leave the local's entry intact.  During the loop,
+  // `funcDecls.containsKey` alone can't make this distinction: an earlier
+  // iteration may have added an IMPORTED decl under the same name.
+  val localFuncNames: Map[String, Bool] = newMap()
+  val preImportNames = mapKeys(funcDecls)
+  var pin = 0
+  while pin < preImportNames.count {
+    localFuncNames.add(preImportNames[pin], true)
+    pin = pin + 1
+  }
   var ig = 0
   while ig < importedGenDecls.count {
     val idecl = importedGenDecls[ig]
@@ -3629,11 +3653,13 @@ pub func monoFileWithImportsAndTypeDecls(
             if not ambiguousImportedFuncNames.containsKey(idecl.name) {
               ambiguousImportedFuncNames.add(idecl.name, true)
             }
-            if funcDecls.containsKey(idecl.name) {
-              funcDecls.remove(idecl.name)
-            }
-            if genDecls.containsKey(idecl.name) {
-              genDecls.remove(idecl.name)
+            if not localFuncNames.containsKey(idecl.name) {
+              if funcDecls.containsKey(idecl.name) {
+                funcDecls.remove(idecl.name)
+              }
+              if genDecls.containsKey(idecl.name) {
+                genDecls.remove(idecl.name)
+              }
             }
           }
         }

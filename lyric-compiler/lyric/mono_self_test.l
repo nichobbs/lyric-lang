@@ -637,6 +637,99 @@ test "identical duplicate cross-package registration is not ambiguous" {
   assertTrue(hasFunc(res.file, "isSomeDup__Int"), "duplicate registration of the identical decl is not ambiguity")
 }
 
+// #5961: an ambiguity between two IMPORTS must never evict a SAME-PACKAGE
+// local function's entry — the local shadows every import ("same-package
+// wins"), so it is exactly what the type checker resolves at the call site
+// and inference must keep using it.  Before the fix, the eviction removed
+// whatever occupied the name, local included, silently degrading a
+// perfectly unambiguous local call to the Object fallback.
+test "local function survives imported-name ambiguity eviction (#5961)" {
+  val callerSrc = "package Caller\n" + "func dup(s: in String): String { s + s }\n" +
+    "func caller(): String { mapLike2(\"hi\", { s: String -> dup(s) }) }\n"
+  val libSrc = "package Lib\n" + "pub func mapLike2[T, U](x: in T, f: (T) -> U): U { f(x) }\n"
+  val libASrc = "package LibA\n" + "pub func dup(s: in String): String { s + s }\n"
+  val libBSrc = "package LibB\n" + "pub func dup(c: in Char): Char { c }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val libAPr = parse(libASrc)
+  val libBPr = parse(libBSrc)
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var ja = 0
+  while ja < libAPr.file.items.count {
+    match libAPr.file.items[ja].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ja = ja + 1
+  }
+  var jb = 0
+  while jb < libBPr.file.items.count {
+    match libBPr.file.items[jb].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    jb = jb + 1
+  }
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(
+    hasFunc(res.file, "mapLike2__String__String"),
+    "the local dup's String return drives inference; the imports' ambiguity must not evict the local"
+  )
+  assertFalse(hasFunc(res.file, "mapLike2__String__Object"), "the local call must not degrade to the Object fallback")
+}
+
+// #5962: two imported functions sharing a name whose signatures differ ONLY
+// in parameter mode are a genuine ambiguity, not a duplicate — the sig key
+// folds modes in, so they evict like any other conflicting pair.
+test "imported functions differing only in parameter mode are ambiguous (#5962)" {
+  val callerSrc = "package Caller\n" + "func caller(): String { mapLike2(\"hi\", { s: String -> dup(s) }) }\n"
+  val libSrc = "package Lib\n" + "pub func mapLike2[T, U](x: in T, f: (T) -> U): U { f(x) }\n"
+  val libASrc = "package LibA\n" + "pub func dup(s: in String): String { s + s }\n"
+  val libBSrc = "package LibB\n" + "pub func dup(s: inout String): String { s }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val libAPr = parse(libASrc)
+  val libBPr = parse(libBSrc)
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var ja = 0
+  while ja < libAPr.file.items.count {
+    match libAPr.file.items[ja].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ja = ja + 1
+  }
+  var jb = 0
+  while jb < libBPr.file.items.count {
+    match libBPr.file.items[jb].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    jb = jb + 1
+  }
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(
+    hasFunc(res.file, "mapLike2__String__Object"),
+    "mode-differing same-name imports are ambiguous; U safely defaults to Object"
+  )
+}
+
 test "lambda-only argument binds type param when no other source exists (#5604)" {
   val callerSrc = "package Caller\n" + "func caller(): Int { eachLike({ z: Int -> () }) }\n"
   val libSrc = "package Lib\n" + "pub func eachLike[T](f: (T) -> Unit): Int { 0 }\n"
