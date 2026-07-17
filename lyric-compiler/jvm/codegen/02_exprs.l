@@ -1153,6 +1153,18 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         }
         case None -> ()
       }
+      // Bare or package-qualified NULLARY union-case value reference
+      // (`StoreError.Internal`, or package-qualified `Std.Errors.SomeUnion.
+      // Case`) — the non-call analog of the case-CONSTRUCTOR-with-args fix in
+      // `lowerMethodCall` (#5943). Same fallthrough position as the enum
+      // check above.
+      match tryQualifiedUnionCaseValueJvm(ctx, expr) {
+        case Some(cls) -> {
+          val emptyArgs: List[CallArg] = newList()
+          return lowerConstruction(ctx, insns, cls, emptyArgs)
+        }
+        case None -> ()
+      }
       val recvTy = lowerExpr(ctx, insns, recv)
       match recvTy {
         case JRef(cls) -> {

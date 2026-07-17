@@ -1265,6 +1265,37 @@ pub func tryQualifiedEnumClassJvm(ctx: in FuncCtx, expr: in Expr): Option[String
   }
 }
 
+// Resolve a bare or package-qualified reference to a NULLARY union case
+// (`StoreError.Internal`, type-qualified; or package-qualified `Std.Errors.
+// SomeUnion.Case`) to its declaring case class, or `None` when `expr` isn't
+// such a reference. A nullary case with no call parens parses as a plain
+// `EMember` value expression (never an `ECall`), so it never reaches
+// `lowerMethodCall`'s case-CONSTRUCTOR-with-args fix (#5943) — this is the
+// argument-less analog of that fix, and the non-enum analog of
+// `tryQualifiedEnumClassJvm` just above. Reuses the `<Union>$<Case>` key
+// `collectFileCtors`'s `IUnion` branch already registers for every case
+// (#4802) — the same registry the construction fix and `resolveCaseClassJvm`
+// consult. A receiver whose first segment names a local is a real value
+// member-access chain, not a case reference (same guard as
+// `tryQualifiedEnumClassJvm`).
+pub func tryQualifiedUnionCaseValueJvm(ctx: in FuncCtx, expr: in Expr): Option[String] {
+  match expr.kind {
+    case EMember(recv, memberName) -> {
+      val segs = flattenPathExprSegsJvm(recv)
+      if segs.count == 0 {
+        return None
+      }
+      match lookupSlot(ctx, segs[0]) {
+        case Some(_) -> return None
+        case None -> ()
+      }
+      val unionTy = segs[segs.count - 1]
+      mapGet(ctx.ctors, unionTy + "$" + memberName)
+    }
+    case _ -> None
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4d. Declared slice/List element types (docs/59 §4.3 #5439 class).
 // ─────────────────────────────────────────────────────────────────────────────

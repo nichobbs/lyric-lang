@@ -3117,7 +3117,24 @@ func lowerMethodCall(
             val qualPath = ModulePath(segments = qualFqnSegs, span = recv.span)
             return lowerBuiltinOrStaticCall(ctx, insns, memberName, qualPath, args)
           }
-          case None -> ()
+          case None -> {
+            // Qualified union-case CONSTRUCTION (#5943): `Std.Errors.ParseError.
+            // InvalidFormat(input = ..., expected = ...)` (package-qualified) and
+            // the same-package `StoreError.UserNotFound(id = 7)` (type-qualified,
+            // MSIL's #3840 shape) both flatten to a receiver whose LAST segment
+            // names the parent union, with `memberName` the case. Neither is a
+            // registered free function (the `qualSigOpt` probe above just missed),
+            // so without this the receiver falls through to `lowerExpr` and
+            // panics evaluating the package/union-type prefix as a value. The
+            // `collectFileCtors` `IUnion` branch already registers every case
+            // under the union-name-qualified key `<Union>$<Case>` (#4802) —
+            // reuse that single registry lookup instead of adding a new one.
+            val unionTy = qualSegs[qualSegs.count - 1]
+            match mapGet(ctx.ctors, unionTy + "$" + memberName) {
+              case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
+              case None -> ()
+            }
+          }
         }
       }
     }

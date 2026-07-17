@@ -40,6 +40,32 @@
 //! lowering (`lowerBuiltinOrStaticCall`) instead — mirroring MSIL's
 //! `flattenPathExprSegs` fix in `lowerMethodCallMsil` (#3332).
 //!
+//! #5943 closed the remaining member of this qualified-resolution family: a
+//! package-qualified union-case CONSTRUCTOR call with args (`Std.Errors.
+//! ParseError.InvalidFormat(input = ..., expected = ...)`, or the same-package
+//! `AppError.Missing(id = ...)` / `Pkg.AppError.Missing(id = ...)` shapes) is
+//! neither a registered free function (the #5845 probe) nor a nullary enum
+//! value (#5769), so it fell through the SAME `lowerMethodCall` receiver-as-
+//! value path and panicked identically. Fixed by adding a case-constructor
+//! probe right after the #5845 free-function probe: flatten the receiver,
+//! take its LAST segment as the parent union's simple name, and look up
+//! `<Union>$<Case>` in the `ctors` registry that `collectFileCtors`'s
+//! `IUnion` branch already populates for #4802 — reusing that single
+//! registry instead of adding a new one. The non-call analog (a bare nullary
+//! case VALUE reference with no parens, `AppError.Down`) parses as a plain
+//! `EMember`, never reaching `lowerMethodCall` at all, so a sibling probe
+//! (`tryQualifiedUnionCaseValueJvm`, `jvm/codegen/01_types.l`) was added
+//! beside `tryQualifiedEnumClassJvm` in the `EMember` value-lowering path
+//! (`jvm/codegen/02_exprs.l`) for that shape. Both probes are scoped
+//! narrowly: MSIL already resolves the package/type-qualified CALL form
+//! (mirrors `lowerMethodCallMsil`'s own #3840 union-case-constructor fix),
+//! so only JVM needed the codegen change; a 3+-segment package-qualified
+//! BARE-VALUE nullary reference (no call parens) is not exercised here
+//! because it surfaces a separate, pre-existing MSIL gap unrelated to #5943
+//! (tracked separately) — the nullary case below is exercised through the
+//! 2-segment type-qualified form (`AppError.Down`), which already works on
+//! both targets.
+//!
 //! Run in CI via native `lyric test` on **both targets** (like
 //! `bitwise_self_test.l`): `--target dotnet` through `Msil.Bridge` (already
 //! covered by `enum_msil_self_test.l`'s equivalent case, but exercised again
@@ -49,6 +75,7 @@
 package Lyric.QualifiedEnumCaseSelfTest
 
 import Std.Core
+import Std.Errors
 import Std.Http
 import Std.Testing
 
@@ -130,4 +157,61 @@ test "#5845: Std.Http.request(...) and Std.Http.withHeader(...) (fully-qualified
   // second arity through the same qualified-call path.
   val _ = Std.Http.withHeader(req, "X-Test", "1")
   assertTrue(true, "Std.Http.request/withHeader (3-segment qualified free-function calls) executed without panicking")
+}
+
+// #5943: package-qualified union-case CONSTRUCTION — a nullary case, a
+// single-field case, and a two-field case, each covering a different arity
+// of the same fix.
+union AppError {
+  case Down
+  case Missing(id: Long)
+  case Bad(code: Int, reason: String)
+}
+
+func describeAppError(e: in AppError): String {
+  match e {
+    case Down -> "down"
+    case Missing(id) -> "missing:" + toString(id)
+    case Bad(code, reason) -> "bad:" + toString(code) + ":" + reason
+  }
+}
+
+test "#5943: nullary union case via type-qualified reference (no package prefix) resolves on both targets" {
+  val a = AppError.Down
+  assertEqual(describeAppError(a), "down", "AppError.Down (type-qualified nullary reference)")
+}
+
+test "#5943: single-field union-case CONSTRUCTION type-qualified (Union.Case(args), no package prefix) resolves on both targets" {
+  val a = AppError.Missing(id = 7i64)
+  assertEqual(describeAppError(a), "missing:7", "AppError.Missing(id = 7) (type-qualified construction)")
+}
+
+test "#5943: single-field union-case CONSTRUCTION fully package-qualified resolves on both targets" {
+  // `EMember(EMember(EPath["Lyric"], "QualifiedEnumCaseSelfTest"), "AppError")`
+  // as the receiver, `Missing` the member — the exact multi-segment shape
+  // `lowerMethodCall` fell through to value-evaluation on before the fix.
+  val a = Lyric.QualifiedEnumCaseSelfTest.AppError.Missing(id = 99i64)
+  assertEqual(describeAppError(a), "missing:99", "Lyric.QualifiedEnumCaseSelfTest.AppError.Missing(id = 99)")
+}
+
+test "#5943: two-field union-case CONSTRUCTION fully package-qualified resolves on both targets" {
+  val a = Lyric.QualifiedEnumCaseSelfTest.AppError.Bad(code = 500, reason = "boom")
+  assertEqual(
+    describeAppError(a),
+    "bad:500:boom",
+    "Lyric.QualifiedEnumCaseSelfTest.AppError.Bad(code = 500, reason = \"boom\")"
+  )
+}
+
+test "#5943: package-qualified union-case CONSTRUCTION against a real cross-package stdlib union (Std.Errors.ParseError) resolves on both targets" {
+  // `Std.Errors` is a genuinely different package from this test module (not
+  // just a same-file/self-qualified reference) — the real-world #5943 repro
+  // shape: a consumer package constructing another package's union case by
+  // its full dotted path.
+  val e = Std.Errors.ParseError.InvalidFormat(input = "abc", expected = "int")
+  assertEqual(
+    ParseError.message(e),
+    "invalid format: 'abc' (expected int)",
+    "Std.Errors.ParseError.InvalidFormat(...) (cross-package qualified construction)"
+  )
 }
