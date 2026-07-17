@@ -3019,6 +3019,48 @@ func lowerMethodCall(
     }
     case _ -> ()
   }
+  // Fully-qualified free-function call whose multi-segment package prefix the
+  // parser left as nested `EMember`s (`Std.Http.request(...)` parses as
+  // `EMember(EMember(EPath["Std"], "Http"), "request")`, never a flat EPath —
+  // the `EPath` arm above only covers a single-segment receiver). Mirrors
+  // MSIL's `flattenPathExprSegs` fix (`lowerMethodCallMsil`, #3332) and this
+  // package's own `flattenPathExprSegsJvm`/`tryQualifiedEnumClassJvm` value-
+  // reference fix (#5769): flatten the receiver into its segment list and, if
+  // `<prefix>/<member>` names a registered free function, route to the
+  // static-call lowering below instead of falling through to `lowerExpr`
+  // (which tries to evaluate the package prefix as a VALUE and panics —
+  // #5845). A receiver whose first segment names a local is a real value
+  // member-access chain, not a package-qualified reference, and is left to
+  // the normal value-receiver path (same guard `tryQualifiedEnumClassJvm`
+  // uses).
+  val qualSegs = flattenPathExprSegsJvm(recv)
+  if qualSegs.count > 0 {
+    match lookupSlot(ctx, qualSegs[0]) {
+      case Some(_) -> ()
+      case None -> {
+        val qualKey = joinSegments(qualSegs, "/") + "/" + memberName
+        val qualArgcKey = qualKey + "@" + toString(args.count)
+        val qualSigOpt = match mapGet(ctx.funcSigs, qualArgcKey) {
+          case Some(sig) -> Some(value = sig)
+          case None -> mapGet(ctx.funcSigs, qualKey)
+        }
+        match qualSigOpt {
+          case Some(_) -> {
+            val qualFqnSegs: List[String] = newList()
+            var qi = 0
+            while qi < qualSegs.count {
+              qualFqnSegs.add(qualSegs[qi])
+              qi = qi + 1
+            }
+            qualFqnSegs.add(memberName)
+            val qualPath = ModulePath(segments = qualFqnSegs, span = recv.span)
+            return lowerBuiltinOrStaticCall(ctx, insns, memberName, qualPath, args)
+          }
+          case None -> ()
+        }
+      }
+    }
+  }
   val recvTy = lowerExpr(ctx, insns, recv)
   // `shr` is arithmetic (ISHR/LSHR — sign-replicating); Lyric's Int/Long/
   // Byte are signed and the JVM backend has no unsigned integer type, so the
