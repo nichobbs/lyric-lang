@@ -828,3 +828,43 @@ test "findNearestManifestDetailed: no lyric.toml anywhere reports NoManifestFoun
     case FoundBrokenManifest(path, _) -> panic("unexpected corrupt manifest found at " + path)
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5860: no CLI-integration test exists for `Lyric.Cli.main`'s bare-dispatch
+// `FoundBrokenManifest` arm (cli_main.l) or `cmdTest`'s auto-discovery
+// `FoundBrokenManifest` arm (cli_test.l) — only the lower-level
+// `Disc.findNearestManifestDetailed` primitive above is driven directly.
+// Investigated adding one; documenting why it isn't possible in-process
+// today rather than shipping a test that doesn't actually exercise the
+// wiring it claims to cover:
+//
+//  1. Both call sites are hardcoded to
+//     `Disc.findNearestManifestDetailed(Environment.currentDirectory())` —
+//     the discovery PRIMITIVE takes an explicit `startDir` (which is how
+//     the tests above drive it against fixture directories), but neither
+//     `main`'s bare-argv branch nor `cmdTest`'s auto-discovery branch
+//     exposes a way to substitute a fixture directory for the real process
+//     cwd. `Std.Environment` has no `setCurrentDirectory`/chdir extern
+//     either (checked `_kernel/environment_host.l`), so there is no way to
+//     redirect discovery to a controlled fixture tree without changing
+//     `main`/`cmdTest`'s own signatures — a production-code change, not a
+//     test addition, and out of scope for this test-coverage follow-up.
+//  2. `cmdTest` (cli_test.l) is package-private (not `pub`), so even
+//     setting aside (1), this self-test's package (`Lyric.CliSharedSelfTest`)
+//     cannot call it directly today.
+//  3. `printErr`/`printUsage` write straight to `Std.Console.error`/stdout;
+//     there is no capture facility, so even with (1) and (2) solved, the
+//     exact warning text the issue calls out could not be asserted — only
+//     the Int exit code could be.
+//  4. Actually invoking `Lyric.Cli.main([])` for real (the one call of the
+//     two that IS `pub`) is unsafe here regardless: it runs against
+//     whatever the test process's ACTUAL cwd is, which under `lyric test`
+//     is inside a real checkout with a valid `lyric.toml` — it would kick
+//     off a full recursive `cmdBuild` of the discovered project rather
+//     than hit the broken-manifest branch this issue is about.
+//
+// Closing this properly needs an injectable start-directory seam on
+// `main`/`cmdTest` (or their discovery call) plus a stdout/stderr capture
+// facility — both real production-code additions, not test-only changes.
+// Filed as a documented gap rather than a fabricated assertion.
+// ─────────────────────────────────────────────────────────────────────────────
