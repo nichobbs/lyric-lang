@@ -439,6 +439,25 @@ func typeExprListKey(ts: in List[TypeExpr]): String {
   acc
 }
 
+// A structural signature key for a `FunctionDecl` — its parameter types
+// joined with its return type — used to tell apart two DIFFERENT functions
+// that merely share a bare name (#5843) from genuine duplicate collections
+// of the SAME declaration (which must keep comparing equal).  Generic type
+// parameters are folded in verbatim via `typeExprKey` (their names are part
+// of the structural shape, so `f[T](x: T): T` and `f[U](x: U): Bool` still
+// compare unequal on the return type) — this key is for name-collision
+// detection only, never for specialisation mangling.
+func funcSigKeyMono(decl: in FunctionDecl): String {
+  val paramTys: List[TypeExpr] = newList()
+  var i = 0
+  while i < decl.params.count {
+    paramTys.add(decl.params[i].ty)
+    i = i + 1
+  }
+  val retKey = match decl.ret { case Some(r) -> typeExprKey(r); case None -> "Unit" }
+  typeExprListKey(paramTys) + "->" + retKey
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. TypeExpr substitution (type-var name → concrete TypeExpr,
 //     value-var name → concrete Expr)
@@ -3576,10 +3595,51 @@ pub func monoFileWithImportsAndTypeDecls(
   // (from `Std.Core` via `core_proof.l`), producing a broken identity
   // specialisation `tag__Opt` that the call site then targeted instead of
   // the user's `match`-bearing function.
+  // #5843: two distinct cross-package functions sharing a bare name (e.g.
+  // `Std.String.toUpper(String): String` and `Std.Char.toUpper(Char): Char`
+  // — `pipeAddNonGenericFuncs` collects every stdlib package's `pub func`s
+  // into one flat pool regardless of what the compiled file actually
+  // imports) previously resolved to whichever decl happened to be collected
+  // first — an arbitrary, package-iteration-order artefact, not the
+  // signature the type checker actually resolved at any given call site.
+  // A generic caller inferring its type argument off the WRONG overload's
+  // return type (e.g. `mapOption(opt, { s: String -> toUpper(s) })`
+  // specialising against `Char` instead of `String`) mis-specialises into a
+  // real closed instantiation the runtime value never had, crashing with an
+  // `InvalidCastException`/`InvalidProgramException` at the call site.
+  // Track the first-seen signature per name and, on a genuine conflict,
+  // evict the name from both maps entirely — `inferReturnFromName` then
+  // safely misses (falls through to `None`/`Object`-defaulted, the same
+  // degradation already used for lambdas and BCL returns) instead of
+  // silently guessing.  Inference-only union-ctor synths never participate:
+  // they are appended last specifically so a real function's entry always
+  // wins their name collision (see the comment below), not a queue of
+  // equally-weighted "real" candidates.
+  val importedFuncSigKeys: Map[String, String] = newMap()
+  val ambiguousImportedFuncNames: Map[String, Bool] = newMap()
   var ig = 0
   while ig < importedGenDecls.count {
     val idecl = importedGenDecls[ig]
-    if not funcDecls.containsKey(idecl.name) {
+    if not annsInferenceOnlyMono(idecl.annotations) {
+      val sigKey = funcSigKeyMono(idecl)
+      match mapGet(importedFuncSigKeys, idecl.name) {
+        case None -> importedFuncSigKeys.add(idecl.name, sigKey)
+        case Some(prevKey) -> {
+          if prevKey != sigKey {
+            if not ambiguousImportedFuncNames.containsKey(idecl.name) {
+              ambiguousImportedFuncNames.add(idecl.name, true)
+            }
+            if funcDecls.containsKey(idecl.name) {
+              funcDecls.remove(idecl.name)
+            }
+            if genDecls.containsKey(idecl.name) {
+              genDecls.remove(idecl.name)
+            }
+          }
+        }
+      }
+    }
+    if not funcDecls.containsKey(idecl.name) and not ambiguousImportedFuncNames.containsKey(idecl.name) {
       funcDecls.add(idecl.name, idecl)
       // Inference-only union-ctor synths (see `annsInferenceOnlyMono`) join
       // the inference surface but must never become specialisation

@@ -551,6 +551,92 @@ test "distinct-type from feeds imported generic specialisation with the real pay
   assertTrue(hasFunc(res.file, "isLike__Age"), "Age.from(...) infers Age, not the Object default")
 }
 
+// #5843: two DIFFERENT cross-package functions can share a bare name (the
+// bridges collect every stdlib package's non-generic `pub func`s into one
+// flat inference pool regardless of what the compiled file imports, e.g.
+// `Std.String.toUpper(String): String` vs `Std.Char.toUpper(Char): Char`).
+// Before this fix the first-registered decl won arbitrarily, so a generic
+// caller could infer its type argument from the WRONG overload's return
+// type and specialise into an instantiation the runtime value never has —
+// silently mis-specialising instead of just staying un-inferred.  Evicting
+// the ambiguous name is the safe degradation: the generic then falls back
+// to its existing Object-default behaviour instead of guessing.
+test "ambiguous cross-package function name is evicted from inference, not guessed (#5843)" {
+  val callerSrc = "package Caller\n" + "func caller(): String { mapLike2(\"hi\", { s: String -> dup(s) }) }\n"
+  val libSrc = "package Lib\n" + "pub func mapLike2[T, U](x: in T, f: (T) -> U): U { f(x) }\n"
+  val libASrc = "package LibA\n" + "pub func dup(s: in String): String { s + s }\n"
+  val libBSrc = "package LibB\n" + "pub func dup(c: in Char): Char { c }\n"
+
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val libAPr = parse(libASrc)
+  val libBPr = parse(libBSrc)
+
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var ja = 0
+  while ja < libAPr.file.items.count {
+    match libAPr.file.items[ja].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ja = ja + 1
+  }
+  var jb = 0
+  while jb < libBPr.file.items.count {
+    match libBPr.file.items[jb].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    jb = jb + 1
+  }
+
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(
+    hasFunc(res.file, "mapLike2__String__Object"),
+    "ambiguous 'dup' across LibA/LibB is evicted; U safely defaults to Object instead of guessing"
+  )
+  assertFalse(hasFunc(res.file, "mapLike2__String__Char"), "must never guess the wrong overload's return type")
+  assertFalse(hasFunc(res.file, "mapLike2__String__String"), "must never guess either overload's return type")
+}
+
+// A duplicate REGISTRATION of the exact same decl (e.g. the same generic
+// collected via two overlapping collector passes) must not be treated as a
+// name collision — only a genuinely DIFFERENT signature under the same name
+// counts as ambiguous.
+test "identical duplicate cross-package registration is not ambiguous" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool { isSomeDup(dup2(5)) }\n"
+  val libSrc = "package Lib\n" + "pub func dup2(x: in Int): Int { x }\n" +
+    "pub func isSomeDup[T](x: in T): Bool { true }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val feed: List[FunctionDecl] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    match libPr.file.items[i].kind {
+      case IFunc(decl) -> {
+        feed.add(decl)
+        // Simulate the same decl entering the pool twice (e.g. overlapping
+        // stdlib-package / private-generic collectors).
+        if decl.name == "dup2" {
+          feed.add(decl)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertTrue(hasFunc(res.file, "isSomeDup__Int"), "duplicate registration of the identical decl is not ambiguity")
+}
+
 test "lambda-only argument binds type param when no other source exists (#5604)" {
   val callerSrc = "package Caller\n" + "func caller(): Int { eachLike({ z: Int -> () }) }\n"
   val libSrc = "package Lib\n" + "pub func eachLike[T](f: (T) -> Unit): Int { 0 }\n"
