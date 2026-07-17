@@ -878,7 +878,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping BuildInfo self-test"
             exit 1
           fi
-          "$lyric_bin" test lyric-compiler/lyric/buildinfo_self_test.l
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/buildinfo_self_test.l
 
       # BuildInfo `--define` runtime path (docs/60 §9.2): asserts that
       # `--define`-supplied `version` / `build_profile` / `git_hash` actually
