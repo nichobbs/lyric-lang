@@ -4092,6 +4092,26 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/func_val_local_rettype_self_test.l
 
+      # Stdlib-generic mono self-test on JVM (#5843) — the file's old header
+      # claimed MSIL-only (#1707) but the whole suite passes on JVM now;
+      # pins the mono ambiguity-eviction fix (mapOption + colliding toUpper)
+      # on the JVM backend.
+      - name: Stdlib-generic mono self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping stdlib-generic mono JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping stdlib-generic mono JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/stdlib_generic_mono_self_test.l
+
       # Inout-slice self-test on JVM (#5842) — the JVM half of the dotnet-job
       # step of the same name.  Pins the Object[]→ArrayList holder write-back
       # conversion on the JVM backend.
@@ -5991,12 +6011,13 @@ jobs:
       # D-progress-674.  The #5077 audit (2026-07-16) wired the passing
       # remainder: book_ch01/03/05/07, book_ch13_ffi, kernel_bcl_tests, and
       # xml_viability_tests; book_ch04_tests joined once #5842 (inout
-      # slice[T] cast) was fixed.  Deliberately still excluded (tracked, not
-      # silent): book_ch02_tests (#5841 range-subtype isOk mono miscompile),
-      # book_ch12_tests (#5843 generic-HOF-lambda InvalidProgramException),
-      # and metadata_reader_tests (#5624 placeholder Param rows; also needs
-      # LYRIC_LOAD_COMPILER=1).  Each suite exits non-zero on any assertion
-      # failure or runtime fault.
+      # slice[T] cast) was fixed, book_ch12_tests once #5843 (mono
+      # cross-package name-collision) was.  Deliberately still excluded
+      # (tracked, not silent): book_ch02_tests (#5841's mono half is fixed
+      # but the suite then hits the module-val dependent-initializer .cctor
+      # InvalidProgramException, #5955) and metadata_reader_tests (#5624
+      # placeholder Param rows; also needs LYRIC_LOAD_COMPILER=1).  Each
+      # suite exits non-zero on any assertion failure or runtime fault.
       - name: Stdlib runtime suites on dotnet (kernels + core stdlib)
         working-directory: ${{ github.workspace }}
         run: |
@@ -6014,8 +6035,8 @@ jobs:
             regex_tests yaml_tests testing_tests mocking_tests xml_tests \
             set_tests sort_tests \
             book_ch01_tests book_ch03_tests book_ch04_tests book_ch05_tests \
-            book_ch07_tests book_ch13_ffi_tests kernel_bcl_tests \
-            xml_viability_tests; do
+            book_ch07_tests book_ch12_tests book_ch13_ffi_tests \
+            kernel_bcl_tests xml_viability_tests; do
             echo "--- lyric run lyric-stdlib/tests/$suite.l"
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done
