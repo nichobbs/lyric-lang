@@ -35,8 +35,8 @@
 //!     `scope`/`spawn` — genuinely concurrent on this target, D120) — same
 //!     two assertions.
 //!
-//! NOT yet wired into CI — the orchestrator should add it alongside
-//! `http_async_tests.l` (both targets; see that file's own header note).
+//! Wired into CI on both targets in `.github/workflows/ci.yml`, alongside
+//! `http_async_tests.l`.
 @test_module
 package Std.Http.VersionTests
 
