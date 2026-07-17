@@ -30442,3 +30442,32 @@ async call's generic-parameter unification reports the call's real physical
 
 **Related:** `docs/03-decision-log.md` D-progress-686; #5723, #5725, #5730,
 #5733, #5734.
+
+## `Std.Tls` module ships — PEM certificate/private-key loading with dotnet + JVM kernel twins (2026-07-16)
+
+New `lyric-stdlib/std/tls.l` (`Std.Tls`) plus `_kernel/tls_host.l` /
+`_kernel_jvm/tls_host.l` kernel twins: `Certificate`/`Identity` opaque
+types, `TlsVersion` enum, `TlsServerConfig` record (mTLS-ready from v1),
+`TlsError` union, and PEM-only cert/key constructors — docs/61
+§3.1's phase 1.1 (epic #5874, issue #5876). dotnet uses
+`X509CertificateLoader` for certs and bridges the one
+`ReadOnlySpan<char>`-only identity-combine API via per-call temp files;
+JVM uses `CertificateFactory` for certs and a pure-Lyric PEM→DER→
+`PKCS8EncodedKeySpec` path for keys, with a sign/verify round-trip for
+mismatch detection. Testing surfaced three pre-existing, general compiler
+bugs unrelated to TLS specifically (filed, not fixed here): #5903 (nested
+union-case pattern-match mis-dispatch, JVM), #5908 (cross-package
+record-default-field construction silently wrong on `--target jvm`), and
+#5920 (the same cross-package record-default-field construction throwing
+`InvalidProgramException` on `--target dotnet` under the source-built
+toolchain — found via real CI evidence after the implementing sandbox's
+published-tool verification missed it). `Std.Tls` works around #5903 with
+a case rename; for #5908/#5920, `TlsServerConfig`'s defaults-omission test
+was removed outright (no target currently passes it, so per CLAUDE.md it
+isn't gated to either one) rather than kept on a single target, leaving
+only the explicit-fields-construction test, which runs on both targets.
+`tls.l`'s `TlsServerConfig` doc comment tells consumers to pass every
+field explicitly until both bugs land.
+
+**Related:** `docs/03-decision-log.md` D-progress-688; #5876, #5874, #5903,
+#5908, #5920.
