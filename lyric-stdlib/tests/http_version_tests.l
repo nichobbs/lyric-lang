@@ -55,12 +55,21 @@ val deadUrl: String = "http://127.0.0.1:1/"
 
 val http3Marker: String = "HTTP/3"
 
+// Unwraps `Err(e)` first, then matches `e`'s HttpError cases in a SEPARATE,
+// top-level `match` — deliberately not `case Err(ConnectionFailed(_, m)) ->
+// ...` (D-progress-688 / #5903): matching a union case nested directly
+// inside another case's payload does not reliably discriminate on the
+// self-hosted JVM backend today (confirmed while writing this file — see
+// `HttpClientBuilder.build()`'s own `version`/`pinHttp11` two-step match for
+// the fix that motivated this same shape here).
 func expectHttp3Unsupported(r: in Result[HttpResponse, HttpError], label: in String): Unit {
   match r {
     case Ok(_) -> panic(label + ": expected the Http3-unsupported error")
-    case Err(ConnectionFailed(_, message)) ->
-      assertTrue(contains(message, http3Marker), label + ": message should name HTTP/3, got: " + message)
-    case Err(other) -> panic(label + ": expected ConnectionFailed, got a different HttpError case")
+    case Err(e) -> match e {
+      case ConnectionFailed(_, message) ->
+        assertTrue(contains(message, http3Marker), label + ": message should name HTTP/3, got: " + message)
+      case other -> panic(label + ": expected ConnectionFailed, got a different HttpError case")
+    }
   }
 }
 
@@ -90,8 +99,10 @@ test "Http3 still validates URLs before the version gate" {
   val c = HttpClientBuilder.build(HttpClientBuilder.new().withHttpVersion(Http3))
   match await c.get("not-a-url") {
     case Ok(_) -> panic("expected InvalidUrl for a scheme-less string")
-    case Err(InvalidUrl(_)) -> ()
-    case Err(other) -> panic("expected InvalidUrl even with Http3 configured")
+    case Err(e) -> match e {
+      case InvalidUrl(_) -> ()
+      case other -> panic("expected InvalidUrl even with Http3 configured")
+    }
   }
 }
 

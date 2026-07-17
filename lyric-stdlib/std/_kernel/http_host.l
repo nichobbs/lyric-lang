@@ -94,11 +94,13 @@ func newStringContent(body: in String, encoding: in Encoding, mediaType: in Stri
 @externTarget("System.Net.Http.HttpRequestMessage.set_Content")
 func setRequestContent(req: in HttpRequestMessage, content: in StringContent): Unit = ()
 
-// Raw ctors (private): every public `newClient*` wrapper below applies
-// `applyHttp2OrLower` before handing the client back, so D128 decision 4's
-// "every constructed client, including the singleton" default is
-// impossible to bypass at a call site — see the wrappers just after the
-// version-policy primitives.
+// Raw ctors (private, no version applied): every public `hostClient*`
+// function below builds through exactly one of these, then applies exactly
+// one of `applyHttp2OrLower`/`applyHttp11Exact` (below) before handing the
+// client back — never both, so no constructed client is ever version-
+// stamped twice. D128 decision 4's "every constructed client, including the
+// singleton" default is impossible to bypass at a call site: every path to
+// a raw ctor is followed by exactly one `apply*` call.
 @externTarget("System.Net.Http.HttpClient..ctor")
 func rawNewClient(): HttpClientHandle = ()
 
@@ -174,21 +176,6 @@ func applyHttp11Exact(c: in HttpClientHandle): HttpClientHandle {
   setDefaultRequestVersion(c, newVersion(1, 1))
   setDefaultVersionPolicy(c, versionPolicyExact())
   c
-}
-
-// Public `newClient*` wrappers — the ONLY constructors `hostDefaultClient`/
-// `hostClient*` below call, so every constructed `HttpClientHandle`
-// (including the process-wide singleton) defaults to h2-or-lower.
-func newClient(): HttpClientHandle {
-  applyHttp2OrLower(rawNewClient())
-}
-
-func newClientFromHandler(handler: in HttpClientHandler): HttpClientHandle {
-  applyHttp2OrLower(rawNewClientFromHandler(handler))
-}
-
-func newClientFromSocketsHandler(handler: in SocketsHttpHandler): HttpClientHandle {
-  applyHttp2OrLower(rawNewClientFromSocketsHandler(handler))
 }
 
 @externTarget("System.Net.Sockets.AddressFamily.Unix")
@@ -327,7 +314,7 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // (sockets stay in TIME_WAIT for two MSL after GC).
 // Named `processClient` (not `defaultClient`) to avoid a name-resolution clash with
 // the `Std.Http.defaultClient()` factory function when both packages are compiled together.
-val processClient: HttpClientHandle = newClient()
+val processClient: HttpClientHandle = applyHttp2OrLower(rawNewClient())
 
 pub func hostDefaultClient(): HttpClientHandle {
   processClient
@@ -351,17 +338,30 @@ pub func hostStatusCode(response: in HttpResponseMessage): Int {
   responseStatusInt(response)
 }
 
-pub func hostClientWithRedirects(maxRedirects: in Int): HttpClientHandle {
+// Raw (unversioned) redirect-configured client builders — shared by the
+// default-version and `*Http11` public functions below, each of which
+// applies exactly one `apply*` call to the result (docs/61 §5.1; #5879:
+// building through `hostClientWithRedirects` and re-applying a second
+// version would stamp the handle twice).
+func buildRedirectingClient(maxRedirects: in Int): HttpClientHandle {
   val handler = newHandler()
   setAllowAutoRedirect(handler, true)
   setMaxAutomaticRedirections(handler, maxRedirects)
-  newClientFromHandler(handler)
+  rawNewClientFromHandler(handler)
+}
+
+func buildNonRedirectingClient(): HttpClientHandle {
+  val handler = newHandler()
+  setAllowAutoRedirect(handler, false)
+  rawNewClientFromHandler(handler)
+}
+
+pub func hostClientWithRedirects(maxRedirects: in Int): HttpClientHandle {
+  applyHttp2OrLower(buildRedirectingClient(maxRedirects))
 }
 
 pub func hostClientNoRedirects(): HttpClientHandle {
-  val handler = newHandler()
-  setAllowAutoRedirect(handler, false)
-  newClientFromHandler(handler)
+  applyHttp2OrLower(buildNonRedirectingClient())
 }
 
 // ---------------------------------------------------------------------------
@@ -385,55 +385,71 @@ func newUnixSocketHandler(socketPath: in String): SocketsHttpHandler {
   handler
 }
 
-pub func hostClientWithUnixSocket(socketPath: in String): HttpClientHandle {
-  newClientFromSocketsHandler(newUnixSocketHandler(socketPath))
+// Raw (unversioned) Unix-socket client builders — same one-`apply*`-call
+// discipline as `buildRedirectingClient`/`buildNonRedirectingClient` above.
+func buildUnixSocketClient(socketPath: in String): HttpClientHandle {
+  rawNewClientFromSocketsHandler(newUnixSocketHandler(socketPath))
 }
 
-pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClientHandle {
+func buildUnixSocketRedirectingClient(socketPath: in String, maxRedirects: in Int): HttpClientHandle {
   val handler = newUnixSocketHandler(socketPath)
   socketsSetAllowAutoRedirect(handler, true)
   socketsSetMaxAutomaticRedirections(handler, maxRedirects)
-  newClientFromSocketsHandler(handler)
+  rawNewClientFromSocketsHandler(handler)
+}
+
+func buildUnixSocketNonRedirectingClient(socketPath: in String): HttpClientHandle {
+  val handler = newUnixSocketHandler(socketPath)
+  socketsSetAllowAutoRedirect(handler, false)
+  rawNewClientFromSocketsHandler(handler)
+}
+
+pub func hostClientWithUnixSocket(socketPath: in String): HttpClientHandle {
+  applyHttp2OrLower(buildUnixSocketClient(socketPath))
+}
+
+pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClientHandle {
+  applyHttp2OrLower(buildUnixSocketRedirectingClient(socketPath, maxRedirects))
 }
 
 pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClientHandle {
-  val handler = newUnixSocketHandler(socketPath)
-  socketsSetAllowAutoRedirect(handler, false)
-  newClientFromSocketsHandler(handler)
+  applyHttp2OrLower(buildUnixSocketNonRedirectingClient(socketPath))
 }
 
 // ---------------------------------------------------------------------------
 // HTTP/1.1 exact-pin variants (docs/61 §5.1, D128 decision 4; #5879).
 //
-// Every construction path above already defaults to h2-or-lower via
-// `newClient*`; these mirror each one, re-applying `applyHttp11Exact` to
-// override that default. `hostClientHttp11` builds a FRESH client (never
-// `processClient`, the shared singleton `hostDefaultClient` returns) — the
-// singleton's version must stay at the process-wide h2-or-lower default for
-// every other caller.
+// Each mirrors its default-version counterpart above but applies
+// `applyHttp11Exact` instead of `applyHttp2OrLower` — to the SAME raw,
+// not-yet-versioned handle a fresh `buildXxx`/`rawNewClient*` call
+// produces, never to an already-versioned handle (that would stamp the
+// version twice). `hostClientHttp11` builds a FRESH client via
+// `rawNewClient()` directly (never `processClient`, the shared singleton
+// `hostDefaultClient` returns) — the singleton's version must stay at the
+// process-wide h2-or-lower default for every other caller.
 // ---------------------------------------------------------------------------
 pub func hostClientHttp11(): HttpClientHandle {
-  applyHttp11Exact(newClient())
+  applyHttp11Exact(rawNewClient())
 }
 
 pub func hostClientWithRedirectsHttp11(maxRedirects: in Int): HttpClientHandle {
-  applyHttp11Exact(hostClientWithRedirects(maxRedirects))
+  applyHttp11Exact(buildRedirectingClient(maxRedirects))
 }
 
 pub func hostClientNoRedirectsHttp11(): HttpClientHandle {
-  applyHttp11Exact(hostClientNoRedirects())
+  applyHttp11Exact(buildNonRedirectingClient())
 }
 
 pub func hostClientWithUnixSocketHttp11(socketPath: in String): HttpClientHandle {
-  applyHttp11Exact(hostClientWithUnixSocket(socketPath))
+  applyHttp11Exact(buildUnixSocketClient(socketPath))
 }
 
 pub func hostClientWithUnixSocketAndRedirectsHttp11(socketPath: in String, maxRedirects: in Int): HttpClientHandle {
-  applyHttp11Exact(hostClientWithUnixSocketAndRedirects(socketPath, maxRedirects))
+  applyHttp11Exact(buildUnixSocketRedirectingClient(socketPath, maxRedirects))
 }
 
 pub func hostClientWithUnixSocketNoRedirectsHttp11(socketPath: in String): HttpClientHandle {
-  applyHttp11Exact(hostClientWithUnixSocketNoRedirects(socketPath))
+  applyHttp11Exact(buildUnixSocketNonRedirectingClient(socketPath))
 }
 
 // `ResponseHeader` (#5568): native Lyric over `HttpHeaders.Contains` +
