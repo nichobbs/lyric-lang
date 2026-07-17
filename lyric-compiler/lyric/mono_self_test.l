@@ -74,6 +74,29 @@ func findFunc(file: in SourceFile, name: in String): Option[FunctionDecl] {
   None
 }
 
+// Pull the trailing (implicit-return or explicit `return`) expression out of
+// a func's body — mirrors `Lyric.Mono.lambdaBodyResultTE`'s statement-kind
+// match.  Used to inspect what a call site's callee looks like AFTER mono,
+// so a test can assert a call was left completely UNREWRITTEN (still names
+// the original bare function, not a `__`-suffixed specialisation).
+func lastStmtExprInFunc(file: in SourceFile, name: in String): Option[Expr] {
+  match findFunc(file, name) {
+    case None -> None
+    case Some(decl) -> match decl.body { case None -> None; case Some(fb) -> match fb { case FBExpr(e) -> Some(value = e); case FBBlock(blk) -> { if blk.statements.count == 0 { None } else { match blk.statements[blk.statements.count - 1].kind { case SExpr(e) -> Some(value = e); case SReturn(vOpt) -> vOpt; case _ -> None } } } } }
+  }
+}
+
+// The bare (single-segment) callee name of `e`, when `e` is a plain
+// `ECall(EPath([name]), args)` — `None` for anything else (a specialised
+// call site's callee is still a single-segment `EPath`, just under the
+// mangled `__`-suffixed name, so this only needs the single-segment case).
+func callFnBareName(e: in Expr): Option[String] {
+  match e.kind {
+    case ECall(fn, _) -> match fn.kind { case EPath(p) -> { if p.segments.count == 1 { Some(value = p.segments[0]) } else { None } }; case _ -> None }
+    case _ -> None
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Synthetic-AST helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -737,6 +760,75 @@ test "arity alone disambiguates an ambiguous name at a 2-argument call site (sto
     hasFunc(res.file, "isOkLike__Object__Object"),
     "must not degrade to the Object fallback when arity alone resolves the ambiguity"
   )
+}
+
+// Regression pin for the `lyric-validation`/`Std.Iter` shape found in a
+// round-6 follow-up review: `Validation.all(errors: in slice[slice[...]]):
+// slice[...]` (arity 1, NON-generic) and `Std.Iter.all[T](xs: in slice[T],
+// pred: (T) -> Bool): Bool` (arity 2, GENERIC) share the bare name `all`.
+// The INFERENCE-side ambiguity fix above (`resolveAmbiguousOverload`) does
+// not, by itself, protect the separate Phase-2 REWRITE path: `genDecls` is a
+// first-wins slot exactly like `funcDecls`, so if the GENERIC candidate
+// happens to be collected first, it occupies `genDecls["all"]` — and
+// `rewriteExpr`'s bare-`EPath` generic-call arm only rejected call sites with
+// MORE arguments than the generic's param count (the #3627/#3677 guard),
+// never FEWER, so the arity-1 `all(errors)` call slipped through, got
+// "specialised" against the arity-2 generic's signature, and was rewritten
+// with an argument list that doesn't match the specialisation it names —
+// invalid IL at runtime.  `genDeclResolvesForCallSite` closes this by
+// checking, for an ambiguous name, that THIS call site's arguments actually
+// resolve (via `resolveAmbiguousOverload`) to the specific candidate sitting
+// in `genDecls` before rewriting proceeds.  Feeds the GENERIC decl first so
+// it wins the first-wins `genDecls` slot, exactly reproducing the reported
+// collection order.
+test "non-generic arity-1 sharing a name with a generic arity-2 is left unspecialised (lyric-validation/Std.Iter shape)" {
+  val callerSrc = "package Caller\n" + "func caller(xs: in slice[slice[String]]): slice[String] { all(xs) }\n"
+  val genLibSrc = "package Iter\n" + "pub func all[T](xs: in slice[T], pred: in (T) -> Bool): Bool { true }\n"
+  val nonGenLibSrc = "package Validation\n" +
+    "pub func all(errors: in slice[slice[String]]): slice[String] { errors[0] }\n"
+
+  val callerPr = parse(callerSrc)
+  val genLibPr = parse(genLibSrc)
+  val nonGenLibPr = parse(nonGenLibSrc)
+
+  // Generic first, so it wins `genDecls`' first-wins slot under "all" —
+  // this ordering is exactly what exposed the bug.
+  val feed: List[FunctionDecl] = newList()
+  var gi = 0
+  while gi < genLibPr.file.items.count {
+    match genLibPr.file.items[gi].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    gi = gi + 1
+  }
+  var ni = 0
+  while ni < nonGenLibPr.file.items.count {
+    match nonGenLibPr.file.items[ni].kind {
+      case IFunc(decl) -> feed.add(decl)
+      case _ -> ()
+    }
+    ni = ni + 1
+  }
+
+  val res = monoFileWithImports(callerPr.file, feed)
+  assertFalse(hasFunc(res.file, "all__String"), "must not create a bogus specialisation of the generic 'all'")
+  assertFalse(hasFunc(res.file, "all__Slice_String"), "must not create a bogus specialisation of the generic 'all'")
+  match lastStmtExprInFunc(res.file, "caller") {
+    case None -> assertTrue(false, "caller's body must still be inspectable after mono")
+    case Some(bodyExpr) -> {
+      match callFnBareName(bodyExpr) {
+        case None -> assertTrue(false, "caller's call site must still be a plain single-segment call")
+        case Some(calleeName) -> {
+          assertEqual(
+            calleeName,
+            "all",
+            "the arity-1 call must survive completely unrewritten (still names 'all', not a '__'-suffixed specialisation) so it binds to the non-generic Validation.all at codegen"
+          )
+        }
+      }
+    }
+  }
 }
 
 // A duplicate REGISTRATION of the exact same decl (e.g. the same generic

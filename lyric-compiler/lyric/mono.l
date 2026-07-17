@@ -2966,6 +2966,49 @@ func indexExprToTypeArgMono(state: in MonoState, e: in Expr): Option[TypeArg] {
   }
 }
 
+// True iff, when `fname` is one of an ambiguous overload set, THIS call
+// site's arguments actually resolve to `baseDecl` — the specific decl
+// sitting in `state.genDecls` under that bare name.  `state.genDecls` is a
+// first-wins slot exactly like `state.funcDecls` (see the collector in
+// `monoFileWithImportsAndTypeDecls`): an ambiguous name's GENERIC candidate
+// can occupy that slot even when a DIFFERENT, non-generic (or
+// different-arity) overload is what a given call site actually means —
+// e.g. `Validation.all(errors: in slice[slice[ValidationError]])` (arity 1,
+// non-generic) and `Std.Iter.all[T](xs: in slice[T], pred: (T) -> Bool)`
+// (arity 2, generic) share the bare name `all`.  Whichever is collected
+// first wins the `genDecls` slot; if it's the generic, an unrelated arity-1
+// call would otherwise be attempted against it — the call-site arity
+// guards below (`args.count <= baseDecl.params.count`) only reject MORE
+// args than params (the #3627/#3677 same-named-generic-with-fewer-params
+// collision), never FEWER, so a 1-argument call against a 2-parameter
+// generic slips through, gets "specialised" with an argument list that
+// doesn't match the specialisation's real signature, and produces invalid
+// IL at runtime.  When `fname` is unambiguous this is a no-op (`true`);
+// when ambiguous, only a call site `resolveAmbiguousOverload` confirms
+// targets THIS SPECIFIC (generic) candidate is allowed to proceed through
+// the specialisation path below — any other outcome (the call resolves to
+// a different overload, or can't be resolved at all) leaves the call
+// untouched so it binds through normal, non-generic cross-package
+// resolution at codegen, mirroring the existing "uninferable call to an
+// imported generic stays silent" degradation.
+func genDeclResolvesForCallSite(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  fname: in String,
+  args: in List[CallArg],
+  baseDecl: in FunctionDecl,
+): Bool {
+  match mapGet(state.ambiguousFuncOverloads, fname) {
+    case None -> true
+    case Some(_) -> {
+      match resolveAmbiguousOverload(state, env, fname, args) {
+        case None -> false
+        case Some(resolved) -> funcSigKeyMono(resolved) == funcSigKeyMono(baseDecl)
+      }
+    }
+  }
+}
+
 func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Expr {
   val s = expr.span
   match expr.kind {
@@ -2997,45 +3040,52 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                   case Some(baseDecl) -> {
                     val allParams = extractAllParamInfo(baseDecl.generics)
                     if allParams.count > 0 and targs.count == allParams.count {
-                      val subst: Map[String, TypeExpr] = newMap()
-                      val valueSubst: Map[String, Expr] = newMap()
-                      var i = 0
-                      while i < allParams.count {
-                        val p = allParams[i]
-                        match targs[i] {
-                          case TAType(te) -> {
-                            if not p.isValue {
-                              subst.add(p.name, te)
+                      // An ambiguous `fname` resolving to a DIFFERENT overload
+                      // than the one sitting in `genDecls` is not a targs-count
+                      // mismatch — silently leave the call untouched (no
+                      // diagnostic) rather than firing the misleading "expected
+                      // N explicit type argument(s)" message below.
+                      if genDeclResolvesForCallSite(state, env, fname, args, baseDecl) {
+                        val subst: Map[String, TypeExpr] = newMap()
+                        val valueSubst: Map[String, Expr] = newMap()
+                        var i = 0
+                        while i < allParams.count {
+                          val p = allParams[i]
+                          match targs[i] {
+                            case TAType(te) -> {
+                              if not p.isValue {
+                                subst.add(p.name, te)
+                              }
+                            }
+                            case TAValue(e) -> {
+                              if p.isValue {
+                                valueSubst.add(p.name, e)
+                              }
                             }
                           }
-                          case TAValue(e) -> {
-                            if p.isValue {
-                              valueSubst.add(p.name, e)
-                            }
+                          i = i + 1
+                        }
+                        if allParamsBound(allParams, subst, valueSubst) {
+                          val name = specFuncName(fname, allParams, subst, valueSubst)
+                          validateWhereBounds(baseDecl, subst, fn.span, state.diags)
+                          if not state.seenSpecs.containsKey(name) {
+                            state.seenSpecs.add(name, true)
+                            val specDecl = specializeFunc(baseDecl, name, subst, valueSubst)
+                            state.allSpecs.add(
+                              SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = valueSubst, callSpan = fn.span)
+                            )
                           }
+                          val newFn = singleSegPathExpr(name, fn.span)
+                          return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
                         }
-                        i = i + 1
+                        noteUnspecialisableLocalCall(
+                          state,
+                          env,
+                          fname,
+                          "the explicit type arguments do not bind every generic parameter",
+                          fn.span
+                        )
                       }
-                      if allParamsBound(allParams, subst, valueSubst) {
-                        val name = specFuncName(fname, allParams, subst, valueSubst)
-                        validateWhereBounds(baseDecl, subst, fn.span, state.diags)
-                        if not state.seenSpecs.containsKey(name) {
-                          state.seenSpecs.add(name, true)
-                          val specDecl = specializeFunc(baseDecl, name, subst, valueSubst)
-                          state.allSpecs.add(
-                            SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = valueSubst, callSpan = fn.span)
-                          )
-                        }
-                        val newFn = singleSegPathExpr(name, fn.span)
-                        return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
-                      }
-                      noteUnspecialisableLocalCall(
-                        state,
-                        env,
-                        fname,
-                        "the explicit type arguments do not bind every generic parameter",
-                        fn.span
-                      )
                     } else {
                       noteUnspecialisableLocalCall(
                         state,
@@ -3066,92 +3116,106 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                 // A genuine call to this generic can never supply more arguments
                 // than it has parameters; reject that case so an unrelated
                 // same-named function isn't hijacked into a broken specialisation
-                // (the unqualified sibling of the #3627 collision).
+                // (the unqualified sibling of the #3627 collision).  When `fname`
+                // is ambiguous, `genDeclResolvesForCallSite` additionally confirms
+                // THIS call site's arguments actually target the generic sitting
+                // in `genDecls` (not, say, an unrelated non-generic overload that
+                // merely has fewer params — #3677's guard above only rejects
+                // MORE args than params, never fewer; see that helper's doc
+                // comment for the `Validation.all`/`Std.Iter.all` shape this
+                // closes).  A call that fails this check falls all the way
+                // through to the final `Expr(...)` below, untouched — same as
+                // the `case None` arm — so it binds through normal, non-generic
+                // cross-package resolution at codegen instead of being rewritten
+                // with an argument list that doesn't match the specialisation's
+                // real signature (invalid IL at runtime).
                 if typeParams.count > 0 and valueParams.count == 0 and args.count <= baseDecl.params.count {
-                  // Pure type-generic call site: existing inference path
-                  // (value generics require explicit `f[N]` type apps).
-                  val subst: Map[String, TypeExpr] = newMap()
-                  var i = 0
-                  while i < args.count and i < baseDecl.params.count {
-                    match lambdaShapeOfArg(callArgExpr(args[i])) {
-                      case Some(lamE) -> {
-                        match lamE.kind {
-                          case ELambda(lps, lbody) -> unifyLambdaArgTE(state, env, typeParams, baseDecl.params[i].ty, lps, lbody, subst)
-                          case _ -> ()
-                        }
-                      }
-                      case None -> {
-                        // Direct union-case construction: bind only
-                        // field-pinned slots (see partialUnifyCtorArg).
-                        var handled = false
-                        match ctorSynthOfArg(state, callArgExpr(args[i])) {
-                          case Some(ctorD) -> {
-                            val ctorCallArgs = match unwrapParenExprMono(callArgExpr(args[i])).kind {
-                              case ECall(_, cas) -> cas
-                              case _ -> newList()
-                            }
-                            handled = partialUnifyCtorArg(state, env, typeParams, baseDecl.params[i].ty, ctorD, ctorCallArgs, subst)
+                  if genDeclResolvesForCallSite(state, env, fname, args, baseDecl) {
+                    // Pure type-generic call site: existing inference path
+                    // (value generics require explicit `f[N]` type apps).
+                    val subst: Map[String, TypeExpr] = newMap()
+                    var i = 0
+                    while i < args.count and i < baseDecl.params.count {
+                      match lambdaShapeOfArg(callArgExpr(args[i])) {
+                        case Some(lamE) -> {
+                          match lamE.kind {
+                            case ELambda(lps, lbody) -> unifyLambdaArgTE(state, env, typeParams, baseDecl.params[i].ty, lps, lbody, subst)
+                            case _ -> ()
                           }
-                          case None -> ()
                         }
-                        if not handled {
-                          match inferExprTE(state, env, callArgExpr(args[i])) {
-                            case Some(argTE) -> {
-                              unifyTE(typeParams, baseDecl.params[i].ty, argTE, subst)
+                        case None -> {
+                          // Direct union-case construction: bind only
+                          // field-pinned slots (see partialUnifyCtorArg).
+                          var handled = false
+                          match ctorSynthOfArg(state, callArgExpr(args[i])) {
+                            case Some(ctorD) -> {
+                              val ctorCallArgs = match unwrapParenExprMono(callArgExpr(args[i])).kind {
+                                case ECall(_, cas) -> cas
+                                case _ -> newList()
+                              }
+                              handled = partialUnifyCtorArg(state, env, typeParams, baseDecl.params[i].ty, ctorD, ctorCallArgs, subst)
                             }
                             case None -> ()
                           }
+                          if not handled {
+                            match inferExprTE(state, env, callArgExpr(args[i])) {
+                              case Some(argTE) -> {
+                                unifyTE(typeParams, baseDecl.params[i].ty, argTE, subst)
+                              }
+                              case None -> ()
+                            }
+                          }
+                        }
+                      }
+                      i = i + 1
+                    }
+                    // An IMPORTED generic whose declaration is erased from every
+                    // assembly (generic pub funcs are never emitted — the bundle
+                    // drops them and `registerStdlibFunc` skips them) has exactly
+                    // one executable form: a local specialisation.  When the
+                    // arguments pin only some (or none) of the type parameters,
+                    // default the unbound ones to `Object` — the erased
+                    // uniform-ABI meaning the un-specialised call always had —
+                    // instead of leaving the call generic, which codegen then
+                    // silently DROPPED (arguments lowered, no call emitted:
+                    // `isNone(None)` returned its own argument, #5604).  Local
+                    // generics keep the loud M0002 below: their declaration is
+                    // still in the file, so the erased-default is never the
+                    // user's intent there.
+                    if not substIsComplete(typeParams, subst) {
+                      if not state.droppedLocalGenerics.containsKey(fname) and not annsHaveAxiomMono(baseDecl.annotations) {
+                        var du = 0
+                        while du < typeParams.count {
+                          if not subst.containsKey(typeParams[du]) {
+                            subst.add(typeParams[du], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = fn.span))
+                          }
+                          du = du + 1
                         }
                       }
                     }
-                    i = i + 1
-                  }
-                  // An IMPORTED generic whose declaration is erased from every
-                  // assembly (generic pub funcs are never emitted — the bundle
-                  // drops them and `registerStdlibFunc` skips them) has exactly
-                  // one executable form: a local specialisation.  When the
-                  // arguments pin only some (or none) of the type parameters,
-                  // default the unbound ones to `Object` — the erased
-                  // uniform-ABI meaning the un-specialised call always had —
-                  // instead of leaving the call generic, which codegen then
-                  // silently DROPPED (arguments lowered, no call emitted:
-                  // `isNone(None)` returned its own argument, #5604).  Local
-                  // generics keep the loud M0002 below: their declaration is
-                  // still in the file, so the erased-default is never the
-                  // user's intent there.
-                  if not substIsComplete(typeParams, subst) {
-                    if not state.droppedLocalGenerics.containsKey(fname) and not annsHaveAxiomMono(baseDecl.annotations) {
-                      var du = 0
-                      while du < typeParams.count {
-                        if not subst.containsKey(typeParams[du]) {
-                          subst.add(typeParams[du], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = fn.span))
-                        }
-                        du = du + 1
+                    if substIsComplete(typeParams, subst) {
+                      val allParams = extractAllParamInfo(baseDecl.generics)
+                      val emptyValueSubst: Map[String, Expr] = newMap()
+                      val name = specFuncName(fname, allParams, subst, emptyValueSubst)
+                      validateWhereBounds(baseDecl, subst, fn.span, state.diags)
+                      if not state.seenSpecs.containsKey(name) {
+                        state.seenSpecs.add(name, true)
+                        val specDecl = specializeFunc(baseDecl, name, subst, emptyValueSubst)
+                        state.allSpecs.add(
+                          SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = emptyValueSubst, callSpan = fn.span)
+                        )
                       }
+                      val newFn = singleSegPathExpr(name, fn.span)
+                      return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
                     }
+                    noteUnspecialisableLocalCall(
+                      state,
+                      env,
+                      fname,
+                      "could not infer type argument(s) " + unresolvedTypeParamList(typeParams, subst) + " from the call's arguments",
+                      fn.span
+                    )
                   }
-                  if substIsComplete(typeParams, subst) {
-                    val allParams = extractAllParamInfo(baseDecl.generics)
-                    val emptyValueSubst: Map[String, Expr] = newMap()
-                    val name = specFuncName(fname, allParams, subst, emptyValueSubst)
-                    validateWhereBounds(baseDecl, subst, fn.span, state.diags)
-                    if not state.seenSpecs.containsKey(name) {
-                      state.seenSpecs.add(name, true)
-                      val specDecl = specializeFunc(baseDecl, name, subst, emptyValueSubst)
-                      state.allSpecs.add(
-                        SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = emptyValueSubst, callSpan = fn.span)
-                      )
-                    }
-                    val newFn = singleSegPathExpr(name, fn.span)
-                    return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
-                  }
-                  noteUnspecialisableLocalCall(
-                    state,
-                    env,
-                    fname,
-                    "could not infer type argument(s) " + unresolvedTypeParamList(typeParams, subst) + " from the call's arguments",
-                    fn.span
-                  )
                 } else {
                   // The arity guard above deliberately skips calls with MORE
                   // args than the generic has params (they target an unrelated
@@ -3190,8 +3254,10 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                 // `Testing.assertEq(a, b, msg)` vs `Std.Core.Proof.assertEq[T](x)`,
                 // #3627).  A genuine call to this generic can never supply more
                 // arguments than it has parameters, so reject that case and leave
-                // the call for normal (non-generic) resolution.
-                if qTypeParams.count > 0 and qValueParams.count == 0 and args.count <= qBaseDecl.params.count {
+                // the call for normal (non-generic) resolution.  `genDeclResolvesForCallSite`
+                // closes the same-arity ambiguous-name hole (see its doc comment)
+                // for a qualified call too.
+                if qTypeParams.count > 0 and qValueParams.count == 0 and args.count <= qBaseDecl.params.count and genDeclResolvesForCallSite(state, env, qfname, args, qBaseDecl) {
                   val qSubst: Map[String, TypeExpr] = newMap()
                   var qi = 0
                   while qi < args.count and qi < qBaseDecl.params.count {
