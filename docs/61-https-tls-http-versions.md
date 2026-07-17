@@ -490,7 +490,10 @@ items marked ∥ are independent and can proceed in parallel.
 7. `_kernel/tcp_host.l`: `TcpListener`/`NetworkStream`/`SslStream` transport
    kernel incl. ALPN + mTLS. ∥ with 8.
 8. `Std.HttpEngine` HTTP/1.1: parser, serializer, connection FSM, byte-level
-   test corpus. ∥ with 7.
+   test corpus. ∥ with 7. _Shipped in D-progress-692 (#5883): the protocol
+   engine and its exhaustive test corpus, with no transport yet — item 7
+   (`_kernel/tcp_host.l`) and item 9 (server assembly) remain to be done
+   before this phase's server is usable end-to-end._
 9. Server assembly: `scope`/`spawn` accept loop behind the existing
    `Std.HttpServer` 12-function surface + `startListenerTls`; `HttpListener`
    retired; self-tests. (After 7+8.)
