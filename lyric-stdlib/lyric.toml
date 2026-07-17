@@ -42,6 +42,10 @@ output_assembly = "Lyric.Stdlib.dll"
 # Tier 1 — collections; depends on Tier 0 + kernel.
 "Std.Collections"      = "std/collections.l"
 "Std.Process"          = "std/process.l"
+# Build metadata surface (docs/60 §9.2) — the type only; the compiler
+# synthesizes the per-build `buildInfo()` accessor into the consumer's
+# root package. Depends on Std.Core (Option) + Std.Collections (List).
+"Std.BuildInfo"        = "std/buildinfo.l"
 
 # Tier 2 — numeric, text, stream utilities.
 "Std.Math"             = "std/math.l"

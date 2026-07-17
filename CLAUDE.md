@@ -665,7 +665,10 @@ need direction and have nothing else productive to do**.  Specifically:
   `Std.Time` (Instant, Duration, now, nowEpochMillis, fromEpochMillis, toIsoString),
   `Std.Uuid` (newUuid, uuidToString, parseUuidOpt),
   `Std.Xml` (pure-Lyric XML 1.0 parser, cross-platform, D065),
-  `Std.Yaml` (pure-Lyric YAML 1.2 + JSON parser, cross-platform, D065).
+  `Std.Yaml` (pure-Lyric YAML 1.2 + JSON parser, cross-platform, D065),
+  `Std.BuildInfo` (the `BuildInfo` build-metadata record; the compiler
+  synthesizes the per-build `buildInfo()` accessor into any file that imports
+  it — docs/60 §9.2).
 - `lyric-stdlib/tests/` — Lyric-language test suite for the stdlib. Each
   `*_tests.l` file is a standalone Lyric program that imports the modules
   it covers and asserts correctness via `Std.Testing`.

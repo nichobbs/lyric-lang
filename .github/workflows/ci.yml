@@ -859,6 +859,27 @@ jobs:
           fi
           bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
+      # Std.BuildInfo synthesis (docs/60 §9.2): the compiler synthesizes a
+      # `buildInfo()` accessor into a file that imports Std.BuildInfo. Asserts
+      # the deterministic dev-checkout defaults at runtime (no `--define` under
+      # `lyric test`). Imports only `Std.*`. The JVM twin runs in the JVM
+      # self-tests job below.
+      - name: BuildInfo self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping BuildInfo self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping BuildInfo self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/buildinfo_self_test.l
+
       # Bool stringification cross-target parity (#5552): toString(Bool),
       # Bool.toString(), string concatenation, and string interpolation all
       # render lowercase "true"/"false" on both targets — the BCL's
@@ -3919,6 +3940,26 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # JVM twin of the BuildInfo synthesis self-test (docs/60 §9.2): the
+      # `buildInfo()` accessor is synthesized and its BuildInfo record is
+      # constructed cross-package on the JVM target too. dotnet half runs in
+      # the dotnet self-tests job above.
+      - name: BuildInfo self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping BuildInfo JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping BuildInfo JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/buildinfo_self_test.l
 
       # JVM half of the compound-assign String self-test (#5657).  The JVM
       # `s += <Double>` path spills the rhs to a slot before the (branching)

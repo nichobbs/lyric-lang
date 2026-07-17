@@ -115,7 +115,12 @@ pub func pipeParseAndErase(
   if gate("", cfgRes.diagnostics) {
     return None
   }
-  Some(value = cfgRes.file)
+  // Std.BuildInfo synthesis (docs/60 §9.2): if the file imports Std.BuildInfo,
+  // append the per-build `buildInfo()` accessor. Runs after @cfg erasure so the
+  // synthesized item is never itself erased. `activeFeatures` is the user's own
+  // feature set (not the synthetic target pseudo-feature cfg adds).
+  val biFile = BD.synthesizeBuildInfo(cfgRes.file, targetName, activeFeatures, defines)
+  Some(value = biFile)
 }
 
 /// The pre-typecheck rewrite chain, in the one authoritative order:
