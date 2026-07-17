@@ -156,18 +156,23 @@ func stringLiteralExpr(text: in String, sp: in Span): Expr {
 // the stdlib's (docs/60 §9.2). The values come from the same resolved-defines
 // map plus the target/feature parameters already flowing through
 // `pipeParseAndErase`; nothing new is threaded through the backends.
-// True iff the file has a bare, unaliased `import Std.BuildInfo`. An aliased
-// import (`import Std.BuildInfo as BI`) is deliberately NOT matched: the
-// synthesized accessor references `BuildInfo` unqualified, which would not
-// resolve under an alias, so triggering here would surface a confusing error on
-// code the user never wrote. The documented spelling is the bare import.
+// True iff the file has a bare, unaliased, unselective `import Std.BuildInfo`.
+// Both an aliased import (`import Std.BuildInfo as BI`) and a selector-group
+// import (`import Std.BuildInfo.{BuildInfo as BI}` or `.{BuildInfo}`) are
+// deliberately NOT matched: the synthesized accessor references `BuildInfo`
+// unqualified, so it only resolves when the plain import brings the whole
+// package's public surface into scope. Under an alias or an aliased selector
+// the bare `BuildInfo` name is not in scope, so triggering there would surface
+// a confusing error on code the user never wrote. The documented spelling is
+// the bare `import Std.BuildInfo` (docs/60 §9.2).
 func importsStdBuildInfo(imports: in List[ImportDecl]): Bool {
   var i = 0
   while i < imports.count {
     val imp = imports[i]
     val p = imp.path
     val unaliased = match imp.asAlias { case Some(_) -> false; case None -> true }
-    if unaliased and p.segments.count == 2 and p.segments[0] == "Std" and p.segments[1] == "BuildInfo" {
+    val unselective = match imp.selector { case Some(_) -> false; case None -> true }
+    if unaliased and unselective and p.segments.count == 2 and p.segments[0] == "Std" and p.segments[1] == "BuildInfo" {
       return true
     }
     i = i + 1
@@ -175,13 +180,23 @@ func importsStdBuildInfo(imports: in List[ImportDecl]): Bool {
   false
 }
 
-// True iff a module-level `func buildInfo` already exists — the user opted to
-// define their own, so we leave it untouched (no duplicate, no override).
-func hasUserBuildInfoFunc(items: in List[Item]): Bool {
+// True iff a module-level `buildInfo` binding already exists — a `func` or a
+// `val` — meaning the user opted to define their own, so we leave it untouched
+// (no duplicate, no override). The `IConst` arm is defensive AST completeness:
+// a module-level `const` item is not producible by the current grammar, but the
+// AST variant exists, so it is handled for free rather than silently ignored.
+func hasUserBuildInfoDecl(items: in List[Item]): Bool {
   var i = 0
   while i < items.count {
     match items[i].kind {
       case IFunc(decl) -> if decl.name == "buildInfo" { return true }
+      case IConst(decl) -> if decl.name == "buildInfo" { return true }
+      case IVal(decl) -> {
+        match decl.pattern.kind {
+          case PBinding(name, _) -> if name == "buildInfo" { return true }
+          case _ -> ()
+        }
+      }
       case _ -> ()
     }
     i = i + 1
@@ -302,7 +317,7 @@ pub func synthesizeBuildInfo(
   if not importsStdBuildInfo(sf.imports) {
     return sf
   }
-  if hasUserBuildInfoFunc(sf.items) {
+  if hasUserBuildInfoDecl(sf.items) {
     return sf
   }
   val version = match lookupDefine(defines, "version") { case Some(v) -> v; case None -> "0.0.0" }

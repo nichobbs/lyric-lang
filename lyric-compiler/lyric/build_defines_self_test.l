@@ -361,3 +361,21 @@ test "synthesizeBuildInfo does not trigger on an aliased import" {
   val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
   assertFalse(hasBuildInfoFunc(synthd), "aliased import is not the opt-in spelling (no synthesis)")
 }
+
+test "synthesizeBuildInfo does not trigger on a selector-aliased import (#5969)" {
+  val pr = parse("package T\nimport Std.BuildInfo.{BuildInfo as BI}\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertFalse(hasBuildInfoFunc(synthd), "an aliased selector leaves bare BuildInfo out of scope (no synthesis)")
+}
+
+test "synthesizeBuildInfo does not trigger on a selector-group import (#5969)" {
+  val pr = parse("package T\nimport Std.BuildInfo.{BuildInfo}\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertFalse(hasBuildInfoFunc(synthd), "only the bare `import Std.BuildInfo` is the opt-in spelling (no synthesis)")
+}
+
+test "synthesizeBuildInfo defers to a user-defined val buildInfo (#5968)" {
+  val pr = parse("package T\nimport Std.BuildInfo\nval buildInfo = 7\n")
+  val synthd = BD.synthesizeBuildInfo(pr.file, "dotnet", newList(), noDefines())
+  assertEqualInt(synthd.items.count, pr.file.items.count, "a user `val buildInfo` is not overridden")
+}
