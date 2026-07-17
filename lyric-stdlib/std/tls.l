@@ -181,6 +181,9 @@ func certFromBytes(path: in String, bytes: in slice[Byte]): Result[Certificate, 
     case Ok(handle) -> Ok(value = Certificate(handle = handle))
     case Err(hostError) -> match hostError {
       case Host.HostMalformed(msg) -> Err(error = PemMalformed(path = path, message = msg))
+      // Unreachable for a cert-only load — only the identity/pairing path
+      // produces HostMismatch — but HostLoadError is shared with that path,
+      // so this arm exists purely to keep the match exhaustive (#5922).
       case Host.HostMismatch(msg) -> Err(error = PemMalformed(path = path, message = msg))
     }
   }

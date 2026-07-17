@@ -31,10 +31,10 @@
 //! tool (0.4.32) in this sandbox (no source-buildable `./bin/lyric` was
 //! available; see the PR description).
 //!
-//! `TlsServerConfig`'s default-field-omission behavior is covered
-//! separately in `tls_server_config_tests.l` (dotnet-only — see that
-//! file's header for why) rather than here, so every test in this file
-//! runs identically on both targets.
+//! `TlsServerConfig` is covered separately in `tls_server_config_tests.l`
+//! (both targets). Its default-field-omission behavior has no test on any
+//! target: omitted-default construction currently miscompiles on JVM
+//! (#5908) and dotnet (#5920) — see that file's header and D-progress-688.
 @test_module
 package Std.Tls.Tests
 
