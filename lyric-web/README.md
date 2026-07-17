@@ -175,6 +175,58 @@ router = Web.withMiddleware(router, Web.requestLogger())
 
 ---
 
+## Streaming (chunked) responses
+
+A regular `Handler` returns one complete `Response` — the framework can't send any bytes until `handle` returns, so an endpoint whose body is produced incrementally (SSE, log tailing, progress reporting) has to buffer everything and hold the connection open in silence until it's done. `StreamingHandler` is a separate, opt-in-per-route interface for exactly this case (lyric-lang#5979):
+
+```lyric
+pub interface StreamingHandler {
+  func handleStream(req: in Request, w: in ResponseWriter): Unit
+}
+```
+
+`ResponseWriter` lets a handler send the response in pieces as they're produced, instead of building one `Response` value up front:
+
+```lyric
+record ProgressHandler {}
+
+impl Web.StreamingHandler for ProgressHandler {
+  func handleStream(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+    Web.writeHeader(w, "Content-Type", "text/event-stream")
+    var i = 0
+    while i < 10 {
+      match Web.writeChunk(w, "data: step " + i.toString() + "\n\n") {
+        case Ok(_) -> ()
+        case Err(_) -> return  // client disconnected — stop producing
+      }
+      i = i + 1
+      // ... do the next unit of work here ...
+    }
+  }
+}
+```
+
+Register with `Web.addStreamingGet`/`Web.addStreamingPost` on a `StreamingRoutes` table (built with `Web.emptyStreamingRoutes()`), separate from the ordinary `Router` — a request that doesn't match a streaming route falls through to `Router`'s regular routes unchanged. Serve both together with `Web.startStreaming(router, streaming)` (reads env config exactly like `Web.start`) or `Web.serveStreaming(router, streaming, host, port)`:
+
+```lyric
+func main(): Unit {
+  var router = Web.create()
+  router = Web.addGet(router, "/health", HealthHandler())
+
+  var streaming = Web.emptyStreamingRoutes()
+  streaming = Web.addStreamingGet(streaming, "/progress", ProgressHandler())
+
+  Web.startStreaming(router, streaming)
+}
+```
+
+- `Web.writeStatus(w, code)` / `Web.writeHeader(w, name, value)` set the status/headers before the first chunk; calling either after the first `writeChunk` is a contract violation (`requires: not w.committed`), not silent. `Content-Type` is special-cased at commit time (the BCL response type exposes it as a dedicated property, not a plain header) — write it with `writeHeader(w, "Content-Type", ...)` like any other header.
+- `Web.writeChunk(w, data)` writes and flushes one chunk immediately (`Transfer-Encoding: chunked`, no `Content-Length` — the body length is never known up front) and returns `Result[Unit, String]`: an `Err` means the write failed (e.g. the client disconnected) — stop producing more output rather than writing into a dead connection.
+- A handler that returns without ever calling `writeChunk` still gets a well-formed (empty) chunked response — the framework commits and closes it either way.
+- **dotnet-only for now.** The JVM `serve` path goes through a completely different server (`Web.Kernel.Runtime`'s Undertow binding) that doesn't yet expose a streaming path — see [Known gaps](#known-gaps).
+
+---
+
 ## Composing static files + middleware with wire templates
 
 Beyond direct `withStaticFiles`/`withMiddleware` calls, `Web.StaticFiles` (a `pub config` template) and `Web.Middleware` (an ordinary interface) compose with [config templates, `contributes[T]`, and wire templates](../docs/58-wire-templates-sketch.md) (D121) — a library or application can declare a reusable, overridable bundle of static mounts and middleware:
@@ -316,6 +368,7 @@ Convert to a `Response` with `Web.errorResponse(err)`.
 ## Known gaps
 
 - **Single-threaded accept loop on `dotnet`.** `Web.serve`'s `dotnet` branch handles one request at a time — fine for the examples and moderate traffic, not a high-concurrency production server. Concurrent request handling needs either real MSIL structured concurrency (`spawn` currently lowers to a synchronous no-op on `--target dotnet`) or a hand-rolled thread pool; not yet implemented. The `jvm` branch does not share this limitation — Undertow's own XNIO I/O/worker threads handle concurrent requests natively.
+- **Streaming (`StreamingHandler`/`ResponseWriter`) is `dotnet`-only** (lyric-lang#5979). The JVM `serve` path delegates entirely to `Web.Kernel.Runtime`'s Undertow server, a different I/O model that doesn't yet expose a chunked-write path — a tracked follow-up, not a silent gap.
 - **`Web.addWorker` background timers are registered but not invoked** — tracked in issue #5359.
 - **Live OpenAPI JSON / Swagger UI serving is not implemented** — tracked in issue #5360. Use the build-time `lyric web spec` workflow instead.
 - **JVM target's test suite does not compile today**, for reasons entirely outside this library — distinct, newly-discovered JVM backend bugs, none of which is #1707 (that ticket is closed and covers an unrelated nested-generic-construction defect; an earlier draft of this work mischaracterized the blocker as #1707, corrected here after re-verifying end to end):
