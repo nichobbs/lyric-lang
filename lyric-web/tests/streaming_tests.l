@@ -27,6 +27,18 @@
 //!                  commit-if-never-committed fallback must still close a
 //!                  well-formed (empty, still `Transfer-Encoding:
 //!                  chunked`) response rather than hanging or erroring.
+//!   GET /created -> StreamingHandler that calls `Web.writeStatus(w, 201)`
+//!                  before writing its one chunk, exercising the
+//!                  status-setting path (untested by /stream, which never
+//!                  overrides the 200 default).
+//!   GET /blocked -> registered as a streaming route, but a
+//!                  `BlockingMiddleware` attached to the (non-streaming)
+//!                  `Router` rejects any request to this path with 403
+//!                  before calling `next.handle` — proving streaming
+//!                  routes run through `router.middlewares` exactly like
+//!                  ordinary ones (lyric-lang#5985): the matched
+//!                  `StreamingHandler` (which panics if it ever runs)
+//!                  must never be invoked.
 //!
 //! Fixed host/port (127.0.0.1:8210) rather than reading argv/env, matching
 //! `serve_failure_tests.l` (8199)'s precedent; 8210 avoids every
@@ -39,8 +51,10 @@
 //! least the 400ms inter-chunk sleep (proving the bytes were not
 //! buffered and released all at once), asserts both chunk markers are in
 //! the body, asserts the response carries `Transfer-Encoding: chunked`
-//! and no `Content-Length` (unbounded-length body, no upfront size), then
-//! asserts `/empty` returns a well-formed empty chunked body.
+//! and no `Content-Length` (unbounded-length body, no upfront size),
+//! asserts `/empty` returns a well-formed empty chunked body, asserts
+//! `/created` returns 201, and asserts `/blocked` returns 403 from the
+//! middleware without ever running the panicking handler.
 package Web.StreamingTest
 
 import Std.Core
@@ -89,10 +103,47 @@ impl Web.StreamingHandler for EmptyStreamHandler {
   }
 }
 
+record CreatedStreamHandler {
+}
+
+impl Web.StreamingHandler for CreatedStreamHandler {
+  func handleStream(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+    Web.writeStatus(w, 201)
+    match Web.writeChunk(w, "created\n") {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
+  }
+}
+
+record NeverRunHandler {
+}
+
+impl Web.StreamingHandler for NeverRunHandler {
+  func handleStream(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+    panic("BlockingMiddleware should have rejected this request before the streaming handler ever ran (lyric-lang#5985)")
+  }
+}
+
+record BlockingMiddleware {
+}
+
+impl Web.Middleware for BlockingMiddleware {
+  func wrap(req: in Web.Request, next: Web.Handler): Web.Response {
+    if req.path == "/blocked" {
+      return Web.errorResponse(Web.forbidden("blocked by middleware"))
+    }
+    return next.handle(req)
+  }
+}
+
 func main(): Unit {
-  val router = Web.addGet(Web.create(), "/health", HealthHandler())
+  var router = Web.addGet(Web.create(), "/health", HealthHandler())
+  router = Web.withMiddleware(router, BlockingMiddleware())
   var streaming = Web.emptyStreamingRoutes()
   streaming = Web.addStreamingGet(streaming, "/stream", StreamHandler())
   streaming = Web.addStreamingGet(streaming, "/empty", EmptyStreamHandler())
+  streaming = Web.addStreamingGet(streaming, "/created", CreatedStreamHandler())
+  streaming = Web.addStreamingGet(streaming, "/blocked", NeverRunHandler())
   Web.serveStreaming(router, streaming, "127.0.0.1", 8210)
 }

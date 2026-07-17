@@ -324,6 +324,27 @@ jobs:
             echo "FAIL: /empty (handler that never calls writeChunk) returned a non-empty body: '$empty_body'"
             exit 1
           fi
+          created_status="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8210/created || true)"
+          if [ "$created_status" != "201" ]; then
+            echo "FAIL: /created (writeStatus(w, 201)) returned status '$created_status', expected 201"
+            exit 1
+          fi
+          # BlockingMiddleware (lyric-lang#5985): a streaming route's middleware
+          # must run and be able to reject the request before the streaming
+          # handler is ever invoked -- a 403 here (not a crash from
+          # NeverRunHandler's panic) proves streaming dispatch goes through
+          # router.middlewares.
+          blocked_status="$(curl -s --max-time 3 -o /tmp/blocked_body.txt -w '%{http_code}' http://127.0.0.1:8210/blocked || true)"
+          if [ "$blocked_status" != "403" ]; then
+            echo "FAIL: /blocked returned status '$blocked_status', expected 403 (BlockingMiddleware should reject before the streaming handler runs)"
+            cat /tmp/blocked_body.txt
+            exit 1
+          fi
+          if ! kill -0 "$st_pid" 2>/dev/null; then
+            echo "FAIL: streaming_tests server crashed handling /blocked (NeverRunHandler's panic ran -- middleware did not block it)"
+            tail -20 /tmp/streaming.run.log
+            exit 1
+          fi
           kill "$st_pid" 2>/dev/null || true
           wait "$st_pid" 2>/dev/null || true
           echo "PASS"

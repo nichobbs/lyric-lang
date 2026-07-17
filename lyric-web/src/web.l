@@ -1194,6 +1194,58 @@ func dispatchStreaming(routes: in slice[StreamRoute], req: in Request, ctx: in H
   return false
 }
 
+// A sentinel `Response` meaning "already streamed to the wire — do not
+// call writeResponse". `status = -1` is unambiguous: real HTTP status
+// codes are 100-599, so no handler-constructed Response ever collides
+// with it. Needed because `StreamingAwareDispatchHandler` (below) has to
+// return *some* `Response` to satisfy `Handler`'s signature so it can
+// run inside the same `MiddlewareChain` regular routes use.
+@cfg(feature = "dotnet")
+func streamedResponseSentinel(): Response {
+  val empty: Map[String, String] = newMap()
+  val noBytes: slice[Byte] = []
+  return Response(status = -1, contentType = "", bodyBytes = noBytes, headers = empty)
+}
+
+@cfg(feature = "dotnet")
+func isStreamedResponse(resp: in Response): Bool {
+  return resp.status == -1
+}
+
+// The route-matching tail of a streaming-aware middleware chain: tries
+// the streaming route table first (actually running the matched
+// `StreamingHandler` and returning the sentinel above), falling back to
+// the ordinary `Route` table otherwise. A `Handler` — not a bespoke
+// dispatch function called directly — specifically so it composes with
+// `MiddlewareChain` exactly like `RouteDispatchHandler` does: CORS,
+// logging, auth, and any other registered `router.middlewares` run for
+// streaming requests exactly as they do for ordinary ones (including
+// short-circuiting them outright before a byte is streamed) instead of
+// being silently bypassed (lyric-lang#5979 review: `serveStreaming`
+// previously called `dispatchStreaming` directly, never going through
+// `router.middlewares` at all). A middleware that *post-processes* the
+// response `next.handle` returns (CORS's `Access-Control-Allow-Origin`
+// header, e.g.) has nothing to attach that to once the real bytes are
+// already on the wire — this only fixes pre-processing/short-circuiting
+// middleware (which is what provides actual protection); the residual
+// gap is called out in the README.
+@cfg(feature = "dotnet")
+record StreamingAwareDispatchHandler {
+  routes: slice[Route]
+  streamingRoutes: slice[StreamRoute]
+  ctx: HttpContext
+}
+
+@cfg(feature = "dotnet")
+impl Handler for StreamingAwareDispatchHandler {
+  func handle(req: in Request): Response {
+    if dispatchStreaming(self.streamingRoutes, req, self.ctx) {
+      return streamedResponseSentinel()
+    }
+    return routeDispatch(self.routes, req)
+  }
+}
+
 // ─── CORS configuration guard ─────────────────────────────────────────────────
 /// Validate the CORS configuration that `start()` reads from the environment.
 /// Returns `Some(error)` when the configuration is unsafe to bind a server with,
@@ -1370,9 +1422,14 @@ pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: 
     try {
       val ctx = nextContext(listener)
       val req = buildRequest(ctx)
-      val handled = dispatchStreaming(streaming.routes, req, ctx)
-      if not handled {
-        val resp = dispatch(router, req)
+      val inner: Handler = StreamingAwareDispatchHandler(
+        routes = router.routes,
+        streamingRoutes = streaming.routes,
+        ctx = ctx
+      )
+      val chain: Handler = MiddlewareChain(mws = router.middlewares, idx = 0, inner = inner)
+      val resp = chain.handle(req)
+      if not isStreamedResponse(resp) {
         writeResponse(ctx, resp)
       }
     } catch Bug as e {

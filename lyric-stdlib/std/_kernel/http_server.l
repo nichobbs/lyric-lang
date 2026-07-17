@@ -390,9 +390,16 @@ pub func streamWriteChunk(s: in Stream, bytes: in slice[Byte], offset: in Int, c
 }
 
 /// Close a chunked-response stream and its underlying response, ending
-/// the chunked body (a zero-length terminating chunk). Idempotent at
-/// the BCL level, same as `stopListener`.
+/// the chunked body (a zero-length terminating chunk). Guarded: closing
+/// an already-broken connection (the exact case `streamWriteChunk`'s
+/// `Err` return signals) can throw, and disconnects are routine for a
+/// long-lived stream — letting that propagate would crash the whole
+/// accept loop over one client going away, not just that connection.
 pub func endChunkedResponse(c: in HttpContext, s: in Stream): Unit {
-  streamClose(s)
-  responseClose(ctxResponse(c))
+  try {
+    streamClose(s)
+    responseClose(ctxResponse(c))
+  } catch Bug as _ {
+    ()
+  }
 }
