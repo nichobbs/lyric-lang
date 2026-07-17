@@ -4201,6 +4201,43 @@ jobs:
           "$lyric_bin" test --target jvm lyric-stdlib/tests/tls_server_config_tests.l
           echo "Std.Tls TlsServerConfig test ran: tls_server_config_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
+      # HttpVersion deterministic coverage on JVM (docs/61 §5.1, D128
+      # decision 4; #5879) — the JVM half of the dotnet-job step of the same
+      # name.  Placed in this (post-barrier) sub-batch per #5913/#5917: the
+      # pre-barrier sub-batch above is already at its ~14-concurrent-step
+      # cap.  Deterministic — the Http3 gate never touches the network, so
+      # no live listener is needed.
+      - name: Std.Http HttpVersion test coverage on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Http HttpVersion JVM tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-stdlib/tests/http_version_tests.l
+          echo "Std.Http HttpVersion test ran: http_version_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Real HTTP round-trip proving HttpVersion.negotiatedVersion() against
+      # a live plaintext Std.HttpServer listener on JVM (docs/61 §5.1, D128
+      # decision 4; #5879), in-process via scope/spawn (genuinely concurrent
+      # on this target, D120) — no child-process harness needed, unlike the
+      # dotnet leg (http_version_self_test.l, #5329).  Imports only Std.*.
+      - name: Std.Http HttpVersion round-trip self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Http HttpVersion round-trip JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/http_version_jvm_self_test.l
+          echo "Std.Http HttpVersion round-trip self-test ran: http_version_jvm_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
       # Map-key self-test on JVM (#1480 MSIL / #4982 Finding 1 JVM) — the JVM
       # half of the dotnet-job step of the same name.  Records with
       # `@derive(Equals)`/`@derive(Hash)` now carry synthesised
@@ -6111,6 +6148,53 @@ jobs:
           cp .bootstrap/stage1/*.dll .bootstrap/httprt-lib/
           cp lyric-stdlib/bin/Lyric.Stdlib*.dll .bootstrap/httprt-lib/
           LYRIC_STDLIB_BIN="$PWD/.bootstrap/httprt-lib" "$lyric_bin" test --target dotnet lyric-compiler/lyric/http_roundtrip_self_test.l
+
+      # HttpVersion deterministic coverage (docs/61 §5.1, D128 decision 4;
+      # #5879): the Http3-unsupported gate never touches the network (build()
+      # routes to Std.Http.HttpClientImpl.unsupportedReason before any kernel
+      # call), so this runs with plain stdlib discovery — no LYRIC_STDLIB_BIN
+      # overlay needed, matching http_async_tests.l's own step above.
+      - name: Std.Http HttpVersion test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Http HttpVersion tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_version_tests.l
+
+      # Real HTTP round-trip proving HttpVersion.negotiatedVersion() against a
+      # live plaintext Std.HttpServer listener (docs/61 §5.1, D128 decision 4;
+      # #5879): default client stays Http11 over plaintext (h2 only upgrades
+      # via ALPN/TLS) and withHttpVersion(Http11) pins explicitly. Same
+      # child-process concurrency model and LYRIC_STDLIB_BIN overlay as the
+      # Std.Http round-trip self-test above (#5329) — see
+      # http_version_self_test.l's own header for why this is dotnet-only
+      # (http_version_jvm_self_test.l covers the JVM leg in-process).
+      - name: Std.Http HttpVersion round-trip self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping Std.Http HttpVersion round-trip self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Http HttpVersion round-trip self-test"
+            exit 1
+          fi
+          if [ ! -f lyric-stdlib/bin/Lyric.Stdlib.dll ]; then
+            echo "::error::lyric-stdlib/bin/Lyric.Stdlib.dll missing — the 'Build full stdlib' step must run before this one"
+            exit 1
+          fi
+          rm -rf .bootstrap/httpverrt-lib
+          mkdir -p .bootstrap/httpverrt-lib
+          cp .bootstrap/stage1/*.dll .bootstrap/httpverrt-lib/
+          cp lyric-stdlib/bin/Lyric.Stdlib*.dll .bootstrap/httpverrt-lib/
+          LYRIC_STDLIB_BIN="$PWD/.bootstrap/httpverrt-lib" "$lyric_bin" test --target dotnet lyric-compiler/lyric/http_version_self_test.l
 
       # Std.Log structured-fields regression coverage (docs/59 §8.1): the
       # escapeLogValue substring count-vs-end bug made any log call with a
