@@ -401,7 +401,7 @@ items marked ∥ are independent and can proceed in parallel.
    (After 1; ∥ with 2.)
 4. HTTP-version knob + h2-or-lower default parity + `negotiatedVersion`
    accessor + self-tests on both targets. ∥ with 1. _Shipped
-   (D-progress-688, #5879): `HttpVersion` enum + `HttpClientBuilder.withHttpVersion`
+   (D-progress-690, #5879): `HttpVersion` enum + `HttpClientBuilder.withHttpVersion`
    + `HttpResponse.negotiatedVersion()`; every constructed dotnet
    `HttpClientHandle` (including the process-wide singleton) now defaults
    to h2-or-lower; `Http3` refused with a typed `ConnectionFailed` before

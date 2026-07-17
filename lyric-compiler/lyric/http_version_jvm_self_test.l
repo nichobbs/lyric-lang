@@ -53,6 +53,34 @@ func versionName(v: in HttpVersion): String {
   }
 }
 
+// Bind the first free port in [base, base+9], mirroring the dotnet
+// sibling's serverSource() scan (#5929) so a busy runner port doesn't
+// flake the run the way a hardcoded port would.
+func tryStart(port: in Int): Option[Server.HttpListener] {
+  return try {
+    Some(value = Server.startListener("http://127.0.0.1:" + port.toString() + "/"))
+  } catch Bug as _ {
+    None
+  }
+}
+
+record BoundListener {
+  listener: Server.HttpListener
+  port: Int
+}
+
+func startOnFreePort(base: in Int): BoundListener {
+  var attempt = 0
+  while attempt < 10 {
+    match tryStart(base + attempt) {
+      case Some(l) -> return BoundListener(listener = l, port = base + attempt)
+      case None -> ()
+    }
+    attempt = attempt + 1
+  }
+  panic("no free port in [" + base.toString() + ", " + (base + 9).toString() + "]")
+}
+
 // Answers exactly one request with a fixed 200 OK body. Run as a spawned
 // task alongside a single client call in the same scope (module header).
 async func respondOnce(l: in Server.HttpListener): Unit {
@@ -61,10 +89,11 @@ async func respondOnce(l: in Server.HttpListener): Unit {
 }
 
 test "default client negotiatedVersion is Http11 over plaintext" {
-  val l = Server.startListener("http://127.0.0.1:18234/")
+  val bound = startOnFreePort(18234)
+  val l = bound.listener
   scope {
     val serverTask = spawn respondOnce(l)
-    val result = await getAsync("http://127.0.0.1:18234/ping")
+    val result = await getAsync("http://127.0.0.1:" + bound.port.toString() + "/ping")
     match result {
       case Err(e) -> panic("GET failed: " + HttpError.message(e))
       case Ok(response) -> {
@@ -78,11 +107,12 @@ test "default client negotiatedVersion is Http11 over plaintext" {
 }
 
 test "withHttpVersion(Http11) pins negotiatedVersion to Http11 over plaintext" {
-  val l = Server.startListener("http://127.0.0.1:18235/")
+  val bound = startOnFreePort(18334)
+  val l = bound.listener
   val client = HttpClientBuilder.build(HttpClientBuilder.new().withHttpVersion(Http11))
   scope {
     val serverTask = spawn respondOnce(l)
-    val result = await client.get("http://127.0.0.1:18235/ping")
+    val result = await client.get("http://127.0.0.1:" + bound.port.toString() + "/ping")
     match result {
       case Err(e) -> panic("GET failed: " + HttpError.message(e))
       case Ok(response) -> {

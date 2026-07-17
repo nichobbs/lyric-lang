@@ -57,7 +57,7 @@ val http3Marker: String = "HTTP/3"
 
 // Unwraps `Err(e)` first, then matches `e`'s HttpError cases in a SEPARATE,
 // top-level `match` — deliberately not `case Err(ConnectionFailed(_, m)) ->
-// ...` (D-progress-688 / #5903): matching a union case nested directly
+// ...` (D-progress-690 / #5903): matching a union case nested directly
 // inside another case's payload does not reliably discriminate on the
 // self-hosted JVM backend today (confirmed while writing this file — see
 // `HttpClientBuilder.build()`'s own `version`/`pinHttp11` two-step match for

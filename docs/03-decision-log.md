@@ -17240,7 +17240,7 @@ native/plan/04+05, D065 (pure-Lyric parser precedent), D119/D120
 
 ---
 
-## D-progress-688 — TLS phase 1.4: `HttpClientBuilder.withHttpVersion`, h2-or-lower client default parity, `HttpResponse.negotiatedVersion()` (docs/61 §5.1, D128 decision 3/4, #5879)
+## D-progress-690 — TLS phase 1.4: `HttpClientBuilder.withHttpVersion`, h2-or-lower client default parity, `HttpResponse.negotiatedVersion()` (docs/61 §5.1, D128 decision 3/4, #5879)
 
 **Context.** D128 decision 3/4 called for a new `HttpVersion` builder knob
 plus a deliberate dotnet default change: every constructed `HttpClient`
