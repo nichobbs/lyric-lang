@@ -4284,6 +4284,16 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Extra barrier (JVM batch 0-split): the first JVM sub-batch (before the
+      # "JVM batch 1-split" barrier below) had grown to ~18 concurrent
+      # in-process JVM compilations — over the ~14-step cap (see #5913) at
+      # which the runner's parallel-step status collection starts misreporting
+      # a passing step as OOM/signal-killed, producing flaky failures on
+      # unrelated PRs (#6021, #6033).  Split ~9 + ~9 so each sub-batch stays
+      # under the cap.
+      - name: Wait for parallel tests (JVM batch 0-split)
+        wait-all: true
+
       # Qualified enum-case self-test on JVM (#5769) — package-qualified
       # restored/bundled enum-case value references (Std.Http.GET shape) via
       # flattenPathExprSegsJvm/tryQualifiedEnumClassJvm; the dotnet half runs
@@ -4666,6 +4676,16 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/map_key_self_test.l
           echo "map-key self-test ran: map_key_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Extra barrier (JVM batch 1a-split): the sub-batch between the
+      # "JVM batch 1-split" and "JVM batch 1" barriers had grown to ~19
+      # concurrent in-process JVM compilations — over the ~14-step cap
+      # (see #5913) at which parallel-step status collection starts
+      # misreporting a passing step as OOM/signal-killed, producing flaky
+      # failures on unrelated PRs (#6021, #6033).  Split ~10 + ~9 so each
+      # sub-batch stays under the cap.
+      - name: Wait for parallel tests (JVM batch 1a-split)
+        wait-all: true
 
       # Map-option self-test on JVM (#1727 MSIL / #5003 JVM) — the JVM half of
       # the dotnet-job step of the same name.  Pins the `lowerConstruction`
