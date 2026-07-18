@@ -6663,6 +6663,26 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/tcp_host_tls_tests.l
 
+      # Std.HttpServer dotnet server-assembly test coverage (#5884, docs/61
+      # §6.1 item 9 / §6.2 / §6.3 phase 3.3; D-progress-700): the dotnet
+      # HTTP/1.1 server rebuilt on Std.TcpHost + Std.HttpEngine, replacing the
+      # retired System.Net.HttpListener. Runs a real in-process loopback — a
+      # plaintext GET against the real Lyric HTTP client, a POST body, keep-alive
+      # reuse on one connection, a concurrent-connection case, a TLS + mTLS
+      # accept/reject round trip against the real Lyric HTTPS client, and the
+      # startListenerTls mTLS-misconfiguration (InvalidConfig) guard. dotnet-only
+      # (the JVM server is a separate kernel with tls_server_jvm_tests.l).
+      - name: Std.HttpServer dotnet server test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.HttpServer server tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_server_dotnet_tests.l
+
       # Stdlib runtime suites on dotnet (#5604, expanded in D-progress-670 /
       # #5710): these `func main`-shaped suites (run via `lyric run`, not
       # `lyric test` — they predate @test_module) exercise the FFI kernels and

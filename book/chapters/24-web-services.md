@@ -73,10 +73,13 @@ func main(): Unit {
 
 `Web.start` reads `LYRIC_CONFIG_WEB_SERVER_*`/`LYRIC_CONFIG_WEB_CORS_*`
 from the environment, starts the HTTP listener (built on
-`Std.HttpServer`, i.e. `System.Net.HttpListener`), and blocks until the
-process is killed. It is single-threaded and synchronous — one request
-at a time — which is a known limit, not a design goal; see the README's
-"Known gaps".
+`Std.HttpServer`), and blocks until the process is killed. On
+`--target dotnet` `Std.HttpServer` now runs on a pure-Lyric sans-IO HTTP/1.1
+engine over a `System.Net.Sockets` + `SslStream` transport — the
+`System.Net.HttpListener` server was retired (docs/61 §6, TLS phase 3.3) — so
+connections are accepted and read concurrently. `lyric-web`'s own request
+dispatch still runs the pull loop one request at a time (its full move onto
+the concurrent server is tracked separately); see the README's "Known gaps".
 
 Compose multiple packages' routers with `Web.merge` and scope them
 with `Web.prefix`.
