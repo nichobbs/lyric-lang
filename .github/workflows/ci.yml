@@ -873,6 +873,7 @@ jobs:
             lyric-compiler/lyric/closure_correctness_self_test.l \
             lyric-compiler/lyric/func_val_local_rettype_self_test.l \
             lyric-compiler/lyric/qualified_enum_case_self_test.l \
+            lyric-compiler/lyric/qualified_union_case_self_test.l \
             lyric-compiler/lyric/slice_append_widening_self_test.l \
             lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
             lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
@@ -4303,6 +4304,27 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/qualified_enum_case_self_test.l
+
+      # Bare union-case match-arm resolution self-test on JVM.
+      # qualified_union_case_self_test.l: #3840 (qualified construction) +
+      # #5982 (bare nullary match arm picking the wrong same-package union via
+      # resolveBareCaseClassJvm). The dotnet half runs in
+      # compiler-self-tests-dotnet-a.
+      - name: Bare union-case match self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping union-case JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping union-case JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/qualified_union_case_self_test.l
 
       # HOF-returned-closure local self-test on JVM (#5796) — the JVM parity
       # control for the MSIL #5774 fix (un-annotated closure-typed locals

@@ -335,6 +335,45 @@ func enumPatternClass(ctx: in FuncCtx, scrutTy: in JvmType, caseName: in String)
   }
 }
 
+// Resolve the JVM case-class name for a BARE `case <Name> ->` nullary-case
+// TEST, consulting the scrutinee's own static union type first (#5982): two
+// same-package unions sharing a nullary case name (`union A { case Internal
+// | case Ok }` / `union B { case Internal | case Fail }`) each register
+// `Internal` under the SAME bare `ctors` key, so a plain `ctorClassFor(ctx,
+// name)` lookup always resolves to whichever union registered first,
+// regardless of which union `scrutTy` actually names — the isinst test then
+// tests the wrong class and the real (differently-classed) case value never
+// matches, surfacing as "match not exhaustive".  Mirrors MSIL's
+// `pickCaseFqnByScrutinee` (scrutinee's own parent-union FQN wins over a
+// same-named candidate from another union) and `resolveCaseClassJvm`'s own
+// PConstructor scrutinee-scoped derivation — but, unlike `resolveCaseClassJvm`,
+// an unresolved scrutinee-scoped guess is never trusted as a fallback: a bare
+// `PBinding` name (unlike an explicit `PConstructor`) may be a genuine
+// variable, so this returns `None` (not a guessed nonexistent class) when no
+// registry actually knows the name, leaving the caller's existing "not a case
+// at all" bind-anything behaviour intact.
+func resolveBareCaseClassJvm(ctx: in FuncCtx, name: in String, scrutTy: in JvmType): Option[String] {
+  match scrutTy {
+    case JRef(baseCls) -> {
+      if not (baseCls == "java/lang/Object") and not (baseCls == "java/util/ArrayList") {
+        val derived = baseCls + "$" + name
+        if ctx.caseFields.containsKey(derived) {
+          Some(value = derived)
+        } else {
+          val unionName = jvmSimpleName(baseCls)
+          match mapGet(ctx.ctors, unionName + "$" + name) {
+            case Some(cls) -> Some(value = cls)
+            case None -> ctorClassFor(ctx, name)
+          }
+        }
+      } else {
+        ctorClassFor(ctx, name)
+      }
+    }
+    case _ -> ctorClassFor(ctx, name)
+  }
+}
+
 func resolveCaseClassJvm(ctx: in FuncCtx, head: in ModulePath, scrutTy: in JvmType): String {
   val caseName = lastSegment(head)
   match scrutTy {
@@ -526,7 +565,10 @@ func lowerPatternTest(
           // known union case, emit the isinst test that `PConstructor` would, so
           // it does not behave as an unconditional catch-all and hijack later
           // arms.  Otherwise it is a genuine variable bind — always matches.
-          match ctorClassFor(ctx, name) {
+          // Resolved scrutinee-type-first (#5982) so two same-package unions
+          // sharing a nullary case name disambiguate to the union actually
+          // being matched, not whichever registered the bare name first.
+          match resolveBareCaseClassJvm(ctx, name, scrutTy) {
             case Some(cls) -> {
               if jvmClassIsUnionCase(cls) {
                 emitLoad(insns, scrutSlot, scrutTy)
