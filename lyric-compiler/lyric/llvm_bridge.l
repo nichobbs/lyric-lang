@@ -631,7 +631,7 @@ pub func compileToNativeWithFlags(
         "error[N0001]: clang was not found on PATH (install it via your platform's package manager: `apt install clang`, Xcode CLI tools, ...)"
       )
       Console.error("  the LLVM IR was written to " + llPath + "; compile it manually with:")
-      Console.error("  clang -O" + effOpt + " " + llPath + " " + rtPath + " -lm -lpthread -o " + outputPath)
+      Console.error("  clang -O" + effOpt + " " + llPath + " " + rtPath + " -lm -lpthread -ldl -o " + outputPath)
       Console.error("  (" + e + ")")
       return false
     }

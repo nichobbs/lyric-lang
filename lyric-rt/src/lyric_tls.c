@@ -308,7 +308,10 @@ static pthread_once_t g_tls_once = PTHREAD_ONCE_INIT;
 
 static void* dlopen_any(const char* const* names) {
     for (int i = 0; names[i]; i++) {
-        void* h = dlopen(names[i], RTLD_NOW | RTLD_GLOBAL);
+        /* RTLD_LOCAL: every symbol is resolved explicitly via dlsym below, so
+         * there is no need to widen the process's global symbol namespace with
+         * libssl/libcrypto exports. */
+        void* h = dlopen(names[i], RTLD_NOW | RTLD_LOCAL);
         if (h) return h;
     }
     return NULL;
@@ -538,15 +541,15 @@ static int set_min_version(ossl_ssl_ctx* ctx, int32_t min_version) {
 
 /* ── Client ───────────────────────────────────────────────────────────── */
 
-void* lyric_tls_client_new(const char* ca_pem, int32_t insecure) {
+void* lyric_tls_client_new(const char* ca_pem, int32_t min_version, int32_t insecure) {
     if (!tls_ready()) return NULL;
     ossl_ssl_ctx* ctx = O.SSL_CTX_new(O.TLS_client_method());
     if (!ctx) {
         set_ossl_err("create client TLS context");
         return NULL;
     }
-    /* TLS 1.2 floor on every connection (docs/61 §3/§5.1). */
-    if (set_min_version(ctx, 12) != 0) {
+    /* TLS 1.2 floor (docs/61 §3/§5.1); `min_version` 13 pins TLS 1.3. */
+    if (set_min_version(ctx, min_version) != 0) {
         O.SSL_CTX_free(ctx);
         return NULL;
     }
@@ -598,9 +601,22 @@ void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_hos
         O.SSL_free(ssl);
         return NULL;
     }
-    /* SNI is sent on every connection.  Hostname verification is hard-wired
-     * on (SSL_set1_host) unless the context is insecure (docs/61 §7 item 3). */
-    if (sni_host && sni_host[0] != '\0') {
+    /* Hostname verification is hard-wired on for every non-insecure client
+     * connection (docs/61 §7 item 3).  FAIL CLOSED: with verification enabled
+     * and no host to verify against, refuse the connect rather than silently
+     * downgrading to chain-only validation (the #6109 MITM-adjacent hole — the
+     * native sibling of the dotnet #5950 fix).  Only the insecure override may
+     * skip SSL_set1_host. */
+    int has_host = sni_host && sni_host[0] != '\0';
+    if (!w->insecure && !has_host) {
+        set_err("hostname verification is enabled but no host was provided to "
+                "verify against; refusing to connect (use the insecure override "
+                "to disable verification)");
+        O.SSL_free(ssl);
+        return NULL;
+    }
+    if (has_host) {
+        /* SNI is sent on every named connection. */
         O.SSL_ctrl(ssl, OSSL_SSL_CTRL_SET_TLSEXT_HOSTNAME,
                    OSSL_TLSEXT_NAMETYPE_host_name, (void*)sni_host);
         if (!w->insecure) {

@@ -17172,7 +17172,11 @@ transport/server/client layers to gated follow-on PRs.
   file. The file declares its own opaque-pointer + function-pointer view of
   the OpenSSL ABI, so the runtime archive builds with zero OpenSSL
   build-time dependency. SNI + RFC 6125 hostname verification are hard-wired
-  on for clients (the docs/61 §4 dual-key insecure flag is the only override);
+  on for clients and **fail closed** — a non-insecure client connect with no
+  host to verify against is refused, never silently downgraded to chain-only
+  validation (#6109, the native sibling of the dotnet #5950 fix) — with the
+  docs/61 §4 dual-key insecure flag the only override; the client context also
+  takes a `min_version` (TLS 1.2 floor / 1.3 pin, mirroring the server side);
   mTLS pins client trust to a supplied CA and can require a client cert;
   system trust is `SSL_CTX_set_default_verify_paths` + `SSL_CERT_FILE`/
   `SSL_CERT_DIR`. Handles are raw malloc'd resources freed explicitly (the
@@ -17190,7 +17194,8 @@ server-auth TLS + ALPN negotiation (`h2,http/1.1` → `http/1.1`), TLS 1.3
 floor, mTLS accept, mTLS reject (client presents no cert — the server refuses
 and no data round-trips; the client's TLS-1.3 handshake returning before the
 server validates client auth is documented in the test), hostname-mismatch
-rejection, and insecure-skip-verify. Run in CI under clang **and** gcc via
+rejection, the #6109 empty-host-refused (fail-closed) case, and
+insecure-skip-verify. Run in CI under clang **and** gcc via
 `make -C lyric-rt test`, plus a gcc ASan run (`make -C lyric-rt test-asan`) so
 a leaked SSL_CTX/SSL/fd/alpn buffer or a use-after-free in a handshake fails
 the run. All green with OpenSSL 3.0.13.

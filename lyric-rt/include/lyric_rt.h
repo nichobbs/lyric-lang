@@ -545,11 +545,12 @@ int32_t lyric_tls_available(void);
  * verify paths (honoring SSL_CERT_FILE / SSL_CERT_DIR); a non-empty
  * `ca_pem` pins trust EXCLUSIVELY to that CA (the additive-vs-exclusive
  * distinction is a Lyric-layer concern — the seam takes exactly the trust
- * anchors it is given).  `insecure` != 0 disables certificate and hostname
- * verification (the docs/61 §4 dual-key policy override) — the ONLY way to
- * turn verification off.  Returns a context handle, or NULL (last_error
- * set).  Free with `lyric_tls_ctx_free`. */
-void* lyric_tls_client_new(const char* ca_pem, int32_t insecure);
+ * anchors it is given).  `min_version` is 12 for the TLS 1.2 floor or 13 to
+ * pin TLS 1.3 (the `.withMinTlsVersion` client knob).  `insecure` != 0
+ * disables certificate and hostname verification (the docs/61 §4 dual-key
+ * policy override) — the ONLY way to turn verification off.  Returns a
+ * context handle, or NULL (last_error set).  Free with `lyric_tls_ctx_free`. */
+void* lyric_tls_client_new(const char* ca_pem, int32_t min_version, int32_t insecure);
 
 /* Present a client certificate + key on `client_ctx` for mutual TLS.
  * `key_pem` must be an unencrypted PKCS#8 key ("BEGIN PRIVATE KEY").
@@ -559,10 +560,12 @@ int32_t lyric_tls_client_set_identity(void* client_ctx, const char* cert_pem, co
 
 /* Perform the CLIENT handshake over the already-connected `fd`.  SNI and
  * RFC 6125 hostname verification are hard-wired on from `sni_host` unless
- * the context was built `insecure`.  `alpn_csv` advertises ALPN protocols.
- * Returns a connection handle on a verified handshake, or NULL (last_error
- * set); the caller still owns `fd` and closes it with `lyric_sock_close`.
- * Free the handle with `lyric_tls_free`. */
+ * the context was built `insecure`.  FAILS CLOSED: a non-insecure context
+ * with an empty `sni_host` (no name to verify) is REFUSED (NULL, last_error
+ * set) rather than silently downgraded to chain-only validation.  `alpn_csv`
+ * advertises ALPN protocols.  Returns a connection handle on a verified
+ * handshake, or NULL (last_error set); the caller still owns `fd` and closes
+ * it with `lyric_sock_close`.  Free the handle with `lyric_tls_free`. */
 void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_host, const char* alpn_csv);
 
 /* Build a SERVER TLS context from an identity (`cert_pem` + `key_pem`,

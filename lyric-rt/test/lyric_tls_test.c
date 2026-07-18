@@ -224,7 +224,7 @@ static int run_tls_scenario(void* server_ctx, void* client_ctx, const char* sni,
 static void test_tls_server_auth(void) {
     void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "http/1.1");
     CHECK(server != NULL);
-    void* client = lyric_tls_client_new(CA_CRT, 0);
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
     CHECK(client != NULL);
     if (server && client) {
         char calpn[32];
@@ -245,7 +245,7 @@ static void test_tls_server_auth(void) {
 static void test_tls_tls13_floor(void) {
     void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 13, "", 0, "http/1.1");
     CHECK(server != NULL);
-    void* client = lyric_tls_client_new(CA_CRT, 0);
+    void* client = lyric_tls_client_new(CA_CRT, 13, 0); /* client also pins 1.3 */
     CHECK(client != NULL);
     if (server && client) {
         char calpn[32];
@@ -261,7 +261,7 @@ static void test_tls_tls13_floor(void) {
 static void test_mtls_accept(void) {
     void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, CA_CRT, 1, "http/1.1");
     CHECK(server != NULL);
-    void* client = lyric_tls_client_new(CA_CRT, 0);
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
     CHECK(client != NULL);
     if (server && client) {
         CHECK(lyric_tls_client_set_identity(client, CLIENT_CRT, CLIENT_KEY) == 0);
@@ -281,7 +281,7 @@ static void test_mtls_reject_no_client_cert(void) {
     void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, CA_CRT, 1, "http/1.1");
     CHECK(server != NULL);
     /* Client presents NO certificate — the server requires one. */
-    void* client = lyric_tls_client_new(CA_CRT, 0);
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
     CHECK(client != NULL);
     if (server && client) {
         char calpn[32];
@@ -303,7 +303,7 @@ static void test_mtls_reject_no_client_cert(void) {
 static void test_hostname_mismatch_rejected(void) {
     void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "http/1.1");
     CHECK(server != NULL);
-    void* client = lyric_tls_client_new(CA_CRT, 0);
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
     CHECK(client != NULL);
     if (server && client) {
         char calpn[32];
@@ -321,7 +321,7 @@ static void test_insecure_skip_verify(void) {
     void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "http/1.1");
     CHECK(server != NULL);
     /* No CA, insecure=1: a hostname the cert does not cover still connects. */
-    void* client = lyric_tls_client_new("", 1);
+    void* client = lyric_tls_client_new("", 12, 1);
     CHECK(client != NULL);
     if (server && client) {
         char calpn[32];
@@ -329,6 +329,26 @@ static void test_insecure_skip_verify(void) {
         int ok = run_tls_scenario(server, client, "not-in-cert.example", "http/1.1", calpn, &rt, NULL);
         CHECK(ok == 1);
         CHECK(rt == 1);
+    }
+    lyric_tls_ctx_free(server);
+    lyric_tls_ctx_free(client);
+}
+
+/* #6109: a non-insecure client connect with an empty host has no name to
+ * verify against and MUST be refused (fail closed) rather than silently
+ * downgraded to chain-only validation.  The insecure path (tested above)
+ * is the only one allowed to skip hostname verification. */
+static void test_empty_host_refused(void) {
+    void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "http/1.1");
+    CHECK(server != NULL);
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0); /* not insecure */
+    CHECK(client != NULL);
+    if (server && client) {
+        char calpn[32];
+        int rt = 0;
+        int ok = run_tls_scenario(server, client, "", "http/1.1", calpn, &rt, NULL);
+        CHECK(ok == 0); /* refused: hostname verification on, no host to verify */
+        CHECK(rt == 0);
     }
     lyric_tls_ctx_free(server);
     lyric_tls_ctx_free(client);
@@ -351,6 +371,7 @@ int main(void) {
     test_mtls_accept();
     test_mtls_reject_no_client_cert();
     test_hostname_mismatch_rejected();
+    test_empty_host_refused();
     test_insecure_skip_verify();
 
     if (failures == 0) {
