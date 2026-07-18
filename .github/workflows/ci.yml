@@ -6664,7 +6664,7 @@ jobs:
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/tcp_host_tls_tests.l
 
       # Std.HttpServer dotnet server-assembly test coverage (#5884, docs/61
-      # §6.1 item 9 / §6.2 / §6.3 phase 3.3; D-progress-699): the dotnet
+      # §6.1 item 9 / §6.2 / §6.3 phase 3.3; D-progress-700): the dotnet
       # HTTP/1.1 server rebuilt on Std.TcpHost + Std.HttpEngine, replacing the
       # retired System.Net.HttpListener. Runs a real in-process loopback — a
       # plaintext GET against the real Lyric HTTP client, a POST body, keep-alive

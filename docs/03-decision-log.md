@@ -17147,7 +17147,7 @@ real `lyric test` invocations as normal.
 
 ---
 
-## D-progress-699 — TLS phase 3.3: dotnet `Std.HttpServer` server assembly on `Std.TcpHost` + `Std.HttpEngine`; `HttpListener` retired; real `startListenerTls` (docs/61 §6.1 item 9 / §6.2 / §6.3, D128, #5884)
+## D-progress-700 — TLS phase 3.3: dotnet `Std.HttpServer` server assembly on `Std.TcpHost` + `Std.HttpEngine`; `HttpListener` retired; real `startListenerTls` (docs/61 §6.1 item 9 / §6.2 / §6.3, D128, #5884)
 
 **Context.** D128 decision 7 replaces the .NET server with a pure-Lyric sans-IO
 HTTP engine over a thin transport kernel. Phase 3.1 (D-progress-697, #5882)

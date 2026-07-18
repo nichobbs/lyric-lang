@@ -30896,7 +30896,7 @@ D128; #5882, #5883, #5884, #5874, #5947, #6029.
 ## `Std.HttpServer` dotnet server assembly ships — sans-IO engine + TcpHost transport, `HttpListener` retired, real `startListenerTls` (2026-07-18)
 
 TLS phase 3.3 (docs/61 §6.1 item 9 / §6.2 / §6.3, epic #5874, issue #5884;
-D-progress-699). `lyric-stdlib/std/_kernel/http_server.l` on `--target dotnet`
+D-progress-700). `lyric-stdlib/std/_kernel/http_server.l` on `--target dotnet`
 is rebuilt on `Std.TcpHost` (transport, #5882) + `Std.HttpEngine` (sans-IO
 HTTP/1.1, #5883), **retiring the `System.Net.HttpListener` server** the
 module's own header called "bootstrap-grade." The `HttpListener` externs are
@@ -30937,5 +30937,5 @@ Boundary: lyric-web onto the new server (#5885) and h2/ALPN end-to-end (#5889,
 gated on the h2 FSM #5888) are separate; the transport advertises only
 `http/1.1` here. Native server is #5890.
 
-**Related:** `docs/03-decision-log.md` D-progress-699; docs/61 §6, D128; #5884,
+**Related:** `docs/03-decision-log.md` D-progress-700; docs/61 §6, D128; #5884,
 #5874, #5882 (D-progress-697), #5883, #5885, #5889, #6041, #6042.

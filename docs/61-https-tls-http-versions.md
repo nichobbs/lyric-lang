@@ -526,7 +526,7 @@ items marked ∥ are independent and can proceed in parallel.
    runtime — a fourth gap, filed as issue #5932; the construction lives in
    `_kernel_jvm/http_server.l` instead, reached through the minimal
    `Identity.hostHandle` kernel-only accessor added to `tls.l`. Mutual TLS
-   remains tracked (issue #5930); dotnet server TLS shipped (#5884, D-progress-699).
+   remains tracked (issue #5930); dotnet server TLS shipped (#5884, D-progress-700).
 6. lyric-web: Undertow `addHttpsListener` + `ENABLE_HTTP2`, `Web.serveTls`,
    `WebTls` config template, typed dotnet `Unsupported` until phase 3;
    docs + book. (After 1; ∥ with 5.) _Shipped in phase 2.2 (issue #5881,
@@ -571,18 +571,18 @@ items marked ∥ are independent and can proceed in parallel.
    `List<SslApplicationProtocol>` property is set via a documented reflection
    bridge working around generic-`List<ExternValueType>` FFI gap #6029. Item 9
    (the `Std.HttpServer` server assembly on this kernel) shipped in
-   D-progress-699 (#5884)._
+   D-progress-700 (#5884)._
 8. `Std.HttpEngine` HTTP/1.1: parser, serializer, connection FSM, byte-level
    test corpus. ∥ with 7. _Shipped in D-progress-694 (#5883, PR #5999): the
    protocol engine and its exhaustive (59-case) test corpus, including
    RFC 9112 §3.2 Host-header validation and `EngineLimits.maxBodyBytes`
    enforcement added in the same PR's review round. Its transport (item 7,
    `_kernel/tcp_host.l`, D-progress-697) and server assembly (item 9,
-   D-progress-699) have since shipped, so the dotnet server is usable
+   D-progress-700) have since shipped, so the dotnet server is usable
    end-to-end._
 9. Server assembly: `scope`/`spawn` accept loop behind the existing
    `Std.HttpServer` 12-function surface + `startListenerTls`; `HttpListener`
-   retired; self-tests. (After 7+8.) _Shipped in D-progress-699 (#5884): the
+   retired; self-tests. (After 7+8.) _Shipped in D-progress-700 (#5884): the
    dotnet `Std.HttpServer` kernel (`_kernel/http_server.l`) rebuilt on
    `Std.TcpHost` + `Std.HttpEngine`. The `System.Net.HttpListener` externs are
    gone; `HttpContext`/`HttpListener` are now Lyric records and the chunked-

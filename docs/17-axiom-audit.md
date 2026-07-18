@@ -786,9 +786,10 @@ All are provisional pending weaver integration.
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
 | `Std.TlsHost`            | `tls_host.l`                 | 1      | 0           |
 | `Std.TcpHost`            | `tcp_host.l`                 | 1      | 0           |
+| `Std.HttpServer`         | `http_server.l`              | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
-| **Total**                |                              | **25** | **2**       |
+| **Total**                |                              | **26** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -886,6 +887,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.FormatHost` | `format_host.l` | System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts |
 | `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; all are pure functions |
 | `dotnet` | `Std.HttpHost` | `http_host.l` | System.Net.Http and System.Net.Security TLS configuration operations conform to their documented .NET contracts |
+| `dotnet` | `Std.HttpServer` | `http_server.l` | System.Threading.Tasks.Task.Run, System.Collections.Concurrent.ConcurrentQueue, and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts |
 | `dotnet` | `Std.JsonHost` | `json_host.l` | System.Text.Json operations conform to their documented .NET contracts |
 | `dotnet` | `Std.Jvm` | `jvm.l` | Std.Jvm provides JVM-target escape hatches for interoperating with Java exception semantics per docs/31-maven-linking.md Q-J012 |
 | `dotnet` | `Std.JvmExceptionHost` | `jvm_exception.l` | java.lang.Exception is the Java checked-exception root; \n JvmException wraps it for Lyric callers at the FFI boundary \n per docs/31-maven-linking.md §5 |
