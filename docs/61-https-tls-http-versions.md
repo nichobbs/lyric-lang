@@ -439,7 +439,52 @@ items marked ∥ are independent and can proceed in parallel.
    design deterministically, with no live TLS peer needed on either
    target.
 3. JVM client TLS: `SSLContext` wiring, same surface/policy, self-test.
-   (After 1; ∥ with 2.)
+   (After 1; ∥ with 2.) _Shipped (D-progress-693, #5878):
+   `hostSupportsTlsConfig()` flips to `true`; `_kernel_jvm/http_host.l`
+   assembles a `KeyStore`/`TrustManagerFactory`/`SSLContext`/`SSLParameters`
+   per request instead of the .NET twin's validation-callback shape (JVM's
+   `java.net.http.HttpClient` has no such callback). **Design deviations
+   from the issue's literal wording**: (1) additive/exclusive CA trust is a
+   MERGED/REPLACED `KeyStore` (system trust anchors read via
+   `getAcceptedIssuers()`, reflectively, off the default
+   `TrustManagerFactory`) rather than a fallback-order decision callback —
+   the JDK's own PKIX validator does the chain check, so there is nothing
+   for a `resolveTlsValidationDecision`-shaped function to drive on this
+   target (it stays declared, unused, for cross-target #5950 test parity);
+   (2) building the required reference-typed Java arrays
+   (`TrustManager[]`, `Certificate[]`, `String[]`, `Class[]`) and passing
+   a JDK-documented `null` (`KeyStore.load`/`TrustManagerFactory.init`)
+   needed a `java.lang.reflect.{Method,Array}` bridge — the JVM auto-FFI
+   cannot pass a Lyric `slice[T]` for reference `T` as a call argument at
+   all (verified empirically; files a fresh instance of the #5931 array-
+   erasure class against `TrustManagerFactory.init`/`SSLContext.init`/
+   `SSLParameters.setProtocols`/`Proxy.newProxyInstance`, not just the
+   `impl <ExternInterface>` case #5931 originally found); (3)
+   `withInsecureSkipVerify()`'s all-trusting `X509TrustManager` cannot be
+   written as `impl JX509TrustManager for Record` at all — every method
+   mentions a `slice[ExternType]` and hits the same erasure gap at compile
+   time ("no matching instance or inherited method") — so it is built via
+   `java.lang.reflect.Proxy.newProxyInstance` + `impl JInvocationHandler
+   for Record` instead (`InvocationHandler.invoke`'s only array parameter
+   is genuinely `Object[]`, an exact match for `slice[JObject]`, so it
+   needs none of the workarounds); (4) hostname verification cannot be
+   disabled on this target through any public API — verified empirically,
+   `java.net.http.HttpClient` enforces its own endpoint-identification
+   check unconditionally regardless of the supplied `SSLContext`/
+   `SSLParameters`, even with the all-trusting proxy trust manager
+   installed and `setEndpointIdentificationAlgorithm` explicitly cleared —
+   so `withInsecureSkipVerify()` on jvm disables chain trust only, which is
+   STRICTER than docs/61 §4's baseline ("disables peer chain verification
+   and hostname matching together"), not a gap. Verified end-to-end
+   against real live TLS peers in the implementing sandbox (exclusive CA
+   correctly rejects a real public-CA-signed site; additive CA correctly
+   accepts one while still trusting the extra CA; the insecure path
+   accepts a real self-signed peer; a real wrong-hostname peer is rejected
+   on every path, insecure included) — not part of committed CI (a
+   public-endpoint test is not CI-acceptable); `http_tls_client_tests.l`
+   (shared with #5877) covers the policy matrix, builder composition, and
+   the now-target-neutral `tlsConfigSupported()`/Unix-socket-behavioural-
+   probe deterministically on both targets, with no live TLS peer needed.
 4. HTTP-version knob + h2-or-lower default parity + `negotiatedVersion`
    accessor + self-tests on both targets. ∥ with 1. _Shipped
    (D-progress-690, #5879): `HttpVersion` enum + `HttpClientBuilder.withHttpVersion`

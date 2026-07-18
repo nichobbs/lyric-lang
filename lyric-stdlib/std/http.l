@@ -425,10 +425,10 @@ pub func HttpClientBuilder.withHttpVersion(b: in HttpClientBuilder, version: in 
 /// the two on a given builder; combining them is legal but the additive
 /// certificate never takes effect.
 ///
-/// Not supported yet on `--target jvm` (tracked in #5878): `build()` still
-/// succeeds, but every request through the resulting client fails with a
-/// typed `ConnectionFailed` naming that issue. Check `tlsConfigSupported()`
-/// to detect this ahead of time.
+/// Supported on both `--target dotnet` and `--target jvm` (#5877, #5878).
+/// On jvm, `cert` is added to a `KeyStore` alongside every certificate the
+/// platform's own default trust store already accepts — a chain valid
+/// against either set is accepted.
 @stable(since = "1.2")
 pub func HttpClientBuilder.withCaCertificate(b: in HttpClientBuilder, cert: in Certificate): HttpClientBuilder {
   HttpClientBuilder(
@@ -453,7 +453,9 @@ pub func HttpClientBuilder.withCaCertificate(b: in HttpClientBuilder, cert: in C
 /// builder, THIS wins unconditionally — see its doc comment for the full
 /// rule.
 ///
-/// Same JVM support boundary as `withCaCertificate` (#5878).
+/// Supported on both targets (#5877, #5878). On jvm, `cert` is the ONLY
+/// entry in the `KeyStore` fed to the `TrustManagerFactory` — the
+/// platform's own trust store is never consulted.
 @stable(since = "1.2")
 pub func HttpClientBuilder.withExclusiveCaCertificate(b: in HttpClientBuilder, cert: in Certificate): HttpClientBuilder {
   HttpClientBuilder(
@@ -472,7 +474,9 @@ pub func HttpClientBuilder.withExclusiveCaCertificate(b: in HttpClientBuilder, c
 /// Present `identity` as this client's own certificate for mutual TLS
 /// (docs/61 §3.2).
 ///
-/// Same JVM support boundary as `withCaCertificate` (#5878).
+/// Supported on both targets (#5877, #5878). On jvm, `identity`'s
+/// certificate + private key populate a `KeyStore` fed to a
+/// `KeyManagerFactory`.
 @stable(since = "1.2")
 pub func HttpClientBuilder.withClientIdentity(b: in HttpClientBuilder, identity: in Identity): HttpClientBuilder {
   HttpClientBuilder(
@@ -492,7 +496,9 @@ pub func HttpClientBuilder.withClientIdentity(b: in HttpClientBuilder, identity:
 /// `Std.Tls.TlsVersion`'s floor is TLS 1.2 — there is no way to configure
 /// anything older.
 ///
-/// Same JVM support boundary as `withCaCertificate` (#5878).
+/// Supported on both targets (#5877, #5878). On jvm, lowers to
+/// `SSLParameters.setProtocols` (`["TLSv1.3"]` for the `Tls13` pin,
+/// `["TLSv1.2", "TLSv1.3"]` for the `Tls12` floor).
 @stable(since = "1.2")
 pub func HttpClientBuilder.withMinTlsVersion(b: in HttpClientBuilder, version: in TlsVersion): HttpClientBuilder {
   HttpClientBuilder(
@@ -522,8 +528,17 @@ pub func HttpClientBuilder.withMinTlsVersion(b: in HttpClientBuilder, version: i
 /// | yes | no | Verification enabled, plus a one-time stderr warning |
 /// | yes | yes | Verification disabled for this client only |
 ///
-/// Never use in production. Same JVM support boundary as
-/// `withCaCertificate` (#5878).
+/// Never use in production. Supported on both targets (#5877, #5878).
+///
+/// **jvm-specific note:** this disables CHAIN/CA verification (installs an
+/// all-trusting `X509TrustManager`) but NOT hostname verification —
+/// `java.net.http.HttpClient` enforces its own endpoint-identification
+/// check unconditionally, independent of any supplied `SSLContext`/
+/// `SSLParameters`, and there is no public API to disable it (verified
+/// empirically). This is STRICTER than the policy this doc comment
+/// otherwise describes ("disables peer chain verification and hostname
+/// matching together"), not a gap: on `--target jvm` a hostname-mismatched
+/// certificate is rejected even with this option enabled.
 @stable(since = "1.2")
 pub func HttpClientBuilder.withInsecureSkipVerify(b: in HttpClientBuilder): HttpClientBuilder {
   HttpClientBuilder(
@@ -544,12 +559,14 @@ pub func HttpClientBuilder.withInsecureSkipVerify(b: in HttpClientBuilder): Http
 /// `withExclusiveCaCertificate`, `withClientIdentity`,
 /// `withMinTlsVersion`, `withInsecureSkipVerify`; docs/61 §3.2).
 ///
-/// `true` on `--target dotnet`. `false` on `--target jvm` until #5878
-/// ships JVM TLS wiring — `build()` still succeeds on a TLS-configured
-/// builder either way (stays infallible), but on that target every
-/// request through the resulting client fails with a typed
-/// `ConnectionFailed` naming #5878 instead of silently connecting without
-/// the configured options.
+/// `true` on `--target dotnet` and `--target jvm` (#5877, #5878) —
+/// `build()` stays infallible either way, but a TLS-configured client
+/// actually connects with the configured options on both targets today.
+/// A future target lacking TLS config support would still have `build()`
+/// succeed, with every request through the resulting client failing with a
+/// typed `ConnectionFailed` naming the gap, rather than silently
+/// connecting without the configured options — this probe exists so
+/// callers can detect that case ahead of time.
 @stable(since = "1.2")
 pub func tlsConfigSupported(): Bool {
   HostHttp.hostSupportsTlsConfig()
@@ -653,11 +670,15 @@ pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
   // (see `_kernel/http_host.l`'s TLS section header: Unix sockets require
   // `SocketsHttpHandler`, whose only certificate-validation hook is a
   // custom .NET delegate type the current FFI delegate-bridge cannot bind
-  // to). Gated on `tlsSupported` so this dotnet-specific reason never
-  // shadows the plain "unsupported on this target" (#5878) reason on a
-  // target (jvm) where TLS is unsupported regardless of Unix sockets.
-  // `hostClientWithTls` is therefore only ever called when there is no
-  // socket path at all.
+  // to). `--target jvm` never reaches this branch for a DIFFERENT,
+  // unrelated, pre-existing reason: Unix domain sockets are unconditionally
+  // unsupported there regardless of TLS (#2663 — `java.net.http.HttpClient`
+  // has no Unix-socket transport at all; `hostClientWithUnixSocket` panics
+  // unconditionally on that target). Gated on `tlsSupported` so this
+  // dotnet-specific reason never shadows the generic "unsupported on this
+  // target" reason below on a hypothetical future target with no TLS
+  // config support at all. `hostClientWithTls` is therefore only ever
+  // called when there is no socket path at all.
   val unixSocketBlocksTls = isSome(b.socketPath) and hasTls and tlsSupported
   val tlsHandledByKernel = hasTls and tlsSupported and not unixSocketBlocksTls
 
@@ -738,10 +759,15 @@ pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
         "the current FFI delegate-bridge cannot bind to); see issue #5947"
     )
   } else if hasTls and not tlsSupported {
+    // Unreachable on both currently-shipped targets (dotnet: #5877; jvm:
+    // #5878) — kept as a generic, honest fallback for any future target
+    // whose kernel has not yet wired TLS config (docs/61's no-silent-skip
+    // rule: `build()` still succeeds, but every request fails with a typed
+    // error naming this gap, never a silent no-TLS-config connection).
     Some(
       value = "TLS client configuration (withCaCertificate/withExclusiveCaCertificate/withClientIdentity/" +
-        "withMinTlsVersion/withInsecureSkipVerify) is not supported yet on this target; see issue #5878 " +
-        "(docs/61-https-tls-http-versions.md phase 1.3)"
+        "withMinTlsVersion/withInsecureSkipVerify) is not supported yet on this target " +
+        "(docs/61-https-tls-http-versions.md §3.2)"
     )
   } else {
     None

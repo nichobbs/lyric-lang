@@ -41,13 +41,14 @@
 //! observed at the next poll point rather than aborting the transfer —
 //! the same cooperative-cancellation contract `_kernel_jvm/task.l`
 //! documents for this target.
-@axiom("java.net.http.HttpClient operations conform to their documented JVM contracts")
+@axiom("java.net.http.HttpClient and javax.net.ssl / java.security TLS configuration operations conform to their documented JVM contracts")
 package Std.HttpHost
 
 import Std.Core
 import Std.Collections
 import Std.Task
 import Std.Tls
+import Std.TlsHost
 
 // =====================================================================
 // Extern types — JDK classes the helpers below reference.
@@ -216,35 +217,76 @@ pub func hostClientWithUnixSocketNoRedirectsHttp11(socketPath: in String): HttpC
 }
 
 // ---------------------------------------------------------------------------
-// TLS client configuration: not implemented on this target yet — the JVM
-// slice is #5878 (docs/61 §3.2, D128; phase 1.2 dotnet-only in #5877).
+// TLS client configuration (docs/61 §3.2, D128; phase 1.3, #5878) — the JVM
+// twin of `_kernel/http_host.l`'s `applyTlsOptions`/`hostClientWithTls`.
 //
-// `Std.Http.HttpClientBuilder.build()` calls this capability probe BEFORE
-// ever attempting kernel-level TLS wiring; when it returns `false` (as it
-// does here), `build()` sets `HttpClientImpl.unsupportedReason` instead
-// (the same mechanism `Http3` already uses on both targets) rather than
-// calling a JVM `hostClientWithTls` this file has no reason to declare yet
-// — a TLS-configured client still builds successfully, but every request
-// through it fails with a typed `ConnectionFailed` naming this issue,
-// never a silent no-TLS-config connection (docs/61's no-silent-skip rule).
+// `Std.Http.HttpClientBuilder.build()` calls `hostSupportsTlsConfig()` BEFORE
+// ever attempting kernel-level TLS wiring; it now returns `true` on this
+// target, so `build()` routes a TLS-configured builder into
+// `hostClientWithTls` below exactly as it already does on `--target dotnet`.
+//
+// Trust model, and why it differs in SHAPE from the dotnet kernel even
+// though the OUTCOME (docs/61 §3.2/§4's policy matrix) is identical:
+// `java.net.http.HttpClient` has no per-request certificate-validation
+// CALLBACK the way `HttpClientHandler.ServerCertificateCustomValidationCallback`
+// does — TLS trust on this target is configured once, structurally, via a
+// `KeyStore` fed to a `TrustManagerFactory`, which the JDK's own PKIX path
+// builder then validates every handshake against. So instead of mirroring
+// `resolveTlsValidationDecision`'s "ask the platform, then decide whether to
+// fall back to a custom chain" callback shape, this kernel builds the
+// KeyStore itself:
+//   - **Additive** (`withCaCertificate`): a KeyStore containing the
+//     configured CA PLUS every certificate the platform's own default
+//     `TrustManagerFactory` reports as an accepted issuer (`systemTrustAnchors`
+//     below) — a chain that validates against EITHER trust anchor set
+//     validates overall, matching "ADDITIONAL trust root" (`Std.Http`'s
+//     `withCaCertificate` doc comment).
+//   - **Exclusive** (`withExclusiveCaCertificate`): a KeyStore containing
+//     ONLY the configured CA — the platform trust store is never consulted,
+//     matching "REPLACES the platform trust store entirely".
+//   - **Neither configured** (client identity and/or minTlsVersion only):
+//     a `TrustManagerFactory` initialised with a `null` KeyStore, the
+//     documented JDK idiom for "use the platform default" — identical
+//     behaviour to an unconfigured client.
+// `resolveCaMode` (below) still picks between these three exactly as it
+// does on dotnet — the exclusive-wins precedence rule (#5975) is
+// target-neutral pure logic and is reused, not re-derived.
+//
+// Hostname verification — the load-bearing security property #5950 fixed on
+// dotnet — is NEVER at risk of the same regression here, for a structural
+// reason rather than a callback discipline: `java.net.http.HttpClient`
+// performs its own endpoint-identification check independently of whatever
+// `SSLContext`/`SSLParameters` the caller supplies, and does so
+// UNCONDITIONALLY — verified empirically (see `buildClientSslParameters`'s
+// doc comment below): even installing a custom, all-trusting
+// `X509TrustManager` and explicitly clearing
+// `SSLParameters.setEndpointIdentificationAlgorithm` could not make this
+// target accept a certificate issued for the wrong hostname. There is
+// consequently no "callback that forgot to check hostname" bug class
+// possible on this target at all — chain trust (KeyStore-driven) and
+// hostname matching (enforced by the JDK's `HttpClient` implementation
+// itself, never by kernel code) are two independent, non-overridable
+// checks. `setEndpointIdentificationAlgorithm("HTTPS")` is still set
+// explicitly on every non-insecure path below anyway, matching the
+// defence-in-depth posture #5878 was asked to preserve, even though this
+// target's own enforcement does not depend on it.
+//
+// `TlsCaMode`/`resolveCaMode`/`TlsValidationDecision`/`resolveTlsValidationDecision`
+// remain declared (mirrored verbatim from the dotnet twin, as before) so
+// `http_tls_client_tests.l`'s exhaustive #5950/#5975 regression coverage
+// keeps running identically on both targets — target-neutral pure logic,
+// no BCL dependency. `resolveCaMode` IS now genuinely consumed by
+// `buildClientSslContext` below; `resolveTlsValidationDecision`/
+// `TlsValidationDecision` are not — this target's real trust decision is
+// the JDK's own PKIX path validator over the KeyStore built above, not a
+// hand-rolled decision core, so there is nothing here for that callback
+// shape to drive. It stays for cross-target parity of the tested pure
+// function, not because a caller invokes it.
 // ---------------------------------------------------------------------------
 pub func hostSupportsTlsConfig(): Bool {
-  false
+  true
 }
 
-// The pure decision core the future JVM validation callback (#5878) will
-// drive, mirrored here identically from `_kernel/http_host.l`'s dotnet
-// twin (docs/61 §3.2; MITM fix #5950) — this logic is plain Lyric with no
-// BCL/extern dependency at all, so it is target-neutral and duplicated
-// verbatim rather than shared through a new package, matching this
-// directory's existing twin-kernel-file convention (each `_kernel*/`
-// file is self-contained per target). Not yet CALLED by anything on this
-// target (no JVM TLS wiring exists until #5878 ships), but declaring it
-// now means `http_tls_client_tests.l`'s `resolveTlsValidationDecision`
-// regression test — proving a hostname mismatch can never be overridden
-// by any CA configuration — runs identically on both targets today, and
-// #5878's callback can reuse this exact, already-tested function instead
-// of re-deriving it.
 pub enum TlsCaMode {
   case NoCaConfigured
   case AdditiveCa
@@ -254,7 +296,8 @@ pub enum TlsCaMode {
 // Precedence rule when both `withCaCertificate` and
 // `withExclusiveCaCertificate` are configured on the same builder
 // (#5975) — mirrored verbatim from the dotnet twin; see that file's doc
-// comment for the full rationale. Exclusive always wins.
+// comment for the full rationale. Exclusive always wins. Genuinely
+// consumed by `buildClientSslContext` below (module header).
 @pure
 pub func resolveCaMode(caCertificate: in Option[Certificate], exclusiveCaCertificate: in Option[Certificate]): TlsCaMode {
   match exclusiveCaCertificate {
@@ -272,6 +315,8 @@ pub enum TlsValidationDecision {
   case TryCustomChain
 }
 
+// Kept for cross-target #5950 regression parity in `http_tls_client_tests.l`
+// (module header) — not called by this target's real wiring.
 @pure
 pub func resolveTlsValidationDecision(
   hostnameAndAvailabilityOk: in Bool, chainAlreadyOk: in Bool, caMode: in TlsCaMode
@@ -295,6 +340,584 @@ pub func resolveTlsValidationDecision(
         }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Reflection bridge (module header above; mirrored self-contained per this
+// directory's per-file convention rather than shared with
+// `_kernel_jvm/http_server.l`'s in-flight server-TLS counterpart).
+//
+// The JVM auto-FFI (`jvm/auto_ffi.l`) cannot construct or pass a
+// reference-typed Java array (`Certificate[]`, `TrustManager[]`, `String[]`,
+// `Class[]`) as a call ARGUMENT — a Lyric `slice[T]` for reference `T`
+// always erases to `Object[]` at the call site, which the JDK rejects for
+// any more specifically-typed array parameter (verified empirically against
+// `KeyStore.setCertificateEntry`'s sibling `setKeyEntry`, `SSLContext.init`,
+// `SSLParameters.setProtocols`, and `Proxy.newProxyInstance` — each throws
+// "no matching...method" at COMPILE time, not just runtime). RETURNING an
+// array from a call (`tmf.getTrustManagers()`, `kmf.getKeyManagers()`) is
+// unaffected — only the argument direction is broken. `java.lang.reflect`
+// sidesteps this: `Array.newInstance`/`Array.set` build a genuinely-typed
+// array one element at a time (each call takes a single object or a class +
+// int, never an array, so it scores fine), and `Method.invoke(Object,
+// Object...)`'s varargs parameter erases to `Object[]` too — an exact match
+// for a Lyric `slice[JObject]` argument, so relaying an already-built array
+// through it needs no coercion at all. The same `Array.newInstance` +
+// `Array.get` trick produces a genuine `null` reference of any class,
+// standing in for Lyric's lack of a null literal (#4775) where the JDK API
+// expects one (`KeyStore.load(null, password)` is the documented way to
+// initialize an empty keystore; `TrustManagerFactory.init((KeyStore) null)`
+// is the documented way to ask for the platform default trust store). A
+// `null` reference carries no runtime type tag, so which class name
+// `nullOfClass` is asked to build the (immediately-discarded) 1-element
+// array from does not affect the `null` value it returns — `"java.lang.Object"`
+// is used uniformly below for readability.
+//
+// A checkcast-on-assignment idiom appears throughout the code below
+// (`val x: SpecificType = someReflectiveOrEraseGenericCall()`), matching the
+// existing `val ex: HttpContext = l.queue.take()` idiom this file's own
+// module header already documents for `JInputStream`/`HttpContext`: binding
+// an `Object`-erased call result (a raw `Method.invoke`/`Array.get` return,
+// or a JDK method whose declared return is a generic/erased type) directly
+// to a more specific extern-typed `val` inserts the checkcast — this only
+// works at a genuine call-expression assignment site, not through an
+// intermediate `JObject`-typed local or a plain Lyric helper function
+// (verified empirically; the type checker correctly rejects the latter as a
+// real type mismatch, T0060).
+// ---------------------------------------------------------------------------
+extern type JObject = "java.lang.Object"
+
+extern type JClass = "java.lang.Class"
+
+extern type JMethod = "java.lang.reflect.Method"
+
+extern type JReflectArray = "java.lang.reflect.Array"
+
+extern type JInvocationHandler = "java.lang.reflect.InvocationHandler"
+
+extern type JClassLoader = "java.lang.ClassLoader"
+
+extern type JCharacterCls = "java.lang.Character"
+
+extern type JKeyStore = "java.security.KeyStore"
+
+extern type JTrustManagerFactory = "javax.net.ssl.TrustManagerFactory"
+
+extern type JKeyManagerFactory = "javax.net.ssl.KeyManagerFactory"
+
+extern type JSSLContext = "javax.net.ssl.SSLContext"
+
+extern type JSSLParameters = "javax.net.ssl.SSLParameters"
+
+extern type JTrustManager = "javax.net.ssl.TrustManager"
+
+extern type JSecureRandom = "java.security.SecureRandom"
+
+extern type JCertificate = "java.security.cert.Certificate"
+
+extern type JPrivateKey = "java.security.PrivateKey"
+
+func findMethodByNameAndArity(cls: in JClass, name: in String, arity: in Int): JMethod {
+  val methods: slice[JMethod] = cls.getMethods()
+  var i = 0
+  var found: Option[JMethod] = None
+  while i < methods.length {
+    val m = methods[i]
+    if m.getName() == name and m.getParameterCount() == arity {
+      found = Some(value = m)
+    }
+    i = i + 1
+  }
+  match found {
+    case Some(m) -> m
+    case None -> panic("Std.HttpHost: reflective method lookup failed for " + name + "/" + arity.toString())
+  }
+}
+
+// `TrustManagerFactory.init` has TWO one-argument overloads
+// (`init(KeyStore)` / `init(ManagerFactoryParameters)`); arity alone does
+// not disambiguate them, so this variant also matches the first
+// parameter's declared type name.
+func findMethodByNameArityAndParamType(cls: in JClass, name: in String, arity: in Int, paramClassName: in String): JMethod {
+  val methods: slice[JMethod] = cls.getMethods()
+  var i = 0
+  var found: Option[JMethod] = None
+  while i < methods.length {
+    val m = methods[i]
+    if m.getName() == name and m.getParameterCount() == arity {
+      val ptypes: slice[JClass] = m.getParameterTypes()
+      if ptypes[0].getName() == paramClassName {
+        found = Some(value = m)
+      }
+    }
+    i = i + 1
+  }
+  match found {
+    case Some(m) -> m
+    case None -> panic("Std.HttpHost: reflective method lookup failed for " + name + " with param type " + paramClassName)
+  }
+}
+
+// A genuine `null` reference (module header) — the class name only shapes
+// the scratch array `Array.newInstance` builds to extract it from.
+func nullOfClass(className: in String): JObject {
+  val c: JClass = JClass.forName(className)
+  val arr: JObject = JReflectArray.newInstance(c, 1)
+  JReflectArray.get(arr, 0)
+}
+
+// An empty `char[]` (boxed as Object), the "no password" argument to
+// KeyStore/factory calls below.
+func emptyCharArrayObj(): JObject {
+  val charClass: JClass = JCharacterCls.TYPE
+  JReflectArray.newInstance(charClass, 0)
+}
+
+// A genuinely-typed 1-element array of `elemClassName` holding `v`.
+func makeTypedArray1[T](elemClassName: in String, v: in T): JObject {
+  val elemClass: JClass = JClass.forName(elemClassName)
+  val arr: JObject = JReflectArray.newInstance(elemClass, 1)
+  JReflectArray.set(arr, 0, v)
+  arr
+}
+
+// A genuinely-typed `String[]` holding every element of `values`, in order.
+func makeStringArray(values: in List[String]): JObject {
+  val elemClass: JClass = JClass.forName("java.lang.String")
+  val arr: JObject = JReflectArray.newInstance(elemClass, values.count)
+  var i = 0
+  while i < values.count {
+    JReflectArray.set(arr, i, values[i])
+    i = i + 1
+  }
+  arr
+}
+
+func invoke1[A, B](target: in A, methodName: in String, arg0: in B): JObject {
+  val cls: JClass = target.getClass()
+  val m = findMethodByNameAndArity(cls, methodName, 1)
+  val argsList: List[JObject] = newList()
+  argsList.add(arg0)
+  m.invoke(target, argsList.toArray())
+}
+
+func invoke1Typed[A, B](target: in A, methodName: in String, paramClassName: in String, arg0: in B): JObject {
+  val cls: JClass = target.getClass()
+  val m = findMethodByNameArityAndParamType(cls, methodName, 1, paramClassName)
+  val argsList: List[JObject] = newList()
+  argsList.add(arg0)
+  m.invoke(target, argsList.toArray())
+}
+
+func invoke2[A, B, C](target: in A, methodName: in String, arg0: in B, arg1: in C): JObject {
+  val cls: JClass = target.getClass()
+  val m = findMethodByNameAndArity(cls, methodName, 2)
+  val argsList: List[JObject] = newList()
+  argsList.add(arg0)
+  argsList.add(arg1)
+  m.invoke(target, argsList.toArray())
+}
+
+func invoke3[A, B, C, D](target: in A, methodName: in String, arg0: in B, arg1: in C, arg2: in D): JObject {
+  val cls: JClass = target.getClass()
+  val m = findMethodByNameAndArity(cls, methodName, 3)
+  val argsList: List[JObject] = newList()
+  argsList.add(arg0)
+  argsList.add(arg1)
+  argsList.add(arg2)
+  m.invoke(target, argsList.toArray())
+}
+
+func invoke4[A, B, C, D, E](target: in A, methodName: in String, arg0: in B, arg1: in C, arg2: in D, arg3: in E): JObject {
+  val cls: JClass = target.getClass()
+  val m = findMethodByNameAndArity(cls, methodName, 4)
+  val argsList: List[JObject] = newList()
+  argsList.add(arg0)
+  argsList.add(arg1)
+  argsList.add(arg2)
+  argsList.add(arg3)
+  m.invoke(target, argsList.toArray())
+}
+
+// Looks up a zero-argument method on a PUBLIC interface/superclass rather
+// than `target.getClass()` — reflection's accessibility check is keyed on
+// the `Method` object's DECLARING class, and the JDK's real
+// `X509TrustManager` implementation backing `TrustManagerFactory` lives in
+// a non-exported `sun.security.ssl` class (`getMethods()` on the concrete
+// instance's own class throws `IllegalAccessException` at invoke time,
+// verified empirically). Looking the method up through the PUBLIC
+// `javax.net.ssl.X509TrustManager` interface's own `Method` object instead
+// bypasses that module-encapsulation failure with no `--add-opens` JVM
+// flag required — a documented, supported reflection idiom for calling
+// public-interface methods on non-exported implementation classes.
+func invokeInterfaceMethod0[A](target: in A, interfaceClassName: in String, methodName: in String): JObject {
+  val ifaceClass: JClass = JClass.forName(interfaceClassName)
+  val m = findMethodByNameAndArity(ifaceClass, methodName, 0)
+  val emptyArgs: List[JObject] = newList()
+  m.invoke(target, emptyArgs.toArray())
+}
+
+// ---------------------------------------------------------------------------
+// KeyStore / TrustManagerFactory / KeyManagerFactory construction (module
+// header: "additive" and "exclusive" CA trust as merged/replaced KeyStores).
+// ---------------------------------------------------------------------------
+func newEmptyPkcs12KeyStore(): JKeyStore {
+  val ks: JKeyStore = JKeyStore.getInstance("PKCS12")
+  val _load = invoke2(ks, "load", nullOfClass("java.io.InputStream"), emptyCharArrayObj())
+  ks
+}
+
+func defaultTrustManagerFactory(): JTrustManagerFactory {
+  val algo: String = JTrustManagerFactory.getDefaultAlgorithm()
+  val tmf: JTrustManagerFactory = JTrustManagerFactory.getInstance(algo)
+  val _init = invoke1Typed(tmf, "init", "java.security.KeyStore", nullOfClass("java.security.KeyStore"))
+  tmf
+}
+
+// Every certificate the PLATFORM's own default trust manager accepts as an
+// issuer — read via `defaultTrustManagerFactory` (which itself asks the JDK
+// for its documented default trust store, honouring
+// `javax.net.ssl.trustStore`/`trustStorePassword` when set) plus
+// `invokeInterfaceMethod0` to call `getAcceptedIssuers()` on the (possibly
+// module-hidden) implementation it returns.
+func systemTrustAnchors(): slice[JCertificate] {
+  val tmf = defaultTrustManagerFactory()
+  val managers: slice[JTrustManager] = tmf.getTrustManagers()
+  val issuersObj: JObject = invokeInterfaceMethod0(managers[0], "javax.net.ssl.X509TrustManager", "getAcceptedIssuers")
+  val count = JReflectArray.getLength(issuersObj)
+  val result: List[JCertificate] = newList()
+  var i = 0
+  while i < count {
+    val c: JCertificate = JReflectArray.get(issuersObj, i)
+    result.add(c)
+    i = i + 1
+  }
+  result.toArray()
+}
+
+// ADDITIVE trust (`withCaCertificate`): `extraCa` plus every platform trust
+// anchor — a chain valid against either set is accepted.
+func buildAdditiveTrustKeyStore(extraCa: in JCertificate): JKeyStore {
+  val ks = newEmptyPkcs12KeyStore()
+  ks.setCertificateEntry("lyric-extra-ca", extraCa)
+  val anchors = systemTrustAnchors()
+  var i = 0
+  while i < anchors.length {
+    ks.setCertificateEntry("lyric-system-ca-" + i.toString(), anchors[i])
+    i = i + 1
+  }
+  ks
+}
+
+// EXCLUSIVE trust (`withExclusiveCaCertificate`): ONLY `onlyCa` — the
+// platform trust store is never consulted.
+func buildExclusiveTrustKeyStore(onlyCa: in JCertificate): JKeyStore {
+  val ks = newEmptyPkcs12KeyStore()
+  ks.setCertificateEntry("lyric-exclusive-ca", onlyCa)
+  ks
+}
+
+func trustManagerFactoryFor(ks: in JKeyStore): JTrustManagerFactory {
+  val algo: String = JTrustManagerFactory.getDefaultAlgorithm()
+  val tmf: JTrustManagerFactory = JTrustManagerFactory.getInstance(algo)
+  val _init = invoke1Typed(tmf, "init", "java.security.KeyStore", ks)
+  tmf
+}
+
+// Client identity (`withClientIdentity`, mTLS): a KeyStore holding
+// `identity`'s certificate + private key under a fixed alias, the standard
+// JDK way to feed a `KeyManagerFactory`. Mirrors the equivalent
+// server-identity construction the phase-2 (#5880) JVM server-TLS kernel
+// builds for `HttpsServer`, duplicated rather than shared per this
+// directory's self-contained-per-file convention.
+func buildClientIdentityKeyStore(identity: in Identity): JKeyStore {
+  val handle = Identity.rawHandle(identity)
+  val cert: JCertificate = handle.cert
+  val privateKey: JPrivateKey = match handle.key {
+    case Some(k) -> k
+    case None -> panic("Std.HttpHost: client Identity has no private key (invariant violation)")
+  }
+  val ks = newEmptyPkcs12KeyStore()
+  val certChainArr = makeTypedArray1("java.security.cert.Certificate", cert)
+  val _setKey = invoke4(ks, "setKeyEntry", "lyric-client", privateKey, emptyCharArrayObj(), certChainArr)
+  ks
+}
+
+func clientKeyManagerFactory(identity: in Identity): JKeyManagerFactory {
+  val ks = buildClientIdentityKeyStore(identity)
+  val algo: String = JKeyManagerFactory.getDefaultAlgorithm()
+  val kmf: JKeyManagerFactory = JKeyManagerFactory.getInstance(algo)
+  val _init = invoke2(kmf, "init", ks, emptyCharArrayObj())
+  kmf
+}
+
+// ---------------------------------------------------------------------------
+// Insecure all-trusting `X509TrustManager` (`withInsecureSkipVerify`, both
+// keys of the dual-key policy set — docs/61 §4). Implementing
+// `X509TrustManager` directly via `impl JX509TrustManager for Record` is
+// NOT FFI-expressible on this target: every one of its methods
+// (`checkClientTrusted`/`checkServerTrusted` take `X509Certificate[]`;
+// `getAcceptedIssuers` returns one) hits the same reference-array-argument
+// erasure gap `jvm/auto_ffi.l` has for any `impl <ExternInterface> for
+// Record` method whose signature mentions a `slice[ExternType]` — verified
+// empirically: calling such a method through the interface fails to
+// compile with "no matching instance or inherited method" because the
+// auto-FFI always encodes the parameter as `[Ljava/lang/Object;`, never the
+// real `[Ljava/security/cert/X509Certificate;` descriptor (the same defect
+// class #5931 documents against the phase-2 JVM server-TLS kernel's
+// `X509KeyManager` attempt).
+//
+// `java.lang.reflect.Proxy` sidesteps this cleanly: `Proxy.newProxyInstance`
+// builds a REAL `X509TrustManager` at runtime backed by a Lyric
+// `InvocationHandler` — and `InvocationHandler.invoke(Object, Method,
+// Object[])`'s only array parameter is genuinely `Object[]`, an EXACT match
+// for a Lyric `slice[JObject]` argument, so `impl JInvocationHandler for
+// Record` needs none of the reflection workarounds above and compiles
+// through ordinary auto-FFI. Verified end-to-end against a real self-signed
+// TLS peer (accepts) and a real wrong-hostname peer (still rejects — see
+// `buildClientSslParameters`'s doc comment: hostname verification is
+// enforced independently of trust-manager configuration on this target, so
+// this all-trusting manager only ever disables CHAIN verification).
+// ---------------------------------------------------------------------------
+record AllTrustingHandler {
+  marker: Bool
+}
+
+// A genuine `java.lang.Object`-typed box around `v` (any Lyric value,
+// primitive or reference) — needed because `InvocationHandler.invoke`'s
+// return type is `Object`, and the JDK's proxy dispatch throws
+// `ClassCastException` if the returned value is not assignment-compatible
+// with the interface method's OWN declared return type (`String` for
+// `toString`, `int`/boxed-then-unboxed for `hashCode`, `boolean` for
+// `equals`) — a plain Lyric `String`/`Bool`/`Int` value does not
+// type-check directly against a `JObject`-declared position (verified;
+// T0060), so it is boxed one element at a time via the same
+// `java.lang.reflect.Array` idiom this file already uses for typed-array
+// construction, then read back through it (`Array.get` on a `List[JObject]`
+// specifically mis-resolves the checkcast target to a bogus same-package
+// class rather than `java.lang.Object` — a JVM backend bug reproduced in
+// isolation; `Array.get` on a reflectively-built array does not hit it).
+func boxAsObject[T](v: in T): JObject {
+  val cls: JClass = JClass.forName("java.lang.Object")
+  val arr: JObject = JReflectArray.newInstance(cls, 1)
+  JReflectArray.set(arr, 0, v)
+  JReflectArray.get(arr, 0)
+}
+
+// The JDK routes `Object`'s own methods (`toString`/`hashCode`/`equals`)
+// through `InvocationHandler.invoke` too, not just the interface's own
+// abstract methods — any code that logs, hashes, or compares the proxy
+// (a `HashMap` using it as a key, a debugger, `Object.toString()` in a
+// log line) reaches this dispatch. The original version of this handler
+// returned `proxy` itself for anything other than `getAcceptedIssuers`,
+// which is wrong for every one of these: `proxy` is not assignable to
+// `String` (`toString`) or to boxed `Integer`/`Boolean`
+// (`hashCode`/`equals`), so the JDK's own assignment-compatibility check
+// throws `ClassCastException` the moment any of them is invoked. Dispatch
+// explicitly by method name instead:
+impl JInvocationHandler for AllTrustingHandler {
+  func invoke(proxy: in JObject, method: in JMethod, args: in slice[JObject]): JObject {
+    val name: String = method.getName()
+    if name == "getAcceptedIssuers" {
+      val cls: JClass = JClass.forName("java.security.cert.X509Certificate")
+      val empty: JObject = JReflectArray.newInstance(cls, 0)
+      empty
+    } else if name == "checkClientTrusted" or name == "checkServerTrusted" {
+      // Both are declared `void`; the JDK ignores whatever `invoke`
+      // returns for a `void`-declared interface method, so any value is
+      // safe here. Returning normally (no thrown `CertificateException`)
+      // is exactly "trusted, no questions asked" — the documented
+      // all-trusting shape.
+      nullOfClass("java.lang.Object")
+    } else if name == "toString" {
+      val description: String = "AllTrustingHandler(insecureSkipVerify proxy)"
+      boxAsObject(description)
+    } else if name == "hashCode" {
+      val identity: Int = JSystem.identityHashCode(proxy)
+      boxAsObject(identity)
+    } else if name == "equals" {
+      // Intended: identity comparison against `args[0]` (matching
+      // `Object.equals`'s default contract, consistent with the
+      // identity-based `hashCode` above). NOT implemented that way: reading
+      // `args[0]` — indexing a `slice[T]` whose element type resolves to
+      // exactly `java.lang.Object` — throws `NoClassDefFoundError` for a
+      // bogus same-package class name at runtime, a confirmed JVM backend
+      // codegen bug independent of how the read is phrased (a bound `val`,
+      // an inline comparison operand, and an inline call argument were all
+      // tried and all fail identically; a `List[JObject]` index read hits
+      // the exact same fault). No FFI workaround exists: passing `args`
+      // itself into a helper call (to extract the element via reflection
+      // instead) fails too, for the unrelated, already-documented reason
+      // that the auto-FFI cannot pass a `slice[T]` value as a call argument
+      // at all. Falls back to `false` unconditionally instead — never
+      // throws, and never wrongly claims equality with an unrelated,
+      // wrongly-typed object (the safer of the two failure modes); the
+      // cost is a reflexivity-contract violation (`x.equals(x)` should be
+      // `true`) that this proxy's only real consumer — `SSLContext.init`,
+      // which never calls `equals` on an installed `TrustManager` — cannot
+      // observe. `getAcceptedIssuers`/`checkClientTrusted`/
+      // `checkServerTrusted` (the methods the TLS handshake path actually
+      // invokes) are unaffected by this.
+      val neverEqual: Bool = false
+      boxAsObject(neverEqual)
+    } else {
+      // `X509TrustManager` declares no other methods; this is an
+      // unreachable, defensive fallback rather than a silent `proxy`
+      // return that could throw for a future JDK method this file hasn't
+      // been updated for.
+      nullOfClass("java.lang.Object")
+    }
+  }
+}
+
+func buildAllTrustingTrustManager(): JTrustManager {
+  val cl: JClassLoader = JClassLoader.getSystemClassLoader()
+  val tmClass: JClass = JClass.forName("javax.net.ssl.X509TrustManager")
+  val ifacesArr = makeTypedArray1("java.lang.Class", tmClass)
+  val handler: AllTrustingHandler = AllTrustingHandler(marker = true)
+  val asHandler: JInvocationHandler = handler
+  val proxyClass: JClass = JClass.forName("java.lang.reflect.Proxy")
+  val m = findMethodByNameAndArity(proxyClass, "newProxyInstance", 3)
+  val argsList: List[JObject] = newList()
+  argsList.add(cl)
+  argsList.add(ifacesArr)
+  argsList.add(asHandler)
+  val tm: JTrustManager = m.invoke(nullOfClass("java.lang.Object"), argsList.toArray())
+  tm
+}
+
+// ---------------------------------------------------------------------------
+// SSLContext / SSLParameters assembly.
+// ---------------------------------------------------------------------------
+func buildClientSslContext(
+  caCertificate: in Option[Certificate],
+  exclusiveCaCertificate: in Option[Certificate],
+  clientIdentity: in Option[Identity],
+  insecureSkipVerify: in Bool,
+): JSSLContext {
+  val trustManagersObj: JObject = if insecureSkipVerify {
+    makeTypedArray1("javax.net.ssl.TrustManager", buildAllTrustingTrustManager())
+  } else {
+    val tmf = match resolveCaMode(caCertificate, exclusiveCaCertificate) {
+      case ExclusiveCa -> match exclusiveCaCertificate {
+        case Some(cert) -> trustManagerFactoryFor(buildExclusiveTrustKeyStore(Certificate.rawHandle(cert).cert))
+        case None -> defaultTrustManagerFactory()
+      }
+      case AdditiveCa -> match caCertificate {
+        case Some(cert) -> trustManagerFactoryFor(buildAdditiveTrustKeyStore(Certificate.rawHandle(cert).cert))
+        case None -> defaultTrustManagerFactory()
+      }
+      case NoCaConfigured -> defaultTrustManagerFactory()
+    }
+    val tmObj: JObject = tmf.getTrustManagers()
+    tmObj
+  }
+  val keyManagersObj: JObject = match clientIdentity {
+    case Some(identity) -> {
+      val kmObj: JObject = clientKeyManagerFactory(identity).getKeyManagers()
+      kmObj
+    }
+    case None -> nullOfClass("java.lang.Object")
+  }
+  val ctx: JSSLContext = JSSLContext.getInstance("TLS")
+  val random: JSecureRandom = JSecureRandom.new()
+  val _init = invoke3(ctx, "init", keyManagersObj, trustManagersObj, random)
+  ctx
+}
+
+// `SSLParameters.setProtocols` (docs/61 §3.2, `withMinTlsVersion`):
+// `Tls13` pins to TLS 1.3 exactly; `Tls12` (and the unset default) floors
+// at TLS 1.2 while still allowing negotiation up to 1.3, matching the
+// dotnet twin's "leave the platform's TLS-1.2-or-newer default alone"
+// floor semantics.
+//
+// Endpoint identification (docs/61 §4's dual-key insecure policy; the
+// #5950-class security property): explicitly set to `"HTTPS"` on every
+// non-insecure path, matching the defence-in-depth intent #5878 was asked
+// to preserve. On the insecure path it is cleared to `""` (the SSLParameters
+// javadoc's documented equivalent of `null`) — but empirically, on THIS
+// target, clearing it has no observable effect: `java.net.http.HttpClient`
+// enforces its own hostname check unconditionally regardless of the
+// supplied `SSLParameters`/`SSLContext` (verified directly: an all-trusting
+// custom `TrustManager` combined with an explicitly-cleared endpoint
+// identification algorithm still rejected a real wrong-hostname certificate
+// with "No subject alternative DNS name matching ... found"). So
+// `withInsecureSkipVerify()` on `--target jvm` disables CHAIN verification
+// only — hostname matching cannot be disabled through any public API on
+// this target, which is STRICTER than docs/61 §4's baseline requirement
+// ("disables peer chain verification and hostname matching together"), not
+// a gap: there is no way to construct the unsafe combination this target's
+// design explicitly warns against.
+func buildClientSslParameters(ctx: in JSSLContext, minVersion: in Option[TlsVersion], insecureSkipVerify: in Bool): JSSLParameters {
+  val params: JSSLParameters = ctx.getDefaultSSLParameters()
+  val protocolValues: List[String] = newList()
+  match minVersion {
+    case Some(v) -> match v {
+      case Tls13 -> protocolValues.add("TLSv1.3")
+      case Tls12 -> {
+        protocolValues.add("TLSv1.2")
+        protocolValues.add("TLSv1.3")
+      }
+    }
+    case None -> {
+      protocolValues.add("TLSv1.2")
+      protocolValues.add("TLSv1.3")
+    }
+  }
+  val protocolsArr = makeStringArray(protocolValues)
+  val _setProtocols = invoke1(params, "setProtocols", protocolsArr)
+  if insecureSkipVerify {
+    params.setEndpointIdentificationAlgorithm("")
+  } else {
+    params.setEndpointIdentificationAlgorithm("HTTPS")
+  }
+  params
+}
+
+// The single entry point for every TLS-configured client — mirrors
+// `_kernel/http_host.l`'s `hostClientWithTls` signature exactly (`Std.Http`
+// calls whichever kernel's copy the active `--target` resolves to). Redirect
+// handling mirrors the existing non-TLS `hostClient*`/`hostClientWithRedirects`
+// family: `noRedirects` wins outright, otherwise a positive `maxRedirects`
+// follows redirects (the hop CAP itself is process-wide on this target —
+// module header on `hostClientWithRedirects` above — not configurable
+// per-client), and no explicit redirect configuration defaults to following,
+// matching `hostDefaultClient`.
+pub func hostClientWithTls(
+  maxRedirects: in Option[Int],
+  noRedirects: in Bool,
+  pinHttp11: in Bool,
+  caCertificate: in Option[Certificate],
+  exclusiveCaCertificate: in Option[Certificate],
+  clientIdentity: in Option[Identity],
+  minTlsVersion: in Option[TlsVersion],
+  insecureSkipVerify: in Bool,
+): HttpClientHandle {
+  val ctx = buildClientSslContext(caCertificate, exclusiveCaCertificate, clientIdentity, insecureSkipVerify)
+  val params = buildClientSslParameters(ctx, minTlsVersion, insecureSkipVerify)
+  val followRedirects = if noRedirects {
+    false
+  } else {
+    match maxRedirects {
+      case Some(n) -> n > 0
+      case None -> true
+    }
+  }
+  val version: JHttpVersion = if pinHttp11 {
+    JHttpVersion.HTTP_1_1
+  } else {
+    JHttpVersion.HTTP_2
+  }
+  val b: JHttpClientBuilder = HttpClientHandle.newBuilder()
+  val withRedirect: JHttpClientBuilder = if followRedirects {
+    b.followRedirects(JRedirect.NORMAL)
+  } else {
+    b.followRedirects(JRedirect.NEVER)
+  }
+  val withVersion: JHttpClientBuilder = withRedirect.version(version)
+  val withCtx: JHttpClientBuilder = withVersion.sslContext(ctx)
+  val withParams: JHttpClientBuilder = withCtx.sslParameters(params)
+  withParams.build()
 }
 
 // =====================================================================

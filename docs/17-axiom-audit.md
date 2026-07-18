@@ -687,8 +687,13 @@ JVM target — each file selects a Java BCL extern surface that the
 covering operations on `java.lang.{String,Math,Character,System}`,
 `java.util.{ArrayList,HashMap,Random,UUID,regex.Pattern}`,
 `java.io.{File,FileInputStream,FileOutputStream,Files}`,
-`java.net.{URI,http.HttpClient}`, `java.nio.charset.StandardCharsets`,
-`java.security.{MessageDigest,SecureRandom}`,
+`java.net.{URI,http.HttpClient}`,
+`javax.net.ssl.{SSLContext,SSLParameters,TrustManagerFactory,KeyManagerFactory}`,
+`java.nio.charset.StandardCharsets`,
+`java.security.{MessageDigest,SecureRandom,KeyStore,cert.*}`,
+`java.lang.reflect.{Method,Array,Proxy,InvocationHandler}` (the
+array-argument/null-literal reflection bridge `_kernel_jvm/http_host.l`'s
+TLS wiring needs — module header),
 `java.time.{Instant,Duration,LocalDateTime,ZoneId}`, and the helper
 classes under `lyric.stdlib.jvm.*` (typed wrappers over the underlying
 JDK surfaces, mirroring `Std.<X>Host` on the .NET side).
@@ -828,7 +833,15 @@ retired phantom `lyric.stdlib.jvm.HttpClientHost` shim to the real
 `java.net.http.HttpClient` boundary, and `Std.HttpServer` gained its own
 axiom when its kernel was rewritten onto `com.sun.net.httpserver.HttpServer`
 (the .NET `http_server.l` twin carries no axiom; its extern boundary is
-covered by per-declaration `@externTarget` bindings audited in §12).
+covered by per-declaration `@externTarget` bindings audited in §12).  The
+JVM `Std.HttpHost` axiom widened again in phase 1.3 (#5878, docs/61 §3.2)
+to cover client TLS configuration: `javax.net.ssl.{SSLContext,
+SSLParameters, TrustManagerFactory, KeyManagerFactory}`,
+`java.security.KeyStore`, and the `java.lang.reflect.{Method, Array,
+Proxy, InvocationHandler}` bridge that constructs/reads the
+reference-typed Java arrays (`Certificate[]`, `TrustManager[]`,
+`String[]`, `Class[]`) the JVM auto-FFI cannot pass as call arguments —
+see `_kernel_jvm/http_host.l`'s module header for the full rationale.
 
 Note: the old `std.bcl.*` entries from the M4.3 baseline (11 axioms in 6
 modules) were the conceptual design-doc predecessors of the current
@@ -895,7 +908,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.FileHost` | `file_host.l` | java.io.File / FileInputStream / FileOutputStream conform to their documented JVM contracts |
 | `jvm` | `Std.FormatHost` | `format_host.l` | java.math.BigDecimal, java.lang.Integer, and java.util.Locale conform to their documented JVM contracts |
 | `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-256/SHA-512 semantics and are pure functions of their input bytes |
-| `jvm` | `Std.HttpHost` | `http_host.l` | java.net.http.HttpClient operations conform to their documented JVM contracts |
+| `jvm` | `Std.HttpHost` | `http_host.l` | java.net.http.HttpClient and javax.net.ssl / java.security TLS configuration operations conform to their documented JVM contracts |
 | `jvm` | `Std.HttpServer` | `http_server.l` | com.sun.net.httpserver.HttpServer / javax.net.ssl / java.security / java.lang.reflect operations conform to their documented JVM contracts |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
 | `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |

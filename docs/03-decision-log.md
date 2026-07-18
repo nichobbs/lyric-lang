@@ -17861,6 +17861,219 @@ this entry reuses), docs/51 (impl-for-extern-interface), #5874, #5880,
 
 ---
 
+## D-progress-693 — TLS phase 1.3: JVM client TLS — `SSLContext` wiring, same builder surface and insecure policy (docs/61 §3.2 + §4, D128, #5878)
+
+**Context.** D-progress-691 (#5877) shipped `HttpClientBuilder`'s TLS
+surface with real wiring on `--target dotnet` only; `_kernel_jvm/http_host.l`
+carried `hostSupportsTlsConfig() -> false`, so every TLS-configured client
+on `--target jvm` built successfully (infallible) but failed every
+request with a typed error naming #5878. This entry ships the JVM side:
+the exact same public surface and dual-key insecure policy, wired for
+real against `java.net.http.HttpClient`.
+
+**Shipped.**
+
+- `_kernel_jvm/http_host.l`: `hostSupportsTlsConfig() -> true`. New
+  `hostClientWithTls(maxRedirects, noRedirects, pinHttp11, caCertificate,
+  exclusiveCaCertificate, clientIdentity, minTlsVersion,
+  insecureSkipVerify): HttpClientHandle` — the exact signature `Std.Http`'s
+  `build()` already called unconditionally on either kernel.
+- **Trust model differs in SHAPE from dotnet, not outcome.**
+  `java.net.http.HttpClient` has no per-request certificate-validation
+  callback (unlike `HttpClientHandler.ServerCertificateCustomValidationCallback`),
+  so TLS trust is configured once, structurally, via a `KeyStore` fed to a
+  `TrustManagerFactory`, which the JDK's own PKIX path builder validates
+  every handshake against:
+  - **Additive** (`withCaCertificate`): a `KeyStore` holding the
+    configured CA PLUS every certificate the platform's own default
+    `TrustManagerFactory` reports as an accepted issuer
+    (`systemTrustAnchors`, read via `TrustManagerFactory.getInstance(default)`
+    `.init((KeyStore) null)` — the documented JDK idiom for "use the
+    platform default" — then `getAcceptedIssuers()` on the `X509TrustManager`
+    it returns). A chain valid against EITHER trust anchor set is accepted.
+  - **Exclusive** (`withExclusiveCaCertificate`): a `KeyStore` holding
+    ONLY the configured CA. The platform trust store is never consulted.
+  - **Neither configured**: `TrustManagerFactory.init((KeyStore) null)` —
+    identical behaviour to an unconfigured client.
+  - `resolveCaMode` (mirrored from the dotnet twin, #5975's exclusive-
+    wins precedence) picks between these three and is now genuinely
+    CALLED, not just declared for cross-target test parity.
+  - `withClientIdentity` (mTLS): a `KeyStore` holding the identity's
+    certificate + private key under a fixed alias (mirroring the
+    equivalent server-identity construction the phase-2/#5880 JVM
+    server-TLS kernel builds), fed to a `KeyManagerFactory`.
+  - `withMinTlsVersion`: `SSLParameters.setProtocols` — `["TLSv1.3"]` for
+    the `Tls13` pin, `["TLSv1.2", "TLSv1.3"]` for the `Tls12` floor (and
+    the unset default), matching the dotnet twin's "TLS 1.2 or newer,
+    never below" floor semantics.
+- **Hostname verification — the #5950-class security property — is
+  structurally un-regressable on this target, not merely re-implemented
+  correctly.** `java.net.http.HttpClient` performs its own endpoint-
+  identification check independently of whatever `SSLContext`/
+  `SSLParameters` the caller supplies, and enforces it UNCONDITIONALLY —
+  verified empirically: installing the all-trusting `X509TrustManager`
+  below AND explicitly clearing `SSLParameters.setEndpointIdentificationAlgorithm`
+  to `""` (the javadoc-documented equivalent of `null`) still rejected a
+  real wrong-hostname certificate with "No subject alternative DNS name
+  matching ... found". So there is no "callback that forgot to check
+  hostname" bug class possible here at all: chain trust (`KeyStore`-driven)
+  and hostname matching (enforced by the JDK's `HttpClient` implementation
+  itself) are two independent, non-overridable checks.
+  `setEndpointIdentificationAlgorithm("HTTPS")` is still set explicitly on
+  every non-insecure path anyway, matching the defence-in-depth intent
+  #5878 was asked to preserve even though this target's enforcement does
+  not depend on it. **Consequence for `withInsecureSkipVerify()` on this
+  target specifically:** it disables CHAIN/CA verification only —
+  hostname matching cannot be disabled through any public API — which is
+  STRICTER than docs/61 §4's baseline ("disables peer chain verification
+  and hostname matching together"), not a gap: there is no way to
+  construct the unsafe combination that policy warns against.
+- **Insecure all-trusting `X509TrustManager`** (`withInsecureSkipVerify`,
+  both dual-key cells set): built via `java.lang.reflect.Proxy.newProxyInstance`
+  backed by `impl JInvocationHandler for AllTrustingHandler` — see the FFI
+  gap below for why it could not be `impl JX509TrustManager for Record`
+  directly. `checkClientTrusted`/`checkServerTrusted` return normally (no
+  thrown `CertificateException`, the documented all-trusting shape);
+  `getAcceptedIssuers()` returns a genuinely-typed empty
+  `X509Certificate[]` built via `java.lang.reflect.Array`.
+  `TlsCaMode`/`resolveCaMode`/`TlsValidationDecision`/`resolveTlsValidationDecision`
+  remain declared verbatim (as D-progress-691 left them) for
+  `http_tls_client_tests.l`'s cross-target #5950/#5975 pure-function
+  parity; `resolveCaMode` is now genuinely consumed (above),
+  `resolveTlsValidationDecision`/`TlsValidationDecision` are not — this
+  target's real trust decision is the JDK's own PKIX validator, not a
+  hand-rolled decision core, so there is nothing here for that callback
+  shape to drive.
+
+**Real FFI gaps found while implementing this, all filed/documented
+rather than worked around silently:**
+
+1. **The JVM auto-FFI cannot pass a reference-typed Java array as a call
+   ARGUMENT, full stop — not only through `impl <ExternInterface>`
+   (#5931's original finding), but for ANY call.** A Lyric `slice[T]` for
+   reference `T` always erases to `Object[]` at the call site; the JDK
+   rejects this for any more specifically-typed array parameter.
+   Reproduced and confirmed empirically as COMPILE-time failures ("no
+   matching...method") against `TrustManagerFactory.init`,
+   `KeyStore.setKeyEntry`'s sibling shape, `SSLContext.init`,
+   `SSLParameters.setProtocols`, and `Proxy.newProxyInstance` — five
+   independent call sites, all failing the identical way. RETURNING an
+   array from a call (`tmf.getTrustManagers()`, `kmf.getKeyManagers()`) is
+   unaffected; only the argument direction is broken. **Workaround:**
+   `java.lang.reflect.{Method,Array}` — `Array.newInstance`/`Array.set`
+   build a genuinely-typed array one element at a time (never an array
+   argument itself), and `Method.invoke(Object, Object...)`'s varargs
+   parameter erases to `Object[]` too, an exact match for a Lyric
+   `slice[JObject]` argument. The same `Array.newInstance`+`Array.get`
+   trick produces a genuine `null` reference of any class (Lyric has no
+   null literal, #4775) where the JDK API expects one
+   (`KeyStore.load(null, password)`, `TrustManagerFactory.init((KeyStore)
+   null)`). Not independently filed — the reflection bridge is a stable,
+   documented, self-contained workaround (mirrored, independently
+   discovered convention already in flight in the JVM server-TLS phase-2
+   kernel, #5880/#5930/#5931), not a ticking time bomb.
+2. **Reflectively calling `getAcceptedIssuers()` on the JDK's real
+   `TrustManagerFactory`-returned `X509TrustManager` throws
+   `IllegalAccessException` when the `Method` is looked up via
+   `instance.getClass()`.** The concrete implementation
+   (`sun.security.ssl.X509TrustManagerImpl`) lives in a non-exported
+   package; `getMethods()` on ITS class returns a `Method` object whose
+   accessibility check fails under the JPMS module system. **Workaround:**
+   look the `Method` up through the PUBLIC `javax.net.ssl.X509TrustManager`
+   interface's own `Class` object instead of the concrete instance's
+   class — reflection's accessibility check is keyed on the `Method`
+   object's DECLARING class, so this bypasses the failure with no
+   `--add-opens` JVM flag required (a documented, supported reflection
+   idiom, not a hack).
+3. **Implementing `X509TrustManager` directly via `impl
+   JX509TrustManager for Record` is not FFI-expressible at all on this
+   target — confirmed as a genuine blocker, not assumed.** Reproduced
+   with a minimal, TLS-unrelated repro: every method
+   (`checkClientTrusted`/`checkServerTrusted` take `X509Certificate[]`;
+   `getAcceptedIssuers` returns one) fails to COMPILE
+   ("no matching instance or inherited method") because the auto-FFI
+   always encodes the `slice[ExternType]` parameter as
+   `[Ljava/lang/Object;`, never the real
+   `[Ljava/security/cert/X509Certificate;` descriptor — the same defect
+   class #5931 already filed against the phase-2 JVM server-TLS kernel's
+   `X509KeyManager` attempt, now confirmed to also block the client-side
+   `X509TrustManager` shape. Per this issue's own instruction ("if
+   genuinely not FFI-expressible, report as a blocker, don't ship a
+   hole"), this was investigated to a definitive answer rather than
+   assumed: `java.lang.reflect.Proxy` + `impl JInvocationHandler for
+   Record` (item above) is a full, working alternative that needed no
+   compiler fix, so no hole was shipped — but the underlying
+   `impl <ExternInterface>` array-erasure gap itself remains open and
+   should be tracked against #5931 rather than re-discovered per call site.
+
+**Test coverage and its honest boundary.**
+`lyric-stdlib/tests/http_tls_client_tests.l` (shared with D-progress-691,
+both targets, fully deterministic, no live TLS peer in CI):
+`tlsConfigSupported()` now asserted `true` unconditionally (no more
+per-target branching — #5878 removed the last target difference the
+probe distinguished); the Unix-socket+TLS sub-case that used to branch on
+`tlsConfigSupported()` now detects jvm's unrelated, pre-existing Unix-
+socket-unconditionally-unsupported behaviour (#2663) BEHAVIOURALLY, via a
+`try`/`catch Bug` probe on a plain (no-TLS) `withUnixSocket` construction,
+rather than by branching on the (now target-neutral) capability probe or
+the target name. Every other test in the file (the dual-key policy
+matrix, builder composition, `resolveTlsValidationDecision`'s #5950
+regression coverage, `resolveCaMode`'s #5975 precedence coverage) already
+ran on both targets unconditionally and needed no changes — they were
+testing target-neutral pure functions or `build()`'s infallibility
+contract, neither of which changed shape. **Not part of committed CI, but
+hand-verified end-to-end in the implementing sandbox against real live
+TLS peers** (a public-endpoint test is not CI-acceptable, and there is
+still no CI-safe live peer on jvm presenting a genuinely wrong-hostname
+certificate — server TLS is #5880, not yet shipped): exclusive CA trust
+correctly REJECTS a real public-CA-signed site (`www.google.com`) when
+the exclusive CA doesn't match, with a real PKIX exception, not a
+hostname error; additive CA trust correctly ACCEPTS the same site (system
+roots preserved) while also holding the extra CA; the insecure path
+(`withInsecureSkipVerify` + `LYRIC_TLS_ALLOW_INSECURE=1` — set as a real
+process environment variable at JVM start, since `Std.Environment.setVar`
+is a documented no-op on this target, see below) accepts a real
+self-signed peer (`self-signed.badssl.com`); a real wrong-hostname
+certificate (`wrong.host.badssl.com`) is rejected on every path tried,
+including the insecure one. `withClientIdentity` + `withMinTlsVersion`
+both build successfully through the real `KeyManagerFactory`/`SSLContext`
+assembly (no live mTLS-requiring server exists in this sandbox to
+handshake against, matching the pre-existing honest boundary — server TLS
+is #5880).
+
+**One pre-existing, unrelated finding surfaced along the way (not a
+regression, not fixed here):** `Std.Environment.setVar` is a documented
+no-op on `--target jvm` (the JVM exposes no portable `setenv`), so
+`http_tls_client_tests.l`'s existing "build() stays infallible ... via
+`setVar`" test genuinely only proves the infallibility contract on this
+target, not that the env var actually flips the runtime policy — this was
+already true before this change (D-progress-691 shipped that test
+verbatim) and is now called out explicitly in the file's own header
+rather than left implicit.
+
+**Verification:** hand-verified end-to-end against the published NuGet
+`lyric` global tool (`LYRIC_STD_PATH` for `lyric test --target jvm`,
+`LYRIC_STDLIB_BIN` after `lyric build --manifest lyric-stdlib/lyric.full.toml`
+for `lyric test --target dotnet`) — this session's sandbox could not
+build `./bin/lyric` from source (same profile as D-progress-543/687/
+690/691). `http_tls_client_tests.l` (12/12) plus the pre-existing
+`http_tests.l`/`http_version_tests.l`/`tls_tests.l`/
+`tls_server_config_tests.l` suites all green, unaffected, on both
+targets.
+
+**Related:** docs/61 §3.2 + §4, D128, #5874, #5877, #5878, #5880 (JVM
+server TLS, phase 2), #5930/#5931 (the `impl <ExternInterface>`
+array-erasure class this entry's FFI gap #3 confirms also blocks the
+client-side `X509TrustManager` shape), #5950 (MITM fix, dotnet), #5975
+(CA precedence, dotnet), D-progress-691 (dotnet client TLS — the sibling
+this entry mirrors the surface/policy of), D-progress-689 (`Std.Tls`,
+`Certificate.rawHandle`/`Identity.rawHandle` this entry's `Std.TlsHost`
+import consumes), docs/44-jvm-production-readiness-plan.md (JVM
+production-readiness context), docs/51-ffi-interfaces-proposal.md
+(`impl <ExternInterface> for Record`).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

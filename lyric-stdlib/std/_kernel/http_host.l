@@ -510,11 +510,14 @@ pub func hostClientWithUnixSocketNoRedirectsHttp11(socketPath: in String): HttpC
 //
 // `hostSupportsTlsConfig()` is the capability probe `Std.Http` checks
 // before ever calling `hostClientWithTls`: on this target it is `true`
-// (this section is the real wiring); the JVM twin
-// (`_kernel_jvm/http_host.l`) returns `false` until #5878 ships JVM TLS
-// support, so a TLS-configured client on that target still builds (`build()`
-// stays infallible) but fails every request with a typed error naming
-// #5878 instead of silently connecting without the configured options.
+// (this section is the real wiring). The JVM twin
+// (`_kernel_jvm/http_host.l`) also returns `true` now (#5878, phase 1.3) —
+// its real wiring is structurally different (a `KeyStore`/
+// `TrustManagerFactory`/`SSLContext` assembly rather than this file's
+// `HttpClientHandler`/`X509Chain` validation callback, since
+// `java.net.http.HttpClient` has no per-request validation callback to
+// install), but the OUTCOME (docs/61 §3.2/§4's policy matrix) matches: see
+// that file's own module header for the JVM-specific design.
 // ---------------------------------------------------------------------------
 pub func hostSupportsTlsConfig(): Bool {
   true
