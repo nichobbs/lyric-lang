@@ -15,6 +15,18 @@
 //!
 //! Run in CI via native `lyric test --target dotnet` (in-process through the
 //! self-hosted `Msil.Bridge`).  Imports only `Std.*`.
+//!
+//! Test 4 ("qualifier disambiguates same-named cases across unions") doubles
+//! as the regression cover for #5982: on `--target jvm`,
+//! `jvm/codegen/03_match.l`'s `PBinding` nullary-case branch resolved a bare
+//! `case Internal ->` arm via the bundle-global `ctorClassFor` registry
+//! without consulting the scrutinee's static union type, so it always tested
+//! against whichever of `StoreError`/`NetError` registered `Internal` first —
+//! surfacing as "match not exhaustive" when matching over the OTHER union's
+//! value.  Fixed by `resolveBareCaseClassJvm`, which derives
+//! `<scrutinee's own class>$Internal` first.  This file now runs on BOTH
+//! `--target dotnet` and `--target jvm` in CI (the JVM step lives in the
+//! `compiler-self-tests-jvm` job).
 @test_module
 package Lyric.QualifiedUnionCaseSelfTest
 
