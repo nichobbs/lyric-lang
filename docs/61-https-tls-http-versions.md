@@ -588,7 +588,16 @@ items marked ∥ are independent and can proceed in parallel.
     `http_engine_tests.l`. Encoder policy boundary: always-Huffman-or-never
     (deterministic, RFC-vector-reproducing); size-optimal per-literal choice
     is a tracked follow-up, not a correctness gap._
-12. h2 frame codec + tests. ∥ with 11.
+12. h2 frame codec + tests. ∥ with 11. _Shipped (D-progress-696, #5887):
+    `Std.HttpEngine.H2Frame` — pure-Lyric, no-extern frame codec covering the
+    9-octet header (§4.1) and all ten §6 frame types (DATA, HEADERS, PRIORITY
+    parsed-but-deprecated, RST_STREAM, SETTINGS, PUSH_PROMISE, PING, GOAWAY,
+    WINDOW_UPDATE, CONTINUATION) + `UnknownFrame` pass-through, flags/padding,
+    the §3.4 connection preface, `SETTINGS_MAX_FRAME_SIZE` (§4.2) enforcement,
+    and a sans-IO streaming `FrameDecoder` with typed `FrameError` connection-
+    vs stream-level signalling. 58-case byte-vector `@test_module` green on
+    dotnet + jvm. HPACK (#5886) and the connection/stream FSM + flow control
+    (#5888) stay out of scope — fragments are opaque `slice[Byte]`._
 13. h2 connection/stream FSM + flow control + SETTINGS/GOAWAY. (After 11+12.)
 14. ALPN wiring in the dotnet transport + e2e h2 self-test (own client +
     `curl --http2`). (After 13.)

@@ -4626,6 +4626,24 @@ jobs:
           "$lyric_bin" test --target jvm lyric-stdlib/tests/http_hpack_tests.l
           echo "Std.HttpEngine.Hpack test ran: http_hpack_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
+      # Std.HttpEngine.H2Frame (HTTP/2 frame codec / RFC 9113 §4/§6) coverage on
+      # JVM (#5887, docs/61 §6.4 phase 4.2): pure-Lyric frame parser/serializer +
+      # sans-IO streaming decoder asserted against explicit RFC 9113 byte
+      # vectors. Zero externs, so this and the dotnet step must and do produce
+      # identical results.
+      - name: Std.HttpEngine.H2Frame test coverage on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.HttpEngine.H2Frame JVM tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-stdlib/tests/http_h2frame_tests.l
+          echo "Std.HttpEngine.H2Frame test ran: http_h2frame_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
       # Map-key self-test on JVM (#1480 MSIL / #4982 Finding 1 JVM) — the JVM
       # half of the dotnet-job step of the same name.  Records with
       # `@derive(Equals)`/`@derive(Hash)` now carry synthesised
@@ -6587,6 +6605,25 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_hpack_tests.l
+
+      # Std.HttpEngine.H2Frame (HTTP/2 frame codec / RFC 9113 §4/§6) coverage
+      # (#5887, docs/61 §6.4 phase 4.2): the pure-Lyric HTTP/2 frame
+      # parser/serializer — 9-octet header, all ten §6 frame types + unknown
+      # pass-through, flags/padding, connection preface, SETTINGS_MAX_FRAME_SIZE
+      # enforcement, and the sans-IO streaming FrameDecoder — asserted against
+      # explicit RFC 9113 byte vectors. Zero externs, so this and the JVM step
+      # above (in the JVM batch 1-split sub-batch) must and do produce identical
+      # results.
+      - name: Std.HttpEngine.H2Frame test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.HttpEngine.H2Frame tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_h2frame_tests.l
 
       # Stdlib runtime suites on dotnet (#5604, expanded in D-progress-670 /
       # #5710): these `func main`-shaped suites (run via `lyric run`, not
