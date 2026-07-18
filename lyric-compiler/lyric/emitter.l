@@ -47,6 +47,7 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 import Lyric.Lexer
+import Lyric.BuildDefines as BD
 import Lyric.CliShell as CliShell
 import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages as RP
@@ -2227,9 +2228,10 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
       pkgSrcs.add(mergePackageSources(mp.name, mp.sources, req.activeFeatures, req.declaredFeatures))
       mpi = mpi + 1
     }
-    // Project-path `--define` is still gated in the CLI (#5852 follow-up), so
-    // the JVM project bridge receives an empty defines list for now.
-    val noProjDefinesJvm: List[String] = newList()
+    // Auto-injected well-known `version` define (docs/60 §9.2) from the
+    // manifest so `BuildInfo.version` populates on a JVM project build. User
+    // `--define` on the project path is a separate follow-up (#5852).
+    val projDefinesJvm = BD.withWellKnownDefines(req.packageVersion, newList())
     val okP = JvmBridge.compileProjectToJarBundledWithFeatures(
       pkgSrcs,
       req.outputPath,
@@ -2238,7 +2240,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
       req.activeFeatures,
       req.declaredFeatures,
       depTemplateNames,
-      noProjDefinesJvm
+      projDefinesJvm
     )
     if okP {
       return EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
@@ -2250,9 +2252,10 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   val pkgName = pkg.name
   val source = if pkg.sources.count > 0 { pkg.sources[0] } else { "" }
 
-  // Single-package project path — `--define` still gated in the CLI (#5852);
-  // pass empty defines for now.
-  val noProjDefinesJvm1: List[String] = newList()
+  // Auto-injected well-known `version` define (docs/60 §9.2) from the manifest
+  // so `BuildInfo.version` populates on a single-package JVM project build. User
+  // `--define` on the project path is a separate follow-up (#5852).
+  val projDefinesJvm1 = BD.withWellKnownDefines(req.packageVersion, newList())
   val ok = JvmBridge.compileToJarBundledWithFeatures(
     source,
     req.outputPath,
@@ -2261,7 +2264,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
     req.activeFeatures,
     req.declaredFeatures,
     depTemplateNames,
-    noProjDefinesJvm1
+    projDefinesJvm1
   )
 
   if ok {

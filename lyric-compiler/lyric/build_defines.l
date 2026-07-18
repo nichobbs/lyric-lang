@@ -32,11 +32,31 @@ pub record BuildDefinesResult {
   diagnostics: List[Diagnostic]
 }
 
-// (Well-known-define construction and precedence merging — for the
-// auto-injected `version`/`target`/`build_profile` defines and manifest
-// `[build.define]` layering — land with the project-path parity follow-up
-// that actually consumes them, #5852. Kept out of this slice to avoid
-// shipping unused code.)
+/// Prepend the auto-derived well-known `version` define (docs/60 §3, §9.2) as a
+/// FALLBACK beneath any caller-supplied `cli` defines: because `decodeDefines`
+/// is last-wins and the well-known entry comes first, an explicit
+/// `--define version=…` always overrides it. `version` is the manifest's
+/// `[package].version`, so this is what populates `BuildInfo.version` (and any
+/// `@build_const("version")` val) on a project build without an explicit
+/// `--define`. Omitted when empty — single-file builds carry no manifest
+/// version, so they keep the deterministic `"0.0.0"` fallback.
+///
+/// `target` / `build_profile` well-known defines and the manifest
+/// `[build.define]` layering remain follow-ups (#5852); this ships the
+/// high-value `version` slice against the project path that consumes it.
+pub func withWellKnownDefines(version: in String, cli: in List[String]): List[String] {
+  val result: List[String] = newList()
+  if version.length > 0 {
+    result.add("version=" + version)
+  }
+  var i = 0
+  while i < cli.count {
+    result.add(cli[i])
+    i = i + 1
+  }
+  result
+}
+
 // ── Private helpers ─────────────────────────────────────────────────────────
 func hasKey(defines: in List[Define], key: in String): Bool {
   var i = 0

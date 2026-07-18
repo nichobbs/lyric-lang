@@ -164,6 +164,44 @@ test "applyBuildDefines emits F0032 for a malformed (no-key) @build_const (#5923
   assertTrue(hasDiagCode(res.diagnostics, "F0032"), "@build_const with no string-literal key is rejected (F0032)")
 }
 
+// ── withWellKnownDefines: auto-injected well-known `version` (docs/60 §9.2) ──
+test "withWellKnownDefines injects version when non-empty" {
+  val ds = BD.decodeDefines(BD.withWellKnownDefines("4.5.6", newList()))
+  match BD.lookupDefine(ds, "version") {
+    case Some(v) -> assertEqual(v, "4.5.6", "manifest version becomes the well-known version define")
+    case None -> assertTrue(false, "version should be injected")
+  }
+}
+
+test "withWellKnownDefines omits version when the manifest version is empty" {
+  val synthd = BD.withWellKnownDefines("", newList())
+  assertEqualInt(synthd.count, 0, "no well-known entry for an empty version (single-file has none)")
+}
+
+test "an explicit --define version overrides the well-known version (precedence #5852)" {
+  val cli: List[String] = newList()
+  cli.add("version=9.9.9")
+  val ds = BD.decodeDefines(BD.withWellKnownDefines("4.5.6", cli))
+  match BD.lookupDefine(ds, "version") {
+    case Some(v) -> assertEqual(v, "9.9.9", "a CLI --define wins over the well-known fallback")
+    case None -> assertTrue(false, "version should resolve")
+  }
+}
+
+test "withWellKnownDefines preserves unrelated cli defines" {
+  val cli: List[String] = newList()
+  cli.add("git_hash=abc")
+  val ds = BD.decodeDefines(BD.withWellKnownDefines("4.5.6", cli))
+  match BD.lookupDefine(ds, "version") {
+    case Some(v) -> assertEqual(v, "4.5.6", "version from well-known")
+    case None -> assertTrue(false, "version should resolve")
+  }
+  match BD.lookupDefine(ds, "git_hash") {
+    case Some(v) -> assertEqual(v, "abc", "unrelated cli define preserved")
+    case None -> assertTrue(false, "git_hash should resolve")
+  }
+}
+
 // ── Std.BuildInfo synthesis (docs/60 §9.2) ───────────────────────────────────
 // Locate the synthesized `buildInfo()` accessor's returned `BuildInfo(...)`
 // constructor expression, if present.
