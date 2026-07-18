@@ -1229,6 +1229,95 @@ one new `llvm_self_test_async.l` case (31 total).
 
 ---
 
+## Phase N9: Native HTTP + TLS transport (epic #5874 phase 5, issue #5890)
+
+Depends on: Phase N4 (FFI boundary) complete; the sans-IO `Std.HttpEngine`
+(#5883, merged). This is the native counterpart to the dotnet `Std.TcpHost`
+(#5882) / `Std.HttpServer` (#5884) transports and drives the SAME engine —
+per docs/61 decision 6/8, the protocol logic is target-independent and only
+the transport kernel is per-target. Design: docs/61 §7 (OpenSSL 3.x-dynamic
+seam), D128 decision 10.
+
+The band splits the "native HTTPS" work into a verified C foundation (N9.1,
+shipped) and the Lyric-level integration layers that sit on top of it, each a
+follow-on PR gated on a stdlib native-port prerequisite.
+
+### N9.1 — `lyric_tls_*` / `lyric_sock_*` seam in `lyric-rt` (OpenSSL 3.x) ✅ SHIPPED (D-progress-703)
+
+The narrow C transport seam that everything else builds on:
+
+- **`lyric_sock_*`** — a blocking POSIX socket transport (connect / listen /
+  accept / local-port / read / write / close). No OpenSSL dependency.
+- **`lyric_tls_*`** — a TLS seam over OpenSSL 3.x loaded DYNAMICALLY with
+  dlopen/dlsym on first use, so `lyric_rt.a` has NO link-time dependency on
+  libssl/libcrypto and the seam can be re-pointed at mbedTLS (static/musl)
+  by swapping `src/lyric_tls.c` alone (the swappable-seam intent of D128
+  decision 10). Covers: context create/free (client + server), PEM cert/key
+  load, client connect + handshake (SNI + RFC 6125 hostname verification
+  hard-wired on, with the docs/61 §4 dual-key insecure override), server
+  accept + handshake, read / write / shutdown, ALPN advertise/select on
+  both roles, mTLS (client-CA verify + require-client-cert), a thread-local
+  `lyric_tls_last_error` diagnostic, and an `lyric_tls_available` probe.
+  Handles are raw malloc'd resources freed explicitly (the `lyric_process_*`
+  op discipline); the ARC-managed lifetime (docs/61 §7 item 4) is realised
+  in the N9.2 twin's opaque-type destructors.
+
+Verified by `lyric-rt/test/lyric_tls_test.c` (real loopback handshakes with
+an embedded EC test PKI: plain byte round-trip, server-auth TLS + ALPN
+negotiation, TLS 1.3 floor, mTLS accept, mTLS reject, hostname-mismatch
+rejection, insecure-skip-verify), run in CI under clang + gcc via
+`make -C lyric-rt test` plus an ASan run (`make -C lyric-rt test-asan CC=gcc`)
+so a leaked SSL_CTX/SSL/fd or use-after-free fails the run. `llvm_bridge.l`'s
+native link gained `-ldl` (inert for non-TLS binaries — a program that never
+references the seam does not pull `lyric_tls.o` from the archive).
+
+### N9.2 — `Std.TcpHost` native twin (`_kernel_native/tcp_host.l`) — follow-on (#6103)
+
+The `extern func` bindings for the N9.1 seam and the `Std.TcpHost` public
+surface on native (the plaintext transport + `hostAcceptTls` /
+`hostUpgradeServerTls` / `hostAlpn` / read / write / close), wrapping each
+raw seam handle in an opaque type whose destructor calls the matching
+`lyric_tls_*`/`lyric_sock_*` free (the ARC-managed lifetime). This is where
+the seam's `extern func` declarations live (D-N-007: externs only in
+`_kernel_native/`) and where the native `_self_test.l` (a real loopback TLS
+handshake driven from compiled Lyric, ASan-compiled) belongs.
+
+**Prerequisite:** the `Std.TcpHost` surface takes `Std.Tls.TlsServerConfig`,
+so `Std.Tls` must compile on native first — which needs a
+`_kernel_native/tls_host.l` (`Std.TlsHost` twin: PEM cert/key load via the
+seam) and a `_kernel_native/encoding_host.l` (`Std.Encoding` has `_kernel/`
+and `_kernel_jvm/` twins but no native one yet). Those two stdlib native
+ports gate this item.
+
+### N9.3 — `Std.HttpServer` native twin — follow-on (#6104)
+
+The thread-per-connection server model (docs/61 §7 item 5) over the existing
+pthread FFI kernel: an accept loop spawning one handler thread per
+connection, each pumping `hostRead` bytes through its own
+`Std.HttpEngine.Connection` and writing serialized responses back. Replaces
+the `_kernel/http_server.l` .NET-specific concurrency (Task.Run /
+ConcurrentQueue / SemaphoreSlim) with the native thread model. Gated on N9.2.
+
+### N9.4 — `Std.Http` native client — follow-on (#6105)
+
+The `_kernel_native/http_host.l` client twin on the seam (client TLS connect
++ the sans-IO engine's client connection FSM), so `Std.Http` works on native.
+Gated on N9.2.
+
+### N9.5 — lyric-web `serveTls` on native; ALPN h2 — follow-on (#6106)
+
+lyric-web's `serveTls` onto the native `Std.HttpServer`, plus ALPN-selected
+h2 (docs/61 §6.4) once the engine's h2 stack is target-independent. Gated on
+N9.3.
+
+**Open questions (docs/61 §9):** Q-TLS-001 (macOS native trust: the seam
+uses `SSL_CTX_set_default_verify_paths` + `SSL_CERT_FILE`/`SSL_CERT_DIR` on
+both OSes for now; the Security.framework question is deferred). Q-TLS-004
+(session resumption / 0-RTT policy — 0-RTT off; resumption cache tuning is a
+later item).
+
+---
+
 ## Dependency graph summary
 
 ```

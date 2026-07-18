@@ -17147,6 +17147,95 @@ real `lyric test` invocations as normal.
 
 ---
 
+## D-progress-703 — TLS phase 5 (native), band N9.1: the `lyric_sock_*` + `lyric_tls_*` OpenSSL 3.x transport seam in `lyric-rt` (docs/61 §7, D128 decision 10, #5890)
+
+**Context.** Epic #5874's phases 1–4 built the managed (dotnet/jvm) HTTPS
+stack and the pure-Lyric sans-IO `Std.HttpEngine`. Phase 5 (issue #5890) is
+the native target, which per docs/61 §7 decomposes into a transport kernel
+(sockets + TLS) feeding the same engine. The issue explicitly left phase 5 to
+be "banded into N-items in a `native/plan/` follow-on before implementation".
+
+**Decision.** Band phase 5 as Phase N9 in `native/plan/08-work-items.md`
+(N9.1–N9.5) and ship the C foundation, **N9.1 — the `lyric_sock_*` +
+`lyric_tls_*` seam** — at production quality, deferring the Lyric-level
+transport/server/client layers to gated follow-on PRs.
+
+- **`lyric-rt/src/lyric_tls.c`** — a blocking POSIX socket transport
+  (`lyric_sock_connect`/`_listen`/`_local_port`/`_accept`/`_read`/`_write`/
+  `_close`) plus a TLS seam over OpenSSL 3.x (`lyric_tls_available`,
+  `lyric_tls_client_new`/`_client_set_identity`/`_client_connect`,
+  `lyric_tls_server_new`/`_server_accept`, `lyric_tls_read`/`_write`/`_alpn`/
+  `_shutdown`/`_free`/`_ctx_free`, `lyric_tls_last_error`). OpenSSL is loaded
+  **dynamically with dlopen/dlsym on first use** (decision 10): `lyric_rt.a`
+  carries NO link-time libssl/libcrypto dependency, a non-TLS binary never
+  loads OpenSSL, and the seam is re-pointable at mbedTLS by swapping this one
+  file. The file declares its own opaque-pointer + function-pointer view of
+  the OpenSSL ABI, so the runtime archive builds with zero OpenSSL
+  build-time dependency. SNI + RFC 6125 hostname verification are hard-wired
+  on for clients and **fail closed** — a non-insecure client connect with no
+  host to verify against is refused, never silently downgraded to chain-only
+  validation (#6109, the native sibling of the dotnet #5950 fix) — with the
+  docs/61 §4 dual-key insecure flag the only override; the client context also
+  takes a `min_version` (TLS 1.2 floor / 1.3 pin, mirroring the server side);
+  mTLS pins client trust to a supplied CA and can require a client cert;
+  system trust is `SSL_CTX_set_default_verify_paths` + `SSL_CERT_FILE`/
+  `SSL_CERT_DIR`. Handles are raw malloc'd resources freed explicitly (the
+  `lyric_process_*` op discipline); the docs/61 §7 item 4 ARC-managed lifetime
+  lands in the N9.2 twin's destructors. Load robustness (review round 2):
+  the server ALPN-select callback guards CVE-2024-5535 (never forwards an
+  empty client protocol list into `SSL_select_next_proto`, an OOB read on
+  OpenSSL ≤ 3.0.13 — the very version this PR runs against, #6114); dlopen
+  binds only the versioned 3.x sonames (`libssl.so.3`/`libcrypto.so.3`, never
+  the unversioned dev symlinks) and additionally verifies
+  `OpenSSL_version_num() >= 3.0.0`, refusing anything older (#6116); and the
+  one-time load-failure reason is captured in a non-thread-local buffer and
+  surfaced to each calling thread's `lyric_tls_last_error` (#6115).
+- **`llvm_bridge.l`** native link gained `-ldl` (a no-op stub on glibc ≥ 2.34;
+  a real dep on older glibc / musl). Inert for non-TLS binaries — the linker
+  does not pull `lyric_tls.o` from the archive unless a seam symbol is
+  referenced.
+
+**Verification.** `lyric-rt/test/lyric_tls_test.c` drives REAL loopback
+OpenSSL handshakes on two threads with an embedded EC test PKI (a CA, a
+`localhost`/127.0.0.1 server leaf, a client leaf): plain byte round-trip,
+server-auth TLS + ALPN negotiation (`h2,http/1.1` → `http/1.1`), TLS 1.3
+floor, mTLS accept, mTLS reject (client presents no cert — the server refuses
+and no data round-trips; the client's TLS-1.3 handshake returning before the
+server validates client auth is documented in the test), hostname-mismatch
+rejection, the #6109 empty-host-refused (fail-closed) case, the #6114
+CVE-2024-5535 empty-client-ALPN-list guard (driven directly through the
+factored `lyric_tls_alpn_pick` under ASan), an ALPN no-overlap handshake, the
+#6117 require-client-cert-without-CA seam contract, and insecure-skip-verify.
+Run in CI under clang **and** gcc via
+`make -C lyric-rt test`, plus a gcc ASan run (`make -C lyric-rt test-asan`) so
+a leaked SSL_CTX/SSL/fd/alpn buffer or a use-after-free in a handshake fails
+the run. All green with OpenSSL 3.0.13.
+
+**Sandbox boundary (honest).** This session could not build the current
+native backend from source (release-download seed network-blocked; F#
+mint-fallback removed) and the published NuGet `lyric` 0.4.33 tool's native
+backend is too far behind `main` to compile the current stdlib for
+`--target native` (documented like D-progress-543). So no compiled-Lyric
+native run was possible in-sandbox; the C test is the load-bearing runtime
+verification (it exercises the actual production seam code against real
+OpenSSL). A native `_self_test.l` driving the seam from compiled Lyric lands
+with N9.2, where the seam's `extern func` bindings live (D-N-007: externs
+only in `_kernel_native/`), not in a compiler self-test.
+
+**Deferred (tracked follow-on N-items, each gated on a stdlib native port):**
+N9.2 `Std.TcpHost` native twin (`_kernel_native/tcp_host.l`) — gated on
+`Std.Encoding`/`Std.Tls` native ports (`Std.Encoding` has `_kernel/` +
+`_kernel_jvm/` twins but no native one; `Std.Tls`'s `TlsServerConfig` is on
+the `Std.TcpHost` surface); N9.3 `Std.HttpServer` native twin
+(thread-per-connection over the pthread kernel driving `Std.HttpEngine`);
+N9.4 `Std.Http` native client; N9.5 lyric-web `serveTls` + ALPN h2.
+
+**Related:** #5890, #5874, docs/61-https-tls-http-versions.md §7/§8, D128,
+`native/plan/08-work-items.md` Phase N9, D-N-007, D-N-014, D-progress-540,
+D-progress-543.
+
+---
+
 ## D-progress-701 — TLS phase 3.4: lyric-web `Web.serveTls` terminates real TLS on `--target dotnet` via `Std.HttpServer.startListenerTls`; server-TLS parity on both targets (docs/61 §6.3 item 10, D128, #5885)
 
 **Context.** Phase 3.3 (D-progress-700, #5884) rebuilt the dotnet

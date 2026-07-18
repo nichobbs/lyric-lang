@@ -2762,6 +2762,11 @@ jobs:
           fi
           make -C lyric-rt test
           make -C lyric-rt clean && make -C lyric-rt test CC=gcc
+          # ASan run of the TLS transport seam (real loopback OpenSSL
+          # handshakes) under gcc's reliably-present libasan — a leaked
+          # SSL_CTX/SSL/fd or a use-after-free in a handshake round-trip
+          # fails the run (issue #5890, docs/61 §7).
+          make -C lyric-rt test-asan CC=gcc
           for t in \
             lyric-compiler/lyric/llvm_ir_self_test.l \
             lyric-compiler/lyric/llvm_codegen_self_test.l \

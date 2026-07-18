@@ -404,6 +404,21 @@ core. Considerations codified now so phase 5 doesn't rediscover them:
    the host's OpenSSL minor version — documented, not fought. Static
    binaries would switch the seam to mbedTLS (out of scope here).
 
+**Status (D-progress-703, #5890):** the C seam is shipped as
+`lyric-rt/src/lyric_tls.c` — `lyric_sock_*` (POSIX socket transport) +
+`lyric_tls_*` (OpenSSL 3.x, dlopen'd per item 1). It implements every setter
+listed above (context create/free, PEM cert/key load, connect/accept
+handshake, read/write/shutdown, ALPN both roles, min-version, mTLS
+verify/require, SNI + hostname verification with the §4 insecure override,
+system-trust discovery via `SSL_CTX_set_default_verify_paths` +
+`SSL_CERT_FILE`/`SSL_CERT_DIR`). Handles are raw resources freed explicitly;
+the ARC-managed lifetime (item 4) is realised in the follow-on
+`_kernel_native/tcp_host.l` twin's opaque-type destructors. The seam is
+verified by real loopback OpenSSL handshakes in `lyric_tls_test.c` (clang +
+gcc + ASan in CI). The Lyric transport/server/client layers are banded as
+Phase N9.2–N9.5 in `native/plan/08-work-items.md`. Q-TLS-001 (macOS trust)
+and Q-TLS-004 (resumption/0-RTT) remain open.
+
 ## 8. Phasing and PR breakdown
 
 Each item is one PR, tracked as a sub-issue of epic #5874. Within a phase,
@@ -682,8 +697,32 @@ items marked ∥ are independent and can proceed in parallel.
 
 **Phase 5 — native (opens when native HTTP work starts)**
 15. `lyric_tls_*` OpenSSL seam in `lyric-rt` + socket transport + client;
-    server thread-per-connection; banded like N-items, planned in a
-    follow-on to `native/plan/` rather than fully specced here.
+    server thread-per-connection; banded like N-items in `native/plan/`
+    (Phase N9). _Banded and started (D-progress-703, #5890): the C foundation
+    **N9.1 — the `lyric_sock_*` + `lyric_tls_*` seam — shipped**. It is a
+    blocking POSIX socket transport plus a TLS seam over OpenSSL 3.x loaded
+    DYNAMICALLY (dlopen/dlsym on first use — `lyric_rt.a` carries no link-time
+    libssl/libcrypto dependency, so a non-TLS binary never loads OpenSSL and
+    the seam can be re-pointed at mbedTLS by swapping `src/lyric_tls.c` alone,
+    the §7 decision-10 intent). Covers context create/free (client + server),
+    PEM cert/key load, client connect + handshake (SNI + hostname verification
+    hard-wired on, §4 dual-key insecure override), server accept + handshake,
+    read/write/shutdown, ALPN advertise/select on both roles, and mTLS
+    (client-CA verify + require-client-cert), with a thread-local
+    `lyric_tls_last_error` diagnostic seam. Verified by
+    `lyric-rt/test/lyric_tls_test.c` — real loopback handshakes with an
+    embedded EC test PKI (plain round-trip, server-auth + ALPN, TLS 1.3 floor,
+    mTLS accept, mTLS reject, hostname-mismatch rejection, insecure-skip-verify)
+    — run in CI under clang + gcc (`make -C lyric-rt test`) plus a gcc ASan run
+    (`make -C lyric-rt test-asan`). The Lyric-level layers are follow-on
+    N-items, each gated on a stdlib native port: **N9.2** `Std.TcpHost` native
+    twin (`_kernel_native/tcp_host.l`, where the seam `extern func`s live and a
+    native loopback self-test belongs) — gated on `Std.Encoding`/`Std.Tls`
+    native ports; **N9.3** `Std.HttpServer` native twin (thread-per-connection
+    over the pthread kernel driving `Std.HttpEngine`); **N9.4** `Std.Http`
+    native client; **N9.5** lyric-web `serveTls` + ALPN h2. See
+    `native/plan/08-work-items.md` Phase N9 for the full banding and
+    prerequisites._
 
 Every PR carries its own docs/book/progress-log sync per the working
 conventions; none lands with a silent one-target gap.

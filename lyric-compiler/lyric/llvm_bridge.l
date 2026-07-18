@@ -606,6 +606,11 @@ pub func compileToNativeWithFlags(
   clangArgs.add(rtPath)
   clangArgs.add("-lm")
   clangArgs.add("-lpthread")
+  // libdl for the lyric_tls.c OpenSSL seam's dlopen/dlsym (a no-op stub on
+  // glibc >= 2.34; a real dependency on older glibc / musl). A program that
+  // never references the TLS seam does not pull lyric_tls.o from the archive,
+  // so this stays inert for non-TLS binaries. docs/61 §7, issue #5890.
+  clangArgs.add("-ldl")
   var li = 0
   while li < npkg.nativeLibs.count {
     clangArgs.add("-l" + npkg.nativeLibs[li])
@@ -626,7 +631,7 @@ pub func compileToNativeWithFlags(
         "error[N0001]: clang was not found on PATH (install it via your platform's package manager: `apt install clang`, Xcode CLI tools, ...)"
       )
       Console.error("  the LLVM IR was written to " + llPath + "; compile it manually with:")
-      Console.error("  clang -O" + effOpt + " " + llPath + " " + rtPath + " -lm -lpthread -o " + outputPath)
+      Console.error("  clang -O" + effOpt + " " + llPath + " " + rtPath + " -lm -lpthread -ldl -o " + outputPath)
       Console.error("  (" + e + ")")
       return false
     }
