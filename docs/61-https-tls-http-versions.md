@@ -530,7 +530,7 @@ items marked ∥ are independent and can proceed in parallel.
 6. lyric-web: Undertow `addHttpsListener` + `ENABLE_HTTP2`, `Web.serveTls`,
    `WebTls` config template, typed dotnet `Unsupported` until phase 3;
    docs + book. (After 1; ∥ with 5.) _Shipped in phase 2.2 (issue #5881,
-   D-progress-696)_: `Web.serveTls(router, host, port, tls)` on `--target
+   D-progress-698)_: `Web.serveTls(router, host, port, tls)` on `--target
    jvm` builds an Undertow HTTPS listener via
    `Undertow.Builder.addHttpsListener(port, host, sslContext)` +
    `UndertowOptions.ENABLE_HTTP2` (h2 via ALPN, TLS-only per decision 8),

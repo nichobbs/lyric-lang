@@ -316,6 +316,30 @@ func isWhitelistedT0010(d: in Diagnostic): Bool {
   isWhitelistedStdlibType(name)
 }
 
+// True iff `d` is a T0014 "unknown qualified type 'Std.X.Y' (...)" about a
+// `Std.*`-qualified stdlib type.  The synthesised contract source drops the
+// package's imports, so a signature that references a stdlib type by its
+// full `Std.Module.Type` path (e.g. `Std.Tls.TlsServerConfig`) legitimately
+// cannot resolve in the standalone contract recheck (which loads no stdlib)
+// — exactly the situation `isWhitelistedT0010` handles for BARE `Std.Core`
+// names, extended to the qualified form that non-Core stdlib types (and any
+// type not implicitly in scope) carry in their repr.  Whitelisting is sound:
+// the contract came from a DLL that compiled cleanly, so every `Std.*` type
+// in it really exists, and each consumer re-resolves it against the real
+// stdlib in its own full type-check.  `extractT0010Name` returns the FIRST
+// quoted run of the message, which for the T0014 shape is the full qualified
+// name (`joined`), not the trailing `last`.
+func isWhitelistedStdQualified(d: in Diagnostic): Bool {
+  if d.code != "T0014" {
+    return false
+  }
+  val name = extractT0010Name(d.message)
+  if Str.isEmpty(name) {
+    return false
+  }
+  name.startsWith("Std.")
+}
+
 // True iff `d` is one of the diagnostic codes that cannot meaningfully apply
 // to a synthesised contract source — these are whitelisted so they do not turn
 // a successful synthesis into a failure.  The synthesised source reconstructs a
@@ -366,7 +390,7 @@ func filterRealErrors(diags: in List[Diagnostic]): List[Diagnostic] {
   var i = 0
   while i < diags.count {
     val d = diags[i]
-    if isErrorDiag(d) and not isWhitelistedT0010(d) and not isSynthesizedBodyDiag(d) {
+    if isErrorDiag(d) and not isWhitelistedT0010(d) and not isWhitelistedStdQualified(d) and not isSynthesizedBodyDiag(d) {
       kept.add(d)
     }
     i = i + 1

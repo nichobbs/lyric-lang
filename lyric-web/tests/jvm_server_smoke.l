@@ -181,7 +181,7 @@ func startHttpsServer(tls: in Std.Tls.TlsServerConfig): Unit {
       match Web.serveTls(r, "127.0.0.1", 8100, tls) {
         case Ok(_) -> ()
         case Err(e) -> Console.println("HTTPS-H2-SELFCHECK: FAIL serveTls: " + Web.ServeTlsError.message(e))
-      }
+      };
       ()
     }
   )

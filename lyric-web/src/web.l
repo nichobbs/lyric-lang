@@ -1498,7 +1498,9 @@ pub func tlsServerConfigFromWebTls(cfg: in WebTls): Result[Std.Tls.TlsServerConf
 /// for HTTPS today.
 @stable(since = "0.3")
 @cfg(feature = "dotnet")
-pub func serveTls(router: in Router, host: in String, port: in Int, tls: in Std.Tls.TlsServerConfig): Result[Unit, ServeTlsError]
+pub func serveTls(
+  router: in Router, host: in String, port: in Int, tls: in Std.Tls.TlsServerConfig
+): Result[Unit, ServeTlsError]
   requires: host.length > 0
   requires: port >= 1
   requires: port <= 65535
@@ -1519,16 +1521,16 @@ pub func serveTls(router: in Router, host: in String, port: in Int, tls: in Std.
 /// naming issue #6017; non-mTLS TLS termination is fully supported.
 @stable(since = "0.3")
 @cfg(feature = "jvm")
-pub func serveTls(router: in Router, host: in String, port: in Int, tls: in Std.Tls.TlsServerConfig): Result[Unit, ServeTlsError]
+pub func serveTls(
+  router: in Router, host: in String, port: in Int, tls: in Std.Tls.TlsServerConfig
+): Result[Unit, ServeTlsError]
   requires: host.length > 0
   requires: port >= 1
   requires: port <= 65535
 {
   match HttpKernel.serveTls(host, port, tls, router) {
     case Ok(_) -> return Ok(value = ())
-    case Err(e) -> match e {
-      case NotSupportedOnTarget(msg) -> return Err(error = ServerTlsUnsupported(message = msg))
-    }
+    case Err(e) -> match e { case NotSupportedOnTarget(msg) -> return Err(error = ServerTlsUnsupported(message = msg)) }
   }
 }
 

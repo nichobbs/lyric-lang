@@ -30604,8 +30604,17 @@ that trusts the SAN fixture cert and asserts `HttpResponse.negotiatedVersion()
 `build --manifest lyric-web --target jvm` cyclic-package crash, #6024) meant
 JVM verification used the CI-equivalent single-file build path.
 
-**Related:** `docs/03-decision-log.md` D-progress-696; #5881, #5874, #5885,
-#6017, #6024, #5903.
+Surfacing the qualified stdlib type `Std.Tls.TlsServerConfig` in lyric-web's
+public API additionally required a compiler fix in
+`Lyric.RestoredPackages.synthesiseArtifact`: its standalone contract recheck
+whitelisted only BARE `Std.Core` anchors (T0010), so a full `Std.Module.Type`
+path raised an un-whitelisted T0014 that broke every lyric-web consumer's
+`Web.dll` restore (caught on `examples/rbac`). The whitelist now also drops
+T0014 for `Std.*`-qualified types (guarded by two new
+`restored_packages_self_test.l` cases); `examples/rbac` goes green.
+
+**Related:** `docs/03-decision-log.md` D-progress-698; #5881, #5874, #5885,
+#6017, #6024, #6039, #5903.
 
 ## `HttpClientBuilder` TLS client configuration ships for real on JVM (phase 1.3) — `SSLContext` wiring, same surface and insecure policy (2026-07-18)
 

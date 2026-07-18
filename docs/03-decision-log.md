@@ -17147,7 +17147,7 @@ real `lyric test` invocations as normal.
 
 ---
 
-## D-progress-696 — TLS phase 2.2: lyric-web `Web.serveTls` — Undertow HTTPS listener + `ENABLE_HTTP2` + `WebTls` config template (docs/61 §5.2 + §6.3, D128, #5881)
+## D-progress-698 — TLS phase 2.2: lyric-web `Web.serveTls` — Undertow HTTPS listener + `ENABLE_HTTP2` + `WebTls` config template (docs/61 §5.2 + §6.3, D128, #5881)
 
 **Context.** D128 decision 6 sequences JVM server TLS onto the existing
 stacks; phase 2.1 (D-progress-692, #5880) shipped `Std.HttpServer`'s
@@ -17234,6 +17234,27 @@ Undertow path is not affected by that one.
   `tlsServerConfigFromWebTls` file-not-found → `CertFileNotFound`. 4/4 pass
   via `lyric test --manifest lyric-web/lyric.toml`.
 
+**Restored-package contract-synthesis fix (consumer break).** Surfacing a
+QUALIFIED non-`Std.Core` stdlib type (`Std.Tls.TlsServerConfig` /
+`Std.Tls.TlsError`) in lyric-web's public API broke **every** lyric-web
+consumer's restore of `Web.dll` (found via CI on `examples/rbac`):
+`Lyric.RestoredPackages.synthesiseArtifact` re-type-checks a restored
+package's contract as a standalone source that deliberately drops the
+package's imports and loads no stdlib, then whitelists the resulting
+stdlib-not-in-scope diagnostics. That whitelist only covered BARE `Std.Core`
+anchors (`Option`, `Result`, …) via **T0010**; a full `Std.Module.Type` path
+raises **T0014** ("unknown qualified type"), which was un-whitelisted and
+aborted the whole synthesis. Fix: `restored_packages.l` now also drops T0014
+errors whose qualified name starts with `Std.` (`isWhitelistedStdQualified`),
+consistent with the existing T0010 philosophy — sound because the contract
+came from a DLL that compiled cleanly (every `Std.*` type in it really
+exists) and each consumer re-resolves it against the real stdlib in its own
+full type-check. Non-`Std.` qualified refs (missing sibling packages) still
+error. This is the real fix and unblocks any library exposing a qualified
+stdlib type, not just lyric-web. Guarded by two new
+`restored_packages_self_test.l` cases (Std-qualified filtered / non-Std still
+errors); verified end-to-end by `examples/rbac` going green.
+
 **Sandbox / tooling notes.**
 
 - The published NuGet `lyric` 0.4.33 tool crashes on
@@ -17243,13 +17264,28 @@ Undertow path is not affected by that one.
   lyric-auth builds fine, and the single-file `lyric build --target jvm`
   path CI uses works). This is pre-existing and unrelated to this change;
   filed as issue #6024. All JVM verification here used the single-file
-  CI-equivalent path, which reproduces the real CI build.
-- `lyric fmt` was hand-substituted per D-progress-543: the 0.4.33 tool's
-  formatter collapses this repo's multi-line `match` style and wraps long
-  signatures `main`'s formatter keeps on one line, and its loss-check
-  actually **aborts** on `http_server.l` wanting to rewrite `internal` →
-  `pub` (a formatter bug on the `internal` modifier). Changed `.l` files
-  were hand-formatted to match each file's established canonical style.
+  CI-equivalent path against the 0.4.33 tool, which reproduces the real CI
+  JVM build (HTTPS/h2 self-check PASS + `curl --http2` 2:200).
+- The `restored_packages.l` compiler fix cannot run in the published tool
+  (which has the old `Lyric.RestoredPackages` baked in), so it was verified
+  against a **source-built toolchain**: the standard bootstrap seed download
+  is network-blocked here (D-progress-543's sandbox), so stage-0 was seeded
+  from the 0.4.33 tool's own DLLs and stage-1 + the AOT `lyric` were built
+  from HEAD source. That seed-mismatched toolchain emits degraded generic
+  signatures (`W0005 Result\`2 → System.Object`, #2494) and consequently
+  mis-resolves some JVM auto-FFI (an unrelated `J002` on pre-existing kernel
+  code), so it is trustworthy for the MSIL/dotnet path only. It confirmed
+  `restored_packages_self_test.l` 17/17 and `examples/rbac` green; the JVM
+  server-TLS path was verified with the (properly-built) published tool.
+- `lyric fmt`: with the source-built `lyric` available, every changed `.l`
+  file was run through the **canonical** self-hosted formatter — EXCEPT
+  `http_server.l`, whose `internal ServerSslContext.rawContext` trips a
+  formatter bug that rewrites `internal` → `pub`; the loss-check correctly
+  aborts the write. This is not published-tool divergence (the earlier
+  D-progress-543 read): the canonical formatter refuses the **pristine**
+  `tls.l` (also `internal`-bearing) identically. Filed as issue #6039.
+  `http_server.l` is therefore maintained hand-formatted, exactly as `tls.l`
+  is on `main`.
 
 **Files.** `lyric-stdlib/std/_kernel_jvm/http_server.l` (exposed
 `ServerSslContext`/`serverSslContextFromConfig`/`rawContext`);
@@ -17257,12 +17293,15 @@ Undertow path is not affected by that one.
 `lyric-web/src/web.l` (`ServeTlsError`, `WebTls`, `tlsServerConfigFromWebTls`,
 dotnet/jvm `serveTls`); `lyric-web/tests/jvm_server_smoke.l` (HTTPS/h2
 self-check); `lyric-web/tests/serve_tls_tests.l` (new, dotnet);
+`lyric-compiler/lyric/restored_packages.l` (T0014 `Std.*` whitelist);
+`lyric-compiler/lyric/restored_packages_self_test.l` (two new cases);
 `lyric-web/lyric.toml`; `.github/workflows/ci.yml`; `lyric-web/README.md`;
 `docs/61-https-tls-http-versions.md` §8; `docs/10-bootstrap-progress.md`.
 
 **Related.** D128, docs/61 §5.2/§6.3, D-progress-690/692 (phases 1.4/2.1),
-issues #5881, #5885 (dotnet phase 3), #6017 (Undertow mTLS), #6024 (tool
-manifest-build cycle bug), #5903 (case-name collision).
+docs/45 (restored-contract synthesis), issues #5881, #5885 (dotnet phase 3),
+#6017 (Undertow mTLS), #6024 (tool manifest-build cycle bug), #6039 (fmt
+`internal` bug), #5903 (case-name collision).
 
 ---
 

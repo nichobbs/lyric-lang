@@ -252,16 +252,14 @@ pub func serve(host: in String, port: in Int, router: in Web.Router): Unit
 /// loud, typed rejection naming the tracking issue, never a silent ignore.
 /// Non-mTLS TLS termination (identity + minVersion) never returns `Err`.
 @stable(since = "0.3")
-pub func serveTls(host: in String, port: in Int, tls: in TlsServerConfig, router: in Web.Router): Result[Unit, TlsListenError]
+pub func serveTls(
+  host: in String, port: in Int, tls: in TlsServerConfig, router: in Web.Router
+): Result[Unit, TlsListenError]
   requires: host.length > 0
   requires: port >= 1
   requires: port <= 65535
 {
-  val mtlsRequested = tls.requireClientCert or
-    match tls.clientCa {
-      case Some(_) -> true
-      case None -> false
-    }
+  val mtlsRequested = tls.requireClientCert or match tls.clientCa { case Some(_) -> true; case None -> false }
   if mtlsRequested {
     return Err(
       error = NotSupportedOnTarget(

@@ -83,12 +83,7 @@ test "serveTls returns a typed ServerTlsUnsupported on dotnet naming phase 3" {
   val router = Web.create()
   match Web.serveTls(router, "127.0.0.1", 8443, fixtureConfig()) {
     case Ok(_) -> panic("expected Err(ServerTlsUnsupported) on --target dotnet")
-    case Err(e) -> match e {
-      case ServerTlsUnsupported(msg) -> {
-        assertTrue(msg.contains("dotnet"), "message names the dotnet target")
-        assertTrue(msg.contains("5885"), "message names the phase-3 tracking issue #5885")
-      }
-    }
+    case Err(e) -> match e { case ServerTlsUnsupported(msg) -> { assertTrue(msg.contains("dotnet"), "message names the dotnet target"); assertTrue(msg.contains("5885"), "message names the phase-3 tracking issue #5885") } }
   }
 }
 
@@ -98,7 +93,12 @@ test "ServeTlsError.message returns the carried message" {
 }
 
 test "WebTls carries required + defaulted fields" {
-  val cfg = WebTls(certPath = "/etc/tls/cert.pem", keyPath = "/etc/tls/key.pem", clientCaPath = "", requireClientCert = false)
+  val cfg = WebTls(
+    certPath = "/etc/tls/cert.pem",
+    keyPath = "/etc/tls/key.pem",
+    clientCaPath = "",
+    requireClientCert = false
+  )
   assertEqual(cfg.certPath, "/etc/tls/cert.pem", "certPath")
   assertEqual(cfg.keyPath, "/etc/tls/key.pem", "keyPath")
   assertEqual(cfg.clientCaPath, "", "clientCaPath default")
@@ -114,11 +114,6 @@ test "tlsServerConfigFromWebTls reports a missing cert file as CertFileNotFound"
   )
   match tlsServerConfigFromWebTls(cfg) {
     case Ok(_) -> panic("expected Err for a missing cert file")
-    case Err(e) -> match e {
-      case CertFileNotFound(_) -> assertTrue(true, "missing file surfaces as CertFileNotFound")
-      case PemMalformed(_, _) -> panic("expected CertFileNotFound, got PemMalformed")
-      case KeyMismatch(_, _) -> panic("expected CertFileNotFound, got KeyMismatch")
-      case Unsupported(_, _) -> panic("expected CertFileNotFound, got Unsupported")
-    }
+    case Err(e) -> match e { case CertFileNotFound(_) -> assertTrue(true, "missing file surfaces as CertFileNotFound"); case PemMalformed(_, _) -> panic("expected CertFileNotFound, got PemMalformed"); case KeyMismatch(_, _) -> panic("expected CertFileNotFound, got KeyMismatch"); case Unsupported(_, _) -> panic("expected CertFileNotFound, got Unsupported") }
   }
 }
