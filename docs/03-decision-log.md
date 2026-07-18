@@ -18718,6 +18718,190 @@ sibling this mirrors); issue #5887; epic #5874; #5886 (HPACK, sibling PR);
 
 ---
 
+## D-progress-699 — TLS phase 4.3: `Std.HttpEngine.H2Conn` ships (pure-Lyric HTTP/2 connection/stream state machine + flow control, RFC 9113 §3/§5/§6, docs/61 §6.4 phase 4.3, #5888)
+
+**Context.** docs/61 §6.4 / §8 phase 4 sequences the h2 server stack as four
+independently-testable pure-Lyric slices: HPACK (#5886, D-progress-695), the
+frame codec (#5887, D-progress-696), the connection/stream FSM + flow control
+(#5888, this entry), and the dotnet ALPN transport wiring (#5889). This entry
+ships the third: `Std.HttpEngine.H2Conn` (`lyric-stdlib/std/http_h2conn.l`),
+the top of the pure-Lyric HTTP/2 server stack, which composes the two shipped
+building blocks into a single connection- and stream-level FSM.
+
+**What shipped.** A sans-IO server-side FSM (bytes in via `feed`, typed
+`H2Event`s + already-serialized outbound control frames out), mirroring the
+`Std.HttpEngine` HTTP/1.1 precedent (D-progress-694): the §3.4 preface +
+`SETTINGS` handshake (with automatic ACK); `SETTINGS` validation/application
+(`ENABLE_PUSH` ∈ {0,1}, `INITIAL_WINDOW_SIZE` ≤ 2^31-1, `MAX_FRAME_SIZE` ∈
+[2^14, 2^24-1], the encoder-table-size tie to `HEADER_TABLE_SIZE`); the §5.1
+per-stream lifecycle (idle → open → half-closed remote/local → closed) with
+illegal transitions rejected as the RFC's stream- or connection-level errors;
+HEADERS + CONTINUATION reassembly (§6.2/§6.10) feeding the HPACK decoder,
+including the §4.3 "decode even a refused stream's block to keep the
+compression context in sync" rule; connection- and per-stream flow control
+(§6.9) on **both** the receive side (a window overrun is a `FLOW_CONTROL_ERROR`;
+DATA on a reset stream reclaims the connection window) and the send side
+(`sendData` refuses to exceed the peer's window; a peer `WINDOW_UPDATE`
+replenishes it; the `SETTINGS_INITIAL_WINDOW_SIZE`-change window adjustment of
+§6.9.2, including the overflow-to-`FLOW_CONTROL_ERROR` guard); the
+concurrent-streams limit (`REFUSED_STREAM`); `PING` auto-ACK; `GOAWAY`
+(received + server-initiated `sendGoAway`); and the §5.4 error classification
+(connection error → `GOAWAY` + poison; stream error → `RST_STREAM` + close just
+that stream). No externs, no kernel file. Deliberately out of scope per the
+issue and RFC 9113: no server push (`PUSH_PROMISE` received by a server is a
+`PROTOCOL_ERROR`) and no RFC 7540 priority tree (`PRIORITY` accepted + ignored).
+
+`http_h2conn_tests.l` (62 cases) drives the FSM end to end by composing the
+**real** `H2Frame` + `Hpack` calls — a request encoded by the HPACK encoder
+must decode through the server's HPACK decoder, and every control frame the
+FSM emits must parse back through the frame decoder — so the agreement between
+the three layers is itself under test. Coverage: the handshake; a full
+request/response exchange; HEADERS+CONTINUATION reassembly (single-feed and
+split across feeds); the lifecycle FSM and its illegal-transition rejections;
+receive- and send-side flow control (exhaustion, replenishment, initial-window
+race, overflow); RST mid-stream; the concurrency limit; PING/GOAWAY; and the
+connection-vs-stream error classification incl. the malformed-sequence GOAWAY
+causes. Green on **both** targets: `lyric test --target dotnet` (in-process
+`Msil.Bridge`) and `--target jvm` (in-process `Jvm.Bridge`
+`compileToJarBundled`).
+
+**Bundle-wide name collision found and fixed (#5903/#5995 class).** The
+initial draft named a stream-state case `H2StreamClosed`, which collides with
+`Std.HttpEngine.H2Frame`'s `H2ErrorCode.H2StreamClosed` (the `STREAM_CLOSED`
+error code) — and this package uses *both* meanings in the same file. Compiling
+the full `lyric.full.toml` bundle failed silently (the published tool reports
+only a generic `B0001`, laxer than CI as the previous wave warned). The
+stream-state cases were renamed to an `H2S…` prefix (`H2SIdle`/`H2SOpen`/
+`H2SHalfClosedLocal`/`H2SHalfClosedRemote`/`H2SClosed`), leaving the error-code
+`H2StreamClosed` to `H2Frame`. Every other type/case this package introduces is
+`H2…`-prefixed for the same reason. (Diagnosing this cost time because the
+published tool swallows the emit exception; the managed `lyric.dll` reports the
+same generic `B0001`. The decisive test was that the package builds in a
+minimal manifest but not the full bundle — pointing at a cross-package
+collision, not a local error.)
+
+**Tracked bounded characteristics (documented, not silent).** Two deliberate
+limitations of composing on top of the padding-stripping frame codec are
+documented in the module header and filed: inbound DATA flow control counts the
+decoded (unpadded) payload length (#6063 — nil impact since request bodies are
+never padded and this server emits none), and fully-closed streams are retained
+for the connection lifetime so a late frame on a just-closed stream is a no-op
+rather than an idle-stream error (#6064 — growth bounded by total streams
+opened). A codec-detected stream-level frame fault (malformed `PRIORITY`
+length, zero `WINDOW_UPDATE` increment on a stream) carries no stream id
+through `H2Frame.FrameError`, so it is escalated to a connection error
+(`GOAWAY`), which RFC 9113 §5.4 permits.
+
+**No new compiler bugs.** House-style workarounds were applied preemptively
+(explicit-typed locals, flat one-call match arms per #5936, `H2…`-prefixed
+cases per #5995); none of the sibling-documented codegen bugs (#5934/#5935/
+#5936) were newly triggered.
+
+**Review follow-ups (#6066/#6067/#6068).** Two flow-control correctness bugs
+surfaced by review arithmetic were fixed before merge: (#6066) the
+`WINDOW_UPDATE` overflow guard `increment > h2MaxWindow() - window` overflowed
+32-bit `Int` when a stream `sendWindow` was legitimately negative (the §6.9.2
+`SETTINGS_INITIAL_WINDOW_SIZE`-decrease case), breaking the exact
+`WINDOW_UPDATE`-based recovery the RFC prescribes — replaced with a
+`windowUpdateOverflows(window, increment)` helper that skips the upper-bound
+subtraction entirely when `window ≤ 0` (the sum can't exceed 2^31-1 there);
+(#6067) `grantStreamWindow` gained the upper-bound overflow `requires:` its
+sibling `grantConnectionWindow` already carried
+(`increment <= h2MaxWindow() - streamReceiveWindow(conn, streamId)`).
+Additionally (#6068, was a SUGGESTION) a `WINDOW_UPDATE`/`RST_STREAM` on an idle
+even-numbered (push) stream id, or an odd id above the client high-water mark,
+now raises the §5.1 idle-stream `PROTOCOL_ERROR` via an `isIdleStreamId` helper,
+while an odd id at/below the high-water mark stays a tolerated closed-stream
+no-op. Five regression cases were added (negative-window `WINDOW_UPDATE`
+recovery, the `grantStreamWindow` overflow-contract panic, idle-even
+`WINDOW_UPDATE`/`RST_STREAM`, and the skipped-odd no-op), bringing the suite to
+41/41 on both targets.
+
+**Second review round (#6073/#6074/#6078 + coverage #6075/#6076/#6077).** One
+more REQUIRED finding and a batch of correctness/coverage items were fixed:
+(#6073) `handleData`'s unknown-stream arm escalated DATA on a just-refused
+stream to a connection GOAWAY — a client that pipelined DATA before seeing our
+`SETTINGS_MAX_CONCURRENT_STREAMS` refusal got the whole connection killed
+instead of that one stream; it now applies the same `isIdleStreamId` distinction
+as the other handlers (truly-idle → GOAWAY; recently-closed/refused →
+`RST_STREAM(STREAM_CLOSED)` + connection-window reclaim). (#6074) the stream-level
+DATA `FLOW_CONTROL_ERROR` path now reclaims the connection receive window (the
+octets were debited up front) via a shared `reclaimConnectionWindow` helper,
+matching the closed-stream path. (#6078) a `contFrames` counter +
+`maxContinuationFrames()` cap (1024) bounds the CONTINUATION-flood DoS (a peer
+that withholds END_HEADERS and streams endless zero-length fragments, which the
+byte-budget guard alone never trips) → `ENHANCE_YOUR_CALM`. Coverage gaps closed
+with focused tests: trailer HEADERS (happy path, missing-END_STREAM error,
+on-half-closed-remote error — #6075); the §4.3 decode-a-refused-stream behaviour
+made *observable* by driving HPACK dynamic-table indexing across a persistent
+paired encoder (a refused stream's insert must land in the server decoder or a
+later dynamic-index reference misresolves — #6076); and the `ENHANCE_YOUR_CALM`
+header-list-limit branch, the `SETTINGS_INITIAL_WINDOW_SIZE`-increase overflow
+branch, and the response-side HEADERS+CONTINUATION split (#6077). Suite now
+51/51 on both targets.
+
+**Third review round (#6082/#6083 REQUIRED + #6084/#6085/#6086/#6087).**
+(#6082) `beginTrailerHeaders` dropped a *rejected* trailer HEADERS block without
+HPACK-decoding it — the same §4.3 compression-context desync #6076 covers for
+the new-stream refusal, but the trailer-rejection path skipped the decode, so
+after a rejected trailer every subsequent header block on the connection
+mis-decoded; the reject path now runs the block through the decoder
+(`accepted = false`) before rejecting, verified by a #6076-style paired-encoder
+test. (#6083) HTTP/2 **Rapid Reset (CVE-2023-44487)**: a peer that opens a
+stream and immediately `RST_STREAM`s it forces per-stream work while freeing the
+concurrency slot instantly, evading `SETTINGS_MAX_CONCURRENT_STREAMS`. Mitigated
+with a `rapidResetCount` (resets of server-*incomplete* streams) + a
+`serverCompletedCount` credit and a `maxRapidResets()` threshold of **100** (the
+common industry value); the connection is torn down with
+`GOAWAY(ENHANCE_YOUR_CALM)` only once the reset count crosses 100 **and** exceeds
+the completion credit — so a busy, legitimate connection that cancels many
+streams over its lifetime is never falsely terminated (both the attack and the
+ratio-guard cases are tested). Robustness: (#6084) `encodeResponseHeaders` now
+validates stream state like `sendData`; (#6085) `sendData`/
+`encodeResponseHeaders`/`grantConnectionWindow`/`grantStreamWindow` short-circuit
+on a poisoned (`isFailed`) connection; (#6086) after the server's own graceful
+`GOAWAY`, new peer streams above the advertised last-stream-id are refused
+(§6.8). Coverage (#6087): PING-ACK path, mid-list-invalid multi-param SETTINGS
+abort, peer-RST DATA arm, post-poison no-op driver calls. Suite now 60/60 on
+both targets.
+
+While adding the Rapid-Reset fields, the flat `H2Connection` record hit 17
+fields and tripped a self-hosted **JVM backend** `max_stack` under-computation
+(`Operand stack overflow` verifying `newServerConnection`; MSIL unaffected) —
+filed as #6089 and worked around by grouping five shutdown/mitigation fields
+into an `H2ShutdownState` sub-record (arity back to 13).
+
+**Fourth review round (#6090 REQUIRED + #6091).** Both are the same root cause:
+retained closed streams (#6064) participating in flow control they should be
+inert for. (#6090) `applyInitialWindowChange` adjusted — and ran its
+connection-poisoning overflow guard over — *every* retained stream, including
+closed / half-closed-local ones. Since a stream can accumulate a near-max
+`sendWindow` via ordinary WINDOW_UPDATE before closing, a later perfectly legal
+`SETTINGS_INITIAL_WINDOW_SIZE` change could trip the overflow check on a **dead**
+stream and tear down the whole connection, killing every healthy stream on it —
+reachable via ordinary traffic, no attack. RFC 9113 §6.9.2 scopes the adjustment
+to streams with an active flow-control window, so the loop is now gated by the
+`streamWritable` (open / half-closed-remote) liveness check. (#6091)
+`handleStreamWindowUpdate` on a retained closed / half-closed-local stream is now
+a true no-op (no `sendWindow` mutation, no `H2WindowUpdated` event) — the §5.1
+flow-control race semantics — which is also what made #6090 reachable. An audit
+of every other loop / accessor touching `sendWindow` confirmed the two send-side
+paths were the only dead-stream hazards (`grantStreamWindow` is a driver-side
+receive-window grant with no `SETTINGS`-overflow exposure). Two regression tests
+(a closed stream at max window surviving a settings change while a live stream
+keeps working; WINDOW_UPDATE on a closed stream as a no-op). Suite now 62/62 on
+both targets.
+
+Cross-references: docs/61-https-tls-http-versions.md §6.4 (h2-in-the-engine
+plan) and §8 phase 4 item 13; D-progress-694 (`Std.HttpEngine` HTTP/1.1, the
+sans-IO sibling this mirrors); D-progress-695 (HPACK, #5886) and D-progress-696
+(frame codec, #5887), the two layers this composes; issue #5888; epic #5874;
+#5889 (dotnet ALPN transport + e2e, the follow-on that consumes this); #6063,
+#6064 (tracked bounded characteristics); #5903/#5995 (the bare-case collision
+class).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

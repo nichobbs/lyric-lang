@@ -30848,6 +30848,67 @@ and the codec keeps `parseFrame`/`serializeFrame` dispatch flat and routes
 **Related:** `docs/03-decision-log.md` D-progress-696; docs/61 §6.4/§8;
 #5887, #5874, #5886, #5888.
 
+## `Std.HttpEngine.H2Conn` ships — pure-Lyric HTTP/2 connection/stream state machine + flow control, RFC 9113 §3/§5/§6 (2026-07-18)
+
+New `lyric-stdlib/std/http_h2conn.l` (`Std.HttpEngine.H2Conn`): the top of the
+pure-Lyric HTTP/2 server stack — docs/61 §6.4's phase 4.3 (epic #5874, issue
+#5888). Composes the two shipped building blocks, `Std.HttpEngine.H2Frame`
+(#5887, frame codec) and `Std.HttpEngine.Hpack` (#5886, HPACK), into a single
+sans-IO, zero-extern, no-kernel **server-side** connection- and stream-level
+FSM: `feed(conn, bytes)` returns typed `H2Event`s plus the serialized control
+frames the FSM generated in response (SETTINGS ACK, PING ACK, WINDOW_UPDATE
+reclaim, RST_STREAM, GOAWAY), mirroring the `Std.HttpEngine` HTTP/1.1 precedent
+(D-progress-694). Implements the §3.4 preface + `SETTINGS` handshake (auto-ACK);
+`SETTINGS` validation/application (incl. the `INITIAL_WINDOW_SIZE`-change window
+adjustment of §6.9.2 with the overflow guard); the §5.1 per-stream lifecycle
+(idle → open → half-closed remote/local → closed) with illegal-transition
+rejection; HEADERS + CONTINUATION reassembly (§6.2/§6.10) feeding the HPACK
+decoder (incl. the §4.3 decode-a-refused-stream rule); connection- and
+per-stream flow control (§6.9) on both the receive side (overrun →
+`FLOW_CONTROL_ERROR`; DATA on a reset stream reclaims the connection window) and
+the send side (`sendData` bounded by the peer window; a peer `WINDOW_UPDATE`
+replenishes it); the concurrent-streams limit (`REFUSED_STREAM`); `PING`
+auto-ACK; `GOAWAY` (received + `sendGoAway`); and the §5.4 connection-vs-stream
+error classification (`GOAWAY` vs `RST_STREAM`). No server push (`PUSH_PROMISE`
+received by a server is a `PROTOCOL_ERROR`); no RFC 7540 priority tree
+(`PRIORITY` accepted + ignored).
+
+`lyric-stdlib/tests/http_h2conn_tests.l` is a 62-case `@test_module` that drives
+the FSM end to end through the **real** `H2Frame` + `Hpack` calls (so the
+agreement between the three layers is itself under test): the handshake; a full
+request/response exchange; HEADERS+CONTINUATION reassembly (single-feed and
+split across feeds); the lifecycle FSM and its illegal-transition rejections;
+receive- and send-side flow control (exhaustion, replenishment, initial-window
+race, overflow, negative-window recovery, grant-overflow contract); RST
+mid-stream; the concurrency limit; idle-vs-closed stream-id classification;
+PING/GOAWAY; and the connection-vs-stream error classification incl. the
+malformed-sequence GOAWAY causes. Green on both targets — `lyric test --target
+dotnet` and `--target jvm` — 62/62 each.
+
+Bundle-wide collision found and fixed: a stream-state case first named
+`H2StreamClosed` collided with `H2Frame`'s `H2ErrorCode.H2StreamClosed`
+(STREAM_CLOSED), which this package uses in the same file — the full
+`lyric.full.toml` bundle failed silently until the state cases were renamed
+`H2S…`. No new compiler bugs: the erased-receiver workaround (#5934/#5935 —
+bind a union-case-/`List`-element-bound record to an explicitly-typed local
+before a direct `.field` deref) and the flat-match/#5936 stackmap workaround
+were reused, and every type/case is `H2…`-prefixed per #5995. Two tracked
+bounded characteristics filed: #6063 (padded-DATA receive-accounting) and #6064
+(closed-stream pruning).
+
+DoS mitigations (untrusted-input server): a CONTINUATION-flood cap
+(`maxContinuationFrames()` = 1024, #6078) and an HTTP/2 Rapid Reset
+(CVE-2023-44487) guard (`maxRapidResets()` = 100 with a completion-credit ratio
+guard, #6083), both terminating the connection with `ENHANCE_YOUR_CALM`. A
+rejected trailer HEADERS block is still HPACK-decoded to keep the compression
+context in sync (§4.3, #6082), matching the refused-new-stream path. Adding the
+Rapid-Reset fields pushed the flat `H2Connection` record to 17 fields and
+tripped a JVM-backend `max_stack` under-computation (#6089, MSIL unaffected);
+worked around by grouping five fields into an `H2ShutdownState` sub-record.
+
+**Related:** `docs/03-decision-log.md` D-progress-699; docs/61 §6.4/§8;
+#5888, #5874, #5886, #5887, #5889, #6063, #6064, #6078, #6082, #6083, #6089.
+
 ## `Std.TcpHost` ships — dotnet TCP + server-side TLS transport kernel (`TcpListener`/`SslStream`, ALPN, mTLS) (2026-07-18)
 
 New `lyric-stdlib/std/_kernel/tcp_host.l` (`Std.TcpHost`) — issue #5882,
