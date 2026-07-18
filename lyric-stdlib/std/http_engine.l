@@ -77,12 +77,32 @@
 //!     `Transfer-Encoding` whose last coding is not `chunked` leaves the
 //!     message length indeterminate for a recipient that does not implement
 //!     the other codings (this engine implements none of them, by design —
-//!     content-codings are a payload-transform concern above this layer).
-//!     `chunked` appearing anywhere but last is `NonFinalChunkedEncoding`;
-//!     missing entirely is `InvalidTransferEncoding`.
+//!     content-codings are a payload-transform concern above this layer). An
+//!     empty `Transfer-Encoding` header is `InvalidTransferEncoding`;
+//!     `chunked` present but not the final coding is `NonFinalChunkedEncoding`;
+//!     no `chunked` coding present at all (e.g. `Transfer-Encoding: gzip`) is
+//!     the distinct `UnsupportedTransferCoding` — these three are kept
+//!     separate so a caller can tell "empty header" from "wrong position"
+//!     from "coding this engine doesn't understand" rather than collapsing
+//!     them into one ambiguous kind.
 //!   - **Conflicting `Content-Length` values are rejected**
 //!     (`ConflictingContentLength`, RFC 9112 §6.3); identical repeated
 //!     values are tolerated (a common, harmless proxy artifact).
+//!   - **Exactly one `Host` header is required on every HTTP/1.1 request**
+//!     (RFC 9112 §3.2: "a server MUST respond with a 400 (Bad Request)
+//!     status code to any HTTP/1.1 request message that lacks a Host header
+//!     field and to any request message that contains more than one Host
+//!     header field"). Missing is `MissingHost`; more than one is
+//!     `MultipleHost`. HTTP/1.0 has no such requirement and is exempt. This
+//!     check runs after framing analysis succeeds, so a request with both a
+//!     missing Host *and* a framing defect (e.g. conflicting
+//!     `Content-Length`) reports the framing defect — the more severe,
+//!     smuggling-adjacent condition — rather than the Host omission.
+//!   - **A request body exceeding `EngineLimits.maxBodyBytes` is rejected**
+//!     as `BodyTooLarge` — checked once against `Content-Length` for a
+//!     fixed-length body, and cumulatively as each chunk's declared size is
+//!     read for a chunked body (the total is not known in advance, so this
+//!     is the only way to bound it before the body is fully drained).
 //!   - **No whitespace between a header field-name and its colon** (RFC
 //!     9112 §5.1: "A server MUST reject ... with a 400 (Bad Request)
 //!     response ... to close or refuse to reuse the connection") —
@@ -111,7 +131,7 @@
 //! ## Limits (`EngineLimits`)
 //!
 //! `EngineLimits` deliberately declares **no defaulted fields** — every one
-//! of its four fields is mandatory at every construction site, in every
+//! of its five fields is mandatory at every construction site, in every
 //! package. This sidesteps, by construction, the cross-package
 //! defaulted-field-omission miscompile that affects records with declared
 //! defaults on both backends (#5908 JVM, #5920 MSIL — see
@@ -120,8 +140,13 @@
 //! "missing required field" diagnostic (not a runtime miscompile) is the
 //! only failure mode for an incomplete construction. Use
 //! `EngineLimits.defaults()` for the common case; construct a custom
-//! `EngineLimits` value directly (all four fields) to test limit
-//! enforcement.
+//! `EngineLimits` value directly (all five fields) to test limit
+//! enforcement. `maxBodyBytes` bounds request-body size (fixed-length and
+//! chunked alike, see the "Strictness decisions" section above) — the
+//! engine itself never buffers an unbounded body (it streams `BodyChunk`
+//! events out as bytes arrive), but without this cap a driver that
+//! accumulates those chunks into memory has no shared primitive enforcing a
+//! ceiling.
 //!
 //! ## Connection lifecycle
 //!
@@ -176,12 +201,13 @@ pub record EngineLimits {
   maxHeaderCount: Int
   maxHeaderLineLength: Int
   maxTotalHeaderBytes: Int
+  maxBodyBytes: Int
 }
 
 /// Sane production defaults: an 8 KiB request line, at most 100 headers, an
-/// 8 KiB single header line, and 64 KiB of total header bytes per request
+/// 8 KiB single header line, 64 KiB of total header bytes per request
 /// (trailers on a chunked body reuse the same header-count/byte budget,
-/// counted independently per request).
+/// counted independently per request), and a 10 MiB request body.
 @pure
 @experimental
 pub func EngineLimits.defaults(): EngineLimits {
@@ -189,7 +215,8 @@ pub func EngineLimits.defaults(): EngineLimits {
     maxRequestLineLength = 8192,
     maxHeaderCount = 100,
     maxHeaderLineLength = 8192,
-    maxTotalHeaderBytes = 65536
+    maxTotalHeaderBytes = 65536,
+    maxBodyBytes = 10485760
   )
 }
 
@@ -286,10 +313,14 @@ pub union ProtocolErrorKind {
   case ContentLengthWithTransferEncoding
   case InvalidTransferEncoding
   case NonFinalChunkedEncoding
+  case UnsupportedTransferCoding
   case MalformedChunkSize
   case ChunkSizeOverflow
   case BareCr
   case BareLf
+  case MissingHost
+  case MultipleHost
+  case BodyTooLarge
 }
 
 /// The HTTP status code a driver should respond with for a given rejection
@@ -313,10 +344,14 @@ pub func protocolErrorStatus(kind: in ProtocolErrorKind): Int {
     case ContentLengthWithTransferEncoding -> 400
     case InvalidTransferEncoding -> 400
     case NonFinalChunkedEncoding -> 400
+    case UnsupportedTransferCoding -> 400
     case MalformedChunkSize -> 400
     case ChunkSizeOverflow -> 400
     case BareCr -> 400
     case BareLf -> 400
+    case MissingHost -> 400
+    case MultipleHost -> 400
+    case BodyTooLarge -> 413
   }
 }
 
@@ -342,9 +377,9 @@ union ConnPhase {
   case PhRequestLine
   case PhHeaders(method: String, target: String, version: HttpVersion, headers: List[HeaderField], headerBytes: Int)
   case PhFixedBody(remaining: Int)
-  case PhChunkSize
-  case PhChunkData(remaining: Int)
-  case PhChunkCrlf
+  case PhChunkSize(bodyBytesSoFar: Int)
+  case PhChunkData(remaining: Int, bodyBytesSoFar: Int)
+  case PhChunkCrlf(bodyBytesSoFar: Int)
   case PhTrailer(count: Int, bytes: Int)
   case PhFatal
 }
@@ -862,32 +897,42 @@ func splitAndTrimTokens(values: in List[String]): List[String] {
   tokens
 }
 
-/// RFC 9112 section 6.1: `chunked` must be the final transfer-coding.
+/// RFC 9112 section 6.1: `chunked` must be present and must be the final
+/// transfer-coding. Three distinct outcomes are distinguished: the header
+/// is present but empty (`InvalidTransferEncoding`), `chunked` never
+/// appears at all (`UnsupportedTransferCoding` — this engine implements no
+/// other transfer-coding), and `chunked` appears somewhere other than the
+/// final position (`NonFinalChunkedEncoding`, including the case where it
+/// appears more than once).
 func validateChunkedTransferEncoding(values: in List[String]): Result[Unit, ProtoErr] {
   val tokens = splitAndTrimTokens(values)
   if tokens.count == 0 {
     return Err(error = ProtoErr(kind = InvalidTransferEncoding, message = "Transfer-Encoding header present but empty"))
   }
   val lastIdx = tokens.count - 1
-  if not equalsCaseInsensitive(tokens[lastIdx], "chunked") {
+  var firstChunkedIdx = -1
+  var k = 0
+  while k < tokens.count {
+    if equalsCaseInsensitive(tokens[k], "chunked") and firstChunkedIdx == -1 {
+      firstChunkedIdx = k
+    }
+    k = k + 1
+  }
+  if firstChunkedIdx == -1 {
+    return Err(
+      error = ProtoErr(
+        kind = UnsupportedTransferCoding,
+        message = "no chunked transfer-coding present; this engine supports only chunked (RFC 9112 section 6.1)"
+      )
+    )
+  }
+  if firstChunkedIdx != lastIdx {
     return Err(
       error = ProtoErr(
         kind = NonFinalChunkedEncoding,
         message = "chunked must be the final transfer-coding (RFC 9112 section 6.1)"
       )
     )
-  }
-  var k = 0
-  while k < lastIdx {
-    if equalsCaseInsensitive(tokens[k], "chunked") {
-      return Err(
-        error = ProtoErr(
-          kind = NonFinalChunkedEncoding,
-          message = "chunked transfer-coding must not appear before the final position"
-        )
-      )
-    }
-    k = k + 1
   }
   Ok(value = ())
 }
@@ -957,6 +1002,35 @@ func hasExpectContinue(headers: in List[HeaderField]): Bool {
   }
 }
 
+/// RFC 9112 section 3.2: an HTTP/1.1 request must carry exactly one `Host`
+/// header field; HTTP/1.0 has no such requirement and is exempt.
+func validateHostHeader(version: in HttpVersion, headers: in List[HeaderField]): Option[ProtoErr] {
+  match version {
+    case Http1_0 -> None
+    case Http1_1 -> checkHostCount(headerValues(headers, "Host").count)
+  }
+}
+
+func checkHostCount(count: in Int): Option[ProtoErr] {
+  if count == 0 {
+    Some(
+      value = ProtoErr(
+        kind = MissingHost,
+        message = "HTTP/1.1 requests must include a Host header field (RFC 9112 section 3.2)"
+      )
+    )
+  } else if count > 1 {
+    Some(
+      value = ProtoErr(
+        kind = MultipleHost,
+        message = "HTTP/1.1 requests must not include more than one Host header field (RFC 9112 section 3.2)"
+      )
+    )
+  } else {
+    None
+  }
+}
+
 // =============================================================================
 // §8. Chunk framing.
 // =============================================================================
@@ -1018,30 +1092,56 @@ func finishHeaders(
 ): Unit {
   match analyzeFraming(headers) {
     case Err(e) -> failWith(state, events, e.kind, e.message)
-    case Ok(plan) -> {
+    case Ok(plan) -> finishHeadersWithPlan(state, events, method, target, version, headers, plan)
+  }
+}
+
+/// Runs after framing analysis has already succeeded, so a request with
+/// both a missing/duplicate Host header and a framing defect reports the
+/// framing defect (checked by the caller) rather than the Host omission.
+func finishHeadersWithPlan(
+  state: inout Connection,
+  events: in List[HttpEvent],
+  method: in String,
+  target: in String,
+  version: in HttpVersion,
+  headers: in List[HeaderField],
+  plan: in BodyPlan,
+): Unit {
+  match validateHostHeader(version, headers) {
+    case Some(e) -> failWith(state, events, e.kind, e.message)
+    case None -> {
       state.keepAlive = computeKeepAlive(version, headers)
       events.add(RequestHead(method = method, target = target, version = version, headers = headers))
       if hasExpectContinue(headers) {
         events.add(ExpectContinue)
       }
-      match plan {
-        case BpNone -> {
-          events.add(RequestComplete)
-          state.phase = PhRequestLine
-        }
-        case BpFixed(length) -> {
-          if length == 0 {
-            events.add(RequestComplete)
-            state.phase = PhRequestLine
-          } else {
-            state.phase = PhFixedBody(remaining = length)
-          }
-        }
-        case BpChunked -> {
-          state.phase = PhChunkSize
-        }
-      }
+      enterBodyPhase(state, events, plan)
     }
+  }
+}
+
+func enterBodyPhase(state: inout Connection, events: in List[HttpEvent], plan: in BodyPlan): Unit {
+  match plan {
+    case BpNone -> {
+      events.add(RequestComplete)
+      state.phase = PhRequestLine
+    }
+    case BpFixed(length) -> enterFixedBodyPhase(state, events, length)
+    case BpChunked -> {
+      state.phase = PhChunkSize(bodyBytesSoFar = 0)
+    }
+  }
+}
+
+func enterFixedBodyPhase(state: inout Connection, events: in List[HttpEvent], length: in Int): Unit {
+  if length == 0 {
+    events.add(RequestComplete)
+    state.phase = PhRequestLine
+  } else if length > state.limits.maxBodyBytes {
+    failWith(state, events, BodyTooLarge, "request body length exceeds the configured limit")
+  } else {
+    state.phase = PhFixedBody(remaining = length)
   }
 }
 
@@ -1195,7 +1295,7 @@ func stepFixedBody(state: inout Connection, events: in List[HttpEvent], remainin
   }
 }
 
-func stepChunkSize(state: inout Connection, events: in List[HttpEvent]): Bool {
+func stepChunkSize(state: inout Connection, events: in List[HttpEvent], bodyBytesSoFar: in Int): Bool {
   match scanCrlfLine(state.buf, state.limits.maxHeaderLineLength) {
     case LsNeedMore -> false
     case LsTooLong -> {
@@ -1211,27 +1311,49 @@ func stepChunkSize(state: inout Connection, events: in List[HttpEvent]): Bool {
       true
     }
     case LsFound(lineEnd, consumed) -> {
-      val line = state.buf.slice(0, lineEnd)
-      val remaining = state.buf.slice(consumed, state.buf.length)
-      state.buf = remaining
-      match parseChunkSizeLine(line) {
-        case Err(e) -> failWith(state, events, e.kind, e.message)
-        case Ok(size) -> {
-          if size == 0 {
-            state.phase = PhTrailer(count = 0, bytes = 0)
-          } else {
-            state.phase = PhChunkData(remaining = size)
-          }
-        }
-      }
+      onChunkSizeLine(state, events, lineEnd, consumed, bodyBytesSoFar)
       true
     }
   }
 }
 
-func stepChunkData(state: inout Connection, events: in List[HttpEvent], remaining: in Int): Bool {
+func onChunkSizeLine(
+  state: inout Connection,
+  events: in List[HttpEvent],
+  lineEnd: in Int,
+  consumed: in Int,
+  bodyBytesSoFar: in Int,
+): Unit {
+  val line = state.buf.slice(0, lineEnd)
+  val remaining = state.buf.slice(consumed, state.buf.length)
+  state.buf = remaining
+  match parseChunkSizeLine(line) {
+    case Err(e) -> failWith(state, events, e.kind, e.message)
+    case Ok(size) -> enterChunkFromSize(state, events, size, bodyBytesSoFar)
+  }
+}
+
+/// A zero-size chunk ends the body (move to trailers); otherwise accumulate
+/// this chunk's declared size into the running total and reject as
+/// `BodyTooLarge` if the cumulative chunked body would exceed
+/// `EngineLimits.maxBodyBytes` — the only point where a chunked body's
+/// total size is checkable, since it is never declared up front.
+func enterChunkFromSize(state: inout Connection, events: in List[HttpEvent], size: in Int, bodyBytesSoFar: in Int): Unit {
+  if size == 0 {
+    state.phase = PhTrailer(count = 0, bytes = 0)
+  } else {
+    val newTotal = bodyBytesSoFar + size
+    if newTotal > state.limits.maxBodyBytes {
+      failWith(state, events, BodyTooLarge, "chunked request body length exceeds the configured limit")
+    } else {
+      state.phase = PhChunkData(remaining = size, bodyBytesSoFar = newTotal)
+    }
+  }
+}
+
+func stepChunkData(state: inout Connection, events: in List[HttpEvent], remaining: in Int, bodyBytesSoFar: in Int): Bool {
   if remaining == 0 {
-    state.phase = PhChunkCrlf
+    state.phase = PhChunkCrlf(bodyBytesSoFar = bodyBytesSoFar)
     true
   } else if state.buf.length == 0 {
     false
@@ -1241,18 +1363,18 @@ func stepChunkData(state: inout Connection, events: in List[HttpEvent], remainin
     val remainingBuf = state.buf.slice(take, state.buf.length)
     state.buf = remainingBuf
     events.add(BodyChunk(bytes = chunk))
-    state.phase = PhChunkData(remaining = remaining - take)
+    state.phase = PhChunkData(remaining = remaining - take, bodyBytesSoFar = bodyBytesSoFar)
     true
   }
 }
 
-func stepChunkCrlf(state: inout Connection, events: in List[HttpEvent]): Bool {
+func stepChunkCrlf(state: inout Connection, events: in List[HttpEvent], bodyBytesSoFar: in Int): Bool {
   if state.buf.length < 2 {
     false
   } else if isCr(state.buf[0]) and isLf(state.buf[1]) {
     val remaining = state.buf.slice(2, state.buf.length)
     state.buf = remaining
-    state.phase = PhChunkSize
+    state.phase = PhChunkSize(bodyBytesSoFar = bodyBytesSoFar)
     true
   } else {
     failWith(state, events, MalformedChunkSize, "chunk data not followed by CRLF")
@@ -1307,14 +1429,14 @@ func driveFeed(state: inout Connection, bytes: in slice[Byte]): List[HttpEvent] 
       case PhFixedBody(remaining) -> {
         progress = stepFixedBody(state, events, remaining)
       }
-      case PhChunkSize -> {
-        progress = stepChunkSize(state, events)
+      case PhChunkSize(bodyBytesSoFar) -> {
+        progress = stepChunkSize(state, events, bodyBytesSoFar)
       }
-      case PhChunkData(remaining) -> {
-        progress = stepChunkData(state, events, remaining)
+      case PhChunkData(remaining, bodyBytesSoFar) -> {
+        progress = stepChunkData(state, events, remaining, bodyBytesSoFar)
       }
-      case PhChunkCrlf -> {
-        progress = stepChunkCrlf(state, events)
+      case PhChunkCrlf(bodyBytesSoFar) -> {
+        progress = stepChunkCrlf(state, events, bodyBytesSoFar)
       }
       case PhTrailer(count, bytes) -> {
         progress = stepTrailer(state, events, count, bytes)
@@ -1344,22 +1466,62 @@ pub func feed(conn: in Connection, bytes: in slice[Byte]): FeedResult
   requires: not isFailed(conn)
 {
   var state = conn
+  // `state = conn` is a shallow record copy: a `PhHeaders` phase's
+  // `List[HeaderField]` is a heap object, so without this clone `state`
+  // would alias the same list `conn` references, and `onHeaderField`'s
+  // in-place mutation would be observable through the (supposedly
+  // superseded) `conn` value too. Cloning here enforces the "never reuse
+  // `conn` after `feed`" linear-value contract by construction rather than
+  // by caller discipline alone.
+  state.phase = cloneHeaderPhaseIfNeeded(state.phase)
   val events = driveFeed(state, bytes)
   FeedResult(conn = state, events = events)
+}
+
+func cloneHeaderPhaseIfNeeded(phase: in ConnPhase): ConnPhase {
+  match phase {
+    case PhRequestLine -> phase
+    case PhHeaders(method, target, version, headers, headerBytes) -> clonedHeaderPhase(method, target, version, headers, headerBytes)
+    case PhFixedBody(_) -> phase
+    case PhChunkSize(_) -> phase
+    case PhChunkData(_, _) -> phase
+    case PhChunkCrlf(_) -> phase
+    case PhTrailer(_, _) -> phase
+    case PhFatal -> phase
+  }
+}
+
+func clonedHeaderPhase(
+  method: in String,
+  target: in String,
+  version: in HttpVersion,
+  headers: in List[HeaderField],
+  headerBytes: in Int,
+): ConnPhase {
+  val headersCopy: List[HeaderField] = newList()
+  var i = 0
+  while i < headers.count {
+    headersCopy.add(headers[i])
+    i = i + 1
+  }
+  PhHeaders(method = method, target = target, version = version, headers = headersCopy, headerBytes = headerBytes)
 }
 
 // =============================================================================
 // §10. Response serialization.
 // =============================================================================
-/// A response header/reason-phrase byte, restricted to visible US-ASCII
-/// plus space (RFC 9110 field-value grammar is fundamentally a byte
-/// charset, not Unicode text — see the module header's "Deviations"
+/// A response header/reason-phrase byte, restricted to visible US-ASCII,
+/// space, and HTAB — RFC 9110 section 5.5's `field-vchar` / SP / HTAB
+/// field-value grammar (RFC 9110 field-value grammar is fundamentally a
+/// byte charset, not Unicode text — see the module header's "Deviations"
 /// section for why the serializer requires ASCII rather than encoding
-/// arbitrary text). Excludes CR/LF, which would otherwise let a caller
+/// arbitrary text). Excludes CR/LF/NUL, which would otherwise let a caller
 /// that reflects unsanitized input into a response header inject
-/// additional header lines or a second response ("response splitting").
+/// additional header lines or a second response ("response splitting") —
+/// those, not the wider `[32, 126]` range, are the actual injection risk,
+/// so the guard only rejects genuinely unsafe bytes.
 func isResponseSafeByte(cp: in Int): Bool {
-  cp >= 32 and cp <= 126
+  (cp >= 32 and cp <= 126) or cp == 9
 }
 
 func isResponseSafeString(s: in String): Bool {
@@ -1389,7 +1551,7 @@ func allHeadersResponseSafe(headers: in List[HeaderField]): Bool {
 /// Every char in `s` is ASCII (< 0x80), so a direct code-point-to-byte
 /// conversion is exact — no UTF-8 multi-byte encoding is needed. Safe to
 /// call only after `isResponseSafeString`/`isResponseSafeByte` have
-/// validated every character is in `[32, 126]`.
+/// validated every character is in `[32, 126]` or HTAB (0x09).
 func asciiStringToBytes(s: in String): slice[Byte] {
   val acc: List[Byte] = newList()
   var i = 0
@@ -1412,16 +1574,20 @@ func asciiStringToBytes(s: in String): slice[Byte] {
 /// formats whatever `headers` it is given.
 ///
 /// # Contract
-/// `reason` and every header name/value must be free of control characters
-/// (`[32, 126]` only) — this is a programmer-facing misuse guard against
-/// response splitting (see `isResponseSafeByte`'s doc comment), not a
-/// wire-content condition, since this side of the engine is never fed
-/// untrusted network bytes directly.
+/// `reason` (which RFC 9112 section 4 permits to be empty) and every
+/// header name/value must be free of CR, LF, and NUL (see
+/// `isResponseSafeByte`'s doc comment) — this is a programmer-facing
+/// misuse guard against response splitting, not a wire-content condition,
+/// since this side of the engine is never fed untrusted network bytes
+/// directly. RFC-legal bytes that are not a splitting risk (an empty
+/// reason-phrase, HTAB inside a header value) are accepted rather than
+/// rejected, since response headers commonly reflect application-supplied
+/// values (`Location`, `Set-Cookie`) that should not panic the connection
+/// just for being unusual but legal.
 @experimental
 pub func serializeResponseHead(
   version: in HttpVersion, status: in Int, reason: in String, headers: in List[HeaderField]
 ): slice[Byte]
-  requires: reason.length > 0
   requires: isResponseSafeString(reason)
   requires: allHeadersResponseSafe(headers)
 {

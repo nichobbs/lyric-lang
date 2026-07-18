@@ -144,10 +144,14 @@ func kindEquals(a: in ProtocolErrorKind, b: in ProtocolErrorKind): Bool {
     case ContentLengthWithTransferEncoding -> match b { case ContentLengthWithTransferEncoding -> true; case _ -> false }
     case InvalidTransferEncoding -> match b { case InvalidTransferEncoding -> true; case _ -> false }
     case NonFinalChunkedEncoding -> match b { case NonFinalChunkedEncoding -> true; case _ -> false }
+    case UnsupportedTransferCoding -> match b { case UnsupportedTransferCoding -> true; case _ -> false }
     case MalformedChunkSize -> match b { case MalformedChunkSize -> true; case _ -> false }
     case ChunkSizeOverflow -> match b { case ChunkSizeOverflow -> true; case _ -> false }
     case BareCr -> match b { case BareCr -> true; case _ -> false }
     case BareLf -> match b { case BareLf -> true; case _ -> false }
+    case MissingHost -> match b { case MissingHost -> true; case _ -> false }
+    case MultipleHost -> match b { case MultipleHost -> true; case _ -> false }
+    case BodyTooLarge -> match b { case BodyTooLarge -> true; case _ -> false }
   }
 }
 
@@ -432,7 +436,8 @@ test "too many headers is TooManyHeaders" {
     maxRequestLineLength = 8192,
     maxHeaderCount = 2,
     maxHeaderLineLength = 8192,
-    maxTotalHeaderBytes = 65536
+    maxTotalHeaderBytes = 65536,
+    maxBodyBytes = 10485760
   )
   val req = bytesOf("GET / HTTP/1.1\r\nA: 1\r\nB: 2\r\nC: 3\r\n\r\n")
   val events = dropNeedMore(feedWhole(limits, req))
@@ -445,7 +450,8 @@ test "a single oversized header line is HeaderLineTooLong" {
     maxRequestLineLength = 8192,
     maxHeaderCount = 100,
     maxHeaderLineLength = 32,
-    maxTotalHeaderBytes = 65536
+    maxTotalHeaderBytes = 65536,
+    maxBodyBytes = 10485760
   )
   val req = bytesOf("GET / HTTP/1.1\r\nX-Long: " + repeat("a", 100) + "\r\n\r\n")
   val events = dropNeedMore(feedWhole(limits, req))
@@ -463,7 +469,8 @@ test "total header bytes exceeding the configured limit is HeadersTooLarge" {
     maxRequestLineLength = 8192,
     maxHeaderCount = 100,
     maxHeaderLineLength = 8192,
-    maxTotalHeaderBytes = 15
+    maxTotalHeaderBytes = 15,
+    maxBodyBytes = 10485760
   )
   val req = bytesOf("GET / HTTP/1.1\r\nA: 111111\r\nB: 222222\r\nC: 333333\r\n\r\n")
   val events = dropNeedMore(feedWhole(limits, req))
@@ -483,7 +490,7 @@ test "conflicting Content-Length values are ConflictingContentLength" {
 }
 
 test "identical repeated Content-Length values are tolerated" {
-  val req = bytesOf("POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello")
+  val req = bytesOf("POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello")
   val events = dropNeedMore(feedWhole(EngineLimits.defaults(), req))
   assertEqualInt(events.count, 3, "repeated identical Content-Length event count")
   assertBodyChunkText(events[1], "hello", "repeated identical Content-Length body")
@@ -522,10 +529,20 @@ test "chunked not the final transfer-coding is NonFinalChunkedEncoding" {
 }
 
 test "Transfer-Encoding ending in chunked after another coding is accepted" {
-  val req = bytesOf("POST /upload HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n")
+  val req = bytesOf(
+    "POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: gzip, chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n"
+  )
   val events = dropNeedMore(feedWhole(EngineLimits.defaults(), req))
   assertEqualInt(events.count, 3, "gzip-then-chunked event count")
   assertBodyChunkText(events[1], "Hello", "gzip-then-chunked body")
+}
+
+test "a Transfer-Encoding with no chunked coding present is UnsupportedTransferCoding" {
+  assertRejects(
+    bytesOf("POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n"),
+    UnsupportedTransferCoding,
+    "no chunked coding present"
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -537,7 +554,7 @@ test "Transfer-Encoding ending in chunked after another coding is accepted" {
 // `ProtocolError`; `assertRejectsAfterHead` checks only the last event.
 test "a chunk-size line with no hex digits is MalformedChunkSize" {
   assertRejectsAfterHead(
-    bytesOf("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nZZZ\r\n\r\n"),
+    bytesOf("POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\nZZZ\r\n\r\n"),
     MalformedChunkSize,
     "non-hex chunk size"
   )
@@ -545,7 +562,7 @@ test "a chunk-size line with no hex digits is MalformedChunkSize" {
 
 test "a chunk size with more than 7 hex digits is ChunkSizeOverflow" {
   assertRejectsAfterHead(
-    bytesOf("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFF\r\n\r\n"),
+    bytesOf("POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFF\r\n\r\n"),
     ChunkSizeOverflow,
     "overflow chunk size"
   )
@@ -553,7 +570,7 @@ test "a chunk size with more than 7 hex digits is ChunkSizeOverflow" {
 
 test "chunk data not followed by CRLF is MalformedChunkSize" {
   assertRejectsAfterHead(
-    bytesOf("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHelloXX0\r\n\r\n"),
+    bytesOf("POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHelloXX0\r\n\r\n"),
     MalformedChunkSize,
     "chunk data missing CRLF"
   )
@@ -561,10 +578,75 @@ test "chunk data not followed by CRLF is MalformedChunkSize" {
 
 test "bare LF in a chunk-size line is BareLf" {
   assertRejectsAfterHead(
-    bytesOf("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\nHello\r\n0\r\n\r\n"),
+    bytesOf("POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\nHello\r\n0\r\n\r\n"),
     BareLf,
     "bare LF chunk-size line"
   )
+}
+
+// ---------------------------------------------------------------------------
+// Rejections — Host header (RFC 9112 3.2).
+// ---------------------------------------------------------------------------
+test "an HTTP/1.1 request without a Host header is MissingHost" {
+  assertRejects(bytesOf("GET / HTTP/1.1\r\n\r\n"), MissingHost, "missing Host")
+}
+
+test "an HTTP/1.1 request with duplicate Host headers is MultipleHost" {
+  assertRejects(
+    bytesOf("GET / HTTP/1.1\r\nHost: a.example.com\r\nHost: b.example.com\r\n\r\n"),
+    MultipleHost,
+    "duplicate Host"
+  )
+}
+
+test "an HTTP/1.0 request without a Host header is accepted" {
+  val req = bytesOf("GET / HTTP/1.0\r\n\r\n")
+  val events = dropNeedMore(feedWhole(EngineLimits.defaults(), req))
+  assertEqualInt(events.count, 2, "HTTP/1.0 no-Host event count")
+  assertRequestHead(events[0], "GET", "/", "HTTP/1.0 no-Host")
+  assertRequestComplete(events[1], "HTTP/1.0 no-Host")
+}
+
+// ---------------------------------------------------------------------------
+// Rejections — body size limit (`EngineLimits.maxBodyBytes`).
+// ---------------------------------------------------------------------------
+test "a fixed-length body exceeding maxBodyBytes is BodyTooLarge" {
+  val limits = EngineLimits(
+    maxRequestLineLength = 8192,
+    maxHeaderCount = 100,
+    maxHeaderLineLength = 8192,
+    maxTotalHeaderBytes = 65536,
+    maxBodyBytes = 4
+  )
+  val req = bytesOf("POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 11\r\n\r\nhello world")
+  val events = dropNeedMore(feedWhole(limits, req))
+  // The oversized-body check runs after `RequestHead` is already emitted
+  // (the length is only known once framing has been analyzed), so this
+  // asserts the *last* event rather than a single-event rejection.
+  assertTrue(events.count >= 1, "oversized fixed-length body: at least one event")
+  assertProtocolError(events[events.count - 1], BodyTooLarge, "oversized fixed-length body")
+}
+
+test "a chunked body whose cumulative size exceeds maxBodyBytes is BodyTooLarge" {
+  val limits = EngineLimits(
+    maxRequestLineLength = 8192,
+    maxHeaderCount = 100,
+    maxHeaderLineLength = 8192,
+    maxTotalHeaderBytes = 65536,
+    maxBodyBytes = 8
+  )
+  val req = bytesOf(
+    "POST /upload HTTP/1.1\r\n" + "Host: example.com\r\n" + "Transfer-Encoding: chunked\r\n" + "\r\n" +
+      "5\r\n" +
+      "Hello\r\n" +
+      "5\r\n" +
+      "World\r\n" +
+      "0\r\n" +
+      "\r\n"
+  )
+  val events = dropNeedMore(feedWhole(limits, req))
+  assertTrue(events.count >= 1, "cumulative chunked body too large: at least one event")
+  assertProtocolError(events[events.count - 1], BodyTooLarge, "cumulative chunked body too large")
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +703,10 @@ test "protocolErrorStatus maps known kinds to their documented status codes" {
   assertEqualInt(protocolErrorStatus(TooManyHeaders), 431, "TooManyHeaders status")
   assertEqualInt(protocolErrorStatus(HeadersTooLarge), 431, "HeadersTooLarge status")
   assertEqualInt(protocolErrorStatus(ContentLengthWithTransferEncoding), 400, "smuggling-defense status")
+  assertEqualInt(protocolErrorStatus(UnsupportedTransferCoding), 400, "UnsupportedTransferCoding status")
+  assertEqualInt(protocolErrorStatus(MissingHost), 400, "MissingHost status")
+  assertEqualInt(protocolErrorStatus(MultipleHost), 400, "MultipleHost status")
+  assertEqualInt(protocolErrorStatus(BodyTooLarge), 413, "BodyTooLarge status")
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +722,17 @@ test "serializeResponseHead formats a status line, headers, and blank line" {
     "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n",
     "response head bytes"
   )
+}
+
+test "serializeResponseHead accepts an empty reason-phrase and HTAB in a header value" {
+  // RFC 9112 section 4 permits an empty reason-phrase; RFC 9110 section 5.5
+  // permits HTAB inside a field-value. Neither is a response-splitting risk
+  // (only CR/LF/NUL are), so both are accepted rather than rejected by the
+  // `requires:` contract.
+  val headers: List[HeaderField] = newList()
+  headers.add(HeaderField(name = "X-Note", value = "a\tb"))
+  val head = serializeResponseHead(Http1_1, 204, "", headers)
+  assertEqual(textOf(head), "HTTP/1.1 204 \r\nX-Note: a\tb\r\n\r\n", "empty reason + HTAB header value")
 }
 
 test "HEAD-response serialization has a head but no body bytes written" {
@@ -681,6 +778,7 @@ test "EngineLimits.defaults() returns sane production values" {
   assertEqualInt(d.maxHeaderCount, 100, "default max header count")
   assertEqualInt(d.maxHeaderLineLength, 8192, "default max header line length")
   assertEqualInt(d.maxTotalHeaderBytes, 65536, "default max total header bytes")
+  assertEqualInt(d.maxBodyBytes, 10485760, "default max body bytes")
 }
 
 test "httpVersionToken renders the wire tokens" {
