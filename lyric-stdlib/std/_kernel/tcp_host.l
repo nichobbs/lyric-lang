@@ -82,6 +82,10 @@ extern type MemStream = "System.IO.MemoryStream"
 
 extern type SslStream = "System.Net.Security.SslStream"
 
+extern type Socket = "System.Net.Sockets.Socket"
+
+extern type EndPoint = "System.Net.EndPoint"
+
 extern type SslServerAuthOptions = "System.Net.Security.SslServerAuthenticationOptions"
 
 extern type SslApplicationProtocol = "System.Net.Security.SslApplicationProtocol"
@@ -179,6 +183,21 @@ func clientStream(c: in TcpClient): Stream = ()
 @externInstance
 @externTarget("System.Net.Sockets.TcpClient.Close")
 func clientClose(c: in TcpClient): Unit = ()
+
+// `TcpClient.Client` (the underlying `Socket`) and `Socket.RemoteEndPoint`
+// back `hostRemoteAddress` (used by `lyric-ws`'s dotnet WebSocket kernel to
+// populate `onOpen`'s `remoteAddress` callback argument — docs/62 §6). The
+// base-`Object.ToString()` hint on the derived `EndPoint`-typed value is the
+// same pattern `optionsRuntimeType`/`chainPolicyCustomTrustStore` below use
+// for a base-method-on-derived-receiver call.
+@externTarget("System.Net.Sockets.TcpClient.get_Client")
+func clientSocket(c: in TcpClient): Socket = ()
+
+@externTarget("System.Net.Sockets.Socket.get_RemoteEndPoint")
+func socketRemoteEndPoint(s: in Socket): EndPoint = ()
+
+@externTarget("System.Object.ToString")
+func endPointToString(e: in EndPoint): String = ()
 
 @externInstance
 @externTarget("System.IO.Stream.Read")
@@ -514,25 +533,21 @@ func computeAlpn(ssl: in Stream): String {
 /// certificate or one that does not chain to `cfg.clientCa` — is
 /// `Err(TlsHandshakeFailed(...))`, and the underlying socket is closed
 /// before returning so a rejected peer never leaks a connection.
-// mTLS misconfiguration guard (#6042). With the callback-free mTLS path
-// (module header), trust in a presented client certificate is pinned ONLY by
-// the `CertificateChainPolicy` built from `clientCa`. If `requireClientCert`
-// is set but no `clientCa` is configured, `buildServerOptions` installs no
-// chain policy, so `SslStream` would validate the client certificate against
-// the SYSTEM trust store — accepting ANY publicly-trusted certificate and
-// defeating the purpose of private-CA mutual TLS. That is a security
-// misconfiguration, not a permissive default, so it is rejected loudly here
-// (before any socket work) rather than silently falling back.
-func validateServerConfig(cfg: in Tls.TlsServerConfig): Option[TcpError] {
+func validateServerConfig(
+  // mTLS misconfiguration guard (#6042). With the callback-free mTLS path
+  // (module header), trust in a presented client certificate is pinned ONLY by
+  // the `CertificateChainPolicy` built from `clientCa`. If `requireClientCert`
+  // is set but no `clientCa` is configured, `buildServerOptions` installs no
+  // chain policy, so `SslStream` would validate the client certificate against
+  // the SYSTEM trust store — accepting ANY publicly-trusted certificate and
+  // defeating the purpose of private-CA mutual TLS. That is a security
+  // misconfiguration, not a permissive default, so it is rejected loudly here
+  // (before any socket work) rather than silently falling back.
+  cfg: in Tls.TlsServerConfig,
+): Option[TcpError] {
   if cfg.requireClientCert {
     match cfg.clientCa {
-      case None ->
-        Some(
-          value = TlsConfigInvalid(
-            message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a client CA " +
-              "(refusing to fall back to the system trust store, which would accept any publicly-trusted client certificate)"
-          )
-        )
+      case None -> Some(value = TlsConfigInvalid(message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a client CA " + "(refusing to fall back to the system trust store, which would accept any publicly-trusted client certificate)"))
       case Some(_) -> None
     }
   } else {
@@ -543,10 +558,7 @@ func validateServerConfig(cfg: in Tls.TlsServerConfig): Option[TcpError] {
 pub func hostAcceptTls(l: in Listener, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
   match validateServerConfig(cfg) {
     case Some(e) -> Err(error = e)
-    case None -> match hostAccept(l) {
-      case Err(e) -> Err(error = e)
-      case Ok(plain) -> hostUpgradeServerTls(plain, cfg)
-    }
+    case None -> match hostAccept(l) { case Err(e) -> Err(error = e); case Ok(plain) -> hostUpgradeServerTls(plain, cfg) }
   }
 }
 
@@ -619,6 +631,18 @@ pub func hostWrite(c: in Conn, bytes: in slice[Byte]): Result[Unit, TcpError] {
     Ok(value = ())
   } catch Bug as b {
     Err(error = TransportFailed(message = b.message))
+  }
+}
+
+/// The connection's remote endpoint as a string (e.g. `"127.0.0.1:54321"`),
+/// or `""` if it cannot be determined (a closed/disposed socket throws,
+/// which is swallowed rather than surfaced — a best-effort diagnostic value,
+/// never load-bearing for protocol correctness).
+pub func hostRemoteAddress(c: in Conn): String {
+  try {
+    endPointToString(socketRemoteEndPoint(clientSocket(c.client)))
+  } catch Bug as _ {
+    ""
   }
 }
 
