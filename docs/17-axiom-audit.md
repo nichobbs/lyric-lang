@@ -409,6 +409,31 @@ The verifier pre-checks this; application code should not use this module.
 
 **Review**: Stable.
 
+### `Std.ProcessPipedHost` — `lyric-stdlib/std/_kernel/process_piped_host.l`
+
+```
+@axiom("System.Diagnostics.Process piped stdin/stdout conforms to its documented .NET contracts")
+```
+
+**BCL surface**: `Std.ProcessPipedHost` — spawns a child process with
+redirected stdin/stdout and holds it open for interactive line-oriented
+exchange (`spawnPiped` / `pipedWriteLine` / `pipedReadLine` /
+`pipedCloseStdin` / `pipedKill` / `pipedWaitExit`).  Backs
+`Std.Process.spawnPiped`, used by `lyric-mcp`'s stdio client transport
+(docs/62 §5.2).  The JVM twin (`_kernel_jvm/process_piped_host.l`,
+`java.lang.ProcessBuilder` + `java.lang.Process`) carries the analogous
+claim; its read path has a tracked gap (#6135).
+
+**Gap**: Long-lived child-process lifecycle and blocking pipe I/O involve
+OS state that cannot be modelled in first-order logic.  Spawn and I/O
+failures surface as `Result` errors at the kernel boundary.
+
+**Caller obligation**: `executable` must be a valid path on the host
+system; callers must not interleave concurrent reads on one handle and
+must close or kill the child when done (handles are not reclaimed by GC).
+
+**Review**: Stable.
+
 ### `Std.VerifierEnvHost` — `lyric-stdlib/std/_kernel/verifier_env_host.l`
 
 ```
@@ -778,6 +803,7 @@ All are provisional pending weaver integration.
 | `Std.EnvironmentHost`    | `environment_host.l`         | 3      | 0           |
 | `Std.ProcessHost`        | `process_host.l`             | 1      | 0           |
 | `Std.ProcessCaptureHost` | `process_capture_host.l`     | 1      | 0           |
+| `Std.ProcessPipedHost`   | `process_piped_host.l`       | 1      | 0           |
 | `Std.JsonHost`           | `json_host.l`                | 1      | 0           |
 | `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
 | `Std.RandomHost`         | `random_host.l`              | 1      | 0           |
@@ -789,7 +815,7 @@ All are provisional pending weaver integration.
 | `Std.HttpServer`         | `http_server.l`              | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
-| **Total**                |                              | **26** | **2**       |
+| **Total**                |                              | **27** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -815,6 +841,7 @@ recorded in the §19 baseline.
 | `Std.PathHost`           | `path_host.l`                | 1      | 0           |
 | `Std.ProcessHost`        | `process_host.l`             | 1      | 0           |
 | `Std.ProcessCaptureHost` | `process_capture_host.l`     | 1      | 0           |
+| `Std.ProcessPipedHost`   | `process_piped_host.l`       | 1      | 0           |
 | `Std.RandomHost`         | `random_host.l`              | 1      | 0           |
 | `Std.SecureRandomHost`   | `secure_random_host.l`       | 1      | 0           |
 | `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
@@ -822,7 +849,7 @@ recorded in the §19 baseline.
 | `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
 | `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
-| **Total**                |                              | **22** | **0**       |
+| **Total**                |                              | **23** | **0**       |
 
 ### Combined total
 
