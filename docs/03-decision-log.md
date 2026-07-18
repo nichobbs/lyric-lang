@@ -18332,6 +18332,141 @@ h2 is usable end-to-end.
 D-progress-694 (`Std.HttpEngine`, the HTTP/1.1 engine this sits beside and
 shares `HeaderField` with); D128 (the HTTPS/TLS/HTTP-versions design); RFC 7541;
 #5886, #5874.
+## D-progress-697 — TLS phase 3.1: dotnet TCP + server-side TLS transport kernel `Std.TcpHost` (`TcpListener`/`SslStream`, ALPN, mTLS); one generic-`List<ExternValueType>` FFI gap filed and worked around (docs/61 §6.1/§6.3, D128, #5882)
+
+Ships `lyric-stdlib/std/_kernel/tcp_host.l` (`Std.TcpHost`) — issue #5882,
+epic #5874, docs/61 §6.1/§6.3 phase 3.1 — the `--target dotnet` transport
+kernel the sans-IO `Std.HttpEngine` (D-progress-694) drives, and the last of
+phase 3's two ∥ items (item 8, the engine, already shipped). It is the
+dotnet counterpart to the JVM server-TLS work in D-progress-692.
+
+**Public surface (all `Result[_, TcpError]`-disciplined, no exceptions
+escape):**
+
+- `hostListen(host, port)` / `hostStopListener` — bind/stop a `TcpListener`
+  on an IP literal.
+- `hostAccept` (plain) / `hostConnect(host, port)` (plain client dial — the
+  §6.1 table's "client-side connect counterpart").
+- `hostAcceptTls(listener, cfg)` / `hostUpgradeServerTls(conn, cfg)` —
+  server-side `SslStream` termination from a `Std.Tls.TlsServerConfig`
+  (server `identity`, `minVersion`, ALPN, and mTLS). Accept+handshake in one
+  call, or accept-then-upgrade split.
+- `hostRead(conn, maxBytes)` / `hostWrite(conn, bytes)` / `hostClose` — the
+  byte-slice-in/out primitives the driver pumps through the engine. An empty
+  `hostRead` slice is EOF.
+- `hostAlpn(conn)` — the negotiated ALPN protocol (`"http/1.1"`, or `""` for
+  a plain connection / no ALPN); the engine selects its FSM on it. Phase 4
+  (docs/61 §6.4) adds `"h2"`.
+
+**Design decisions, each forced by a real BCL/FFI constraint (not a
+shortcut):**
+
+1. **mTLS is callback-free.** `SslServerAuthenticationOptions.
+   RemoteCertificateValidationCallback` is the custom delegate
+   `RemoteCertificateValidationCallback`, which the D122 delegate bridge
+   cannot construct (it builds only `System.Func`/`System.Action` — the same
+   #5947 gap `_kernel/http_host.l`'s client-side section documents). So mTLS
+   uses the .NET 7+ path: `ClientCertificateRequired = true` plus a
+   `CertificateChainPolicy` with `TrustMode = CustomRootTrust` and a
+   `CustomTrustStore` holding `clientCa` (with `RevocationMode = NoCheck`,
+   matching the client kernel's #5952 default). `SslStream` then rejects — as
+   `TcpError.TlsHandshakeFailed` — a client that presents no cert or one that
+   does not chain to `clientCa`, with no delegate on the path. This corrects
+   the docs/61 §6.1 table row, which originally sketched a validation
+   callback. Because trust is pinned ONLY by the `clientCa`-built chain
+   policy, `requireClientCert` with no `clientCa` would silently fall back to
+   the system trust store and accept any publicly-trusted client certificate;
+   `validateServerConfig` rejects that misconfiguration up front (before any
+   accept) with the typed `TcpError.TlsConfigInvalid` rather than falling back
+   (#6042).
+
+2. **One `Conn.stream: Stream` field for plain and TLS.** The self-hosted
+   type checker treats extern types invariantly (no implicit `NetworkStream ->
+   Stream` / `SslStream -> Stream` widening at a field, return, or param), so
+   the `SslStream` constructor is declared to *return* the base `Stream`
+   (trusted annotation), and the `SslStream`-specific members
+   (`AuthenticateAsServer`, `NegotiatedApplicationProtocol`) are reached by
+   `@externTarget` name on a base-`Stream` receiver — the receiver's Lyric
+   type is used only for overload scoring, so the exact `SslStream` member
+   call is still emitted, and the runtime object genuinely is an `SslStream`.
+
+3. **ALPN via a documented reflection bridge, working around new FFI gap
+   #6029.** `SslServerAuthenticationOptions.ApplicationProtocols` is
+   `List<SslApplicationProtocol>` — a generic collection over an extern value
+   type — which the MSIL emitter cannot encode in a member signature: the
+   `@externTarget` setter path degrades the parameter to `System.Object`
+   (`MissingMethodException` at run time) and the auto-FFI property-assignment
+   path panics the emitter (`panicExternSetterUnresolved`). Filed as **#6029**
+   with an HTTP-independent minimal repro. The kernel builds the genuine
+   `List<SslApplicationProtocol>` and assigns the property entirely through
+   non-generic reflection (`Type.GetType` on the assembly-qualified closed
+   generic name → `Activator.CreateInstance` typed as `System.Collections.
+   IList` → `FieldInfo.GetValue(anyObj)` to read the boxed `Http11` *static
+   field* — the `obj` arg is ignored for a static field, which both dodges the
+   lack of a Lyric null literal and boxes the value type for free, sidestepping
+   the `InvalidProgramException` that an unboxed value-type-into-`object`
+   argument produces → `IList.Add(object)` → `PropertyInfo.SetValue`). This is
+   the same "reach the capability through a non-generic seam" tactic
+   `_kernel/http_host.l` uses (its non-generic `IEnumerator` header walk).
+   `computeAlpn` compares the negotiated protocol via the static `op_Equality`
+   method against values built with the `SslApplicationProtocol(string)` ctor
+   (`Http11`/`Http2`/`Http3` are static *fields*, so no `get_*` target
+   exists). To be removed once #6029 lands. The `FieldInfo` extern alias is
+   named `NetFieldInfo` (not `FieldInfo`): the MSIL codegen registers every
+   extern-type alias in one bundle-global, package-unscoped table consulted
+   *before* the package-scoped resolver, so a bare `FieldInfo` alias hijacks
+   the compiler's own `Jvm.Classfile.FieldInfo` record during the shared
+   stage-1 build and hard-crashes codegen on its `.name` field access — a real
+   compiler scoping defect filed as **#6041** (found by CI's from-source build,
+   which the published-tool sandbox verification could not catch). The
+   `Net`-prefix (matching `NetObject`/`NetType`) sidesteps it.
+
+**Verification.** `lyric-stdlib/tests/tcp_host_tls_tests.l` (`@test_module`,
+8 cases, wired into committed dotnet CI): `TcpError.message`; a `hostListen`
+bind-failure; a plain loopback echo (accept/connect/read/write/close +
+`hostAlpn == ""`); a full server-side TLS handshake that negotiates and
+reports `http/1.1` via ALPN and completes an HTTP/1.1 request/response round
+trip against the **real Lyric HTTPS client** (`withExclusiveCaCertificate`,
+D-progress-691); both mTLS outcomes (a client cert chaining to `clientCa`
+accepted; a certless client with `requireClientCert` rejected at the
+handshake); the `TlsConfigInvalid` rejection of `requireClientCert` without a
+`clientCa` (#6042, up front, no client needed); and the `Tls13` `minVersion`
+branch (a TLS-1.3-only server still completes the round trip, #6033). The
+in-process loopback runs the server accept on a `System.Threading.Tasks.Task`
+because Lyric `spawn` is degenerate-synchronous on `--target dotnet`
+(D119/D120); the client waits on a bounded readiness poll (server-task
+started) rather than a fixed sleep, so slow CI scheduling cannot flake it
+(#6032). Declaring that `extern` in the test mirrors `tls_server_jvm_tests.l`'s
+handshake-layer `extern`s — a documented test-only exception to the
+`_kernel/`-only extern rule for driving the opposite side of a real protocol.
+dotnet-only, as the JVM/native transports are separate later issues; no JVM
+twin.
+
+**Sandbox / formatting boundary.** This session's sandbox could not build
+`./bin/lyric` from source (network-policy-blocked release download; same
+profile as D-progress-543/687/690/691/694), so all verification used the
+published NuGet `lyric` 0.4.33 global tool: `LYRIC_STD_PATH=<repo>/lyric-stdlib/std`
+for source resolution, and a bundle built with `lyric build --manifest
+lyric-stdlib/lyric.full.toml -o <dir>/Lyric.Stdlib.dll` exposed via
+`LYRIC_STDLIB_BIN=<dir>` for `lyric test --target dotnet` runtime linking
+(the bundle must be named `Lyric.Stdlib.dll` so the CLR resolves the
+assembly by name). Per D-progress-543, that tool's `lyric fmt` diverges from
+`main`'s canonical style (0.4.33 collapses multi-line `match` arms onto one
+line with `;` separators and appends trailing `;` to `val _ =` statements);
+it left `_kernel/tcp_host.l` unchanged (already canonical) but rewrote the
+test file into that divergent form, so the test was hand-formatted to the
+repo's prevailing multi-line-match convention instead, exactly as
+D-progress-543 prescribes.
+
+**Related:** docs/61 §6.1/§6.3, D128, #5874, #5882 (this item), #5883/
+D-progress-694 (`Std.HttpEngine`, the ∥ item this drives), #5884 (item 9,
+the server assembly wiring `Std.HttpServer.startListenerTls` onto this
+kernel — still to do), #6029 (the generic-`List<ExternValueType>` FFI gap
+filed here), #5947 (custom-delegate FFI gap that forces the callback-free
+mTLS path), #5952 (revocation-check default), D-progress-689 (`Std.Tls`,
+whose `internal` `Identity.rawHandle`/`Certificate.rawHandle` this kernel
+consumes), D-progress-691/-693 (client TLS), D-progress-692 (JVM server
+TLS — the sibling this mirrors on dotnet).
 
 ## D-progress-696 — `Std.HttpEngine.H2Frame` ships (pure-Lyric HTTP/2 frame codec, RFC 9113 §4/§6, docs/61 §6.4 phase 4.2, #5887)
 

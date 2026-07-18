@@ -30844,3 +30844,51 @@ and the codec keeps `parseFrame`/`serializeFrame` dispatch flat and routes
 
 **Related:** `docs/03-decision-log.md` D-progress-696; docs/61 §6.4/§8;
 #5887, #5874, #5886, #5888.
+
+## `Std.TcpHost` ships — dotnet TCP + server-side TLS transport kernel (`TcpListener`/`SslStream`, ALPN, mTLS) (2026-07-18)
+
+New `lyric-stdlib/std/_kernel/tcp_host.l` (`Std.TcpHost`) — issue #5882,
+epic #5874, docs/61 §6.1/§6.3 phase 3.1 — the `--target dotnet` transport
+kernel the sans-IO `Std.HttpEngine` (above) drives, completing phase 3's two
+∥ items. Provides the `Result[_, TcpError]`-disciplined accept/connect/
+read/write/close byte primitives over `TcpListener`/`TcpClient`/
+`NetworkStream`, and server-side TLS termination over `SslStream`:
+`hostAcceptTls`/`hostUpgradeServerTls` build `SslServerAuthenticationOptions`
+from a `Std.Tls.TlsServerConfig` (server `identity`, `minVersion`, ALPN
+advertising `http/1.1`, and mTLS), with `hostAlpn` reporting the negotiated
+protocol the engine selects its FSM on.
+
+mTLS is the callback-free `ClientCertificateRequired` + `CertificateChainPolicy`
+(`CustomRootTrust` over `clientCa`) path, because
+`RemoteCertificateValidationCallback` is a custom delegate the FFI bridge
+cannot construct (#5947) — correcting docs/61 §6.1's original callback
+sketch. Because trust is pinned only by the `clientCa`-built chain policy,
+`requireClientCert` without a `clientCa` is rejected up front with the typed
+`TcpError.TlsConfigInvalid` rather than silently falling back to the system
+trust store (which would accept any publicly-trusted client cert) — #6042.
+The ALPN `List<SslApplicationProtocol>` property is assigned through a
+documented non-generic reflection bridge working around a newly-filed FFI gap
+(#6029: the MSIL emitter cannot encode a generic-`List<ExternValueType>`
+member signature — `@externTarget` degrades the param to `object`, auto-FFI
+property-assignment panics the emitter).
+
+Verified by `lyric-stdlib/tests/tcp_host_tls_tests.l` (8 `@test_module`
+cases, wired into committed dotnet CI): `TcpError.message`, a bind failure, a
+plain loopback echo, a full TLS handshake negotiating `http/1.1` via ALPN and
+round-tripping bytes against the real Lyric HTTPS client, both mTLS
+accept/reject outcomes, the `TlsConfigInvalid` misconfiguration rejection
+(#6042), and the `Tls13` `minVersion` branch (#6033); the in-process loopback
+synchronizes via a bounded readiness poll rather than a fixed sleep (#6032).
+dotnet-only (JVM/native transports are later issues). Item 9 (wiring
+`Std.HttpServer.startListenerTls` onto this kernel, #5884) remains before the
+phase-3 server is usable end to end.
+
+**Sandbox/formatting boundary:** verified with the published NuGet `lyric`
+0.4.33 tool (no source build available — D-progress-543/694 profile);
+`lyric fmt` diverged on both the kernel and the test file (pulling a block
+comment into a parameter list and collapsing multi-line `match` arms) so both
+were hand-formatted to the repo's canonical multi-line-`match` style per
+D-progress-543.
+
+**Related:** `docs/03-decision-log.md` D-progress-697; docs/61 §6.1/§6.3,
+D128; #5882, #5883, #5884, #5874, #5947, #6029.

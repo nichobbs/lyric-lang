@@ -291,7 +291,7 @@ boundary is kernel. Being sans-IO makes it:
 
 | Target | Accept + bytes | TLS |
 |---|---|---|
-| dotnet | `System.Net.Sockets.TcpListener` / `NetworkStream` (new `_kernel/tcp_host.l`) | `System.Net.Security.SslStream` server-auth (`X509Certificate2` from `Std.Tls`), ALPN via `SslServerAuthenticationOptions.ApplicationProtocols`, mTLS via `ClientCertificateRequired` + validation callback |
+| dotnet | `System.Net.Sockets.TcpListener` / `NetworkStream` (new `_kernel/tcp_host.l`) | `System.Net.Security.SslStream` server-auth (`X509Certificate2` from `Std.Tls`), ALPN via `SslServerAuthenticationOptions.ApplicationProtocols`, mTLS via `ClientCertificateRequired` + a `CertificateChainPolicy` (`CustomRootTrust` over `clientCa`) — the callback-free path, since `RemoteCertificateValidationCallback` is a custom delegate the FFI bridge cannot construct (#5947); see D-progress-697 |
 | jvm (later, evidence-gated) | virtual-thread `ServerSocket` | `SSLServerSocket` / `SSLEngine`, `setNeedClientAuth` |
 | native (phase 5) | POSIX sockets in `lyric-rt` | OpenSSL 3.x (§7) |
 
@@ -555,7 +555,23 @@ items marked ∥ are independent and can proceed in parallel.
 
 **Phase 3 — .NET server engine**
 7. `_kernel/tcp_host.l`: `TcpListener`/`NetworkStream`/`SslStream` transport
-   kernel incl. ALPN + mTLS. ∥ with 8.
+   kernel incl. ALPN + mTLS. ∥ with 8. _Shipped in D-progress-697 (#5882): the
+   dotnet `Std.TcpHost` package — `hostListen`/`hostAccept`/`hostConnect`
+   (plain), `hostAcceptTls`/`hostUpgradeServerTls` (server-side `SslStream`
+   termination from `TlsServerConfig`), `hostRead`/`hostWrite`/`hostClose`
+   (`Result[_, TcpError]` byte primitives), and `hostAlpn` (negotiated
+   protocol). ALPN advertises `http/1.1` (h2 in phase 4); mTLS is the
+   callback-free `ClientCertificateRequired` + `CertificateChainPolicy`
+   (`CustomRootTrust`) path — NOT the `RemoteCertificateValidationCallback`
+   the §6.1 table originally sketched, which is a custom delegate the FFI
+   bridge cannot construct (#5947). Verified by
+   `lyric-stdlib/tests/tcp_host_tls_tests.l` (6 cases: plain echo, TLS
+   handshake + ALPN + byte round trip against the real Lyric HTTPS client,
+   mTLS accept, mTLS reject) in committed dotnet CI. The ALPN
+   `List<SslApplicationProtocol>` property is set via a documented reflection
+   bridge working around generic-`List<ExternValueType>` FFI gap #6029. Item 9
+   (server assembly wiring `Std.HttpServer.startListenerTls` onto this kernel)
+   remains before this phase's server is usable end-to-end._
 8. `Std.HttpEngine` HTTP/1.1: parser, serializer, connection FSM, byte-level
    test corpus. ∥ with 7. _Shipped in D-progress-694 (#5883, PR #5999): the
    protocol engine and its exhaustive (59-case) test corpus, including
