@@ -17147,7 +17147,7 @@ real `lyric test` invocations as normal.
 
 ---
 
-## D-progress-692 — `Std.HttpEngine` ships (pure-Lyric sans-IO HTTP/1.1 parser/serializer/connection FSM, docs/61 §6.1 phase 3.2); five pre-existing JVM/MSIL backend bugs found and worked around
+## D-progress-694 — `Std.HttpEngine` ships (pure-Lyric sans-IO HTTP/1.1 parser/serializer/connection FSM, docs/61 §6.1 phase 3.2); five pre-existing JVM/MSIL backend bugs found and worked around
 
 Ships `lyric-stdlib/std/http_engine.l` (`Std.HttpEngine`) — issue #5883,
 phase 3.2 of the HTTPS/TLS epic (#5874, docs/61-https-tls-http-versions.md
@@ -17279,6 +17279,53 @@ refuse bytes it has already been handed), and defers the actual
 future driver — documented explicitly in the module header rather than
 silently reinterpreted.
 
+**Review-round follow-up (PR #5999).** A code review raised one REQUIRED
+finding and five SUGGESTIONs, addressed in the same PR before merge:
+
+- **#6000 (REQUIRED)** — RFC 9112 §3.2 requires a server to reject any
+  HTTP/1.1 request that lacks a `Host` header field, or that carries more
+  than one. Added `validateHostHeader`/`checkHostCount`, invoked from
+  `finishHeaders` *after* framing analysis succeeds (so a request with
+  both a framing defect and a missing Host reports the framing defect —
+  the more severe, smuggling-adjacent condition — not the Host omission).
+  New `ProtocolErrorKind` cases `MissingHost`/`MultipleHost`, both mapping
+  to 400. HTTP/1.0 is exempt (no such requirement in RFC 9112 for 1.0).
+- **#6004** — added `EngineLimits.maxBodyBytes` (a fifth mandatory field,
+  keeping the "no defaulted fields" #5908/#5920 sidestep intact), enforced
+  once against `Content-Length` for a fixed-length body and cumulatively
+  via a `bodyBytesSoFar: Int` threaded through `PhChunkSize`/
+  `PhChunkData`/`PhChunkCrlf` for a chunked body (whose total is never
+  declared up front). Exceeding it is the new `BodyTooLarge` kind, mapped
+  to 413.
+- **#6003** — `validateChunkedTransferEncoding` conflated "no `chunked`
+  coding present at all" with "`chunked` present but not last" under one
+  `NonFinalChunkedEncoding` kind. Split into a new `UnsupportedTransferCoding`
+  kind for the former, keeping `NonFinalChunkedEncoding` for the latter.
+- **#6002** — `serializeResponseHead`'s `requires:` clauses rejected an
+  RFC-legal empty reason-phrase (RFC 9112 §4 permits one) and HTAB inside
+  a header value (RFC 9110 §5.5's `field-vchar`/SP/HTAB grammar allows
+  it), panicking the connection for input that was never actually an
+  injection risk. Dropped the `reason.length > 0` requirement and widened
+  `isResponseSafeByte` to `(cp >= 32 and cp <= 126) or cp == 9`, rejecting
+  only CR/LF/NUL — the actual response-splitting hazards.
+- **#6005** — `feed`'s `var state = conn` is a shallow record copy, so a
+  `PhHeaders` phase's `List[HeaderField]` aliased the same heap object
+  `conn` referenced; `onHeaderField`'s in-place `.add()` was, in
+  principle, observable through a stale `conn` reference kept around in
+  violation of (but not caught by) the linear-value contract. `feed` now
+  defensively clones the header list via `cloneHeaderPhaseIfNeeded`/
+  `clonedHeaderPhase` at entry, enforcing the contract by construction.
+- **#6001 (deferred)** — quadratic (`acc = acc + …`) string construction
+  in header-serialization hot paths is a real but bounded (limits-capped)
+  inefficiency; fixing it spans four functions and was judged out of
+  scope for this round. Left as a tracked follow-up, not gold-plated in.
+
+The test corpus grew from 52 to 59 `@test_module` cases: missing/duplicate
+Host (both polarities), an explicit HTTP/1.0-without-Host acceptance case,
+`UnsupportedTransferCoding`, `BodyTooLarge` for both fixed-length and
+cumulative chunked bodies, and the relaxed serializer contract (empty
+reason + HTAB).
+
 **Verification.** No source-buildable `./bin/lyric` was available in this
 sandbox (same D-progress-543 exception as D-progress-689); the published
 NuGet `lyric` 0.4.32 tool was used. Following the D-progress-689 addendum's
@@ -17289,23 +17336,33 @@ stale prebuilt `Lyric.Stdlib.dll` for runtime resolution even with
 throwaway `func main(): Int` harness driven by `lyric run --manifest`
 against a small manifest containing only this module's own transitive
 closure — the recipe that correctly recompiles and executes fresh source,
-per D-progress-689. All 59 checks (covering every `@test_module` test's
-assertions) pass identically on `--target dotnet` and `--target jvm`,
-verified twice: once against a minimal manifest carrying only this
-module's own dependency closure, and again against the real, full
-`lyric-stdlib/lyric.full.toml` bundle (69 packages, including `Std.Http`)
-after rebasing onto a `main` that had, in the interim, landed #5877's own
-`Std.Http.HttpVersion` enum and triggered the #5995 collision above — the
-second run is what caught #5995, since it only manifests once both
-`HttpVersion` enums coexist in one compiled program. `lyric build
---manifest lyric-stdlib/lyric.full.toml` (the full stdlib bundle with
-`Std.HttpEngine` added) stays clean on both targets (a pre-existing,
-unrelated `W0005`/#2494 warning count on dotnet is identical with and
-without this addition). CI, which builds a genuine `./bin/lyric` from
-source, runs the real `lyric test` invocations on both targets as normal.
+per D-progress-689. All 71 checks (covering every `@test_module` test's
+assertions, including the review-round additions above) pass identically
+on `--target dotnet` and `--target jvm`, verified twice: once against a
+minimal manifest carrying only this module's own dependency closure, and
+again against the real, full `lyric-stdlib/lyric.full.toml` bundle (68
+packages, including `Std.Http`) after rebasing onto a `main` that had, in
+the interim, landed #5877's own `Std.Http.HttpVersion` enum and triggered
+the #5995 collision above — the second run is what caught #5995, since it
+only manifests once both `HttpVersion` enums coexist in one compiled
+program. (An early version of the harness that crammed every check into a
+single giant `func main()` hit an unrelated `InvalidCastException`
+casting an `EngineLimits` value to `Func<Object>`; splitting the harness's
+checks across several helper functions — mirroring how `Lyric.TestSynth`
+already compiles each real `test { }` block into its own synthesized
+function — made the crash disappear, confirming it was an artifact of the
+scratch harness's shape, not a `Std.HttpEngine` or shipped-test-corpus
+issue.) `lyric build --manifest lyric-stdlib/lyric.full.toml` (the full
+stdlib bundle with `Std.HttpEngine` added) stays clean on both targets (a
+pre-existing, unrelated `W0005`/#2494 warning count on dotnet is identical
+with and without this addition). `scripts/audit-axioms.sh` and
+`scripts/audit-kernel-stubs.sh` both stay clean. CI, which builds a
+genuine `./bin/lyric` from source, runs the real `lyric test` invocations
+on both targets as normal.
 
 **Related:** #5883, #5874, docs/61-https-tls-http-versions.md §6.1, D128,
-#5934, #5935, #5936, #5937, #5995, D-progress-543, D-progress-689, D065.
+#5934, #5935, #5936, #5937, #5995, #6000, #6002, #6003, #6004, #6005,
+D-progress-543, D-progress-689, D065.
 
 ---
 
