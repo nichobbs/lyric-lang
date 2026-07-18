@@ -938,9 +938,11 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
                                        # module-level val (docs/60). Repeatable. Substituted before
                                        # type-check as a String literal (no source re-parse). An
                                        # unsupplied key keeps the val's in-source fallback literal.
-                                       # v1: single-file --target dotnet/jvm; --target native
-                                       # (blocked by native codegen, #5977), project builds, and
-                                       # --watch are rejected (project-path parity #5852).
+                                       # v1: single-file AND project (--manifest / lyric.toml)
+                                       # --target dotnet/jvm; on a project build the manifest
+                                       # [package].version is the well-known `version` fallback an
+                                       # explicit --define version=… overrides. --target native
+                                       # (#5977), --watch, and --release are rejected.
 
 # Build kind (manifest [build] kind, .NET target; default "lib")
 #   kind = "lib"     -> managed foo.dll + foo.runtimeconfig.json (run via `dotnet exec`)

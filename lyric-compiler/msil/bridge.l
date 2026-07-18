@@ -395,7 +395,8 @@ pub func compileProjectToMsilWithRestored(
     restoredArtifacts,
     emptyNugetPaths,
     "",
-    noDepTemplatePkgs
+    noDepTemplatePkgs,
+    newList()
   )
 }
 
@@ -414,6 +415,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   nugetAssemblyPaths: in List[String],
   packageVersion: in String,
   depTemplatePkgs: in List[ProjectPackagePayload],
+  defines: in List[String],
 ): Bool {
   if packages.count == 0 {
     return false
@@ -473,12 +475,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // "per-package symbol tables" recommendation; the old flat
   // accumulation was a known gap tracked as #1195.
   val parsedPkgs: List[ParsedUserPkg] = newList()
-  // Auto-injected well-known `version` define (docs/60 §9.2): the manifest's
-  // `[package].version` populates `BuildInfo.version` (and any
-  // `@build_const("version")`) on a project build with no explicit `--define`.
-  // Hoisted out of the per-package loop since it never varies (#5906). User
-  // `--define` on the project path is a separate follow-up (#5852).
-  val projDefines = BD.decodeDefines(BD.withWellKnownDefines(packageVersion, newList()))
+  // User `--define`s merged beneath the auto-injected well-known `version`
+  // (docs/60 §9.2, M1d): the manifest's `[package].version` is the fallback and
+  // any `--define version=…` wins (decodeDefines last-wins, #5852 phase C).
+  // Hoisted out of the per-package loop since it never varies (#5906).
+  val projDefines = BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]
@@ -1026,7 +1027,8 @@ pub func compileProjectToMsilWithRestoredEncoded(
     restoredArtifacts,
     emptyNugetPaths,
     packageVersion,
-    noDepTemplatePkgsEncoded
+    noDepTemplatePkgsEncoded,
+    newList()
   )
 }
 

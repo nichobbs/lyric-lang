@@ -403,17 +403,10 @@ func emitSingleFileOrProject(
     return noContributionOutcome(req)
   }
 
-  // docs/60: this build has routed to the project path (a nearby lyric.toml
-  // contributes dependencies/features), which uses EmitProjectRequest and does
-  // not yet thread `--define`. The cmdBuild gate only catches an *explicit*
-  // --manifest / non-dotnet target; an *auto-discovered* manifest reaches here.
-  // Fail rather than silently drop the defines (#5894; parity tracked in #5852).
-  if req.defines.count > 0 {
-    return failedEmitOutcome(
-      sourcePath +
-        ": --define is not applied on a project build (a nearby lyric.toml contributes dependencies/features, routing this through the project path); project-path --define parity is tracked in #5852"
-    )
-  }
+  // docs/60 (#5852 phase C): this single-file build routed to the project path
+  // (a nearby lyric.toml contributes dependencies/features). `req.defines` (the
+  // user's `--define`s) is threaded into the project request below, merged
+  // beneath the manifest's well-known `version` in the bridges.
 
   val srcs: List[String] = newList()
   srcs.add(req.source)
@@ -439,7 +432,8 @@ func emitSingleFileOrProject(
     declaredFeatures = declaredFeatures,
     packageVersion = req.packageVersion,
     depTemplateSrcs = resolvedDeps.depTemplateSrcs,
-    nugetAssemblyPaths = resolvedDeps.nugetThirdPartyPaths
+    nugetAssemblyPaths = resolvedDeps.nugetThirdPartyPaths,
+    defines = req.defines
   )
 
   var mavenSaved: Option[String] = None
@@ -891,18 +885,17 @@ func cmdBuild(argv: in slice[String]): Int {
   // bridge too, but native `--define` stays gated: native codegen cannot yet
   // *consume* a define (module-level `val` references block `@build_const`, and
   // list literals block `Std.BuildInfo`), so it would crash rather than
-  // substitute — tracked in #5977. Reject `--define` up front where it would be
-  // silently dropped or crash: `--target native`, a project build (explicit
-  // `--manifest`, or an auto-discovered nearby `lyric.toml` — the latter caught
-  // by the `emitSingleFileOrProject` gate), and `--watch` (whose rebuild action
-  // carries no defines). Project-path parity is tracked in #5852.
+  // substitute — tracked in #5977. `--define` now works on both single-file and
+  // project builds (explicit `--manifest` and auto-discovered `lyric.toml`) for
+  // `--target dotnet`/`jvm` (#5852 phase C). Still rejected where it would crash
+  // or be silently dropped: `--target native` (#5977), `--watch` (whose rebuild
+  // action carries no defines), and `--release` (the AOT-packaging path does not
+  // thread defines — a separate follow-up).
   if cliDefines.count > 0 {
     val consumableTarget = match target { case Dotnet -> true; case Jvm -> true; case Native -> false }
-    val singleFile = positional.count > 0
-    val hasManifest = match manifestArg { case Some(_) -> true; case None -> false }
-    if (not singleFile) or (not consumableTarget) or hasManifest or watch {
+    if (not consumableTarget) or watch or release {
       printErr(
-        "build: --define is currently supported only for single-file --target dotnet/jvm builds without --watch (native --define blocked by native codegen gaps, tracked in #5977; project-path parity tracked in #5852)"
+        "build: --define is supported on single-file and project (--manifest / lyric.toml) --target dotnet/jvm builds; it is not supported with --target native (native codegen gaps, #5977), --watch, or --release"
       )
       return 1
     }
@@ -987,7 +980,8 @@ func cmdBuild(argv: in slice[String]): Int {
       allFeatures,
       noRestore,
       packageVersionArg,
-      None
+      None,
+      cliDefines
     )
   }
 
@@ -1294,7 +1288,8 @@ func buildReleaseProject(
     allFeatures,
     noRestore,
     packageVersionOverride,
-    Some(value = resolved)
+    Some(value = resolved),
+    newList()
   )
   if buildExit != 0 {
     return buildExit
@@ -1487,6 +1482,7 @@ pub func buildProject(
   noRestore: in Bool,
   packageVersionOverride: in Option[String],
   preResolvedDeps: in Option[ResolvedManifestDeps],
+  cliDefines: in List[String],
 ): Int {
   val buildStart = Time.now()
   val mfText = match File.readText(mfPath) {
@@ -1645,7 +1641,8 @@ pub func buildProject(
       case None -> manifest.packageSection.version
     },
     depTemplateSrcs = depTemplatePkgsList,
-    nugetAssemblyPaths = nugetThirdPartyPaths
+    nugetAssemblyPaths = nugetThirdPartyPaths,
+    defines = cliDefines
   )
 
   // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM

@@ -840,7 +840,8 @@ test "buildProject: a preResolvedDeps sentinel's hadWorkspaceError is honored, n
     false,
     true,
     None,
-    Some(value = sentinel)
+    Some(value = sentinel),
+    newList()
   )
   assertEqualInt(
     exitCode,
@@ -878,7 +879,8 @@ test "buildProject: preResolvedDeps = None re-resolves internally and a dependen
     false,
     true,
     None,
-    None
+    None,
+    newList()
   )
   assertEqualInt(
     exitCode,

@@ -377,7 +377,7 @@ jobs:
       # project build with `[package].version` in lyric.toml populates
       # `BuildInfo.version` with NO `--define`. Non-background (this job has
       # Java 21 + project-build infra); asserted end-to-end on dotnet and jvm.
-      - name: BuildInfo project version auto-injection (docs/60 §9.2)
+      - name: BuildInfo project version + --define (docs/60 §9.2, #5852)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
@@ -408,23 +408,44 @@ jobs:
           import Std.Console
           import Std.BuildInfo
 
+          @build_const("greeting")
+          val GREETING: String = "default-greeting"
+
           func main(): Int {
             val bi = buildInfo()
             println("version=" + bi.version)
+            println("greeting=" + GREETING)
             0
           }
           LYR
+          # (M1d) project build with NO --define: BuildInfo.version auto-injected
+          # from the manifest; @build_const keeps its in-source fallback.
           echo "=== dotnet project build (manifest version=4.5.6, no --define) ==="
           "$lyric_bin" build --manifest "$proj/lyric.toml"
           out="$(dotnet "$proj/bin/biverproj.dll")"
           echo "dotnet: $out"
-          echo "$out" | grep -qx "version=4.5.6" || { echo "::error::dotnet project build did not auto-inject BuildInfo.version from the manifest"; exit 1; }
-          echo "=== jvm project build ==="
+          echo "$out" | grep -qx "version=4.5.6"          || { echo "::error::dotnet project build did not auto-inject BuildInfo.version from the manifest"; exit 1; }
+          echo "$out" | grep -qx "greeting=default-greeting" || { echo "::error::@build_const fallback wrong on project build"; exit 1; }
+          echo "=== jvm project build (no --define) ==="
           "$lyric_bin" build --manifest "$proj/lyric.toml" --target jvm -o "$proj/biverproj.jar"
           outj="$(java -jar "$proj/biverproj.jar")"
           echo "jvm: $outj"
           echo "$outj" | grep -qx "version=4.5.6" || { echo "::error::jvm project build did not auto-inject BuildInfo.version from the manifest"; exit 1; }
-          echo "BuildInfo project version auto-injection OK (dotnet + jvm, version=4.5.6)" >> "$GITHUB_STEP_SUMMARY"
+          # (phase C, #5852) project build WITH --define: user --define overrides
+          # the well-known manifest version, and substitutes the @build_const.
+          echo "=== dotnet project build WITH --define (override) ==="
+          "$lyric_bin" build --manifest "$proj/lyric.toml" --define version=9.9.9 --define greeting=hello-project
+          outd="$(dotnet "$proj/bin/biverproj.dll")"
+          echo "dotnet(--define): $outd"
+          echo "$outd" | grep -qx "version=9.9.9"        || { echo "::error::project --define version did not override the manifest well-known version"; exit 1; }
+          echo "$outd" | grep -qx "greeting=hello-project" || { echo "::error::project --define did not substitute the @build_const"; exit 1; }
+          echo "=== jvm project build WITH --define (override) ==="
+          "$lyric_bin" build --manifest "$proj/lyric.toml" --target jvm --define version=7.7.7 --define greeting=jvm-greet -o "$proj/biverproj.jar"
+          outjd="$(java -jar "$proj/biverproj.jar")"
+          echo "jvm(--define): $outjd"
+          echo "$outjd" | grep -qx "version=7.7.7"     || { echo "::error::jvm project --define version did not override the manifest version"; exit 1; }
+          echo "$outjd" | grep -qx "greeting=jvm-greet" || { echo "::error::jvm project --define did not substitute the @build_const"; exit 1; }
+          echo "BuildInfo project version + --define OK (dotnet + jvm: no-define 4.5.6; --define override 9.9.9/7.7.7 + @build_const)" >> "$GITHUB_STEP_SUMMARY"
 
       # Prove proof-only examples.
       - name: Prove proof-only examples (with z3)

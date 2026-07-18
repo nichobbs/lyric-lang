@@ -136,7 +136,8 @@ func buildDll(tmpDir: in String, pkgName: in String, source: in String, asmName:
     declaredFeatures = newList(),
     packageVersion = "",
     depTemplateSrcs = newList(),
-    nugetAssemblyPaths = newList()
+    nugetAssemblyPaths = newList(),
+    defines = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -170,7 +171,8 @@ func buildAndRunConsumer(
     declaredFeatures = newList(),
     packageVersion = "",
     depTemplateSrcs = newList(),
-    nugetAssemblyPaths = newList()
+    nugetAssemblyPaths = newList(),
+    defines = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -208,12 +210,23 @@ func buildAndRunConsumer(
 test "cross-package Nat-backed range-subtype parameter and return round-trip" {
   val tmpDir = freshTempDir("nat-score")
   val producerSrc = "package NatXp.Lib\n" + "\n" + "pub type Score = Nat range 0 ..= 1000000\n" + "\n" +
-    "pub func makeScore(n: Long): Score {\n" + "  Score.from(n)\n" + "}\n" + "\n" +
-    "pub func scoreToLong(s: in Score): Long {\n" + "  s.toLong()\n" + "}\n" + "\n" +
-    "pub func bumpScore(s: in Score): Score {\n" + "  Score.from(s.toLong() + 1)\n" + "}\n"
+    "pub func makeScore(n: Long): Score {\n" +
+    "  Score.from(n)\n" +
+    "}\n" +
+    "\n" +
+    "pub func scoreToLong(s: in Score): Long {\n" +
+    "  s.toLong()\n" +
+    "}\n" +
+    "\n" +
+    "pub func bumpScore(s: in Score): Score {\n" +
+    "  Score.from(s.toLong() + 1)\n" +
+    "}\n"
   val producerDll = buildDll(tmpDir, "NatXp.Lib", producerSrc, "NatXp.Lib")
   val consumerSrc = "package NatXp.App\n" + "\n" + "import NatXp.Lib\n" + "\n" + "func main(): Unit {\n" +
-    "  val s = makeScore(41)\n" + "  val s2 = bumpScore(s)\n" + "  println(scoreToLong(s2))\n" + "}\n"
+    "  val s = makeScore(41)\n" +
+    "  val s2 = bumpScore(s)\n" +
+    "  println(scoreToLong(s2))\n" +
+    "}\n"
   val captured = buildAndRunConsumer(tmpDir, "NatXp.App", consumerSrc, "NatXp.App", "NatXp.Lib", producerDll)
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "natxp_score: exit 0 (stderr=" + captured.stderr + ")")
@@ -229,15 +242,25 @@ test "cross-package Nat-backed range-subtype parameter and return round-trip" {
 test "cross-package record with Nat-backed range field construct and read" {
   val tmpDir = freshTempDir("nat-rec")
   val producerSrc = "package NatXp.RecLib\n" + "\n" + "pub type Score = Nat range 0 ..= 1000000\n" + "\n" +
-    "pub record Counter { score: Score }\n" + "\n" +
-    "pub func makeCounter(n: Long): Counter {\n" + "  Counter(score = Score.from(n))\n" + "}\n" + "\n" +
-    "pub func counterScoreToLong(c: in Counter): Long {\n" + "  c.score.toLong()\n" + "}\n" + "\n" +
+    "pub record Counter { score: Score }\n" +
+    "\n" +
+    "pub func makeCounter(n: Long): Counter {\n" +
+    "  Counter(score = Score.from(n))\n" +
+    "}\n" +
+    "\n" +
+    "pub func counterScoreToLong(c: in Counter): Long {\n" +
+    "  c.score.toLong()\n" +
+    "}\n" +
+    "\n" +
     "pub func bumpCounter(c: in Counter): Counter {\n" +
-    "  Counter(score = Score.from(c.score.toLong() + 1))\n" + "}\n"
+    "  Counter(score = Score.from(c.score.toLong() + 1))\n" +
+    "}\n"
   val producerDll = buildDll(tmpDir, "NatXp.RecLib", producerSrc, "NatXp.RecLib")
   val consumerSrc = "package NatXp.RecApp\n" + "\n" + "import NatXp.RecLib\n" + "\n" + "func main(): Unit {\n" +
-    "  val c = makeCounter(9)\n" + "  val c2 = bumpCounter(c)\n" +
-    "  println(counterScoreToLong(c2))\n" + "}\n"
+    "  val c = makeCounter(9)\n" +
+    "  val c2 = bumpCounter(c)\n" +
+    "  println(counterScoreToLong(c2))\n" +
+    "}\n"
   val captured = buildAndRunConsumer(tmpDir, "NatXp.RecApp", consumerSrc, "NatXp.RecApp", "NatXp.RecLib", producerDll)
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "natxp_rec: exit 0 (stderr=" + captured.stderr + ")")

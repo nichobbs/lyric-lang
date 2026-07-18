@@ -104,7 +104,8 @@ func runEmitProjectOpts(
     declaredFeatures = declared,
     packageVersion = "",
     depTemplateSrcs = newList(),
-    nugetAssemblyPaths = newList()
+    nugetAssemblyPaths = newList(),
+    defines = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -161,7 +162,8 @@ func runEmitProjectJvmOpts(
     declaredFeatures = newList(),
     packageVersion = "",
     depTemplateSrcs = newList(),
-    nugetAssemblyPaths = newList()
+    nugetAssemblyPaths = newList(),
+    defines = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -428,7 +430,8 @@ test "per-package isolation implicit leak rejected" {
     declaredFeatures = newList(),
     packageVersion = "",
     depTemplateSrcs = newList(),
-    nugetAssemblyPaths = newList()
+    nugetAssemblyPaths = newList(),
+    defines = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -593,7 +596,8 @@ test "restored dep wiring no crash" {
     declaredFeatures = newList(),
     packageVersion = "",
     depTemplateSrcs = newList(),
-    nugetAssemblyPaths = newList()
+    nugetAssemblyPaths = newList(),
+    defines = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -635,7 +639,8 @@ test "emitProject subprocess fallback on restored dep" {
     declaredFeatures = newList(),
     packageVersion = "",
     depTemplateSrcs = newList(),
-    nugetAssemblyPaths = newList()
+    nugetAssemblyPaths = newList(),
+    defines = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {

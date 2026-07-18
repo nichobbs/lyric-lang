@@ -41,7 +41,7 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
     case Some(p) -> p
   }
   val mfDir = Path.dirname(mfPath)
-  val buildRc = buildProject(mfPath, None, target, newList(), false, false, false, None, None)
+  val buildRc = buildProject(mfPath, None, target, newList(), false, false, false, None, None, newList())
   if buildRc != 0 {
     return buildRc
   }
@@ -238,7 +238,7 @@ func runWatchAction(a: in WatchAction): Int {
   match a {
     case RunFile(sp, ua, t) -> runOnce(sp, ua, t)
     case RunProj(mp, ua, t) -> runProjectOnce(mp, ua, t)
-    case BuildProj(mf, o, t, f, nd, af, nr, pv) -> buildProject(mf, o, t, f, nd, af, nr, pv, None)
+    case BuildProj(mf, o, t, f, nd, af, nr, pv) -> buildProject(mf, o, t, f, nd, af, nr, pv, None, newList())
     case BuildFile(sp, o, t, m, tr, op, f, nd, af) -> {
       val runDefines: List[String] = newList()
       buildOneNativeWithFeatures(sp, o, t, m, tr, op, f, nd, af, runDefines)
