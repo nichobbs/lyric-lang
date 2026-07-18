@@ -1403,15 +1403,22 @@ pub func serve(router: in Router, host: in String, port: in Int): Unit
 }
 
 // ─── TLS (HTTPS) server ─────────────────────────────────────────────────────
-/// Failure returned by `serveTls` (docs/61 §6.3).  A single case today:
-/// server TLS is not runnable in the given configuration on the current
-/// target — on `dotnet` at all (until the sans-IO engine lands, phase 3 of
-/// epic #5874, issue #5885), and on `jvm` for mutual-TLS configurations
-/// (issue #6017).  The case is named `ServerTlsUnsupported` rather than
-/// reusing `Std.HttpServer.TlsListenError`'s `NotSupportedOnTarget` on
-/// purpose: the self-hosted JVM backend resolves a bare match case name from
-/// a global table rather than the scrutinee's static type (`std/tls.l`'s
-/// module header, #5903), so two in-scope unions must not share a case name.
+/// Failure returned by `serveTls` (docs/61 §6.3).  A single case: server TLS
+/// is not runnable in the given configuration on the current target.  It is
+/// returned when the HTTPS listener cannot be brought up — on `dotnet`, an
+/// invalid TLS configuration (a mutual-TLS misconfiguration:
+/// `requireClientCert` with no `clientCa`) or a bind failure surfaced by
+/// `Std.HttpServer.startListenerTls`; on `jvm`, a mutual-TLS request
+/// (`requireClientCert`/`clientCa`), which the Undertow listener does not yet
+/// support (issue #6017).  Since phase 3.4 (issue #5885) `dotnet` server TLS
+/// is real (the sans-IO `Std.HttpEngine` + `Std.TcpHost`/`SslStream`
+/// transport replaced `HttpListener`), so the "unsupported on dotnet at all"
+/// state is gone; non-mTLS and mTLS both serve there.  The case is named
+/// `ServerTlsUnsupported` rather than reusing `Std.HttpServer.TlsListenError`'s
+/// `NotSupportedOnTarget` on purpose: the self-hosted JVM backend resolves a
+/// bare match case name from a global table rather than the scrutinee's static
+/// type (`std/tls.l`'s module header, #5903), so two in-scope unions must not
+/// share a case name.
 @stable(since = "0.3")
 pub union ServeTlsError {
   case ServerTlsUnsupported(message: String)
@@ -1495,11 +1502,20 @@ pub func tlsServerConfigFromWebTls(cfg: in WebTls): Result[Std.Tls.TlsServerConf
 /// forever), so a returned `Err(ServerTlsUnsupported(...))` is the only
 /// observable return.
 ///
-/// dotnet: not supported until the pure-Lyric sans-IO HTTP server engine
-/// replaces `HttpListener` (which cannot terminate TLS off-Windows or speak
-/// h2) — returns a typed `ServerTlsUnsupported` naming phase 3 / issue #5885,
-/// a loud tracked gap per docs/61's no-silent-skip rule. Use `--target jvm`
-/// for HTTPS today.
+/// dotnet: terminates TLS for real (phase 3.4, issue #5885) via
+/// `Std.HttpServer.startListenerTls` — the pure-Lyric sans-IO `Std.HttpEngine`
+/// over the `Std.TcpHost` `TcpListener`/`SslStream` transport (server
+/// identity + `minVersion` + ALPN `http/1.1` + callback-free mTLS) that
+/// replaced `HttpListener`.  The router is dispatched through the same pull
+/// loop / `dispatch` core as plaintext `serve`.  Mutual TLS is fully
+/// supported here (unlike the JVM Undertow listener): the `tls` config is
+/// passed straight through, including `clientCa`/`requireClientCert`.  A
+/// configuration that cannot bind a listener (a mutual-TLS misconfiguration —
+/// `requireClientCert` with no `clientCa` — or a socket bind failure) returns
+/// a typed `ServerTlsUnsupported` carrying the underlying
+/// `Std.HttpServer.TlsListenError` message rather than a silent failure.  h2
+/// end-to-end is out of scope here (the transport advertises only `http/1.1`;
+/// the engine's h2 FSM + ALPN wiring are issue #5889).
 @stable(since = "0.3")
 @cfg(feature = "dotnet")
 pub func serveTls(
@@ -1509,13 +1525,41 @@ pub func serveTls(
   requires: port >= 1
   requires: port <= 65535
 {
-  return Err(
-    error = ServerTlsUnsupported(
-      message = "lyric-web serveTls is not supported on --target dotnet yet: the managed HttpListener " +
-        "cannot terminate TLS off-Windows or speak HTTP/2. It ships with the pure-Lyric sans-IO HTTP " +
-        "server engine (docs/61 §6, phase 3 of epic #5874, issue #5885). Use --target jvm for HTTPS today."
-    )
-  )
+  // `startListenerTls` returns `Result[HttpListener, TlsListenError]`; extract
+  // the message via `TlsListenError.message` (a call, resolved inside
+  // `Std.HttpServer`) rather than matching its cases here, so no cross-package
+  // user-union case match happens in this function (the #5903 family — see the
+  // JVM `serveTls`' header for the concrete failure mode it avoids).
+  val listener = match startListenerTls(host, port, tls) {
+    case Ok(l) -> l
+    case Err(e) -> {
+      val reason = TlsListenError.message(e)
+      return Err(
+        error = ServerTlsUnsupported(
+          message = "lyric-web serveTls could not start an HTTPS listener on " + host + ":" + port.toString() +
+            ": " +
+            reason
+        )
+      )
+    }
+  }
+  Console.println("[lyric-web] Listening on https://" + host + ":" + port.toString() + "/")
+  while true {
+    try {
+      val ctx = nextContext(listener)
+      val req = buildRequest(ctx)
+      val resp = dispatch(router, req)
+      writeResponse(ctx, resp)
+    } catch Bug as e {
+      // A caught Bug means the request loop can no longer make progress; surface
+      // it loudly and stop rather than exiting 0 as if shut down cleanly (mirror
+      // of the plaintext `serve` failure path, #5260).
+      Console.error("[lyric-web] request handling failed on https://" + host + ":" + port.toString() + ": " + e.message)
+      stopListener(listener)
+      Env.exitCode(1)
+    }
+  }
+  return Ok(value = ())
 }
 
 /// jvm: rejects mutual-TLS configs with a typed `ServerTlsUnsupported`

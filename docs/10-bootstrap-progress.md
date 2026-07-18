@@ -30586,6 +30586,9 @@ naming the sans-IO-engine work (phase 3, issue #5885) — the managed
 `HttpListener` cannot terminate TLS off-Windows or speak HTTP/2. A
 `Web.WebTls` config block (env-overridable cert/key/client-CA paths, D128
 decision 2) plus `tlsServerConfigFromWebTls` complete the surface.
+(Superseded by phase 3.4 / D-progress-701, #5885: dotnet `serveTls` now
+terminates real TLS over the new `Std.HttpServer` — see the dotnet
+`Web.serveTls` entry below.)
 
 Mutual TLS did not ship on the Undertow path: the reused identity-only
 `SSLContext` builder carries no client-CA `TrustManager`, and Undertow
@@ -30939,3 +30942,47 @@ gated on the h2 FSM #5888) are separate; the transport advertises only
 
 **Related:** `docs/03-decision-log.md` D-progress-700; docs/61 §6, D128; #5884,
 #5874, #5882 (D-progress-697), #5883, #5885, #5889, #6041, #6042.
+
+## lyric-web `Web.serveTls` terminates real TLS on dotnet — server-TLS parity on both targets (2026-07-18)
+
+TLS phase 3.4 (docs/61 §6.3 item 10, epic #5874, issue #5885; D-progress-701).
+lyric-web's dotnet `serveTls` (`lyric-web/src/web.l`) now calls
+`Std.HttpServer.startListenerTls(host, port, tls)` — the sans-IO `Std.HttpEngine`
+over the `Std.TcpHost` `TcpListener`/`SslStream` transport shipped in phase 3.3
+(#5884) — and dispatches the resulting listener through the same pull loop /
+`Web.dispatch` core as plaintext `serve`. The phase-2.2 typed
+`ServerTlsUnsupported`-on-dotnet stub is gone.
+
+**Mutual TLS is fully supported on dotnet** (unlike the JVM Undertow listener,
+where mTLS is #6017): the `tls` config — including `clientCa`/`requireClientCert`
+— is passed straight through to the callback-free mTLS transport kernel. A
+configuration that cannot bind a listener (a mutual-TLS misconfiguration:
+`requireClientCert` with no `clientCa`; or a socket bind failure) is surfaced as
+a typed `Err(ServerTlsUnsupported(...))` carrying the underlying
+`Std.HttpServer.TlsListenError` message, never a silent failure. The message is
+read via `TlsListenError.message` (a call resolved inside `Std.HttpServer`)
+rather than by matching its cases in `Web`, so no cross-package user-union case
+match happens in `serveTls` (the #5903 family).
+
+No new externs, no new public type/case names. `serve`/`serveTls`/`WebTls`/
+`tlsServerConfigFromWebTls` are unchanged in signature; only the dotnet
+`serveTls` body and two doc comments change.
+
+Verified by `lyric-web/tests/serve_tls_tests.l` (`Web.ServeTlsTests`
+`@test_module`, wired into dotnet CI via `lyric test --manifest
+lyric-web/lyric.toml`): a real in-process `Web.serveTls` TLS round trip driven
+by the real Lyric HTTPS client (`tcp_host_tls_tests.l`'s background-`Task.Run` +
+client pattern), an mTLS accept (a client presenting a CA-chained cert), a
+mutual-TLS-misconfiguration rejection (typed error, no listener bound),
+`tlsServerConfigFromWebTls` success + file-not-found, and the `WebTls`
+config-template env-var override. The JVM `serveTls` path is unchanged and stays
+covered by `tests/jvm_server_smoke.l`. Verified against a from-source-built
+`./bin/lyric` (the published tool's baked bundle shadows the new
+`Std.HttpServer`).
+
+Boundary: h2/ALPN end-to-end on the dotnet server is #5889 (gated on the h2 FSM
+#5888; the transport advertises only `http/1.1`). Native server TLS is #5890.
+JVM mTLS is #6017.
+
+**Related:** `docs/03-decision-log.md` D-progress-701; docs/61 §6.3, D128; #5885,
+#5874, #5884 (D-progress-700), #5881 (D-progress-698), #6017, #5889, #5903.
