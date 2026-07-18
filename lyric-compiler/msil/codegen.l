@@ -11530,24 +11530,30 @@ func unwrapParenExpr(e: in Expr): Expr {
 // positional (already in order), the field-name map is absent (defensive), or
 // a required field has neither a named arg nor a registered default.
 func fillCtorDefaultArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List[CallArg]): List[CallArg] {
-  // Build name → arg from the call site; bail if any arg is positional.
-  // When args.count == 0 we still need to go through the default-injection path
-  // to handle zero-arg construction of types whose fields all have defaults.
+  // Classify the call site: all-named (or empty), all-positional, or mixed.
   val nameToArg: Map[String, CallArg] = newMap()
+  var anyNamed = false
+  var anyPositional = false
   var i = 0
   while i < args.count {
     match args[i] {
       case CANamed(nm, _, _) -> {
+        anyNamed = true
         if nameToArg.containsKey(nm) {
           return args
         }  // dup name — leave as-is
         nameToArg.add(nm, args[i])
       }
       case CAPositional(_) -> {
-        return args
+        anyPositional = true
       }
     }
     i = i + 1
+  }
+  // Mixed positional + named is a rare shape the front-end may not even allow;
+  // leave it untouched rather than guess the intended field mapping.
+  if anyNamed and anyPositional {
+    return args
   }
   // Count total fields by probing fieldDeclaredNames until a key is absent.
   var totalFields = 0
@@ -11556,6 +11562,33 @@ func fillCtorDefaultArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List[
   }
   if totalFields == 0 {
     return args  // no field-order info — preserve current behaviour
+  }
+  // All-positional call: positional args fill the leading fields in order;
+  // APPEND each trailing omitted field's declared default so the emitted
+  // constructor call has one argument per field (#6146 MSIL sibling —
+  // previously the positional path bailed here and passed too few args,
+  // yielding `InvalidProgramException` at the JIT).  A positional call can
+  // only omit TRAILING fields, so leading positions already line up.
+  if anyPositional {
+    if args.count >= totalFields {
+      return args  // fully (or over-) supplied — nothing to fill
+    }
+    val orderedPos: List[CallArg] = newList()
+    var ap = 0
+    while ap < args.count {
+      orderedPos.add(args[ap])
+      ap = ap + 1
+    }
+    var fpp = args.count
+    while fpp < totalFields {
+      val byPosKeyP = ctorKey + "/field" + toString(fpp)
+      match mapGet(cctx.ctorDefaultExprs, byPosKeyP) {
+        case Some(dflt) -> orderedPos.add(CAPositional(expr = dflt))
+        case None -> return args  // required trailing field with no default — bail
+      }
+      fpp = fpp + 1
+    }
+    return orderedPos
   }
   // Reassemble in field-declaration order, injecting defaults for missing fields.
   val ordered: List[CallArg] = newList()

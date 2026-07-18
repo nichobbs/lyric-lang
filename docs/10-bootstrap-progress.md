@@ -30476,10 +30476,10 @@ lowers the declared default instead of a zero value, independent of
 package origin) — `TlsServerConfig`'s defaults-omission test is back in
 `tls_server_config_tests.l` and runs on both targets; `tls.l`'s
 `TlsServerConfig` doc comment no longer tells consumers to pass every
-field explicitly. See `docs/03-decision-log.md` D-progress-702 for the
+field explicitly. See `docs/03-decision-log.md` D-progress-704 for the
 full four-part root-cause breakdown.
 
-**Related:** `docs/03-decision-log.md` D-progress-689, D-progress-702;
+**Related:** `docs/03-decision-log.md` D-progress-689, D-progress-704;
 #5876, #5874, #5903, #5908, #5920.
 
 ## `HttpClientBuilder` TLS client configuration ships (phase 1.2) — dotnet trust/identity/min-version surface with the dual-key insecure policy (2026-07-17)
