@@ -30800,3 +30800,47 @@ follow-up, not a correctness gap.
 
 **Related:** `docs/03-decision-log.md` D-progress-695;
 `docs/61-https-tls-http-versions.md` §6.4 / §8; RFC 7541; #5886, #5874.
+
+## `Std.HttpEngine.H2Frame` ships — pure-Lyric HTTP/2 frame codec, RFC 9113 §4/§6 (2026-07-18)
+
+New `lyric-stdlib/std/http_h2frame.l` (`Std.HttpEngine.H2Frame`): the HTTP/2
+frame layer — docs/61 §6.4's phase 4.2 (epic #5874, issue #5887). Same
+pure-Lyric, sans-IO, zero-extern, no-kernel style as `Std.HttpEngine`
+(D-progress-694) and `Std.Xml`/`Std.Yaml` (D065); imports only
+`Std.Core`/`Std.Collections`. Serializes and parses the 9-octet frame header
+(§4.1) and **all ten §6 frame types** — DATA, HEADERS, PRIORITY (parsed but
+deprecated per §5.3.2), RST_STREAM, SETTINGS, PUSH_PROMISE, PING, GOAWAY,
+WINDOW_UPDATE, CONTINUATION — plus `UnknownFrame` pass-through (§4.1/§5.1:
+an unknown type is discarded, not rejected). Handles all flags (END_STREAM /
+END_HEADERS / PADDED / PRIORITY / ACK) and the §6.1 padding strip with its
+pad-length security check; detects/emits the §3.4 connection preface; carries
+error codes (§7) and SETTINGS values (§6.5) as `Long` since they are 32-bit
+unsigned. A sans-IO streaming `FrameDecoder`/`feedFrames` buffers frames across
+arbitrary chunk boundaries, enforces `SETTINGS_MAX_FRAME_SIZE` (§4.2) from the
+header alone (an attacker's declared-huge frame is never buffered), and reports
+malformed frames as a typed `FrameError` classified connection- vs stream-level
+(§5.4) — poisoning itself only on connection-level faults.
+
+`lyric-stdlib/tests/http_h2frame_tests.l` is a 58-case byte-vector
+`@test_module`: a serialize↔parse round-trip for every §6 type, known-good
+vectors (a SETTINGS parameter, a PING with 8-octet opaque data, a GOAWAY with
+last-stream-id + error code), flag/padding permutations, malformed-frame
+rejection asserting the exact `FrameError` (oversize vs SETTINGS_MAX_FRAME_SIZE,
+bad pad length, wrong fixed-frame length, forbidden stream ids), reserved-bit
+masking, unknown-type pass-through, preface detection/emission, and two
+boundary-split torture tests (every 2-way split, and byte-at-a-time). Green on
+both targets — `lyric test --target dotnet` and `--target jvm` — 58/58 each.
+
+Honest boundary: this is the FRAME layer only. HPACK header-block compression
+(RFC 7541) is #5886 — `HEADERS`/`PUSH_PROMISE`/`CONTINUATION` fragments are
+opaque `slice[Byte]` here. The connection/stream state machine,
+`HEADERS`+`CONTINUATION` reassembly, `SETTINGS` application, and flow control
+are #5888. No new compiler bugs: the test corpus reused the known self-hosted
+JVM erased-receiver workaround (bind a union-case-/`List`-element-bound
+`slice`/record to an explicitly-typed local before a direct `.length`/index/
+`.field` deref — same class as #5934/#5935 that `Std.HttpEngine` documents),
+and the codec keeps `parseFrame`/`serializeFrame` dispatch flat and routes
+`state.buf` reassignment through a local per #5936.
+
+**Related:** `docs/03-decision-log.md` D-progress-696; docs/61 §6.4/§8;
+#5887, #5874, #5886, #5888.

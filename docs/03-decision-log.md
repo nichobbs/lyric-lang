@@ -18333,6 +18333,83 @@ D-progress-694 (`Std.HttpEngine`, the HTTP/1.1 engine this sits beside and
 shares `HeaderField` with); D128 (the HTTPS/TLS/HTTP-versions design); RFC 7541;
 #5886, #5874.
 
+## D-progress-696 — `Std.HttpEngine.H2Frame` ships (pure-Lyric HTTP/2 frame codec, RFC 9113 §4/§6, docs/61 §6.4 phase 4.2, #5887)
+
+_(Renumber to the next free `D-progress-N` if a rebase collides this id.)_
+
+Phase 4.2 of the HTTPS/TLS epic (#5874). Adds the pure-Lyric HTTP/2 frame
+layer as a new stdlib package `Std.HttpEngine.H2Frame`
+(`lyric-stdlib/std/http_h2frame.l`), sitting beside the HTTP/1.1 engine
+`Std.HttpEngine` (D-progress-694). Like that engine — and `Std.Xml`/`Std.Yaml`
+(D065) — it is **pure Lyric with zero externs, no kernel twin, no I/O**:
+`slice[Byte]` in, typed events out. It imports only `Std.Core`/`Std.Collections`.
+
+**Surface.**
+
+- `H2FrameHeader` (9-octet header, §4.1) with `parseFrameHeader` /
+  `serializeFrameHeader`; the reserved stream-id "R" bit is masked on parse and
+  written 0 on serialize.
+- `H2Frame` union covering **all ten §6 frame types**: `DataFrame`,
+  `HeadersFrame`, `PriorityFrame` (parsed but deprecated per §5.3.2),
+  `RstStreamFrame`, `SettingsFrame`, `PushPromiseFrame`, `PingFrame`,
+  `GoAwayFrame`, `WindowUpdateFrame`, `ContinuationFrame`, plus `UnknownFrame`
+  pass-through (§4.1/§5.1: an unknown type is discarded by the driver, not
+  rejected). `parseFrame` / `serializeFrame` round-trip every type.
+- Flag handling (END_STREAM / END_HEADERS / PADDED / PRIORITY / ACK) and full
+  parse-side padding strip with the §6.1 pad-length security check.
+- `H2ErrorCode` (§7, 14 codes + `H2UnknownError`) and `SettingsId` (§6.5.2,
+  6 params + `SettingsUnknown`) with wire-value converters; `SettingsParam`
+  values and error codes are carried as `Long` because they are 32-bit
+  *unsigned* and exceed `Int`.
+- Connection preface (§3.4): `connectionPreface()` / `isConnectionPreface`.
+- `FrameError` (`code`, `connectionError`, `message`) mapping malformed/oversized
+  frames to the RFC's connection- vs stream-level classification.
+- Streaming decoder `FrameDecoder` / `feedFrames` (sans-IO, linear-value, like
+  `Std.HttpEngine.Connection`): buffers frames across arbitrary `feedFrames`
+  chunk boundaries, detects the preface, enforces `SETTINGS_MAX_FRAME_SIZE`
+  (§4.2) from the header alone so an attacker's declared-huge frame is never
+  buffered, and poisons itself on a connection-level error while continuing
+  past stream-level ones.
+
+**Scope boundary (drawn explicitly, per the no-silent-skip rule).** This is the
+frame layer only. HPACK header-block decompression (RFC 7541) is #5886 — the
+`HEADERS`/`PUSH_PROMISE`/`CONTINUATION` fragments are passed through as opaque
+`slice[Byte]`. The connection/stream state machine, `HEADERS`+`CONTINUATION`
+reassembly, `SETTINGS` application, and flow-control accounting are #5888. The
+codec validates each frame's *own* well-formedness (sizes, padding, the fixed
+per-type stream-id rules of §6) but tracks no connection-wide state. Serialize
+emits no padding (an unpadded frame is always wire-valid); the parse-side
+padding logic is covered directly by byte vectors.
+
+**Verification.** `lyric-stdlib/tests/http_h2frame_tests.l` — a 58-case
+`@test_module` byte-vector corpus: a round-trip for every §6 type, known-good
+vectors (a SETTINGS parameter, a PING with 8-octet opaque data, a GOAWAY with
+last-stream-id + error code), flag/padding permutations, malformed-frame
+rejection asserting the exact `FrameError` (oversize vs `SETTINGS_MAX_FRAME_SIZE`,
+bad pad length, wrong fixed-frame length, forbidden stream ids), reserved-bit
+masking, unknown-type pass-through, preface detection/emission, and two
+boundary-split torture tests (every 2-way split, and byte-at-a-time). Green on
+**both** targets: `lyric test --target dotnet` (in-process `Msil.Bridge`) and
+`--target jvm` (in-process `Jvm.Bridge` `compileToJarBundled`), 58/58 each.
+
+**Compiler-bug interactions (existing, not new).** The test corpus hit the
+known self-hosted JVM erased-receiver limitation (a union-case- or
+`List`-element-bound `slice[Byte]`/record dereferenced *directly* — `.length`,
+indexing, `.field` — lowers against a statically-`Object` receiver); each site
+is worked around house-style by binding to an explicitly-typed local first
+(the same fix `Std.HttpEngine` documents for #5934/#5935). The codec source
+routes every self-referential `state.buf = state.buf.slice(...)` through a local
+per #5936, and keeps `parseFrame`/`serializeFrame` dispatch flat (one helper
+call per arm) to avoid the #5936 inconsistent-stack-map-frame shape. Union
+case names are `H2`/`Settings`-prefixed to avoid the cross-package bare-case
+resolution hazard (#5995) now that both `Std.HttpEngine` and
+`Std.HttpEngine.H2Frame` co-compile in the stdlib bundle.
+
+Cross-references: docs/61-https-tls-http-versions.md §6.4 (h2-in-the-engine
+plan) and §8 phase 4 item 12; D-progress-694 (`Std.HttpEngine` HTTP/1.1, the
+sibling this mirrors); issue #5887; epic #5874; #5886 (HPACK, sibling PR);
+#5888 (connection/stream FSM, follow-on).
+
 ---
 
 ## Decisions deferred to v2 or later
