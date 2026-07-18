@@ -31047,3 +31047,45 @@ JVM mTLS is #6017.
 
 **Related:** `docs/03-decision-log.md` D-progress-701; docs/61 §6.3, D128; #5885,
 #5874, #5884 (D-progress-700), #5881 (D-progress-698), #6017, #5889, #5903.
+
+## Native TCP + TLS transport seam ships in `lyric-rt` — `lyric_sock_*` + `lyric_tls_*` over OpenSSL 3.x (dlopen), TLS phase 5 band N9.1 (2026-07-18)
+
+`lyric-rt/src/lyric_tls.c` adds the native-target transport seam for the sans-IO
+`Std.HttpEngine`: a blocking POSIX socket transport (`lyric_sock_connect`/
+`_listen`/`_local_port`/`_accept`/`_read`/`_write`/`_close`) plus a TLS seam over
+OpenSSL 3.x (`lyric_tls_available`, client + server context create/free, PEM
+cert/key load, connect/accept handshake, read/write/shutdown, ALPN on both
+roles, min-version, mTLS verify/require, SNI + hostname verification with the
+docs/61 §4 insecure override, `lyric_tls_last_error` diagnostics). OpenSSL is
+loaded **dynamically with dlopen/dlsym** on first use (D128 decision 10): the
+runtime archive carries no link-time libssl/libcrypto dependency, a non-TLS
+binary never loads OpenSSL, and the seam is re-pointable at mbedTLS by swapping
+`lyric_tls.c` alone. The file declares its own opaque-pointer view of the
+OpenSSL ABI, so `lyric_rt.a` builds with zero OpenSSL build-time dependency.
+
+`llvm_bridge.l`'s native clang link gained `-ldl` (a no-op stub on glibc ≥ 2.34;
+a real dep on older glibc/musl), inert for non-TLS binaries.
+
+Verified by `lyric-rt/test/lyric_tls_test.c` — real loopback OpenSSL handshakes
+on two threads with an embedded EC test PKI: plain byte round-trip, server-auth
+TLS + ALPN negotiation, TLS 1.3 floor, mTLS accept, mTLS reject, hostname-
+mismatch rejection, insecure-skip-verify. Run in CI under clang **and** gcc via
+`make -C lyric-rt test`, plus a gcc ASan run (`make -C lyric-rt test-asan`) so a
+leaked SSL_CTX/SSL/fd or a use-after-free fails the run. Green against OpenSSL
+3.0.13.
+
+Boundary (honest): the seam is the verified C foundation (N9.1). The Lyric-level
+transport/server/client layers are banded as follow-on N-items in
+`native/plan/08-work-items.md` Phase N9, each gated on a stdlib native port:
+N9.2 `Std.TcpHost` native twin (`_kernel_native/tcp_host.l`, where the seam's
+`extern func` bindings and a native loopback self-test belong) — gated on
+`Std.Encoding`/`Std.Tls` native ports; N9.3 `Std.HttpServer` native twin
+(thread-per-connection over the pthread kernel driving `Std.HttpEngine`); N9.4
+`Std.Http` native client; N9.5 lyric-web `serveTls` + ALPN h2. This session
+could not build the current native backend from source (release-download seed
+network-blocked) and the published `lyric` tool's native backend is behind
+`main`, so no compiled-Lyric native run was possible in-sandbox (documented like
+D-progress-543); the C test is the load-bearing runtime verification.
+
+**Related:** `docs/03-decision-log.md` D-progress-703; docs/61 §7/§8, D128; #5890,
+#5874, `native/plan/08-work-items.md` Phase N9, D-N-007, D-N-014, D-progress-540.
