@@ -40,7 +40,7 @@ left as a documented, deterministic test failure) in this library's code —
 see the referenced file/function for the in-code repro notes.
 
 1. **Union case field named `result` fails to parse (`P0050` "expected a
-   type").** `pub union RpcResponse { case RpcSuccess(id: RpcId, result:
+   type").** Filed as [#6118](https://github.com/nichobbs/lyric-lang/issues/6118). `pub union RpcResponse { case RpcSuccess(id: RpcId, result:
    JsonValue) ... }` — the exact shape `docs/62-jsonrpc-mcp.md` §3 specs —
    fails to parse. Reproduced in isolation: a bare `case Bar(result: Int)`
    union case field fails the same way, while `result` is unremarkable as
@@ -54,7 +54,7 @@ see the referenced file/function for the in-code repro notes.
    the doc.
 
 2. **A lambda literal inside an `impl` method body crashes the self-hosted
-   MSIL backend.** `Msil.Codegen: lambda token missing for __lambda_0 —
+   MSIL backend.** Filed as [#6119](https://github.com/nichobbs/lyric-lang/issues/6119). `Msil.Codegen: lambda token missing for __lambda_0 —
    liftLambdasMsil pre-pass was not run`. Reproduced in isolation with a
    two-line `impl Iface for Record { func f(): T { someHigherOrderCall({
    -> ... }) } }`. The lambda-lifting pre-pass that ordinary function
@@ -64,7 +64,7 @@ see the referenced file/function for the in-code repro notes.
    `impl` block) instead of writing the lambda inline.
 
 3. **A cross-package closure argument crashes at runtime on the JVM
-   backend.** `ClassCastException: <CallerPkg>$Lambda$N cannot be cast to
+   backend.** Same root-cause family as [#5329](https://github.com/nichobbs/lyric-lang/issues/5329) (its bug 3). `ClassCastException: <CallerPkg>$Lambda$N cannot be cast to
    class <CalleePkg>.Lyric$Lambda`. A function-typed parameter (`in () ->
    Int`, etc.) works fine when the lambda argument is written in the same
    package as the callee, but a lambda passed in from a *different*
@@ -78,7 +78,7 @@ see the referenced file/function for the in-code repro notes.
    record-of-interface `Clock` instead of a stored closure (a different,
    also-real bug with a closure captured in a record field).
 
-4. **`Option[T] == Option[T]` does not compare structurally.** Two
+4. **`Option[T] == Option[T]` does not compare structurally.** Filed as [#6120](https://github.com/nichobbs/lyric-lang/issues/6120). Two
    independently-built `Some(value = 1)` values of the same `Option[Int]`
    compare `false` with `==` — reproduced in isolation on `.NET`.
    **Workaround**: every `Option`-valued test assertion in this library
@@ -87,7 +87,7 @@ see the referenced file/function for the in-code repro notes.
 
 5. **Calling a generic `Std.Core` function (`isSome`/`isNone`/
    `unwrapOption`) with several different concrete type arguments across
-   one file intermittently crashes at runtime** with `Msil.Codegen: match
+   one file intermittently crashes at runtime**. Filed as [#6121](https://github.com/nichobbs/lyric-lang/issues/6121). with `Msil.Codegen: match
    not exhaustive in <Pkg>.isSome__Object` / an analogous JVM message —
    even though each individual call type-checks and the same call
    sometimes runs correctly in a different `lyric test` invocation of the
@@ -102,7 +102,7 @@ see the referenced file/function for the in-code repro notes.
    hit before the type argument was pinned via an explicitly-typed local.
 
 6. **A `while` loop whose `match` arms mix loop-continuing and
-   loop-ending control flow breaks on the self-hosted JVM backend.**
+   loop-ending control flow breaks on the self-hosted JVM backend.** Filed as [#6122](https://github.com/nichobbs/lyric-lang/issues/6122).
    `while running { match transport.receive() { case Err(e) -> { running =
    false }; case Ok(None) -> { running = false }; case Ok(Some(text)) -> {
    ... /* running stays true */ } } }` — silently stops after exactly one
@@ -118,6 +118,8 @@ see the referenced file/function for the in-code repro notes.
    downstream test failures (see below).
 
 ### Remaining JVM-only test failures (not yet root-caused to a single fix)
+
+Tracked as [#6123](https://github.com/nichobbs/lyric-lang/issues/6123) (JsonRpcTests cluster) and [#6124](https://github.com/nichobbs/lyric-lang/issues/6124) (StdioTests cluster).
 
 After applying the workarounds above, four `JsonRpc` tests and seven
 `JsonRpc.Stdio` tests still fail **only** on `--target jvm` (`.NET` is
