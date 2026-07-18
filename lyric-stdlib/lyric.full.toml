@@ -32,6 +32,7 @@ output_assembly = "Lyric.Stdlib.dll"
 # Kernel boundaries (extern type / @externTarget host shims).
 "Std.ProcessHost"      = "std/_kernel/process_host.l"
 "Std.ProcessCaptureHost" = "std/_kernel/process_capture_host.l"
+"Std.ProcessPipedHost" = "std/_kernel/process_piped_host.l"
 "Std.ConsoleHost"      = "std/_kernel/console_host.l"
 "Std.RegexHost"        = "std/_kernel/regex_host.l"
 "Std.CharHost"         = "std/_kernel/char_host.l"

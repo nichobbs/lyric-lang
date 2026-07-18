@@ -16,6 +16,7 @@ import Std.Collections
 import Std.Errors
 import Std.ProcessHost
 import Std.ProcessCaptureHost
+import Std.ProcessPipedHost
 
 // Build an argument string for inherited-stdio spawning.
 // Arguments that require quoting (contain spaces, quotes, or backslashes)
@@ -128,4 +129,96 @@ pub func runCaptureWithInput(
     case Ok(raw) -> Ok(value = projectResult(raw))
     case Err(e) -> Err(error = e)
   }
+}
+
+// ── Piped (long-lived bidirectional stdio) subprocess API ────────────────────
+/// A running child process with piped stdin/stdout, for interactive or
+/// streaming protocols (e.g. an MCP server's stdio transport) rather than a
+/// single batch write-then-capture round trip. Stderr is inherited from
+/// this process — see `_kernel/process_piped_host.l`'s module doc.
+@stable(since = "1.0")
+pub record PipedProcess {
+  handle: PipedHandle
+}
+
+/// Spawn `executable` with `args`, redirecting stdin and stdout for
+/// line-oriented bidirectional communication (e.g. NDJSON framing).
+///
+/// Returns `Err(IOError)` if the executable cannot be started.
+@stable(since = "1.0")
+pub func spawnPiped(executable: in String, args: in List[String]): Result[PipedProcess, IOError] {
+  return try {
+    val arguments = buildArgString(args)
+    Ok(value = PipedProcess(handle = hostSpawnPiped(executable, arguments)))
+  } catch Bug as b {
+    Err(error = IoError(path = executable, message = b.message))
+  }
+}
+
+/// Read one line from the child's stdout, excluding the trailing newline.
+/// `Ok(None)` marks clean EOF (typically because the child exited or closed
+/// its stdout).
+@stable(since = "1.0")
+pub func pipedReadLine(p: in PipedProcess): Result[Option[String], String] {
+  return try {
+    Ok(value = hostPipedReadLineOpt(p.handle))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+/// Write one line to the child's stdin. A trailing newline is appended and
+/// the write is flushed immediately.
+@stable(since = "1.0")
+pub func pipedWriteLine(p: in PipedProcess, line: in String): Result[Unit, String] {
+  return try {
+    hostPipedWriteLine(p.handle, line)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+/// True while the child process has not yet exited.
+@stable(since = "1.0")
+pub func pipedIsAlive(p: in PipedProcess): Bool {
+  hostPipedIsAlive(p.handle)
+}
+
+/// Forcibly terminate the child process (and, where supported, its process
+/// tree). Safe to call on an already-exited process.
+@stable(since = "1.0")
+pub func pipedKill(p: in PipedProcess): Unit {
+  hostPipedKill(p.handle)
+}
+
+/// Close only the child's stdin (signals EOF without affecting its
+/// stdout) — for a batch-style child that reads until EOF, then writes its
+/// complete output and exits, while `pipedReadLine` keeps working
+/// afterward. Use `pipedClose` to release everything once done.
+@stable(since = "1.0")
+pub func pipedCloseStdin(p: in PipedProcess): Unit {
+  hostPipedCloseStdin(p.handle)
+}
+
+/// Block up to `timeoutMs` milliseconds for the child to exit. Returns
+/// `true` if it exited within the deadline.
+@stable(since = "1.0")
+pub func pipedWaitExit(p: in PipedProcess, timeoutMs: in Int): Bool {
+  hostPipedWaitExit(p.handle, timeoutMs)
+}
+
+/// The child's OS exit code. Only meaningful once the child has exited
+/// (`pipedIsAlive` is `false`, or `pipedWaitExit` returned `true`).
+@stable(since = "1.0")
+pub func pipedExitCode(p: in PipedProcess): Int {
+  hostPipedExitCode(p.handle)
+}
+
+/// Close the child's stdin/stdout pipes and release the OS process handle.
+/// Does not itself wait for or kill the child — call `pipedKill` first if
+/// termination is required.
+@stable(since = "1.0")
+pub func pipedClose(p: in PipedProcess): Unit {
+  hostPipedClose(p.handle)
 }
