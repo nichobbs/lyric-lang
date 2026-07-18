@@ -1261,6 +1261,29 @@ jobs:
           fi
           bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Lambda-Bool-if-condition self-test (#5935).  Runtime regression test
+      # pinning that a direct call through a function-typed (`(T) -> Bool`)
+      # parameter used straight as an `if`/`while` condition unboxes correctly
+      # on the self-hosted backends — the JVM shape that used to emit a
+      # `VerifyError` before #5563's general condition-coercion fix (commit
+      # 15bf300 / PR #5846) landed. Run via native `lyric test` (imports only
+      # `Std.*`), asserting every runtime value.
+      - name: Lambda-Bool-if-condition self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping lambda-Bool-if-condition self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lambda-Bool-if-condition self-test"
+            exit 1
+          fi
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/lambda_bool_if_cond_self_test.l
+
       # Extra barrier (batch 1a-split): the batch above the batch-1a barrier had
       # grown to ~21 concurrent in-process compilations — well over the ~14-step
       # cap the header comment documents as the point where the runner's
@@ -4366,6 +4389,25 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/slice_byte_lambda_arg_self_test.l
+
+      # Lambda-Bool-if-condition self-test on JVM (#5935) — the JVM half of the
+      # dotnet-job step of the same name; this is the load-bearing run (the
+      # bug only reproduced on the erased-invoke JVM path).
+      - name: Lambda-Bool-if-condition self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping lambda-Bool-if-condition JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lambda-Bool-if-condition JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/lambda_bool_if_cond_self_test.l
 
       # Extra barrier (JVM batch 0-split): the first JVM sub-batch (before the
       # "JVM batch 1-split" barrier below) had grown to ~18 concurrent
