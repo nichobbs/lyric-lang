@@ -1,6 +1,9 @@
 # 62 — JSON-RPC 2.0 and Model Context Protocol libraries
 
-Status: sketch — unbacked (no decision-log entry yet). First consumer:
+Status: specced in D129. lyric-jsonrpc, lyric-mcp (stdio transport),
+the stdlib seams, and the lyric-ws dotnet backend (#778) are implemented;
+streamable HTTP (§5.3 milestone 2) and the open questions remain. JVM
+gaps are tracked in #6118–#6124, #6127, #6133–#6136. First consumer:
 `nichobbs/cloud-agents`' in-container permission-callback MCP server
 (see that repo's `docs/phase6-mcp-callbacks.md`). This sketch is the
 agreed build spec for three coordinated tracks; each track lands as its

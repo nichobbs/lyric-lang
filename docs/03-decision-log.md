@@ -19002,3 +19002,50 @@ class).
 - REPL
 
 These are noted in `04-out-of-scope.md` with full rationale.
+
+## D129 — JSON-RPC 2.0 and MCP libraries; lyric-ws dotnet backend (docs/62)
+
+**Context.** Lyric had no reusable JSON-RPC implementation (the LSP server
+hand-rolls Content-Length framing inside `lsp.l`) and no Model Context
+Protocol support; `Ws.startServer` returned `NOT_IMPLEMENTED` on
+`--target dotnet` (#778). The first consumer is cloud-agents'
+in-container permission-callback MCP server (that repo's
+`docs/phase6-mcp-callbacks.md`), which needs an MCP server library over
+stdio plus a production WebSocket/streaming story. Full design:
+`docs/62-jsonrpc-mcp.md`.
+
+**Decisions** (implemented on the docs/62 branch):
+
+1. **`lyric-jsonrpc` ships its own strict RFC 8259 `JsonRpc.Json` value
+   model** (pure Lyric, cross-target, parser + compact writer, depth
+   limit, i64-exact numbers) rather than reusing `Std.Json` (dotnet-only
+   read cursor, no writer) or `Std.Yaml.parseJson` (deliberately lenient
+   superset — a protocol endpoint must answer malformed JSON with
+   `-32700`, not accept it as YAML). Q-RPC-001 (future `Std.Json` v2
+   migration) stays open.
+2. **The JSON-RPC peer is symmetric** (`RpcPeer` over `RpcTransport` +
+   `RpcHandler`), single-threaded dispatch v1, batch support in the core;
+   the MCP layer never emits batches (2025-06-18 removed them). The LSP
+   server is not migrated in v1 (Q-RPC-002).
+3. **`lyric-mcp` targets MCP revision 2025-06-18** (2025-03-26 accepted
+   in negotiation): server builder + client, stdio transport v1;
+   streamable HTTP is milestone 2 (open). Tool-execution failures are
+   `isError: true` results, never protocol errors.
+4. **Stdlib seams**: `Std.Hash.sha1OfBytes` (RFC 6455 accept key — not a
+   security boundary, documented as such) and a `Std.Process` piped-spawn
+   kernel pair (`spawnPiped`/`pipedReadLine`/`pipedWriteLine`/…) for
+   long-lived bidirectional child stdio.
+5. **The lyric-ws dotnet backend is pure-Lyric RFC 6455 over
+   `Std.TcpHost`** (the docs/61 transport seam), not ASP.NET Core — no
+   new NuGet dependency, target-portable frame codec (`Ws.Frame`),
+   minimal upgrade parser (`Ws.Handshake`), and it implements
+   fragmentation + auto-ping properly rather than replicating the JVM
+   kernel's documented gaps (JVM parity follow-up: Q-WS-001).
+
+**Verification.** All dotnet suites green: lyric-jsonrpc 79 tests,
+lyric-ws 55 (incl. real loopback connect/handshake/echo/fragmentation/
+ping/broadcast), lyric-mcp 44 (incl. real `cat`-subprocess pipe tests);
+SHA-1 vectors pass on both targets. JVM gaps are tracked, not skipped:
+#6118–#6124, #6127, #6133–#6136 (several pre-existing compiler bugs this
+work surfaced and isolated, incl. the #5258 residual cross-DLL `pub val`
+gap and a JVM workspace-dep test-pipeline resolution failure).
