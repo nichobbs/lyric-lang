@@ -473,9 +473,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // "per-package symbol tables" recommendation; the old flat
   // accumulation was a known gap tracked as #1195.
   val parsedPkgs: List[ParsedUserPkg] = newList()
-  // Empty until the project path threads --define (#5852); hoisted out of the
-  // per-package loop since it never varies (#5906).
-  val projDefines = BD.decodeDefines(newList())
+  // Auto-injected well-known `version` define (docs/60 §9.2): the manifest's
+  // `[package].version` populates `BuildInfo.version` (and any
+  // `@build_const("version")`) on a project build with no explicit `--define`.
+  // Hoisted out of the per-package loop since it never varies (#5906). User
+  // `--define` on the project path is a separate follow-up (#5852).
+  val projDefines = BD.decodeDefines(BD.withWellKnownDefines(packageVersion, newList()))
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]

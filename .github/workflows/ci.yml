@@ -373,6 +373,59 @@ jobs:
               && echo "PASS" || { echo "FAIL"; cat /tmp/"$ex".test.log; exit 1; }
           done
 
+      # BuildInfo well-known `version` auto-injection (docs/60 §9.2, #5852): a
+      # project build with `[package].version` in lyric.toml populates
+      # `BuildInfo.version` with NO `--define`. Non-background (this job has
+      # Java 21 + project-build infra); asserted end-to-end on dotnet and jvm.
+      - name: BuildInfo project version auto-injection (docs/60 §9.2)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found; skipping BuildInfo project version test"
+            exit 1
+          fi
+          proj="$(mktemp -d)"
+          mkdir -p "$proj/src"
+          cat > "$proj/lyric.toml" <<'TOML'
+          [package]
+          name = "biverproj"
+          version = "4.5.6"
+
+          [project]
+          name = "biverproj"
+          output = "single"
+          output_assembly = "biverproj.dll"
+
+          [project.packages]
+          "biverproj" = "src/main.l"
+          TOML
+          cat > "$proj/src/main.l" <<'LYR'
+          package biverproj
+
+          import Std.Console
+          import Std.BuildInfo
+
+          func main(): Int {
+            val bi = buildInfo()
+            println("version=" + bi.version)
+            0
+          }
+          LYR
+          echo "=== dotnet project build (manifest version=4.5.6, no --define) ==="
+          "$lyric_bin" build --manifest "$proj/lyric.toml"
+          out="$(dotnet "$proj/bin/biverproj.dll")"
+          echo "dotnet: $out"
+          echo "$out" | grep -qx "version=4.5.6" || { echo "::error::dotnet project build did not auto-inject BuildInfo.version from the manifest"; exit 1; }
+          echo "=== jvm project build ==="
+          "$lyric_bin" build --manifest "$proj/lyric.toml" --target jvm -o "$proj/biverproj.jar"
+          outj="$(java -jar "$proj/biverproj.jar")"
+          echo "jvm: $outj"
+          echo "$outj" | grep -qx "version=4.5.6" || { echo "::error::jvm project build did not auto-inject BuildInfo.version from the manifest"; exit 1; }
+          echo "BuildInfo project version auto-injection OK (dotnet + jvm, version=4.5.6)" >> "$GITHUB_STEP_SUMMARY"
+
       # Prove proof-only examples.
       - name: Prove proof-only examples (with z3)
         if: steps.changes.outputs.has_code_changes == 'true'

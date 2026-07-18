@@ -1,6 +1,6 @@
 # 60 — Build defines (compile-time value injection)
 
-**Status:** Design sketch; **M1a + M1b + M1c shipped**. M1a — the
+**Status:** Design sketch; **M1a + M1b + M1c + M1d shipped**. M1a — the
 `@build_const("KEY")` substitution pass (`Lyric.BuildDefines`) + `lyric build
 --define KEY=VALUE` for single-file `--target dotnet` builds (diagnostics
 F0030–F0032). M1b — the `Std.BuildInfo` layer (§9.2): the
@@ -19,11 +19,18 @@ place, but native codegen cannot yet *consume* a define — module-level `val`
 references block `@build_const`, and list literals block `Std.BuildInfo`'s
 `features` — so it crashes rather than substitutes (tracked in #5977; note this
 also means `Std.BuildInfo` shipped in M1b is not yet functional on native).
-Project-path threading, manifest `[build.define]`, and the auto-injected
-well-known defines (which would populate `BuildInfo.version` from the manifest
-and `profile` from `--release` without an explicit `--define`) remain follow-ups
-(#5852). Q-BD-001 – Q-BD-009 below are resolved in this draft; a decision-log
-entry still codifies the full design.
+M1d — the auto-injected well-known **`version`** define
+(`BD.withWellKnownDefines`): the manifest's `[package].version` is injected as a
+fallback define on the project path (both the MSIL project bridge and the JVM
+project emitter path), so `BuildInfo.version` (and any `@build_const("version")`)
+populates on a project build **without** an explicit `--define`. It is a
+fallback — an explicit `--define version=…` still wins (`decodeDefines` is
+last-wins). Single-file builds carry no manifest version, so they keep the
+deterministic `"0.0.0"` fallback. User `--define` on the project path (the
+larger `EmitProjectRequest.defines` threading + gate lift), the remaining
+well-known defines (`target`, `build_profile` from `--release`), and manifest
+`[build.define]` remain follow-ups (#5852). Q-BD-001 – Q-BD-009 below are
+resolved in this draft; a decision-log entry still codifies the full design.
 **Builds on:** `docs/24-build-features.md` (D045 — the `[features]` /
 `@cfg` compile-time *erasure* mechanism this parallels for *substitution*;
 the "compile-time vs runtime" boundary in §1.1 governs both),
