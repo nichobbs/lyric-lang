@@ -548,7 +548,24 @@ items marked ∥ are independent and can proceed in parallel.
     targets; docs/book/progress sync. (After 9.)
 
 **Phase 4 — h2 (engine, .NET first)**
-11. HPACK codec + tests. ∥ with 12.
+11. HPACK codec + tests. ∥ with 12. _Shipped (D-progress-695, #5886):
+    `Std.HttpEngine.Hpack` (`lyric-stdlib/std/http_hpack.l`) — a complete,
+    pure-Lyric HPACK (RFC 7541) codec: static table (Appendix A, 61 entries),
+    dynamic table with `len(name)+len(value)+32` cost accounting, FIFO
+    eviction, the oversized-entry-empties-the-table rule, and
+    `SETTINGS_HEADER_TABLE_SIZE`-bounded size updates; integer (§5.1) and
+    string (§5.2) primitives; the full Appendix B Huffman code (encode +
+    trie decode with EOS/padding conformance rejection); and all §6
+    representations (indexed, the three literal forms, and size update). No
+    externs, no kernel file. `http_hpack_tests.l` (39 cases) asserts the
+    codec byte-for-byte against **every RFC 7541 Appendix C vector**
+    (C.1–C.6, incl. the C.5/C.6 eviction sequences at table size 256) in both
+    directions plus round-trip and adversarial (integer/table-size bombs,
+    embedded EOS, invalid Huffman padding) cases; all pass identically on
+    `--target dotnet` and `--target jvm`, wired into CI beside
+    `http_engine_tests.l`. Encoder policy boundary: always-Huffman-or-never
+    (deterministic, RFC-vector-reproducing); size-optimal per-literal choice
+    is a tracked follow-up, not a correctness gap._
 12. h2 frame codec + tests. ∥ with 11.
 13. h2 connection/stream FSM + flow control + SETTINGS/GOAWAY. (After 11+12.)
 14. ALPN wiring in the dotnet transport + e2e h2 self-test (own client +

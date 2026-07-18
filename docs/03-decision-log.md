@@ -18074,6 +18074,82 @@ production-readiness context), docs/51-ffi-interfaces-proposal.md
 
 ---
 
+## D-progress-695 — TLS phase 4.1: `Std.HttpEngine.Hpack` ships (pure-Lyric HPACK / RFC 7541 codec; static+dynamic tables, Huffman, size updates), verified byte-for-byte against every RFC 7541 Appendix C vector on both targets (docs/61 §6.4, D128, #5886)
+
+**Status:** Implemented (2026-07-18).
+
+New `lyric-stdlib/std/http_hpack.l` (`Std.HttpEngine.Hpack`): a complete,
+pure-Lyric HPACK header-compression codec — docs/61 §6.4's phase 4.1 (epic
+#5874, issue #5886), the first slice of the h2 stack. No externs, no kernel
+file; only `Std.Core`/`Std.Collections`/`Std.String`/`Std.Char` plus
+`Std.HttpEngine` (for the shared `HeaderField` type), following the same
+pure-parser precedent as `Std.Xml`/`Std.Yaml` (D065) and `Std.HttpEngine`
+itself (D-progress-694). Full RFC 7541 surface:
+
+- **Integer representation (§5.1)** — `encodeInteger`/`decodeIntegerAt` with an
+  arbitrary prefix; the decoder bounds intermediate arithmetic and rejects an
+  unterminated continuation run as `IntegerOverflow` (a classic HPACK-bomb
+  defense) rather than wrapping.
+- **String literals (§5.2)** — raw and Huffman-coded, with the `H` bit; the
+  full RFC 7541 Appendix B Huffman code (257 symbols incl. EOS) is encoded
+  MSB-first and decoded through a trie built from the code table. Decode
+  rejects an embedded EOS symbol (`HuffmanEosSymbol`), a bit run that leaves
+  the tree (`InvalidHuffmanCode`), and padding that is not the <= 7-bit
+  all-ones EOS prefix (`InvalidHuffmanPadding`) — the §5.2 conformance rules.
+- **Static table (Appendix A)** — all 61 entries.
+- **Dynamic table (§4)** — FIFO with `len(name)+len(value)+32` cost accounting,
+  eviction to fit, an oversized-entry-empties-the-table rule (§4.4), and size
+  updates (§4.3) bounded by the negotiated `SETTINGS_HEADER_TABLE_SIZE`
+  ceiling; an over-ceiling update is `TableSizeUpdateTooLarge` and a size
+  update after a header field is `SizeUpdateAfterHeader` (§4.2).
+- **All representations (§6)** — indexed; literal with incremental indexing,
+  without indexing, and never indexed; and dynamic table size update. The
+  stateful `HpackDecoder` accepts every representation; the stateful
+  `HpackEncoder` is deliberately deterministic (exact-match → indexed, else
+  literal-with-incremental-indexing referencing an indexed name where possible)
+  so its output byte-matches the RFC reference vectors, and low-level
+  per-representation encoders are exposed for explicit control.
+
+**Octet model.** HPACK names/values are octet strings; the codec models each as
+a Lyric `String` under a Latin-1 mapping (code point i == octet i). Encoding a
+`String` whose code point exceeds 255 is rejected (`NonOctetValue`) rather than
+corrupting the carried bytes.
+
+**Verification.** `lyric-stdlib/tests/http_hpack_tests.l` (39 `@test_module`
+cases) asserts the codec against the **exact byte vectors of RFC 7541
+Appendix C** — C.1 (integers), C.2 (all four literal representations), C.3/C.4
+(request sequences without/with Huffman, one shared dynamic table across three
+blocks), and C.5/C.6 (response sequences at table size 256, exercising
+eviction) — checking both the decoded header lists *and* the documented
+dynamic-table state (entry order, count, size) after each block, in both
+directions (decode(vector) and encode(list) == vector). Plus encode∘decode
+round-trip property tests (incl. a multi-block session with eviction and a
+Huffman round-trip over all 256 octet values) and the adversarial cases the
+issue names (integer/table-size bombs, an embedded EOS, non-ones and over-long
+Huffman padding, out-of-range indices). All 39 pass on **both** `--target
+dotnet` and `--target jvm` (byte-identical, as a pure-Lyric codec must be),
+wired into CI beside `http_engine_tests.l`.
+
+**Encoder policy boundary (tracked, not a gap).** The encoder Huffman-codes all
+literals when constructed with `huffman = true` and none otherwise, and never
+emits the never-indexed representation on its own. This is a deterministic,
+RFC-vector-reproducing policy; a size-optimal per-literal
+`shorter-of-{raw, Huffman}` choice and a sensitive-header never-index policy are
+valid future refinements (any conforming decoder already accepts this output),
+noted in the module header for a follow-up — not correctness gaps.
+
+**Scope boundary.** This is the HPACK slice only (docs/61 §6.4 phase 4.1, item
+11). The h2 frame codec (item 12, #5887-adjacent), connection/stream FSM + flow
+control (item 13), and ALPN transport wiring (item 14) remain to be done before
+h2 is usable end-to-end.
+
+**Related:** `docs/61-https-tls-http-versions.md` §6.4 / §8 (phase 4);
+D-progress-694 (`Std.HttpEngine`, the HTTP/1.1 engine this sits beside and
+shares `HeaderField` with); D128 (the HTTPS/TLS/HTTP-versions design); RFC 7541;
+#5886, #5874.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
