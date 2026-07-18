@@ -32,7 +32,10 @@
 //! `respondText` / `respondJson` / `respondBytesWithHeaders`) plus the three
 //! chunked-streaming helpers (`beginChunkedResponse` / `streamWriteChunk` /
 //! `endChunkedResponse`) are unchanged in name and semantics, so `lyric-web`
-//! and every other consumer keeps working without a source edit. `HttpContext`
+//! and every other consumer keeps working without a source edit
+//! (`startListenerWithLimits` / `startListenerTlsWithLimits` are additive — the
+//! only new public functions — for callers that need to raise the engine's
+//! request-size caps). `HttpContext`
 //! and `HttpListener`, formerly extern aliases for BCL types, are now Lyric
 //! records — they are returned/held by consumers but never named as extern
 //! types, so the shape change is source-compatible. The chunked-stream handle
@@ -495,28 +498,58 @@ func processConnection(
   hostClose(conn)
 }
 
-// The accept loop (runs on the background listener task): accept a connection
-// and spawn its own per-connection task. A plain `AcceptFailed`/`BindFailed`
-// means the listener was stopped — end the loop; a per-connection TLS handshake
-// failure (`hostAcceptTls` already closed that socket) is skipped so one bad
-// client never takes the server down.
-func acceptLoop(
+// Handle one accept result: on success spawn a per-connection task and keep
+// the loop running; on a stopped listener (`AcceptFailed`/`BindFailed`) end the
+// loop; a per-connection TLS handshake failure (`hostAcceptTls` already closed
+// that socket) is skipped so one bad client never takes the server down.
+// Returns whether the accept loop should keep running.
+func onAccepted(
+  accepted: in Result[Conn, TcpError],
+  queue: in ConcurrentQueue[HttpContext],
+  available: in Semaphore,
+  limits: in EngineLimits,
+): Bool {
+  match accepted {
+    case Ok(conn) -> {
+      val _ = taskRun({ -> processConnection(conn, queue, available, limits) })
+      true
+    }
+    case Err(e) -> match e { case AcceptFailed(_) -> false; case BindFailed(_) -> false; case _ -> true }
+  }
+}
+
+// Plain (non-TLS) accept loop. Split from the TLS loop rather than branching on
+// an `Option[TlsServerConfig]` parameter inside the loop: a cross-package
+// `Option[TlsServerConfig]` argument threaded through the background-task
+// closure degrades in the multi-package bundle build (the self-hosted MSIL
+// emitter's #2494 generic-instantiation degradation), so the `match tls` there
+// silently faulted and the accept loop never accepted. Two monomorphic loops
+// carry no generic-over-extern-payload parameter and are unaffected.
+func plainAcceptLoop(
   transport: in Listener,
   queue: in ConcurrentQueue[HttpContext],
   available: in Semaphore,
-  tls: in Option[TlsServerConfig],
   limits: in EngineLimits,
 ): Unit {
   var running = true
   while running {
-    val accepted = match tls { case None -> hostAccept(transport); case Some(cfg) -> hostAcceptTls(transport, cfg) }
-    match accepted {
-      case Ok(conn) -> {
-        val _ = taskRun({ -> processConnection(conn, queue, available, limits) });
-        ()
-      }
-      case Err(e) -> match e { case AcceptFailed(_) -> { running = false }; case BindFailed(_) -> { running = false }; case _ -> () }
-    }
+    val accepted = hostAccept(transport)
+    running = onAccepted(accepted, queue, available, limits)
+  }
+}
+
+// TLS accept loop — terminates TLS on each accepted connection using `cfg`.
+func tlsAcceptLoop(
+  transport: in Listener,
+  queue: in ConcurrentQueue[HttpContext],
+  available: in Semaphore,
+  cfg: in TlsServerConfig,
+  limits: in EngineLimits,
+): Unit {
+  var running = true
+  while running {
+    val accepted = hostAcceptTls(transport, cfg)
+    running = onAccepted(accepted, queue, available, limits)
   }
 }
 
@@ -524,32 +557,55 @@ func acceptLoop(
 // Public host helpers.
 // =====================================================================
 /// Construct + bind + start a plaintext listener for `prefix` (e.g.
-/// `"http://localhost:8080/"`). The caller owns it and must call
-/// `stopListener` on shutdown. A `"*"` / `"+"` host binds the IPv4 wildcard;
-/// `"localhost"` binds loopback.
+/// `"http://localhost:8080/"`), using `EngineLimits.defaults()`. The caller
+/// owns it and must call `stopListener` on shutdown. A `"*"` / `"+"` host binds
+/// the IPv4 wildcard; `"localhost"` binds loopback. Use
+/// `startListenerWithLimits` to raise the request-size caps.
 pub func startListener(prefix: in String): HttpListener {
+  startListenerWithLimits(prefix, EngineLimits.defaults())
+}
+
+/// Like `startListener`, but with caller-supplied `EngineLimits`. The retired
+/// `HttpListener` server accepted unbounded request bodies; the sans-IO engine
+/// defaults to a 10 MiB `maxBodyBytes` cap (`EngineLimits.defaults()`), so a
+/// large-payload endpoint must raise the cap here (a custom `EngineLimits`
+/// value, or `EngineLimits.defaults()` with a larger `maxBodyBytes`). Kept as a
+/// separate function rather than a defaulted `startListener` parameter: a
+/// cross-package `EngineLimits` default omitted at the call site would risk the
+/// same multi-package bundle-build generic degradation this server's accept
+/// loop was just hardened against.
+pub func startListenerWithLimits(prefix: in String, limits: in EngineLimits): HttpListener {
   val parsed = parsePrefix(prefix)
   match hostListen(resolveBindHost(parsed.bindHost), parsed.port) {
     case Ok(transport) -> {
       val queue: ConcurrentQueue[HttpContext] = newConcurrentQueue()
       val available = newSemaphore(0)
-      val limits = EngineLimits.defaults()
-      val task = taskRun({ -> acceptLoop(transport, queue, available, None, limits) })
+      val task = taskRun({ -> plainAcceptLoop(transport, queue, available, limits) })
       HttpListener(transport = transport, queue = queue, available = available, acceptTask = task)
     }
     case Err(e) -> panic("Std.HttpServer.startListener: bind failed: " + TcpError.message(e))
   }
 }
 
-/// TLS twin of `startListener` (docs/61 §6.3, issue #5884). Binds `host`:`port`
-/// and terminates TLS on every connection using `tls` (server identity,
-/// `minVersion`, ALPN `http/1.1`, and callback-free mTLS). `host` is an IP
-/// literal, `"*"`/`"+"` (wildcard), or `"localhost"`. Returns
-/// `Err(InvalidConfig(...))` for a mutual-TLS misconfiguration
-/// (`requireClientCert` with no `clientCa`) caught before binding; per-connection
-/// handshake failures are handled inside the accept loop, never fatal to the
-/// listener.
+/// TLS twin of `startListener` (docs/61 §6.3, issue #5884), using
+/// `EngineLimits.defaults()`. Binds `host`:`port` and terminates TLS on every
+/// connection using `tls` (server identity, `minVersion`, ALPN `http/1.1`, and
+/// callback-free mTLS). `host` is an IP literal, `"*"`/`"+"` (wildcard), or
+/// `"localhost"`. Returns `Err(InvalidConfig(...))` for a mutual-TLS
+/// misconfiguration (`requireClientCert` with no `clientCa`) caught before
+/// binding; per-connection handshake failures are handled inside the accept
+/// loop, never fatal to the listener. Use `startListenerTlsWithLimits` to raise
+/// the request-size caps.
 pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig): Result[HttpListener, TlsListenError] {
+  startListenerTlsWithLimits(host, port, tls, EngineLimits.defaults())
+}
+
+/// Like `startListenerTls`, but with caller-supplied `EngineLimits` (see
+/// `startListenerWithLimits` for why the cap is overridable and why this is a
+/// separate function).
+pub func startListenerTlsWithLimits(
+  host: in String, port: in Int, tls: in TlsServerConfig, limits: in EngineLimits
+): Result[HttpListener, TlsListenError] {
   val mtlsMisconfigured = tls.requireClientCert and match tls.clientCa { case Some(_) -> false; case None -> true }
   if mtlsMisconfigured {
     return Err(
@@ -563,8 +619,7 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
     case Ok(transport) -> {
       val queue: ConcurrentQueue[HttpContext] = newConcurrentQueue()
       val available = newSemaphore(0)
-      val limits = EngineLimits.defaults()
-      val task = taskRun({ -> acceptLoop(transport, queue, available, Some(value = tls), limits) })
+      val task = taskRun({ -> tlsAcceptLoop(transport, queue, available, tls, limits) })
       Ok(value = HttpListener(transport = transport, queue = queue, available = available, acceptTask = task))
     }
     case Err(e) -> Err(error = InvalidConfig(message = "bind failed: " + TcpError.message(e)))
@@ -575,7 +630,15 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
 pub func nextContext(l: in HttpListener): HttpContext {
   semWait(l.available)
   var ctx: HttpContext = default()
-  val _ = cqTryDequeue(l.queue, ctx)
+  // The semaphore is released once per enqueue, so an item is always present
+  // here; a `false` return means the queue/semaphore invariant was violated
+  // (never expected) — surface it loudly rather than returning a `default()`
+  // context that would fault on first use.
+  if not cqTryDequeue(l.queue, ctx) {
+    panic(
+      "Std.HttpServer.nextContext: request queue empty after its availability semaphore was signalled (invariant violation)"
+    )
+  }
   ctx
 }
 

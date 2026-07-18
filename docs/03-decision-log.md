@@ -17209,6 +17209,26 @@ T)` (single one-argument overload, `out`-parameter preserving field identity)
 plus arity-0 `SemaphoreSlim.Wait()`/`Release()` are all unambiguous and
 correct — the same `ConcurrentQueue` idiom `lyric-mq`'s kernel already uses.
 
+**Third emitter constraint — no `Option<extern-payload>` through the accept
+loop.** A single `acceptLoop` that branched on an `Option[TlsServerConfig]`
+parameter (`None` → plain, `Some(cfg)` → TLS) built fine as an inline package
+but, compiled into the multi-package bundle, silently mis-read the `None`
+threaded through the background-task closure (the #2494 generic-instantiation
+degradation): the `match tls` faulted, the accept loop never accepted, and every
+request hung with an empty response (the `HttpListener`-based `examples/rest_service.l`
+CI smoke caught it; the published-tool test path does not run it). Fixed by
+splitting into two monomorphic loops — `plainAcceptLoop` and `tlsAcceptLoop` —
+neither carrying a generic-over-extern-payload parameter. `nextContext` also
+now panics (rather than returning a `default()` context) if `TryDequeue` fails
+after its availability semaphore was signalled.
+
+**Request-size caps.** The retired `HttpListener` server accepted unbounded
+bodies; the engine defaults to a 10 MiB `EngineLimits.maxBodyBytes`. Two
+additive public functions — `startListenerWithLimits` / `startListenerTlsWithLimits`
+— let a large-payload consumer raise the caps, kept separate from the base
+functions (rather than a defaulted `EngineLimits` parameter) to avoid re-introducing
+the cross-package generic-degradation the accept-loop split just fixed.
+
 **Verification.** `lyric-stdlib/tests/http_server_dotnet_tests.l` (new,
 `@test_module`, wired into dotnet CI) covers plaintext GET (real Lyric HTTP
 client), POST body delivery, keep-alive reuse on one connection, a

@@ -186,6 +186,24 @@ func taskWait(t: in Task): Unit = ()
 @externTarget("System.Threading.Thread.Sleep")
 func threadSleep(ms: in Int): Unit = ()
 
+// Thread-safe accumulator for the concurrent-connections test: four background
+// `Task.Run` clients record their outcome here, so it must not be a plain
+// (non-thread-safe) `List`. `ConcurrentQueue` is the same primitive the server
+// kernel uses for its pull queue; results are drained single-threaded after the
+// clients join (#6079).
+extern type ConcQueue[T] = "System.Collections.Concurrent.ConcurrentQueue`1"
+
+@externTarget("System.Collections.Concurrent.ConcurrentQueue`1..ctor")
+func newConcQueue[T](): ConcQueue[T] = ()
+
+@externInstance
+@externTarget("System.Collections.Concurrent.ConcurrentQueue`1.Enqueue")
+func concEnqueue[T](q: in ConcQueue[T], item: in T): Unit = ()
+
+@externInstance
+@externTarget("System.Collections.Concurrent.ConcurrentQueue`1.TryDequeue")
+func concTryDequeue[T](q: in ConcQueue[T], result: out T): Bool = ()
+
 func serverIdentity(): Identity {
   match Identity.fromPem(serverCertPem, serverKeyPem) {
     case Ok(id) -> id
@@ -276,15 +294,33 @@ func rawRequest(host: in String, port: in Int, reqText: in String, marker: in St
   joined(acc)
 }
 
-// One concurrent raw client: GET /<tag>, record "ok:/<tag>" on success.
-func concurrentClient(port: in Int, tag: in String, results: in List[String]): Unit {
+// One concurrent raw client: GET /<tag>, record "ok:<tag>" on success. Writes
+// to a thread-safe `ConcurrentQueue` since this runs on a background task
+// alongside the other clients (#6079).
+func concurrentClient(port: in Int, tag: in String, results: in ConcQueue[String]): Unit {
   val marker = "path=/" + tag
   val body = rawRequest("127.0.0.1", port, "GET /" + tag + " HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", marker)
   if body.contains(marker) {
-    results.add("ok:" + tag)
+    concEnqueue(results, "ok:" + tag)
   } else {
-    results.add("bad:" + tag)
+    concEnqueue(results, "bad:" + tag)
   }
+}
+
+// Drain a ConcurrentQueue[String] into a single-threaded joined string (called
+// only after all producer tasks have joined).
+func drainConcQueue(results: in ConcQueue[String]): String {
+  var acc = ""
+  var more = true
+  while more {
+    var item = ""
+    if concTryDequeue(results, item) {
+      acc = acc + item + ";"
+    } else {
+      more = false
+    }
+  }
+  acc
 }
 
 test "plaintext GET round trip via the Lyric HTTP client" {
@@ -342,7 +378,7 @@ test "concurrent connections are all served" {
   val listener = startListener("http://127.0.0.1:19404/")
   val server = taskRun({ -> serveN(listener, 4) })
   threadSleep(100)
-  val results: List[String] = newList()
+  val results: ConcQueue[String] = newConcQueue()
   val c0 = taskRun({ -> concurrentClient(19404, "c0", results) })
   val c1 = taskRun({ -> concurrentClient(19404, "c1", results) })
   val c2 = taskRun({ -> concurrentClient(19404, "c2", results) })
@@ -353,7 +389,7 @@ test "concurrent connections are all served" {
   taskWait(c3)
   taskWait(server)
   stopListener(listener)
-  val all = joined(results)
+  val all = drainConcQueue(results)
   assertTrue(
     all.contains("ok:c0") and all.contains("ok:c1") and all.contains("ok:c2") and all.contains("ok:c3"),
     "all four concurrent connections served: " + all

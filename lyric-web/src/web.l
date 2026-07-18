@@ -1354,8 +1354,12 @@ func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
 /// the environment (e.g. attaching a router built by `Lambda.withRouter`
 /// through a different entry point).
 ///
-/// dotnet: a hand-rolled Std.HttpServer (System.Net.HttpListener) accept
-/// loop — single-threaded, synchronous (see README "Known gaps").
+/// dotnet: a `Std.HttpServer` pull loop over the pure-Lyric sans-IO HTTP/1.1
+/// engine + `System.Net.Sockets`/`SslStream` transport (the
+/// `System.Net.HttpListener` server was retired, docs/61 §6). The transport
+/// accepts and reads connections concurrently; this dispatch loop still
+/// handles one request at a time (its full move onto the concurrent server is
+/// tracked separately — see README "Known gaps").
 @stable(since = "0.2")
 @cfg(feature = "dotnet")
 pub func serve(router: in Router, host: in String, port: in Int): Unit
