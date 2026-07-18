@@ -17260,11 +17260,35 @@ is now 15/15. (d) **`tcp_host_tls_tests.l` fix:** advertising `h2` made the defa
 tests assert the server reports `hostAlpn == ""` and still round-trips bytes (the
 h2 ALPN path is covered by `http_server_dotnet_tests.l`) — all 8 pass.
 
+**Second review round (#6144/#6145).** (a) **Trailer bypass of the body cap
+closed (#6144, REQUIRED):** the #6129 reject was gated only on the DATA path, so
+an over-cap stream followed by a *trailer* HEADERS block (END_STREAM on the
+trailers) could still re-dispatch the (truncated) request. Rejection is now
+**terminal**: a stream over `maxBodyBytes` is recorded in a per-connection
+`rejectedStreams` set that BOTH `onH2Data` and `onH2Headers` consult first, so a
+trailer HEADERS (or any further frame) on it is dropped — never re-dispatched,
+never a protocol violation — and its END_STREAM/reset prunes the marker. (b)
+**Rejected-accumulator prune (#6145):** the stream's `H2ReqAccum` (buffered
+headers/body) is dropped the moment it is rejected, so the accumulator map only
+ever holds in-progress non-rejected streams; a rejected stream a client abandons
+retains only the tiny id marker, bounded by streams opened — consistent with the
+FSM's own retained-stream bookkeeping (#6064). Test: an over-cap request is
+proven **never dispatched** to the handler (a recording puller shows only the
+subsequent valid path) and the connection stays healthy (the post-rejection
+request still returns 200) — `http_server_dotnet_tests.l` is now 16/16. (The
+exact over-cap-DATA-then-trailer *frame* sequence isn't drivable end-to-end: no
+available TLS client — .NET HttpClient or curl — sends h2 request trailers, and a
+raw Lyric TLS h2 client is blocked by FFI gaps (`X509Certificate2.CreateFromPem`
+crashes the emitter; the client-side ALPN `List<SslApplicationProtocol>` setter
+hits #6029), so the trailer branch is covered by the shared `isRejectedStream`
+guard + `dispatchH2Stream` path plus the not-dispatched assertion, per the test's
+header comment.)
+
 **Boundary.** dotnet server h2 end-to-end only. The h2 FSM (#5888) and frame/HPACK
 codecs (#5886/#5887) are composed, not reimplemented; JVM h2 is Undertow's own
 path (D-progress-698); native HTTPS is #5890.
 
-**Related:** #5889, #5874, #6107, #6129, #6130, #6131, #6132,
+**Related:** #5889, #5874, #6107, #6129, #6130, #6131, #6132, #6144, #6145,
 docs/61-https-tls-http-versions.md §6.4, D128, D-progress-700, D-progress-699,
 D-progress-697.
 

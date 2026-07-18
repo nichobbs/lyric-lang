@@ -277,6 +277,19 @@ func serveLargeBody(l: in HttpListener, body: in String): Unit {
   respondText(ctx, 200, body)
 }
 
+// Puller that records the path of every request the handler is actually
+// dispatched, into a thread-safe queue, then echoes it. Used to prove a
+// maxBodyBytes-rejected request never reaches the handler.
+func serveRecording(l: in HttpListener, dispatched: in ConcQueue[String], n: in Int): Unit {
+  var i = 0
+  while i < n {
+    val ctx = nextContext(l)
+    concEnqueue(dispatched, requestPath(ctx))
+    respondText(ctx, 200, "handled " + requestPath(ctx))
+    i = i + 1
+  }
+}
+
 // Puller that serves one request as a chunked response of three chunks (buffered
 // then flushed as one h2 response, #6107), exercising the h2 chunked path.
 func serveChunked(l: in HttpListener): Unit {
@@ -657,6 +670,50 @@ test "HTTP/2 request body just under maxBodyBytes is accepted" {
   stopListener(listener)
   assertEqualInt(resp.statusCode(), 200, "under-cap h2 request body accepted")
   assertTrue(body.contains("body=" + underBody), "the full under-cap body reached the handler")
+}
+
+// #6144: a stream rejected for exceeding maxBodyBytes must be TERMINAL — the
+// request is never dispatched to the handler and the connection is not corrupted
+// (a subsequent request on it still succeeds). The `onH2Data` and `onH2Headers`
+// (trailer) paths share the same `isRejectedStream` guard and the same
+// `dispatchH2Stream`, so proving the over-cap request never reaches the handler
+// here proves the guard for both. (The exact "over-cap DATA without END_STREAM
+// then a trailer HEADERS block" frame sequence cannot be driven end-to-end by
+// the .NET HttpClient or curl — neither sends h2 *request* trailers — and a raw
+// Lyric TLS h2 client is blocked by FFI gaps: `X509Certificate2.CreateFromPem`
+// crashes the emitter and the client-side ALPN `List<SslApplicationProtocol>`
+// setter hits #6029; the trailer branch is covered by the shared guard + code
+// review, not a bespoke raw-frame client.)
+test "HTTP/2 over-cap request is never dispatched to the handler and the connection stays healthy" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTlsWithLimits("127.0.0.1", 19416, cfg, smallBodyLimits(1024)) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTlsWithLimits failed: " + TlsListenError.message(e))
+  }
+  // The handler serves exactly one request — the valid one; the over-cap request
+  // must be rejected before it ever reaches `nextContext`.
+  val dispatched: ConcQueue[String] = newConcQueue()
+  val server = taskRun({ -> serveRecording(listener, dispatched, 1) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  match await client.post("https://localhost:19416/overcap", makeBody(4096)) {
+    case Ok(r) -> assertEqualInt(r.statusCode(), 413, "over-cap h2 request is rejected with 413")
+    case Err(e) -> panic("over-cap POST should return 413, not a transport error: " + HttpError.message(e))
+  }
+  // A subsequent valid request must still succeed: the rejection was terminal and
+  // raised no connection-level protocol error that would break the connection.
+  val okResp = match await client.get("https://localhost:19416/valid") {
+    case Ok(r) -> r
+    case Err(e) -> panic("post-rejection GET should succeed: " + HttpError.message(e))
+  }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(okResp.statusCode(), 200, "the request after a rejection succeeds (connection healthy)")
+  val handled = drainConcQueue(dispatched)
+  assertTrue(handled.contains("/valid"), "the valid request reached the handler: " + handled)
+  assertTrue(not handled.contains("/overcap"), "the over-cap request was NEVER dispatched to the handler: " + handled)
 }
 
 test "HTTP/2 large response body spans multiple DATA frames and arrives intact" {

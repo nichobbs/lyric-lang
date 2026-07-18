@@ -281,11 +281,6 @@ record H2ReqAccum {
   headers: List[HeaderField]
   body: List[Byte]
   haveHeaders: Bool
-  // Set once the stream's accumulated body would exceed `EngineLimits.maxBodyBytes`:
-  // a `413` is sent, the request is never dispatched to the handler, and every
-  // further DATA frame on the stream is dropped (not buffered) so a hostile client
-  // can never grow server memory past the cap.
-  rejected: Bool
 }
 
 // The request line + non-pseudo headers extracted from an h2 header block.
@@ -309,6 +304,17 @@ record H2ConnState {
   // The same `EngineLimits` the HTTP/1.1 path enforces (`maxBodyBytes` in
   // particular): an h2 request body is capped identically, at parity.
   limits: EngineLimits
+  // Stream ids that have been *terminally rejected* for exceeding
+  // `maxBodyBytes` (a `413` was sent, the request never dispatched). Consulted on
+  // every subsequent frame — DATA *and* a trailer HEADERS block — so a rejected
+  // stream can never re-dispatch the request or trip a protocol violation
+  // (#6144). The stream's `H2ReqAccum` is dropped when it is rejected (freeing
+  // its buffered headers/body), so the accumulator map only ever holds
+  // in-progress non-rejected streams (#6145); this marker set is pruned when the
+  // stream reaches END_STREAM or is reset. A rejected stream a client abandons
+  // (never END_STREAM/RST) retains only this tiny id marker — bounded by streams
+  // opened, consistent with the FSM's own retained-stream bookkeeping (#6064).
+  rejectedStreams: Map[Int, Bool]
 }
 
 /// An open chunked (`Transfer-Encoding: chunked`) response. Carries the
@@ -741,7 +747,7 @@ func getOrCreateAccum(state: in H2ConnState, streamId: in Int): H2ReqAccum {
   match mapGet(state.accums, streamId) {
     case Some(a) -> a
     case None -> {
-      val fresh = H2ReqAccum(headers = newList(), body = newList(), haveHeaders = false, rejected = false)
+      val fresh = H2ReqAccum(headers = newList(), body = newList(), haveHeaders = false)
       state.accums.add(streamId, fresh)
       fresh
     }
@@ -750,6 +756,27 @@ func getOrCreateAccum(state: in H2ConnState, streamId: in Int): H2ReqAccum {
 
 func removeAccum(state: in H2ConnState, streamId: in Int): Unit {
   state.accums.remove(streamId)
+}
+
+// Mark `streamId` as terminally rejected (over `maxBodyBytes`) and drop its
+// accumulator so no buffered headers/body are retained (#6145). Subsequent
+// frames on it are dropped by `isRejectedStream` (#6144).
+func markRejectedStream(state: in H2ConnState, streamId: in Int): Unit {
+  state.rejectedStreams.add(streamId, true)
+  removeAccum(state, streamId)
+}
+
+func isRejectedStream(state: in H2ConnState, streamId: in Int): Bool {
+  match mapGet(state.rejectedStreams, streamId) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// Prune the rejected-stream marker once the stream is fully closed (its
+// END_STREAM seen, or a reset), so the marker set does not retain closed streams.
+func forgetRejectedStream(state: in H2ConnState, streamId: in Int): Unit {
+  state.rejectedStreams.remove(streamId)
 }
 
 // Split an HPACK-decoded request header block into method / path / non-pseudo
@@ -965,6 +992,16 @@ func onH2Headers(
   endStream: in Bool,
   work: in List[H2Event],
 ): Unit {
+  if isRejectedStream(state, streamId) {
+    // Terminal rejection (over `maxBodyBytes`, #6144): a trailer HEADERS block
+    // must NOT re-dispatch the already-413'd request, and acting on it must not
+    // trip a protocol violation — drop it. Its END_STREAM closes the stream, so
+    // prune the marker.
+    if endStream {
+      forgetRejectedStream(state, streamId)
+    }
+    return
+  }
   val accum = getOrCreateAccum(state, streamId)
   if not accum.haveHeaders {
     accum.headers = headers
@@ -1024,27 +1061,28 @@ func sendH2Reject413(state: in H2ConnState, streamId: in Int): Unit {
 func onH2Data(
   state: in H2ConnState, streamId: in Int, data: in slice[Byte], endStream: in Bool, work: in List[H2Event]
 ): Unit {
-  val accum = getOrCreateAccum(state, streamId)
   // Every consumed DATA octet gives back connection-level receive window so the
   // shared window (and thus the other streams on the connection) never stalls,
   // whether or not this stream's bytes are kept.
   replenishConnWindow(state, data.length)
-  if accum.rejected {
-    // Already over the cap: drop further DATA (never buffer past the cap) and,
-    // on END_STREAM, forget the stream (the 413 was already sent).
+  if isRejectedStream(state, streamId) {
+    // Already terminally rejected (#6144): drop further DATA (never buffer past
+    // the cap); its END_STREAM closes the stream, so prune the marker.
     if endStream {
-      removeAccum(state, streamId)
+      forgetRejectedStream(state, streamId)
     }
     return
   }
+  val accum = getOrCreateAccum(state, streamId)
   if accum.body.count + data.length > state.limits.maxBodyBytes {
-    // Reject: cap the memory (do not append this frame), send a 413, and mark the
-    // stream so subsequent frames are dropped. Matches the HTTP/1.1 path, which
-    // rejects an oversized body as `BodyTooLarge` at `maxBodyBytes`.
-    accum.rejected = true
+    // Reject terminally: cap the memory (do not append this frame), mark the
+    // stream (which drops its accumulator, #6145), and send a 413. Matches the
+    // HTTP/1.1 path, which rejects an oversized body as `BodyTooLarge` at
+    // `maxBodyBytes`.
+    markRejectedStream(state, streamId)
     sendH2Reject413(state, streamId)
     if endStream {
-      removeAccum(state, streamId)
+      forgetRejectedStream(state, streamId)
     }
     return
   }
@@ -1066,8 +1104,14 @@ func processH2Event(state: in H2ConnState, ev: in H2Event, work: in List[H2Event
     case H2PingReceived(_) -> ()
     case H2PingAcknowledged(_) -> ()
     case H2GoAwayReceived(_, _) -> ()
-    case H2PeerReset(streamId, _) -> removeAccum(state, streamId)
-    case H2StreamErr(streamId, _, _) -> removeAccum(state, streamId)
+    case H2PeerReset(streamId, _) -> {
+      removeAccum(state, streamId)
+      forgetRejectedStream(state, streamId)
+    }
+    case H2StreamErr(streamId, _, _) -> {
+      removeAccum(state, streamId)
+      forgetRejectedStream(state, streamId)
+    }
     case H2ConnError(_, _) -> {
       // The FSM already queued a GOAWAY in the feed's outbound bytes and poisoned
       // the connection; stop reading.
@@ -1105,7 +1149,8 @@ func processH2Connection(
     queue = queue,
     available = available,
     open = true,
-    limits = limits
+    limits = limits,
+    rejectedStreams = newMap()
   )
   while state.open and not H2.isFailed(state.h2) {
     match hostRead(conn, 65536) {
