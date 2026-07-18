@@ -31096,7 +31096,7 @@ Boundary: dotnet server h2 end-to-end only. The h2 FSM (#5888) and frame/HPACK
 codecs (#5886/#5887) are composed, not reimplemented; JVM h2 is Undertow's own
 path (#5881); native HTTPS is #5890.
 
-**Related:** `docs/03-decision-log.md` D-progress-702; docs/61 §6.4, D128; #5889,
+**Related:** `docs/03-decision-log.md` D-progress-704; docs/61 §6.4, D128; #5889,
 #5874, #6107, #5888 (D-progress-699), #5884 (D-progress-700), #5882 (D-progress-697).
 
 ## Native TCP + TLS transport seam ships in `lyric-rt` — `lyric_sock_*` + `lyric_tls_*` over OpenSSL 3.x (dlopen), TLS phase 5 band N9.1 (2026-07-18)

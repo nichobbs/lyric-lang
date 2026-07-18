@@ -78,12 +78,20 @@
 //! request stream is dispatched as an ordinary `HttpContext` and its response
 //! is serialized back through the H2Conn send path (HEADERS + flow-controlled
 //! DATA frames), so consumers (`lyric-web`, `examples`) serve h2 with no source
-//! change. Per-stream serialization is strict (one in-flight request/response
-//! per connection at a time); multiplexed concurrent streams are processed in
-//! sequence (head-of-line at the server), and a response body larger than the
-//! peer's advertised flow-control window is delivered as the peer grants
-//! `WINDOW_UPDATE` — the interleaved multi-stream send-pump is tracked as a
-//! follow-up (#6107), not implemented here.
+//! change. Request bodies are capped at the same `EngineLimits.maxBodyBytes` the
+//! HTTP/1.1 path enforces: a stream whose accumulated DATA would exceed the cap
+//! is answered `413` and never dispatched, and further DATA on it is dropped
+//! (never buffered past the cap), so a hostile client cannot exhaust memory.
+//! Received-window credit is returned via `WINDOW_UPDATE` as DATA is consumed, so
+//! a large legal body flows past the initial 64 KiB window. If the response
+//! headers cannot be HPACK-encoded, the stream is reset with `RST_STREAM`
+//! (`INTERNAL_ERROR`) rather than left hanging. Per-stream serialization is strict
+//! (one in-flight request/response per connection at a time); multiplexed
+//! concurrent streams are processed in sequence (head-of-line at the server), and
+//! a response body larger than the peer's advertised send window is delivered as
+//! the peer grants `WINDOW_UPDATE` — the interleaved multi-stream send-pump and
+//! incremental (non-buffered) h2 chunked streaming are tracked as a follow-up
+//! (#6107), not implemented here.
 @axiom("System.Threading.Tasks.Task.Run, System.Collections.Concurrent.ConcurrentQueue, and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts")
 package Std.HttpServer
 
@@ -103,6 +111,10 @@ import Std.HttpEngine
 // to `Std.HttpEngine` (no longer ambiguous, since H2Conn is only reachable via
 // the alias). Every other H2Conn name used here is unique, so it stays bare.
 import Std.HttpEngine.H2Conn as H2
+// For the `H2InternalError` error code passed to `H2.sendRstStream` when an h2
+// response cannot be encoded. H2Frame shares no `feed`/`isFailed` name with
+// `Std.HttpEngine`, so it needs no alias.
+import Std.HttpEngine.H2Frame
 import Std.TcpHost
 
 // =====================================================================
@@ -269,6 +281,11 @@ record H2ReqAccum {
   headers: List[HeaderField]
   body: List[Byte]
   haveHeaders: Bool
+  // Set once the stream's accumulated body would exceed `EngineLimits.maxBodyBytes`:
+  // a `413` is sent, the request is never dispatched to the handler, and every
+  // further DATA frame on the stream is dropped (not buffered) so a hostile client
+  // can never grow server memory past the cap.
+  rejected: Bool
 }
 
 // The request line + non-pseudo headers extracted from an h2 header block.
@@ -289,6 +306,9 @@ record H2ConnState {
   queue: ConcurrentQueue[HttpContext]
   available: Semaphore
   open: Bool
+  // The same `EngineLimits` the HTTP/1.1 path enforces (`maxBodyBytes` in
+  // particular): an h2 request body is capped identically, at parity.
+  limits: EngineLimits
 }
 
 /// An open chunked (`Transfer-Encoding: chunked`) response. Carries the
@@ -625,7 +645,7 @@ func onAccepted(
       // that negotiated `h2` drives the HTTP/2 FSM; everything else (plain
       // connection, `http/1.1`, or no ALPN) speaks HTTP/1.1.
       if hostAlpn(conn) == "h2" {
-        val _ = taskRun({ -> processH2Connection(conn, queue, available) })
+        val _ = taskRun({ -> processH2Connection(conn, queue, available, limits) })
       } else {
         val _ = taskRun({ -> processConnection(conn, queue, available, limits) })
       }
@@ -721,7 +741,7 @@ func getOrCreateAccum(state: in H2ConnState, streamId: in Int): H2ReqAccum {
   match mapGet(state.accums, streamId) {
     case Some(a) -> a
     case None -> {
-      val fresh = H2ReqAccum(headers = newList(), body = newList(), haveHeaders = false)
+      val fresh = H2ReqAccum(headers = newList(), body = newList(), haveHeaders = false, rejected = false)
       state.accums.add(streamId, fresh)
       fresh
     }
@@ -864,7 +884,17 @@ func sendH2Response(state: in H2ConnState, exchange: in H2Exchange, work: in Lis
   appendH2ExtraHeaders(headers, exchange.extra)
   val endOnHeaders = bodyArr.length == 0
   match encodeResponseHeaders(state.h2, streamId, headers, endOnHeaders) {
-    case Err(_) -> ()
+    case Err(_) -> {
+      // The response headers could not be HPACK-encoded: rather than silently
+      // dropping the response and leaving the stream hanging, reset it with
+      // RST_STREAM(INTERNAL_ERROR) (RFC 9113 section 6.4) so the client sees a
+      // definite stream failure.
+      val rst = H2.sendRstStream(state.h2, streamId, H2InternalError)
+      if rst.length > 0 {
+        val _ = hostWrite(state.conn, rst);
+        ()
+      }
+    }
     case Ok(headBytes) -> {
       val _ = hostWrite(state.conn, headBytes)
       if bodyArr.length > 0 {
@@ -947,11 +977,81 @@ func onH2Headers(
   }
 }
 
+// Replenish the connection-level receive window by `len` and send the peer the
+// `WINDOW_UPDATE` (stream 0). Called for every DATA octet the driver consumes —
+// including bytes it drops for an over-limit stream — so the shared connection
+// window never deadlocks the *other* streams on the connection.
+func replenishConnWindow(state: in H2ConnState, len: in Int): Unit {
+  if len > 0 {
+    val bytes = grantConnectionWindow(state.h2, len)
+    if bytes.length > 0 {
+      val _ = hostWrite(state.conn, bytes);
+      ()
+    }
+  }
+}
+
+// Replenish a stream-level receive window by `len` and send the `WINDOW_UPDATE`.
+// Called only for bytes accepted into an under-cap body, so a large (but legal)
+// request body keeps flowing past the 64 KiB initial window; a rejected stream's
+// window is deliberately NOT replenished (backpressure).
+func replenishStreamWindow(state: in H2ConnState, streamId: in Int, len: in Int): Unit {
+  if len > 0 {
+    val bytes = grantStreamWindow(state.h2, streamId, len)
+    if bytes.length > 0 {
+      val _ = hostWrite(state.conn, bytes);
+      ()
+    }
+  }
+}
+
+// Send a bodyless `413` response with END_STREAM on `streamId` (RFC 9110 §15.5.14).
+// Used when a request body exceeds `maxBodyBytes`; the stream is not dispatched to
+// the handler.
+func sendH2Reject413(state: in H2ConnState, streamId: in Int): Unit {
+  val headers: List[HeaderField] = newList()
+  headers.add(HeaderField(name = ":status", value = "413"))
+  headers.add(HeaderField(name = "content-length", value = "0"))
+  match encodeResponseHeaders(state.h2, streamId, headers, true) {
+    case Err(_) -> ()
+    case Ok(bytes) -> {
+      val _ = hostWrite(state.conn, bytes);
+      ()
+    }
+  }
+}
+
 func onH2Data(
   state: in H2ConnState, streamId: in Int, data: in slice[Byte], endStream: in Bool, work: in List[H2Event]
 ): Unit {
   val accum = getOrCreateAccum(state, streamId)
+  // Every consumed DATA octet gives back connection-level receive window so the
+  // shared window (and thus the other streams on the connection) never stalls,
+  // whether or not this stream's bytes are kept.
+  replenishConnWindow(state, data.length)
+  if accum.rejected {
+    // Already over the cap: drop further DATA (never buffer past the cap) and,
+    // on END_STREAM, forget the stream (the 413 was already sent).
+    if endStream {
+      removeAccum(state, streamId)
+    }
+    return
+  }
+  if accum.body.count + data.length > state.limits.maxBodyBytes {
+    // Reject: cap the memory (do not append this frame), send a 413, and mark the
+    // stream so subsequent frames are dropped. Matches the HTTP/1.1 path, which
+    // rejects an oversized body as `BodyTooLarge` at `maxBodyBytes`.
+    accum.rejected = true
+    sendH2Reject413(state, streamId)
+    if endStream {
+      removeAccum(state, streamId)
+    }
+    return
+  }
   appendBytes(accum.body, data)
+  // Under the cap: also give back stream-level window so a large legal body can
+  // exceed the 64 KiB initial receive window.
+  replenishStreamWindow(state, streamId, data.length)
   if endStream {
     dispatchH2Stream(state, streamId, work)
   }
@@ -990,10 +1090,23 @@ func processH2Batch(state: in H2ConnState, bytes: in slice[Byte]): Unit {
 
 // The per-connection h2 loop: send the server's initial SETTINGS, then read →
 // feed → process until the connection closes or fails.
-func processH2Connection(conn: in Conn, queue: in ConcurrentQueue[HttpContext], available: in Semaphore): Unit {
+func processH2Connection(
+  conn: in Conn,
+  queue: in ConcurrentQueue[HttpContext],
+  available: in Semaphore,
+  limits: in EngineLimits,
+): Unit {
   val h2 = newServerConnection(h2DefaultServerSettings())
   val _ = hostWrite(conn, serverInitialFrame(h2))
-  val state = H2ConnState(conn = conn, h2 = h2, accums = newMap(), queue = queue, available = available, open = true)
+  val state = H2ConnState(
+    conn = conn,
+    h2 = h2,
+    accums = newMap(),
+    queue = queue,
+    available = available,
+    open = true,
+    limits = limits
+  )
   while state.open and not H2.isFailed(state.h2) {
     match hostRead(conn, 65536) {
       case Err(_) -> {

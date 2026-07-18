@@ -364,7 +364,7 @@ The .NET client (which already speaks h2 after §5.1) is the e2e test peer
 for the h2 server self-test — both directions of our own stack verify each
 other, plus a `curl --http2` smoke in CI for an independent implementation.
 
-**Shipped on dotnet (phase 4.4, D-progress-702, #5889):** `Std.TcpHost`
+**Shipped on dotnet (phase 4.4, D-progress-704, #5889):** `Std.TcpHost`
 advertises `h2` ahead of `http/1.1`, and the dotnet `Std.HttpServer` selects the
 FSM on `hostAlpn` — `"h2"` drives `Std.HttpEngine.H2Conn`, otherwise HTTP/1.1.
 An h2 request stream is dispatched as an ordinary `HttpContext` onto the same
@@ -706,7 +706,7 @@ items marked ∥ are independent and can proceed in parallel.
     the #5886/#5887 steps. Two tracked bounded characteristics filed (#6063
     padded-DATA receive-accounting, #6064 closed-stream pruning)._
 14. ALPN wiring in the dotnet transport + e2e h2 self-test (own client +
-    `curl --http2`). (After 13.) _Shipped (D-progress-702, #5889):
+    `curl --http2`). (After 13.) _Shipped (D-progress-704, #5889):
     `Std.TcpHost` advertises `h2` ahead of `http/1.1` via ALPN, and the dotnet
     `Std.HttpServer` selects the protocol on `hostAlpn` — `"h2"` drives the
     pure-Lyric `Std.HttpEngine.H2Conn` FSM (#5888), else HTTP/1.1. An h2 request

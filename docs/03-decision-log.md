@@ -17147,7 +17147,7 @@ real `lyric test` invocations as normal.
 
 ---
 
-## D-progress-702 — TLS phase 4.4: HTTP/2 end-to-end on the dotnet server — ALPN wiring + `Std.HttpEngine.H2Conn` FSM driving through the `Std.HttpServer` pull surface (docs/61 §6.4 phase 4.4, D128, #5889)
+## D-progress-704 — TLS phase 4.4: HTTP/2 end-to-end on the dotnet server — ALPN wiring + `Std.HttpEngine.H2Conn` FSM driving through the `Std.HttpServer` pull surface (docs/61 §6.4 phase 4.4, D128, #5889)
 
 **Context.** Phase 4.1–4.3 shipped the pure-Lyric h2 stack (HPACK #5886, frame
 codec #5887, connection/stream FSM `Std.HttpEngine.H2Conn` #5888), and phase 3.1
@@ -17238,12 +17238,35 @@ HEADERS+DATA response (content correct, only the incremental-flush timing
 differs). The interleaved multi-stream send-pump + incremental DATA streaming is
 #6107.
 
+**Review-round hardening (#6128 findings #6129/#6130/#6131/#6132).** (a) **Request
+bodies are capped at `EngineLimits.maxBodyBytes`** (#6129, REQUIRED — a parity gap
+vs the HTTP/1.1 path, and an unbounded-memory DoS): `onAccepted` threads the same
+`EngineLimits` into `processH2Connection`, and `onH2Data` answers a stream whose
+accumulated DATA would exceed the cap with `413` (never dispatched to the handler)
+and drops all further DATA on it (never buffered past the cap). The h2 receive
+window is replenished via `WINDOW_UPDATE` as DATA is consumed (connection-level for
+every consumed octet — protecting the other streams — plus stream-level for
+accepted bytes), so a large *legal* body flows past the 64 KiB initial window.
+(b) **On an `encodeResponseHeaders` failure the stream is reset** with
+`RST_STREAM(INTERNAL_ERROR)` via a new `H2.sendRstStream` (mirroring `sendGoAway`)
+rather than silently dropped and left hanging (#6131). (c) Tests added: an over-cap
+h2 body is `413`, a just-under-cap body succeeds, a 200 KB response spans multiple
+DATA frames and drives `sendH2Body`/`pumpForWindow` + `WINDOW_UPDATE` intact
+(#6130), and an h2 chunked response arrives fully (#6132) — `http_server_dotnet_tests.l`
+is now 15/15. (d) **`tcp_host_tls_tests.l` fix:** advertising `h2` made the default
+(h2-or-lower) Lyric client negotiate h2 against that suite's raw HTTP/1.1
+`serveOneTls` echo server, so its round-trip cases now pin the client to HTTP/1.1
+(`withHttpVersion(Http11)`); a .NET client pinned to 1.1 sends no ALPN, so those
+tests assert the server reports `hostAlpn == ""` and still round-trips bytes (the
+h2 ALPN path is covered by `http_server_dotnet_tests.l`) — all 8 pass.
+
 **Boundary.** dotnet server h2 end-to-end only. The h2 FSM (#5888) and frame/HPACK
 codecs (#5886/#5887) are composed, not reimplemented; JVM h2 is Undertow's own
 path (D-progress-698); native HTTPS is #5890.
 
-**Related:** #5889, #5874, #6107, docs/61-https-tls-http-versions.md §6.4, D128,
-D-progress-700, D-progress-699, D-progress-697.
+**Related:** #5889, #5874, #6107, #6129, #6130, #6131, #6132,
+docs/61-https-tls-http-versions.md §6.4, D128, D-progress-700, D-progress-699,
+D-progress-697.
 
 ## D-progress-703 — TLS phase 5 (native), band N9.1: the `lyric_sock_*` + `lyric_tls_*` OpenSSL 3.x transport seam in `lyric-rt` (docs/61 §7, D128 decision 10, #5890)
 
