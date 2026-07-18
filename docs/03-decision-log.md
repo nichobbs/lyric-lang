@@ -17147,6 +17147,87 @@ real `lyric test` invocations as normal.
 
 ---
 
+## D-progress-699 — TLS phase 3.3: dotnet `Std.HttpServer` server assembly on `Std.TcpHost` + `Std.HttpEngine`; `HttpListener` retired; real `startListenerTls` (docs/61 §6.1 item 9 / §6.2 / §6.3, D128, #5884)
+
+**Context.** D128 decision 7 replaces the .NET server with a pure-Lyric sans-IO
+HTTP engine over a thin transport kernel. Phase 3.1 (D-progress-697, #5882)
+shipped `Std.TcpHost` (`TcpListener`/`SslStream`) and 3.2 (D-progress-694,
+#5883) shipped `Std.HttpEngine` (the sans-IO HTTP/1.1 parser/serializer/FSM).
+This phase (docs/61 §6.1 item 9, #5884) is the server assembly that composes
+them behind the existing `Std.HttpServer` surface and retires the
+`System.Net.HttpListener` server the module's own header called "bootstrap-grade"
+(single-threaded, synchronous, no TLS on Linux/macOS).
+
+**What shipped.** `lyric-stdlib/std/_kernel/http_server.l` rewritten:
+
+- **HttpListener externs gone.** Nothing in the file reaches the BCL HTTP
+  stack. `HttpContext` and `HttpListener`, formerly extern aliases for
+  `System.Net.HttpListenerContext`/`HttpListener`, are now Lyric records; the
+  chunked-stream handle (formerly the `System.IO.Stream` extern) is the Lyric
+  record `HttpChunkedStream`.
+- **Structured accept loop (docs/61 §6.2).** `startListener` binds via
+  `hostListen` and spawns a background `Task.Run` accept loop that, per
+  connection, spawns a `Task.Run` handler. Each handler drives its own
+  `Std.HttpEngine.Connection`: it pumps `hostRead` bytes through `feed`,
+  accumulates `BodyChunk`s, writes a `100 Continue` on `ExpectContinue`, and on
+  `RequestComplete` hands a ready `HttpContext` to the pull queue, then blocks
+  until the puller responds — reading the next request on the same connection
+  when the engine keeps it alive (keep-alive), else closing. `spawn`/`scope` is
+  degenerate-synchronous on `--target dotnet` (D119/D120), so the real OS-thread
+  concurrency comes from `Task.Run`, exactly as `tcp_host_tls_tests.l` runs its
+  loopback server. This fixes the single-threaded `HttpListener.GetContext`
+  concurrency deficiency in the same change as TLS.
+- **Preserved 12-function pull surface.** `startListener` / `nextContext` /
+  `stopListener` / `requestMethod` / `requestPath` / `requestBody` /
+  `requestQuery` / `requestHeaders` / `urlDecode` / `respondText` /
+  `respondJson` / `respondBytesWithHeaders` plus the three chunked-streaming
+  helpers are unchanged in name and semantics. `lyric-web` and `examples/`
+  keep building; the only consumer edit is renaming lyric-web's two internal
+  `Stream`-typed streaming signatures to `HttpChunkedStream` (the old public
+  `Stream` type could not keep its name — a record named `Stream` would collide
+  bundle-globally with `Std.TcpHost`'s `extern type Stream`, the #6041 class of
+  defect).
+- **Real `startListenerTls` on dotnet.** Built over `hostAcceptTls` (server
+  identity + `minVersion` + ALPN `http/1.1` + callback-free mTLS). The phase-2
+  `NotSupportedOnTarget` stub is gone; a mutual-TLS misconfiguration
+  (`requireClientCert` with no `clientCa`) returns `Err(InvalidConfig(...))`
+  before binding, and per-connection handshake failures are dropped inside the
+  accept loop (the server keeps serving), never fatal to the listener.
+
+**Concurrency-primitive choice (two self-hosted-emitter constraints).** The
+pull queue is a `ConcurrentQueue<HttpContext>` + a `SemaphoreSlim` counting
+available items, and the per-request response hand-off is a per-context
+`SemaphoreSlim`. `BlockingCollection` was tried first and rejected for two
+independently-verified reasons: (1) `BlockingCollection.TryTake` has two
+two-argument overloads (`out T, int` vs `out T, TimeSpan`) that arity-only
+metadata resolution cannot distinguish (W0008 — the "published-tool laxer than
+CI" overload-audit risk); and (2) a generic-*return* `Take(): T` silently
+corrupts a value-type record with a reference-typed field — the returned
+`HttpContext` copy lost its `done` semaphore's object identity, so the
+per-request hand-off deadlocked in keep-alive. `ConcurrentQueue.TryDequeue(out
+T)` (single one-argument overload, `out`-parameter preserving field identity)
+plus arity-0 `SemaphoreSlim.Wait()`/`Release()` are all unambiguous and
+correct — the same `ConcurrentQueue` idiom `lyric-mq`'s kernel already uses.
+
+**Verification.** `lyric-stdlib/tests/http_server_dotnet_tests.l` (new,
+`@test_module`, wired into dotnet CI) covers plaintext GET (real Lyric HTTP
+client), POST body delivery, keep-alive reuse on one connection, a
+concurrent-connection case, TLS GET (real HTTPS client), mTLS accept + reject,
+and the `startListenerTls` `InvalidConfig` guard — mirroring
+`tcp_host_tls_tests.l`'s structure. Additionally verified end-to-end against
+`curl` (independent HTTP/1.1 + HTTP/1.0 + chunked-streaming implementation) and
+four concurrent `curl` clients (out-of-order responses confirm genuine
+parallelism).
+
+**Boundary.** lyric-web onto the new server (docs/61 §6.1 item 10, #5885) and
+h2/ALPN end-to-end (#5889, gated on the h2 FSM #5888) are separate; the
+transport advertises only `http/1.1` here. Native server is #5890.
+
+**Related:** #5884, #5874, #5882 (D-progress-697), #5883 (D-progress-694),
+#5885, #5889, #6041, #6042, docs/61-https-tls-http-versions.md §6, D128.
+
+---
+
 ## D-progress-698 — TLS phase 2.2: lyric-web `Web.serveTls` — Undertow HTTPS listener + `ENABLE_HTTP2` + `WebTls` config template (docs/61 §5.2 + §6.3, D128, #5881)
 
 **Context.** D128 decision 6 sequences JVM server TLS onto the existing
