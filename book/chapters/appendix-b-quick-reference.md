@@ -751,6 +751,7 @@ output_assembly = "myapp.dll"
 | `Std.HttpEngine` | Sans-IO HTTP/1.1 parser, serializer, connection FSM | `EngineLimits` (incl. `maxBodyBytes`), `Connection`, `HttpEvent`, `feed`, `newConnection`, `shouldClose`, `serializeResponseHead`, `serializeChunk` |
 | `Std.HttpEngine.Hpack` | Pure-Lyric HPACK (RFC 7541) header codec for HTTP/2 | `HpackEncoder`, `HpackDecoder`, `newEncoder`, `newDecoder`, `encodeHeaderList`, `decodeHeaderBlock`, `encoderSetMaxTableSize`, `DynamicTable`, `HpackError` |
 | `Std.HttpEngine.H2Frame` | Pure-Lyric HTTP/2 (RFC 9113) frame codec + sans-IO frame decoder | `parseFrame`, `serializeFrame`, `parseFrameHeader`, `serializeFrameHeader`, `FrameDecoder`, `feedFrames`, `connectionPreface`, `isConnectionPreface`, `FrameError`, `H2ErrorCode`, `SettingsId` |
+| `Std.HttpEngine.H2Conn` | Pure-Lyric sans-IO HTTP/2 (RFC 9113) server connection/stream state machine + flow control | `newServerConnection`, `serverInitialFrame`, `feed`, `H2Connection`, `H2Event`, `H2Settings`, `H2StreamState`, `streamState`, `sendData`, `encodeResponseHeaders`, `grantConnectionWindow`, `grantStreamWindow`, `sendGoAway`, `isFailed` |
 | `Std.Testing` | Test assertions | `assertTrue`, `assertEqual`, `assertEqualInt`, `assertPanics`, `assertPanicsWith` |
 | `Std.Testing.Snapshot` | Snapshot testing | `snapshot(label, actual)`, `snapshotMatch(label, actual)` |
 | `Std.Testing.Property` | Property-based testing | `forAllIntRange`, `forAllBool`, `forAllDouble`, `forAllIntPair` |

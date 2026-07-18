@@ -4654,6 +4654,25 @@ jobs:
           "$lyric_bin" test --target jvm lyric-stdlib/tests/http_h2frame_tests.l
           echo "Std.HttpEngine.H2Frame test ran: http_h2frame_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
+      # Std.HttpEngine.H2Conn (HTTP/2 connection/stream state machine + flow
+      # control / RFC 9113 §3/§5/§6) coverage on JVM (#5888, docs/61 §6.4 phase
+      # 4.3): the pure-Lyric server-side FSM that composes the frame codec
+      # (#5887) and HPACK (#5886), driven end to end through the real H2Frame +
+      # Hpack calls. Zero externs, so this and the dotnet step must and do
+      # produce identical results.
+      - name: Std.HttpEngine.H2Conn test coverage on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.HttpEngine.H2Conn JVM tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-stdlib/tests/http_h2conn_tests.l
+          echo "Std.HttpEngine.H2Conn test ran: http_h2conn_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
       # Map-key self-test on JVM (#1480 MSIL / #4982 Finding 1 JVM) — the JVM
       # half of the dotnet-job step of the same name.  Records with
       # `@derive(Equals)`/`@derive(Hash)` now carry synthesised
@@ -6644,6 +6663,25 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_h2frame_tests.l
+
+      # Std.HttpEngine.H2Conn (HTTP/2 connection/stream state machine + flow
+      # control / RFC 9113 §3/§5/§6) coverage (#5888, docs/61 §6.4 phase 4.3):
+      # the pure-Lyric server-side FSM composing the frame codec (#5887) and
+      # HPACK (#5886) — preface/SETTINGS handshake, per-stream lifecycle,
+      # HEADERS+CONTINUATION reassembly, connection/stream flow control,
+      # PING/GOAWAY, and connection-vs-stream error classification — driven end
+      # to end through the real H2Frame + Hpack calls. Zero externs, so this and
+      # the JVM step above must and do produce identical results.
+      - name: Std.HttpEngine.H2Conn test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.HttpEngine.H2Conn tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_h2conn_tests.l
 
       # Std.TcpHost transport-kernel test coverage (#5882, docs/61 §6.1/§6.3
       # phase 3.1): the dotnet TcpListener + SslStream server-side TLS

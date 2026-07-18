@@ -657,6 +657,26 @@ items marked ∥ are independent and can proceed in parallel.
     dotnet + jvm. HPACK (#5886) and the connection/stream FSM + flow control
     (#5888) stay out of scope — fragments are opaque `slice[Byte]`._
 13. h2 connection/stream FSM + flow control + SETTINGS/GOAWAY. (After 11+12.)
+    _Shipped (D-progress-699, #5888): `Std.HttpEngine.H2Conn`
+    (`lyric-stdlib/std/http_h2conn.l`) — a pure-Lyric, no-extern, sans-IO
+    **server-side** HTTP/2 connection/stream state machine composing the frame
+    codec (#5887) and HPACK (#5886). Covers the §3.4 preface + `SETTINGS`
+    handshake (auto-ACK); `SETTINGS` validation/application incl. the
+    `INITIAL_WINDOW_SIZE`-change window adjustment (§6.9.2); the §5.1 per-stream
+    lifecycle (idle → open → half-closed remote/local → closed) with
+    illegal-transition rejection; HEADERS + CONTINUATION reassembly (§6.2/§6.10)
+    feeding the HPACK decoder (incl. the §4.3 decode-a-refused-stream rule);
+    connection- and per-stream flow control (§6.9) on both the receive side
+    (overrun → `FLOW_CONTROL_ERROR`) and the send side (`sendData` bounded by
+    the peer window; `WINDOW_UPDATE` replenish); the concurrent-streams limit
+    (`REFUSED_STREAM`); `PING` auto-ACK; `GOAWAY` (received + `sendGoAway`); and
+    the §5.4 connection-vs-stream error classification (`GOAWAY` vs
+    `RST_STREAM`). No server push (`PUSH_PROMISE` → `PROTOCOL_ERROR`); no
+    priority tree (`PRIORITY` accepted + ignored). 62-case `@test_module`
+    (`http_h2conn_tests.l`) drives the FSM end to end through the real
+    `H2Frame` + `Hpack` calls, green on dotnet + jvm and wired into CI beside
+    the #5886/#5887 steps. Two tracked bounded characteristics filed (#6063
+    padded-DATA receive-accounting, #6064 closed-stream pruning)._
 14. ALPN wiring in the dotnet transport + e2e h2 self-test (own client +
     `curl --http2`). (After 13.)
 
