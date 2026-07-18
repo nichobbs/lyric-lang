@@ -17,8 +17,15 @@
 //! full server-side TLS handshake + HTTP round trip against the real Lyric
 //! HTTPS client, both mTLS outcomes (a client cert that chains to `clientCa`
 //! is accepted; a client presenting no cert is rejected at the handshake and
-//! the server keeps serving), and the `startListenerTls` mTLS-misconfiguration
-//! guard (`requireClientCert` with no `clientCa` → `InvalidConfig`).
+//! the server keeps serving), the `startListenerTls` mTLS-misconfiguration
+//! guard (`requireClientCert` with no `clientCa` → `InvalidConfig`), and — the
+//! phase-4.4 h2 end-to-end (issue #5889) — HTTP/2 negotiation over ALPN driven
+//! through the pure-Lyric `Std.HttpEngine.H2Conn` FSM: a GET and a POST each
+//! asserting `HttpResponse.negotiatedVersion() == Http2` with the routed
+//! request observed by the handler, plus two multiplexed streams on one h2
+//! connection. Both directions of our own stack (the .NET-backed HTTPS client
+//! and the pure-Lyric h2 server) verify each other; a `curl --http2` CI smoke
+//! (`dotnet_h2_smoke.l`) is the independent implementation cross-check.
 //!
 //! Concurrency: the pull-model server needs its accept loop and the request
 //! driver to run on separate OS threads (Lyric `spawn` is degenerate-
@@ -469,6 +476,100 @@ test "mTLS rejects a client presenting no certificate" {
     case Ok(_) -> panic("expected the certless client to be rejected by the mTLS server")
     case Err(_) -> assertTrue(true, "certless client rejected at the TLS handshake")
   }
+}
+
+test "HTTP/2 GET negotiates h2 over ALPN and round-trips via the Lyric HTTPS client" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 19409, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+  val server = taskRun({ -> serveN(listener, 1) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val resp = match await client.get("https://localhost:19409/h2get?x=1") {
+    case Ok(r) -> r
+    case Err(e) -> panic("h2 GET failed: " + HttpError.message(e))
+  }
+  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(resp.statusCode(), 200, "h2 response is 200")
+  match HttpResponse.negotiatedVersion(resp) {
+    case Http2 -> assertTrue(true, "negotiated HTTP/2 over ALPN")
+    case _ -> panic("expected HTTP/2 negotiation but got a lower version; body=" + body)
+  }
+  assertTrue(body.contains("m=GET"), "method observed over h2: " + body)
+  assertTrue(body.contains("path=/h2get"), "path observed over h2: " + body)
+  assertTrue(body.contains("q=x=1"), "query observed over h2: " + body)
+}
+
+test "HTTP/2 POST body reaches the handler and negotiates h2" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 19410, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+  val server = taskRun({ -> serveN(listener, 1) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val resp = match await client.post("https://localhost:19410/h2post", "hello h2 body") {
+    case Ok(r) -> r
+    case Err(e) -> panic("h2 POST failed: " + HttpError.message(e))
+  }
+  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(resp.statusCode(), 200, "h2 POST response is 200")
+  match HttpResponse.negotiatedVersion(resp) {
+    case Http2 -> assertTrue(true, "negotiated HTTP/2 for the POST")
+    case _ -> panic("expected HTTP/2 negotiation for POST; body=" + body)
+  }
+  assertTrue(body.contains("m=POST"), "method POST observed over h2: " + body)
+  assertTrue(body.contains("body=hello h2 body"), "POST body delivered over h2: " + body)
+}
+
+test "HTTP/2 serves multiple request streams on one connection" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 19411, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+  val server = taskRun({ -> serveN(listener, 2) })
+  threadSleep(100)
+  // A single client instance reuses one h2 connection for both requests, so this
+  // exercises two multiplexed streams driven through the same H2Conn FSM.
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val resp1 = match await client.get("https://localhost:19411/first") {
+    case Ok(r) -> r
+    case Err(e) -> panic("h2 stream 1 failed: " + HttpError.message(e))
+  }
+  val body1 = match await resp1.bodyText() { case Ok(t) -> t; case Err(_) -> panic("stream 1 body read failed") }
+  val resp2 = match await client.get("https://localhost:19411/second") {
+    case Ok(r) -> r
+    case Err(e) -> panic("h2 stream 2 failed: " + HttpError.message(e))
+  }
+  val body2 = match await resp2.bodyText() { case Ok(t) -> t; case Err(_) -> panic("stream 2 body read failed") }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(resp1.statusCode(), 200, "stream 1 is 200")
+  assertEqualInt(resp2.statusCode(), 200, "stream 2 is 200")
+  match HttpResponse.negotiatedVersion(resp1) {
+    case Http2 -> assertTrue(true, "stream 1 is h2")
+    case _ -> panic("stream 1 not h2")
+  }
+  match HttpResponse.negotiatedVersion(resp2) {
+    case Http2 -> assertTrue(true, "stream 2 is h2")
+    case _ -> panic("stream 2 not h2")
+  }
+  assertTrue(body1.contains("path=/first"), "stream 1 path: " + body1)
+  assertTrue(body2.contains("path=/second"), "stream 2 path: " + body2)
 }
 
 test "startListenerTls rejects requireClientCert without clientCa" {

@@ -31049,6 +31049,56 @@ JVM mTLS is #6017.
 **Related:** `docs/03-decision-log.md` D-progress-701; docs/61 §6.3, D128; #5885,
 #5874, #5884 (D-progress-700), #5881 (D-progress-698), #6017, #5889, #5903.
 
+## HTTP/2 end-to-end on the dotnet `Std.HttpServer` — ALPN `h2` + `Std.HttpEngine.H2Conn` FSM through the pull surface (2026-07-18)
+
+`Std.TcpHost` now advertises `h2` ahead of `http/1.1` in the server's ALPN list
+(`_kernel/tcp_host.l`: the reflection-built `ApplicationProtocols` reads the
+`SslApplicationProtocol.Http2` static field alongside `Http11`), and the dotnet
+`Std.HttpServer` (`_kernel/http_server.l`) selects the protocol on
+`hostAlpn(conn)`: `"h2"` drives the pure-Lyric `Std.HttpEngine.H2Conn` FSM
+(#5888), otherwise the HTTP/1.1 `Std.HttpEngine.Connection` path. TLS-only — no
+h2c, per D128 decision 7.
+
+`processH2Connection` sends the server's initial `SETTINGS`, then read → `feed` →
+process: the FSM's outbound control frames (`SETTINGS`/`PING` ACK,
+`WINDOW_UPDATE` reclaim, `RST_STREAM`, `GOAWAY`) are written straight back, and a
+complete request stream (pseudo-headers → method/path, `:authority` → a
+synthesized `host`, DATA accumulated to END_STREAM) is dispatched as an ordinary
+`HttpContext` onto the SAME pull queue the HTTP/1.1 path uses. The `respond*` /
+chunked helpers fill a per-stream `H2Exchange` mailbox and release the request's
+`done` semaphore; the connection task then HPACK-encodes the response (`:status`
++ lowercased fields) and frames the body as flow-controlled DATA. So
+`lyric-web` and every `Std.HttpServer` consumer serve h2 with no source change.
+All socket I/O and h2 FSM mutation stay on the single per-connection task
+(race-free); the puller only writes plain response values into the mailbox.
+
+Verified by `lyric-stdlib/tests/http_server_dotnet_tests.l` (three new cases: an
+h2 GET and POST, each asserting `HttpResponse.negotiatedVersion() == Http2` with
+the routed request observed by the handler, plus two multiplexed streams on one
+h2 connection — our own .NET-backed HTTPS client and the pure-Lyric h2 server
+verifying each other) and by a `curl --http2` CI smoke
+(`lyric-stdlib/tests/dotnet_h2_smoke.l` + a new ci.yml step) as the independent
+nghttp2 cross-check (`%{http_version}` 2, `%{http_code}` 200). Built and run
+against a from-source `./bin/lyric` (the published tool links a prebuilt stdlib
+bundle and cannot exercise stdlib source edits).
+
+Bounded characteristics (tracked, not silent — #6107): v1 serializes streams per
+connection (head-of-line at the server); a response body exceeding the peer's
+granted flow-control window is delivered as `WINDOW_UPDATE`s arrive (a bounded
+`pumpForWindow`; if none arrive the send stops and the connection is torn down on
+the next read — a loud, peer-detectable incomplete response, never a silent
+truncation); and h2 chunked responses buffer their chunks and flush as one
+HEADERS+DATA response (content correct, only the incremental-flush timing
+differs). The interleaved multi-stream send-pump + incremental DATA streaming is
+#6107.
+
+Boundary: dotnet server h2 end-to-end only. The h2 FSM (#5888) and frame/HPACK
+codecs (#5886/#5887) are composed, not reimplemented; JVM h2 is Undertow's own
+path (#5881); native HTTPS is #5890.
+
+**Related:** `docs/03-decision-log.md` D-progress-702; docs/61 §6.4, D128; #5889,
+#5874, #6107, #5888 (D-progress-699), #5884 (D-progress-700), #5882 (D-progress-697).
+
 ## Native TCP + TLS transport seam ships in `lyric-rt` — `lyric_sock_*` + `lyric_tls_*` over OpenSSL 3.x (dlopen), TLS phase 5 band N9.1 (2026-07-18)
 
 `lyric-rt/src/lyric_tls.c` adds the native-target transport seam for the sans-IO

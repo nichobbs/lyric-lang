@@ -17147,6 +17147,104 @@ real `lyric test` invocations as normal.
 
 ---
 
+## D-progress-702 — TLS phase 4.4: HTTP/2 end-to-end on the dotnet server — ALPN wiring + `Std.HttpEngine.H2Conn` FSM driving through the `Std.HttpServer` pull surface (docs/61 §6.4 phase 4.4, D128, #5889)
+
+**Context.** Phase 4.1–4.3 shipped the pure-Lyric h2 stack (HPACK #5886, frame
+codec #5887, connection/stream FSM `Std.HttpEngine.H2Conn` #5888), and phase 3.1
+shipped the dotnet `Std.TcpHost` transport with server-side `SslStream` + ALPN.
+Until now the transport advertised only `http/1.1`, so the dotnet
+`Std.HttpServer` (D-progress-700) never spoke HTTP/2 — the h2 FSM had no
+transport driving it. This closes that gap end to end (TLS-only, no h2c per D128
+decision 7).
+
+**What shipped.**
+
+- **ALPN advertises `h2` then `http/1.1`** (`_kernel/tcp_host.l`): the
+  reflection-built `SslServerAuthenticationOptions.ApplicationProtocols` list now
+  reads the `SslApplicationProtocol.Http2` static field (boxed via
+  `FieldInfo.GetValue`, the same #6029 generic-`List<ExternValueType>` workaround
+  the `Http11` entry uses) and adds it ahead of `http/1.1`, so a peer offering h2
+  negotiates it (server preference), and a peer offering only `http/1.1` (or no
+  ALPN) falls back. `computeAlpn`/`hostAlpn` already reported `"h2"`.
+- **The server assembly drives the h2 FSM** (`_kernel/http_server.l`): `onAccepted`
+  branches on `hostAlpn(conn)` — `"h2"` runs a new `processH2Connection`, else the
+  HTTP/1.1 path. `processH2Connection` sends the server's initial `SETTINGS`
+  (`serverInitialFrame`), then read → `feed` → process: control frames the FSM
+  emits (`SETTINGS`/`PING` ACK, `WINDOW_UPDATE` reclaim, `RST_STREAM`, `GOAWAY`)
+  are written straight back from `H2FeedResult.outbound`; `H2RequestHeaders`
+  (pseudo-headers → method/path, `:authority` → a synthesized `host`) and
+  `H2RequestData` accumulate per stream until END_STREAM, at which point the
+  stream is dispatched as an ordinary `HttpContext` onto the SAME pull queue the
+  HTTP/1.1 path uses. The `respond*`/chunked helpers fill a per-stream
+  `H2Exchange` mailbox and release the request's `done` semaphore; the connection
+  task then HPACK-encodes the response (`:status` + lowercased fields, RFC 9113
+  §8.2) and frames the body as flow-controlled DATA (`encodeResponseHeaders` +
+  `sendData`, split at the peer's max frame size, `pumpForWindow` for a mid-send
+  `WINDOW_UPDATE`). So `lyric-web`/`examples` serve h2 with zero source change.
+- **Race-free by construction:** all socket I/O and all `H2Conn` FSM mutation
+  (the shared HPACK encoder + flow windows) stay on the single connection task;
+  the puller only writes plain response values into the `H2Exchange` mailbox.
+  The strict per-request `done` handshake keeps the two off the shared state
+  simultaneously, exactly as the HTTP/1.1 path does.
+
+**Bundle-uniqueness.** New records (`H2Exchange`, `H2ReqAccum`, `H2RequestLine`,
+`H2ConnState`) are `H2`-prefixed; no new union cases are introduced (the h2 event
+vocabulary is `Std.HttpEngine.H2Conn`'s, matched here), so the #5903 bundle-global
+case-name hazard does not apply.
+
+**Two implementation findings, both fixed here.** (1) `Std.HttpEngine` and
+`Std.HttpEngine.H2Conn` *both* export `feed` and `isFailed` (over the HTTP/1.1
+`Connection` vs the `H2Connection`). A bare call in `_kernel/http_server.l`
+(which imports both) mis-binds in the MSIL codegen's bundle-global,
+package-unscoped name table to the HTTP/1.1 overload and faults at runtime on an
+`H2Connection` (the #5903 name-collision class, here on *functions*, not union
+cases). Fixed by aliasing the import (`import … H2Conn as H2`) and qualifying the
+h2-path calls `H2.feed` / `H2.isFailed`; the h1-path bare `feed` then resolves
+unambiguously to `Std.HttpEngine`. Verified live: a bare `isFailed(h2)` threw
+while `h2.fatal` (the same field, read directly) worked, and qualification fixed
+it. (2) The thread-per-connection accept loop serves each connection on a
+`Task.Run` (threadpool) thread that blocks in `hostRead` for the connection's
+lifetime; an HTTP/2 connection is *persistent*, so its task blocks a threadpool
+thread until the client disconnects. Running several h2 servers in one process
+(the 11-test suite) without closing the client's pooled connections accumulated
+enough blocked threads to starve the pool the client's own `await` continuations
+and the puller loop need — a blocking-I/O starvation deadlock (the whole suite
+hung, though each h2 scenario passed standalone). Fixed by raising the pool
+minimum via `ThreadPool.SetMinThreads` at server startup so on-demand threads are
+created without the growth throttle. `Task.Factory.StartNew(LongRunning)`
+(dedicated non-pool threads) is the more principled fix but crashes the
+self-hosted MSIL emitter's overload resolution — a real FFI gap, so the
+min-threads approach is used and the fully-async transport is deferred (#6107).
+
+**Verification.** `http_server_dotnet_tests.l` gains three h2 cases (GET and POST
+each asserting `HttpResponse.negotiatedVersion() == Http2` with the routed request
+observed by the handler, plus two multiplexed streams on one connection) — both
+directions of our own stack (the .NET-backed HTTPS client and the pure-Lyric h2
+server) verify each other. A `curl --http2` CI smoke (`dotnet_h2_smoke.l` + a new
+ci.yml step) is the independent nghttp2 cross-check, asserting `%{http_version}` 2
+and `%{http_code}` 200. Verified against a from-source-built `./bin/lyric` (the
+published 0.4.33 tool links a prebuilt stdlib bundle and cannot exercise stdlib
+source edits; the from-source toolchain — seeded from the published tool's DLLs —
+and CI are the authoritative check for this bundle-level change).
+
+**Bounded characteristics (tracked, not silent — #6107).** v1 serializes streams
+per connection (concurrent client streams processed in sequence, head-of-line at
+the server); a response body exceeding the peer's advertised flow-control window
+is delivered as the peer grants `WINDOW_UPDATE` (if none arrives within the
+bounded `pumpForWindow`, the send stops and the connection is torn down on the
+next read — a loud, peer-detectable incomplete response, never a silent
+truncation); and chunked responses over h2 buffer their chunks and flush as one
+HEADERS+DATA response (content correct, only the incremental-flush timing
+differs). The interleaved multi-stream send-pump + incremental DATA streaming is
+#6107.
+
+**Boundary.** dotnet server h2 end-to-end only. The h2 FSM (#5888) and frame/HPACK
+codecs (#5886/#5887) are composed, not reimplemented; JVM h2 is Undertow's own
+path (D-progress-698); native HTTPS is #5890.
+
+**Related:** #5889, #5874, #6107, docs/61-https-tls-http-versions.md §6.4, D128,
+D-progress-700, D-progress-699, D-progress-697.
+
 ## D-progress-703 — TLS phase 5 (native), band N9.1: the `lyric_sock_*` + `lyric_tls_*` OpenSSL 3.x transport seam in `lyric-rt` (docs/61 §7, D128 decision 10, #5890)
 
 **Context.** Epic #5874's phases 1–4 built the managed (dotnet/jvm) HTTPS

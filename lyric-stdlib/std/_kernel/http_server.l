@@ -66,9 +66,24 @@
 //! inside the accept loop (the connection is dropped; the server keeps
 //! serving), never fatal to the listener.
 //!
-//! h2/ALPN end-to-end negotiation is out of scope here (issue #5889, gated on
-//! the h2 FSM #5888): the transport advertises only `http/1.1`, so every
-//! connection this server accepts speaks HTTP/1.1.
+//! ## h2/ALPN end-to-end (phase 4.4, issue #5889)
+//!
+//! `Std.TcpHost` now advertises `h2` ahead of `http/1.1` in the server's ALPN
+//! list, so a TLS peer that offers HTTP/2 negotiates it (TLS-only — no h2c,
+//! D128 decision 7). On each accepted connection the server selects the
+//! protocol on `hostAlpn`: `"h2"` drives the pure-Lyric `Std.HttpEngine.H2Conn`
+//! connection/stream FSM (#5888); `"http/1.1"` (or a plain / no-ALPN
+//! connection) keeps the HTTP/1.1 `Std.HttpEngine.Connection` path. Both feed
+//! the SAME pull surface (`nextContext` / `respond*` / chunked helpers): an h2
+//! request stream is dispatched as an ordinary `HttpContext` and its response
+//! is serialized back through the H2Conn send path (HEADERS + flow-controlled
+//! DATA frames), so consumers (`lyric-web`, `examples`) serve h2 with no source
+//! change. Per-stream serialization is strict (one in-flight request/response
+//! per connection at a time); multiplexed concurrent streams are processed in
+//! sequence (head-of-line at the server), and a response body larger than the
+//! peer's advertised flow-control window is delivered as the peer grants
+//! `WINDOW_UPDATE` — the interleaved multi-stream send-pump is tracked as a
+//! follow-up (#6107), not implemented here.
 @axiom("System.Threading.Tasks.Task.Run, System.Collections.Concurrent.ConcurrentQueue, and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts")
 package Std.HttpServer
 
@@ -78,6 +93,16 @@ import Std.Char
 import Std.Encoding
 import Std.Tls
 import Std.HttpEngine
+// Aliased: `Std.HttpEngine.H2Conn` and `Std.HttpEngine` both export `feed` and
+// `isFailed` (over `H2Connection` vs the HTTP/1.1 `Connection`). A bare call is
+// ambiguous in the shared stdlib bundle — the MSIL codegen's bundle-global,
+// package-unscoped name table binds it to whichever registered first (the
+// HTTP/1.1 one), so a bare `feed`/`isFailed` on an `H2Connection` mis-binds and
+// faults at runtime (#5903 class). Qualifying the h2-path calls `H2.feed` /
+// `H2.isFailed` binds them unambiguously; the h1-path bare `feed` then resolves
+// to `Std.HttpEngine` (no longer ambiguous, since H2Conn is only reachable via
+// the alias). Every other H2Conn name used here is unique, so it stays bare.
+import Std.HttpEngine.H2Conn as H2
 import Std.TcpHost
 
 // =====================================================================
@@ -102,6 +127,34 @@ extern type Task = "System.Threading.Tasks.Task"
 @externStatic
 @externTarget("System.Threading.Tasks.Task.Run")
 func taskRun(work: in () -> Unit): Task = ()
+
+// Each accepted connection is served on a `Task.Run` (threadpool) thread that
+// blocks in `hostRead` for the connection's lifetime — the thread-per-connection
+// model (docs/61 §6.2). HTTP/2 connections are *persistent*: a client keeps one
+// open and multiplexes many streams over it, so its server task blocks on a
+// threadpool thread until the client disconnects. Under high fan-out (or a test
+// that opens several h2 servers in one process without closing the client's
+// pooled connections) enough blocking threads accumulate to starve the pool the
+// client's own async continuations and the puller loop need — a classic
+// blocking-I/O starvation deadlock. Raising the pool's minimum thread count so
+// on-demand threads are created without the growth throttle keeps the pool from
+// starving. (A fully async transport would remove the per-connection blocking
+// thread entirely; that is a larger rework than this slice, tracked with the
+// other h2 transport follow-ups in #6107.)
+extern type ThreadPool = "System.Threading.ThreadPool"
+
+@externStatic
+@externTarget("System.Threading.ThreadPool.SetMinThreads")
+func setMinThreads(workerThreads: in Int, completionPortThreads: in Int): Bool = ()
+
+// The minimum threadpool size the server requests once on startup. Comfortably
+// covers a large number of concurrently-blocked connection tasks plus the
+// puller and client async machinery, without eagerly allocating them (threads
+// are still created only on demand — this only raises the no-throttle ceiling).
+func ensureServerThreadCapacity(): Unit {
+  val _ = setMinThreads(200, 200);
+  ()
+}
 
 extern type ConcurrentQueue[T] = "System.Collections.Concurrent.ConcurrentQueue`1"
 
@@ -186,6 +239,56 @@ pub record HttpContext {
   body: slice[Byte]
   keepAlive: Bool
   done: Semaphore
+  // `Some` for a request served over HTTP/2: the response is delivered into
+  // this exchange mailbox by the `respond*` / chunked helpers (on the puller
+  // thread) and serialized back through the H2Conn send path by the connection
+  // task. `None` for HTTP/1.1, where `respond*` writes the wire response
+  // directly. See the module header's h2 section.
+  h2: Option[H2Exchange]
+}
+
+// The response mailbox for one HTTP/2 request stream. The puller thread fills
+// `status` / `contentType` / `body` / `extra` via a `respond*` (or chunked)
+// helper and releases the context's `done` semaphore; the owning connection
+// task then HPACK-encodes the response headers and frames the body as
+// flow-controlled DATA on `streamId`. Kept free of any `H2Connection` reference
+// so the FSM state stays touched only by the connection task (no cross-thread
+// mutation of the shared hpack encoder / flow windows).
+record H2Exchange {
+  streamId: Int
+  status: Int
+  contentType: String
+  body: List[Byte]
+  extra: Map[String, String]
+}
+
+// Per-stream request accumulation on the connection task: the HPACK-decoded
+// request `headers` and the DATA-frame `body` gathered until END_STREAM, at
+// which point the stream is dispatched as an `HttpContext`.
+record H2ReqAccum {
+  headers: List[HeaderField]
+  body: List[Byte]
+  haveHeaders: Bool
+}
+
+// The request line + non-pseudo headers extracted from an h2 header block.
+record H2RequestLine {
+  method: String
+  target: String
+  headers: List[HeaderField]
+}
+
+// Mutable per-connection h2 driver state, threaded (by reference) through the
+// event loop and the response send path. `h2` is mutated in place by `feed`
+// (which returns the same connection object), so its identity is stable across
+// the connection's lifetime.
+record H2ConnState {
+  conn: Conn
+  h2: H2Connection
+  accums: Map[Int, H2ReqAccum]
+  queue: ConcurrentQueue[HttpContext]
+  available: Semaphore
+  open: Bool
 }
 
 /// An open chunked (`Transfer-Encoding: chunked`) response. Carries the
@@ -194,6 +297,11 @@ pub record HttpContext {
 pub record HttpChunkedStream {
   conn: Conn
   done: Semaphore
+  // `Some` for a chunked response over HTTP/2: each `streamWriteChunk` appends
+  // to the exchange's buffered body and `endChunkedResponse` flushes it as one
+  // h2 response. `None` for HTTP/1.1, where chunks are written to the wire
+  // incrementally. (Incremental h2 DATA streaming is the #6107 follow-up.)
+  h2: Option[H2Exchange]
 }
 
 // =====================================================================
@@ -472,6 +580,7 @@ func processConnection(
       }
       case RoRequest(method, target, version, headers, body, keepAlive) -> {
         val done: Semaphore = newSemaphore(0)
+        val noH2: Option[H2Exchange] = None
         val ctx = HttpContext(
           conn = conn,
           method = method,
@@ -480,7 +589,8 @@ func processConnection(
           headers = headers,
           body = body,
           keepAlive = keepAlive,
-          done = done
+          done = done,
+          h2 = noH2
         )
         cqEnqueue(queue, ctx)
         val _ = semRelease(available)
@@ -511,7 +621,14 @@ func onAccepted(
 ): Bool {
   match accepted {
     case Ok(conn) -> {
-      val _ = taskRun({ -> processConnection(conn, queue, available, limits) })
+      // Select the protocol on the negotiated ALPN (docs/61 §6.4): a TLS peer
+      // that negotiated `h2` drives the HTTP/2 FSM; everything else (plain
+      // connection, `http/1.1`, or no ALPN) speaks HTTP/1.1.
+      if hostAlpn(conn) == "h2" {
+        val _ = taskRun({ -> processH2Connection(conn, queue, available) })
+      } else {
+        val _ = taskRun({ -> processConnection(conn, queue, available, limits) })
+      }
       true
     }
     case Err(e) -> match e { case AcceptFailed(_) -> false; case BindFailed(_) -> false; case _ -> true }
@@ -554,6 +671,347 @@ func tlsAcceptLoop(
 }
 
 // =====================================================================
+// HTTP/2 connection driver (runs on the connection task).
+//
+// A single connection task owns all socket I/O and all `H2Conn` FSM feeding
+// for one h2 connection, so the shared HPACK encoder / flow-control windows are
+// never touched from two threads. A complete request stream is dispatched as an
+// ordinary `HttpContext` onto the same pull queue the HTTP/1.1 path uses; the
+// puller's `respond*` helper fills the stream's `H2Exchange` mailbox and
+// releases `done`, then the connection task serializes the response back as
+// HEADERS + flow-controlled DATA frames. Request/response is strictly
+// serialized per connection (the task blocks on `done` between dispatch and
+// send); concurrent client streams are handled in sequence (#6107).
+// =====================================================================
+func minIntH2(a: in Int, b: in Int): Int {
+  if a < b {
+    a
+  } else {
+    b
+  }
+}
+
+func asciiLower(s: in String): String {
+  var acc = ""
+  var i = 0
+  while i < s.length {
+    val cp = toInt(s[i])
+    if cp >= 65 and cp <= 90 {
+      acc = acc + ("" + fromInt(cp + 32))
+    } else {
+      acc = acc + ("" + s[i])
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// RFC 9113 §8.2.2: connection-specific header fields are forbidden in HTTP/2.
+// `content-type` / `content-length` are set explicitly by the sender, so they
+// are also skipped when copying extra headers.
+func isH2SkippedResponseHeader(lowerName: in String): Bool {
+  lowerName == "connection" or lowerName == "keep-alive" or lowerName == "proxy-connection" or
+    lowerName == "transfer-encoding" or
+    lowerName == "upgrade" or
+    lowerName == "content-length" or
+    lowerName == "content-type"
+}
+
+func getOrCreateAccum(state: in H2ConnState, streamId: in Int): H2ReqAccum {
+  match mapGet(state.accums, streamId) {
+    case Some(a) -> a
+    case None -> {
+      val fresh = H2ReqAccum(headers = newList(), body = newList(), haveHeaders = false)
+      state.accums.add(streamId, fresh)
+      fresh
+    }
+  }
+}
+
+func removeAccum(state: in H2ConnState, streamId: in Int): Unit {
+  state.accums.remove(streamId)
+}
+
+// Split an HPACK-decoded request header block into method / path / non-pseudo
+// headers (RFC 9113 §8.3.1). Missing `:method` / `:path` default defensively
+// (mirroring the HTTP/1.1 kernel's `requestMethod`/`requestPath` fallbacks);
+// `:authority` is surfaced as a `host` header so Host-keyed consumers behave
+// as they do over HTTP/1.1.
+func extractH2Request(headers: in List[HeaderField]): H2RequestLine {
+  var method = "GET"
+  var target = "/"
+  var authority = ""
+  val regular: List[HeaderField] = newList()
+  var i = 0
+  while i < headers.count {
+    val h = headers[i]
+    if h.name == ":method" {
+      method = h.value
+    } else if h.name == ":path" {
+      target = h.value
+    } else if h.name == ":authority" {
+      authority = h.value
+    } else if h.name.length > 0 and h.name[0] == ':' {
+      // Any other pseudo-header (`:scheme`, or an unknown one): not a real
+      // request header, drop it.
+      ()
+    } else {
+      regular.add(h)
+    }
+    i = i + 1
+  }
+  if authority.length > 0 {
+    regular.add(HeaderField(name = "host", value = authority))
+  }
+  H2RequestLine(method = method, target = target, headers = regular)
+}
+
+// Feed newly-read bytes into the connection FSM: advance the decoder, write any
+// control frames it emitted (SETTINGS ACK, PING ACK, WINDOW_UPDATE reclaim,
+// RST_STREAM, GOAWAY), and append every semantic event onto `work` for the
+// caller's processing loop to drain (which is also how a flow-control pump
+// surfaces a concurrently-opened stream — it is appended and processed after
+// the in-flight response completes).
+func h2Feed(state: in H2ConnState, bytes: in slice[Byte], work: in List[H2Event]): Unit {
+  if H2.isFailed(state.h2) {
+    return
+  }
+  val fr = H2.feed(state.h2, bytes)
+  state.h2 = fr.conn
+  if fr.outbound.length > 0 {
+    val _ = hostWrite(state.conn, fr.outbound);
+    ()
+  }
+  var i = 0
+  while i < fr.events.count {
+    work.add(fr.events[i])
+    i = i + 1
+  }
+}
+
+// Bounded read pump to obtain send-flow window for a stream mid-response: reads
+// more bytes and feeds them so a peer `WINDOW_UPDATE` is applied. Any request
+// events read here are appended to `work` (never dropped) and dispatched after
+// the current response finishes.
+func pumpForWindow(state: in H2ConnState, streamId: in Int, work: in List[H2Event]): Unit {
+  var tries = 0
+  while maxSendableOnStream(state.h2, streamId) <= 0 and tries < 256 and not H2.isFailed(state.h2) {
+    match hostRead(state.conn, 65536) {
+      case Err(_) -> {
+        return
+      }
+      case Ok(bytes) -> {
+        if bytes.length == 0 {
+          return
+        }
+        h2Feed(state, bytes, work)
+      }
+    }
+    tries = tries + 1
+  }
+}
+
+// Frame `body` as flow-controlled DATA on `streamId`, splitting into frames no
+// larger than the peer's max frame size and no larger than the currently
+// available send window (pumping for more window when exhausted). END_STREAM is
+// set on the final frame.
+func sendH2Body(state: in H2ConnState, streamId: in Int, body: in slice[Byte], work: in List[H2Event]): Unit {
+  var off = 0
+  while off < body.length and not H2.isFailed(state.h2) {
+    var sendable = maxSendableOnStream(state.h2, streamId)
+    if sendable <= 0 {
+      pumpForWindow(state, streamId, work)
+      sendable = maxSendableOnStream(state.h2, streamId)
+      if sendable <= 0 {
+        // No window granted after a bounded pump (peer never sent WINDOW_UPDATE
+        // and did not close): stop. The connection's next read returns EOF/err
+        // and the loop tears it down — a loud incomplete response, never a
+        // silent truncation the peer can't detect.
+        return
+      }
+    }
+    val frameCap = minIntH2(peerMaxFrameSize(state.h2), sendable)
+    val chunkLen = minIntH2(frameCap, body.length - off)
+    val isLast = off + chunkLen == body.length
+    val chunk = body.slice(off, off + chunkLen)
+    match sendData(state.h2, streamId, chunk, isLast) {
+      case Ok(bytes) -> {
+        val _ = hostWrite(state.conn, bytes)
+        off = off + chunkLen
+      }
+      case Err(_) -> {
+        return
+      }
+    }
+  }
+}
+
+// Serialize the response the puller placed in `exchange` back onto the wire:
+// HPACK-encode the response headers (`:status` + lowercased fields, RFC 9113
+// §8.2 / §8.3.2), then frame the body as flow-controlled DATA.
+func sendH2Response(state: in H2ConnState, exchange: in H2Exchange, work: in List[H2Event]): Unit {
+  if H2.isFailed(state.h2) {
+    return
+  }
+  val streamId = exchange.streamId
+  val bodyArr = exchange.body.toArray()
+  val headers: List[HeaderField] = newList()
+  headers.add(HeaderField(name = ":status", value = toString(exchange.status)))
+  if exchange.contentType.length > 0 and responseHeaderSafe(exchange.contentType) {
+    headers.add(HeaderField(name = "content-type", value = exchange.contentType))
+  }
+  headers.add(HeaderField(name = "content-length", value = toString(bodyArr.length)))
+  appendH2ExtraHeaders(headers, exchange.extra)
+  val endOnHeaders = bodyArr.length == 0
+  match encodeResponseHeaders(state.h2, streamId, headers, endOnHeaders) {
+    case Err(_) -> ()
+    case Ok(headBytes) -> {
+      val _ = hostWrite(state.conn, headBytes)
+      if bodyArr.length > 0 {
+        sendH2Body(state, streamId, bodyArr, work)
+      }
+    }
+  }
+}
+
+// Copy caller-supplied response headers into the h2 header list: lowercase each
+// name (RFC 9113 §8.2 requires lowercase field names), drop connection-specific
+// and already-set content-* headers, and skip response-unsafe values.
+func appendH2ExtraHeaders(headers: in List[HeaderField], extra: in Map[String, String]): Unit {
+  val names = mapKeys(extra).toArray()
+  var i = 0
+  while i < names.length {
+    val name = names[i]
+    val lower = asciiLower(name)
+    if lower.length > 0 and not isH2SkippedResponseHeader(lower) and responseHeaderSafe(lower) {
+      match mapGet(extra, name) {
+        case Some(value) -> {
+          if responseHeaderSafe(value) {
+            headers.add(HeaderField(name = lower, value = value))
+          }
+        }
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+}
+
+// Dispatch a fully-received request stream: build an `HttpContext` (h2 mailbox
+// attached), hand it to the pull queue, block until the puller responds, then
+// serialize the response and forget the stream.
+func dispatchH2Stream(state: in H2ConnState, streamId: in Int, work: in List[H2Event]): Unit {
+  match mapGet(state.accums, streamId) {
+    case None -> ()
+    case Some(accum) -> {
+      val line = extractH2Request(accum.headers)
+      val exchange = H2Exchange(streamId = streamId, status = 0, contentType = "", body = newList(), extra = newMap())
+      val someH2: Option[H2Exchange] = Some(value = exchange)
+      val done: Semaphore = newSemaphore(0)
+      val ctx = HttpContext(
+        conn = state.conn,
+        method = line.method,
+        target = line.target,
+        version = Http1_1,
+        headers = line.headers,
+        body = accum.body.toArray(),
+        keepAlive = true,
+        done = done,
+        h2 = someH2
+      )
+      cqEnqueue(state.queue, ctx)
+      val _ = semRelease(state.available)
+      semWait(done)
+      sendH2Response(state, exchange, work)
+      removeAccum(state, streamId)
+    }
+  }
+}
+
+func onH2Headers(
+  state: in H2ConnState,
+  streamId: in Int,
+  headers: in List[HeaderField],
+  endStream: in Bool,
+  work: in List[H2Event],
+): Unit {
+  val accum = getOrCreateAccum(state, streamId)
+  if not accum.haveHeaders {
+    accum.headers = headers
+    accum.haveHeaders = true
+  }
+  // A second HEADERS on an open stream is trailers (§8.1); the request line and
+  // fields are already captured, so only its END_STREAM matters.
+  if endStream {
+    dispatchH2Stream(state, streamId, work)
+  }
+}
+
+func onH2Data(
+  state: in H2ConnState, streamId: in Int, data: in slice[Byte], endStream: in Bool, work: in List[H2Event]
+): Unit {
+  val accum = getOrCreateAccum(state, streamId)
+  appendBytes(accum.body, data)
+  if endStream {
+    dispatchH2Stream(state, streamId, work)
+  }
+}
+
+func processH2Event(state: in H2ConnState, ev: in H2Event, work: in List[H2Event]): Unit {
+  match ev {
+    case H2NeedMore -> ()
+    case H2SettingsReceived(_) -> ()
+    case H2SettingsAcknowledged -> ()
+    case H2WindowUpdated(_) -> ()
+    case H2PingReceived(_) -> ()
+    case H2PingAcknowledged(_) -> ()
+    case H2GoAwayReceived(_, _) -> ()
+    case H2PeerReset(streamId, _) -> removeAccum(state, streamId)
+    case H2StreamErr(streamId, _, _) -> removeAccum(state, streamId)
+    case H2ConnError(_, _) -> {
+      // The FSM already queued a GOAWAY in the feed's outbound bytes and poisoned
+      // the connection; stop reading.
+      state.open = false
+    }
+    case H2RequestHeaders(streamId, headers, endStream) -> onH2Headers(state, streamId, headers, endStream, work)
+    case H2RequestData(streamId, data, endStream) -> onH2Data(state, streamId, data, endStream, work)
+  }
+}
+
+func processH2Batch(state: in H2ConnState, bytes: in slice[Byte]): Unit {
+  val work: List[H2Event] = newList()
+  h2Feed(state, bytes, work)
+  var i = 0
+  while i < work.count and state.open and not H2.isFailed(state.h2) {
+    processH2Event(state, work[i], work)
+    i = i + 1
+  }
+}
+
+// The per-connection h2 loop: send the server's initial SETTINGS, then read →
+// feed → process until the connection closes or fails.
+func processH2Connection(conn: in Conn, queue: in ConcurrentQueue[HttpContext], available: in Semaphore): Unit {
+  val h2 = newServerConnection(h2DefaultServerSettings())
+  val _ = hostWrite(conn, serverInitialFrame(h2))
+  val state = H2ConnState(conn = conn, h2 = h2, accums = newMap(), queue = queue, available = available, open = true)
+  while state.open and not H2.isFailed(state.h2) {
+    match hostRead(conn, 65536) {
+      case Err(_) -> {
+        state.open = false
+      }
+      case Ok(bytes) -> {
+        if bytes.length == 0 {
+          state.open = false
+        } else {
+          processH2Batch(state, bytes)
+        }
+      }
+    }
+  }
+  hostClose(conn)
+}
+
+// =====================================================================
 // Public host helpers.
 // =====================================================================
 /// Construct + bind + start a plaintext listener for `prefix` (e.g.
@@ -575,6 +1033,7 @@ pub func startListener(prefix: in String): HttpListener {
 /// same multi-package bundle-build generic degradation this server's accept
 /// loop was just hardened against.
 pub func startListenerWithLimits(prefix: in String, limits: in EngineLimits): HttpListener {
+  ensureServerThreadCapacity()
   val parsed = parsePrefix(prefix)
   match hostListen(resolveBindHost(parsed.bindHost), parsed.port) {
     case Ok(transport) -> {
@@ -615,6 +1074,7 @@ pub func startListenerTlsWithLimits(
       )
     )
   }
+  ensureServerThreadCapacity()
   match hostListen(resolveBindHost(host), port) {
     case Ok(transport) -> {
       val queue: ConcurrentQueue[HttpContext] = newConcurrentQueue()
@@ -834,14 +1294,28 @@ func respondBytesWith(
   body: in slice[Byte],
   extra: in Map[String, String],
 ): Unit {
-  val headers: List[HeaderField] = newList()
-  appendSafeHeader(headers, "Content-Type", contentType)
-  headers.add(HeaderField(name = "Content-Length", value = toString(body.length)))
-  appendConnectionHeader(headers, c.version, c.keepAlive)
-  appendExtraHeaders(headers, extra)
-  val head = serializeResponseHead(c.version, status, reasonForStatus(status), headers)
-  val _ = hostWrite(c.conn, head.concat(body))
-  signalDone(c)
+  match c.h2 {
+    case Some(exchange) -> {
+      // HTTP/2: deliver the response into the stream's mailbox and hand off to
+      // the connection task, which HPACK-encodes it and frames the body as DATA.
+      // No wire write happens here (h2 FSM state is owned by the connection task).
+      exchange.status = status
+      exchange.contentType = contentType
+      appendBytes(exchange.body, body)
+      mapPutAll(exchange.extra, extra)
+      signalDone(c)
+    }
+    case None -> {
+      val headers: List[HeaderField] = newList()
+      appendSafeHeader(headers, "Content-Type", contentType)
+      headers.add(HeaderField(name = "Content-Length", value = toString(body.length)))
+      appendConnectionHeader(headers, c.version, c.keepAlive)
+      appendExtraHeaders(headers, extra)
+      val head = serializeResponseHead(c.version, status, reasonForStatus(status), headers)
+      val _ = hostWrite(c.conn, head.concat(body))
+      signalDone(c)
+    }
+  }
 }
 
 /// Reply with a plaintext body; completes the exchange.
@@ -886,14 +1360,32 @@ pub func respondBytesWithHeaders(
 pub func beginChunkedResponse(
   c: in HttpContext, status: in Int, contentType: in String, headers: in Map[String, String]
 ): HttpChunkedStream {
-  val respHeaders: List[HeaderField] = newList()
-  appendSafeHeader(respHeaders, "Content-Type", contentType)
-  respHeaders.add(HeaderField(name = "Transfer-Encoding", value = "chunked"))
-  appendConnectionHeader(respHeaders, c.version, c.keepAlive)
-  appendExtraHeaders(respHeaders, headers)
-  val head = serializeResponseHead(c.version, status, reasonForStatus(status), respHeaders)
-  val _ = hostWrite(c.conn, head)
-  HttpChunkedStream(conn = c.conn, done = c.done)
+  match c.h2 {
+    case Some(exchange) -> {
+      // HTTP/2 has no chunked transfer-encoding; the response is a HEADERS
+      // frame followed by DATA frames. This slice buffers the chunks into the
+      // exchange body and flushes them as one h2 response at `endChunkedResponse`
+      // (incremental h2 DATA streaming is the #6107 follow-up). Record the
+      // status/content-type/extra now; the body accumulates via
+      // `streamWriteChunk`.
+      exchange.status = status
+      exchange.contentType = contentType
+      mapPutAll(exchange.extra, headers)
+      val someH2: Option[H2Exchange] = Some(value = exchange)
+      HttpChunkedStream(conn = c.conn, done = c.done, h2 = someH2)
+    }
+    case None -> {
+      val respHeaders: List[HeaderField] = newList()
+      appendSafeHeader(respHeaders, "Content-Type", contentType)
+      respHeaders.add(HeaderField(name = "Transfer-Encoding", value = "chunked"))
+      appendConnectionHeader(respHeaders, c.version, c.keepAlive)
+      appendExtraHeaders(respHeaders, headers)
+      val head = serializeResponseHead(c.version, status, reasonForStatus(status), respHeaders)
+      val _ = hostWrite(c.conn, head)
+      val noH2: Option[H2Exchange] = None
+      HttpChunkedStream(conn = c.conn, done = c.done, h2 = noH2)
+    }
+  }
 }
 
 /// Write `bytes[offset..offset+count)` as one chunk and flush it immediately.
@@ -906,9 +1398,13 @@ pub func streamWriteChunk(
     return Ok(value = ())
   }
   val payload = bytes.slice(offset, offset + count)
-  match hostWrite(s.conn, serializeChunk(payload)) {
-    case Ok(_) -> Ok(value = ())
-    case Err(e) -> Err(error = TcpError.message(e))
+  match s.h2 {
+    case Some(exchange) -> {
+      // HTTP/2: buffer into the exchange body; flushed as DATA at endChunkedResponse.
+      appendBytes(exchange.body, payload)
+      Ok(value = ())
+    }
+    case None -> match hostWrite(s.conn, serializeChunk(payload)) { case Ok(_) -> Ok(value = ()); case Err(e) -> Err(error = TcpError.message(e)) }
   }
 }
 
@@ -916,6 +1412,18 @@ pub func streamWriteChunk(
 /// a broken connection is swallowed (a disconnect mid-stream is routine and
 /// must not crash the accept loop).
 pub func endChunkedResponse(c: in HttpContext, s: in HttpChunkedStream): Unit {
-  val _ = hostWrite(s.conn, serializeLastChunk())
-  val _ = semRelease(s.done)
+  match s.h2 {
+    case Some(_) -> {
+      // HTTP/2: the body is buffered in the exchange; releasing `done` hands off
+      // to the connection task, which serializes HEADERS + DATA (END_STREAM on
+      // the final DATA frame).
+      val _ = semRelease(s.done);
+      ()
+    }
+    case None -> {
+      val _ = hostWrite(s.conn, serializeLastChunk())
+      val _ = semRelease(s.done);
+      ()
+    }
+  }
 }

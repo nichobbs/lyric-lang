@@ -15,8 +15,8 @@
 //!     establish for the client stack.
 //!   * **TLS termination** — `System.Net.Security.SslStream` server-auth
 //!     from a `Std.Tls.TlsServerConfig`: the server certificate/key
-//!     (`identity`), the ALPN protocol list (`http/1.1` now; `h2` arrives
-//!     with the engine's h2 stack in phase 4, docs/61 §6.4), the minimum
+//!     (`identity`), the ALPN protocol list (`h2` then `http/1.1`, docs/61
+//!     §6.4 phase 4.4), the minimum
 //!     protocol version, and mutual-TLS (`requireClientCert` +
 //!     `clientCa`). The handshake, record layer, and crypto stay entirely
 //!     inside the platform library — this is emphatically NOT the
@@ -349,16 +349,22 @@ val sslAppProtoTypeName: String = "System.Net.Security.SslApplicationProtocol, S
 
 val appProtoListTypeName: String = "System.Collections.Generic.List`1[[System.Net.Security.SslApplicationProtocol, System.Net.Security]]"
 
-// Build a genuine `List<SslApplicationProtocol>` holding only `http/1.1` and
-// assign it to `options.ApplicationProtocols` via reflection (see the block
-// comment above for why the direct paths are unavailable). `Http11` is a
-// static *field* of struct type; read it boxed through `FieldInfo.GetValue`
-// so it flows into `IList.Add(object)` as a reference. Phase 4 (docs/61 §6.4)
-// adds `"h2"` ahead of `http/1.1` here.
-func setApplicationProtocolHttp11(opts: in SslServerAuthOptions): Unit {
+// Build a genuine `List<SslApplicationProtocol>` holding `h2` (first, so it is
+// the server's ALPN preference) and `http/1.1`, and assign it to
+// `options.ApplicationProtocols` via reflection (see the block comment above
+// for why the direct paths are unavailable). Both `Http2` and `Http11` are
+// static *fields* of struct type; read each boxed through `FieldInfo.GetValue`
+// so it flows into `IList.Add(object)` as a reference. Advertising `h2` here is
+// the ALPN half of docs/61 §6.4 phase 4.4 (issue #5889): a peer that offers h2
+// negotiates HTTP/2 (the server assembly selects the h2 FSM on the `hostAlpn`
+// result), and a peer that offers only `http/1.1` (or no ALPN) falls back to
+// HTTP/1.1.
+func setApplicationProtocols(opts: in SslServerAuthOptions): Unit {
   val protoType = typeGetType(sslAppProtoTypeName)
+  val http2Boxed = fieldGetValueBoxed(typeGetField(protoType, "Http2"), opts)
   val http11Boxed = fieldGetValueBoxed(typeGetField(protoType, "Http11"), opts)
   val list = activatorCreateIList(typeGetType(appProtoListTypeName))
+  val _ = ilistAddBoxed(list, http2Boxed)
   val _ = ilistAddBoxed(list, http11Boxed)
   propertySetValue(typeGetProperty(optionsRuntimeType(opts), "ApplicationProtocols"), opts, list)
 }
@@ -477,7 +483,7 @@ func buildServerOptions(cfg: in Tls.TlsServerConfig): SslServerAuthOptions {
     case Tls13 -> optionsSetEnabledSslProtocols(opts, sslProtocolsTls13())
     case Tls12 -> ()
   }
-  setApplicationProtocolHttp11(opts)
+  setApplicationProtocols(opts)
   if cfg.requireClientCert {
     optionsSetClientCertificateRequired(opts, true)
   }
@@ -495,8 +501,9 @@ func buildServerOptions(cfg: in Tls.TlsServerConfig): SslServerAuthOptions {
 }
 
 // The negotiated ALPN protocol as a wire string, matched against the set
-// this transport can advertise. `""` means no ALPN was negotiated (the peer
-// offered none). Phase 4 (docs/61 §6.4) starts advertising `"h2"` too.
+// this transport advertises (`h2` and `http/1.1`, docs/61 §6.4). `""` means no
+// ALPN was negotiated (the peer offered none) — the server assembly then serves
+// HTTP/1.1.
 func computeAlpn(ssl: in Stream): String {
   val neg = sslNegotiatedProtocol(ssl)
   if sslAppEq(neg, sslAppProtoOf("http/1.1")) {
@@ -514,25 +521,21 @@ func computeAlpn(ssl: in Stream): String {
 /// certificate or one that does not chain to `cfg.clientCa` — is
 /// `Err(TlsHandshakeFailed(...))`, and the underlying socket is closed
 /// before returning so a rejected peer never leaks a connection.
-// mTLS misconfiguration guard (#6042). With the callback-free mTLS path
-// (module header), trust in a presented client certificate is pinned ONLY by
-// the `CertificateChainPolicy` built from `clientCa`. If `requireClientCert`
-// is set but no `clientCa` is configured, `buildServerOptions` installs no
-// chain policy, so `SslStream` would validate the client certificate against
-// the SYSTEM trust store — accepting ANY publicly-trusted certificate and
-// defeating the purpose of private-CA mutual TLS. That is a security
-// misconfiguration, not a permissive default, so it is rejected loudly here
-// (before any socket work) rather than silently falling back.
-func validateServerConfig(cfg: in Tls.TlsServerConfig): Option[TcpError] {
+func validateServerConfig(
+  // mTLS misconfiguration guard (#6042). With the callback-free mTLS path
+  // (module header), trust in a presented client certificate is pinned ONLY by
+  // the `CertificateChainPolicy` built from `clientCa`. If `requireClientCert`
+  // is set but no `clientCa` is configured, `buildServerOptions` installs no
+  // chain policy, so `SslStream` would validate the client certificate against
+  // the SYSTEM trust store — accepting ANY publicly-trusted certificate and
+  // defeating the purpose of private-CA mutual TLS. That is a security
+  // misconfiguration, not a permissive default, so it is rejected loudly here
+  // (before any socket work) rather than silently falling back.
+  cfg: in Tls.TlsServerConfig,
+): Option[TcpError] {
   if cfg.requireClientCert {
     match cfg.clientCa {
-      case None ->
-        Some(
-          value = TlsConfigInvalid(
-            message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a client CA " +
-              "(refusing to fall back to the system trust store, which would accept any publicly-trusted client certificate)"
-          )
-        )
+      case None -> Some(value = TlsConfigInvalid(message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a client CA " + "(refusing to fall back to the system trust store, which would accept any publicly-trusted client certificate)"))
       case Some(_) -> None
     }
   } else {
@@ -543,10 +546,7 @@ func validateServerConfig(cfg: in Tls.TlsServerConfig): Option[TcpError] {
 pub func hostAcceptTls(l: in Listener, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
   match validateServerConfig(cfg) {
     case Some(e) -> Err(error = e)
-    case None -> match hostAccept(l) {
-      case Err(e) -> Err(error = e)
-      case Ok(plain) -> hostUpgradeServerTls(plain, cfg)
-    }
+    case None -> match hostAccept(l) { case Err(e) -> Err(error = e); case Ok(plain) -> hostUpgradeServerTls(plain, cfg) }
   }
 }
 
