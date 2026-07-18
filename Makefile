@@ -307,6 +307,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/named_arg_order_self_test.l \
 	lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
 	lyric-compiler/lyric/nested_generic_self_test.l \
+	lyric-compiler/lyric/record_omitted_default_self_test.l \
 	lyric-compiler/lyric/outparam_self_test.l \
 	lyric-compiler/lyric/parser_self_test.l \
 	lyric-compiler/lyric/pattern_lowering_self_test.l \

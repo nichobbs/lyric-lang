@@ -19155,6 +19155,9 @@ success line.
 **Related:** #5876, #5874, docs/61-https-tls-http-versions.md, D128,
 D-progress-689 (the original workaround this supersedes), #5903 (a
 distinct JVM cross-package bare-case-name collision, still open).
+
+---
+
 ## D-progress-705 — JVM `impl <ExternType> for Record` now rejects a non-interface target at compile time under `error[J006]` instead of emitting invalid `implements <Class>` bytecode (#5930)
 
 **The bug.** On `--target jvm`, `impl <ExternType> for Record` compiled
