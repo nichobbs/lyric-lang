@@ -112,6 +112,49 @@ test "releaseFromDllIgnoredArgsWarning: empty list yields a warning with no file
   )
 }
 
+// ─── defineBuildGateError accept/reject matrix (#5852 / #6139 / #6140) ────
+test "defineBuildGateError: no defines is always allowed" {
+  match Cli.defineBuildGateError(false, false, true, true, true, "lyric.toml") {
+    case None -> assertTrue(true, "no defines -> allowed regardless of other flags")
+    case Some(msg) -> assertTrue(false, "no defines should be allowed, got: " + msg)
+  }
+}
+
+test "defineBuildGateError: consumable dotnet/jvm project build is allowed" {
+  match Cli.defineBuildGateError(true, true, false, false, false, "lyric.toml") {
+    case None -> assertTrue(true, "consumable target, no watch/release/aot -> allowed")
+    case Some(msg) -> assertTrue(false, "plain consumable project build should be allowed, got: " + msg)
+  }
+}
+
+test "defineBuildGateError: non-consumable target (native) is rejected" {
+  match Cli.defineBuildGateError(true, false, false, false, false, "") {
+    case None -> assertTrue(false, "--target native should reject --define")
+    case Some(msg) -> assertTrue(Str.contains(msg, "native"), "native rejection names the target, got: " + msg)
+  }
+}
+
+test "defineBuildGateError: --watch is rejected" {
+  match Cli.defineBuildGateError(true, true, true, false, false, "") {
+    case None -> assertTrue(false, "--watch should reject --define")
+    case Some(msg) -> assertTrue(Str.contains(msg, "--watch"), "watch rejection names the flag, got: " + msg)
+  }
+}
+
+test "defineBuildGateError: explicit --release is rejected" {
+  match Cli.defineBuildGateError(true, true, false, true, false, "") {
+    case None -> assertTrue(false, "--release should reject --define")
+    case Some(msg) -> assertTrue(Str.contains(msg, "--release"), "release rejection names the flag, got: " + msg)
+  }
+}
+
+test "defineBuildGateError: manifest kind = aot (autoAot) is rejected with the manifest path" {
+  match Cli.defineBuildGateError(true, true, false, false, true, "/proj/lyric.toml") {
+    case None -> assertTrue(false, "kind = aot should reject --define (#6139)")
+    case Some(msg) -> assertTrue(Str.contains(msg, "aot") and Str.contains(msg, "/proj/lyric.toml"), "aot rejection names kind=aot and the manifest path, got: " + msg)
+  }
+}
+
 // ─── filterExtraRefsDlls (#4282) ─────────────────────────────────────────
 test "filterExtraRefsDlls: excludes the primary DLL and Lyric.Stdlib.dll, keeps only .dll files, sorted" {
   val files: List[String] = newList()

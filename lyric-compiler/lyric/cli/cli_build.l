@@ -95,6 +95,44 @@ pub func releaseFromDllIgnoredArgsWarning(positional: in List[String]): String {
   "build: warning: source-file arguments are ignored alongside --release-from-dll: " + Str.joinList(", ", positional)
 }
 
+// Pure accept/reject predicate for `lyric build --define` (#5852 / #6139).
+// Returns `Some(message)` when `--define` is not supported for the given build
+// shape, or `None` when it is allowed. Every path that would otherwise drop the
+// defines silently is rejected up front:
+//   - a non-consumable target (`--target native`, #5977: native codegen cannot
+//     yet consume a define),
+//   - `--watch` (the rebuild action carries no defines),
+//   - `--release` (the AOT-packaging path does not thread defines), and
+//   - `[build] kind = "aot"` in the manifest (`autoAot`), which routes into the
+//     same AOT-packaging path as an explicit `--release` (#6139).
+// Pulled out of `cmdBuild` so the accept/reject matrix is unit-testable without
+// a manifest round-trip (#6140). `manifestPath` is only referenced by the
+// `autoAot` message; pass "" when it is not applicable.
+pub func defineBuildGateError(
+  hasDefines: in Bool,
+  targetConsumable: in Bool,
+  watch: in Bool,
+  release: in Bool,
+  autoAot: in Bool,
+  manifestPath: in String,
+): Option[String] {
+  if not hasDefines {
+    return None
+  }
+  if (not targetConsumable) or watch or release {
+    return Some(
+      value = "build: --define is supported on single-file and project (--manifest / lyric.toml) --target dotnet/jvm builds; it is not supported with --target native (native codegen gaps, #5977), --watch, or --release"
+    )
+  }
+  if autoAot {
+    return Some(
+      value = "build: --define is not supported with [build] kind = \"aot\" in " + manifestPath +
+        " (the AOT-packaging build path does not thread defines, #5852); remove --define or build without kind = \"aot\""
+    )
+  }
+  None
+}
+
 // Filter a `--extra-refs-dir` directory listing down to the extra reference
 // DLLs for `--release-from-dll`: only `.dll` files, excluding the primary
 // DLL itself (`dllBase`, the release target's own basename) and
@@ -891,14 +929,13 @@ func cmdBuild(argv: in slice[String]): Int {
   // or be silently dropped: `--target native` (#5977), `--watch` (whose rebuild
   // action carries no defines), and `--release` (the AOT-packaging path does not
   // thread defines — a separate follow-up).
-  if cliDefines.count > 0 {
-    val consumableTarget = match target { case Dotnet -> true; case Jvm -> true; case Native -> false }
-    if (not consumableTarget) or watch or release {
-      printErr(
-        "build: --define is supported on single-file and project (--manifest / lyric.toml) --target dotnet/jvm builds; it is not supported with --target native (native codegen gaps, #5977), --watch, or --release"
-      )
+  val consumableTarget = match target { case Dotnet -> true; case Jvm -> true; case Native -> false }
+  match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, release, false, "") {
+    case Some(msg) -> {
+      printErr(msg)
       return 1
     }
+    case None -> ()
   }
   // Project-mode: `lyric build --manifest lyric.toml`, or no positional source
   // at all (discover the nearest lyric.toml by walking up from the cwd).
@@ -932,6 +969,20 @@ func cmdBuild(argv: in slice[String]): Int {
       case Dotnet -> readBuildKindFromManifest(Some(value = mfPath)) == "aot"
       case Jvm -> false
       case Native -> false
+    }
+    // `[build] kind = "aot"` routes into `buildReleaseProject` below just like an
+    // explicit `--release`, and that AOT-packaging path does not thread `--define`
+    // (#5852). Reject up front rather than silently building with the in-source
+    // `@build_const` fallback — the same no-silent-drop contract the early gate
+    // above enforces for explicit `--release` (#6139). `targetConsumable`/`watch`/
+    // `release` are already cleared by the early gate when defines are present, so
+    // only `autoAot` can fire here.
+    match defineBuildGateError(cliDefines.count > 0, true, false, false, autoAot, mfPath) {
+      case Some(msg) -> {
+        printErr(msg)
+        return 1
+      }
+      case None -> ()
     }
     if watch and autoAot {
       printErr("build: --watch is not supported with [build] kind = \"aot\" in " + mfPath)

@@ -33,8 +33,10 @@ project bridges; `buildProject` gains a `cliDefines` param): `lyric build`
 now substitutes `@build_const`s and populates the define-sourced `Std.BuildInfo`
 fields on a project build, merged beneath the well-known `version` so an explicit
 `--define version=…` overrides the manifest. The CLI gate widens to "single-file
-or project, `--target dotnet`/`jvm`"; native (#5977), `--watch`, and `--release`
-stay gated. The remaining well-known defines (`target`, `build_profile` from
+or project, `--target dotnet`/`jvm`"; native (#5977), `--watch`, `--release`, and
+a manifest `[build] kind = "aot"` (which routes into the same AOT-packaging path
+as `--release`, #6139) stay gated — rejected up front rather than silently
+dropped. The remaining well-known defines (`target`, `build_profile` from
 `--release`) and manifest `[build.define]` remain follow-ups (#5852). Q-BD-001 –
 Q-BD-009 below are resolved in this draft; a decision-log entry still codifies
 the full design.

@@ -942,7 +942,8 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
                                        # --target dotnet/jvm; on a project build the manifest
                                        # [package].version is the well-known `version` fallback an
                                        # explicit --define version=… overrides. --target native
-                                       # (#5977), --watch, and --release are rejected.
+                                       # (#5977), --watch, --release, and a manifest [build]
+                                       # kind = "aot" (#6139) are rejected.
 
 # Build kind (manifest [build] kind, .NET target; default "lib")
 #   kind = "lib"     -> managed foo.dll + foo.runtimeconfig.json (run via `dotnet exec`)
