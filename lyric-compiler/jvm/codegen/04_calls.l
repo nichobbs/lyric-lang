@@ -2022,7 +2022,25 @@ func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in Str
           emitStore(insns, slot, fty)
           argSlots.add(slot)
         } else {
-          argSlots.add(-1)
+          // A trailing field the call site omitted.  `orderCtorArgs` only
+          // reorders/aligns SUPPLIED args, so any field past `ordered.count`
+          // relies on its own declared default-value expression (#5908) — the
+          // JVM-zero-value fallback (`pushDefaultValue` below) is only correct
+          // for a field with no source-level default, which the type checker
+          // should never let through as omitted.  Evaluate the default
+          // expression exactly like a supplied argument (same reason as the
+          // comment above: it can itself branch, so it must land in a local
+          // before `new`/`dup` put uninitialized-object slots on the stack).
+          match fields[i].dflt {
+            case Some(defExpr) -> {
+              val aTy = lowerExpr(ctx, insns, defExpr)
+              coerceValueTo(ctx, insns, aTy, fty)
+              val slot = allocSlot(ctx, "__ctor_dflt_" + freshLabel(ctx), fty)
+              emitStore(insns, slot, fty)
+              argSlots.add(slot)
+            }
+            case None -> argSlots.add(-1)
+          }
         }
         i = i + 1
       }

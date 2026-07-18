@@ -1057,6 +1057,22 @@ test "non-generic callee return feeds cross-package union-predicate specialisati
     not hasFunc(resNoFeed.file, "isErrLike__Int__String"),
     "without makeRes fed, isErrLike is not specialised (call hits the erased generic)"
   )
+  // #5970: this is the exact crash shape docs/59 §5.2 B1 documents — before
+  // the fix, `makeRes()` being unresolvable defaulted isErrLike's T/E to
+  // Object and emitted `isErrLike__Object__Object`, whose `isinst
+  // Result_Err<object,object>` arms can never match the real
+  // `Result[Int, String]` `makeRes()` constructs at runtime ("Unable to
+  // cast Result_Err to Boolean").  Must raise M0004 and never emit the
+  // unsafe Object-defaulted specialisation.
+  assertEqualInt(
+    diagCountCode(resNoFeed.diagnostics, "M0004"),
+    1,
+    "unresolvable makeRes() flowing into isErrLike's Result[T,E] slot raises M0004 (#5970)"
+  )
+  assertTrue(
+    not hasFunc(resNoFeed.file, "isErrLike__Object__Object"),
+    "the crash-prone Object-defaulted isErrLike__Object__Object is never emitted (#5970)"
+  )
 
   // With the non-generic callee fed alongside the generic, mono infers
   // makeRes(): Result[Int, String], unifies T=Int / E=String, and emits the
@@ -1448,6 +1464,65 @@ test "uninferable call to imported generic stays silent" {
   }
   val res = monoFileWithImports(parse(callerSrc).file, importedGen)
   assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 0, "imported generics keep the erased fallback — no M0002")
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0004"),
+    0,
+    "zero-arg call has no opaque argument flow — no M0004 either"
+  )
+}
+
+// Shared helper for the M0004 (#5970) tests below: collects the generic
+// `FunctionDecl`s out of a parsed "Lib" package so they can be fed to
+// `monoFileWithImports` as import candidates, exactly like the harness
+// inlined in the tests above.
+func importedGenericsOf(src: in String): List[FunctionDecl] {
+  val pr = parse(src)
+  val gen: List[FunctionDecl] = newList()
+  var i = 0
+  while i < pr.file.items.count {
+    match pr.file.items[i].kind {
+      case IFunc(decl) -> match decl.generics { case Some(_) -> gen.add(decl); case None -> () }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  gen
+}
+
+// #5970: the call-site rewriter defaults an IMPORTED generic's unbound type
+// params to `Object` so the call still specialises (#5604) — but when an
+// argument that's genuinely opaque to mono's inference (here: an `if`
+// expression, a shape `inferExprTE` has no arm for) flows into a parameter
+// slot whose declared type actually mentions the unbound param, that
+// default produces a specialisation whose erased `Object` match arms can
+// crash against the argument's real (possibly closed-generic) runtime
+// identity — the `isOk(File.writeText(...))` family of crashes this
+// diagnostic exists to catch.  Must raise M0004 instead of silently
+// defaulting.
+test "opaque argument into imported generic's structural param raises M0004 (#5970)" {
+  val callerSrc = "package Caller\n" + "func mkBox(): Int { 0 }\n" + "func caller(): Int {\n" +
+    "  val b = if true { mkBox() } else { mkBox() }\n" +
+    "  peekBox(b)\n" +
+    "}\n"
+  val importedSrc = "package Lib\n" + "record Box[T] { value: T }\n" + "pub func peekBox[T](b: in Box[T]): Int { 0 }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, importedGenericsOf(importedSrc))
+  assertEqualInt(diagCountCode(res.diagnostics, "M0004"), 1, "opaque arg into a T-shaped slot raises M0004")
+  assertTrue(not hasFunc(res.file, "peekBox__Object"), "the unsafe Object-defaulted specialisation is never emitted")
+}
+
+// #5970 negative: the SAME opaque (`if`-typed) argument shape stays silent
+// when the parameter it flows into does NOT mention the unbound type
+// param — nothing generic-shaped is actually handed to the specialised
+// body to mismatch, so the existing #5604 erased fallback is safe and
+// unchanged.
+test "opaque argument into a non-generic-shaped slot stays silent (#5970 negative)" {
+  val callerSrc = "package Caller\n" + "func mkVal(): Int { 0 }\n" + "func caller(): Int {\n" +
+    "  val n = if true { mkVal() } else { mkVal() }\n" +
+    "  peekOther(n)\n" +
+    "}\n"
+  val importedSrc = "package Lib\n" + "pub func peekOther[T](n: in Int): Int { 0 }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, importedGenericsOf(importedSrc))
+  assertEqualInt(diagCountCode(res.diagnostics, "M0004"), 0, "param slot doesn't mention T — no M0004")
 }
 
 // B2 negative: the #3677 arity-overflow shape (call has MORE args than the

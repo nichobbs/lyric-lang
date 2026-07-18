@@ -101,12 +101,24 @@ pub record MonoResult {
   ///     diagnostic existed — docs/59 §5.2 B2).
   ///   • `M0003` — the specialisation worklist exhausted its budget
   ///     (unbounded recursive instantiation), formerly a compiler panic.
-  /// Inference gaps on calls to IMPORTED generics still fall back
-  /// silently to the un-specialised call (the emitter handles those via
-  /// real CLR generics / the native instantiation registry) — that's the
-  /// conservative behaviour by design.  The bridges route this list
-  /// through `reportAndAbort` so M-errors abort codegen the same way
-  /// parse/type-check/mode-check diagnostics do.
+  ///   • `M0004` — a call site targeting an IMPORTED generic left one or
+  ///     more type params unbound AND an opaque, uninferable argument
+  ///     flows into a parameter slot that mentions those params.  Most
+  ///     inference gaps on imported-generic calls default the unbound
+  ///     params to `Object` and specialise anyway (#5604 — safe when
+  ///     nothing opaque is actually handed to the specialised body, e.g. a
+  ///     zero-arg call or a param that doesn't mention the unbound param).
+  ///     This shape is NOT safe: the specialised copy pattern-matches /
+  ///     narrows the slot as if it were always `Object`, but the real
+  ///     argument may carry a genuinely different closed-generic runtime
+  ///     identity (e.g. `Result[Unit, IOError]`) that the erased
+  ///     `Object`/`Object` arms can never structurally match — a runtime
+  ///     `InvalidProgramException` / "match not exhaustive" crash instead
+  ///     of a compile-time error (#5970).  Reported instead of silently
+  ///     defaulting.
+  /// The bridges route this list through `reportAndAbort` so M-errors
+  /// abort codegen the same way parse/type-check/mode-check diagnostics
+  /// do.
   diagnostics: List[Diagnostic]
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Internal state
@@ -2841,6 +2853,173 @@ func noteUnspecialisableLocalCall(
   )
 }
 
+// #5970: does `te` structurally reference any name in `names`?  Walks the
+// same TypeExpr shapes `substTypeExpr` substitutes through, but tests
+// membership instead of replacing.  Used to find parameter slots whose
+// declared type actually depends on a type param the Object-default
+// fallback is about to fill — the slots where an opaque runtime argument
+// can crash a specialised body's structural match (see
+// `importedFallbackHasUnresolvedFlow`).
+func typeExprMentionsAnyName(te: in TypeExpr, names: in List[String]): Bool {
+  match te.kind {
+    case TRef(path) -> path.segments.count == 1 and listContainsStr(names, path.segments[0])
+    case TGenericApp(_, targs) -> {
+      var i = 0
+      while i < targs.count {
+        val hit = match targs[i] { case TAType(inner) -> typeExprMentionsAnyName(inner, names); case TAValue(_) -> false }
+        if hit {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TTuple(ts) -> {
+      var i = 0
+      while i < ts.count {
+        if typeExprMentionsAnyName(ts[i], names) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TNullable(inner) -> typeExprMentionsAnyName(inner, names)
+    case TSlice(elem) -> typeExprMentionsAnyName(elem, names)
+    case TArray(_, elem) -> typeExprMentionsAnyName(elem, names)
+    case TFunction(ps, r) -> {
+      var i = 0
+      while i < ps.count {
+        if typeExprMentionsAnyName(ps[i], names) {
+          return true
+        }
+        i = i + 1
+      }
+      typeExprMentionsAnyName(r, names)
+    }
+    case TParen(inner) -> typeExprMentionsAnyName(inner, names)
+    case _ -> false
+  }
+}
+
+// #5970: is `e` a shape mono ALREADY treats as a recognised-safe erasure
+// point, independent of whether `inferExprTE` can name its type?
+//
+//   - A lambda (`{ x -> … }`): unification already tried
+//     `unifyLambdaArgTE` against it (the per-argument loop above this
+//     call site) and it stayed unbound.  Lambdas construct a fresh
+//     closure AT THE CALL SITE from whatever the specialised body's
+//     parameter type says — there is no pre-existing, independently-typed
+//     runtime value to mismatch (the #5843/#5962 ambiguous-overload tests
+//     document this as the intentional erased degradation).
+//   - A bare reference to a NULLARY inference-only union case (e.g.
+//     `NoneLike`, no parens, no fields): `ctorSynthOfArg` only recognises
+//     the CALL form (`Some(value = …)`), so a nullary case reference never
+//     reaches that unification path either — but it carries zero runtime
+//     data, so it constructs exactly as erased-Object at the call site too
+//     (the #5604 `isEmptyLike(NoneLike)` test documents this).
+//
+// Any other opaque shape (an unresolvable function call, an `if`/`match`/
+// block whose value may already carry an independently-fixed closed-generic
+// identity from elsewhere) is NOT recognised here and stays classified as
+// risky by the caller.
+func argIsRecognizedSafeErasure(state: in MonoState, e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsRecognizedSafeErasure(state, inner)
+    case ELambda(_, _) -> true
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(state.funcDecls, path.segments[0]) {
+          case Some(d) -> annsInferenceOnlyMono(d.annotations) and d.params.count == 0
+          case None -> false
+        }
+      } else {
+        false
+      }
+    }
+    case _ -> false
+  }
+}
+
+// #5970: before an IMPORTED generic's unbound type params are defaulted to
+// `Object` (see the call site in the single-segment `EPath` rewrite arm),
+// decide whether that default is the SAFE erased degradation (#5604) or the
+// shape that crashes at runtime.
+//
+// Safe: no argument flows into a parameter slot whose declared type
+// mentions an unbound param (e.g. a zero-arg call like `pickImported()`,
+// or every unbound param only appears in the return type) — nothing
+// opaque is being handed to the specialised body to pattern-match against,
+// so an `Object`-typed slot is exactly the uniform erased ABI this
+// function always had.  A lambda argument or a bare nullary-case reference
+// is ALSO safe even when unresolved (`argIsRecognizedSafeErasure`) — both
+// construct fresh, at the call site, under the same Object substitution.
+//
+// Unsafe: an argument DOES flow into such a slot, that argument's own type
+// could not be inferred (`inferExprTE` returns `None`), AND it isn't one of
+// the recognised-safe shapes above.  The specialised copy will pattern-match
+// / narrow that slot as if it always carried `Object`, but the real argument
+// may carry a genuinely different, independently-fixed closed-generic
+// runtime identity (e.g. `Result[Unit, IOError]`) whose structural checks
+// the erased `Object`/`Object` arms can never match — `InvalidProgramException`
+// / "match not exhaustive" at runtime (#5970).  Reported loudly instead of
+// silently defaulting.
+func importedFallbackHasUnresolvedFlow(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  typeParams: in List[String],
+  subst: in Map[String, TypeExpr],
+  params: in List[Param],
+  args: in List[CallArg],
+): Bool {
+  val unbound: List[String] = newList()
+  var i = 0
+  while i < typeParams.count {
+    if not subst.containsKey(typeParams[i]) {
+      unbound.add(typeParams[i])
+    }
+    i = i + 1
+  }
+  if unbound.count == 0 {
+    return false
+  }
+  var ai = 0
+  while ai < args.count and ai < params.count {
+    if typeExprMentionsAnyName(params[ai].ty, unbound) {
+      val argExpr = callArgExpr(args[ai])
+      if not argIsRecognizedSafeErasure(state, argExpr) {
+        match inferExprTE(state, env, argExpr) {
+          case None -> return true
+          case Some(_) -> ()
+        }
+      }
+    }
+    ai = ai + 1
+  }
+  false
+}
+
+// Emit `M0004` when an IMPORTED generic call site is about to default its
+// unbound type param(s) to `Object` (the #5604 erased fallback) while an
+// opaque, uninferable argument is flowing into a parameter slot that
+// mentions those params — the shape `importedFallbackHasUnresolvedFlow`
+// confirmed can crash at runtime against the argument's real closed-generic
+// identity (#5970).  Unlike `noteUnspecialisableLocalCall`'s M0002 (a
+// same-package generic whose declaration is erased outright), the imported
+// generic's declaration still exists and specialises fine for OTHER call
+// sites — only this call site's inference gap is the problem, so the
+// message points at annotating the binding rather than the generic itself.
+func noteUnresolvableImportedCall(state: in MonoState, fname: in String, unresolved: in String, callSpan: in Span): Unit {
+  state.diags.add(
+    errorDiagnostic(
+      "M0004",
+      "cannot infer type argument(s) " + unresolved + " for call to imported generic function '" + fname +
+        "'; the argument's type could not be determined, and defaulting it to 'Object' here would produce a specialisation that can crash at runtime against the argument's real type — annotate the binding that produces this argument with its concrete type (e.g. `val r: Result[T, E] = …`) so the call can be monomorphised precisely",
+      callSpan
+    )
+  )
+}
+
 // The subset of `typeParams` that `subst` failed to bind, rendered as a
 // quoted comma-separated list for the M0002 message.
 func unresolvedTypeParamList(typeParams: in List[String], subst: in Map[String, TypeExpr]): String {
@@ -3184,12 +3363,27 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                     // user's intent there.
                     if not substIsComplete(typeParams, subst) {
                       if not state.droppedLocalGenerics.containsKey(fname) and not annsHaveAxiomMono(baseDecl.annotations) {
-                        var du = 0
-                        while du < typeParams.count {
-                          if not subst.containsKey(typeParams[du]) {
-                            subst.add(typeParams[du], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = fn.span))
+                        // #5970: an opaque argument flowing into a slot that
+                        // mentions an unbound param would default to `Object`
+                        // here and crash the specialised body's structural
+                        // match against the argument's real (possibly
+                        // closed-generic) runtime identity — see
+                        // `importedFallbackHasUnresolvedFlow`'s doc comment.
+                        // Report loudly instead of defaulting in that case;
+                        // every other unbound-param shape (zero-arg calls,
+                        // params that don't mention the unbound params, or
+                        // an argument mono DID manage to type) keeps the
+                        // existing #5604 erased fallback unchanged.
+                        if importedFallbackHasUnresolvedFlow(state, env, typeParams, subst, baseDecl.params, args) {
+                          noteUnresolvableImportedCall(state, fname, unresolvedTypeParamList(typeParams, subst), fn.span)
+                        } else {
+                          var du = 0
+                          while du < typeParams.count {
+                            if not subst.containsKey(typeParams[du]) {
+                              subst.add(typeParams[du], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = fn.span))
+                            }
+                            du = du + 1
                           }
-                          du = du + 1
                         }
                       }
                     }

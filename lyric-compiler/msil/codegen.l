@@ -29884,6 +29884,24 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
         if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
           cctx.fieldDeclaredNames.add(byPosKey, f.name)
         }
+        // Default-value expr, mirroring the in-bundle registration above
+        // (~line 2843): `rec` here is the RESTORED artifact's resynthesised
+        // `RecordDecl` (`Lyric.RestoredPackages.synthesiseSource` re-parses
+        // the contract's `repr` string), so this only carries a real
+        // `Some(expr)` once the repr itself preserves the field's `= expr`
+        // (`Lyric.ContractMeta.reprForRecord`) — without both halves, a
+        // cross-package construction call site that omits this field finds
+        // no default to splice in (`fillCtorDefaultArgs` bails), emitting a
+        // `newobj` with fewer arguments than the ctor's declared param
+        // count — an invalid MSIL program (#5920).
+        match f.dflt {
+          case Some(dfltExpr) -> {
+            if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
+              cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+            }
+          }
+          case None -> ()
+        }
         // Also mirror fieldSigBytes / fieldVarIndices at the positional key so
         // MLdfldGeneric and pattern field-binding can resolve by position.
         if not cctx.fieldSigBytes.containsKey(byPosKey) {
@@ -31589,6 +31607,25 @@ func registerStdlibRecordLikeType(
           val byPosKey = typeFqn + "/field" + toString(fpos)
           if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
             cctx.fieldDeclaredNames.add(byPosKey, f.name)
+          }
+          // Default-value expr (#5920): unlike a genuinely restored
+          // `[dependencies]` DLL, `decl` here is parsed straight from the
+          // stdlib package's own `.l` source (`collectStdlibPackages`
+          // parses `stdlibSources` text directly, no contract-repr
+          // round-trip), so `f.dflt` is already the real AST — this
+          // registration was simply missing, the same gap
+          // `registerRestoredRecordFields` had.  Without it, a consumer
+          // constructing a stdlib record (e.g. `Std.Tls.TlsServerConfig`)
+          // while omitting a defaulted field finds no default to splice
+          // in (`fillCtorDefaultArgs` bails), emitting a `newobj` with
+          // fewer arguments than the ctor's declared param count.
+          match f.dflt {
+            case Some(dfltExpr) -> {
+              if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
+                cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+              }
+            }
+            case None -> ()
           }
           // Populate positional fieldVarIndices for generic-param fields.
           if ftyVarIdx >= 0 and not cctx.fieldVarIndices.containsKey(byPosKey) {

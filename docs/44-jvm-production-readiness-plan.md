@@ -661,9 +661,20 @@ and J4 (async), and the J2→J4 logical dependency holds — so Track A
   (`tls_server_jvm_tests.l`). Mutual TLS did not ship: `HttpsServer` requires
   subclassing the concrete `HttpsConfigurator` class to call
   `HttpsParameters.setNeedClientAuth`, which Lyric's `impl <ExternInterface>
-  for Record` cannot do (interfaces only, verified empirically) — tracked as
-  issue #5930. `startListenerTls` returns a typed `NotSupportedOnTarget` error
-  for any mTLS request rather than a silent skip. lyric-web's Undertow
+  for Record` cannot do (interfaces only) — tracked as issue #5930. Real
+  concrete/abstract-class subclassing (`super_class` + `invokespecial` to a
+  chosen superclass constructor + override dispatch) remains unimplemented;
+  what shipped instead is the bounded, production-quality compile-time
+  guard — `impl <ExternType> for Record` now aborts under `error[J006]` when
+  `<ExternType>`'s JDK metadata is not an interface (`ClassInfo.isInterface`
+  false), so the mis-shaped block fails loud at build time instead of
+  compiling to bytecode that throws `IncompatibleClassChangeError` at
+  class-load (verified: `jvm_impl_extern_class_self_test.l`, driving
+  `Jvm.Bridge.compileToJarBundled` in-process against the exact
+  `HttpsConfigurator` repro plus a `java.lang.Object` case and a
+  `java.lang.Runnable` no-false-positive regression case). `startListenerTls`
+  returns a typed `NotSupportedOnTarget` error for any mTLS request rather
+  than a silent skip. lyric-web's Undertow
   `addHttpsListener` + `ENABLE_HTTP2` wiring shipped in phase 2.2 (issue
   #5881, `Web.serveTls` on JVM), and the dotnet `Web.serveTls` reached parity
   in phase 3.4 (issue #5885, D-progress-701) over `Std.HttpServer`'s new

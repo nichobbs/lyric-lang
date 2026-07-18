@@ -2628,6 +2628,52 @@ func constraintRefToJvmClass(cr: in ConstraintRef, pkgName: in String, externTyp
   }
 }
 
+// True iff `cr` (an `impl <cr> for …` interface reference) resolves through
+// `externTypes` to a real JDK type — i.e. it is a single-segment name that
+// was declared via `extern type` / `import extern`.  A multi-segment path is
+// either a cross-package native Lyric interface or an explicit FQN written
+// out in full; neither is validated against JDK metadata here.  Mirrors
+// `implIfaceIsExternalClr` on the MSIL side (`msil/codegen.l`).
+func implIfaceExternDottedFqn(cr: in ConstraintRef, externTypes: in Map[String, String]): Option[String] {
+  if cr.head.segments.count == 1 {
+    mapGet(externTypes, cr.head.segments[0])
+  } else {
+    None
+  }
+}
+
+// Reject `impl <ExternType> for Record` at compile time when `<ExternType>`
+// resolves to a JDK CLASS (concrete or abstract) rather than an interface
+// (#5930).  Before this check, such a block silently emitted an `implements`
+// clause against the class in the generated `.class` file — bytecode that is
+// invalid per the JVM spec (only interfaces may appear in the `interfaces`
+// table for an `implements` relationship) and throws
+// `IncompatibleClassChangeError` at class-load time, e.g. `impl
+// HttpsConfigurator for MyConfigurator` where `HttpsConfigurator` is the
+// abstract JDK class `com.sun.net.httpserver.HttpsConfigurator`.
+//
+// Real subclassing of a concrete/abstract extern class (`super_class` +
+// `invokespecial` to the chosen superclass constructor + override dispatch)
+// is a genuine feature, not yet supported on the JVM target — tracked as a
+// follow-up.  Silent-skips when the JDK reference index can't resolve the
+// class at all (no `java.base.jmod` on disk, or a Maven/non-JDK type not on
+// `LYRIC_FFI_JARS`): a build-time false positive from an unavailable
+// classpath is worse than deferring the error to `TypeLoadException` at
+// first use in that degraded environment, matching the established
+// silent-skip convention for an unindexed FFI classpath (see F0024's
+// "index empty" branch on the MSIL side).
+func validateImplTargetIsInterfaceJvm(
+  decl: in ImplDecl,
+  pkgName: in String,
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+): Unit {
+  match implIfaceExternDottedFqn(decl.iface, externTypes) {
+    case None -> ()
+    case Some(javaFqn) -> match loadClass(autoFfi, javaFqn) { case None -> (); case Some(ci) -> { if not ci.isInterface { val targetName = typeExprToJvmClass(decl.target, pkgName).replace("/", "."); val pos = decl.span.startPos; panic("error[J006]: " + pos.line.toString() + ":" + pos.column.toString() + ": cannot `impl " + javaFqn + " for " + targetName + "`: '" + javaFqn + "' is a concrete or abstract JDK class, not an interface — only " + "interfaces can be implemented; subclassing external classes is not " + "yet supported on the JVM target") } } }
+  }
+}
+
 // Collect a file's `extern type Alias = "java.fq.Name"` declarations into an
 // alias → dotted-Java-FQN map (first-wins).  Used to resolve extern aliases in
 // parameter/return descriptors so they don't fall back to `<pkg>/<Alias>`.
@@ -3388,8 +3434,8 @@ pub func collectFileCasesExtern(
             var fi = 0
             while fi < c.fields.count {
               match c.fields[fi] {
-                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps)))
-                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps)))
+                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
+                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
               }
               fi = fi + 1
             }
@@ -3406,7 +3452,7 @@ pub func collectFileCasesExtern(
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, tps, externTypes), paramIdx = -1))
+              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, tps, externTypes), paramIdx = -1, dflt = f.dflt))
               case _ -> {
               }
             }
@@ -3428,9 +3474,9 @@ pub func collectFileCasesExtern(
             match decl.members[mi] {
               case PMField(pf) -> {
                 match pf {
-                  case PFVar(name, ty, _, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1))
-                  case PFLet(name, ty, _, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1))
-                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmExtern(f.ty, owner, externTypes), paramIdx = -1))
+                  case PFVar(name, ty, _, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1, dflt = None))
+                  case PFLet(name, ty, _, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1, dflt = None))
+                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmExtern(f.ty, owner, externTypes), paramIdx = -1, dflt = None))
                 }
               }
               case _ -> ()
@@ -3457,7 +3503,7 @@ pub func collectFileCasesExtern(
                 // registers as a nonexistent `<pkg>/<Alias>` class, and every
                 // construction site checkcasts to it — NoClassDefFoundError at
                 // first call (the Std.Regex-on-JVM failure shape).
-                case OMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, genericParamNames(decl.generics), externTypes), paramIdx = -1))
+                case OMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, genericParamNames(decl.generics), externTypes), paramIdx = -1, dflt = f.dflt))
                 case OMInvariant(_) -> ()
               }
               mi = mi + 1
@@ -3822,7 +3868,7 @@ pub func registerProjectableViews(
             var fi = 0
             while fi < infos.count {
               if not infos[fi].hidden {
-                vflds.add(JvmCaseField(name = infos[fi].name, ty = projViewFieldType(infos[fi]), paramIdx = -1))
+                vflds.add(JvmCaseField(name = infos[fi].name, ty = projViewFieldType(infos[fi]), paramIdx = -1, dflt = None))
               }
               fi = fi + 1
             }
@@ -4132,6 +4178,7 @@ pub func codegenPackageWithSigsSeeded(
   while pi < file.items.count {
     match file.items[pi].kind {
       case IImpl(decl) -> {
+        validateImplTargetIsInterfaceJvm(decl, pkgName, externTypes, autoFfi)
         val targetClass = typeExprToJvmClass(decl.target, pkgName)
         val ifaceClass = constraintRefToJvmClass(decl.iface, pkgName, externTypes)
         val implFuncs: List[LFunc] = newList()

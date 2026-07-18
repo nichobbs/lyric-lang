@@ -2329,7 +2329,7 @@ whose wrapped method may throw `Error` subclasses as an unsafe boundary.
 | `protected type`                 | `final class` with `ReentrantLock` / `RWLock` / `Semaphore` |
 | `wire`                           | `final class` with lazy-holder singletons + `ScopedValue` |
 | `interface`                      | Java `interface`                                     |
-| `impl I for T`                   | `class T implements I` with method bodies            |
+| `impl I for T`                   | `class T implements I` with method bodies; `I` must be an interface — an `impl` against an `extern type` whose JDK metadata resolves to a concrete or abstract class is rejected at compile time (`error[J006]`, #5930), since only interfaces may appear in the JVM `interfaces` table |
 | `extern package`                 | references via FFI; no Lyric class file emitted      |
 
 

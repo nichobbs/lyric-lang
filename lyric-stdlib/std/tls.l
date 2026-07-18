@@ -114,22 +114,13 @@ pub func TlsError.message(e: in TlsError): String {
 /// TLS configuration for a server listener, including mTLS (D128 decision
 /// 5: mutual TLS ships from v1, not as a later add-on).
 ///
-/// Construction note: a consumer in a DIFFERENT package that omits a
-/// defaulted field (e.g. `TlsServerConfig(identity = id)`, leaning on
-/// `minVersion`/`clientCa`/`requireClientCert`'s declared defaults)
-/// currently miscompiles on BOTH targets — a pre-existing, general
-/// compiler gap in cross-package record-default construction, not specific
-/// to this type: `--target jvm` produces an incorrectly-populated field
-/// value (#5908), and `--target dotnet` throws
-/// `System.InvalidProgramException` for the identical construction shape
-/// under the source-built toolchain (#5920, the MSIL sibling of #5908).
-/// **Pass every field explicitly at every construction site** (`identity`,
-/// `minVersion`, `clientCa`, `requireClientCert`) until both land — the
-/// declared defaults are correct as documentation of intent, but relying on
-/// omission to fill them in is not yet safe on either target. See
-/// `tls_server_config_tests.l` (which, per the same reasoning, has no test
-/// for the omitted-defaults shape — only the explicit-fields construction
-/// is covered).
+/// A consumer in a different package may omit any defaulted field
+/// (`TlsServerConfig(identity = id)`, leaning on
+/// `minVersion`/`clientCa`/`requireClientCert`'s declared defaults) — the
+/// general cross-package record-default construction gap that previously
+/// miscompiled this on both targets (`--target jvm` #5908, `--target
+/// dotnet` #5920) is fixed. See `tls_server_config_tests.l`'s
+/// omitted-defaults test.
 @stable(since = "1.2")
 pub record TlsServerConfig {
   identity: Identity

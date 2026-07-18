@@ -19045,6 +19045,177 @@ workaround).
 
 ---
 
+## D-progress-704 — #5908 (JVM) / #5920 (MSIL) fixed: cross-package record/opaque construction with an omitted default-valued field
+
+**Root cause, three independent registration gaps plus one JVM codegen
+gap.** Constructing a record (or opaque type) while omitting a defaulted
+field, from a package other than the one that declares it, miscompiled on
+both targets. Reduced to a minimal repro (`package Lib.Types` declaring
+`pub record MyCfg { identity: Ident, version: Version = V1 }`; a second
+package constructing `MyCfg(identity = ident)` and matching `.version`)
+and confirmed against the REAL shape (`Std.Tls.TlsServerConfig`, consumed
+from the prebuilt `Lyric.Stdlib.dll` via plain `lyric run`/`lyric test`,
+exactly as #5908/#5920 were filed). All four fixes below were needed
+together — verified by an initial pass-after test that STILL failed on
+`--target dotnet` until #3 was found (`TlsServerConfig` is a `Std.*`
+record, which never touches #2's code path at all — see #3):
+
+1. **`Lyric.ContractMeta.reprForRecord`/`reprForOpaque`
+   (`lyric-compiler/lyric/contract_meta.l`) silently dropped a field's
+   default-value expression (`= expr`) when rendering the source-level
+   `repr` string embedded in a compiled DLL's `Lyric.Contract` resource.**
+   `Lyric.RestoredPackages.synthesiseSource` re-parses that repr into a
+   fresh `RecordDecl`/`OpaqueTypeDecl` for a GENUINELY restored (compiled
+   separately, then loaded via a `[dependencies]` entry — NuGet-restored
+   Lyric packages, workspace/path deps) dependency. Without the default
+   expression surviving the round-trip, every field-default lookup keyed
+   off that resynthesised decl's `FieldDecl.dflt` sees `None`, as if the
+   field had no default at all — even though the type checker still let
+   the construction site omit it (the non-generic constructor type-check
+   path, `typechecker_exprs.l`, does not itself validate that every
+   non-optional field is supplied — a separate, pre-existing gap not
+   touched here). Fixed by rendering `= <Fmt.exprInline(0, dflt)>` for each
+   defaulted field, mirroring `reprForConfigField`'s identical pattern for
+   `config { }` field defaults (same file, already correct). This fix
+   alone covers the `[dependencies]`-restored-package shape; **it does
+   NOT cover `Std.*` stdlib records** (see #3) — `Lyric.Stdlib.dll`'s
+   consumers resolve stdlib types by parsing the real `.l` SOURCE
+   (`Msil.Bridge.collectStdlibPackages` / JVM's equivalent), never by
+   resynthesising the DLL's embedded contract, so `f.dflt` was already
+   correct there without this fix.
+2. **MSIL restored-dependency path.** Even with the repr fix,
+   `registerRestoredRecordFields` (`lyric-compiler/msil/codegen.l`) never
+   read `f.dflt` at all — it populated
+   `fieldDeclaredNames`/`fieldSigBytes`/`fieldVarIndices` for a restored
+   record's fields but never `ctorDefaultExprs`, the map
+   `fillCtorDefaultArgs` consults to splice a default expression into an
+   omitted-field call site. With no entry, `fillCtorDefaultArgs` bailed
+   (returned the args list unchanged, short by however many fields were
+   omitted), and codegen emitted a `newobj` call with FEWER arguments than
+   the constructor's declared parameter count — invalid IL, rejected by
+   the JIT (`InvalidProgramException`). Fixed by adding the same
+   `ctorDefaultExprs` registration `addPackageTokens`'s in-bundle `IRecord`
+   walk already does (~codegen.l:2843), keyed identically
+   (`<class>/field<pos>`).
+3. **MSIL stdlib path (the one `Std.Tls.TlsServerConfig` actually
+   exercises) — a THIRD, separate registration function with the exact
+   same gap as #2, discovered only after #1+#2 still left the real
+   `Std.Tls` repro throwing `InvalidProgramException`.**
+   `registerStdlibRecordLikeType` (`lyric-compiler/msil/codegen.l`,
+   reached via `registerStdlibArtifactTokens` →
+   `registerStdlibTypeItemMembers`, the code path every `Std.*` record
+   construction resolves through) registers `fieldTokens` /
+   `fieldDeclaredNames` / `recordCtorTokens` for a stdlib record's fields
+   but — independently of #2's restored-package function — also never
+   populated `ctorDefaultExprs` from `f.dflt`. Fixed identically: add the
+   same `ctorDefaultExprs` registration, keyed `<typeFqn>/field<pos>`.
+4. **JVM (#5908) — a fourth, wholly independent bug, not limited to
+   restored OR stdlib packages.** `Jvm.Codegen.lowerConstruction`'s
+   omitted-field fallback (`pushDefaultValue`) unconditionally pushed the
+   JVM zero value (`null` for references, `0`/`0L`/`0.0`/`false` for
+   primitives) for ANY field past the supplied-argument count — it never
+   consulted the field's declared default expression, full stop. Verified
+   this reproduces even for a same-file, same-package record (`package P;
+   record R { a: Int, b: Int = 2 }; func main() { R(a = 1).b }` inside one
+   file returns `0`, not `2`, pre-fix) — so #1/#2/#3's registration fixes
+   alone would NOT have closed #5908; the restored-dependency framing in
+   the original report was incidental to how the bug was found, not the
+   actual boundary. Fixed by adding a
+   `dflt: Option[Expr]` field to `JvmCaseField` (`jvm/codegen/01_types.l`,
+   threaded through all 8 construction sites — `None` for union-case
+   fields, protected-type fields, and synthesised `@projectable` view
+   fields, none of which carry source-level defaults; `f.dflt` for record
+   and opaque fields) and, in `lowerConstruction`, lowering the default
+   expression (`Jvm.Codegen.lowerExpr`) into a fresh local — same
+   pre-`new`/`dup` local-hoisting discipline the existing supplied-argument
+   path already uses, and for the same reason (#5003: a branching default
+   expression must not leave an uninitialized-object stack slot under its
+   own internal labels) — instead of falling through to
+   `pushDefaultValue`, whenever a field carries one.
+
+**Regression test.** `lyric-stdlib/tests/tls_server_config_tests.l` (CI-wired
+on both `--target dotnet` and `--target jvm` already, single-file `lyric
+test` against the prebuilt `Lyric.Stdlib.dll` — a genuine restored
+dependency) gained back the omitted-defaults test its header had
+documented as blocked on this fix, covering all three of
+`TlsServerConfig`'s defaulted-field kinds in one construction: an enum
+default (`minVersion: TlsVersion = Tls12`), a generic/union default
+(`clientCa: Option[Certificate] = None`), and a scalar `Bool` default
+(`requireClientCert = false`). `tls.l`'s `TlsServerConfig` doc comment no
+longer tells consumers to pass every field explicitly.
+
+**Verified fail-before/pass-after on both targets** against a source-built
+`./bin/lyric` (not the published-tool substitute D-progress-689's
+addendum flagged as insufficient for this exact class of bug): pre-fix,
+`lyric run --target dotnet` on the `Std.Tls` repro threw
+`System.InvalidProgramException`; `--target jvm` threw `RuntimeException:
+Jvm.Codegen: match not exhaustive`. Post-fix, both print the expected
+success line.
+
+**Related:** #5876, #5874, docs/61-https-tls-http-versions.md, D128,
+D-progress-689 (the original workaround this supersedes), #5903 (a
+distinct JVM cross-package bare-case-name collision, still open).
+## D-progress-705 — JVM `impl <ExternType> for Record` now rejects a non-interface target at compile time under `error[J006]` instead of emitting invalid `implements <Class>` bytecode (#5930)
+
+**The bug.** On `--target jvm`, `impl <ExternType> for Record` compiled
+successfully and emitted an `implements <ExternType>` clause even when
+`<ExternType>` resolved to a concrete or abstract JDK **class**, not an
+interface — the JVM-side `impl <ExternInterface> for Record` mechanism
+(D105/docs/51, wired up per D-progress-629/631, docs/44 m-90) never
+validated its target actually *was* an interface. That bytecode is invalid
+per the JVM spec (only interfaces populate a class's `interfaces` table)
+and threw `java.lang.IncompatibleClassChangeError` at class-load time —
+confirmed with the issue's exact repro (`impl HttpsConfigurator for
+MyConfigurator`) via `javap` and a real `java` run before this fix. This is
+the blocker D-progress-692 (#5880 phase 2.1) filed while building JVM mTLS:
+`HttpsServer` requires subclassing `HttpsConfigurator` to call
+`HttpsParameters.setNeedClientAuth`.
+
+**Scope: compile-time diagnostic only, not full subclassing.** Real
+concrete/abstract-class subclassing on JVM (`super_class` selection,
+`invokespecial` to a chosen superclass constructor, override-method
+validation) is a separate, unshipped feature — MSIL never supported it
+through `impl` either (`F0020`, D105 Phase 2, docs/51, panics on a
+non-interface CLR target the same way). This change ships the JVM-side twin
+of that existing MSIL guard: a loud build-time error instead of a silent
+invalid-bytecode trap. Full subclassing remains a tracked follow-up
+(#5930's underlying feature request, still open; unblocks JVM mTLS, #6017)
+— not filed as a new issue by this change, and not designed here beyond
+noting the shape (superclass selection + constructor chaining + override
+validation against `Jvm.AutoFfi.ClassInfo`, mirroring docs/51's F0021–F0023
+interface-conformance checks).
+
+**The fix (`jvm/codegen/06_items.l`).** The `IImpl` pre-pass now calls
+`validateImplTargetIsInterfaceJvm` for every `impl` block. It resolves the
+interface reference to a dotted JDK FQN only when it's a single-segment name
+resolving through the file's `externTypes` map (`implIfaceExternDottedFqn`,
+mirroring MSIL's `implIfaceIsExternalClr`); a multi-segment path (cross-
+package Lyric interface, explicit FQN) is left unchecked, matching
+`constraintRefToJvmClass`'s existing resolution rule. When it does resolve
+to an extern JDK type, `Jvm.AutoFfi.loadClass` loads the real `ClassInfo`
+and checks `.isInterface`; `false` aborts the build with `error[J006]`
+naming the class and explaining only interfaces can be `impl`'d. Silent-
+skips (no diagnostic) when the JDK reference index can't resolve the class
+at all (no `java.base.jmod`, non-JDK type not on `LYRIC_FFI_JARS`) —
+mirrors `F0024`'s "index empty" convention on MSIL. `J006` is the next free
+JVM diagnostic code after `J001`–`J005` (docs/44 M-15).
+
+**Verified.** New `jvm_impl_extern_class_self_test.l` (3 cases, driving
+`Jvm.Bridge.compileToJarBundled` in-process, mirroring how
+`jvm_auto_ffi_bridge_self_test.l` verifies `J005`): the `HttpsConfigurator`
+repro and a `java.lang.Object` target both abort under `J006`; a
+`java.lang.Runnable` target still compiles — the no-false-positive guard.
+Wired into CI (`compiler-self-tests-dotnet-a`'s "Compiler self-tests" step)
+and the Makefile's `TEST_EMITTER_FILES`. No regression: `parser_self_test.l`
+(124/124), `ffi_iface_impl_jvm_self_test.l` (2/2), `auto_ffi_jvm_self_test.l`
+(37/37, including interface-dispatch cases), and `lyric-auth`'s real
+`--target jvm` security-test suite (32/32) all pass unchanged.
+
+**Related:** #5930, #5880, D-progress-692, D-progress-629/631 (docs/44
+m-90), docs/51 (`F0020`), docs/44 §8, docs/18 Appendix A, #6017.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

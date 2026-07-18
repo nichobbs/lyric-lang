@@ -90,6 +90,14 @@ pub record JvmCaseField {
   // codegen: record 'JvmCaseField' missing field 'paramIdx'`.  Same constraint
   // the sibling `JvmFuncSig.retGenericArgs`/`isIface` fields observe.
   paramIdx: Int
+  // This field's declared default-value expression (`name: Type = expr`),
+  // when the source `FieldDecl` carries one.  `None` for union-case fields
+  // (no default syntax), protected-type fields, and synthesised
+  // `@projectable` view fields.  A construction call site that omits this
+  // field falls back to lowering `dflt` instead of the JVM zero value
+  // (#5908) — passed explicitly at every construction site, same reason as
+  // `paramIdx` above.
+  dflt: Option[Expr]
 }
 
 // If `ty` is a bare reference to one of `tps` (a generic type parameter), return
