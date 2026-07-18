@@ -683,6 +683,38 @@ record AllTrustingHandler {
   marker: Bool
 }
 
+// A genuine `java.lang.Object`-typed box around `v` (any Lyric value,
+// primitive or reference) — needed because `InvocationHandler.invoke`'s
+// return type is `Object`, and the JDK's proxy dispatch throws
+// `ClassCastException` if the returned value is not assignment-compatible
+// with the interface method's OWN declared return type (`String` for
+// `toString`, `int`/boxed-then-unboxed for `hashCode`, `boolean` for
+// `equals`) — a plain Lyric `String`/`Bool`/`Int` value does not
+// type-check directly against a `JObject`-declared position (verified;
+// T0060), so it is boxed one element at a time via the same
+// `java.lang.reflect.Array` idiom this file already uses for typed-array
+// construction, then read back through it (`Array.get` on a `List[JObject]`
+// specifically mis-resolves the checkcast target to a bogus same-package
+// class rather than `java.lang.Object` — a JVM backend bug reproduced in
+// isolation; `Array.get` on a reflectively-built array does not hit it).
+func boxAsObject[T](v: in T): JObject {
+  val cls: JClass = JClass.forName("java.lang.Object")
+  val arr: JObject = JReflectArray.newInstance(cls, 1)
+  JReflectArray.set(arr, 0, v)
+  JReflectArray.get(arr, 0)
+}
+
+// The JDK routes `Object`'s own methods (`toString`/`hashCode`/`equals`)
+// through `InvocationHandler.invoke` too, not just the interface's own
+// abstract methods — any code that logs, hashes, or compares the proxy
+// (a `HashMap` using it as a key, a debugger, `Object.toString()` in a
+// log line) reaches this dispatch. The original version of this handler
+// returned `proxy` itself for anything other than `getAcceptedIssuers`,
+// which is wrong for every one of these: `proxy` is not assignable to
+// `String` (`toString`) or to boxed `Integer`/`Boolean`
+// (`hashCode`/`equals`), so the JDK's own assignment-compatibility check
+// throws `ClassCastException` the moment any of them is invoked. Dispatch
+// explicitly by method name instead:
 impl JInvocationHandler for AllTrustingHandler {
   func invoke(proxy: in JObject, method: in JMethod, args: in slice[JObject]): JObject {
     val name: String = method.getName()
@@ -690,11 +722,50 @@ impl JInvocationHandler for AllTrustingHandler {
       val cls: JClass = JClass.forName("java.security.cert.X509Certificate")
       val empty: JObject = JReflectArray.newInstance(cls, 0)
       empty
+    } else if name == "checkClientTrusted" or name == "checkServerTrusted" {
+      // Both are declared `void`; the JDK ignores whatever `invoke`
+      // returns for a `void`-declared interface method, so any value is
+      // safe here. Returning normally (no thrown `CertificateException`)
+      // is exactly "trusted, no questions asked" — the documented
+      // all-trusting shape.
+      nullOfClass("java.lang.Object")
+    } else if name == "toString" {
+      val description: String = "AllTrustingHandler(insecureSkipVerify proxy)"
+      boxAsObject(description)
+    } else if name == "hashCode" {
+      val identity: Int = JSystem.identityHashCode(proxy)
+      boxAsObject(identity)
+    } else if name == "equals" {
+      // Intended: identity comparison against `args[0]` (matching
+      // `Object.equals`'s default contract, consistent with the
+      // identity-based `hashCode` above). NOT implemented that way: reading
+      // `args[0]` — indexing a `slice[T]` whose element type resolves to
+      // exactly `java.lang.Object` — throws `NoClassDefFoundError` for a
+      // bogus same-package class name at runtime, a confirmed JVM backend
+      // codegen bug independent of how the read is phrased (a bound `val`,
+      // an inline comparison operand, and an inline call argument were all
+      // tried and all fail identically; a `List[JObject]` index read hits
+      // the exact same fault). No FFI workaround exists: passing `args`
+      // itself into a helper call (to extract the element via reflection
+      // instead) fails too, for the unrelated, already-documented reason
+      // that the auto-FFI cannot pass a `slice[T]` value as a call argument
+      // at all. Falls back to `false` unconditionally instead — never
+      // throws, and never wrongly claims equality with an unrelated,
+      // wrongly-typed object (the safer of the two failure modes); the
+      // cost is a reflexivity-contract violation (`x.equals(x)` should be
+      // `true`) that this proxy's only real consumer — `SSLContext.init`,
+      // which never calls `equals` on an installed `TrustManager` — cannot
+      // observe. `getAcceptedIssuers`/`checkClientTrusted`/
+      // `checkServerTrusted` (the methods the TLS handshake path actually
+      // invokes) are unaffected by this.
+      val neverEqual: Bool = false
+      boxAsObject(neverEqual)
     } else {
-      // checkClientTrusted / checkServerTrusted: returning normally (no
-      // thrown CertificateException) is exactly "trusted, no questions
-      // asked" — the documented all-trusting shape.
-      proxy
+      // `X509TrustManager` declares no other methods; this is an
+      // unreachable, defensive fallback rather than a silent `proxy`
+      // return that could throw for a future JDK method this file hasn't
+      // been updated for.
+      nullOfClass("java.lang.Object")
     }
   }
 }

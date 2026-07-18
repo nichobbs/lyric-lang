@@ -86,6 +86,53 @@
 //! is no stdout/stderr-capture facility in `Std.Testing` today; the pure
 //! `resolveInsecureVerifyPolicy` result (which decides WHETHER the warning
 //! fires) is the testable proxy for that decision.
+//!
+//! `withClientIdentity` (mTLS) coverage (#6008): added below alongside a
+//! matching PEM private key fixture — this option had no dedicated test on
+//! EITHER target beyond the generic "every with* method" case, and its jvm
+//! path exercises real `KeyStore.setKeyEntry`/`KeyManagerFactory.init`
+//! kernel wiring (`_kernel_jvm/http_host.l`'s `clientKeyManagerFactory`),
+//! not just a builder field being set. Same honest boundary as the rest of
+//! this file: no live mTLS-requiring server exists in CI on either target
+//! (dotnet: #5884; jvm: #5880), so only construction through the real
+//! identity-loading path is asserted, never a peer actually accepting the
+//! presented certificate.
+//!
+//! `_kernel_jvm/http_host.l`'s `AllTrustingHandler` (the insecure-path
+//! `X509TrustManager` proxy) fix (#6007): the JDK routes `Object`'s own
+//! methods (`toString`/`hashCode`/`equals`) through
+//! `InvocationHandler.invoke` too, not only the interface's own abstract
+//! methods, and an earlier version of that handler returned the proxy
+//! reference itself for anything other than `getAcceptedIssuers` — wrong
+//! for all three, since none of them declare `Object`/`TrustManager` as
+//! their return type, so the JDK's own assignment-compatibility check
+//! would throw `ClassCastException`. Fixed by dispatching on
+//! `method.getName()` and boxing genuine `String`/`Integer`/`Boolean`
+//! values via the same `java.lang.reflect.Array` idiom the file already
+//! uses (module header) — a plain Lyric `String`/`Int`/`Bool` value does
+//! not type-check directly against `InvocationHandler.invoke`'s `Object`
+//! return position (T0060). Verified by hand (not an automated test in
+//! this file, since `buildAllTrustingTrustManager` is package-private and
+//! `Std.Http`'s public surface never exposes the underlying proxy to call
+//! `toString`/`hashCode`/`equals` on directly): a standalone repro
+//! mirroring the real interface + handler shape confirmed `toString()` and
+//! `hashCode()` now return correctly instead of throwing. `equals(Object)`
+//! could not be fixed the same way: reading the compared object out of
+//! `invoke`'s `args: slice[JObject]` parameter (needed for the intended
+//! identity comparison) throws `NoClassDefFoundError` for a bogus
+//! same-package class name — a JVM backend codegen bug reproduced
+//! independently of TLS (indexing ANY `slice[T]`/`List[T]` whose element
+//! type resolves to exactly `java.lang.Object`, via a bound `val`, an
+//! inline operand, or an inline call argument, all fail identically), with
+//! no FFI workaround available (passing `args` itself into a helper to
+//! extract the element via reflection instead hits the already-documented,
+//! unrelated limitation that the auto-FFI cannot pass a `slice[T]` value as
+//! a call argument at all). `equals` returns `false` unconditionally
+//! instead — never throws, never wrongly claims equality with an unrelated
+//! object, at the cost of a reflexivity-contract violation this proxy's
+//! only real consumer (`SSLContext.init`, which never calls `equals` on an
+//! installed `TrustManager`) cannot observe. See that method's own doc
+//! comment in `_kernel_jvm/http_host.l` for the full account.
 @test_module
 package Std.Http.TlsClientTests
 
@@ -130,12 +177,53 @@ mPcVDnIORvhyajE=
 -----END CERTIFICATE-----
 """
 
+// Matching unencrypted PKCS8 RSA private key (same fixture pair as
+// tls_tests.l) — needed for `withClientIdentity` (mTLS) coverage below;
+// the CA-only tests above never needed a key.
+val rsaKey = """
+-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDDnUdgq1pnbpYC
+1sMD5M9+2hDHJvbyRDWfSerHfZcZJbb0rYJRNxHMyNZuH+iCYrlGKu//5cMmqMGq
+WAib3NpG5FDhRgyX8XthC5DIMKKbO4Axh+ZQ4dwijAlZBprbpNBU/qyK7sEfl4Jw
+3MOYnzxRBRO76veglY8hMYfyTsg9iDmDkoUeKDxEf+lAJU3FEU2Q5viw8VwPAbYg
+gMI/V0WiEzT7M7XeF9q7+/hEFGtkqNOvmzmAXAsjCztcIOskTVS0qwyvZYstMh6G
+H8H4XrMMrIFLA9m6CucKcP7ZvNe0p9G5NlLc3Wx6VOym7OZVQErFF1Wx8PjYYK6W
+hwbO1W9fAgMBAAECggEAAIapPxwAc7vAbbe5yx/8sNrvdq5vYCpnQdgZV1vsdyCc
+75G0AoI7opZfzgq9UvSzm09Utyd7DNSHrVMoAwlrTPqAh7XANnO4WoP0FGqIiBLM
+hVnX52ikm+8KRNyVhMFaeJkbY5tSBW2PcIljtNx10zqd1TOy2iu6p2+yXIYUT5GC
+sqTO7L1pimk1wD4RoLhGXSnK8oYXPCPyxWLfDNNw8HR8XhR0Xc9ZZtPap+qVOO6V
+g2aVGHqHojwB9C52TS2a3xTW+H9gj6H8Iao8Zd3Wj7GDubslf6iLO/12SUF0/V42
+dQ1KDg9eLOox02OP142UlVd7C5bBIYStaqoOha4k+QKBgQD8oCqkhdVoVFaqDcJ1
+3aVIBrqaVYJ8RnjFr61ar2CNvh0GhA9iPYUCc86WWNSEkJ0Z9mfV4x9ROqI9Hf9F
+ythB9H4zQTz9brdlOsFUJj4nCiaBV1l8u1QVlp1oWWhMawhhjcNCZmvlp4Kv6Lfr
+8RfOw7C1YCyzVn3kxhU3QaWJaQKBgQDGOiqrvxply7lBvEJldDmwEgH8LzfU1+ia
+Dnhq9LD+o3oxIUKSF8+Yi7EDiqR2qhqrju+OnrOIVCJptDTL+qPrvlGrkffzdh7f
+kjUI6JcjFburuwFtyjZ3MgcwvmQqmoe5SbF39nukuWU7XNnamwjcecdK8xrRoMQi
+wDbB19oRhwKBgBz40Wsk3iCk63t9MHwL+1STUPs6K0jNXDRvvVXVHyGiV/nTU2BU
+5dguJ9ceQOEjJKFBnQ7uiTzrmIeh1RDP/pUx0PdX2ALIm8fEQT/BUwdvJpNWzTB8
+21vOdibtegSpkcB+XZJT5LPlzhsWeWFZuP1BfBaQ/Q9kL/P4s54urSlhAoGAaOzt
+HU/gpzV48ES4WH928a32gwhzYySOKM20C9lNvtvFmC/kzvPvnO2EWz2N5IoR5/GW
++EUk/uqZ9J3AvKAFGIn7LPfs6WAC45C+peKH7bhZSIOKNBUvU1SV3cVJvAtkAD3z
+xG4h8IV6AjwZzM73l8yWIyQfdArHByX7VgvtkA0CgYEA11lPJlkOv3u/g1788zDb
+EMHKJlE8t0ACUGfhHcxkvzCDJA0uiZUZNCVnkJPKaq+ITAaCnqa2eGqLqcyFOo5N
+cTeg+l0KrzjQe6Q2hOojgqg7mskbY4sZGno7Pv+syl9h0aDjdxCBaX+ROQkm79IR
+doONW2QlEIagNnVFFGh2abM=
+-----END PRIVATE KEY-----
+"""
+
 val insecureAllowVar: String = "LYRIC_TLS_ALLOW_INSECURE"
 
 func ca(): Certificate {
   match Certificate.fromPem(rsaCert) {
     case Ok(cert) -> cert
     case Err(e) -> panic("expected Ok parsing the fixture certificate: " + TlsError.message(e))
+  }
+}
+
+func identity(): Identity {
+  match Identity.fromPem(rsaCert, rsaKey) {
+    case Ok(id) -> id
+    case Err(e) -> panic("expected Ok parsing the fixture identity: " + TlsError.message(e))
   }
 }
 
@@ -204,6 +292,43 @@ test "build() stays infallible for every TLS with* method individually" {
 
   val withInsecure = HttpClientBuilder.build(HttpClientBuilder.new().withInsecureSkipVerify())
   assertTrue(true, "withInsecureSkipVerify alone builds")
+
+  val withIdentity = HttpClientBuilder.build(HttpClientBuilder.new().withClientIdentity(identity()))
+  assertTrue(true, "withClientIdentity alone builds")
+}
+
+// ─── withClientIdentity (mTLS): real KeyManagerFactory/SSLContext path ─────
+// #6008: `withClientIdentity` had no coverage of its own beyond the generic
+// "every with* method individually" case above. On `--target jvm` this
+// exercises `_kernel_jvm/http_host.l`'s `clientKeyManagerFactory` — a real
+// `KeyStore.setKeyEntry` (via the `java.lang.reflect` bridge, module header)
+// + `KeyManagerFactory.init` — not just a field being set on the builder
+// record. On `--target dotnet` it exercises `_kernel/http_host.l`'s
+// `applyTlsOptions`'s `handlerClientCertificates`/`certCollectionAdd` path.
+// Honest boundary (matching this file's header): there is no live
+// mTLS-requiring TLS server in CI on either target (server TLS is #5884
+// dotnet / #5880 jvm), so this cannot prove the presented certificate is
+// actually accepted by a peer — only that construction through the real
+// identity-loading kernel path never panics, on both targets, alone and
+// combined with the other TLS knobs.
+test "withClientIdentity builds through the real KeyManagerFactory/SSLContext path without panicking" {
+  val identityAlone = HttpClientBuilder.build(HttpClientBuilder.new().withClientIdentity(identity()))
+  assertTrue(true, "withClientIdentity alone builds through the real kernel wiring")
+
+  val identityWithMinVersion = HttpClientBuilder.build(
+    HttpClientBuilder.new().withClientIdentity(identity()).withMinTlsVersion(Tls13)
+  )
+  assertTrue(true, "withClientIdentity + withMinTlsVersion(Tls13) builds")
+
+  val identityWithCa = HttpClientBuilder.build(
+    HttpClientBuilder.new().withClientIdentity(identity()).withCaCertificate(ca())
+  )
+  assertTrue(true, "withClientIdentity + withCaCertificate (client auth + additive trust) builds")
+
+  val identityWithRedirects = HttpClientBuilder.build(
+    HttpClientBuilder.new().withClientIdentity(identity()).withRedirects(3)
+  )
+  assertTrue(true, "withClientIdentity + withRedirects builds")
 }
 
 test "build() composes TLS options with redirects, unix socket, and HTTP version" {
@@ -227,6 +352,7 @@ test "build() composes TLS options with redirects, unix socket, and HTTP version
       .withRedirects(5)
       .withHttpVersion(Http2)
       .withCaCertificate(ca())
+      .withClientIdentity(identity())
       .withMinTlsVersion(Tls12)
       .withInsecureSkipVerify()
   )

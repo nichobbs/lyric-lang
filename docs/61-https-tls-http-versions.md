@@ -439,7 +439,7 @@ items marked ∥ are independent and can proceed in parallel.
    design deterministically, with no live TLS peer needed on either
    target.
 3. JVM client TLS: `SSLContext` wiring, same surface/policy, self-test.
-   (After 1; ∥ with 2.) _Shipped (D-progress-692, #5878):
+   (After 1; ∥ with 2.) _Shipped (D-progress-693, #5878):
    `hostSupportsTlsConfig()` flips to `true`; `_kernel_jvm/http_host.l`
    assembles a `KeyStore`/`TrustManagerFactory`/`SSLContext`/`SSLParameters`
    per request instead of the .NET twin's validation-callback shape (JVM's

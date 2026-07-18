@@ -17861,7 +17861,7 @@ this entry reuses), docs/51 (impl-for-extern-interface), #5874, #5880,
 
 ---
 
-## D-progress-692 — TLS phase 1.3: JVM client TLS — `SSLContext` wiring, same builder surface and insecure policy (docs/61 §3.2 + §4, D128, #5878)
+## D-progress-693 — TLS phase 1.3: JVM client TLS — `SSLContext` wiring, same builder surface and insecure policy (docs/61 §3.2 + §4, D128, #5878)
 
 **Context.** D-progress-691 (#5877) shipped `HttpClientBuilder`'s TLS
 surface with real wiring on `--target dotnet` only; `_kernel_jvm/http_host.l`
