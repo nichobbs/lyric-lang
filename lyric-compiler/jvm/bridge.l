@@ -1029,9 +1029,10 @@ pub func compileProjectToJarBundledWithFeatures(
   var mainIdx = 0
   var sawMain = false
   // Resolved `--define`s (docs/60), decoded once — hoisted out of the
-  // per-package loop since it never varies (#5906). Empty on the project path
-  // (which still passes `newList()`); populated for single-file JVM builds
-  // (#5852).
+  // per-package loop since it never varies (#5906). Populated for both
+  // single-file and project JVM builds: `emitProjectJvmInProcess` threads
+  // `req.defines` (merged beneath the well-known `version`) into this project
+  // path, matching the single-file path (#5852).
   val jvmProjDefines = BD.decodeDefines(defines)
   var psi = 0
   while psi < pkgSrcs.count {
