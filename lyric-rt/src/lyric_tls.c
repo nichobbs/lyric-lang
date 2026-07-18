@@ -50,10 +50,25 @@
 
 static _Thread_local char g_err[256];
 
+/* The OpenSSL load happens once on whichever thread first touches TLS, and
+ * its failure reason must be visible to EVERY caller thread — not just the
+ * one that ran the load.  So the load failure is captured in this
+ * NON-thread-local buffer (written once under pthread_once, then read-only)
+ * and copied into the calling thread's `g_err` on demand by `tls_ready`
+ * (#6115). */
+static char g_load_err[256];
+
 static void set_err(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(g_err, sizeof(g_err), fmt, ap);
+    va_end(ap);
+}
+
+static void set_load_err(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(g_load_err, sizeof(g_load_err), fmt, ap);
     va_end(ap);
 }
 
@@ -300,6 +315,7 @@ struct ossl_fns {
     void (*EVP_PKEY_free)(ossl_evp_pkey*);
     unsigned long (*ERR_get_error)(void);
     void (*ERR_error_string_n)(unsigned long, char*, size_t);
+    unsigned long (*OpenSSL_version_num)(void);
 };
 
 static struct ossl_fns O;
@@ -321,24 +337,28 @@ static void* dlopen_any(const char* const* names) {
 static void* resolve(void* h, const char* name, int* ok) {
     void* p = dlsym(h, name);
     if (!p) {
-        if (*ok) set_err("OpenSSL symbol not found: %s", name);
+        if (*ok) set_load_err("OpenSSL symbol not found: %s", name);
         *ok = 0;
     }
     return p;
 }
 
 static void load_openssl(void) {
+    /* Only the VERSIONED 3.x sonames are loaded — never the unversioned
+     * `libssl.so`/`libssl.dylib` dev symlinks, which could silently bind a
+     * pre-3.x OpenSSL whose ABI this file's hand-rolled view does not match
+     * (D128 "OpenSSL 3.x ABI only"; #6116). */
 #if defined(__APPLE__)
-    static const char* const crypto_names[] = {"libcrypto.3.dylib", "libcrypto.dylib", NULL};
-    static const char* const ssl_names[] = {"libssl.3.dylib", "libssl.dylib", NULL};
+    static const char* const crypto_names[] = {"libcrypto.3.dylib", NULL};
+    static const char* const ssl_names[] = {"libssl.3.dylib", NULL};
 #else
-    static const char* const crypto_names[] = {"libcrypto.so.3", "libcrypto.so", NULL};
-    static const char* const ssl_names[] = {"libssl.so.3", "libssl.so", NULL};
+    static const char* const crypto_names[] = {"libcrypto.so.3", NULL};
+    static const char* const ssl_names[] = {"libssl.so.3", NULL};
 #endif
     void* hc = dlopen_any(crypto_names);
     void* hs = dlopen_any(ssl_names);
     if (!hc || !hs) {
-        set_err("cannot load OpenSSL 3.x (libssl/libcrypto not found)");
+        set_load_err("cannot load OpenSSL 3.x (libssl.so.3 / libcrypto.so.3 not found)");
         g_tls_loaded = -1;
         return;
     }
@@ -393,13 +413,34 @@ static void load_openssl(void) {
     O.EVP_PKEY_free = (void (*)(ossl_evp_pkey*))resolve(hc, "EVP_PKEY_free", &ok);
     O.ERR_get_error = (unsigned long (*)(void))resolve(hc, "ERR_get_error", &ok);
     O.ERR_error_string_n = (void (*)(unsigned long, char*, size_t))resolve(hc, "ERR_error_string_n", &ok);
+    O.OpenSSL_version_num = (unsigned long (*)(void))resolve(hc, "OpenSSL_version_num", &ok);
+
+    /* Belt-and-suspenders after the versioned-soname load: refuse anything
+     * that reports < 3.0.0 (major nibble of the 0xMNNFFPPS version word), so a
+     * mislabeled or shimmed library can never drive this 3.x-only ABI view
+     * (#6116). */
+    if (ok && O.OpenSSL_version_num) {
+        unsigned long v = O.OpenSSL_version_num();
+        if ((v >> 28) < 3) {
+            set_load_err("OpenSSL 3.x required, but the loaded library reports version 0x%lx", v);
+            ok = 0;
+        }
+    }
 
     g_tls_loaded = ok ? 1 : -1;
 }
 
 static int tls_ready(void) {
     pthread_once(&g_tls_once, load_openssl);
-    return g_tls_loaded == 1;
+    if (g_tls_loaded != 1) {
+        /* Surface the one-time (non-thread-local) load failure on THIS
+         * thread, so a constructor's NULL return leaves a meaningful
+         * lyric_tls_last_error for the caller even when the load ran on
+         * another thread (#6115). */
+        if (g_load_err[0] != '\0') set_err("%s", g_load_err);
+        return 0;
+    }
+    return 1;
 }
 
 int32_t lyric_tls_available(void) {
@@ -656,16 +697,37 @@ void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_hos
 
 /* ── Server ───────────────────────────────────────────────────────────── */
 
+/* ALPN selection core, factored out of the OpenSSL callback so the
+ * CVE-2024-5535 guard is directly unit-testable (lyric_tls_test.c).  Returns 1
+ * and sets the out/outlen pointers when a protocol is negotiated, 0 otherwise.
+ *
+ * CVE-2024-5535: on OpenSSL < 3.0.14 / 3.1.6 / 3.2.2 / 3.3.1, passing an EMPTY
+ * client protocol list (`inlen == 0`) into SSL_select_next_proto triggers an
+ * out-of-bounds read that returns a bogus pointer into the SERVER's own list.
+ * Guard the empty/NULL client list here and never call into OpenSSL for it.
+ * Not `static`: exposed (unadvertised, no public header decl) so the seam's own
+ * test can drive the inlen==0 path directly under ASan. */
+int lyric_tls_alpn_pick(const unsigned char* server_wire, unsigned int server_len,
+                        const unsigned char* in, unsigned int inlen,
+                        const unsigned char** out, unsigned char* outlen) {
+    if (!server_wire || server_len == 0) return 0;
+    if (!in || inlen == 0) return 0; /* CVE-2024-5535 empty-client-list guard */
+    if (O.SSL_select_next_proto((unsigned char**)out, outlen, server_wire, server_len, in, inlen) == 1) {
+        return 1; /* OPENSSL_NPN_NEGOTIATED */
+    }
+    return 0; /* no overlap */
+}
+
 static int server_alpn_select(ossl_ssl* ssl, const unsigned char** out, unsigned char* outlen,
                               const unsigned char* in, unsigned int inlen, void* arg) {
     (void)ssl;
     lyric_tls_ctx_t* w = (lyric_tls_ctx_t*)arg;
-    if (!w || !w->alpn_wire || w->alpn_len == 0) return OSSL_SSL_TLSEXT_ERR_NOACK;
+    if (!w) return OSSL_SSL_TLSEXT_ERR_NOACK;
     /* Server preference order wins: server list is the "preferred" arg. */
-    if (O.SSL_select_next_proto((unsigned char**)out, outlen, w->alpn_wire, w->alpn_len, in, inlen) == 1) {
-        return OSSL_SSL_TLSEXT_ERR_OK; /* OPENSSL_NPN_NEGOTIATED */
+    if (lyric_tls_alpn_pick(w->alpn_wire, w->alpn_len, in, inlen, out, outlen)) {
+        return OSSL_SSL_TLSEXT_ERR_OK;
     }
-    return OSSL_SSL_TLSEXT_ERR_NOACK; /* no overlap: proceed without ALPN */
+    return OSSL_SSL_TLSEXT_ERR_NOACK; /* no protocol negotiated: proceed without ALPN */
 }
 
 void* lyric_tls_server_new(const char* cert_pem, const char* key_pem,

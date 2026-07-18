@@ -17181,7 +17181,15 @@ transport/server/client layers to gated follow-on PRs.
   system trust is `SSL_CTX_set_default_verify_paths` + `SSL_CERT_FILE`/
   `SSL_CERT_DIR`. Handles are raw malloc'd resources freed explicitly (the
   `lyric_process_*` op discipline); the docs/61 §7 item 4 ARC-managed lifetime
-  lands in the N9.2 twin's destructors.
+  lands in the N9.2 twin's destructors. Load robustness (review round 2):
+  the server ALPN-select callback guards CVE-2024-5535 (never forwards an
+  empty client protocol list into `SSL_select_next_proto`, an OOB read on
+  OpenSSL ≤ 3.0.13 — the very version this PR runs against, #6114); dlopen
+  binds only the versioned 3.x sonames (`libssl.so.3`/`libcrypto.so.3`, never
+  the unversioned dev symlinks) and additionally verifies
+  `OpenSSL_version_num() >= 3.0.0`, refusing anything older (#6116); and the
+  one-time load-failure reason is captured in a non-thread-local buffer and
+  surfaced to each calling thread's `lyric_tls_last_error` (#6115).
 - **`llvm_bridge.l`** native link gained `-ldl` (a no-op stub on glibc ≥ 2.34;
   a real dep on older glibc / musl). Inert for non-TLS binaries — the linker
   does not pull `lyric_tls.o` from the archive unless a seam symbol is
@@ -17194,8 +17202,11 @@ server-auth TLS + ALPN negotiation (`h2,http/1.1` → `http/1.1`), TLS 1.3
 floor, mTLS accept, mTLS reject (client presents no cert — the server refuses
 and no data round-trips; the client's TLS-1.3 handshake returning before the
 server validates client auth is documented in the test), hostname-mismatch
-rejection, the #6109 empty-host-refused (fail-closed) case, and
-insecure-skip-verify. Run in CI under clang **and** gcc via
+rejection, the #6109 empty-host-refused (fail-closed) case, the #6114
+CVE-2024-5535 empty-client-ALPN-list guard (driven directly through the
+factored `lyric_tls_alpn_pick` under ASan), an ALPN no-overlap handshake, the
+#6117 require-client-cert-without-CA seam contract, and insecure-skip-verify.
+Run in CI under clang **and** gcc via
 `make -C lyric-rt test`, plus a gcc ASan run (`make -C lyric-rt test-asan`) so
 a leaked SSL_CTX/SSL/fd/alpn buffer or a use-after-free in a handshake fails
 the run. All green with OpenSSL 3.0.13.

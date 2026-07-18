@@ -29,6 +29,12 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 
+/* Internal seam helper (no public header decl); driven directly here to
+ * exercise the CVE-2024-5535 empty-client-list guard (#6114). */
+extern int lyric_tls_alpn_pick(const unsigned char* server_wire, unsigned int server_len,
+                               const unsigned char* in, unsigned int inlen,
+                               const unsigned char** out, unsigned char* outlen);
+
 static int failures = 0;
 
 #define CHECK(cond)                                                        \
@@ -354,6 +360,87 @@ static void test_empty_host_refused(void) {
     lyric_tls_ctx_free(client);
 }
 
+/* #6114 (CVE-2024-5535): an empty client ALPN protocol list (inlen == 0)
+ * must NOT be forwarded into SSL_select_next_proto — on unpatched OpenSSL
+ * (incl. the 3.0.13 this suite runs against) that is an out-of-bounds read.
+ * The seam's alpn_pick guards it and returns "no protocol"; asserted here
+ * directly (and run under ASan, which would flag the overread if the guard
+ * regressed).  Version-independent: the guard returns before any OpenSSL
+ * call, so this holds on patched libraries too. */
+static void test_alpn_empty_client_list_guard(void) {
+    /* Valid, non-empty server list ("http/1.1", length-prefixed). */
+    static const unsigned char server_wire[] = {8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+    const unsigned char* out = NULL;
+    unsigned char outlen = 0;
+
+    /* Empty client list: NULL/0 — must be refused without reading `in`. */
+    CHECK(lyric_tls_alpn_pick(server_wire, sizeof(server_wire), NULL, 0, &out, &outlen) == 0);
+    /* A non-NULL-but-zero-length client list is equally guarded. */
+    static const unsigned char dummy = 0;
+    CHECK(lyric_tls_alpn_pick(server_wire, sizeof(server_wire), &dummy, 0, &out, &outlen) == 0);
+
+    if (lyric_tls_available()) {
+        /* Positive control: a valid overlapping client list negotiates. */
+        static const unsigned char client_wire[] = {8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+        out = NULL;
+        outlen = 0;
+        CHECK(lyric_tls_alpn_pick(server_wire, sizeof(server_wire),
+                                  client_wire, sizeof(client_wire), &out, &outlen) == 1);
+        CHECK(outlen == 8 && out != NULL && memcmp(out, "http/1.1", 8) == 0);
+        /* Non-overlapping client list negotiates nothing. */
+        static const unsigned char other_wire[] = {6, 's', 'p', 'd', 'y', '/', '3'};
+        CHECK(lyric_tls_alpn_pick(server_wire, sizeof(server_wire),
+                                  other_wire, sizeof(other_wire), &out, &outlen) == 0);
+    }
+}
+
+/* End-to-end no-ALPN-overlap: a client offering only a protocol the server
+ * does not advertise completes the handshake with NO protocol negotiated —
+ * exercises server_alpn_select's inlen>0 no-overlap path (NOACK), not a crash. */
+static void test_alpn_no_overlap_handshake(void) {
+    void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "http/1.1");
+    CHECK(server != NULL);
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
+    CHECK(client != NULL);
+    if (server && client) {
+        char calpn[32];
+        int rt = 0;
+        tls_server_arg srv;
+        int ok = run_tls_scenario(server, client, "localhost", "spdy/3", calpn, &rt, &srv);
+        CHECK(ok == 1); /* handshake completes despite no ALPN overlap */
+        CHECK(rt == 1);
+        CHECK(strcmp(calpn, "") == 0);    /* no protocol negotiated client-side */
+        CHECK(strcmp(srv.alpn, "") == 0); /* nor server-side */
+    }
+    lyric_tls_ctx_free(server);
+    lyric_tls_ctx_free(client);
+}
+
+/* #6117: lock in the documented seam behavior of require_client_cert with no
+ * client_ca_pem.  Enforcing the "must pin a client CA" rule is the Lyric layer's
+ * job (Std.TcpHost.validateServerConfig, #6042); the seam verifies only against
+ * the anchors it is given, so with NO CA it enables no client-cert check and a
+ * certificate-less client connects normally.  This test guards against a silent
+ * change to that contract (e.g. accidentally enabling verify against an empty
+ * store, which would reject every client). */
+static void test_server_require_client_cert_without_ca(void) {
+    void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 1, "http/1.1");
+    CHECK(server != NULL);
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0); /* presents no client cert */
+    CHECK(client != NULL);
+    if (server && client) {
+        char calpn[32];
+        int rt = 0;
+        tls_server_arg srv;
+        int ok = run_tls_scenario(server, client, "localhost", "http/1.1", calpn, &rt, &srv);
+        CHECK(ok == 1); /* no CA pinned => no client-cert enforcement at the seam */
+        CHECK(rt == 1);
+        CHECK(srv.accept_ok == 1);
+    }
+    lyric_tls_ctx_free(server);
+    lyric_tls_ctx_free(client);
+}
+
 int main(void) {
     test_plain_roundtrip();
 
@@ -373,6 +460,9 @@ int main(void) {
     test_hostname_mismatch_rejected();
     test_empty_host_refused();
     test_insecure_skip_verify();
+    test_alpn_empty_client_list_guard();
+    test_alpn_no_overlap_handshake();
+    test_server_require_client_cert_without_ca();
 
     if (failures == 0) {
         printf("lyric_tls_test: all tests passed\n");
