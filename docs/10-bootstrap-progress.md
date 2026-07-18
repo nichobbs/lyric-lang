@@ -30567,6 +30567,77 @@ client TLS, above).
 **Related:** `docs/03-decision-log.md` D-progress-692; #5880, #5874, #5884,
 #5930, #5931, #5932.
 
+## `HttpClientBuilder` TLS client configuration ships for real on JVM (phase 1.3) — `SSLContext` wiring, same surface and insecure policy (2026-07-18)
+
+`_kernel_jvm/http_host.l`'s `hostSupportsTlsConfig()` flips from `false`
+to `true` (docs/61 §3.2's phase 1.3, epic #5874, issue #5878): every
+`HttpClientBuilder` TLS option (`withCaCertificate`,
+`withExclusiveCaCertificate`, `withClientIdentity`, `withMinTlsVersion`,
+`withInsecureSkipVerify`) shipped on `--target dotnet` alone in phase 1.2
+(D-progress-691, above) now works identically on `--target jvm`.
+
+`java.net.http.HttpClient` has no per-request certificate-validation
+callback the way `HttpClientHandler.ServerCertificateCustomValidationCallback`
+does, so the JVM kernel's wiring is structurally different even though the
+outcome matches: a `java.security.KeyStore` fed to a
+`javax.net.ssl.TrustManagerFactory`, which the JDK's own PKIX path builder
+validates every handshake against. Additive trust (`withCaCertificate`)
+merges the configured CA into a `KeyStore` alongside every certificate the
+platform's default trust manager already accepts; exclusive trust
+(`withExclusiveCaCertificate`) builds a `KeyStore` holding ONLY the
+configured CA. `withClientIdentity` (mTLS) and `withMinTlsVersion`
+(`SSLParameters.setProtocols`) follow the same `KeyStore`/factory pattern.
+`resolveCaMode` (the #5975 exclusive-wins precedence rule, mirrored
+verbatim from the dotnet kernel) is now genuinely called by this wiring,
+not just declared for cross-target test parity.
+
+Hostname verification — the #5950-class MITM property the dotnet kernel
+had to fix with a custom decision core — turns out to be structurally
+un-regressable on this target: `java.net.http.HttpClient` enforces its own
+endpoint-identification check unconditionally, independent of any
+supplied `SSLContext`/`SSLParameters`, verified empirically (an
+all-trusting custom trust manager plus an explicitly-cleared endpoint
+identification algorithm still rejected a real wrong-hostname
+certificate). Consequence: `withInsecureSkipVerify()` on `--target jvm`
+disables chain/CA verification only — hostname matching cannot be
+disabled through any public API on this target, which is STRICTER than
+docs/61 §4's documented baseline, not a gap.
+
+Two real FFI limits were found and worked around, both documented rather
+than silently routed around: (1) the JVM auto-FFI cannot pass a
+reference-typed Java array as a call argument at all (a Lyric `slice[T]`
+for reference `T` always erases to `Object[]`), confirmed against five
+independent JDK calls this feature needs (`TrustManagerFactory.init`,
+`SSLContext.init`, `SSLParameters.setProtocols`, `Proxy.newProxyInstance`,
+plus the `KeyStore.setKeyEntry` shape) — worked around with a
+`java.lang.reflect.{Method,Array}` bridge that builds genuinely-typed
+arrays and genuine `null` references one element/call at a time; (2)
+implementing `X509TrustManager` directly via `impl JX509TrustManager for
+Record` (needed for the insecure all-trusting case) is not FFI-expressible
+at all — every method mentions a `slice[ExternType]` and hits the same
+array-erasure gap #5931 already filed against the JVM server-TLS phase-2
+kernel's `X509KeyManager` attempt — so it is built instead via
+`java.lang.reflect.Proxy.newProxyInstance` backed by `impl
+JInvocationHandler for Record` (whose only array parameter is genuinely
+`Object[]`, needing no workaround).
+
+Verified end-to-end against real live TLS peers in the implementing
+sandbox (not part of committed CI — a public-endpoint test is not
+CI-acceptable): exclusive CA trust correctly rejects a real public-CA-
+signed site; additive CA trust correctly accepts the same site while
+still trusting the extra CA; the insecure path accepts a real self-signed
+peer; a real wrong-hostname certificate is rejected on every path,
+insecure included. `lyric-stdlib/tests/http_tls_client_tests.l` (shared
+with phase 1.2) now asserts `tlsConfigSupported()` unconditionally `true`
+on both targets and detects the unrelated, pre-existing jvm Unix-socket
+limitation (#2663) behaviourally via a `try`/`catch Bug` probe rather than
+by branching on the (now target-neutral) capability probe.
+
+**Related:** `docs/03-decision-log.md` D-progress-693; #5878, #5874,
+#5877, #5880 (JVM server TLS, phase 2), #5930, #5931 (the
+`impl <ExternInterface>` array-erasure class this confirms also blocks
+client-side `X509TrustManager`), #5950, #5975.
+
 ## `Std.HttpEngine` ships — pure-Lyric sans-IO HTTP/1.1 parser, serializer, connection FSM (2026-07-17)
 
 New `lyric-stdlib/std/http_engine.l` (`Std.HttpEngine`): a target-independent

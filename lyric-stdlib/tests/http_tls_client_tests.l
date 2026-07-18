@@ -1,6 +1,6 @@
 //! stdlib/tests/http_tls_client_tests.l — deterministic coverage for
 //! `HttpClientBuilder`'s TLS client configuration surface (docs/61 §3.2 +
-//! §4, D128; phase 1.2, #5877).
+//! §4, D128; phase 1.2/1.3, #5877/#5878).
 //!
 //! Coverage model, and its honest boundary: `Std.HttpServer` has no TLS
 //! surface yet (server TLS is phase 2/3 of docs/61, tracked separately)
@@ -17,34 +17,53 @@
 //!     just the pure function in isolation). `build()`'s own infallibility
 //!     contract (docs/61 §3.2: "build() stays infallible") is asserted
 //!     directly: every combination below returns a client, never panics.
+//!     (`setVar` is a documented no-op on `--target jvm` — `Std.Environment`
+//!     exposes no portable `setenv` — so this specific sub-test still only
+//!     proves `build()`'s infallibility contract on that target, not that
+//!     the env var actually flips the runtime policy; the pure
+//!     `resolveInsecureVerifyPolicy` matrix above already covers the policy
+//!     logic itself target-neutrally.)
 //!   - Builder composition: chaining every TLS `with*` method together,
 //!     and combined with the pre-existing Unix-socket/redirect/version
 //!     knobs (the "full matrix" `_kernel/http_host.l`'s `hostClientWithTls`
 //!     assembles), never panics either.
-//!   - The honest per-target design (docs/61 §3.2's JVM support boundary):
-//!     `tlsConfigSupported()` is the capability probe `Std.Http` itself
-//!     exposes (backed by `_kernel/http_host.l`'s real TLS wiring on
-//!     dotnet, `_kernel_jvm/http_host.l`'s `false` stub on jvm, #5878).
-//!     This file runs on BOTH targets and branches on that probe's OWN
-//!     return value — not on which target compiled it — so the same test
-//!     asserts real different things per target honestly: on dotnet it
-//!     just confirms the probe reports `true` (the deterministic parts
-//!     above already exercise the real wiring); on jvm it confirms a
-//!     TLS-configured client fails every request with a typed error
-//!     naming #5878, never a silent no-TLS-config connection.
+//!   - TLS client configuration is now WIRED FOR REAL on both targets
+//!     (`tlsConfigSupported()` returns `true` on `--target dotnet` and
+//!     `--target jvm` alike, #5877/#5878): every `build()` call below goes
+//!     through the real kernel TLS assembly on whichever target compiled
+//!     it — `_kernel/http_host.l`'s `HttpClientHandler`/`X509Chain` wiring
+//!     on dotnet, `_kernel_jvm/http_host.l`'s `KeyStore`/
+//!     `TrustManagerFactory`/`SSLContext` wiring on jvm — not a stub. The
+//!     one remaining per-target difference this file still guards
+//!     behaviourally rather than by name (module header: no target-name
+//!     branching) is Unix domain sockets, which are unconditionally
+//!     unsupported on `--target jvm` for an unrelated, pre-existing reason
+//!     (#2663, `java.net.http.HttpClient` has no Unix-socket transport) —
+//!     detected via a `try`/`catch Bug` probe on the plain (no-TLS)
+//!     Unix-socket construction itself, not `tlsConfigSupported()` (which
+//!     no longer distinguishes the targets).
 //!   - The MITM-bypass fix (#5950): `_kernel/http_host.l`'s certificate
 //!     validation callback (installed by `withCaCertificate`/
 //!     `withExclusiveCaCertificate`/`withInsecureSkipVerify`) is a pure
 //!     decision core, `resolveTlsValidationDecision`, exhaustively
 //!     tested here for every `(hostnameAndAvailabilityOk, chainAlreadyOk,
-//!     caMode)` combination. The property under test: whenever
-//!     `hostnameAndAvailabilityOk` is `false` (the platform's own hostname
-//!     check, or its cert-presence check, failed), the result is ALWAYS
-//!     `RejectImmediately` — no CA configuration, however permissive, and
-//!     no chain-already-fine signal can override that. This is exactly
-//!     the property whose absence made #5950 an MITM bypass (the original
-//!     callback only ever re-ran a chain check and never consulted
-//!     hostname at all).
+//!     caMode)` combination — mirrored verbatim in `_kernel_jvm/http_host.l`
+//!     even though the JVM kernel's real wiring does not call it (its
+//!     `KeyStore`/`TrustManagerFactory` model delegates chain trust to the
+//!     JDK's own PKIX validator, and hostname verification is enforced by
+//!     `java.net.http.HttpClient` itself, independently and
+//!     unconditionally — verified empirically against a real live peer;
+//!     see that file's module header). The property under test here:
+//!     whenever `hostnameAndAvailabilityOk` is `false` (the platform's own
+//!     hostname check, or its cert-presence check, failed), the result is
+//!     ALWAYS `RejectImmediately` — no CA configuration, however
+//!     permissive, and no chain-already-fine signal can override that.
+//!     This is exactly the property whose absence made #5950 an MITM
+//!     bypass (the original callback only ever re-ran a chain check and
+//!     never consulted hostname at all).
+//!   - `resolveCaMode`'s exclusive-wins precedence (#5975) is likewise
+//!     exhaustively tested target-neutrally, and is now genuinely CALLED
+//!     by both kernels' real wiring (not just declared for parity).
 //!
 //! What this file deliberately does NOT try to prove: that a custom CA
 //! certificate is actually honored/rejected during a real TLS handshake,
@@ -53,15 +72,20 @@
 //! host is rejected over a REAL connection. Those require a real TLS
 //! listener trusting (or not) a real client-presented chain and/or
 //! presenting a real name-mismatched certificate, which does not exist in
-//! CI yet on either target (dotnet: #5884; jvm: #5878/#5880 pending) —
+//! CI yet on either target (dotnet: #5884; jvm: #5880 pending) —
 //! `resolveTlsValidationDecision`'s exhaustive coverage above is the
 //! strongest CI-safe proof available today that the DECISION LOGIC itself
-//! can never accept a hostname mismatch, independent of a live peer. The
-//! warning text `build()` prints via `Std.Console.error` is not
-//! captured/asserted either — there is no stdout/stderr-capture facility
-//! in `Std.Testing` today; the pure `resolveInsecureVerifyPolicy` result
-//! (which decides WHETHER the warning fires) is the testable proxy for
-//! that decision.
+//! can never accept a hostname mismatch, independent of a live peer. (Both
+//! kernels' real wiring — additive/exclusive CA KeyStore merging on jvm,
+//! the custom validation callback on dotnet, and the all-trusting
+//! `X509TrustManager` proxy the insecure path installs on jvm — has been
+//! verified end-to-end against real live TLS peers during development of
+//! this change, outside CI; see the phase-1.3 PR description for the
+//! specific peers and outcomes exercised.) The warning text `build()`
+//! prints via `Std.Console.error` is not captured/asserted either — there
+//! is no stdout/stderr-capture facility in `Std.Testing` today; the pure
+//! `resolveInsecureVerifyPolicy` result (which decides WHETHER the warning
+//! fires) is the testable proxy for that decision.
 @test_module
 package Std.Http.TlsClientTests
 
@@ -209,29 +233,40 @@ test "build() composes TLS options with redirects, unix socket, and HTTP version
   assertTrue(true, "every non-unix-socket knob combined builds")
 }
 
-// ─── Per-target honest design: tlsConfigSupported() capability probe ───────
-// #2663-style: constructing a Unix-socket client is unsupported on the JVM
-// target regardless of TLS configuration (pre-existing gap), so this test
-// deliberately never combines withUnixSocket with a TLS option — that
-// combination would panic on jvm for a reason unrelated to this feature.
+// ─── tlsConfigSupported() capability probe: now true on both targets ───────
+// #5878 ships real TLS wiring on jvm alongside the dotnet slice (#5877), so
+// `tlsConfigSupported()` no longer distinguishes the targets at all — pin
+// that directly rather than branching on it.
 val deadUrl: String = "http://127.0.0.1:1/"
 
-test "tlsConfigSupported() capability probe matches this target's design" {
-  if tlsConfigSupported() {
-    // dotnet: the deterministic tests above already exercise the real
-    // kernel wiring end-to-end (build() never panics with TLS options
-    // configured); this assertion just pins the probe's own value.
-    assertTrue(true, "TLS client configuration is supported on this target")
+test "tlsConfigSupported() reports true on both targets now that #5878 has shipped" {
+  assertTrue(tlsConfigSupported(), "TLS client configuration is supported on this target")
+}
 
-    // Unix sockets + TLS options is the one combination this target still
-    // can't honor (`_kernel/http_host.l`'s TLS section header: Unix
-    // sockets require `SocketsHttpHandler`, whose only certificate-
+// Unix domain sockets remain unconditionally unsupported on `--target jvm`
+// for an unrelated, pre-existing reason (#2663: `java.net.http.HttpClient`
+// has no Unix-socket transport) — detected BEHAVIOURALLY via a `try`/`catch
+// Bug` probe on the plain (no-TLS) construction, not by branching on
+// `tlsConfigSupported()` (which no longer varies per target) or on the
+// target name itself. On jvm, even a TLS-free `withUnixSocket(...)` panics
+// inside `build()`; on dotnet it builds fine (the socket is dialed lazily,
+// at request time).
+test "Unix domain sockets + TLS: dotnet returns a typed #5947 error, jvm is unconditionally unsupported (#2663)" {
+  val unixSocketSupported = try {
+    val _ = HttpClientBuilder.build(HttpClientBuilder.new().withUnixSocket("/tmp/lyric-tls-test-probe.sock"))
+    true
+  } catch Bug as _ {
+    false
+  }
+
+  if unixSocketSupported {
+    // dotnet: Unix sockets + TLS options still don't compose (#5947,
+    // unrelated to this change — `_kernel/http_host.l`'s TLS section header:
+    // Unix sockets require `SocketsHttpHandler`, whose only certificate-
     // validation hook is a custom .NET delegate type the current FFI
-    // delegate-bridge cannot bind to, #5947). Guarded behind
-    // `tlsConfigSupported()` so `--target jvm` never reaches this branch
-    // at runtime — combining `withUnixSocket` with anything is
-    // unconditionally unsupported there for the unrelated, pre-existing
-    // #2663 reason, which would panic rather than return a typed error.
+    // delegate-bridge cannot bind to). `build()` stays infallible; every
+    // request through the resulting client fails with a typed error naming
+    // #5947 instead.
     val unixWithCa = HttpClientBuilder.build(
       HttpClientBuilder.new().withUnixSocket("/tmp/lyric-tls-test.sock").withCaCertificate(ca())
     )
@@ -244,18 +279,10 @@ test "tlsConfigSupported() capability probe matches this target's design" {
       }
     }
   } else {
-    // jvm (#5878 not yet shipped): a TLS-configured client must still
-    // build (infallible) but fail every request with a typed error
-    // naming the tracking issue — never a silent no-TLS-config connection.
-    val client = HttpClientBuilder.build(HttpClientBuilder.new().withCaCertificate(ca()))
-    match await client.get(deadUrl) {
-      case Ok(_) -> panic("expected the TLS-unsupported error on jvm, got Ok")
-      case Err(e) -> match e {
-        case ConnectionFailed(_, message) ->
-          assertTrue(contains(message, "#5878"), "message should name #5878, got: " + message)
-        case other -> panic("expected ConnectionFailed, got a different HttpError case")
-      }
-    }
+    // jvm: already proven unsupported by the panic the probe above caught
+    // (regardless of TLS) — nothing more to assert about the TLS+Unix-socket
+    // combination specifically on this target.
+    assertTrue(true, "Unix domain sockets are unsupported on this target regardless of TLS (#2663)")
   }
 }
 
