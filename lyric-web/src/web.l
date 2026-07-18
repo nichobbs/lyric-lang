@@ -1023,7 +1023,7 @@ pub record ResponseWriter {
   var status: Int
   var headers: Map[String, String]
   var committed: Bool
-  var stream: Option[Stream]
+  var stream: Option[HttpChunkedStream]
 }
 
 @cfg(feature = "dotnet")
@@ -1059,7 +1059,7 @@ pub func writeHeader(w: in ResponseWriter, name: in String, value: in String): U
 // rejected by their `requires:` clause, so this only runs once in
 // practice, but writeChunk calls it unconditionally for simplicity).
 @cfg(feature = "dotnet")
-func commitStream(w: in ResponseWriter): Stream {
+func commitStream(w: in ResponseWriter): HttpChunkedStream {
   match w.stream {
     case Some(s) -> return s
     case None -> ()
