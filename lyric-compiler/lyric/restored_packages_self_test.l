@@ -14,6 +14,8 @@ import Std.Path as Path
 import Std.Environment as Environment
 import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages
+import Lyric.Parser
+import Lyric.AliasRewriter
 
 func selfDllPath(): String {
   Path.join(Environment.appBaseDirectory(), "restored_packages_self_test.dll")
@@ -341,6 +343,48 @@ func testSynthesiseArtifactWhitelistedStdQualifiedFiltered(): Unit {
   }
 }
 
+// #5844: a `pub` function whose signature reaches a cross-package type
+// through an ALIASED import (`import Std.File as File`, body references
+// `File.FileStat`) must round-trip through contract synthesis exactly like
+// the bare-qualified case above.  Unlike
+// `testSynthesiseArtifactWhitelistedStdQualifiedFiltered` (which hand-crafts
+// the `Std.Tls.TlsServerConfig` repr string directly, never touching alias
+// expansion), this test drives the REAL pipeline a compiler build uses:
+// parse -> `Lyric.AliasRewriter.rewriteFile` (which expands the aliased
+// `File.FileStat` reference to the fully-qualified `Std.File.FileStat`
+// *before* contract synthesis ever sees it, per
+// `Lyric.Pipeline.pipeExpandAndRewrite`'s pass order) ->
+// `Lyric.ContractMeta.buildContractFromFile` -> `synthesiseArtifact`.  This
+// is exactly the shape `Lyric.Cli.cli_shared.l`'s `anyLyricSourceNewerThan`
+// hit when made `pub` (#5844's repro).  The `isWhitelistedStdQualified`
+// guard added for the bare-qualified case is name-shape-based (any T0014
+// whose joined qualified name starts with "Std."), so it already covers
+// this alias-expanded shape too — this test pins that coverage against the
+// real emission path instead of a hand-written repr.
+func testSynthesiseArtifactAliasedStdQualifiedFiltered(): Unit {
+  val src = "package MyApp.FileTools\n\nimport Std.File as File\n\npub func isNewer(dir: in String, ref: in File.FileStat): Bool {\n  false\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val contract = Meta.buildContractFromFile(rewritten, "1.0.0")
+  assertEqualInt(contract.decls.count, 1, "alias_std_qualified: exactly one pub decl in the contract")
+  val d = contract.decls[0]
+  // Pin the alias-expansion behaviour itself: the repr must carry the
+  // fully-qualified `Std.File.FileStat`, not the source-level alias
+  // `File.FileStat` — confirms this test exercises the same shape #5844
+  // reported, not a degenerate no-op rewrite.
+  assertTrue(
+    Str.contains(d.repr, "Std.File.FileStat"),
+    "alias_std_qualified: repr carries the alias-expanded qualified type (got " + d.repr + ")"
+  )
+  val art = mkArtifact("MyApp.FileTools", contract.decls)
+  match synthesiseArtifact(art, emptyDecls()) {
+    case Err(e) -> panic("alias_std_qualified: unexpected error (aliased Std.File.FileStat should be filtered): " + errorMessage(e))
+    case Ok(sa) -> {
+      assertEqual(sa.packageName, "MyApp.FileTools", "alias_std_qualified: round-tripped")
+    }
+  }
+}
+
 // A qualified reference to a NON-stdlib package that is genuinely absent
 // (no preamble, not `Std.*`) is still a real error — the `Std.` guard must
 // not swallow every T0014.
@@ -425,6 +469,10 @@ test "synthesise artifact whitelisted T0010 filtered" {
 
 test "synthesise artifact whitelisted Std-qualified T0014 filtered" {
   testSynthesiseArtifactWhitelistedStdQualifiedFiltered()
+}
+
+test "synthesise artifact whitelisted aliased Std-qualified T0014 filtered (#5844)" {
+  testSynthesiseArtifactAliasedStdQualifiedFiltered()
 }
 
 test "synthesise artifact non-Std qualified still errors" {
