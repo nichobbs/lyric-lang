@@ -6625,6 +6625,24 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_h2frame_tests.l
 
+      # Std.TcpHost transport-kernel test coverage (#5882, docs/61 §6.1/§6.3
+      # phase 3.1): the dotnet TcpListener + SslStream server-side TLS
+      # transport that drives Std.HttpEngine. Runs a real in-process loopback
+      # — a plain echo, a server-side TLS handshake that negotiates http/1.1
+      # via ALPN against the real Lyric HTTPS client, and both mTLS
+      # accept/reject outcomes. dotnet-only (the JVM/native transports are
+      # separate later issues), so there is no JVM twin of this step.
+      - name: Std.TcpHost transport-kernel test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.TcpHost tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-stdlib/tests/tcp_host_tls_tests.l
+
       # Stdlib runtime suites on dotnet (#5604, expanded in D-progress-670 /
       # #5710): these `func main`-shaped suites (run via `lyric run`, not
       # `lyric test` — they predate @test_module) exercise the FFI kernels and
