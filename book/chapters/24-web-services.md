@@ -84,6 +84,44 @@ the concurrent server is tracked separately); see the README's "Known gaps".
 Compose multiple packages' routers with `Web.merge` and scope them
 with `Web.prefix`.
 
+## Serving over HTTPS (TLS)
+
+`Web.serveTls(router, host, port, tls)` serves a router over HTTPS on **both
+targets**, terminating TLS from a `Std.Tls.TlsServerConfig` (a PEM certificate
+chain + private key, and optionally a client CA for mutual TLS). Like
+`Web.serve` it blocks forever once bound; it returns `Result[Unit,
+ServeTlsError]`, whose only observable value is an `Err(ServerTlsUnsupported)`
+for a configuration that cannot be served.
+
+```lyric
+match Identity.fromPemFiles("server.pem", "server.key") {
+  case Err(e) -> Console.error("cert/key: " + TlsError.message(e))
+  case Ok(id) -> {
+    val tls = TlsServerConfig(identity = id, minVersion = Tls12, clientCa = None, requireClientCert = false)
+    match Web.serveTls(router, "0.0.0.0", 8443, tls) {
+      case Ok(_) -> ()  // never reached — blocks forever
+      case Err(e) -> Console.error("serveTls: " + Web.ServeTlsError.message(e))
+    }
+  }
+}
+```
+
+- **`--target dotnet`** terminates real TLS over the pure-Lyric sans-IO
+  `Std.HttpServer` (server identity + minimum version + ALPN `http/1.1`).
+  **Mutual TLS is fully supported** here — set `clientCa` and
+  `requireClientCert` on the config. HTTP/2 end-to-end is not yet negotiated
+  on this server (issue #5889).
+- **`--target jvm`** terminates real TLS over an Undertow HTTPS listener with
+  HTTP/2 enabled (via ALPN, TLS-only). Mutual TLS on this path is not yet
+  supported (issue #6017); a mutual-TLS config returns a typed
+  `ServerTlsUnsupported`.
+
+To keep cert/key paths configurable per environment without a rebuild, use the
+`Web.WebTls` config template (`certPath`/`keyPath`/`clientCaPath`/
+`requireClientCert`, each overridable via `LYRIC_CONFIG_*`) and load it with
+`Web.tlsServerConfigFromWebTls`, which returns a `Result[TlsServerConfig,
+TlsError]`.
+
 ## Static file serving
 
 ```lyric

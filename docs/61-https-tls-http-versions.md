@@ -20,8 +20,8 @@ TLS support off-Windows and is HTTP/1.1-only by construction.
 |---|---|---|
 | Client TLS | Works (platform trust), no config surface | Works (default `SSLContext`), no config surface |
 | Client HTTP version | **1.1 only** (`HttpClient` default; the kernel never sets `DefaultRequestVersion`) | **h2 with 1.1 fallback** (JDK default; `_kernel_jvm/http_host.l` never calls `Builder.version()`) |
-| Server TLS (`Std.HttpServer`) | Impossible: managed `HttpListener` has no TLS on Linux/macOS; Windows needs out-of-band `netsh` http.sys binding | Explicitly rejected: `_kernel_jvm/http_server.l` errors on `https://` prefixes (no keystore surface; noted against #2663) |
-| Server TLS (`lyric-web`) | Same `HttpListener` accept loop (`web.l` dotnet `serve`) | Undertow, but only `addHttpListener` is called — plaintext only |
+| Server TLS (`Std.HttpServer`) | Shipped (phase 3.3, #5884): `startListenerTls` over the sans-IO `Std.HttpEngine` + `Std.TcpHost`/`SslStream` transport (identity + `minVersion` + ALPN `http/1.1` + callback-free mTLS); `HttpListener` retired | Shipped (phase 2.1, #5880): `HttpsServer` + `SSLContext` from `TlsServerConfig` (mTLS is #5930) |
+| Server TLS (`lyric-web`) | Shipped (phase 3.4, #5885): `Web.serveTls` terminates real TLS via `Std.HttpServer.startListenerTls`, mTLS supported | Shipped (phase 2.2, #5881): Undertow `addHttpsListener` + `ENABLE_HTTP2` (mTLS is #6017) |
 | Server HTTP version | 1.1 (`HttpListener` cannot do h2) | 1.1 (`com.sun.net.httpserver` cannot; Undertow can but `ENABLE_HTTP2` is not set) |
 | native | No HTTP kernel exists yet | — |
 
@@ -610,7 +610,22 @@ items marked ∥ are independent and can proceed in parallel.
    10 (lyric-web onto the new server, #5885) and h2/ALPN end-to-end (#5889)
    remain._
 10. lyric-web dotnet onto the new server; `serveTls` end-to-end both
-    targets; docs/book/progress sync. (After 9.)
+    targets; docs/book/progress sync. (After 9.) _Shipped (D-progress-701,
+    #5885): lyric-web's dotnet `serveTls` (`lyric-web/src/web.l`) now calls
+    `Std.HttpServer.startListenerTls` and dispatches through the same pull
+    loop / `dispatch` core as plaintext `serve`; the phase-2.2 typed
+    `ServerTlsUnsupported`-on-dotnet stub is gone. **mTLS is fully supported
+    on dotnet** (the config is passed straight through to the callback-free
+    mTLS transport kernel), unlike the JVM Undertow listener (mTLS is #6017);
+    a config that cannot bind (mutual-TLS misconfiguration or bind failure)
+    returns a typed `ServerTlsUnsupported` carrying the underlying
+    `TlsListenError` message, never a silent failure. Verified by
+    `lyric-web/tests/serve_tls_tests.l` (real in-process `Web.serveTls`
+    end-to-end over TLS + mTLS driven by the real Lyric HTTPS client, plus the
+    `WebTls` config-template env-var override), wired into CI via `lyric test
+    --manifest lyric-web/lyric.toml`; the JVM path stays covered by
+    `tests/jvm_server_smoke.l`. h2/ALPN end-to-end on the dotnet server
+    remains #5889._
 
 **Phase 4 — h2 (engine, .NET first)**
 11. HPACK codec + tests. ∥ with 12. _Shipped (D-progress-695, #5886):

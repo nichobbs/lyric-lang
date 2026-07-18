@@ -664,8 +664,12 @@ and J4 (async), and the J2→J4 logical dependency holds — so Track A
   for Record` cannot do (interfaces only, verified empirically) — tracked as
   issue #5930. `startListenerTls` returns a typed `NotSupportedOnTarget` error
   for any mTLS request rather than a silent skip. lyric-web's Undertow
-  `addHttpsListener` + `ENABLE_HTTP2` wiring (phase 2 item 6) and the JVM
-  engine convergence (docs/61 §6.5) remain open; longer-term the JVM
+  `addHttpsListener` + `ENABLE_HTTP2` wiring shipped in phase 2.2 (issue
+  #5881, `Web.serveTls` on JVM), and the dotnet `Web.serveTls` reached parity
+  in phase 3.4 (issue #5885, D-progress-701) over `Std.HttpServer`'s new
+  sans-IO server — so lyric-web server TLS is now real on **both** managed
+  targets (dotnet additionally supports mTLS; JVM mTLS is #6017). Only the JVM
+  engine convergence (docs/61 §6.5) remains open; longer-term the JVM
   converges onto the pure-Lyric sans-IO HTTP engine once it has parity +
   performance evidence on dotnet.
 - **Maven resolver: RESOLVED (M-7).** The Java `resolver/` was revived — it is

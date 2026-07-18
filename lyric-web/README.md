@@ -2,7 +2,7 @@
 
 HTTP web service library for [Lyric](https://github.com/nichobbs/lyric-lang). Ships real method/path routing with path parameters, static file serving, a middleware pipeline (CORS built in), OpenAPI 3.1 type vocabulary for spec generation, and aspect templates for authentication and rate limiting.
 
-> **Status**: `@experimental`. Route dispatch, static files, and middleware are implemented and tested (`lyric-web/tests/dispatch_tests.l`) against the `dotnet` target, built on `Std.HttpServer` (`System.Net.HttpListener`), single-threaded synchronous accept loop. The `jvm` target's `Web.Kernel.Runtime` binds `io.undertow` (Undertow's own multi-threaded XNIO I/O/worker pool, so no single-threaded-loop caveat there), but the test suite does not compile on `--target jvm` today due to newly-discovered JVM backend bugs (#5444, #5458; #5443 is worked around) — see [JVM target](#jvm-target) below.
+> **Status**: `@experimental`. Route dispatch, static files, and middleware are implemented and tested (`lyric-web/tests/dispatch_tests.l`) against the `dotnet` target, built on `Std.HttpServer` — the pure-Lyric sans-IO `Std.HttpEngine` over the `Std.TcpHost` `TcpListener`/`SslStream` transport that replaced `System.Net.HttpListener` (TLS via `Web.serveTls`, #5884/#5885). The transport accepts and reads connections concurrently on background tasks; lyric-web's dispatch pull loop still handles one request at a time. The `jvm` target's `Web.Kernel.Runtime` binds `io.undertow` (Undertow's own multi-threaded XNIO I/O/worker pool), but the test suite does not compile on `--target jvm` today due to newly-discovered JVM backend bugs (#5444, #5458; #5443 is worked around) — see [JVM target](#jvm-target) below.
 
 ## Packages
 
@@ -281,22 +281,33 @@ All config fields are env-var-backed, read once at startup, fail-fast if a requi
 
 ### HTTPS (TLS)
 
-`Web.serveTls(router, host, port, tls)` serves `router` over HTTPS on
-`--target jvm` — an Undertow `addHttpsListener` with `ENABLE_HTTP2` (HTTP/2
-via ALPN, TLS-only), built from a `Std.Tls.TlsServerConfig` (PEM cert + key;
-see `Std.Tls`). It blocks forever like `Web.serve`, and returns
+`Web.serveTls(router, host, port, tls)` serves `router` over HTTPS on **both
+targets**, built from a `Std.Tls.TlsServerConfig` (PEM cert + key; see
+`Std.Tls`). It blocks forever like `Web.serve`, and returns
 `Result[Unit, ServeTlsError]` — the only observable return is an `Err`
 (`ServerTlsUnsupported`) for a configuration that cannot be served:
 
-- **`--target dotnet`: not supported yet.** The managed `HttpListener` cannot
-  terminate TLS off-Windows or speak HTTP/2; `serveTls` returns a typed
-  `ServerTlsUnsupported` naming the sans-IO-engine work (phase 3 of epic
-  #5874, issue #5885). Use `--target jvm` for HTTPS today.
-- **mTLS (`requireClientCert` / `clientCa`) is not supported on the JVM
-  Undertow path yet** — it needs a client-CA `TrustManager` on the
-  `SSLContext` plus Undertow's XNIO `SSL_CLIENT_AUTH_MODE` option; `serveTls`
-  returns a typed `ServerTlsUnsupported` naming issue #6017. Non-mTLS TLS
-  termination (server identity + minimum version) is fully supported.
+- **`--target dotnet`: real TLS termination** over the pure-Lyric sans-IO
+  `Std.HttpServer` (`Std.HttpEngine` + `Std.TcpHost`/`SslStream`) that
+  replaced `HttpListener` — server identity + minimum version + ALPN
+  `http/1.1`, dispatched through the same `Web.dispatch` core as plaintext
+  `serve` (phase 3.4 of epic #5874, issue #5885). **Mutual TLS is fully
+  supported here** (`clientCa` + `requireClientCert` are passed straight
+  through to the callback-free mTLS transport kernel). h2 end-to-end is not
+  yet negotiated on this server (the transport advertises only `http/1.1`;
+  issue #5889).
+- **`--target jvm`: real TLS termination** over an Undertow `addHttpsListener`
+  with `ENABLE_HTTP2` (HTTP/2 via ALPN, TLS-only). **mTLS
+  (`requireClientCert` / `clientCa`) is not supported on the JVM Undertow path
+  yet** — it needs a client-CA `TrustManager` on the `SSLContext` plus
+  Undertow's XNIO `SSL_CLIENT_AUTH_MODE` option; `serveTls` returns a typed
+  `ServerTlsUnsupported` naming issue #6017. Non-mTLS TLS termination (server
+  identity + minimum version) is fully supported.
+
+A configuration that cannot bind a listener — a mutual-TLS misconfiguration
+(`requireClientCert` with no `clientCa`) or a socket bind failure — returns a
+typed `ServerTlsUnsupported` carrying the underlying reason on either target,
+never a silent failure.
 
 Cert/key/client-CA paths are runtime-configurable so a deployment can point
 them per environment without a rebuild. The `Web.WebTls` config block carries
