@@ -529,7 +529,29 @@ items marked ∥ are independent and can proceed in parallel.
    and dotnet server TLS remain tracked (issues #5930, #5884).
 6. lyric-web: Undertow `addHttpsListener` + `ENABLE_HTTP2`, `Web.serveTls`,
    `WebTls` config template, typed dotnet `Unsupported` until phase 3;
-   docs + book. (After 1; ∥ with 5.)
+   docs + book. (After 1; ∥ with 5.) _Shipped in phase 2.2 (issue #5881,
+   D-progress-696)_: `Web.serveTls(router, host, port, tls)` on `--target
+   jvm` builds an Undertow HTTPS listener via
+   `Undertow.Builder.addHttpsListener(port, host, sslContext)` +
+   `UndertowOptions.ENABLE_HTTP2` (h2 via ALPN, TLS-only per decision 8),
+   reusing the `Std.HttpServer.serverSslContextFromConfig` `SSLContext`
+   builder (newly exposed alongside `startListenerTls`) rather than
+   re-declaring the `KeyManagerFactory`/`KeyStore`/reflection extern
+   boundary. On `--target dotnet` it returns a typed
+   `ServerTlsUnsupported` naming phase 3 / issue #5885. A `WebTls` config
+   block (declared as a plain `pub config` with required fields — the
+   sketch's `pub config … from { }` form isn't valid parser syntax, since
+   `from` is the config-derivation keyword) plus `tlsServerConfigFromWebTls`
+   give env-overridable cert/key/client-CA paths (D128 decision 2).
+   **mTLS did NOT ship on this path**: the reused identity-only `SSLContext`
+   builder carries no client-CA `TrustManager`, and Undertow needs its XNIO
+   `SSL_CLIENT_AUTH_MODE` socket option wired too — `serveTls` rejects any
+   `requireClientCert`/`clientCa` request with a typed `NotSupportedOnTarget`,
+   tracked in issue #6017. Verified end-to-end by
+   `tests/jvm_server_smoke.l`'s in-process HTTPS/h2 self-check (a real
+   Undertow TLS listener + a `Std.Http` client that trusts the fixture cert
+   and asserts `HttpResponse.negotiatedVersion() == Http2`) plus a
+   `curl --http2` cross-check, and by `tests/serve_tls_tests.l` on dotnet.
 
 **Phase 3 — .NET server engine**
 7. `_kernel/tcp_host.l`: `TcpListener`/`NetworkStream`/`SslStream` transport

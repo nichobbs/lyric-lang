@@ -279,6 +279,48 @@ All config fields are env-var-backed, read once at startup, fail-fast if a requi
 | `LYRIC_CONFIG_WEB_SERVER_HOST` | `String` | `0.0.0.0` | Bind address |
 | `LYRIC_CONFIG_WEB_SERVER_PORT` | `Int` | `8080` | TCP port (1–65535) |
 
+### HTTPS (TLS)
+
+`Web.serveTls(router, host, port, tls)` serves `router` over HTTPS on
+`--target jvm` — an Undertow `addHttpsListener` with `ENABLE_HTTP2` (HTTP/2
+via ALPN, TLS-only), built from a `Std.Tls.TlsServerConfig` (PEM cert + key;
+see `Std.Tls`). It blocks forever like `Web.serve`, and returns
+`Result[Unit, ServeTlsError]` — the only observable return is an `Err`
+(`ServerTlsUnsupported`) for a configuration that cannot be served:
+
+- **`--target dotnet`: not supported yet.** The managed `HttpListener` cannot
+  terminate TLS off-Windows or speak HTTP/2; `serveTls` returns a typed
+  `ServerTlsUnsupported` naming the sans-IO-engine work (phase 3 of epic
+  #5874, issue #5885). Use `--target jvm` for HTTPS today.
+- **mTLS (`requireClientCert` / `clientCa`) is not supported on the JVM
+  Undertow path yet** — it needs a client-CA `TrustManager` on the
+  `SSLContext` plus Undertow's XNIO `SSL_CLIENT_AUTH_MODE` option; `serveTls`
+  returns a typed `ServerTlsUnsupported` naming issue #6017. Non-mTLS TLS
+  termination (server identity + minimum version) is fully supported.
+
+Cert/key/client-CA paths are runtime-configurable so a deployment can point
+them per environment without a rebuild. The `Web.WebTls` config block carries
+the paths (overridable via `LYRIC_CONFIG_*`), and `tlsServerConfigFromWebTls`
+loads them into a `TlsServerConfig`:
+
+| `WebTls` field | Type | Default | Description |
+|---|---|---|---|
+| `certPath` | `String` | (required) | PEM server certificate chain path |
+| `keyPath` | `String` | (required) | PEM PKCS8 private key path |
+| `clientCaPath` | `String` | `""` | PEM client-CA path (mTLS; empty = off) |
+| `requireClientCert` | `Bool` | `false` | Require a client certificate (mTLS) |
+
+```lyric
+val cfg = Web.WebTls(certPath = "server.pem", keyPath = "server.key", clientCaPath = "", requireClientCert = false)
+match Web.tlsServerConfigFromWebTls(cfg) {
+  case Ok(tls) -> match Web.serveTls(router, "0.0.0.0", 8443, tls) {
+    case Ok(_) -> ()  // never reached — blocks forever
+    case Err(e) -> Console.error("serveTls: " + Web.ServeTlsError.message(e))
+  }
+  case Err(e) -> Console.error("TLS config: " + TlsError.message(e))
+}
+```
+
 ### CORS
 
 | Env var | Type | Default | Description |
@@ -383,6 +425,8 @@ Convert to a `Response` with `Web.errorResponse(err)`.
 ## JVM target
 
 `Web.Kernel.Runtime`'s JVM file (`src/_kernel/jvm/web_kernel.l`) binds `io.undertow` directly: `Undertow.builder().addHttpListener(port, host).setHandler(handler).build()`, where `handler` is a Lyric record (`LyricUndertowHandler`) implementing the real `io.undertow.server.HttpHandler` interface via `impl` (docs/51-ffi-interfaces-proposal.md). Each request is read fully into a `Web.Request` (blocking I/O via `exchange.startBlocking()`), routed through the same `Web.dispatch(router, req)` pure core the `dotnet` accept loop uses, and the `Web.Response` is written back onto the exchange. `Web.serve`'s `jvm` branch (`@cfg(feature = "jvm")`) delegates to it entirely; `Web.serve`'s `dotnet` branch is unaffected and unchanged. See [Known gaps](#known-gaps) above for the current build blockers (#5444, #5458; #5443 is worked around) and how the interface-binding half was verified independently of them.
+
+`Web.serveTls` (HTTPS, above) reuses the same `LyricUndertowHandler` / `Web.dispatch` core: only the listener differs — `addHttpsListener(port, host, sslContext)` + `UndertowOptions.ENABLE_HTTP2` (HTTP/2 via ALPN, TLS-only). The server `SSLContext` is built by reusing `Std.HttpServer.serverSslContextFromConfig` (the same `KeyManagerFactory`-backed construction `Std.HttpServer.startListenerTls` uses) rather than re-declaring the keystore/keymanager extern boundary. `tests/jvm_server_smoke.l` carries an in-process HTTPS/HTTP-2 self-check — a real `Web.serveTls` listener driven by a `Std.Http` client that trusts the fixture cert and asserts `HttpResponse.negotiatedVersion() == Http2` — wired into the `compiler-self-tests-jvm` CI job alongside a `curl --http2` cross-check.
 
 ## Package layout
 

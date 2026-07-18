@@ -5946,6 +5946,16 @@ jobs:
           header="$(curl -s --max-time 3 -H 'X-Test: abc' http://localhost:8099/echo-header)"
           body="$(curl -s --max-time 3 -X POST --data 'ping' http://localhost:8099/echo-body)"
           code404="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:8099/nope)"
+          # TLS phase 2.2 (#5881): main also stands up a TLS-terminated Undertow
+          # listener (Web.serveTls, ENABLE_HTTP2) on :8100 and drives it with an
+          # in-process Std.Http client that trusts the fixture cert, asserting a
+          # 200 AND an h2-negotiated connection (HttpResponse.negotiatedVersion),
+          # logging a single HTTPS-H2-SELFCHECK: PASS line.  That self-check runs
+          # at startup, before the plaintext :8099 listener this loop waited on,
+          # so the line is already in the log by now.  An independent curl --http2
+          # cross-checks h2 against the real HTTPS listener.
+          h2selfcheck="$(grep -o 'HTTPS-H2-SELFCHECK: PASS.*' /tmp/jvm_server_smoke.run.log | head -1)"
+          curlh2="$(curl -sk --http2 --max-time 4 -o /dev/null -w '%{http_version}:%{http_code}' https://127.0.0.1:8100/hello/Ada || echo 'curl-failed')"
           kill "$srv_pid" 2>/dev/null || true
           wait "$srv_pid" 2>/dev/null || true
           fail=0
@@ -5953,11 +5963,13 @@ jobs:
           [ "$header" = '{"xTest":"abc"}' ] || { echo "::error::header endpoint returned '$header'"; fail=1; }
           [ "$body" = "ping" ] || { echo "::error::body endpoint returned '$body'"; fail=1; }
           [ "$code404" = "404" ] || { echo "::error::unmatched route returned HTTP $code404, expected 404"; fail=1; }
+          [ -n "$h2selfcheck" ] || { echo "::error::HTTPS/h2 in-process self-check did not report PASS (Web.serveTls + negotiatedVersion)"; fail=1; }
+          [ "$curlh2" = "2:200" ] || { echo "::error::curl --http2 against the TLS listener returned '$curlh2', expected 2:200"; fail=1; }
           if [ "$fail" != 0 ]; then
             tail -40 /tmp/jvm_server_smoke.run.log
             exit 1
           fi
-          echo "lyric-web Undertow JVM smoke passed (4/4 endpoints)" >> "$GITHUB_STEP_SUMMARY"
+          echo "lyric-web Undertow JVM smoke passed (4/4 plaintext endpoints + HTTPS/h2 serveTls: $h2selfcheck; curl --http2 $curlh2)" >> "$GITHUB_STEP_SUMMARY"
       # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
       # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
       # views, pure-Lyric tryGetValue) AND the post-mono signature

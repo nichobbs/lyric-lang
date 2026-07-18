@@ -67,6 +67,7 @@ import Std.Collections
 import Std.String
 import Std.Json
 import Std.HttpServer
+import Std.Tls
 import Std.File
 import Std.Encoding as Enc
 import Web.Kernel.Runtime as HttpKernel
@@ -1395,6 +1396,140 @@ pub func serve(router: in Router, host: in String, port: in Int): Unit
   requires: port <= 65535
 {
   HttpKernel.serve(host, port, router)
+}
+
+// ─── TLS (HTTPS) server ─────────────────────────────────────────────────────
+/// Failure returned by `serveTls` (docs/61 §6.3).  A single case today:
+/// server TLS is not runnable in the given configuration on the current
+/// target — on `dotnet` at all (until the sans-IO engine lands, phase 3 of
+/// epic #5874, issue #5885), and on `jvm` for mutual-TLS configurations
+/// (issue #6017).  The case is named `ServerTlsUnsupported` rather than
+/// reusing `Std.HttpServer.TlsListenError`'s `NotSupportedOnTarget` on
+/// purpose: the self-hosted JVM backend resolves a bare match case name from
+/// a global table rather than the scrutinee's static type (`std/tls.l`'s
+/// module header, #5903), so two in-scope unions must not share a case name.
+@stable(since = "0.3")
+pub union ServeTlsError {
+  case ServerTlsUnsupported(message: String)
+}
+
+/// Human-readable message for a `ServeTlsError`.
+@stable(since = "0.3")
+pub func ServeTlsError.message(e: in ServeTlsError): String {
+  match e {
+    case ServerTlsUnsupported(m) -> m
+  }
+}
+
+/// Runtime-configurable TLS paths for a `serveTls` deployment (docs/61 §6.3,
+/// D128 decision 2).  A `config` block so cert/key/client-CA paths are
+/// overridable per environment through `LYRIC_CONFIG_*` env vars without a
+/// rebuild (docs/25): a consumer instantiates it (directly, or in a `wire`
+/// graph) and the runtime layer supplies the paths.  `certPath`/`keyPath`
+/// are required; an empty `clientCaPath` means no mTLS.
+///
+/// The design sketch (docs/61 §6.3) wrote this as `pub config WebTls from
+/// { ... }`; the self-hosted parser's `from` is the config-DERIVATION form
+/// (`config Local from Base { ... }`) and requires a source type, so the
+/// template is declared as a plain `pub config` — which already permits
+/// required (no-default) fields and carries the same `LYRIC_CONFIG_*`
+/// env-override semantics.
+///
+/// Convert to a `Std.Tls.TlsServerConfig` with `tlsServerConfigFromWebTls`,
+/// then pass that to `serveTls`.
+@stable(since = "0.3")
+pub config WebTls {
+  certPath: String
+  keyPath: String
+  clientCaPath: String = ""
+  requireClientCert: Bool = false
+}
+
+/// Load the cert/key (and, when `clientCaPath` is set, the client CA) named
+/// by a `WebTls` config into a `Std.Tls.TlsServerConfig` ready for
+/// `serveTls`.  Loading failures (missing file, malformed PEM, unsupported
+/// key format, cert/key mismatch) are returned as `Std.Tls.TlsError` data,
+/// not raised — the caller decides how to surface a misconfigured deployment.
+///
+/// Every `TlsServerConfig` field is passed explicitly (never relying on a
+/// defaulted field): cross-package record construction with omitted defaults
+/// currently miscompiles on both targets (`std/tls.l`'s header, #5908/#5920).
+@stable(since = "0.3")
+pub func tlsServerConfigFromWebTls(cfg: in WebTls): Result[Std.Tls.TlsServerConfig, Std.Tls.TlsError] {
+  match Identity.fromPemFiles(cfg.certPath, cfg.keyPath) {
+    case Err(e) -> return Err(error = e)
+    case Ok(identity) -> {
+      if cfg.clientCaPath.length > 0 {
+        match Certificate.fromPemFile(cfg.clientCaPath) {
+          case Err(e) -> return Err(error = e)
+          case Ok(ca) -> return Ok(
+            value = TlsServerConfig(
+              identity = identity,
+              minVersion = Tls12,
+              clientCa = Some(value = ca),
+              requireClientCert = cfg.requireClientCert
+            )
+          )
+        }
+      }
+      return Ok(
+        value = TlsServerConfig(
+          identity = identity,
+          minVersion = Tls12,
+          clientCa = None,
+          requireClientCert = cfg.requireClientCert
+        )
+      )
+    }
+  }
+}
+
+/// Serve `router` over HTTPS on `host`:`port`, terminating TLS from `tls`
+/// (docs/61 §6.3).  Blocks until the process is terminated, exactly like
+/// `serve`.  Returns only on a configuration that cannot be served — the
+/// `Ok` branch is never reached in normal operation (the accept loop blocks
+/// forever), so a returned `Err(ServerTlsUnsupported(...))` is the only
+/// observable return.
+///
+/// dotnet: not supported until the pure-Lyric sans-IO HTTP server engine
+/// replaces `HttpListener` (which cannot terminate TLS off-Windows or speak
+/// h2) — returns a typed `ServerTlsUnsupported` naming phase 3 / issue #5885,
+/// a loud tracked gap per docs/61's no-silent-skip rule. Use `--target jvm`
+/// for HTTPS today.
+@stable(since = "0.3")
+@cfg(feature = "dotnet")
+pub func serveTls(router: in Router, host: in String, port: in Int, tls: in Std.Tls.TlsServerConfig): Result[Unit, ServeTlsError]
+  requires: host.length > 0
+  requires: port >= 1
+  requires: port <= 65535
+{
+  return Err(
+    error = ServerTlsUnsupported(
+      message = "lyric-web serveTls is not supported on --target dotnet yet: the managed HttpListener " +
+        "cannot terminate TLS off-Windows or speak HTTP/2. It ships with the pure-Lyric sans-IO HTTP " +
+        "server engine (docs/61 §6, phase 3 of epic #5874, issue #5885). Use --target jvm for HTTPS today."
+    )
+  )
+}
+
+/// jvm: delegates to `Web.Kernel.Runtime.serveTls` — an Undertow HTTPS
+/// listener with `ENABLE_HTTP2` (h2 via ALPN) built from `tls`.  Blocks
+/// forever once bound.  mTLS (`tls.requireClientCert` / `tls.clientCa`) is
+/// not yet supported on this path and returns a typed `ServerTlsUnsupported`
+/// naming issue #6017; non-mTLS TLS termination is fully supported.
+@stable(since = "0.3")
+@cfg(feature = "jvm")
+pub func serveTls(router: in Router, host: in String, port: in Int, tls: in Std.Tls.TlsServerConfig): Result[Unit, ServeTlsError]
+  requires: host.length > 0
+  requires: port >= 1
+  requires: port <= 65535
+{
+  match HttpKernel.serveTls(host, port, tls, router) {
+    case Ok(_) -> return Ok(value = ())
+    case Err(e) -> match e {
+      case NotSupportedOnTarget(msg) -> return Err(error = ServerTlsUnsupported(message = msg))
+    }
+  }
 }
 
 /// Run the accept loop for `router`/`streaming` on `host`:`port`, exactly

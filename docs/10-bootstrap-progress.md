@@ -30567,6 +30567,46 @@ client TLS, above).
 **Related:** `docs/03-decision-log.md` D-progress-692; #5880, #5874, #5884,
 #5930, #5931, #5932.
 
+## lyric-web `Web.serveTls` ships on JVM — Undertow HTTPS listener + `ENABLE_HTTP2` + `WebTls` config template, non-mTLS (2026-07-18)
+
+`Web.serveTls(router, host, port, tls: Std.Tls.TlsServerConfig)` on
+`--target jvm` (`lyric-web/src/_kernel/jvm/web_kernel.l`) stands up an
+Undertow HTTPS listener — `Undertow.Builder.addHttpsListener(port, host,
+sslContext)` + `UndertowOptions.ENABLE_HTTP2` (HTTP/2 via ALPN, TLS-only
+per docs/61 decision 8) — reusing the plaintext `serve`'s
+`LyricUndertowHandler` / `Web.dispatch` core. The server `SSLContext` is
+built by reusing `Std.HttpServer.serverSslContextFromConfig` (newly
+exposed alongside `startListenerTls`, with an `internal
+ServerSslContext.rawContext` accessor) instead of re-declaring the
+`KeyManagerFactory`/`KeyStore`/reflection extern boundary. docs/61 §6.3's
+phase 2.2 (epic #5874, issue #5881).
+
+On `--target dotnet`, `Web.serveTls` returns a typed `ServerTlsUnsupported`
+naming the sans-IO-engine work (phase 3, issue #5885) — the managed
+`HttpListener` cannot terminate TLS off-Windows or speak HTTP/2. A
+`Web.WebTls` config block (env-overridable cert/key/client-CA paths, D128
+decision 2) plus `tlsServerConfigFromWebTls` complete the surface.
+
+Mutual TLS did not ship on the Undertow path: the reused identity-only
+`SSLContext` builder carries no client-CA `TrustManager`, and Undertow
+additionally needs its XNIO `SSL_CLIENT_AUTH_MODE` option wired.
+`serveTls` returns a typed `Err(NotSupportedOnTarget(...))` (surfaced as
+`ServerTlsUnsupported` at the `Web` layer) for any
+`requireClientCert`/`clientCa` request, tracked in #6017 (a different
+blocker than phase 2.1's `HttpsConfigurator` gap #5930).
+
+Verified end-to-end by `tests/jvm_server_smoke.l`'s in-process HTTPS/h2
+self-check (a real `Web.serveTls` Undertow listener + a `Std.Http` client
+that trusts the SAN fixture cert and asserts `HttpResponse.negotiatedVersion()
+== Http2`) plus a `curl --http2` cross-check, both wired into the
+`compiler-self-tests-jvm` CI job; and by `tests/serve_tls_tests.l` on dotnet
+(`Web.ServeTlsTests`, 4/4). A published-tool sandbox limitation (the 0.4.33
+`build --manifest lyric-web --target jvm` cyclic-package crash, #6024) meant
+JVM verification used the CI-equivalent single-file build path.
+
+**Related:** `docs/03-decision-log.md` D-progress-696; #5881, #5874, #5885,
+#6017, #6024, #5903.
+
 ## `HttpClientBuilder` TLS client configuration ships for real on JVM (phase 1.3) — `SSLContext` wiring, same surface and insecure policy (2026-07-18)
 
 `_kernel_jvm/http_host.l`'s `hostSupportsTlsConfig()` flips from `false`

@@ -37,6 +37,8 @@ package Web.Kernel.Runtime
 import Std.Core
 import Std.Collections
 import Std.Console as Console
+import Std.Tls
+import Std.HttpServer
 import Web
 
 // ─── Undertow HTTP server ───────────────────────────────────────────────────
@@ -45,6 +47,19 @@ extern type JUndertow = "io.undertow.Undertow"
 extern type JUndertowBuilder = "io.undertow.Undertow$Builder"
 
 extern type JHttpHandler = "io.undertow.server.HttpHandler"
+
+// TLS listener wiring (docs/61 §5.2 / §6.3, phase 2.2 of epic #5874, issue
+// #5881).  `addHttpsListener(port, host, SSLContext)` terminates TLS on the
+// Undertow listener; `UndertowOptions.ENABLE_HTTP2` (an `org.xnio.Option`
+// static field, read via auto-FFI) opts the listener into h2 — TLS-only via
+// ALPN, so it sequences with, not before, server TLS (docs/61 decision 8).
+extern type JSSLContext = "javax.net.ssl.SSLContext"
+
+extern type JUndertowOptions = "io.undertow.UndertowOptions"
+
+extern type JXnioOption[T] = "org.xnio.Option"
+
+extern type JBoolean = "java.lang.Boolean"
 
 extern type JHttpServerExchange = "io.undertow.server.HttpServerExchange"
 
@@ -212,6 +227,63 @@ pub func serve(host: in String, port: in Int, router: in Web.Router): Unit
   server.start()
   val latch = JCountDownLatch.new(1)
   latchAwaitForever(latch)
+}
+
+/// Start a TLS-terminated Undertow server on `host`:`port` and block the
+/// calling thread forever (docs/61 §6.3, phase 2.2 of epic #5874, issue
+/// #5881).  Requests run through the same `LyricUndertowHandler` /
+/// `Web.dispatch` core the plaintext `serve` uses; only the listener
+/// construction differs — `addHttpsListener(port, host, sslContext)` plus
+/// `UndertowOptions.ENABLE_HTTP2` (h2 is TLS-only via ALPN, so it is enabled
+/// exactly when TLS is — docs/61 §5.2, decision 8).
+///
+/// The server `SSLContext` is built by reusing
+/// `Std.HttpServer.serverSslContextFromConfig` — the same
+/// `KeyManagerFactory`-backed context construction the JVM
+/// `Std.HttpServer.startListenerTls` kernel uses — rather than re-declaring
+/// the whole `KeyStore` / `KeyManagerFactory` / reflection extern boundary a
+/// second time.  `tls.minVersion` restricts the negotiated protocol range;
+/// `tls.identity` supplies the server certificate + key.
+///
+/// mTLS (`tls.requireClientCert` / `tls.clientCa`) is NOT yet supported on
+/// this path: it needs a client-CA `TrustManager` on the `SSLContext` plus
+/// Undertow's XNIO `SSL_CLIENT_AUTH_MODE` socket option, tracked in #6017.
+/// A request for either field returns `Err(NotSupportedOnTarget(...))` — a
+/// loud, typed rejection naming the tracking issue, never a silent ignore.
+/// Non-mTLS TLS termination (identity + minVersion) never returns `Err`.
+@stable(since = "0.3")
+pub func serveTls(host: in String, port: in Int, tls: in TlsServerConfig, router: in Web.Router): Result[Unit, TlsListenError]
+  requires: host.length > 0
+  requires: port >= 1
+  requires: port <= 65535
+{
+  val mtlsRequested = tls.requireClientCert or
+    match tls.clientCa {
+      case Some(_) -> true
+      case None -> false
+    }
+  if mtlsRequested {
+    return Err(
+      error = NotSupportedOnTarget(
+        message = "mutual TLS (requireClientCert / clientCa) is not yet supported by lyric-web's " +
+          "Undertow HTTPS listener: it needs a client-CA TrustManager on the SSLContext plus Undertow's " +
+          "XNIO SSL_CLIENT_AUTH_MODE socket option (tracked in #6017). Non-mTLS server TLS " +
+          "(identity + minVersion) is fully supported."
+      )
+    )
+  }
+  val serverCtx = serverSslContextFromConfig(tls.identity, tls.minVersion)
+  val sslContext: JSSLContext = serverCtx.rawContext()
+  val handler: JHttpHandler = LyricUndertowHandler(router = router)
+  val builder = JUndertow.builder()
+  val _listener = builder.addHttpsListener(port, host, sslContext)
+  val _http2 = builder.setServerOption(JUndertowOptions.ENABLE_HTTP2, JBoolean.TRUE)
+  val _handler = builder.setHandler(handler)
+  val server: JUndertow = builder.build()
+  server.start()
+  val latch = JCountDownLatch.new(1)
+  latchAwaitForever(latch)
+  Ok(value = ())
 }
 
 // ─── Rate limiting (tumbling window) ────────────────────────────────────────
