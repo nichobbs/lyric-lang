@@ -652,12 +652,22 @@ and J4 (async), and the J2→J4 logical dependency holds — so Track A
   not block the v1.0 release train and continues shipping on its own cadence.
 - **Generics on JVM:** accept erased + `checkcast` for v1 (recommended; matches
   `docs/18`), or invest in specialised helpers / await Valhalla (Q-J001/Q-J003)?
-- **Server TLS / h2 on JVM: SPECCED (D128, `docs/61-https-tls-http-versions.md`).**
-  The `_kernel_jvm/http_server.l` `https://` rejection (tracked with #2663) and
-  lyric-web's plaintext-only Undertow listener are remediated under epic #5874
-  phase 2 (`HttpsServer` + `SSLContext`, Undertow `addHttpsListener` +
-  `ENABLE_HTTP2`); longer-term the JVM converges onto the pure-Lyric sans-IO
-  HTTP engine once it has parity + performance evidence on dotnet (docs/61 §6.5).
+- **Server TLS / h2 on JVM: SPECCED (D128, `docs/61-https-tls-http-versions.md`);
+  phase 2.1 shipped (issue #5880).** `Std.HttpServer.startListenerTls`
+  (`_kernel_jvm/http_server.l`) now builds a real `HttpsServer` +
+  `KeyManagerFactory`-backed `SSLContext` from `TlsServerConfig`, lifting the
+  `https://` rejection (formerly tracked with #2663) for the non-mTLS case —
+  verified by a real TLS handshake + HTTP/1.1 round trip
+  (`tls_server_jvm_tests.l`). Mutual TLS did not ship: `HttpsServer` requires
+  subclassing the concrete `HttpsConfigurator` class to call
+  `HttpsParameters.setNeedClientAuth`, which Lyric's `impl <ExternInterface>
+  for Record` cannot do (interfaces only, verified empirically) — tracked as
+  issue #5930. `startListenerTls` returns a typed `NotSupportedOnTarget` error
+  for any mTLS request rather than a silent skip. lyric-web's Undertow
+  `addHttpsListener` + `ENABLE_HTTP2` wiring (phase 2 item 6) and the JVM
+  engine convergence (docs/61 §6.5) remain open; longer-term the JVM
+  converges onto the pure-Lyric sans-IO HTTP engine once it has parity +
+  performance evidence on dotnet.
 - **Maven resolver: RESOLVED (M-7).** The Java `resolver/` was revived — it is
   the live Maven resolution path (`cli_restore.l` executes `lyric-resolver.jar`,
   built by `make maven-resolver` and bundled with every distribution). A

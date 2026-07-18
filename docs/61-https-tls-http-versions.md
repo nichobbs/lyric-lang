@@ -321,7 +321,7 @@ pub record TlsServerConfig {
 }
 
 // Std.HttpServer — TLS twin of startListener; same 12-function surface after it
-pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig): ...
+pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig): Result[HttpListener, TlsListenError]
 
 // lyric-web
 pub func serveTls(router: in Router, host: in String, port: in Int, tls: in Std.Tls.TlsServerConfig): Unit
@@ -340,9 +340,15 @@ pub config WebTls from {
 ```
 
 Until phase 3 lands, `serveTls`/`startListenerTls` on **dotnet** return a
-typed, documented `Unsupported` error naming the tracking issue — a loud
-tracked gap per the no-silent-skip rule, mirroring how the JVM kernel
-rejects `https://` today (but typed, not a panic).
+typed, documented `TlsListenError` error naming the tracking issue — a
+loud tracked gap per the no-silent-skip rule, mirroring how the JVM kernel
+rejects `https://` today (but typed, not a panic). On **JVM**,
+`startListenerTls` ships for real (phase 2.1, issue #5880, §8) for a
+server identity + `minVersion`; requesting mTLS
+(`requireClientCert`/`clientCa`) returns the same `TlsListenError` shape
+instead — the JVM twin doesn't need phase 3 to work, but mTLS there is
+gated on a separate FFI capability (§8, issue #5930), not the phase-3
+schedule.
 
 ### 6.4 h2 in the engine (phase 4)
 
@@ -449,6 +455,33 @@ items marked ∥ are independent and can proceed in parallel.
 **Phase 2 — JVM server TLS**
 5. `Std.HttpServer` JVM kernel: `HttpsServer` + `SSLContext` from
    `TlsServerConfig`, incl. mTLS; lift the `https://` rejection. (After 1.)
+   _Shipped in phase 2.1 (issue #5880) for the non-mTLS case_:
+   `startListenerTls` builds a real `HttpsServer` + `KeyManagerFactory`-backed
+   `SSLContext` from `TlsServerConfig.identity`/`minVersion`, verified by a
+   real TLS handshake + HTTP/1.1 round trip
+   (`tls_server_jvm_tests.l`). **mTLS (`requireClientCert`/`clientCa`) did
+   NOT ship**: `HttpsServer` only applies `HttpsParameters.setNeedClientAuth`
+   through an application-supplied `HttpsConfigurator.configure(...)`
+   override, which requires subclassing the concrete `HttpsConfigurator`
+   class — Lyric's `impl <ExternInterface> for Record` only implements
+   interfaces (verified empirically: attempting it throws
+   `IncompatibleClassChangeError` at class-load time), a real FFI gap filed
+   as issue #5930. `startListenerTls` rejects any mTLS request with a typed
+   `Err(NotSupportedOnTarget(...))` rather than silently ignoring it. Two
+   further FFI gaps surfaced and were worked around rather than blocking
+   the whole slice: `impl <ExternInterface> for Record` methods with
+   `slice[ExternType]` params/returns emit a mismatched `Object[]`
+   descriptor (issue #5931), and the JVM auto-FFI cannot pass a
+   reference-typed array as a call argument at all — both sidestepped via
+   `KeyManagerFactory`/`java.lang.reflect` instead of a custom
+   `X509KeyManager` impl (see `_kernel_jvm/http_server.l`'s module header).
+   A same-package multi-file split (`_kernel_jvm/`-only file alongside
+   `Std.Tls`'s top-level `tls.l`) was also tried for the `SSLContext`
+   construction and found to break unrelated static-call resolution at JVM
+   runtime — a fourth gap, filed as issue #5932; the construction lives in
+   `_kernel_jvm/http_server.l` instead, reached through the minimal
+   `Identity.hostHandle` kernel-only accessor added to `tls.l`. Mutual TLS
+   and dotnet server TLS remain tracked (issues #5930, #5884).
 6. lyric-web: Undertow `addHttpsListener` + `ENABLE_HTTP2`, `Web.serveTls`,
    `WebTls` config template, typed dotnet `Unsupported` until phase 3;
    docs + book. (After 1; ∥ with 5.)

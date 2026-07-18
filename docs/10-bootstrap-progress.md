@@ -30526,3 +30526,43 @@ checking.
 **Related:** `docs/03-decision-log.md` D-progress-691; #5877, #5874,
 #5947, #5950, #5952, #5878, #5971 (a dotnet qualified-case-pattern-match
 compiler bug found while writing the #5950 regression test).
+
+## `Std.HttpServer.startListenerTls` ships on JVM — real `HttpsServer` + `SSLContext` termination, non-mTLS (2026-07-17)
+
+`Std.HttpServer.startListenerTls(host, port, tls: TlsServerConfig)`
+(`_kernel_jvm/http_server.l`) now builds a real
+`com.sun.net.httpserver.HttpsServer` with a `KeyManagerFactory`-backed
+`SSLContext` from `Std.Tls.Identity`/`TlsVersion` — docs/61 §6.3's phase
+2.1 (epic #5874, issue #5880), lifting the `https://`-prefix rejection
+previously tracked against #2663. The same 12-function pull-model surface
+(`nextContext`/`requestMethod`/…/`respondBytesWithHeaders`) works
+identically against a TLS listener. Verified end-to-end by
+`lyric-stdlib/tests/tls_server_jvm_tests.l`: a real `SSLSocket` client
+trusting the fixture cert as its own CA completes a genuine handshake and
+HTTP/1.1 round trip. `--target dotnet`'s twin remains an unchanged typed
+stub (issue #5884).
+
+Mutual TLS (`requireClientCert`/`clientCa`) did not ship: `HttpsServer`
+requires subclassing the concrete `HttpsConfigurator` class to call
+`HttpsParameters.setNeedClientAuth`, and Lyric's `impl <ExternInterface>
+for Record` only implements interfaces (verified: throws
+`IncompatibleClassChangeError` at class-load time against a real repro) —
+filed as #5930. `startListenerTls` returns a typed
+`Err(NotSupportedOnTarget(...))` for any mTLS request. Two further JVM
+auto-FFI gaps surfaced and were worked around (JDK `KeyManagerFactory` +
+`java.lang.reflect` instead of a custom `X509KeyManager`/`X509TrustManager`
+`impl`) rather than blocking the whole slice: `impl <ExternInterface> for
+Record` methods with `slice[ExternType]` params/returns emit a mismatched
+`Object[]` descriptor (#5931), and the JVM auto-FFI cannot pass a
+reference-typed array as a call argument at all (unfiled as its own issue;
+same root cause as #5931's fix direction). A fourth gap (#5932) was found
+and avoided by architecture: a same-package split across a top-level
+stdlib file and an additional `_kernel_jvm/`-only file breaks unrelated
+static-call resolution at JVM runtime, so the `SSLContext` construction
+lives in `_kernel_jvm/http_server.l` instead of a new `Std.Tls`-package
+file, reached through the existing `internal Identity.rawHandle`
+kernel-boundary accessor on `tls.l` (shipped with phase 1.2's dotnet
+client TLS, above).
+
+**Related:** `docs/03-decision-log.md` D-progress-692; #5880, #5874, #5884,
+#5930, #5931, #5932.

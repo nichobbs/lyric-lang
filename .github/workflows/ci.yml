@@ -4573,6 +4573,24 @@ jobs:
           "$lyric_bin" test --target jvm lyric-compiler/lyric/http_version_jvm_self_test.l
           echo "Std.Http HttpVersion round-trip self-test ran: http_version_jvm_self_test.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
+      # TLS phase 2.1 (#5880, docs/61 §6.3): Std.HttpServer.startListenerTls
+      # real HttpsServer/SSLContext termination — JVM-only (the dotnet twin
+      # is a typed Unsupported stub, #5884, with no runtime surface to
+      # exercise). Placed alongside the other Std.Tls JVM steps above (same
+      # sub-batch, same #5913 concurrent-step-cap reasoning).
+      - name: Std.HttpServer TLS test coverage on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.HttpServer TLS JVM tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-stdlib/tests/tls_server_jvm_tests.l
+          echo "Std.HttpServer TLS test ran: tls_server_jvm_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
       # Map-key self-test on JVM (#1480 MSIL / #4982 Finding 1 JVM) — the JVM
       # half of the dotnet-job step of the same name.  Records with
       # `@derive(Equals)`/`@derive(Hash)` now carry synthesised

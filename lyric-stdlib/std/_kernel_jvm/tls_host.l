@@ -19,6 +19,17 @@
 //! a plain Lyric record pairing them (an `Option[JPrivateKey]`, `None` for a
 //! cert-only load) rather than an extern alias.
 //!
+//! `JCertificate`/`JPrivateKey` and `CertHandle`'s `cert`/`key` fields are
+//! `pub` so `std/tls.l`'s `internal Identity.rawHandle` kernel-boundary
+//! accessor (a `Host.CertHandle` pass-through, docs/61 §3.2 phase 1.2) can
+//! be consumed by `_kernel_jvm/http_server.l`'s `SSLContext` construction
+//! for `Std.HttpServer.startListenerTls` (docs/61 §6.3, issue #5880)
+//! without weakening `Std.Tls`'s own opacity guarantee: `Identity`/
+//! `Certificate` stay opaque to every consumer outside `Std.Tls`; only
+//! this already-`pub` handle record's fields became readable, and only
+//! `Std.Tls`'s own `tls.l` (same package) ever reaches `Identity.handle`
+//! directly.
+//!
 //! Key-mismatch detection: there is no direct "does this key belong to this
 //! cert" JDK call, so `hostIdentityFromPemBytes` performs a sign/verify
 //! round-trip — sign a fixed probe message with the parsed private key,
@@ -44,7 +55,7 @@ import Std.String
 
 extern type JCertificateFactory = "java.security.cert.CertificateFactory"
 
-extern type JCertificate = "java.security.cert.Certificate"
+pub extern type JCertificate = "java.security.cert.Certificate"
 
 extern type JByteArrayInputStream = "java.io.ByteArrayInputStream"
 
@@ -52,7 +63,7 @@ extern type JPKCS8EncodedKeySpec = "java.security.spec.PKCS8EncodedKeySpec"
 
 extern type JKeyFactory = "java.security.KeyFactory"
 
-extern type JPrivateKey = "java.security.PrivateKey"
+pub extern type JPrivateKey = "java.security.PrivateKey"
 
 extern type JSignature = "java.security.Signature"
 
@@ -68,8 +79,8 @@ pub union HostLoadError {
 /// A parsed certificate plus an optional private key (module header) — the
 /// JVM analog of .NET's `X509Certificate2` handle.
 pub record CertHandle {
-  cert: JCertificate
-  key: Option[JPrivateKey]
+  pub cert: JCertificate
+  pub key: Option[JPrivateKey]
 }
 
 func parseCert(bytes: in slice[Byte]): JCertificate {

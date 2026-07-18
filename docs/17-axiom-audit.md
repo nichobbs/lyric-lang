@@ -896,7 +896,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.FormatHost` | `format_host.l` | java.math.BigDecimal, java.lang.Integer, and java.util.Locale conform to their documented JVM contracts |
 | `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-256/SHA-512 semantics and are pure functions of their input bytes |
 | `jvm` | `Std.HttpHost` | `http_host.l` | java.net.http.HttpClient operations conform to their documented JVM contracts |
-| `jvm` | `Std.HttpServer` | `http_server.l` | com.sun.net.httpserver.HttpServer operations conform to their documented JVM contracts |
+| `jvm` | `Std.HttpServer` | `http_server.l` | com.sun.net.httpserver.HttpServer / javax.net.ssl / java.security / java.lang.reflect operations conform to their documented JVM contracts |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
 | `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |
 | `jvm` | `Std.PathHost` | `path_host.l` | java.io.File.separatorChar and java.io.File.getParent conform to their documented JVM contracts |
