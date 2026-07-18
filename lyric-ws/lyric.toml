@@ -12,30 +12,42 @@ output_assembly = "Ws.dll"
 
 [project.packages]
 "Ws"            = "src/ws.l"
+"Ws.Frame"      = "src/ws_frame.l"
+"Ws.Handshake"  = "src/ws_handshake.l"
 "Ws.Aspects"    = "src/ws_aspects.l"
 "Ws.Kernel.Net" = "src/_kernel/net/ws_kernel.l"
 "Ws.Kernel.Jvm" = "src/_kernel/jvm/ws_kernel.l"
 
 [project.tests]
 "Ws.WsTests"                       = "tests/ws_tests.l"
+"Ws.WsFrameTests"                  = "tests/ws_frame_tests.l"
+"Ws.WsHandshakeTests"              = "tests/ws_handshake_tests.l"
+"Ws.WsDotnetE2eTests"              = "tests/ws_dotnet_e2e_tests.l"
 "Ws.WsSecurityAspectWeavingTests"  = "tests/ws_security_aspect_weaving_tests.l"
 
 # tests/ws_jvm_e2e_test.l is NOT registered here — see its header for why
 # (a real, self-hosted JVM backend bug blocks it from passing today).
+#
+# Ws.WsDotnetE2eTests is dotnet-only (it dials Std.TcpHost directly, which
+# has no JVM kernel) — like ws_jvm_e2e_test.l's exclusion above, this is
+# fine only because CI runs this manifest's tests with the default
+# (dotnet) feature set; a future `lyric test --target jvm --features jvm`
+# run against this manifest would need Ws.WsDotnetE2eTests excluded the
+# same way. Ws.WsFrameTests / Ws.WsHandshakeTests exercise target-independent
+# pure-Lyric code (Ws.Frame / Ws.Handshake) and are safe on both targets.
 
 [features]
 default = ["dotnet"]
-dotnet = []   # ASP.NET Core WebSockets
+dotnet = []   # pure-Lyric RFC 6455 over Std.TcpHost (Ws.Kernel.Net, #778)
 jvm    = []   # Undertow WebSockets (Phase 6)
 
 [dependencies]
 "Lyric.Auth"   = { workspace = true }
 
 # [nuget] — no third-party packages needed for the current .NET kernel
-# implementation; the real ASP.NET Core WebSocket upgrade path (deferred to
-# #778) will add Microsoft.AspNetCore.WebSockets when that work lands.
-# System.Threading.RateLimiting and Microsoft.AspNetCore.WebSockets both
-# ship in the .NET 10 BCL and do not require separate NuGet packages.
+# implementation: Ws.Kernel.Net is pure-Lyric RFC 6455 over Std.TcpHost
+# (System.Net.Sockets), not ASP.NET Core WebSockets — see Ws.Kernel.Net's
+# module header (docs/62-jsonrpc-mcp.md §6, #778).
 
 [maven]
 # JVM WebSocket server backend (Ws.Kernel.Jvm).  Same coordinate/version as

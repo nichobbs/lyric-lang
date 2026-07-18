@@ -1,13 +1,15 @@
 //! Ws — WebSocket server library for Lyric.
 //! Stability: @experimental — the connection lifecycle compiles and the WsAuth
 //! aspect has tests.  `startServer` is backed by a real running server on
-//! both targets: ASP.NET Core WebSockets is still path-finder-scope bookkeeping
-//! only pending #778 (`Ws.Kernel.Net.startServer` returns `NOT_IMPLEMENTED`),
-//! while Undertow on JVM is a real, tested end-to-end connect/send/receive/
-//! close loop (see `Ws.Kernel.Jvm`'s header for its documented gaps:
-//! fragmented multi-frame messages and automatic ping keepalives).  The
-//! rate-limiter's burst budget is one-shot (does not refill; tracked in
-//! issue #1178).
+//! both targets: dotnet is pure-Lyric RFC 6455 over `Std.TcpHost` (`Ws.Kernel.Net`,
+//! docs/62-jsonrpc-mcp.md §6, #778) — real connect/handshake/send/receive/close,
+//! WITH fragmented multi-frame message reassembly and automatic ping keepalive
+//! (see `Ws.Kernel.Net`'s header); Undertow on JVM is a real, tested end-to-end
+//! connect/send/receive/close loop but is missing those two (see
+//! `Ws.Kernel.Jvm`'s header for its documented gaps: fragmented multi-frame
+//! messages and automatic ping keepalives — tracked as Q-WS-001 to bring JVM to
+//! dotnet parity).  The rate-limiter's burst budget is one-shot (does not
+//! refill; tracked in issue #1178).
 //!
 //! Provides the full connection lifecycle for WebSocket servers:
 //! connection context, message types, a handler interface for
@@ -27,7 +29,7 @@
 //!     func onError(ctx: in WsContext, error: in WsError): Unit { ... }
 //!   }
 //!
-//!   // Start a real server bound to the handler (--target jvm today; see above)
+//!   // Start a real server bound to the handler (real on both targets; see above)
 //!   match Ws.startServer("0.0.0.0", 8080, "/ws", MyHandler()) {
 //!     case Ok(registry) -> ...   // push via Ws.sendText(registry, connId, "hi")
 //!     case Err(e) -> ...
@@ -317,9 +319,9 @@ pub func createRegistry(): Result[NativeRegistry, WsError] {
 /// down.  Uses the default 65536-byte max message size — see
 /// `startServerWithConfig` to override it.
 ///
-/// See the module header for per-target status: real end-to-end on
-/// `--target jvm` (Undertow); `Err(WsError(code = "SERVER_START_FAILED"))`
-/// on `--target dotnet` pending #778.
+/// See the module header for per-target status: real end-to-end on both
+/// `--target dotnet` (pure-Lyric RFC 6455 over `Std.TcpHost`, #778) and
+/// `--target jvm` (Undertow).
 @stable(since = "0.1")
 pub func startServer(host: in String, port: in Int, path: in String, handler: in WsHandler): Result[NativeRegistry, WsError] {
   startServerWithConfig(host, port, path, 65536, handler)
