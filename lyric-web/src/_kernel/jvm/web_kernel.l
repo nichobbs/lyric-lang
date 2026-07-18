@@ -245,31 +245,23 @@ pub func serve(host: in String, port: in Int, router: in Web.Router): Unit
 /// second time.  `tls.minVersion` restricts the negotiated protocol range;
 /// `tls.identity` supplies the server certificate + key.
 ///
-/// mTLS (`tls.requireClientCert` / `tls.clientCa`) is NOT yet supported on
-/// this path: it needs a client-CA `TrustManager` on the `SSLContext` plus
-/// Undertow's XNIO `SSL_CLIENT_AUTH_MODE` socket option, tracked in #6017.
-/// A request for either field returns `Err(NotSupportedOnTarget(...))` — a
-/// loud, typed rejection naming the tracking issue, never a silent ignore.
-/// Non-mTLS TLS termination (identity + minVersion) never returns `Err`.
+/// Returns `Unit` (blocks forever, like the plaintext `serve`), NOT a
+/// `Result`: the caller (`Web.serveTls`) rejects mutual-TLS configs BEFORE
+/// calling here, so this path always has a servable non-mTLS config and
+/// never needs to report a typed error.  Keeping the return type `Unit`
+/// avoids a `Web`-layer `match` over a `Result[_, Std.HttpServer error]`
+/// nested inside a function returning `Result[_, Web.ServeTlsError]`, which
+/// the JVM backend miscompiles to a `ClassCastException` (it casts the inner
+/// `Err` payload to the outer error type — the #5903 family; see
+/// `Web.serveTls`).  This kernel therefore assumes `tls` is non-mTLS
+/// (`serverSslContextFromConfig` builds an identity-only context regardless);
+/// `Web.serveTls` enforces that invariant.
 @stable(since = "0.3")
-pub func serveTls(
-  host: in String, port: in Int, tls: in TlsServerConfig, router: in Web.Router
-): Result[Unit, TlsListenError]
+pub func serveTls(host: in String, port: in Int, tls: in TlsServerConfig, router: in Web.Router): Unit
   requires: host.length > 0
   requires: port >= 1
   requires: port <= 65535
 {
-  val mtlsRequested = tls.requireClientCert or match tls.clientCa { case Some(_) -> true; case None -> false }
-  if mtlsRequested {
-    return Err(
-      error = NotSupportedOnTarget(
-        message = "mutual TLS (requireClientCert / clientCa) is not yet supported by lyric-web's " +
-          "Undertow HTTPS listener: it needs a client-CA TrustManager on the SSLContext plus Undertow's " +
-          "XNIO SSL_CLIENT_AUTH_MODE socket option (tracked in #6017). Non-mTLS server TLS " +
-          "(identity + minVersion) is fully supported."
-      )
-    )
-  }
   val serverCtx = serverSslContextFromConfig(tls.identity, tls.minVersion)
   val sslContext: JSSLContext = serverCtx.rawContext()
   val handler: JHttpHandler = LyricUndertowHandler(router = router)
@@ -281,7 +273,6 @@ pub func serveTls(
   server.start()
   val latch = JCountDownLatch.new(1)
   latchAwaitForever(latch)
-  Ok(value = ())
 }
 
 // ─── Rate limiting (tumbling window) ────────────────────────────────────────

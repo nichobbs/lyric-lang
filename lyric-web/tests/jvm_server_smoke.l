@@ -188,8 +188,44 @@ func startHttpsServer(tls: in Std.Tls.TlsServerConfig): Unit {
   t.start()
 }
 
+// Confirm mTLS configs are rejected with a typed error (no listener bound):
+// requireClientCert = true must return Err(ServerTlsUnsupported) naming the
+// tracking issue, never silently start a plaintext-auth listener (#6040).
+// serveTls returns this immediately — it rejects mTLS before binding — so
+// this runs on the main thread with no port actually opened.
+func runMtlsRejectionCheck(): Unit {
+  val id = match Identity.fromPem(httpsCertPem, httpsKeyPem) {
+    case Ok(i) -> i
+    case Err(e) -> {
+      Console.println("MTLS-REJECT-SELFCHECK: FAIL identity load: " + TlsError.message(e))
+      return
+    }
+  }
+  val mtls = TlsServerConfig(identity = id, minVersion = Tls12, clientCa = None, requireClientCert = true)
+  match Web.serveTls(httpsRouter(), "127.0.0.1", 8101, mtls) {
+    case Ok(_) -> Console.println("MTLS-REJECT-SELFCHECK: FAIL mTLS config was not rejected")
+    case Err(e) -> {
+      val msg = Web.ServeTlsError.message(e)
+      if msg.contains("mutual TLS") or msg.contains("6017") {
+        Console.println("MTLS-REJECT-SELFCHECK: PASS mTLS rejected with a typed error")
+      } else {
+        Console.println("MTLS-REJECT-SELFCHECK: FAIL unexpected message: " + msg)
+      }
+    }
+  }
+}
+
 // Start a real TLS Undertow listener, then GET it with an h2-capable client
 // that trusts the fixture cert, asserting status 200 AND h2 negotiation.
+//
+// The listener binds asynchronously on its own thread, so instead of a single
+// fixed `sleep` (a bind race that flaked under CI scheduling jitter, #6028),
+// the client GET is retried in a BOUNDED poll loop: the request fails fast
+// with a connection error until the socket is accepting, and each retry waits
+// a short interval, up to a total budget.  A genuinely-broken listener still
+// fails fast (the budget expires in a few seconds); a slow-to-bind one is
+// tolerated.  The FIRST successful response (Ok) is evaluated and ends the
+// loop — a wrong status / non-h2 / wrong body is reported as FAIL, not retried.
 func runHttpsH2SelfCheck(): Unit {
   val id = match Identity.fromPem(httpsCertPem, httpsKeyPem) {
     case Ok(i) -> i
@@ -200,7 +236,6 @@ func runHttpsH2SelfCheck(): Unit {
   }
   val tls = TlsServerConfig(identity = id, minVersion = Tls12, clientCa = None, requireClientCert = false)
   startHttpsServer(tls)
-  JThread.sleep(1000i64)
 
   val caCert = match Certificate.fromPem(httpsCertPem) {
     case Ok(c) -> c
@@ -210,25 +245,39 @@ func runHttpsH2SelfCheck(): Unit {
     }
   }
   val client = HttpClientBuilder.new().withCaCertificate(caCert).build()
-  val respR = await client.get("https://127.0.0.1:8100/hello/Ada")
-  match respR {
-    case Ok(resp) -> {
-      val st = HttpResponse.statusCode(resp)
-      val ver = HttpResponse.negotiatedVersion(resp)
-      val isH2 = match ver { case Http2 -> true; case Http11 -> false; case Http3 -> false }
-      val body = match await HttpResponse.bodyText(resp) { case Ok(b) -> b; case Err(_) -> "" }
-      if st == 200 and isH2 and body == "Hello, Ada!" {
-        Console.println("HTTPS-H2-SELFCHECK: PASS status=200 negotiated=h2 body=Hello,Ada")
-      } else {
-        val vs = match ver { case Http2 -> "h2"; case Http11 -> "http/1.1"; case Http3 -> "h3" }
-        Console.println("HTTPS-H2-SELFCHECK: FAIL status=" + st.toString() + " negotiated=" + vs + " body=" + body)
+
+  var attempt = 0
+  var reported = false
+  while attempt < 40 and not reported {
+    JThread.sleep(150i64)
+    match await client.get("https://127.0.0.1:8100/hello/Ada") {
+      case Ok(resp) -> {
+        val st = HttpResponse.statusCode(resp)
+        val ver = HttpResponse.negotiatedVersion(resp)
+        val isH2 = match ver { case Http2 -> true; case Http11 -> false; case Http3 -> false }
+        val body = match await HttpResponse.bodyText(resp) { case Ok(b) -> b; case Err(_) -> "" }
+        if st == 200 and isH2 and body == "Hello, Ada!" {
+          Console.println("HTTPS-H2-SELFCHECK: PASS status=200 negotiated=h2 body=Hello,Ada")
+        } else {
+          val vs = match ver { case Http2 -> "h2"; case Http11 -> "http/1.1"; case Http3 -> "h3" }
+          Console.println("HTTPS-H2-SELFCHECK: FAIL status=" + st.toString() + " negotiated=" + vs + " body=" + body)
+        }
+        reported = true
+      }
+      case Err(_) -> {
+        attempt = attempt + 1
       }
     }
-    case Err(e) -> Console.println("HTTPS-H2-SELFCHECK: FAIL request: " + HttpError.message(e))
+  }
+  if not reported {
+    Console.println(
+      "HTTPS-H2-SELFCHECK: FAIL listener did not accept a connection within budget (" + attempt.toString() + " attempts)"
+    )
   }
 }
 
 func main(): Unit {
+  runMtlsRejectionCheck()
   runHttpsH2SelfCheck()
   var router = Web.create()
   router = Web.addGet(router, "/hello/{name}", HelloHandler())

@@ -1514,11 +1514,23 @@ pub func serveTls(
   )
 }
 
-/// jvm: delegates to `Web.Kernel.Runtime.serveTls` — an Undertow HTTPS
-/// listener with `ENABLE_HTTP2` (h2 via ALPN) built from `tls`.  Blocks
-/// forever once bound.  mTLS (`tls.requireClientCert` / `tls.clientCa`) is
-/// not yet supported on this path and returns a typed `ServerTlsUnsupported`
-/// naming issue #6017; non-mTLS TLS termination is fully supported.
+/// jvm: rejects mutual-TLS configs with a typed `ServerTlsUnsupported`
+/// (naming issue #6017), then delegates non-mTLS serving to
+/// `Web.Kernel.Runtime.serveTls` — an Undertow HTTPS listener with
+/// `ENABLE_HTTP2` (h2 via ALPN) built from `tls` — which blocks forever once
+/// bound, so the `Ok(())` return is unreachable in normal operation.
+///
+/// The mTLS check lives HERE (not in the kernel) on purpose: the kernel's
+/// `serveTls` returns `Unit`, so this function never `match`es a
+/// `Result[_, Std.HttpServer.TlsListenError]` from inside a function returning
+/// `Result[_, ServeTlsError]`.  That cross-error-type nested match miscompiles
+/// on `--target jvm` — the backend casts the inner `Err` payload
+/// (`TlsListenError.NotSupportedOnTarget`) to the OUTER error type
+/// (`Web.ServeTlsError`) and throws `ClassCastException` at runtime (the #5903
+/// global-case-table family; verified via the mTLS-rejection self-check in
+/// `tests/jvm_server_smoke.l`).  Reading `tls`'s fields and matching
+/// `Std.Core.Option` here is safe — only cross-package *user*-union case
+/// matching hits the bug.
 @stable(since = "0.3")
 @cfg(feature = "jvm")
 pub func serveTls(
@@ -1528,10 +1540,19 @@ pub func serveTls(
   requires: port >= 1
   requires: port <= 65535
 {
-  match HttpKernel.serveTls(host, port, tls, router) {
-    case Ok(_) -> return Ok(value = ())
-    case Err(e) -> match e { case NotSupportedOnTarget(msg) -> return Err(error = ServerTlsUnsupported(message = msg)) }
+  val mtlsRequested = tls.requireClientCert or match tls.clientCa { case Some(_) -> true; case None -> false }
+  if mtlsRequested {
+    return Err(
+      error = ServerTlsUnsupported(
+        message = "mutual TLS (requireClientCert / clientCa) is not yet supported by lyric-web's " +
+          "Undertow HTTPS listener: it needs a client-CA TrustManager on the SSLContext plus Undertow's " +
+          "XNIO SSL_CLIENT_AUTH_MODE socket option (tracked in #6017). Non-mTLS server TLS " +
+          "(identity + minVersion) is fully supported."
+      )
+    )
   }
+  HttpKernel.serveTls(host, port, tls, router)
+  return Ok(value = ())
 }
 
 /// Run the accept loop for `router`/`streaming` on `host`:`port`, exactly

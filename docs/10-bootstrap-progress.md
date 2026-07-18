@@ -30614,7 +30614,7 @@ T0014 for `Std.*`-qualified types (guarded by two new
 `restored_packages_self_test.l` cases); `examples/rbac` goes green.
 
 **Related:** `docs/03-decision-log.md` D-progress-698; #5881, #5874, #5885,
-#6017, #6024, #6039, #5903.
+#6017, #6024, #6039, #6028, #6040, #5903.
 
 ## `HttpClientBuilder` TLS client configuration ships for real on JVM (phase 1.3) — `SSLContext` wiring, same surface and insecure policy (2026-07-18)
 

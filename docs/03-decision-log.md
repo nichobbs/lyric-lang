@@ -17209,25 +17209,51 @@ listener (docs/61 §5.2/§6.3, issue #5881). h2 is TLS-only via ALPN
 **mTLS deferred (loud, typed).** The reused `serverSslContextFromConfig`
 builds an identity-only context (no client-CA `TrustManager`), and Undertow
 additionally needs its XNIO `SSL_CLIENT_AUTH_MODE` socket option wired.
-`serveTls` therefore rejects any `requireClientCert`/`clientCa` request with
-a typed `NotSupportedOnTarget` (mapped to `ServerTlsUnsupported` at the `Web`
-layer) naming the tracking issue #6017 — never a silent ignore. This is a
-different blocker than phase 2.1's `HttpsConfigurator` gap (#5930); the
-Undertow path is not affected by that one.
+`Web.serveTls` therefore rejects any `requireClientCert`/`clientCa` request
+with a typed `ServerTlsUnsupported` naming the tracking issue #6017 — never a
+silent ignore. This is a different blocker than phase 2.1's
+`HttpsConfigurator` gap (#5930); the Undertow path is not affected by that one.
+
+The mTLS check lives in `Web.serveTls` itself (reading `tls`'s fields +
+matching `Std.Core.Option` on `clientCa`), and the JVM kernel `serveTls`
+returns **`Unit`** (like the plaintext `serve`), NOT `Result[_,
+TlsListenError]`. The first cut had the kernel return the typed error and the
+`Web` layer `match` it — but a cross-error-type nested `match` (an inner
+`Result[_, Std.HttpServer.TlsListenError]` inside a function returning
+`Result[_, Web.ServeTlsError]`) miscompiles on `--target jvm`: the backend
+casts the inner `Err` payload (`TlsListenError.NotSupportedOnTarget`) to the
+OUTER error type (`Web.ServeTlsError`) and throws `ClassCastException` at
+runtime (the #5903 global-case-table family). The success-path smoke never
+exercised the `Err` arm, so the #6040 mTLS-rejection self-check is what
+surfaced it. Moving the mTLS decision into `Web.serveTls` (no kernel `Result`,
+no cross-package user-union case match) is the fix; reading `tls` fields and
+matching `Option` there is safe — only cross-package *user*-union case
+matching hits the bug.
 
 **Verification.**
 
-- `tests/jvm_server_smoke.l` extended with an in-process HTTPS/h2 self-check:
-  `main` stands up a real TLS-terminated Undertow listener via `Web.serveTls`
-  on a background thread (SAN fixture cert for `127.0.0.1`), then drives it
-  with a `Std.Http` client that trusts the fixture cert and asserts a 200
-  **and** `HttpResponse.negotiatedVersion() == Http2` (the phase-1.4
-  accessor), logging `HTTPS-H2-SELFCHECK: PASS`. The CI step asserts that
-  line plus an independent `curl --http2` (`http_version=2 code=200`). Run
-  locally through the CI-equivalent flow (`lyric restore` + single-file
-  `lyric build --target jvm`) against the published NuGet `lyric` 0.4.33
-  tool + `LYRIC_STD_PATH`: 4/4 plaintext endpoints, HTTPS/h2 PASS, curl
-  `2:200`.
+- `tests/jvm_server_smoke.l` extended with two in-process self-checks:
+  (a) **HTTPS/h2** — `main` stands up a real TLS-terminated Undertow listener
+  via `Web.serveTls` on a background thread (SAN fixture cert for
+  `127.0.0.1`), then drives it with a `Std.Http` client that trusts the
+  fixture cert and asserts a 200 **and** `HttpResponse.negotiatedVersion() ==
+  Http2` (the phase-1.4 accessor), logging `HTTPS-H2-SELFCHECK: PASS`; (b)
+  **mTLS rejection** (#6040) — `Web.serveTls` with `requireClientCert = true`
+  must return a typed `ServerTlsUnsupported` (not crash, not silently start a
+  plaintext-auth listener), logging `MTLS-REJECT-SELFCHECK: PASS`. The CI step
+  asserts both PASS lines plus an independent `curl --http2`
+  (`http_version=2 code=200`).
+  **Flaky-smoke fix (#6028):** the h2 self-check's first cut used a fixed
+  1-second `sleep` to wait for the async Undertow bind, which raced CI
+  scheduling jitter (the client connected before the listener accepted →
+  the run exited without a PASS line). Replaced with a **bounded poll loop**:
+  the client GET is retried (≤40 × 150 ms) until the socket accepts, failing
+  fast on a genuinely-broken listener while tolerating a slow bind; the first
+  successful response is evaluated (a wrong status/version/body reports FAIL,
+  not a retry). Run locally through the CI-equivalent flow (`lyric restore` +
+  single-file `lyric build --target jvm`) against the published NuGet `lyric`
+  0.4.33 tool + `LYRIC_STD_PATH`: 4/4 plaintext endpoints, HTTPS/h2 PASS,
+  mTLS-reject PASS, curl `2:200`.
 - `tests/serve_tls_tests.l` (dotnet `@test_module`, registered in
   `[project.tests]`): dotnet `serveTls` → typed `ServerTlsUnsupported` naming
   #5885; `ServeTlsError.message`; `WebTls` field defaults;
@@ -17301,7 +17327,8 @@ self-check); `lyric-web/tests/serve_tls_tests.l` (new, dotnet);
 **Related.** D128, docs/61 §5.2/§6.3, D-progress-690/692 (phases 1.4/2.1),
 docs/45 (restored-contract synthesis), issues #5881, #5885 (dotnet phase 3),
 #6017 (Undertow mTLS), #6024 (tool manifest-build cycle bug), #6039 (fmt
-`internal` bug), #5903 (case-name collision).
+`internal` bug), #6028 (flaky-smoke bind race, fixed), #6040 (mTLS-rejection
+test, added), #5903 (case-name collision / cross-error-type match miscompile).
 
 ---
 
