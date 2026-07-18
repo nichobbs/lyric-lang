@@ -749,6 +749,34 @@ func lowerPatternTest(
           }
           case None -> ()
         }
+        // Package-qualified enum-case pattern (`case Std.Http.GET ->`, or an
+        // `import X as Y` alias already expanded to the real package by
+        // `Lyric.AliasRewriter`): the check above only matches when the
+        // PENULTIMATE segment alone names the enum — true when the
+        // declaring package is a single segment, but `Std.Http.GET`'s
+        // penultimate segment is "Http", not the full package "Std.Http".
+        // `collectFileSigsSeeded` (06_items.l) registers the package-
+        // qualified case ordinal under the FULL dotted-package key
+        // alongside the type-scoped one (#5769's VALUE-position fix); this
+        // PATTERN path never consulted it (#5971, JVM parity gap for the
+        // multi-segment-package case the #5769 fix's own 2-segment repro
+        // didn't exercise).
+        val pkgSegs: List[String] = newList()
+        var pqi = 0
+        while pqi < head.segments.count - 1 {
+          pkgSegs.add(head.segments[pqi])
+          pqi = pqi + 1
+        }
+        val pkgJoined = joinSegments(pkgSegs, ".")
+        match enumVariantClass(ctx, pkgJoined, lastSegment(head)) {
+          case Some(eqcls) -> {
+            emitLoad(insns, scrutSlot, scrutTy)
+            insns.add(LGetstatic(owner = eqcls, name = lastSegment(head), t = JRef(className = eqcls)))
+            insns.add(LIfAcmpne(label = failLabel))
+            return
+          }
+          case None -> ()
+        }
       }
       // isinst test against the case class; fail if the scrutinee is not that
       // case.  (Unlike a checkcast this never throws on a non-matching arm.)
@@ -1325,6 +1353,23 @@ func lowerPatternBind(
       // derived `<scrutClass>$<case>` class does not exist (docs/59 §4.4).
       if head.segments.count >= 2 {
         match enumVariantClass(ctx, head.segments[head.segments.count - 2], lastSegment(head)) {
+          case Some(_) -> {
+            insns.add(LNop)
+            return
+          }
+          case None -> ()
+        }
+        // Package-qualified enum-case pattern (`case Std.Http.GET ->`, or an
+        // aliased import already expanded to the real package): mirrors the
+        // TEST-phase fallback above (#5971) — the penultimate-segment-only
+        // check above only matches a single-segment declaring package.
+        val bindPkgSegs: List[String] = newList()
+        var bpqi = 0
+        while bpqi < head.segments.count - 1 {
+          bindPkgSegs.add(head.segments[bpqi])
+          bpqi = bpqi + 1
+        }
+        match enumVariantClass(ctx, joinSegments(bindPkgSegs, "."), lastSegment(head)) {
           case Some(_) -> {
             insns.add(LNop)
             return

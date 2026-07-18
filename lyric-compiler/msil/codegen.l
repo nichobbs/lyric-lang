@@ -6129,6 +6129,32 @@ func boxIfNeededMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType
   }
 }
 
+// Normalize a value's static type to the "scalar `Byte`" convention the
+// uniform `Func<object,…>` lambda-invoke ABI (#1877) uses for `Byte`-typed
+// parameters, before boxing an argument across that ABI boundary.
+// `typeExprToMsilCtx`'s `TRef("Byte")` arm maps a `Byte` type ANNOTATION to
+// `MInt` (Int32) — including a lifted lambda's own `Byte`-annotated
+// parameter, which `lowerFuncMsil` records in `boxedParamTypes` and later
+// unboxes via `unbox.any int32` at the identifier-load site.  A value read
+// straight out of a `slice[Byte]` / `List[Byte]` / `Map[_, Byte]` keeps the
+// genuine `MByte` (`System.Byte`) static type instead (`sliceElemMsilCtx`,
+// kept for `byte[]`/`List<byte>` BCL interop, #3472/#3473).  Boxing such a
+// value with its own `MByte` tag when it crosses INTO the Func-invoke ABI
+// produces an object the callee's `unbox.any int32` cannot cast:
+// `InvalidCastException: Unable to cast object of type 'System.Byte' to
+// type 'System.Int32'` (#5934) — e.g. `pred(bytes[i])` where `bytes:
+// slice[Byte]` and `pred: (Byte) -> Bool`.  Both box forms wrap the
+// identical (non-negative, since `Byte` is unsigned) int32 stack value a
+// `ldelem.u1`/`callvirt IList.get_Item`-loaded byte is CLI stack-normalized
+// to (ECMA-335 §III.1.1), so re-tagging the box as `Int32` here is exactly
+// the value the callee expects, not an approximation.
+func funcAbiArgBoxTypeMsil(ty: in MsilType): MsilType {
+  match ty {
+    case MByte -> MInt
+    case _ -> ty
+  }
+}
+
 // Convert a `Bool` (I4 0/1) already on top of the stack into the canonical
 // lowercase `"true"` / `"false"` string, leaving the string on the stack.
 // Pins the same spelling the language's own Bool literals and `Std.Json` use,
@@ -10620,6 +10646,46 @@ func lowerPatternTestMsil(
           }
         }
       }
+      // Package-qualified enum-case pattern (`case PkgA.Red ->`, or a
+      // multi-segment package prefix like `case Std.Http.GET ->`): Lyric enum
+      // cases are conventionally referenced through their declaring PACKAGE,
+      // not an explicit `<EnumType>.` segment (`registerEnumDeclMsil` keys the
+      // ordinal as `pkgName + "." + case`, e.g. "PkgA.Red").  The check above
+      // only fires when some segment literally names the enum TYPE; without
+      // this fallback a package-qualified case pattern (the qualifier being a
+      // package name, or an `import X as Y` alias that `Lyric.AliasRewriter`
+      // has already expanded to the real declaring package) falls through to
+      // the union-case isinst path below, which never matches an Int-ordinal
+      // enum scrutinee, and then to the "truly unknown case name" fallback —
+      // which emits an unconditional non-null check instead of testing the
+      // case, so the scrutinee's own ordinal (`brfalse` on the boxed/unboxed
+      // Int) silently decides the match instead of the pattern (#5971, MSIL
+      // parity for the JVM value-position fix #5737/#5769).
+      if head.segments.count >= 2 {
+        val pkgSegs: List[String] = newList()
+        var pqi = 0
+        while pqi < head.segments.count - 1 {
+          pkgSegs.add(head.segments[pqi])
+          pqi = pqi + 1
+        }
+        val pkgQualified = joinSegsMsil(pkgSegs, ".")
+        match mapGet(cctx.enumCaseOrdinals, pkgQualified + "." + caseName) {
+          case Some(ordv) -> {
+            emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+            match scrutTy {
+              case MObject -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MInt)))
+              case _ -> {
+              }
+            }
+            insns.add(MLdcI4(v = ordv))
+            insns.add(MCeq)
+            insns.add(MBrFalse(label = failLabel))
+            return
+          }
+          case None -> {
+          }
+        }
+      }
       // For an in-bundle generic union the scrutinee FQN carries the arity suffix
       // (`Pkg.Maybe`1`); strip it before splicing the case name (#2362).
       val baseCls = match scrutTy {
@@ -12542,7 +12608,7 @@ func lowerBuiltinOrStaticCallMsil(
             while i < args.count {
               val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
               if needBoxing {
-                boxIfNeededMsil(cctx, insns, argTy)
+                boxIfNeededMsil(cctx, insns, funcAbiArgBoxTypeMsil(argTy))
               }
               argTypes.add(argTy)
               i = i + 1

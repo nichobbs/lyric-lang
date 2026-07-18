@@ -66,6 +66,27 @@
 //! 2-segment type-qualified form (`AppError.Down`), which already works on
 //! both targets.
 //!
+//! #5971 closed the PATTERN-position sibling of the #5769 VALUE fix: a
+//! package-qualified enum-case *pattern* in a `match` arm (`case
+//! Std.Http.GET ->`), including through an `import X as Y` alias (`case
+//! H.GET ->` after `import Std.Http as H`), silently failed to discriminate
+//! on `--target dotnet`. `registerEnumDeclMsil` already keys the package-
+//! qualified ordinal (`pkgName + "." + case`) for VALUE references, but the
+//! `PConstructor` pattern-TEST codegen (`lowerPatternTestMsil`,
+//! `msil/codegen.l`) only consulted it when the pattern's penultimate
+//! segment named the enum TYPE (`case HttpMethod.GET ->`) — never when it
+//! named the declaring PACKAGE, the conventional Lyric spelling #5769
+//! established. Falling through, the pattern hit the "truly unknown case
+//! name" fallback: an unconditional non-null check instead of an ordinal
+//! comparison, so the scrutinee's OWN ordinal (via IL `brfalse`) silently
+//! decided the match — ordinal 0 (`GET`) never matched (false negative) and
+//! any nonzero ordinal always matched (false positive), regardless of the
+//! actual case tested. `Lyric.AliasRewriter` already expands `import X as
+//! Y` / `case Y.Case ->` to the real package path before type-check, so the
+//! aliased form hit the exact same codegen gap. `--target jvm` was
+//! unaffected (#5769 already covers the JVM pattern path via
+//! `enumVariantClass`).
+//!
 //! Run in CI via native `lyric test` on **both targets** (like
 //! `bitwise_self_test.l`): `--target dotnet` through `Msil.Bridge` (already
 //! covered by `enum_msil_self_test.l`'s equivalent case, but exercised again
@@ -77,6 +98,7 @@ package Lyric.QualifiedEnumCaseSelfTest
 import Std.Core
 import Std.Errors
 import Std.Http
+import Std.Http as H
 import Std.Testing
 
 enum Color {
@@ -213,5 +235,74 @@ test "#5943: package-qualified union-case CONSTRUCTION against a real cross-pack
     ParseError.message(e),
     "invalid format: 'abc' (expected int)",
     "Std.Errors.ParseError.InvalidFormat(...) (cross-package qualified construction)"
+  )
+}
+
+// #5971: package-qualified enum-case PATTERN in a `match` arm — the
+// PATTERN-position sibling of the #5769 VALUE fix above.  A real
+// cross-package enum (`Std.Http.HttpMethod`), tested at three distinct
+// ordinals (GET=0, POST=1, PUT=2) so a regression that resolves the
+// discriminator to "always true for ordinal != 0" or "always false for
+// ordinal == 0" (the exact #5971 MSIL bug) cannot pass by accident.
+func describeHttpMethodQualified(m: in HttpMethod): String {
+  match m {
+    case Std.Http.GET -> "qualified-get"
+    case Std.Http.POST -> "qualified-post"
+    case Std.Http.PUT -> "qualified-put"
+    case _ -> "qualified-other"
+  }
+}
+
+test "#5971: package-qualified enum-case pattern (case Std.Http.GET ->) discriminates correctly on both targets" {
+  assertEqual(
+    describeHttpMethodQualified(Std.Http.GET),
+    "qualified-get",
+    "GET (ordinal 0) matches its own qualified case pattern"
+  )
+  assertEqual(
+    describeHttpMethodQualified(Std.Http.POST),
+    "qualified-post",
+    "POST (ordinal 1) matches its own qualified case pattern, not GET's"
+  )
+  assertEqual(
+    describeHttpMethodQualified(Std.Http.PUT),
+    "qualified-put",
+    "PUT (ordinal 2) matches its own qualified case pattern, not GET's"
+  )
+  assertEqual(
+    describeHttpMethodQualified(Std.Http.DELETE),
+    "qualified-other",
+    "DELETE (ordinal 3, no dedicated arm) falls through to the catch-all"
+  )
+}
+
+// #5971 aliased form: `import Std.Http as H` is syntactic sugar for `import
+// Std.Http` per `Lyric.AliasRewriter` (`case H.GET ->` rewrites to `case
+// Std.Http.GET ->` before type-check), so this exercises the exact
+// user-facing shape from the bug report through the same codegen path.
+func describeHttpMethodAliasQualified(m: in HttpMethod): String {
+  match m {
+    case H.GET -> "alias-get"
+    case H.POST -> "alias-post"
+    case H.PUT -> "alias-put"
+    case _ -> "alias-other"
+  }
+}
+
+test "#5971: aliased package-qualified enum-case pattern (import Std.Http as H; case H.GET ->) discriminates correctly on both targets" {
+  assertEqual(
+    describeHttpMethodAliasQualified(Std.Http.GET),
+    "alias-get",
+    "GET (ordinal 0) matches via the import alias"
+  )
+  assertEqual(
+    describeHttpMethodAliasQualified(Std.Http.POST),
+    "alias-post",
+    "POST (ordinal 1) matches via the import alias, not GET's"
+  )
+  assertEqual(
+    describeHttpMethodAliasQualified(Std.Http.PUT),
+    "alias-put",
+    "PUT (ordinal 2) matches via the import alias, not GET's"
   )
 }
