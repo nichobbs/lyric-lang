@@ -1,0 +1,41 @@
+# lyric-jsonrpc — JSON-RPC 2.0 peer + strict cross-target JSON value model.
+#
+# Ships three coordinated packages:
+#   - JsonRpc.Json   — strict RFC 8259 JSON value model (parser + writer),
+#                       pure Lyric, identical on both targets.
+#   - JsonRpc        — JSON-RPC 2.0 envelope types, standard error codes,
+#                       the RpcHandler / RpcTransport interfaces, and the
+#                       symmetric RpcPeer (runLoop / call / notify).
+#   - JsonRpc.Stdio   — NDJSON and Content-Length stdio framings over
+#                       Std.Console / Std.ConsoleHost primitives.
+#
+# See docs/62-jsonrpc-mcp.md sections 1-4 for the agreed build spec.
+# First consumer: nichobbs/cloud-agents' in-container permission-callback
+# MCP server (lyric-mcp, a follow-on track, builds on this library).
+
+[package]
+name        = "Lyric.JsonRpc"
+version     = "0.1.0"
+authors     = ["Lyric Contributors"]
+license     = "MIT"
+description = "JSON-RPC 2.0 peer, strict cross-target JSON value model, and stdio framing for Lyric."
+
+[project]
+name            = "Lyric.JsonRpc"
+output          = "single"
+output_assembly = "JsonRpc.dll"
+
+[project.packages]
+"JsonRpc.Json"  = "src/json.l"
+"JsonRpc"       = "src/jsonrpc.l"
+"JsonRpc.Stdio" = "src/stdio.l"
+
+[project.tests]
+"JsonRpc.Json.JsonTests"     = "tests/json_tests.l"
+"JsonRpc.JsonRpcTests"       = "tests/jsonrpc_tests.l"
+"JsonRpc.Stdio.StdioTests"   = "tests/stdio_tests.l"
+
+[features]
+default = ["dotnet"]
+dotnet  = []
+jvm     = []
