@@ -463,6 +463,154 @@ LyricString* lyric_process_stdout(void* op);
 LyricString* lyric_process_stderr(void* op);
 void lyric_process_free(void* op);
 
+/* ── TCP sockets + TLS transport (lyric_tls.c) ─────────────────────────
+ *
+ * The native-target transport seam for the sans-IO `Std.HttpEngine`
+ * (docs/61 §7, D128 decision 10; epic #5874 phase 5, issue #5890).  Two
+ * layers: a blocking POSIX socket transport (`lyric_sock_*`) and a narrow
+ * TLS seam (`lyric_tls_*`) over OpenSSL 3.x.
+ *
+ * OpenSSL is loaded DYNAMICALLY at runtime with dlopen/dlsym on first use
+ * (see lyric_tls.c) — lyric_rt.a carries NO link-time dependency on
+ * libssl/libcrypto, so a native binary that never opens a TLS connection
+ * never loads OpenSSL, and the whole seam can be re-pointed at mbedTLS for
+ * static/musl builds by swapping lyric_tls.c alone, without touching any
+ * Lyric code (the swappable-seam intent of D128 decision 10).  Target the
+ * OpenSSL 3.x ABI only.
+ *
+ * All handles here are RAW malloc'd resources (the lyric_process_* op
+ * discipline), NOT ARC objects: a `void*` TLS context / connection is
+ * released with its explicit `lyric_tls_ctx_free` / `lyric_tls_free`, and a
+ * socket fd with `lyric_sock_close`.  The `_kernel_native/` Lyric twin wraps
+ * each in an opaque type whose destructor calls the matching free, which is
+ * where the ARC-managed-resource lifetime (docs/61 §7 item 4) is realised.
+ *
+ * Diagnostics: on a NULL/-1 failure the seam records a thread-local message
+ * (OpenSSL's error string, or a strerror for a socket failure) retrievable
+ * with `lyric_tls_last_error` — so the Lyric twin can surface a typed
+ * `TcpError`/`TlsHandshakeFailed` carrying a real reason, never an opaque
+ * boolean.
+ */
+
+/* ── Plain TCP sockets (POSIX; always available, no OpenSSL) ─────────── */
+
+/* Dial a blocking TCP connection to `host`:`port`.  `host` may be an IP
+ * literal or a DNS name (getaddrinfo resolves it, trying each address in
+ * turn).  Returns the connected fd, or -1 on failure (last_error set). */
+int32_t lyric_sock_connect(const char* host, int32_t port);
+
+/* Bind + listen a TCP socket on `ip`:`port` (`ip` an IP literal such as
+ * "127.0.0.1" / "0.0.0.0" / "::"; not a DNS name).  SO_REUSEADDR is set.
+ * A `port` of 0 binds an ephemeral port (read it back with
+ * `lyric_sock_local_port`).  Returns the listening fd, or -1 (last_error
+ * set). */
+int32_t lyric_sock_listen(const char* ip, int32_t port, int32_t backlog);
+
+/* The local port a socket is bound to (getsockname), or -1 on failure.
+ * Used to recover the kernel-assigned port after an ephemeral bind. */
+int32_t lyric_sock_local_port(int32_t fd);
+
+/* Block until a client connects to the listening `listen_fd`; returns the
+ * accepted connection fd, or -1 (last_error set). */
+int32_t lyric_sock_accept(int32_t listen_fd);
+
+/* Read up to `n` bytes into `buf`, blocking until at least one arrives.
+ * Returns the count read, 0 on a clean peer close (EOF), or -1 on error.
+ * Retries on EINTR. */
+int64_t lyric_sock_read(int32_t fd, uint8_t* buf, int64_t n);
+
+/* Write ALL `n` bytes of `buf` (looping over partial writes, retrying on
+ * EINTR).  Returns `n` on success, or -1 on error. */
+int64_t lyric_sock_write(int32_t fd, const uint8_t* buf, int64_t n);
+
+/* close(2) the fd.  Returns 0 on success, -1 on failure.  No-op on a
+ * negative fd. */
+int32_t lyric_sock_close(int32_t fd);
+
+/* ── TLS over OpenSSL 3.x (dlopen'd) ───────────────────────────────────
+ *
+ * `min_version` is 12 for TLS 1.2 (the floor) or 13 for TLS 1.3.  ALPN is
+ * advertised/selected from a comma-separated wire-name list (`alpn_csv`,
+ * e.g. "http/1.1" or "h2,http/1.1"); "" or NULL disables ALPN.  Every PEM
+ * argument is a NUL-terminated PEM text block ("" / NULL = absent).
+ */
+
+/* 1 iff OpenSSL 3.x could be dlopen'd and every needed symbol resolved.
+ * When 0, every `lyric_tls_*` constructor returns NULL with a last_error
+ * naming the missing library — the Lyric twin turns that into a typed
+ * "TLS unavailable" error rather than crashing. */
+int32_t lyric_tls_available(void);
+
+/* Build a CLIENT TLS context.  `ca_pem` "" / NULL uses the system default
+ * verify paths (honoring SSL_CERT_FILE / SSL_CERT_DIR); a non-empty
+ * `ca_pem` pins trust EXCLUSIVELY to that CA (the additive-vs-exclusive
+ * distinction is a Lyric-layer concern — the seam takes exactly the trust
+ * anchors it is given).  `insecure` != 0 disables certificate and hostname
+ * verification (the docs/61 §4 dual-key policy override) — the ONLY way to
+ * turn verification off.  Returns a context handle, or NULL (last_error
+ * set).  Free with `lyric_tls_ctx_free`. */
+void* lyric_tls_client_new(const char* ca_pem, int32_t insecure);
+
+/* Present a client certificate + key on `client_ctx` for mutual TLS.
+ * `key_pem` must be an unencrypted PKCS#8 key ("BEGIN PRIVATE KEY").
+ * Returns 0 on success, -1 on a load / cert-key-mismatch failure
+ * (last_error set). */
+int32_t lyric_tls_client_set_identity(void* client_ctx, const char* cert_pem, const char* key_pem);
+
+/* Perform the CLIENT handshake over the already-connected `fd`.  SNI and
+ * RFC 6125 hostname verification are hard-wired on from `sni_host` unless
+ * the context was built `insecure`.  `alpn_csv` advertises ALPN protocols.
+ * Returns a connection handle on a verified handshake, or NULL (last_error
+ * set); the caller still owns `fd` and closes it with `lyric_sock_close`.
+ * Free the handle with `lyric_tls_free`. */
+void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_host, const char* alpn_csv);
+
+/* Build a SERVER TLS context from an identity (`cert_pem` + `key_pem`,
+ * PKCS#8).  `client_ca_pem` non-empty enables client-certificate
+ * verification against that CA; `require_client_cert` != 0 makes a client
+ * certificate mandatory (mutual TLS).  `alpn_csv` is the server's ordered
+ * ALPN preference list.  Returns a context handle, or NULL (last_error
+ * set).  Free with `lyric_tls_ctx_free`. */
+void* lyric_tls_server_new(const char* cert_pem, const char* key_pem,
+                           int32_t min_version, const char* client_ca_pem,
+                           int32_t require_client_cert, const char* alpn_csv);
+
+/* Perform the SERVER handshake over an accepted `fd`.  Returns a connection
+ * handle on success (including a satisfied mTLS requirement), or NULL
+ * (last_error set) — e.g. a required client certificate absent or not
+ * chaining to `client_ca_pem`.  The caller owns `fd`.  Free with
+ * `lyric_tls_free`. */
+void* lyric_tls_server_accept(void* server_ctx, int32_t fd);
+
+/* Read up to `n` decrypted bytes.  Returns the count, 0 on a clean TLS
+ * close (close_notify / EOF), or -1 on error.  Transparently drives any
+ * renegotiation / WANT_READ retry loop. */
+int64_t lyric_tls_read(void* conn, uint8_t* buf, int64_t n);
+
+/* Encrypt and write ALL `n` bytes.  Returns `n`, or -1 on error. */
+int64_t lyric_tls_write(void* conn, const uint8_t* buf, int64_t n);
+
+/* The negotiated ALPN protocol wire name into `out` (NUL-terminated,
+ * truncated to `out_cap`).  Returns its length, or 0 when no ALPN protocol
+ * was negotiated. */
+int32_t lyric_tls_alpn(void* conn, char* out, int32_t out_cap);
+
+/* Send a TLS close_notify (best-effort).  Does not close the fd. */
+void lyric_tls_shutdown(void* conn);
+
+/* Free a connection handle (SSL_free).  Does NOT close the underlying fd —
+ * the caller closes it with `lyric_sock_close`.  No-op on NULL. */
+void lyric_tls_free(void* conn);
+
+/* Free a client/server context handle (SSL_CTX_free + owned buffers).
+ * No-op on NULL. */
+void lyric_tls_ctx_free(void* ctx);
+
+/* Copy the most recent seam error message for THIS thread into `out`
+ * (NUL-terminated, truncated to `out_cap`); returns its length.  Empty
+ * when no error has been recorded. */
+int32_t lyric_tls_last_error(char* out, int32_t out_cap);
+
 #ifdef __cplusplus
 }
 #endif

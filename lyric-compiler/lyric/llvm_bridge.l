@@ -606,6 +606,11 @@ pub func compileToNativeWithFlags(
   clangArgs.add(rtPath)
   clangArgs.add("-lm")
   clangArgs.add("-lpthread")
+  // libdl for the lyric_tls.c OpenSSL seam's dlopen/dlsym (a no-op stub on
+  // glibc >= 2.34; a real dependency on older glibc / musl). A program that
+  // never references the TLS seam does not pull lyric_tls.o from the archive,
+  // so this stays inert for non-TLS binaries. docs/61 §7, issue #5890.
+  clangArgs.add("-ldl")
   var li = 0
   while li < npkg.nativeLibs.count {
     clangArgs.add("-l" + npkg.nativeLibs[li])
