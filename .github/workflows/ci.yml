@@ -4591,6 +4591,24 @@ jobs:
           "$lyric_bin" test --target jvm lyric-stdlib/tests/tls_server_jvm_tests.l
           echo "Std.HttpServer TLS test ran: tls_server_jvm_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
 
+      # Std.HttpEngine test coverage on JVM (#5883) — the JVM half of the
+      # dotnet-job step of the same name (stdlib-builds). Placed in this
+      # sub-batch (after the "JVM batch 1-split" barrier), not the
+      # pre-split batch above, which has drifted back over the
+      # ~14-concurrent-step cap (#5913).
+      - name: Std.HttpEngine test coverage on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.HttpEngine JVM tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-stdlib/tests/http_engine_tests.l
+          echo "Std.HttpEngine test ran: http_engine_tests.l (--target jvm)" >> "$GITHUB_STEP_SUMMARY"
+
       # Map-key self-test on JVM (#1480 MSIL / #4982 Finding 1 JVM) — the JVM
       # half of the dotnet-job step of the same name.  Records with
       # `@derive(Equals)`/`@derive(Hash)` now carry synthesised
@@ -6499,6 +6517,22 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_tls_client_tests.l
+
+      # Std.HttpEngine test coverage (#5883, docs/61 §6.1 phase 3.2): the
+      # pure-Lyric sans-IO HTTP/1.1 parser/serializer/connection-FSM that
+      # phase 3.3 (#5884) drives from a TcpListener/SslStream transport.
+      # Zero externs, so this and the JVM step below (in the JVM batch
+      # 1-split sub-batch) must and do produce identical results.
+      - name: Std.HttpEngine test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.HttpEngine tests"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_engine_tests.l
 
       # Stdlib runtime suites on dotnet (#5604, expanded in D-progress-670 /
       # #5710): these `func main`-shaped suites (run via `lyric run`, not

@@ -17147,6 +17147,225 @@ real `lyric test` invocations as normal.
 
 ---
 
+## D-progress-694 — `Std.HttpEngine` ships (pure-Lyric sans-IO HTTP/1.1 parser/serializer/connection FSM, docs/61 §6.1 phase 3.2); five pre-existing JVM/MSIL backend bugs found and worked around
+
+Ships `lyric-stdlib/std/http_engine.l` (`Std.HttpEngine`) — issue #5883,
+phase 3.2 of the HTTPS/TLS epic (#5874, docs/61-https-tls-http-versions.md
+§6.1, D128). Zero externs, zero kernel files: the engine imports only
+`Std.Core`/`Std.Collections`/`Std.String`/`Std.Char`, the same dependency
+set `Std.Xml`/`Std.Yaml` (D065) already establish as precedent for a
+pure-Lyric parser, so it needs no kernel work at all when the JVM and
+native transports (docs/61 decision 6/8) reuse it later.
+
+**Event vocabulary.** `feed(conn, bytes): FeedResult` is the sans-IO core:
+`Connection` is a linear value (old values must not be reused after a
+`feed` call; rebind to `result.conn`), and `feed` returns every event the
+newly-fed bytes produced — `NeedMore`, `RequestHead(method, target,
+version, headers)`, `ExpectContinue` (100-continue), `BodyChunk(bytes)`,
+`RequestComplete`, and `ProtocolError(kind, message)` (an exhaustive
+`ProtocolErrorKind` enum plus a pure `protocolErrorStatus(kind): Int`
+helper, rather than the issue's originally-sketched `ProtocolError(code,
+reason)` — letting tests assert the *exact* rejection kind instead of
+string-matching a message). One `feed` call can yield many events (a
+bodyless request is `RequestHead` + `RequestComplete` together; two
+fully-buffered pipelined requests yield two of each). Response
+serialization (`serializeResponseHead`/`serializeChunk`/
+`serializeLastChunk`/`serializeFixedLengthBody`) is stateless and
+`requires:`-contract-guarded against response-splitting (ASCII-only
+reason/header content, RFC 9110 §5.5's field-value grammar being a byte
+charset, not Unicode text, so this is the *correct* reading, not a
+shortcut).
+
+**RFC 9112 strictness (security-critical).** Bare CR/bare LF are rejected
+outright (strict CRLF only — recipients "MAY" tolerate bare LF per §2.2,
+but this server does not); `Content-Length` + `Transfer-Encoding` together
+is rejected unconditionally regardless of which framing "would win"
+(§6.3's explicit request-smuggling defense); a `Transfer-Encoding` whose
+final coding isn't `chunked` is rejected (§6.1); conflicting
+`Content-Length` values are rejected, identical repeats tolerated (§6.3);
+whitespace between a header field-name and its colon is rejected (§5.1);
+obs-fold header continuation is rejected (§5.2); header field-values
+outside `field-vchar`/SP/HTAB (including `obs-text`, since this stdlib has
+no Latin-1 helper to represent 0x80-0xFF faithfully as a `String`) are
+rejected. Request-target accepts origin-form and absolute-form always,
+asterisk-form only for `OPTIONS` (§3.2.2/§3.2.4); authority-form
+(`CONNECT`) is not accepted — this engine does not support `CONNECT`
+tunneling. Trailers and chunk extensions are parsed and discarded, not
+interpreted. Every strictness decision is documented with its RFC citation
+in the module's own header comment, not just here.
+
+**Test corpus.** `lyric-stdlib/tests/http_engine_tests.l` is an exhaustive
+`@test_module` (52 tests): happy-path GET/POST/chunked/100-continue;
+chunked body with extensions and trailers; a keep-alive pipeline of two
+requests fed in one buffer, re-verified byte-at-a-time; a boundary-split
+torture test iterating every 2-way split point of a representative
+fixed-length AND a representative chunked request (asserting the
+reconstructed body text and final event, not a fixed event count/shape,
+since a split landing mid-body legitimately produces more than one
+`BodyChunk` event — the sans-IO engine cannot and must not coalesce across
+`feed` calls); one rejection test per `ProtocolErrorKind` case; header/line
+count/size limit enforcement; HTTP/1.0-without-Content-Length + keep-alive
+default semantics on both versions; `protocolErrorStatus` mapping; and a
+chunked-response-serialization round-trip fed back through the request
+parser (proving the serializer and parser agree on the wire format). Runs
+on both `--target dotnet` and `--target jvm` in CI; both must and do
+produce identical results.
+
+**Five pre-existing, general compiler bugs found (all filed, none fixed
+here — out of this PR's scope, each isolated to a minimal repro
+independent of HTTP):**
+
+1. **#5934 (MSIL)** — passing a `slice[Byte]` index expression
+   (`bytes[i]`) directly into a `(Byte) -> Bool`-typed parameter throws
+   `InvalidCastException: Unable to cast object of type 'System.Byte' to
+   type 'System.Int32'` at the call site; a plain `Byte`-typed local
+   works. Worked around throughout `http_engine.l` by binding the indexed
+   element to an explicitly `: Byte`-typed local before calling the
+   predicate.
+2. **#5935 (JVM)** — using the `Bool` a `(T) -> Bool` call returns
+   directly as an `if` condition emits invalid bytecode (`VerifyError: Bad
+   type on operand stack` at the `ifeq`, an unboxed `Boolean` reaching a
+   branch instruction). Worked around by binding the call's result to an
+   explicitly `: Bool`-typed local first, forcing the unbox at the
+   assignment.
+3. **#5936 (JVM)** — `field = field.slice(...)` (or `.concat(...)`)
+   self-reassignment on an `inout` record parameter, followed by more code
+   in the same function (here, a subsequent `match`), emits an
+   inconsistent stack-map frame (`VerifyError`). Reproduced independent of
+   `Connection`/HTTP with a two-field record and a two-case `Result`
+   match. Worked around by never writing `state.field = state.field.op(...)`
+   inline anywhere in this file — every such site binds the result to a
+   local first, then assigns.
+4. **#5937 (JVM)** — a `slice[Byte]`-typed field on a `pub opaque type`,
+   accessed through `inout` from *within the declaring package* (ordinary,
+   legitimate same-package access, not an opacity violation), throws
+   `NoSuchFieldError: ... does not have member field 'java.lang.Object[]
+   buf'` — the caller's compiled field-access bytecode expects a
+   descriptor the class doesn't actually have. The identical field shape
+   on a plain (non-`opaque`) `record` works correctly. Worked around by
+   declaring `Connection` as a plain `record` instead of `opaque` — a real,
+   documented loss of compiler-enforced field-hiding (nothing stops an
+   external package from reaching into `Connection`'s fields today),
+   accepted as the lesser evil versus not shipping the engine at all.
+   `Connection`'s own doc comment explains the deviation and points here.
+5. **#5995 (both targets)** — a cross-package **enum** case-name
+   collision: `Std.Http`'s own `HttpVersion` enum (landed on `main` via
+   #5877/e6442a3d while this PR was rebasing) declares a case named
+   `Http11`; this module's independently-designed, unrelated `HttpVersion`
+   enum originally declared the same case name. Once both enums are
+   compiled into the same program (as they are in the real
+   `lyric-stdlib/lyric.full.toml` bundle), a bare `Http11`
+   construction/match here silently resolved against `Std.Http`'s case
+   instead of this module's own — verified with the real stdlib bundle,
+   reproducing on both `--target dotnet` and `--target jvm`, and
+   confirmed to disappear the instant the name stopped colliding. The
+   same bug class as `Std.Tls`'s `CertFileNotFound` rename (#5903,
+   partially addressed by #5984's "JVM qualified union-case construction"
+   fix — but this repro shows the collision still reproduces for this
+   enum-vs-enum shape on both targets). Worked around by renaming this
+   module's cases to `Http1_0`/`Http1_1` (only `Http11` collided;
+   `Http10` is unique, but renaming just one would be asymmetric).
+
+**Honest boundary.** This ships the protocol engine only — no transport.
+docs/61's own phase breakdown (§8, item 8) already scopes this
+correctly: the `.NET` `TcpListener`/`SslStream` kernel (item 7, #5884) and
+the `scope`/`spawn` accept loop assembling them behind
+`Std.HttpServer`/`startListenerTls` (item 9, #5882) are separate,
+not-yet-started PRs. The design doc's "pipelining rejection" language
+(§6.1) is interpreted narrowly: this sans-IO layer parses every complete
+request already present in a `feed` call's buffer (it has no way to
+refuse bytes it has already been handed), and defers the actual
+"don't read ahead of the in-flight response" transport policy to the
+future driver — documented explicitly in the module header rather than
+silently reinterpreted.
+
+**Review-round follow-up (PR #5999).** A code review raised one REQUIRED
+finding and five SUGGESTIONs, addressed in the same PR before merge:
+
+- **#6000 (REQUIRED)** — RFC 9112 §3.2 requires a server to reject any
+  HTTP/1.1 request that lacks a `Host` header field, or that carries more
+  than one. Added `validateHostHeader`/`checkHostCount`, invoked from
+  `finishHeaders` *after* framing analysis succeeds (so a request with
+  both a framing defect and a missing Host reports the framing defect —
+  the more severe, smuggling-adjacent condition — not the Host omission).
+  New `ProtocolErrorKind` cases `MissingHost`/`MultipleHost`, both mapping
+  to 400. HTTP/1.0 is exempt (no such requirement in RFC 9112 for 1.0).
+- **#6004** — added `EngineLimits.maxBodyBytes` (a fifth mandatory field,
+  keeping the "no defaulted fields" #5908/#5920 sidestep intact), enforced
+  once against `Content-Length` for a fixed-length body and cumulatively
+  via a `bodyBytesSoFar: Int` threaded through `PhChunkSize`/
+  `PhChunkData`/`PhChunkCrlf` for a chunked body (whose total is never
+  declared up front). Exceeding it is the new `BodyTooLarge` kind, mapped
+  to 413.
+- **#6003** — `validateChunkedTransferEncoding` conflated "no `chunked`
+  coding present at all" with "`chunked` present but not last" under one
+  `NonFinalChunkedEncoding` kind. Split into a new `UnsupportedTransferCoding`
+  kind for the former, keeping `NonFinalChunkedEncoding` for the latter.
+- **#6002** — `serializeResponseHead`'s `requires:` clauses rejected an
+  RFC-legal empty reason-phrase (RFC 9112 §4 permits one) and HTAB inside
+  a header value (RFC 9110 §5.5's `field-vchar`/SP/HTAB grammar allows
+  it), panicking the connection for input that was never actually an
+  injection risk. Dropped the `reason.length > 0` requirement and widened
+  `isResponseSafeByte` to `(cp >= 32 and cp <= 126) or cp == 9`, rejecting
+  only CR/LF/NUL — the actual response-splitting hazards.
+- **#6005** — `feed`'s `var state = conn` is a shallow record copy, so a
+  `PhHeaders` phase's `List[HeaderField]` aliased the same heap object
+  `conn` referenced; `onHeaderField`'s in-place `.add()` was, in
+  principle, observable through a stale `conn` reference kept around in
+  violation of (but not caught by) the linear-value contract. `feed` now
+  defensively clones the header list via `cloneHeaderPhaseIfNeeded`/
+  `clonedHeaderPhase` at entry, enforcing the contract by construction.
+- **#6001 (deferred)** — quadratic (`acc = acc + …`) string construction
+  in header-serialization hot paths is a real but bounded (limits-capped)
+  inefficiency; fixing it spans four functions and was judged out of
+  scope for this round. Left as a tracked follow-up, not gold-plated in.
+
+The test corpus grew from 52 to 59 `@test_module` cases: missing/duplicate
+Host (both polarities), an explicit HTTP/1.0-without-Host acceptance case,
+`UnsupportedTransferCoding`, `BodyTooLarge` for both fixed-length and
+cumulative chunked bodies, and the relaxed serializer contract (empty
+reason + HTAB).
+
+**Verification.** No source-buildable `./bin/lyric` was available in this
+sandbox (same D-progress-543 exception as D-progress-689); the published
+NuGet `lyric` 0.4.32 tool was used. Following the D-progress-689 addendum's
+lesson directly: `lyric test --manifest` was confirmed to *still* link the
+stale prebuilt `Lyric.Stdlib.dll` for runtime resolution even with
+`--manifest` (only compilation is fresh), so the real assertions in
+`http_engine_tests.l` were verified by porting the identical checks into a
+throwaway `func main(): Int` harness driven by `lyric run --manifest`
+against a small manifest containing only this module's own transitive
+closure — the recipe that correctly recompiles and executes fresh source,
+per D-progress-689. All 71 checks (covering every `@test_module` test's
+assertions, including the review-round additions above) pass identically
+on `--target dotnet` and `--target jvm`, verified twice: once against a
+minimal manifest carrying only this module's own dependency closure, and
+again against the real, full `lyric-stdlib/lyric.full.toml` bundle (68
+packages, including `Std.Http`) after rebasing onto a `main` that had, in
+the interim, landed #5877's own `Std.Http.HttpVersion` enum and triggered
+the #5995 collision above — the second run is what caught #5995, since it
+only manifests once both `HttpVersion` enums coexist in one compiled
+program. (An early version of the harness that crammed every check into a
+single giant `func main()` hit an unrelated `InvalidCastException`
+casting an `EngineLimits` value to `Func<Object>`; splitting the harness's
+checks across several helper functions — mirroring how `Lyric.TestSynth`
+already compiles each real `test { }` block into its own synthesized
+function — made the crash disappear, confirming it was an artifact of the
+scratch harness's shape, not a `Std.HttpEngine` or shipped-test-corpus
+issue.) `lyric build --manifest lyric-stdlib/lyric.full.toml` (the full
+stdlib bundle with `Std.HttpEngine` added) stays clean on both targets (a
+pre-existing, unrelated `W0005`/#2494 warning count on dotnet is identical
+with and without this addition). `scripts/audit-axioms.sh` and
+`scripts/audit-kernel-stubs.sh` both stay clean. CI, which builds a
+genuine `./bin/lyric` from source, runs the real `lyric test` invocations
+on both targets as normal.
+
+**Related:** #5883, #5874, docs/61-https-tls-http-versions.md §6.1, D128,
+#5934, #5935, #5936, #5937, #5995, #6000, #6002, #6003, #6004, #6005,
+D-progress-543, D-progress-689, D065.
+
+---
+
 ## D128 — HTTPS/TLS across client and server, sans-IO HTTP engine, and a unified h2-or-lower default (docs/61)
 
 **Context.** Client-side HTTPS already worked on both managed targets

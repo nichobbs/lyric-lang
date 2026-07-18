@@ -30566,3 +30566,70 @@ client TLS, above).
 
 **Related:** `docs/03-decision-log.md` D-progress-692; #5880, #5874, #5884,
 #5930, #5931, #5932.
+
+## `Std.HttpEngine` ships — pure-Lyric sans-IO HTTP/1.1 parser, serializer, connection FSM (2026-07-17)
+
+New `lyric-stdlib/std/http_engine.l` (`Std.HttpEngine`): a target-independent
+HTTP/1.1 protocol engine — docs/61 §6.1's phase 3.2 (epic #5874, issue
+#5883). No externs, no kernel file; only `Std.Core`/`Std.Collections`/
+`Std.String`/`Std.Char`, following the `Std.Xml`/`Std.Yaml` (D065)
+precedent for a pure-Lyric parser. `feed(conn, bytes): FeedResult` consumes
+byte slices incrementally and returns typed events (`NeedMore`,
+`RequestHead`, `ExpectContinue`, `BodyChunk`, `RequestComplete`,
+`ProtocolError(kind, message)`); `serializeResponseHead`/`serializeChunk`/
+`serializeLastChunk`/`serializeFixedLengthBody` produce response bytes.
+Strict RFC 9112 framing: rejects `Content-Length` + `Transfer-Encoding`
+together (request-smuggling defense, §6.3), a `chunked` coding not last,
+conflicting `Content-Length` values, obs-fold, whitespace before a header
+colon, and bare CR/LF — see the module's own header comment for the full
+strictness rationale with RFC citations. `lyric-stdlib/tests/
+http_engine_tests.l` is an exhaustive byte-level corpus (happy paths,
+chunked bodies with extensions/trailers, keep-alive pipelining, two
+boundary-split torture tests — every 2-way split point and byte-at-a-time
+feeding — every rejection case, limits enforcement, HTTP/1.0 semantics,
+and a response-serializer round-trip through the request parser), run on
+both targets in CI.
+
+Testing surfaced five pre-existing, general compiler bugs unrelated to
+HTTP specifically (filed, not fixed here): #5934 (MSIL — a `slice[Byte]`
+index expression passed directly into a `(Byte) -> Bool`-typed parameter
+throws `InvalidCastException`), #5935 (JVM — the `Bool` returned by such a
+call, used directly as an `if` condition, emits an unverifiable boxed
+comparison), #5936 (JVM — `field = field.slice(...)` self-reassignment on
+an `inout` record parameter followed by more code emits an inconsistent
+stack-map frame), #5937 (JVM — a `slice[Byte]` field on an `opaque
+type`, read through `inout` from the declaring package, gets a mismatched
+field descriptor and throws `NoSuchFieldError`; worked around by declaring
+`Connection` as a plain `record` instead of `opaque`, documented in its own
+doc comment), and #5995 (both targets — a cross-package enum case-name
+collision: `Std.Http`'s own `HttpVersion` enum, landed on `main` via #5877
+while this PR was rebasing, also declares a case named `Http11`; a bare
+`Http11` construction/match in this module's unrelated `HttpVersion` enum
+silently resolved against `Std.Http`'s case once both were compiled into
+the real `lyric-stdlib/lyric.full.toml` bundle — worked around by renaming
+this module's cases to `Http1_0`/`Http1_1`). Each bug was isolated to a
+minimal, HTTP-independent repro before filing. The engine itself has no
+known correctness gaps on either target; both `dotnet` and `jvm` pass the
+full test corpus identically, verified against both a minimal manifest and
+the real, full stdlib bundle.
+
+Honest boundary: this PR ships the protocol engine only — no transport.
+The `.NET` `TcpListener`/`SslStream` kernel and the `scope`/`spawn` accept
+loop that drive this engine over a real socket are #5884/#5882 (phase 3,
+items 7/9), not yet started.
+
+A follow-up review round on the PR (#5999) added: RFC 9112 §3.2 Host-header
+validation (`MissingHost`/`MultipleHost`, 400, HTTP/1.1-only — #6000);
+`EngineLimits.maxBodyBytes`, enforced once for fixed-length bodies and
+cumulatively for chunked bodies (`BodyTooLarge`, 413 — #6004); a distinct
+`UnsupportedTransferCoding` kind for "no chunked coding present" versus
+`NonFinalChunkedEncoding` for "chunked present but not last" (#6003); a
+relaxed `serializeResponseHead` contract that accepts an RFC-valid empty
+reason-phrase and HTAB in header values, rejecting only CR/LF/NUL (#6002);
+and a defensive header-list clone at `feed`'s entry so the linear-value
+contract is enforced by construction (#6005). The test corpus grew to 59
+cases; #6001 (quadratic string building in header hot paths) remains a
+tracked follow-up.
+
+**Related:** `docs/03-decision-log.md` D-progress-694; #5883, #5874,
+#5934, #5935, #5936, #5937, #5995, #6000, #6002, #6003, #6004, #6005.
