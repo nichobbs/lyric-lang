@@ -30590,20 +30590,28 @@ feeding — every rejection case, limits enforcement, HTTP/1.0 semantics,
 and a response-serializer round-trip through the request parser), run on
 both targets in CI.
 
-Testing surfaced four pre-existing, general compiler bugs unrelated to
+Testing surfaced five pre-existing, general compiler bugs unrelated to
 HTTP specifically (filed, not fixed here): #5934 (MSIL — a `slice[Byte]`
 index expression passed directly into a `(Byte) -> Bool`-typed parameter
 throws `InvalidCastException`), #5935 (JVM — the `Bool` returned by such a
 call, used directly as an `if` condition, emits an unverifiable boxed
 comparison), #5936 (JVM — `field = field.slice(...)` self-reassignment on
 an `inout` record parameter followed by more code emits an inconsistent
-stack-map frame), and #5937 (JVM — a `slice[Byte]` field on an `opaque
+stack-map frame), #5937 (JVM — a `slice[Byte]` field on an `opaque
 type`, read through `inout` from the declaring package, gets a mismatched
 field descriptor and throws `NoSuchFieldError`; worked around by declaring
 `Connection` as a plain `record` instead of `opaque`, documented in its own
-doc comment). Each bug was isolated to a minimal, HTTP-independent repro
-before filing. The engine itself has no known correctness gaps on either
-target; both `dotnet` and `jvm` pass the full test corpus identically.
+doc comment), and #5995 (both targets — a cross-package enum case-name
+collision: `Std.Http`'s own `HttpVersion` enum, landed on `main` via #5877
+while this PR was rebasing, also declares a case named `Http11`; a bare
+`Http11` construction/match in this module's unrelated `HttpVersion` enum
+silently resolved against `Std.Http`'s case once both were compiled into
+the real `lyric-stdlib/lyric.full.toml` bundle — worked around by renaming
+this module's cases to `Http1_0`/`Http1_1`). Each bug was isolated to a
+minimal, HTTP-independent repro before filing. The engine itself has no
+known correctness gaps on either target; both `dotnet` and `jvm` pass the
+full test corpus identically, verified against both a minimal manifest and
+the real, full stdlib bundle.
 
 Honest boundary: this PR ships the protocol engine only — no transport.
 The `.NET` `TcpListener`/`SslStream` kernel and the `scope`/`spawn` accept
@@ -30624,4 +30632,4 @@ cases; #6001 (quadratic string building in header hot paths) remains a
 tracked follow-up.
 
 **Related:** `docs/03-decision-log.md` D-progress-694; #5883, #5874,
-#5934, #5935, #5936, #5937, #6000, #6002, #6003, #6004, #6005.
+#5934, #5935, #5936, #5937, #5995, #6000, #6002, #6003, #6004, #6005.

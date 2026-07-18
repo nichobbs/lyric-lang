@@ -630,7 +630,7 @@ test "serializeResponseHead formats a status line, headers, and blank line" {
   val headers: List[HeaderField] = newList()
   headers.add(HeaderField(name = "Content-Type", value = "text/plain"))
   headers.add(HeaderField(name = "Content-Length", value = "5"))
-  val head = serializeResponseHead(Http11, 200, "OK", headers)
+  val head = serializeResponseHead(Http1_1, 200, "OK", headers)
   assertEqual(
     textOf(head),
     "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n",
@@ -645,7 +645,7 @@ test "HEAD-response serialization has a head but no body bytes written" {
   // body bytes — only status line, headers, and the terminating blank line.
   val headers: List[HeaderField] = newList()
   headers.add(HeaderField(name = "Content-Length", value = "12"))
-  val head = serializeResponseHead(Http11, 200, "OK", headers)
+  val head = serializeResponseHead(Http1_1, 200, "OK", headers)
   assertTrue(endsWith(textOf(head), "\r\n\r\n"), "response head ends with the blank-line terminator")
   assertFalse(contains(textOf(head), "Hello"), "no body bytes are present in the serialized head")
 }
@@ -684,6 +684,6 @@ test "EngineLimits.defaults() returns sane production values" {
 }
 
 test "httpVersionToken renders the wire tokens" {
-  assertEqual(httpVersionToken(Http11), "HTTP/1.1", "HTTP/1.1 token")
-  assertEqual(httpVersionToken(Http10), "HTTP/1.0", "HTTP/1.0 token")
+  assertEqual(httpVersionToken(Http1_1), "HTTP/1.1", "HTTP/1.1 token")
+  assertEqual(httpVersionToken(Http1_0), "HTTP/1.0", "HTTP/1.0 token")
 }

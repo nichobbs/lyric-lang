@@ -17147,7 +17147,7 @@ real `lyric test` invocations as normal.
 
 ---
 
-## D-progress-692 — `Std.HttpEngine` ships (pure-Lyric sans-IO HTTP/1.1 parser/serializer/connection FSM, docs/61 §6.1 phase 3.2); four pre-existing JVM/MSIL backend bugs found and worked around
+## D-progress-692 — `Std.HttpEngine` ships (pure-Lyric sans-IO HTTP/1.1 parser/serializer/connection FSM, docs/61 §6.1 phase 3.2); five pre-existing JVM/MSIL backend bugs found and worked around
 
 Ships `lyric-stdlib/std/http_engine.l` (`Std.HttpEngine`) — issue #5883,
 phase 3.2 of the HTTPS/TLS epic (#5874, docs/61-https-tls-http-versions.md
@@ -17211,7 +17211,7 @@ parser (proving the serializer and parser agree on the wire format). Runs
 on both `--target dotnet` and `--target jvm` in CI; both must and do
 produce identical results.
 
-**Four pre-existing, general compiler bugs found (all filed, none fixed
+**Five pre-existing, general compiler bugs found (all filed, none fixed
 here — out of this PR's scope, each isolated to a minimal repro
 independent of HTTP):**
 
@@ -17248,6 +17248,23 @@ independent of HTTP):**
    external package from reaching into `Connection`'s fields today),
    accepted as the lesser evil versus not shipping the engine at all.
    `Connection`'s own doc comment explains the deviation and points here.
+5. **#5995 (both targets)** — a cross-package **enum** case-name
+   collision: `Std.Http`'s own `HttpVersion` enum (landed on `main` via
+   #5877/e6442a3d while this PR was rebasing) declares a case named
+   `Http11`; this module's independently-designed, unrelated `HttpVersion`
+   enum originally declared the same case name. Once both enums are
+   compiled into the same program (as they are in the real
+   `lyric-stdlib/lyric.full.toml` bundle), a bare `Http11`
+   construction/match here silently resolved against `Std.Http`'s case
+   instead of this module's own — verified with the real stdlib bundle,
+   reproducing on both `--target dotnet` and `--target jvm`, and
+   confirmed to disappear the instant the name stopped colliding. The
+   same bug class as `Std.Tls`'s `CertFileNotFound` rename (#5903,
+   partially addressed by #5984's "JVM qualified union-case construction"
+   fix — but this repro shows the collision still reproduces for this
+   enum-vs-enum shape on both targets). Worked around by renaming this
+   module's cases to `Http1_0`/`Http1_1` (only `Http11` collided;
+   `Http10` is unique, but renaming just one would be asymmetric).
 
 **Honest boundary.** This ships the protocol engine only — no transport.
 docs/61's own phase breakdown (§8, item 8) already scopes this
@@ -17263,8 +17280,8 @@ future driver — documented explicitly in the module header rather than
 silently reinterpreted.
 
 **Verification.** No source-buildable `./bin/lyric` was available in this
-sandbox (same D-progress-543 exception as D-progress-688); the published
-NuGet `lyric` 0.4.32 tool was used. Following the D-progress-688 addendum's
+sandbox (same D-progress-543 exception as D-progress-689); the published
+NuGet `lyric` 0.4.32 tool was used. Following the D-progress-689 addendum's
 lesson directly: `lyric test --manifest` was confirmed to *still* link the
 stale prebuilt `Lyric.Stdlib.dll` for runtime resolution even with
 `--manifest` (only compilation is fresh), so the real assertions in
@@ -17272,17 +17289,23 @@ stale prebuilt `Lyric.Stdlib.dll` for runtime resolution even with
 throwaway `func main(): Int` harness driven by `lyric run --manifest`
 against a small manifest containing only this module's own transitive
 closure — the recipe that correctly recompiles and executes fresh source,
-per D-progress-688. All 59 checks (covering every `@test_module` test's
-assertions) pass identically on `--target dotnet` and `--target jvm`.
-`lyric build --manifest lyric-stdlib/lyric.full.toml` (the full stdlib
-bundle with `Std.HttpEngine` added) stays clean on both targets (a
-pre-existing, unrelated `W0005`/#2494 warning count on dotnet is identical
-with and without this addition). CI, which builds a genuine `./bin/lyric`
-from source, runs the real `lyric test` invocations on both targets as
-normal.
+per D-progress-689. All 59 checks (covering every `@test_module` test's
+assertions) pass identically on `--target dotnet` and `--target jvm`,
+verified twice: once against a minimal manifest carrying only this
+module's own dependency closure, and again against the real, full
+`lyric-stdlib/lyric.full.toml` bundle (69 packages, including `Std.Http`)
+after rebasing onto a `main` that had, in the interim, landed #5877's own
+`Std.Http.HttpVersion` enum and triggered the #5995 collision above — the
+second run is what caught #5995, since it only manifests once both
+`HttpVersion` enums coexist in one compiled program. `lyric build
+--manifest lyric-stdlib/lyric.full.toml` (the full stdlib bundle with
+`Std.HttpEngine` added) stays clean on both targets (a pre-existing,
+unrelated `W0005`/#2494 warning count on dotnet is identical with and
+without this addition). CI, which builds a genuine `./bin/lyric` from
+source, runs the real `lyric test` invocations on both targets as normal.
 
 **Related:** #5883, #5874, docs/61-https-tls-http-versions.md §6.1, D128,
-#5934, #5935, #5936, #5937, D-progress-543, D-progress-689, D065.
+#5934, #5935, #5936, #5937, #5995, D-progress-543, D-progress-689, D065.
 
 ---
 

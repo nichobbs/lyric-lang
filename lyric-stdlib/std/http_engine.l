@@ -196,10 +196,23 @@ pub func EngineLimits.defaults(): EngineLimits {
 // =============================================================================
 // §2. Core vocabulary types.
 // =============================================================================
+/// Cases are `Http1_0`/`Http1_1`, not the more obvious `Http10`/`Http11`:
+/// `Std.Http`'s own (client-facing, negotiation-oriented) `HttpVersion`
+/// enum already declares a case named `Http11`, and a self-hosted
+/// compiler bug (cross-package bare enum-case name resolution — the same
+/// bug class as `Std.Tls`'s `CertFileNotFound` rename, #5903/#5984; this
+/// specific enum-vs-enum shape filed as #5995) resolves a bare `Http11`
+/// construction/match against the *wrong* package's case once both types
+/// are compiled into the same program (verified against the real
+/// `lyric-stdlib/lyric.full.toml` bundle, on both `--target dotnet` and
+/// `--target jvm`), silently corrupting `HttpVersion` values built or
+/// matched here. Only the exact string `Http11` collides (verified:
+/// `Http10` does not exist elsewhere in the stdlib) — renaming just that
+/// one case would be asymmetric, so both are renamed for consistency.
 @experimental
 pub enum HttpVersion {
-  case Http10
-  case Http11
+  case Http1_0
+  case Http1_1
 }
 
 /// Render the wire token for a version ("HTTP/1.0" / "HTTP/1.1").
@@ -207,8 +220,8 @@ pub enum HttpVersion {
 @experimental
 pub func httpVersionToken(v: in HttpVersion): String {
   match v {
-    case Http10 -> "HTTP/1.0"
-    case Http11 -> "HTTP/1.1"
+    case Http1_0 -> "HTTP/1.0"
+    case Http1_1 -> "HTTP/1.1"
   }
 }
 
@@ -610,9 +623,9 @@ record ParsedRequestLine {
 
 func parseHttpVersionToken(bytes: in slice[Byte]): Option[HttpVersion] {
   if bytes.length == 8 and asciiBytesToString(bytes) == "HTTP/1.1" {
-    Some(value = Http11)
+    Some(value = Http1_1)
   } else if bytes.length == 8 and asciiBytesToString(bytes) == "HTTP/1.0" {
-    Some(value = Http10)
+    Some(value = Http1_0)
   } else {
     None
   }
@@ -931,8 +944,8 @@ func computeKeepAlive(version: in HttpVersion, headers: in List[HeaderField]): B
     false
   } else {
     match version {
-      case Http11 -> true
-      case Http10 -> hasKeepAlive
+      case Http1_1 -> true
+      case Http1_0 -> hasKeepAlive
     }
   }
 }
