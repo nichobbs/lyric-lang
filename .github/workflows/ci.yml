@@ -6899,10 +6899,13 @@ jobs:
             kill "$smoke_pid" 2>/dev/null || true
             exit 1
           fi
-          curlh2="$(curl -sk --http2 --max-time 4 -w '%{http_version}:%{http_code}' https://127.0.0.1:8443/hello || echo 'curl-failed')"
+          # -o /dev/null so `$curlh2` is only the -w output (`2:200`); without it the
+          # `/hello` response body ("hello h2 dotnet") is captured too and the
+          # `2:200` match fails.
+          curlh2="$(curl -sk -o /dev/null --http2 --max-time 4 -w '%{http_version}:%{http_code}' https://127.0.0.1:8443/hello || echo 'curl-failed')"
           kill "$smoke_pid" 2>/dev/null || true
           case "$curlh2" in
-            2:200*) echo "dotnet Std.HttpServer h2 curl --http2 smoke passed ($curlh2)" >> "$GITHUB_STEP_SUMMARY" ;;
+            2:200) echo "dotnet Std.HttpServer h2 curl --http2 smoke passed ($curlh2)" >> "$GITHUB_STEP_SUMMARY" ;;
             *) echo "::error::curl --http2 against the dotnet TLS listener returned '$curlh2', expected 2:200"; cat /tmp/dotnet_h2_smoke.run.log || true; exit 1 ;;
           esac
 
