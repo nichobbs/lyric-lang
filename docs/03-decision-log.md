@@ -17147,6 +17147,191 @@ real `lyric test` invocations as normal.
 
 ---
 
+## D-progress-698 — TLS phase 2.2: lyric-web `Web.serveTls` — Undertow HTTPS listener + `ENABLE_HTTP2` + `WebTls` config template (docs/61 §5.2 + §6.3, D128, #5881)
+
+**Context.** D128 decision 6 sequences JVM server TLS onto the existing
+stacks; phase 2.1 (D-progress-692, #5880) shipped `Std.HttpServer`'s
+`HttpsServer`-based `startListenerTls`. lyric-web on `--target jvm` binds
+`io.undertow` directly (its own `Web.Kernel.Runtime`, not `Std.HttpServer`),
+so its HTTPS story is a separate Undertow `addHttpsListener` + `ENABLE_HTTP2`
+listener (docs/61 §5.2/§6.3, issue #5881). h2 is TLS-only via ALPN
+(decision 8), so `ENABLE_HTTP2` is set exactly when TLS is.
+
+**Shipped.**
+
+- `Std.HttpServer` JVM kernel (`_kernel_jvm/http_server.l`): the private
+  `buildServerSslContext` (`KeyManagerFactory`-backed identity `SSLContext`,
+  the same construction `startListenerTls` uses) is now exposed as a
+  `pub opaque type ServerSslContext` + `pub func serverSslContextFromConfig(
+  identity, minVersion): ServerSslContext` + an `internal
+  ServerSslContext.rawContext(): javax.net.ssl.SSLContext` kernel-boundary
+  accessor (mirroring `Std.Tls`'s `Identity.rawHandle`). This lets
+  lyric-web's Undertow kernel reuse the whole `KeyStore`/`KeyManagerFactory`/
+  `java.lang.reflect` extern boundary instead of re-declaring it — the reuse
+  the task called for.
+- lyric-web JVM kernel (`src/_kernel/jvm/web_kernel.l`):
+  `pub func serveTls(host, port, tls, router): Result[Unit, TlsListenError]`
+  builds the context via `serverSslContextFromConfig`, extracts the raw
+  `SSLContext`, and stands up
+  `Undertow.builder().addHttpsListener(port, host, sslContext)
+  .setServerOption(UndertowOptions.ENABLE_HTTP2, Boolean.TRUE)
+  .setHandler(...)`, reusing the plaintext `serve`'s `LyricUndertowHandler`
+  / `Web.dispatch` core. `UndertowOptions.ENABLE_HTTP2` is read as a static
+  `org.xnio.Option` field via auto-FFI; `setServerOption`'s generic-erased
+  `(Option, Object)` signature resolves through auto-FFI (an explicit
+  `@externTarget` binder would emit the wrong non-erased descriptor).
+- lyric-web `Web` package (`src/web.l`): `pub func serveTls(router, host,
+  port, tls: Std.Tls.TlsServerConfig): Result[Unit, ServeTlsError]` — jvm
+  delegates to the kernel; dotnet returns a typed `ServerTlsUnsupported`
+  naming phase 3 / issue #5885 (the managed `HttpListener` cannot terminate
+  TLS off-Windows or speak h2). `ServeTlsError`'s case is `ServerTlsUnsupported`,
+  deliberately NOT reusing `Std.HttpServer.TlsListenError`'s
+  `NotSupportedOnTarget` — the JVM backend resolves a bare match case name
+  from a global table (#5903), so two in-scope unions must not share a case
+  name. `pub config WebTls { certPath; keyPath; clientCaPath = "";
+  requireClientCert = false }` + `tlsServerConfigFromWebTls` give
+  env-overridable cert paths (D128 decision 2).
+
+**Corrections to docs/61 §6.3 as written.**
+
+- The sketch's `pub config WebTls from { … }` is **not valid parser
+  syntax**: `from` is the config-*derivation* keyword (`config Local from
+  Base { … }`) and requires a source type — `pub config X from {` is a P0010
+  parse error. A plain `pub config WebTls { … }` already permits required
+  (no-default) fields and carries the same `LYRIC_CONFIG_*` env-override
+  semantics, so the template is declared that way.
+- `serveTls` returns `Result[Unit, ServeTlsError]`, not the `Unit` the §6.3
+  signature sketches: §6.3's own prose requires it to "return a typed …
+  `Unsupported` error," which a `Unit` function cannot carry. The `Ok`
+  branch is unreachable in normal operation (the accept loop blocks
+  forever); the only observable return is the `Err`.
+
+**mTLS deferred (loud, typed).** The reused `serverSslContextFromConfig`
+builds an identity-only context (no client-CA `TrustManager`), and Undertow
+additionally needs its XNIO `SSL_CLIENT_AUTH_MODE` socket option wired.
+`Web.serveTls` therefore rejects any `requireClientCert`/`clientCa` request
+with a typed `ServerTlsUnsupported` naming the tracking issue #6017 — never a
+silent ignore. This is a different blocker than phase 2.1's
+`HttpsConfigurator` gap (#5930); the Undertow path is not affected by that one.
+
+The mTLS check lives in `Web.serveTls` itself (reading `tls`'s fields +
+matching `Std.Core.Option` on `clientCa`), and the JVM kernel `serveTls`
+returns **`Unit`** (like the plaintext `serve`), NOT `Result[_,
+TlsListenError]`. The first cut had the kernel return the typed error and the
+`Web` layer `match` it — but a cross-error-type nested `match` (an inner
+`Result[_, Std.HttpServer.TlsListenError]` inside a function returning
+`Result[_, Web.ServeTlsError]`) miscompiles on `--target jvm`: the backend
+casts the inner `Err` payload (`TlsListenError.NotSupportedOnTarget`) to the
+OUTER error type (`Web.ServeTlsError`) and throws `ClassCastException` at
+runtime (the #5903 global-case-table family). The success-path smoke never
+exercised the `Err` arm, so the #6040 mTLS-rejection self-check is what
+surfaced it. Moving the mTLS decision into `Web.serveTls` (no kernel `Result`,
+no cross-package user-union case match) is the fix; reading `tls` fields and
+matching `Option` there is safe — only cross-package *user*-union case
+matching hits the bug.
+
+**Verification.**
+
+- `tests/jvm_server_smoke.l` extended with two in-process self-checks:
+  (a) **HTTPS/h2** — `main` stands up a real TLS-terminated Undertow listener
+  via `Web.serveTls` on a background thread (SAN fixture cert for
+  `127.0.0.1`), then drives it with a `Std.Http` client that trusts the
+  fixture cert and asserts a 200 **and** `HttpResponse.negotiatedVersion() ==
+  Http2` (the phase-1.4 accessor), logging `HTTPS-H2-SELFCHECK: PASS`; (b)
+  **mTLS rejection** (#6040) — `Web.serveTls` with `requireClientCert = true`
+  must return a typed `ServerTlsUnsupported` (not crash, not silently start a
+  plaintext-auth listener), logging `MTLS-REJECT-SELFCHECK: PASS`. The CI step
+  asserts both PASS lines plus an independent `curl --http2`
+  (`http_version=2 code=200`).
+  **Flaky-smoke fix (#6028):** the h2 self-check's first cut used a fixed
+  1-second `sleep` to wait for the async Undertow bind, which raced CI
+  scheduling jitter (the client connected before the listener accepted →
+  the run exited without a PASS line). Replaced with a **bounded poll loop**:
+  the client GET is retried (≤40 × 150 ms) until the socket accepts, failing
+  fast on a genuinely-broken listener while tolerating a slow bind; the first
+  successful response is evaluated (a wrong status/version/body reports FAIL,
+  not a retry). Run locally through the CI-equivalent flow (`lyric restore` +
+  single-file `lyric build --target jvm`) against the published NuGet `lyric`
+  0.4.33 tool + `LYRIC_STD_PATH`: 4/4 plaintext endpoints, HTTPS/h2 PASS,
+  mTLS-reject PASS, curl `2:200`.
+- `tests/serve_tls_tests.l` (dotnet `@test_module`, registered in
+  `[project.tests]`): dotnet `serveTls` → typed `ServerTlsUnsupported` naming
+  #5885; `ServeTlsError.message`; `WebTls` field defaults;
+  `tlsServerConfigFromWebTls` file-not-found → `CertFileNotFound`. 4/4 pass
+  via `lyric test --manifest lyric-web/lyric.toml`.
+
+**Restored-package contract-synthesis fix (consumer break).** Surfacing a
+QUALIFIED non-`Std.Core` stdlib type (`Std.Tls.TlsServerConfig` /
+`Std.Tls.TlsError`) in lyric-web's public API broke **every** lyric-web
+consumer's restore of `Web.dll` (found via CI on `examples/rbac`):
+`Lyric.RestoredPackages.synthesiseArtifact` re-type-checks a restored
+package's contract as a standalone source that deliberately drops the
+package's imports and loads no stdlib, then whitelists the resulting
+stdlib-not-in-scope diagnostics. That whitelist only covered BARE `Std.Core`
+anchors (`Option`, `Result`, …) via **T0010**; a full `Std.Module.Type` path
+raises **T0014** ("unknown qualified type"), which was un-whitelisted and
+aborted the whole synthesis. Fix: `restored_packages.l` now also drops T0014
+errors whose qualified name starts with `Std.` (`isWhitelistedStdQualified`),
+consistent with the existing T0010 philosophy — sound because the contract
+came from a DLL that compiled cleanly (every `Std.*` type in it really
+exists) and each consumer re-resolves it against the real stdlib in its own
+full type-check. Non-`Std.` qualified refs (missing sibling packages) still
+error. This is the real fix and unblocks any library exposing a qualified
+stdlib type, not just lyric-web. Guarded by two new
+`restored_packages_self_test.l` cases (Std-qualified filtered / non-Std still
+errors); verified end-to-end by `examples/rbac` going green.
+
+**Sandbox / tooling notes.**
+
+- The published NuGet `lyric` 0.4.33 tool crashes on
+  `lyric build --manifest lyric-web/lyric.toml --target jvm` for the
+  **pristine** tree (a `Web` ↔ `Web.Kernel.Runtime` cyclic-package bundling
+  bug in the `build --manifest` JVM path; a non-cyclic library like
+  lyric-auth builds fine, and the single-file `lyric build --target jvm`
+  path CI uses works). This is pre-existing and unrelated to this change;
+  filed as issue #6024. All JVM verification here used the single-file
+  CI-equivalent path against the 0.4.33 tool, which reproduces the real CI
+  JVM build (HTTPS/h2 self-check PASS + `curl --http2` 2:200).
+- The `restored_packages.l` compiler fix cannot run in the published tool
+  (which has the old `Lyric.RestoredPackages` baked in), so it was verified
+  against a **source-built toolchain**: the standard bootstrap seed download
+  is network-blocked here (D-progress-543's sandbox), so stage-0 was seeded
+  from the 0.4.33 tool's own DLLs and stage-1 + the AOT `lyric` were built
+  from HEAD source. That seed-mismatched toolchain emits degraded generic
+  signatures (`W0005 Result\`2 → System.Object`, #2494) and consequently
+  mis-resolves some JVM auto-FFI (an unrelated `J002` on pre-existing kernel
+  code), so it is trustworthy for the MSIL/dotnet path only. It confirmed
+  `restored_packages_self_test.l` 17/17 and `examples/rbac` green; the JVM
+  server-TLS path was verified with the (properly-built) published tool.
+- `lyric fmt`: with the source-built `lyric` available, every changed `.l`
+  file was run through the **canonical** self-hosted formatter — EXCEPT
+  `http_server.l`, whose `internal ServerSslContext.rawContext` trips a
+  formatter bug that rewrites `internal` → `pub`; the loss-check correctly
+  aborts the write. This is not published-tool divergence (the earlier
+  D-progress-543 read): the canonical formatter refuses the **pristine**
+  `tls.l` (also `internal`-bearing) identically. Filed as issue #6039.
+  `http_server.l` is therefore maintained hand-formatted, exactly as `tls.l`
+  is on `main`.
+
+**Files.** `lyric-stdlib/std/_kernel_jvm/http_server.l` (exposed
+`ServerSslContext`/`serverSslContextFromConfig`/`rawContext`);
+`lyric-web/src/_kernel/jvm/web_kernel.l` (`serveTls` + Undertow TLS externs);
+`lyric-web/src/web.l` (`ServeTlsError`, `WebTls`, `tlsServerConfigFromWebTls`,
+dotnet/jvm `serveTls`); `lyric-web/tests/jvm_server_smoke.l` (HTTPS/h2
+self-check); `lyric-web/tests/serve_tls_tests.l` (new, dotnet);
+`lyric-compiler/lyric/restored_packages.l` (T0014 `Std.*` whitelist);
+`lyric-compiler/lyric/restored_packages_self_test.l` (two new cases);
+`lyric-web/lyric.toml`; `.github/workflows/ci.yml`; `lyric-web/README.md`;
+`docs/61-https-tls-http-versions.md` §8; `docs/10-bootstrap-progress.md`.
+
+**Related.** D128, docs/61 §5.2/§6.3, D-progress-690/692 (phases 1.4/2.1),
+docs/45 (restored-contract synthesis), issues #5881, #5885 (dotnet phase 3),
+#6017 (Undertow mTLS), #6024 (tool manifest-build cycle bug), #6039 (fmt
+`internal` bug), #6028 (flaky-smoke bind race, fixed), #6040 (mTLS-rejection
+test, added), #5903 (case-name collision / cross-error-type match miscompile).
+
+---
+
 ## D-progress-694 — `Std.HttpEngine` ships (pure-Lyric sans-IO HTTP/1.1 parser/serializer/connection FSM, docs/61 §6.1 phase 3.2); five pre-existing JVM/MSIL backend bugs found and worked around
 
 Ships `lyric-stdlib/std/http_engine.l` (`Std.HttpEngine`) — issue #5883,

@@ -319,6 +319,41 @@ func testSynthesiseArtifactWhitelistedT0010Filtered(): Unit {
   }
 }
 
+// A signature that references a stdlib type by its FULL `Std.Module.Type`
+// path — the shape any non-`Std.Core` stdlib type (e.g. lyric-web's
+// `serveTls(tls: Std.Tls.TlsServerConfig)`) carries in its repr — produces a
+// T0014 "unknown qualified type 'Std.X.Y'" in the standalone contract
+// recheck (which loads no stdlib), NOT a bare-name T0010.  That T0014 must be
+// filtered for `Std.*`-qualified names exactly as the T0010 bare-name anchors
+// are, or the whole restored-DLL synthesis fails and every consumer of that
+// library breaks (the regression this guards: `examples/rbac` restoring
+// `Web.dll`).  Two references in one signature (param + return) exercise the
+// multi-diagnostic path.
+func testSynthesiseArtifactWhitelistedStdQualifiedFiltered(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(mkDecl("func", "serveTls", "pub func serveTls(tls: Std.Tls.TlsServerConfig): Std.Tls.TlsVersion"))
+  val art = mkArtifact("MyApp.WebTls", decls)
+  match synthesiseArtifact(art, emptyDecls()) {
+    case Err(e) -> panic("synth_artifact_std_qualified: unexpected error (T0014 on Std.Tls.* should be filtered): " + errorMessage(e))
+    case Ok(sa) -> {
+      assertEqual(sa.packageName, "MyApp.WebTls", "synth_artifact_std_qualified: round-tripped")
+    }
+  }
+}
+
+// A qualified reference to a NON-stdlib package that is genuinely absent
+// (no preamble, not `Std.*`) is still a real error — the `Std.` guard must
+// not swallow every T0014.
+func testSynthesiseArtifactNonStdQualifiedStillErrors(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(mkDecl("func", "use", "pub func use(x: Other.Pkg.Widget): Int"))
+  val art = mkArtifact("MyApp.NeedsOther", decls)
+  match synthesiseArtifact(art, emptyDecls()) {
+    case Ok(_) -> panic("synth_artifact_non_std_qualified: expected a real error for a missing non-stdlib qualified type")
+    case Err(e) -> match e { case SynthesisDiagnostics(_, ds) -> assertTrue(ds.count > 0, "synth_artifact_non_std_qualified: at least one diagnostic"); case _ -> panic("synth_artifact_non_std_qualified: wrong error variant") }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Test items
 // ─────────────────────────────────────────────────────────────────────────────
@@ -386,4 +421,12 @@ test "synthesise artifact malformed repr" {
 
 test "synthesise artifact whitelisted T0010 filtered" {
   testSynthesiseArtifactWhitelistedT0010Filtered()
+}
+
+test "synthesise artifact whitelisted Std-qualified T0014 filtered" {
+  testSynthesiseArtifactWhitelistedStdQualifiedFiltered()
+}
+
+test "synthesise artifact non-Std qualified still errors" {
+  testSynthesiseArtifactNonStdQualifiedStillErrors()
 }

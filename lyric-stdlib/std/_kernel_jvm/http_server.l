@@ -297,6 +297,41 @@ func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JS
   ctx
 }
 
+/// An opaque, server-identity `javax.net.ssl.SSLContext` built from a
+/// `Std.Tls` `Identity` + `TlsVersion`. Exposed so OTHER JVM server
+/// kernels in this project — specifically `lyric-web`'s Undertow kernel,
+/// which drives `Undertow.Builder.addHttpsListener(port, host, sslContext)`
+/// rather than `com.sun.net.httpserver.HttpsServer` — can reuse the
+/// `KeyManagerFactory`/`KeyStore`/`java.lang.reflect` extern wiring above
+/// (module header) instead of re-declaring the whole boundary a second
+/// time. It carries no client-cert trust configuration: mutual TLS
+/// (`TlsServerConfig.clientCa` / `requireClientCert`) is the caller's
+/// responsibility to accept or reject, since the trust-manager + per-server
+/// client-auth wiring differs per server implementation
+/// (`HttpsServer.setNeedClientAuth` vs Undertow's XNIO `SSL_CLIENT_AUTH_MODE`).
+pub opaque type ServerSslContext {
+  ctx: JSSLContext
+}
+
+/// Build a server-identity `SSLContext` from a certificate/key `Identity`
+/// and a minimum protocol version. Non-mTLS only (see `ServerSslContext`);
+/// callers that support mutual TLS layer the client-cert trust on top of
+/// the returned context themselves. Reuses `buildServerSslContext` — the
+/// exact same construction `startListenerTls` uses for its own
+/// `HttpsServer`.
+pub func serverSslContextFromConfig(identity: in Identity, minVersion: in TlsVersion): ServerSslContext {
+  ServerSslContext(ctx = buildServerSslContext(identity, minVersion))
+}
+
+/// Kernel-boundary accessor for the underlying `javax.net.ssl.SSLContext`.
+/// `internal` (visible across packages within this project but excluded
+/// from the published `Lyric.Contract` surface), mirroring `Std.Tls`'s
+/// `Identity.rawHandle` — the consuming kernel binds the returned value to
+/// its own `extern type = "javax.net.ssl.SSLContext"`.
+internal func ServerSslContext.rawContext(s: in ServerSslContext): JSSLContext {
+  s.ctx
+}
+
 /// The listener handle: the running `HttpServer` plus the blocking queue
 /// the SAM-bridged handler feeds and `nextContext` drains (module header).
 /// A record rather than an extern alias because the pull-model bridge

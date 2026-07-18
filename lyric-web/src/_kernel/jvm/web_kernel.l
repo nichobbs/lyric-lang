@@ -37,6 +37,8 @@ package Web.Kernel.Runtime
 import Std.Core
 import Std.Collections
 import Std.Console as Console
+import Std.Tls
+import Std.HttpServer
 import Web
 
 // ─── Undertow HTTP server ───────────────────────────────────────────────────
@@ -45,6 +47,19 @@ extern type JUndertow = "io.undertow.Undertow"
 extern type JUndertowBuilder = "io.undertow.Undertow$Builder"
 
 extern type JHttpHandler = "io.undertow.server.HttpHandler"
+
+// TLS listener wiring (docs/61 §5.2 / §6.3, phase 2.2 of epic #5874, issue
+// #5881).  `addHttpsListener(port, host, SSLContext)` terminates TLS on the
+// Undertow listener; `UndertowOptions.ENABLE_HTTP2` (an `org.xnio.Option`
+// static field, read via auto-FFI) opts the listener into h2 — TLS-only via
+// ALPN, so it sequences with, not before, server TLS (docs/61 decision 8).
+extern type JSSLContext = "javax.net.ssl.SSLContext"
+
+extern type JUndertowOptions = "io.undertow.UndertowOptions"
+
+extern type JXnioOption[T] = "org.xnio.Option"
+
+extern type JBoolean = "java.lang.Boolean"
 
 extern type JHttpServerExchange = "io.undertow.server.HttpServerExchange"
 
@@ -209,6 +224,52 @@ pub func serve(host: in String, port: in Int, router: in Web.Router): Unit
 {
   val handler: JHttpHandler = LyricUndertowHandler(router = router)
   val server: JUndertow = JUndertow.builder().addHttpListener(port, host).setHandler(handler).build()
+  server.start()
+  val latch = JCountDownLatch.new(1)
+  latchAwaitForever(latch)
+}
+
+/// Start a TLS-terminated Undertow server on `host`:`port` and block the
+/// calling thread forever (docs/61 §6.3, phase 2.2 of epic #5874, issue
+/// #5881).  Requests run through the same `LyricUndertowHandler` /
+/// `Web.dispatch` core the plaintext `serve` uses; only the listener
+/// construction differs — `addHttpsListener(port, host, sslContext)` plus
+/// `UndertowOptions.ENABLE_HTTP2` (h2 is TLS-only via ALPN, so it is enabled
+/// exactly when TLS is — docs/61 §5.2, decision 8).
+///
+/// The server `SSLContext` is built by reusing
+/// `Std.HttpServer.serverSslContextFromConfig` — the same
+/// `KeyManagerFactory`-backed context construction the JVM
+/// `Std.HttpServer.startListenerTls` kernel uses — rather than re-declaring
+/// the whole `KeyStore` / `KeyManagerFactory` / reflection extern boundary a
+/// second time.  `tls.minVersion` restricts the negotiated protocol range;
+/// `tls.identity` supplies the server certificate + key.
+///
+/// Returns `Unit` (blocks forever, like the plaintext `serve`), NOT a
+/// `Result`: the caller (`Web.serveTls`) rejects mutual-TLS configs BEFORE
+/// calling here, so this path always has a servable non-mTLS config and
+/// never needs to report a typed error.  Keeping the return type `Unit`
+/// avoids a `Web`-layer `match` over a `Result[_, Std.HttpServer error]`
+/// nested inside a function returning `Result[_, Web.ServeTlsError]`, which
+/// the JVM backend miscompiles to a `ClassCastException` (it casts the inner
+/// `Err` payload to the outer error type — the #5903 family; see
+/// `Web.serveTls`).  This kernel therefore assumes `tls` is non-mTLS
+/// (`serverSslContextFromConfig` builds an identity-only context regardless);
+/// `Web.serveTls` enforces that invariant.
+@stable(since = "0.3")
+pub func serveTls(host: in String, port: in Int, tls: in TlsServerConfig, router: in Web.Router): Unit
+  requires: host.length > 0
+  requires: port >= 1
+  requires: port <= 65535
+{
+  val serverCtx = serverSslContextFromConfig(tls.identity, tls.minVersion)
+  val sslContext: JSSLContext = serverCtx.rawContext()
+  val handler: JHttpHandler = LyricUndertowHandler(router = router)
+  val builder = JUndertow.builder()
+  val _listener = builder.addHttpsListener(port, host, sslContext)
+  val _http2 = builder.setServerOption(JUndertowOptions.ENABLE_HTTP2, JBoolean.TRUE)
+  val _handler = builder.setHandler(handler)
+  val server: JUndertow = builder.build()
   server.start()
   val latch = JCountDownLatch.new(1)
   latchAwaitForever(latch)
