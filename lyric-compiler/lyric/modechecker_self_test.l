@@ -626,3 +626,25 @@ test "same-named var record locals in sequential blocks do not crash (#6157)" {
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "sequential same-name var locals: no crash, no V0015")
 }
+
+test "shadowed var local of a different record type does not leak its type past its scope (#6166 false positive)" {
+  // Outer `box` is `Mut` (n is `var`); a nested block shadows `box` as `Other`
+  // (n is NON-var).  After the block ends, `box.n = 2` writes the outer `Mut`
+  // local, whose `n` IS `var` — so no V0015.  Before the scope-undo fix the
+  // inner `Other` binding leaked, and the write was checked against
+  // `Other.n` (non-var) → a false-positive V0015 on valid code.
+  val src = "package P\nrecord Mut {\n  var n: Int\n}\nrecord Other {\n  n: Int\n}\nfunc f(cond: Bool): Int {\n  var box = Mut(n = 1)\n  if cond {\n    var box = Other(n = 9)\n    box.n\n  } else {\n    0\n  }\n  box.n = 2\n  box.n\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "outer Mut.n (var) write after shadow: no V0015")
+}
+
+test "shadowed var local of a different record type still catches the outer violation (#6166 false negative)" {
+  // Mirror image: outer `b` is `Immut` (label is NON-var); a nested block
+  // shadows `b` as `MutBox` (label is `var`).  After the block ends,
+  // `b.label = \"d\"` writes the outer `Immut` local's non-var field and MUST
+  // fire V0015.  Before the fix the leaked `MutBox` binding hid it (false
+  // negative).
+  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nfunc g(cond: Bool): String {\n  var b = Immut(label = \"a\")\n  if cond {\n    var b = MutBox(label = \"b\")\n    b.label = \"c\"\n    b.label\n  } else {\n    \"z\"\n  }\n  b.label = \"d\"\n  b.label\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0015"), "outer Immut.label (non-var) write after shadow: V0015 fires")
+}

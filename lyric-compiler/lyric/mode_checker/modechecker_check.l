@@ -2857,10 +2857,46 @@ func walkStmtForFieldWrite(ctx: in FieldWriteCtx, st: in Statement): Unit {
 }
 
 func walkBlockForFieldWrite(ctx: in FieldWriteCtx, blk: in Block): Unit {
+  // Scope-undo (#6166): `ctx.locals` is a single flat map with no scope
+  // push/pop, so a `var` record local declared inside this block would leak
+  // its record-type binding to the enclosing scope after the block ends — a
+  // same-named outer local (or a later same-named local of a DIFFERENT record
+  // type) would then be checked against this block's stale type, causing
+  // V0015 false negatives and false positives.  Snapshot the map on entry and
+  // restore it on exit (the field-write analog of `Jvm.Codegen.allocSlot`'s
+  // scope-undo log).  Every `{ }` block is a lexical scope, and every
+  // scope-introducing construct (if/else, match arm, loop/try/scope body,
+  // block expression) routes through here, so this is the single correct
+  // choke point.
+  val savedNames: List[String] = newList()
+  val savedTypes: List[String] = newList()
+  for k in mapKeys(ctx.locals) {
+    savedNames.add(k)
+    match mapGet(ctx.locals, k) {
+      case Some(v) -> savedTypes.add(v)
+      case None -> savedTypes.add("")
+    }
+  }
   var i = 0
   while i < blk.statements.count {
     walkStmtForFieldWrite(ctx, blk.statements[i])
     i = i + 1
+  }
+  // Restore: drop everything the block left behind, then re-add the entry
+  // snapshot so the outer binding (if any) is exactly what it was before.
+  val curKeys: List[String] = newList()
+  for k2 in mapKeys(ctx.locals) {
+    curKeys.add(k2)
+  }
+  var ri = 0
+  while ri < curKeys.count {
+    ctx.locals.remove(curKeys[ri])
+    ri = ri + 1
+  }
+  var si = 0
+  while si < savedNames.count {
+    ctx.locals.add(savedNames[si], savedTypes[si])
+    si = si + 1
   }
 }
 
