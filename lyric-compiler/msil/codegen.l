@@ -394,6 +394,13 @@ pub record CodegenCtx {
   metadataPathIndex: Map[String, String]
   metadataVtypeSet: Map[String, Bool]
   metadataReady: List[Bool]
+  // Per-assembly parsed-PE/metadata cache (#3421): parallel lists (assembly
+  // path → parsed structure) threaded into `Mdr.decodeExternMethodSig` so
+  // repeated extern-method-signature resolutions against the same reference
+  // assembly within one compilation skip re-reading and re-parsing it from
+  // disk.  See `Msil.MetadataReader.loadParsedAssemblyCached`.
+  metadataParsedPaths: List[String]
+  metadataParsedAssemblies: List[Mdr.MdrParsedAssembly]
   // One-shot flag tracking whether the D105 §A "FFI metadata index is empty"
   // warning has been emitted for this build.  Codegen surfaces a one-line
   // notice to stderr on the first external-iface impl encountered when the
@@ -1899,6 +1906,8 @@ pub func newCodegenCtx(
     metadataPathIndex = newMap(),
     metadataVtypeSet = newMap(),
     metadataReady = newList(),
+    metadataParsedPaths = newList(),
+    metadataParsedAssemblies = newList(),
     ffiIndexEmptyWarned = newList(),
     tokActionCtor = tokActionCtor,
     tokActionInvoke = tokActionInvoke,
@@ -16910,14 +16919,21 @@ func emitGenericExternMember(
       match sigOpt {
         case Some(_) -> ()
         case None -> {
-          sigOpt = Mdr.decodeExternMethodSig(path, cleanFqn, r.memberName, decl.params.count)
+          sigOpt = Mdr.decodeExternMethodSig(
+            cctx.metadataParsedPaths,
+            cctx.metadataParsedAssemblies,
+            path,
+            cleanFqn,
+            r.memberName,
+            decl.params.count
+          )
         }
       }
       match sigOpt {
         case Some(_) -> ()
         case None -> {
           val getter = "get_" + r.memberName
-          match Mdr.decodeExternMethodSig(path, cleanFqn, getter, decl.params.count) {
+          match Mdr.decodeExternMethodSig(cctx.metadataParsedPaths, cctx.metadataParsedAssemblies, path, cleanFqn, getter, decl.params.count) {
             case Some(gsig) -> {
               sigOpt = Some(value = gsig)
               emitMemberName = getter

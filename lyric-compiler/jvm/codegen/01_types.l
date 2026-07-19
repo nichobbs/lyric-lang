@@ -433,6 +433,15 @@ pub record FuncCtx {
   // owning class is the package host class (`pkgName`).  Empty for hand-built
   // / generator-internal contexts (m-2).
   moduleVals: Map[String, JvmType]
+  // `config { … }` block fields in scope (docs/25-config-blocks.md, #3228):
+  // "<BlockName>/<fieldName>" -> JVM field type.  A qualified read
+  // (`Settings.port`) resolves through this map to `getstatic
+  // <pkgName>/<BlockName>.<fieldName>` — the field emitted by
+  // `Jvm.Lowering.lowerConfigBlock`'s synthesised `<clinit>`.  Config blocks
+  // are package-private (docs/25 §2.2), so the owning class is always
+  // `pkgName + "/" + BlockName`.  Empty for hand-built / generator-internal
+  // contexts, mirroring `moduleVals`.
+  configFieldTypes: Map[String, JvmType]
   // JVM class names (e.g. "Pkg/Counter") of `opaque type` declarations in scope.
   // An opaque type stores its fields privately as `$<name>` and exposes them via
   // `$<name>()` accessor methods, so a field read on an opaque receiver lowers

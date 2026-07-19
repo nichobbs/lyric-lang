@@ -23885,7 +23885,7 @@ Replaced the no-op `lowerProtectedMsil` stub with production `Monitor.Enter`/`Mo
 `buildProject` now calls `Generator.preprocess` before type-checking on both single-file and directory-scan code paths.
 
 **IConfig (`config {}`) block lowering** (`codegen.l`, `lowering.l`):
-Full implementation of `config BlockName { field: Type = default }` lowering for .NET. Each block emits a sealed static TypeDef with FieldDef rows and a `.cctor` that reads `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>` from the environment, uses the declared default when absent/empty, or calls `Environment.Exit(78)` (POSIX `EX_CONFIG`) for required fields. Supports `Int`, `Bool`, and `String` fields. `msil_self_test_m85.l` verifies default-value behavior. **JVM parity not yet implemented; tracked in #2998.**
+Full implementation of `config BlockName { field: Type = default }` lowering for .NET. Each block emits a sealed static TypeDef with FieldDef rows and a `.cctor` that reads `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>` from the environment, uses the declared default when absent/empty, or calls `Environment.Exit(78)` (POSIX `EX_CONFIG`) for required fields. Supports `Int`, `Bool`, and `String` fields. `msil_self_test_m85.l` verifies default-value behavior. **JVM parity for module-scope config blocks shipped in #3228** (`jvm/lowering.l::lowerConfigBlock`: `public static final` fields + a `<clinit>` env-var reader mirroring the `.cctor`, `System.exit(78)` for required fields); `config_block_self_test.l` runs on both targets. The docs/58 config-*template* / wire-embedded layering remains dotnet-only (separate follow-up).
 
 **`WMScoped` no-op arm** (`codegen.l`):
 The bootstrap-grade per-call allocation arm for scoped wire members was removed. `WMScoped` now emits nothing until `AsyncLocal<T>`-backed scoping lands in #2972.
@@ -24477,8 +24477,9 @@ types.  Fixed per issue #2993's option 2 (full support):
   negative probe asserting `G0009`.  `typechecker_self_test.l` adds three
   config-guard tests (G0009 / G0010 / G0013, positive and negative).
 
-JVM config-block parity remains tracked in #2998; docs/25's status header,
-v1 scope note, §3 parse-rule table, and §8 diagnostics table updated.
+JVM config-block parity for module-scope blocks shipped in #3228 (see the
+IConfig lowering note above); docs/25's status header, v1 scope note, §3
+parse-rule table, and §8 diagnostics table were updated for the MSIL work.
 
 ### D-progress-506 — `lyric-health` runs checks via function references; dispatcher panic removed (#679, D099)
 

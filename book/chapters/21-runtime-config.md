@@ -142,9 +142,10 @@ Inside a `wire` graph an instantiation is also usable as a *value* of the
 template's record type — `Web.create(staticFiles: Assets)` — and may be
 declared directly inside the wire body; see Chapter 11 §11.7.
 
-Note: config blocks (and therefore config-template instantiations) emit
-runtime state on the .NET target; JVM config emission is a known,
-separately tracked gap (#3228).
+Note: module-scope config blocks now emit runtime state on **both** the
+.NET and JVM targets (JVM emission shipped in #3228). Config-*template*
+instantiations (the `from` form shown here) still emit only on the .NET
+target — their JVM lowering is a separate follow-up.
 
 ## Config vs wire injection
 

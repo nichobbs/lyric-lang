@@ -5090,6 +5090,22 @@ pub record LStaticVal {
   initInsns: List[LInsn]
 }
 
+// ── LConfigField — config block static fields (D046, #3228) ───────────────────
+// JVM counterpart of `Msil.Lowering.MConfigField` (docs/25-config-blocks.md).
+// One field inside a `config { … }` block; `defaultInsns` pushes the literal
+// default (no field store — `lowerConfigBlock` assembles the surrounding
+// `putstatic`), empty for a required field.  `requiredErrMsg` is the stderr
+// message printed before `System.exit(78)` for a required field with no
+// value; empty when `hasDefault` is true.
+pub record LConfigField {
+  name: String
+  fieldType: JvmType
+  envVarName: String
+  hasDefault: Bool
+  defaultInsns: List[LInsn]
+  requiredErrMsg: String
+}
+
 pub union LPackageItem {
   case LPRecord(rec: LRecord)
   case LPSealedUnion(su: LSealedUnion)
@@ -5119,6 +5135,14 @@ pub union LPackageItem {
   // `lowerClosure`, which emits the capture-field ctor + the functional-interface
   // method.  Drained from `FuncCtx.closureAcc` by `codegenPackageWithSigs`.
   case LPClosureClass(c: LClosure)
+  // #3228: `config { … }` block (D046 / docs/25-config-blocks.md) — JVM
+  // counterpart of MSIL's `MPConfig`.  Emits a class named
+  // `<ns>/<blockName>` with one `public static final` field per config
+  // field, initialised from environment variables by a synthesised
+  // `<clinit>`.  Empty `fields` is never constructed — the codegen layer
+  // guards zero-field blocks (see `Jvm.Codegen`'s `IConfig` item arm),
+  // mirroring `Msil.Codegen`'s identical guard.
+  case LPConfig(ns: String, blockName: String, fields: List[LConfigField])
 }
 
 pub record LPackage {
@@ -5171,6 +5195,126 @@ func lowerFuncsToClass(
   } else {
     makeClassWithMethods(funcsClass, methods)
   }
+}
+
+// Lower a `config { }` block (D046 / docs/25-config-blocks.md, #3228) into a
+// JVM class whose fields are initialised from environment variables by a
+// synthesised `<clinit>`.  Mirrors `Msil.Lowering.lowerMConfig`'s per-field
+// control flow, translated to JVM bytecode:
+//
+//   ldc envVarName
+//   invokestatic System.getenv(String):String
+//   astore tmp                     ; LAstoreAs(tmp, "java/lang/String") — typed
+//                                   ; so the later invokevirtual verifies
+//   aload tmp
+//   ifnull absent_i                ; stack empty at absent_i
+//   aload tmp
+//   invokevirtual String.isEmpty():boolean
+//   ifne absent_i                  ; stack empty at absent_i
+//   ; present path (fallthrough)
+//   aload tmp
+//   [Integer.parseInt / Long.parseLong / Float.parseFloat / Double.parseDouble
+//    / Boolean.parseBoolean, or nothing for a String field — raw value already
+//    on the stack]
+//   putstatic field_i
+//   goto done_i
+//   absent_i:
+//   <defaultInsns + putstatic>  OR  <System.err println + System.exit(78)>
+//   goto done_i                     ; dead after exit(); kept for structural
+//                                   ; symmetry with the MSIL lowering — the
+//                                   ; verifier doesn't know System.exit never
+//                                   ; returns
+//   done_i:
+//
+// One shared local slot (`tmp`, always slot 0 — `<clinit>` has no `this` and
+// no params) is reused sequentially across every field: safe because
+// `<clinit>` executes strictly in field-declaration order and no two fields'
+// uses of the slot overlap.  Every branch target above sees an EMPTY operand
+// stack, honouring the invariant `lowerFuncImpl`'s StackMapTable builder
+// assumes (see its header comment: "An empty operand stack at every branch
+// target") — a value is never left live across a label.
+pub func lowerConfigBlock(ns: in String, blockName: in String, fields: in List[LConfigField], pool: in Pool): ClassFile {
+  val className = ns + "/" + blockName
+  val strTy = JRef(className = "java/lang/String")
+  val cfFields: List[FieldInfo] = newList()
+  val clinitInsns: List[LInsn] = newList()
+  val tmpSlot = 0
+  var fi = 0
+  while fi < fields.count {
+    val f = fields[fi]
+    val emptyAttrs: List[Attribute] = newList()
+    cfFields.add(makeFieldInfo(ACC_PUBLIC + ACC_STATIC + ACC_FINAL, f.name, typeDescriptor(f.fieldType), emptyAttrs))
+    val absentLabel = "cfg_absent_" + fi
+    val doneLabel = "cfg_done_" + fi
+
+    val getenvPs: List[JvmType] = newList()
+    getenvPs.add(strTy)
+    clinitInsns.add(LPushString(s = f.envVarName))
+    clinitInsns.add(LInvokestatic(owner = "java/lang/System", name = "getenv", params = getenvPs, ret = strTy))
+    clinitInsns.add(LAstoreAs(slot = tmpSlot, className = "java/lang/String"))
+    clinitInsns.add(LAload(slot = tmpSlot))
+    clinitInsns.add(LIfnull(label = absentLabel))
+    val isEmptyPs: List[JvmType] = newList()
+    clinitInsns.add(LAload(slot = tmpSlot))
+    clinitInsns.add(LInvokevirtual(owner = "java/lang/String", name = "isEmpty", params = isEmptyPs, ret = JBoolean))
+    clinitInsns.add(LIfne(label = absentLabel))
+
+    // Present path (fallthrough): re-use the already-loaded env value.
+    clinitInsns.add(LAload(slot = tmpSlot))
+    val parsePs: List[JvmType] = newList()
+    parsePs.add(strTy)
+    match f.fieldType {
+      case JInt -> clinitInsns.add(LInvokestatic(owner = "java/lang/Integer", name = "parseInt", params = parsePs, ret = JInt))
+      case JLong -> clinitInsns.add(LInvokestatic(owner = "java/lang/Long", name = "parseLong", params = parsePs, ret = JLong))
+      case JFloat -> clinitInsns.add(LInvokestatic(owner = "java/lang/Float", name = "parseFloat", params = parsePs, ret = JFloat))
+      case JDouble -> clinitInsns.add(LInvokestatic(owner = "java/lang/Double", name = "parseDouble", params = parsePs, ret = JDouble))
+      case JBoolean -> clinitInsns.add(LInvokestatic(owner = "java/lang/Boolean", name = "parseBoolean", params = parsePs, ret = JBoolean))
+      case JRef(_) -> {
+      }  // String field: the raw env-var value is already on the stack
+      case _ -> panic("Jvm.Lowering ICE: config field '" + f.name + "' has an unsupported JvmType — the type checker (G0009) should have rejected this")
+    }
+    clinitInsns.add(LPutstatic(owner = className, name = f.name, t = f.fieldType))
+    clinitInsns.add(LGoto(label = doneLabel))
+
+    // Absent path.
+    clinitInsns.add(LLabel(name = absentLabel))
+    if f.hasDefault {
+      for insn in f.defaultInsns.toArray() {
+        clinitInsns.add(insn)
+      }
+      clinitInsns.add(LPutstatic(owner = className, name = f.name, t = f.fieldType))
+    } else {
+      // Required field: print to stderr and exit with code 78 (POSIX EX_CONFIG).
+      clinitInsns.add(LGetstatic(owner = "java/lang/System", name = "err", t = JRef(className = "java/io/PrintStream")))
+      clinitInsns.add(LPushString(s = f.requiredErrMsg))
+      val printlnPs: List[JvmType] = newList()
+      printlnPs.add(strTy)
+      clinitInsns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = printlnPs, ret = JVoid))
+      clinitInsns.add(LIconst(v = 78))
+      val exitPs: List[JvmType] = newList()
+      exitPs.add(JInt)
+      clinitInsns.add(LInvokestatic(owner = "java/lang/System", name = "exit", params = exitPs, ret = JVoid))
+    }
+    clinitInsns.add(LGoto(label = doneLabel))
+    clinitInsns.add(LLabel(name = doneLabel))
+
+    fi = fi + 1
+  }
+  clinitInsns.add(LReturn)
+
+  val clinitParams: List[JvmType] = newList()
+  val clinit = LFunc(
+    flags = ACC_STATIC,
+    name = "<clinit>",
+    params = clinitParams,
+    ret = JVoid,
+    insns = clinitInsns,
+    maxStack = 0,
+    maxLocals = 0
+  )
+  val methods: List[MethodInfo] = newList()
+  methods.add(lowerFunc(clinit, pool))
+  makeClassFull(className, cfFields, methods)
 }
 
 /// Dispatch over all package items and return the complete list of ClassFiles.
@@ -5243,6 +5387,9 @@ pub func lowerPackage(pkg: in LPackage, pool: in Pool): List[ClassFile] {
       }
       case LPClosureClass(c) -> {
         result.add(lowerClosure(c, pool))
+      }
+      case LPConfig(ns, blockName, fields) -> {
+        result.add(lowerConfigBlock(ns, blockName, fields, pool))
       }
     }
   }

@@ -38,6 +38,7 @@ func makeFuncCtx(
   autoFfi: in AutoFfiCtx,
   retTy: in JvmType,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -72,6 +73,7 @@ func makeFuncCtx(
     deferRanSlots = deferRanSlots,
     selfClass = None,
     moduleVals = moduleVals,
+    configFieldTypes = configFieldTypes,
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     usesLyricCount = usesLyricCount,
@@ -117,6 +119,7 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     deferRanSlots = ctx.deferRanSlots,
     selfClass = ctx.selfClass,
     moduleVals = ctx.moduleVals,
+    configFieldTypes = ctx.configFieldTypes,
     opaqueTypes = ctx.opaqueTypes,
     closureAcc = ctx.closureAcc,
     usesLyricCount = ctx.usesLyricCount,
@@ -146,6 +149,7 @@ func makeFuncCtxForGenerator(
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -181,6 +185,7 @@ func makeFuncCtxForGenerator(
     deferRanSlots = deferRanSlots,
     selfClass = None,
     moduleVals = moduleVals,
+    configFieldTypes = configFieldTypes,
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     usesLyricCount = usesLyricCount,
@@ -212,6 +217,7 @@ func makeFuncCtxInstance(
   autoFfi: in AutoFfiCtx,
   retTy: in JvmType,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -247,6 +253,7 @@ func makeFuncCtxInstance(
     deferRanSlots = deferRanSlots,
     selfClass = Some(value = className),
     moduleVals = moduleVals,
+    configFieldTypes = configFieldTypes,
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     usesLyricCount = usesLyricCount,
@@ -843,6 +850,7 @@ pub func lowerFunc(
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -859,6 +867,7 @@ pub func lowerFunc(
     autoFfi,
     retTy,
     moduleVals,
+    configFieldTypes,
     opaqueTypes,
     closureAcc,
     usesLyricCount
@@ -1186,6 +1195,7 @@ pub func lowerRecord(
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -1253,6 +1263,7 @@ pub func lowerRecord(
                 externTypes,
                 autoFfi,
                 moduleVals,
+                configFieldTypes,
                 opaqueTypes,
                 closureAcc,
                 usesLyricCount
@@ -1386,6 +1397,7 @@ func lowerProtectedMethod(
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -1405,6 +1417,7 @@ func lowerProtectedMethod(
     autoFfi,
     retTy,
     moduleVals,
+    configFieldTypes,
     opaqueTypes,
     closureAcc,
     usesLyricCount
@@ -1454,6 +1467,7 @@ func lowerRecordMethod(
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -1478,6 +1492,7 @@ func lowerRecordMethod(
     autoFfi,
     retTy,
     moduleVals,
+    configFieldTypes,
     opaqueTypes,
     closureAcc,
     usesLyricCount
@@ -1505,6 +1520,7 @@ func lowerImplMethod(
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -1528,6 +1544,7 @@ func lowerImplMethod(
     autoFfi,
     retTy,
     moduleVals,
+    configFieldTypes,
     opaqueTypes,
     closureAcc,
     usesLyricCount
@@ -1563,6 +1580,7 @@ func buildProtected(
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -1596,6 +1614,7 @@ func buildProtected(
             externTypes,
             autoFfi,
             moduleVals,
+            configFieldTypes,
             opaqueTypes,
             closureAcc,
             usesLyricCount
@@ -1620,6 +1639,7 @@ func buildProtected(
                 externTypes,
                 autoFfi,
                 moduleVals,
+                configFieldTypes,
                 opaqueTypes,
                 closureAcc,
                 usesLyricCount
@@ -2008,6 +2028,7 @@ func buildWire(
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -2073,6 +2094,7 @@ func buildWire(
           externTypes,
           autoFfi,
           moduleVals,
+          configFieldTypes,
           opaqueTypes,
           closureAcc,
           usesLyricCount,
@@ -2098,6 +2120,7 @@ func buildWire(
           externTypes,
           autoFfi,
           moduleVals,
+          configFieldTypes,
           opaqueTypes,
           closureAcc,
           usesLyricCount,
@@ -2126,6 +2149,7 @@ func buildWire(
           externTypes,
           autoFfi,
           moduleVals,
+          configFieldTypes,
           opaqueTypes,
           closureAcc,
           usesLyricCount,
@@ -2171,6 +2195,7 @@ func lowerWireBindingInit(
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -2206,6 +2231,7 @@ func lowerWireBindingInit(
       autoFfi,
       expectedTy,
       moduleVals,
+      configFieldTypes,
       opaqueTypes,
       closureAcc,
       usesLyricCount
@@ -2441,6 +2467,7 @@ func lowerGeneratorBody(
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
@@ -2458,6 +2485,7 @@ func lowerGeneratorBody(
     externTypes,
     autoFfi,
     moduleVals,
+    configFieldTypes,
     opaqueTypes,
     closureAcc,
     usesLyricCount
@@ -3743,6 +3771,125 @@ pub func collectFileOpaque(file: in SourceFile, owner: in String, into: in Map[S
   }
 }
 
+// Collect every `config { … }` block's field types (docs/25-config-blocks.md,
+// #3228) into `into`, keyed `"<BlockName>/<fieldName>"`.  Drives qualified
+// reads (`Settings.port`) resolving to `getstatic <owner>/<BlockName>.<field>`
+// — see `FuncCtx.configFieldTypes`.  By the time codegen sees the file,
+// `Lyric.WireExpand` has already materialised every `config … from …`
+// template instantiation and hoisted every wire-embedded config instance out
+// to a top-level `IConfig` item with a concrete field list (docs/58 §12), so
+// this pre-pass only needs to walk `file.items` once, exactly like
+// `collectFileValsExtern` — no template/`from` resolution happens here.
+// Config field types are restricted to Bool/Int/Long/Float/Double/String
+// (G0009), so `typeExprToJvm` (no extern-type resolution needed) is enough.
+pub func collectFileConfigFieldTypes(file: in SourceFile, owner: in String, into: in Map[String, JvmType]): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IConfig(decl) -> {
+        var fi = 0
+        while fi < decl.fields.count {
+          val f = decl.fields[fi]
+          val key = decl.name + "/" + f.name
+          if not into.containsKey(key) {
+            into.add(key, typeExprToJvm(f.ty, owner))
+          }
+          fi = fi + 1
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+// Derive the environment variable name for a config block field (D046,
+// mirrors `Msil.Codegen.deriveConfigEnvVarName`):
+// LYRIC_CONFIG_<PKG_UPPER>_<BLOCK_UPPER>_<FIELD_UPPER>
+// Slashes in the JVM package path are replaced with underscores before
+// uppercasing (the JVM `pkgName` is already slash-separated, e.g.
+// "MyApp/Server", where MSIL's is dot-separated).
+func deriveConfigEnvVarNameJvm(pkgName: in String, blockName: in String, fieldName: in String): String {
+  val pkgUpper = pkgName.replace("/", "_").toUpper()
+  val blockUpper = blockName.toUpper()
+  val fieldUpper = fieldName.toUpper()
+  "LYRIC_CONFIG_" + pkgUpper + "_" + blockUpper + "_" + fieldUpper
+}
+
+// Lower a config field's literal default expression into `insns`, pushing the
+// value in `fieldTy`'s representation (no field store — the caller assembles
+// the surrounding `putstatic`).  Mirrors `Msil.Codegen.emitConfigDefaultLiteralMsil`.
+// Returns false for any non-literal shape; the type checker's G0010 guard
+// rejects those before codegen, so a false return here is an ICE, not a
+// diagnosable input.
+func emitConfigDefaultLiteralJvm(fieldTy: in JvmType, lit: in Literal, neg: in Bool, insns: in List[LInsn]): Bool {
+  match lit {
+    case LInt(v0, _, _) -> {
+      val v = if neg { 0i64 - v0 } else { v0 }
+      match fieldTy {
+        case JInt -> {
+          insns.add(LIconst(v = longToInt(v)))
+          true
+        }
+        case JLong -> {
+          insns.add(LLconst(v = v))
+          true
+        }
+        case JFloat -> {
+          insns.add(LFconst(v = v.toDouble()))
+          true
+        }
+        case JDouble -> {
+          insns.add(LDconst(v = v.toDouble()))
+          true
+        }
+        case _ -> false
+      }
+    }
+    case LFloat(f0, _, _) -> {
+      val fv = if neg { 0.0 - f0 } else { f0 }
+      match fieldTy {
+        case JFloat -> {
+          insns.add(LFconst(v = fv))
+          true
+        }
+        case JDouble -> {
+          insns.add(LDconst(v = fv))
+          true
+        }
+        case _ -> false
+      }
+    }
+    case LBool(bv) -> {
+      match fieldTy {
+        case JBoolean -> {
+          if neg {
+            false
+          } else {
+            insns.add(LIconst(v = if bv { 1 } else { 0 }))
+            true
+          }
+        }
+        case _ -> false
+      }
+    }
+    case LString(sv) -> {
+      match fieldTy {
+        case JRef(cls) -> {
+          if cls == "java/lang/String" and not neg {
+            insns.add(LPushString(s = sv))
+            true
+          } else {
+            false
+          }
+        }
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 // True when the annotation list carries `@<headName>` (first path segment
 // match).  Mirrors the MSIL backend's `hasAnnotationMsil`.
 pub func hasAnnotationJvm(anns: in List[Annotation], headName: in String): Bool {
@@ -4115,6 +4262,12 @@ pub func codegenPackageWithSigsSeeded(
   // in every function of this package.
   val moduleVals: Map[String, JvmType] = newMap()
   collectFileValsExtern(file, pkgName, moduleVals, externTypes)
+  // #3228: collect `config { … }` block field types up front (mirrors
+  // `moduleVals` above) so a qualified read (`Settings.port`) anywhere in the
+  // package resolves to `getstatic <pkgName>/<BlockName>.<fieldName>` — see
+  // `FuncCtx.configFieldTypes`.
+  val configFieldTypes: Map[String, JvmType] = newMap()
+  collectFileConfigFieldTypes(file, pkgName, configFieldTypes)
   // J3 M-3: collect opaque-type class names so field reads on opaque receivers
   // route through the `$<name>()` accessor methods instead of a direct getfield.
   val opaqueTypes: Map[String, Bool] = newMap()
@@ -4149,6 +4302,7 @@ pub func codegenPackageWithSigsSeeded(
     autoFfi,
     JVoid,
     moduleVals,
+    configFieldTypes,
     opaqueTypes,
     closureAcc,
     usesLyricCount
@@ -4203,6 +4357,7 @@ pub func codegenPackageWithSigsSeeded(
                   externTypes,
                   autoFfi,
                   moduleVals,
+                  configFieldTypes,
                   opaqueTypes,
                   closureAcc,
                   usesLyricCount
@@ -4240,6 +4395,7 @@ pub func codegenPackageWithSigsSeeded(
             externTypes,
             autoFfi,
             moduleVals,
+            configFieldTypes,
             opaqueTypes,
             closureAcc,
             usesLyricCount
@@ -4279,6 +4435,7 @@ pub func codegenPackageWithSigsSeeded(
               externTypes,
               autoFfi,
               moduleVals,
+              configFieldTypes,
               opaqueTypes,
               closureAcc,
               usesLyricCount
@@ -4320,6 +4477,7 @@ pub func codegenPackageWithSigsSeeded(
           externTypes,
           autoFfi,
           moduleVals,
+          configFieldTypes,
           opaqueTypes,
           closureAcc,
           usesLyricCount
@@ -4375,6 +4533,7 @@ pub func codegenPackageWithSigsSeeded(
           externTypes,
           autoFfi,
           moduleVals,
+          configFieldTypes,
           opaqueTypes,
           closureAcc,
           usesLyricCount
@@ -4496,6 +4655,7 @@ pub func codegenPackageWithSigsSeeded(
             externTypes,
             autoFfi,
             moduleVals,
+            configFieldTypes,
             opaqueTypes,
             closureAcc,
             usesLyricCount
@@ -4559,6 +4719,7 @@ pub func codegenPackageWithSigsSeeded(
                   externTypes,
                   autoFfi,
                   moduleVals,
+                  configFieldTypes,
                   opaqueTypes,
                   closureAcc,
                   usesLyricCount
@@ -4595,6 +4756,7 @@ pub func codegenPackageWithSigsSeeded(
               externTypes,
               autoFfi,
               moduleVals,
+              configFieldTypes,
               opaqueTypes,
               closureAcc,
               usesLyricCount
@@ -4624,14 +4786,71 @@ pub func codegenPackageWithSigsSeeded(
       }
       case IFixture(_) -> {
       }
-      case IConfig(_) -> {
-        // J3 M-3: `config { … }` blocks declare compile-time DI configuration
-        // (D046 / D048).  They are resolved during config/wire resolution and
-        // carry no standalone runtime representation — the MSIL backend emits
-        // nothing for `IConfig` for the same reason, so this is intentional
-        // parity, not a dropped body.  When the config-resolution phase lands a
-        // JVM consumer it will read the resolved values directly rather than a
-        // synthesised class.
+      case IConfig(decl) -> {
+        // #3228: `config { … }` block (D046 / docs/25-config-blocks.md) — JVM
+        // parity with the MSIL `.cctor` static-field path
+        // (`Msil.Codegen`/`Msil.Lowering.lowerMConfig`).  Emits a static-field
+        // holder class (`ACC_PUBLIC + ACC_SUPER`; the MSIL side additionally
+        // marks its twin `sealed`, immaterial here since the class is never
+        // instantiated or subclassed — access is purely via `getstatic`)
+        // named `<pkgName>/<BlockName>` with one `public static final` field
+        // per config field, populated by a synthesised `<clinit>` that reads
+        // each field's env var and falls back to the declared default (or
+        // aborts with exit code 78 for a required field).  Empty blocks emit
+        // nothing, matching `Msil.Codegen`'s guard.  Field types are the
+        // same map `collectFileConfigFieldTypes` seeded into
+        // `configFieldTypes` above, so a qualified read anywhere in the
+        // package sees the exact same JVM type as the field this emits.
+        if decl.fields.count > 0 {
+          val cfgFields: List[LConfigField] = newList()
+          var cfi = 0
+          while cfi < decl.fields.count {
+            val cf = decl.fields[cfi]
+            val fTy = typeExprToJvm(cf.ty, pkgName)
+            val envVarName = deriveConfigEnvVarNameJvm(pkgName, decl.name, cf.name)
+            val hasDefault = match cf.default { case Some(_) -> true; case None -> false }
+            val defaultInsnsList: List[LInsn] = newList()
+            if hasDefault {
+              match cf.default {
+                case Some(defExpr) -> {
+                  val lowered = match defExpr.kind {
+                    case ELiteral(lit) -> emitConfigDefaultLiteralJvm(fTy, lit, false, defaultInsnsList)
+                    case EPrefix(op, inner) -> match op { case PreNeg -> match inner.kind { case ELiteral(lit2) -> emitConfigDefaultLiteralJvm(fTy, lit2, true, defaultInsnsList); case _ -> false }; case _ -> false }
+                    case _ -> false
+                  }
+                  if not lowered {
+                    // A silent fall-through here leaves the field at its
+                    // zero-initialised value regardless of the declared
+                    // default; the front-end's G0010 guard rejects these
+                    // shapes before codegen (mirrors the MSIL ICE panic).
+                    panic(
+                      "Jvm.Codegen ICE: config default for '" + decl.name + "." + cf.name +
+                        "' is not a literal of the declared type — the type checker (G0010) should have rejected this"
+                    )
+                  }
+                }
+                case None -> ()
+              }
+            }
+            val requiredMsg = if hasDefault {
+              ""
+            } else {
+              "error: required config field " + decl.name + "." + cf.name + " (env var " + envVarName + ") is not set"
+            }
+            cfgFields.add(
+              LConfigField(
+                name = cf.name,
+                fieldType = fTy,
+                envVarName = envVarName,
+                hasDefault = hasDefault,
+                defaultInsns = defaultInsnsList,
+                requiredErrMsg = requiredMsg
+              )
+            )
+            cfi = cfi + 1
+          }
+          items.add(LPConfig(ns = pkgName, blockName = decl.name, fields = cfgFields))
+        }
       }
       case IAspect(_) -> {
       }
