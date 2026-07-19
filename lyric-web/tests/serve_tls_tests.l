@@ -30,7 +30,6 @@
 package Web.ServeTlsTests
 
 import Std.Core
-import Std.Collections
 import Std.String
 import Std.Tls
 import Std.Http

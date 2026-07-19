@@ -401,10 +401,14 @@ jobs:
             exit 1
           fi
           echo "PASS"
-          # Web.serve() failure-observability path (#5260): the server's
-          # /crash route panics during request handling; serve()'s catch-Bug
-          # arm must log the [lyric-web] failure line, stop the listener,
-          # and exit non-zero — not swallow the crash.
+          # Web.serve() per-request crash isolation (#5261, supersedes the
+          # #5260 fail-fast contract): the server's /crash route panics during
+          # request handling; serve()'s per-request catch-Bug arm must log the
+          # [lyric-web] failure line, answer that request 500, and KEEP the
+          # accept loop running — a single bad request must not take the whole
+          # server down. Assert /crash -> 500, the failure line is logged, and
+          # /health still serves 200 afterward; then kill the server (it no
+          # longer exits on its own).
           echo "=== smoke lyric-web/tests/serve_failure_tests.l ==="
           "$lyric_bin" run lyric-web/tests/serve_failure_tests.l > /tmp/serve_failure.run.log 2>&1 &
           sf_pid=$!
@@ -419,19 +423,28 @@ jobs:
             tail -20 /tmp/serve_failure.run.log
             exit 1
           fi
-          curl -s --max-time 3 http://127.0.0.1:8199/crash >/dev/null 2>&1 || true
-          sf_rc=0
-          wait "$sf_pid" || sf_rc=$?
-          if [ "$sf_rc" -eq 0 ]; then
-            echo "FAIL: serve_failure exited 0 after a request-handler panic (#5260)"
+          sf_crash_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8199/crash || echo "000")
+          if [ "$sf_crash_code" != "500" ]; then
+            echo "FAIL: /crash returned '$sf_crash_code', expected 500 (#5261)"
+            kill "$sf_pid" 2>/dev/null || true
             tail -20 /tmp/serve_failure.run.log
             exit 1
           fi
           if ! grep -q "\[lyric-web\] request handling failed" /tmp/serve_failure.run.log; then
-            echo "FAIL: missing [lyric-web] failure line in serve_failure log (#5260)"
+            echo "FAIL: missing [lyric-web] failure line in serve_failure log (#5261)"
+            kill "$sf_pid" 2>/dev/null || true
             tail -20 /tmp/serve_failure.run.log
             exit 1
           fi
+          sf_health_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8199/health || echo "000")
+          if [ "$sf_health_code" != "200" ]; then
+            echo "FAIL: /health returned '$sf_health_code' after a request-handler panic; server did not survive (#5261)"
+            kill "$sf_pid" 2>/dev/null || true
+            tail -20 /tmp/serve_failure.run.log
+            exit 1
+          fi
+          kill "$sf_pid" 2>/dev/null || true
+          wait "$sf_pid" 2>/dev/null || true
           echo "PASS"
           # Web.serveStreaming()/ResponseWriter (lyric-lang#5979): a chunk
           # written before the handler finishes must reach the client before
@@ -1536,6 +1549,29 @@ jobs:
             exit 1
           fi
           bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/block_shadow_self_test.l
+
+      # Try/finally early-exit self-test (#5765).  Runtime regression test
+      # pinning that a `return`/`break`/`continue` inside a try body or catch
+      # arm still runs the enclosing `finally` on the self-hosted backends
+      # (the JVM path previously emitted the control transfer directly,
+      # bypassing the finally — unlike MSIL's `leave`-routed handlers).  Run
+      # via native `lyric test` (imports only `Std.*`), asserting every
+      # runtime value on both targets.
+      - name: Try/finally early-exit self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping try/finally early-exit self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping try/finally early-exit self-test"
+            exit 1
+          fi
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/try_finally_early_exit_self_test.l
 
       # Lambda-Bool-if-condition self-test (#5935).  Runtime regression test
       # pinning that a direct call through a function-typed (`(T) -> Bool`)
@@ -4733,6 +4769,27 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+
+      # Try/finally early-exit self-test on JVM (#5765) — the JVM half of the
+      # dotnet-job step of the same name, and the load-bearing target for this
+      # fix: pins that `return`/`break`/`continue` inside a try body or catch
+      # arm routes through the enclosing `finally` (via the deferStack the JVM
+      # backend already uses for `defer`/`scope`), matching MSIL's `leave`.
+      - name: Try/finally early-exit self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping try/finally early-exit JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping try/finally early-exit JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/try_finally_early_exit_self_test.l
 
       # slice[Byte]-index lambda-argument self-test on JVM (#5934).  Runtime
       # regression pin for the MSIL Func-ABI box/unbox type mismatch: a

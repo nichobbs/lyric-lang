@@ -69,6 +69,7 @@ output_assembly = "Web.dll"
 "Web.DispatchTests"    = "tests/dispatch_tests.l"
 "Web.ServeTlsTests"    = "tests/serve_tls_tests.l"
 "Web.WebTlsConfigTests" = "tests/webtls_config_tests.l"
+"Web.ServeCrashIsolationTests" = "tests/serve_crash_isolation_tests.l"
 
 [dependencies]
 "Lyric.Auth"         = { workspace = true }

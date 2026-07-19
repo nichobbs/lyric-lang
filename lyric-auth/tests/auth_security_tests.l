@@ -155,6 +155,50 @@ test "verifyJwt: ALG_REJECTED is distinct from BAD_SIGNATURE (#1090)" {
   assertEqual(codeHs, "BAD_SIGNATURE", "alg-allowed-but-sig-fails code")
 }
 
+// ─── alg=none forgery / algorithm-pinning end-to-end regression (#5636) ──────
+// RFC 8725 §3.1 requires rejecting a token whose `alg` header is `none` (an
+// unsigned-token forgery) or any algorithm outside the caller's allow-list
+// (HS256/RS256 confusion).  `verifyJwt` itself forbids "none" from ever
+// appearing in the caller's allow-list via its `requires:` contract, so an
+// attacker-supplied `alg=none` header can never be in `allowedAlgorithms`
+// and always falls through to `ALG_REJECTED` before the kernel is reached.
+// These three tests pin the full trio end to end: alg=none rejected,
+// mismatched alg rejected, and a correctly-signed matching-alg token
+// accepted — confirming there is no live gap on `--target dotnet` even
+// though the Lyric-level `jwtAlg` belt-and-suspenders extraction (auth.l)
+// tracks the still-open MSIL `.indexOf` codegen bug #5625 separately.
+test "verifyJwt: alg=none forged token is rejected as ALG_REJECTED, not accepted (#5636)" {
+  // Header: {"alg":"none"} → eyJhbGciOiJub25lIn0 (len=19, rem=3; needs = padding).
+  // Classic alg=none forgery drops the signature; the empty final segment
+  // does not matter here since alg pinning short-circuits before signature
+  // verification is ever attempted.
+  val r = Auth.verifyJwt("eyJhbGciOiJub25lIn0.payload.", "test-secret", "", "", "HS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "ALG_REJECTED", "alg=none forged token must be rejected, never accepted (RFC 8725 §3.1)")
+}
+
+test "verifyJwt: HS256/RS256 confusion (RS256 token, HS256-only allow-list) is rejected (#5636)" {
+  // Header: {"alg":"RS256"} → eyJhbGciOiJSUzI1NiJ9 (len=20, rem=0).
+  val r = Auth.verifyJwt("eyJhbGciOiJSUzI1NiJ9.payload.fakesig", "test-secret", "", "", "HS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "ALG_REJECTED", "alg confusion (RS256 token against an HS256-only pin) must be rejected")
+}
+
+test "verifyJwt: correctly-signed matching-alg token is accepted (#5636)" {
+  // Header: {"alg":"HS256"}, payload {"iss":"alice"}, signed with
+  // HMAC-SHA256("test-secret") — reconstruction documented in the Python
+  // snippet above.
+  val r = Auth.verifyJwt(
+    "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJhbGljZSJ9.5aKgRbW0s3yamkNfocjRYD-wgC2m6fedIAg2c6k8I1c",
+    "test-secret",
+    "alice",
+    "",
+    "HS256"
+  )
+  val isOk = match r { case Ok(v) -> true; case Err(e) -> false }
+  assertTrue(isOk, "a correctly-signed token whose alg matches the allow-list must verify")
+}
+
 // ─── Duplicate alg key attack regression (#560) ───────────────────────────────
 // RFC 8259 §4 permits duplicate keys; last-wins is common in many JSON parsers.
 // A crafted header {"alg":"RS256","alg":"HS256"} tries to mask the real alg behind

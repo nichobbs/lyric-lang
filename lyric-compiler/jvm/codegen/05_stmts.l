@@ -1635,6 +1635,18 @@ func lowerTryCatchFinallyExpr(
   val rslotName = "__tryf_r_" + afterL
   var rslot = -1
 
+  // Same guaranteed-cleanup mechanism as the statement-mode `lowerTryCatch`
+  // (#5765): push `fb` onto `ctx.deferStack` for the duration of lowering the
+  // try body and every catch-arm body, so an early `return`/`break`/
+  // `continue` inside either replays it via the existing `replayDefers`
+  // machinery instead of skipping it.
+  val ranSlot = allocSlot(ctx, "__tryf_ran_" + freshLabel(ctx), JInt)
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = ranSlot))
+  ctx.deferStack.add(fb)
+  ctx.deferRanSlots.add(ranSlot)
+  val savedDepth = ctx.deferStack.count - 1
+
   insns.add(LLabel(name = startL))
   val resultTy = lowerBlockExpr(ctx, insns, body)
   // Same structure as `lowerTryCatchExpr` above (#5805/#5850): pre-lower
@@ -1643,6 +1655,11 @@ func lowerTryCatchFinallyExpr(
   // every fall-through-to-join Unit edge up front.
   val tryTerminated = lastInsnIsTerminator(insns)
   val arms = lowerCatchArmsBuffered(ctx, catches)
+  // The finally block is only auto-replayed inside the try body and
+  // catch-arm bodies above; drop it from the shared stack before the
+  // catch-all / normal-path copies below, which lower it directly.
+  ctx.deferStack.removeAt(savedDepth)
+  ctx.deferRanSlots.removeAt(savedDepth)
   val joinTy = effectiveCatchJoinTy(resultTy, arms)
   validateCatchJoinEdges(ctx, "try-catch-finally", resultTy, tryTerminated, arms, catches)
   match joinTy {
@@ -1685,7 +1702,14 @@ func lowerTryCatchFinallyExpr(
   val tmpName = "__tryf_ex_" + finallyExL
   val tmpSlot = allocSlot(ctx, tmpName, exTy2)
   emitStore(insns, tmpSlot, exTy2)
+  // Skip the finally block when an early-exit replay already ran it and its
+  // own code threw (the same double-execution guard `replayDefers`/
+  // `lowerDeferRegion` use for `defer`, #2855).
+  val tryfSkipL = freshLabel(ctx)
+  insns.add(LIload(slot = ranSlot))
+  insns.add(LIfne(label = tryfSkipL))
   lowerBlock(ctx, insns, fb)
+  insns.add(LLabel(name = tryfSkipL))
   emitLoad(insns, tmpSlot, exTy2)
   insns.add(LAthrow)
   insns.add(LTryCatch(startLabel = startL, endLabel = finallyExL, handlerLabel = finallyExL, catchClass = ""))
@@ -1715,6 +1739,31 @@ func lowerTryCatch(
   val startL = freshLabel(ctx)
   val endL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
+
+  // A `finally` block must run on EVERY exit from the try body and its catch
+  // arms, not just normal fall-through and exception unwind — an explicit
+  // `return`/`break`/`continue` inside either previously bypassed it entirely
+  // (#5765).  Push it onto the shared `ctx.deferStack` for the duration of
+  // lowering the try body and every catch-arm body: `SReturn`/`SBreak`/
+  // `SContinue` already call `replayDefers` against that stack (the `defer`
+  // and `scope { }` machinery), so this reuses the exact same guaranteed-
+  // cleanup path — including the `deferRanSlots` "already ran" flag, which
+  // the catch-all handler below also consults so a throw from the inlined
+  // finally on an early-exit path does not run the block a second time.
+  var ranSlot = -1
+  var pushedFinally = false
+  match finally_ {
+    case Some(fb0) -> {
+      ranSlot = allocSlot(ctx, "__finally_ran_" + freshLabel(ctx), JInt)
+      insns.add(LIconst(v = 0))
+      insns.add(LIstore(slot = ranSlot))
+      ctx.deferStack.add(fb0)
+      ctx.deferRanSlots.add(ranSlot)
+      pushedFinally = true
+    }
+    case None -> ()
+  }
+  val savedDepth = ctx.deferStack.count - 1
 
   insns.add(LLabel(name = startL))
   lowerBlock(ctx, insns, body)
@@ -1756,6 +1805,14 @@ func lowerTryCatch(
     i = i + 1
   }
 
+  // The finally block is only auto-replayed inside the try body and catch-arm
+  // bodies above; drop it from the shared stack before the catch-all /
+  // normal-path copies below, which lower it directly.
+  if pushedFinally {
+    ctx.deferStack.removeAt(savedDepth)
+    ctx.deferRanSlots.removeAt(savedDepth)
+  }
+
   // When a finally block is present, emit a catch-all handler that runs
   // the finally block then rethrows, covering the try body and all catch
   // bodies.  The range [startL, finallyExL) excludes the handler itself,
@@ -1774,7 +1831,14 @@ func lowerTryCatch(
       val tmpName = "__finally_ex_" + freshLabel(ctx)
       val tmpSlot = allocSlot(ctx, tmpName, exTy)
       emitStore(insns, tmpSlot, exTy)
+      // Skip the finally block when an early-exit replay already ran it and
+      // its own code threw: the same double-execution guard `replayDefers`/
+      // `lowerDeferRegion` use for `defer` (#2855).
+      val skipL = freshLabel(ctx)
+      insns.add(LIload(slot = ranSlot))
+      insns.add(LIfne(label = skipL))
       lowerBlock(ctx, insns, fb)
+      insns.add(LLabel(name = skipL))
       emitLoad(insns, tmpSlot, exTy)
       insns.add(LAthrow)
       // Catch-all entry: covers try body ([startL, endL)) and all catch

@@ -73,7 +73,6 @@ import Std.Collections
 import Std.Console as Console
 import Std.Tls
 import Std.Http
-import Std.Errors
 import Web
 
 record HelloHandler {

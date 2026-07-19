@@ -464,7 +464,16 @@ pub func hostListen(host: in String, port: in Int): Result[Listener, TcpError] {
 pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
   try {
     val client = newTcpClientConnected(host, port)
-    Ok(value = Conn(client = client, stream = clientStream(client), alpn = ""))
+    // `clientStream` (`GetStream()`) is wrapped in its own try so a failure
+    // here — after the client is already connected — closes the socket
+    // before returning the error instead of leaking it (#6057).
+    val stream = try {
+      clientStream(client)
+    } catch Bug as b {
+      clientClose(client)
+      return Err(error = TransportFailed(message = b.message))
+    }
+    Ok(value = Conn(client = client, stream = stream, alpn = ""))
   } catch Bug as b {
     Err(error = TransportFailed(message = b.message))
   }
@@ -485,7 +494,16 @@ pub func hostStopListener(l: in Listener): Unit {
 pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
   try {
     val client = listenerAccept(l.handle)
-    Ok(value = Conn(client = client, stream = clientStream(client), alpn = ""))
+    // `clientStream` (`GetStream()`) is wrapped in its own try so a failure
+    // here — after the socket is already accepted — closes it before
+    // returning the error instead of leaking it (#6057).
+    val stream = try {
+      clientStream(client)
+    } catch Bug as b {
+      clientClose(client)
+      return Err(error = AcceptFailed(message = b.message))
+    }
+    Ok(value = Conn(client = client, stream = stream, alpn = ""))
   } catch Bug as b {
     Err(error = AcceptFailed(message = b.message))
   }
@@ -582,7 +600,19 @@ pub func hostUpgradeServerTls(conn: in Conn, cfg: in Tls.TlsServerConfig): Resul
     }
     case None -> ()
   }
-  val ssl = newServerSslStream(conn.stream, false)
+  // The `SslStream` ctor itself is wrapped in its own try (#6058): if it were
+  // to throw, `conn.client` must still be closed rather than leaking, and the
+  // failure must map to `TlsHandshakeFailed` like every other fallible BCL
+  // call in this file, not escape as a raw host exception. No SslStream
+  // exists yet on this path, so `conn.stream` (the plain NetworkStream) is
+  // disposed directly rather than through `ssl`.
+  val ssl = try {
+    newServerSslStream(conn.stream, false)
+  } catch Bug as b {
+    disposeQuietly(conn.stream)
+    clientClose(conn.client)
+    return Err(error = TlsHandshakeFailed(message = b.message))
+  }
   try {
     sslAuthenticateAsServer(ssl, buildServerOptions(cfg))
     Ok(value = Conn(client = conn.client, stream = ssl, alpn = computeAlpn(ssl)))

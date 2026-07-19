@@ -181,7 +181,7 @@ A regular `Handler` returns one complete `Response` — the framework can't send
 
 ```lyric
 pub interface StreamingHandler {
-  func handleStream(req: in Request, w: in ResponseWriter): Unit
+  func streamHandle(req: in Request, w: in ResponseWriter): Unit
 }
 ```
 
@@ -191,7 +191,7 @@ pub interface StreamingHandler {
 record ProgressHandler {}
 
 impl Web.StreamingHandler for ProgressHandler {
-  func handleStream(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+  func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
     Web.writeHeader(w, "Content-Type", "text/event-stream")
     var i = 0
     while i < 10 {
@@ -459,6 +459,7 @@ lyric-web/
     security_aspect_weaving_tests.l  Web.Aspects templates, woven
     jvm_server_smoke.l            real Undertow HTTP round trip (jvm; blocked on #5444/#5458, see Known gaps)
     serve_failure_tests.l         Web.serve() failure-observability path (#5260); CI-orchestrated, see file header
+    serve_crash_isolation_tests.l Web.serve()/serveStreaming() per-request crash isolation (#5261)
 ```
 
 ## See also
