@@ -8,6 +8,7 @@ package Lyric.Manifest.SelfTest
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.Testing
 import Lyric.Manifest
 
@@ -538,40 +539,12 @@ func findBuildDefine(defs: in List[String], key: in String): Option[String] {
   var i = 0
   while i < defs.count {
     val eq = key + "="
-    if startsWithStr(defs[i], eq) {
-      return Some(value = substringFrom(defs[i], eq.length))
+    if Str.startsWith(defs[i], eq) {
+      return Some(value = Str.substring(defs[i], eq.length))
     }
     i += 1
   }
   None
-}
-
-func startsWithStr(s: in String, prefix: in String): Bool {
-  if s.length < prefix.length {
-    return false
-  }
-  var i = 0
-  while i < prefix.length {
-    if s[i] != prefix[i] {
-      return false
-    }
-    i += 1
-  }
-  true
-}
-
-func substringFrom(s: in String, start: in Int): String {
-  var acc = ""
-  var i = start
-  while i < s.length {
-    acc = acc + charToStr(s[i])
-    i += 1
-  }
-  acc
-}
-
-func charToStr(c: in Char): String {
-  "" + c
 }
 
 // A `[build.define]` table alongside `[build] kind = "exe"`: both parse.

@@ -59,17 +59,6 @@ pub func withWellKnownDefines(version: in String, cli: in List[String]): List[St
   result
 }
 
-/// Append the auto-derived well-known `target` define (docs/60 §3.3) as a
-/// FALLBACK: added only when the caller has not already supplied a `target`
-/// define, so an explicit `--define target=…` still wins. `targetName` is the
-/// active backend (`dotnet` / `jvm` / `native`), which is deterministic per
-/// build invocation, so injecting it on every build keeps the reproducibility
-/// byte-compare intact (docs/60 §8). Injected in `pipeParseAndErase` (which
-/// already receives `targetName`), so it lands uniformly on every backend and
-/// on both the single-file and project paths — unlike the `version` fallback,
-/// which is manifest-sourced and therefore project-only. Operates on the
-/// already-decoded `Define` list so it composes after `decodeDefines`'
-/// last-wins dedup.
 /// Layer manifest `[build.define]` entries (docs/60 §3.1) beneath CLI
 /// `--define`s: returns `manifest ++ cli`, so under `decodeDefines`' last-wins
 /// convention a CLI `--define` overrides a manifest define of the same key
@@ -92,6 +81,17 @@ pub func withManifestDefines(manifest: in List[String], cli: in List[String]): L
   result
 }
 
+/// Append the auto-derived well-known `target` define (docs/60 §3.3) as a
+/// FALLBACK: added only when the caller has not already supplied a `target`
+/// define, so an explicit `--define target=…` still wins. `targetName` is the
+/// active backend (`dotnet` / `jvm` / `native`), which is deterministic per
+/// build invocation, so injecting it on every build keeps the reproducibility
+/// byte-compare intact (docs/60 §8). Injected in `pipeParseAndErase` (which
+/// already receives `targetName`), so it lands uniformly on every backend and
+/// on both the single-file and project paths — unlike the `version` fallback,
+/// which is manifest-sourced and therefore project-only. Operates on the
+/// already-decoded `Define` list so it composes after `decodeDefines`'
+/// last-wins dedup.
 pub func withWellKnownTarget(targetName: in String, defines: in List[Define]): List[Define] {
   if targetName.length == 0 or hasKey(defines, "target") {
     return defines
