@@ -8698,15 +8698,24 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   val mainPkg = units[0].pkgName
   val sigs = buildSigs(units)
   // Module-level `val`/`const` bindings across the whole bundle, keyed by bare
-  // name (#5977 part 2). Later same-name entries win (last unit wins), matching
-  // the self-package-first resolution order; in practice names don't collide.
+  // name (#5977 part 2). First registration wins — `units[0]` (the user
+  // package) is registered first, so a user-package binding shadows a
+  // same-named one in a bundled package, matching the self-package-first
+  // resolution order. The `containsKey` guard is required, not just a policy:
+  // `Map.add` throws on a duplicate key rather than overwriting (see
+  // `buildSigs`/`addSig`'s identical first-wins guard, and
+  // `Std.Collections.mapPutAll`'s remove-then-add workaround), so an unguarded
+  // `.add` would crash native compilation whenever two packages declare a
+  // module `val` with the same bare name (#6224).
   val moduleVals: Map[String, ModuleValDef] = newMap()
   var mvUi = 0
   while mvUi < units.count {
     val mvs = units[mvUi].moduleVals
     var mvI = 0
     while mvI < mvs.count {
-      moduleVals.add(mvs[mvI].name, mvs[mvI])
+      if not moduleVals.containsKey(mvs[mvI].name) {
+        moduleVals.add(mvs[mvI].name, mvs[mvI])
+      }
       mvI = mvI + 1
     }
     mvUi = mvUi + 1
@@ -8900,11 +8909,14 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
       case IExternFunc(decl) -> externs.add(decl)
       // Module-level `val`/`const` (#5977 part 2): collect for use-site
       // inlining. A `val` with a non-binding (destructuring) pattern is not a
-      // named module binding, so it is left for the `case _` diagnostic.
+      // named module binding, so it is skipped here — consistent with the
+      // bundle path (`unitOf` in llvm_bridge.l); a reference to it then surfaces
+      // the `loadLocal` "unknown name" diagnostic at the use site rather than
+      // failing an otherwise-unrelated compile at collection time.
       case IVal(decl) -> {
         match decl.pattern.kind {
           case PBinding(vn, _) -> moduleVals.add(ModuleValDef(name = vn, init = decl.init, ty = decl.ty))
-          case _ -> panic("Lyric.LlvmCodegen: destructuring module-level `val` is not yet supported for --target native (#5977)")
+          case _ -> ()
         }
       }
       case IConst(decl) -> moduleVals.add(ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty)))
