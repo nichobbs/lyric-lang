@@ -939,15 +939,15 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
                                        # type-check as a String literal (no source re-parse). An
                                        # unsupplied key keeps the val's in-source fallback literal.
                                        # v1: single-file AND project (--manifest / lyric.toml)
-                                       # --target dotnet/jvm; on a project build the manifest
+                                       # --target dotnet/jvm/native; on a project build the manifest
                                        # [package].version is the well-known `version` fallback an
                                        # explicit --define version=… overrides. The active backend
                                        # (dotnet/jvm/native) is auto-injected as the well-known
                                        # `target` define on every build (also override-able), and
                                        # `build_profile` is auto-injected as debug (normal build) or
-                                       # release (--release/AOT). User --define on --target native
-                                       # (#5977), --watch, --release, and a manifest [build]
-                                       # kind = "aot" (#6139) are rejected.
+                                       # release (--release/AOT). User --define with --watch,
+                                       # --release, and a manifest [build] kind = "aot" (#6139)
+                                       # are rejected (native --define works, #5977).
 
 # Build kind (manifest [build] kind, .NET target; default "lib")
 #   kind = "lib"     -> managed foo.dll + foo.runtimeconfig.json (run via `dotnet exec`)
@@ -964,7 +964,7 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
 #   build_channel = "stable"          # string values only; injected into @build_const("build_channel")
 #   api_base      = "https://api.example.com"
 #   # Layered beneath CLI --define (a --define of the same key wins). Applied on
-#   # --target dotnet/jvm project builds; rejected on --target native/--release/kind="aot".
+#   # --target dotnet/jvm/native project builds; rejected on --release/kind="aot".
 
 # Build features (compile-time gating; see chapter 20 §20.7)
 lyric build --features X,Y <file.l>    # additive over manifest's [features] default

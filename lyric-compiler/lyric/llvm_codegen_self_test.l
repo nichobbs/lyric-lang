@@ -209,6 +209,18 @@ test "cross-package same-named module vals resolve per package (#6225)" {
   assertEqualInt(r.exitCode, 30, "each package reads its own TAG: 20 + 10")
 }
 
+test "cross-package module val via the bare-name fallback (no collision)" {
+  // B references a name only A declares (no B.ONLY_A), so the self-package
+  // qualified lookup misses and the bare-name fallback resolves it to A's val.
+  val depA = "package A\nval ONLY_A: Int = 7\n"
+  val mainB = "package B\nfunc main(): Int {\n  ONLY_A\n}\n"
+  val sources: List[String] = newList()
+  sources.add(mainB)
+  sources.add(depA)
+  val r = compileAndRunBundle(sources)
+  assertEqualInt(r.exitCode, 7, "bare-name fallback resolves B's ONLY_A ref to A's val")
+}
+
 test "integer arithmetic" {
   // The result binds to a local first: a trailing line that begins with
   // '(' would otherwise continue the previous statement as a call.
