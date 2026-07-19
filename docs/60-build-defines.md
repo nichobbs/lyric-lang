@@ -14,14 +14,17 @@ own parameters. M1c — `--define` threading to the **JVM and native** bridges
 `compileToNativeWithFlags`), so single-file `--define` (and therefore
 `Std.BuildInfo`'s define-sourced fields) now works on `--target dotnet` and
 `--target jvm`; the CLI gate narrows from "single-file dotnet only" to
-"single-file dotnet/jvm". **Native `--define` stays gated** pending the second
-half of #5977: native codegen now lowers list literals (`[...]` → `lyric_list_new`
-+ `lyric_list_push`), so **`Std.BuildInfo` is functional on `--target native`**
-(its `buildInfo()` accessor's `features = [...]` compiles and runs, and the
-well-known `target`/`build_profile` defines populate) — but `@build_const`
-consumption still crashes because native codegen cannot yet load a **module-level
-`val` reference** (the annotated `val` is exactly what `@build_const` reads).
-Until that lands, native `--define` stays gated (tracked in #5977).
+"single-file dotnet/jvm". Both native-codegen gaps behind #5977 are now closed:
+native lowers list literals (`[...]` → `lyric_list_new` + `lyric_list_push`), so
+**`Std.BuildInfo` is functional on `--target native`** (its `buildInfo()`
+accessor's `features = [...]` compiles and runs, and the well-known
+`target`/`build_profile` defines populate); and native resolves **module-level
+`val` references** by inlining a literal-initialized binding at the use site, so
+a `@build_const` `val` (whose initializer is always a `String` literal after
+substitution) compiles and runs on native too. **Native `--define` stays gated
+for one more step** — lifting the CLI gate + wiring a native `--define` build
+CI check is the final slice of #5977; until it lands the substitution is applied
+but the CLI still rejects `--define` on `--target native`.
 M1d — the auto-injected well-known **`version`** define
 (`BD.withWellKnownDefines`): the manifest's `[package].version` is injected as a
 fallback define on the project path (both the MSIL project bridge and the JVM

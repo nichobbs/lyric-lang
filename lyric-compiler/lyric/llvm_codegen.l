@@ -99,6 +99,22 @@ pub record CodegenUnit {
   // desugared inner body (collected into `fns` by `collectProtectedMethods`)
   // plus a codegen-synthesised lock/unlock wrapper (`registerProtectedMethods`).
   protecteds: List[ProtectedTypeDecl]
+  // Module-level `val` / `const` bindings (#5977 part 2). Native has no
+  // static-global storage yet, so a reference to a module-level binding is
+  // resolved by inlining its initializer at the use site — supported only for
+  // a literal initializer (which is exactly what `@build_const` produces). A
+  // non-literal initializer is collected too, so `loadLocal` can surface a
+  // clean diagnostic instead of an "unknown name" one.
+  moduleVals: List[ModuleValDef]
+}
+
+/// A module-level `val`/`const` binding, normalized for native inlining
+/// (#5977). `ty` is the declared type when present (a `const` always has one;
+/// a `val` may not) — used as the expected type when lowering the initializer.
+pub record ModuleValDef {
+  name: String
+  init: Expr
+  ty: Option[TypeExpr]
 }
 
 /// Call-registry entry: how a resolvable callee lowers.  `isExternSym`
@@ -235,6 +251,9 @@ record Ctx {
   curPkg: List[String]
   // Return type of the function being lowered (singleton list).
   curRet: List[NType]
+  // Module-level `val`/`const` bindings by name (#5977 part 2), for use-site
+  // inlining (native has no static-global storage yet).
+  moduleVals: Map[String, ModuleValDef]
   // Heap-type registries (module-wide, shared across functions).
   recordDefs: Map[String, NRecInfo]
   unionDefs: Map[String, NUnionInfo]
@@ -1227,7 +1246,25 @@ func bindLocal(ctx: in Ctx, insns: in List[NInsn], name: in String, v: in NVal):
 func loadLocal(ctx: in Ctx, insns: in List[NInsn], name: in String): NVal {
   val ty = match mapGet(ctx.varTypes, name) {
     case Some(t) -> t
-    case None -> panic("Lyric.LlvmCodegen: unknown name '" + name + "' (module-level constants and non-local references are not yet supported for --target native)")
+    case None -> {
+      // Not a local — a reference to a module-level `val`/`const` (#5977 part 2).
+      // Native has no static-global storage yet, so inline the binding's
+      // initializer at the use site; only a literal initializer is supported
+      // (which is exactly what `@build_const` produces). Resolve self-package
+      // qualified FIRST — so a package's own binding wins over a same-named one
+      // in another bundled package (#6225) — then the bare name (an imported /
+      // cross-package reference), the same order `lowerCall` uses for functions.
+      val selfKey = if ctx.curPkg.count > 0 { ctx.curPkg[0] + "." + name } else { name }
+      match mapGet(ctx.moduleVals, selfKey) {
+        case Some(mv) -> return lowerModuleVal(ctx, insns, mv)
+        case None -> {
+          match mapGet(ctx.moduleVals, name) {
+            case Some(mv) -> return lowerModuleVal(ctx, insns, mv)
+            case None -> panic("Lyric.LlvmCodegen: unknown name '" + name + "' (non-local references other than module-level val/const are not yet supported for --target native)")
+          }
+        }
+      }
+    }
   }
   match ty {
     case NVoid -> NVal(ty = NVoid, value = NUndef(ty = NVoid))
@@ -1240,6 +1277,39 @@ func loadLocal(ctx: in Ctx, insns: in List[NInsn], name: in String): NVal {
       insns.add(NLoad(dest = dest, ty = ty, ptr = NLocal(name = slot)))
       NVal(ty = ty, value = NLocal(name = dest))
     }
+  }
+}
+
+// True iff `e` is a compile-time literal — possibly parenthesized, or a negated
+// numeric literal (`-1`, the common `val MIN: Int = -1` form) — the only
+// module-level initializer form native can inline at a use site (#5977).
+func isLiteralInit(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(_) -> true
+    case EParen(inner) -> isLiteralInit(inner)
+    case EPrefix(op, operand) -> {
+      match op {
+        case PreNeg -> isLiteralInit(operand)
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+// Inline a module-level `val`/`const` at a reference site by lowering its
+// initializer, using the declared type as the expected type when present so a
+// widening literal (e.g. `val N: Long = 5`) constructs at the declared width.
+func lowerModuleVal(ctx: in Ctx, insns: in List[NInsn], mv: in ModuleValDef): NVal {
+  if not isLiteralInit(mv.init) {
+    panic(
+      "Lyric.LlvmCodegen: module-level '" + mv.name +
+        "' has a non-literal initializer, which is not yet supported for --target native (only literal-initialized module val/const are inlined; #5977)"
+    )
+  }
+  match mv.ty {
+    case Some(t) -> lowerExprExpecting(ctx, insns, mv.init, typeToN(ctx, t))
+    case None -> lowerExpr(ctx, insns, mv.init)
   }
 }
 
@@ -7910,6 +7980,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     sigs = mod.sigs,
     curPkg = curPkg,
     curRet = curRet,
+    moduleVals = mod.moduleVals,
     recordDefs = mod.recordDefs,
     unionDefs = mod.unionDefs,
     caseRefs = mod.caseRefs,
@@ -8642,6 +8713,35 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   }
   val mainPkg = units[0].pkgName
   val sigs = buildSigs(units)
+  // Module-level `val`/`const` bindings across the whole bundle (#5977 part 2),
+  // keyed BOTH by qualified name (`Pkg.name`) and bare name (`name`) — the same
+  // two-part scheme `buildSigs` uses for functions (and `loadLocal` looks up
+  // self-package-qualified FIRST, so a package's own binding always wins over a
+  // same-named one in another bundled package — #6225). Bare keys are a
+  // first-wins fallback for an imported/cross-package bare reference; `units[0]`
+  // (the user package) registers first so its bare names shadow bundled ones.
+  // The `containsKey` guard is required, not just policy: `Map.add` throws on a
+  // duplicate key rather than overwriting (see `addSig`, and
+  // `Std.Collections.mapPutAll`'s remove-then-add workaround), so an unguarded
+  // `.add` would crash native compilation on any bare-name collision (#6224).
+  val moduleVals: Map[String, ModuleValDef] = newMap()
+  var mvUi = 0
+  while mvUi < units.count {
+    val upkg = units[mvUi].pkgName
+    val mvs = units[mvUi].moduleVals
+    var mvI = 0
+    while mvI < mvs.count {
+      val qkey = upkg + "." + mvs[mvI].name
+      if not moduleVals.containsKey(qkey) {
+        moduleVals.add(qkey, mvs[mvI])
+      }
+      if not moduleVals.containsKey(mvs[mvI].name) {
+        moduleVals.add(mvs[mvI].name, mvs[mvI])
+      }
+      mvI = mvI + 1
+    }
+    mvUi = mvUi + 1
+  }
   val emptySlots: Map[String, String] = newMap()
   val emptyTypes: Map[String, NType] = newMap()
   val emptyRecs: Map[String, NRecInfo] = newMap()
@@ -8673,6 +8773,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     sigs = sigs,
     curPkg = newList(),
     curRet = newList(),
+    moduleVals = moduleVals,
     recordDefs = emptyRecs,
     unionDefs = emptyUnions,
     caseRefs = emptyCases,
@@ -8822,11 +8923,25 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val interfaces: List[InterfaceDecl] = newList()
   val impls: List[ImplDecl] = newList()
   val protecteds: List[ProtectedTypeDecl] = newList()
+  val moduleVals: List[ModuleValDef] = newList()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(decl) -> fns.add(decl)
       case IExternFunc(decl) -> externs.add(decl)
+      // Module-level `val`/`const` (#5977 part 2): collect for use-site
+      // inlining. A `val` with a non-binding (destructuring) pattern is not a
+      // named module binding, so it is skipped here — consistent with the
+      // bundle path (`unitOf` in llvm_bridge.l); a reference to it then surfaces
+      // the `loadLocal` "unknown name" diagnostic at the use site rather than
+      // failing an otherwise-unrelated compile at collection time.
+      case IVal(decl) -> {
+        match decl.pattern.kind {
+          case PBinding(vn, _) -> moduleVals.add(ModuleValDef(name = vn, init = decl.init, ty = decl.ty))
+          case _ -> ()
+        }
+      }
+      case IConst(decl) -> moduleVals.add(ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty)))
       case IRecord(decl) -> {
         records.add(decl)
         collectRecordMethods(pkgName, decl, fns)
@@ -8861,7 +8976,8 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     distincts = distincts,
     interfaces = interfaces,
     impls = impls,
-    protecteds = protecteds
+    protecteds = protecteds,
+    moduleVals = moduleVals
   )
 }
 
