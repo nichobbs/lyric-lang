@@ -943,9 +943,11 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
                                        # [package].version is the well-known `version` fallback an
                                        # explicit --define version=… overrides. The active backend
                                        # (dotnet/jvm/native) is auto-injected as the well-known
-                                       # `target` define on every build (also override-able).
-                                       # --target native (#5977), --watch, --release, and a manifest
-                                       # [build] kind = "aot" (#6139) are rejected.
+                                       # `target` define on every build (also override-able), and
+                                       # `build_profile` is auto-injected as debug (normal build) or
+                                       # release (--release/AOT). User --define on --target native
+                                       # (#5977), --watch, --release, and a manifest [build]
+                                       # kind = "aot" (#6139) are rejected.
 
 # Build kind (manifest [build] kind, .NET target; default "lib")
 #   kind = "lib"     -> managed foo.dll + foo.runtimeconfig.json (run via `dotnet exec`)

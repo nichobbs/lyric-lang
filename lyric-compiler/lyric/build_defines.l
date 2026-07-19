@@ -106,6 +106,30 @@ pub func withWellKnownTarget(targetName: in String, defines: in List[Define]): L
   result
 }
 
+/// Append the well-known `build_profile` define (docs/60 §3.3) as a FALLBACK:
+/// added only when the caller has not already supplied a `build_profile` define.
+/// `pipeParseAndErase` injects `"debug"` on every compile; a `--release`/AOT
+/// build injects `build_profile=release` into its defines *upstream* of the
+/// compile, so `decodeDefines`' last-wins keeps `release` present and this
+/// fallback is skipped there (an explicit `--define build_profile=…` on a
+/// non-release build likewise wins). `build_profile` is fixed per build
+/// invocation (`debug` vs `release`), so injecting it keeps the reproducibility
+/// byte-compare intact (docs/60 §8). Operates on the already-decoded `Define`
+/// list so it composes after `decodeDefines`.
+pub func withWellKnownProfile(profile: in String, defines: in List[Define]): List[Define] {
+  if profile.length == 0 or hasKey(defines, "build_profile") {
+    return defines
+  }
+  val result: List[Define] = newList()
+  var i = 0
+  while i < defines.count {
+    result.add(defines[i])
+    i = i + 1
+  }
+  result.add(Define(key = "build_profile", value = profile))
+  result
+}
+
 // ── Private helpers ─────────────────────────────────────────────────────────
 func hasKey(defines: in List[Define], key: in String): Bool {
   var i = 0

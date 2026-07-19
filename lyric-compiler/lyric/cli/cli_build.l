@@ -1197,6 +1197,17 @@ func cmdBuild(argv: in slice[String]): Int {
 // then produce a self-contained native binary via Lyric.Release.  The default
 // output is the source stem with no extension (an executable), next to the
 // source unless `-o` overrides it.
+// The compiler-injected well-known `build_profile=release` define for a
+// `--release`/AOT staging compile (docs/60 §3.3), as the `"KEY=VALUE"` form the
+// build path threads. A normal build gets the `"debug"` fallback injected in
+// `pipeParseAndErase`; the release paths thread this so last-wins reports
+// `release` for `@build_const("build_profile")` / `Std.BuildInfo.profile`.
+func releaseProfileDefines(): List[String] {
+  val d: List[String] = newList()
+  d.add("build_profile=release")
+  d
+}
+
 func buildReleaseSingle(
   sourcePath: in String,
   explicitOut: in Option[String],
@@ -1237,7 +1248,21 @@ func buildReleaseSingle(
   // no C# trampoline in this pipeline (see `Lyric.Release`).  The native
   // output keeps the file-stem name (what the user expects from `foo.l`).
   val stagingDll = Path.join(Path.join(srcDir, ".lyric-release"), pkgName + ".dll")
-  val buildExit = buildOne(sourcePath, stagingDll, Dotnet, manifestArg)
+  // Inject `build_profile=release` into the staging compile (docs/60 §3.3) —
+  // `buildOne`/`buildOneNative` pass no defines, so use the feature-aware entry
+  // point directly with the release profile define.
+  val buildExit = buildOneNativeWithFeatures(
+    sourcePath,
+    stagingDll,
+    Dotnet,
+    manifestArg,
+    "",
+    "",
+    newList(),
+    false,
+    false,
+    releaseProfileDefines()
+  )
   if buildExit != 0 {
     return buildExit
   }
@@ -1411,6 +1436,13 @@ func buildReleaseProject(
     return 1
   }
 
+  // The staging DLL is a --release build: inject the well-known
+  // `build_profile=release` define (docs/60 §3.3) so the release binary's
+  // `@build_const("build_profile")` and `Std.BuildInfo.profile` report "release"
+  // instead of the "debug" fallback `pipeParseAndErase` injects for normal
+  // builds. `[build.define]`/user `--define` stay gated on --release (cmdBuild
+  // rejects them before this point), so this compiler-injected define is the
+  // only one the release staging compile carries.
   val buildExit = buildProject(
     mfPath,
     Some(value = stagingDll),
@@ -1421,7 +1453,7 @@ func buildReleaseProject(
     noRestore,
     packageVersionOverride,
     Some(value = resolved),
-    newList()
+    releaseProfileDefines()
   )
   if buildExit != 0 {
     return buildExit
