@@ -4074,14 +4074,21 @@ jobs:
             x + 1
           }
           LYRIC
+          # `main.l` also asserts the well-known `build_profile` define on the
+          # MULTI-PACKAGE release path (`buildReleaseProject`, docs/60 M1h #5852):
+          # its staging compile injects build_profile=release, so BuildInfo.profile
+          # reports "release" in the native binary (the single-file path is guarded
+          # by the hello-world smoke test above; this covers buildReleaseProject).
           cat > "$dir/src/app/main.l" <<'LYRIC'
           package ReleaseNugetSmoke
           import Std.Core
+          import Std.BuildInfo
           import ReleaseNugetSmoke.Helper
           extern type JsonConvert = "Newtonsoft.Json.JsonConvert"
           pub func main(): Int {
             println(JsonConvert.SerializeObject("hi"))
             println(addOne(41).toString())
+            println("profile=" + buildInfo().profile)
             0
           }
           LYRIC
@@ -4095,12 +4102,13 @@ jobs:
           out="$("$native_bin" 2>&1)"
           echo "native AOT output: $out"
           expected='"hi"
-          42'
+          42
+          profile=release'
           if [ "$out" != "$expected" ]; then
             echo "::error::manifest+[nuget] native AOT smoke test produced unexpected output: '$out'"
             exit 1
           fi
-          echo "OK: manifest project with a [nuget] dependency built and ran correctly under Native AOT." >> "$GITHUB_STEP_SUMMARY"
+          echo "OK: manifest project with a [nuget] dependency built and ran correctly under Native AOT (incl. build_profile=release)." >> "$GITHUB_STEP_SUMMARY"
 
       # Native AOT publish of the `lyric` CLI itself (#1494 / Band 5).
       # `dotnet publish` honours the csproj's `<PublishAot>true</PublishAot>`,
