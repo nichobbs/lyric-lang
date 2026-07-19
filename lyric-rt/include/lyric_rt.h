@@ -330,6 +330,31 @@ LyricList* lyric_dir_list(const char* path);
  * is int32_t* by design — see lyric_file_read_bytes (#4844, #4845). */
 LyricList* lyric_dir_list2(const char* path, int32_t* ok);
 
+/* Per-entry classification codes lyric_dir_list_typed prepends to each
+ * returned name, as a single ASCII digit ('0'/'1'/'2'). */
+#define LYRIC_DIRENT_OTHER 0 /* neither a regular file nor a directory */
+#define LYRIC_DIRENT_DIR   1
+#define LYRIC_DIRENT_REG   2
+
+/* Single-sweep entry-name-and-kind listing (#4856): like lyric_dir_list2,
+ * but also classifies every entry via `readdir`'s `d_type` in the same
+ * opendir/readdir pass, eliminating the caller's separate per-entry
+ * `stat()` probe.  Each returned string is a single LYRIC_DIRENT_* digit
+ * ('0', '1', or '2') followed by the bare entry name (e.g. "1subdir") —
+ * a single fresh rc=1 LyricList via the same return-plus-ok-flag
+ * protocol as lyric_dir_list2, deliberately NOT a second ref-typed
+ * out-param (a List[T] out-param initialised Lyric-side before the FFI
+ * call, as the kernel layer's `nativeAddrOf` convention requires, would
+ * leak that initialiser the moment this function overwrites the slot —
+ * see the matching note in file_host.l).  A symlink (DT_LNK) or an
+ * entry whose filesystem leaves d_type unpopulated (DT_UNKNOWN) is
+ * resolved with a single following stat(2), so classification matches
+ * lyric_file_exists / lyric_dir_exists exactly (both follow symlinks) —
+ * only the two-probe-per-entry cost is removed, not the
+ * symlink-following semantics.  *ok reports success (1/0), matching
+ * lyric_dir_list2. */
+LyricList* lyric_dir_list_typed(const char* path, int32_t* ok);
+
 /* ── Environment (lyric_fs.c) ──────────────────────────────────────── */
 
 /* getenv(3) wrapper.  Returns a fresh rc=1 LyricString copy of the

@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -450,6 +451,88 @@ static void test_dir_list2(void) {
     CHECK(memcmp(LYRIC_STRING_DATA(n0), "entry.txt", 9) == 0);
     lyric_release(names);
     unlink(inner);
+    rmdir(tmpl);
+}
+
+/* Linear scan for a kind-prefixed entry ("<digit><name>", see
+ * lyric_dir_list_typed) by its bare name; readdir order is unspecified,
+ * so tests look entries up by name instead of assuming a position.
+ * Returns the LYRIC_DIRENT_* digit on a match, -1 if not found. */
+static int32_t find_entry_kind(LyricList* entries, const char* target) {
+    int64_t n = lyric_list_len(entries);
+    size_t target_len = strlen(target);
+    for (int64_t i = 0; i < n; i++) {
+        LyricString* s = (LyricString*)(intptr_t)lyric_list_get(entries, i);
+        int64_t slen = lyric_string_len(s);
+        if ((size_t)slen == target_len + 1 &&
+            memcmp(LYRIC_STRING_DATA(s) + 1, target, target_len) == 0) {
+            return (int32_t)(LYRIC_STRING_DATA(s)[0] - '0');
+        }
+    }
+    return -1;
+}
+
+static void test_dir_list_typed(void) {
+    /* Missing directory: same ok-flag protocol as lyric_dir_list2. */
+    int32_t ok = 1;
+    LyricList* missing = lyric_dir_list_typed("/definitely/missing/lyric-rt-dir-typed", &ok);
+    CHECK(ok == 0);
+    CHECK(lyric_list_len(missing) == 0);
+    lyric_release(missing);
+
+    char tmpl[] = "/tmp/lyric_rt_dir_typed_XXXXXX";
+    CHECK(mkdtemp(tmpl) != NULL);
+
+    /* file.txt: a regular file entry — DT_REG, classified with no stat(). */
+    char filep[512];
+    snprintf(filep, sizeof filep, "%s/file.txt", tmpl);
+    FILE* f = fopen(filep, "w");
+    CHECK(f != NULL);
+    fclose(f);
+
+    /* subdir: a directory entry — DT_DIR, classified with no stat(). */
+    char subp[512];
+    snprintf(subp, sizeof subp, "%s/subdir", tmpl);
+    CHECK(mkdir(subp, 0755) == 0);
+
+    /* link_to_file / link_to_dir: symlinks (DT_LNK) exercise the
+     * following-stat() fallback that DT_UNKNOWN also takes — the
+     * classification must match the TARGET's kind, exactly like
+     * lyric_file_exists / lyric_dir_exists (both follow symlinks).
+     * DT_UNKNOWN itself depends on filesystem support and can't be
+     * forced portably from a test, but it shares this same fallback
+     * branch in classify_dirent, so this exercises that code path. */
+    char linkFile[512];
+    snprintf(linkFile, sizeof linkFile, "%s/link_to_file", tmpl);
+    CHECK(symlink(filep, linkFile) == 0);
+    char linkDir[512];
+    snprintf(linkDir, sizeof linkDir, "%s/link_to_dir", tmpl);
+    CHECK(symlink(subp, linkDir) == 0);
+
+    /* link_broken: a dangling symlink — DT_LNK, stat() fails, so it must
+     * classify as OTHER, matching the original hostFileExists /
+     * hostDirectoryExists behavior (both report false on a failed stat). */
+    char linkBroken[512];
+    snprintf(linkBroken, sizeof linkBroken, "%s/link_broken", tmpl);
+    CHECK(symlink("/definitely/missing/lyric-rt-typed-target", linkBroken) == 0);
+
+    int32_t ok2 = 0;
+    LyricList* entries = lyric_dir_list_typed(tmpl, &ok2);
+    CHECK(ok2 == 1);
+    CHECK(lyric_list_len(entries) == 5);
+
+    CHECK(find_entry_kind(entries, "file.txt") == LYRIC_DIRENT_REG);
+    CHECK(find_entry_kind(entries, "subdir") == LYRIC_DIRENT_DIR);
+    CHECK(find_entry_kind(entries, "link_to_file") == LYRIC_DIRENT_REG);
+    CHECK(find_entry_kind(entries, "link_to_dir") == LYRIC_DIRENT_DIR);
+    CHECK(find_entry_kind(entries, "link_broken") == LYRIC_DIRENT_OTHER);
+
+    lyric_release(entries);
+    unlink(linkBroken);
+    unlink(linkDir);
+    unlink(linkFile);
+    unlink(filep);
+    rmdir(subp);
     rmdir(tmpl);
 }
 
@@ -1564,6 +1647,7 @@ int main(void) {
     test_read_bytes();
     test_write_bytes();
     test_dir_list2();
+    test_dir_list_typed();
     test_is_dir_nofollow();
     test_args();
     test_map_keys_values();

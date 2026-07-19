@@ -282,6 +282,94 @@ LyricList* lyric_dir_list2(const char* path, int32_t* ok) {
     return l;
 }
 
+/* Classifies one directory entry as LYRIC_DIRENT_{OTHER,DIR,REG}.
+ * `full_path` must be the entry's joined path (dir + "/" + d_name) so
+ * the DT_LNK / DT_UNKNOWN fallback can stat(2) it — a FOLLOWING stat,
+ * matching lyric_file_exists / lyric_dir_exists, so a symlink is
+ * classified by its target's kind, exactly like the two-probe path this
+ * replaces. A device/fifo/socket/whiteout entry (a known d_type that is
+ * none of DT_DIR/DT_REG/DT_LNK/DT_UNKNOWN) can never resolve to a
+ * regular file or directory via stat() either — it isn't a symlink, so
+ * stat() sees the same node lstat() would — so it short-circuits to
+ * OTHER without a syscall. */
+static int32_t classify_dirent(const char* full_path, unsigned char d_type) {
+    if (d_type == DT_DIR) return LYRIC_DIRENT_DIR;
+    if (d_type == DT_REG) return LYRIC_DIRENT_REG;
+    if (d_type == DT_LNK || d_type == DT_UNKNOWN) {
+        struct stat st;
+        if (stat(full_path, &st) != 0) return LYRIC_DIRENT_OTHER;
+        if (S_ISDIR(st.st_mode)) return LYRIC_DIRENT_DIR;
+        if (S_ISREG(st.st_mode)) return LYRIC_DIRENT_REG;
+        return LYRIC_DIRENT_OTHER;
+    }
+    return LYRIC_DIRENT_OTHER;
+}
+
+/* Single-sweep entry-name-and-kind listing (#4856): one opendir/readdir
+ * pass classifies every entry via `d_type`, falling back to stat(2) only
+ * for DT_LNK / DT_UNKNOWN (see classify_dirent) instead of the caller
+ * doing a full stat() per entry after a bare-name listing. Each returned
+ * string is a single LYRIC_DIRENT_* ASCII digit followed by the bare
+ * entry name — see the header doc comment for why this avoids a second
+ * ref-typed out-param. */
+LyricList* lyric_dir_list_typed(const char* path, int32_t* ok) {
+    DIR* d = opendir(path);
+    if (!d) {
+        *ok = 0;
+        return lyric_list_new(1);
+    }
+
+    LyricList* list = lyric_list_new(1);
+    size_t path_len = strlen(path);
+    errno = 0;
+    struct dirent* ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            errno = 0;
+            continue;
+        }
+        size_t name_len = strlen(ent->d_name);
+        char* full = (char*)malloc(path_len + 1 + name_len + 1);
+        if (!full) {
+            lyric_release(list);
+            closedir(d);
+            *ok = 0;
+            return lyric_list_new(1);
+        }
+        memcpy(full, path, path_len);
+        full[path_len] = '/';
+        memcpy(full + path_len + 1, ent->d_name, name_len + 1); /* +1 copies the NUL */
+        int32_t kind = classify_dirent(full, ent->d_type);
+        free(full);
+
+        uint8_t* tagged = (uint8_t*)malloc(name_len + 1);
+        if (!tagged) {
+            lyric_release(list);
+            closedir(d);
+            *ok = 0;
+            return lyric_list_new(1);
+        }
+        tagged[0] = (uint8_t)('0' + kind);
+        memcpy(tagged + 1, ent->d_name, name_len);
+        LyricString* entry = lyric_string_from_literal(tagged, (int64_t)(name_len + 1));
+        free(tagged);
+        lyric_list_push(list, (int64_t)(intptr_t)entry); /* list retains it */
+        lyric_release(entry); /* drop this function's local reference */
+        errno = 0;
+    }
+    /* readdir returns NULL both at end-of-stream and on error;
+     * a non-zero errno after the loop means the latter. */
+    if (errno != 0) {
+        lyric_release(list);
+        closedir(d);
+        *ok = 0;
+        return lyric_list_new(1);
+    }
+    closedir(d);
+    *ok = 1;
+    return list;
+}
+
 /* ── Environment ───────────────────────────────────────────────────── */
 
 LyricString* lyric_env_get(const char* name) {
