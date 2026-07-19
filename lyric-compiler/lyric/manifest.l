@@ -238,7 +238,9 @@ pub record Manifest {
   nuget: Option[NugetSection]
   maven: Option[MavenSection]
   features: Option[FeaturesSection]
-  /// Non-None when this manifest also declares a `[build]` table.
+  /// Non-None when this manifest declares a `[build]` table **or** a
+  /// `[build.define]` table (a `[build.define]`-only manifest yields a
+  /// `BuildSection` with the default `kind = "lib"` and the parsed defines).
   build: Option[BuildSection]
   /// Non-None when this manifest also declares a `[workspace]` table.
   workspace: Option[WorkspaceSection]

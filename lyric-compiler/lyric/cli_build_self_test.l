@@ -155,6 +155,42 @@ test "defineBuildGateError: manifest kind = aot (autoAot) is rejected with the m
   }
 }
 
+// ─── manifestDefineGateError accept/reject matrix (#6188) ─────────────────
+test "manifestDefineGateError: no manifest defines is always allowed" {
+  match Cli.manifestDefineGateError(false, true, true, true, "/p/lyric.toml") {
+    case None -> assertTrue(true, "no manifest defines -> allowed regardless of shape")
+    case Some(msg) -> assertTrue(false, "no manifest defines should be allowed, got: " + msg)
+  }
+}
+
+test "manifestDefineGateError: plain dotnet/jvm project build is allowed" {
+  match Cli.manifestDefineGateError(true, false, false, false, "/p/lyric.toml") {
+    case None -> assertTrue(true, "consumable project build -> allowed")
+    case Some(msg) -> assertTrue(false, "plain project build should be allowed, got: " + msg)
+  }
+}
+
+test "manifestDefineGateError: --target native is rejected" {
+  match Cli.manifestDefineGateError(true, true, false, false, "/p/lyric.toml") {
+    case None -> assertTrue(false, "native should reject manifest [build.define]")
+    case Some(msg) -> assertTrue(Str.contains(msg, "native") and Str.contains(msg, "/p/lyric.toml"), "native rejection names the target and manifest path, got: " + msg)
+  }
+}
+
+test "manifestDefineGateError: --release is rejected" {
+  match Cli.manifestDefineGateError(true, false, true, false, "/p/lyric.toml") {
+    case None -> assertTrue(false, "--release should reject manifest [build.define]")
+    case Some(msg) -> assertTrue(Str.contains(msg, "--release"), "release rejection names the flag, got: " + msg)
+  }
+}
+
+test "manifestDefineGateError: [build] kind = aot is rejected" {
+  match Cli.manifestDefineGateError(true, false, false, true, "/p/lyric.toml") {
+    case None -> assertTrue(false, "kind = aot should reject manifest [build.define]")
+    case Some(msg) -> assertTrue(Str.contains(msg, "aot"), "aot rejection names kind=aot, got: " + msg)
+  }
+}
+
 // ─── filterExtraRefsDlls (#4282) ─────────────────────────────────────────
 test "filterExtraRefsDlls: excludes the primary DLL and Lyric.Stdlib.dll, keeps only .dll files, sorted" {
   val files: List[String] = newList()
