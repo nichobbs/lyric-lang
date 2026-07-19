@@ -1432,6 +1432,39 @@ jobs:
           bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/wire_di_self_test.l
           echo "docs/58 self-tests ran: wire_expand, wire_templates, config_templates, wire_di (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
+      # config-block self-test (#3228, wired in #6198): base module-scope
+      # `config { }` blocks emit runtime state on both targets (JVM emission
+      # shipped in #3228).  Exercises defaulted fields (incl. a negative-literal
+      # default), a per-type env-var override, and a satisfied required field.
+      # The override/required cases read env vars exported into the process
+      # environment below (`Std.Environment.setVar` is a no-op on JVM, so the
+      # harness sets them; the JVM subprocess inherits them).  JVM half runs in
+      # the JVM self-tests job.
+      - name: config-block self-test (native lyric test, dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        env:
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_PORT: "9090"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_LIMIT: "4294967296"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_RATE: "2.5"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_RATIO: "3.5"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_ENABLED: "true"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_HOST: "override-host"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_REQUIRED_SECRET: "s3cr3t"
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping config-block self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping config-block self-test"
+            exit 1
+          fi
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/config_block_self_test.l
+          echo "config-block self-test ran: config_block_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
+
       # Slice-ops self-test (#5244).  `slice[T].append`/`.concat`/`.slice` —
       # the compiler's own documented canonical `slice[T]` example
       # (docs/agent/reference.md) — threw "unsupported method" at runtime on
@@ -4456,6 +4489,35 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # config-block self-test on JVM (#3228, wired in #6198) — the
+      # load-bearing half: JVM `config { }` emission (static fields + a
+      # `<clinit>` env-var reader) shipped in #3228.  Env-var overrides are
+      # exported below and inherited by the `java` subprocess.  dotnet half
+      # runs in the docs/58 job.
+      - name: config-block self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        env:
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_PORT: "9090"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_LIMIT: "4294967296"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_RATE: "2.5"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_RATIO: "3.5"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_ENABLED: "true"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_HOST: "override-host"
+          LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_REQUIRED_SECRET: "s3cr3t"
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping config-block JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping config-block JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/config_block_self_test.l
 
       # JVM half of the compound-assign String self-test (#5657).  The JVM
       # `s += <Double>` path spills the rhs to a slot before the (branching)
