@@ -116,6 +116,8 @@ import Std.HttpEngine.H2Conn as H2
 // `Std.HttpEngine`, so it needs no alias.
 import Std.HttpEngine.H2Frame
 import Std.TcpHost
+import Std.Environment as Env
+import Std.Parse
 
 // =====================================================================
 // Concurrency externs (BCL threading — the only externs in this file).
@@ -209,8 +211,29 @@ func semRelease(s: in Semaphore): Int = ()
 // rather than spawning unbounded background tasks) once this many
 // connections are already in flight, and each connection task releases its
 // permit when it finishes. 1000 comfortably covers ordinary production load
-// while still bounding worst-case thread/handle usage.
-val maxConcurrentConnections: Int = 1000
+// while still bounding worst-case thread/handle usage. Operators can override
+// it per deployment (without a rebuild) via the `LYRIC_HTTP_MAX_CONNECTIONS`
+// environment variable — see `resolveMaxConcurrentConnections`.
+val maxConcurrentConnectionsDefault: Int = 1000
+
+// Resolve the concurrent-connection cap: honour `LYRIC_HTTP_MAX_CONNECTIONS`
+// when it is set to a positive integer, otherwise fall back to
+// `maxConcurrentConnectionsDefault`. A missing, non-numeric, or < 1 value
+// falls back rather than failing — an unbounded (0/negative) cap would defeat
+// the #6071 backpressure guarantee. Read once per listener at start; a cap of
+// 1 is the seam the backpressure regression test uses. Public so a caller can
+// query the effective cap (and so the resolution logic is directly testable).
+pub func resolveMaxConcurrentConnections(): Int {
+  match Env.getVar("LYRIC_HTTP_MAX_CONNECTIONS") {
+    case Ok(raw) -> {
+      match tryParseInt(raw) {
+        case Ok(n) -> if n >= 1 { n } else { maxConcurrentConnectionsDefault }
+        case Err(_) -> maxConcurrentConnectionsDefault
+      }
+    }
+    case Err(_) -> maxConcurrentConnectionsDefault
+  }
+}
 
 // =====================================================================
 // Public types.
@@ -674,10 +697,11 @@ func onAccepted(
     case Ok(conn) -> {
       // Bound the number of connections served concurrently (#6071): acquire
       // a permit before spawning the connection task, so the accept loop
-      // itself blocks (backpressure) once `maxConcurrentConnections`
-      // connections are already in flight, rather than spawning an unbounded
-      // number of background tasks. The connection task releases the permit
-      // when it finishes (`processConnection`/`processH2Connection`).
+      // itself blocks (backpressure) once the resolved cap
+      // (`resolveMaxConcurrentConnections`) connections are already in flight,
+      // rather than spawning an unbounded number of background tasks. The
+      // connection task releases the permit when it finishes
+      // (`processConnection`/`processH2Connection`).
       semWait(connLimit)
       // Select the protocol on the negotiated ALPN (docs/61 §6.4): a TLS peer
       // that negotiated `h2` drives the HTTP/2 FSM; everything else (plain
@@ -1242,7 +1266,7 @@ pub func startListenerWithLimits(prefix: in String, limits: in EngineLimits): Ht
     case Ok(transport) -> {
       val queue: ConcurrentQueue[HttpContext] = newConcurrentQueue()
       val available = newSemaphore(0)
-      val connLimit = newSemaphore(maxConcurrentConnections)
+      val connLimit = newSemaphore(resolveMaxConcurrentConnections())
       val task = taskRun({ -> plainAcceptLoop(transport, queue, available, limits, connLimit) })
       HttpListener(transport = transport, queue = queue, available = available, acceptTask = task)
     }
@@ -1283,7 +1307,7 @@ pub func startListenerTlsWithLimits(
     case Ok(transport) -> {
       val queue: ConcurrentQueue[HttpContext] = newConcurrentQueue()
       val available = newSemaphore(0)
-      val connLimit = newSemaphore(maxConcurrentConnections)
+      val connLimit = newSemaphore(resolveMaxConcurrentConnections())
       val task = taskRun({ -> tlsAcceptLoop(transport, queue, available, tls, limits, connLimit) })
       Ok(value = HttpListener(transport = transport, queue = queue, available = available, acceptTask = task))
     }
