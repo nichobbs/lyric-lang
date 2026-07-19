@@ -41,11 +41,11 @@ pub record BuildDefinesResult {
 /// `--define`. Omitted when empty — single-file builds carry no manifest
 /// version, so they keep the deterministic `"0.0.0"` fallback.
 ///
-/// The `build_profile` well-known define (from `--release`) remains a follow-up
-/// (#5852). The `target` well-known define ships via `withWellKnownTarget`
-/// (injected in `pipeParseAndErase`, which already carries `targetName`), the
-/// manifest `[build.define]` layering ships via `withManifestDefines` (below),
-/// and this ships the `version` slice against the project path that consumes it.
+/// This ships the well-known `version` slice against the project path that
+/// consumes it. The sibling well-known defines ship alongside: `target` via
+/// `withWellKnownTarget` and `build_profile` via `withWellKnownProfile` (both
+/// injected in `pipeParseAndErase`), and the manifest `[build.define]` layering
+/// via `withManifestDefines` (below).
 pub func withWellKnownDefines(version: in String, cli: in List[String]): List[String] {
   val result: List[String] = newList()
   if version.length > 0 {
@@ -103,6 +103,30 @@ pub func withWellKnownTarget(targetName: in String, defines: in List[Define]): L
     i = i + 1
   }
   result.add(Define(key = "target", value = targetName))
+  result
+}
+
+/// Append the well-known `build_profile` define (docs/60 §3.3) as a FALLBACK:
+/// added only when the caller has not already supplied a `build_profile` define.
+/// `pipeParseAndErase` injects `"debug"` on every compile; a `--release`/AOT
+/// build injects `build_profile=release` into its defines *upstream* of the
+/// compile, so `decodeDefines`' last-wins keeps `release` present and this
+/// fallback is skipped there (an explicit `--define build_profile=…` on a
+/// non-release build likewise wins). `build_profile` is fixed per build
+/// invocation (`debug` vs `release`), so injecting it keeps the reproducibility
+/// byte-compare intact (docs/60 §8). Operates on the already-decoded `Define`
+/// list so it composes after `decodeDefines`.
+pub func withWellKnownProfile(profile: in String, defines: in List[Define]): List[Define] {
+  if profile.length == 0 or hasKey(defines, "build_profile") {
+    return defines
+  }
+  val result: List[Define] = newList()
+  var i = 0
+  while i < defines.count {
+    result.add(defines[i])
+    i = i + 1
+  }
+  result.add(Define(key = "build_profile", value = profile))
   result
 }
 

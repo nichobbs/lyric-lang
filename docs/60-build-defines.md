@@ -1,6 +1,6 @@
 # 60 — Build defines (compile-time value injection)
 
-**Status:** Design sketch; **M1a + M1b + M1c + M1d + M1e + M1f + M1g shipped**. M1a — the
+**Status:** Design sketch; **M1a + M1b + M1c + M1d + M1e + M1f + M1g + M1h shipped**. M1a — the
 `@build_const("KEY")` substitution pass (`Lyric.BuildDefines`) + `lyric build
 --define KEY=VALUE` for single-file `--target dotnet` builds (diagnostics
 F0030–F0032). M1b — the `Std.BuildInfo` layer (§9.2): the
@@ -51,9 +51,18 @@ strings, layered on a project build beneath CLI `--define`s (`BD.withManifestDef
 parses with a default `kind = "lib"`; a non-string value is a manifest error
 (§4, String-only). Applied on `--target dotnet`/`jvm` project builds; rejected
 up front (no silent drop) on `--target native` (#5977), `--release`, and
-`[build] kind = "aot"` (the AOT-packaging path threads no defines). The
-remaining well-known define (`build_profile` from `--release`) remains a
-follow-up (#5852). Q-BD-001 –
+`[build] kind = "aot"` (the AOT-packaging path threads no defines). M1h — the
+auto-injected well-known **`build_profile`** define (`BD.withWellKnownProfile`):
+`pipeParseAndErase` injects `build_profile=debug` on every compile as a fallback;
+a `--release`/AOT build injects `build_profile=release` into its staging compile
+upstream (`buildReleaseProject`/`buildReleaseSingle`), so `decodeDefines`'
+last-wins keeps `release` there. This makes `@build_const("build_profile")` and
+`Std.BuildInfo.profile` report `debug`/`release` correctly with no explicit
+`--define`, without touching the user-define release gates (those stay rejected;
+the profile define is compiler-injected). Deterministic per invocation
+(reproducibility-safe, §8). With M1h the full auto-injected well-known set
+(`version` / `target` / `build_profile`) ships; only native `--define` (blocked
+on native codegen, #5977) remains outstanding under #5852. Q-BD-001 –
 Q-BD-009 below are resolved in this draft; a decision-log entry still codifies
 the full design.
 **Builds on:** `docs/24-build-features.md` (D045 — the `[features]` /

@@ -9,7 +9,7 @@
 //! dev-checkout default:
 //!
 //!   version        = "0.0.0"   (no `version` define supplied)
-//!   profile        = "debug"   (no `build_profile` define supplied)
+//!   profile        = "debug"   (auto-injected build_profile for a non-release build)
 //!   gitHash        = None      (reproducibility seam — supplied only on opt-in)
 //!   buildTimestamp = None
 //!   features       = []        (no active features under `lyric test`)
@@ -40,7 +40,7 @@ test "buildInfo() is synthesized and callable from a file that imports Std.Build
 test "version / profile take their deterministic dev-checkout fallbacks under lyric test" {
   val bi = buildInfo()
   assertEqual(bi.version, "0.0.0", "no version define supplied -> 0.0.0")
-  assertEqual(bi.profile, "debug", "no build_profile define supplied -> debug")
+  assertEqual(bi.profile, "debug", "non-release build -> auto-injected build_profile=debug")
 }
 
 test "gitHash / buildTimestamp are None without their defines (reproducibility seam)" {

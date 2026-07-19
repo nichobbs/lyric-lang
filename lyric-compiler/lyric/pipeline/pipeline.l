@@ -109,7 +109,11 @@ pub func pipeParseAndErase(
   // single-file and project paths, so injecting here lands it uniformly. It is
   // a no-op when the caller already supplied a `target` define, so an explicit
   // `--define target=…` still wins.
-  val definesWk = BD.withWellKnownTarget(targetName, defines)
+  // The well-known `build_profile` define (docs/60 §3.3) is injected here too,
+  // always as the `"debug"` fallback: a `--release`/AOT build injects
+  // `build_profile=release` into its defines upstream of this call, so last-wins
+  // keeps `release` and this fallback is skipped for release compiles.
+  val definesWk = BD.withWellKnownProfile("debug", BD.withWellKnownTarget(targetName, defines))
   // Build-define substitution runs before @cfg erasure (docs/60 §5): a
   // define can never be read from an item cfg is about to erase, and cfg
   // predicates cannot observe a define. Both are pure SourceFile -> SourceFile

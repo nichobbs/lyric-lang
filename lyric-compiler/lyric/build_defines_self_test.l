@@ -243,6 +243,49 @@ test "withWellKnownTarget preserves unrelated defines" {
   }
 }
 
+// ── withWellKnownProfile: auto-injected `build_profile` (docs/60 §3.3) ───────
+test "withWellKnownProfile injects the profile as a fallback define" {
+  val ds = BD.withWellKnownProfile("debug", BD.decodeDefines(newList()))
+  match BD.lookupDefine(ds, "build_profile") {
+    case Some(v) -> assertEqual(v, "debug", "the profile becomes the well-known build_profile define")
+    case None -> assertTrue(false, "build_profile should be injected")
+  }
+}
+
+test "withWellKnownProfile omits build_profile when the profile is empty" {
+  val ds = BD.withWellKnownProfile("", BD.decodeDefines(newList()))
+  match BD.lookupDefine(ds, "build_profile") {
+    case Some(_) -> assertTrue(false, "no build_profile define for an empty profile")
+    case None -> assertTrue(true, "empty profile injects nothing")
+  }
+}
+
+test "a release-injected build_profile overrides the debug fallback (§3.3)" {
+  // The release paths inject build_profile=release upstream; the pipeline's
+  // "debug" fallback must then be a no-op (only-if-absent).
+  val upstream: List[String] = newList()
+  upstream.add("build_profile=release")
+  val ds = BD.withWellKnownProfile("debug", BD.decodeDefines(upstream))
+  match BD.lookupDefine(ds, "build_profile") {
+    case Some(v) -> assertEqual(v, "release", "an already-present build_profile wins over the debug fallback")
+    case None -> assertTrue(false, "build_profile should resolve")
+  }
+}
+
+test "withWellKnownProfile preserves unrelated defines" {
+  val cli: List[String] = newList()
+  cli.add("target=dotnet")
+  val ds = BD.withWellKnownProfile("debug", BD.decodeDefines(cli))
+  match BD.lookupDefine(ds, "build_profile") {
+    case Some(v) -> assertEqual(v, "debug", "build_profile from well-known")
+    case None -> assertTrue(false, "build_profile should resolve")
+  }
+  match BD.lookupDefine(ds, "target") {
+    case Some(v) -> assertEqual(v, "dotnet", "unrelated define preserved")
+    case None -> assertTrue(false, "target should resolve")
+  }
+}
+
 // ── withManifestDefines: manifest [build.define] layering (docs/60 §3.1) ─────
 test "withManifestDefines layers manifest defines beneath cli defines" {
   val mf: List[String] = newList()
