@@ -6758,7 +6758,22 @@ jobs:
             deps: "auth"
           - id: testing
             deps: "cache mail storage feature-flags mq session"
-    if: needs.build.outputs.has_code_changes == 'true' && fromJSON(needs.build.outputs.ecosystem_run_map)[matrix.id]
+    # NOTE (#6165 follow-up): the original per-library gate
+    #   fromJSON(needs.build.outputs.ecosystem_run_map)[matrix.id]
+    # fails to LOAD on this runner's workflow engine (object-indexing a
+    # fromJSON result by a matrix variable in a job-level `if:` is rejected
+    # at parse time, which fails the WHOLE workflow to 0 jobs — see the
+    # 0-job startup failures on every commit after 56618c9). Every other
+    # gate in this file uses a plain `needs.build.outputs.X == 'true'`
+    # comparison, which loads fine. Fall back to the coarse
+    # `has_code_changes` gate (pre-#6165 behaviour: run every ecosystem
+    # matrix entry on any code change) so the workflow loads. The parallel
+    # per-library matrix split — #6165's main win — is preserved; only the
+    # per-library CHANGE-gating is dropped. `ecosystem_run_map` is still
+    # produced by `build`, so the gate can be re-enabled in a runner-safe
+    # form (e.g. `contains(fromJSON(<array>), matrix.id)`) once it can be
+    # validated on a working CI run.
+    if: needs.build.outputs.has_code_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
