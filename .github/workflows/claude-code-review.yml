@@ -34,8 +34,13 @@ env:
     Run (ignore errors if it already exists):
     gh label create "pr-${{ github.event.pull_request.number }}" --color "0075ca" --description "Review findings for PR #${{ github.event.pull_request.number }}" --repo ${{ github.repository }} 2>/dev/null || true
 
-    ## Step 4: For each REQUIRED or SUGGESTION finding, create a tracking issue (dedup first)
-    Repeat for every finding:
+    ## Step 4: For each REQUIRED finding only, create a tracking issue (dedup first)
+    SUGGESTION findings are NOT filed as tracking issues — they are surfaced inline
+    in the Step 7 summary comment for the author to address or explicitly dismiss
+    during the review cycle (enforced by branch protection's "require conversation
+    resolution before merging"). This keeps the issue tracker a curated list of
+    blocking work rather than an ever-growing pile of advisory notes. Only REQUIRED
+    findings get a tracked issue. Repeat for every REQUIRED finding:
 
     a) List all open issues already carrying this PR's label to detect duplicates:
        gh issue list --repo ${{ github.repository }} --label "pr-${{ github.event.pull_request.number }}" --state open --json number,title --limit 100
@@ -46,7 +51,7 @@ env:
     c) Otherwise create a new issue and record the returned number:
        gh issue create --repo ${{ github.repository }} --title "[Review] <concise title>" --body "<body with PR number, severity, file location, description>" --label "review-finding" --label "pr-${{ github.event.pull_request.number }}"
 
-       The body must contain: "**PR:** #${{ github.event.pull_request.number }}", "**Severity:** REQUIRED" or "**Severity:** SUGGESTION", the file/line if applicable, and a clear description.
+       The body must contain: "**PR:** #${{ github.event.pull_request.number }}", "**Severity:** REQUIRED", the file/line if applicable, and a clear description.
 
     ## Step 5: Auto-close issues whose findings are now resolved
     For each open issue labeled pr-${{ github.event.pull_request.number }}, if its finding is no longer present in the current diff, close it:
@@ -64,7 +69,9 @@ env:
     The summary must include:
     - Verdict at the top: CHANGES REQUIRED or APPROVED
     - REQUIRED findings with issue links, e.g.: "- REQUIRED: <title> — #<n>"
-    - SUGGESTION findings with issue links, e.g.: "- SUGGESTION: <title> — #<n>"
+    - SUGGESTION findings described INLINE with no issue link (they are advisory
+      and meant to be resolved in-review), e.g.:
+      "- SUGGESTION: <title> (<file>:<line>) — <one-line description of the fix>"
     - PRAISE items (no issue links needed)
     - Any previously open issues that were closed this run
 
