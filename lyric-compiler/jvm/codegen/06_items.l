@@ -4789,7 +4789,10 @@ pub func codegenPackageWithSigsSeeded(
       case IConfig(decl) -> {
         // #3228: `config { … }` block (D046 / docs/25-config-blocks.md) — JVM
         // parity with the MSIL `.cctor` static-field path
-        // (`Msil.Codegen`/`Msil.Lowering.lowerMConfig`).  Emits a sealed class
+        // (`Msil.Codegen`/`Msil.Lowering.lowerMConfig`).  Emits a static-field
+        // holder class (`ACC_PUBLIC + ACC_SUPER`; the MSIL side additionally
+        // marks its twin `sealed`, immaterial here since the class is never
+        // instantiated or subclassed — access is purely via `getstatic`)
         // named `<pkgName>/<BlockName>` with one `public static final` field
         // per config field, populated by a synthesised `<clinit>` that reads
         // each field's env var and falls back to the declared default (or
