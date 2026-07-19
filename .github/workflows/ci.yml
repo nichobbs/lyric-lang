@@ -633,7 +633,7 @@ jobs:
           outtc="$(dotnet "$proj/tgt2.dll")"
           echo "dotnet(--define): $outtc"
           echo "$outtc" | grep -qx "target=custom" || { echo "::error::explicit --define target did not override the well-known target (#5852 M1f)"; exit 1; }
-          # (M1f, #5852) well-known `build_profile` define: `debug` on a normal
+          # (M1h, #5852) well-known `build_profile` define: `debug` on a normal
           # build (pipeParseAndErase fallback), overridable by --define, and
           # `release` on a real --release/AOT build (the release path injects
           # build_profile=release into the staging compile). The --release case

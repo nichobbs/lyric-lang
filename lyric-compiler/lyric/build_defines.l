@@ -41,11 +41,11 @@ pub record BuildDefinesResult {
 /// `--define`. Omitted when empty — single-file builds carry no manifest
 /// version, so they keep the deterministic `"0.0.0"` fallback.
 ///
-/// The `build_profile` well-known define (from `--release`) remains a follow-up
-/// (#5852). The `target` well-known define ships via `withWellKnownTarget`
-/// (injected in `pipeParseAndErase`, which already carries `targetName`), the
-/// manifest `[build.define]` layering ships via `withManifestDefines` (below),
-/// and this ships the `version` slice against the project path that consumes it.
+/// This ships the well-known `version` slice against the project path that
+/// consumes it. The sibling well-known defines ship alongside: `target` via
+/// `withWellKnownTarget` and `build_profile` via `withWellKnownProfile` (both
+/// injected in `pipeParseAndErase`), and the manifest `[build.define]` layering
+/// via `withManifestDefines` (below).
 pub func withWellKnownDefines(version: in String, cli: in List[String]): List[String] {
   val result: List[String] = newList()
   if version.length > 0 {
