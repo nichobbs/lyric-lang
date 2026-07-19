@@ -346,7 +346,9 @@ func buildWorkspaceDep(
     None,
     // preResolvedDeps: this dep's own manifest hasn't been resolved yet by
     // this call site, so let buildProject resolve it internally as before.
-    None
+    None,
+    // no user --define for a transitively-built workspace dep
+    newList()
   )
 
   buildStack.removeAt(buildStack.count - 1)

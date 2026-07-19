@@ -254,7 +254,8 @@ func buildServerDll(tmpDir: in String): String {
     declaredFeatures = newList(),
     packageVersion = "",
     depTemplateSrcs = newList(),
-    nugetAssemblyPaths = newList()
+    nugetAssemblyPaths = newList(),
+    defines = newList()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {

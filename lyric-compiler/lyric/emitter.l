@@ -132,6 +132,11 @@ pub record EmitProjectRequest {
   /// from the dependency's `[project.packages]` list.
   depTemplateSrcs: List[ProjectPackage]
   nugetAssemblyPaths: List[String]
+  /// Resolved user build defines (docs/60) as `"KEY=VALUE"` strings, from the
+  /// CLI's repeatable `--define` on a project build (#5852 phase C). Merged
+  /// beneath the auto-injected well-known `version` (M1d) inside the bridges.
+  /// Pass `newList()` when there are no user defines.
+  defines: List[String]
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1471,7 +1476,8 @@ func emitPerPackagePackage(
     declaredFeatures = noFeatures,
     packageVersion = "0.1.0",
     depTemplateSrcs = noDepTemplateSrcs,
-    nugetAssemblyPaths = emptyNugetPaths
+    nugetAssemblyPaths = emptyNugetPaths,
+    defines = newList()
   )
   val res = emitProject(req)
   match res.outputPath {
@@ -1703,7 +1709,8 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
     declaredFeatures = noFeatures,
     packageVersion = "0.1.0",
     depTemplateSrcs = noDepTemplateSrcs,
-    nugetAssemblyPaths = emptyNugetPaths
+    nugetAssemblyPaths = emptyNugetPaths,
+    defines = newList()
   )
   emitProject(req)
 }
@@ -1926,7 +1933,8 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     declaredFeatures = req.declaredFeatures,
     packageVersion = req.packageVersion,
     depTemplateSrcs = req.depTemplateSrcs,
-    nugetAssemblyPaths = req.nugetAssemblyPaths
+    nugetAssemblyPaths = req.nugetAssemblyPaths,
+    defines = req.defines
   )
 
   match req.target {
@@ -2180,7 +2188,8 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
     restoredArtifacts,
     req.nugetAssemblyPaths,
     req.packageVersion,
-    depTemplatePkgs
+    depTemplatePkgs,
+    req.defines
   )
   if ok {
     val okDiags: List[Diagnostic] = newList()
@@ -2230,8 +2239,9 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
     }
     // Auto-injected well-known `version` define (docs/60 §9.2) from the
     // manifest so `BuildInfo.version` populates on a JVM project build. User
-    // `--define` on the project path is a separate follow-up (#5852).
-    val projDefinesJvm = BD.withWellKnownDefines(req.packageVersion, newList())
+    // `--define`s (req.defines) are merged beneath it, an explicit
+    // `--define version=…` winning (#5852 phase C).
+    val projDefinesJvm = BD.withWellKnownDefines(req.packageVersion, req.defines)
     val okP = JvmBridge.compileProjectToJarBundledWithFeatures(
       pkgSrcs,
       req.outputPath,
@@ -2254,8 +2264,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
 
   // Auto-injected well-known `version` define (docs/60 §9.2) from the manifest
   // so `BuildInfo.version` populates on a single-package JVM project build. User
-  // `--define` on the project path is a separate follow-up (#5852).
-  val projDefinesJvm1 = BD.withWellKnownDefines(req.packageVersion, newList())
+  // `--define`s (req.defines) are merged beneath it (#5852 phase C).
+  val projDefinesJvm1 = BD.withWellKnownDefines(req.packageVersion, req.defines)
   val ok = JvmBridge.compileToJarBundledWithFeatures(
     source,
     req.outputPath,
@@ -2446,7 +2456,8 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
           noArtifacts,
           emptyNugetPaths,
           req.packageVersion,
-          noDepTemplatePkgsPerPkg
+          noDepTemplatePkgsPerPkg,
+          req.defines
         )
         if ok {
           val okDiags: List[Diagnostic] = newList()

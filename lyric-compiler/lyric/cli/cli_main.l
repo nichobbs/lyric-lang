@@ -217,7 +217,8 @@ pub func main(argv: in slice[String]): Int {
           declaredFeatures = declaredFeatures,
           packageVersion = "",
           depTemplateSrcs = newList(),
-          nugetAssemblyPaths = nugetAssemblyPaths
+          nugetAssemblyPaths = nugetAssemblyPaths,
+          defines = newList()
         )
 
         val result = Emitter.emitProject(req)
