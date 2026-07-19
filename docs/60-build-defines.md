@@ -1,6 +1,6 @@
 # 60 — Build defines (compile-time value injection)
 
-**Status:** Design sketch; **M1a + M1b + M1c + M1d + M1e shipped**. M1a — the
+**Status:** Design sketch; **M1a + M1b + M1c + M1d + M1e + M1f shipped**. M1a — the
 `@build_const("KEY")` substitution pass (`Lyric.BuildDefines`) + `lyric build
 --define KEY=VALUE` for single-file `--target dotnet` builds (diagnostics
 F0030–F0032). M1b — the `Std.BuildInfo` layer (§9.2): the
@@ -36,8 +36,15 @@ fields on a project build, merged beneath the well-known `version` so an explici
 or project, `--target dotnet`/`jvm`"; native (#5977), `--watch`, `--release`, and
 a manifest `[build] kind = "aot"` (which routes into the same AOT-packaging path
 as `--release`, #6139) stay gated — rejected up front rather than silently
-dropped. The remaining well-known defines (`target`, `build_profile` from
-`--release`) and manifest `[build.define]` remain follow-ups (#5852). Q-BD-001 –
+dropped. M1f — the auto-injected well-known **`target`** define
+(`BD.withWellKnownTarget`): the active backend name (`dotnet` / `jvm` / `native`)
+is injected as a fallback define in `pipeParseAndErase` — the one pass that
+carries `targetName` on every backend and both the single-file and project paths
+— so `@build_const("target")` populates on every build without an explicit
+`--define`. It is deterministic per build invocation (reproducibility-safe,
+§8) and a fallback: an explicit `--define target=…` still wins. The remaining
+well-known define (`build_profile` from `--release`) and manifest
+`[build.define]` remain follow-ups (#5852). Q-BD-001 –
 Q-BD-009 below are resolved in this draft; a decision-log entry still codifies
 the full design.
 **Builds on:** `docs/24-build-features.md` (D045 — the `[features]` /

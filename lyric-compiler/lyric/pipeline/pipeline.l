@@ -103,11 +103,18 @@ pub func pipeParseAndErase(
   if gate("", parseResult.diagnostics) {
     return None
   }
+  // Auto-inject the well-known `target` define (docs/60 §3.3) as a fallback
+  // beneath the already-decoded user/manifest defines: `pipeParseAndErase` is
+  // the one place that carries `targetName` on every backend and both the
+  // single-file and project paths, so injecting here lands it uniformly. It is
+  // a no-op when the caller already supplied a `target` define, so an explicit
+  // `--define target=…` still wins.
+  val definesWk = BD.withWellKnownTarget(targetName, defines)
   // Build-define substitution runs before @cfg erasure (docs/60 §5): a
   // define can never be read from an item cfg is about to erase, and cfg
   // predicates cannot observe a define. Both are pure SourceFile -> SourceFile
   // AST transforms; substitution only ever inserts String-literal nodes.
-  val bdRes = BD.applyBuildDefines(defines, parseResult.file)
+  val bdRes = BD.applyBuildDefines(definesWk, parseResult.file)
   if gate("", bdRes.diagnostics) {
     return None
   }
@@ -119,7 +126,7 @@ pub func pipeParseAndErase(
   // append the per-build `buildInfo()` accessor. Runs after @cfg erasure so the
   // synthesized item is never itself erased. `activeFeatures` is the user's own
   // feature set (not the synthetic target pseudo-feature cfg adds).
-  val biFile = BD.synthesizeBuildInfo(cfgRes.file, targetName, activeFeatures, defines)
+  val biFile = BD.synthesizeBuildInfo(cfgRes.file, targetName, activeFeatures, definesWk)
   Some(value = biFile)
 }
 

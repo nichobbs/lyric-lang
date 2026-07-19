@@ -445,7 +445,37 @@ jobs:
           echo "jvm(--define): $outjd"
           echo "$outjd" | grep -qx "version=7.7.7"     || { echo "::error::jvm project --define version did not override the manifest version"; exit 1; }
           echo "$outjd" | grep -qx "greeting=jvm-greet" || { echo "::error::jvm project --define did not substitute the @build_const"; exit 1; }
-          echo "BuildInfo project version + --define OK (dotnet + jvm: no-define 4.5.6; --define override 9.9.9/7.7.7 + @build_const)" >> "$GITHUB_STEP_SUMMARY"
+          # (M1f, #5852) well-known `target` define auto-injected in pipeParseAndErase
+          # with NO --define: @build_const("target") resolves to the active backend
+          # name on each target, and an explicit --define target=… still overrides it.
+          # Single-file (the injection is not manifest-sourced, unlike `version`).
+          cat > "$proj/src/tgt.l" <<'LYR'
+          package tgtprobe
+
+          @build_const("target")
+          val TARGET: String = "unknown"
+
+          func main(): Int {
+            println("target=" + TARGET)
+            0
+          }
+          LYR
+          echo "=== dotnet single-file @build_const(\"target\") (no --define) ==="
+          "$lyric_bin" build "$proj/src/tgt.l" -o "$proj/tgt.dll"
+          outt="$(dotnet "$proj/tgt.dll")"
+          echo "dotnet: $outt"
+          echo "$outt" | grep -qx "target=dotnet" || { echo "::error::well-known target define not auto-injected on dotnet (#5852 M1f)"; exit 1; }
+          echo "=== jvm single-file @build_const(\"target\") (no --define) ==="
+          "$lyric_bin" build "$proj/src/tgt.l" --target jvm -o "$proj/tgt.jar"
+          outtj="$(java -jar "$proj/tgt.jar")"
+          echo "jvm: $outtj"
+          echo "$outtj" | grep -qx "target=jvm" || { echo "::error::well-known target define not auto-injected on jvm (#5852 M1f)"; exit 1; }
+          echo "=== dotnet --define target=custom (override) ==="
+          "$lyric_bin" build "$proj/src/tgt.l" --define target=custom -o "$proj/tgt2.dll"
+          outtc="$(dotnet "$proj/tgt2.dll")"
+          echo "dotnet(--define): $outtc"
+          echo "$outtc" | grep -qx "target=custom" || { echo "::error::explicit --define target did not override the well-known target (#5852 M1f)"; exit 1; }
+          echo "BuildInfo project version + --define OK (dotnet + jvm: no-define 4.5.6; --define override 9.9.9/7.7.7 + @build_const; well-known target dotnet/jvm + override)" >> "$GITHUB_STEP_SUMMARY"
 
       # Prove proof-only examples.
       - name: Prove proof-only examples (with z3)

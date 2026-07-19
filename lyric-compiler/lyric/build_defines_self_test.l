@@ -202,6 +202,47 @@ test "withWellKnownDefines preserves unrelated cli defines" {
   }
 }
 
+// ── withWellKnownTarget: auto-injected well-known `target` (docs/60 §3.3) ────
+test "withWellKnownTarget injects the target name as a fallback define" {
+  val ds = BD.withWellKnownTarget("dotnet", BD.decodeDefines(newList()))
+  match BD.lookupDefine(ds, "target") {
+    case Some(v) -> assertEqual(v, "dotnet", "the backend name becomes the well-known target define")
+    case None -> assertTrue(false, "target should be injected")
+  }
+}
+
+test "withWellKnownTarget omits target when the target name is empty" {
+  val ds = BD.withWellKnownTarget("", BD.decodeDefines(newList()))
+  match BD.lookupDefine(ds, "target") {
+    case Some(_) -> assertTrue(false, "no target define for an empty target name")
+    case None -> assertTrue(true, "empty target name injects nothing")
+  }
+}
+
+test "an explicit --define target overrides the well-known target (precedence #5852)" {
+  val cli: List[String] = newList()
+  cli.add("target=custom")
+  val ds = BD.withWellKnownTarget("jvm", BD.decodeDefines(cli))
+  match BD.lookupDefine(ds, "target") {
+    case Some(v) -> assertEqual(v, "custom", "a user-supplied target define wins over the well-known fallback")
+    case None -> assertTrue(false, "target should resolve")
+  }
+}
+
+test "withWellKnownTarget preserves unrelated defines" {
+  val cli: List[String] = newList()
+  cli.add("version=1.2.3")
+  val ds = BD.withWellKnownTarget("native", BD.decodeDefines(cli))
+  match BD.lookupDefine(ds, "target") {
+    case Some(v) -> assertEqual(v, "native", "target from well-known")
+    case None -> assertTrue(false, "target should resolve")
+  }
+  match BD.lookupDefine(ds, "version") {
+    case Some(v) -> assertEqual(v, "1.2.3", "unrelated define preserved")
+    case None -> assertTrue(false, "version should resolve")
+  }
+}
+
 // ── Std.BuildInfo synthesis (docs/60 §9.2) ───────────────────────────────────
 // Locate the synthesized `buildInfo()` accessor's returned `BuildInfo(...)`
 // constructor expression, if present.
