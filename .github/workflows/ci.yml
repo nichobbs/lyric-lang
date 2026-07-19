@@ -59,6 +59,15 @@ jobs:
             HEAD_SHA="${{ github.sha }}"
           fi
 
+          # Shared core-infra prefix: anything here can change what every
+          # ecosystem-tests matrix entry does (the manifest chain, or how
+          # it's invoked) regardless of which library's own directory
+          # changed, so it must appear in EVERY entry's trigger pattern
+          # below, not just the has_core_changes check further down. A
+          # ci.yml-only change (like this PR's own diff) is the case that
+          # would otherwise silently zero out the whole matrix.
+          CORE_INFRA_PATTERN='lyric-compiler/|lyric-stdlib/|bootstrap/|lyric-rt/|resolver/|scripts/|Makefile|\.github/workflows/ci\.yml'
+
           # Per-ecosystem-library dependency map backing the `ecosystem-tests`
           # matrix (split from the old monolithic `ecosystem-security-tests`
           # job). Each id names one lyric-<id>/ library; the value lists the
@@ -67,7 +76,8 @@ jobs:
           # comments that used to live inline in that job. `emit_run_map`
           # below turns this into a JSON {id: true|false} map: a PR touching
           # only an unrelated library's directory skips that matrix entry; a
-          # compiler/stdlib change always triggers every entry.
+          # compiler/stdlib/core-infra change (per CORE_INFRA_PATTERN above)
+          # always triggers every entry.
           declare -A ECO_DEPS=(
             [auth]=""
             [session]="cache"
@@ -107,7 +117,7 @@ jobs:
               if [ "$force_true" = "true" ]; then
                 val=true
               else
-                pattern="^(lyric-compiler/|lyric-stdlib/|lyric-${id}/"
+                pattern="^(${CORE_INFRA_PATTERN}|lyric-${id}/"
                 for dep in ${ECO_DEPS[$id]}; do
                   pattern="${pattern}|lyric-${dep}/"
                 done
@@ -166,25 +176,25 @@ jobs:
           fi
 
           # Second, finer-grained signal: does the diff touch the
-          # compiler/runtime core (lyric-compiler/, lyric-stdlib/,
-          # bootstrap/, lyric-rt/, resolver/, scripts/, this workflow file,
-          # or the root Makefile)? Deliberately excludes native/ — that
-          # directory holds only *.md backend-design planning docs (no
-          # code; the real native backend lives under lyric-compiler/lyric/
-          # llvm_*.l and lyric-stdlib/std/_kernel_native/, both already
-          # covered below), so including it would force a rebuild for
-          # doc-only edits with nothing to actually verify. The compiler
-          # self-test, native-backend, closure zero-overhead, ilverify,
-          # AOT-smoke, and e2e-CLI jobs below only ever exercise this
-          # surface — a PR that touches just one ecosystem library
-          # (lyric-web/, lyric-mq/, ...), lyric-vscode/, lyric-testing/, or
-          # examples/ gains nothing from re-running them. Same
-          # conservative-fallback shape as the has_code_changes check
-          # above: any ambiguity (git diff failure, first push already
-          # handled) resolves to "true" — a missed skip costs CI minutes,
-          # a wrong skip hides a regression.
+          # compiler/runtime core (CORE_INFRA_PATTERN, declared above:
+          # lyric-compiler/, lyric-stdlib/, bootstrap/, lyric-rt/,
+          # resolver/, scripts/, this workflow file, or the root Makefile)?
+          # Deliberately excludes native/ — that directory holds only *.md
+          # backend-design planning docs (no code; the real native backend
+          # lives under lyric-compiler/lyric/llvm_*.l and
+          # lyric-stdlib/std/_kernel_native/, both already covered), so
+          # including it would force a rebuild for doc-only edits with
+          # nothing to actually verify. The compiler self-test,
+          # native-backend, closure zero-overhead, ilverify, AOT-smoke, and
+          # e2e-CLI jobs below only ever exercise this surface — a PR that
+          # touches just one ecosystem library (lyric-web/, lyric-mq/,
+          # ...), lyric-vscode/, lyric-testing/, or examples/ gains nothing
+          # from re-running them. Same conservative-fallback shape as the
+          # has_code_changes check above: any ambiguity (git diff failure,
+          # first push already handled) resolves to "true" — a missed skip
+          # costs CI minutes, a wrong skip hides a regression.
           core_changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
-            | { grep -E '^(lyric-compiler/|lyric-stdlib/|bootstrap/|lyric-rt/|resolver/|scripts/|Makefile|\.github/workflows/ci\.yml)' || true; } \
+            | { grep -E "^(${CORE_INFRA_PATTERN})" || true; } \
             | head -1) || core_changed="yes"
 
           if [ -n "$core_changed" ]; then
@@ -6833,10 +6843,15 @@ jobs:
       # don't collide on a duplicate name.
       - name: Run tests (search, elasticsearch + meilisearch)
         if: matrix.id == 'search'
+        # Both variants always run even if the first fails (matching the
+        # old monolithic job's overall=$? aggregation) so a single failed
+        # run surfaces both failures instead of hiding the second behind
+        # the first until a follow-up push.
         run: |
-          set -euo pipefail
-          "$LYRIC_CLI_PATH" test --manifest lyric-search/lyric.toml
-          "$LYRIC_CLI_PATH" test --manifest lyric-search/lyric.toml --no-default-features --features meilisearch
+          overall=0
+          "$LYRIC_CLI_PATH" test --manifest lyric-search/lyric.toml || overall=$?
+          "$LYRIC_CLI_PATH" test --manifest lyric-search/lyric.toml --no-default-features --features meilisearch || overall=$?
+          exit "$overall"
 
       # --features local: guards that the local-dev kernel (a real
       # HTTP test server, Lambda.Kernel.Runtime) at least builds/links
@@ -6844,10 +6859,15 @@ jobs:
       # to exercise and isn't tested here — see docs/57 §5.2/§7 item 5.
       - name: Run tests (lambda, default + local feature)
         if: matrix.id == 'lambda'
+        # Both variants always run even if the first fails (matching the
+        # old monolithic job's overall=$? aggregation) so a single failed
+        # run surfaces both failures instead of hiding the second behind
+        # the first until a follow-up push.
         run: |
-          set -euo pipefail
-          "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml
-          "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml --features local
+          overall=0
+          "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml || overall=$?
+          "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml --features local || overall=$?
+          exit "$overall"
 
       - name: Run tests (web)
         if: matrix.id == 'web'
