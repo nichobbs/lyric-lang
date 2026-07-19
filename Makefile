@@ -208,11 +208,13 @@ test-typechecker: ## Run the type-checker self-test
 #     ./bin/lyric test --target dotnet "$$t" >/dev/null 2>&1 && echo "$$t"
 #   done
 # This is deliberately NOT `find lyric-compiler -name '*_self_test.l'`
-# unfiltered — of the 117 files in the directory, 11 fail this way:
+# unfiltered — of the 118 files in the directory, 12 fail this way:
 #   - `--target jvm` only: auto_ffi_jvm_self_test.l, hash_jvm_self_test.l,
-#     stdlib_jvm_kernels_self_test.l
+#     stdlib_jvm_kernels_self_test.l, self_field_reassign_jvm_self_test.l
+#     (the last is JVM-only because bare self-field writes in an `impl`
+#     method are silently dropped on MSIL today, #6173).
 #     (run via `./bin/lyric test --target jvm <file>` by hand, or see the
-#     `compiler-self-tests-jvm` CI job for the full jvm-target list).
+#     `compiler-self-tests-jvm` CI job for the full jvm-target list.)
 #   - needs `LYRIC_LOAD_COMPILER=1` and/or the native toolchain:
 #     llvm_codegen_self_test.l, llvm_collections_self_test.l,
 #     llvm_ffi_self_test.l, llvm_heap_self_test.l, llvm_stdlib_self_test.l
