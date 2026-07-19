@@ -19598,3 +19598,60 @@ bootstrap closure). Same resolved signatures out; `auto_ffi_self_test.l`
 **Verification.** `config_block_self_test.l` 3/3 both targets;
 `auto_ffi_self_test.l` 23/23; full `make lyric` clean; `make ilverify`
 116 DLLs / 0 IL-validity errors.
+
+## D-progress-709 — Issue-cleanup round 13: B′-mode bridge codegen fixes (#4600), native dir-list `d_type` (#4856), JVM lambda-walker dedup (#4250), JVM CI parity (#2033, #3284)
+
+**Date:** 2026-07-19
+**Status:** SHIPPED
+
+Five independent fixes; the substantive one is #4600.
+
+**#4600 — B′-mode aspect bridge codegen, both targets.** B′-mode aspect
+specialisation (D114/docs/55) had no JVM *runtime* self-test — existing
+weaver tests only checked AST/weaver shape. Adding `bmode_runtime_self_test.l`
+(runs on both targets; asserts real values across plain proceed-doubling,
+two-shape dedup, and a row-constrained `args` `where TArgs has { base: Int }`
+with a `config` override) surfaced two real codegen bugs, both fixed:
+- `msil/bridge.l`: the single-file MSIL path (`compileToMsilWithVersion`)
+  wove against an empty template map, so a same-package `from`-instance
+  could never resolve (fatal A0045) — even though the JVM single-file path
+  already self-scanned. Fixed by collecting the file's own `pub aspect`
+  templates before weaving.
+- `jvm/bridge.l`: the bundle path's function-signature / record-field /
+  constructor registries were built from the *pre-weave* file, so B′-mode's
+  weaver-synthesised `__lyric_bmode_*` functions and
+  `__LyricBModeCallContext`/`__LyricBModeCfg_*`/`__LyricBModeArgs_*` records
+  were invisible to codegen (a compile-time `has no known field` panic,
+  then a runtime `NoSuchMethodError`). Fixed with post-weave re-scans
+  (`collectBModeWovenSigs`/`collectFileCasesExtern`/`collectFileCtors`)
+  mirroring the existing `collectAspectWovenSigs` pattern (dedup of that
+  pair tracked as follow-up #6216). This is the same JVM bridge gap that
+  blocked lyric-mq's aspect-weaving tests on JVM (#3385).
+
+**#4856 — native dir-list.** `hostListFilesResult`/`hostListDirsResult` did
+an extra `stat()` per entry (O(2n) syscalls). New `lyric_dir_list_typed` C
+kernel classifies from `readdir`'s `dirent.d_type` in one sweep, falling
+back to a single following `stat()` only for `DT_LNK`/`DT_UNKNOWN`
+(preserving the old symlink-follow semantics). The Lyric kernel consumes it
+via a 1-digit ASCII kind prefix on each name (return-plus-ok idiom —
+avoids a ref-container out-param that ASan flagged as a 48-byte leak, the
+trap `file_host.l`'s own header warns about). Verified by
+`make -C lyric-rt test` (`test_dir_list_typed`) + `llvm_stdlib_self_test.l`
+18/18 under ASan.
+
+**#4250 — JVM lambda-walker dedup.** `collectInLambdaNamesStmt`
+(`02_exprs.l`) and `collectInLambdaNamesBlockStmt` (`06_items.l`) were two
+near-identical statement walkers; deleted the `06_items.l` copy (its caller
+uses the canonical one). The #4240 completeness gap (STry/SDefer/SScope)
+was already fixed on `main`; this removes the divergence risk.
+
+**#2033 / #3284 — JVM CI parity.** `ensures_self_test.l` and
+`pconstructor_typed_binding_self_test.l` ran dotnet-only; both are
+cross-target. Confirmed each passes on `--target jvm` (7/7 each) and wired
+the missing JVM CI steps.
+
+**Verification.** `bmode_runtime` 3/3 both targets; `ensures` jvm 7/7;
+`pconstructor` jvm 7/7; `closure` jvm 18/18 (no regression); `lyric-rt` C
+tests pass; full `make lyric` clean; `make ilverify` 116 DLLs / 0
+IL-validity errors. (D-progress number provisional — may renumber on
+rebase if another in-flight PR lands D-progress-709 first.)
