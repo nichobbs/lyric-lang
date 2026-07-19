@@ -33,6 +33,7 @@ jobs:
     outputs:
       has_code_changes: ${{ steps.changes.outputs.has_code_changes }}
       has_core_changes: ${{ steps.changes.outputs.has_core_changes }}
+      has_jvm_ecosystem_changes: ${{ steps.changes.outputs.has_jvm_ecosystem_changes }}
       ecosystem_run_map: ${{ steps.changes.outputs.run_map }}
     permissions:
       contents: read
@@ -141,6 +142,7 @@ jobs:
           if [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "has_code_changes=true" >> "$GITHUB_OUTPUT"
             echo "has_core_changes=true" >> "$GITHUB_OUTPUT"
+            echo "has_jvm_ecosystem_changes=true" >> "$GITHUB_OUTPUT"
             emit_run_map true ""
             echo "First push — assuming code changes."
             exit 0
@@ -205,6 +207,29 @@ jobs:
           else
             echo "has_core_changes=false" >> "$GITHUB_OUTPUT"
             echo "No compiler/runtime-core changes — compiler/native/JVM/AOT test jobs skipped."
+          fi
+
+          # compiler-self-tests-jvm's own gate: a superset of has_core_changes.
+          # Unlike the other 12 has_core_changes-gated jobs, this one also
+          # contains the ONLY CI exercise of four ecosystem libraries' JVM
+          # kernels/manifests — Storage.Kernel.Jvm, Resilience.Kernel.Jvm, the
+          # Auth.Kernel.Jvm feature-resolution build, and the lyric-web
+          # Undertow end-to-end smoke (tests/jvm_server_smoke.l) — none of
+          # which the ecosystem-tests matrix duplicates (it only runs their
+          # default/dotnet manifests). Folding lyric-web/storage/resilience/
+          # auth into the shared has_core_changes pattern instead would have
+          # over-broadened the OTHER 12 jobs' gates for libraries they never
+          # touch, so this is a separate, job-specific signal.
+          jvm_ecosystem_changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
+            | { grep -E "^(${CORE_INFRA_PATTERN}|lyric-web/|lyric-storage/|lyric-resilience/|lyric-auth/)" || true; } \
+            | head -1) || jvm_ecosystem_changed="yes"
+
+          if [ -n "$jvm_ecosystem_changed" ]; then
+            echo "has_jvm_ecosystem_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Compiler-core or web/storage/resilience/auth JVM-kernel changes detected — compiler-self-tests-jvm will run."
+          else
+            echo "has_jvm_ecosystem_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No compiler-core or web/storage/resilience/auth changes — compiler-self-tests-jvm skipped."
           fi
 
           # Finally, the per-library run map itself (a fresh `git diff` call,
@@ -732,7 +757,14 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    # Its only real consumer is compiler-self-tests-jvm (build-and-test's
+    # `needs` on it is always()-gated and immune to cascade-skip) — shares
+    # that job's has_jvm_ecosystem_changes gate exactly, not the narrower
+    # has_core_changes, so a lyric-web/storage/resilience/auth-only change
+    # can't leave compiler-self-tests-jvm auto-skipped by GitHub's default
+    # cascade-skip-on-skipped-need behavior despite its own `if:` wanting
+    # to run.
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_ecosystem_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -4319,7 +4351,12 @@ jobs:
     needs: [build, build-stage2]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    # Broader than the other has_core_changes-gated jobs: this one also
+    # carries the only JVM-kernel coverage for lyric-web/storage/resilience/
+    # auth (see has_jvm_ecosystem_changes above) — has_core_changes alone
+    # would silently skip that coverage on a PR confined to just one of
+    # those four libraries.
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_ecosystem_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
