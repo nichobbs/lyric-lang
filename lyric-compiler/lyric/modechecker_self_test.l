@@ -664,3 +664,51 @@ test "same-block re-declaration to a non-in-file-record type evicts the stale ma
     "re-declared b (via non-ctor call) write: stale Frozen evicted, no V0015"
   )
 }
+
+test "val binding shadowing a var-record local evicts the stale mapping (#6185)" {
+  // Outer `b` is `Immut` (label non-var); a nested block re-binds `b` via a
+  // `val` to `MutBox` (label IS var) and writes `b.label`.  The write is on the
+  // val binding, which we don't track — so no V0015.  Before the #6185 fix the
+  // `val` arm never evicted, so `b.label` was checked against the outer
+  // `Immut.label` (non-var) → a false positive.
+  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nfunc f(): String {\n  var b = Immut(label = \"a\")\n  {\n    val b = MutBox(label = \"x\")\n    b.label = \"y\"\n    b.label\n  }\n  b.label\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "val-shadow write: no false-positive V0015")
+}
+
+test "match-arm pattern bind shadowing a var-record local evicts the stale mapping (#6185)" {
+  // The arm pattern `W(b)` binds `b` to `MutBox` inside the arm; a write to
+  // `b.label` (var) there must not be checked against the outer `Immut` local
+  // of the same name.  Before #6185 the arm never evicted the pattern binder.
+  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nunion Wrap {\n  case W(inner: MutBox)\n}\nfunc g(w: in Wrap): String {\n  var b = Immut(label = \"a\")\n  match w {\n    case W(b) -> {\n      b.label = \"y\"\n      b.label\n    }\n  }\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "match-arm-shadow write: no false-positive V0015")
+}
+
+test "lambda parameter shadowing a var-record local evicts the stale mapping (#6185)" {
+  // The lambda param `b: MutBox` shadows the outer `Immut` local inside the
+  // lambda body; the `b.label` (var) write there must not be checked against
+  // `Immut.label`.  Before #6185 lambda params never evicted.
+  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nfunc h(): String {\n  var b = Immut(label = \"a\")\n  val g = { b: MutBox -> b.label = \"y\"\n    b.label\n  }\n  b.label\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "lambda-param-shadow write: no false-positive V0015")
+}
+
+test "for-loop variable shadowing a var-record local evicts the stale mapping (#6185)" {
+  // The loop variable `b` shadows the outer `Immut` local inside the body; the
+  // `b.label` (var) write must not be checked against `Immut.label`.  Before
+  // #6185 the for-loop variable never evicted.
+  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nfunc k(items: in List[MutBox]): Int {\n  var b = Immut(label = \"a\")\n  for b in items {\n    b.label = \"y\"\n  }\n  0\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "for-var-shadow write: no false-positive V0015")
+}
+
+test "restore after a non-var-binder shadow still catches the outer violation (#6185 false negative)" {
+  // A `val`-shadow of `b` in a nested block must be scoped: after the block,
+  // the outer `Immut` binding is restored, so the outer `b.label = \"z\"` write
+  // to the non-var field MUST still fire V0015.  Guards against the eviction
+  // leaking past its scope (the false-negative dual of the four cases above).
+  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nfunc fn(): String {\n  var b = Immut(label = \"a\")\n  {\n    val b = MutBox(label = \"x\")\n    b.label = \"ok\"\n  }\n  b.label = \"z\"\n  b.label\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0015"), "outer Immut.label write after val-shadow: V0015 still fires")
+}

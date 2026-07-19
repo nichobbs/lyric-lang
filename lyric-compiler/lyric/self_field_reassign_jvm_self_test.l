@@ -44,10 +44,14 @@ func classifyInt(n: in Int): Result[Int, String] {
   }
 }
 
+interface Bumper {
+  func bump(n: Int): Int
+}
+
 impl Stepper for Acc {
   func step(n: Int): Int {
-    // Bare self-field reassign, RHS is a branching if-expression, then more
-    // statements — the exact #6168 shape.
+    // Bare self-field reassign (AssEq), RHS is a branching if-expression, then
+    // more statements — the exact #6168 shape.
     total = if n > 0 { total + n } else { total }
     seen = seen + 1
     match classifyInt(n) {
@@ -56,6 +60,25 @@ impl Stepper for Acc {
         total = total + v
         self.total
       }
+    }
+  }
+}
+
+impl Bumper for Acc {
+  func bump(n: Int): Int {
+    // COMPOUND self-field assign (`+=`) whose RHS is a branching if-expression
+    // (#6186): the implicit-`this` compound arm must read the current field
+    // into a temp, lower the branching RHS against an empty operand stack, then
+    // combine and store — the compound analog of the #6168 AssEq fix.  `seen`'s
+    // plain `+=` exercises the non-branching compound path in the same method.
+    total += if n > 0 { n * 2 } else { 0 - 1 }
+    seen += 1
+    match classifyInt(n) {
+      case Err(_) -> {
+        total -= 5
+        self.total
+      }
+      case Ok(_) -> self.total
     }
   }
 }
@@ -69,11 +92,17 @@ test "bare self-field reassign with a branching RHS in an impl method (#6168)" {
   assertEqualInt(a.seen, 2, "seen incremented on each step, mutation persists")
 }
 
-test "compound self-field assign with a branching sibling in an impl method (#6168)" {
+test "compound self-field assign (+=) with a branching RHS in an impl method (#6186)" {
   var a = Acc(total = 10, seen = 0)
-  // step(2): total = if 2>0 { 10+2 } else {10} = 12; seen=1; Ok -> total=12; returns 12.
-  val r = a.step(2)
-  assertEqualInt(r, 12, "step(2) from total=10 yields 12")
-  assertEqualInt(a.total, 12, "total field reflects the accumulated writes")
-  assertEqualInt(a.seen, 1, "seen field reflects the compound-style increment")
+  // bump(4): total += (4>0 ? 4*2 : -1) = 10 + 8 = 18; seen += 1 = 1; Ok arm
+  // returns total unchanged = 18.
+  val r = a.bump(4)
+  assertEqualInt(r, 18, "bump(4): compound += with a branching RHS -> 18")
+  assertEqualInt(a.total, 18, "total field reflects the compound write")
+  assertEqualInt(a.seen, 1, "seen reflects the plain compound increment")
+  // bump(-2): total += (else -1) = 18 - 1 = 17; seen += 1 = 2; Err arm
+  // (classifyInt(-2) = Err) runs total -= 5 = 12.
+  val r2 = a.bump(0 - 2)
+  assertEqualInt(r2, 12, "bump(-2): else-branch (-1) then Err-arm -= 5 -> 12")
+  assertEqualInt(a.seen, 2, "seen incremented again, mutations persist")
 }

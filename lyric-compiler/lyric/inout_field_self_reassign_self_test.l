@@ -98,6 +98,24 @@ func consumeAndClassifyViaLocal(h: inout Holder, n: in Int): Unit {
   }
 }
 
+// #6186: the COMPOUND-assignment (`+=`/`-=`) arm of the same `lowerAssignExpr`
+// rewrite — untested by the AssEq cases above.  A compound assign whose RHS is
+// a branching if-expression is the exact compound-arm analog of #5936: the arm
+// reads the current field value, then must lower the branching RHS against an
+// empty operand stack (both the field value and the receiver spilled to temps)
+// before combining, or the branch target's stack-map frame desyncs.
+func accumulateCompound(h: inout Holder, n: in Int): Unit {
+  h.count += if n > 0 { n * 2 } else { 0 - 1 }
+  match classify(h.buf) {
+    case Err(_) -> {
+      h.count -= 3
+    }
+    case Ok(value) -> {
+      h.count += value
+    }
+  }
+}
+
 test "inline self-reassign slice() then match mutates count and buf (#5936)" {
   var h = Holder(buf = [65.toByte(), 66.toByte(), 67.toByte(), 68.toByte()], count = 0)
   consumeAndClassify(h, 2)
@@ -133,4 +151,17 @@ test "inline self-reassign slice() with an empty taken slice hits the Err arm" {
   consumeAndClassify(h, 0)
   assertEqualInt(h.count, 0 - 1, "count set by the Err arm")
   assertEqualInt(h.buf.length, 2, "remaining buf unchanged")
+}
+
+test "compound-assign (+=) with a branching RHS on an inout field (#6186)" {
+  var h = Holder(buf = [7.toByte(), 8.toByte()], count = 10)
+  // count = 10 + (n>0 ? n*2 : -1) = 10 + 8 = 18; classify(buf, len 2) = Ok(2)
+  // -> count += 2 = 20.
+  accumulateCompound(h, 4)
+  assertEqualInt(h.count, 20, "compound += with a branching RHS, then Ok-arm += value")
+  // Negative-n path takes the else-branch (-1) and the count stays > 0 so the
+  // Ok arm still runs: count = 5 + (-1) + 2 = 6.
+  var h2 = Holder(buf = [7.toByte(), 8.toByte()], count = 5)
+  accumulateCompound(h2, 0 - 3)
+  assertEqualInt(h2.count, 6, "compound += else-branch (-1) then Ok-arm += value")
 }
