@@ -1644,7 +1644,16 @@ pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: 
         }
       } catch Bug as e {
         Console.error("[lyric-web] request handling failed on " + prefixStr + ": " + e.message)
-        writeResponse(ctx, text(500, "Internal Server Error"))
+        // The recovery write can itself throw when the failure correlates with
+        // a broken connection (one of the cases #5261 requires to stay
+        // request-local). Keep it inside this per-request scope: escalating to
+        // the outer nextContext-only catch would stop the listener and exit,
+        // reintroducing "one bad request kills the whole server" (#6222).
+        try {
+          writeResponse(ctx, text(500, "Internal Server Error"))
+        } catch Bug as e2 {
+          Console.error("[lyric-web] failed to write 500 response on " + prefixStr + ": " + e2.message)
+        }
       }
     } catch Bug as e {
       // A caught Bug here means the listener itself can no longer make

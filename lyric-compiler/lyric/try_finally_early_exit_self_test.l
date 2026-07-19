@@ -140,6 +140,27 @@ func excThroughFinally(log: in List[Int]): Int {
   }
 }
 
+// A `finally` that itself throws while being replayed on an early return:
+// the `return 5` triggers the inner finally, which panics mid-replay. The
+// throw must abandon the return and propagate to the enclosing `catch`
+// (not be swallowed, not double-run the finally, not let the return win) —
+// the intricate deferStack-replay-raises interaction the JVM exception
+// table must get right, matching MSIL's `leave`-through-finally semantics.
+func finallyThrowsOnReturn(log: in List[Int]): Int {
+  try {
+    try {
+      log.add(1)
+      return 5
+    } finally {
+      log.add(2)
+      panic("finally boom")
+    }
+  } catch Bug as _ {
+    log.add(3)
+    return 42
+  }
+}
+
 test "return out of a try/finally runs the finally exactly once" {
   val log1: List[Int] = newList()
   assertEqualInt(returnThroughFinally(log1, 5), 10, "x>0 branch value")
@@ -204,4 +225,13 @@ test "a genuine exception through nested try/finally still runs the finally once
   assertEqualInt(log.count, 2, "inner finally ran once, then outer catch ran")
   assertEqualInt(log[0], 10, "inner finally ran on the exception path")
   assertEqualInt(log[1], 11, "outer catch ran after the finally")
+}
+
+test "a finally that throws during an early-return replay propagates to the enclosing catch" {
+  val log: List[Int] = newList()
+  assertEqualInt(finallyThrowsOnReturn(log), 42, "outer catch wins, not the abandoned return 5")
+  assertEqualInt(log.count, 3, "body + finally (which threw) + outer catch")
+  assertEqualInt(log[0], 1, "try body ran up to the return")
+  assertEqualInt(log[1], 2, "finally ran (once) before it threw")
+  assertEqualInt(log[2], 3, "the finally's throw routed to the enclosing catch")
 }

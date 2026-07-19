@@ -20,12 +20,11 @@
 //! pure core.
 //!
 //! `tests/serve_failure_tests.l` is a separate, CI-orchestrated program
-//! that predates this fix (#5260) and its accompanying
-//! `.github/workflows/ci.yml` smoke step still asserts the OLD contract
-//! (a `/crash` hit must exit the whole process non-zero) — see that
-//! file's header for why fixing #5261 makes that specific CI assertion
-//! stale, and why it could not be updated in the same change that shipped
-//! this fix.
+//! that predates this fix (#5260); its accompanying
+//! `.github/workflows/ci.yml` smoke step now asserts the post-#5261
+//! contract (`/crash` → 500, failure line logged, `/health` still 200,
+//! then `kill`), updated alongside this fix (#6218). See that file's
+//! header for the full CI-step description.
 @test_module
 package Web.ServeCrashIsolationTests
 

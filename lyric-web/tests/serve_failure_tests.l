@@ -23,12 +23,11 @@
 //! it used to pin — hitting it now logs the failure line below and
 //! answers 500, and this program keeps running afterward. The
 //! `.github/workflows/ci.yml` "smoke lyric-web/tests/serve_failure_tests.l"
-//! step still asserts the OLD contract (wait on this process's PID for a
-//! non-zero exit code after hitting `/crash`), which is now stale — that
-//! step could not be updated in the same change that shipped the #5261
-//! fix (workflow-file edits are out of scope for that change) and needs a
-//! follow-up to assert the new contract instead (poll `/crash` for a 500,
-//! then poll `/health` again for a 200, rather than waiting on the PID).
+//! step asserts this new contract (updated alongside the #5261 fix, #6218):
+//! poll `/health` for readiness, assert `/crash` returns 500, assert the
+//! failure line is logged, assert `/health` still returns 200 (proving the
+//! server survived the panic), then `kill` the process — it no longer exits
+//! on its own.
 //!
 //! **Not run via `lyric test --manifest lyric-web/lyric.toml`.** Unlike the
 //! `[project.tests]` entries in this directory (`dispatch_tests.l`,
@@ -43,8 +42,8 @@
 //! This file instead follows `tests/jvm_server_smoke.l`'s precedent: a plain
 //! `func main` program, built and run directly, with a CI script driving it
 //! and asserting the observable behavior (see the CI step named in this
-//! header's last paragraph — currently pinning the pre-#5261 contract, see
-//! above).
+//! header's last paragraph — pinning the post-#5261 crash-isolation
+//! contract, see above).
 //!
 //! Routes:
 //!   GET /health  -> 200 "ok". The CI script polls this to learn when the

@@ -19730,9 +19730,33 @@ PEM fixtures duplicated between two test files) left as-is — a shared test
 fixtures module isn't buildable without shipping test-only data in the
 production `Web.dll`/jar; harmless non-secret duplication.
 
-**Verification.** `try_finally_early_exit` 7/7 both targets; `serve_crash_
-isolation` pass; lyric-web suite green; stdlib HTTP/TLS suites green; auth
-security suite 39 + 3 new pass both targets; full `make lyric` clean;
-`make ilverify` 116 DLLs / 0 IL-validity errors. (D-progress number
-provisional — may renumber on rebase if another in-flight PR lands
-D-progress-710 first.)
+**Review-round hardening (#6221 / #6222).** Two REQUIRED findings on the
+hardening code itself, both fixed in the same PR. **#6221** — the #6071
+`connLimit` permit was released only as `processConnection` /
+`processH2Connection`'s last statement, so a throw from an unguarded
+`hostWrite` / `processH2Batch` on a broken socket (running under
+fire-and-forget `taskRun`) skipped the release and eventually wedged the
+accept loop on `semWait(connLimit)` — the hardening causing the exhaustion
+it prevents. Fixed by moving `hostClose(conn)` + `semRelease(connLimit)`
+into a top-of-function `defer { }` (the idiom `http_host.l` already uses),
+so cleanup runs on the throw path too. **#6222** — the #5261 per-request
+recovery `writeResponse(ctx, text(500, …))` in `serveStreaming`'s catch was
+itself unguarded; a throw there (a broken connection — exactly the case
+#5261 requires to stay request-local) escalated to the outer
+`nextContext`-only catch, stopping the listener and exiting — reintroducing
+"one bad request kills the whole server" for that sub-case. Fixed by
+wrapping the recovery write in its own `try`/`catch Bug` that logs and keeps
+serving. Also took two SUGGESTIONs: corrected the now-stale
+`serve_failure_tests.l` / `serve_crash_isolation_tests.l` header paragraphs
+(the CI step *is* updated in this PR, not a follow-up), and added an 8th
+`try_finally_early_exit_self_test.l` case pinning that a `finally` throwing
+during an early-return replay propagates to the enclosing `catch` (not
+swallowed, not double-run) on both targets.
+
+**Verification.** `try_finally_early_exit` 8/8 both targets (incl. the new
+finally-throws-during-replay case); `serve_crash_isolation` pass; lyric-web
+suite green; stdlib HTTP/TLS suites green (`http_server` 16/16 incl. the
+#6221 `defer`); auth security suite 39 + 3 new pass both targets; full
+`make lyric` clean; `make ilverify` 116 DLLs / 0 IL-validity errors.
+(D-progress number provisional — may renumber on rebase if another in-flight
+PR lands D-progress-710 first.)

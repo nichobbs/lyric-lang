@@ -605,6 +605,15 @@ func processConnection(
   limits: in EngineLimits,
   connLimit: in Semaphore,
 ): Unit {
+  // Guarantee the socket is closed and this connection's concurrency-limit
+  // permit (#6071) is released even if request handling throws — a broken
+  // socket can throw from readOneRequest/writeErrorResponse. Because this
+  // runs via fire-and-forget `taskRun`, a leaked permit is never recovered
+  // and would eventually wedge the accept loop on `semWait(connLimit)` (#6221).
+  defer {
+    hostClose(conn)
+    val _ = semRelease(connLimit)
+  }
   var engineConn = newConnection(limits)
   var open = true
   while open {
@@ -643,11 +652,9 @@ func processConnection(
         }
       }
     }
-  }
-  hostClose(conn)
-  // Release this connection's concurrency-limit permit (#6071) so a queued
-  // accept — blocked on `semWait(connLimit)` in `onAccepted` — can proceed.
-  val _ = semRelease(connLimit);
+  };
+  // `hostClose(conn)` + `semRelease(connLimit)` run via the `defer` above so
+  // they still fire if the loop body throws (#6221).
   ()
 }
 
@@ -1168,6 +1175,14 @@ func processH2Connection(
   limits: in EngineLimits,
   connLimit: in Semaphore,
 ): Unit {
+  // Guarantee socket close + concurrency-permit release even if the initial
+  // `hostWrite` or `processH2Batch` throws on a broken socket — otherwise a
+  // fire-and-forget `taskRun` exception leaks the #6071 permit and eventually
+  // wedges the accept loop on `semWait(connLimit)` (#6221).
+  defer {
+    hostClose(conn)
+    val _ = semRelease(connLimit)
+  }
   val h2 = newServerConnection(h2DefaultServerSettings())
   val _ = hostWrite(conn, serverInitialFrame(h2))
   val state = H2ConnState(
@@ -1193,11 +1208,9 @@ func processH2Connection(
         }
       }
     }
-  }
-  hostClose(conn)
-  // Release this connection's concurrency-limit permit (#6071) so a queued
-  // accept — blocked on `semWait(connLimit)` in `onAccepted` — can proceed.
-  val _ = semRelease(connLimit);
+  };
+  // `hostClose(conn)` + `semRelease(connLimit)` run via the `defer` above so
+  // they still fire if the initial write or `processH2Batch` throws (#6221).
   ()
 }
 
