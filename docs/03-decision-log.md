@@ -19555,3 +19555,46 @@ JVM-only because MSIL silently drops bare self-field writes inside an
 `impl` method today (a separate, pre-existing bug filed as #6173). Both
 wired into CI. The `EIndex` (array/map/list) `AssEq` lowering has the same
 bug class and is tracked as a follow-up (#6169).
+
+## D-progress-707 — JVM `config { }` block emission (#3228) + MSIL reference-assembly metadata caching (#3421)
+
+Two independent self-hosted-compiler fixes.
+
+**#3228 — JVM `config { }` emission.** Module-scope `config { }` blocks
+(docs/25, D046/D048) were parsed but silently dropped on `--target jvm`
+(the `IConfig` item arm in `jvm/codegen/06_items.l` emitted nothing), so
+config values were unavailable at runtime on JVM while working on MSIL.
+The JVM backend now mirrors `Msil.Lowering.lowerMConfig` field-for-field:
+each config field becomes a `public static final` field on a class named
+`<pkgName>/<BlockName>`, and a synthesized `<clinit>` reads the env var
+(`System.getenv`), null/empty-checks it, parses to the field's type
+(`Integer.parseInt`/`Long.parseLong`/`Float.parseFloat`/`Double.parseDouble`/
+`Boolean.parseBoolean`, or the raw string), and `putstatic`s it — falling
+back to the declared literal default, or `System.err.println` +
+`System.exit(78)` for an unsatisfied required field. One shared `String`
+local slot is reused per field and every branch target sees an empty
+operand stack, honoring the JVM StackMapTable-builder invariant. New
+`LConfigField`/`LPConfig` lowering nodes + `lowerConfigBlock` in
+`jvm/lowering.l`; `configFieldTypes` threaded through the `FuncCtx`
+builders so an `EMember` read of a config field resolves to the
+`getstatic`. Scope boundary: the docs/58 config-*template* / wire-embedded
+layering's JVM lowering remains a separate follow-up (dotnet-only), so
+`config_templates_self_test.l` stays `--target dotnet`; base blocks are
+covered by the new `config_block_self_test.l` on **both** targets (default
+path + env-var override, all field types).
+
+**#3421 — MSIL metadata caching.** `Msil.MetadataReader.decodeExternMethodSig`
+re-read the reference-assembly PE bytes and re-parsed its metadata root +
+`#~` table layout on every call. Reference assemblies do not change during
+a compilation, so the parsed structure is now memoized per assembly path,
+threaded through `Msil.CodegenCtx` (`metadataParsedPaths` /
+`metadataParsedAssemblies`, alongside the existing `metadataPathIndex` /
+`metadataVtypeSet` caches) rather than a module-level `val` — the latter
+tripped the #2494 per-package-seed gap (`listTokensForLowering` hard-panics
+on a collection-constructing module-level initialiser in the compiler's own
+bootstrap closure). Same resolved signatures out; `auto_ffi_self_test.l`
+23/23 unchanged.
+
+**Verification.** `config_block_self_test.l` 3/3 both targets;
+`auto_ffi_self_test.l` 23/23; full `make lyric` clean; `make ilverify`
+116 DLLs / 0 IL-validity errors.

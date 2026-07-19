@@ -2,8 +2,12 @@
 
 **Status:** MSIL backend shipped (PR #2966, D-progress-488); extended to
 `Long`/`Float`/`Double` fields with compile-time `G0009`/`G0010`/`G0013`
-guards (#2993, D-progress-505). JVM backend
-parity not yet implemented; tracked in #2998.  v1 surface (parser + AST +
+guards (#2993, D-progress-505). JVM backend parity for module-scope config
+blocks shipped (#3228): each field lowers to a `public static final` field
+plus a `<clinit>` that reads the env var and falls back to the declared
+default, mirroring the MSIL `.cctor`.  (The docs/58 config-*template* /
+wire-embedded layering remains `--target dotnet` only for now — a separate
+follow-up, unrelated to base config blocks.)  v1 surface (parser + AST +
 type-check + symbol table) implemented in the F# bootstrap and
 self-hosted compiler (PRs #206, #227).  v2 spec:
 `docs/29-config-v2-sketch.md` (D048, file source + layered

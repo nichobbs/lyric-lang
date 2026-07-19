@@ -4,10 +4,11 @@
 //! synthesised record twin, env-var resolution under the LOCAL name, and
 //! the value-position record-construction rewrite inside a wire graph.
 //!
-//! `--target dotnet` only: module-level config blocks emit runtime state
-//! (static fields + env-var .cctor) only on the .NET target today — the
-//! JVM config-emission gap is pre-existing (`jvm/codegen/06_items.l`
-//! emits nothing for IConfig) and tracked as #3228, separately from docs/58.
+//! `--target dotnet` only: this test exercises the docs/58 config-*template*
+//! / wire-embedded layering, whose JVM lowering is a separate follow-up.
+//! (Base module-scope `config { }` blocks now emit on JVM too — static
+//! fields + a `<clinit>` env-var reader — shipped in #3228; see
+//! `config_block_self_test.l`, which runs on both targets.)
 //! Front-end expansion itself is target-independent and covered by
 //! `wire_expand_self_test.l`; wire templates run on both targets via
 //! `wire_templates_self_test.l`.
