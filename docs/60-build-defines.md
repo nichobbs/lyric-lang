@@ -1,6 +1,6 @@
 # 60 — Build defines (compile-time value injection)
 
-**Status:** Design sketch; **M1a + M1b + M1c + M1d + M1e + M1f shipped**. M1a — the
+**Status:** Design sketch; **M1a + M1b + M1c + M1d + M1e + M1f + M1g shipped**. M1a — the
 `@build_const("KEY")` substitution pass (`Lyric.BuildDefines`) + `lyric build
 --define KEY=VALUE` for single-file `--target dotnet` builds (diagnostics
 F0030–F0032). M1b — the `Std.BuildInfo` layer (§9.2): the
@@ -42,9 +42,18 @@ is injected as a fallback define in `pipeParseAndErase` — the one pass that
 carries `targetName` on every backend and both the single-file and project paths
 — so `@build_const("target")` populates on every build without an explicit
 `--define`. It is deterministic per build invocation (reproducibility-safe,
-§8) and a fallback: an explicit `--define target=…` still wins. The remaining
-well-known define (`build_profile` from `--release`) and manifest
-`[build.define]` remain follow-ups (#5852). Q-BD-001 –
+§8) and a fallback: an explicit `--define target=…` still wins. M1g — the
+manifest **`[build.define]`** table (§3.1): parsed by `manifest.l`
+(`BuildSection.defines`, exposed via `getManifestBuildDefines`) as `"KEY=VALUE"`
+strings, layered on a project build beneath CLI `--define`s (`BD.withManifestDefines`
+→ CLI wins over a manifest define of the same key, both over the well-known
+`version` fallback). A `[build.define]`-only manifest (no `[build]` header)
+parses with a default `kind = "lib"`; a non-string value is a manifest error
+(§4, String-only). Applied on `--target dotnet`/`jvm` project builds; rejected
+up front (no silent drop) on `--target native` (#5977), `--release`, and
+`[build] kind = "aot"` (the AOT-packaging path threads no defines). The
+remaining well-known define (`build_profile` from `--release`) remains a
+follow-up (#5852). Q-BD-001 –
 Q-BD-009 below are resolved in this draft; a decision-log entry still codifies
 the full design.
 **Builds on:** `docs/24-build-features.md` (D045 — the `[features]` /

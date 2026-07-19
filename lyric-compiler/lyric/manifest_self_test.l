@@ -8,6 +8,7 @@ package Lyric.Manifest.SelfTest
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.Testing
 import Lyric.Manifest
 
@@ -531,6 +532,71 @@ func testMavenTableMissingVersion(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// [build.define] table (docs/60 §3.1)
+// ─────────────────────────────────────────────────────────────────────────────
+// Look up a "key=value" entry's value in a build-defines list.
+func findBuildDefine(defs: in List[String], key: in String): Option[String] {
+  var i = 0
+  while i < defs.count {
+    val eq = key + "="
+    if Str.startsWith(defs[i], eq) {
+      return Some(value = Str.substring(defs[i], eq.length))
+    }
+    i += 1
+  }
+  None
+}
+
+// A `[build.define]` table alongside `[build] kind = "exe"`: both parse.
+func testBuildDefineWithKind(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build]\nkind = \"exe\"\n\n[build.define]\nbuild_channel = \"stable\"\napi_base = \"https://api.example.com\"\n"
+  val m = parseOk(toml)
+  match m.build {
+    case None -> assertTrue(false, "build-define-with-kind: expected Some(BuildSection)")
+    case Some(b) -> assertEqual(b.kind, "exe", "build-define-with-kind: kind preserved")
+  }
+  val defs = getManifestBuildDefines(m)
+  assertEqualInt(defs.count, 2, "build-define-with-kind: two defines")
+  match findBuildDefine(defs, "build_channel") {
+    case Some(v) -> assertEqual(v, "stable", "build-define-with-kind: build_channel value")
+    case None -> assertTrue(false, "build-define-with-kind: build_channel present")
+  }
+  match findBuildDefine(defs, "api_base") {
+    case Some(v) -> assertEqual(v, "https://api.example.com", "build-define-with-kind: api_base value")
+    case None -> assertTrue(false, "build-define-with-kind: api_base present")
+  }
+}
+
+// A `[build.define]` table with no `[build]` header: kind defaults to "lib",
+// the defines are still collected.
+func testBuildDefineWithoutBuild(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build.define]\nchannel = \"nightly\"\n"
+  val m = parseOk(toml)
+  match m.build {
+    case None -> assertTrue(false, "build-define-only: expected Some(BuildSection) with default kind")
+    case Some(b) -> assertEqual(b.kind, "lib", "build-define-only: kind defaults to lib")
+  }
+  match findBuildDefine(getManifestBuildDefines(m), "channel") {
+    case Some(v) -> assertEqual(v, "nightly", "build-define-only: channel value")
+    case None -> assertTrue(false, "build-define-only: channel present")
+  }
+}
+
+// No `[build.define]` table -> empty define list.
+func testBuildDefineAbsent(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+  val m = parseOk(toml)
+  assertEqualInt(getManifestBuildDefines(m).count, 0, "build-define-absent: no defines")
+}
+
+// A non-string `[build.define]` value is rejected (docs/60 §4: String-only).
+func testBuildDefineInvalidValueType(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build.define]\nport = 8080\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "build.define", "port"), "build-define-nonstring: InvalidField for a non-string value")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §6. [project] section
 // ─────────────────────────────────────────────────────────────────────────────
 func testProject(): Unit {
@@ -794,6 +860,22 @@ test "native flag-form extra_libs" {
 
 test "native carriage-return extra_libs" {
   testNativeCrLib()
+}
+
+test "build.define with [build] kind" {
+  testBuildDefineWithKind()
+}
+
+test "build.define without [build] header" {
+  testBuildDefineWithoutBuild()
+}
+
+test "build.define absent" {
+  testBuildDefineAbsent()
+}
+
+test "build.define non-string value rejected" {
+  testBuildDefineInvalidValueType()
 }
 
 test "project section" {

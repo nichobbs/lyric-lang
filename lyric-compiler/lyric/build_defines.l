@@ -41,11 +41,11 @@ pub record BuildDefinesResult {
 /// `--define`. Omitted when empty — single-file builds carry no manifest
 /// version, so they keep the deterministic `"0.0.0"` fallback.
 ///
-/// The `build_profile` well-known define (from `--release`) and the manifest
-/// `[build.define]` layering remain follow-ups (#5852); the `target` well-known
-/// define ships via `withWellKnownTarget` (injected in `pipeParseAndErase`,
-/// which already carries `targetName`), and this ships the `version` slice
-/// against the project path that consumes it.
+/// The `build_profile` well-known define (from `--release`) remains a follow-up
+/// (#5852). The `target` well-known define ships via `withWellKnownTarget`
+/// (injected in `pipeParseAndErase`, which already carries `targetName`), the
+/// manifest `[build.define]` layering ships via `withManifestDefines` (below),
+/// and this ships the `version` slice against the project path that consumes it.
 pub func withWellKnownDefines(version: in String, cli: in List[String]): List[String] {
   val result: List[String] = newList()
   if version.length > 0 {
@@ -55,6 +55,28 @@ pub func withWellKnownDefines(version: in String, cli: in List[String]): List[St
   while i < cli.count {
     result.add(cli[i])
     i = i + 1
+  }
+  result
+}
+
+/// Layer manifest `[build.define]` entries (docs/60 §3.1) beneath CLI
+/// `--define`s: returns `manifest ++ cli`, so under `decodeDefines`' last-wins
+/// convention a CLI `--define` overrides a manifest define of the same key
+/// (§3.2), and both override the auto-injected well-known `version` fallback
+/// (which `withWellKnownDefines` prepends before this list). Operates on the
+/// raw `"KEY=VALUE"` string form so it composes with `withWellKnownDefines`
+/// before `decodeDefines`.
+pub func withManifestDefines(manifest: in List[String], cli: in List[String]): List[String] {
+  val result: List[String] = newList()
+  var i = 0
+  while i < manifest.count {
+    result.add(manifest[i])
+    i = i + 1
+  }
+  var j = 0
+  while j < cli.count {
+    result.add(cli[j])
+    j = j + 1
   }
   result
 }
