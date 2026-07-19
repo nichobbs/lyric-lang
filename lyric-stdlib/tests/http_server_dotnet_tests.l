@@ -807,4 +807,11 @@ test "resolveMaxConcurrentConnections honours LYRIC_HTTP_MAX_CONNECTIONS with sa
 
   Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "lots")
   assertEqualInt(resolveMaxConcurrentConnections(), 1000, "non-numeric falls back to the default")
+
+  // Leave the process-global env in an explicit, obvious state (Env has no
+  // unsetVar): set it back to the numeric default so any later test in this
+  // module sees a clean, self-explaining value rather than the incidental
+  // "lots" left over above.
+  Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "1000")
+  assertEqualInt(resolveMaxConcurrentConnections(), 1000, "explicit default value resolves unchanged")
 }
