@@ -1250,10 +1250,19 @@ func loadLocal(ctx: in Ctx, insns: in List[NInsn], name: in String): NVal {
       // Not a local — a reference to a module-level `val`/`const` (#5977 part 2).
       // Native has no static-global storage yet, so inline the binding's
       // initializer at the use site; only a literal initializer is supported
-      // (which is exactly what `@build_const` produces).
-      match mapGet(ctx.moduleVals, name) {
+      // (which is exactly what `@build_const` produces). Resolve self-package
+      // qualified FIRST — so a package's own binding wins over a same-named one
+      // in another bundled package (#6225) — then the bare name (an imported /
+      // cross-package reference), the same order `lowerCall` uses for functions.
+      val selfKey = if ctx.curPkg.count > 0 { ctx.curPkg[0] + "." + name } else { name }
+      match mapGet(ctx.moduleVals, selfKey) {
         case Some(mv) -> return lowerModuleVal(ctx, insns, mv)
-        case None -> panic("Lyric.LlvmCodegen: unknown name '" + name + "' (non-local references other than module-level val/const are not yet supported for --target native)")
+        case None -> {
+          match mapGet(ctx.moduleVals, name) {
+            case Some(mv) -> return lowerModuleVal(ctx, insns, mv)
+            case None -> panic("Lyric.LlvmCodegen: unknown name '" + name + "' (non-local references other than module-level val/const are not yet supported for --target native)")
+          }
+        }
       }
     }
   }
@@ -1271,12 +1280,19 @@ func loadLocal(ctx: in Ctx, insns: in List[NInsn], name: in String): NVal {
   }
 }
 
-// True iff `e` is a compile-time literal (possibly parenthesized) — the only
+// True iff `e` is a compile-time literal — possibly parenthesized, or a negated
+// numeric literal (`-1`, the common `val MIN: Int = -1` form) — the only
 // module-level initializer form native can inline at a use site (#5977).
 func isLiteralInit(e: in Expr): Bool {
   match e.kind {
     case ELiteral(_) -> true
     case EParen(inner) -> isLiteralInit(inner)
+    case EPrefix(op, operand) -> {
+      match op {
+        case PreNeg -> isLiteralInit(operand)
+        case _ -> false
+      }
+    }
     case _ -> false
   }
 }
@@ -8697,22 +8713,28 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   }
   val mainPkg = units[0].pkgName
   val sigs = buildSigs(units)
-  // Module-level `val`/`const` bindings across the whole bundle, keyed by bare
-  // name (#5977 part 2). First registration wins — `units[0]` (the user
-  // package) is registered first, so a user-package binding shadows a
-  // same-named one in a bundled package, matching the self-package-first
-  // resolution order. The `containsKey` guard is required, not just a policy:
-  // `Map.add` throws on a duplicate key rather than overwriting (see
-  // `buildSigs`/`addSig`'s identical first-wins guard, and
+  // Module-level `val`/`const` bindings across the whole bundle (#5977 part 2),
+  // keyed BOTH by qualified name (`Pkg.name`) and bare name (`name`) — the same
+  // two-part scheme `buildSigs` uses for functions (and `loadLocal` looks up
+  // self-package-qualified FIRST, so a package's own binding always wins over a
+  // same-named one in another bundled package — #6225). Bare keys are a
+  // first-wins fallback for an imported/cross-package bare reference; `units[0]`
+  // (the user package) registers first so its bare names shadow bundled ones.
+  // The `containsKey` guard is required, not just policy: `Map.add` throws on a
+  // duplicate key rather than overwriting (see `addSig`, and
   // `Std.Collections.mapPutAll`'s remove-then-add workaround), so an unguarded
-  // `.add` would crash native compilation whenever two packages declare a
-  // module `val` with the same bare name (#6224).
+  // `.add` would crash native compilation on any bare-name collision (#6224).
   val moduleVals: Map[String, ModuleValDef] = newMap()
   var mvUi = 0
   while mvUi < units.count {
+    val upkg = units[mvUi].pkgName
     val mvs = units[mvUi].moduleVals
     var mvI = 0
     while mvI < mvs.count {
+      val qkey = upkg + "." + mvs[mvI].name
+      if not moduleVals.containsKey(qkey) {
+        moduleVals.add(qkey, mvs[mvI])
+      }
       if not moduleVals.containsKey(mvs[mvI].name) {
         moduleVals.add(mvs[mvI].name, mvs[mvI])
       }

@@ -109,6 +109,58 @@ func compileAndRun(source: in String): RunOutcome {
   }
 }
 
+// Compile + run a multi-package bundle (units[0] is the entry package) through
+// `codegenNativeBundle`, exercising the cross-package resolution path the
+// single-unit `codegenNativePackage` never reaches (#6225).
+func compileAndRunBundle(sources: in List[String]): RunOutcome {
+  val units: List[CodegenUnit] = newList()
+  var si = 0
+  while si < sources.count {
+    val pr = parse(sources[si])
+    if pr.diagnostics.count > 0 {
+      panic("bundle test source has parse diagnostics")
+    }
+    units.add(unitOfFile(dottedPkgName(pr.file), pr.file))
+    si = si + 1
+  }
+  val pkg = codegenNativeBundle(units, "")
+  val ll = lowerNativePackage(pkg)
+  val rt = findLyricRt()
+  if rt.length == 0 {
+    panic("lyric_rt.a not found; run `make -C lyric-rt` first")
+  }
+  val dir = Path.join(tempBase(), "lyric-llvm-selftest")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "b_" + uuidToString(newUuid()))
+  val llPath = stem + ".ll"
+  match File.writeText(llPath, ll) {
+    case Ok(_) -> {
+    }
+    case Err(_) -> panic("cannot write " + llPath)
+  }
+  val clangArgs: List[String] = newList()
+  clangArgs.add("-O0")
+  clangArgs.add(llPath)
+  clangArgs.add(rt)
+  clangArgs.add("-lm")
+  clangArgs.add("-lpthread")
+  clangArgs.add("-o")
+  clangArgs.add(stem)
+  match Process.runCapture("clang", clangArgs, 120000) {
+    case Ok(res) -> {
+      if res.exitCode != 0 {
+        panic("clang failed on " + llPath + ": " + res.stderr)
+      }
+    }
+    case Err(e) -> panic("clang could not be started: " + e)
+  }
+  val noArgs: List[String] = newList()
+  match Process.runCapture(stem, noArgs, 60000) {
+    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Err(e) -> panic("binary could not be started: " + e)
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Cases.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -136,6 +188,25 @@ test "module-level val with inferred type" {
 test "module-level val referenced multiple times" {
   val r = compileAndRun("package T\nval K: Int = 5\nfunc main(): Int {\n  K + K + K\n}\n")
   assertEqualInt(r.exitCode, 15, "module val inlined per use")
+}
+
+test "module-level val negated-literal initializer" {
+  val r = compileAndRun("package T\nval MIN: Int = -1\nfunc main(): Int {\n  MIN + 43\n}\n")
+  assertEqualInt(r.exitCode, 42, "negated-literal module val inlined: -1 + 43")
+}
+
+test "cross-package same-named module vals resolve per package (#6225)" {
+  // Two packages both declare `val TAG`; each package's own function must read
+  // its OWN value. A(TAG)=10, B(TAG)=20 -> main = B.TAG + A.fromA() = 20 + 10.
+  // The pre-fix bare-name-only map would inline units[0]'s TAG (20) into A's
+  // reference too, giving 40.
+  val depA = "package A\nval TAG: Int = 10\npub func fromA(): Int {\n  TAG\n}\n"
+  val mainB = "package B\nval TAG: Int = 20\nfunc main(): Int {\n  TAG + fromA()\n}\n"
+  val sources: List[String] = newList()
+  sources.add(mainB)
+  sources.add(depA)
+  val r = compileAndRunBundle(sources)
+  assertEqualInt(r.exitCode, 30, "each package reads its own TAG: 20 + 10")
 }
 
 test "integer arithmetic" {
