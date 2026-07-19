@@ -19244,17 +19244,26 @@ unresolved field name rather than guessing.
 `checkFileWithImports` alongside `checkAwaitInTry`/`checkSpawnConsumption`/
 `checkNativeFfiBoundary`, unconditionally (all verification levels).
 
-**Verification.** Six cases added to `modechecker_self_test.l`: a `var`
-field reassigned through a `var` local compiles; a non-`var` field
-reassigned through a `var` local is V0015; the same through a compound
-assignment (`+=`) is V0015; construction (`Rec(field = x)`) is not V0015;
-a non-`var` field write through an `inout` parameter is *not* flagged
-(pins the deliberate scope narrowing); a non-`var` field write through a
-`val` binding is not flagged (the pre-existing, separate gap of mutating
-any field through an immutable binding, still unenforced). 73/73 mode
-checker self-tests pass; 124/124 parser self-tests pass (unaffected);
-`make lyric` (full stdlib rebuild) and `./bin/lyric run --target dotnet
-lyric-stdlib/tests/core_tests.l` both green.
+**Verification.** Seventeen cases added to `modechecker_self_test.l`
+across the initial landing and the review-driven scope hardening. The
+core cases: a `var` field reassigned through a `var` local compiles; a
+non-`var` field reassigned through a `var` local is V0015; the same
+through a compound assignment (`+=`) is V0015; construction
+(`Rec(field = x)`) is not V0015; a non-`var` field write through an
+`inout` parameter is *not* flagged (pins the deliberate scope narrowing);
+a non-`var` field write through a `val` binding is not flagged (the
+pre-existing, separate gap of mutating any field through an immutable
+binding, still unenforced). The scope-shadowing cases pin both the
+false-positive and false-negative directions for every binder form that
+can re-introduce a `var`-tracked record local's name — sibling scopes and
+sequential blocks (#6157), a nested-block `var` shadow of a different
+record type (#6166), a same-block re-declaration via a non-constructor
+call (#6167), and `val`/`let`, match-arm pattern, lambda-parameter,
+for-loop, and `catch ... as` binders (#6185, #6194) — plus a restore
+guard confirming the outer violation still fires after an inner shadow
+scope ends. 84/84 mode checker self-tests pass; 124/124 parser self-tests
+pass (unaffected); `make lyric` (full stdlib rebuild) and `./bin/lyric
+run --target dotnet lyric-stdlib/tests/core_tests.l` both green.
 
 **Follow-up (part 2, tracked in issue #1815, not started here):** emitter
 enforcement — mark the backing field `initonly` (MSIL) / `final`
@@ -19506,3 +19515,43 @@ SHA-1 vectors pass on both targets. JVM gaps are tracked, not skipped:
 #6118–#6124, #6127, #6133–#6136 (several pre-existing compiler bugs this
 work surfaced and isolated, incl. the #5258 residual cross-DLL `pub val`
 gap and a JVM workspace-dep test-pipeline resolution failure).
+
+## D-progress-708 — JVM: field-assignment `VerifyError` from a receiver left live across a branching RHS (#5936, #6168)
+
+**Date:** 2026-07-18
+**Status:** SHIPPED
+
+On `--target jvm`, a record field assignment whose RHS reads the same
+field being assigned *and* contains an internal branch —
+`h.buf = h.buf.slice(n, h.buf.length)` (the `.slice()`/`.concat()` bounds
+check is a conditional), followed by more code such as a `match` — emitted
+an inconsistent StackMapTable frame → `VerifyError: Inconsistent stackmap
+frames at branch target` at class load.
+
+**Root cause.** `Jvm.Codegen.lowerAssignExpr` (`jvm/codegen/05_stmts.l`)
+pushed the receiver onto the operand stack and *then* lowered the RHS with
+the receiver still live. `assembleCodeWithFrames` (`bytecode.l`) computes
+every branch target's frame under the documented invariant that the
+operand stack is EMPTY at each branch target, so the receiver still on the
+stack across the RHS's internal branch desynced the computed frame from
+the real runtime stack shape.
+
+**Fix.** Spill the receiver — and, for a compound assignment (`+=`, `*=`,
+…), the current field value read from it — to temp local slots and reload
+them *after* the RHS lowers, so RHS evaluation always begins from an empty
+operand stack regardless of what internal branches it contains. Applied to
+all four arms: explicit-receiver `EMember` (`AssEq` + compound) and its
+implicit-`this` sibling `selfFieldType` (`AssEq` + compound). The
+implicit-`this` path is the #6168 half — the explicit-`EMember` #5936 fix
+originally missed it; both are used by every `impl` method and
+protected-type entry.
+
+**Coverage.** `inout_field_self_reassign_self_test.l` (explicit-receiver,
+5 cases incl. the `.slice()`/`.concat()` repro shapes, an `Err`-arm
+variant, an explicit-local control, and a `+=`-with-branching-RHS compound
+case) runs on **both** targets; `self_field_reassign_jvm_self_test.l`
+(implicit-`this` in an `impl` method, `AssEq` + compound) runs on JVM —
+JVM-only because MSIL silently drops bare self-field writes inside an
+`impl` method today (a separate, pre-existing bug filed as #6173). Both
+wired into CI. The `EIndex` (array/map/list) `AssEq` lowering has the same
+bug class and is tracked as a follow-up (#6169).
