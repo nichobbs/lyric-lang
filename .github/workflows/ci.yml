@@ -90,7 +90,7 @@ jobs:
             [lambda]="auth resilience web"
             [web]="auth resilience"
             [ws]="auth"
-            [testing]="cache auth resilience mail storage feature-flags mq session"
+            [testing]="cache mail storage feature-flags mq session"
           )
 
           # $1: "true" forces every entry to true (conservative fallback /
@@ -6610,14 +6610,8 @@ jobs:
           - id: ws
             deps: "auth"
           - id: testing
-            deps: "cache auth resilience mail storage feature-flags mq session"
+            deps: "cache mail storage feature-flags mq session"
     if: needs.build.outputs.has_code_changes == 'true' && fromJSON(needs.build.outputs.ecosystem_run_map)[matrix.id]
-    env:
-      # Own convenience var for the path to the AOT `lyric` binary — kept
-      # distinct from the real `LYRIC_BIN` env var (set conditionally below)
-      # that the compiled toolchain itself reads to route emitProject
-      # subprocess calls; reusing that name here would shadow it.
-      LYRIC_CLI_PATH: bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -6632,8 +6626,16 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
+        # LYRIC_CLI_PATH is computed here (step level, shell-expanding the
+        # real $BUILD_CONFIG env var) rather than in a job-level `env:` —
+        # the `env` context is not available when *defining* another
+        # `env:` key at the job level (actionlint's own -ignore list
+        # documents this exact pre-existing pitfall for bench.yml's
+        # LYRIC_BIN, #5638 item 5). Written to $GITHUB_ENV so every later
+        # step in this job sees it as a real environment variable.
         run: |
-          chmod +x "$LYRIC_CLI_PATH"
+          echo "LYRIC_CLI_PATH=bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" >> "$GITHUB_ENV"
+          chmod +x "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
 
       - name: Stage stdlib DLLs + local-dep resolver setup
         run: |
