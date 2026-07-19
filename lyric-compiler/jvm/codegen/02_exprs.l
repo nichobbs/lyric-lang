@@ -1102,6 +1102,21 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           match lookupSlot(ctx, rn) {
             case Some(_) -> ()
             case None -> {
+              // Config-block field read (`Settings.port`, docs/25-config-blocks.md,
+              // #3228): when the single-segment receiver matches a config block
+              // name declared in this package and "blockName/fieldName" is in
+              // `ctx.configFieldTypes`, emit `getstatic` directly on the config
+              // block's own class (`<pkgName>/<BlockName>`, synthesised by
+              // `Jvm.Lowering.lowerConfigBlock`) without evaluating the receiver.
+              // Mirrors the MSIL `configFieldTokens` short-circuit.
+              val cfKey = rn + "/" + memberName
+              match mapGet(ctx.configFieldTypes, cfKey) {
+                case Some(cfTy) -> {
+                  insns.add(LGetstatic(owner = ctx.pkgName + "/" + rn, name = memberName, t = cfTy))
+                  return cfTy
+                }
+                case None -> ()
+              }
               // Enum-case value read (`Direction.North`, docs/59 §4.4): when
               // the receiver names a declared enum carrying this variant, the
               // value is the variant's `public static final` singleton field
@@ -3216,6 +3231,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     ctx.autoFfi,
     JRef(className = "java/lang/Object"),
     ctx.moduleVals,
+    ctx.configFieldTypes,
     ctx.opaqueTypes,
     ctx.closureAcc,
     ctx.usesLyricCount
@@ -3578,6 +3594,7 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
     ctx.autoFfi,
     objTy,
     ctx.moduleVals,
+    ctx.configFieldTypes,
     ctx.opaqueTypes,
     ctx.closureAcc,
     ctx.usesLyricCount
