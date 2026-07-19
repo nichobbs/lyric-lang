@@ -3016,6 +3016,82 @@ pub func resolveOverload(
   }
 }
 
+// ── Per-assembly parse cache (#3421) ─────────────────────────────────────────
+// Parsing a reference assembly's PE container, metadata root, `#~` table
+// header, and table layout is invariant for the lifetime of a single
+// compilation: reference assemblies do not change mid-build, so caching the
+// parsed structures by assembly path is sound. Without this cache,
+// `decodeExternMethodSig` re-read the file from disk and re-ran all four
+// parse layers on *every* call, which is O(calls) disk reads + parses of
+// identical bytes for a build that resolves many extern methods from the
+// same reference assembly.
+//
+// The cache is threaded explicitly as two parallel lists (path → parsed
+// structure) supplied by the caller, mirroring `CodegenCtx`'s existing
+// per-compilation metadata caches (`metadataPathIndex`/`metadataVtypeSet`
+// in `codegen.l`) and `Jvm.AutoFfi.AutoFfiCtx`'s class cache
+// (`lyric-compiler/jvm/auto_ffi.l`) — rather than a module-level `val`: a
+// module-level `val` whose initializer constructs `List`/`Map` values in
+// this package hits a pre-existing self-hosted-MSIL per-package-build
+// TypeRef-seeding gap (#2494) that hard-panics during `Lyric.Cli`'s own
+// bootstrap build ("System.Collections.Generic.List`1 TypeRef not
+// seeded"), since this package is itself part of the compiler's bootstrap
+// closure. `Msil.CodegenCtx` (the only real caller, via `decodeExternMethodSig`
+// below) owns the lists' lifetime, scoped to one compilation.
+pub record MdrParsedAssembly {
+  img: PeImage
+  layout: TableLayout
+  th: TablesHeader
+}
+
+// Parse the PE container + metadata root + `#~` table header + table layout
+// at `asmPath`.  Stateless — no caching; see `loadParsedAssemblyCached` for
+// the cross-call-cached entry point.
+pub func loadParsedAssembly(asmPath: in String): Option[MdrParsedAssembly] {
+  match File.readBytes(asmPath) {
+    case Err(_) -> None
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> Some(value = MdrParsedAssembly(img = img, layout = layout, th = th)) } } } }
+  }
+}
+
+// Look up `path` in the caller-owned parallel-list cache. `cachePaths` and
+// `cacheParsed` are kept in lockstep — index `i` in one corresponds to
+// index `i` in the other.
+func findParsedAssembly(
+  cachePaths: in List[String], cacheParsed: in List[MdrParsedAssembly], path: in String
+): Option[MdrParsedAssembly] {
+  var i = 0
+  while i < cachePaths.count {
+    if cachePaths[i] == path {
+      return Some(value = cacheParsed[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Parse (or fetch from `cachePaths`/`cacheParsed`) the structures at
+// `asmPath`.  A cache hit skips the disk read and every parse layer (#3421).
+pub func loadParsedAssemblyCached(
+  cachePaths: in List[String],
+  cacheParsed: in List[MdrParsedAssembly],
+  asmPath: in String,
+): Option[MdrParsedAssembly] {
+  match findParsedAssembly(cachePaths, cacheParsed, asmPath) {
+    case Some(p) -> return Some(value = p)
+    case None -> {
+    }
+  }
+  match loadParsedAssembly(asmPath) {
+    case None -> None
+    case Some(p) -> {
+      cachePaths.add(asmPath)
+      cacheParsed.add(p)
+      Some(value = p)
+    }
+  }
+}
+
 // Decode the raw signature of a method on a (possibly generic) declaring type,
 // selecting by member name + arity rather than scoring against concrete
 // argument types.  Unlike `resolveOverloadIn`, the returned `paramTypes`
@@ -3118,13 +3194,24 @@ pub func decodeExternMethodSigIn(
   }
 }
 
-// Read-from-disk convenience wrapper over `decodeExternMethodSigIn`.
+// Read-from-disk convenience wrapper over `decodeExternMethodSigIn`.  Routes
+// the parse through `loadParsedAssemblyCached` (#3421): `cachePaths`/
+// `cacheParsed` is a caller-owned per-compilation cache (`CodegenCtx`'s
+// `metadataParsedPaths`/`metadataParsedAssemblies` in `codegen.l`) so
+// repeated resolutions against the same assembly skip the disk read and
+// every parse layer instead of re-reading and re-parsing `asmPath` on
+// every call.
 pub func decodeExternMethodSig(
-  asmPath: in String, typeFqn: in String, member: in String, declArity: in Int
+  cachePaths: in List[String],
+  cacheParsed: in List[MdrParsedAssembly],
+  asmPath: in String,
+  typeFqn: in String,
+  member: in String,
+  declArity: in Int,
 ): Option[DecodedMethodSig] {
-  match File.readBytes(asmPath) {
-    case Err(_) -> None
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> decodeExternMethodSigIn(img, layout, th, typeFqn, member, declArity) } } } }
+  match loadParsedAssemblyCached(cachePaths, cacheParsed, asmPath) {
+    case None -> None
+    case Some(p) -> decodeExternMethodSigIn(p.img, p.layout, p.th, typeFqn, member, declArity)
   }
 }
 
