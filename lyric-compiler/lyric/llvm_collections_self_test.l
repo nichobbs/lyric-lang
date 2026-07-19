@@ -151,6 +151,48 @@ test "list indexing and set" {
   assertEqualInt(r.exitCode, 44, "list-index: 1+40+3")
 }
 
+// ── list literals `[...]` (EList lowering, #5977) ─────────────────────────────
+test "list literal of Int (expected type from annotation)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val xs: List[Int] = [7, 35]\n" + "  var sum = 0\n" +
+    "  for x in xs {\n" +
+    "    sum = sum + x\n" +
+    "  }\n" +
+    "  sum + xs.count\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 44, "list-literal-int: 7+35+2")
+}
+
+test "list literal of String elements (ARC-checked)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val xs: List[String] = [\"a\", \"bb\", \"ccc\"]\n" +
+    "  var total = 0\n" +
+    "  for s in xs {\n" +
+    "    total = total + s.length\n" +
+    "  }\n" +
+    "  total\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 6, "list-literal-string: 1+2+3")
+}
+
+test "empty list literal with an annotation" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val xs: List[Int] = []\n" + "  xs.add(9)\n" +
+    "  xs.count + xs[0]\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 10, "empty-list-literal: count 1 + elem 9")
+}
+
+test "bare list literal (element type inferred from the first element)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  var sum = 0\n" + "  for x in [10, 20, 12] {\n" +
+    "    sum = sum + x\n" +
+    "  }\n" +
+    "  sum\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 42, "bare-list-literal: 10+20+12")
+}
+
 test "explicit type arguments construct without an annotation" {
   val src = "package T\n" + "func main(): Int {\n" + "  val xs = newList[Long]()\n" + "  xs.add(20)\n" +
     "  xs.add(22)\n" +
