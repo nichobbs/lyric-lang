@@ -79,7 +79,7 @@ record StreamHandler {
 }
 
 impl Web.StreamingHandler for StreamHandler {
-  func handleStream(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+  func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
     Web.writeHeader(w, "Content-Type", "text/event-stream")
     Web.writeHeader(w, "X-Stream-Test", "yes")
     match Web.writeChunk(w, "chunk0\n") {
@@ -98,7 +98,7 @@ record EmptyStreamHandler {
 }
 
 impl Web.StreamingHandler for EmptyStreamHandler {
-  func handleStream(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+  func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
     ()
   }
 }
@@ -107,7 +107,7 @@ record CreatedStreamHandler {
 }
 
 impl Web.StreamingHandler for CreatedStreamHandler {
-  func handleStream(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+  func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
     Web.writeStatus(w, 201)
     match Web.writeChunk(w, "created\n") {
       case Ok(_) -> ()
@@ -120,7 +120,7 @@ record NeverRunHandler {
 }
 
 impl Web.StreamingHandler for NeverRunHandler {
-  func handleStream(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+  func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
     panic("BlockingMiddleware should have rejected this request before the streaming handler ever ran (lyric-lang#5985)")
   }
 }

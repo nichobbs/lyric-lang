@@ -19655,3 +19655,108 @@ the missing JVM CI steps.
 tests pass; full `make lyric` clean; `make ilverify` 116 DLLs / 0
 IL-validity errors. (D-progress number provisional — may renumber on
 rebase if another in-flight PR lands D-progress-709 first.)
+
+## D-progress-710 — Issue-cleanup round 14: JVM try/finally early-exit (#5765), lyric-web per-request crash isolation (#5261), stdlib HTTP-host accept-path hardening (#6071/#6057/#6058), auth alg-pinning regression coverage (#5636), lyric-web cleanups
+
+Fourth issue-cleanup batch. Four independent fixes plus a coupled CI-step
+update, verified fail-before/pass-after individually and re-verified together
+on one build (full `make lyric` + `make ilverify` 116 DLLs / 0 IL-validity
+errors).
+
+**#5765 — JVM try/finally skips `finally` on early exit.** In
+`lyric-compiler/jvm/codegen/05_stmts.l`, `lowerTryCatch` (statement) and
+`lowerTryCatchFinallyExpr` (expression) emitted the `finally` only on normal
+fall-through and the catch-all rethrow path. An explicit `return` / `break` /
+`continue` inside the try body or a catch arm emitted its control transfer
+directly (`ireturn` / `goto`), bypassing `finally` — unlike MSIL, whose
+`leave` routes through all enclosing handlers. Fixed by pushing the `finally`
+block onto `ctx.deferStack` (with a `deferRanSlots` ran-once guard) for the
+duration of lowering the try body and every catch-arm body — the same
+guaranteed-cleanup machinery `defer { }` / `scope { }` already use
+(`SReturn` / `SBreak` / `SContinue` already `replayDefers` against that
+stack). The finally is popped before the catch-all/normal-path code (still
+lowered directly), and both sites check the ran-flag so a throw from the
+inlined finally on an early-exit path never runs it twice. Regression pin:
+`try_finally_early_exit_self_test.l` (new, 7 cases, both targets, CI-wired) —
+return / break / continue / catch-body return / nested try-finally /
+value-position early return / exception-path no-regression.
+
+**#5261 — lyric-web: a single bad request kills the whole server.**
+`serveStreaming()` (dotnet) wrapped `nextContext` + `buildRequest` + `dispatch`
++ `writeResponse` in one flat `try`/`catch Bug` that treated *any* per-request
+exception (handler panic, malformed request, broken connection) as fatal:
+stop the listener and `Env.exitCode(1)`. Fixed with nested `try`s — the outer
+wraps only `nextContext` (a genuine listener failure, still fatal); an inner
+one wraps request handling, so a caught `Bug` is logged and answered 500 for
+that request only while the accept loop keeps serving. `serve()` now delegates
+to `serveStreaming(router, emptyStreamingRoutes(), ...)` (behaviourally
+identical for an empty streaming table), deduping the two accept loops (#5990)
+in the same change. New in-process pin `serve_crash_isolation_tests.l` (a real
+`Web.serve` listener: `/crash` → 500, then `/health` → 200). The coupled
+`.github/workflows/ci.yml` `serve_failure_tests.l` smoke step (#6218) —
+previously `wait`-ing on the PID for a non-zero exit, which would now hang —
+is updated to assert the new contract (`/crash` → 500, failure line logged,
+`/health` still 200, then `kill`).
+
+**#6071 / #6057 / #6058 — stdlib HTTP-host accept-path hardening.** In
+`lyric-stdlib/std/_kernel/`: (#6057) `hostAccept` / `hostConnect` ran
+`clientStream(client)` (`GetStream()`) inside the outer `try` whose `catch`
+had no handle on `client` — a throw there leaked the accepted/connected
+socket; fixed with an inner `try`/`catch` that closes `client` before
+returning `Err`. (#6058) `hostUpgradeServerTls` constructed the `SslStream`
+before its `try`; moved into a `try`/`catch` that disposes/closes on failure.
+(#6071) `onAccepted` spawned a task per connection unbounded; added a
+`maxConcurrentConnections = 1000` counting semaphore acquired before spawning
+(accept-loop backpressure once saturated) and released after `hostClose`,
+threaded through the plain and TLS accept loops. Not unit-testable without a
+BCL fault-injection seam; verified by code-trace + the existing HTTP/TLS
+server suites staying green.
+
+**#5636 — auth alg-pinning: verified-secure + regression coverage.**
+Investigation found no live gap: `Auth.verifyJwt`'s `.NET` `jwtAlg` twin
+fails closed (any extraction failure → `MALFORMED_HEADER`), and the primary
+enforcement path (`Auth.Kernel.Net.verifyJwtImpl`) re-extracts and re-checks
+`alg` via pure string/JSON parsing, never touching the `.indexOf` UFCS codegen
+path that rides the separately-tracked compiler bug #5625. Added 3 RFC 8725
+§3.1 regression tests (`auth_security_tests.l`, both targets): alg=none
+forgery rejected, HS256/RS256 confusion rejected, matching-alg token accepted.
+No production change; #5625 remains the tracked underlying compiler fix.
+
+**lyric-web cleanups.** Removed unused `extern type JXnioOption[T]` (#6026),
+`import Std.Errors` (#6047), `import Std.Collections` (#6098); renamed
+`StreamingHandler.handleStream` → `streamHandle` to avoid a
+`name like "handle*"` aspect-match collision (#5993). #6027 (byte-identical
+PEM fixtures duplicated between two test files) left as-is — a shared test
+fixtures module isn't buildable without shipping test-only data in the
+production `Web.dll`/jar; harmless non-secret duplication.
+
+**Review-round hardening (#6221 / #6222).** Two REQUIRED findings on the
+hardening code itself, both fixed in the same PR. **#6221** — the #6071
+`connLimit` permit was released only as `processConnection` /
+`processH2Connection`'s last statement, so a throw from an unguarded
+`hostWrite` / `processH2Batch` on a broken socket (running under
+fire-and-forget `taskRun`) skipped the release and eventually wedged the
+accept loop on `semWait(connLimit)` — the hardening causing the exhaustion
+it prevents. Fixed by moving `hostClose(conn)` + `semRelease(connLimit)`
+into a top-of-function `defer { }` (the idiom `http_host.l` already uses),
+so cleanup runs on the throw path too. **#6222** — the #5261 per-request
+recovery `writeResponse(ctx, text(500, …))` in `serveStreaming`'s catch was
+itself unguarded; a throw there (a broken connection — exactly the case
+#5261 requires to stay request-local) escalated to the outer
+`nextContext`-only catch, stopping the listener and exiting — reintroducing
+"one bad request kills the whole server" for that sub-case. Fixed by
+wrapping the recovery write in its own `try`/`catch Bug` that logs and keeps
+serving. Also took two SUGGESTIONs: corrected the now-stale
+`serve_failure_tests.l` / `serve_crash_isolation_tests.l` header paragraphs
+(the CI step *is* updated in this PR, not a follow-up), and added an 8th
+`try_finally_early_exit_self_test.l` case pinning that a `finally` throwing
+during an early-return replay propagates to the enclosing `catch` (not
+swallowed, not double-run) on both targets.
+
+**Verification.** `try_finally_early_exit` 8/8 both targets (incl. the new
+finally-throws-during-replay case); `serve_crash_isolation` pass; lyric-web
+suite green; stdlib HTTP/TLS suites green (`http_server` 16/16 incl. the
+#6221 `defer`); auth security suite 39 + 3 new pass both targets; full
+`make lyric` clean; `make ilverify` 116 DLLs / 0 IL-validity errors.
+(D-progress number provisional — may renumber on rebase if another in-flight
+PR lands D-progress-710 first.)

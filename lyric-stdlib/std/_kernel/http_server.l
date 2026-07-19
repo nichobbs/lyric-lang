@@ -200,6 +200,18 @@ func semWait(s: in Semaphore): Unit = ()
 @externTarget("System.Threading.SemaphoreSlim.Release")
 func semRelease(s: in Semaphore): Int = ()
 
+// Bounds the number of connections served concurrently (#6071 hardening): the
+// accept loop spawns one `Task.Run` thread per accepted connection with no
+// upper bound, so a burst of many simultaneously-open connections (malicious
+// or otherwise) could exhaust the .NET threadpool/OS thread or handle limits.
+// A counting semaphore gates `taskRun` in `onAccepted`: the accept loop
+// blocks (backpressure — new connections queue in the OS listen backlog
+// rather than spawning unbounded background tasks) once this many
+// connections are already in flight, and each connection task releases its
+// permit when it finishes. 1000 comfortably covers ordinary production load
+// while still bounding worst-case thread/handle usage.
+val maxConcurrentConnections: Int = 1000
+
 // =====================================================================
 // Public types.
 // =====================================================================
@@ -591,7 +603,17 @@ func processConnection(
   queue: in ConcurrentQueue[HttpContext],
   available: in Semaphore,
   limits: in EngineLimits,
+  connLimit: in Semaphore,
 ): Unit {
+  // Guarantee the socket is closed and this connection's concurrency-limit
+  // permit (#6071) is released even if request handling throws — a broken
+  // socket can throw from readOneRequest/writeErrorResponse. Because this
+  // runs via fire-and-forget `taskRun`, a leaked permit is never recovered
+  // and would eventually wedge the accept loop on `semWait(connLimit)` (#6221).
+  defer {
+    hostClose(conn)
+    val _ = semRelease(connLimit)
+  }
   var engineConn = newConnection(limits)
   var open = true
   while open {
@@ -630,8 +652,10 @@ func processConnection(
         }
       }
     }
-  }
-  hostClose(conn)
+  };
+  // `hostClose(conn)` + `semRelease(connLimit)` run via the `defer` above so
+  // they still fire if the loop body throws (#6221).
+  ()
 }
 
 // Handle one accept result: on success spawn a per-connection task and keep
@@ -644,16 +668,24 @@ func onAccepted(
   queue: in ConcurrentQueue[HttpContext],
   available: in Semaphore,
   limits: in EngineLimits,
+  connLimit: in Semaphore,
 ): Bool {
   match accepted {
     case Ok(conn) -> {
+      // Bound the number of connections served concurrently (#6071): acquire
+      // a permit before spawning the connection task, so the accept loop
+      // itself blocks (backpressure) once `maxConcurrentConnections`
+      // connections are already in flight, rather than spawning an unbounded
+      // number of background tasks. The connection task releases the permit
+      // when it finishes (`processConnection`/`processH2Connection`).
+      semWait(connLimit)
       // Select the protocol on the negotiated ALPN (docs/61 §6.4): a TLS peer
       // that negotiated `h2` drives the HTTP/2 FSM; everything else (plain
       // connection, `http/1.1`, or no ALPN) speaks HTTP/1.1.
       if hostAlpn(conn) == "h2" {
-        val _ = taskRun({ -> processH2Connection(conn, queue, available, limits) })
+        val _ = taskRun({ -> processH2Connection(conn, queue, available, limits, connLimit) })
       } else {
-        val _ = taskRun({ -> processConnection(conn, queue, available, limits) })
+        val _ = taskRun({ -> processConnection(conn, queue, available, limits, connLimit) })
       }
       true
     }
@@ -673,11 +705,12 @@ func plainAcceptLoop(
   queue: in ConcurrentQueue[HttpContext],
   available: in Semaphore,
   limits: in EngineLimits,
+  connLimit: in Semaphore,
 ): Unit {
   var running = true
   while running {
     val accepted = hostAccept(transport)
-    running = onAccepted(accepted, queue, available, limits)
+    running = onAccepted(accepted, queue, available, limits, connLimit)
   }
 }
 
@@ -688,11 +721,12 @@ func tlsAcceptLoop(
   available: in Semaphore,
   cfg: in TlsServerConfig,
   limits: in EngineLimits,
+  connLimit: in Semaphore,
 ): Unit {
   var running = true
   while running {
     val accepted = hostAcceptTls(transport, cfg)
-    running = onAccepted(accepted, queue, available, limits)
+    running = onAccepted(accepted, queue, available, limits, connLimit)
   }
 }
 
@@ -1139,7 +1173,16 @@ func processH2Connection(
   queue: in ConcurrentQueue[HttpContext],
   available: in Semaphore,
   limits: in EngineLimits,
+  connLimit: in Semaphore,
 ): Unit {
+  // Guarantee socket close + concurrency-permit release even if the initial
+  // `hostWrite` or `processH2Batch` throws on a broken socket — otherwise a
+  // fire-and-forget `taskRun` exception leaks the #6071 permit and eventually
+  // wedges the accept loop on `semWait(connLimit)` (#6221).
+  defer {
+    hostClose(conn)
+    val _ = semRelease(connLimit)
+  }
   val h2 = newServerConnection(h2DefaultServerSettings())
   val _ = hostWrite(conn, serverInitialFrame(h2))
   val state = H2ConnState(
@@ -1165,8 +1208,10 @@ func processH2Connection(
         }
       }
     }
-  }
-  hostClose(conn)
+  };
+  // `hostClose(conn)` + `semRelease(connLimit)` run via the `defer` above so
+  // they still fire if the initial write or `processH2Batch` throws (#6221).
+  ()
 }
 
 // =====================================================================
@@ -1197,7 +1242,8 @@ pub func startListenerWithLimits(prefix: in String, limits: in EngineLimits): Ht
     case Ok(transport) -> {
       val queue: ConcurrentQueue[HttpContext] = newConcurrentQueue()
       val available = newSemaphore(0)
-      val task = taskRun({ -> plainAcceptLoop(transport, queue, available, limits) })
+      val connLimit = newSemaphore(maxConcurrentConnections)
+      val task = taskRun({ -> plainAcceptLoop(transport, queue, available, limits, connLimit) })
       HttpListener(transport = transport, queue = queue, available = available, acceptTask = task)
     }
     case Err(e) -> panic("Std.HttpServer.startListener: bind failed: " + TcpError.message(e))
@@ -1237,7 +1283,8 @@ pub func startListenerTlsWithLimits(
     case Ok(transport) -> {
       val queue: ConcurrentQueue[HttpContext] = newConcurrentQueue()
       val available = newSemaphore(0)
-      val task = taskRun({ -> tlsAcceptLoop(transport, queue, available, tls, limits) })
+      val connLimit = newSemaphore(maxConcurrentConnections)
+      val task = taskRun({ -> tlsAcceptLoop(transport, queue, available, tls, limits, connLimit) })
       Ok(value = HttpListener(transport = transport, queue = queue, available = available, acceptTask = task))
     }
     case Err(e) -> Err(error = InvalidConfig(message = "bind failed: " + TcpError.message(e)))

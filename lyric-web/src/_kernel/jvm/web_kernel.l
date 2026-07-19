@@ -57,8 +57,6 @@ extern type JSSLContext = "javax.net.ssl.SSLContext"
 
 extern type JUndertowOptions = "io.undertow.UndertowOptions"
 
-extern type JXnioOption[T] = "org.xnio.Option"
-
 extern type JBoolean = "java.lang.Boolean"
 
 extern type JHttpServerExchange = "io.undertow.server.HttpServerExchange"

@@ -1005,9 +1005,14 @@ pub func dispatch(router: in Router, req: in Request): Response {
 // `Web.Kernel.Runtime`'s Undertow server (a different I/O model), which
 // doesn't yet expose a streaming path — a tracked gap, not a silent skip
 // (lyric-lang#5979's follow-up).
+// `streamHandle`, not `handleStream`: the "handle" prefix collides with the
+// `matches: name like "handle*"` convention `Web.Aspects`' own doc comment
+// recommends for aspect-instantiation (RequiresAuth/RateLimit/…), which
+// would otherwise sweep every `StreamingHandler` implementation into
+// row-constrained B'-mode aspects it has no matching fields for (#5993).
 @cfg(feature = "dotnet")
 pub interface StreamingHandler {
-  func handleStream(req: in Request, w: in ResponseWriter): Unit
+  func streamHandle(req: in Request, w: in ResponseWriter): Unit
 }
 
 /// A handle for writing a chunked response body incrementally. Obtained by
@@ -1183,7 +1188,7 @@ func dispatchStreaming(routes: in slice[StreamRoute], req: in Request, ctx: in H
           )
           val w = newResponseWriter(ctx)
           val h = route.handler
-          h.handleStream(bound, w)
+          h.streamHandle(bound, w)
           finishStream(w)
           return true
         }
@@ -1360,6 +1365,13 @@ func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
 /// accepts and reads connections concurrently; this dispatch loop still
 /// handles one request at a time (its full move onto the concurrent server is
 /// tracked separately — see README "Known gaps").
+///
+/// Delegates to `serveStreaming` with an empty streaming route table: an
+/// empty `StreamingRoutes` never matches, so `dispatchStreaming` always
+/// falls through to the same `routeDispatch` path `RouteDispatchHandler`
+/// used to run directly, making the two behaviorally identical (#5990) —
+/// this keeps the accept-loop/crash-isolation skeleton (#5261) in one
+/// place instead of duplicated across both entry points.
 @stable(since = "0.2")
 @cfg(feature = "dotnet")
 pub func serve(router: in Router, host: in String, port: in Int): Unit
@@ -1367,26 +1379,7 @@ pub func serve(router: in Router, host: in String, port: in Int): Unit
   requires: port >= 1
   requires: port <= 65535
 {
-  val bindHost = if host == "0.0.0.0" or host == "+" or host == "*" { "+" } else { host }
-  val prefixStr = "http://" + bindHost + ":" + port.toString() + "/"
-  val listener = startListener(prefixStr)
-  Console.println("[lyric-web] Listening on " + prefixStr)
-  while true {
-    try {
-      val ctx = nextContext(listener)
-      val req = buildRequest(ctx)
-      val resp = dispatch(router, req)
-      writeResponse(ctx, resp)
-    } catch Bug as e {
-      // A caught Bug here means the request loop can no longer make progress.
-      // Surface the failure loudly instead of exiting 0 as if the server had
-      // shut down cleanly — a silent exit 0 looks like success to process
-      // supervisors and masks the underlying defect from whoever is debugging it.
-      Console.error("[lyric-web] request handling failed on " + prefixStr + ": " + e.message)
-      stopListener(listener)
-      Env.exitCode(1)
-    }
-  }
+  serveStreaming(router, emptyStreamingRoutes(), host, port)
 }
 
 /// jvm: delegates entirely to Web.Kernel.Runtime's Undertow-backed server —
@@ -1612,6 +1605,15 @@ pub func serveTls(
 /// (chunked) responses" section above for why this is a separate table
 /// rather than a change to `Router`/`dispatch`/`serve`.
 ///
+/// A failure handling one request (a handler panic, a malformed request,
+/// a broken connection mid-response) is isolated to that request: it is
+/// logged and answered with a 500, and the accept loop keeps serving —
+/// a single bad request must not take the whole server down (#5261).
+/// Only `nextContext` itself failing — meaning the listener can no
+/// longer accept new connections at all — is treated as fatal: that is
+/// logged, the listener is stopped, and the process exits non-zero
+/// rather than looping forever unable to make progress.
+///
 /// dotnet-only (see `StreamingHandler`'s doc comment).
 @stable(since = "0.3")
 @cfg(feature = "dotnet")
@@ -1623,23 +1625,43 @@ pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: 
   val bindHost = if host == "0.0.0.0" or host == "+" or host == "*" { "+" } else { host }
   val prefixStr = "http://" + bindHost + ":" + port.toString() + "/"
   val listener = startListener(prefixStr)
-  Console.println("[lyric-web] Listening on " + prefixStr + " (streaming enabled)")
+  val suffix = if streaming.routes.length > 0 { " (streaming enabled)" } else { "" }
+  Console.println("[lyric-web] Listening on " + prefixStr + suffix)
   while true {
     try {
       val ctx = nextContext(listener)
-      val req = buildRequest(ctx)
-      val inner: Handler = StreamingAwareDispatchHandler(
-        routes = router.routes,
-        streamingRoutes = streaming.routes,
-        ctx = ctx
-      )
-      val chain: Handler = MiddlewareChain(mws = router.middlewares, idx = 0, inner = inner)
-      val resp = chain.handle(req)
-      if not isStreamedResponse(resp) {
-        writeResponse(ctx, resp)
+      try {
+        val req = buildRequest(ctx)
+        val inner: Handler = StreamingAwareDispatchHandler(
+          routes = router.routes,
+          streamingRoutes = streaming.routes,
+          ctx = ctx
+        )
+        val chain: Handler = MiddlewareChain(mws = router.middlewares, idx = 0, inner = inner)
+        val resp = chain.handle(req)
+        if not isStreamedResponse(resp) {
+          writeResponse(ctx, resp)
+        }
+      } catch Bug as e {
+        Console.error("[lyric-web] request handling failed on " + prefixStr + ": " + e.message)
+        // The recovery write can itself throw when the failure correlates with
+        // a broken connection (one of the cases #5261 requires to stay
+        // request-local). Keep it inside this per-request scope: escalating to
+        // the outer nextContext-only catch would stop the listener and exit,
+        // reintroducing "one bad request kills the whole server" (#6222).
+        try {
+          writeResponse(ctx, text(500, "Internal Server Error"))
+        } catch Bug as e2 {
+          Console.error("[lyric-web] failed to write 500 response on " + prefixStr + ": " + e2.message)
+        }
       }
     } catch Bug as e {
-      Console.error("[lyric-web] request handling failed on " + prefixStr + ": " + e.message)
+      // A caught Bug here means the listener itself can no longer make
+      // progress (nextContext failed). Surface the failure loudly instead
+      // of exiting 0 as if the server had shut down cleanly — a silent
+      // exit 0 looks like success to process supervisors and masks the
+      // underlying defect from whoever is debugging it.
+      Console.error("[lyric-web] listener failed on " + prefixStr + ": " + e.message)
       stopListener(listener)
       Env.exitCode(1)
     }
