@@ -92,6 +92,8 @@ jobs:
             [storage]=""
             [proto]=""
             [otel]="proto"
+            [jsonrpc]=""
+            [mcp]="jsonrpc"
             [logging]=""
             [mq]="cache"
             [grpc]="auth resilience"
@@ -6561,7 +6563,7 @@ jobs:
             --lyric "$lyric_bin"
 
   # Ecosystem-library security/regression tests. Split from one monolithic
-  # ~25-command job (#<this PR>) into a per-library matrix so libraries run
+  # ~25-command job (#6165) into a per-library matrix so libraries run
   # in parallel and a PR touching only one library's directory skips every
   # unrelated entry. Gating comes from `needs.build.outputs.ecosystem_run_map`
   # (computed in `build`'s "Detect code changes" step from the ECO_DEPS
@@ -6603,6 +6605,10 @@ jobs:
             deps: ""
           - id: otel
             deps: "proto"
+          - id: jsonrpc
+            deps: ""
+          - id: mcp
+            deps: "jsonrpc"
           - id: logging
             deps: ""
           - id: mq
@@ -6799,6 +6805,22 @@ jobs:
         if: matrix.id == 'otel'
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-otel/lyric.toml
+
+      # lyric-jsonrpc is tier-0 (pure Lyric, no deps). dotnet-target runs —
+      # the JVM gaps are tracked (#6123, #6124, #6136). Guards the
+      # published Lyric.JsonRpc package (#6156).
+      - name: Run tests (jsonrpc)
+        if: matrix.id == 'jsonrpc'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-jsonrpc/lyric.toml
+
+      # lyric-mcp restores Lyric.JsonRpc as a workspace member (built as a
+      # path dependency above). Guards the published Lyric.Mcp package
+      # (#6156).
+      - name: Run tests (mcp)
+        if: matrix.id == 'mcp'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-mcp/lyric.toml
 
       - name: Run tests (logging)
         if: matrix.id == 'logging'
