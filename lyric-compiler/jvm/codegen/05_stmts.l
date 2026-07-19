@@ -220,22 +220,47 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           match selfFieldType(ctx, name) {
             case Some(fty) -> {
               val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+              // The RHS is lowered against an EMPTY operand stack in both arms
+              // — `this` (slot 0, stable) is pushed only AFTER the RHS, and for
+              // a compound op the current field value is read into a temp
+              // first.  This is the implicit-self (`impl` method / protected-
+              // type entry) sibling of the `EMember` path's #5936 fix: a bare
+              // self-field reassign whose RHS reads the same field inline
+              // (`buf = buf.slice(0, n)` inside an `impl` method) lowers to an
+              // internal conditional branch (the inlined bounds check), and
+              // evaluating it with `this` still live broke the "operand stack
+              // empty at every branch target" StackMapTable invariant →
+              // `VerifyError: Inconsistent stackmap frames` (#6168).
               match op {
                 case AssEq -> {
-                  insns.add(LAload(slot = 0))
                   val vTy = lowerExpr(ctx, insns, value)
+                  val vSlot = allocSlot(ctx, "__sfassign_v_" + freshLabel(ctx), vTy)
+                  emitStore(insns, vSlot, vTy)
+                  insns.add(LAload(slot = 0))
+                  emitLoad(insns, vSlot, vTy)
                   // Receiver-aware coercion: a `[B` flowing into a
                   // `slice[Byte]`-typed receiver field needs the boxing loop,
-                  // which requires spilling `this` around it (#5609 item 2).
+                  // which requires an empty stack under the reloaded value —
+                  // guaranteed now that both operands come from slots
+                  // (#5609 item 2).
                   coerceValueToUnderReceiver(ctx, insns, JRef(className = selfCls), vTy, fty)
                   insns.add(LPutfield(owner = selfCls, name = name, t = fty))
                 }
                 case _ -> {
                   insns.add(LAload(slot = 0))
-                  insns.add(LDup)
                   insns.add(LGetfield(owner = selfCls, name = name, t = fty))
+                  val curSlot = allocSlot(ctx, "__sfassign_cur_" + freshLabel(ctx), fty)
+                  emitStore(insns, curSlot, fty)
                   val vTy = lowerExpr(ctx, insns, value)
+                  val vSlot = allocSlot(ctx, "__sfassign_v_" + freshLabel(ctx), vTy)
+                  emitStore(insns, vSlot, vTy)
+                  emitLoad(insns, curSlot, fty)
+                  emitLoad(insns, vSlot, vTy)
                   emitCompoundCombineJvm(ctx, insns, op, fty, vTy)
+                  val combSlot = allocSlot(ctx, "__sfassign_comb_" + freshLabel(ctx), fty)
+                  emitStore(insns, combSlot, fty)
+                  insns.add(LAload(slot = 0))
+                  emitLoad(insns, combSlot, fty)
                   insns.add(LPutfield(owner = selfCls, name = name, t = fty))
                 }
               }
