@@ -9,6 +9,17 @@ on:
 permissions:
   contents: read
 
+# A follow-up push to the same PR (or a new push to main) supersedes
+# whatever CI run is already in flight for it — the old run's ~20 jobs
+# would just be queueing for runners while their result is about to be
+# discarded anyway. Cancelling frees those runner slots immediately for
+# whichever run actually needs to report a status. Group by PR number
+# when this is a pull_request event, falling back to the ref for push
+# events (mirrors the pattern already used by book.yml/claude-rebase.yml).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 # Single build configuration shared across every dotnet build / test /
 # path-discovery step.  Changing it here flips the configuration for
 # every dependent path (bin/$BUILD_CONFIG/net10.0/...) at once — keeps
