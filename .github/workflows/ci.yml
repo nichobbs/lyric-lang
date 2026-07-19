@@ -634,10 +634,10 @@ jobs:
           echo "dotnet(--define): $outtc"
           echo "$outtc" | grep -qx "target=custom" || { echo "::error::explicit --define target did not override the well-known target (#5852 M1f)"; exit 1; }
           # (M1h, #5852) well-known `build_profile` define: `debug` on a normal
-          # build (pipeParseAndErase fallback), overridable by --define, and
-          # `release` on a real --release/AOT build (the release path injects
-          # build_profile=release into the staging compile). The --release case
-          # is the load-bearing guard for the release-path injection.
+          # build (pipeParseAndErase fallback), overridable by --define. The
+          # `release`-on-a-real-`--release`-build case needs clang/ILCompiler, so
+          # it is asserted in the dedicated `aot-smoke` job (which installs those
+          # prerequisites), not here in the `build` job.
           cat > "$proj/src/prof.l" <<'LYR'
           package profprobe
 
@@ -658,12 +658,7 @@ jobs:
           outpo="$(dotnet "$proj/prof2.dll")"
           echo "dotnet(--define): $outpo"
           echo "$outpo" | grep -qx "profile=release" || { echo "::error::--define build_profile did not override the debug fallback (#5852 M1h)"; exit 1; }
-          echo "=== dotnet --release (expect profile=release from the release path) ==="
-          "$lyric_bin" build "$proj/src/prof.l" --release -o "$proj/prof-native"
-          outpr="$("$proj/prof-native")"
-          echo "release: $outpr"
-          echo "$outpr" | grep -qx "profile=release" || { echo "::error::--release build did not inject build_profile=release into the staging compile (#5852 M1h)"; exit 1; }
-          echo "BuildInfo project version + --define OK (dotnet + jvm: no-define 4.5.6; --define override 9.9.9/7.7.7 + @build_const; well-known target dotnet/jvm + override; build_profile debug/override/--release)" >> "$GITHUB_STEP_SUMMARY"
+          echo "BuildInfo project version + --define OK (dotnet + jvm: no-define 4.5.6; --define override 9.9.9/7.7.7 + @build_const; well-known target dotnet/jvm + override; build_profile debug/override)" >> "$GITHUB_STEP_SUMMARY"
 
       # Prove proof-only examples.
       - name: Prove proof-only examples (with z3)
@@ -4007,11 +4002,18 @@ jobs:
           fi
           dir="$(mktemp -d)"
           src="$dir/hello.l"
+          # Also asserts the well-known `build_profile` define (docs/60 M1h,
+          # #5852): a real --release/AOT build injects build_profile=release into
+          # the staging compile, so BuildInfo.profile reports "release" in the
+          # native binary. This is the load-bearing guard for the release-path
+          # injection, and this job (unlike `build`) has clang/ILCompiler.
           cat > "$src" <<'LYRIC'
           package Hello
           import Std.Core
+          import Std.BuildInfo
           func main(): Int {
             println("hello-aot")
+            println("profile=" + buildInfo().profile)
             0
           }
           LYRIC
@@ -4023,11 +4025,9 @@ jobs:
           fi
           out="$("$native_bin" 2>&1)"
           echo "native AOT output: $out"
-          if [ "$out" != "hello-aot" ]; then
-            echo "::error::native AOT smoke test produced unexpected output: '$out'"
-            exit 1
-          fi
-          echo "OK: native AOT binary produced and executed correctly." >> "$GITHUB_STEP_SUMMARY"
+          echo "$out" | grep -qx "hello-aot" || { echo "::error::native AOT smoke test did not print hello-aot; got: '$out'"; exit 1; }
+          echo "$out" | grep -qx "profile=release" || { echo "::error::--release native build did not inject build_profile=release (#5852 M1h); got: '$out'"; exit 1; }
+          echo "OK: native AOT binary produced and executed correctly (hello-aot + build_profile=release)." >> "$GITHUB_STEP_SUMMARY"
 
       # Regression test for #5782: `buildReleaseProject` (the manifest/
       # multi-package `lyric build --release` path, as opposed to the
