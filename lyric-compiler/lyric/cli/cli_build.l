@@ -12,6 +12,7 @@ import Std.Errors
 import Std.Parse
 import Std.Hash as Hash
 import Lyric.Manifest as Mf
+import Lyric.BuildDefines as BD
 import Lyric.Lexer
 import Lyric.Workspace as Ws
 import Lyric.Discovery as Disc
@@ -41,6 +42,32 @@ func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
       }
     }
   }
+}
+
+// True iff the manifest at `mfPath` declares a non-empty `[build.define]` table
+// (docs/60 §3.1). Used by `cmdBuild`'s gate to reject up front — rather than
+// silently drop — manifest defines on a build shape that cannot consume them
+// (`--release`/`kind = "aot"` route into `buildReleaseProject`, which threads
+// no defines; `--target native` can thread them but cannot yet consume one,
+// #5977). A read/parse failure degrades to `false`: the real build below
+// surfaces the manifest error with full diagnostics.
+func manifestDeclaresBuildDefines(mfPath: in String): Bool {
+  match File.readText(mfPath) {
+    case Err(_) -> false
+    case Ok(mfText) -> {
+      match Mf.parseManifest(mfText, mfPath) {
+        case Err(_) -> false
+        case Ok(mf) -> Mf.getManifestBuildDefines(mf).count > 0
+      }
+    }
+  }
+}
+
+// The rejection message for a manifest `[build.define]` table on a build shape
+// that cannot consume it (docs/60 §3.1). `reason` names the specific shape.
+func manifestDefinesUnsupportedMsg(mfPath: in String, reason: in String): String {
+  "build: [build.define] in " + mfPath + " is not supported with " + reason +
+    "; manifest defines apply only on --target dotnet/jvm project builds (#5852)"
 }
 
 // Resolve the `[native]` config for a `--target native` build (N6.4):
@@ -948,6 +975,22 @@ func cmdBuild(argv: in slice[String]): Int {
         return 1
       }
     }
+    // docs/60 §3.1: manifest `[build.define]` is threaded through `buildProject`
+    // (--target dotnet/jvm, non-release, non-aot). Reject up front (no silent
+    // drop, #6139) on shapes that cannot consume it: --target native (#5977),
+    // --release, and [build] kind = "aot" (both route into `buildReleaseProject`,
+    // which threads no defines). --watch is fine — `buildProject` reapplies the
+    // manifest defines on every rebuild.
+    val mfHasDefines = manifestDeclaresBuildDefines(mfPath)
+    val targetIsNative = match target { case Native -> true; case _ -> false }
+    if mfHasDefines and targetIsNative {
+      printErr(manifestDefinesUnsupportedMsg(mfPath, "--target native (native codegen gaps, #5977)"))
+      return 1
+    }
+    if mfHasDefines and release {
+      printErr(manifestDefinesUnsupportedMsg(mfPath, "--release (the AOT-packaging path threads no defines)"))
+      return 1
+    }
     if release {
       return buildReleaseProject(
         mfPath,
@@ -969,6 +1012,10 @@ func cmdBuild(argv: in slice[String]): Int {
       case Dotnet -> readBuildKindFromManifest(Some(value = mfPath)) == "aot"
       case Jvm -> false
       case Native -> false
+    }
+    if mfHasDefines and autoAot {
+      printErr(manifestDefinesUnsupportedMsg(mfPath, "[build] kind = \"aot\" (the AOT-packaging path threads no defines)"))
+      return 1
     }
     // `[build] kind = "aot"` routes into `buildReleaseProject` below just like an
     // explicit `--release`, and that AOT-packaging path does not thread `--define`
@@ -1693,7 +1740,10 @@ pub func buildProject(
     },
     depTemplateSrcs = depTemplatePkgsList,
     nugetAssemblyPaths = nugetThirdPartyPaths,
-    defines = cliDefines
+    // Layer manifest `[build.define]` beneath CLI `--define`s (docs/60 §3.1):
+    // CLI wins over a manifest define of the same key, both over the well-known
+    // `version` fallback the bridges prepend (decodeDefines is last-wins).
+    defines = BD.withManifestDefines(Mf.getManifestBuildDefines(manifest), cliDefines)
   )
 
   // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM

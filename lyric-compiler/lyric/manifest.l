@@ -211,8 +211,15 @@ pub record RegistryConfig {
 ///   - `"aot"`    — native ahead-of-time compiled binary, no runtime
 ///                  dependency (planned; not yet emitted).
 /// For the Jvm target, `kind` is currently a no-op.
+///
+/// `defines` carries the `[build.define]` sub-table (docs/60 §3.1) as a
+/// `List[String]` of `"KEY=VALUE"` entries — the same cross-package-safe
+/// representation the CLI `--define` list uses. Empty when the manifest has no
+/// `[build.define]` table. Values are TOML strings only (§4); a non-string
+/// value is a manifest error.
 pub record BuildSection {
   kind: String
+  defines: List[String]
 }
 
 /// Parsed form of a virtual workspace root (`lyric.toml` with `[workspace]`
@@ -832,28 +839,60 @@ func assembleProject(entries: in List[Entry]): Option[ProjectSection] {
   )
 }
 
-func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], ManifestError] {
-  if not hasSection(entries, "build") {
-    return Ok(value = None)
-  }
-  match findString(entries, "build", "kind") {
-    case Some(kind) -> {
-      // Validate: kind must be one of "lib", "exe", "bundle", or "aot".
-      if kind == "lib" or kind == "exe" or kind == "bundle" or kind == "aot" {
-        Ok(value = Some(value = BuildSection(kind = kind)))
-      } else {
-        Err(
+// Collect the `[build.define]` sub-table (docs/60 §3.1) into `"KEY=VALUE"`
+// strings — the cross-package-safe representation the define pipeline consumes.
+// Values must be TOML strings (§4: String-only defines); a non-string value is
+// an InvalidField error rather than a silent skip.
+func collectBuildDefines(entries: in List[Entry]): Result[List[String], ManifestError] {
+  val defs: List[String] = newList()
+  var i = 0
+  while i < entries.count {
+    val e = entries[i]
+    if e.section == "build.define" {
+      match e.value {
+        case VStr(s) -> defs.add(e.key + "=" + s)
+        case _ -> return Err(
           error = InvalidField(
-            section = "build",
-            field = "kind",
-            message = "must be \"lib\", \"exe\", \"bundle\", or \"aot\", got \"" + kind + "\""
+            section = "build.define",
+            field = e.key,
+            message = "build define values must be strings (docs/60 §4)"
           )
         )
       }
     }
-    case None -> {
-      // Default to "lib" when [build] exists but kind is missing
-      Ok(value = Some(value = BuildSection(kind = "lib")))
+    i += 1
+  }
+  Ok(value = defs)
+}
+
+func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], ManifestError] {
+  val hasBuild = hasSection(entries, "build")
+  val hasDefine = hasSection(entries, "build.define")
+  if (not hasBuild) and (not hasDefine) {
+    return Ok(value = None)
+  }
+  match collectBuildDefines(entries) {
+    case Err(e) -> Err(error = e)
+    case Ok(defines) -> {
+      // `kind` defaults to "lib" when the table is missing or `[build]` is
+      // absent entirely (a `[build.define]`-only manifest).
+      match findString(entries, "build", "kind") {
+        case Some(kind) -> {
+          // Validate: kind must be one of "lib", "exe", "bundle", or "aot".
+          if kind == "lib" or kind == "exe" or kind == "bundle" or kind == "aot" {
+            Ok(value = Some(value = BuildSection(kind = kind, defines = defines)))
+          } else {
+            Err(
+              error = InvalidField(
+                section = "build",
+                field = "kind",
+                message = "must be \"lib\", \"exe\", \"bundle\", or \"aot\", got \"" + kind + "\""
+              )
+            )
+          }
+        }
+        case None -> Ok(value = Some(value = BuildSection(kind = "lib", defines = defines)))
+      }
     }
   }
 }
@@ -1324,6 +1363,17 @@ pub func getManifestFeaturesOrEmpty(m: in Manifest): FeaturesSection {
   match m.features {
     case Some(f) -> return f
     case None -> return FeaturesSection(declared = newList(), defaults = newList())
+  }
+}
+
+/// Return the `[build.define]` entries (as `"KEY=VALUE"` strings, docs/60 §3.1)
+/// from the manifest, or an empty list when no `[build]`/`[build.define]` table
+/// is present. The build pipeline layers these beneath CLI `--define`s (CLI
+/// wins) and above the auto-injected well-known `version` fallback.
+pub func getManifestBuildDefines(m: in Manifest): List[String] {
+  match m.build {
+    case Some(b) -> return b.defines
+    case None -> return newList()
   }
 }
 

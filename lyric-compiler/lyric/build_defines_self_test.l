@@ -243,6 +243,56 @@ test "withWellKnownTarget preserves unrelated defines" {
   }
 }
 
+// ── withManifestDefines: manifest [build.define] layering (docs/60 §3.1) ─────
+test "withManifestDefines layers manifest defines beneath cli defines" {
+  val mf: List[String] = newList()
+  mf.add("api_base=https://mf")
+  val cli: List[String] = newList()
+  cli.add("git_hash=abc")
+  val ds = BD.decodeDefines(BD.withManifestDefines(mf, cli))
+  match BD.lookupDefine(ds, "api_base") {
+    case Some(v) -> assertEqual(v, "https://mf", "manifest define preserved")
+    case None -> assertTrue(false, "api_base should resolve")
+  }
+  match BD.lookupDefine(ds, "git_hash") {
+    case Some(v) -> assertEqual(v, "abc", "cli define preserved")
+    case None -> assertTrue(false, "git_hash should resolve")
+  }
+}
+
+test "a cli --define overrides a manifest [build.define] of the same key (§3.2)" {
+  val mf: List[String] = newList()
+  mf.add("api_base=https://manifest")
+  val cli: List[String] = newList()
+  cli.add("api_base=https://cli")
+  val ds = BD.decodeDefines(BD.withManifestDefines(mf, cli))
+  match BD.lookupDefine(ds, "api_base") {
+    case Some(v) -> assertEqual(v, "https://cli", "cli --define wins over the manifest define")
+    case None -> assertTrue(false, "api_base should resolve")
+  }
+}
+
+test "withManifestDefines with empty cli yields the manifest defines" {
+  val mf: List[String] = newList()
+  mf.add("channel=stable")
+  val ds = BD.decodeDefines(BD.withManifestDefines(mf, newList()))
+  match BD.lookupDefine(ds, "channel") {
+    case Some(v) -> assertEqual(v, "stable", "manifest define resolves with no cli defines")
+    case None -> assertTrue(false, "channel should resolve")
+  }
+}
+
+test "a manifest [build.define] version overrides the well-known version fallback (§3.3)" {
+  val mf: List[String] = newList()
+  mf.add("version=2.0.0")
+  // version fallback (prepended) < manifest [build.define] < cli
+  val ds = BD.decodeDefines(BD.withWellKnownDefines("1.0.0", BD.withManifestDefines(mf, newList())))
+  match BD.lookupDefine(ds, "version") {
+    case Some(v) -> assertEqual(v, "2.0.0", "manifest [build.define] version overrides [package].version")
+    case None -> assertTrue(false, "version should resolve")
+  }
+}
+
 // ── Std.BuildInfo synthesis (docs/60 §9.2) ───────────────────────────────────
 // Locate the synthesized `buildInfo()` accessor's returned `BuildInfo(...)`
 // constructor expression, if present.

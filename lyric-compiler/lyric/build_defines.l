@@ -70,6 +70,28 @@ pub func withWellKnownDefines(version: in String, cli: in List[String]): List[St
 /// which is manifest-sourced and therefore project-only. Operates on the
 /// already-decoded `Define` list so it composes after `decodeDefines`'
 /// last-wins dedup.
+/// Layer manifest `[build.define]` entries (docs/60 §3.1) beneath CLI
+/// `--define`s: returns `manifest ++ cli`, so under `decodeDefines`' last-wins
+/// convention a CLI `--define` overrides a manifest define of the same key
+/// (§3.2), and both override the auto-injected well-known `version` fallback
+/// (which `withWellKnownDefines` prepends before this list). Operates on the
+/// raw `"KEY=VALUE"` string form so it composes with `withWellKnownDefines`
+/// before `decodeDefines`.
+pub func withManifestDefines(manifest: in List[String], cli: in List[String]): List[String] {
+  val result: List[String] = newList()
+  var i = 0
+  while i < manifest.count {
+    result.add(manifest[i])
+    i = i + 1
+  }
+  var j = 0
+  while j < cli.count {
+    result.add(cli[j])
+    j = j + 1
+  }
+  result
+}
+
 pub func withWellKnownTarget(targetName: in String, defines: in List[Define]): List[Define] {
   if targetName.length == 0 or hasKey(defines, "target") {
     return defines

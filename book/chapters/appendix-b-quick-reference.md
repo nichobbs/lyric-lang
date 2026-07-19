@@ -957,6 +957,13 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
 #   kind = "aot"     -> native AOT, no runtime — Linux (`x64`/`arm64`) and macOS; clang/ld64 required;
 #                       equivalent to `lyric build --release`; Windows tracked in #1975
 
+# Build defines (manifest [build.define] table; docs/60 §3.1)
+#   [build.define]
+#   build_channel = "stable"          # string values only; injected into @build_const("build_channel")
+#   api_base      = "https://api.example.com"
+#   # Layered beneath CLI --define (a --define of the same key wins). Applied on
+#   # --target dotnet/jvm project builds; rejected on --target native/--release/kind="aot".
+
 # Build features (compile-time gating; see chapter 20 §20.7)
 lyric build --features X,Y <file.l>    # additive over manifest's [features] default
 lyric build --no-default-features      # suppress the default = […] set
