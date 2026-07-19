@@ -7237,7 +7237,7 @@ jobs:
             lyric-cache lyric-logging lyric-proto lyric-generator-sdk
             lyric-mail lyric-storage lyric-auth lyric-resilience
             lyric-validation lyric-i18n lyric-otel lyric-feature-flags
-            lyric-aws-xray lyric-aws-secrets lyric-db
+            lyric-aws-xray lyric-aws-secrets lyric-db lyric-jsonrpc
           )
           for lib in "${tier0[@]}"; do
             echo "=== build $lib (tier 0) ==="
@@ -7247,7 +7247,7 @@ jobs:
             fi
           done
           # Tier 1: libraries depending only on tier-0 libraries.
-          tier1=(lyric-mq lyric-session lyric-jobs lyric-search lyric-ws lyric-web lyric-grpc)
+          tier1=(lyric-mq lyric-session lyric-jobs lyric-search lyric-ws lyric-web lyric-grpc lyric-mcp)
           for lib in "${tier1[@]}"; do
             echo "=== build $lib (tier 1) ==="
             if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
