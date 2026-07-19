@@ -6630,6 +6630,14 @@ jobs:
           # lyric-web chain).  Run here to guard the WebSocket type surface.
           echo "=== lyric-ws tests ==="
           "$lyric_bin" test --manifest lyric-ws/lyric.toml || overall=$?
+          # lyric-jsonrpc is tier-0 (pure Lyric, no deps); lyric-mcp restores
+          # Lyric.JsonRpc as a workspace member.  dotnet-target runs — the
+          # JVM gaps are tracked (#6123, #6124, #6136).  Guards the published
+          # Lyric.JsonRpc/Lyric.Mcp packages (#6156).
+          echo "=== lyric-jsonrpc tests ==="
+          "$lyric_bin" test --manifest lyric-jsonrpc/lyric.toml || overall=$?
+          echo "=== lyric-mcp tests ==="
+          "$lyric_bin" test --manifest lyric-mcp/lyric.toml || overall=$?
           # lyric-testing went green (37/37) once three compiler fixes landed:
           # the monomorphiser bare-name collision (#3627), type-alias resolution
           # in interface-impl signatures (#3673), and isOk/isSome over erased
