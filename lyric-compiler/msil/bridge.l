@@ -225,8 +225,21 @@ pub func compileToMsilWithVersion(
   // the weave itself ensures the import on its output for any later
   // consumer.  Verified at runtime on both targets with a `call.elapsed`
   // aspect in a file with no `import Std.Time`.
-  val noWeaveTemplates: Map[String, CollectedTemplate] = newMap()
-  val weavedFile = match pipeWeave(file, noWeaveTemplates, "") { case Some(f) -> f; case None -> return false }
+  //
+  // Collect this file's OWN `pub aspect` templates before weaving (#4600):
+  // a same-package `from`-instance (`aspect X from Template { ... }`,
+  // declared in the same single file being compiled) resolves against
+  // `pkgName + "." + fqn` (`Weaver.lookupFromTemplate`'s unqualified-name
+  // retry, #3543), so the template must be in the map even though there is
+  // no cross-package dependency involved.  `compileProjectToJarBundledWithFeatures`
+  // already does this for the JVM single-file path (it scans `userFile.items`
+  // into `allTemplates`); this closes the matching MSIL gap so B'-mode
+  // from-instances (docs/55) resolve identically on both targets for a
+  // single-file build, not just multi-package project builds with a path
+  // dependency.
+  val singleFileTemplates: Map[String, CollectedTemplate] = newMap()
+  Weaver.collectAspectTemplates(file.items, pkgName, singleFileTemplates)
+  val weavedFile = match pipeWeave(file, singleFileTemplates, "") { case Some(f) -> f; case None -> return false }
 
   // Lambda-lifting: extract ELambda nodes into synthetic __lambda_<i> IFunc items
   // so that addPackageTokens assigns them stable MethodDef tokens before codegen.

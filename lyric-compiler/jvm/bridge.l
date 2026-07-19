@@ -839,6 +839,65 @@ func collectAspectWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig
   }
 }
 
+// Detect a B'-mode shape-keyed specialised function name (docs/55 §3.2):
+// `Lyric.Weaver.buildBModeSpecializedFunction` names the shared function
+// `__lyric_bmode_<templateKey>__<shapeKey>`.  Distinct from
+// `isAspectWovenName`'s `__aspect_` infix and `isMonoSpecializedName`'s
+// bare-`__` mono copies (both explicitly exclude the `__lyric_` prefix).
+func isBModeSpecializedName(name: in String): Bool {
+  Str.startsWith(name, "__lyric_bmode_")
+}
+
+// Register the sigs of B'-mode shape-keyed specialised functions
+// (`__lyric_bmode_<template>__<shape>`) from the POST-weave file, patching
+// the registry built from the pre-weave `userFile` (#4600).  Without this,
+// the per-match wrapper's call to the shared specialised function
+// (`Lyric.Weaver.buildBModeCallSite`'s `return <spec>(...)`) falls through
+// to the `(…)Object` guess — the B'-mode analogue of the `__aspect_*` fix
+// `collectAspectWovenSigs` applies for #3402.  The specialised function is
+// called by BARE name (unqualified, same-package), so both the bare and the
+// qualified `owner/name` key are registered, mirroring `collectAspectWovenSigs`.
+func collectBModeWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
+  val owner = pkgJvmOwner(file.packageDecl.path)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        if isBModeSpecializedName(decl.name) {
+          val params: List[JvmType] = newList()
+          val paramNames: List[String] = newList()
+          var pi = 0
+          while pi < decl.params.count {
+            params.add(typeExprToJvm(decl.params[pi].ty, owner))
+            paramNames.add(decl.params[pi].name)
+            pi = pi + 1
+          }
+          val ret = match decl.ret { case Some(te) -> typeExprToJvm(te, owner); case None -> JVoid }
+          val sig = JvmFuncSig(
+            owner = owner,
+            params = params,
+            ret = ret,
+            paramNames = paramNames,
+            paramDefaults = newList(),
+            paramModes = newList(),
+            isIface = false,
+            retGenericArgs = returnTypeGenericArgs(decl.ret)
+          )
+          val qkey = owner + "/" + decl.name
+          if not into.containsKey(qkey) {
+            into.add(qkey, sig)
+          }
+          if not into.containsKey(decl.name) {
+            into.add(decl.name, sig)
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
 // Detect a monomorphizer-specialised function name.  `Lyric.Mono` mangles a
 // specialised copy as `<base>__<T1>__<T2>` (`specFuncName`), so the name
 // carries a `__` infix.  Aspect-weave names (`__aspect_` infix) and
@@ -1454,10 +1513,30 @@ pub func compileProjectToJarBundledWithFeatures(
       // from the post-weave file so the `proceed(args)` call resolves to the
       // real descriptor instead of the `(…)Object` guess (#3402, JVM analogue).
       collectAspectWovenSigs(f, registry)
+      // Register B'-mode shape-keyed specialised functions (`__lyric_bmode_*`,
+      // docs/55) from the post-weave file so a per-match wrapper's call to the
+      // shared specialised function resolves to the real descriptor (#4600).
+      collectBModeWovenSigs(f, registry)
       // Register monomorphizer-specialised copies (`mapKeys__String__Int`, …)
       // from the post-mono file so their call sites resolve to the real
       // descriptor (#3229; the #3676 map-iteration symptom).
       collectMonoSpecializedSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps))
+      // Register weaver-synthesised record fields (`__LyricBModeCallContext`,
+      // `__LyricBModeCfg_*`, `__LyricBModeArgs_*`, docs/55/56) from the
+      // post-weave file: `caseReg` above was built from the pre-weave
+      // `userFile`, so these types are absent and a `config.<field>` /
+      // row-typed `args.<field>` read inside the shared specialised function
+      // panics with "has no known field or member" (#4600).
+      // `collectFileCasesExtern` first-wins-guards on `into.containsKey`, so
+      // re-running it over the whole post-weave file is a safe additive scan.
+      collectFileCasesExtern(f, caseReg, externSeedForFile(f, extPkgNames, extPkgMaps))
+      // Register the SAME weaver-synthesised records as constructable types
+      // (`new + invokespecial <init>` instead of the plain-function-call
+      // guess) — `ctorReg` above was ALSO built from the pre-weave `userFile`
+      // and misses `__LyricBModeCallContext(...)` construction at the B'-mode
+      // call site, producing a NoSuchMethodError for a phantom static method
+      // (#4600).  `collectFileCtors` first-wins-guards the same way.
+      collectFileCtors(f, ctorReg)
       codegenPackageInto(
         f,
         registry,
@@ -1501,7 +1580,10 @@ pub func compileProjectToJarBundledWithFeatures(
       match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg, pkgName) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
+          collectBModeWovenSigs(ff, registry)
           collectMonoSpecializedSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps))
+          collectFileCasesExtern(ff, caseReg, externSeedForFile(ff, extPkgNames, extPkgMaps))
+          collectFileCtors(ff, ctorReg)
           codegenPackageInto(
             ff,
             registry,
