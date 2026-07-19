@@ -2977,7 +2977,16 @@ func walkStmtForFieldWrite(ctx: in FieldWriteCtx, st: in Statement): Unit {
       walkBlockForFieldWrite(ctx, body)
       var ci = 0
       while ci < catches.count {
-        walkBlockForFieldWrite(ctx, catches[ci].body)
+        // `catch Type as name` binds `name` scoped to the catch body; evict
+        // any shadowed `var`-record mapping for that scope (#6194, the
+        // remaining #6185 binder shape).
+        val catchNames: List[String] = newList()
+        match catches[ci].bindName {
+          case Some(nm) -> catchNames.add(nm)
+          case None -> {
+          }
+        }
+        walkBlockForFieldWriteEvicting(ctx, catches[ci].body, catchNames)
         ci = ci + 1
       }
       match finally_ {

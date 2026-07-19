@@ -712,3 +712,14 @@ test "restore after a non-var-binder shadow still catches the outer violation (#
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0015"), "outer Immut.label write after val-shadow: V0015 still fires")
 }
+
+test "catch-clause bind name shadowing a var-record local evicts the stale mapping (#6194)" {
+  // `catch Bug as b` binds `b` scoped to the catch body; a `b.label = x` there
+  // (on the caught value, not the outer `Immut` local of the same name) must
+  // not be checked against `Immut.label`.  Before #6194 the `STry` arm walked
+  // the catch body without evicting the catch binder — the last #6185 binder
+  // shape.
+  val src = "package P\nrecord Immut {\n  label: String\n}\nfunc risky(): Int {\n  1\n}\nfunc g(): String {\n  var b = Immut(label = \"a\")\n  val r = try {\n    risky()\n    \"ok\"\n  } catch Bug as b {\n    b.label = \"z\"\n    \"caught\"\n  }\n  r\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "catch-bind-shadow write: no false-positive V0015")
+}
