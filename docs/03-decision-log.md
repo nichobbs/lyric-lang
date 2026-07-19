@@ -19188,6 +19188,90 @@ most recent doc of record for #5935 as "not fixed here"); commit `15bf300`
 `findByteWhere`/`allBytes` (the still-present, now-superfluous-but-harmless
 workaround).
 
+## D-progress-706 — #1815 part 1: `V0015`, the mode-checker "write to a non-`var` record field" diagnostic
+
+**Date:** 2026-07-18
+**Status:** SHIPPED (part 1 of 2; see follow-up below)
+
+Record fields have carried a parsed `FieldDecl.isMutable` flag (the `var`
+prefix, language reference §2.4) since the parser added it, but nothing
+consumed it — a write to a non-`var` field silently compiled on every
+target. This closes the mode-checker half of that gap: a write to `r.field`
+(or `r.field op= …`) is rejected with **V0015** ("cannot reassign immutable
+field `r.field`; declare it `var field` on record `R` to allow mutation")
+when `field.isMutable == false` and `r` is a `var` local of a record type
+declared in the same file.
+
+**Design — narrowed twice by empirical false-positive evidence.** The
+initial design (matching the issue's suggestion) tracked both `var` locals
+*and* `inout` parameters as write-capable record bindings, on the theory
+that "the code can write to `r`" is what should gate the check. Running the
+resulting diagnostic through `make lyric` (which compiles the entire stdlib
+through the mode checker) immediately surfaced 31 errors in `Std.Xml` alone,
+all `XmlState.pos` — a cursor field, declared without `var`, mutated
+directly (`st.pos = st.pos + 1`) inside a chain of `st: inout XmlState`
+helper functions (`xSkipWs`, `xEat`, `xParseName`, …). A grep across
+`lyric-stdlib/std/*.l` found the same "cursor state threaded through
+`inout` helpers, non-`var` field mutated directly" idiom in `Std.Yaml`,
+`Std.Json`, `Std.HttpEngine`, `Std.Http.H2Conn`, and `Std.Http.Hpack` — six
+files, dozens of call sites. This is a pervasive, load-bearing pattern, not
+an oversight; tracking `inout` params would have broken the stdlib build
+across all of them, which CLAUDE.md's "no shortcuts" standard rules out as
+a way to close the task (either the diagnostic is safe against the real
+tree, or its scope is too broad — fixing dozens of call sites across six
+files to add `var` markers would have been unrelated scope creep for a
+"part 1, mode-checker only" task).
+
+**What shipped instead:** `inout` parameters are deliberately *not*
+tracked — only a `var` local whose record type is resolved either from an
+explicit annotation or from an unqualified constructor-call initialiser
+(`Foo(...)`) is treated as a write-capable binding. This is a real,
+enforceable subset (a `var`-bound record mutated directly by the same
+function that constructed it) that happens to not collide with the
+`inout`-threaded-cursor idiom anywhere in the current tree, verified by
+running the full `lyric.full.toml` stdlib build (72 packages) and every
+ecosystem library manifest (`lyric-web`, `lyric-mq`, `lyric-auth`,
+`lyric-validation`, `lyric-resilience`, `lyric-storage`, `lyric-cache`,
+`lyric-health`, `lyric-logging`, `lyric-otel`, `lyric-proto`, `lyric-grpc`,
+`lyric-jobs`, `lyric-mail`, `lyric-ws`, `lyric-session`, `lyric-search`,
+`lyric-feature-flags`, `lyric-i18n`, `lyric-testing`, `lyric-docker`) at
+zero V0015 hits. Also scoped to records/exposed records declared in the
+*same file* (the mode checker has no cross-file symbol table) and skips an
+unresolved field name rather than guessing.
+
+**Placement.** New pass `checkImmutableFieldWrites` in
+`lyric-compiler/lyric/mode_checker/modechecker_check.l` (§10c), called from
+`checkFileWithImports` alongside `checkAwaitInTry`/`checkSpawnConsumption`/
+`checkNativeFfiBoundary`, unconditionally (all verification levels).
+
+**Verification.** Six cases added to `modechecker_self_test.l`: a `var`
+field reassigned through a `var` local compiles; a non-`var` field
+reassigned through a `var` local is V0015; the same through a compound
+assignment (`+=`) is V0015; construction (`Rec(field = x)`) is not V0015;
+a non-`var` field write through an `inout` parameter is *not* flagged
+(pins the deliberate scope narrowing); a non-`var` field write through a
+`val` binding is not flagged (the pre-existing, separate gap of mutating
+any field through an immutable binding, still unenforced). 73/73 mode
+checker self-tests pass; 124/124 parser self-tests pass (unaffected);
+`make lyric` (full stdlib rebuild) and `./bin/lyric run --target dotnet
+lyric-stdlib/tests/core_tests.l` both green.
+
+**Follow-up (part 2, tracked in issue #1815, not started here):** emitter
+enforcement — mark the backing field `initonly` (MSIL) / `final`
+(`ACC_FINAL`, JVM) so a non-`var` field is also locked at the IL/bytecode
+level, independent of what the mode checker can statically see. Widening
+the mode-checker rule itself to `inout` parameters and cross-file/
+cross-package types would first require either fixing the `inout`-threaded-
+cursor idiom across the stdlib (adding `var` to the affected fields) or a
+narrower rule that distinguishes "cursor mutated by its own owning
+helpers" from "field mutated somewhere it shouldn't be" — genuinely open
+design work, not scoped to this entry.
+
+**Related:** docs/01-language-reference.md §2.4 (updated to describe the
+shipped enforcement in place of the stale "not yet tracked" note); V0012/
+V0014 (the sibling `checkAwaitInTry`/`checkSpawnConsumption` passes this
+mirrors structurally).
+
 ---
 
 ## D-progress-704 — #5908 (JVM) / #5920 (MSIL) fixed: cross-package record/opaque construction with an omitted default-valued field

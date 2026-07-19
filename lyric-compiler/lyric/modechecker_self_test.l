@@ -569,3 +569,60 @@ test "n0100 lambda-local var admits nativeaddrof inside its own lambda" {
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "N0100")), "lambda-own-var: no N0100")
 }
+
+// ── V0015: write to a non-`var` record field (#1815 part 1) ────────────────────
+test "var field reassigned through a var local compiles" {
+  val src = "package P\nrecord Counter {\n  var count: Int\n  label: String\n}\nfunc f(): Int {\n  var c = Counter(count = 0, label = \"x\")\n  c.count = c.count + 1\n  c.count\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "var-field-write: no V0015")
+}
+
+test "non-var field reassigned through a var local is V0015" {
+  val src = "package P\nrecord Counter {\n  var count: Int\n  label: String\n}\nfunc f(): String {\n  var c = Counter(count = 0, label = \"x\")\n  c.label = \"y\"\n  c.label\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0015"), "nonvar-field-write: V0015 emitted")
+}
+
+test "non-var field reassigned through a compound assignment is V0015" {
+  val src = "package P\nrecord Box {\n  n: Int\n}\nfunc f(): Int {\n  var b = Box(n = 0)\n  b.n += 1\n  b.n\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0015"), "nonvar-field-compound-assign: V0015 emitted")
+}
+
+test "record construction is not V0015" {
+  val src = "package P\nrecord Point {\n  x: Int\n  y: Int\n}\nfunc f(): Point {\n  Point(x = 1, y = 2)\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "construction: no V0015")
+}
+
+test "non-var field write through an inout param is not tracked (deliberately narrow, #1815 part 1)" {
+  // Std.Xml's cursor-state idiom (XmlState.pos mutated via `st: inout XmlState`
+  // helpers) is a pervasive, legitimate pattern in the stdlib today; tracking
+  // `inout` params here would flag it and break the stdlib build, so this
+  // pass only tracks `var` locals (see checkFuncForFieldWrite).
+  val src = "package P\nrecord Cursor {\n  pos: Int\n}\nfunc advance(c: inout Cursor): Unit {\n  c.pos = c.pos + 1\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "inout-param-write: no V0015 (out of scope for part 1)")
+}
+
+test "non-var field write through a val binding is not tracked (pre-existing gap)" {
+  val src = "package P\nrecord Box {\n  n: Int\n}\nfunc f(): Int {\n  val b = Box(n = 0)\n  b.n = 1\n  b.n\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "val-binding-write: no V0015 (not tracked; see docs)")
+}
+
+test "same-named var record locals in sibling scopes do not crash the pass (#6157)" {
+  // `ctx.locals` is a single flat map with no scope push/pop, so both `b`
+  // bindings reach `fieldWriteTrackLocal` with the same key; the unguarded
+  // `Map.add` threw on the duplicate, crashing the mode checker on ordinary
+  // valid source.  `n` is `var`, so no V0015 should fire either.
+  val src = "package P\nrecord Box {\n  var n: Int\n}\nfunc f(cond: Bool): Int {\n  if cond {\n    var b = Box(n = 1)\n    b.n = 2\n    b.n\n  } else {\n    var b = Box(n = 3)\n    b.n = 4\n    b.n\n  }\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "sibling-same-name var locals: no crash, no V0015")
+}
+
+test "same-named var record locals in sequential blocks do not crash (#6157)" {
+  val src = "package P\nrecord Box {\n  var n: Int\n}\nfunc f(): Int {\n  var acc = 0\n  {\n    var b = Box(n = 1)\n    b.n = 2\n    acc = acc + b.n\n  }\n  {\n    var b = Box(n = 3)\n    b.n = 4\n    acc = acc + b.n\n  }\n  acc\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "sequential same-name var locals: no crash, no V0015")
+}
