@@ -842,6 +842,7 @@ jobs:
           # Tier 1: no Lyric package dependencies.
           run_tier 1 \
             lyric-resilience/lyric.toml \
+            lyric-jsonrpc/lyric.toml \
             lyric-validation/lyric.toml \
             lyric-logging/lyric.toml \
             lyric-cache/lyric.toml \
@@ -860,6 +861,7 @@ jobs:
           # The tier barrier buys the indexing lag the retry budget needs.
           run_tier 3 \
             lyric-otel/lyric.toml \
+            lyric-mcp/lyric.toml \
             lyric-grpc/lyric.toml \
             lyric-web/lyric.toml \
             lyric-db/lyric.toml \
