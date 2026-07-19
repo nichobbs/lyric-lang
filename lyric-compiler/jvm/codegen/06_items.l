@@ -598,68 +598,6 @@ pub func setupInstanceParamSlotsAndHolders(
   }
 }
 
-// Collect names referenced inside any lambda in a block statement.
-func collectInLambdaNamesBlockStmt(s: in Statement, acc: in List[String]): Unit {
-  match s.kind {
-    case SLocal(binding) -> {
-      match binding {
-        case LBVal(_, _, init) -> collectInLambdaNamesExpr(init, acc)
-        case LBLet(_, _, init) -> collectInLambdaNamesExpr(init, acc)
-        case LBVar(_, _, initOpt) -> {
-          match initOpt {
-            case Some(init) -> collectInLambdaNamesExpr(init, acc)
-            case None -> ()
-          }
-        }
-      }
-    }
-    case SAssign(target, _, v) -> {
-      collectInLambdaNamesExpr(target, acc)
-      collectInLambdaNamesExpr(v, acc)
-    }
-    case SExpr(e) -> collectInLambdaNamesExpr(e, acc)
-    case SThrow(e) -> collectInLambdaNamesExpr(e, acc)
-    case SWhile(_, cond, body) -> {
-      collectInLambdaNamesExpr(cond, acc)
-      collectInLambdaNamesBlockBody(body, acc)
-    }
-    case SLoop(_, body) -> collectInLambdaNamesBlockBody(body, acc)
-    case SFor(_, _, iter, body) -> {
-      collectInLambdaNamesExpr(iter, acc)
-      collectInLambdaNamesBlockBody(body, acc)
-    }
-    case STry(body, catches, finally_) -> {
-      collectInLambdaNamesBlockBody(body, acc)
-      var ci = 0
-      while ci < catches.count {
-        collectInLambdaNamesBlockBody(catches[ci].body, acc)
-        ci = ci + 1
-      }
-      match finally_ {
-        case Some(fb) -> collectInLambdaNamesBlockBody(fb, acc)
-        case None -> ()
-      }
-    }
-    case SDefer(body) -> collectInLambdaNamesBlockBody(body, acc)
-    case SScope(_, body) -> collectInLambdaNamesBlockBody(body, acc)
-    case SReturn(valOpt) -> {
-      match valOpt {
-        case Some(e) -> collectInLambdaNamesExpr(e, acc)
-        case None -> ()
-      }
-    }
-    case _ -> ()
-  }
-}
-
-func collectInLambdaNamesBlockBody(b: in Block, acc: in List[String]): Unit {
-  var i = 0
-  while i < b.statements.count {
-    collectInLambdaNamesBlockStmt(b.statements[i], acc)
-    i = i + 1
-  }
-}
-
 // Compute the pre-pass set of `var` names referenced inside lambdas
 // in the function body.  These must be hoisted to heap cells for by-ref capture.
 func computeHoistedVarNamesJvm(decl: in FunctionDecl, mutableVars: in Map[String, Bool]): List[String] {
@@ -667,7 +605,7 @@ func computeHoistedVarNamesJvm(decl: in FunctionDecl, mutableVars: in Map[String
   match decl.body {
     case Some(body) -> {
       match body {
-        case FBBlock(blk) -> collectInLambdaNamesBlockBody(blk, inLambdaNames)
+        case FBBlock(blk) -> collectInLambdaNamesBlock(blk, inLambdaNames)
         case FBExpr(e) -> collectInLambdaNamesExpr(e, inLambdaNames)
       }
     }
