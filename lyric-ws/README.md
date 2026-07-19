@@ -4,10 +4,23 @@ WebSocket server with pluggable backends and aspect-based security.
 
 ## Platform parity
 
-| Feature flag | Backend                                     | Status                                                    |
-|--------------|----------------------------------------------|-----------------------------------------------------------|
-| `jvm`        | Undertow WebSocket via `Ws.Kernel.Jvm`       | Real: `Ws.startServer` runs a genuine `io.undertow.Undertow` server; connect, send (text/binary/ping/pong/close), receive (single-frame text/binary/ping/pong), and connection-registry queries are all backed by real Undertow/XNIO calls |
-| `dotnet`     | ASP.NET Core WebSockets via `Ws.Kernel.Net`  | Bookkeeping only: `createRegistry`/`send`/`broadcast`/`close`/`connectionCount`/`isConnected` validate state but never touch a socket; `Ws.startServer` returns `Err(code = "SERVER_START_FAILED")` (`NOT_IMPLEMENTED`) — the real ASP.NET Core WebSocket upgrade path is deferred to #778 |
+| Feature flag | Backend                                                    | Status                                                    |
+|--------------|-------------------------------------------------------------|-----------------------------------------------------------|
+| `dotnet`     | Pure-Lyric RFC 6455 over `Std.TcpHost` via `Ws.Kernel.Net`  | Real: `Ws.startServer` runs a genuine `System.Net.Sockets.TcpListener`-backed server (docs/62-jsonrpc-mcp.md §6, #778). Connect, handshake (`Ws.Handshake`), send/receive (text/binary/ping/pong/close), **fragmented multi-frame message reassembly**, and **automatic ping-interval keepalive** are all real and tested end-to-end (`tests/ws_dotnet_e2e_tests.l`) — including the two capabilities the JVM kernel still lacks (see below, tracked as Q-WS-001) |
+| `jvm`        | Undertow WebSocket via `Ws.Kernel.Jvm`                      | Real: `Ws.startServer` runs a genuine `io.undertow.Undertow` server; connect, send (text/binary/ping/pong/close), receive (single-frame text/binary/ping/pong), and connection-registry queries are all backed by real Undertow/XNIO calls |
+
+`Ws.Kernel.Net` is pure Lyric: a minimal HTTP/1.1 upgrade-handshake
+parser + `Sec-WebSocket-Accept` derivation (`Ws.Handshake`, via the new
+`Std.Hash.sha1OfBytes`) and an RFC 6455 frame codec (`Ws.Frame`) on top
+of the `Std.TcpHost` transport kernel — the same seam
+`Std.HttpServer`/`Std.HttpEngine` use (docs/61 phase 3.3). No new NuGet
+dependency; not ASP.NET Core WebSockets. Concurrency mirrors
+`Std.HttpServer`'s dotnet assembly: a background `Task` runs the accept
+loop, and each connection gets its own read-loop `Task` plus (when
+ping keepalive is enabled) a ping-loop `Task`. See `Ws.Kernel.Net`'s
+module header for the full design, including why `pingIntervalMs` is
+read from `LYRIC_CONFIG_WS_SERVER_PINGINTERVALMS` directly rather than
+threaded through `startServer`'s parameters.
 
 `Ws.Kernel.Jvm` binds `io.undertow:undertow-core` (declared in this
 package's `[maven]` table) via `extern type` + auto-FFI — no
@@ -21,9 +34,10 @@ self-hosted JVM backend (`lyric-compiler/jvm/codegen/06_items.l`; see
 `ffi_iface_impl_jvm_self_test.l`).
 
 Known JVM-kernel gaps (documented in `Ws.Kernel.Jvm`'s own header, not
-silent stubs): fragmented (multi-frame) WebSocket messages are not
-reassembled; automatic ping-interval keepalives are not scheduled; text
-decoding is lenient UTF-8 (substitutes U+FFFD) rather than
+silent stubs — the dotnet kernel above does not replicate them, tracked
+to close as Q-WS-001): fragmented (multi-frame) WebSocket messages are
+not reassembled; automatic ping-interval keepalives are not scheduled;
+text decoding is lenient UTF-8 (substitutes U+FFFD) rather than
 `Std.Encoding.tryDecodeUtf8`'s strict validate-and-reject, because that
 pure-Lyric helper hits a separate, pre-existing self-hosted JVM backend
 bug (`slice[Byte]` element indexing resolves to the JVM-erased `Object`
@@ -42,6 +56,8 @@ until that gap is fixed.
 | Package | Purpose |
 |---|---|
 | `Ws` | Core types, `WsHandler`/`WsRegistry` interfaces, and public API |
+| `Ws.Frame` | Pure-Lyric RFC 6455 frame codec (target-independent) |
+| `Ws.Handshake` | Pure-Lyric HTTP/1.1 upgrade-handshake parser + `Sec-WebSocket-Accept` derivation (target-independent) |
 | `Ws.Aspects` | Reusable aspect templates: `WsAuth` and `WsRateLimit` |
 
 ## Quick start
@@ -70,7 +86,7 @@ Ws.register(registry, "/chat", func(ctx: in WsContext): Unit {
 
 ## Backends
 
-.NET backend uses ASP.NET Core WebSockets. JVM backend (Undertow) is planned for Phase 6.
+dotnet backend is pure-Lyric RFC 6455 over `Std.TcpHost` (`Ws.Kernel.Net`, not ASP.NET Core WebSockets). JVM backend uses Undertow (`Ws.Kernel.Jvm`). See "Platform parity" above for per-target status.
 
 ## Core types and functions
 

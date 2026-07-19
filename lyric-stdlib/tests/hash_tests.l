@@ -2,12 +2,21 @@
 package Std.Hash.Tests
 
 import Std.Core
+import Std.Encoding
 import Std.File
 import Std.Hash
 import Std.Testing
 import Std.Uuid as Uuid
 
 // FIPS 180-4 test vectors (uppercase). Wrapped because top-level val isn't supported by the bootstrap parser.
+func sha1Abc(): String {
+  "A9993E364706816ABA3E25717850C26C9CD0D89D"
+}
+
+func sha1Empty(): String {
+  "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709"
+}
+
 func sha256Abc(): String {
   "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"
 }
@@ -29,6 +38,32 @@ func sha512Empty(): String {
 func bytesAbc(): slice[Byte] {
   // ASCII codepoints 0x61 0x62 0x63.
   [97u8, 98u8, 99u8]
+}
+
+func testSha1OfBytesKnownVector(): Unit {
+  val hex = sha1OfBytes(bytesAbc())
+  assertEqual(hex, sha1Abc(), "sha1('abc') matches FIPS 180-4 vector")
+}
+
+func testSha1OfBytesEmpty(): Unit {
+  val empty: slice[Byte] = []
+  val hex = sha1OfBytes(empty)
+  assertEqual(hex, sha1Empty(), "sha1('') matches FIPS 180-4 vector")
+}
+
+// RFC 6455 section 1.3's worked handshake example: hashing the client's
+// Sec-WebSocket-Key concatenated with the magic GUID and Base64-encoding the
+// raw digest yields Sec-WebSocket-Accept. This exercises sha1OfBytes' output
+// through the same hex-decode -> Base64-encode path `Ws.Handshake` uses (a
+// stdlib-level regression net independent of lyric-ws's own tests).
+func testSha1SupportsRfc6455HandshakeExample(): Unit {
+  val key = "dGhlIHNhbXBsZSBub25jZQ=="
+  val guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+  val digestHex = sha1OfBytes(encodeUtf8(key + guid))
+  match tryDecodeHex(digestHex) {
+    case Some(bytes) -> assertEqual(encodeBase64(bytes), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "RFC 6455 1.3 Sec-WebSocket-Accept example")
+    case None -> assertTrue(false, "sha1OfBytes returned malformed hex")
+  }
 }
 
 func testSha256OfBytesKnownVector(): Unit {
@@ -85,6 +120,9 @@ func testSha512OfFileKnownVector(): Unit {
 }
 
 func main(): Int {
+  testSha1OfBytesKnownVector()
+  testSha1OfBytesEmpty()
+  testSha1SupportsRfc6455HandshakeExample()
   testSha256OfBytesKnownVector()
   testSha256OfBytesEmpty()
   testSha512OfBytesKnownVector()
