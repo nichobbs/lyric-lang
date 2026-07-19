@@ -81,7 +81,7 @@ jobs:
           declare -A ECO_DEPS=(
             [auth]=""
             [session]="cache"
-            [health]="auth resilience web"
+            [health]=""
             [cache]=""
             [docker]=""
             [mail]=""
@@ -703,7 +703,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -6584,7 +6584,7 @@ jobs:
           - id: session
             deps: "cache"
           - id: health
-            deps: "auth resilience web"
+            deps: ""
           - id: cache
             deps: ""
           - id: docker
