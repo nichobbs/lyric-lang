@@ -13377,10 +13377,13 @@ route it to the unknown-command handler.
 **`var` record fields (parser):**
 
 The parser now accepts `var name: Type` in record member declarations,
-preserving the `var` annotation in the AST. Mutability enforcement is deferred
-to the T6+ type-checker tier; the emitter currently treats `var` fields
-identically to non-`var` fields at the IL level.  Mode-checker enforcement of
-write-to-non-`var` rejection is tracked in #1815.
+preserving the `var` annotation in the AST. Mode-checker enforcement of
+write-to-non-`var` fields shipped as diagnostic `V0015` (#1815 part 1,
+`modechecker_check.l::checkImmutableFieldWrites`): a write to a non-`var`
+field of an in-file record `var` local is now rejected. The emitter-side
+enforcement (`initonly` field flags on MSIL / `ACC_FINAL` on JVM) and
+widening the check beyond `var` locals to `inout` params are tracked as
+part 2 in #6155.
 
 **Test results:** 792/792 emitter tests pass, 237/237 CLI tests pass.
 

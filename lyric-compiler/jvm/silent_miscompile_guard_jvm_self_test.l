@@ -48,8 +48,8 @@ import Std.Testing
 // A record with two differently-typed fields, used to exercise complex field
 // assignment and named-argument reorder.
 record Mixed {
-  count: Int
-  label: String
+  var count: Int
+  var label: String
 }
 
 // A union with a payload-bearing case, used to exercise union construction and

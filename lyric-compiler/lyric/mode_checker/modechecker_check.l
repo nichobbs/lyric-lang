@@ -2462,6 +2462,670 @@ func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §10c. V0015 — write to a non-`var` record field.
+//
+// docs/01-language-reference.md §2.4: a record field is immutable unless
+// declared `var` (`FieldDecl.isMutable`).  The self-hosted parser has carried
+// the flag since the field was added, but nothing consumed it — a write to a
+// non-`var` field silently compiled.  This pass closes that hole for the one
+// shape the mode checker can resolve *without* a symbol table: a single-
+// segment `var` local whose record type is declared in the same file, either
+// via an explicit type annotation or inferred from an unqualified
+// constructor call (`Foo(...)`) used as its initialiser.
+//
+// Deliberately narrow (issue #1815 part 1) to avoid false positives:
+//   * Only `var` locals are tracked as write-capable record bindings — an
+//     `inout` parameter is deliberately NOT tracked (see
+//     `checkFuncForFieldWrite`: a pervasive stdlib idiom threads a
+//     cursor-style state record through a chain of `st: inout StateRecord`
+//     helpers that mutate a non-`var` field directly, e.g. `XmlState.pos` in
+//     Std.Xml — tracking `inout` here flags dozens of legitimate existing
+//     call sites and breaks the stdlib build).  An immutable (`val`/`let`/
+//     `in`) binding is likewise not tracked, so `r.field = x` through one is
+//     simply not flagged here (a pre-existing, separate gap: mutating *any*
+//     field through an immutable binding is unenforced today).
+//   * Only records/exposed records declared in *this* file are indexed;
+//     a field write through a type imported from another file or package is
+//     not flagged (the mode checker has no cross-file symbol table).
+//   * `Rec(field = x)` construction is not a target of `SAssign`/`EAssign`
+//     at all, so it can never trip this check.
+//   * An unresolved field name (typo, or a field the type checker will
+//     already reject) is silently skipped — never guessed at.
+//
+// Part 2 (emitter `initonly`/`ACC_FINAL` enforcement) and widening write-site
+// tracking to `inout` parameters / method receivers are out of scope; see
+// issue #1815.
+// ─────────────────────────────────────────────────────────────────────────────
+record FieldWriteCtx {
+  diag: List[Diagnostic]
+  recordFields: Map[String, Map[String, Bool]]
+  locals: Map[String, String]
+}
+
+func fieldWriteSimpleTypeName(t: in TypeExpr): String {
+  match t.kind {
+    case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+    case TParen(inner) -> fieldWriteSimpleTypeName(inner)
+    case _ -> ""
+  }
+}
+
+// The type name of an unqualified constructor call (`Foo(...)`), used to
+// infer a `var` local's record type when it carries no explicit annotation.
+func fieldWriteCtorTypeName(e: in Expr): String {
+  match e.kind {
+    case ECall(fn, _) -> {
+      match fn.kind {
+        case EPath(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+        case _ -> ""
+      }
+    }
+    case EParen(inner) -> fieldWriteCtorTypeName(inner)
+    case _ -> ""
+  }
+}
+
+func recordFieldMutabilityMap(members: in List[RecordMember]): Map[String, Bool] {
+  val m: Map[String, Bool] = newMap()
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case RMField(field) -> {
+        m.add(field.name, field.isMutable)
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  m
+}
+
+func collectRecordFieldsOfFile(file: in SourceFile): Map[String, Map[String, Bool]] {
+  val result: Map[String, Map[String, Bool]] = newMap()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> result.add(decl.name, recordFieldMutabilityMap(decl.members))
+      case IExposedRec(decl) -> result.add(decl.name, recordFieldMutabilityMap(decl.members))
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  result
+}
+
+// A saved copy of `ctx.locals` for scope-undo.  `ctx.locals` is a single
+// flat map with no push/pop, so every scope boundary snapshots on entry and
+// restores on exit (see `walkBlockForFieldWrite`).
+record FieldWriteSnap {
+  names: List[String]
+  types: List[String]
+}
+
+func fieldWriteSnapshot(ctx: in FieldWriteCtx): FieldWriteSnap {
+  val ns: List[String] = newList()
+  val ts: List[String] = newList()
+  for k in mapKeys(ctx.locals) {
+    ns.add(k)
+    match mapGet(ctx.locals, k) {
+      case Some(v) -> ts.add(v)
+      case None -> ts.add("")
+    }
+  }
+  FieldWriteSnap(names = ns, types = ts)
+}
+
+func fieldWriteRestore(ctx: in FieldWriteCtx, snap: in FieldWriteSnap): Unit {
+  val curKeys: List[String] = newList()
+  for k2 in mapKeys(ctx.locals) {
+    curKeys.add(k2)
+  }
+  var ri = 0
+  while ri < curKeys.count {
+    ctx.locals.remove(curKeys[ri])
+    ri = ri + 1
+  }
+  var si = 0
+  while si < snap.names.count {
+    ctx.locals.add(snap.names[si], snap.types[si])
+    si = si + 1
+  }
+}
+
+// Drop any record-type mapping for `name`.  A binding that re-introduces
+// `name` under a form we do NOT track as a write-capable record local (a
+// `val`/`let`, a match-arm pattern bind, a lambda parameter, a for-loop
+// variable) must still shadow a prior `var`-record mapping for that name, or a
+// later `name.field = …` inside the new binding's scope is checked against the
+// STALE record's field-mutability data — the #6185 false-positive/negative,
+// the same bug class as #6157/#6166/#6167 but reached via a non-`var` binder.
+func fieldWriteEvictName(ctx: in FieldWriteCtx, name: in String): Unit {
+  if ctx.locals.containsKey(name) {
+    ctx.locals.remove(name)
+  }
+}
+
+// Collect every identifier a pattern binds into the value scope (so match-arm
+// and for-loop binders can evict a shadowed `var`-record mapping for the arm /
+// loop-body scope).  `PConstRef` names a compile-time constant, not a binder.
+func fieldWriteCollectPatternNames(pat: in Pattern, acc: in List[String]): Unit {
+  match pat.kind {
+    case PBinding(name, inner) -> {
+      acc.add(name)
+      match inner {
+        case Some(p) -> fieldWriteCollectPatternNames(p, acc)
+        case None -> {
+        }
+      }
+    }
+    case PConstructor(_, args) -> {
+      var i = 0
+      while i < args.count {
+        fieldWriteCollectPatternNames(args[i], acc)
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, p, _) -> fieldWriteCollectPatternNames(p, acc)
+          case RPFShort(nm, _) -> acc.add(nm)
+        }
+        i = i + 1
+      }
+    }
+    case PTuple(pats) -> {
+      var i = 0
+      while i < pats.count {
+        fieldWriteCollectPatternNames(pats[i], acc)
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> fieldWriteCollectPatternNames(inner, acc)
+    case PTypeTest(inner, _) -> fieldWriteCollectPatternNames(inner, acc)
+    case POr(pats) -> {
+      var i = 0
+      while i < pats.count {
+        fieldWriteCollectPatternNames(pats[i], acc)
+        i = i + 1
+      }
+    }
+    case PWildcard -> {
+    }
+    case PLiteral(_) -> {
+    }
+    case PRange(_, _, _) -> {
+    }
+    case PConstRef(_) -> {
+    }
+    case PError -> {
+    }
+  }
+}
+
+// Track `name` as a write-capable binding of record type `tn` when `tn`
+// resolves (via an explicit annotation or a constructor-call initialiser) to
+// a record declared in this file.
+func fieldWriteTrackLocal(
+  ctx: in FieldWriteCtx, name: in String, tyOpt: in Option[TypeExpr], initOpt: in Option[Expr]
+): Unit {
+  // Re-declaring a `var` local under `name` ALWAYS invalidates any prior
+  // record-type mapping for it.  Evicting first, unconditionally, handles three
+  // things at once:
+  //   * `ctx.locals` is a single flat map with no scope push/pop, so two `var`
+  //     locals with the same name reach here twice with the same key; an
+  //     unguarded `Map.add` throws on the duplicate, crashing the mode checker
+  //     on valid source (#6157).
+  //   * If the NEW binding's type isn't a known in-file record — an imported
+  //     record, an external type, a non-constructor initialiser, or no
+  //     resolvable type — the old mapping must still go, or a later
+  //     `name.field = …` is checked against the STALE record's
+  //     field-mutability data, producing a false positive or false negative
+  //     (#6167, same-block re-declaration — distinct from the cross-block
+  //     leak #6166's snapshot/restore covers).
+  // After eviction, re-add only when the new type resolves to an in-file
+  // record.  The most-recent binding always wins, mirroring the same-name
+  // shadow handling `allocSlot`/`N0100Ctx` already use.
+  if ctx.locals.containsKey(name) {
+    ctx.locals.remove(name)
+  }
+  var tn = ""
+  match tyOpt {
+    case Some(te) -> {
+      tn = fieldWriteSimpleTypeName(te)
+    }
+    case None -> {
+    }
+  }
+  if tn == "" {
+    match initOpt {
+      case Some(e) -> {
+        tn = fieldWriteCtorTypeName(e)
+      }
+      case None -> {
+      }
+    }
+  }
+  if tn != "" {
+    match mapGet(ctx.recordFields, tn) {
+      case Some(_) -> {
+        ctx.locals.add(name, tn)
+      }
+      case None -> {
+      }
+    }
+  }
+}
+
+func checkFieldWriteTarget(ctx: in FieldWriteCtx, target: in Expr): Unit {
+  match target.kind {
+    case EMember(recv, fieldName) -> {
+      match recv.kind {
+        case EPath(path) -> {
+          if path.segments.count == 1 {
+            match mapGet(ctx.locals, path.segments[0]) {
+              case Some(recordName) -> {
+                match mapGet(ctx.recordFields, recordName) {
+                  case Some(fieldsMap) -> {
+                    match mapGet(fieldsMap, fieldName) {
+                      case Some(isMut) -> {
+                        if not isMut {
+                          ctx.diag.add(
+                            errorDiagnostic(
+                              "V0015",
+                              "cannot reassign immutable field '" + path.segments[0] + "." + fieldName + "'; declare it `var " + fieldName +
+                                "` on record '" +
+                                recordName +
+                                "' to allow mutation",
+                              target.span
+                            )
+                          )
+                        }
+                      }
+                      case None -> {
+                      }
+                    }
+                  }
+                  case None -> {
+                  }
+                }
+              }
+              case None -> {
+              }
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
+}
+
+func walkExprForFieldWrite(ctx: in FieldWriteCtx, e: in Expr): Unit {
+  match e.kind {
+    case EAssign(t, _, v) -> {
+      checkFieldWriteTarget(ctx, t)
+      walkExprForFieldWrite(ctx, t)
+      walkExprForFieldWrite(ctx, v)
+    }
+    case EAwait(inner) -> walkExprForFieldWrite(ctx, inner)
+    case EYield(inner) -> walkExprForFieldWrite(ctx, inner)
+    case ESpawn(inner) -> walkExprForFieldWrite(ctx, inner)
+    case ETry(inner) -> walkExprForFieldWrite(ctx, inner)
+    case EOld(inner) -> walkExprForFieldWrite(ctx, inner)
+    case EPropagate(inner) -> walkExprForFieldWrite(ctx, inner)
+    case EParen(inner) -> walkExprForFieldWrite(ctx, inner)
+    case ETuple(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        walkExprForFieldWrite(ctx, exprs[i])
+        i = i + 1
+      }
+    }
+    case EList(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        walkExprForFieldWrite(ctx, exprs[i])
+        i = i + 1
+      }
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      walkExprForFieldWrite(ctx, cond)
+      walkEobForFieldWrite(ctx, thenB)
+      match elseOpt {
+        case Some(eb) -> walkEobForFieldWrite(ctx, eb)
+        case None -> {
+        }
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      walkExprForFieldWrite(ctx, scrutinee)
+      var ai = 0
+      while ai < arms.count {
+        val arm = arms[ai]
+        // The arm's pattern binds names scoped to its guard and body; evict
+        // any shadowed `var`-record mapping for the arm's duration (#6185).
+        val armNames: List[String] = newList()
+        fieldWriteCollectPatternNames(arm.pattern, armNames)
+        val snap = fieldWriteSnapshot(ctx)
+        var ei = 0
+        while ei < armNames.count {
+          fieldWriteEvictName(ctx, armNames[ei])
+          ei = ei + 1
+        }
+        match arm.guard {
+          case Some(g) -> walkExprForFieldWrite(ctx, g)
+          case None -> {
+          }
+        }
+        walkEobForFieldWrite(ctx, arm.body)
+        fieldWriteRestore(ctx, snap)
+        ai = ai + 1
+      }
+    }
+    case EForall(_, whereOpt, body) -> {
+      walkExprForFieldWrite(ctx, body)
+      match whereOpt {
+        case Some(w) -> walkExprForFieldWrite(ctx, w)
+        case None -> {
+        }
+      }
+    }
+    case EExists(_, whereOpt, body) -> {
+      walkExprForFieldWrite(ctx, body)
+      match whereOpt {
+        case Some(w) -> walkExprForFieldWrite(ctx, w)
+        case None -> {
+        }
+      }
+    }
+    case ETypeApp(fn, _) -> walkExprForFieldWrite(ctx, fn)
+    case EIndex(recv, indices) -> {
+      walkExprForFieldWrite(ctx, recv)
+      var i = 0
+      while i < indices.count {
+        walkExprForFieldWrite(ctx, indices[i])
+        i = i + 1
+      }
+    }
+    case EMember(recv, _) -> walkExprForFieldWrite(ctx, recv)
+    case EPrefix(_, x) -> walkExprForFieldWrite(ctx, x)
+    case EBinop(_, l, r) -> {
+      walkExprForFieldWrite(ctx, l)
+      walkExprForFieldWrite(ctx, r)
+    }
+    case ECall(fn, args) -> {
+      walkExprForFieldWrite(ctx, fn)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CANamed(_, v, _) -> walkExprForFieldWrite(ctx, v)
+          case CAPositional(v) -> walkExprForFieldWrite(ctx, v)
+        }
+        ai = ai + 1
+      }
+    }
+    case EBlock(blk) -> walkBlockForFieldWrite(ctx, blk)
+    case EUnsafe(blk) -> walkBlockForFieldWrite(ctx, blk)
+    case ELambda(lambdaParams, body) -> {
+      // Lambda parameters shadow enclosing names inside the body (#6185).
+      val lamNames: List[String] = newList()
+      var li = 0
+      while li < lambdaParams.count {
+        lamNames.add(lambdaParams[li].name)
+        li = li + 1
+      }
+      walkBlockForFieldWriteEvicting(ctx, body, lamNames)
+    }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] {
+          case ISExpr(x) -> walkExprForFieldWrite(ctx, x)
+          case ISText(_, _) -> {
+          }
+        }
+        si = si + 1
+      }
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          walkExprForFieldWrite(ctx, lo)
+          walkExprForFieldWrite(ctx, hi)
+        }
+        case RBHalfOpen(lo, hi) -> {
+          walkExprForFieldWrite(ctx, lo)
+          walkExprForFieldWrite(ctx, hi)
+        }
+        case RBLowerOpen(hi) -> walkExprForFieldWrite(ctx, hi)
+        case RBUpperOpen(lo) -> walkExprForFieldWrite(ctx, lo)
+      }
+    }
+    case ELiteral(_) -> {
+    }
+    case EPath(_) -> {
+    }
+    case ESelf -> {
+    }
+    case EResult -> {
+    }
+    case EError -> {
+    }
+  }
+}
+
+func walkEobForFieldWrite(ctx: in FieldWriteCtx, eob: in ExprOrBlock): Unit {
+  match eob {
+    case EOBExpr(e) -> walkExprForFieldWrite(ctx, e)
+    case EOBBlock(blk) -> walkBlockForFieldWrite(ctx, blk)
+  }
+}
+
+func walkStmtForFieldWrite(ctx: in FieldWriteCtx, st: in Statement): Unit {
+  match st.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(pat, _, init) -> {
+          walkExprForFieldWrite(ctx, init)
+          // A `val` re-binding shadows any prior `var`-record mapping for the
+          // names its pattern binds (#6185); `val` locals are not tracked as
+          // write-capable, so just evict.  `LBVal` binds a full pattern
+          // (destructuring), so collect every bound name.
+          val valNames: List[String] = newList()
+          fieldWriteCollectPatternNames(pat, valNames)
+          var vi = 0
+          while vi < valNames.count {
+            fieldWriteEvictName(ctx, valNames[vi])
+            vi = vi + 1
+          }
+        }
+        case LBLet(name, _, init) -> {
+          walkExprForFieldWrite(ctx, init)
+          fieldWriteEvictName(ctx, name)
+        }
+        case LBVar(name, tyOpt, initOpt) -> {
+          match initOpt {
+            case Some(init) -> walkExprForFieldWrite(ctx, init)
+            case None -> {
+            }
+          }
+          fieldWriteTrackLocal(ctx, name, tyOpt, initOpt)
+        }
+      }
+    }
+    case SAssign(t, _, v) -> {
+      checkFieldWriteTarget(ctx, t)
+      walkExprForFieldWrite(ctx, t)
+      walkExprForFieldWrite(ctx, v)
+    }
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(v) -> walkExprForFieldWrite(ctx, v)
+        case None -> {
+        }
+      }
+    }
+    case SThrow(x) -> walkExprForFieldWrite(ctx, x)
+    case STry(body, catches, finally_) -> {
+      walkBlockForFieldWrite(ctx, body)
+      var ci = 0
+      while ci < catches.count {
+        // `catch Type as name` binds `name` scoped to the catch body; evict
+        // any shadowed `var`-record mapping for that scope (#6194, the
+        // remaining #6185 binder shape).
+        val catchNames: List[String] = newList()
+        match catches[ci].bindName {
+          case Some(nm) -> catchNames.add(nm)
+          case None -> {
+          }
+        }
+        walkBlockForFieldWriteEvicting(ctx, catches[ci].body, catchNames)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> walkBlockForFieldWrite(ctx, fb)
+        case None -> {
+        }
+      }
+    }
+    case SDefer(body) -> walkBlockForFieldWrite(ctx, body)
+    case SScope(_, body) -> walkBlockForFieldWrite(ctx, body)
+    case SFor(_, pat, iter, body) -> {
+      walkExprForFieldWrite(ctx, iter)
+      // The loop pattern binds names scoped to the body (#6185).
+      val forNames: List[String] = newList()
+      fieldWriteCollectPatternNames(pat, forNames)
+      walkBlockForFieldWriteEvicting(ctx, body, forNames)
+    }
+    case SWhile(_, cond, body) -> {
+      walkExprForFieldWrite(ctx, cond)
+      walkBlockForFieldWrite(ctx, body)
+    }
+    case SLoop(_, body) -> walkBlockForFieldWrite(ctx, body)
+    case SExpr(x) -> walkExprForFieldWrite(ctx, x)
+    case SInvariant(x) -> walkExprForFieldWrite(ctx, x)
+    case SRule(l, r) -> {
+      walkExprForFieldWrite(ctx, l)
+      walkExprForFieldWrite(ctx, r)
+    }
+    case SBreak(_) -> {
+    }
+    case SContinue(_) -> {
+    }
+    case SItem(_) -> {
+    }
+  }
+}
+
+func walkBlockForFieldWrite(ctx: in FieldWriteCtx, blk: in Block): Unit {
+  walkBlockForFieldWriteEvicting(ctx, blk, newList())
+}
+
+func walkBlockForFieldWriteEvicting(ctx: in FieldWriteCtx, blk: in Block, evictNames: in List[String]): Unit {
+  // Scope-undo (#6166): `ctx.locals` is a single flat map with no scope
+  // push/pop, so a `var` record local declared inside this block would leak
+  // its record-type binding to the enclosing scope after the block ends — a
+  // same-named outer local (or a later same-named local of a DIFFERENT record
+  // type) would then be checked against this block's stale type, causing
+  // V0015 false negatives and false positives.  Snapshot the map on entry and
+  // restore it on exit (the field-write analog of `Jvm.Codegen.allocSlot`'s
+  // scope-undo log).  Every `{ }` block is a lexical scope, and every
+  // scope-introducing construct (if/else, match arm, loop/try/scope body,
+  // block expression) routes through here, so this is the single correct
+  // choke point.
+  val snap = fieldWriteSnapshot(ctx)
+  // Names this scope re-binds via a non-`var` binder (match-arm pattern,
+  // lambda param, for-loop variable) shadow any outer `var`-record mapping for
+  // the duration of the scope (#6185); the restore below puts the outer
+  // mapping back on exit.
+  var ei = 0
+  while ei < evictNames.count {
+    fieldWriteEvictName(ctx, evictNames[ei])
+    ei = ei + 1
+  }
+  var i = 0
+  while i < blk.statements.count {
+    walkStmtForFieldWrite(ctx, blk.statements[i])
+    i = i + 1
+  }
+  fieldWriteRestore(ctx, snap)
+}
+
+func checkFuncForFieldWrite(
+  recordFields: in Map[String, Map[String, Bool]],
+  diag: in List[Diagnostic],
+  fn: in FunctionDecl,
+): Unit {
+  match fn.body {
+    case None -> {
+    }
+    case Some(body) -> {
+      // Only `var` locals are tracked as write-capable record bindings — NOT
+      // `inout` parameters.  A pervasive stdlib idiom (Std.Xml, Std.Yaml,
+      // Std.Json, Std.HttpEngine: a cursor-style state record threaded
+      // through a call chain of `st: inout StateRecord` helpers, each
+      // mutating a field directly) writes non-`var` fields through `inout`
+      // params at dozens of call sites; tracking `inout` here would flag all
+      // of it and break the stdlib build.  See docs/01-language-reference.md
+      // §2.4 — full write-site enforcement (including through `inout`) is
+      // future T6+ work; this pass covers the narrower, unambiguous case of
+      // a field write through a local the *same* function constructed.
+      val locals: Map[String, String] = newMap()
+      val ctx = FieldWriteCtx(diag = diag, recordFields = recordFields, locals = locals)
+      match body {
+        case FBExpr(e) -> walkExprForFieldWrite(ctx, e)
+        case FBBlock(blk) -> walkBlockForFieldWrite(ctx, blk)
+      }
+    }
+  }
+}
+
+func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): Unit {
+  val recordFields = collectRecordFieldsOfFile(file)
+  if mapIsEmpty(recordFields) {
+    return
+  }
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn)
+      case IRecord(decl) | IExposedRec(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IImpl(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §11. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta]): ModeCheckResult {
@@ -2470,6 +3134,7 @@ pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta
   checkAwaitInTry(file, fileLevel, diag)
   checkSpawnConsumption(file, fileLevel, diag)
   checkNativeFfiBoundary(file, diag)
+  checkImmutableFieldWrites(file, diag)
   if not vlIsProofRequired(fileLevel) {
     return ModeCheckResult(level = fileLevel, diagnostics = diag)
   }

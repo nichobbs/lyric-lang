@@ -220,22 +220,47 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           match selfFieldType(ctx, name) {
             case Some(fty) -> {
               val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+              // The RHS is lowered against an EMPTY operand stack in both arms
+              // — `this` (slot 0, stable) is pushed only AFTER the RHS, and for
+              // a compound op the current field value is read into a temp
+              // first.  This is the implicit-self (`impl` method / protected-
+              // type entry) sibling of the `EMember` path's #5936 fix: a bare
+              // self-field reassign whose RHS reads the same field inline
+              // (`buf = buf.slice(0, n)` inside an `impl` method) lowers to an
+              // internal conditional branch (the inlined bounds check), and
+              // evaluating it with `this` still live broke the "operand stack
+              // empty at every branch target" StackMapTable invariant →
+              // `VerifyError: Inconsistent stackmap frames` (#6168).
               match op {
                 case AssEq -> {
-                  insns.add(LAload(slot = 0))
                   val vTy = lowerExpr(ctx, insns, value)
+                  val vSlot = allocSlot(ctx, "__sfassign_v_" + freshLabel(ctx), vTy)
+                  emitStore(insns, vSlot, vTy)
+                  insns.add(LAload(slot = 0))
+                  emitLoad(insns, vSlot, vTy)
                   // Receiver-aware coercion: a `[B` flowing into a
                   // `slice[Byte]`-typed receiver field needs the boxing loop,
-                  // which requires spilling `this` around it (#5609 item 2).
+                  // which requires an empty stack under the reloaded value —
+                  // guaranteed now that both operands come from slots
+                  // (#5609 item 2).
                   coerceValueToUnderReceiver(ctx, insns, JRef(className = selfCls), vTy, fty)
                   insns.add(LPutfield(owner = selfCls, name = name, t = fty))
                 }
                 case _ -> {
                   insns.add(LAload(slot = 0))
-                  insns.add(LDup)
                   insns.add(LGetfield(owner = selfCls, name = name, t = fty))
+                  val curSlot = allocSlot(ctx, "__sfassign_cur_" + freshLabel(ctx), fty)
+                  emitStore(insns, curSlot, fty)
                   val vTy = lowerExpr(ctx, insns, value)
+                  val vSlot = allocSlot(ctx, "__sfassign_v_" + freshLabel(ctx), vTy)
+                  emitStore(insns, vSlot, vTy)
+                  emitLoad(insns, curSlot, fty)
+                  emitLoad(insns, vSlot, vTy)
                   emitCompoundCombineJvm(ctx, insns, op, fty, vTy)
+                  val combSlot = allocSlot(ctx, "__sfassign_comb_" + freshLabel(ctx), fty)
+                  emitStore(insns, combSlot, fty)
+                  insns.add(LAload(slot = 0))
+                  emitLoad(insns, combSlot, fty)
                   insns.add(LPutfield(owner = selfCls, name = name, t = fty))
                 }
               }
@@ -268,7 +293,20 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
       // Record / opaque field assignment: `recv.field = e` → load receiver, eval
       // (and coerce) RHS, `putfield owner.field:desc`.  Compound ops
       // (`recv.field += e`) read the current field value, combine, and store.
+      //
+      // The receiver — and, for compound ops, the current field value — is
+      // spilled to a temp slot and RELOADED after the RHS is lowered, rather
+      // than left live on the operand stack across it.  `assembleCodeWithFrames`
+      // documents (and its StackMapTable generator hard-codes) that the operand
+      // stack is EMPTY at every branch target; an RHS that reads the same
+      // field being assigned inline (`h.buf = h.buf.slice(n, h.buf.length)`)
+      // lowers to bytecode with an internal conditional branch (the inlined
+      // `.slice()`/`.concat()` bounds check), and evaluating it with `recv`
+      // still live on the stack broke that invariant — `VerifyError:
+      // Inconsistent stackmap frames at branch target` (#5936).
       val recvTy = lowerExpr(ctx, insns, recv)
+      val recvSlot = allocSlot(ctx, "__fassign_recv_" + freshLabel(ctx), recvTy)
+      emitStore(insns, recvSlot, recvTy)
       match recvTy {
         case JRef(cls) -> {
           val fty = match recordFieldType(ctx, cls, fieldName) {
@@ -278,20 +316,36 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           match op {
             case AssEq -> {
               val vTy = lowerExpr(ctx, insns, value)
+              val vSlot = allocSlot(ctx, "__fassign_v_" + freshLabel(ctx), vTy)
+              emitStore(insns, vSlot, vTy)
+              emitLoad(insns, recvSlot, recvTy)
+              emitLoad(insns, vSlot, vTy)
               // Receiver-aware coercion (#5609 item 2): the boxing loop for
               // a `[B` → `slice[Byte]` field needs an empty operand stack,
-              // so the already-stacked receiver is spilled around it.
+              // which reloading from slots (instead of keeping values live
+              // across the RHS) already guarantees.
               coerceValueToUnderReceiver(ctx, insns, recvTy, vTy, fty)
               insns.add(LPutfield(owner = cls, name = fieldName, t = fty))
             }
             case _ -> {
-              // Compound: stack has [recv]; dup it so one copy reads the field and
-              // the other receives the putfield.  Sequence: dup; getfield; rhs;
-              // <op>; putfield.
-              insns.add(LDup)
+              // Compound: read the current field value into a slot too, so
+              // the RHS is lowered against an empty operand stack exactly
+              // like the AssEq case above, then reload [current, rhs] for
+              // the combine and [recv, combined] for the store.
+              emitLoad(insns, recvSlot, recvTy)
               insns.add(LGetfield(owner = cls, name = fieldName, t = fty))
+              val curSlot = allocSlot(ctx, "__fassign_cur_" + freshLabel(ctx), fty)
+              emitStore(insns, curSlot, fty)
               val vTy = lowerExpr(ctx, insns, value)
+              val vSlot = allocSlot(ctx, "__fassign_v_" + freshLabel(ctx), vTy)
+              emitStore(insns, vSlot, vTy)
+              emitLoad(insns, curSlot, fty)
+              emitLoad(insns, vSlot, vTy)
               emitCompoundCombineJvm(ctx, insns, op, fty, vTy)
+              val combSlot = allocSlot(ctx, "__fassign_comb_" + freshLabel(ctx), fty)
+              emitStore(insns, combSlot, fty)
+              emitLoad(insns, recvSlot, recvTy)
+              emitLoad(insns, combSlot, fty)
               insns.add(LPutfield(owner = cls, name = fieldName, t = fty))
             }
           }

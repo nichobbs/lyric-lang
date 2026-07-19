@@ -90,7 +90,7 @@ pub record Customer {
   pub id:    CustomerId
   pub email: Email
   internalNotes: String    // package-private field
-  var count: Int           // mutable field (mutability enforcement: T6+)
+  var count: Int           // mutable field (a write to a non-`var` field via a `var` local is V0015)
 }
 
 // Sum type (union)

@@ -1717,6 +1717,27 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/inout_slice_self_test.l
 
+      # Inout-field self-reassign self-test (#5936).  `h.field = h.field.slice(...)`
+      # on an inout record param, inline (RHS reads the field being assigned),
+      # followed by a match — the receiver must be spilled to a temp before the
+      # RHS lowers or its internal branch desyncs the StackMapTable (JVM
+      # VerifyError).  JVM is load-bearing; this is the dotnet parity control.
+      - name: Inout-field self-reassign self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping inout-field-self-reassign self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping inout-field-self-reassign self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/inout_field_self_reassign_self_test.l
+
       # Enum/closure/pattern-bind self-test (D-progress-623 / #5361, #5364).
       # Pins two self-hosted MSIL backend bugs: a payload-free `enum`
       # co-compiled with a closure crashing `Msil.Lowering` (#5361), and a
@@ -4762,6 +4783,49 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/inout_slice_self_test.l
+
+      # Inout-field self-reassign self-test on JVM (#5936) — the load-bearing
+      # run (the VerifyError only reproduced on JVM's StackMapTable path); the
+      # dotnet half is the parity control in the same-named dotnet-job step.
+      - name: Inout-field self-reassign self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping inout-field-self-reassign JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping inout-field-self-reassign JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/inout_field_self_reassign_self_test.l
+
+      # Self-field reassign in an impl method self-test on JVM (#6168) — the
+      # implicit-receiver (`selfFieldType`) sibling of the inout-field fix
+      # above: a bare `field = <branching RHS>` inside an `impl` method must
+      # lower the RHS against an empty operand stack (spill `this`) or the
+      # branch target's StackMapTable frame desyncs (VerifyError).  JVM-ONLY:
+      # bare self-field mutation in an impl method is silently dropped on MSIL
+      # today (a separate, pre-existing bug), and the #6168 defect itself is
+      # JVM-specific.
+      - name: Self-field reassign self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping self-field-reassign JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping self-field-reassign JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/self_field_reassign_jvm_self_test.l
 
       # Never-tail self-test on JVM (#5652) — the JVM half of the dotnet-job
       # step of the same name.  Pins the Never-in-tail-position default-value
