@@ -30460,22 +30460,28 @@ types, `TlsVersion` enum, `TlsServerConfig` record (mTLS-ready from v1),
 JVM uses `CertificateFactory` for certs and a pure-Lyric PEM→DER→
 `PKCS8EncodedKeySpec` path for keys, with a sign/verify round-trip for
 mismatch detection. Testing surfaced three pre-existing, general compiler
-bugs unrelated to TLS specifically (filed, not fixed here): #5903 (nested
-union-case pattern-match mis-dispatch, JVM), #5908 (cross-package
-record-default-field construction silently wrong on `--target jvm`), and
-#5920 (the same cross-package record-default-field construction throwing
-`InvalidProgramException` on `--target dotnet` under the source-built
-toolchain — found via real CI evidence after the implementing sandbox's
-published-tool verification missed it). `Std.Tls` works around #5903 with
-a case rename; for #5908/#5920, `TlsServerConfig`'s defaults-omission test
-was removed outright (no target currently passes it, so per CLAUDE.md it
-isn't gated to either one) rather than kept on a single target, leaving
-only the explicit-fields-construction test, which runs on both targets.
-`tls.l`'s `TlsServerConfig` doc comment tells consumers to pass every
-field explicitly until both bugs land.
+bugs unrelated to TLS specifically (filed, not fixed at the time): #5903
+(nested union-case pattern-match mis-dispatch, JVM, still open), #5908
+(cross-package record-default-field construction silently wrong on
+`--target jvm`), and #5920 (the same cross-package record-default-field
+construction throwing `InvalidProgramException` on `--target dotnet`
+under the source-built toolchain — found via real CI evidence after the
+implementing sandbox's published-tool verification missed it). `Std.Tls`
+works around #5903 with a case rename. **#5908/#5920 are now fixed** across
+four independent gaps (`Lyric.ContractMeta.reprForRecord`/`reprForOpaque`
+preserve a field's default-value expression across the restored-DLL repr
+round-trip; the MSIL bridge threads it into `ctorDefaultExprs` for both
+restored-package AND `Std.*` stdlib records — two separate registration
+functions had the identical gap; the JVM backend's `lowerConstruction`
+lowers the declared default instead of a zero value, independent of
+package origin) — `TlsServerConfig`'s defaults-omission test is back in
+`tls_server_config_tests.l` and runs on both targets; `tls.l`'s
+`TlsServerConfig` doc comment no longer tells consumers to pass every
+field explicitly. See `docs/03-decision-log.md` D-progress-704 for the
+full four-part root-cause breakdown.
 
-**Related:** `docs/03-decision-log.md` D-progress-689; #5876, #5874, #5903,
-#5908, #5920.
+**Related:** `docs/03-decision-log.md` D-progress-689, D-progress-704;
+#5876, #5874, #5903, #5908, #5920.
 
 ## `HttpClientBuilder` TLS client configuration ships (phase 1.2) — dotnet trust/identity/min-version surface with the dual-key insecure policy (2026-07-17)
 

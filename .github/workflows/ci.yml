@@ -951,11 +951,13 @@ jobs:
             lyric-compiler/lyric/slice_append_widening_self_test.l \
             lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
             lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
+            lyric-compiler/lyric/record_omitted_default_self_test.l \
             lyric-compiler/lyric/slice_byte_lambda_arg_self_test.l \
             lyric-compiler/lyric/app_host_self_test.l \
             lyric-compiler/lyric/deflate_zip_self_test.l \
             lyric-compiler/lyric/generator/generator_self_test.l \
-            lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l ; do
+            lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l \
+            lyric-compiler/lyric/jvm_impl_extern_class_self_test.l ; do
             echo "=== $t ==="
             bash scripts/ci-retry-on-signal.sh "$lyric_bin" test "$t"
             ran="$ran $t"
@@ -4410,6 +4412,27 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/slice_byte_lambda_arg_self_test.l
+
+      # Record omitted-default construction self-test on JVM (#5908/#5920 +
+      # the #6146 non-trailing-omission field-alignment follow-up).  JVM is
+      # load-bearing for both the omitted-default materialisation and the
+      # per-field padding (a middle default omitted while a later field is
+      # supplied); the dotnet half runs in the "Compiler self-tests" loop.
+      - name: Record omitted-default self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping record-omitted-default JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping record-omitted-default JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/record_omitted_default_self_test.l
 
       # Lambda-Bool-if-condition self-test on JVM (#5935) — the JVM half of the
       # dotnet-job step of the same name; this is the load-bearing run (the

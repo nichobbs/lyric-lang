@@ -3,18 +3,23 @@
 //!
 //! `TlsServerConfig`'s omitted-defaults ergonomics (`TlsServerConfig(identity
 //! = id)`, leaning on `minVersion`/`clientCa`/`requireClientCert`'s declared
-//! defaults) do NOT have a test here — that construction shape currently
-//! miscompiles on **both** targets under the source-built compiler: JVM gets
-//! an incorrectly-populated field value for a cross-package record
-//! constructed with an omitted default (#5908), and CI evidence against
-//! `main`'s own toolchain (not just this sandbox's published fallback tool)
-//! showed the identical construction throws
-//! `System.InvalidProgramException: Common Language Runtime detected an
-//! invalid program.` on `--target dotnet` too — the MSIL sibling of #5908,
-//! filed as #5920. Per CLAUDE.md's "no skipped/known-failing tests" rule,
-//! there is no test to gate on either target for this shape; restore it
-//! once #5908 and #5920 both land. The remaining test below (every field
-//! passed explicitly) is unaffected by either bug and runs on both targets.
+//! defaults) previously had no test here: that construction shape miscompiled
+//! on **both** targets — JVM got an incorrectly-populated field value for a
+//! cross-package record constructed with an omitted default (#5908), and
+//! dotnet threw `System.InvalidProgramException: Common Language Runtime
+//! detected an invalid program.` for the identical construction (the MSIL
+//! sibling of #5908, filed as #5920). Root cause: the record's default-value
+//! expression was silently dropped when the compiler round-tripped a
+//! restored (compiled-DLL) dependency's public surface — the contract
+//! `repr` string a cross-package construction site resolves the default
+//! from never embedded the field's `= expr` in the first place
+//! (`Lyric.ContractMeta.reprForRecord`) — plus (JVM only) `lowerConstruction`
+//! unconditionally substituted the JVM zero value for any omitted field
+//! instead of ever consulting its declared default. Both are fixed; the test
+//! below exercises the omitted-defaults construction shape and covers all
+//! three defaulted fields' kinds in one call: an enum default (`minVersion`),
+//! a generic/union default (`clientCa: Option[Certificate] = None`), and a
+//! scalar `Bool` default (`requireClientCert`).
 @test_module
 package Std.Tls.ServerConfigTests
 
@@ -83,25 +88,30 @@ doONW2QlEIagNnVFFGh2abM=
 test "TlsServerConfig accepts explicit non-default values" {
   match Identity.fromPem(rsaCert, rsaKey) {
     case Err(e) -> panic("expected Ok building the identity: " + TlsError.message(e))
-    case Ok(identity) -> match Certificate.fromPem(rsaCert) {
-      case Err(e) -> panic("expected Ok building the CA certificate: " + TlsError.message(e))
-      case Ok(ca) -> {
-        val cfg = TlsServerConfig(
-          identity = identity,
-          minVersion = Tls13,
-          clientCa = Some(value = ca),
-          requireClientCert = true
-        )
-        match cfg.minVersion {
-          case Tls13 -> assertTrue(true, "minVersion honors an explicit Tls13")
-          case Tls12 -> panic("expected explicit minVersion Tls13")
-        }
-        match cfg.clientCa {
-          case Some(_) -> assertTrue(true, "clientCa honors an explicit certificate")
-          case None -> panic("expected explicit clientCa Some")
-        }
-        assertTrue(cfg.requireClientCert, "requireClientCert honors an explicit true")
+    case Ok(identity) -> match Certificate.fromPem(rsaCert) { case Err(e) -> panic("expected Ok building the CA certificate: " + TlsError.message(e)); case Ok(ca) -> { val cfg = TlsServerConfig(identity = identity, minVersion = Tls13, clientCa = Some(value = ca), requireClientCert = true); match cfg.minVersion { case Tls13 -> assertTrue(true, "minVersion honors an explicit Tls13"); case Tls12 -> panic("expected explicit minVersion Tls13") }; match cfg.clientCa { case Some(_) -> assertTrue(true, "clientCa honors an explicit certificate"); case None -> panic("expected explicit clientCa Some") }; assertTrue(cfg.requireClientCert, "requireClientCert honors an explicit true") } }
+  }
+}
+
+// Regression test for #5908 (JVM) / #5920 (dotnet, MSIL): construction
+// omitting every defaulted field must resolve each field's declared
+// default, not a JVM/CLR zero value. `Std.Tls` is a restored (prebuilt
+// `Lyric.Stdlib.dll`) dependency from this test's own package, so this
+// exercises the exact cross-package restored-dependency path both issues
+// were filed against.
+test "TlsServerConfig omitted defaults resolve to their declared values" {
+  match Identity.fromPem(rsaCert, rsaKey) {
+    case Err(e) -> panic("expected Ok building the identity: " + TlsError.message(e))
+    case Ok(identity) -> {
+      val cfg = TlsServerConfig(identity = identity)
+      match cfg.minVersion {
+        case Tls12 -> assertTrue(true, "minVersion defaults to Tls12 when omitted")
+        case Tls13 -> panic("expected the declared default minVersion = Tls12")
       }
+      match cfg.clientCa {
+        case None -> assertTrue(true, "clientCa defaults to None when omitted")
+        case Some(_) -> panic("expected the declared default clientCa = None")
+      }
+      assertFalse(cfg.requireClientCert, "requireClientCert defaults to false when omitted")
     }
   }
 }

@@ -41,7 +41,6 @@ import Std.String as Str
 import Std.Json
 import Std.Encoding as Encoding
 import Lyric.Lexer
-
 import Lyric.Parser
 import Msil.MetadataReader as Mdr
 import Lyric.CliShell as CliShell
@@ -869,6 +868,19 @@ func renderGenerics(g: in Option[GenericParams]): String {
 
 // Build the `pub record Name[T] { field1: T1, field2: T2 }` repr for
 // a record decl.  Records with no fields emit `pub record Name {}`.
+//
+// A field's default-value expression (`= expr`) is part of the repr —
+// omitting it silently drops the field's optionality for every consumer
+// that restores this record from a compiled DLL: the resynthesised
+// `RecordDecl` re-parsed from the repr would carry `dflt = None` on every
+// field, so a cross-package construction site that omits the field never
+// finds a default to splice in (`fillCtorDefaultArgs` / its JVM analogue
+// bail out), producing a `newobj`/constructor call with fewer arguments
+// than the declared field count — an invalid MSIL program
+// (`InvalidProgramException`, #5920) or a JVM constructor call that leaves
+// the field at its JVM-default value (#5908).  Mirrors
+// `reprForConfigField`'s identical `Fmt.exprInline` use for `config { }`
+// field defaults.
 func reprForRecord(decl: in RecordDecl): String {
   var fields = ""
   var i = 0
@@ -879,7 +891,8 @@ func reprForRecord(decl: in RecordDecl): String {
         if emittedAny {
           fields = fields + ", "
         }
-        fields = fields + f.name + ": " + renderTypeExpr(f.ty)
+        val defStr = match f.dflt { case Some(e) -> " = " + Fmt.exprInline(0, e); case None -> "" }
+        fields = fields + f.name + ": " + renderTypeExpr(f.ty) + defStr
         emittedAny = true
       }
       case _ -> ()
@@ -1072,7 +1085,11 @@ func reprForDistinct(decl: in DistinctTypeDecl): String {
 // `pub opaque type Name { f1: T1, ... }` — emits the structural
 // payload so cross-package consumers see the same field set the
 // emitter encoded.  Opaque types without a body emit
-// `pub opaque type Name {}`.
+// `pub opaque type Name {}`.  Field defaults are rendered for the same
+// reason as `reprForRecord`'s (#5908/#5920): dropping `= expr` here would
+// silently make a restored opaque type's defaulted field required at
+// every cross-package construction site (with no default expr to splice
+// in at codegen time).
 func reprForOpaque(decl: in OpaqueTypeDecl): String {
   var fields = ""
   var emittedAny = false
@@ -1083,7 +1100,8 @@ func reprForOpaque(decl: in OpaqueTypeDecl): String {
         if emittedAny {
           fields = fields + ", "
         }
-        fields = fields + f.name + ": " + renderTypeExpr(f.ty)
+        val defStr = match f.dflt { case Some(e) -> " = " + Fmt.exprInline(0, e); case None -> "" }
+        fields = fields + f.name + ": " + renderTypeExpr(f.ty) + defStr
         emittedAny = true
       }
       case _ -> ()

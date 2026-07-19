@@ -1944,7 +1944,15 @@ func pushDefaultValue(insns: in List[LInsn], ty: in JvmType): Unit {
 // A `<init>` consumes fields positionally; named-argument call sites (`Point(y
 // = 2, x = 1)`) must be permuted to match.  All-positional calls are returned
 // unchanged (already in declaration order).
-func orderCtorArgs(fields: in List[JvmCaseField], args: in List[CallArg]): List[CallArg] {
+// One entry per FIELD (length always == fields.count): `Some(arg)` when the
+// call site supplied that field — by name if any argument is named, else by
+// position — and `None` when it was omitted (the field's declared default is
+// used at the construction site).  Padding omitted slots per-field, rather
+// than compacting to only the supplied args, is what keeps `fields[i]` aligned
+// with its own value when a NON-trailing defaulted field is omitted while a
+// later field is supplied (`R(a = 1, c = 9)` on `record R { a, b = 2, c = 3 }`
+// — the compacting form put `c`'s value into `b` and defaulted `c`, #6146).
+func orderCtorArgsPadded(fields: in List[JvmCaseField], args: in List[CallArg]): List[Option[CallArg]] {
   var anyNamed = false
   var i = 0
   while i < args.count {
@@ -1956,8 +1964,21 @@ func orderCtorArgs(fields: in List[JvmCaseField], args: in List[CallArg]): List[
     }
     i = i + 1
   }
+  val result: List[Option[CallArg]] = newList()
   if not anyNamed {
-    return args
+    // Positional: field f takes args[f] when supplied, else None.  A positional
+    // call can only omit TRAILING fields (the front-end enforces this), so
+    // position is a faithful field index.
+    var p = 0
+    while p < fields.count {
+      if p < args.count {
+        result.add(Some(value = args[p]))
+      } else {
+        result.add(None)
+      }
+      p = p + 1
+    }
+    return result
   }
   val byName: Map[String, CallArg] = newMap()
   var j = 0
@@ -1972,18 +1993,12 @@ func orderCtorArgs(fields: in List[JvmCaseField], args: in List[CallArg]): List[
     }
     j = j + 1
   }
-  val reordered: List[CallArg] = newList()
   var f = 0
   while f < fields.count {
-    match mapGet(byName, fields[f].name) {
-      case Some(a) -> {
-        reordered.add(a)
-      }
-      case None -> ()
-    }
+    result.add(mapGet(byName, fields[f].name))
     f = f + 1
   }
-  reordered
+  result
 }
 
 // Lower a record / union-case construction to `new`/`invokespecial`.  Arguments
@@ -2006,23 +2021,48 @@ func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in Str
       // ("Inconsistent stackmap frames").  Storing each argument to a local
       // first guarantees the stack is empty when any such branching argument
       // lowers, regardless of the enclosing constructor call.
-      val ordered = orderCtorArgs(fields, args)
+      // Per-field, padded (length == fields.count): `Some` = supplied by the
+      // call site, `None` = omitted (use the field's declared default).  Every
+      // field resolves against ITS OWN slot, so an omitted non-trailing
+      // defaulted field can't shift a later supplied field's value into it
+      // (#6146).
+      val ordered = orderCtorArgsPadded(fields, args)
       val argSlots: List[Int] = newList()
       var i = 0
       while i < fields.count {
         val fty = fields[i].ty
-        if i < ordered.count {
-          val aTy = lowerCallArg(ctx, insns, ordered[i])
-          // `coerceValueTo` (not bare `coerceArgTo`) so a raw JDK primitive
-          // array flowing into a declared `slice[T]` field boxes into the
-          // erased `[Ljava/lang/Object;` representation the field descriptor
-          // (and this arg slot's StackMapTable entry) declares (#5572).
-          coerceValueTo(ctx, insns, aTy, fty)
-          val slot = allocSlot(ctx, "__ctor_arg_" + freshLabel(ctx), fty)
-          emitStore(insns, slot, fty)
-          argSlots.add(slot)
-        } else {
-          argSlots.add(-1)
+        match ordered[i] {
+          case Some(arg) -> {
+            val aTy = lowerCallArg(ctx, insns, arg)
+            // `coerceValueTo` (not bare `coerceArgTo`) so a raw JDK primitive
+            // array flowing into a declared `slice[T]` field boxes into the
+            // erased `[Ljava/lang/Object;` representation the field descriptor
+            // (and this arg slot's StackMapTable entry) declares (#5572).
+            coerceValueTo(ctx, insns, aTy, fty)
+            val slot = allocSlot(ctx, "__ctor_arg_" + freshLabel(ctx), fty)
+            emitStore(insns, slot, fty)
+            argSlots.add(slot)
+          }
+          case None -> {
+            // Field omitted at the call site: use its declared default-value
+            // expression (#5908).  The JVM-zero-value fallback
+            // (`pushDefaultValue` below) is only correct for a field with no
+            // source-level default, which the type checker should never let
+            // through as omitted.  Evaluate the default expression exactly like
+            // a supplied argument (same reason as above: it can itself branch,
+            // so it must land in a local before `new`/`dup` put uninitialized-
+            // object slots on the stack).
+            match fields[i].dflt {
+              case Some(defExpr) -> {
+                val aTy = lowerExpr(ctx, insns, defExpr)
+                coerceValueTo(ctx, insns, aTy, fty)
+                val slot = allocSlot(ctx, "__ctor_dflt_" + freshLabel(ctx), fty)
+                emitStore(insns, slot, fty)
+                argSlots.add(slot)
+              }
+              case None -> argSlots.add(-1)
+            }
+          }
         }
         i = i + 1
       }
