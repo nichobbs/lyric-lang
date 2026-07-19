@@ -9,6 +9,17 @@ on:
 permissions:
   contents: read
 
+# A follow-up push to the same PR (or a new push to main) supersedes
+# whatever CI run is already in flight for it — the old run's ~20 jobs
+# would just be queueing for runners while their result is about to be
+# discarded anyway. Cancelling frees those runner slots immediately for
+# whichever run actually needs to report a status. Group by PR number
+# when this is a pull_request event, falling back to the ref for push
+# events (mirrors the pattern already used by book.yml/claude-rebase.yml).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 # Single build configuration shared across every dotnet build / test /
 # path-discovery step.  Changing it here flips the configuration for
 # every dependent path (bin/$BUILD_CONFIG/net10.0/...) at once — keeps
@@ -21,6 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       has_code_changes: ${{ steps.changes.outputs.has_code_changes }}
+      has_core_changes: ${{ steps.changes.outputs.has_core_changes }}
+      has_jvm_ecosystem_changes: ${{ steps.changes.outputs.has_jvm_ecosystem_changes }}
+      ecosystem_run_map: ${{ steps.changes.outputs.run_map }}
     permissions:
       contents: read
 
@@ -46,9 +60,90 @@ jobs:
             HEAD_SHA="${{ github.sha }}"
           fi
 
+          # Shared core-infra prefix: anything here can change what every
+          # ecosystem-tests matrix entry does (the manifest chain, or how
+          # it's invoked) regardless of which library's own directory
+          # changed, so it must appear in EVERY entry's trigger pattern
+          # below, not just the has_core_changes check further down. A
+          # ci.yml-only change (like this PR's own diff) is the case that
+          # would otherwise silently zero out the whole matrix.
+          CORE_INFRA_PATTERN='lyric-compiler/|lyric-stdlib/|bootstrap/|lyric-rt/|resolver/|scripts/|Makefile|\.github/workflows/ci\.yml'
+
+          # Per-ecosystem-library dependency map backing the `ecosystem-tests`
+          # matrix (split from the old monolithic `ecosystem-security-tests`
+          # job). Each id names one lyric-<id>/ library; the value lists the
+          # OTHER lyric-<dep>/ directories that library's own test-manifest
+          # chain actually path-depends on, transcribed from the build-order
+          # comments that used to live inline in that job. `emit_run_map`
+          # below turns this into a JSON {id: true|false} map: a PR touching
+          # only an unrelated library's directory skips that matrix entry; a
+          # compiler/stdlib/core-infra change (per CORE_INFRA_PATTERN above)
+          # always triggers every entry.
+          declare -A ECO_DEPS=(
+            [auth]=""
+            [session]="cache"
+            [health]=""
+            [cache]=""
+            [docker]=""
+            [mail]=""
+            [aws-xray]=""
+            [aws-secrets]=""
+            [feature-flags]=""
+            [validation]=""
+            [storage]=""
+            [proto]=""
+            [otel]="proto"
+            [jsonrpc]=""
+            [mcp]="jsonrpc"
+            [logging]=""
+            [mq]="cache"
+            [grpc]="auth resilience"
+            [db]="logging"
+            [search]="resilience"
+            [lambda]="auth resilience web"
+            [web]="auth resilience"
+            [ws]="auth"
+            [testing]="cache mail storage feature-flags mq session"
+          )
+
+          # $1: "true" forces every entry to true (conservative fallback /
+          # first push); otherwise $2 is the newline-separated changed-file
+          # list to grep each entry's trigger pattern against. Builds the
+          # JSON via an array + IFS join rather than manual comma bookkeeping
+          # so no branch of this loop can trip the shell's default `-e`.
+          emit_run_map() {
+            local force_true="$1"
+            local files="$2"
+            local id dep pattern val
+            local entries=()
+            for id in "${!ECO_DEPS[@]}"; do
+              if [ "$force_true" = "true" ]; then
+                val=true
+              else
+                pattern="^(${CORE_INFRA_PATTERN}|lyric-${id}/"
+                for dep in ${ECO_DEPS[$id]}; do
+                  pattern="${pattern}|lyric-${dep}/"
+                done
+                pattern="${pattern})"
+                if printf '%s\n' "$files" | grep -qE "$pattern"; then
+                  val=true
+                else
+                  val=false
+                fi
+              fi
+              entries+=("\"${id}\":${val}")
+            done
+            run_map="{$(IFS=,; echo "${entries[*]}")}"
+            echo "run_map=${run_map}" >> "$GITHUB_OUTPUT"
+            echo "Ecosystem per-library run map: ${run_map}"
+          }
+
           # First-ever push to a branch has no parent; treat as code change.
           if [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "has_code_changes=true" >> "$GITHUB_OUTPUT"
+            echo "has_core_changes=true" >> "$GITHUB_OUTPUT"
+            echo "has_jvm_ecosystem_changes=true" >> "$GITHUB_OUTPUT"
+            emit_run_map true ""
             echo "First push — assuming code changes."
             exit 0
           fi
@@ -82,6 +177,69 @@ jobs:
           else
             echo "has_code_changes=false" >> "$GITHUB_OUTPUT"
             echo "Docs-only change — build and test skipped."
+          fi
+
+          # Second, finer-grained signal: does the diff touch the
+          # compiler/runtime core (CORE_INFRA_PATTERN, declared above:
+          # lyric-compiler/, lyric-stdlib/, bootstrap/, lyric-rt/,
+          # resolver/, scripts/, this workflow file, or the root Makefile)?
+          # Deliberately excludes native/ — that directory holds only *.md
+          # backend-design planning docs (no code; the real native backend
+          # lives under lyric-compiler/lyric/llvm_*.l and
+          # lyric-stdlib/std/_kernel_native/, both already covered), so
+          # including it would force a rebuild for doc-only edits with
+          # nothing to actually verify. The compiler self-test,
+          # native-backend, closure zero-overhead, ilverify, AOT-smoke, and
+          # e2e-CLI jobs below only ever exercise this surface — a PR that
+          # touches just one ecosystem library (lyric-web/, lyric-mq/,
+          # ...), lyric-vscode/, lyric-testing/, or examples/ gains nothing
+          # from re-running them. Same conservative-fallback shape as the
+          # has_code_changes check above: any ambiguity (git diff failure,
+          # first push already handled) resolves to "true" — a missed skip
+          # costs CI minutes, a wrong skip hides a regression.
+          core_changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
+            | { grep -E "^(${CORE_INFRA_PATTERN})" || true; } \
+            | head -1) || core_changed="yes"
+
+          if [ -n "$core_changed" ]; then
+            echo "has_core_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Compiler/runtime-core changes detected — compiler/native/JVM/AOT test jobs will run."
+          else
+            echo "has_core_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No compiler/runtime-core changes — compiler/native/JVM/AOT test jobs skipped."
+          fi
+
+          # compiler-self-tests-jvm's own gate: a superset of has_core_changes.
+          # Unlike the other 12 has_core_changes-gated jobs, this one also
+          # contains the ONLY CI exercise of four ecosystem libraries' JVM
+          # kernels/manifests — Storage.Kernel.Jvm, Resilience.Kernel.Jvm, the
+          # Auth.Kernel.Jvm feature-resolution build, and the lyric-web
+          # Undertow end-to-end smoke (tests/jvm_server_smoke.l) — none of
+          # which the ecosystem-tests matrix duplicates (it only runs their
+          # default/dotnet manifests). Folding lyric-web/storage/resilience/
+          # auth into the shared has_core_changes pattern instead would have
+          # over-broadened the OTHER 12 jobs' gates for libraries they never
+          # touch, so this is a separate, job-specific signal.
+          jvm_ecosystem_changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
+            | { grep -E "^(${CORE_INFRA_PATTERN}|lyric-web/|lyric-storage/|lyric-resilience/|lyric-auth/)" || true; } \
+            | head -1) || jvm_ecosystem_changed="yes"
+
+          if [ -n "$jvm_ecosystem_changed" ]; then
+            echo "has_jvm_ecosystem_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Compiler-core or web/storage/resilience/auth JVM-kernel changes detected — compiler-self-tests-jvm will run."
+          else
+            echo "has_jvm_ecosystem_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No compiler-core or web/storage/resilience/auth changes — compiler-self-tests-jvm skipped."
+          fi
+
+          # Finally, the per-library run map itself (a fresh `git diff` call,
+          # independent of the `changed`/`core_changed` computations above so
+          # a grep quirk in either can't affect this one).
+          eco_files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null) && eco_ok=1 || eco_ok=0
+          if [ "$eco_ok" -eq 1 ]; then
+            emit_run_map false "$eco_files"
+          else
+            emit_run_map true ""
           fi
 
       # Guardrail for #733: PR #687 gutted `_kernel/net/*.l` files in
@@ -600,7 +758,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -629,7 +787,14 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    # Its only real consumer is compiler-self-tests-jvm (build-and-test's
+    # `needs` on it is always()-gated and immune to cascade-skip) — shares
+    # that job's has_jvm_ecosystem_changes gate exactly, not the narrower
+    # has_core_changes, so a lyric-web/storage/resilience/auth-only change
+    # can't leave compiler-self-tests-jvm auto-skipped by GitHub's default
+    # cascade-skip-on-skipped-need behavior despite its own `if:` wanting
+    # to run.
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_ecosystem_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -697,7 +862,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -733,7 +898,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     continue-on-error: false  # Stage 2+: required gate — zero boxing must be maintained
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -771,7 +936,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     continue-on-error: false  # Stage 2+: required gate — zero boxing must be maintained
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -845,7 +1010,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
       - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
         run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
@@ -2826,7 +2991,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
       - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
         run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
@@ -2974,7 +3139,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
       - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
         run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
@@ -3740,7 +3905,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -4048,7 +4213,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -4216,7 +4381,12 @@ jobs:
     needs: [build, build-stage2]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    # Broader than the other has_core_changes-gated jobs: this one also
+    # carries the only JVM-kernel coverage for lyric-web/storage/resilience/
+    # auth (see has_jvm_ecosystem_changes above) — has_core_changes alone
+    # would silently skip that coverage on a PR confined to just one of
+    # those four libraries.
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_ecosystem_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -6407,7 +6577,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -6459,12 +6629,72 @@ jobs:
             --shard "${{ matrix.shard }}" \
             --lyric "$lyric_bin"
 
-  ecosystem-security-tests:
+  # Ecosystem-library security/regression tests. Split from one monolithic
+  # ~25-command job (#6165) into a per-library matrix so libraries run
+  # in parallel and a PR touching only one library's directory skips every
+  # unrelated entry. Gating comes from `needs.build.outputs.ecosystem_run_map`
+  # (computed in `build`'s "Detect code changes" step from the ECO_DEPS
+  # table there) — `deps:` below mirrors that same table and drives the
+  # actual path-dependency build order, leaf-first, so keep the two in sync
+  # if a library's local-path dependencies change.
+  ecosystem-tests:
     runs-on: ubuntu-latest
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: auth
+            deps: ""
+          - id: session
+            deps: "cache"
+          - id: health
+            deps: ""
+          - id: cache
+            deps: ""
+          - id: docker
+            deps: ""
+          - id: mail
+            deps: ""
+          - id: aws-xray
+            deps: ""
+          - id: aws-secrets
+            deps: ""
+          - id: feature-flags
+            deps: ""
+          - id: validation
+            deps: ""
+          - id: storage
+            deps: ""
+          - id: proto
+            deps: ""
+          - id: otel
+            deps: "proto"
+          - id: jsonrpc
+            deps: ""
+          - id: mcp
+            deps: "jsonrpc"
+          - id: logging
+            deps: ""
+          - id: mq
+            deps: "cache"
+          - id: grpc
+            deps: "auth resilience"
+          - id: db
+            deps: "logging"
+          - id: search
+            deps: "resilience"
+          - id: lambda
+            deps: "auth resilience web"
+          - id: web
+            deps: "auth resilience"
+          - id: ws
+            deps: "auth"
+          - id: testing
+            deps: "cache mail storage feature-flags mq session"
+    if: needs.build.outputs.has_code_changes == 'true' && fromJSON(needs.build.outputs.ecosystem_run_map)[matrix.id]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -6479,19 +6709,26 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # LYRIC_CLI_PATH is computed here (step level, shell-expanding the
+        # real $BUILD_CONFIG env var) rather than in a job-level `env:` —
+        # the `env` context is not available when *defining* another
+        # `env:` key at the job level (actionlint's own -ignore list
+        # documents this exact pre-existing pitfall for bench.yml's
+        # LYRIC_BIN, #5638 item 5). Written to $GITHUB_ENV so every later
+        # step in this job sees it as a real environment variable.
+        run: |
+          echo "LYRIC_CLI_PATH=bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" >> "$GITHUB_ENV"
+          chmod +x "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
 
-      - name: Ecosystem test suite (lyric-auth + lyric-session + lyric-health)
-        working-directory: ${{ github.workspace }}
+      - name: Stage stdlib DLLs + local-dep resolver setup
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
             echo "::error::stage 1 bundle missing; ecosystem tests cannot run"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
+          if [ ! -x "$LYRIC_CLI_PATH" ]; then
+            echo "::error::AOT binary not found at $LYRIC_CLI_PATH"
             exit 1
           fi
           # Stage 1 compiled all Lyric.Stdlib*.dll files into .bootstrap/stage1/.
@@ -6504,147 +6741,181 @@ jobs:
           stdlib_dlls=(.bootstrap/stage1/Lyric.Stdlib*.dll)
           shopt -u nullglob
           if (( ${#stdlib_dlls[@]} == 0 )); then
-            echo "::warning::no Lyric.Stdlib*.dll found in .bootstrap/stage1; skipping ecosystem tests"
-            exit 0
+            echo "::error::no Lyric.Stdlib*.dll found in .bootstrap/stage1"
+            exit 1
           fi
           mkdir -p lyric-stdlib/bin
           cp "${stdlib_dlls[@]}" lyric-stdlib/bin/
-          # NOTE: the per-test-dir stdlib pre-copy that used to live here is no
-          # longer needed — `lyric test --manifest` now co-locates the split
-          # `Lyric.Stdlib.*.dll` assemblies next to each compiled test DLL
-          # itself (cmdTestManifest -> copyRuntimeDepsBeside, #1468 / #1841).
-          # The `mkdir` stays because the Session.Host pre-copy below runs
-          # before `lyric test` creates the directory.
-          mkdir -p lyric-session/.lyric-test
           # lyric-session no longer needs a host shim: Session.Kernel.Net
           # binds StackExchange.Redis directly via @externTarget in native
           # Lyric (#1777). lyric-auth likewise needs no shim (pure Lyric
           # HMAC-SHA256 + constant-time comparison).
-          cli_bin_dir="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0"
           # Route emitProject subprocess calls to the F# bootstrap CLI, which
           # handles --internal-project-build.  The AOT binary is a pure trampoline
           # into the Lyric CLI dispatcher and does not handle internal flags
           # (#1082 stripped the AOT entry point of its path-discovery shim).
-          cli_dll="$cli_bin_dir/lyric.dll"
+          # Written to $GITHUB_ENV (not `export`) so it also applies to the
+          # later "Build path dependencies" / "Run tests" steps in this job.
+          cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
           if [ -f "$cli_dll" ]; then
-            export LYRIC_BIN=dotnet
-            export LYRIC_CLI_DLL="$cli_dll"
+            echo "LYRIC_BIN=dotnet" >> "$GITHUB_ENV"
+            echo "LYRIC_CLI_DLL=$cli_dll" >> "$GITHUB_ENV"
           fi
-          # lyric-session depends on Lyric.Cache (a local path dep).  The test
-          # runner's local-dep resolver requires the dep's output DLL to already
-          # exist (lyric-cache/bin/Cache.dll) and errors otherwise, so build it
-          # here before running the session suite.  Copy the result next to the
-          # session test DLL so `dotnet exec` loads it at runtime — the
-          # runtimeconfig additionalProbingPaths only resolves NuGet-style
-          # versioned layouts (same reason the host-shim DLLs are copied above).
-          echo "=== building lyric-cache (lyric-session dependency) ==="
-          if ! "$lyric_bin" build --manifest lyric-cache/lyric.toml; then
-            echo "::error::failed to build lyric-cache (lyric-session dependency)"
-            exit 1
-          fi
-          if [ -f lyric-cache/bin/Cache.dll ]; then
-            cp lyric-cache/bin/Cache.dll lyric-session/.lyric-test/
-          else
-            echo "::error::lyric-cache build produced no lyric-cache/bin/Cache.dll"
-            exit 1
-          fi
-          # lyric-health depends on Lyric.Web (a local path dep), which in
-          # turn depends on Lyric.Auth and Lyric.Resilience.  The test
-          # runner's local-dep resolver requires each dep's output DLL to
-          # already exist, so build the chain bottom-up before running the
-          # health suite (D-progress-505 / #679).
-          # lyric-logging is a path dep of lyric-db; lyric-resilience of
-          # lyric-search.  Build the dep chain bottom-up so each test's
-          # local-dep resolver finds an existing output DLL.
-          echo "=== building lyric-web chain + lyric-db/search deps ==="
-          for lib in lyric-logging lyric-auth lyric-resilience lyric-web; do
-            if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
-              echo "::error::failed to build $lib (ecosystem test dependency)"
+
+      - name: Build path dependencies (${{ matrix.deps }})
+        if: matrix.deps != ''
+        run: |
+          set -euo pipefail
+          for lib in ${{ matrix.deps }}; do
+            echo "=== building lyric-$lib (${{ matrix.id }} dependency) ==="
+            if ! "$LYRIC_CLI_PATH" build --manifest "lyric-$lib/lyric.toml"; then
+              echo "::error::failed to build lyric-$lib (${{ matrix.id }} dependency)"
               exit 1
             fi
           done
-          # Run all test manifests; capture exit codes so all always run
-          # before we report the overall result.
-          overall=0
-          echo "=== lyric-auth tests ==="
-          "$lyric_bin" test --manifest lyric-auth/lyric.toml || overall=$?
-          echo "=== lyric-session tests ==="
-          # lyric-session's dotnet/jvm features are not default (StackExchange.Redis
-          # is a genuine mandatory NuGet dep for the dotnet kernel, unlike
-          # lyric-auth/lyric-storage's NuGet-free dotnet default) — restore first,
-          # then activate the dotnet feature explicitly so Session.Kernel.Net and
-          # the Redis-dependent test files actually compile and run.
-          if ! "$lyric_bin" restore --manifest lyric-session/lyric.toml; then
-            echo "::error::failed to restore lyric-session NuGet dependencies"
-            overall=1
+
+      - name: Run tests (auth)
+        if: matrix.id == 'auth'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-auth/lyric.toml
+
+      - name: Run tests (session)
+        if: matrix.id == 'session'
+        # lyric-session's dotnet/jvm features are not default (StackExchange.Redis
+        # is a genuine mandatory NuGet dep for the dotnet kernel, unlike
+        # lyric-auth/lyric-storage's NuGet-free dotnet default) — restore first,
+        # then activate the dotnet feature explicitly so Session.Kernel.Net and
+        # the Redis-dependent test files actually compile and run. The Cache.dll
+        # copy is needed because the runtimeconfig additionalProbingPaths only
+        # resolves NuGet-style versioned layouts, not plain path deps.
+        run: |
+          set -euo pipefail
+          mkdir -p lyric-session/.lyric-test
+          if [ -f lyric-cache/bin/Cache.dll ]; then
+            cp lyric-cache/bin/Cache.dll lyric-session/.lyric-test/
+          else
+            echo "::error::lyric-cache/bin/Cache.dll missing (should have been built as a path dependency above)"
+            exit 1
           fi
-          "$lyric_bin" test --manifest lyric-session/lyric.toml --features dotnet || overall=$?
-          echo "=== lyric-health tests ==="
-          "$lyric_bin" test --manifest lyric-health/lyric.toml || overall=$?
-          # lyric-cache, lyric-mail, lyric-aws-xray, lyric-feature-flags, and
-          # lyric-validation are tier-0 (no local path deps) and have green
-          # suites; run them here so their coverage is enforced on every push
-          # instead of build-only.  cache is already built above (session
-          # dependency).
-          echo "=== lyric-cache tests ==="
-          "$lyric_bin" test --manifest lyric-cache/lyric.toml || overall=$?
-          # lyric-docker had never been wired into CI at all (#5697 follow-up):
-          # its own createContainerBody/extractJsonField suite went undetected-red
-          # for multiple releases (jsonEscapeValue called the nonexistent
-          # String.codePointAt, and \uXXXX/decimal decoding called the
-          # nonexistent Int.parse(s, radix) — both compiled, both crashed at
-          # runtime on first use). Tier-0 (no local path deps besides its own
-          # Sockets sub-package); run here so this can't regress silently again.
-          echo "=== lyric-docker tests ==="
-          "$lyric_bin" test --manifest lyric-docker/lyric.toml || overall=$?
-          echo "=== lyric-mail tests ==="
-          "$lyric_bin" test --manifest lyric-mail/lyric.toml || overall=$?
-          echo "=== lyric-aws-xray tests ==="
-          "$lyric_bin" test --manifest lyric-aws-xray/lyric.toml || overall=$?
-          # --features local: exercises the no-op local kernel (init()/
-          # getSecret()/getParameter() always-NotFound contract). The AWS
-          # SDK backend needs live credentials and isn't tested here.
-          echo "=== lyric-aws-secrets tests (local feature) ==="
-          "$lyric_bin" test --manifest lyric-aws-secrets/lyric.toml --features local || overall=$?
-          echo "=== lyric-feature-flags tests ==="
-          "$lyric_bin" test --manifest lyric-feature-flags/lyric.toml || overall=$?
-          echo "=== lyric-validation tests ==="
-          "$lyric_bin" test --manifest lyric-validation/lyric.toml || overall=$?
-          # lyric-storage also runs under --target jvm above, but that run only
-          # exercises the @cfg(feature = "jvm") stand-in of the ValidateKey
-          # weaving test. Run the default (dotnet) manifest here so the REAL
-          # woven @cfg(feature = "dotnet") around(call) aspect is exercised too.
-          echo "=== lyric-storage tests (dotnet) ==="
-          "$lyric_bin" test --manifest lyric-storage/lyric.toml || overall=$?
-          echo "=== lyric-proto tests ==="
-          "$lyric_bin" test --manifest lyric-proto/lyric.toml || overall=$?
-          # lyric-otel — type vocabulary + OTLP codec/transport tests; depends
-          # on Lyric.Proto as a workspace member (built by the workspace
-          # resolution above; keep lyric-proto's own tests before this).
-          echo "=== lyric-otel tests ==="
-          "$lyric_bin" test --manifest lyric-otel/lyric.toml || overall=$?
-          # lyric-logging, lyric-mq, and lyric-grpc went green once the
-          # enum-value-in-expression-position codegen fix (#3344) landed.  Their
-          # path deps are already built above: cache (mq), auth + resilience
-          # (grpc); logging is tier-0.
-          echo "=== lyric-logging tests ==="
-          "$lyric_bin" test --manifest lyric-logging/lyric.toml || overall=$?
-          echo "=== lyric-mq tests ==="
-          "$lyric_bin" test --manifest lyric-mq/lyric.toml || overall=$?
-          echo "=== lyric-grpc tests ==="
-          "$lyric_bin" test --manifest lyric-grpc/lyric.toml || overall=$?
-          # lyric-db (dep: logging) and lyric-search (dep: resilience) — test
-          # files corrected from non-Lyric syntax (qualified union construction /
-          # phantom Map API); deps built above.
-          echo "=== lyric-db tests ==="
-          # lyric-db's dotnet kernel has mandatory NuGet deps (Npgsql +
-          # Microsoft.Data.Sqlite) whose extern ctors resolve from package
-          # metadata at compile time — restore first, like lyric-session.
-          # The SQLite native asset (libe_sqlite3.so) is not deployed by the
-          # bundler yet (#5573), so point the loader at the NuGet cache.
-          if ! "$lyric_bin" restore --manifest lyric-db/lyric.toml; then
+          if ! "$LYRIC_CLI_PATH" restore --manifest lyric-session/lyric.toml; then
+            echo "::error::failed to restore lyric-session NuGet dependencies"
+            exit 1
+          fi
+          "$LYRIC_CLI_PATH" test --manifest lyric-session/lyric.toml --features dotnet
+
+      - name: Run tests (health)
+        if: matrix.id == 'health'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-health/lyric.toml
+
+      - name: Run tests (cache)
+        if: matrix.id == 'cache'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-cache/lyric.toml
+
+      # lyric-docker had never been wired into CI at all (#5697 follow-up):
+      # its own createContainerBody/extractJsonField suite went undetected-red
+      # for multiple releases (jsonEscapeValue called the nonexistent
+      # String.codePointAt, and \uXXXX/decimal decoding called the
+      # nonexistent Int.parse(s, radix) — both compiled, both crashed at
+      # runtime on first use). Run here so this can't regress silently again.
+      - name: Run tests (docker)
+        if: matrix.id == 'docker'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-docker/lyric.toml
+
+      - name: Run tests (mail)
+        if: matrix.id == 'mail'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-mail/lyric.toml
+
+      - name: Run tests (aws-xray)
+        if: matrix.id == 'aws-xray'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-aws-xray/lyric.toml
+
+      # --features local: exercises the no-op local kernel (init()/
+      # getSecret()/getParameter() always-NotFound contract). The AWS
+      # SDK backend needs live credentials and isn't tested here.
+      - name: Run tests (aws-secrets, local feature)
+        if: matrix.id == 'aws-secrets'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-aws-secrets/lyric.toml --features local
+
+      - name: Run tests (feature-flags)
+        if: matrix.id == 'feature-flags'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-feature-flags/lyric.toml
+
+      - name: Run tests (validation)
+        if: matrix.id == 'validation'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-validation/lyric.toml
+
+      # lyric-storage also runs under --target jvm elsewhere, but that run only
+      # exercises the @cfg(feature = "jvm") stand-in of the ValidateKey
+      # weaving test. Run the default (dotnet) manifest here so the REAL
+      # woven @cfg(feature = "dotnet") around(call) aspect is exercised too.
+      - name: Run tests (storage, dotnet)
+        if: matrix.id == 'storage'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-storage/lyric.toml
+
+      - name: Run tests (proto)
+        if: matrix.id == 'proto'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-proto/lyric.toml
+
+      # lyric-otel — type vocabulary + OTLP codec/transport tests; depends
+      # on Lyric.Proto as a workspace member (built as a path dependency above).
+      - name: Run tests (otel)
+        if: matrix.id == 'otel'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-otel/lyric.toml
+
+      # lyric-jsonrpc is tier-0 (pure Lyric, no deps). dotnet-target runs —
+      # the JVM gaps are tracked (#6123, #6124, #6136). Guards the
+      # published Lyric.JsonRpc package (#6156).
+      - name: Run tests (jsonrpc)
+        if: matrix.id == 'jsonrpc'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-jsonrpc/lyric.toml
+
+      # lyric-mcp restores Lyric.JsonRpc as a workspace member (built as a
+      # path dependency above). Guards the published Lyric.Mcp package
+      # (#6156).
+      - name: Run tests (mcp)
+        if: matrix.id == 'mcp'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-mcp/lyric.toml
+
+      - name: Run tests (logging)
+        if: matrix.id == 'logging'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-logging/lyric.toml
+
+      - name: Run tests (mq)
+        if: matrix.id == 'mq'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-mq/lyric.toml
+
+      - name: Run tests (grpc)
+        if: matrix.id == 'grpc'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-grpc/lyric.toml
+
+      # lyric-db's dotnet kernel has mandatory NuGet deps (Npgsql +
+      # Microsoft.Data.Sqlite) whose extern ctors resolve from package
+      # metadata at compile time — restore first, like lyric-session.
+      # The SQLite native asset (libe_sqlite3.so) is not deployed by the
+      # bundler yet (#5573), so point the loader at the NuGet cache.
+      - name: Run tests (db)
+        if: matrix.id == 'db'
+        run: |
+          set -euo pipefail
+          if ! "$LYRIC_CLI_PATH" restore --manifest lyric-db/lyric.toml; then
             echo "::error::failed to restore lyric-db NuGet dependencies"
-            overall=1
+            exit 1
           fi
           # `|| true` on the whole substitution: under `set -e`/`pipefail` a
           # `find` that hits an unreadable dir, or the SIGPIPE from `head`
@@ -6653,58 +6924,56 @@ jobs:
           # normal probe path.
           sqlite_native="$( { find "$HOME/.nuget/packages/sqlitepclraw.lib.e_sqlite3" -path '*linux-x64/native*' -name '*.so' 2>/dev/null || true; } | head -1 | { xargs -r dirname || true; } )"
           LD_LIBRARY_PATH="${sqlite_native}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-            "$lyric_bin" test --manifest lyric-db/lyric.toml || overall=$?
-          echo "=== lyric-search tests (elasticsearch, default) ==="
-          "$lyric_bin" test --manifest lyric-search/lyric.toml || overall=$?
-          # Meilisearch backend is a mutually-exclusive alternative feature, so
-          # it gets zero coverage from the default (elasticsearch) run (#5598).
-          # --no-default-features drops elasticsearch so the @cfg-gated probes
-          # don't collide on a duplicate name.
-          echo "=== lyric-search tests (meilisearch) ==="
-          "$lyric_bin" test --manifest lyric-search/lyric.toml --no-default-features --features meilisearch || overall=$?
-          # lyric-lambda (dep: lyric-web, built above) — test file corrected from
-          # non-Lyric syntax (|> pipe, phantom Map API, qualified union ctor); the
-          # library gained LambdaError factory functions + an authorizer split fix.
-          echo "=== lyric-lambda tests ==="
-          "$lyric_bin" test --manifest lyric-lambda/lyric.toml || overall=$?
-          # --features local: guards that the local-dev kernel (a real
-          # HTTP test server, Lambda.Kernel.Runtime) at least builds/links
-          # cleanly. The dispatch loop itself needs a live HTTP round-trip
-          # to exercise and isn't tested here — see docs/57 §5.2/§7 item 5.
-          echo "=== lyric-lambda tests (local feature) ==="
-          "$lyric_bin" test --manifest lyric-lambda/lyric.toml --features local || overall=$?
-          # lyric-web went green once the generic-`ConcurrentDictionary` extern
-          # codegen fix (#3392) landed: checkRateLimit is no longer a silent
-          # no-op, so the rate-limit suite asserts real deny/burst behaviour.
-          # Built above (lyric-web chain); run here to guard the fix.
-          echo "=== lyric-web tests ==="
-          "$lyric_bin" test --manifest lyric-web/lyric.toml || overall=$?
-          # lyric-ws depends on Lyric.Auth (already built above as part of the
-          # lyric-web chain).  Run here to guard the WebSocket type surface.
-          echo "=== lyric-ws tests ==="
-          "$lyric_bin" test --manifest lyric-ws/lyric.toml || overall=$?
-          # lyric-jsonrpc is tier-0 (pure Lyric, no deps); lyric-mcp restores
-          # Lyric.JsonRpc as a workspace member.  dotnet-target runs — the
-          # JVM gaps are tracked (#6123, #6124, #6136).  Guards the published
-          # Lyric.JsonRpc/Lyric.Mcp packages (#6156).
-          echo "=== lyric-jsonrpc tests ==="
-          "$lyric_bin" test --manifest lyric-jsonrpc/lyric.toml || overall=$?
-          echo "=== lyric-mcp tests ==="
-          "$lyric_bin" test --manifest lyric-mcp/lyric.toml || overall=$?
-          # lyric-testing went green (37/37) once three compiler fixes landed:
-          # the monomorphiser bare-name collision (#3627), type-alias resolution
-          # in interface-impl signatures (#3673), and isOk/isSome over erased
-          # generics (#3674).  Its mocks pull in mail/storage/mq/flags/session/
-          # cache; `lyric test --manifest` restores those path deps.
-          echo "=== lyric-testing tests ==="
-          "$lyric_bin" test --manifest lyric-testing/lyric.toml || overall=$?
-          if [ $overall -ne 0 ]; then
-            echo "::error::ecosystem test suite failed — security regression detected"
-            exit $overall
-          fi
-          echo "ecosystem test suite passed"
+            "$LYRIC_CLI_PATH" test --manifest lyric-db/lyric.toml
 
-  # Stdlib and ecosystem-library builds — runs in parallel with ecosystem-security-tests.
+      # Meilisearch backend is a mutually-exclusive alternative feature, so
+      # it gets zero coverage from the default (elasticsearch) run (#5598).
+      # --no-default-features drops elasticsearch so the @cfg-gated probes
+      # don't collide on a duplicate name.
+      - name: Run tests (search, elasticsearch + meilisearch)
+        if: matrix.id == 'search'
+        # Both variants always run even if the first fails (matching the
+        # old monolithic job's overall=$? aggregation) so a single failed
+        # run surfaces both failures instead of hiding the second behind
+        # the first until a follow-up push.
+        run: |
+          overall=0
+          "$LYRIC_CLI_PATH" test --manifest lyric-search/lyric.toml || overall=$?
+          "$LYRIC_CLI_PATH" test --manifest lyric-search/lyric.toml --no-default-features --features meilisearch || overall=$?
+          exit "$overall"
+
+      # --features local: guards that the local-dev kernel (a real
+      # HTTP test server, Lambda.Kernel.Runtime) at least builds/links
+      # cleanly. The dispatch loop itself needs a live HTTP round-trip
+      # to exercise and isn't tested here — see docs/57 §5.2/§7 item 5.
+      - name: Run tests (lambda, default + local feature)
+        if: matrix.id == 'lambda'
+        # Both variants always run even if the first fails (matching the
+        # old monolithic job's overall=$? aggregation) so a single failed
+        # run surfaces both failures instead of hiding the second behind
+        # the first until a follow-up push.
+        run: |
+          overall=0
+          "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml || overall=$?
+          "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml --features local || overall=$?
+          exit "$overall"
+
+      - name: Run tests (web)
+        if: matrix.id == 'web'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-web/lyric.toml
+
+      - name: Run tests (ws)
+        if: matrix.id == 'ws'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-ws/lyric.toml
+
+      - name: Run tests (testing)
+        if: matrix.id == 'testing'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-testing/lyric.toml
+
+  # Stdlib and ecosystem-library builds — runs in parallel with ecosystem-tests.
   stdlib-builds:
     runs-on: ubuntu-latest
     needs: [build]
@@ -7372,7 +7641,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -8372,7 +8641,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -8805,7 +9074,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, build-stage2, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, numbered-backend-self-tests, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required, resolver-build]
+    needs: [build, build-stage2, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, numbered-backend-self-tests, ecosystem-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required, resolver-build]
     if: always()
     permissions:
       contents: read
