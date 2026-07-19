@@ -6911,6 +6911,48 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-stdlib/tests/http_server_dotnet_tests.l
 
+      # HTTP/2 end-to-end curl smoke (#5889, docs/61 §6.4 phase 4.4): the
+      # dotnet Std.HttpServer over TLS advertises `h2` via ALPN and drives the
+      # pure-Lyric Std.HttpEngine.H2Conn FSM. The in-process own-client check
+      # (negotiatedVersion() == Http2) lives in the http_server_dotnet_tests.l
+      # step above; this is the INDEPENDENT implementation cross-check with a
+      # real curl/nghttp2 client (`--http2`), asserting the negotiated wire
+      # version is 2 and the routed body is 200 — mirroring the JVM
+      # jvm_server_smoke curl --http2 cross-check.
+      - name: Std.HttpServer dotnet h2 curl smoke (dotnet_h2_smoke.l)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping dotnet h2 curl smoke"
+            exit 1
+          fi
+          "$lyric_bin" build --target dotnet lyric-stdlib/tests/dotnet_h2_smoke.l -o /tmp/dotnet_h2_smoke.dll
+          dotnet /tmp/dotnet_h2_smoke.dll > /tmp/dotnet_h2_smoke.run.log 2>&1 &
+          smoke_pid=$!
+          up=0
+          for _ in $(seq 1 50); do
+            if curl -sk --http2 --max-time 1 -o /dev/null https://127.0.0.1:8443/hello 2>/dev/null; then up=1; break; fi
+            if ! kill -0 "$smoke_pid" 2>/dev/null; then break; fi
+            sleep 0.2
+          done
+          if [ "$up" != "1" ]; then
+            echo "::error::dotnet_h2_smoke server did not come up"
+            cat /tmp/dotnet_h2_smoke.run.log || true
+            kill "$smoke_pid" 2>/dev/null || true
+            exit 1
+          fi
+          # -o /dev/null so `$curlh2` is only the -w output (`2:200`); without it the
+          # `/hello` response body ("hello h2 dotnet") is captured too and the
+          # `2:200` match fails.
+          curlh2="$(curl -sk -o /dev/null --http2 --max-time 4 -w '%{http_version}:%{http_code}' https://127.0.0.1:8443/hello || echo 'curl-failed')"
+          kill "$smoke_pid" 2>/dev/null || true
+          case "$curlh2" in
+            2:200) echo "dotnet Std.HttpServer h2 curl --http2 smoke passed ($curlh2)" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::curl --http2 against the dotnet TLS listener returned '$curlh2', expected 2:200"; cat /tmp/dotnet_h2_smoke.run.log || true; exit 1 ;;
+          esac
+
       # Stdlib runtime suites on dotnet (#5604, expanded in D-progress-670 /
       # #5710): these `func main`-shaped suites (run via `lyric run`, not
       # `lyric test` — they predate @test_module) exercise the FFI kernels and

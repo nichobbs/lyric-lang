@@ -17,8 +17,15 @@
 //! full server-side TLS handshake + HTTP round trip against the real Lyric
 //! HTTPS client, both mTLS outcomes (a client cert that chains to `clientCa`
 //! is accepted; a client presenting no cert is rejected at the handshake and
-//! the server keeps serving), and the `startListenerTls` mTLS-misconfiguration
-//! guard (`requireClientCert` with no `clientCa` → `InvalidConfig`).
+//! the server keeps serving), the `startListenerTls` mTLS-misconfiguration
+//! guard (`requireClientCert` with no `clientCa` → `InvalidConfig`), and — the
+//! phase-4.4 h2 end-to-end (issue #5889) — HTTP/2 negotiation over ALPN driven
+//! through the pure-Lyric `Std.HttpEngine.H2Conn` FSM: a GET and a POST each
+//! asserting `HttpResponse.negotiatedVersion() == Http2` with the routed
+//! request observed by the handler, plus two multiplexed streams on one h2
+//! connection. Both directions of our own stack (the .NET-backed HTTPS client
+//! and the pure-Lyric h2 server) verify each other; a `curl --http2` CI smoke
+//! (`dotnet_h2_smoke.l`) is the independent implementation cross-check.
 //!
 //! Concurrency: the pull-model server needs its accept loop and the request
 //! driver to run on separate OS threads (Lyric `spawn` is degenerate-
@@ -36,6 +43,7 @@
 package Std.HttpServer.DotnetTests
 
 import Std.Core
+import Std.Collections
 import Std.Encoding
 import Std.String
 import Std.Tls
@@ -43,6 +51,9 @@ import Std.TcpHost
 import Std.HttpServer
 import Std.Http
 import Std.Testing
+// Aliased to name `EngineLimits` for the maxBodyBytes-cap tests without pulling
+// `Std.HttpEngine`'s `HttpVersion` cases into scope alongside `Std.Http`'s.
+import Std.HttpEngine as Eng
 
 val caCertPem = """
 -----BEGIN CERTIFICATE-----
@@ -236,6 +247,59 @@ func serveN(l: in HttpListener, n: in Int): Unit {
     respondText(ctx, 200, reply)
     i = i + 1
   }
+}
+
+// A small `EngineLimits` capping request bodies at `maxBodyBytes` bytes (other
+// limits at their defaults) for the h2 body-cap tests.
+func smallBodyLimits(maxBodyBytes: in Int): Eng.EngineLimits {
+  Eng.EngineLimits(
+    maxRequestLineLength = 8192,
+    maxHeaderCount = 100,
+    maxHeaderLineLength = 8192,
+    maxTotalHeaderBytes = 65536,
+    maxBodyBytes = maxBodyBytes
+  )
+}
+
+// A deterministic ASCII string of exactly `n` bytes: the digit cycle 0-9 repeated.
+func makeBody(n: in Int): String {
+  var s = ""
+  while s.length < n {
+    s = s + "0123456789"
+  }
+  s.substring(0, n)
+}
+
+// Puller that serves one request with a large plaintext body, exercising the
+// multi-frame DATA split + flow-control window pump on the send side.
+func serveLargeBody(l: in HttpListener, body: in String): Unit {
+  val ctx = nextContext(l)
+  respondText(ctx, 200, body)
+}
+
+// Puller that records the path of every request the handler is actually
+// dispatched, into a thread-safe queue, then echoes it. Used to prove a
+// maxBodyBytes-rejected request never reaches the handler.
+func serveRecording(l: in HttpListener, dispatched: in ConcQueue[String], n: in Int): Unit {
+  var i = 0
+  while i < n {
+    val ctx = nextContext(l)
+    concEnqueue(dispatched, requestPath(ctx))
+    respondText(ctx, 200, "handled " + requestPath(ctx))
+    i = i + 1
+  }
+}
+
+// Puller that serves one request as a chunked response of three chunks (buffered
+// then flushed as one h2 response, #6107), exercising the h2 chunked path.
+func serveChunked(l: in HttpListener): Unit {
+  val ctx = nextContext(l)
+  val headers: Map[String, String] = newMap()
+  val s = beginChunkedResponse(ctx, 200, "text/plain; charset=utf-8", headers)
+  val _1 = streamWriteChunk(s, encodeUtf8("chunk-A;"), 0, 8)
+  val _2 = streamWriteChunk(s, encodeUtf8("chunk-B;"), 0, 8)
+  val _3 = streamWriteChunk(s, encodeUtf8("chunk-C"), 0, 7)
+  endChunkedResponse(ctx, s)
 }
 
 func joined(parts: in List[String]): String {
@@ -469,6 +533,243 @@ test "mTLS rejects a client presenting no certificate" {
     case Ok(_) -> panic("expected the certless client to be rejected by the mTLS server")
     case Err(_) -> assertTrue(true, "certless client rejected at the TLS handshake")
   }
+}
+
+test "HTTP/2 GET negotiates h2 over ALPN and round-trips via the Lyric HTTPS client" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 19409, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+  val server = taskRun({ -> serveN(listener, 1) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val resp = match await client.get("https://localhost:19409/h2get?x=1") {
+    case Ok(r) -> r
+    case Err(e) -> panic("h2 GET failed: " + HttpError.message(e))
+  }
+  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(resp.statusCode(), 200, "h2 response is 200")
+  match HttpResponse.negotiatedVersion(resp) {
+    case Http2 -> assertTrue(true, "negotiated HTTP/2 over ALPN")
+    case _ -> panic("expected HTTP/2 negotiation but got a lower version; body=" + body)
+  }
+  assertTrue(body.contains("m=GET"), "method observed over h2: " + body)
+  assertTrue(body.contains("path=/h2get"), "path observed over h2: " + body)
+  assertTrue(body.contains("q=x=1"), "query observed over h2: " + body)
+}
+
+test "HTTP/2 POST body reaches the handler and negotiates h2" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 19410, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+  val server = taskRun({ -> serveN(listener, 1) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val resp = match await client.post("https://localhost:19410/h2post", "hello h2 body") {
+    case Ok(r) -> r
+    case Err(e) -> panic("h2 POST failed: " + HttpError.message(e))
+  }
+  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(resp.statusCode(), 200, "h2 POST response is 200")
+  match HttpResponse.negotiatedVersion(resp) {
+    case Http2 -> assertTrue(true, "negotiated HTTP/2 for the POST")
+    case _ -> panic("expected HTTP/2 negotiation for POST; body=" + body)
+  }
+  assertTrue(body.contains("m=POST"), "method POST observed over h2: " + body)
+  assertTrue(body.contains("body=hello h2 body"), "POST body delivered over h2: " + body)
+}
+
+test "HTTP/2 serves multiple request streams on one connection" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 19411, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+  val server = taskRun({ -> serveN(listener, 2) })
+  threadSleep(100)
+  // A single client instance reuses one h2 connection for both requests, so this
+  // exercises two multiplexed streams driven through the same H2Conn FSM.
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val resp1 = match await client.get("https://localhost:19411/first") {
+    case Ok(r) -> r
+    case Err(e) -> panic("h2 stream 1 failed: " + HttpError.message(e))
+  }
+  val body1 = match await resp1.bodyText() { case Ok(t) -> t; case Err(_) -> panic("stream 1 body read failed") }
+  val resp2 = match await client.get("https://localhost:19411/second") {
+    case Ok(r) -> r
+    case Err(e) -> panic("h2 stream 2 failed: " + HttpError.message(e))
+  }
+  val body2 = match await resp2.bodyText() { case Ok(t) -> t; case Err(_) -> panic("stream 2 body read failed") }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(resp1.statusCode(), 200, "stream 1 is 200")
+  assertEqualInt(resp2.statusCode(), 200, "stream 2 is 200")
+  match HttpResponse.negotiatedVersion(resp1) {
+    case Http2 -> assertTrue(true, "stream 1 is h2")
+    case _ -> panic("stream 1 not h2")
+  }
+  match HttpResponse.negotiatedVersion(resp2) {
+    case Http2 -> assertTrue(true, "stream 2 is h2")
+    case _ -> panic("stream 2 not h2")
+  }
+  assertTrue(body1.contains("path=/first"), "stream 1 path: " + body1)
+  assertTrue(body2.contains("path=/second"), "stream 2 path: " + body2)
+}
+
+test "HTTP/2 request body exceeding maxBodyBytes is rejected (413), not buffered unboundedly" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTlsWithLimits("127.0.0.1", 19412, cfg, smallBodyLimits(1024)) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTlsWithLimits failed: " + TlsListenError.message(e))
+  }
+  // No puller task: an over-limit request is rejected by the connection task
+  // (413, END_STREAM) and never dispatched to `nextContext`.
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val resp = match await client.post("https://localhost:19412/big", makeBody(4096)) {
+    case Ok(r) -> r
+    case Err(e) -> panic("over-limit POST should return 413, not a transport error: " + HttpError.message(e))
+  }
+  stopListener(listener)
+  assertEqualInt(resp.statusCode(), 413, "over-limit h2 request body rejected with 413")
+}
+
+test "HTTP/2 request body just under maxBodyBytes is accepted" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTlsWithLimits("127.0.0.1", 19413, cfg, smallBodyLimits(1024)) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTlsWithLimits failed: " + TlsListenError.message(e))
+  }
+  val server = taskRun({ -> serveN(listener, 1) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val underBody = makeBody(500)
+  val resp = match await client.post("https://localhost:19413/ok", underBody) {
+    case Ok(r) -> r
+    case Err(e) -> panic("under-cap POST failed: " + HttpError.message(e))
+  }
+  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(resp.statusCode(), 200, "under-cap h2 request body accepted")
+  assertTrue(body.contains("body=" + underBody), "the full under-cap body reached the handler")
+}
+
+// #6144: a stream rejected for exceeding maxBodyBytes must be TERMINAL — the
+// request is never dispatched to the handler and the connection is not corrupted
+// (a subsequent request on it still succeeds). The `onH2Data` and `onH2Headers`
+// (trailer) paths share the same `isRejectedStream` guard and the same
+// `dispatchH2Stream`, so proving the over-cap request never reaches the handler
+// here proves the guard for both. (The exact "over-cap DATA without END_STREAM
+// then a trailer HEADERS block" frame sequence cannot be driven end-to-end by
+// the .NET HttpClient or curl — neither sends h2 *request* trailers — and a raw
+// Lyric TLS h2 client is blocked by FFI gaps: `X509Certificate2.CreateFromPem`
+// crashes the emitter and the client-side ALPN `List<SslApplicationProtocol>`
+// setter hits #6029; the trailer branch is covered by the shared guard + code
+// review, not a bespoke raw-frame client.)
+test "HTTP/2 over-cap request is never dispatched to the handler and the connection stays healthy" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTlsWithLimits("127.0.0.1", 19416, cfg, smallBodyLimits(1024)) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTlsWithLimits failed: " + TlsListenError.message(e))
+  }
+  // The handler serves exactly one request — the valid one; the over-cap request
+  // must be rejected before it ever reaches `nextContext`.
+  val dispatched: ConcQueue[String] = newConcQueue()
+  val server = taskRun({ -> serveRecording(listener, dispatched, 1) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  match await client.post("https://localhost:19416/overcap", makeBody(4096)) {
+    case Ok(r) -> assertEqualInt(r.statusCode(), 413, "over-cap h2 request is rejected with 413")
+    case Err(e) -> panic("over-cap POST should return 413, not a transport error: " + HttpError.message(e))
+  }
+  // A subsequent valid request must still succeed: the rejection was terminal and
+  // raised no connection-level protocol error that would break the connection.
+  val okResp = match await client.get("https://localhost:19416/valid") {
+    case Ok(r) -> r
+    case Err(e) -> panic("post-rejection GET should succeed: " + HttpError.message(e))
+  }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(okResp.statusCode(), 200, "the request after a rejection succeeds (connection healthy)")
+  val handled = drainConcQueue(dispatched)
+  assertTrue(handled.contains("/valid"), "the valid request reached the handler: " + handled)
+  assertTrue(not handled.contains("/overcap"), "the over-cap request was NEVER dispatched to the handler: " + handled)
+}
+
+test "HTTP/2 large response body spans multiple DATA frames and arrives intact" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 19414, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+  // 200000 bytes > the 16 KiB max frame size (many DATA frames) and > the 65535
+  // initial send window (drives sendH2Body's pumpForWindow + WINDOW_UPDATE).
+  val bigResp = makeBody(200000)
+  val server = taskRun({ -> serveLargeBody(listener, bigResp) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val resp = match await client.get("https://localhost:19414/large") {
+    case Ok(r) -> r
+    case Err(e) -> panic("large-body GET failed: " + HttpError.message(e))
+  }
+  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(resp.statusCode(), 200, "large h2 response is 200")
+  match HttpResponse.negotiatedVersion(resp) {
+    case Http2 -> assertTrue(true, "h2")
+    case _ -> panic("expected h2 for large body")
+  }
+  assertEqualInt(body.length, 200000, "full multi-frame body length received")
+  assertTrue(body == bigResp, "multi-frame body content is intact and in order")
+}
+
+test "HTTP/2 chunked response body arrives fully" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 19415, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+  val server = taskRun({ -> serveChunked(listener) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val resp = match await client.get("https://localhost:19415/chunked") {
+    case Ok(r) -> r
+    case Err(e) -> panic("chunked GET failed: " + HttpError.message(e))
+  }
+  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(resp.statusCode(), 200, "chunked h2 response is 200")
+  match HttpResponse.negotiatedVersion(resp) {
+    case Http2 -> assertTrue(true, "h2")
+    case _ -> panic("expected h2 for chunked")
+  }
+  assertTrue(body == "chunk-A;chunk-B;chunk-C", "all chunks arrive concatenated in order: " + body)
 }
 
 test "startListenerTls rejects requireClientCert without clientCa" {

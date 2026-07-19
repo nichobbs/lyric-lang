@@ -364,6 +364,19 @@ The .NET client (which already speaks h2 after §5.1) is the e2e test peer
 for the h2 server self-test — both directions of our own stack verify each
 other, plus a `curl --http2` smoke in CI for an independent implementation.
 
+**Shipped on dotnet (phase 4.4, D-progress-704, #5889):** `Std.TcpHost`
+advertises `h2` ahead of `http/1.1`, and the dotnet `Std.HttpServer` selects the
+FSM on `hostAlpn` — `"h2"` drives `Std.HttpEngine.H2Conn`, otherwise HTTP/1.1.
+An h2 request stream is dispatched as an ordinary `HttpContext` onto the same
+pull surface and its response is HPACK-encoded + framed as flow-controlled DATA
+through the H2Conn send path, so `lyric-web` and every server consumer serve h2
+with no source change. All socket I/O and h2 FSM mutation stay on the single
+per-connection task (race-free); the puller only fills a per-stream response
+mailbox. v1 serializes streams per connection and delivers response bodies within
+the peer's granted flow-control window (the interleaved multi-stream send-pump +
+incremental h2 chunked streaming are tracked as #6107). JVM h2 is Undertow's own
+path (phase 2.2, #5881); native is phase 5 (#5890).
+
 ### 6.5 JVM convergence criteria (decision 6)
 
 The JVM moves off Undertow/`com.sun` onto the engine only when, on .NET, the
@@ -693,7 +706,24 @@ items marked ∥ are independent and can proceed in parallel.
     the #5886/#5887 steps. Two tracked bounded characteristics filed (#6063
     padded-DATA receive-accounting, #6064 closed-stream pruning)._
 14. ALPN wiring in the dotnet transport + e2e h2 self-test (own client +
-    `curl --http2`). (After 13.)
+    `curl --http2`). (After 13.) _Shipped (D-progress-704, #5889):
+    `Std.TcpHost` advertises `h2` ahead of `http/1.1` via ALPN, and the dotnet
+    `Std.HttpServer` selects the protocol on `hostAlpn` — `"h2"` drives the
+    pure-Lyric `Std.HttpEngine.H2Conn` FSM (#5888), else HTTP/1.1. An h2 request
+    stream is dispatched as an ordinary `HttpContext` onto the same pull queue,
+    and its response is HPACK-encoded + framed as flow-controlled DATA back
+    through the H2Conn send path, so `lyric-web`/`examples` serve h2 with no
+    source change. Race-free by construction: all socket I/O and h2 FSM mutation
+    stay on the connection task; the puller only fills a per-stream response
+    mailbox. Verified by `http_server_dotnet_tests.l` (GET + POST + multiplexed
+    streams, each asserting `HttpResponse.negotiatedVersion() == Http2`) — our
+    own .NET-backed HTTPS client and the pure-Lyric h2 server verifying each
+    other — plus a `curl --http2` CI smoke (`dotnet_h2_smoke.l`) as the
+    independent nghttp2 cross-check (`%{http_version}` 2, `%{http_code}` 200).
+    v1 bounded characteristics (per-connection stream serialization; response
+    body bounded by the peer's granted flow-control window; buffered — not
+    incrementally streamed — h2 chunked responses) are tracked as #6107. TLS-only
+    per decision 7._
 
 **Phase 5 — native (opens when native HTTP work starts)**
 15. `lyric_tls_*` OpenSSL seam in `lyric-rt` + socket transport + client;

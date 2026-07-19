@@ -107,10 +107,13 @@ match Identity.fromPemFiles("server.pem", "server.key") {
 ```
 
 - **`--target dotnet`** terminates real TLS over the pure-Lyric sans-IO
-  `Std.HttpServer` (server identity + minimum version + ALPN `http/1.1`).
-  **Mutual TLS is fully supported** here — set `clientCa` and
-  `requireClientCert` on the config. HTTP/2 end-to-end is not yet negotiated
-  on this server (issue #5889).
+  `Std.HttpServer`, advertising `h2` then `http/1.1` via ALPN. A client that
+  offers HTTP/2 (browsers, `curl --http2`, and the Lyric HTTPS client's default
+  h2-or-lower mode) is served over **HTTP/2** end-to-end through the pure-Lyric
+  `Std.HttpEngine.H2Conn` state machine; a client that only offers `http/1.1`
+  (or plaintext, which has no ALPN) falls back to HTTP/1.1 automatically — the
+  same router and handlers serve both with no code change. **Mutual TLS is fully
+  supported** here — set `clientCa` and `requireClientCert` on the config.
 - **`--target jvm`** terminates real TLS over an Undertow HTTPS listener with
   HTTP/2 enabled (via ALPN, TLS-only). Mutual TLS on this path is not yet
   supported (issue #6017); a mutual-TLS config returns a typed

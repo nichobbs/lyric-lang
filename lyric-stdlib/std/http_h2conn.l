@@ -1757,3 +1757,25 @@ pub func sendGoAway(conn: in H2Connection, errorCode: in H2ErrorCode): slice[Byt
   state.shutdown.goAwayLastStreamId = state.lastPeerStreamId
   serializeFrame(GoAwayFrame(lastStreamId = state.lastPeerStreamId, errorCode = errorCode, debugData = emptyBytes()))
 }
+
+/// Produce a server-initiated `RST_STREAM` (RFC 9113 section 6.4) carrying
+/// `errorCode`, closing `streamId` and returning the serialized frame to write.
+/// A server uses this to abort a single stream it can no longer serve (e.g. a
+/// response whose headers cannot be encoded — `H2InternalError`) without tearing
+/// down the whole connection, so a stream is never left hanging with no response
+/// and no reset. A no-op empty grant if the connection is already poisoned or the
+/// stream is unknown.
+@experimental
+pub func sendRstStream(conn: in H2Connection, streamId: in Int, errorCode: in H2ErrorCode): slice[Byte] {
+  var state = conn
+  if isFailed(state) {
+    return emptyBytes()
+  }
+  match findStream(state, streamId) {
+    case None -> emptyBytes()
+    case Some(_) -> {
+      closeStream(state, streamId)
+      serializeFrame(RstStreamFrame(streamId = streamId, errorCode = errorCode))
+    }
+  }
+}
