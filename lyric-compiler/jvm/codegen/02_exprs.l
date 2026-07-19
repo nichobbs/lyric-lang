@@ -3059,6 +3059,12 @@ func collectInLambdaNamesBlock(b: in Block, acc: in List[String]): Unit {
   }
 }
 
+// Shared statement-level lambda-name walker, used both for nested block
+// expressions (EBlock/EUnsafe, above) and for top-level function-body
+// traversal (`computeHoistedVarNamesJvm` in 06_items.l). Previously
+// duplicated as `collectInLambdaNamesBlockStmt`/`collectInLambdaNamesBlockBody`
+// in 06_items.l, which drifted out of sync with this version (#4250, #4240) —
+// keep this the single canonical traversal.
 func collectInLambdaNamesStmt(s: in Statement, acc: in List[String]): Unit {
   match s.kind {
     case SLocal(binding) -> {

@@ -43,6 +43,16 @@ extern func rtReadBytes(path: NativePtr[Byte], okOut: NativePtr[Int]): List[Byte
 
 extern func rtDirList(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String] = "lyric_dir_list2"
 
+// Single-sweep name+kind listing (#4856): one opendir/readdir pass
+// classifies every entry via `d_type` instead of a bare-name listing
+// plus a per-entry stat() probe. Each returned string is a single
+// LYRIC_DIRENT_* digit ('1' = directory, '2' = regular file, '0' =
+// neither, see lyric_rt.h) followed by the bare entry name — a second
+// List[Int] out-param would leak its Lyric-side `newList()`
+// initialiser the moment the extern call overwrites the slot (the
+// return-plus-ok-flag protocol above exists precisely to avoid that).
+extern func rtDirListTyped(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String] = "lyric_dir_list_typed"
+
 extern func rtWriteBytes(path: NativePtr[Byte], data: List[Byte], append: Int): Int = "lyric_file_write_bytes"
 
 extern func rtDirRemove(path: NativePtr[Byte]): Int = "lyric_dir_remove"
@@ -192,9 +202,10 @@ pub func hostWriteBytesResult(path: in String, bytes: in List[Byte]): Result[Uni
 }
 
 // Bare entry NAMES straight from lyric_dir_list2 (files and dirs
-// mixed); the managed twin yields absolute paths split by kind, so
-// each public seam below re-joins the names onto `dir` and filters by
-// an existence probe of its kind.
+// mixed); used ONLY by the recursive delete walker below, which must
+// classify each child with an lstat probe (isRealDirNative) rather
+// than the following-stat semantics listEntriesByKind uses, so it
+// cannot share that single-sweep typed listing.
 @unsafe_ffi
 func listEntryNamesNative(dir: in String): Result[List[String], IOError] {
   var ok: Int = 0
@@ -207,36 +218,39 @@ func listEntryNamesNative(dir: in String): Result[List[String], IOError] {
   Ok(value = names)
 }
 
-pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
-  match listEntryNamesNative(dir) {
-    case Ok(names) -> {
-      val acc: List[String] = newList()
-      for n in names {
-        val p = dir + "/" + n
-        if hostFileExists(p) {
-          acc.add(p)
-        }
-      }
-      Ok(value = acc)
-    }
-    case Err(e) -> Err(error = e)
+// Single-sweep name+kind listing (#4856): one opendir/readdir pass
+// classifies every entry via `d_type`, so filtering by `wantKindDigit`
+// here costs no extra syscalls beyond the earlier bare-name listing
+// plus a per-entry hostFileExists/hostDirectoryExists stat() probe.
+// Each `rtDirListTyped` entry is a single LYRIC_DIRENT_* ASCII digit
+// ('1' = directory, '2' = regular file) followed by the bare name.
+// `wantKindDigit` is passed as a literal by the two callers below
+// rather than a module-level constant, which the native backend does
+// not yet support referencing from a function body.
+@unsafe_ffi
+func listEntriesByKind(dir: in String, wantKindDigit: String): Result[List[String], IOError] {
+  var ok: Int = 0
+  val c = toC(dir)
+  val entries = rtDirListTyped(c, nativeAddrOf(ok))
+  freeC(c)
+  if ok != 1 {
+    return Err(error = IoError(path = dir, message = "the directory could not be listed"))
   }
+  val acc: List[String] = newList()
+  for e in entries {
+    if e.substring(0, 1) == wantKindDigit {
+      acc.add(dir + "/" + e.substring(1, e.length - 1))
+    }
+  }
+  Ok(value = acc)
+}
+
+pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
+  listEntriesByKind(dir, "2")
 }
 
 pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
-  match listEntryNamesNative(dir) {
-    case Ok(names) -> {
-      val acc: List[String] = newList()
-      for n in names {
-        val p = dir + "/" + n
-        if hostDirectoryExists(p) {
-          acc.add(p)
-        }
-      }
-      Ok(value = acc)
-    }
-    case Err(e) -> Err(error = e)
-  }
+  listEntriesByKind(dir, "1")
 }
 
 @unsafe_ffi
