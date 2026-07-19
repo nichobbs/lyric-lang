@@ -648,3 +648,19 @@ test "shadowed var local of a different record type still catches the outer viol
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0015"), "outer Immut.label (non-var) write after shadow: V0015 fires")
 }
+
+test "same-block re-declaration to a non-in-file-record type evicts the stale mapping (#6167)" {
+  // `b` starts as `Frozen` (n non-var), then is re-declared IN THE SAME BLOCK
+  // from `mkMut()` — a plain call, not a constructor, so its type doesn't
+  // resolve to an in-file record.  The subsequent `b.n = 3` writes the new
+  // `Mut` binding (n IS var) and must not fire V0015.  Before the eviction
+  // fix, the stale `b -> Frozen` (n non-var) mapping stayed and the write was
+  // rejected as a false positive.  #6166's block snapshot/restore does not
+  // cover this — the re-declaration is inside a single flat block.
+  val src = "package P\nrecord Frozen {\n  n: Int\n}\nrecord Mut {\n  var n: Int\n}\nfunc mkMut(): Mut {\n  Mut(n = 0)\n}\nfunc f(): Int {\n  var b = Frozen(n = 1)\n  var b = mkMut()\n  b.n = 3\n  b.n\n}\n"
+  val result = parseCheck(src)
+  assertTrue(
+    not (hasDiagCode(result, "V0015")),
+    "re-declared b (via non-ctor call) write: stale Frozen evicted, no V0015"
+  )
+}

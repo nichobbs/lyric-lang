@@ -2562,6 +2562,26 @@ func collectRecordFieldsOfFile(file: in SourceFile): Map[String, Map[String, Boo
 func fieldWriteTrackLocal(
   ctx: in FieldWriteCtx, name: in String, tyOpt: in Option[TypeExpr], initOpt: in Option[Expr]
 ): Unit {
+  // Re-declaring a `var` local under `name` ALWAYS invalidates any prior
+  // record-type mapping for it.  Evicting first, unconditionally, handles three
+  // things at once:
+  //   * `ctx.locals` is a single flat map with no scope push/pop, so two `var`
+  //     locals with the same name reach here twice with the same key; an
+  //     unguarded `Map.add` throws on the duplicate, crashing the mode checker
+  //     on valid source (#6157).
+  //   * If the NEW binding's type isn't a known in-file record — an imported
+  //     record, an external type, a non-constructor initialiser, or no
+  //     resolvable type — the old mapping must still go, or a later
+  //     `name.field = …` is checked against the STALE record's
+  //     field-mutability data, producing a false positive or false negative
+  //     (#6167, same-block re-declaration — distinct from the cross-block
+  //     leak #6166's snapshot/restore covers).
+  // After eviction, re-add only when the new type resolves to an in-file
+  // record.  The most-recent binding always wins, mirroring the same-name
+  // shadow handling `allocSlot`/`N0100Ctx` already use.
+  if ctx.locals.containsKey(name) {
+    ctx.locals.remove(name)
+  }
   var tn = ""
   match tyOpt {
     case Some(te) -> {
@@ -2582,16 +2602,6 @@ func fieldWriteTrackLocal(
   if tn != "" {
     match mapGet(ctx.recordFields, tn) {
       case Some(_) -> {
-        // `ctx.locals` is a single flat map for the whole function body (no
-        // scope push/pop), so two `var` locals with the same name in sibling
-        // scopes (`if`/`else`, sequential blocks, lambdas) reach here twice
-        // with the same key.  `Map.add` throws on a duplicate key, which would
-        // crash the mode checker on ordinary valid source (#6157) — guard it
-        // and let the most-recent binding win, mirroring the same-name-shadow
-        // handling `allocSlot`/`N0100Ctx` already use.
-        if ctx.locals.containsKey(name) {
-          ctx.locals.remove(name)
-        }
         ctx.locals.add(name, tn)
       }
       case None -> {
