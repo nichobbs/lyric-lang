@@ -41,9 +41,11 @@ pub record BuildDefinesResult {
 /// `--define`. Omitted when empty — single-file builds carry no manifest
 /// version, so they keep the deterministic `"0.0.0"` fallback.
 ///
-/// `target` / `build_profile` well-known defines and the manifest
-/// `[build.define]` layering remain follow-ups (#5852); this ships the
-/// high-value `version` slice against the project path that consumes it.
+/// The `build_profile` well-known define (from `--release`) and the manifest
+/// `[build.define]` layering remain follow-ups (#5852); the `target` well-known
+/// define ships via `withWellKnownTarget` (injected in `pipeParseAndErase`,
+/// which already carries `targetName`), and this ships the `version` slice
+/// against the project path that consumes it.
 pub func withWellKnownDefines(version: in String, cli: in List[String]): List[String] {
   val result: List[String] = newList()
   if version.length > 0 {
@@ -54,6 +56,31 @@ pub func withWellKnownDefines(version: in String, cli: in List[String]): List[St
     result.add(cli[i])
     i = i + 1
   }
+  result
+}
+
+/// Append the auto-derived well-known `target` define (docs/60 §3.3) as a
+/// FALLBACK: added only when the caller has not already supplied a `target`
+/// define, so an explicit `--define target=…` still wins. `targetName` is the
+/// active backend (`dotnet` / `jvm` / `native`), which is deterministic per
+/// build invocation, so injecting it on every build keeps the reproducibility
+/// byte-compare intact (docs/60 §8). Injected in `pipeParseAndErase` (which
+/// already receives `targetName`), so it lands uniformly on every backend and
+/// on both the single-file and project paths — unlike the `version` fallback,
+/// which is manifest-sourced and therefore project-only. Operates on the
+/// already-decoded `Define` list so it composes after `decodeDefines`'
+/// last-wins dedup.
+pub func withWellKnownTarget(targetName: in String, defines: in List[Define]): List[Define] {
+  if targetName.length == 0 or hasKey(defines, "target") {
+    return defines
+  }
+  val result: List[Define] = newList()
+  var i = 0
+  while i < defines.count {
+    result.add(defines[i])
+    i = i + 1
+  }
+  result.add(Define(key = "target", value = targetName))
   result
 }
 
