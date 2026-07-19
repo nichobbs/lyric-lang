@@ -248,9 +248,11 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > compiler rejects it elsewhere (`N0100`). Constructs not yet lowered fail
 > the build with a diagnostic naming the construct rather than
 > miscompiling: interface default/generic methods, generic protected
-> types, list literals, module-level `val`, async generators (`yield`
+> types, `Set[T]`, async generators (`yield`
 > inside `async func`), a `defer` that must run during
-> a `panic`, and manifest (multi-package) native builds.
+> a `panic`, and manifest (multi-package) native builds. (List literals
+> and module-level `val` now lower — #5977 — so `--define` /
+> `@build_const` / `Std.BuildInfo` work on native single-file builds.)
 
 ## The anatomy of a Lyric file
 

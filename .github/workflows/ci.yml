@@ -1307,8 +1307,8 @@ jobs:
       # `buildinfo_self_test.l` covers only the default-fallback path (`lyric
       # test` threads no `--define`); this closes the gap for the supplied path
       # on dotnet. The JVM twin of this step lives in the `compiler-self-tests-jvm`
-      # job (which has Java 21); native has no twin (native `--define` is gated —
-      # native codegen can't consume defines yet, #5977).
+      # job (which has Java 21); the native twin is the "Native --define build"
+      # step in `native-backend-self-tests` (#5977 closed).
       #
       # The fixture deliberately imports ONLY `Std.BuildInfo` (+ `Std.Console`
       # for `println`) and NOT `Std.Core`, so it also guards #5949: the
@@ -5700,8 +5700,9 @@ jobs:
       # BuildInfo `--define` runtime path on JVM (docs/60 §5, #5852): the JVM
       # twin of the dotnet step above — asserts `--define`-supplied values flow
       # through the synthesized `buildInfo()` accessor to a runtime value on
-      # `--target jvm` (issue #5852 item 5). Native has no twin: native `--define`
-      # is gated (native codegen can't consume defines yet — #5977). The fixture
+      # `--target jvm` (issue #5852 item 5). The native twin is the
+      # "Native --define build" step in `native-backend-self-tests` (#5977 closed).
+      # The fixture
       # imports only `Std.BuildInfo` + `Std.Console` (not `Std.Core`), guarding
       # the #5949 core-prelude resolution on the JVM target too.
       - name: BuildInfo --define runtime path on JVM (native lyric build --target jvm --define)

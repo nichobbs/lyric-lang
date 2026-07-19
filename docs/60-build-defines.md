@@ -21,11 +21,14 @@ defines populate); native resolves **module-level `val` references** by inlining
 a literal-initialized binding at the use site, so a `@build_const` `val` (whose
 initializer is always a `String` literal after substitution) compiles and runs
 on native too; and the CLI gate is lifted, so `lyric build --target native
---define KEY=VALUE` (single-file and project, including a manifest
-`[build.define]`) substitutes correctly. The gate now widens to "single-file or
-project, `--target dotnet`/`jvm`/`native`" — only `--watch` and
-`--release`/`[build] kind = "aot"` stay gated (their rebuild / AOT-packaging
-paths thread no defines).
+<file.l> --define KEY=VALUE` substitutes correctly. Native builds are
+**single-file only** (native has no multi-package/project build path — a native
+manifest build is rejected by `buildProject`), so native `--define` is
+single-file; the well-known `version`/`build_profile` and manifest
+`[build.define]` are project-only and therefore remain MSIL/JVM. The gate widens
+to "single-file `--target dotnet`/`jvm`/`native`, plus project builds on
+`--target dotnet`/`jvm`" — only `--watch` and `--release`/`[build] kind = "aot"`
+stay gated (their rebuild / AOT-packaging paths thread no defines).
 M1d — the auto-injected well-known **`version`** define
 (`BD.withWellKnownDefines`): the manifest's `[package].version` is injected as a
 fallback define on the project path (both the MSIL project bridge and the JVM

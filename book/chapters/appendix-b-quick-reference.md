@@ -938,8 +938,9 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
                                        # module-level val (docs/60). Repeatable. Substituted before
                                        # type-check as a String literal (no source re-parse). An
                                        # unsupplied key keeps the val's in-source fallback literal.
-                                       # v1: single-file AND project (--manifest / lyric.toml)
-                                       # --target dotnet/jvm/native; on a project build the manifest
+                                       # v1: single-file (--target dotnet/jvm/native) AND project
+                                       # (--manifest / lyric.toml, --target dotnet/jvm — native is
+                                       # single-file only). On a project build the manifest
                                        # [package].version is the well-known `version` fallback an
                                        # explicit --define version=… overrides. The active backend
                                        # (dotnet/jvm/native) is auto-injected as the well-known
@@ -964,7 +965,9 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
 #   build_channel = "stable"          # string values only; injected into @build_const("build_channel")
 #   api_base      = "https://api.example.com"
 #   # Layered beneath CLI --define (a --define of the same key wins). Applied on
-#   # --target dotnet/jvm/native project builds; rejected on --release/kind="aot".
+#   # --target dotnet/jvm project builds; rejected on --release/kind="aot".
+#   # (native is single-file only, so [build.define] is dotnet/jvm; native uses
+#   #  single-file --define.)
 
 # Build features (compile-time gating; see chapter 20 §20.7)
 lyric build --features X,Y <file.l>    # additive over manifest's [features] default

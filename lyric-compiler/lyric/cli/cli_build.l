@@ -66,7 +66,7 @@ func manifestDeclaresBuildDefines(mfPath: in String): Bool {
 // that cannot consume it (docs/60 §3.1). `reason` names the specific shape.
 pub func manifestDefinesUnsupportedMsg(mfPath: in String, reason: in String): String {
   "build: [build.define] in " + mfPath + " is not supported with " + reason +
-    "; manifest defines apply only on --target dotnet/jvm project builds (#5852)"
+    "; manifest defines apply only on --target dotnet/jvm project builds (native is single-file only — use `lyric build <main.l> --target native --define`; #5852/#5977)"
 }
 
 // Pure accept/reject predicate for a manifest `[build.define]` table on a
@@ -154,10 +154,11 @@ pub func releaseFromDllIgnoredArgsWarning(positional: in List[String]): String {
 
 // Pure accept/reject predicate for `lyric build --define` (#5852 / #6139).
 // Returns `Some(message)` when `--define` is not supported for the given build
-// shape, or `None` when it is allowed. Every path that would otherwise drop the
-// defines silently is rejected up front:
-//   - a non-consumable target (`--target native`, #5977: native codegen cannot
-//     yet consume a define),
+// shape, or `None` when it is allowed. All three backends consume defines now
+// (dotnet/jvm #5852, native #5977), so `targetConsumable` is `true` for every
+// current target (the parameter stays for a future non-consumable target).
+// Every path that would otherwise drop the defines silently is rejected up front:
+//   - a non-consumable target (none today),
 //   - `--watch` (the rebuild action carries no defines),
 //   - `--release` (the AOT-packaging path does not thread defines), and
 //   - `[build] kind = "aot"` in the manifest (`autoAot`), which routes into the
@@ -974,22 +975,13 @@ func cmdBuild(argv: in slice[String]): Int {
   if noRestore and positional.count > 0 {
     printErr("build: warning: --no-restore has no effect without a project manifest")
   }
-  // docs/60 build defines: `--define` is applied on the single-file compile
-  // path for `--target dotnet` and `--target jvm` — `EmitRequest.defines` is
-  // threaded to the MSIL and JVM bridges (#5852). It is threaded to the native
-  // bridge too, but native `--define` stays gated: native codegen cannot yet
-  // *consume* a define (module-level `val` references block `@build_const`, and
-  // list literals block `Std.BuildInfo`), so it would crash rather than
-  // substitute — tracked in #5977. `--define` now works on both single-file and
-  // project builds (explicit `--manifest` and auto-discovered `lyric.toml`) for
-  // `--target dotnet`/`jvm` (#5852 phase C). Still rejected where it would crash
-  // or be silently dropped: `--target native` (#5977), `--watch` (whose rebuild
-  // action carries no defines), and `--release` (the AOT-packaging path does not
-  // thread defines — a separate follow-up).
-  // All three backends can now consume a define: MSIL/JVM (#5852) and native
-  // (#5977 — list-literal lowering + module-level `val` inlining make
-  // `@build_const`/`Std.BuildInfo` work). `--define` is still rejected with
-  // `--watch`/`--release` (the rebuild/AOT-packaging paths thread no defines).
+  // docs/60 build defines: all three backends can now consume a `--define` —
+  // MSIL/JVM on single-file and project builds (#5852), and native on
+  // single-file builds (#5977 — list-literal lowering + module-level `val`
+  // inlining make `@build_const`/`Std.BuildInfo` work; native has no
+  // multi-package/project build path, so `buildProject` rejects a native
+  // manifest build separately). `--define` is still rejected with `--watch` /
+  // `--release` (their rebuild / AOT-packaging paths thread no defines).
   val consumableTarget = match target { case Dotnet -> true; case Jvm -> true; case Native -> true }
   match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, release, false, "") {
     case Some(msg) -> {

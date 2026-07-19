@@ -127,15 +127,6 @@ test "defineBuildGateError: consumable dotnet/jvm project build is allowed" {
   }
 }
 
-test "defineBuildGateError: all three backends (incl. native) are consumable" {
-  // dotnet/jvm/native all consume defines now (#5852 + #5977); only
-  // --watch/--release gate. A consumable target with no watch/release/aot -> allowed.
-  match Cli.defineBuildGateError(true, true, false, false, false, "") {
-    case None -> assertTrue(true, "consumable target -> allowed")
-    case Some(msg) -> assertTrue(false, "a consumable target should be allowed, got: " + msg)
-  }
-}
-
 test "defineBuildGateError: --watch is rejected" {
   match Cli.defineBuildGateError(true, true, true, false, false, "") {
     case None -> assertTrue(false, "--watch should reject --define")
