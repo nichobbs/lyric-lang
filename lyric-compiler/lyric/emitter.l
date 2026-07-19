@@ -2329,9 +2329,9 @@ func emitNativeInProcess(
   for lib in extraLibs {
     clangFlags.add("-l" + lib)
   }
-  // Native `--define` plumbing is threaded (parity with MSIL/JVM), but the CLI
-  // gates native `--define` (native codegen can't consume defines yet — #5977),
-  // so `req.defines` is empty here in practice until that gate lifts.
+  // Native `--define` is threaded and consumed (#5977 closed: list-literal
+  // lowering + module-level `val` inlining make `@build_const`/`Std.BuildInfo`
+  // work), so `req.defines` substitutes on a single-file native build.
   val ok = LlvmBridge.compileToNativeWithFlags(
     req.source,
     req.outputPath,

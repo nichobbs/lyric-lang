@@ -127,13 +127,6 @@ test "defineBuildGateError: consumable dotnet/jvm project build is allowed" {
   }
 }
 
-test "defineBuildGateError: non-consumable target (native) is rejected" {
-  match Cli.defineBuildGateError(true, false, false, false, false, "") {
-    case None -> assertTrue(false, "--target native should reject --define")
-    case Some(msg) -> assertTrue(Str.contains(msg, "native"), "native rejection names the target, got: " + msg)
-  }
-}
-
 test "defineBuildGateError: --watch is rejected" {
   match Cli.defineBuildGateError(true, true, true, false, false, "") {
     case None -> assertTrue(false, "--watch should reject --define")
@@ -157,35 +150,29 @@ test "defineBuildGateError: manifest kind = aot (autoAot) is rejected with the m
 
 // ─── manifestDefineGateError accept/reject matrix (#6188) ─────────────────
 test "manifestDefineGateError: no manifest defines is always allowed" {
-  match Cli.manifestDefineGateError(false, true, true, true, "/p/lyric.toml") {
+  match Cli.manifestDefineGateError(false, true, true, "/p/lyric.toml") {
     case None -> assertTrue(true, "no manifest defines -> allowed regardless of shape")
     case Some(msg) -> assertTrue(false, "no manifest defines should be allowed, got: " + msg)
   }
 }
 
-test "manifestDefineGateError: plain dotnet/jvm project build is allowed" {
-  match Cli.manifestDefineGateError(true, false, false, false, "/p/lyric.toml") {
-    case None -> assertTrue(true, "consumable project build -> allowed")
+test "manifestDefineGateError: plain dotnet/jvm/native project build is allowed" {
+  // native now consumes manifest defines (#5977), like dotnet/jvm.
+  match Cli.manifestDefineGateError(true, false, false, "/p/lyric.toml") {
+    case None -> assertTrue(true, "consumable project build (incl. native) -> allowed")
     case Some(msg) -> assertTrue(false, "plain project build should be allowed, got: " + msg)
   }
 }
 
-test "manifestDefineGateError: --target native is rejected" {
-  match Cli.manifestDefineGateError(true, true, false, false, "/p/lyric.toml") {
-    case None -> assertTrue(false, "native should reject manifest [build.define]")
-    case Some(msg) -> assertTrue(Str.contains(msg, "native") and Str.contains(msg, "/p/lyric.toml"), "native rejection names the target and manifest path, got: " + msg)
-  }
-}
-
 test "manifestDefineGateError: --release is rejected" {
-  match Cli.manifestDefineGateError(true, false, true, false, "/p/lyric.toml") {
+  match Cli.manifestDefineGateError(true, true, false, "/p/lyric.toml") {
     case None -> assertTrue(false, "--release should reject manifest [build.define]")
     case Some(msg) -> assertTrue(Str.contains(msg, "--release"), "release rejection names the flag, got: " + msg)
   }
 }
 
 test "manifestDefineGateError: [build] kind = aot is rejected" {
-  match Cli.manifestDefineGateError(true, false, false, true, "/p/lyric.toml") {
+  match Cli.manifestDefineGateError(true, false, true, "/p/lyric.toml") {
     case None -> assertTrue(false, "kind = aot should reject manifest [build.define]")
     case Some(msg) -> assertTrue(Str.contains(msg, "aot"), "aot rejection names kind=aot, got: " + msg)
   }

@@ -48,8 +48,7 @@ func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
 // (docs/60 §3.1). Used by `cmdBuild`'s gate to reject up front — rather than
 // silently drop — manifest defines on a build shape that cannot consume them
 // (`--release`/`kind = "aot"` route into `buildReleaseProject`, which threads
-// no defines; `--target native` can thread them but cannot yet consume one,
-// #5977). A read/parse failure degrades to `false`: the real build below
+// no defines). A read/parse failure degrades to `false`: the real build below
 // surfaces the manifest error with full diagnostics.
 func manifestDeclaresBuildDefines(mfPath: in String): Bool {
   match File.readText(mfPath) {
@@ -67,31 +66,25 @@ func manifestDeclaresBuildDefines(mfPath: in String): Bool {
 // that cannot consume it (docs/60 §3.1). `reason` names the specific shape.
 pub func manifestDefinesUnsupportedMsg(mfPath: in String, reason: in String): String {
   "build: [build.define] in " + mfPath + " is not supported with " + reason +
-    "; manifest defines apply only on --target dotnet/jvm project builds (#5852)"
+    "; manifest defines apply only on --target dotnet/jvm project builds (native is single-file only — use `lyric build <main.l> --target native --define`; #5852/#5977)"
 }
 
 // Pure accept/reject predicate for a manifest `[build.define]` table on a
 // project build (docs/60 §3.1 / #6139). Returns `Some(message)` when the manifest
-// declares defines and the build shape cannot consume them — `--target native`
-// (#5977), `--release`, or `[build] kind = "aot"` (both route into the
-// AOT-packaging path, which threads no defines) — or `None` when the defines can
-// be applied (a plain `--target dotnet`/`jvm` project build, or no manifest
-// defines at all). `--watch` is intentionally absent: `buildProject` reapplies
+// declares defines and the build shape cannot consume them — `--release` or
+// `[build] kind = "aot"` (both route into the AOT-packaging path, which threads
+// no defines) — or `None` when the defines can be applied (a plain
+// `--target dotnet`/`jvm`/`native` project build, or no manifest defines at all).
+// `--target native` now consumes defines (#5977: list literals + module-level
+// `val` inlining). `--watch` is intentionally absent: `buildProject` reapplies
 // the manifest defines on every rebuild, so it is not a silent-drop shape.
 // Pulled out of `cmdBuild` so the reject matrix is unit-testable without a build
 // (#6188), mirroring `defineBuildGateError`.
 pub func manifestDefineGateError(
-  mfHasDefines: in Bool,
-  targetIsNative: in Bool,
-  release: in Bool,
-  autoAot: in Bool,
-  mfPath: in String,
+  mfHasDefines: in Bool, release: in Bool, autoAot: in Bool, mfPath: in String
 ): Option[String] {
   if not mfHasDefines {
     return None
-  }
-  if targetIsNative {
-    return Some(value = manifestDefinesUnsupportedMsg(mfPath, "--target native (native codegen gaps, #5977)"))
   }
   if release {
     return Some(value = manifestDefinesUnsupportedMsg(mfPath, "--release (the AOT-packaging path threads no defines)"))
@@ -161,10 +154,11 @@ pub func releaseFromDllIgnoredArgsWarning(positional: in List[String]): String {
 
 // Pure accept/reject predicate for `lyric build --define` (#5852 / #6139).
 // Returns `Some(message)` when `--define` is not supported for the given build
-// shape, or `None` when it is allowed. Every path that would otherwise drop the
-// defines silently is rejected up front:
-//   - a non-consumable target (`--target native`, #5977: native codegen cannot
-//     yet consume a define),
+// shape, or `None` when it is allowed. All three backends consume defines now
+// (dotnet/jvm #5852, native #5977), so `targetConsumable` is `true` for every
+// current target (the parameter stays for a future non-consumable target).
+// Every path that would otherwise drop the defines silently is rejected up front:
+//   - a non-consumable target (none today),
 //   - `--watch` (the rebuild action carries no defines),
 //   - `--release` (the AOT-packaging path does not thread defines), and
 //   - `[build] kind = "aot"` in the manifest (`autoAot`), which routes into the
@@ -185,7 +179,7 @@ pub func defineBuildGateError(
   }
   if (not targetConsumable) or watch or release {
     return Some(
-      value = "build: --define is supported on single-file and project (--manifest / lyric.toml) --target dotnet/jvm builds; it is not supported with --target native (native codegen gaps, #5977), --watch, or --release"
+      value = "build: --define is supported on single-file and project (--manifest / lyric.toml) --target dotnet/jvm/native builds; it is not supported with --watch or --release"
     )
   }
   if autoAot {
@@ -981,19 +975,14 @@ func cmdBuild(argv: in slice[String]): Int {
   if noRestore and positional.count > 0 {
     printErr("build: warning: --no-restore has no effect without a project manifest")
   }
-  // docs/60 build defines: `--define` is applied on the single-file compile
-  // path for `--target dotnet` and `--target jvm` — `EmitRequest.defines` is
-  // threaded to the MSIL and JVM bridges (#5852). It is threaded to the native
-  // bridge too, but native `--define` stays gated: native codegen cannot yet
-  // *consume* a define (module-level `val` references block `@build_const`, and
-  // list literals block `Std.BuildInfo`), so it would crash rather than
-  // substitute — tracked in #5977. `--define` now works on both single-file and
-  // project builds (explicit `--manifest` and auto-discovered `lyric.toml`) for
-  // `--target dotnet`/`jvm` (#5852 phase C). Still rejected where it would crash
-  // or be silently dropped: `--target native` (#5977), `--watch` (whose rebuild
-  // action carries no defines), and `--release` (the AOT-packaging path does not
-  // thread defines — a separate follow-up).
-  val consumableTarget = match target { case Dotnet -> true; case Jvm -> true; case Native -> false }
+  // docs/60 build defines: all three backends can now consume a `--define` —
+  // MSIL/JVM on single-file and project builds (#5852), and native on
+  // single-file builds (#5977 — list-literal lowering + module-level `val`
+  // inlining make `@build_const`/`Std.BuildInfo` work; native has no
+  // multi-package/project build path, so `buildProject` rejects a native
+  // manifest build separately). `--define` is still rejected with `--watch` /
+  // `--release` (their rebuild / AOT-packaging paths thread no defines).
+  val consumableTarget = match target { case Dotnet -> true; case Jvm -> true; case Native -> true }
   match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, release, false, "") {
     case Some(msg) -> {
       printErr(msg)
@@ -1023,15 +1012,15 @@ func cmdBuild(argv: in slice[String]): Int {
       case Native -> false
     }
     // docs/60 §3.1: manifest `[build.define]` is threaded through `buildProject`
-    // (--target dotnet/jvm, non-release, non-aot). Reject up front (no silent
-    // drop, #6139) on shapes that cannot consume it: --target native (#5977),
-    // --release, and [build] kind = "aot" (both route into `buildReleaseProject`,
-    // which threads no defines). --watch is fine — `buildProject` reapplies the
-    // manifest defines on every rebuild. `manifestDefineGateError` is a pure
-    // predicate (unit-tested, #6188) so this reject matrix can't silently regress.
+    // (--target dotnet/jvm/native, non-release, non-aot). Reject up front (no
+    // silent drop, #6139) on shapes that cannot consume it: --release and
+    // [build] kind = "aot" (both route into `buildReleaseProject`, which threads
+    // no defines). --target native now consumes defines (#5977). --watch is fine
+    // — `buildProject` reapplies the manifest defines on every rebuild.
+    // `manifestDefineGateError` is a pure predicate (unit-tested, #6188) so this
+    // reject matrix can't silently regress.
     val mfHasDefines = manifestDeclaresBuildDefines(mfPath)
-    val targetIsNative = match target { case Native -> true; case _ -> false }
-    match manifestDefineGateError(mfHasDefines, targetIsNative, release, autoAot, mfPath) {
+    match manifestDefineGateError(mfHasDefines, release, autoAot, mfPath) {
       case Some(msg) -> {
         printErr(msg)
         return 1
