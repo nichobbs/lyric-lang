@@ -1483,7 +1483,28 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
       }
       lowerRecordConstructVals(ctx, insns, tupleRecInfo(ctx, elemTys), elems)
     }
-    case EList(_) -> panic("Lyric.LlvmCodegen: list literals are not yet supported for --target native (collections are Phase N2/N5)")
+    case EList(elems) -> {
+      // No expected type here (a bare `[...]` in statement/effect position or an
+      // un-annotated inference site). Infer the element type from the first
+      // element; an empty literal has no type to infer, so require an expected
+      // type — annotate the binding or use `newList[T]()` (#5977).
+      if elems.count == 0 {
+        panic(
+          "Lyric.LlvmCodegen: an empty list literal `[]` needs an expected type on --target native — annotate the binding (val xs: List[Int] = []) or use newList[Int]()"
+        )
+      }
+      val firstV = lowerExpr(ctx, insns, elems[0])
+      val elem = firstV.ty
+      val lst = constructList(ctx, insns, elem)
+      val recvP = collectionAsI8(ctx, insns, lst)
+      pushToList(ctx, insns, recvP, firstV)
+      var li = 1
+      while li < elems.count {
+        pushToList(ctx, insns, recvP, lowerExprExpecting(ctx, insns, elems[li], elem))
+        li = li + 1
+      }
+      lst
+    }
     case EIndex(receiver, indices) -> lowerCollectionIndex(ctx, insns, receiver, indices, expr.span.startPos.line)
     // `await` on a task-typed value (a `spawn` binding) parks until the
     // task completes; anything else passes through, because a direct
@@ -4297,6 +4318,31 @@ func constructList(ctx: in Ctx, insns: in List[NInsn], elem: in NType): NVal {
   outV
 }
 
+// Push one already-lowered value onto a LyricList (given the list cast to i8*),
+// via the same `lyric_list_push` kernel `.add(x)` lowers to.
+func pushToList(ctx: in Ctx, insns: in List[NInsn], recvP: in NValue, v: in NVal): Unit {
+  val pArgs: List[NArg] = newList()
+  pArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+  pArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, v)))
+  val _ = callRuntime(ctx, insns, "lyric_list_push", NVoid, pArgs)
+}
+
+/// Lower a `[e1, e2, ...]` list literal (EList) of known element type by
+/// constructing an empty LyricList and pushing each element — the same
+/// `lyric_list_new` + `lyric_list_push` sequence `newList()` + `.add()` lowers
+/// to (#5977). Each element is lowered with `elem` as its expected type so
+/// nested collection literals and generic cases construct correctly.
+func lowerListLiteral(ctx: in Ctx, insns: in List[NInsn], elems: in List[Expr], elem: in NType): NVal {
+  val lst = constructList(ctx, insns, elem)
+  val recvP = collectionAsI8(ctx, insns, lst)
+  var i = 0
+  while i < elems.count {
+    pushToList(ctx, insns, recvP, lowerExprExpecting(ctx, insns, elems[i], elem))
+    i = i + 1
+  }
+  lst
+}
+
 func constructMap(ctx: in Ctx, insns: in List[NInsn], k: in NType, v: in NType): NVal {
   var keyFlag = NLitInt(v = 0i64, ty = NI32)
   if isStringNType(k) {
@@ -4342,6 +4388,18 @@ func evalCtorArgsForEffect(ctx: in Ctx, insns: in List[NInsn], ctorArgs: in List
 /// constructors.  (Explicit `newList[Int]()` type applications resolve
 /// in lowerCall without an expected type.)
 func collectionConstructForExpected(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in NType): Option[NVal] {
+  // A `[...]` list literal against an expected `List[T]` (record field, typed
+  // binding, arg, return) — the element type comes from `want` (#5977), the
+  // same way `newList()` takes its element types from the expected type.
+  match e.kind {
+    case EList(elems) -> {
+      match listElemOfType(ctx, want) {
+        case Some(elem) -> return Some(value = lowerListLiteral(ctx, insns, elems, elem))
+        case None -> return None
+      }
+    }
+    case _ -> ()
+  }
   var nm = ""
   var ctorArgs: List[CallArg] = newList()
   match e.kind {

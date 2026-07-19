@@ -14,11 +14,14 @@ own parameters. M1c — `--define` threading to the **JVM and native** bridges
 `compileToNativeWithFlags`), so single-file `--define` (and therefore
 `Std.BuildInfo`'s define-sourced fields) now works on `--target dotnet` and
 `--target jvm`; the CLI gate narrows from "single-file dotnet only" to
-"single-file dotnet/jvm". **Native stays gated**: the bridge threading is in
-place, but native codegen cannot yet *consume* a define — module-level `val`
-references block `@build_const`, and list literals block `Std.BuildInfo`'s
-`features` — so it crashes rather than substitutes (tracked in #5977; note this
-also means `Std.BuildInfo` shipped in M1b is not yet functional on native).
+"single-file dotnet/jvm". **Native `--define` stays gated** pending the second
+half of #5977: native codegen now lowers list literals (`[...]` → `lyric_list_new`
++ `lyric_list_push`), so **`Std.BuildInfo` is functional on `--target native`**
+(its `buildInfo()` accessor's `features = [...]` compiles and runs, and the
+well-known `target`/`build_profile` defines populate) — but `@build_const`
+consumption still crashes because native codegen cannot yet load a **module-level
+`val` reference** (the annotated `val` is exactly what `@build_const` reads).
+Until that lands, native `--define` stays gated (tracked in #5977).
 M1d — the auto-injected well-known **`version`** define
 (`BD.withWellKnownDefines`): the manifest's `[package].version` is injected as a
 fallback define on the project path (both the MSIL project bridge and the JVM
