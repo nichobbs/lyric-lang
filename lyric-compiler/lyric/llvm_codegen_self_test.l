@@ -117,6 +117,27 @@ test "exit code from main" {
   assertEqualInt(r.exitCode, 42, "main(): Int exit code")
 }
 
+// ── module-level val / const references (inlined at use sites, #5977 part 2) ──
+test "module-level Int val reference" {
+  val r = compileAndRun("package T\nval N: Int = 42\nfunc main(): Int {\n  N\n}\n")
+  assertEqualInt(r.exitCode, 42, "module val N inlined")
+}
+
+test "module-level String val (the @build_const shape) referenced by length" {
+  val r = compileAndRun("package T\nval GREETING: String = \"hello\"\nfunc main(): Int {\n  GREETING.length\n}\n")
+  assertEqualInt(r.exitCode, 5, "module String val inlined, .length = 5")
+}
+
+test "module-level val with inferred type" {
+  val r = compileAndRun("package T\nval TAG = \"hi\"\nfunc main(): Int {\n  TAG.length\n}\n")
+  assertEqualInt(r.exitCode, 2, "untyped module val inlined, .length = 2")
+}
+
+test "module-level val referenced multiple times" {
+  val r = compileAndRun("package T\nval K: Int = 5\nfunc main(): Int {\n  K + K + K\n}\n")
+  assertEqualInt(r.exitCode, 15, "module val inlined per use")
+}
+
 test "integer arithmetic" {
   // The result binds to a local first: a trailing line that begins with
   // '(' would otherwise continue the previous statement as a call.

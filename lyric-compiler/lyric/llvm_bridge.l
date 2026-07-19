@@ -714,6 +714,10 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
   val interfaces: List[InterfaceDecl] = newList()
   val impls: List[ImplDecl] = newList()
   val protecteds: List[ProtectedTypeDecl] = newList()
+  // Module-level `val`/`const` bindings (#5977 part 2): collected regardless of
+  // `lowerAll` (like type declarations) so a reference from the user package to
+  // a bundled package's const resolves via use-site inlining.
+  val moduleVals: List[ModuleValDef] = newList()
   var i = 0
   while i < f.items.count {
     match f.items[i].kind {
@@ -723,6 +727,13 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
           fns.add(decl)
         }
       }
+      case IVal(decl) -> {
+        match decl.pattern.kind {
+          case PBinding(vn, _) -> moduleVals.add(ModuleValDef(name = vn, init = decl.init, ty = decl.ty))
+          case _ -> ()
+        }
+      }
+      case IConst(decl) -> moduleVals.add(ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty)))
       case IExternFunc(decl) -> {
         val id = pkg + "." + decl.name + "/" + decl.params.count.toString()
         if lowerAll or reachable.containsKey(id) {
@@ -776,6 +787,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
     distincts = distincts,
     interfaces = interfaces,
     impls = impls,
-    protecteds = protecteds
+    protecteds = protecteds,
+    moduleVals = moduleVals
   )
 }
