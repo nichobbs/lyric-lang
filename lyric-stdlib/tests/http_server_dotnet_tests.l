@@ -54,6 +54,7 @@ import Std.Testing
 // Aliased to name `EngineLimits` for the maxBodyBytes-cap tests without pulling
 // `Std.HttpEngine`'s `HttpVersion` cases into scope alongside `Std.Http`'s.
 import Std.HttpEngine as Eng
+import Std.Environment as Env
 
 val caCertPem = """
 -----BEGIN CERTIFICATE-----
@@ -778,4 +779,39 @@ test "startListenerTls rejects requireClientCert without clientCa" {
     case Ok(_) -> panic("expected InvalidConfig for requireClientCert without clientCa")
     case Err(e) -> match e { case InvalidConfig(_) -> assertTrue(true, "mTLS misconfiguration rejected before binding"); case NotSupportedOnTarget(_) -> panic("unexpected NotSupportedOnTarget on dotnet") }
   }
+}
+
+// The #6071 concurrent-connection cap is operator-tunable via
+// LYRIC_HTTP_MAX_CONNECTIONS (D-progress follow-up to PR #6220's review).
+// A full concurrency-timing test would be flaky; this deterministically pins
+// the resolution logic that decides the effective cap — a positive value
+// overrides, and any value that would defeat the backpressure guarantee
+// (zero, negative, non-numeric) falls back to the 1000 default. Each
+// assertion sets the var first, so the block is order-independent (Env has no
+// unsetVar). A cap of 1 is the documented backpressure-test seam.
+test "resolveMaxConcurrentConnections honours LYRIC_HTTP_MAX_CONNECTIONS with safe fallback (#6071 tunable cap)" {
+  Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "5")
+  assertEqualInt(resolveMaxConcurrentConnections(), 5, "positive override honoured")
+
+  Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "4096")
+  assertEqualInt(resolveMaxConcurrentConnections(), 4096, "large override honoured")
+
+  Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "1")
+  assertEqualInt(resolveMaxConcurrentConnections(), 1, "cap of 1 is valid (serializes connections)")
+
+  Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "0")
+  assertEqualInt(resolveMaxConcurrentConnections(), 1000, "zero falls back to the 1000 default")
+
+  Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "-3")
+  assertEqualInt(resolveMaxConcurrentConnections(), 1000, "negative falls back to the default")
+
+  Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "lots")
+  assertEqualInt(resolveMaxConcurrentConnections(), 1000, "non-numeric falls back to the default")
+
+  // Leave the process-global env in an explicit, obvious state (Env has no
+  // unsetVar): set it back to the numeric default so any later test in this
+  // module sees a clean, self-explaining value rather than the incidental
+  // "lots" left over above.
+  Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "1000")
+  assertEqualInt(resolveMaxConcurrentConnections(), 1000, "explicit default value resolves unchanged")
 }

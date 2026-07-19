@@ -189,6 +189,17 @@ Runtime config (all read once at startup, fail-fast if invalid):
 | `LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS` | `GET,POST,PUT,DELETE,OPTIONS,PATCH` | Comma-separated methods |
 | `LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS` | `Content-Type,Authorization,Accept` | Comma-separated headers |
 | `LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS` | `86400` | Preflight cache duration |
+| `LYRIC_HTTP_MAX_CONNECTIONS` | `1000` | Max connections served concurrently (backpressure cap) |
+
+`LYRIC_HTTP_MAX_CONNECTIONS` bounds how many connections the dotnet server
+handles at once: the accept loop blocks (new connections queue in the OS
+listen backlog) once this many are in flight, rather than spawning an
+unbounded number of background tasks. Set it to a positive integer to tune
+the cap per deployment without a rebuild; a missing, non-numeric, or `< 1`
+value falls back to the `1000` default (an unbounded cap would defeat the
+backpressure guarantee). Unlike the `LYRIC_CONFIG_WEB_*` knobs, this one is
+read by the lower-level `Std.HttpServer` transport, so it applies to any
+server built on it.
 
 ## OpenAPI: code-first and spec-first
 

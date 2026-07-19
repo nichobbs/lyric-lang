@@ -19760,3 +19760,43 @@ suite green; stdlib HTTP/TLS suites green (`http_server` 16/16 incl. the
 `make lyric` clean; `make ilverify` 116 DLLs / 0 IL-validity errors.
 (D-progress number provisional — may renumber on rebase if another in-flight
 PR lands D-progress-710 first.)
+
+## D-progress-711 — Issue-cleanup round 15 (part 1): PR #6220 review follow-ups — operator-tunable HTTP connection cap + deterministic resolver test
+
+Non-blocking SUGGESTIONs from PR #6220's review, addressed as follow-ups rather
+than expanding that PR.
+
+**serve() host precondition — already satisfied (no change).** The reviewer
+suggested `Web.serve` declare `requires: host.length > 0` now that #5990 makes
+it delegate to `serveStreaming`. Verified both `serve` overloads (dotnet and
+jvm, `lyric-web/src/web.l`) already carry that clause — no change needed.
+
+**#6071 connection cap now operator-tunable.** `maxConcurrentConnections = 1000`
+was a hardcoded module constant, so the concurrent-connection backpressure cap
+(#6071) couldn't be tuned per deployment without a rebuild. Renamed it to
+`maxConcurrentConnectionsDefault` and added `resolveMaxConcurrentConnections()`
+(`lyric-stdlib/std/_kernel/http_server.l`), which honours the
+`LYRIC_HTTP_MAX_CONNECTIONS` environment variable when set to a positive
+integer and otherwise falls back to the default. A zero/negative/non-numeric
+value falls back rather than failing — an unbounded (0/negative) cap would
+defeat the backpressure guarantee. Read once per listener at start
+(`startListenerWithLimits` / `startListenerTlsWithLimits`), consistent with the
+codebase's `LYRIC_CONFIG_*` env-var config idiom. Chosen over adding a field to
+`EngineLimits`: that record is documented as per-connection *parse* limits with
+deliberately-mandatory fields, so a server-wide connection cap is a poor
+semantic fit and would break every construction site; an env var achieves the
+stated goal (per-deployment tuning, no rebuild) with no API-surface churn.
+
+**Backpressure regression test.** Made `resolveMaxConcurrentConnections` public
+(a legitimate "what cap will this server use?" query, and the test seam) and
+added a deterministic case to `http_server_dotnet_tests.l` pinning the exact
+resolution logic: a positive override wins (`5`, `4096`, `1`), and each value
+that would defeat backpressure (`0`, `-3`, non-numeric) falls back to the 1000
+default. A full concurrency-timing test would be flaky; this pins the decision
+code (the part that regresses) without timing dependence. A cap of `1` is the
+documented seam for a future connection-serialization test.
+
+**Verification.** `http_server_dotnet_tests` 17/17 (incl. the new resolver
+case) on `--target dotnet`; `tcp_host_tls_tests` 8/8 no-regression; stdlib
+bundle rebuilt clean; `make ilverify` 116 DLLs / 0 IL-validity errors.
+(D-progress number provisional — may renumber on rebase.)
