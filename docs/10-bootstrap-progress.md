@@ -31155,3 +31155,73 @@ D-progress-543); the C test is the load-bearing runtime verification.
 
 **Related:** `docs/03-decision-log.md` D-progress-703; docs/61 §7/§8, D128; #5890,
 #5874, `native/plan/08-work-items.md` Phase N9, D-N-007, D-N-014, D-progress-540.
+
+## `Std.TcpHost`/`Std.TlsHost`/`Std.EncodingHost` native twins ship over the N9.1 seam, TLS phase 5 band N9.2 (2026-07-20)
+
+`_kernel_native/tcp_host.l`, `_kernel_native/tls_host.l`, and
+`_kernel_native/encoding_host.l` expose the N9.1 `lyric_sock_*`/`lyric_tls_*`
+C seam to Lyric code, gated in dependency order: `Std.Encoding` → `Std.Tls`
+→ `Std.TcpHost`. `Std.TcpHost` implements the full dotnet/JVM-parity
+surface — `hostListen`/`hostConnect`/`hostStopListener`/`hostAccept`/
+`hostAcceptTls`/`hostUpgradeServerTls`/`hostAlpn`/`hostRead`/`hostWrite`/
+`hostClose` — Result-native throughout (D-N-003: no try/catch on native).
+
+Two corrections to the original N9.2 plan text (docs/61 §7 item 4,
+`native/plan/08-work-items.md`), both forced by reading the compiler/seam
+source before implementing rather than assuming the plan held:
+
+- **Not `opaque type`.** The native `Llvm.Codegen` item-kind dispatch has
+  no `IOpaque` case (panics if used) and no Lyric-level custom-destructor
+  mechanism exists yet for a heap type to run cleanup code on a raw
+  resource field — both real compiler gaps, tracked as issue #6234.
+  `Listener`/`Conn` are plain `pub record`s with package-private fields
+  instead (the `_kernel_native/process_capture_host.l` `ProcessCaptureResult`
+  "public type, private fields, public accessors" shape already in this
+  tree), with `hostClose`/`hostStopListener` as the explicit
+  always-must-be-called free path.
+- **The TLS handle is a `Long`, not `NativePtr[Byte]`.** `Conn` must
+  survive across separate top-level calls, and the mode checker's N0100
+  boundary documents a `NativePtr[T]`-typed record/union field as rejected
+  unconditionally (heap storage outlives any frame). Every `lyric_tls_*`
+  handle is instead declared `Long` at both its extern-func return and
+  parameter positions — the JNI-`jlong`-style "opaque handle as integer"
+  idiom, sound because a pointer and an `i64` are the same machine word on
+  every native-target triple (x86-64/AArch64, both LP64).
+
+`Std.TlsHost`'s native `CertHandle` holds PEM text directly (not a parsed
+OpenSSL object — the N9.1 seam has no standalone parse-only function, only
+PEM-text-taking context constructors), with three new seam functions
+(`lyric_tls_validate_cert_pem`/`_key_pem`/`_identity_pem`) added to
+`lyric-rt/src/lyric_tls.c` for eager load-time validation matching the
+dotnet/JVM twins' contract (identity mismatch detection via
+`SSL_CTX_check_private_key`, catching same-algorithm wrong-key pairings
+too, unlike the dotnet twin). `Std.EncodingHost`'s native twin ports the
+JVM twin's pure-Lyric accumulator verbatim (native's `lyric_rt` list kernel
+is genuinely byte-typed, so the .NET twin's `List<object>`-erasure
+workaround doesn't apply). Two new `LyricList[Byte]`-bridging seam function
+pairs (`lyric_sock_read_bytes`/`_write_bytes`, `lyric_tls_read_bytes`/
+`_write_bytes`) back `hostRead`/`hostWrite`; two new `LyricString*`-returning
+conveniences (`lyric_tls_last_error_string`, `lyric_tls_alpn_string`) avoid
+Lyric-side raw-buffer marshaling.
+
+Verified by `lyric-compiler/lyric/llvm_tls_self_test.l` (four cases: an
+`Std.Encoding` round-trip, `Std.Tls` PEM loading incl. malformed-key
+rejection, a plain `Std.TcpHost` round-trip needing no threads, and a real
+loopback TLS handshake — server via `hostAcceptTls`, client on a genuine
+second pthread since a TLS handshake needs both peers actively driving
+handshake I/O unlike a bare TCP connect — all ASan-compiled), wired into
+the `native-backend-self-tests` CI job. Every new/changed C function is
+also covered by new cases in `lyric-rt/test/lyric_tls_test.c`, green under
+clang + gcc + the gcc ASan run.
+
+Boundary (honest, same as N9.1): this session could not build the native
+backend from source (release-download seed network-blocked), so
+`llvm_tls_self_test.l` was never run locally — CI's `native-backend-self-tests`
+job is the load-bearing validator for the compiled-Lyric correctness claims
+here. The C-level seam additions ARE locally verified (`make -C lyric-rt
+test` both compilers, `make -C lyric-rt test-asan CC=gcc`).
+
+**Related:** `docs/03-decision-log.md` D-progress-712; docs/61 §7 (item 4
+correction) / §8 item 15; `native/plan/08-work-items.md` N9.2; #6103, #5874;
+follow-ups #6234 (native `opaque type` codegen) and its paired
+custom-destructor gap.

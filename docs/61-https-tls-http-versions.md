@@ -424,13 +424,27 @@ listed above (context create/free, PEM cert/key load, connect/accept
 handshake, read/write/shutdown, ALPN both roles, min-version, mTLS
 verify/require, SNI + hostname verification with the §4 insecure override,
 system-trust discovery via `SSL_CTX_set_default_verify_paths` +
-`SSL_CERT_FILE`/`SSL_CERT_DIR`). Handles are raw resources freed explicitly;
-the ARC-managed lifetime (item 4) is realised in the follow-on
-`_kernel_native/tcp_host.l` twin's opaque-type destructors. The seam is
-verified by real loopback OpenSSL handshakes in `lyric_tls_test.c` (clang +
-gcc + ASan in CI). The Lyric transport/server/client layers are banded as
-Phase N9.2–N9.5 in `native/plan/08-work-items.md`. Q-TLS-001 (macOS trust)
-and Q-TLS-004 (resumption/0-RTT) remain open.
+`SSL_CERT_FILE`/`SSL_CERT_DIR`). Handles are raw resources freed explicitly.
+The seam is verified by real loopback OpenSSL handshakes in
+`lyric_tls_test.c` (clang + gcc + ASan in CI). The Lyric transport/server/
+client layers are banded as Phase N9.2–N9.5 in `native/plan/08-work-items.md`.
+Q-TLS-001 (macOS trust) and Q-TLS-004 (resumption/0-RTT) remain open.
+
+**Item 4 correction (D-progress-712, N9.2):** the ARC-managed lifetime is
+realised in the `_kernel_native/tcp_host.l` twin, but NOT via an
+`opaque type`'s destructor as originally sketched here — verified against
+the compiler source while implementing N9.2, `Llvm.Codegen`'s native
+item-kind dispatch has no `IOpaque` case (panics if one is used) and no
+Lyric-level mechanism exists yet for a heap type's destructor to run custom
+`free()` cleanup on a raw resource field (tracked as issue #6234). `Conn`/
+`Listener` are plain records with package-private fields and an
+explicit-call `hostClose`/`hostStopListener` free path instead (matching
+the dotnet/JVM twins' own explicit-`Dispose`/`Close` contract — neither
+managed target has a GC-finalizer path either), and the TLS connection
+handle that must outlive a single call is a `Long` (an "opaque handle as
+integer," the JNI `jlong` idiom), not a `NativePtr[Byte]` — the mode
+checker's N0100 boundary rejects a raw pointer stored in a record/union
+field unconditionally. See D-progress-712 for the full rationale.
 
 ## 8. Phasing and PR breakdown
 
@@ -745,10 +759,33 @@ items marked ∥ are independent and can proceed in parallel.
     mTLS accept, mTLS reject, hostname-mismatch rejection, insecure-skip-verify)
     — run in CI under clang + gcc (`make -C lyric-rt test`) plus a gcc ASan run
     (`make -C lyric-rt test-asan`). The Lyric-level layers are follow-on
-    N-items, each gated on a stdlib native port: **N9.2** `Std.TcpHost` native
-    twin (`_kernel_native/tcp_host.l`, where the seam `extern func`s live and a
-    native loopback self-test belongs) — gated on `Std.Encoding`/`Std.Tls`
-    native ports; **N9.3** `Std.HttpServer` native twin (thread-per-connection
+    N-items, each gated on a stdlib native port. **N9.2 — `Std.TcpHost`
+    native twin — shipped (D-progress-712, #6103)**: `_kernel_native/
+    tcp_host.l` (the seam `extern func`s, `hostListen`/`hostConnect`/
+    `hostStopListener`/`hostAccept`/`hostAcceptTls`/`hostUpgradeServerTls`/
+    `hostAlpn`/`hostRead`/`hostWrite`/`hostClose`) plus its two gating
+    prerequisites, `_kernel_native/encoding_host.l` (`Std.Encoding`, porting
+    the JVM twin's pure-Lyric accumulator — native's `lyric_rt` list kernel
+    is genuinely byte-typed, so the .NET twin's `List<object>`-erasure
+    workaround doesn't apply) and `_kernel_native/tls_host.l` (`Std.TlsHost`,
+    whose native `CertHandle` holds PEM text directly rather than a parsed
+    OpenSSL object — the seam has no standalone parse-only function, only
+    PEM-text-taking context constructors — with three new seam functions,
+    `lyric_tls_validate_cert_pem`/`_key_pem`/`_identity_pem`, added for eager
+    load-time validation matching the dotnet/JVM twins' contract).
+    `Listener`/`Conn` are plain records (not `opaque type` — the native
+    codegen has no `IOpaque` case yet, tracked as #6234) with the TLS
+    connection handle represented as a `Long` rather than `NativePtr[Byte]`
+    (the mode checker's N0100 boundary rejects a raw pointer stored in a
+    heap-type field; a pointer and an `i64` are the same machine word on
+    every native-target triple). Verified by `lyric-compiler/lyric/
+    llvm_tls_self_test.l` (four cases: `Std.Encoding` round-trip, `Std.Tls`
+    PEM loading incl. malformed-key rejection, a plain `Std.TcpHost`
+    round-trip, and a real loopback TLS handshake — server via
+    `hostAcceptTls`, client on a genuine second pthread since a TLS
+    handshake needs both peers actively driving handshake I/O unlike a bare
+    TCP connect — all ASan-compiled), wired into the `native-backend-self-tests`
+    CI job; **N9.3** `Std.HttpServer` native twin (thread-per-connection
     over the pthread kernel driving `Std.HttpEngine`); **N9.4** `Std.Http`
     native client; **N9.5** lyric-web `serveTls` + ALPN h2. See
     `native/plan/08-work-items.md` Phase N9 for the full banding and

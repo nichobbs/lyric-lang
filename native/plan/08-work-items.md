@@ -1271,23 +1271,71 @@ so a leaked SSL_CTX/SSL/fd or use-after-free fails the run. `llvm_bridge.l`'s
 native link gained `-ldl` (inert for non-TLS binaries — a program that never
 references the seam does not pull `lyric_tls.o` from the archive).
 
-### N9.2 — `Std.TcpHost` native twin (`_kernel_native/tcp_host.l`) — follow-on (#6103)
+### N9.2 — `Std.TcpHost` native twin (`_kernel_native/tcp_host.l`) — ✅ SHIPPED (D-progress-712, #6103)
 
-The `extern func` bindings for the N9.1 seam and the `Std.TcpHost` public
-surface on native (the plaintext transport + `hostAcceptTls` /
-`hostUpgradeServerTls` / `hostAlpn` / read / write / close), wrapping each
-raw seam handle in an opaque type whose destructor calls the matching
-`lyric_tls_*`/`lyric_sock_*` free (the ARC-managed lifetime). This is where
-the seam's `extern func` declarations live (D-N-007: externs only in
-`_kernel_native/`) and where the native `_self_test.l` (a real loopback TLS
-handshake driven from compiled Lyric, ASan-compiled) belongs.
+**SHIPPED (D-progress-712):** the `extern func` bindings for the N9.1 seam
+and the `Std.TcpHost` public surface on native (the plaintext transport +
+`hostAcceptTls`/`hostUpgradeServerTls`/`hostAlpn`/read/write/close), plus
+its two gating prerequisites (`_kernel_native/encoding_host.l`,
+`_kernel_native/tls_host.l`). Two corrections to this item's original plan
+text, both forced by reading the compiler/seam source first rather than
+assuming:
 
-**Prerequisite:** the `Std.TcpHost` surface takes `Std.Tls.TlsServerConfig`,
-so `Std.Tls` must compile on native first — which needs a
+- **Not an `opaque type`.** `Llvm.Codegen`'s native item-kind dispatch has
+  no `IOpaque` case (it panics on one today) and no Lyric-level mechanism
+  exists yet for a heap type's destructor to run custom free() cleanup on a
+  raw resource field — both real, verified compiler gaps, tracked as issue
+  #6234. `Listener`/`Conn` are plain `pub record`s with package-private
+  fields instead (the `_kernel_native/process_capture_host.l`
+  `ProcessCaptureResult` "public type, private fields, public accessors"
+  shape already in this tree), with `hostClose`/`hostStopListener` as the
+  explicit always-must-be-called free path — matching the dotnet/JVM
+  twins' own explicit-`Dispose`/`Close` contract (no GC finalizer exists on
+  either managed target either).
+- **The ARC-managed-lifetime raw handle is a `Long`, not a `NativePtr[Byte]`.**
+  `Conn.tlsConnHandle` must survive across separate top-level calls
+  (`hostAcceptTls` constructs it, `hostRead`/`hostWrite`/`hostClose` use it
+  later), and the mode checker's N0100 boundary documents storing
+  `NativePtr[T]` in a record/union field as rejected unconditionally (heap
+  storage outlives any frame) — a real invariant, honoured here even though
+  its enforcement entry point (`checkNativeFfiBoundary`) is defined but not
+  yet wired into the native bridge's pipeline. Every `lyric_tls_*` handle is
+  declared `Long` at both its extern-func return and parameter positions
+  instead (the JNI-`jlong`-style "opaque handle as integer" idiom) — sound
+  because a pointer and an `i64` are the identical machine word on every
+  native-target triple today (x86-64/AArch64, both LP64).
+
+Two new `LyricList[Byte]`-bridging seam functions
+(`lyric_sock_read_bytes`/`_write_bytes`, `lyric_tls_read_bytes`/
+`_write_bytes`) support `hostRead`/`hostWrite`, mirroring
+`lyric_file_read_bytes`'s own byte-list construction; two new
+`LyricString*`-returning conveniences (`lyric_tls_last_error_string`,
+`lyric_tls_alpn_string`) avoid Lyric-side raw-buffer marshaling for
+diagnostics/ALPN. `_kernel_native/tcp_host_self_test.l` is instead
+`lyric-compiler/lyric/llvm_tls_self_test.l` (matching the `llvm_*_self_test.l`
+naming convention this tree already uses for tests that import `Lyric.*`
+compiler packages to drive `compileToNativeWithFlags`): four cases,
+including a real loopback TLS handshake (server via `hostAcceptTls`, client
+on a genuine second pthread — a bare TCP connect completes into the listen
+backlog without a peer present, but a TLS handshake needs both sides
+actively driving handshake I/O, so the plain-transport case needs no
+threads while the TLS case does), ASan-compiled, wired into the
+`native-backend-self-tests` CI job. Two follow-up issues filed (not
+blocking): #6234 (native `opaque type` codegen) and its paired
+custom-destructor gap noted in `tcp_host.l`'s own module header.
+
+**Prerequisite (SHIPPED alongside):** the `Std.TcpHost` surface takes
+`Std.Tls.TlsServerConfig`, so `Std.Tls` must compile on native first —
 `_kernel_native/tls_host.l` (`Std.TlsHost` twin: PEM cert/key load via the
-seam) and a `_kernel_native/encoding_host.l` (`Std.Encoding` has `_kernel/`
-and `_kernel_jvm/` twins but no native one yet). Those two stdlib native
-ports gate this item.
+seam) and `_kernel_native/encoding_host.l` (`Std.Encoding`'s native twin,
+porting the JVM twin's pure-Lyric accumulator verbatim rather than the
+.NET twin's BCL-erasure workaround, which does not apply to native's
+genuinely byte-typed `lyric_rt` list kernel). `Std.TlsHost`'s native
+`CertHandle` holds PEM text directly (not a parsed OpenSSL object — the
+seam has no standalone parse-only function, only PEM-text-taking context
+constructors), with eager load-time validation added to the seam itself
+(`lyric_tls_validate_cert_pem`/`_key_pem`/`_identity_pem`, reusing the
+seam's own internal parse path) to match the dotnet/JVM twins' contract.
 
 ### N9.3 — `Std.HttpServer` native twin — follow-on (#6104)
 
