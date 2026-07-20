@@ -3165,7 +3165,14 @@ jobs:
       # so each lexical scope's pending deferred blocks run explicitly at
       # every scope exit -- fall-off, return, break, continue -- mirroring
       # the existing ARC scope-exit stack; a panic still bypasses it
-      # entirely per D-N-003).
+      # entirely per D-N-003), and llvm_tls_self_test (N9.2, issue #6103:
+      # Std.Encoding/Std.Tls/Std.TcpHost native twins over the N9.1
+      # lyric_sock_*/lyric_tls_* seam -- a real loopback TLS handshake
+      # driven from compiled native Lyric, server via hostAcceptTls,
+      # client on a genuine second pthread since a TLS handshake needs
+      # both peers actively driving handshake I/O, unlike a bare TCP
+      # connect; its ASan case covers the LyricString/LyricList bridging
+      # this item added to lyric_tls.c alongside).
       # The tests import `Lyric.Llvm*` compiler packages by source, so
       # LYRIC_LOAD_COMPILER=1.
       - name: Native backend self-tests (lyric-rt + llvm via native lyric test)
@@ -3206,6 +3213,7 @@ jobs:
             lyric-compiler/lyric/llvm_ffi_self_test.l \
             lyric-compiler/lyric/llvm_collections_self_test.l \
             lyric-compiler/lyric/llvm_stdlib_self_test.l \
+            lyric-compiler/lyric/llvm_tls_self_test.l \
             lyric-compiler/lyric/llvm_self_test_n3.l \
             lyric-compiler/lyric/llvm_self_test_n34.l \
             lyric-compiler/lyric/llvm_self_test_async.l \
