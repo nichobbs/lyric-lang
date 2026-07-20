@@ -19842,10 +19842,10 @@ not just cross-algorithm.
 **C) `Std.TcpHost` (`_kernel_native/tcp_host.l`).** Implements
 `hostListen`/`hostConnect`/`hostStopListener`/`hostAccept`/`hostAcceptTls`/
 `hostUpgradeServerTls`/`hostAlpn`/`hostRead`/`hostWrite`/`hostClose` with
-the same `TcpError` case set as the dotnet/JVM twins, Result-native
-throughout (D-N-003: no try/catch on native). Two deliberate deviations
-from the issue's literal wording, both verified against the compiler
-source before writing around them (not assumed):
+the same `TcpError` case set as the dotnet twin (`Std.TcpHost` has no JVM
+twin), Result-native throughout (D-N-003: no try/catch on native). Two
+deliberate deviations from the issue's literal wording, both verified
+against the compiler source before writing around them (not assumed):
 
 1. **`Listener`/`Conn` are plain `pub record`s, not `opaque type`.**
    `Llvm.Codegen`'s item-kind dispatch (the `SourceFile.items` collection
@@ -19864,8 +19864,9 @@ source before writing around them (not assumed):
    `ProcessCaptureResult` "public type, private fields, public accessor
    functions" shape) and an always-must-be-called `hostClose`/
    `hostStopListener` free path — the same explicit-`Dispose`/`Close`
-   contract the dotnet/JVM twins already document (no GC finalizer path
-   exists on either managed target either).
+   contract the dotnet twin already documents (no GC finalizer path
+   exists on that managed target either — again, `Std.TcpHost` has no
+   JVM twin to compare against).
 2. **`Conn.tlsConnHandle` is a `Long`, not a `NativePtr[Byte]`.** `Conn`
    must survive across multiple separate top-level calls (constructed by
    `hostAcceptTls`, consumed later by `hostRead`/`hostWrite`/`hostClose`),
@@ -19958,3 +19959,23 @@ wouldn't unlock ARC-triggered `free()` without it too).
 `make -C lyric-rt test-asan CC=gcc` green locally, including all new C-level
 tests. `llvm_tls_self_test.l`'s four cases are the CI-validated claim per
 the sandbox boundary above.
+
+**Review follow-ups (PR #6235, approved, two SUGGESTIONs addressed pre-merge).**
+(1) Corrected several "dotnet/JVM twins" comparisons that, on inspection,
+should have read "dotnet twin" — `Std.TcpHost` has NO JVM twin anywhere in
+the repo (only `_kernel/tcp_host.l` for dotnet); the reviewer caught this
+in `_kernel_native/tcp_host.l`'s module header and the matching prose in
+this entry and `docs/10-bootstrap-progress.md`. `Std.TlsHost`/
+`Std.EncodingHost` genuinely do have JVM twins, so those mentions were left
+unchanged. (2) `llvm_tls_self_test.l` originally hardcoded fixed ports
+(19443/19543) rather than binding ephemeral and querying back, unlike
+`lyric_tls_test.c`'s own C-level tests (`lyric_sock_local_port`) — a
+low-probability but real CI-flakiness source. The seam function
+(`lyric_sock_local_port`) already existed from N9.1, so adding a thin
+`hostLocalPort(l: in Listener): Int` wrapper to `_kernel_native/tcp_host.l`
+was genuinely low-effort; both self-test cases now bind `hostListen(host,
+0)` and read the kernel-assigned port back via `hostLocalPort` before
+dialing. `hostLocalPort` is native-only (the dotnet `Std.TcpHost` twin has
+no equivalent accessor and no consumer needs one there yet) — a testing/
+operational convenience over an already-existing seam function, not a new
+cross-target parity claim.

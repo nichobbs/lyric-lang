@@ -51,13 +51,16 @@
 //! functions" shape `_kernel_native/process_capture_host.l`'s
 //! `ProcessCaptureResult` already uses), and `hostStopListener`/
 //! `hostClose` are the explicit, always-must-be-called free path — the
-//! exact API contract `Std.TcpHost`'s dotnet/JVM twins already document
+//! exact API contract the dotnet `Std.TcpHost` twin already documents
 //! (`Dispose`/`Close` are called explicitly there too; there is no GC
-//! finalizer path on either managed target either). No consumer of this
-//! package can read `Listener.fd`/`Conn.tlsConnHandle` directly (no `pub`
-//! field), so the encapsulation guarantee `opaque type` would have given
-//! is preserved by ordinary visibility, just not by a compiler-enforced
-//! ARC destructor.
+//! finalizer path on that managed target either). `Std.TcpHost` has no
+//! JVM twin at all — only the dotnet one, at `_kernel/tcp_host.l` — unlike
+//! `Std.TlsHost`/`Std.EncodingHost` below, which genuinely do have JVM
+//! twins this file's own header comments compare against. No consumer of
+//! this package can read `Listener.fd`/`Conn.tlsConnHandle` directly (no
+//! `pub` field), so the encapsulation guarantee `opaque type` would have
+//! given is preserved by ordinary visibility, just not by a
+//! compiler-enforced ARC destructor.
 //!
 //! ## Representation: `Conn`'s TLS handle is a `Long`, not a `NativePtr[Byte]`
 //!
@@ -105,8 +108,9 @@ import Std.TlsHost as TlsHost
 // Public error + connection types.
 // =====================================================================
 /// Every way a transport operation can fail — the exact case set the
-/// dotnet/JVM `Std.TcpHost` twins expose, so a driver written against
-/// this type is target-independent.
+/// dotnet `Std.TcpHost` twin exposes (there is no JVM twin of
+/// `Std.TcpHost`), so a driver written against this type is portable to
+/// whichever target(s) `Std.TcpHost` ships on.
 pub union TcpError {
   case BindFailed(message: String)
   case AcceptFailed(message: String)
@@ -162,6 +166,8 @@ extern func rtSockConnect(host: NativePtr[Byte], port: Int): Int = "lyric_sock_c
 extern func rtSockListen(ip: NativePtr[Byte], port: Int, backlog: Int): Int = "lyric_sock_listen"
 
 extern func rtSockAccept(listenFd: Int): Int = "lyric_sock_accept"
+
+extern func rtSockLocalPort(fd: Int): Int = "lyric_sock_local_port"
 
 extern func rtSockClose(fd: Int): Int = "lyric_sock_close"
 
@@ -232,6 +238,18 @@ pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
 /// stop is swallowed rather than surfaced (matches the dotnet twin).
 pub func hostStopListener(l: in Listener): Unit {
   val _ = rtSockClose(l.fd)
+}
+
+/// The port `l` is actually bound to (`getsockname` under the hood) —
+/// lets a caller bind an ephemeral port (`hostListen(host, 0)`) and read
+/// back the kernel-assigned one, the same pattern `lyric_tls_test.c`'s
+/// own `lyric_sock_local_port` already uses to avoid fixed-port CI
+/// flakiness. Native-only: the dotnet `Std.TcpHost` twin has no
+/// equivalent accessor (no consumer needs one there yet), so this is not
+/// a cross-target parity claim, just a native testing/operational
+/// convenience over a seam function that already existed for N9.1.
+pub func hostLocalPort(l: in Listener): Int {
+  rtSockLocalPort(l.fd)
 }
 
 /// Block until a client connects, returning a plain (non-TLS) connection.

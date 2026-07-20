@@ -18,7 +18,12 @@
 //! test binary's `main`) drives the real N9.2 deliverable,
 //! `Std.TcpHost.hostAcceptTls`. Every scenario compiles with
 //! `-fsanitize=address`, so a leaked SSL_CTX/SSL/fd, a leaked LyricList
-//! byte buffer, or a leaked CertHandle string fails the run.
+//! byte buffer, or a leaked CertHandle string fails the run. Both
+//! multi-connection tests bind an ephemeral port (`hostListen(host, 0)`)
+//! and read the kernel-assigned one back via `hostLocalPort` before
+//! dialing — the same pattern `lyric_tls_test.c`'s C-level tests already
+//! use over `lyric_sock_local_port` — rather than a fixed port number, to
+//! avoid CI flakiness from a fixed port being in use on the runner.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -217,11 +222,11 @@ test "Std.TcpHost native plain round-trip: listen/connect/accept/read/write/clos
   // single thread suffices -- unlike the TLS scenario below, which needs
   // both peers to actively drive handshake I/O concurrently.
   val src = "package T\n" + "import Std.Core\n" + "import Std.TcpHost\n" + "func main(): Int {\n" +
-    "  val port = 19443\n" +
-    "  val listener = match hostListen(\"127.0.0.1\", port) {\n" +
+    "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
     "    case Ok(l) -> l\n" +
     "    case Err(_) -> return 1\n" +
     "  }\n" +
+    "  val port = hostLocalPort(listener)\n" +
     "  val clientConn = match hostConnect(\"127.0.0.1\", port) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 2\n" +
@@ -300,7 +305,6 @@ test "Std.TcpHost native plain round-trip: listen/connect/accept/read/write/clos
 // string has no clean escaping path).
 test "Std.TcpHost native TLS handshake: hostAcceptTls real loopback (items A+B+C, ASan)" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Tls\n" + "import Std.TcpHost\n" +
-    "val port: Int = 19543\n" +
     "val requestText: String = \"ping-from-native-tls-client\"\n" +
     "val responseText: String = \"pong-from-native-tls-server\"\n" +
     "val certPem: String = \"" +
@@ -324,7 +328,7 @@ test "Std.TcpHost native TLS handshake: hostAcceptTls real loopback (items A+B+C
     "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
     "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
     "@unsafe_ffi\n" +
-    "func clientRun(): NativePtr[Byte] {\n" +
+    "func clientRun(port: in Int): NativePtr[Byte] {\n" +
     "  val hostC = toC(\"127.0.0.1\")\n" +
     "  val fd = rtSockConnect(hostC, port)\n" +
     "  freeC(hostC)\n" +
@@ -398,12 +402,13 @@ test "Std.TcpHost native TLS handshake: hostAcceptTls real loopback (items A+B+C
     "    }\n" +
     "    case Ok(identity) -> {\n" +
     "      val cfg = TlsServerConfig(identity = identity, minVersion = Tls12, clientCa = None, requireClientCert = false)\n" +
-    "      match hostListen(\"127.0.0.1\", port) {\n" +
+    "      match hostListen(\"127.0.0.1\", 0) {\n" +
     "        case Err(_) -> {\n" +
     "          resultCode = 2\n" +
     "        }\n" +
     "        case Ok(listener) -> {\n" +
-    "          val clientFn: () -> NativePtr[Byte] = { -> clientRun() }\n" +
+    "          val assignedPort = hostLocalPort(listener)\n" +
+    "          val clientFn: () -> NativePtr[Byte] = { -> clientRun(assignedPort) }\n" +
     "          var tid: Long = 0\n" +
     "          val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), clientFn, clientFn)\n" +
     "          if rc != 0 {\n" +

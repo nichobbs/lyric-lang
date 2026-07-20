@@ -439,8 +439,9 @@ Lyric-level mechanism exists yet for a heap type's destructor to run custom
 `free()` cleanup on a raw resource field (tracked as issue #6234). `Conn`/
 `Listener` are plain records with package-private fields and an
 explicit-call `hostClose`/`hostStopListener` free path instead (matching
-the dotnet/JVM twins' own explicit-`Dispose`/`Close` contract — neither
-managed target has a GC-finalizer path either), and the TLS connection
+the dotnet twin's own explicit-`Dispose`/`Close` contract — that managed
+target has no GC-finalizer path either, and `Std.TcpHost` has no JVM twin
+to compare against), and the TLS connection
 handle that must outlive a single call is a `Long` (an "opaque handle as
 integer," the JNI `jlong` idiom), not a `NativePtr[Byte]` — the mode
 checker's N0100 boundary rejects a raw pointer stored in a record/union

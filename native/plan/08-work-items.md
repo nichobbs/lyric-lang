@@ -1289,9 +1289,9 @@ assuming:
   fields instead (the `_kernel_native/process_capture_host.l`
   `ProcessCaptureResult` "public type, private fields, public accessors"
   shape already in this tree), with `hostClose`/`hostStopListener` as the
-  explicit always-must-be-called free path — matching the dotnet/JVM
-  twins' own explicit-`Dispose`/`Close` contract (no GC finalizer exists on
-  either managed target either).
+  explicit always-must-be-called free path — matching the dotnet twin's
+  own explicit-`Dispose`/`Close` contract (no GC finalizer exists on that
+  managed target either; `Std.TcpHost` has no JVM twin to compare against).
 - **The ARC-managed-lifetime raw handle is a `Long`, not a `NativePtr[Byte]`.**
   `Conn.tlsConnHandle` must survive across separate top-level calls
   (`hostAcceptTls` constructs it, `hostRead`/`hostWrite`/`hostClose` use it

@@ -31161,10 +31161,11 @@ D-progress-543); the C test is the load-bearing runtime verification.
 `_kernel_native/tcp_host.l`, `_kernel_native/tls_host.l`, and
 `_kernel_native/encoding_host.l` expose the N9.1 `lyric_sock_*`/`lyric_tls_*`
 C seam to Lyric code, gated in dependency order: `Std.Encoding` → `Std.Tls`
-→ `Std.TcpHost`. `Std.TcpHost` implements the full dotnet/JVM-parity
-surface — `hostListen`/`hostConnect`/`hostStopListener`/`hostAccept`/
-`hostAcceptTls`/`hostUpgradeServerTls`/`hostAlpn`/`hostRead`/`hostWrite`/
-`hostClose` — Result-native throughout (D-N-003: no try/catch on native).
+→ `Std.TcpHost`. `Std.TcpHost` implements the full dotnet-parity surface
+(`Std.TcpHost` has no JVM twin) — `hostListen`/`hostConnect`/
+`hostStopListener`/`hostAccept`/`hostAcceptTls`/`hostUpgradeServerTls`/
+`hostAlpn`/`hostRead`/`hostWrite`/`hostClose` — Result-native throughout
+(D-N-003: no try/catch on native).
 
 Two corrections to the original N9.2 plan text (docs/61 §7 item 4,
 `native/plan/08-work-items.md`), both forced by reading the compiler/seam
