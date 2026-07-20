@@ -47,10 +47,19 @@ test: $(BUILD)/lyric_rt.a
 # only) together with the test from source so the seam code (sockets, PEM /
 # context glue, handshake I/O) is fully instrumented: a leaked SSL_CTX / SSL /
 # fd / alpn buffer, a use-after-free, or an overflow in a handshake round-trip
-# fails the run (the llvm_*_self_test ASan discipline).  Run under a compiler
-# with ASan (gcc's libasan is reliably present): `make test-asan CC=gcc`.
+# fails the run (the llvm_*_self_test ASan discipline).  src/lyric_string.c +
+# src/lyric_rt.c + src/lyric_weak.c + src/lyric_collections.c are pulled in
+# too (not part of the seam itself): lyric_tls_last_error_string/
+# lyric_tls_alpn_string return a genuine LyricString* and
+# lyric_{sock,tls}_{read,write}_bytes bridge through a genuine LyricList*
+# (issue #6103 item C), and the test exercises both via
+# lyric_string_len/lyric_list_len/lyric_release, so ASan needs those
+# allocations instrumented too, not just the seam's raw malloc'd handles
+# (lyric_release pulls in lyric_weak_release even though these values are
+# never weakly referenced).  Run under a compiler with ASan (gcc's libasan
+# is reliably present): `make test-asan CC=gcc`.
 test-asan: | $(BUILD)
-	$(CC) $(CFLAGS) -fsanitize=address -Iinclude test/lyric_tls_test.c src/lyric_tls.c $(TEST_LIBS) -o $(BUILD)/lyric_tls_test_asan
+	$(CC) $(CFLAGS) -fsanitize=address -Iinclude test/lyric_tls_test.c src/lyric_tls.c src/lyric_string.c src/lyric_rt.c src/lyric_weak.c src/lyric_collections.c $(TEST_LIBS) -o $(BUILD)/lyric_tls_test_asan
 	$(BUILD)/lyric_tls_test_asan
 
 clean:

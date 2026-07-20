@@ -245,6 +245,69 @@ int64_t lyric_sock_write(int32_t fd, const uint8_t* buf, int64_t n) {
     return n;
 }
 
+/* ── LyricList[Byte] <-> raw-buffer bridging (issue #6103 item C) ──────
+ *
+ * `Std.TcpHost`'s `hostRead`/`hostWrite` are Result[slice[Byte], TcpError]
+ * seams, but lyric_sock_read/write (like lyric_tls_read/write below) take
+ * a raw uint8_t* -- and the `_kernel_native/` twin cannot marshal a raw
+ * scratch buffer into a `slice[Byte]` itself (no NativePtr-arithmetic
+ * byte-at-offset primitive is exposed to Lyric outside this kind of C
+ * helper). These four mirror lyric_file_read_bytes's own
+ * LyricList-buffer bridging (lyric_fs.c): one 64-bit slot per byte
+ * (D-N-015 -- slice[Byte] and List[Byte] share this representation on
+ * native), scalar elements (elems_are_refs = 0). The *_bytes read helpers
+ * follow the file kernel's return-plus-ok-flag protocol (a NULL return
+ * would leak the caller's `newList()`-equivalent the moment the extern
+ * call overwrote the slot); the write helpers take the already-built
+ * LyricList* directly -- the Lyric-side `extern func` declares this
+ * parameter as `slice[Byte]` (not `NativePtr[Byte]`), the same direct
+ * `List[Byte]`-typed-parameter shape `_kernel_native/file_host.l`'s
+ * `rtWriteBytes` already uses, so the real LyricList* pointer arrives
+ * with no Lyric-side marshaling at all -- slice[Byte] and List[Byte]
+ * share one representation on native (D-N-015). */
+LyricList* lyric_sock_read_bytes(int32_t fd, int64_t max_bytes, int32_t* ok) {
+    LyricList* list = lyric_list_new(0);
+    if (max_bytes <= 0) {
+        *ok = 1;
+        return list;
+    }
+    uint8_t* buf = (uint8_t*)malloc((size_t)max_bytes);
+    if (!buf) {
+        set_err("out of memory");
+        *ok = 0;
+        return list;
+    }
+    int64_t n = lyric_sock_read(fd, buf, max_bytes);
+    if (n < 0) {
+        free(buf);
+        *ok = 0;
+        return list;
+    }
+    for (int64_t i = 0; i < n; i++) {
+        lyric_list_push(list, (int64_t)buf[i]);
+    }
+    free(buf);
+    *ok = 1;
+    return list;
+}
+
+int64_t lyric_sock_write_bytes(int32_t fd, void* bytes_list) {
+    LyricList* list = (LyricList*)bytes_list;
+    int64_t n = list ? list->len : 0;
+    if (n <= 0) return 0;
+    uint8_t* buf = (uint8_t*)malloc((size_t)n);
+    if (!buf) {
+        set_err("out of memory");
+        return -1;
+    }
+    for (int64_t i = 0; i < n; i++) {
+        buf[i] = (uint8_t)(list->data[i] & 0xff);
+    }
+    int64_t rc = lyric_sock_write(fd, buf, n);
+    free(buf);
+    return rc;
+}
+
 /* ── OpenSSL 3.x dynamic binding ──────────────────────────────────────── */
 
 /* Opaque OpenSSL types (we only ever hold pointers). */
@@ -571,6 +634,54 @@ static int use_identity(ossl_ssl_ctx* ctx, const char* cert_pem, const char* key
     return 0;
 }
 
+/* ── Standalone PEM validation (docs/61 §7 item B / issue #6103) ────────
+ *
+ * Std.TlsHost's native twin needs to validate a certificate / private key
+ * PEM block at load time (Certificate.fromPem / Identity.fromPem),
+ * matching the dotnet/JVM twins' eager-validation contract, without threading a
+ * throwaway SSL_CTX* back to Lyric (raw pointers may not be stored in
+ * heap types there). These reuse read_cert/read_key/use_identity — the
+ * exact parse path lyric_tls_server_new already exercises — so "does
+ * this PEM parse" costs nothing beyond what a real context build would
+ * already pay. */
+int32_t lyric_tls_validate_cert_pem(const char* cert_pem) {
+    if (!tls_ready()) return 0;
+    ossl_x509* x = read_cert(cert_pem ? cert_pem : "");
+    if (!x) {
+        set_ossl_err("parse certificate");
+        return 0;
+    }
+    O.X509_free(x);
+    return 1;
+}
+
+int32_t lyric_tls_validate_key_pem(const char* key_pem) {
+    if (!tls_ready()) return 0;
+    ossl_evp_pkey* k = read_key(key_pem ? key_pem : "");
+    if (!k) {
+        set_ossl_err("parse private key (only unencrypted PKCS#8 is supported)");
+        return 0;
+    }
+    O.EVP_PKEY_free(k);
+    return 1;
+}
+
+int32_t lyric_tls_validate_identity_pem(const char* cert_pem, const char* key_pem) {
+    if (!tls_ready()) return 0;
+    /* A throwaway context purely to drive use_identity's
+     * SSL_CTX_check_private_key call — the only certificate/key-match
+     * primitive the OpenSSL API exposes. Freed immediately; nothing
+     * escapes this function. */
+    ossl_ssl_ctx* ctx = O.SSL_CTX_new(O.TLS_server_method());
+    if (!ctx) {
+        set_ossl_err("create validation context");
+        return 0;
+    }
+    int rc = use_identity(ctx, cert_pem ? cert_pem : "", key_pem ? key_pem : "");
+    O.SSL_CTX_free(ctx);
+    return rc == 0 ? 1 : 0;
+}
+
 static int set_min_version(ossl_ssl_ctx* ctx, int32_t min_version) {
     long v = (min_version >= 13) ? OSSL_TLS1_3_VERSION : OSSL_TLS1_2_VERSION;
     if (O.SSL_CTX_ctrl(ctx, OSSL_SSL_CTRL_SET_MIN_PROTO_VERSION, v, NULL) != 1) {
@@ -840,6 +951,51 @@ int64_t lyric_tls_write(void* conn, const uint8_t* buf, int64_t n) {
     return n;
 }
 
+/* TLS counterparts of lyric_sock_read_bytes/lyric_sock_write_bytes above
+ * (same LyricList[Byte] bridging rationale). */
+LyricList* lyric_tls_read_bytes(void* conn, int64_t max_bytes, int32_t* ok) {
+    LyricList* list = lyric_list_new(0);
+    if (max_bytes <= 0) {
+        *ok = 1;
+        return list;
+    }
+    uint8_t* buf = (uint8_t*)malloc((size_t)max_bytes);
+    if (!buf) {
+        set_err("out of memory");
+        *ok = 0;
+        return list;
+    }
+    int64_t n = lyric_tls_read(conn, buf, max_bytes);
+    if (n < 0) {
+        free(buf);
+        *ok = 0;
+        return list;
+    }
+    for (int64_t i = 0; i < n; i++) {
+        lyric_list_push(list, (int64_t)buf[i]);
+    }
+    free(buf);
+    *ok = 1;
+    return list;
+}
+
+int64_t lyric_tls_write_bytes(void* conn, void* bytes_list) {
+    LyricList* list = (LyricList*)bytes_list;
+    int64_t n = list ? list->len : 0;
+    if (n <= 0) return 0;
+    uint8_t* buf = (uint8_t*)malloc((size_t)n);
+    if (!buf) {
+        set_err("out of memory");
+        return -1;
+    }
+    for (int64_t i = 0; i < n; i++) {
+        buf[i] = (uint8_t)(list->data[i] & 0xff);
+    }
+    int64_t rc = lyric_tls_write(conn, buf, n);
+    free(buf);
+    return rc;
+}
+
 int32_t lyric_tls_alpn(void* conn, char* out, int32_t out_cap) {
     if (!conn || !out || out_cap <= 0) return 0;
     ossl_ssl* ssl = (ossl_ssl*)conn;
@@ -873,4 +1029,22 @@ void lyric_tls_ctx_free(void* ctx) {
     if (w->ctx) O.SSL_CTX_free(w->ctx);
     if (w->alpn_wire) free(w->alpn_wire);
     free(w);
+}
+
+/* ── LyricString-returning conveniences (issue #6103 item C) ───────────
+ *
+ * See the lyric_rt.h declarations: these exist purely so the
+ * `_kernel_native/` Lyric twin never has to malloc/free a scratch C
+ * buffer just to read a diagnostic or the negotiated ALPN protocol back
+ * as a Lyric String. */
+LyricString* lyric_tls_last_error_string(void) {
+    char buf[256];
+    int32_t n = lyric_tls_last_error(buf, (int32_t)sizeof(buf));
+    return lyric_string_from_literal((const uint8_t*)buf, (int64_t)n);
+}
+
+LyricString* lyric_tls_alpn_string(void* conn) {
+    char buf[256];
+    int32_t n = lyric_tls_alpn(conn, buf, (int32_t)sizeof(buf));
+    return lyric_string_from_literal((const uint8_t*)buf, (int64_t)n);
 }
