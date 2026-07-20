@@ -3113,7 +3113,7 @@ jobs:
   # Native (LLVM) backend self-tests — N7.1 (docs/10 D-progress-540/545).
   # Split out into its own job (previously a `background: true` step inside
   # compiler-self-tests-dotnet-a) because the work here is CPU-bound rather
-  # than wait-bound: the eleven llvm_*_self_test.l files below contain ~130
+  # than wait-bound: the twelve llvm_*_self_test.l files below contain ~135
   # individual `test { }` cases, and each one spawns its own `clang`
   # subprocess (compile a `.ll` module, link against lyric_rt.a, run the
   # binary) — 34 of them linking under `-fsanitize=address`, which is slow
@@ -3165,22 +3165,29 @@ jobs:
       # so each lexical scope's pending deferred blocks run explicitly at
       # every scope exit -- fall-off, return, break, continue -- mirroring
       # the existing ARC scope-exit stack; a panic still bypasses it
-      # entirely per D-N-003), and llvm_tls_self_test (N9.2, issue #6103:
-      # Std.Encoding/Std.Tls/Std.TcpHost native twins over the N9.1
-      # lyric_sock_*/lyric_tls_* seam -- a real loopback TLS handshake
-      # driven from compiled native Lyric, server via hostAcceptTls,
-      # client on a genuine second pthread since a TLS handshake needs
-      # both peers actively driving handshake I/O, unlike a bare TCP
-      # connect; its ASan case covers the LyricString/LyricList bridging
-      # this item added to lyric_tls.c alongside).
-
-      # entirely per D-N-003), and llvm_opaque (#6234 part 1: `opaque type`
-      # codegen -- construction, field access, mutation, UFCS methods, and
-      # an opaque type nested in a record all lower identically to a
-      # record; its ASan case constructs 2000 `Certificate`-shaped opaque
-      # instances -- mirroring `Std.Tls`'s real `Certificate`/`Identity` --
-      # in a loop to prove the synthesised destructor releases the
-      # ARC-managed field with no leak/double-free).
+      # entirely per D-N-003).
+      #
+      # llvm_tls_self_test (N9.2, issue #6103: Std.Encoding/Std.Tls/
+      # Std.TcpHost native twins over the N9.1 lyric_sock_*/lyric_tls_*
+      # seam -- a real loopback TLS handshake driven from compiled native
+      # Lyric, server via hostAcceptTls, client on a genuine second
+      # pthread since a TLS handshake needs both peers actively driving
+      # handshake I/O, unlike a bare TCP connect; its ASan case covers the
+      # LyricString/LyricList bridging this item added to lyric_tls.c
+      # alongside; its item B now goes through Std.Tls's real
+      # Certificate.fromPem/Identity.fromPem API, unblocked by the
+      # llvm_opaque fix below).
+      #
+      # llvm_opaque (#6234 part 1: `opaque type` codegen -- construction,
+      # field access, mutation, UFCS methods, and an opaque type nested in
+      # a record all lower identically to a record on both the single-file
+      # and bundled-stdlib collection paths; a `@projectable opaque type`
+      # is refused with a clear N0101 diagnostic rather than silently
+      # compiling with lost semantics; its ASan case constructs 2000
+      # `Certificate`-shaped opaque instances -- mirroring `Std.Tls`'s real
+      # `Certificate`/`Identity` -- in a loop to prove the synthesised
+      # destructor releases the ARC-managed field with no leak/double-free).
+      #
       # The tests import `Lyric.Llvm*` compiler packages by source, so
       # LYRIC_LOAD_COMPILER=1.
       - name: Native backend self-tests (lyric-rt + llvm via native lyric test)

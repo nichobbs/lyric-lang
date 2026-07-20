@@ -224,6 +224,38 @@ test "body-less opaque forward declaration compiles without lowering" {
   assertEqualInt(r.exitCode, 0, "body-less opaque")
 }
 
+// #6239 (review follow-up to #6234 part 1): `opaqueToRecordDecl` reshapes an
+// `OpaqueTypeDecl` into a `RecordDecl`, which has no `annotations` field —
+// so `@projectable` (a real, both-targets-shipped feature, D015, that
+// synthesises a `<Name>View` exposed-record twin plus `toView()`/`tryInto()`
+// on `--target dotnet`/`--target jvm`) must NOT silently vanish when the
+// same declaration compiles for `--target native`. This drives codegen
+// directly (a rejected program never reaches clang) and asserts the panic
+// carries both the diagnostic code and a mention of `@projectable`, so the
+// guard can't vacuously pass.
+test "@projectable opaque type is rejected at native codegen with N0101, not silently compiled" {
+  val src = "package T\n" + "opaque type Widget @projectable {\n" + "  label: String\n" + "}\n" + "func main(): Int {\n" +
+    "  0\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(pr.diagnostics.count, 0, "the source itself parses")
+  var rejected = false
+  var msg = ""
+  try {
+    val pkg = codegenNativePackage(pr.file, "")
+    val _ = lowerNativePackage(pkg)
+  } catch Bug as b {
+    rejected = true
+    msg = b.message
+  }
+  assertTrue(
+    rejected,
+    "a @projectable opaque type must be rejected at native codegen, not silently compiled with lost semantics"
+  )
+  assertTrue(Str.contains(msg, "N0101"), "the rejection names the N0101 diagnostic code (got: " + msg + ")")
+  assertTrue(Str.contains(msg, "projectable"), "the rejection mentions @projectable (got: " + msg + ")")
+}
+
 // The shape mirrors `Std.Tls`'s `Certificate { handle: Host.CertHandle }`
 // (lyric-stdlib/std/tls.l): a single heap-managed field, constructed
 // repeatedly and dropped. Every construction/release pair must balance

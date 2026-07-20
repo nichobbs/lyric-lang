@@ -259,7 +259,9 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > compiler rejects it elsewhere (`N0100`). Constructs not yet lowered fail
 > the build with a diagnostic naming the construct rather than
 > miscompiling: interface default/generic methods, generic protected
-> types, `Set[T]`, async generators (`yield`
+> types, `@projectable opaque type` (`N0101` — no `<Name>View` twin codegen
+> on native yet; the opaque type itself lowers fine without `@projectable`),
+> `Set[T]`, async generators (`yield`
 > inside `async func`), a `defer` that must run during
 > a `panic`, and manifest (multi-package) native builds. (List literals
 > and module-level `val` now lower — #5977 — so `--define` /

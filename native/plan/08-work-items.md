@@ -1357,13 +1357,20 @@ silently dropped the item). Fixed by reshaping an `OpaqueTypeDecl` into the
 equivalent `RecordDecl` at collection time, so opaque types share every
 record code path (layout, construction, field access, ARC destructor
 synthesis) — opacity is a front-end visibility concern, not a codegen one.
-A custom-destructor hook for an opaque type wrapping a raw resource (the
+A `@projectable opaque type` is refused with a clear `N0101` diagnostic
+rather than silently compiled with lost projection semantics (#6239) — a
+custom-destructor hook for an opaque type wrapping a raw resource (the
 `lyric_tls_*`/`lyric_sock_*` handle this section's ARC-managed-lifetime note
 above refers to) is a separate, still-open gap (#6234 part 2) — this fix
 only makes an opaque type's ordinary ARC-managed fields release correctly,
-not a raw-resource cleanup hook. The stdlib native kernel ports above
-(`_kernel_native/tls_host.l`, `_kernel_native/encoding_host.l`) remain
-un-shipped; this item closes the compiler-side blocker, not the kernel work.
+not a raw-resource cleanup hook. **This item now closes end to end**: #6235
+shipped the stdlib native kernel ports this paragraph originally called
+un-shipped (`_kernel_native/tls_host.l`, `_kernel_native/tcp_host.l`,
+`_kernel_native/encoding_host.l`), and with both the compiler-side blocker
+and the kernel ports landed, `Std.Tls.Certificate.fromPem`/`Identity.fromPem`
+— the real public API, not a kernel-boundary stand-in — now compile and
+construct correctly end to end for `--target native`, verified by
+`llvm_tls_self_test.l`'s re-added item B.
 
 ### N9.3 — `Std.HttpServer` native twin — follow-on (#6104)
 

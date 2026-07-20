@@ -31277,30 +31277,59 @@ ordinary ARC-managed fields (Strings, other heap objects) release
 correctly, exactly like a record's; a future opaque type wrapping an inert
 resource still leaks it, same as a record would today.
 
-Verified by the new `lyric-compiler/lyric/llvm_opaque_self_test.l` (7 cases,
+**Review follow-up (#6239): `@projectable` opaque types refused, not
+silently dropped.** `RecordDecl` has no `annotations` field, so the
+reshape above would otherwise silently drop `@projectable` — a real,
+both-targets-shipped feature (D015, a synthesized `<Name>View` twin plus
+`toView()`/`tryInto()`) — letting a `@projectable opaque type` compile
+"successfully" for native with quietly lost semantics. Fixed by refusing
+loud instead: `checkOpaqueNativeSupported` (called from inside
+`opaqueToRecordDecl` itself, so every call site is covered) panics with a
+new diagnostic code, `N0101`, when `@projectable` is present, mirroring the
+existing `N0099` "construct not yet lowered on this target" convention.
+Every other annotation (e.g. `@stable(since = ...)`) is still silently
+dropped on purpose — it carries no codegen semantics on any target, and
+`Std.Tls.Certificate`/`Identity` themselves carry `@stable` but never
+`@projectable`, so a blanket "refuse any annotation" guard would have
+wrongly re-blocked this fix's own motivating case.
+
+Verified by the new `lyric-compiler/lyric/llvm_opaque_self_test.l` (8 cases,
 wired into the `native-backend-self-tests` CI job): scalar/`String` field
 construction and access, mutable field assignment, a UFCS method call on an
 opaque receiver, an opaque-typed field nested in a `record` (mirroring
 `Std.Tls.TlsServerConfig.identity: Identity`), a body-less forward
-declaration, and an ASan+LeakSanitizer loop constructing 2000
+declaration, a `@projectable opaque type` rejected with `N0101` (asserted
+via `try`/`catch Bug`, checking the panic message names both the code and
+`@projectable`), and an ASan+LeakSanitizer loop constructing 2000
 `Certificate`-shaped opaque instances to prove the synthesised destructor
-neither leaks nor double-frees.
+neither leaks nor double-frees. All of these drive the single-file
+`unitOfFile` path.
+
+**`Std.Tls` end-to-end: now fully working (updated after rebase onto
+#6235).** This entry originally reported the `Std.Tls` round-trip as
+blocked on `Std.TlsHost` having no `_kernel_native/tls_host.l` twin. This
+PR was subsequently rebased onto `main` after #6235 (N9.2) shipped exactly
+that twin (plus `tcp_host.l`/`encoding_host.l`). With both landed,
+`Std.Tls.Certificate.fromPem`/`Identity.fromPem` — the real public API —
+now compile and construct correctly end to end for `--target native`.
+Verified by re-adding `llvm_tls_self_test.l`'s item B (dropped when that
+file was first authored, specifically because of this compiler gap): a
+genuinely separate-file, bundled `Std.Tls` package compiled through
+`Lyric.LlvmBridge.compileToNativeWithFlags`, exercising `unitOf`'s
+`IOpaque` arm (the bundled-path half of this fix) rather than just
+`unitOfFile`'s single-file path. A real loopback TLS handshake (item D)
+remains a separate, not-yet-authored test — no longer blocked on #6234,
+just not yet written; tracked under #6103's remaining work.
 
 Boundary (honest, matches D-progress-543/D-progress-703): this session
 could not build the self-hosted compiler from source in-sandbox
 (release-download seed network-blocked) and the published `lyric` 0.4.33
 tool's native backend predates Phase N2/N3 entirely, so no in-sandbox
-compiled-Lyric run of the new test was possible; CI's
-`native-backend-self-tests` job is the load-bearing verification. `Std.Tls`'s
-`Certificate`/`Identity` now resolve/construct correctly at the compiler
-level (confirmed by inspection — both are non-generic `opaque type`s with a
-single field, structurally identical to the test's `Certificate { pem:
-String }` case), but a full compiled-and-run `Std.Tls` native round-trip
-remains blocked on a separate, pre-existing gap: `Std.TlsHost` has no
-`_kernel_native/tls_host.l` twin yet (N9.2's own prerequisite, #6103),
-unaffected by this fix.
+compiled-Lyric run of either test was possible; CI's
+`native-backend-self-tests` job is the load-bearing verification.
 
 **Related:** `docs/03-decision-log.md` D-progress-713; #6234 (part 1 resolved,
-part 2 open); #6103 (N9.2, the concrete consumer this unblocks); #6104–#6106;
-docs/61 §7 item 4; `native/plan/08-work-items.md` Phase N9; D-N-014;
+part 2 open); #6239 (the `@projectable` finding, resolved here); #6103 (N9.2,
+merged as #6235); #6104–#6106; docs/61 §7 item 4;
+`native/plan/08-work-items.md` Phase N9; D-N-014;
 D-progress-540, D-progress-545, D-progress-703.
