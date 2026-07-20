@@ -1348,6 +1348,23 @@ constructors), with eager load-time validation added to the seam itself
 (`lyric_tls_validate_cert_pem`/`_key_pem`/`_identity_pem`, reusing the
 seam's own internal parse path) to match the dotnet/JVM twins' contract.
 
+**Compiler-level prerequisite ✅ SHIPPED (#6234 part 1, D-progress-713):**
+`Std.Tls`'s `Certificate`/`Identity` — and every `opaque type` this band's
+"wrap the raw handle in an opaque type" idiom depends on — could not compile
+for `--target native` at all: `Llvm.Codegen`'s item-kind dispatch had no
+`IOpaque` case (single-file compiles panicked; bundled stdlib compiles
+silently dropped the item). Fixed by reshaping an `OpaqueTypeDecl` into the
+equivalent `RecordDecl` at collection time, so opaque types share every
+record code path (layout, construction, field access, ARC destructor
+synthesis) — opacity is a front-end visibility concern, not a codegen one.
+A custom-destructor hook for an opaque type wrapping a raw resource (the
+`lyric_tls_*`/`lyric_sock_*` handle this section's ARC-managed-lifetime note
+above refers to) is a separate, still-open gap (#6234 part 2) — this fix
+only makes an opaque type's ordinary ARC-managed fields release correctly,
+not a raw-resource cleanup hook. The stdlib native kernel ports above
+(`_kernel_native/tls_host.l`, `_kernel_native/encoding_host.l`) remain
+un-shipped; this item closes the compiler-side blocker, not the kernel work.
+
 ### N9.3 — `Std.HttpServer` native twin — follow-on (#6104)
 
 The thread-per-connection server model (docs/61 §7 item 5) over the existing

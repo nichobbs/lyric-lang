@@ -8912,6 +8912,39 @@ pub func codegenNativePackage(file: in SourceFile, triple: in String): NPackage 
   codegenNativeBundle(units, triple)
 }
 
+/// `opaque type` has no native codegen of its own (#6234 part 1):
+/// opacity is a front-end visibility concern enforced by the type
+/// checker's cross-package field-read restriction
+/// (`Lyric.TypeChecker.checkOpaqueDeclTypes`), not a codegen concern —
+/// the underlying heap layout, construction, field access, and ARC
+/// destructor synthesis are structurally identical to a record's, the
+/// same premise `Msil.Codegen`/`Jvm.Codegen` already act on (an opaque
+/// type lowers to an ordinary class with private fields there). This
+/// reshapes an `OpaqueTypeDecl` into the equivalent `RecordDecl` so
+/// every existing record code path — `registerRecordLayout`,
+/// `lowerRecordConstructArgs`, `lowerRecordFieldLoad`,
+/// `recHasRefFields`/`synthRecordDtor`, generic record instantiation —
+/// handles opaque types for free, with zero duplicated logic. A
+/// custom-destructor hook for opaque types wrapping a raw resource
+/// (e.g. a `NativePtr` OS handle) is a separate, unimplemented gap
+/// (#6234 part 2, deliberately out of scope here): this conversion only
+/// makes an opaque type's ARC-managed fields (Strings, other heap
+/// objects) release correctly, exactly like a record's — a future
+/// opaque type wrapping an inert resource still leaks it, same as a
+/// record would today.
+pub func opaqueToRecordDecl(od: in OpaqueTypeDecl): RecordDecl {
+  val members: List[RecordMember] = newList()
+  var i = 0
+  while i < od.members.count {
+    match od.members[i] {
+      case OMField(f) -> members.add(RMField(field = f))
+      case OMInvariant(inv) -> members.add(RMInvariant(inv = inv))
+    }
+    i = i + 1
+  }
+  RecordDecl(name = od.name, generics = od.generics, whereClause = od.whereClause, members = members, span = od.span)
+}
+
 /// Collect one source file's lowerable items into a CodegenUnit.
 pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val fns: List[FunctionDecl] = newList()
@@ -8957,6 +8990,17 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
       case IProtected(decl) -> {
         protecteds.add(decl)
         collectProtectedMethods(pkgName, decl, fns)
+      }
+      // A body-less forward declaration (`opaque type Foo` with no `{ ... }`)
+      // has no fields and no runtime representation on any target (matches
+      // the MSIL/JVM `decl.hasBody` guard) — nothing to lower.  Opaque
+      // methods are ordinary UFCS functions (D037: `self: in Foo` receiver),
+      // already collected above via `IFunc` regardless of the receiver
+      // type's opacity, so no method collection is needed here.
+      case IOpaque(decl) -> {
+        if decl.hasBody {
+          records.add(opaqueToRecordDecl(decl))
+        }
       }
       case ITypeAlias(_) -> {
       }

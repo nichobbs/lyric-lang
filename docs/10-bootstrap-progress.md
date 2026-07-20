@@ -31245,3 +31245,62 @@ from-scratch validator for the three remaining cases.
 correction) / §8 item 15; `native/plan/08-work-items.md` N9.2; #6103, #5874;
 follow-ups #6234 (native `opaque type` codegen) and its paired
 custom-destructor gap.
+
+## Native backend: `opaque type` codegen ships — `Llvm.Codegen` `IOpaque` dispatch, #6234 part 1 (2026-07-20)
+
+`Lyric.LlvmCodegen` had no codegen support at all for `opaque type` on
+`--target native`: the single-file item-collection loop (`unitOfFile`)
+panicked on any `IOpaque` item, and the bundled path (`Lyric.LlvmBridge`'s
+`unitOf`, used whenever a native program imports stdlib packages) silently
+dropped it. Every other pass — type checker, mode checker, contract-meta,
+fmt, doc, lsp, lint, alias-rewriter — already handled `IOpaque`; only the
+native backend was missing it, and `Std.Tls`'s `Certificate`/`Identity`
+(shared/target-independent `opaque type`s used by every target) could
+therefore never compile for native.
+
+Fixed by reshaping an `OpaqueTypeDecl` into the equivalent `RecordDecl`
+(`Lyric.LlvmCodegen.opaqueToRecordDecl`) at item-collection time in both
+`unitOfFile` (`llvm_codegen.l`) and `unitOf` (`llvm_bridge.l`), so an opaque
+type shares every existing record code path — layout, construction, field
+access, ARC destructor synthesis for reference-typed fields, generic
+instantiation — with zero duplicated codegen. This mirrors how
+`Msil.Codegen`/`Jvm.Codegen` already treat an opaque type as an ordinary
+class with private fields: opacity is a front-end visibility concern (the
+type checker's cross-package field-read restriction), never a codegen one.
+A body-less forward declaration (`opaque type Foo` with no `{ }`) is
+skipped, matching the MSIL/JVM `hasBody` guard.
+
+**Deliberately out of scope:** a custom-destructor hook for an opaque type
+wrapping a raw resource (e.g. a `NativePtr` OS handle) — #6234's separate
+part 2, real design work, still open. This fix only makes an opaque type's
+ordinary ARC-managed fields (Strings, other heap objects) release
+correctly, exactly like a record's; a future opaque type wrapping an inert
+resource still leaks it, same as a record would today.
+
+Verified by the new `lyric-compiler/lyric/llvm_opaque_self_test.l` (7 cases,
+wired into the `native-backend-self-tests` CI job): scalar/`String` field
+construction and access, mutable field assignment, a UFCS method call on an
+opaque receiver, an opaque-typed field nested in a `record` (mirroring
+`Std.Tls.TlsServerConfig.identity: Identity`), a body-less forward
+declaration, and an ASan+LeakSanitizer loop constructing 2000
+`Certificate`-shaped opaque instances to prove the synthesised destructor
+neither leaks nor double-frees.
+
+Boundary (honest, matches D-progress-543/D-progress-703): this session
+could not build the self-hosted compiler from source in-sandbox
+(release-download seed network-blocked) and the published `lyric` 0.4.33
+tool's native backend predates Phase N2/N3 entirely, so no in-sandbox
+compiled-Lyric run of the new test was possible; CI's
+`native-backend-self-tests` job is the load-bearing verification. `Std.Tls`'s
+`Certificate`/`Identity` now resolve/construct correctly at the compiler
+level (confirmed by inspection — both are non-generic `opaque type`s with a
+single field, structurally identical to the test's `Certificate { pem:
+String }` case), but a full compiled-and-run `Std.Tls` native round-trip
+remains blocked on a separate, pre-existing gap: `Std.TlsHost` has no
+`_kernel_native/tls_host.l` twin yet (N9.2's own prerequisite, #6103),
+unaffected by this fix.
+
+**Related:** `docs/03-decision-log.md` D-progress-713; #6234 (part 1 resolved,
+part 2 open); #6103 (N9.2, the concrete consumer this unblocks); #6104–#6106;
+docs/61 §7 item 4; `native/plan/08-work-items.md` Phase N9; D-N-014;
+D-progress-540, D-progress-545, D-progress-703.

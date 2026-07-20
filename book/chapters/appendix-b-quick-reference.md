@@ -890,7 +890,9 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # triple/opt default from the manifest [native] table
                                        # (CLI flags override); [native].extra_libs adds -l<name>.
                                        # ARC-managed (no GC; cycles need NativeWeak[T]). Surface:
-                                       # scalars/strings, records, unions, enums, distinct types,
+                                       # scalars/strings, records, opaque types (share record
+                                       # codegen — construction/field access/ARC release),
+                                       # unions, enums, distinct types,
                                        # tuples, match, generics (monomorphized), closures,
                                        # non-generic interfaces (impl I for Record, vtable
                                        # dispatch), NativeWeak[T], slice[T], List/Map +
