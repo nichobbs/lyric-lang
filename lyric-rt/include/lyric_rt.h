@@ -552,6 +552,18 @@ int64_t lyric_sock_write(int32_t fd, const uint8_t* buf, int64_t n);
  * negative fd. */
 int32_t lyric_sock_close(int32_t fd);
 
+/* LyricList[Byte] bridging for `Std.TcpHost`'s `hostRead`/`hostWrite`
+ * (issue #6103 item C): one 64-bit slot per byte, scalar elements
+ * (D-N-015 -- slice[Byte]/List[Byte] share this representation on
+ * native). `*_read_bytes` follows the file kernel's return-plus-ok-flag
+ * protocol (`lyric_file_read_bytes`); `*_write_bytes` takes the already-
+ * built LyricList* directly -- the Lyric-side `extern func` declares this
+ * parameter as `slice[Byte]` directly (the same shape
+ * `_kernel_native/file_host.l`'s `rtWriteBytes(data: List[Byte], ...)`
+ * already uses), so no Lyric-side byte marshaling is needed either way. */
+LyricList* lyric_sock_read_bytes(int32_t fd, int64_t max_bytes, int32_t* ok);
+int64_t lyric_sock_write_bytes(int32_t fd, void* bytes_list);
+
 /* ── TLS over OpenSSL 3.x (dlopen'd) ───────────────────────────────────
  *
  * `min_version` is 12 for TLS 1.2 (the floor) or 13 for TLS 1.3.  ALPN is
@@ -618,6 +630,11 @@ int64_t lyric_tls_read(void* conn, uint8_t* buf, int64_t n);
 /* Encrypt and write ALL `n` bytes.  Returns `n`, or -1 on error. */
 int64_t lyric_tls_write(void* conn, const uint8_t* buf, int64_t n);
 
+/* TLS counterparts of lyric_sock_read_bytes/lyric_sock_write_bytes above
+ * (same LyricList[Byte] bridging, issue #6103 item C). */
+LyricList* lyric_tls_read_bytes(void* conn, int64_t max_bytes, int32_t* ok);
+int64_t lyric_tls_write_bytes(void* conn, void* bytes_list);
+
 /* The negotiated ALPN protocol wire name into `out` (NUL-terminated,
  * truncated to `out_cap`).  Returns its length, or 0 when no ALPN protocol
  * was negotiated. */
@@ -638,6 +655,36 @@ void lyric_tls_ctx_free(void* ctx);
  * (NUL-terminated, truncated to `out_cap`); returns its length.  Empty
  * when no error has been recorded. */
 int32_t lyric_tls_last_error(char* out, int32_t out_cap);
+
+/* ── Standalone PEM validation (no socket/handshake involved) ──────────
+ *
+ * `Std.TlsHost`'s native twin (issue #6103 item B) needs to validate a
+ * certificate / private key PEM block at LOAD time, matching the dotnet
+ * and JVM twins' eager-validation contract — but the constructors above
+ * only parse PEM as a side effect of building a full TLS context. These
+ * three reuse the seam's internal read_cert/read_key/use_identity parse
+ * path (no OpenSSL symbols beyond what lyric_tls_server_new already
+ * resolves) to answer "is this well-formed" / "does this key match this
+ * cert" without allocating a socket-facing context. Each returns 1 on
+ * success, 0 on failure (lyric_tls_last_error set); a cert/key mismatch
+ * (including same-algorithm) is detected via SSL_CTX_check_private_key,
+ * the same primitive lyric_tls_server_new itself uses. */
+int32_t lyric_tls_validate_cert_pem(const char* cert_pem);
+int32_t lyric_tls_validate_key_pem(const char* key_pem);
+int32_t lyric_tls_validate_identity_pem(const char* cert_pem, const char* key_pem);
+
+/* ── LyricString-returning conveniences for the `_kernel_native/` twin ──
+ *
+ * `lyric_tls_last_error` / `lyric_tls_alpn` above are raw fixed-buffer C
+ * APIs (the seam itself has no LyricString dependency — D128 decision
+ * 10's "swappable seam" requires lyric_tls.c to link standalone). These
+ * two hand back a genuine owned LyricString* (rc=1, via
+ * lyric_string_from_literal) so the Lyric-level `extern func` declares
+ * plain `String` as its return type with no manual buffer marshaling at
+ * the call site — the same convenience lyric_process_stdout/_stderr
+ * already establish for a fixed-buffer C result. */
+LyricString* lyric_tls_last_error_string(void);
+LyricString* lyric_tls_alpn_string(void* conn);
 
 #ifdef __cplusplus
 }

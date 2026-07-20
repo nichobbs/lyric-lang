@@ -32,7 +32,6 @@
 package Std.Encoding
 
 import Std.Core
-import Std.Char
 import Std.Collections
 import Std.EncodingHost
 
@@ -41,6 +40,12 @@ import Std.EncodingHost
 // =====================================================================
 /// Encode `bytes` as an uppercase hexadecimal string (two characters per
 /// byte, no separator).  Example: [0xDE, 0xAD] → "DEAD".
+///
+/// Uses `String.substring` rather than `digits[idx]` bracket indexing:
+/// the latter is not a supported codegen shape for `--target native`
+/// (`Lyric.LlvmCodegen.lowerCollectionIndex` only recognises List/slice/Map
+/// receivers, not `String`), while `.substring` is a plain method call
+/// that works identically on every target.
 @stable(since = "1.0")
 pub func encodeHex(bytes: in slice[Byte]): String {
   val digits = "0123456789ABCDEF"
@@ -48,7 +53,7 @@ pub func encodeHex(bytes: in slice[Byte]): String {
   var i = 0
   while i < bytes.length {
     val b = bytes[i]
-    result = result + ("" + digits[b / 16u8]) + ("" + digits[b % 16u8])
+    result = result + digits.substring((b / 16u8).toInt(), 1) + digits.substring((b % 16u8).toInt(), 1)
     i += 1
   }
   result
@@ -57,6 +62,10 @@ pub func encodeHex(bytes: in slice[Byte]): String {
 /// Decode a hexadecimal string (upper or lower case, no prefix required).
 /// Returns `Some(bytes)` on success, `None` for any malformed input
 /// (odd length, non-hex characters).
+///
+/// Walks `s` via `Std.EncodingHost.hostCharCodeAt` (a per-target code-unit
+/// read) rather than `s[i]` bracket indexing, for the same
+/// `--target native` codegen reason as `encodeHex` above.
 @stable(since = "1.0")
 pub func tryDecodeHex(s: in String): Option[slice[Byte]] {
   val len = s.length
@@ -69,24 +78,51 @@ pub func tryDecodeHex(s: in String): Option[slice[Byte]] {
   val result: List[Byte] = newList()
   var i = 0
   while i < len {
-    val hi = hexDigitValue(s[i])
-    val lo = hexDigitValue(s[i + 1])
-    match (hi, lo) {
-      case (Some(h), Some(l)) -> result.add(h * 16 + l)
-      case _ -> return None
+    // Two nested single-value matches rather than a `(hi, lo)` tuple match:
+    // `--target native` only supports bindings/wildcards inside tuple
+    // patterns, not nested constructor patterns like `(Some(h), Some(l))`
+    // (confirmed via direct repro, issue #6237).
+    match hexCodeUnitValue(hostCharCodeAt(s, i)) {
+      case Some(h) -> {
+        match hexCodeUnitValue(hostCharCodeAt(s, i + 1)) {
+          case Some(l) -> result.add((h * 16 + l).toByte())
+          case None -> return None
+        }
+      }
+      case None -> return None
     }
     i += 2
   }
   Some(value = result.toArray())
 }
 
+// Same table as Std.Char.hexDigitValue, but over a raw UTF-16/UTF-8
+// code-unit Int (see hostCharCodeAt) instead of a Char, so tryDecodeHex
+// never needs `s[i]`.
+func hexCodeUnitValue(cp: in Int): Option[Int] {
+  if cp >= 48 and cp <= 57 {
+    return Some(value = cp - 48)
+  }
+  // '0'-'9'
+  if cp >= 97 and cp <= 102 {
+    return Some(value = cp - 97 + 10)
+  }
+  // 'a'-'f'
+  if cp >= 65 and cp <= 70 {
+    return Some(value = cp - 65 + 10)
+  }
+  // 'A'-'F'
+  None
+}
+
 // =====================================================================
 // Base64.
 // =====================================================================
-// Returns the Base64 sextet value (0-63) for a character, or -1 if invalid.
-// '=' is not handled here; callers check for it explicitly.
-func base64CharValue(c: in Char): Int {
-  val cp = toInt(c)
+// Returns the Base64 sextet value (0-63) for a code-unit Int (see
+// hostCharCodeAt), or -1 if invalid. '=' (61) is not handled here;
+// callers check for it explicitly.  Takes an Int rather than a Char so
+// tryDecodeBase64 never needs `s[i]` (see that function's header).
+func base64CodeUnitValue(cp: in Int): Int {
   if cp >= 65 and cp <= 90 {
     return cp - 65
   }
@@ -112,6 +148,9 @@ func base64CharValue(c: in Char): Int {
 
 /// Encode `bytes` as a standard Base64 string (RFC 4648 §4).
 /// Output may include "=" padding characters at the end.
+///
+/// Uses `String.substring` rather than `BASE64_ALPHA[idx]` bracket
+/// indexing — see `encodeHex`'s header for why.
 @stable(since = "1.0")
 pub func encodeBase64(bytes: in slice[Byte]): String {
   val BASE64_ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -122,20 +161,24 @@ pub func encodeBase64(bytes: in slice[Byte]): String {
     val b0 = bytes[i]
     val b1 = bytes[i + 1]
     val b2 = bytes[i + 2]
-    result = result + ("" + BASE64_ALPHA[b0 / 4u8]) + ("" + BASE64_ALPHA[(b0 % 4u8) * 16u8 + b1 / 16u8]) +
-      ("" + BASE64_ALPHA[(b1 % 16u8) * 4u8 + b2 / 64u8]) +
-      ("" + BASE64_ALPHA[b2 % 64u8])
+    result = result + BASE64_ALPHA.substring((b0 / 4u8).toInt(), 1) +
+      BASE64_ALPHA.substring(((b0 % 4u8) * 16u8 + b1 / 16u8).toInt(), 1) +
+      BASE64_ALPHA.substring(((b1 % 16u8) * 4u8 + b2 / 64u8).toInt(), 1) +
+      BASE64_ALPHA.substring((b2 % 64u8).toInt(), 1)
     i += 3
   }
   val rem = len - i
   if rem == 1 {
     val b0 = bytes[i]
-    result = result + ("" + BASE64_ALPHA[b0 / 4u8]) + ("" + BASE64_ALPHA[(b0 % 4u8) * 16u8]) + "=="
+    result = result + BASE64_ALPHA.substring((b0 / 4u8).toInt(), 1) +
+      BASE64_ALPHA.substring(((b0 % 4u8) * 16u8).toInt(), 1) +
+      "=="
   } else if rem == 2 {
     val b0 = bytes[i]
     val b1 = bytes[i + 1]
-    result = result + ("" + BASE64_ALPHA[b0 / 4u8]) + ("" + BASE64_ALPHA[(b0 % 4u8) * 16u8 + b1 / 16u8]) +
-      ("" + BASE64_ALPHA[(b1 % 16u8) * 4u8]) +
+    result = result + BASE64_ALPHA.substring((b0 / 4u8).toInt(), 1) +
+      BASE64_ALPHA.substring(((b0 % 4u8) * 16u8 + b1 / 16u8).toInt(), 1) +
+      BASE64_ALPHA.substring(((b1 % 16u8) * 4u8).toInt(), 1) +
       "="
   }
   result
@@ -146,9 +189,13 @@ pub func encodeBase64(bytes: in slice[Byte]): String {
 /// (invalid characters, wrong padding, length not a multiple of 4).
 ///
 /// On .NET the BCL `System.Convert.FromBase64String` is used so the result
-/// is a genuine byte[].  On JVM a pure-Lyric accumulator is used via the
-/// Std.EncodingHost kernel boundary.  Input is validated in pure Lyric on
-/// both platforms before the host call.
+/// is a genuine byte[].  On JVM and native, a pure-Lyric accumulator is
+/// used via the Std.EncodingHost kernel boundary.  Input is validated in
+/// pure Lyric on every platform before the host call.
+///
+/// Walks `s` via `Std.EncodingHost.hostCharCodeAt` rather than `s[i]`
+/// bracket indexing — see `tryDecodeHex`'s header for why (the same
+/// `--target native` codegen gap applies here).
 @stable(since = "1.0")
 pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
   val len = s.length
@@ -160,31 +207,33 @@ pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
   }
   var i = 0
   while i < len {
-    val c0 = base64CharValue(s[i])
-    val c1 = base64CharValue(s[i + 1])
+    val c0 = base64CodeUnitValue(hostCharCodeAt(s, i))
+    val c1 = base64CodeUnitValue(hostCharCodeAt(s, i + 1))
     if c0 < 0 or c1 < 0 {
       return None
     }
-    val ch2 = s[i + 2]
-    val ch3 = s[i + 3]
-    if ch2 == '=' {
-      if ch3 != '=' {
+    val cp2 = hostCharCodeAt(s, i + 2)
+    val cp3 = hostCharCodeAt(s, i + 3)
+    if cp2 == 61 {
+      // '='
+      if cp3 != 61 {
         return None
       }
       if i + 4 != len {
         return None
       }
     } else {
-      val c2 = base64CharValue(ch2)
+      val c2 = base64CodeUnitValue(cp2)
       if c2 < 0 {
         return None
       }
-      if ch3 == '=' {
+      if cp3 == 61 {
+        // '='
         if i + 4 != len {
           return None
         }
       } else {
-        val c3 = base64CharValue(ch3)
+        val c3 = base64CodeUnitValue(cp3)
         if c3 < 0 {
           return None
         }
@@ -214,6 +263,14 @@ pub func encodeUtf8(s: in String): slice[Byte] {
 /// Decode a UTF-8 byte slice to a `String`.  Returns `Some(s)` when the
 /// bytes are valid UTF-8, `None` otherwise.  Rejects overlong sequences,
 /// lone surrogate code points, and code points above U+10FFFF.
+///
+/// Builds `result` via `Std.EncodingHost.hostStringFromCodepoint` rather
+/// than `"" + fromInt(cp)`: `String + Char` concatenation is not a
+/// supported codegen shape for `--target native` (confirmed via direct
+/// repro — `Lyric.LlvmCodegen.lowerStringBinop` requires both operands to
+/// already be `String`; issue #6237), and `Char.toString()` is a separate,
+/// independently broken path on that backend, so neither is a safe
+/// alternative there.
 @stable(since = "1.0")
 pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
   var result = ""
@@ -223,7 +280,7 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
     val b0: Byte = bytes[i]
     if b0 < 128u8 {
       // 1-byte sequence: U+0000..U+007F
-      result = result + ("" + fromInt(b0.toInt()))
+      result = result + hostStringFromCodepoint(b0.toInt())
       i += 1
     } else if b0 / 32u8 == 6u8 {
       // 2-byte sequence: 110xxxxx 10xxxxxx → U+0080..U+07FF
@@ -240,7 +297,7 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
         return None
       }
       // overlong
-      result = result + ("" + fromInt(cp))
+      result = result + hostStringFromCodepoint(cp)
       i += 2
     } else if b0 / 16u8 == 14u8 {
       // 3-byte sequence: 1110xxxx 10xxxxxx 10xxxxxx → U+0800..U+FFFF
@@ -261,7 +318,7 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
         return None
       }
       // surrogates invalid in UTF-8
-      result = result + ("" + fromInt(cp))
+      result = result + hostStringFromCodepoint(cp)
       i += 3
     } else if b0 / 8u8 == 30u8 {
       // 4-byte sequence: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx → U+10000..U+10FFFF
@@ -283,11 +340,11 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
         return None
       }
       // above U+10FFFF
-      // Encode as surrogate pair
-      val cp1 = cp - 65536
-      val high = 55296 + cp1 / 1024
-      val low = 56320 + cp1 % 1024
-      result = result + ("" + fromInt(high)) + ("" + fromInt(low))
+      // `hostStringFromCodepoint` takes the full scalar value directly and
+      // constructs whatever the target's String representation needs (a
+      // surrogate pair on .NET/JVM, a 4-byte UTF-8 sequence on native) —
+      // no surrogate-pair math needed here.
+      result = result + hostStringFromCodepoint(cp)
       i += 4
     } else {
       return None

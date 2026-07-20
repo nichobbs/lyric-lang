@@ -441,8 +441,242 @@ static void test_server_require_client_cert_without_ca(void) {
     lyric_tls_ctx_free(client);
 }
 
+/* ── Standalone PEM validation (issue #6103 item B) ───────────────────── */
+
+static void test_validate_cert_pem(void) {
+    CHECK(lyric_tls_validate_cert_pem(SERVER_CRT) == 1);
+    CHECK(lyric_tls_validate_cert_pem("not a certificate") == 0);
+    char err[256];
+    lyric_tls_last_error(err, sizeof(err));
+    CHECK(strlen(err) > 0);
+}
+
+static void test_validate_key_pem(void) {
+    CHECK(lyric_tls_validate_key_pem(SERVER_KEY) == 1);
+    CHECK(lyric_tls_validate_key_pem("not a key") == 0);
+}
+
+static void test_validate_identity_pem(void) {
+    CHECK(lyric_tls_validate_identity_pem(SERVER_CRT, SERVER_KEY) == 1);
+    CHECK(lyric_tls_validate_identity_pem(CLIENT_CRT, CLIENT_KEY) == 1);
+    /* Same-algorithm (both EC) wrong-key pairing: SERVER_CRT's public key
+     * does not match CLIENT_KEY. SSL_CTX_check_private_key catches this
+     * (unlike the dotnet twin's CreateFromPemFile, which conflates it with
+     * "malformed" -- see tls_host.l's module header for that asymmetry). */
+    CHECK(lyric_tls_validate_identity_pem(SERVER_CRT, CLIENT_KEY) == 0);
+}
+
+/* ── LyricString-returning conveniences (issue #6103 item C) ──────────── */
+
+static void test_last_error_string(void) {
+    CHECK(lyric_tls_validate_cert_pem("garbage") == 0);
+    LyricString* msg = lyric_tls_last_error_string();
+    CHECK(msg != NULL);
+    CHECK(lyric_string_len(msg) > 0);
+    lyric_release(msg);
+}
+
+/* run_tls_scenario reads back ALPN via the raw lyric_tls_alpn buffer API
+ * on the CLIENT side (client_alpn out-param); exercise the LyricString
+ * wrapper directly against the SERVER side's negotiated connection so
+ * both call shapes are covered without duplicating the handshake.
+ *
+ * A request/response round trip (like run_tls_scenario's own REQUEST/
+ * RESPONSE exchange) is required before either side shuts down: with no
+ * data exchanged, both threads race to SSL_shutdown/close, and whichever
+ * side's close_notify write lands on an already-reset peer socket takes
+ * a process-killing SIGPIPE (no SIGPIPE suppression anywhere in the
+ * socket/TLS write paths, unlike lyric_process.c's pipe writes). The read
+ * gives both sides a synchronization point before either tears down. */
+static int alpn_string_server_saw_conn;
+
+static void* alpn_string_server(void* arg) {
+    int listen_fd = *(int*)arg;
+    int fd = lyric_sock_accept(listen_fd);
+    if (fd < 0) return NULL;
+    set_timeout(fd);
+    void* server_ctx = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "h2,http/1.1");
+    void* conn = lyric_tls_server_accept(server_ctx, fd);
+    if (conn) {
+        alpn_string_server_saw_conn = 1;
+        LyricString* s = lyric_tls_alpn_string(conn);
+        CHECK(s != NULL);
+        CHECK(lyric_string_len(s) == 2);
+        CHECK(memcmp(LYRIC_STRING_DATA(s), "h2", 2) == 0);
+        lyric_release(s);
+        uint8_t buf[256];
+        int64_t n = lyric_tls_read(conn, buf, sizeof(buf));
+        if (n > 0) lyric_tls_write(conn, (const uint8_t*)RESPONSE, (int64_t)strlen(RESPONSE));
+        lyric_tls_shutdown(conn);
+        lyric_tls_free(conn);
+    }
+    lyric_tls_ctx_free(server_ctx);
+    lyric_sock_close(fd);
+    return NULL;
+}
+
+static void test_alpn_string(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+    int port = lyric_sock_local_port(listen_fd);
+    CHECK(port > 0);
+
+    alpn_string_server_saw_conn = 0;
+    pthread_t th;
+    pthread_create(&th, NULL, alpn_string_server, &listen_fd);
+
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
+    CHECK(client != NULL);
+    int fd = lyric_sock_connect("127.0.0.1", port);
+    CHECK(fd >= 0);
+    set_timeout(fd);
+    void* conn = lyric_tls_client_connect(client, fd, "localhost", "h2,http/1.1");
+    CHECK(conn != NULL);
+    if (conn) {
+        if (lyric_tls_write(conn, (const uint8_t*)REQUEST, (int64_t)strlen(REQUEST)) > 0) {
+            uint8_t buf[256];
+            lyric_tls_read(conn, buf, sizeof(buf));
+        }
+        lyric_tls_shutdown(conn);
+        lyric_tls_free(conn);
+    }
+    lyric_sock_close(fd);
+    pthread_join(th, NULL);
+    CHECK(alpn_string_server_saw_conn == 1); /* server side actually negotiated a conn */
+    lyric_sock_close(listen_fd);
+    lyric_tls_ctx_free(client);
+}
+
+/* A NULL connection (mirrors lyric_tls_alpn's own `!conn` guard) returns
+ * the empty LyricString, never NULL/crash. */
+static void test_alpn_string_null_conn(void) {
+    LyricString* s = lyric_tls_alpn_string(NULL);
+    CHECK(s != NULL);
+    CHECK(lyric_string_len(s) == 0);
+    lyric_release(s);
+}
+
+/* ── LyricList[Byte] bridging (issue #6103 item C) ────────────────────── */
+
+static LyricList* list_of_bytes(const char* s) {
+    LyricList* l = lyric_list_new(0);
+    for (const char* p = s; *p; p++) {
+        lyric_list_push(l, (int64_t)(unsigned char)*p);
+    }
+    return l;
+}
+
+static int list_equals_str(LyricList* l, const char* s) {
+    int64_t n = (int64_t)strlen(s);
+    if (lyric_list_len(l) != n) return 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (lyric_list_get(l, i) != (int64_t)(unsigned char)s[i]) return 0;
+    }
+    return 1;
+}
+
+static void test_sock_bytes_roundtrip(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+    int port = lyric_sock_local_port(listen_fd);
+    CHECK(port > 0);
+
+    pthread_t th;
+    pthread_create(&th, NULL, plain_server, &listen_fd);
+
+    int fd = lyric_sock_connect("127.0.0.1", port);
+    CHECK(fd >= 0);
+    set_timeout(fd);
+
+    LyricList* out = list_of_bytes(REQUEST);
+    CHECK(lyric_sock_write_bytes(fd, out) == (int64_t)strlen(REQUEST));
+    int32_t ok = 0;
+    LyricList* in = lyric_sock_read_bytes(fd, 128, &ok);
+    CHECK(ok == 1);
+    CHECK(list_equals_str(in, REQUEST)); /* plain_server echoes verbatim */
+    lyric_release(out);
+    lyric_release(in);
+    lyric_sock_close(fd);
+
+    pthread_join(th, NULL);
+    lyric_sock_close(listen_fd);
+}
+
+static void test_sock_write_bytes_edge_cases(void) {
+    CHECK(lyric_sock_write_bytes(-1, NULL) == 0); /* empty/NULL list is a no-op write */
+    LyricList* empty = lyric_list_new(0);
+    CHECK(lyric_sock_write_bytes(-1, empty) == 0);
+    lyric_release(empty);
+}
+
+static void* tls_bytes_server_conn;
+
+static void* tls_bytes_server(void* arg) {
+    int listen_fd = *(int*)arg;
+    int fd = lyric_sock_accept(listen_fd);
+    if (fd < 0) return NULL;
+    set_timeout(fd);
+    void* server_ctx = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "");
+    void* conn = lyric_tls_server_accept(server_ctx, fd);
+    if (conn) {
+        tls_bytes_server_conn = conn;
+        int32_t ok = 0;
+        LyricList* in = lyric_tls_read_bytes(conn, 256, &ok);
+        if (ok == 1 && list_equals_str(in, REQUEST)) {
+            LyricList* out = list_of_bytes(RESPONSE);
+            lyric_tls_write_bytes(conn, out);
+            lyric_release(out);
+        }
+        lyric_release(in);
+        lyric_tls_shutdown(conn);
+        lyric_tls_free(conn);
+    }
+    lyric_tls_ctx_free(server_ctx);
+    lyric_sock_close(fd);
+    return NULL;
+}
+
+static void test_tls_bytes_roundtrip(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+    int port = lyric_sock_local_port(listen_fd);
+    CHECK(port > 0);
+
+    tls_bytes_server_conn = NULL;
+    pthread_t th;
+    pthread_create(&th, NULL, tls_bytes_server, &listen_fd);
+
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
+    CHECK(client != NULL);
+    int fd = lyric_sock_connect("127.0.0.1", port);
+    CHECK(fd >= 0);
+    set_timeout(fd);
+    void* conn = lyric_tls_client_connect(client, fd, "localhost", "");
+    CHECK(conn != NULL);
+    if (conn) {
+        LyricList* out = list_of_bytes(REQUEST);
+        CHECK(lyric_tls_write_bytes(conn, out) == (int64_t)strlen(REQUEST));
+        lyric_release(out);
+        int32_t ok = 0;
+        LyricList* in = lyric_tls_read_bytes(conn, 256, &ok);
+        CHECK(ok == 1);
+        CHECK(list_equals_str(in, RESPONSE));
+        lyric_release(in);
+        lyric_tls_shutdown(conn);
+        lyric_tls_free(conn);
+    }
+    lyric_sock_close(fd);
+    pthread_join(th, NULL);
+    CHECK(tls_bytes_server_conn != NULL);
+    lyric_sock_close(listen_fd);
+    lyric_tls_ctx_free(client);
+}
+
 int main(void) {
     test_plain_roundtrip();
+    test_alpn_string_null_conn();
+    test_sock_bytes_roundtrip();
+    test_sock_write_bytes_edge_cases();
 
     if (!lyric_tls_available()) {
         char err[256];
@@ -463,6 +697,12 @@ int main(void) {
     test_alpn_empty_client_list_guard();
     test_alpn_no_overlap_handshake();
     test_server_require_client_cert_without_ca();
+    test_validate_cert_pem();
+    test_validate_key_pem();
+    test_validate_identity_pem();
+    test_last_error_string();
+    test_alpn_string();
+    test_tls_bytes_roundtrip();
 
     if (failures == 0) {
         printf("lyric_tls_test: all tests passed\n");
