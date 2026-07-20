@@ -780,12 +780,19 @@ items marked ∥ are independent and can proceed in parallel.
     (the mode checker's N0100 boundary rejects a raw pointer stored in a
     heap-type field; a pointer and an `i64` are the same machine word on
     every native-target triple). Verified by `lyric-compiler/lyric/
-    llvm_tls_self_test.l` (four cases: `Std.Encoding` round-trip, `Std.Tls`
-    PEM loading incl. malformed-key rejection, a plain `Std.TcpHost`
-    round-trip, and a real loopback TLS handshake — server via
-    `hostAcceptTls`, client on a genuine second pthread since a TLS
-    handshake needs both peers actively driving handshake I/O unlike a bare
-    TCP connect — all ASan-compiled), wired into the `native-backend-self-tests`
+    llvm_tls_self_test.l` — THREE cases, not the four originally planned:
+    `Std.Encoding` round-trip (incl. a supplementary-plane codepoint),
+    `Std.TlsHost` PEM loading incl. malformed-key rejection (exercising the
+    kernel boundary directly, not `Std.Tls`'s opaque `Certificate`/
+    `Identity` wrapper — that wrapper cannot compile for `--target native`
+    at all, the same #6234 opaque-type gap noted above), and a plain
+    `Std.TcpHost` round-trip, all ASan-compiled. The fourth case (a real
+    loopback TLS handshake via `hostAcceptTls`) is dropped entirely:
+    `TlsServerConfig.identity: Identity` is unavoidably the opaque type, and
+    unlike the PEM-loading case there is no lower-level kernel bypass. Both
+    cuts were forced by CI actually running the original four-case file and
+    finding it red — see D-progress-712's CI-failure-diagnosis addendum in
+    `docs/03-decision-log.md`. Wired into the `native-backend-self-tests`
     CI job; **N9.3** `Std.HttpServer` native twin (thread-per-connection
     over the pthread kernel driving `Std.HttpEngine`); **N9.4** `Std.Http`
     native client; **N9.5** lyric-web `serveTls` + ALPN h2. See

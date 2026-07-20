@@ -17,9 +17,32 @@ import Std.Core
 import Std.Char
 import Std.Collections
 
+extern type JChar = "java.lang.Character"
+
 // Sentinel charset name; the JVM accumulator in hostEncodeUtf8 ignores it.
 pub func hostGetUtf8Enc(): String {
   "utf-8"
+}
+
+// Returns the UTF-16 code-unit integer value of `s[i]`.  Trivial on JVM
+// (String indexing is fully supported); exists so `Std.Encoding` can call
+// one cross-target primitive instead of `s[i]` directly — the native twin
+// (`_kernel_native/encoding_host.l`) cannot support `s[i]` at all (its
+// `String` is a UTF-8 byte buffer; see that file's header for why).
+pub func hostCharCodeAt(s: in String, i: in Int): Int {
+  toInt(s[i])
+}
+
+// Returns the String representation of a full Unicode scalar value
+// (0..0x10FFFF, already validated by the caller), correctly encoded as a
+// surrogate pair when `cp` is outside the BMP.  `Character.toString(int)`
+// is the exact JDK primitive for this; the native twin needs this
+// cross-target surface because neither `String + Char` concatenation nor
+// `Char.toString()` is a supported codegen shape there (see that file's
+// header) and native's `lyric_string_from_char` seam takes a full scalar
+// value directly rather than a UTF-16 Char.
+pub func hostStringFromCodepoint(cp: in Int): String {
+  JChar.toString(cp)
 }
 
 // Pure-Lyric UTF-8 encoder (JVM path).  `enc` is a sentinel and is unused.

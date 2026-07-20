@@ -339,12 +339,13 @@ func buildServerCtx(cfg: in Tls.TlsServerConfig): Result[Long, TcpError] {
 /// `Err(TlsHandshakeFailed(...))`, and the underlying socket is closed
 /// before returning so a rejected peer never leaks a connection.
 pub func hostAcceptTls(l: in Listener, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
-  match validateServerConfig(cfg) {
-    case Some(e) -> Err(error = e)
-    case None -> match hostAccept(l) {
-      case Err(e) -> Err(error = e)
-      case Ok(plain) -> hostUpgradeServerTls(plain, cfg)
-    }
+  // No `validateServerConfig` call here: `hostUpgradeServerTls` below
+  // validates `cfg` itself, and it is the only other caller of
+  // `validateServerConfig`, so validating here too would just run the same
+  // check twice on every accept.
+  match hostAccept(l) {
+    case Err(e) -> Err(error = e)
+    case Ok(plain) -> hostUpgradeServerTls(plain, cfg)
   }
 }
 

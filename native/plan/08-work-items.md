@@ -1314,15 +1314,26 @@ Two new `LyricList[Byte]`-bridging seam functions
 diagnostics/ALPN. `_kernel_native/tcp_host_self_test.l` is instead
 `lyric-compiler/lyric/llvm_tls_self_test.l` (matching the `llvm_*_self_test.l`
 naming convention this tree already uses for tests that import `Lyric.*`
-compiler packages to drive `compileToNativeWithFlags`): four cases,
-including a real loopback TLS handshake (server via `hostAcceptTls`, client
-on a genuine second pthread — a bare TCP connect completes into the listen
-backlog without a peer present, but a TLS handshake needs both sides
-actively driving handshake I/O, so the plain-transport case needs no
-threads while the TLS case does), ASan-compiled, wired into the
-`native-backend-self-tests` CI job. Two follow-up issues filed (not
-blocking): #6234 (native `opaque type` codegen) and its paired
-custom-destructor gap noted in `tcp_host.l`'s own module header.
+compiler packages to drive `compileToNativeWithFlags`): THREE cases, not
+the four originally planned, ASan-compiled, wired into the
+`native-backend-self-tests` CI job. `Std.Encoding` round-trip and
+`Std.TcpHost` plain (non-TLS) round-trip pass as planned; the PEM-loading
+case exercises `Std.TlsHost.hostCertFromPemBytes`/`hostIdentityFromPemBytes`
+(the kernel boundary) directly rather than through `Std.Tls`'s opaque
+`Certificate`/`Identity` wrapper; and the fourth case (a real loopback TLS
+handshake via `hostAcceptTls`, server on `main`, client on a genuine second
+pthread) is dropped entirely. Both cuts trace to the SAME already-filed
+follow-up: #6234 (native `opaque type` codegen — `Std.Tls`'s
+`Certificate`/`Identity` are opaque, and `Lyric.LlvmCodegen` has no native
+codegen case for `opaque type` at all, confirmed by direct repro against
+both construction and generic-argument resolution) plus its paired
+custom-destructor gap noted in `tcp_host.l`'s own module header. This
+wasn't a hypothetical risk: CI ran the originally-planned four-case file
+red, and the PEM-loading/handshake cases are unfixable without opaque-type
+codegen, which is substantial new compiler work out of scope here — see
+D-progress-712's "CI failure diagnosis and fixes" addendum in
+`docs/03-decision-log.md` for the full root-cause breakdown (five distinct
+findings, four fixed, one — opaque types — genuinely deferred).
 
 **Prerequisite (SHIPPED alongside):** the `Std.TcpHost` surface takes
 `Std.Tls.TlsServerConfig`, so `Std.Tls` must compile on native first —

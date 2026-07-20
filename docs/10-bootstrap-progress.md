@@ -31205,22 +31205,41 @@ pairs (`lyric_sock_read_bytes`/`_write_bytes`, `lyric_tls_read_bytes`/
 conveniences (`lyric_tls_last_error_string`, `lyric_tls_alpn_string`) avoid
 Lyric-side raw-buffer marshaling.
 
-Verified by `lyric-compiler/lyric/llvm_tls_self_test.l` (four cases: an
-`Std.Encoding` round-trip, `Std.Tls` PEM loading incl. malformed-key
-rejection, a plain `Std.TcpHost` round-trip needing no threads, and a real
-loopback TLS handshake — server via `hostAcceptTls`, client on a genuine
-second pthread since a TLS handshake needs both peers actively driving
-handshake I/O unlike a bare TCP connect — all ASan-compiled), wired into
-the `native-backend-self-tests` CI job. Every new/changed C function is
-also covered by new cases in `lyric-rt/test/lyric_tls_test.c`, green under
-clang + gcc + the gcc ASan run.
+Verified by `lyric-compiler/lyric/llvm_tls_self_test.l` — THREE cases, not
+the four originally planned (an `Std.Encoding` round-trip incl. a
+supplementary-plane codepoint, `Std.TlsHost` PEM loading incl.
+malformed-key rejection exercised at the kernel boundary directly, and a
+plain `Std.TcpHost` round-trip needing no threads; the fourth, a real
+loopback TLS handshake via `hostAcceptTls`, is dropped — see below), all
+ASan-compiled, wired into the `native-backend-self-tests` CI job. Every
+new/changed C function is also covered by new cases in
+`lyric-rt/test/lyric_tls_test.c`, green under clang + gcc + the gcc ASan
+run.
 
 Boundary (honest, same as N9.1): this session could not build the native
-backend from source (release-download seed network-blocked), so
-`llvm_tls_self_test.l` was never run locally — CI's `native-backend-self-tests`
-job is the load-bearing validator for the compiled-Lyric correctness claims
-here. The C-level seam additions ARE locally verified (`make -C lyric-rt
-test` both compilers, `make -C lyric-rt test-asan CC=gcc`).
+backend from source (release-download seed network-blocked). Unlike N9.1,
+this WAS exercised against a real from-source-equivalent pipeline before
+merge (a locally-built `lyric-rt.a` plus the published `lyric` tool pointed
+at this branch's stdlib), because the first attempt to rely on CI as the
+sole validator surfaced real, CI-confirmed failures: all four originally-
+planned self-test cases failed to compile. Diagnosis found five distinct
+root causes (four genuinely fixable in `std/encoding.l` and its native
+kernel twin — `String` bracket indexing, `String + Char` concatenation,
+a nested-constructor tuple-match pattern, and an `Int`→`Byte` narrowing gap
+in `List.add` — all confirmed via direct repro and fixed) and one
+pre-existing, deep compiler gap that is NOT fixable in this PR: `opaque
+type` has no native codegen case at all (confirmed for both construction
+and generic-argument resolution), already tracked as #6234 before this
+diagnosis. `Std.Tls`'s `Certificate`/`Identity` are opaque (pre-dating
+N9.2), so the PEM-loading and TLS-handshake self-test cases that go through
+`Std.Tls`'s public API cannot compile on native until #6234 lands — the
+PEM-loading case was re-scoped to exercise `Std.TlsHost`'s kernel-boundary
+functions directly instead (still a real, meaningful test of this item's
+actual deliverable), and the TLS-handshake case was dropped entirely (no
+lower-level bypass exists there). Full root-cause breakdown in
+`docs/03-decision-log.md` D-progress-712's "CI failure diagnosis and fixes"
+addendum. CI's `native-backend-self-tests` job remains the authoritative,
+from-scratch validator for the three remaining cases.
 
 **Related:** `docs/03-decision-log.md` D-progress-712; docs/61 §7 (item 4
 correction) / §8 item 15; `native/plan/08-work-items.md` N9.2; #6103, #5874;
