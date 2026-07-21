@@ -447,6 +447,35 @@ integer," the JNI `jlong` idiom), not a `NativePtr[Byte]` — the mode
 checker's N0100 boundary rejects a raw pointer stored in a record/union
 field unconditionally. See D-progress-712 for the full rationale.
 
+**Item 4 update (D-progress-713, #6234 part 1 SHIPPED — half of the
+correction above is now stale):** the `IOpaque` half of the gap just
+described is resolved. `Llvm.Codegen.opaqueToRecordDecl` reshapes an
+`OpaqueTypeDecl` into the equivalent `RecordDecl` at item-collection time
+(both the single-file and bundled-stdlib collection paths), so an
+`opaque type` shares every existing record code path — layout,
+construction, field access, ARC destructor synthesis — with zero
+duplicated codegen; it no longer panics. `Std.Tls`'s `Certificate`/
+`Identity` now compile **and construct correctly** for `--target native`
+through their real public API (`Certificate.fromPem`/`Identity.fromPem`),
+verified end to end by `llvm_tls_self_test.l`'s item B (a genuinely
+separate-file, bundled `Std.Tls` package exercising the bundled-path
+`IOpaque` arm specifically, not just an isolated single-file repro).
+`opaque type` is **not** broadly unsupported on native any more — do not
+read the "no `IOpaque` case" sentence above as still true.
+
+What is **still** true, and is the ONLY remaining reason `Std.TcpHost`'s
+`Listener`/`Conn` stay plain records rather than `opaque type`: the
+*second*, independent half of #6234 — a custom-destructor/`@finalize`
+mechanism for a heap type wrapping a raw resource (so an opaque type's
+destructor could call `hostClose`/`hostStopListener`'s underlying
+`lyric_tls_*`/`lyric_sock_*` free automatically instead of requiring an
+explicit call) — remains unimplemented. `opaque type` codegen itself works
+fine for `Conn`/`Listener`'s shape today; what's still missing is ARC ever
+running that custom cleanup on release, which is real, separate design
+work. The `Long`-not-`NativePtr[Byte]` handle representation and the
+explicit-call free path stand as designed regardless of when #6234 part 2
+lands — see D-progress-712's rationale, unaffected by this update.
+
 ## 8. Phasing and PR breakdown
 
 Each item is one PR, tracked as a sub-issue of epic #5874. Within a phase,
