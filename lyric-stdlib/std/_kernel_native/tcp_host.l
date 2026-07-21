@@ -18,17 +18,27 @@
 //!
 //! The issue text (and docs/61 §7 item 4) call for "an opaque type whose
 //! destructor calls the matching free" — the natural ARC-idiomatic shape.
-//! Two things about the CURRENT self-hosted native backend rule that out,
-//! verified by reading the code (not assumed) before writing this file:
+//! At the time this file was written, TWO things about the self-hosted
+//! native backend ruled that out, verified by reading the code (not
+//! assumed) before writing this file. **Gap 1 is now fixed** (#6234 part 1,
+//! shipped after this file was written) — see the correction below; gap 2
+//! remains open and is the only reason this file still uses plain records:
 //!
-//! 1. `Llvm.Codegen`'s item-kind dispatch (`lyric-compiler/lyric/
-//!    llvm_codegen.l`, the collection loop over `SourceFile.items`) has
+//! 1. **FIXED, #6234 part 1.** At the time this file was written,
+//!    `Llvm.Codegen`'s item-kind dispatch (`lyric-compiler/lyric/
+//!    llvm_codegen.l`, the collection loop over `SourceFile.items`) had
 //!    cases for `IRecord`/`IUnion`/`IEnum`/`IDistinctType`/`IInterface`/
 //!    `IImpl`/`IProtected`/`ITypeAlias`/`IExternType` — no `IOpaque` case
-//!    at all, so it falls to the wildcard arm and PANICS at compile time:
+//!    at all, so it fell to the wildcard arm and PANICKED at compile time:
 //!    "this item form is not yet supported for --target native". Using
-//!    `opaque type` here would not compile on native today. Filed as a
-//!    tracked compiler gap: issue #6234 (native `opaque type` codegen).
+//!    `opaque type` here would not have compiled on native then.
+//!    `Llvm.Codegen.opaqueToRecordDecl` now reshapes an `OpaqueTypeDecl`
+//!    into the equivalent `RecordDecl` at item-collection time (both the
+//!    single-file and bundled-stdlib paths), so `opaque type` compiles,
+//!    constructs, and releases correctly on native — verified end to end
+//!    against `Std.Tls`'s real `Certificate`/`Identity` opaque types
+//!    (`llvm_tls_self_test.l` item B). `opaque type` is a perfectly usable
+//!    shape for `Listener`/`Conn` today, as far as gap 1 alone goes.
 //! 2. Even setting that aside, no Lyric-level mechanism exists yet for a
 //!    heap type's destructor to run CUSTOM cleanup code (the free() call)
 //!    on a raw resource: `04-arc-design.md`'s synthesised record/union
@@ -37,13 +47,17 @@
 //!    (...))` — an ARC-managed heap pointer — as needing release; a raw
 //!    `NativePtr[T]` field is inert data to it, exactly like an `Int`).
 //!    There is no `@finalize`/custom-destructor annotation a user type can
-//!    carry. Genuine ARC-triggered resource cleanup is therefore also a
-//!    compiler gap, not just an `opaque type` codegen gap — tracked
-//!    alongside #6234.
+//!    carry. **This gap (#6234 part 2) is still open and is now the SOLE
+//!    reason this file doesn't use `opaque type`**: converting
+//!    `Listener`/`Conn` to `opaque type` today would compile and run fine,
+//!    but ARC release still wouldn't call `hostClose`/`hostStopListener`'s
+//!    underlying free automatically — the explicit-call discipline below
+//!    would still be required in practice, so there's no correctness or
+//!    ergonomics win in switching representations until part 2 lands.
 //!
-//! Given both gaps, this file follows the SAME explicit-lifetime
-//! discipline every other `_kernel_native/` file already uses for a
-//! long-lived resource (`_kernel_native/process_capture_host.l`'s
+//! Given gap 2 (gap 1 resolved, see above), this file follows the SAME
+//! explicit-lifetime discipline every other `_kernel_native/` file already
+//! uses for a long-lived resource (`_kernel_native/process_capture_host.l`'s
 //! `rtProcessFree`/`_kernel_native/file_host.l`'s `freeC` — nothing here
 //! is a new pattern): `Listener`/`Conn` are plain (non-opaque) `pub
 //! record`s with package-PRIVATE fields (no `pub` on the fields

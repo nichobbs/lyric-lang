@@ -20153,3 +20153,170 @@ macOS notarization, NuGet package signing, `docs/34-distribution-strategy.md`
 Tracked as a follow-up rather than folded into this change.
 
 **Related:** docs/22-distribution-and-tooling.md §5.2, D059.
+
+---
+
+## D-progress-713 — Native backend: `opaque type` codegen, part 1 of #6234 (`Llvm.Codegen` `IOpaque` dispatch)
+
+**Context.** Discovered while implementing N9.2 (`Std.TcpHost` native twin,
+#6103): docs/61 §7 item 4 and `native/plan/08-work-items.md`'s N9.2 entry
+call for wrapping each raw `lyric_tls_*`/`lyric_sock_*` seam handle "in an
+opaque type whose destructor calls the matching free" — the ARC-idiomatic
+shape, and the same shape `Std.Tls`'s `Certificate`/`Identity`
+(`lyric-stdlib/std/tls.l`, shared/target-independent code used by every
+target) already use. `Lyric.LlvmCodegen`'s item-kind collection had no
+`IOpaque` case at all: `unitOfFile` (the single-file path used by
+`codegenNativePackage`/self-tests) fell to the wildcard arm and panicked
+("this item form is not yet supported for --target native"); `unitOf` (the
+bundled path `Lyric.LlvmBridge` uses for a real program that imports stdlib
+packages) silently dropped the item via its catch-all `case _ -> {}`, so a
+bundled `opaque type` never registered and any use of it panicked later at
+type resolution with a less diagnostic "unknown type" message. Issue #6234
+filed this plus a second, independent gap: no custom-destructor hook exists
+for a heap type wrapping a raw resource (e.g. a `NativePtr` OS handle) —
+that gap (#6234 part 2) is real design work (an annotation or reserved
+method name the codegen recognises before releasing ARC-managed fields) and
+is explicitly **not** addressed here.
+
+**Decision.** Fix part 1 only: reshape an `OpaqueTypeDecl` into the
+equivalent `RecordDecl` at item-collection time
+(`Lyric.LlvmCodegen.opaqueToRecordDecl`, `llvm_codegen.l`), then feed it into
+the same `records: List[RecordDecl]` collection every other backend already
+uses. Opacity is a front-end visibility concern enforced by the type
+checker's cross-package field-read restriction
+(`Lyric.TypeChecker.checkOpaqueDeclTypes`) — never a codegen concern — and
+`OpaqueTypeDecl`'s shape (`name`/`generics`/`whereClause`/`members`/`span`,
+with `OMField(field: FieldDecl)` members) is structurally identical to
+`RecordDecl`'s (`RMField(field: FieldDecl)`); `FieldDecl` is the exact same
+type for both, down to the `isMutable`/`visibility` fields. `Msil.Codegen`
+and `Jvm.Codegen` already act on this premise — an opaque type lowers to an
+ordinary class with private fields and accessor methods on both existing
+targets — this change ports the same premise to the native IR shape rather
+than inventing new codegen. Because every native record consumer
+(`registerRecordLayout`, `lowerRecordConstructArgs`/`lowerRecordFieldLoad`
+via `mapGet(ctx.recordDefs, name)`, `recHasRefFields`/`synthRecordDtor`,
+`typeToN`'s `lookupHeapType`, generic record instantiation) resolves purely
+by name against `ctx.recordDefs` — never by re-inspecting the source item's
+AST kind — converting at collection time gives full parity (layout,
+construction, field read/write, pattern-arm field binds, ARC destructor
+synthesis for reference-typed fields, generics) with zero duplicated
+codegen. A body-less forward declaration (`opaque type Foo` with no `{ }`)
+is skipped (`decl.hasBody` guard), matching the MSIL/JVM behaviour — no
+fields, no runtime representation, nothing to lower. Both collection sites
+(`unitOfFile` in `llvm_codegen.l`, `unitOf` in `llvm_bridge.l`) got the same
+`IOpaque` arm; the bundled path registers unconditionally (not gated on
+`lowerAll`), matching how `IRecord`/`IUnion`/`IEnum`/`IDistinctType` already
+register regardless of reachability — a bundled stdlib opaque type (e.g.
+`Std.Tls.Certificate`) must register even when none of its own functions are
+reachable, since a reachable *user* function may still construct/read one.
+
+**Scope boundary (deliberate).** This only makes an opaque type's ordinary
+ARC-managed fields (Strings, other heap objects) release correctly through
+the same synthesised record-style destructor a record gets — exactly the
+`Certificate { pem: String }` shape. It does **not** add a
+custom-destructor/`@finalize` hook: an opaque type that wraps a raw
+`NativePtr`/OS handle still leaks it today, same as a `record` wrapping one
+would — #6234 part 2 remains open and is intentionally out of scope; the
+issue is left open (not closed) pending that follow-up.
+
+**Verification.** Added `lyric-compiler/lyric/llvm_opaque_self_test.l`
+(8 cases, wired into the `native-backend-self-tests` CI job): scalar field
+construction/read, a `String`-field opaque type printed end-to-end, mutable
+opaque field assignment (`var` field overwrite — ARC Rule 3), a UFCS method
+call on an opaque-typed receiver, an opaque-typed field nested inside a
+`record` (mirroring `Std.Tls.TlsServerConfig.identity: Identity`), a
+body-less opaque forward declaration compiling without panicking, a
+`@projectable opaque type` rejected at native codegen with `N0101` rather
+than silently compiled (#6239, see below), and an ASan+LeakSanitizer case
+constructing 2000 `Certificate`-shaped opaque instances (`opaque type
+Certificate { pem: String }`, the exact real-world shape) in a loop — a
+missed release, premature release, or double release in the synthesised
+destructor would make that run exit non-zero. All of the above drive the
+single-file `unitOfFile` path (`codegenNativePackage`); the bundled
+`unitOf` path is separately covered by `llvm_tls_self_test.l`'s re-added
+item B (see the `Std.Tls` end-to-end status note below).
+
+**Sandbox boundary (honest, matches D-progress-543/D-progress-703).** This
+session could not build the self-hosted compiler from source in-sandbox
+(the release-download seed is network-policy-blocked; there is no F#
+mint-fallback). The published NuGet `lyric` 0.4.33 global tool is present
+but its native backend predates Phase N2/N3 entirely, so it cannot compile
+`lyric-compiler/lyric/*.l` compiler sources (which need
+`LYRIC_LOAD_COMPILER=1` against a freshly built stage-1 bundle) — no
+in-sandbox compiled-Lyric run of the new test was possible. `lyric-rt`
+itself built cleanly (`make -C lyric-rt`, exercising the unrelated
+`lyric_tls.c`/N9.1 C code already on `main`), confirming the C runtime side
+of this sandbox is unaffected. CI's `native-backend-self-tests` job (which
+builds stage 1 from source on the runner, unblocked by this repo's own CI
+credentials) is the load-bearing verification for this change; this PR adds
+a real, ASan-covered test to that job rather than asserting untested
+codegen. The fix itself was derived by close reading of the existing
+`IRecord` codegen path (`registerRecordLayout`/`recHasRefFields`/
+`synthRecordDtor`, all name-keyed against `ctx.recordDefs` — verified via
+`recInfoOfType`/`lookupHeapType`) plus the working MSIL (`Msil.Codegen`'s
+`IOpaque` handling, `msil/codegen.l`) and JVM (`Jvm.Lowering.lowerOpaqueType`,
+`jvm/lowering.l` + `jvm/codegen/06_items.l`) precedents, not by guessing.
+
+**`Std.Tls` end-to-end status (updated after rebase onto #6235).** This PR
+was rebased onto `main` after #6235 (N9.2) landed
+`_kernel_native/tls_host.l`/`tcp_host.l`/`encoding_host.l`, which resolves
+what was, at the time this entry was first written, the last remaining
+blocker (`Host.CertHandle` itself not resolving on native). With both
+landed, `Std.Tls.Certificate.fromPem`/`Identity.fromPem` — the real,
+originally-specced public API, not a lower-level kernel-boundary stand-in —
+now compile and construct correctly end-to-end for `--target native`, and
+this PR adds `llvm_tls_self_test.l`'s re-added item B as the direct
+verification: a genuinely separate-file, bundled-package `opaque type`
+(`Std.Tls`, pulled in via `findStdlibSourcesNative()` alongside the test's
+inline program, exactly like a real `lyric build --target native` would
+bundle it) exercising `Lyric.LlvmBridge.unitOf`'s `IOpaque` arm specifically
+— the bundled-path half of this fix that `llvm_opaque_self_test.l` alone
+(single-file `unitOfFile` path only) did not cover. A real loopback TLS
+handshake (item D, needing both peers to actively drive handshake I/O
+concurrently) remains a separate, not-yet-authored test tracked under
+#6103's remaining work — no longer blocked on #6234, just not yet written.
+
+**`@projectable` opaque types on native: refused with a diagnostic, not
+silently dropped (#6239, review follow-up).** `opaqueToRecordDecl` reshapes
+an `OpaqueTypeDecl` into a `RecordDecl`, which has no `annotations`
+field — so every annotation on the source declaration, including
+`@projectable`, was silently dropped by the conversion. `@projectable` is
+real, both-targets-shipped feature work (D015): `Msil.Codegen`/
+`Jvm.Codegen` synthesise a `<Name>View` exposed-record twin plus
+`toView()`/`tryInto()` whenever `hasAnnotationMsil`/`hasAnnotationJvm(decl.
+annotations, "projectable")` is true. Without a guard, a `@projectable
+opaque type` would compile "successfully" for `--target native` while
+silently losing that projection surface — an undocumented cross-target
+parity gap CLAUDE.md's production-readiness standard rules out.
+**Decision:** fail loud instead of implementing `@projectable` on native
+(real, separate feature work — a `<Name>View` twin has no native-IR analog
+today). Added `hasAnnotationNative` (mirrors the MSIL/JVM private helpers
+of the same shape — there is no shared cross-backend AST-utility package)
+and `checkOpaqueNativeSupported`, called from inside `opaqueToRecordDecl`
+itself (so every call site gets the guard for free, not just the two
+existing ones). A `@projectable opaque type` now panics with a new
+diagnostic code, `N0101` (native codegen's house style for a target-
+unsupported construct is a `panic` whose message leads with the code — see
+the existing `N0099` async-generator precedent in this same file; a
+collected `Diagnostic` list is the mode checker's own mechanism, e.g.
+`N0100`, not something native codegen has). Every OTHER annotation
+(`@stable(since = ...)`, doc-only annotations) is left silently dropped, on
+purpose: those carry no codegen semantics on `Msil.Codegen`/`Jvm.Codegen`
+either (front-end/doc/contract-meta-only), and `Std.Tls`'s own
+`Certificate`/`Identity` carry `@stable` but never `@projectable` — a
+blanket "reject any annotation" guard would have wrongly re-blocked the
+exact real-world case this PR exists to unblock. Verified by a new
+`llvm_opaque_self_test.l` case: a `@projectable opaque type` compile
+attempt is driven directly through `codegenNativePackage` (never reaching
+`clang`), caught via `try { ... } catch Bug as b`, and asserted to mention
+both `N0101` and `projectable` in the panic message — the same "assert the
+panic content, not just that some panic happened" discipline the existing
+`#5543` NativeWeak-in-async-result test already uses in
+`llvm_heap_self_test.l`.
+
+**Related:** #6234 (part 1 resolved here; part 2 — the custom-destructor
+hook — remains open), #6239 (the `@projectable` review finding, resolved
+here), #6103 (N9.2, the concrete consumer this unblocks — merged as #6235),
+#6104–#6106 (N9.3–N9.5, downstream of N9.2), docs/61 §7 item 4, D128,
+`native/plan/08-work-items.md` Phase N9, D-N-014, D-progress-540,
+D-progress-545, D-progress-703, D-progress-543.

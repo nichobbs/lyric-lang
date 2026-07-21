@@ -430,22 +430,32 @@ The seam is verified by real loopback OpenSSL handshakes in
 client layers are banded as Phase N9.2–N9.5 in `native/plan/08-work-items.md`.
 Q-TLS-001 (macOS trust) and Q-TLS-004 (resumption/0-RTT) remain open.
 
-**Item 4 correction (D-progress-712, N9.2):** the ARC-managed lifetime is
-realised in the `_kernel_native/tcp_host.l` twin, but NOT via an
-`opaque type`'s destructor as originally sketched here — verified against
-the compiler source while implementing N9.2, `Llvm.Codegen`'s native
-item-kind dispatch has no `IOpaque` case (panics if one is used) and no
-Lyric-level mechanism exists yet for a heap type's destructor to run custom
-`free()` cleanup on a raw resource field (tracked as issue #6234). `Conn`/
-`Listener` are plain records with package-private fields and an
-explicit-call `hostClose`/`hostStopListener` free path instead (matching
-the dotnet twin's own explicit-`Dispose`/`Close` contract — that managed
-target has no GC-finalizer path either, and `Std.TcpHost` has no JVM twin
-to compare against), and the TLS connection
-handle that must outlive a single call is a `Long` (an "opaque handle as
-integer," the JNI `jlong` idiom), not a `NativePtr[Byte]` — the mode
-checker's N0100 boundary rejects a raw pointer stored in a record/union
-field unconditionally. See D-progress-712 for the full rationale.
+**Item 4 status (D-progress-712, D-progress-713):** the ARC-managed lifetime
+is realised in the `_kernel_native/tcp_host.l` twin, but NOT via an
+`opaque type`'s destructor as originally sketched here. `Conn`/`Listener`
+are plain records with package-private fields and an explicit-call
+`hostClose`/`hostStopListener` free path instead (matching the dotnet
+twin's own explicit-`Dispose`/`Close` contract — that managed target has no
+GC-finalizer path either, and `Std.TcpHost` has no JVM twin to compare
+against), and the TLS connection handle that must outlive a single call is
+a `Long` (an "opaque handle as integer," the JNI `jlong` idiom), not a
+`NativePtr[Byte]` — the mode checker's N0100 boundary rejects a raw pointer
+stored in a record/union field unconditionally.
+
+This is **not** because `opaque type` itself is unsupported on native.
+`Llvm.Codegen.opaqueToRecordDecl` (#6234 part 1, D-progress-713) reshapes
+an `OpaqueTypeDecl` into the equivalent `RecordDecl` at item-collection
+time (both the single-file and bundled-stdlib collection paths), so an
+`opaque type` compiles, constructs, and releases correctly on native with
+zero duplicated codegen — verified end to end against `Std.Tls`'s real
+`Certificate`/`Identity` opaque types through their public API
+(`Certificate.fromPem`/`Identity.fromPem`, `llvm_tls_self_test.l` item B).
+The actual, sole remaining reason `Listener`/`Conn` stay plain records is a
+separate, still-open gap: no Lyric-level mechanism exists yet for a heap
+type's destructor to run CUSTOM cleanup on a raw resource field (a
+`@finalize`-style hook that could call `hostClose`/`hostStopListener`'s
+underlying free automatically) — #6234 part 2. See D-progress-712 for the
+original rationale and D-progress-713 for the `opaque type` codegen fix.
 
 ## 8. Phasing and PR breakdown
 
@@ -774,26 +784,26 @@ items marked ∥ are independent and can proceed in parallel.
     PEM-text-taking context constructors — with three new seam functions,
     `lyric_tls_validate_cert_pem`/`_key_pem`/`_identity_pem`, added for eager
     load-time validation matching the dotnet/JVM twins' contract).
-    `Listener`/`Conn` are plain records (not `opaque type` — the native
-    codegen has no `IOpaque` case yet, tracked as #6234) with the TLS
-    connection handle represented as a `Long` rather than `NativePtr[Byte]`
-    (the mode checker's N0100 boundary rejects a raw pointer stored in a
-    heap-type field; a pointer and an `i64` are the same machine word on
-    every native-target triple). Verified by `lyric-compiler/lyric/
-    llvm_tls_self_test.l` — THREE cases, not the four originally planned:
-    `Std.Encoding` round-trip (incl. a supplementary-plane codepoint),
-    `Std.TlsHost` PEM loading incl. malformed-key rejection (exercising the
-    kernel boundary directly, not `Std.Tls`'s opaque `Certificate`/
-    `Identity` wrapper — that wrapper cannot compile for `--target native`
-    at all, the same #6234 opaque-type gap noted above), and a plain
-    `Std.TcpHost` round-trip, all ASan-compiled. The fourth case (a real
-    loopback TLS handshake via `hostAcceptTls`) is dropped entirely:
-    `TlsServerConfig.identity: Identity` is unavoidably the opaque type, and
-    unlike the PEM-loading case there is no lower-level kernel bypass. Both
-    cuts were forced by CI actually running the original four-case file and
-    finding it red — see D-progress-712's CI-failure-diagnosis addendum in
-    `docs/03-decision-log.md`. Wired into the `native-backend-self-tests`
-    CI job; **N9.3** `Std.HttpServer` native twin (thread-per-connection
+    `Listener`/`Conn` are plain records (not `opaque type` — `opaque type`
+    itself compiles, constructs, and releases fine on native (#6234 part 1,
+    D-progress-713); the reason is that no custom-destructor hook exists yet
+    for ARC to run cleanup on a raw resource field, #6234 part 2, still
+    open) with the TLS connection handle represented as a `Long` rather than
+    `NativePtr[Byte]` (the mode checker's N0100 boundary rejects a raw
+    pointer stored in a heap-type field; a pointer and an `i64` are the same
+    machine word on every native-target triple). Verified by
+    `lyric-compiler/lyric/llvm_tls_self_test.l`, wired into the
+    `native-backend-self-tests` CI job, all ASan-compiled: `Std.Encoding`
+    round-trip (incl. a supplementary-plane codepoint); `Std.Tls` PEM
+    loading incl. malformed-key rejection through `Std.Tls`'s real public
+    API (`Certificate.fromPem`/`Identity.fromPem`), now that #6234 part 1
+    (§7 item 4 above) unblocks it, with the file's original kernel-boundary variant
+    (`Std.TlsHost` called directly) kept alongside for defense in depth;
+    and a plain `Std.TcpHost` round-trip. A real loopback TLS handshake via
+    `hostAcceptTls` remains a separate, not-yet-authored test —
+    `TlsServerConfig.identity: Identity` now constructs fine, so this is no
+    longer blocked on #6234, just not yet written; tracked under #6103's
+    remaining work. **N9.3** `Std.HttpServer` native twin (thread-per-connection
     over the pthread kernel driving `Std.HttpEngine`); **N9.4** `Std.Http`
     native client; **N9.5** lyric-web `serveTls` + ALPN h2. See
     `native/plan/08-work-items.md` Phase N9 for the full banding and

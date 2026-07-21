@@ -8912,6 +8912,97 @@ pub func codegenNativePackage(file: in SourceFile, triple: in String): NPackage 
   codegenNativeBundle(units, triple)
 }
 
+/// Mirrors `Msil.Codegen.hasAnnotationMsil` / `Jvm.Codegen.hasAnnotationJvm`
+/// (each backend keeps its own private copy; there is no shared
+/// AST-utility package for this today). Checks the annotation's leading
+/// path segment, e.g. `@projectable` or `@projectable(json, sql)`.
+func hasAnnotationNative(anns: in List[Annotation], headName: in String): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count > 0 and segs[0] == headName {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// #6239 (review follow-up to #6234 part 1): `opaqueToRecordDecl` only
+/// carries over an opaque type's fields — `RecordDecl` has no
+/// `annotations` field, so EVERY annotation on the source
+/// `OpaqueTypeDecl` (`decl.annotations`, the trailing-position list
+/// `parseOpaqueTypeBody` populates) is dropped. Most annotations are
+/// harmless to drop at the codegen layer (e.g. `@stable(since = ...)`
+/// is front-end/doc/contract-meta-only on every target — it carries no
+/// codegen semantics on `Msil.Codegen`/`Jvm.Codegen` either). But
+/// `@projectable` is a real, both-targets-shipped feature (D015):
+/// `Msil.Codegen`/`Jvm.Codegen` synthesise a `<Name>View` exposed-record
+/// twin plus `toView()`/`tryInto()` conversion functions whenever
+/// `hasAnnotationMsil`/`hasAnnotationJvm(decl.annotations,
+/// "projectable")` is true. Silently dropping `@projectable` here would
+/// let a `@projectable opaque type` compile "successfully" for
+/// `--target native` with zero diagnostic while quietly losing that
+/// projection surface — an undocumented cross-target parity gap, which
+/// CLAUDE.md's production-readiness standard rules out. `@projectable`
+/// native codegen is real, separate feature work (a `<Name>View` twin
+/// has no native-IR analog yet); until that lands, fail loud rather
+/// than silently: `N0101`, mirroring the existing `N0099` "construct
+/// not yet lowered on this target" convention used elsewhere in this
+/// file (native codegen has no diagnostics-collection mechanism, so
+/// house style for a target-unsupported construct is a `panic` whose
+/// message leads with the code, not a collected `Diagnostic` — that's
+/// the mode checker's own mechanism, e.g. `N0100`).
+func checkOpaqueNativeSupported(od: in OpaqueTypeDecl): Unit {
+  if hasAnnotationNative(od.annotations, "projectable") {
+    panic(
+      "N0101: @projectable opaque type '" + od.name + "' is not supported for --target native (the <Name>View projection " +
+        "type plus toView()/tryInto() codegen exists on --target dotnet and " +
+        "--target jvm only; native has no synthesized-view codegen yet, " +
+        "tracked in #6234). Drop @projectable, or use --target dotnet / " +
+        "--target jvm for this type."
+    )
+  }
+}
+
+/// `opaque type` has no native codegen of its own (#6234 part 1):
+/// opacity is a front-end visibility concern enforced by the type
+/// checker's cross-package field-read restriction
+/// (`Lyric.TypeChecker.checkOpaqueDeclTypes`), not a codegen concern —
+/// the underlying heap layout, construction, field access, and ARC
+/// destructor synthesis are structurally identical to a record's, the
+/// same premise `Msil.Codegen`/`Jvm.Codegen` already act on (an opaque
+/// type lowers to an ordinary class with private fields there). This
+/// reshapes an `OpaqueTypeDecl` into the equivalent `RecordDecl` so
+/// every existing record code path — `registerRecordLayout`,
+/// `lowerRecordConstructArgs`, `lowerRecordFieldLoad`,
+/// `recHasRefFields`/`synthRecordDtor`, generic record instantiation —
+/// handles opaque types for free, with zero duplicated logic. A
+/// custom-destructor hook for opaque types wrapping a raw resource
+/// (e.g. a `NativePtr` OS handle) is a separate, unimplemented gap
+/// (#6234 part 2, deliberately out of scope here): this conversion only
+/// makes an opaque type's ARC-managed fields (Strings, other heap
+/// objects) release correctly, exactly like a record's — a future
+/// opaque type wrapping an inert resource still leaks it, same as a
+/// record would today. Calls `checkOpaqueNativeSupported` first (#6239):
+/// a `RecordDecl` has no `annotations` field, so this reshape would
+/// otherwise silently drop `@projectable` along with every other
+/// annotation — see that function's comment for why `@projectable`
+/// specifically must fail loud instead.
+pub func opaqueToRecordDecl(od: in OpaqueTypeDecl): RecordDecl {
+  checkOpaqueNativeSupported(od)
+  val members: List[RecordMember] = newList()
+  var i = 0
+  while i < od.members.count {
+    match od.members[i] {
+      case OMField(f) -> members.add(RMField(field = f))
+      case OMInvariant(inv) -> members.add(RMInvariant(inv = inv))
+    }
+    i = i + 1
+  }
+  RecordDecl(name = od.name, generics = od.generics, whereClause = od.whereClause, members = members, span = od.span)
+}
+
 /// Collect one source file's lowerable items into a CodegenUnit.
 pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val fns: List[FunctionDecl] = newList()
@@ -8957,6 +9048,17 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
       case IProtected(decl) -> {
         protecteds.add(decl)
         collectProtectedMethods(pkgName, decl, fns)
+      }
+      // A body-less forward declaration (`opaque type Foo` with no `{ ... }`)
+      // has no fields and no runtime representation on any target (matches
+      // the MSIL/JVM `decl.hasBody` guard) — nothing to lower.  Opaque
+      // methods are ordinary UFCS functions (D037: `self: in Foo` receiver),
+      // already collected above via `IFunc` regardless of the receiver
+      // type's opacity, so no method collection is needed here.
+      case IOpaque(decl) -> {
+        if decl.hasBody {
+          records.add(opaqueToRecordDecl(decl))
+        }
       }
       case ITypeAlias(_) -> {
       }

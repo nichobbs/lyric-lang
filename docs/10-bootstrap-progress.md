@@ -31171,14 +31171,18 @@ Two corrections to the original N9.2 plan text (docs/61 §7 item 4,
 `native/plan/08-work-items.md`), both forced by reading the compiler/seam
 source before implementing rather than assuming the plan held:
 
-- **Not `opaque type`.** The native `Llvm.Codegen` item-kind dispatch has
-  no `IOpaque` case (panics if used) and no Lyric-level custom-destructor
-  mechanism exists yet for a heap type to run cleanup code on a raw
-  resource field — both real compiler gaps, tracked as issue #6234.
-  `Listener`/`Conn` are plain `pub record`s with package-private fields
-  instead (the `_kernel_native/process_capture_host.l` `ProcessCaptureResult`
-  "public type, private fields, public accessors" shape already in this
-  tree), with `hostClose`/`hostStopListener` as the explicit
+- **Not `opaque type`.** At the time this item shipped, the native
+  `Llvm.Codegen` item-kind dispatch had no `IOpaque` case (panicked if
+  used) and no Lyric-level custom-destructor mechanism existed for a heap
+  type to run cleanup code on a raw resource field — two real compiler
+  gaps, both tracked as issue #6234. The first (`IOpaque` codegen) has
+  since shipped (#6234 part 1, see the entry below); the second (the
+  custom-destructor hook) remains open and is now the sole reason this
+  file still uses plain records. `Listener`/`Conn` are plain `pub
+  record`s with package-private fields instead (the
+  `_kernel_native/process_capture_host.l` `ProcessCaptureResult` "public
+  type, private fields, public accessors" shape already in this tree),
+  with `hostClose`/`hostStopListener` as the explicit
   always-must-be-called free path.
 - **The TLS handle is a `Long`, not `NativePtr[Byte]`.** `Conn` must
   survive across separate top-level calls, and the mode checker's N0100
@@ -31205,14 +31209,19 @@ pairs (`lyric_sock_read_bytes`/`_write_bytes`, `lyric_tls_read_bytes`/
 conveniences (`lyric_tls_last_error_string`, `lyric_tls_alpn_string`) avoid
 Lyric-side raw-buffer marshaling.
 
-Verified by `lyric-compiler/lyric/llvm_tls_self_test.l` — THREE cases, not
-the four originally planned (an `Std.Encoding` round-trip incl. a
-supplementary-plane codepoint, `Std.TlsHost` PEM loading incl.
-malformed-key rejection exercised at the kernel boundary directly, and a
-plain `Std.TcpHost` round-trip needing no threads; the fourth, a real
-loopback TLS handshake via `hostAcceptTls`, is dropped — see below), all
-ASan-compiled, wired into the `native-backend-self-tests` CI job. Every
-new/changed C function is also covered by new cases in
+Verified by `lyric-compiler/lyric/llvm_tls_self_test.l`, ASan-compiled and
+wired into the `native-backend-self-tests` CI job. At the time this item
+shipped the file carried only THREE cases, not the four originally
+planned (an `Std.Encoding` round-trip incl. a supplementary-plane
+codepoint, `Std.TlsHost` PEM loading incl. malformed-key rejection
+exercised at the kernel boundary directly, and a plain `Std.TcpHost`
+round-trip needing no threads; the fourth, a real loopback TLS handshake
+via `hostAcceptTls`, was dropped — see below). **This is now stale**: with
+#6234 part 1 shipped (see the entry below), the PEM-loading case was
+re-added through `Std.Tls`'s real public API, with the kernel-boundary
+variant kept alongside for defense in depth; the loopback-handshake case
+remains a separate, not-yet-authored test, no longer blocked on #6234.
+Every new/changed C function is also covered by new cases in
 `lyric-rt/test/lyric_tls_test.c`, green under clang + gcc + the gcc ASan
 run.
 
@@ -31231,17 +31240,108 @@ pre-existing, deep compiler gap that is NOT fixable in this PR: `opaque
 type` has no native codegen case at all (confirmed for both construction
 and generic-argument resolution), already tracked as #6234 before this
 diagnosis. `Std.Tls`'s `Certificate`/`Identity` are opaque (pre-dating
-N9.2), so the PEM-loading and TLS-handshake self-test cases that go through
-`Std.Tls`'s public API cannot compile on native until #6234 lands — the
+N9.2), so at the time the PEM-loading and TLS-handshake self-test cases
+that go through `Std.Tls`'s public API could not compile on native — the
 PEM-loading case was re-scoped to exercise `Std.TlsHost`'s kernel-boundary
 functions directly instead (still a real, meaningful test of this item's
 actual deliverable), and the TLS-handshake case was dropped entirely (no
 lower-level bypass exists there). Full root-cause breakdown in
 `docs/03-decision-log.md` D-progress-712's "CI failure diagnosis and fixes"
-addendum. CI's `native-backend-self-tests` job remains the authoritative,
-from-scratch validator for the three remaining cases.
+addendum. **Now resolved for the PEM-loading case**: #6234 part 1 shipped
+(see the entry below), so `Std.Tls`'s public API compiles and constructs
+correctly on native, and the PEM-loading case now also exercises it
+directly (kernel-boundary variant kept alongside). The TLS-handshake case
+remains a separate, not-yet-authored test, no longer blocked on #6234.
 
-**Related:** `docs/03-decision-log.md` D-progress-712; docs/61 §7 (item 4
-correction) / §8 item 15; `native/plan/08-work-items.md` N9.2; #6103, #5874;
-follow-ups #6234 (native `opaque type` codegen) and its paired
-custom-destructor gap.
+**Related:** `docs/03-decision-log.md` D-progress-712, D-progress-713;
+docs/61 §7 item 4 / §8 item 15; `native/plan/08-work-items.md` N9.2;
+#6103, #5874; #6234 (native `opaque type` codegen — part 1 shipped, part 2
+custom-destructor still open).
+
+## Native backend: `opaque type` codegen ships — `Llvm.Codegen` `IOpaque` dispatch, #6234 part 1 (2026-07-20)
+
+`Lyric.LlvmCodegen` had no codegen support at all for `opaque type` on
+`--target native`: the single-file item-collection loop (`unitOfFile`)
+panicked on any `IOpaque` item, and the bundled path (`Lyric.LlvmBridge`'s
+`unitOf`, used whenever a native program imports stdlib packages) silently
+dropped it. Every other pass — type checker, mode checker, contract-meta,
+fmt, doc, lsp, lint, alias-rewriter — already handled `IOpaque`; only the
+native backend was missing it, and `Std.Tls`'s `Certificate`/`Identity`
+(shared/target-independent `opaque type`s used by every target) could
+therefore never compile for native.
+
+Fixed by reshaping an `OpaqueTypeDecl` into the equivalent `RecordDecl`
+(`Lyric.LlvmCodegen.opaqueToRecordDecl`) at item-collection time in both
+`unitOfFile` (`llvm_codegen.l`) and `unitOf` (`llvm_bridge.l`), so an opaque
+type shares every existing record code path — layout, construction, field
+access, ARC destructor synthesis for reference-typed fields, generic
+instantiation — with zero duplicated codegen. This mirrors how
+`Msil.Codegen`/`Jvm.Codegen` already treat an opaque type as an ordinary
+class with private fields: opacity is a front-end visibility concern (the
+type checker's cross-package field-read restriction), never a codegen one.
+A body-less forward declaration (`opaque type Foo` with no `{ }`) is
+skipped, matching the MSIL/JVM `hasBody` guard.
+
+**Deliberately out of scope:** a custom-destructor hook for an opaque type
+wrapping a raw resource (e.g. a `NativePtr` OS handle) — #6234's separate
+part 2, real design work, still open. This fix only makes an opaque type's
+ordinary ARC-managed fields (Strings, other heap objects) release
+correctly, exactly like a record's; a future opaque type wrapping an inert
+resource still leaks it, same as a record would today.
+
+**Review follow-up (#6239): `@projectable` opaque types refused, not
+silently dropped.** `RecordDecl` has no `annotations` field, so the
+reshape above would otherwise silently drop `@projectable` — a real,
+both-targets-shipped feature (D015, a synthesized `<Name>View` twin plus
+`toView()`/`tryInto()`) — letting a `@projectable opaque type` compile
+"successfully" for native with quietly lost semantics. Fixed by refusing
+loud instead: `checkOpaqueNativeSupported` (called from inside
+`opaqueToRecordDecl` itself, so every call site is covered) panics with a
+new diagnostic code, `N0101`, when `@projectable` is present, mirroring the
+existing `N0099` "construct not yet lowered on this target" convention.
+Every other annotation (e.g. `@stable(since = ...)`) is still silently
+dropped on purpose — it carries no codegen semantics on any target, and
+`Std.Tls.Certificate`/`Identity` themselves carry `@stable` but never
+`@projectable`, so a blanket "refuse any annotation" guard would have
+wrongly re-blocked this fix's own motivating case.
+
+Verified by the new `lyric-compiler/lyric/llvm_opaque_self_test.l` (8 cases,
+wired into the `native-backend-self-tests` CI job): scalar/`String` field
+construction and access, mutable field assignment, a UFCS method call on an
+opaque receiver, an opaque-typed field nested in a `record` (mirroring
+`Std.Tls.TlsServerConfig.identity: Identity`), a body-less forward
+declaration, a `@projectable opaque type` rejected with `N0101` (asserted
+via `try`/`catch Bug`, checking the panic message names both the code and
+`@projectable`), and an ASan+LeakSanitizer loop constructing 2000
+`Certificate`-shaped opaque instances to prove the synthesised destructor
+neither leaks nor double-frees. All of these drive the single-file
+`unitOfFile` path.
+
+**`Std.Tls` end-to-end: now fully working (updated after rebase onto
+#6235).** This entry originally reported the `Std.Tls` round-trip as
+blocked on `Std.TlsHost` having no `_kernel_native/tls_host.l` twin. This
+PR was subsequently rebased onto `main` after #6235 (N9.2) shipped exactly
+that twin (plus `tcp_host.l`/`encoding_host.l`). With both landed,
+`Std.Tls.Certificate.fromPem`/`Identity.fromPem` — the real public API —
+now compile and construct correctly end to end for `--target native`.
+Verified by re-adding `llvm_tls_self_test.l`'s item B (dropped when that
+file was first authored, specifically because of this compiler gap): a
+genuinely separate-file, bundled `Std.Tls` package compiled through
+`Lyric.LlvmBridge.compileToNativeWithFlags`, exercising `unitOf`'s
+`IOpaque` arm (the bundled-path half of this fix) rather than just
+`unitOfFile`'s single-file path. A real loopback TLS handshake (item D)
+remains a separate, not-yet-authored test — no longer blocked on #6234,
+just not yet written; tracked under #6103's remaining work.
+
+Boundary (honest, matches D-progress-543/D-progress-703): this session
+could not build the self-hosted compiler from source in-sandbox
+(release-download seed network-blocked) and the published `lyric` 0.4.33
+tool's native backend predates Phase N2/N3 entirely, so no in-sandbox
+compiled-Lyric run of either test was possible; CI's
+`native-backend-self-tests` job is the load-bearing verification.
+
+**Related:** `docs/03-decision-log.md` D-progress-713; #6234 (part 1 resolved,
+part 2 open); #6239 (the `@projectable` finding, resolved here); #6103 (N9.2,
+merged as #6235); #6104–#6106; docs/61 §7 item 4;
+`native/plan/08-work-items.md` Phase N9; D-N-014;
+D-progress-540, D-progress-545, D-progress-703.

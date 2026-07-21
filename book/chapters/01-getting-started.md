@@ -220,12 +220,15 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 
 > **Scope today.** Linux (`x64`/`arm64`) and macOS (`arm64`) are supported.
 > The lowered surface covers scalars and strings; records (methods, field
-> defaults, mutable fields), unions, enums, distinct types (range-checked),
-> and tuples; full pattern matching; non-generic interfaces (`impl I for
-> Record` dispatches through a per-interface vtable) and non-generic
-> protected types (`entry`/`func` members lock a mutex around a
-> desugared inner body); generic records, unions, and functions
-> (via call-site monomorphization); closures (by-value captures); and
+> defaults, mutable fields), opaque types (construction, field access,
+> and ARC release lower identically to a record — opacity is a
+> front-end visibility rule, not a codegen difference), unions, enums,
+> distinct types (range-checked), and tuples; full pattern matching;
+> non-generic interfaces (`impl I for Record` dispatches through a
+> per-interface vtable) and non-generic protected types (`entry`/`func`
+> members lock a mutex around a desugared inner body); generic records,
+> unions, and functions (via call-site monomorphization); closures
+> (by-value captures); and
 > `NativeWeak[T]`; and `List[T]`/`Map[K, V]` with `for` loops, indexing,
 > and the `Std.Collections` accessors (map keys must be String or a
 > scalar type); `slice[T]` (shares the list representation, immutable by
@@ -256,7 +259,9 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > compiler rejects it elsewhere (`N0100`). Constructs not yet lowered fail
 > the build with a diagnostic naming the construct rather than
 > miscompiling: interface default/generic methods, generic protected
-> types, `Set[T]`, async generators (`yield`
+> types, `@projectable opaque type` (`N0101` — no `<Name>View` twin codegen
+> on native yet; the opaque type itself lowers fine without `@projectable`),
+> `Set[T]`, async generators (`yield`
 > inside `async func`), a `defer` that must run during
 > a `panic`, and manifest (multi-package) native builds. (List literals
 > and module-level `val` now lower — #5977 — so `--define` /

@@ -4,52 +4,56 @@
 //! (`Lyric.LlvmBridge.compileToNativeWithFlags` with the `_kernel_native/`
 //! twins loaded, exactly like `lyric build --target native`) and run.
 //!
-//! Scope actually covered here (three cases, not the originally-planned
-//! four — see the item B/D note below):
+//! Scope covered here (four cases — item B RE-ADDED, see below):
 //!   - item A: `Std.Encoding` native round-trip (base64 + UTF-8, including
 //!     a supplementary-plane codepoint).
-//!   - item B: `Std.TlsHost` (the kernel boundary this file's twin
-//!     implements) exercised DIRECTLY, not through `Std.Tls`'s public
-//!     `Certificate`/`Identity` API — see below for why.
+//!   - item B: `Std.Tls`'s real public `Certificate.fromPem`/
+//!     `Identity.fromPem` API — a genuinely separate-file, bundled-package
+//!     opaque type (this exercises `Lyric.LlvmBridge.unitOf`'s `IOpaque`
+//!     arm, not just the single-file `unitOfFile` path most of
+//!     `llvm_opaque_self_test.l` drives) — plus a lower-level kernel-
+//!     boundary variant retained for defense in depth (see below).
 //!   - item C: `Std.TcpHost` plain (non-TLS) round-trip:
 //!     listen/connect/accept/read/write/close.
 //!
-//! ## Item B is scoped to the kernel boundary, and item D is deferred
+//! ## Item B history: was blocked on #6234, now unblocked
 //!
 //! `Std.Tls`'s `Certificate`/`Identity` are `pub opaque type` (target-
-//! independent, pre-dating N9.2). `Lyric.LlvmCodegen` has NO native
-//! codegen case for `opaque type` at all today — not construction, not as
-//! a generic type argument (confirmed via direct repro: even
-//! `Result[Certificate, TlsError]`, `Certificate.fromPem`'s own return
-//! type, panics "generic type 'Result' is not yet supported for --target
-//! native" while resolving `Certificate`) — tracked as issue #6234, filed
-//! against this same epic before this file's CI-blocking failures were
-//! diagnosed. Implementing opaque-type codegen (NType registration,
-//! construction, generic-argument resolution, field access, ARC
-//! integration) is substantial new compiler work spanning multiple
-//! codegen subsystems, well beyond this self-test's scope.
+//! independent, pre-dating N9.2). Until #6234 (part 1) shipped,
+//! `Lyric.LlvmCodegen` had NO native codegen case for `opaque type` at
+//! all — not construction, not as a generic type argument (confirmed via
+//! direct repro at the time: even `Result[Certificate, TlsError]`,
+//! `Certificate.fromPem`'s own return type, panicked "generic type
+//! 'Result' is not yet supported for --target native" while resolving
+//! `Certificate` as a generic argument — `typeToNEnvOpt`'s per-argument
+//! `typeToNOpt` lookup came back `None` for the unregistered opaque type,
+//! so the whole `Result[...]` instantiation bailed to the panicking
+//! scalar-only fallback). #6234 part 1 fixed this by reshaping an
+//! `OpaqueTypeDecl` into the equivalent `RecordDecl` at item-collection
+//! time (`Lyric.LlvmCodegen.opaqueToRecordDecl`), so `Certificate`/
+//! `Identity` register into `ctx.recordDefs` like any other record —
+//! which `typeToNOpt` (and therefore `Result[Certificate, TlsError]`'s
+//! generic-argument resolution) then resolves correctly. Item B below is
+//! the direct verification that the real, originally-specced API now
+//! works end to end.
 //!
-//! Consequences, confirmed by direct repro against the real
-//! `_kernel_native/*.l` files (not guessed):
-//!   - item B AS ORIGINALLY SPECCED (`Certificate.fromPem`/
-//!     `Identity.fromPem` through `Std.Tls`) cannot compile for
-//!     `--target native` at all, blocked on #6234 — no amount of
-//!     rewriting this test file changes that. What CAN be verified today
-//!     is `_kernel_native/tls_host.l`'s actual deliverable,
-//!     `Std.TlsHost.hostCertFromPemBytes`/`hostIdentityFromPemBytes`
-//!     (both `pub record`-based, no opaque types), called directly. The
-//!     test below does exactly that — same PEM fixtures, same assertions,
-//!     one layer lower than `Std.Tls`.
-//!   - item D (the real loopback TLS handshake through
-//!     `Std.TcpHost.hostAcceptTls`) is dropped from this file entirely:
-//!     `hostAcceptTls`/`hostUpgradeServerTls` take a `Tls.TlsServerConfig`
-//!     whose `identity: Identity` field is unavoidably the opaque type,
-//!     by design (matching the dotnet/JVM twins' API shape) — there is no
-//!     lower-level bypass the way there is for item B. Re-adding item D
-//!     is tracked as a follow-up blocked on #6234; it is not silently
-//!     skipped — it simply is not in this file until the blocker clears.
+//! What item B does NOT cover: a custom-destructor mechanism for an
+//! opaque type wrapping a raw OS handle is #6234's separate, still-open
+//! part 2 — irrelevant here since native `CertHandle`
+//! (`_kernel_native/tls_host.l`) holds PEM text in ordinary `String`
+//! fields, not a raw pointer, so the ordinary ARC-managed-field release
+//! path is exactly what's needed.
 //!
-//! Both remaining connection-oriented tests bind an ephemeral port
+//! Item D (the real loopback TLS handshake through
+//! `Std.TcpHost.hostAcceptTls`, which takes a `Tls.TlsServerConfig` whose
+//! `identity: Identity` field is unavoidably the opaque type) remains
+//! deferred — NOT because of #6234 any more (item B proves `Identity`
+//! itself now constructs fine), but because driving a real concurrent
+//! client/server handshake needs both peers actively driving handshake
+//! I/O at once, which is separate test-authoring effort tracked under
+//! #6103's remaining work, not a compiler blocker.
+//!
+//! Both connection-oriented tests bind an ephemeral port
 //! (`hostListen(host, 0)`) and read the kernel-assigned one back via
 //! `hostLocalPort` before dialing — the same pattern `lyric_tls_test.c`'s
 //! C-level tests already use over `lyric_sock_local_port` — rather than a
@@ -196,13 +200,77 @@ test "Std.Encoding native round-trip: base64 + UTF-8 (item A)" {
   assertEqualInt(r.exitCode, 42, "encoding round-trip")
 }
 
-// Exercises `_kernel_native/tls_host.l`'s actual deliverable,
-// `Std.TlsHost.hostCertFromPemBytes`/`hostIdentityFromPemBytes`, directly
-// rather than through `Std.Tls`'s opaque `Certificate`/`Identity` wrapper
-// (blocked on #6234 — see this file's module header). Same PEM fixtures
-// and same four assertions `Std.Tls`'s own PEM-loading test would make;
-// this is the kernel boundary one layer below that API.
-test "Std.TlsHost native PEM loading (kernel boundary): cert/identity ok, malformed key rejected (item B)" {
+// The headline item B case: the REAL, originally-specced public API —
+// `Std.Tls.Certificate.fromPem`/`Identity.fromPem` — compiled through the
+// full bundled pipeline. `Std.Tls` is a genuinely separate file/package
+// from this test's inline `src` (pulled in via `findStdlibSourcesNative()`
+// like every other stdlib module), so this exercises
+// `Lyric.LlvmBridge.unitOf`'s `IOpaque` arm — the bundled-path half of
+// #6234 part 1's fix, as opposed to the single-file `unitOfFile` path
+// `llvm_opaque_self_test.l` mostly drives. `Certificate`/`Identity` are
+// `pub opaque type`s with a single `Host.CertHandle`-typed field
+// (`Host.CertHandle` itself a `pub record` on native, per
+// `_kernel_native/tls_host.l`'s module header) — the exact real-world
+// shape #6234's fix targets. Same PEM fixtures and same four assertions
+// as the kernel-boundary variant below, one layer higher.
+test "Std.Tls native PEM loading (real public API): cert/identity ok, malformed key rejected (item B)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Tls\n" + "func main(): Int {\n" + "  val certPem = \"" +
+    luQuote(certPemLines) +
+    "\"\n" +
+    "  val keyPem = \"" +
+    luQuote(keyPemLines) +
+    "\"\n" +
+    "  val badKeyPem = \"" +
+    luQuote(badKeyPemLines) +
+    "\"\n" +
+    "  match Certificate.fromPem(certPem) {\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match Identity.fromPem(certPem, keyPem) {\n" +
+    "    case Err(_) -> {\n" +
+    "      return 2\n" +
+    "    }\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var rejectedMalformed = false\n" +
+    "  match Identity.fromPem(certPem, badKeyPem) {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      rejectedMalformed = true\n" +
+    "    }\n" +
+    "  }\n" +
+    "  if not rejectedMalformed {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  var rejectedGarbage = false\n" +
+    "  match Certificate.fromPem(\"not a certificate\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      rejectedGarbage = true\n" +
+    "    }\n" +
+    "  }\n" +
+    "  if not rejectedGarbage {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.Tls PEM loading (real public API)")
+}
+
+// Defense in depth: exercises `_kernel_native/tls_host.l`'s actual
+// deliverable, `Std.TlsHost.hostCertFromPemBytes`/`hostIdentityFromPemBytes`,
+// directly rather than through `Std.Tls`'s opaque `Certificate`/`Identity`
+// wrapper above. Same PEM fixtures and same four assertions; this is the
+// kernel boundary one layer below the real API.
+test "Std.TlsHost native PEM loading (kernel boundary): cert/identity ok, malformed key rejected" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.TlsHost\n" + "func main(): Int {\n" + "  val certPem = \"" +
     luQuote(certPemLines) +
     "\"\n" +
@@ -341,8 +409,8 @@ test "Std.TcpHost native plain round-trip: listen/connect/accept/read/write/clos
 
 // Item D (a real loopback TLS handshake through
 // `Std.TcpHost.hostAcceptTls`) is deliberately not in this file — see the
-// module header's "item B is scoped to the kernel boundary, and item D is
-// deferred" section. It needs `Std.Tls`'s opaque `Identity` type, which
-// `Lyric.LlvmCodegen` cannot construct or resolve as a generic type
-// argument on `--target native` today (issue #6234). Re-add it once that
-// lands.
+// module header's "item B history" section. `Std.Tls`'s opaque `Identity`
+// type now constructs fine (item B above proves it), so item D is no
+// longer blocked on #6234; it remains a separate test-authoring effort
+// (driving a real concurrent client/server handshake) tracked under
+// #6103's remaining work.

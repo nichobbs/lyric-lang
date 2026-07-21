@@ -749,6 +749,19 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
       case IUnion(decl) -> unions.add(decl)
       case IEnum(decl) -> enums.add(decl)
       case IDistinctType(decl) -> distincts.add(decl)
+      // Opaque types (#6234 part 1): reshaped into an equivalent
+      // `RecordDecl` (`Lyric.LlvmCodegen.opaqueToRecordDecl`) so they share
+      // every downstream record code path.  Always collected regardless of
+      // `lowerAll`, like the other type declarations above — a bundled
+      // stdlib package's opaque type (e.g. `Std.Tls.Certificate`) must
+      // register even when none of its own functions are reachable, since a
+      // reachable *user* function may still construct/read one.  A
+      // body-less forward declaration has no fields to lower.
+      case IOpaque(decl) -> {
+        if decl.hasBody {
+          records.add(opaqueToRecordDecl(decl))
+        }
+      }
       // Interface + impl are collected together (N3.2): the impl's vtable
       // references its methods, so registering one without the other would
       // dangle.  Gated on `lowerAll` — native interfaces are user-package

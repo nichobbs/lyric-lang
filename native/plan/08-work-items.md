@@ -1281,17 +1281,22 @@ its two gating prerequisites (`_kernel_native/encoding_host.l`,
 text, both forced by reading the compiler/seam source first rather than
 assuming:
 
-- **Not an `opaque type`.** `Llvm.Codegen`'s native item-kind dispatch has
-  no `IOpaque` case (it panics on one today) and no Lyric-level mechanism
-  exists yet for a heap type's destructor to run custom free() cleanup on a
-  raw resource field — both real, verified compiler gaps, tracked as issue
-  #6234. `Listener`/`Conn` are plain `pub record`s with package-private
-  fields instead (the `_kernel_native/process_capture_host.l`
-  `ProcessCaptureResult` "public type, private fields, public accessors"
-  shape already in this tree), with `hostClose`/`hostStopListener` as the
-  explicit always-must-be-called free path — matching the dotnet twin's
-  own explicit-`Dispose`/`Close` contract (no GC finalizer exists on that
-  managed target either; `Std.TcpHost` has no JVM twin to compare against).
+- **Not an `opaque type`.** At the time this item shipped, `Llvm.Codegen`'s
+  native item-kind dispatch had no `IOpaque` case (it panicked on one) and
+  no Lyric-level mechanism existed for a heap type's destructor to run
+  custom free() cleanup on a raw resource field — two real, verified
+  compiler gaps, both tracked as issue #6234. The first (`IOpaque` codegen)
+  has since shipped (#6234 part 1, D-progress-713 — see the "Compiler-level
+  prerequisite" paragraph below); the second (the custom-destructor hook)
+  remains open and is now the SOLE reason this file still uses plain
+  records rather than `opaque type`. `Listener`/`Conn` are plain `pub
+  record`s with package-private fields instead (the
+  `_kernel_native/process_capture_host.l` `ProcessCaptureResult` "public
+  type, private fields, public accessors" shape already in this tree), with
+  `hostClose`/`hostStopListener` as the explicit always-must-be-called free
+  path — matching the dotnet twin's own explicit-`Dispose`/`Close` contract
+  (no GC finalizer exists on that managed target either; `Std.TcpHost` has
+  no JVM twin to compare against).
 - **The ARC-managed-lifetime raw handle is a `Long`, not a `NativePtr[Byte]`.**
   `Conn.tlsConnHandle` must survive across separate top-level calls
   (`hostAcceptTls` constructs it, `hostRead`/`hostWrite`/`hostClose` use it
@@ -1314,26 +1319,25 @@ Two new `LyricList[Byte]`-bridging seam functions
 diagnostics/ALPN. `_kernel_native/tcp_host_self_test.l` is instead
 `lyric-compiler/lyric/llvm_tls_self_test.l` (matching the `llvm_*_self_test.l`
 naming convention this tree already uses for tests that import `Lyric.*`
-compiler packages to drive `compileToNativeWithFlags`): THREE cases, not
-the four originally planned, ASan-compiled, wired into the
-`native-backend-self-tests` CI job. `Std.Encoding` round-trip and
-`Std.TcpHost` plain (non-TLS) round-trip pass as planned; the PEM-loading
-case exercises `Std.TlsHost.hostCertFromPemBytes`/`hostIdentityFromPemBytes`
-(the kernel boundary) directly rather than through `Std.Tls`'s opaque
-`Certificate`/`Identity` wrapper; and the fourth case (a real loopback TLS
-handshake via `hostAcceptTls`, server on `main`, client on a genuine second
-pthread) is dropped entirely. Both cuts trace to the SAME already-filed
-follow-up: #6234 (native `opaque type` codegen — `Std.Tls`'s
-`Certificate`/`Identity` are opaque, and `Lyric.LlvmCodegen` has no native
-codegen case for `opaque type` at all, confirmed by direct repro against
-both construction and generic-argument resolution) plus its paired
-custom-destructor gap noted in `tcp_host.l`'s own module header. This
-wasn't a hypothetical risk: CI ran the originally-planned four-case file
-red, and the PEM-loading/handshake cases are unfixable without opaque-type
-codegen, which is substantial new compiler work out of scope here — see
-D-progress-712's "CI failure diagnosis and fixes" addendum in
-`docs/03-decision-log.md` for the full root-cause breakdown (five distinct
-findings, four fixed, one — opaque types — genuinely deferred).
+compiler packages to drive `compileToNativeWithFlags`), wired into the
+`native-backend-self-tests` CI job, ASan-compiled. At the time this item
+shipped the file carried only THREE cases, not the four originally
+planned: `Std.Encoding` round-trip and `Std.TcpHost` plain (non-TLS)
+round-trip passed as planned, but the PEM-loading case could only exercise
+`Std.TlsHost.hostCertFromPemBytes`/`hostIdentityFromPemBytes` (the kernel
+boundary) directly rather than through `Std.Tls`'s opaque
+`Certificate`/`Identity` wrapper, and the fourth case (a real loopback TLS
+handshake via `hostAcceptTls`) was dropped entirely — both cuts traced to
+#6234 (native `opaque type` codegen, confirmed by direct repro against
+both construction and generic-argument resolution), see D-progress-712's
+"CI failure diagnosis and fixes" addendum in `docs/03-decision-log.md` for
+the full root-cause breakdown at the time. **This is now stale**: with
+#6234 part 1 shipped (see the "Compiler-level prerequisite" paragraph
+below), the file's item B was re-added through `Std.Tls`'s real public API,
+with the original kernel-boundary variant kept alongside for defense in
+depth. The originally-planned loopback-handshake case remains a separate,
+not-yet-authored test — no longer blocked on #6234, just not yet written;
+tracked under this item's own remaining work.
 
 **Prerequisite (SHIPPED alongside):** the `Std.TcpHost` surface takes
 `Std.Tls.TlsServerConfig`, so `Std.Tls` must compile on native first —
@@ -1347,6 +1351,30 @@ seam has no standalone parse-only function, only PEM-text-taking context
 constructors), with eager load-time validation added to the seam itself
 (`lyric_tls_validate_cert_pem`/`_key_pem`/`_identity_pem`, reusing the
 seam's own internal parse path) to match the dotnet/JVM twins' contract.
+
+**Compiler-level prerequisite ✅ SHIPPED (#6234 part 1, D-progress-713):**
+`Std.Tls`'s `Certificate`/`Identity` — and every `opaque type` this band's
+"wrap the raw handle in an opaque type" idiom depends on — could not compile
+for `--target native` at all: `Llvm.Codegen`'s item-kind dispatch had no
+`IOpaque` case (single-file compiles panicked; bundled stdlib compiles
+silently dropped the item). Fixed by reshaping an `OpaqueTypeDecl` into the
+equivalent `RecordDecl` at collection time, so opaque types share every
+record code path (layout, construction, field access, ARC destructor
+synthesis) — opacity is a front-end visibility concern, not a codegen one.
+A `@projectable opaque type` is refused with a clear `N0101` diagnostic
+rather than silently compiled with lost projection semantics (#6239) — a
+custom-destructor hook for an opaque type wrapping a raw resource (the
+`lyric_tls_*`/`lyric_sock_*` handle this section's ARC-managed-lifetime note
+above refers to) is a separate, still-open gap (#6234 part 2) — this fix
+only makes an opaque type's ordinary ARC-managed fields release correctly,
+not a raw-resource cleanup hook. **This item now closes end to end**: #6235
+shipped the stdlib native kernel ports this paragraph originally called
+un-shipped (`_kernel_native/tls_host.l`, `_kernel_native/tcp_host.l`,
+`_kernel_native/encoding_host.l`), and with both the compiler-side blocker
+and the kernel ports landed, `Std.Tls.Certificate.fromPem`/`Identity.fromPem`
+— the real public API, not a kernel-boundary stand-in — now compile and
+construct correctly end to end for `--target native`, verified by
+`llvm_tls_self_test.l`'s re-added item B.
 
 ### N9.3 — `Std.HttpServer` native twin — follow-on (#6104)
 

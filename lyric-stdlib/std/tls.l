@@ -139,6 +139,36 @@ func readBytesOrTls(path: in String): Result[slice[Byte], TlsError] {
   }
 }
 
+// `String.contains` (the built-in method `checkKeyPemSupported` used to
+// call directly, `pem.contains("...")`) has no native codegen support:
+// `Lyric.LlvmCodegen.lowerScalarMethodCall`'s String-receiver arm only
+// recognises `.toString()` and `.substring(start, count)` (confirmed via
+// direct repro — issue #6240, the same class of gap as #6237's
+// `s[i]`/`String + Char` findings). `.substring(start, count)` and `==`
+// (via `lyric_string_eq`) ARE both supported identically on every target,
+// so this reimplements "does `haystack` contain `needle`" as a pure-Lyric
+// sliding-window scan built from those two primitives — a cross-target-safe
+// replacement, not a native-only workaround, with identical boolean results
+// to the built-in method it replaces.
+func containsMarker(haystack: in String, needle: in String): Bool {
+  val hLen = haystack.length
+  val nLen = needle.length
+  if nLen == 0 {
+    return true
+  }
+  if nLen > hLen {
+    return false
+  }
+  var i = 0
+  while i <= hLen - nLen {
+    if haystack.substring(i, nLen) == needle {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
 // Recognizes a private-key PEM format this module does not support (module
 // header): PKCS1/SEC1 ("RSA PRIVATE KEY" / "EC PRIVATE KEY") and encrypted
 // PKCS8 ("ENCRYPTED PRIVATE KEY"). A plain PKCS8 block, or content that
@@ -146,12 +176,12 @@ func readBytesOrTls(path: in String): Result[slice[Byte], TlsError] {
 // through to the kernel's own `PemMalformed` classification instead of
 // being misreported as `Unsupported`.
 func checkKeyPemSupported(pem: in String): Option[String] {
-  if pem.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----") {
+  if containsMarker(pem, "-----BEGIN ENCRYPTED PRIVATE KEY-----") {
     return Some(
       value = "encrypted PKCS8 private keys are not supported; decrypt to a plain PKCS8 'PRIVATE KEY' block first"
     )
   }
-  if pem.contains("-----BEGIN RSA PRIVATE KEY-----") or pem.contains("-----BEGIN EC PRIVATE KEY-----") {
+  if containsMarker(pem, "-----BEGIN RSA PRIVATE KEY-----") or containsMarker(pem, "-----BEGIN EC PRIVATE KEY-----") {
     return Some(
       value = "PKCS1/SEC1 private keys are not supported; convert to PKCS8 with `openssl pkcs8 -topk8 -nocrypt`"
     )
