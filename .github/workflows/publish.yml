@@ -981,8 +981,14 @@ jobs:
       - name: Generate SHASUMS256.txt
         shell: bash
         working-directory: /tmp/checksums
+        # A retried run of this job can pull down a SHASUMS256.txt left over
+        # from an earlier attempt (e.g. one that uploaded successfully but
+        # the client timed out before recording success) -- drop it before
+        # hashing so the manifest never folds a stale copy of itself in as
+        # one of its own entries.
         run: |
           set -euo pipefail
+          rm -f SHASUMS256.txt
           sha256sum * > SHASUMS256.txt
           cat SHASUMS256.txt
 
@@ -991,10 +997,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
+        # --clobber makes a retried run idempotent against an upload that
+        # landed server-side on a prior attempt despite a client-side error.
         run: |
           set -euo pipefail
           gh release upload "v${RELEASE_VERSION}" /tmp/checksums/SHASUMS256.txt \
-            --repo "${{ github.repository }}"
+            --repo "${{ github.repository }}" \
+            --clobber
 
   # ---------------------------------------------------------------------------
   # Clean up on core publishing failure: delete the tag and draft release
