@@ -255,13 +255,21 @@ the draft release/tag via `cleanup-on-failure`, same as any other core
 publishing failure.
 
 The file uses the standard `sha256sum` output format (one
-`<hex-digest>  <filename>` line per asset), so it can be verified with the
-coreutils tool directly:
+`<hex-digest>  <filename>` line per asset), so it can be verified with
+coreutils on Linux:
 
 ```sh
 curl -fsSLO https://github.com/nichobbs/lyric-lang/releases/download/v<version>/SHASUMS256.txt
 curl -fsSLO https://github.com/nichobbs/lyric-lang/releases/download/v<version>/lyric-<version>-linux-x64.tar.gz
 sha256sum -c --ignore-missing SHASUMS256.txt
+```
+
+macOS ships the Perl `shasum` script, not GNU coreutils' `sha256sum`, by
+default, and it has no `--ignore-missing` equivalent — filter the manifest
+down to the one file actually on disk before checking it:
+
+```sh
+grep " lyric-<version>-osx-arm64.tar.gz\$" SHASUMS256.txt | shasum -a 256 -c -
 ```
 
 This is a plain integrity manifest, not a signed attestation — it protects
@@ -270,7 +278,7 @@ mirrored copy of an asset against what GitHub actually published, but it
 does not itself prove the asset came from this repository's CI (an
 attacker controlling the release could regenerate both). Cryptographic
 signing of the manifest (GPG/Sigstore) is tracked as a follow-up and is
-out of scope for this mechanism; see `docs/34-distribution-strategy.md` §8
+out of scope for this mechanism; see `docs/34-distribution-strategy.md` §7
 for the existing code-signing surface (Authenticode/notarization/NuGet
 signing) this would complement.
 

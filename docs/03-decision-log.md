@@ -20149,7 +20149,7 @@ is a separate, heavier piece of work than wiring up an unsigned manifest,
 and the repository has no existing GPG/Sigstore signing infrastructure to
 extend (the existing signing surface — Authenticode via Azure Key Vault,
 macOS notarization, NuGet package signing, `docs/34-distribution-strategy.md`
-§8 — is all channel-specific and doesn't cover raw GitHub Release assets).
+§7 — is all channel-specific and doesn't cover raw GitHub Release assets).
 Tracked as a follow-up rather than folded into this change.
 
 **Related:** docs/22-distribution-and-tooling.md §5.2, D059.
