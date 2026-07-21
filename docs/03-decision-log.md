@@ -20091,3 +20091,65 @@ fixture) against a from-source native pipeline built from this branch's
 `lyric-compiler/lyric/llvm_codegen.l`, run through the published `lyric`
 tool as a from-source-equivalent stand-in for the reasons given above —
 the CI job itself remains the authoritative, from-scratch validator.
+
+## D130 — Release binaries publish a `SHASUMS256.txt` checksum manifest (docs/22 §5.2)
+
+**Context.** Published GitHub Releases (`.github/workflows/publish.yml`)
+shipped the standalone platform archives (`lyric-<version>-<rid>.tar.gz`)
+and the VS Code `.vsix` with no accompanying checksum file — a user who
+wanted to verify a downloaded archive against a known-good hash had
+nothing to check it against. This is a distinct mechanism from the
+existing `install.sh.sha256` (D059/docs/22 §5.1.3), which only ever
+covered the installer script itself, not the binaries it installs.
+
+**Decision.** Add a `publish-checksums` job to `publish.yml` that runs
+after `build-standalone` and `publish-vscode` (i.e. after every binary
+asset for the release has been uploaded, while the release is still
+draft): it downloads the exact assets GitHub is now serving via
+`gh release download`, hashes them with `sha256sum`, and uploads the
+resulting `SHASUMS256.txt` back onto the same release. Hashing the
+as-uploaded bytes (rather than re-hashing local build outputs still on
+the runner's filesystem) means the manifest can never drift from what a
+user's own `gh release download`/browser download actually produces —
+a corrupted upload would show up as a checksum mismatch instead of being
+silently blessed by a manifest computed before the corruption could
+happen.
+
+`publish-checksums` was wired into the existing gating jobs rather than
+left as a best-effort side channel:
+- `finalize-release` now requires it to succeed (or be skipped) before
+  marking the release non-draft, alongside `build-standalone`/
+  `publish-nuget`/`publish-vscode` — consistent with treating a release
+  without integrity-verifiable binaries as incomplete, the same way a
+  release missing an architecture's archive is incomplete.
+- `cleanup-on-failure` now treats a `publish-checksums` failure the same
+  as a core-publishing failure: it deletes the draft release and (on
+  `workflow_dispatch` runs) the just-created tag, rather than leaving a
+  release published without its checksum file.
+
+Ecosystem-library NuGet packages are explicitly out of scope for this
+manifest — they're distributed and verified through NuGet.org's own
+package-hash mechanism (every `.nupkg` push is content-addressed and
+NuGet.org exposes a SHA-512 per package), so a GitHub-Release-side
+checksum would be redundant for that artifact class.
+
+**Format.** Plain `sha256sum`-compatible output (`<hex>  <filename>` per
+line, no header/footer), so verification is a single coreutils command
+(`sha256sum -c --ignore-missing SHASUMS256.txt`) with no bespoke tooling
+required — the same reasoning D059 used for keeping `install.sh.sha256`
+a bare hex digest.
+
+**Rejected/deferred: cryptographic signing.** A signed manifest (GPG
+detached signature, or a Sigstore/cosign attestation) would let a
+verifier confirm the checksums themselves came from this repository's CI,
+not just that a download matches whatever manifest sits next to it. Not
+implemented here: it needs a key-custody decision (which signing identity,
+how the private key/OIDC trust root is provisioned to `publish.yml`) that
+is a separate, heavier piece of work than wiring up an unsigned manifest,
+and the repository has no existing GPG/Sigstore signing infrastructure to
+extend (the existing signing surface — Authenticode via Azure Key Vault,
+macOS notarization, NuGet package signing, `docs/34-distribution-strategy.md`
+§8 — is all channel-specific and doesn't cover raw GitHub Release assets).
+Tracked as a follow-up rather than folded into this change.
+
+**Related:** docs/22-distribution-and-tooling.md §5.2, D059.

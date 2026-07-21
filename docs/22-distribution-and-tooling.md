@@ -232,6 +232,48 @@ The GitHub upgrade path implements strict security and reliability controls:
 3. **Download Exit-Code Validation**: The exit codes of `curl` and `wget` are verified (`exitCode == 0`) before continuing, ensuring error payload pages are never written to disk or executed.
 4. **Symlink/TOCTOU Prevention**: The downloaded script is written to a unique, temporary path containing a randomly-generated UUID (e.g., `lyric-install-<uuid>.sh`) in the system temp directory, preventing predictable path exploits. The file is cleanly removed in both success and failure paths.
 
+## 5.2. Release asset checksums (`SHASUMS256.txt`)
+
+Every GitHub Release also carries a `SHASUMS256.txt` asset covering the
+release's binary artifacts: the standalone platform archives
+(`lyric-<version>-<rid>.tar.gz`/`.zip`) and the VS Code extension
+(`lyric-lang-<version>.vsix`). It does **not** cover the NuGet packages
+(`lyric`, the ecosystem libraries) — those are distributed and verified
+through NuGet.org's own package-hash mechanism, not GitHub Releases.
+
+The manifest is produced by `.github/workflows/publish.yml`'s
+`publish-checksums` job, which runs after every binary asset has been
+uploaded to the (still-draft) release: it downloads the exact bytes GitHub
+is serving for that release via `gh release download`, hashes them with
+`sha256sum`, and uploads the resulting `SHASUMS256.txt` back to the same
+release. Hashing the downloaded bytes rather than recomputing from local
+build outputs means the manifest can't drift from what a user's own
+download produces. `publish-checksums` gates `finalize-release` the same
+way `build-standalone`/`publish-nuget`/`publish-vscode` do — the release is
+never marked ready without a checksum manifest — and a failure here deletes
+the draft release/tag via `cleanup-on-failure`, same as any other core
+publishing failure.
+
+The file uses the standard `sha256sum` output format (one
+`<hex-digest>  <filename>` line per asset), so it can be verified with the
+coreutils tool directly:
+
+```sh
+curl -fsSLO https://github.com/nichobbs/lyric-lang/releases/download/v<version>/SHASUMS256.txt
+curl -fsSLO https://github.com/nichobbs/lyric-lang/releases/download/v<version>/lyric-<version>-linux-x64.tar.gz
+sha256sum -c --ignore-missing SHASUMS256.txt
+```
+
+This is a plain integrity manifest, not a signed attestation — it protects
+against corrupted/incomplete downloads and lets a user cross-check a
+mirrored copy of an asset against what GitHub actually published, but it
+does not itself prove the asset came from this repository's CI (an
+attacker controlling the release could regenerate both). Cryptographic
+signing of the manifest (GPG/Sigstore) is tracked as a follow-up and is
+out of scope for this mechanism; see `docs/34-distribution-strategy.md` §8
+for the existing code-signing surface (Authenticode/notarization/NuGet
+signing) this would complement.
+
 ## 6. VS Code extension features
 
 The existing extension (`lyric-vscode/`) provides syntax highlighting,

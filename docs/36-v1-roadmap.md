@@ -335,6 +335,11 @@ byte-match** — making the F#-emitted and self-hosted-emitted compilers
 byte-identical — which is gated on §R7 (front-end completeness / codegen
 convergence; see docs/43) below, not on compilability.
 
+_Progress (D130):_ every release now also publishes a `SHASUMS256.txt`
+covering the standalone archives and the `.vsix` (docs/22 §5.2) — a plain
+integrity manifest, not a signed attestation. Cryptographic signing of the
+manifest (GPG/Sigstore) remains open and unscheduled.
+
 ---
 
 ### R7 — Self-hosted `--target dotnet` soundness & correctness floor  *(NEW; the real v1.0 blocker)*
