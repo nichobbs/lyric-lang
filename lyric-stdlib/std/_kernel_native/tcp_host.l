@@ -24,13 +24,14 @@
 //! shipped after this file was written) — see the correction below; gap 2
 //! remains open and is the only reason this file still uses plain records:
 //!
-//! 1. ~~`Llvm.Codegen`'s item-kind dispatch (`lyric-compiler/lyric/
-//!    llvm_codegen.l`, the collection loop over `SourceFile.items`) has
+//! 1. **FIXED, #6234 part 1.** At the time this file was written,
+//!    `Llvm.Codegen`'s item-kind dispatch (`lyric-compiler/lyric/
+//!    llvm_codegen.l`, the collection loop over `SourceFile.items`) had
 //!    cases for `IRecord`/`IUnion`/`IEnum`/`IDistinctType`/`IInterface`/
 //!    `IImpl`/`IProtected`/`ITypeAlias`/`IExternType` — no `IOpaque` case
-//!    at all, so it falls to the wildcard arm and PANICS at compile time:
+//!    at all, so it fell to the wildcard arm and PANICKED at compile time:
 //!    "this item form is not yet supported for --target native". Using
-//!    `opaque type` here would not compile on native today.~~ **FIXED**:
+//!    `opaque type` here would not have compiled on native then.
 //!    `Llvm.Codegen.opaqueToRecordDecl` now reshapes an `OpaqueTypeDecl`
 //!    into the equivalent `RecordDecl` at item-collection time (both the
 //!    single-file and bundled-stdlib paths), so `opaque type` compiles,
