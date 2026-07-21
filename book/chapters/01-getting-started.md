@@ -22,7 +22,15 @@ curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/in
 
 The script detects your platform, downloads the appropriate release archive from GitHub, extracts it to `~/.lyric/bin`, and adds that directory to your shell profile.
 
-Alternatively, download the archive directly from the project's GitHub releases page and place the `lyric` binary (or `lyric.exe` on Windows) somewhere on your `PATH`.
+Alternatively, download the archive directly from the project's GitHub releases page and place the `lyric` binary (or `lyric.exe` on Windows) somewhere on your `PATH`. Each release also publishes a `SHASUMS256.txt` checksum manifest covering every archive and the VS Code extension; verify a downloaded archive against it with:
+
+```sh
+# Linux (GNU coreutils)
+sha256sum -c --ignore-missing SHASUMS256.txt
+
+# macOS (Perl shasum has no --ignore-missing; filter to the one file you have)
+grep " lyric-<version>-osx-arm64.tar.gz$" SHASUMS256.txt | shasum -a 256 -c -
+```
 
 Verify the installation:
 
