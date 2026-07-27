@@ -9146,11 +9146,63 @@ jobs:
           out="$("$work/hello")"
           echo "binary output: $out"
           [ "$out" = "native release: 42" ] || { echo "unexpected output: $out"; exit 1; }
-          # JVM release fails loud rather than producing a managed artifact.
-          if "$bin_abs" build --release --target jvm "$work/hello.l" >/dev/null 2>&1; then
-            echo "expected non-zero exit for --release --target jvm"; exit 1
+          # A --rid naming a platform other than the host is rejected up front
+          # on the JVM target (native-image cannot cross-compile) -- asserted
+          # here because it needs no GraalVM install.
+          if "$bin_abs" build --release --target jvm "$work/hello.l" --rid osx-arm64 \
+               >"$work/xcompile.out" 2>&1; then
+            echo "expected non-zero exit for --release --target jvm --rid osx-arm64"; exit 1
           fi
+          grep -q "cannot cross-compile" "$work/xcompile.out" || {
+            echo "expected a cross-compile diagnostic"; cat "$work/xcompile.out"; exit 1; }
           echo "Release Native AOT e2e passed"
+
+      # GraalVM for the JVM `--release` e2e below.  Installed by direct download
+      # rather than via `graalvm/setup-graalvm` to keep the workflow's
+      # pin-every-action-by-SHA policy intact without adding a third-party
+      # action to the trust surface.
+      - name: Install GraalVM for JVM release e2e
+        run: |
+          set -euo pipefail
+          ver="21.0.2"
+          url="https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${ver}/graalvm-community-jdk-${ver}_linux-x64_bin.tar.gz"
+          sudo mkdir -p /opt/graalvm
+          curl -fsSL "$url" | sudo tar xz -C /opt/graalvm --strip-components=1
+          echo "GRAALVM_HOME=/opt/graalvm" >> "$GITHUB_ENV"
+          /opt/graalvm/bin/native-image --version
+
+      # JVM `--release` end-to-end: GraalVM native-image over the bundled JAR
+      # must produce a binary that runs with NO JVM available (#1975, D131).
+      # The no-JVM assertion is the load-bearing one: `--no-fallback` exists to
+      # stop native-image silently emitting a launcher that still needs a JVM,
+      # and only running without one proves it held.
+      - name: Release JVM native-image e2e (lyric build --release --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          cat > "$work/hello.l" <<'LYR'
+          package HelloJvm
+          import Std.Core
+          import Std.Console as Console
+          import Std.Collections
+          pub func main(): Int {
+            val xs: List[Int] = newList()
+            xs.add(40); xs.add(2)
+            Console.println("jvm release: " + toString(xs[0] + xs[1]))
+            0
+          }
+          LYR
+          "$bin_abs" build --release --target jvm "$work/hello.l"
+          test -x "$work/hello" || { echo "expected native binary $work/hello"; exit 1; }
+          # Not a fallback image: run it with an environment that has no JVM.
+          out="$(env -i PATH=/usr/bin:/bin "$work/hello")"
+          echo "binary output: $out"
+          [ "$out" = "jvm release: 42" ] || { echo "unexpected output: $out"; exit 1; }
+          file "$work/hello" | grep -q ELF || { echo "expected a native ELF binary"; exit 1; }
+          echo "Release JVM native-image e2e passed"
 
       # Auto-restore-on-build end-to-end — `lyric build` resolves dependencies
       # when lyric.lock is missing or stale, and `--no-restore` opts out (#1971).

@@ -13,10 +13,12 @@
 //! minimal probe `.csproj` seeds the NuGet cache and lets us discover the ILC
 //! toolchain version via `project.assets.json`.
 //!
-//! JVM target (JvmNativeImage): the release path is GraalVM `native-image` over
-//! the bundled JAR.  The seam is defined here so the dispatcher is target-
-//! agnostic; the toolchain invocation is not yet implemented (#1975) and fails
-//! loud rather than silently producing a managed artifact.
+//! JVM target (JvmNativeImage): drives GraalVM `native-image` over the bundled
+//! JAR the JVM backend already produces (user package + transitive `Std.*`
+//! import closure + sibling project packages, entry class named by the JAR
+//! manifest's `Main-Class`).  `--no-fallback` makes a JVM-requiring fallback
+//! image a hard error rather than a silent downgrade, so `--release` either
+//! yields a standalone binary or fails.
 package Lyric.Release
 
 import Std.Core
@@ -31,6 +33,7 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.ProcessCapture as PC
 import Std.Environment as Environment
+import Jvm.NativeImage as NI
 
 // Release target selector.  `buildRelease` is target-agnostic; each arm owns
 // its toolchain invocation so adding the GraalVM path later does not touch the
@@ -164,6 +167,39 @@ func absPath(p: in String): String {
     p
   } else {
     Path.join(Environment.currentDirectory(), p)
+  }
+}
+
+/// Locate `name` in the directories listed in `$PATH`, returning the first hit.
+///
+/// Done by scanning `$PATH` rather than by spawning the tool with `--version`:
+/// `Std.ProcessCapture` surfaces a failed *launch* as a thrown host exception,
+/// not as a non-zero exit code, so probing a tool that is absent would abort
+/// the build with a raw .NET stack trace instead of an actionable diagnostic.
+pub func findOnPath(name: in String, pathVar: in String, os: in String): Option[String] {
+  if pathVar == "" {
+    return None
+  }
+  val dirs = Str.split(pathVar, classpathSeparator(os))
+  var i = 0
+  while i < dirs.length {
+    val dir = Str.trim(dirs[i])
+    if dir != "" {
+      val candidate = Path.join(dir, name)
+      if File.fileExists(candidate) {
+        return Some(value = candidate)
+      }
+    }
+    i += 1
+  }
+  None
+}
+
+// Whether `name` is runnable from `$PATH` on this host.
+func isOnPath(name: in String, os: in String): Bool {
+  match findOnPath(name, Environment.getVarOrDefault("PATH", ""), os) {
+    case Some(_) -> true
+    case None -> false
   }
 }
 
@@ -1024,10 +1060,11 @@ pub func buildReleaseDotnet(
   }
 
   // Verify clang is on PATH before the slow ILC probe and compile steps.
-  val clangVersionArgs: List[String] = newList()
-  clangVersionArgs.add("--version")
-  val clangCheck = PC.runCaptureWithDiagnosticsTimeout("clang", clangVersionArgs, "", 10000)
-  if clangCheck.timedOut or clangCheck.exitCode != 0 {
+  // Probed by scanning $PATH, not by spawning it: a failed launch surfaces as
+  // a thrown host exception rather than a non-zero exit code, so spawning an
+  // absent clang aborted the build with a raw .NET stack trace instead of the
+  // install hint below.
+  if not isOnPath("clang", os) {
     releaseErr(
       "clang not found on PATH; install it before building Native AOT binaries\n" +
         "  Debian/Ubuntu: apt install clang binutils\n" +
@@ -1041,10 +1078,7 @@ pub func buildReleaseDotnet(
   // -fuse-ld=bfd in buildLinkerArgsUnix requires ld.bfd from GNU binutils; without
   // it clang fails with a cryptic "unable to execute command: No such file or directory".
   if os != "osx" {
-    val ldBfdArgs: List[String] = newList()
-    ldBfdArgs.add("--version")
-    val ldBfdCheck = PC.runCaptureWithDiagnosticsTimeout("ld.bfd", ldBfdArgs, "", 10000)
-    if ldBfdCheck.timedOut or ldBfdCheck.exitCode != 0 {
+    if not isOnPath("ld.bfd", os) {
       releaseErr(
         "ld.bfd (GNU binutils) not found on PATH; it is required by -fuse-ld=bfd\n" +
           "  Debian/Ubuntu: apt install binutils\n" +
@@ -1151,21 +1185,305 @@ pub func buildReleaseDotnet(
   0
 }
 
-/// Target-agnostic release entry point.  Dispatches to the .NET AOT path or the
-/// JVM GraalVM path.  The JVM arm is not yet implemented and fails loud (#1975)
-/// rather than silently producing a non-native artifact.
+// ─── GraalVM native-image (JVM target) ───────────────────────────────────────
+// Classpath separator for the host: ';' on Windows, ':' everywhere else.
+// `buildReleaseJvm` rejects Windows before this is reached, but the arg
+// builder is pure and independently tested, so it takes the separator as a
+// parameter rather than hard-coding a POSIX-only ':'.
+pub func classpathSeparator(os: in String): String {
+  if os == "windows" {
+    ";"
+  } else {
+    ":"
+  }
+}
+
+/// Join classpath entries with the host separator.  Returns "" for an empty
+/// list so callers can skip emitting `-cp` entirely.
+pub func joinClasspath(entries: in List[String], os: in String): String {
+  val sep = classpathSeparator(os)
+  var acc = ""
+  var i = 0
+  while i < entries.count {
+    if i > 0 {
+      acc = acc + sep
+    }
+    acc = acc + entries[i]
+    i += 1
+  }
+  acc
+}
+
+/// Build the `native-image` argument list for a bundled Lyric JAR.
+///
+/// `extraJars` are additional classpath entries (restored Maven jars); the
+/// entry class is taken from `jarPath`'s manifest `Main-Class`, which the JVM
+/// backend always writes, so no main class is passed explicitly.
+pub func buildNativeImageArgs(
+  jarPath: in String,
+  extraJars: in List[String],
+  configDir: in String,
+  outPath: in String,
+  os: in String,
+): List[String] {
+  val args: List[String] = newList()
+
+  // A "fallback image" is a launcher that still requires a JVM at runtime;
+  // native-image emits one silently when it cannot close the world.  That
+  // would make `--release` produce a non-self-contained artifact while
+  // exiting 0, so make it a build failure instead.
+  args.add("--no-fallback")
+  args.add("-H:+ReportExceptionStackTraces")
+  args.add("-H:ConfigurationFileDirectories=" + configDir)
+
+  if extraJars.count > 0 {
+    args.add("-cp")
+    args.add(joinClasspath(extraJars, os))
+  }
+
+  args.add("-jar")
+  args.add(jarPath)
+  args.add("-o")
+  args.add(outPath)
+  args
+}
+
+// Diagnostic for a host with no usable `native-image` driver, listing every
+// probed location and how to install one.
+pub func nativeImageNotFoundMessage(probed: in List[String]): String {
+  var msg = "GraalVM `native-image` not found. Probed:\n"
+  var i = 0
+  while i < probed.count {
+    msg = msg + "  - " + probed[i] + "\n"
+    i += 1
+  }
+  msg + "Install a GraalVM JDK (21 or newer) and set GRAALVM_HOME to it:\n" +
+    "  SDKMAN:  sdk install java 21.0.2-graalce\n" +
+    "  Manual:  https://github.com/graalvm/graalvm-ce-builds/releases\n" +
+    "  (GraalVM 22.3 and older also need a separate `gu install native-image`)\n" +
+    "native-image also needs a C toolchain and zlib headers on the host:\n" +
+    "  Debian/Ubuntu: apt install build-essential zlib1g-dev\n" +
+    "  Fedora:        dnf install gcc glibc-devel zlib-devel\n" +
+    "  macOS:         xcode-select --install"
+}
+
+// Diagnostic for `--rid` naming a platform other than the host.  GraalVM
+// native-image has no cross-compilation mode: the image is always built for
+// the machine running the builder.
+pub func jvmCrossCompileMessage(requestedRid: in String, hostRid: in String): String {
+  "`--release --target jvm` cannot cross-compile: GraalVM native-image always builds for the host.\n" +
+    "  requested --rid: " +
+    requestedRid +
+    "\n  host:            " +
+    hostRid +
+    "\nBuild on a " +
+    requestedRid +
+    " machine (or in a matching container) instead, or drop --rid to target the host."
+}
+
+// Locate the GraalVM `native-image` driver.  Probes `$GRAALVM_HOME/bin`, then
+// `$JAVA_HOME/bin` (a GraalVM JDK set as JAVA_HOME is the common SDKMAN
+// layout), then `native-image` on PATH.
+func findNativeImage(): Result[String, String] {
+  val probed: List[String] = newList()
+
+  val graalHome = Environment.getVarOrDefault("GRAALVM_HOME", "")
+  if graalHome != "" {
+    val fromGraalHome = Path.join(Path.join(graalHome, "bin"), "native-image")
+    probed.add("$GRAALVM_HOME/bin/native-image -> " + fromGraalHome)
+    if File.fileExists(fromGraalHome) {
+      return Ok(value = fromGraalHome)
+    }
+  } else {
+    probed.add("$GRAALVM_HOME (not set)")
+  }
+
+  val javaHome = Environment.getVarOrDefault("JAVA_HOME", "")
+  if javaHome != "" {
+    val fromJavaHome = Path.join(Path.join(javaHome, "bin"), "native-image")
+    probed.add("$JAVA_HOME/bin/native-image -> " + fromJavaHome)
+    if File.fileExists(fromJavaHome) {
+      return Ok(value = fromJavaHome)
+    }
+  } else {
+    probed.add("$JAVA_HOME (not set)")
+  }
+
+  match findOnPath("native-image", Environment.getVarOrDefault("PATH", ""), ridOs(Environment.runtimeIdentifier())) {
+    case Some(p) -> return Ok(value = p)
+    case None -> probed.add("native-image on $PATH")
+  }
+
+  Err(error = nativeImageNotFoundMessage(probed))
+}
+
+// Write the four native-image JSON configs into `configDir`, creating it.
+func writeNativeImageConfigs(configDir: in String): Result[Unit, String] {
+  if not File.dirExists(configDir) {
+    match File.createDir(configDir) {
+      case Ok(_) -> ()
+      case Err(e) -> return Err(error = "could not create native-image config dir '" + configDir + "': " + IOError.message(e))
+    }
+  }
+  val names: List[String] = newList()
+  val bodies: List[String] = newList()
+  names.add("reflect-config.json")
+  bodies.add(NI.reflectConfigJson())
+  names.add("resource-config.json")
+  bodies.add(NI.resourceConfigJsonAll())
+  names.add("proxy-config.json")
+  bodies.add(NI.proxyConfigJson())
+  names.add("jni-config.json")
+  bodies.add(NI.jniConfigJson())
+
+  var i = 0
+  while i < names.count {
+    val path = Path.join(configDir, names[i])
+    match File.writeText(path, bodies[i]) {
+      case Ok(_) -> ()
+      case Err(e) -> return Err(error = "could not write " + path + ": " + IOError.message(e))
+    }
+    i += 1
+  }
+  Ok(value = ())
+}
+
+/// Produce a native binary from an already-built bundled JAR via GraalVM
+/// `native-image`.
+///
+/// `jarPath` — absolute path to the bundled JAR (its manifest `Main-Class` is
+/// the image entry point).
+/// `extraJars` — additional classpath entries (restored Maven dependencies).
+/// `ridOpt` — explicit RID; native-image cannot cross-compile, so anything
+/// other than the host platform is rejected up front.
+/// `outPath` — destination for the native binary.
+pub func buildReleaseJvm(
+  jarPath: in String, extraJars: in List[String], ridOpt: in Option[String], outPath: in String
+): Int {
+  val absJar = absPath(jarPath)
+  if not File.fileExists(absJar) {
+    releaseErr("JAR not found at " + absJar)
+    return 1
+  }
+
+  val hostRid = Environment.runtimeIdentifier()
+  if hostRid == "" {
+    releaseErr("could not determine the host platform for the native-image build")
+    return 1
+  }
+
+  // native-image builds for the host only; reject a mismatching --rid rather
+  // than producing a host binary under a cross-target name.
+  match ridOpt {
+    case Some(r) -> {
+      if not isValidRid(r) {
+        releaseErr(
+          "invalid RID '" + r + "': a RID must contain only lowercase letters, digits, dots, and hyphens (e.g. linux-x64)"
+        )
+        return 1
+      }
+      if ridOs(r) != ridOs(hostRid) or ridArch(r) != ridArch(hostRid) {
+        releaseErr(jvmCrossCompileMessage(r, hostRid))
+        return 1
+      }
+    }
+    case None -> ()
+  }
+
+  // Match the .NET arm's supported-platform allowlist: Linux and macOS.
+  // Windows native-image additionally requires an initialized MSVC toolchain
+  // environment, which this pipeline does not set up (#1975).
+  val os = ridOs(hostRid)
+  if os != "linux" and os != "osx" {
+    releaseErr(
+      "'" + hostRid + "' is not yet supported for `--release --target jvm` (Linux and macOS only); tracked in #1975"
+    )
+    return 1
+  }
+
+  val niBin = match findNativeImage() { case Ok(p) -> p; case Err(msg) -> { releaseErr(msg); return 1 } }
+
+  val stageDir = Path.dirname(absJar)
+  val configDir = Path.join(stageDir, "native-image-config")
+  match writeNativeImageConfigs(configDir) {
+    case Ok(_) -> ()
+    case Err(msg) -> {
+      releaseErr(msg)
+      return 1
+    }
+  }
+
+  // native-image refuses to write into a directory that does not exist
+  // ("Writing image to non-existent directory ... is not allowed") rather than
+  // creating it, so materialize the output directory first.
+  val absOut = absPath(outPath)
+  val outDir = Path.dirname(absOut)
+  if not File.dirExists(outDir) {
+    match File.createDir(outDir) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        releaseErr("could not create output dir '" + outDir + "': " + IOError.message(e))
+        val _ = File.deleteDirRecursive(configDir)
+        return 1
+      }
+    }
+  }
+
+  val absExtras: List[String] = newList()
+  var xi = 0
+  while xi < extraJars.count {
+    absExtras.add(absPath(extraJars[xi]))
+    xi += 1
+  }
+
+  Console.println("release: running native-image (" + niBin + ") ...")
+  val niArgs = buildNativeImageArgs(absJar, absExtras, configDir, absOut, os)
+  val niResult = PC.runCaptureWithDiagnosticsTimeout(niBin, niArgs, "", 1800000)
+  if niResult.stdout != "" {
+    Console.println(niResult.stdout)
+  }
+  if niResult.stderr != "" {
+    Console.error(niResult.stderr)
+  }
+  val _ = File.deleteDirRecursive(configDir)
+  if niResult.timedOut {
+    releaseErr("native-image timed out after 30 minutes")
+    return 1
+  }
+  if niResult.exitCode != 0 {
+    releaseErr("native-image exited " + toString(niResult.exitCode))
+    return 1
+  }
+  // native-image reports a config-parse failure through its own summary block
+  // and still prints "Finished generating", so the produced-artifact check is
+  // load-bearing, not belt-and-braces.
+  if not File.fileExists(absOut) {
+    releaseErr("native-image exited 0 but no binary was produced at " + absOut)
+    return 1
+  }
+
+  // Report the path as the user spelled it, matching `buildReleaseDotnet`.
+  Console.println("built native binary " + outPath)
+  0
+}
+
+/// Target-agnostic release entry point.  Dispatches to the .NET AOT path
+/// (`ilc` + platform linker) or the JVM path (GraalVM `native-image`).  Both
+/// arms produce a standalone binary or fail — neither falls back to a managed
+/// artifact.
+///
+/// `programArtifact` is the already-built managed input: a `.dll` for
+/// `DotnetAot`, a bundled `.jar` for `JvmNativeImage`.  `extraRefs` are the
+/// matching auxiliary inputs (ILC `-r:` references / extra classpath jars).
 pub func buildRelease(
   target: in ReleaseTarget,
-  programDll: in String,
+  programArtifact: in String,
   extraRefs: in List[String],
   ridOpt: in Option[String],
   outPath: in String,
 ): Int {
   match target {
-    case DotnetAot -> buildReleaseDotnet(programDll, extraRefs, ridOpt, outPath)
-    case JvmNativeImage -> {
-      releaseErr("`--release --target jvm` (GraalVM native-image) is not yet implemented; tracked in #1975")
-      1
-    }
+    case DotnetAot -> buildReleaseDotnet(programArtifact, extraRefs, ridOpt, outPath)
+    case JvmNativeImage -> buildReleaseJvm(programArtifact, extraRefs, ridOpt, outPath)
   }
 }

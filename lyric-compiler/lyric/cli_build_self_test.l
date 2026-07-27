@@ -955,3 +955,17 @@ test "buildProject: preResolvedDeps = None re-resolves internally and a dependen
       "workspace error so the build succeeds — the sibling test's failure is the sentinel, not a broken fixture"
   )
 }
+
+// ─── filterExtraRefs on the JVM target (D131) ────────────────────────────
+test "filterExtraRefs: on --target jvm keeps only .jar files, excluding the primary jar" {
+  val files: List[String] = newList()
+  files.add("/refs/Zeta.jar")
+  files.add("/refs/App.jar")
+  files.add("/refs/Alpha.jar")
+  files.add("/refs/App.dll")
+  files.add("/refs/notes.txt")
+  val result = Cli.filterExtraRefs(files, "App.jar", ".jar")
+  assertEqualInt(result.count, 2, "filterExtraRefs: excludes the primary jar and every non-.jar file")
+  assertEqual(result[0], "/refs/Alpha.jar", "filterExtraRefs: sorted ascending, entry 0")
+  assertEqual(result[1], "/refs/Zeta.jar", "filterExtraRefs: sorted ascending, entry 1")
+}

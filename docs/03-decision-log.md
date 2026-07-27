@@ -20320,3 +20320,88 @@ here), #6103 (N9.2, the concrete consumer this unblocks — merged as #6235),
 #6104–#6106 (N9.3–N9.5, downstream of N9.2), docs/61 §7 item 4, D128,
 `native/plan/08-work-items.md` Phase N9, D-N-014, D-progress-540,
 D-progress-545, D-progress-703, D-progress-543.
+
+## D131 — `lyric build --release --target jvm`: GraalVM `native-image` fills the `JvmNativeImage` arm (#1975, D079)
+
+**Context:** D079 defined `union ReleaseTarget { DotnetAot | JvmNativeImage }`
+with a target-agnostic `buildRelease`, implemented the `DotnetAot` arm, and left
+`JvmNativeImage` failing loud pending #1975. The seam did its job — filling the
+JVM arm touched no part of the .NET path — but the JVM target had no deployable
+artifact story: `lyric build --target jvm` produces a runnable JAR, and a JAR
+still requires a JVM on the deployment machine. `docs/44` M-18 carried this as
+the last open JVM distribution gap.
+
+**Decision:**
+
+- **`lyric build --release --target jvm`** compiles the ordinary bundled JAR
+  (user package + transitive `Std.*` import closure + sibling project packages)
+  into `.lyric-release/`, then drives GraalVM `native-image` over it. Both
+  single-file and project mode are supported, mirroring the .NET arm exactly;
+  `--release-from-dll` accepts a prebuilt `.jar` on this target.
+- **No wrapper class.** `native-image -jar <jar>` takes the entry point from the
+  JAR manifest's `Main-Class`, which `Jvm.Manifest.makeManifestMf` already
+  writes. This is the JVM analogue of the .NET arm's `EntryPointToken` rooting:
+  neither target generates a trampoline.
+- **`--no-fallback` is mandatory, not a tuning knob.** Left to itself
+  `native-image` responds to a world it cannot close by emitting a *fallback
+  image* — a launcher that still requires a JVM — and exits 0. That would make
+  `--release` report success having produced precisely the artifact it exists to
+  eliminate, so the flag is unconditional and a non-closable world is a build
+  failure. Same principle as D079's "fails loud rather than silently producing a
+  managed artifact", now enforced against a silent *toolchain* downgrade rather
+  than a missing implementation.
+- **No cross-compilation.** `native-image` always builds for the host. `--rid`
+  is therefore validated against the host platform and any mismatch is rejected
+  before the build starts, rather than emitting a host binary under a
+  cross-target name. This is a genuine divergence from the .NET arm (where
+  `--rid` selects a real per-RID ILC toolchain), so it is surfaced as an
+  explicit diagnostic naming both platforms rather than a silently-ignored flag.
+- **Driver discovery:** `$GRAALVM_HOME/bin`, then `$JAVA_HOME/bin` (the common
+  SDKMAN layout puts a GraalVM JDK there), then `native-image` on `PATH`. A
+  miss reports every probed location plus install instructions for both GraalVM
+  itself and the C toolchain / zlib headers it needs.
+- **Platform scope:** Linux and macOS, matching the .NET arm's allowlist.
+  Windows additionally needs an initialized MSVC environment that this pipeline
+  does not set up; it stays tracked in #1975.
+
+**Two latent bugs in the pre-existing B7 config generator were found by
+actually running GraalVM against it** — `Jvm.NativeImage` shipped in the JVM
+lowering stages but had never been executed by a real `native-image`:
+
+- `jniConfigJson()` returned `{"jni": []}` and `proxyConfigJson()` returned
+  `{"proxies": []}`. Both schemas are a top-level **array**; native-image
+  rejects the object forms at config-parse time with "first level of document
+  must be an array of class descriptors". Fixed to `[]`.
+- `resourceConfigJson(pkg)` interpolated the package name into a `pattern`,
+  which native-image reads as a **regex** — the dots in a dotted package name
+  were wildcards. Now escaped, and a new `resourceConfigJsonAll()` covers every
+  package's contract blob in one pattern, which is what the *bundled* release
+  JAR actually needs (the single-package form names one of many).
+
+The config-parse failure is worth recording as a hazard: native-image reports it
+inside its own summary block and still prints "Finished generating '<name>'"
+before exiting **0** with no binary written. The release path therefore treats
+"output file exists" as a load-bearing check, not a belt-and-braces one.
+
+**Also found by running it:** `native-image` refuses to write into a
+non-existent directory rather than creating one, so the release path
+materializes the output directory first.
+
+**Alternatives considered:**
+
+- *`-cp <jar> <MainClass>` instead of `-jar`.* Rejected: it requires reading
+  `Main-Class` back out of the JAR manifest in the release driver, duplicating
+  knowledge the emitter already owns, for no gain.
+- *Silently downgrading a mismatched `--rid` to the host.* Rejected — that is
+  the class of silent one-platform behaviour the project standard forbids.
+- *Passing `-march=compatibility` for portable release binaries.* Deferred: it
+  trades measurable performance for portability, and picking either default
+  silently is a decision users should make. Revisit if distribution tooling
+  needs it.
+
+**Consequence:** every `--release` target now produces a standalone binary or
+fails; there is no target where `--release` quietly yields a managed artifact.
+`docs/44` M-18 closes.
+
+**Related:** #1975, #675, D079, `docs/44-jvm-production-readiness-plan.md` M-18,
+`docs/18-jvm-emission.md` (Stage B7), `docs/22-distribution-and-tooling.md`.

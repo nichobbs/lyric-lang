@@ -872,14 +872,18 @@ lyric build --release                  # project-mode: entry package auto-detect
 lyric build --release --manifest lyric.toml  # explicit project manifest
 lyric build --release <file.l> --rid <rid>   # override host runtime identifier
 lyric build --release <file.l> -o <bin>      # native binary output path
-                                       # (.NET target only; JVM GraalVM native-image: #1975)
-lyric build --release-from-dll <dll>   # link a pre-built managed DLL to a native binary via
-                                       # ILC + clang, skipping source compilation entirely.
-                                       # defaults to <dll-stem> next to the DLL; use -o to override.
+lyric build --release --target jvm <file.l>  # GraalVM native-image over the bundled JAR.
+                                       # native-image found via $GRAALVM_HOME/bin, $JAVA_HOME/bin,
+                                       # then PATH; always --no-fallback (never a JVM-requiring
+                                       # image). Cannot cross-compile: --rid must name the host.
+lyric build --release-from-dll <dll>   # link a pre-built managed artifact to a native binary,
+                                       # skipping source compilation entirely: ILC + clang on
+                                       # --target dotnet, native-image on --target jvm (pass a .jar).
+                                       # defaults to <stem> next to the artifact; use -o to override.
 lyric build --release-from-dll <dll> --extra-refs-dir <dir>
-                                       # add every *.dll in <dir> (except the primary DLL)
-                                       # as ILC managed references — used by bootstrap.sh for
-                                       # stage-2 builds.
+                                       # add every *.dll (or *.jar on --target jvm) in <dir>,
+                                       # except the primary artifact, as extra references —
+                                       # used by bootstrap.sh for stage-2 builds.
 lyric build --target dotnet <file.l>   # target .NET (default): writes foo.dll + foo.runtimeconfig.json
 lyric build --target jvm <file.l>      # writes a runnable foo.jar (NO runtimeconfig.json) via the
                                        # self-hosted JVM emitter (`Main-Class` derived from the source

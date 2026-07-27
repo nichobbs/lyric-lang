@@ -191,24 +191,32 @@ pub func defineBuildGateError(
   None
 }
 
-// Filter a `--extra-refs-dir` directory listing down to the extra reference
-// DLLs for `--release-from-dll`: only `.dll` files, excluding the primary
-// DLL itself (`dllBase`, the release target's own basename) and
-// `Lyric.Stdlib.dll` (colocated independently by the release pipeline via
-// `locateStdlib`, so including it here would duplicate it).  Sorted for
+// Filter a `--extra-refs-dir` directory listing down to the extra references
+// for `--release-from-dll`: only files with extension `ext` (`.dll` on the
+// .NET target, `.jar` on the JVM target), excluding the primary artifact
+// itself (`artifactBase`, the release target's own basename) and
+// `Lyric.Stdlib.dll` (colocated independently by the .NET release pipeline
+// via `locateStdlib`, so including it here would duplicate it; on the JVM
+// target the stdlib closure is compiled into the bundled JAR and no such file
+// exists, making the exclusion inert rather than wrong).  Sorted for
 // deterministic ordering.  Pulled out of `cmdBuild` so the filtering logic
 // is unit-testable without invoking the (heavy, toolchain-dependent) native
-// AOT release path (#4282).
-pub func filterExtraRefsDlls(files: in List[String], dllBase: in String): List[String] {
+// release path (#4282).
+pub func filterExtraRefs(files: in List[String], artifactBase: in String, ext: in String): List[String] {
   val result: List[String] = newList()
   val sorted = Sort.sortStrings(files.toArray())
   for f in sorted {
     val fBase = Path.basename(f)
-    if Str.endsWith(f, ".dll") and fBase != dllBase and fBase != "Lyric.Stdlib.dll" {
+    if Str.endsWith(f, ext) and fBase != artifactBase and fBase != "Lyric.Stdlib.dll" {
       result.add(f)
     }
   }
   result
+}
+
+// Back-compat forwarder for the .NET-target spelling.
+pub func filterExtraRefsDlls(files: in List[String], dllBase: in String): List[String] {
+  filterExtraRefs(files, dllBase, ".dll")
 }
 
 // The parsed manifest driving a single-file build's dependency resolution,
@@ -938,10 +946,13 @@ func cmdBuild(argv: in slice[String]): Int {
         case _ -> ()
       }
       val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
+      // On `--target jvm` the prebuilt input is a bundled JAR and the extra
+      // references are classpath JARs, not managed DLLs.
+      val refsExt = outputExt(target, "lib")
       val extraRefs: List[String] = match extraRefsDir {
         case Some(refsDir) -> {
           match File.listFiles(refsDir) {
-            case Ok(files) -> filterExtraRefsDlls(files, Path.basename(dll))
+            case Ok(files) -> filterExtraRefs(files, Path.basename(dll), refsExt)
             case Err(e) -> {
               printErr("build: --extra-refs-dir: " + IOError.message(e))
               return 1
@@ -1206,11 +1217,6 @@ func buildReleaseSingle(
 ): Int {
   // Native is unreachable here (cmdBuild rejects --release + --target native).
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
-  // JVM (GraalVM) release fails loud without doing a wasted .NET build.
-  match releaseTarget {
-    case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", newList(), ridArg, "")
-    case DotnetAot -> ()
-  }
 
   val srcText = match File.readText(sourcePath) {
     case Ok(t) -> t
@@ -1236,14 +1242,18 @@ func buildReleaseSingle(
   // (set by the MSIL emitter), not from the assembly's file name — there is
   // no C# trampoline in this pipeline (see `Lyric.Release`).  The native
   // output keeps the file-stem name (what the user expects from `foo.l`).
-  val stagingDll = Path.join(Path.join(srcDir, ".lyric-release"), pkgName + ".dll")
+  //
+  // The JVM arm stages a bundled `.jar` instead: `native-image` takes the
+  // entry point from the JAR manifest's `Main-Class`, which the JVM backend
+  // writes from the same package.
+  val stagingArtifact = Path.join(Path.join(srcDir, ".lyric-release"), pkgName + outputExt(target, "lib"))
   // Inject `build_profile=release` into the staging compile (docs/60 §3.3) —
   // `buildOne`/`buildOneNative` pass no defines, so use the feature-aware entry
   // point directly with the release profile define.
   val buildExit = buildOneNativeWithFeatures(
     sourcePath,
-    stagingDll,
-    Dotnet,
+    stagingArtifact,
+    target,
     manifestArg,
     "",
     "",
@@ -1257,7 +1267,7 @@ func buildReleaseSingle(
   }
 
   val outNative = match explicitOut { case Some(o) -> o; case None -> Path.join(srcDir, stem) }
-  Release.buildRelease(releaseTarget, stagingDll, newList(), ridArg, outNative)
+  Release.buildRelease(releaseTarget, stagingArtifact, newList(), ridArg, outNative)
 }
 
 // Project-mode `lyric build --release` (no explicit source file): compile every
@@ -1276,14 +1286,8 @@ func buildReleaseProject(
   noRestore: in Bool,
   packageVersionOverride: in Option[String],
 ): Int {
-  // JVM native-image is not yet implemented; delegate to buildRelease which
-  // fails loud without performing a wasted managed build.
   // Native is unreachable here (cmdBuild rejects --release + --target native).
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
-  match releaseTarget {
-    case JvmNativeImage -> return Release.buildRelease(releaseTarget, "", newList(), ridArg, "")
-    case DotnetAot -> ()
-  }
 
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -1406,10 +1410,11 @@ func buildReleaseProject(
     return 1
   }
   // Build to a staging directory so the production `bin/` output is untouched
-  // by the intermediate managed DLL.
-  val dllBase = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ".dll" }
+  // by the intermediate managed artifact (a `.dll` for .NET AOT, a bundled
+  // `.jar` for GraalVM native-image).
+  val artifactBase = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + outputExt(target, "lib") }
   val stagingDir = Path.join(mfDir, ".lyric-release")
-  val stagingDll = Path.join(stagingDir, dllBase)
+  val stagingArtifact = Path.join(stagingDir, artifactBase)
 
   // Resolve every dependency (workspace, path, and NuGet-as-Lyric-package)
   // ONCE, up front: `buildProject` needs it to build the staging DLL below,
@@ -1420,7 +1425,7 @@ func buildReleaseProject(
   // warnIfNugetUnresolved printing up to twice) for no behavioral difference
   // (#5786).  Passed into `buildProject` via `preResolvedDeps` instead of
   // letting it re-resolve internally.
-  val resolved = resolveManifestDependencies(manifest, mfPath, Dotnet, cliFeatures, noDefaultFeatures)
+  val resolved = resolveManifestDependencies(manifest, mfPath, target, cliFeatures, noDefaultFeatures)
   if resolved.hadWorkspaceError {
     return 1
   }
@@ -1434,8 +1439,8 @@ func buildReleaseProject(
   // only one the release staging compile carries.
   val buildExit = buildProject(
     mfPath,
-    Some(value = stagingDll),
-    Dotnet,
+    Some(value = stagingArtifact),
+    target,
     cliFeatures,
     noDefaultFeatures,
     allFeatures,
@@ -1458,24 +1463,58 @@ func buildReleaseProject(
   // `[dependencies]`-only walk that silently dropped every `[nuget]` entry,
   // which crashed ILC at runtime with `FileNotFoundException` for any
   // NuGet-restored assembly the program actually calls into (#5782).
-  val extraRefs: List[String] = newList()
-  var rdi = 0
-  while rdi < resolved.restoredDlls.count {
-    val entry = resolved.restoredDlls[rdi]
-    val tabPos = entry.indexOf("\t")
-    val dllPath = if tabPos >= 0 { entry.substring(tabPos + 1, entry.length - tabPos - 1) } else { entry }
-    extraRefs.add(dllPath)
-    rdi += 1
-  }
-  var npi = 0
-  while npi < resolved.nugetThirdPartyPaths.count {
-    extraRefs.add(resolved.nugetThirdPartyPaths[npi])
-    npi += 1
+  //
+  // On the JVM target none of this applies: sibling project packages and the
+  // stdlib closure are compiled *into* the bundled JAR, and the only external
+  // classpath entries are the restored `[maven]` jars, which `buildProject`
+  // has just written beside the staging JAR as `module-path.txt`.
+  val extraRefs: List[String] = match target {
+    case Jvm -> stagedMavenClasspath(stagingDir)
+    case _ -> {
+      val refs: List[String] = newList()
+      var rdi = 0
+      while rdi < resolved.restoredDlls.count {
+        val entry = resolved.restoredDlls[rdi]
+        val tabPos = entry.indexOf("\t")
+        val dllPath = if tabPos >= 0 { entry.substring(tabPos + 1, entry.length - tabPos - 1) } else { entry }
+        refs.add(dllPath)
+        rdi += 1
+      }
+      var npi = 0
+      while npi < resolved.nugetThirdPartyPaths.count {
+        refs.add(resolved.nugetThirdPartyPaths[npi])
+        npi += 1
+      }
+      refs
+    }
   }
 
-  val stem = stemOf(dllBase, 4)
+  val stem = stemOf(artifactBase, 4)
   val outNative = match explicitOut { case Some(o) -> o; case None -> Path.join(mfDir, stem) }
-  Release.buildRelease(releaseTarget, stagingDll, extraRefs, ridArg, outNative)
+  Release.buildRelease(releaseTarget, stagingArtifact, extraRefs, ridArg, outNative)
+}
+
+// Read the restored Maven classpath a JVM `buildProject` wrote beside its
+// output JAR (`module-path.txt`, colon-separated, always written — empty when
+// the manifest declares no `[maven]` deps).  Returns an empty list when the
+// file is absent or blank so a Maven-free project simply passes no `-cp`.
+func stagedMavenClasspath(stagingDir: in String): List[String] {
+  val entries: List[String] = newList()
+  val mpPath = Path.join(stagingDir, "module-path.txt")
+  val text = match File.readText(mpPath) { case Ok(t) -> Str.trim(t); case Err(_) -> "" }
+  if text == "" {
+    return entries
+  }
+  val parts = Str.split(text, ":")
+  var i = 0
+  while i < parts.length {
+    val p = Str.trim(parts[i])
+    if p != "" {
+      entries.add(p)
+    }
+    i += 1
+  }
+  entries
 }
 
 // Deterministic ascending sort of a file-path list.
