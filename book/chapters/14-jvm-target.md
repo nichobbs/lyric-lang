@@ -5,7 +5,7 @@ Lyric defaults to .NET, but it also targets the JVM. `lyric build --target jvm` 
 The two targets share the same language, the same type system, the same contracts, and the same standard library surface. What differs is the output format and the platform-specific kernel that implements I/O and other runtime services. Switching targets is a compiler flag, not a code change — unless your code imports platform-specific `extern` packages.
 
 ::: note
-**JVM status.** `lyric build --target jvm` is production-ready for the package shapes covered in this chapter. Maven dependency resolution (`[maven]` table in `lyric.toml`), `module-path.txt` generation, async generators with `await` in their bodies, `lyric run --target jvm`, `lyric bench --target jvm`, and the `func main(args: slice[String]): Int` entry point (argv forwarded; the `Int` return becomes the process exit code via `System.exit`) are all implemented. Remaining gap: GraalVM native-image integration. These are noted inline where they arise.
+**JVM status.** `lyric build --target jvm` is production-ready for the package shapes covered in this chapter. Maven dependency resolution (`[maven]` table in `lyric.toml`), `module-path.txt` generation, async generators with `await` in their bodies, `lyric run --target jvm`, `lyric bench --target jvm`, GraalVM native-image binaries (`lyric build --release --target jvm`, §14.6), and the `func main(args: slice[String]): Int` entry point (argv forwarded; the `Int` return becomes the process exit code via `System.exit`) are all implemented.
 :::
 
 ## §14.1 Building for the JVM
@@ -240,6 +240,48 @@ pub func example(): Unit {
 The `lyric-resolver.jar` tool resolves coordinates, handles transitive dependencies, and stores downloaded JARs in the local Maven cache. It must be available beside the `lyric` binary, or pointed to via `LYRIC_MAVEN_RESOLVER`. Both official distribution channels (the GitHub release archive and the `dotnet tool install lyric` NuGet package) bundle `lyric-resolver.jar` automatically, so a normal install needs no extra step. If it is not found (e.g. a from-source checkout that hasn't run `make maven-resolver`), `lyric restore` emits a note and succeeds (`.NET` builds are unaffected); a subsequent `lyric build --target jvm` will see no `LYRIC_FFI_JARS` and fail at type-resolution if Maven extern types are used.
 
 For full details on the resolver protocol, version pinning, and the `[maven.options]` table, see `docs/31-maven-linking.md`.
+
+## §14.6 Native binaries with GraalVM
+
+A JAR still needs a JVM installed to run it. `lyric build --release --target jvm`
+removes that requirement: it builds the ordinary bundled JAR into
+`.lyric-release/`, then compiles it ahead-of-time with GraalVM's `native-image`
+into a standalone executable.
+
+```sh
+export GRAALVM_HOME=/path/to/graalvm-jdk-21
+lyric build --release --target jvm hello.l
+./hello                     # no JVM on this machine required
+```
+
+The image entry point is the JAR manifest's `Main-Class`, which the emitter
+already writes — there is no generated wrapper class. Restored `[maven]`
+dependencies are passed as the image classpath, so a project with Maven deps
+needs no extra flags. Project mode works the same way (`lyric build --release
+--target jvm` with no source file), with the entry package auto-detected from
+whichever package declares `func main()`.
+
+Three things are worth knowing:
+
+- **The driver is found by convention.** `native-image` is probed at
+  `$GRAALVM_HOME/bin`, then `$JAVA_HOME/bin`, then on `PATH`. When none has it
+  the build fails listing every location it looked at.
+- **`--no-fallback` is always passed.** Left to itself, `native-image` responds
+  to a world it cannot close by silently emitting a *fallback image* — a
+  launcher that still requires a JVM. That would mean `--release` exits 0
+  having produced exactly the artifact you asked it to eliminate, so Lyric
+  turns it into a build failure instead.
+- **There is no cross-compilation.** `native-image` always builds for the
+  machine running it. `--rid` may therefore only name the host platform;
+  anything else is rejected before the build starts rather than producing a
+  host binary under a cross-target name. Build on the target platform (or in a
+  matching container).
+
+`native-image` needs a C toolchain and zlib headers on the host
+(`apt install build-essential zlib1g-dev` on Debian/Ubuntu,
+`dnf install gcc glibc-devel zlib-devel` on Fedora, `xcode-select --install` on
+macOS). Linux and macOS are supported; Windows is tracked in
+[#1975](https://github.com/nichobbs/lyric-lang/issues/1975).
 
 ## Exercises
 

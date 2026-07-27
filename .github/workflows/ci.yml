@@ -1173,6 +1173,7 @@ jobs:
             lyric-compiler/lyric/version_self_test.l \
             lyric-compiler/lyric/cli_workspace_builder_self_test.l \
             lyric-compiler/lyric/cli_build_self_test.l \
+            lyric-compiler/lyric/native_image_self_test.l \
             lyric-compiler/lyric/cli_shared_self_test.l \
             lyric-compiler/lyric/cli_copydll_self_test.l \
             lyric-compiler/lyric/cli_publish_self_test.l \
@@ -9146,11 +9147,105 @@ jobs:
           out="$("$work/hello")"
           echo "binary output: $out"
           [ "$out" = "native release: 42" ] || { echo "unexpected output: $out"; exit 1; }
-          # JVM release fails loud rather than producing a managed artifact.
-          if "$bin_abs" build --release --target jvm "$work/hello.l" >/dev/null 2>&1; then
-            echo "expected non-zero exit for --release --target jvm"; exit 1
+          # A --rid naming a platform other than the host is rejected up front
+          # on the JVM target (native-image cannot cross-compile) -- asserted
+          # here because it needs no GraalVM install.
+          if "$bin_abs" build --release --target jvm "$work/hello.l" --rid osx-arm64 \
+               >"$work/xcompile.out" 2>&1; then
+            echo "expected non-zero exit for --release --target jvm --rid osx-arm64"; exit 1
           fi
+          grep -q "cannot cross-compile" "$work/xcompile.out" || {
+            echo "expected a cross-compile diagnostic"; cat "$work/xcompile.out"; exit 1; }
           echo "Release Native AOT e2e passed"
+
+      # GraalVM for the JVM `--release` e2e below.  Installed by direct download
+      # rather than via `graalvm/setup-graalvm` to keep the workflow's
+      # pin-every-action-by-SHA policy intact without adding a third-party
+      # action to the trust surface.
+      - name: Install GraalVM for JVM release e2e
+        run: |
+          set -euo pipefail
+          ver="21.0.2"
+          # Pinned SHA-256 of the release asset (matches the upstream
+          # ...tar.gz.sha256 published beside it).  Verified before extraction
+          # so the tarball gets the same pin-and-check treatment this workflow
+          # gives every action it uses; bump both together when `ver` changes.
+          sha="b048069aaa3a99b84f5b957b162cc181a32a4330cbc35402766363c5be76ae48"
+          url="https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${ver}/graalvm-community-jdk-${ver}_linux-x64_bin.tar.gz"
+          tarball="$(mktemp -d)/graalvm.tar.gz"
+          curl -fsSL -o "$tarball" "$url"
+          echo "${sha}  ${tarball}" | sha256sum -c -
+          sudo mkdir -p /opt/graalvm
+          sudo tar xz -f "$tarball" -C /opt/graalvm --strip-components=1
+          rm -f "$tarball"
+          echo "GRAALVM_HOME=/opt/graalvm" >> "$GITHUB_ENV"
+          /opt/graalvm/bin/native-image --version
+
+      # JVM `--release` end-to-end: GraalVM native-image over the bundled JAR
+      # must produce a binary that runs with NO JVM available (#1975, D131).
+      # The no-JVM assertion is the load-bearing one: `--no-fallback` exists to
+      # stop native-image silently emitting a launcher that still needs a JVM,
+      # and only running without one proves it held.
+      - name: Release JVM native-image e2e (lyric build --release --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          cat > "$work/hello.l" <<'LYR'
+          package HelloJvm
+          import Std.Core
+          import Std.Console as Console
+          import Std.Collections
+          pub func main(): Int {
+            val xs: List[Int] = newList()
+            xs.add(40); xs.add(2)
+            Console.println("jvm release: " + toString(xs[0] + xs[1]))
+            0
+          }
+          LYR
+          "$bin_abs" build --release --target jvm "$work/hello.l"
+          test -x "$work/hello" || { echo "expected native binary $work/hello"; exit 1; }
+          # Prove it is not a fallback image (a launcher that still needs a
+          # JVM).  `env -i PATH=/usr/bin:/bin` would NOT prove this: the runner
+          # image ships /usr/bin/java, so a fallback launcher would find a JVM
+          # and the assertion would pass vacuously.  Run with a completely
+          # empty environment instead — no PATH, no JAVA_HOME, nothing for a
+          # launcher to locate a JVM with.
+          command -v java >/dev/null && echo "note: a JVM IS installed on this runner (that is what makes the empty-env run meaningful)"
+          out="$(env -i "$work/hello")"
+          echo "binary output: $out"
+          [ "$out" = "jvm release: 42" ] || { echo "unexpected output: $out"; exit 1; }
+          file "$work/hello" | grep -q ELF || { echo "expected a native ELF binary"; exit 1; }
+          # A fallback image links against libjvm; a real AOT image does not.
+          if ldd "$work/hello" | grep -qi 'libjvm\|libjli'; then
+            echo "binary links a JVM library — this is a fallback image, not a standalone AOT binary"
+            ldd "$work/hello"; exit 1
+          fi
+          echo "Release JVM native-image e2e passed"
+
+          # Project mode (multi-package, entry package auto-detected).
+          proj="$(mktemp -d)"
+          mkdir -p "$proj/src/app" "$proj/src/util"
+          cat > "$proj/lyric.toml" <<'TOML'
+          [package]
+          name = "NiProj"
+          version = "0.1.0"
+          [project]
+          name = "NiProj"
+          [project.packages]
+          "Util" = "src/util/util.l"
+          "App"  = "src/app/app.l"
+          TOML
+          printf 'package Util\nimport Std.Core\npub func double(x: in Int): Int { x * 2 }\n' > "$proj/src/util/util.l"
+          printf 'package App\nimport Std.Core\nimport Std.Console as Console\nimport Util\nfunc main(): Int { Console.println("project release: " + toString(double(21))); 0 }\n' > "$proj/src/app/app.l"
+          ( cd "$proj" && "$bin_abs" build --release --target jvm )
+          test -x "$proj/NiProj" || { echo "expected native binary $proj/NiProj"; exit 1; }
+          pout="$(env -i "$proj/NiProj")"
+          echo "project binary output: $pout"
+          [ "$pout" = "project release: 42" ] || { echo "unexpected output: $pout"; exit 1; }
+          echo "Release JVM native-image project-mode e2e passed"
 
       # Auto-restore-on-build end-to-end — `lyric build` resolves dependencies
       # when lyric.lock is missing or stale, and `--no-restore` opts out (#1971).

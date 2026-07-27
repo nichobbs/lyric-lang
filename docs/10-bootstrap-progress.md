@@ -19883,7 +19883,7 @@ regression: emitter 847/847, CLI 84/84.  MSIL target only.
 
 ### D-progress-403 — `lyric build --release`: self-contained Native AOT binaries (#1968 epic; #1975; D079)
 
-**Status:** Shipped for Linux `x64`/`arm64` and macOS (osx `x64`/`arm64`) on the .NET target (`lyric-compiler/lyric/release.l`, `lyric-compiler/lyric/cli/cli_build.l`). Windows (#1975) and the JVM (GraalVM `native-image`) target remain.
+**Status:** Shipped for Linux `x64`/`arm64` and macOS (osx `x64`/`arm64`) on the .NET target (`lyric-compiler/lyric/release.l`, `lyric-compiler/lyric/cli/cli_build.l`). Windows (#1975) remains; the JVM (GraalVM `native-image`) target shipped in D-progress-630 / D131.
 
 `lyric build --release <source.l>` (and `[build] kind = "aot"` in `lyric.toml`)
 produce a self-contained Native AOT executable — no managed runtime required at
@@ -19904,7 +19904,7 @@ Lyric — no generated C#, no `dotnet publish`:
   (which uses a custom macOS `clang` linker command structure, references
   `libSystem.Security.Cryptography.Native.Apple.a`, and utilizes dead code stripping
   `-dead_strip` and symbol exporting `-exported_symbols_list` via `ld64`); Windows (#1975)
-  and `JvmNativeImage` (GraalVM `native-image`) fail loud (#1975) — no silent managed fallback.
+  and `JvmNativeImage` (GraalVM `native-image`) fail loud (#1975) — no silent managed fallback. _(Superseded for `JvmNativeImage`: shipped in D-progress-630 / D131; Windows still open.)_
 - **CLI:** `--release` / `--rid <rid>` flags on `lyric build`; default output is
   the source stem (no extension), `-o` overrides.  `[build] kind = "aot"` in the
   manifest activates the same pipeline via `lyric build`.
@@ -24325,7 +24325,7 @@ manifest, no extension), matching the single-file convention.  `-o`,
 `--no-restore` all pass through unchanged.
 
 `--release --target jvm` still fails loud via the existing `JvmNativeImage`
-arm — GraalVM `native-image` support remains unimplemented (#1975).
+arm — GraalVM `native-image` support remains unimplemented (#1975). _(Superseded: shipped in D-progress-630 / D131.)_
 
 **Docs updated:** `docs/01-language-reference.md` §13.1 (removed single-file
 limitation caveat), `book/chapters/appendix-b-quick-reference.md` (added
@@ -31345,3 +31345,104 @@ part 2 open); #6239 (the `@projectable` finding, resolved here); #6103 (N9.2,
 merged as #6235); #6104–#6106; docs/61 §7 item 4;
 `native/plan/08-work-items.md` Phase N9; D-N-014;
 D-progress-540, D-progress-545, D-progress-703.
+
+### D-progress-630 — `lyric build --release --target jvm`: GraalVM `native-image` binaries (#1975, #675; D131)
+
+**Status:** Shipped for Linux and macOS (`lyric-compiler/lyric/release.l`,
+`lyric-compiler/lyric/cli/cli_build.l`, `lyric-compiler/jvm/native_image.l`).
+Windows remains open (#1975).
+
+D079 left `ReleaseTarget.JvmNativeImage` as a defined-but-unimplemented arm that
+failed loud. It is now implemented, so `--release` produces a standalone binary
+on every supported target rather than only on .NET.
+
+**Pipeline.** `buildReleaseSingle` / `buildReleaseProject` no longer bail out
+early for the JVM: they stage a bundled `.jar` into `.lyric-release/` through
+the same `buildOneNativeWithFeatures` / `buildProject` calls the .NET arm uses
+(now threading `target` instead of hard-coded `Dotnet`), then call
+`Release.buildReleaseJvm`. That driver locates `native-image`
+(`$GRAALVM_HOME/bin` → `$JAVA_HOME/bin` → `PATH`), writes the four config JSONs
+into a staging `native-image-config/` dir, and invokes:
+
+```
+native-image --no-fallback -H:+ReportExceptionStackTraces \
+  -H:ConfigurationFileDirectories=<cfgdir> [-cp <maven jars>] \
+  -jar <bundled.jar> -o <out>
+```
+
+The entry point comes from the JAR manifest's `Main-Class` — the JVM analogue of
+the .NET arm rooting from `EntryPointToken`, with no generated trampoline on
+either side. Restored `[maven]` jars are read back from the `module-path.txt`
+`buildProject` writes beside the staging JAR, so the release path reuses the
+existing Maven resolution rather than re-deriving it.
+
+**Three behaviours of the real toolchain that the implementation had to
+accommodate**, each found by running GraalVM rather than reading its docs:
+
+1. A malformed config file makes native-image print its error *inside* the
+   summary block, still print `Finished generating '<name>'`, and exit **0**
+   with no binary written. "Output file exists" is therefore a load-bearing
+   check in `buildReleaseJvm`, not defensive padding.
+2. `native-image` refuses to write into a directory that does not exist rather
+   than creating it (`Writing image to non-existent directory ... is not
+   allowed`), so the output directory is created first.
+3. `-cp <extras> -jar <main.jar> -o <out>` is a valid combination — classes from
+   the `-cp` jars resolve while the main class still comes from the JAR
+   manifest — verified against a two-JAR fixture before being adopted.
+
+**Two latent bugs fixed in `Jvm.NativeImage`.** The Stage B7 config generator
+had never been run against a real `native-image`: `jniConfigJson()` /
+`proxyConfigJson()` emitted object forms (`{"jni": []}`) where the schemas
+require a top-level array, which is a hard config-parse error; and
+`resourceConfigJson` interpolated a dotted package name into a field
+native-image reads as a regex. Both fixed, plus a new `resourceConfigJsonAll()`
+for the multi-package bundled JAR the release path actually builds.
+
+The regex escape needs to survive a second, independent escaping layer — it
+sits inside a JSON string, where a lone backslash is itself illegal (RFC 8259)
+— and the first attempt escaped only one level, emitting a bare `\.` that no
+JSON parser accepts (caught in review, #6258). `native_image_self_test.l` now
+parses every generated config rather than string-matching it, because
+parseability is the property that actually broke; it also pins the top-level
+array shape of the three empty configs.
+
+**`--rid` diverges from the .NET arm, deliberately.** `native-image` has no
+cross-compilation mode, so `--rid` is validated against the host and a mismatch
+is a hard error naming both platforms — not a silently-ignored flag and not a
+host binary emitted under a cross-target name.
+
+**Tests.** `release_self_test.l` grows from 26 to 47 cases, covering the new
+pure helpers: `classpathSeparator`, `joinClasspath`, `buildNativeImageArgs`
+(including the `--no-fallback` invariant and the `-cp`-omitted-when-empty
+case), `nativeImageNotFoundMessage`, `jvmCrossCompileMessage`, `findOnPath`,
+`ridFlavor` / `ridMatchesHost`, and `jvmReleasePreflightError`. `ridFlavor`
+exists because `ridOs` / `ridArch` alone cannot separate `linux-musl-x64` from
+`linux-x64` (both yield `linux` / `x64`), so a host-match check built on those
+two would have accepted a musl RID on a glibc host and emitted a glibc binary
+under a musl name — the precise mislabelling the `--rid` check exists to stop.
+`jvmReleasePreflightError` runs in the CLI *before* the managed build, so an
+unbuildable request costs no compile; `buildReleaseJvm` re-checks for callers
+that drive it directly.  `native_image_self_test.l` (7 cases) covers the config
+generators, and `cli_build_self_test.l` covers `filterExtraRefs` on `.jar` and
+`stagedMavenClasspath`.
+
+The toolchain-driving control flow in `buildReleaseJvm` itself (the
+output-exists check, config-dir retention on failure) has no direct unit
+coverage — it needs a real `native-image` — and is exercised by the CI e2e
+below instead.
+
+**CI.** The "Release Native AOT e2e" step's negative assertion (JVM release
+must fail) is replaced by a real end-to-end build of both single-file and
+project mode: GraalVM is installed by direct download of the release
+tarball with a pinned SHA-256 verified before extraction — deliberately *not*
+via `graalvm/setup-graalvm`, so the workflow's pin-every-action-by-SHA trust
+posture holds without adding a third-party action — a program is built with
+`--release --target jvm`, and the produced binary is executed under a
+**completely empty environment** (`env -i`, no `PATH` and no `JAVA_HOME`) with
+its output asserted, plus an `ldd` check that it links no `libjvm`/`libjli`.
+
+The empty environment is load-bearing and was got wrong first: the original
+assertion used `env -i PATH=/usr/bin:/bin`, and GitHub's runner image ships
+`/usr/bin/java` — so a fallback launcher would have found a JVM and the check
+would have passed vacuously, defeating the one assertion meant to prove
+`--no-fallback` held (caught in review, #6260).

@@ -189,8 +189,26 @@ identifier (default: your host), and `-o` overrides the output path.
 This is equivalent to setting `[build] kind = "aot"` in your `lyric.toml` and
 running `lyric build`.
 
-> **Scope today.** `--release` covers Linux (`x64`/`arm64`) and macOS (`x64`/`arm64`). Windows is tracked in [#1975] and fails loud rather than emitting a managed
-> artifact. The JVM (GraalVM `native-image`) target is also tracked in #1975.
+On the JVM target, `lyric build --release --target jvm hello.l` does the same
+job through GraalVM **`native-image`**: it builds the ordinary bundled JAR, then
+compiles that JAR ahead-of-time into a standalone executable that needs no JVM
+installed:
+
+```sh
+export GRAALVM_HOME=/path/to/graalvm-jdk-21
+lyric build --release --target jvm hello.l
+./hello
+```
+
+`native-image` is looked up in `$GRAALVM_HOME/bin`, `$JAVA_HOME/bin`, then on
+`PATH`, and needs a C toolchain plus zlib headers (`apt install build-essential
+zlib1g-dev`). The build passes `--no-fallback`, so if GraalVM cannot produce a
+truly standalone image it fails rather than emitting a launcher that still
+requires a JVM. `native-image` cannot cross-compile, so `--rid` may only name
+your host platform.
+
+> **Scope today.** `--release` covers Linux (`x64`/`arm64`) and macOS (`x64`/`arm64`) on both the .NET and JVM targets. Windows is tracked in [#1975] and fails
+> loud rather than emitting a managed artifact.
 
 [#1975]: https://github.com/nichobbs/lyric-lang/issues/1975
 
