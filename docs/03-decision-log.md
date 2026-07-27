@@ -20378,6 +20378,17 @@ lowering stages but had never been executed by a real `native-image`:
   package's contract blob in one pattern, which is what the *bundled* release
   JAR actually needs (the single-package form names one of many).
 
+  The escape is easy to get wrong by exactly one level, and the first attempt
+  at it in this PR did (caught in review, #6258): **two** escaping layers
+  stack. The value must be a regex `\.`, and it is written inside a *JSON
+  string*, where a lone backslash is not a legal escape at all (RFC 8259 admits
+  only `" \ / b f n r t u`). So the emitted bytes must be `\\.` — four
+  backslashes in the Lyric literal. Escaping only for the regex layer yields a
+  bare `\.` that no conformant JSON parser accepts, which — given the
+  silent-0-exit behaviour below — fails in the least visible way available.
+  `native_image_self_test.l` now *parses* every generated document rather than
+  string-matching it, since parseability is the property that broke.
+
 The config-parse failure is worth recording as a hazard: native-image reports it
 inside its own summary block and still prints "Finished generating '<name>'"
 before exiting **0** with no binary written. The release path therefore treats

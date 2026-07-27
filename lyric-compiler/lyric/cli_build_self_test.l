@@ -1,7 +1,7 @@
 //! cli_build_self_test.l — exercises pure helpers and the stdlib-colocation
 //! behavior in `Lyric.Cli` (cli/cli_build.l):
 //!   - `validatePackageVersionArg` (#4426, #4727) — no I/O.
-//!   - `filterExtraRefsDlls` / `releaseFromDllIgnoredArgsWarning` (#4282) —
+//!   - `filterExtraRefs` / `releaseFromDllIgnoredArgsWarning` (#4282) —
 //!     pure logic pulled out of `cmdBuild`'s `--release-from-dll` branch so
 //!     it's testable without invoking the native AOT release path.
 //!   - `buildOneNative` (#4127) — end-to-end: compiles a temp source file
@@ -178,33 +178,33 @@ test "manifestDefineGateError: [build] kind = aot is rejected" {
   }
 }
 
-// ─── filterExtraRefsDlls (#4282) ─────────────────────────────────────────
-test "filterExtraRefsDlls: excludes the primary DLL and Lyric.Stdlib.dll, keeps only .dll files, sorted" {
+// ─── filterExtraRefs (#4282) ─────────────────────────────────────────
+test "filterExtraRefs: excludes the primary DLL and Lyric.Stdlib.dll, keeps only .dll files, sorted" {
   val files: List[String] = newList()
   files.add("/refs/Zeta.dll")
   files.add("/refs/App.dll")
   files.add("/refs/Lyric.Stdlib.dll")
   files.add("/refs/notes.txt")
   files.add("/refs/Alpha.dll")
-  val result = Cli.filterExtraRefsDlls(files, "App.dll")
-  assertEqualInt(result.count, 2, "filterExtraRefsDlls: excludes primary DLL, Lyric.Stdlib.dll, and non-DLL files")
-  assertEqual(result[0], "/refs/Alpha.dll", "filterExtraRefsDlls: sorted ascending, entry 0")
-  assertEqual(result[1], "/refs/Zeta.dll", "filterExtraRefsDlls: sorted ascending, entry 1")
+  val result = Cli.filterExtraRefs(files, "App.dll", ".dll")
+  assertEqualInt(result.count, 2, "filterExtraRefs: excludes primary DLL, Lyric.Stdlib.dll, and non-DLL files")
+  assertEqual(result[0], "/refs/Alpha.dll", "filterExtraRefs: sorted ascending, entry 0")
+  assertEqual(result[1], "/refs/Zeta.dll", "filterExtraRefs: sorted ascending, entry 1")
 }
 
-test "filterExtraRefsDlls: empty input yields an empty list" {
+test "filterExtraRefs: empty input yields an empty list" {
   val files: List[String] = newList()
-  val result = Cli.filterExtraRefsDlls(files, "App.dll")
-  assertEqualInt(result.count, 0, "filterExtraRefsDlls: empty input")
+  val result = Cli.filterExtraRefs(files, "App.dll", ".dll")
+  assertEqualInt(result.count, 0, "filterExtraRefs: empty input")
 }
 
-test "filterExtraRefsDlls: no matches when every file is excluded" {
+test "filterExtraRefs: no matches when every file is excluded" {
   val files: List[String] = newList()
   files.add("/refs/App.dll")
   files.add("/refs/Lyric.Stdlib.dll")
   files.add("/refs/readme.md")
-  val result = Cli.filterExtraRefsDlls(files, "App.dll")
-  assertEqualInt(result.count, 0, "filterExtraRefsDlls: primary DLL, stdlib, and non-DLL all excluded")
+  val result = Cli.filterExtraRefs(files, "App.dll", ".dll")
+  assertEqualInt(result.count, 0, "filterExtraRefs: primary DLL, stdlib, and non-DLL all excluded")
 }
 
 // ─── buildOneNative colocation (#4127) ──────────────────────────────────

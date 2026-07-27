@@ -25,14 +25,20 @@ pub func reflectConfigJson(): String {
 // which native-image interprets as a java.util.regex pattern.  Only the
 // metacharacters that can occur in a Lyric package name (`.`) or a JAR entry
 // path need quoting; everything else in `[A-Za-z0-9_/-]` is regex-inert.
+//
+// Two escaping layers stack here and are easy to conflate.  The value must be
+// a *regex* `\.`, and it is being written into a *JSON string*, where a lone
+// backslash is an invalid escape (RFC 8259 admits only `" \ / b f n r t u`).
+// So the emitted bytes must be `\\.` — hence four backslash characters in this
+// Lyric literal, which decode to the two the JSON file needs.
 func quoteResourceRegex(literal: in String): String {
-  Str.replace(literal, ".", "\\.")
+  Str.replace(literal, ".", "\\\\.")
 }
 
 // Returns resource-config.json for pkgName (declares the embedded lyric-contract).
 pub func resourceConfigJson(pkgName: in String): String {
   "{\n  \"resources\": {\n    \"includes\": [\n      { \"pattern\": \"META-INF/lyric/" + quoteResourceRegex(pkgName) +
-    "\\.lyric-contract\" }\n    ]\n  }\n}"
+    "\\\\.lyric-contract\" }\n    ]\n  }\n}"
 }
 
 // Returns resource-config.json covering EVERY package's lyric-contract blob.

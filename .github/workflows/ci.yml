@@ -1173,6 +1173,7 @@ jobs:
             lyric-compiler/lyric/version_self_test.l \
             lyric-compiler/lyric/cli_workspace_builder_self_test.l \
             lyric-compiler/lyric/cli_build_self_test.l \
+            lyric-compiler/lyric/native_image_self_test.l \
             lyric-compiler/lyric/cli_shared_self_test.l \
             lyric-compiler/lyric/cli_copydll_self_test.l \
             lyric-compiler/lyric/cli_publish_self_test.l \
@@ -9165,9 +9166,18 @@ jobs:
         run: |
           set -euo pipefail
           ver="21.0.2"
+          # Pinned SHA-256 of the release asset (matches the upstream
+          # ...tar.gz.sha256 published beside it).  Verified before extraction
+          # so the tarball gets the same pin-and-check treatment this workflow
+          # gives every action it uses; bump both together when `ver` changes.
+          sha="b048069aaa3a99b84f5b957b162cc181a32a4330cbc35402766363c5be76ae48"
           url="https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${ver}/graalvm-community-jdk-${ver}_linux-x64_bin.tar.gz"
+          tarball="$(mktemp -d)/graalvm.tar.gz"
+          curl -fsSL -o "$tarball" "$url"
+          echo "${sha}  ${tarball}" | sha256sum -c -
           sudo mkdir -p /opt/graalvm
-          curl -fsSL "$url" | sudo tar xz -C /opt/graalvm --strip-components=1
+          sudo tar xz -f "$tarball" -C /opt/graalvm --strip-components=1
+          rm -f "$tarball"
           echo "GRAALVM_HOME=/opt/graalvm" >> "$GITHUB_ENV"
           /opt/graalvm/bin/native-image --version
 

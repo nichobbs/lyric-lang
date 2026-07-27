@@ -214,11 +214,6 @@ pub func filterExtraRefs(files: in List[String], artifactBase: in String, ext: i
   result
 }
 
-// Back-compat forwarder for the .NET-target spelling.
-pub func filterExtraRefsDlls(files: in List[String], dllBase: in String): List[String] {
-  filterExtraRefs(files, dllBase, ".dll")
-}
-
 // The parsed manifest driving a single-file build's dependency resolution,
 // alongside the raw path/text `resolveManifestFeatures` also needs (feature
 // resolution scans the raw TOML text directly rather than the parsed

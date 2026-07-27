@@ -31398,6 +31398,14 @@ require a top-level array, which is a hard config-parse error; and
 native-image reads as a regex. Both fixed, plus a new `resourceConfigJsonAll()`
 for the multi-package bundled JAR the release path actually builds.
 
+The regex escape needs to survive a second, independent escaping layer — it
+sits inside a JSON string, where a lone backslash is itself illegal (RFC 8259)
+— and the first attempt escaped only one level, emitting a bare `\.` that no
+JSON parser accepts (caught in review, #6258). `native_image_self_test.l` now
+parses every generated config rather than string-matching it, because
+parseability is the property that actually broke; it also pins the top-level
+array shape of the three empty configs.
+
 **`--rid` diverges from the .NET arm, deliberately.** `native-image` has no
 cross-compilation mode, so `--rid` is validated against the host and a mismatch
 is a hard error naming both platforms — not a silently-ignored flag and not a

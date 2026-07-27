@@ -1583,8 +1583,10 @@ The generators live in `Jvm.NativeImage` (`lyric-compiler/jvm/native_image.l`):
 - `resourceConfigJsonAll()` — declares the embedded `lyric-contract`
   resources native-image must preserve, as one pattern covering every
   package in the bundle.  `resourceConfigJson(pkg)` is the
-  single-package form; note the `pattern` field is a **regex**, so a
-  dotted package name must be escaped.
+  single-package form.  Note the `pattern` field is a **regex** nested
+  inside a **JSON string**, so a literal dot needs escaping twice over:
+  the emitted bytes are `\\.`, since a lone backslash is not a valid
+  JSON escape (RFC 8259).
 - `proxyConfigJson()` — `[]`.
 - `jniConfigJson()` — `[]`.
 

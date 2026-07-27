@@ -1445,22 +1445,32 @@ pub func buildReleaseJvm(
   if niResult.stderr != "" {
     Console.error(niResult.stderr)
   }
-  val _ = File.deleteDirRecursive(configDir)
+  // The staging config dir is deleted only on success.  Every failure below
+  // leaves it on disk on purpose: a malformed config is a real, already-hit
+  // failure mode here, and native-image names the offending *file* in its
+  // error, so the file has to still exist to be worth naming.  It also
+  // survives into a CI artifact upload, which the captured stdout/stderr text
+  // alone does not.
   if niResult.timedOut {
-    releaseErr("native-image timed out after 30 minutes")
+    releaseErr("native-image timed out after 30 minutes; config left at " + configDir)
     return 1
   }
   if niResult.exitCode != 0 {
-    releaseErr("native-image exited " + toString(niResult.exitCode))
+    releaseErr("native-image exited " + toString(niResult.exitCode) + "; config left at " + configDir)
     return 1
   }
   // native-image reports a config-parse failure through its own summary block
   // and still prints "Finished generating", so the produced-artifact check is
   // load-bearing, not belt-and-braces.
   if not File.fileExists(absOut) {
-    releaseErr("native-image exited 0 but no binary was produced at " + absOut)
+    releaseErr(
+      "native-image exited 0 but no binary was produced at " + absOut +
+        "; this usually means a config file was rejected — see the build output above, config left at " +
+        configDir
+    )
     return 1
   }
+  val _ = File.deleteDirRecursive(configDir)
 
   // Report the path as the user spelled it, matching `buildReleaseDotnet`.
   Console.println("built native binary " + outPath)
