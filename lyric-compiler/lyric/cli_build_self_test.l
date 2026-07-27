@@ -969,3 +969,40 @@ test "filterExtraRefs: on --target jvm keeps only .jar files, excluding the prim
   assertEqual(result[0], "/refs/Alpha.jar", "filterExtraRefs: sorted ascending, entry 0")
   assertEqual(result[1], "/refs/Zeta.jar", "filterExtraRefs: sorted ascending, entry 1")
 }
+
+// ─── stagedMavenClasspath (D131) ─────────────────────────────────────────
+// The JVM `--release` path feeds this straight into `native-image -cp`, so a
+// stray empty entry would become a bogus classpath element rather than a
+// visible error.
+test "stagedMavenClasspath: no module-path.txt yields an empty list" {
+  val dir = freshTempDir("mvncp-absent")
+  val result = Cli.stagedMavenClasspath(dir)
+  assertEqualInt(result.count, 0, "absent module-path.txt is not an error, just no -cp")
+  cleanup(dir)
+}
+
+test "stagedMavenClasspath: an empty module-path.txt yields an empty list" {
+  val dir = freshTempDir("mvncp-empty")
+  // buildProject writes this file unconditionally, empty when no [maven] deps.
+  match File.writeText(Path.join(dir, "module-path.txt"), "") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("write failed: " + IOError.message(e))
+  }
+  assertEqualInt(Cli.stagedMavenClasspath(dir).count, 0, "empty file yields no entries")
+  cleanup(dir)
+}
+
+test "stagedMavenClasspath: splits colon-separated entries and drops blanks" {
+  val dir = freshTempDir("mvncp-entries")
+  // Trailing newline and a trailing separator are both realistic; neither may
+  // produce an empty classpath entry.
+  match File.writeText(Path.join(dir, "module-path.txt"), "/m2/guava.jar:/m2/gson.jar:\n") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("write failed: " + IOError.message(e))
+  }
+  val result = Cli.stagedMavenClasspath(dir)
+  assertEqualInt(result.count, 2, "two real entries, trailing separator dropped")
+  assertEqual(result[0], "/m2/guava.jar", "entry 0")
+  assertEqual(result[1], "/m2/gson.jar", "entry 1")
+  cleanup(dir)
+}

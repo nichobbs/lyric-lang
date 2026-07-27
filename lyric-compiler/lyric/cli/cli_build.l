@@ -1262,6 +1262,14 @@ func buildReleaseSingle(
   }
 
   val outNative = match explicitOut { case Some(o) -> o; case None -> Path.join(srcDir, stem) }
+  // No explicit extra references here on either target.  On JVM that is not a
+  // Maven gap: `emitSingleFileOrProject` runs `injectMavenClasspathForJvm`
+  // before emitting, so the staging JAR's manifest already carries a
+  // `Class-Path:` naming every restored Maven jar — and `native-image -jar`
+  // honours manifest `Class-Path` (verified against a two-JAR fixture:
+  // classes from the referenced jar resolve into the image with no `-cp` at
+  // all).  `buildReleaseProject` passes `-cp` as well only because it has
+  // `module-path.txt` to hand, not because the manifest route is insufficient.
   Release.buildRelease(releaseTarget, stagingArtifact, newList(), ridArg, outNative)
 }
 
@@ -1493,7 +1501,10 @@ func buildReleaseProject(
 // output JAR (`module-path.txt`, colon-separated, always written — empty when
 // the manifest declares no `[maven]` deps).  Returns an empty list when the
 // file is absent or blank so a Maven-free project simply passes no `-cp`.
-func stagedMavenClasspath(stagingDir: in String): List[String] {
+//
+// `pub` so `cli_build_self_test.l` can drive the parse/trim/filter directly
+// against a temp directory, like the other release helpers this path uses.
+pub func stagedMavenClasspath(stagingDir: in String): List[String] {
   val entries: List[String] = newList()
   val mpPath = Path.join(stagingDir, "module-path.txt")
   val text = match File.readText(mpPath) { case Ok(t) -> Str.trim(t); case Err(_) -> "" }

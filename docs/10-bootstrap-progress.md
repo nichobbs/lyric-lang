@@ -31416,6 +31416,10 @@ host binary emitted under a cross-target name.
 `--no-fallback` invariant and the `-cp`-omitted-when-empty case,
 `nativeImageNotFoundMessage`, `jvmCrossCompileMessage`). The CI "Release Native
 AOT e2e" step's negative assertion (JVM release must fail) is replaced by a real
-end-to-end build: GraalVM is installed via `graalvm/setup-graalvm`, a program is
-built with `--release --target jvm`, and the produced binary is executed and its
-output asserted.
+end-to-end build: GraalVM is installed by direct download of the release
+tarball with a pinned SHA-256 verified before extraction — deliberately *not*
+via `graalvm/setup-graalvm`, so the workflow's pin-every-action-by-SHA trust
+posture holds without adding a third-party action — a program is built with
+`--release --target jvm`, and the produced binary is executed under `env -i`
+(no JVM on PATH) with its output asserted, which is what actually proves
+`--no-fallback` held.
