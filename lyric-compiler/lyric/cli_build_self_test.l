@@ -340,6 +340,38 @@ test "defineBuildGateError: the rejection never suggests a shape the target refu
   }
 }
 
+// ─── profile is independent of shape on the AOT path (#6267) ─────────────
+// `buildReleaseSingle`/`buildReleaseProject` used to hardcode
+// "build_profile=release", so `--debug --aot` — the debuggable-AOT combination
+// band B0 exists to unlock — reported profile=release. They now thread the
+// resolved profile through `profileOnlyDefines`, which is `withProfileDefine`
+// over an empty list, so these tests pin the behaviour at its source.
+test "withProfileDefine: release prepends build_profile=release" {
+  val empty: List[String] = newList()
+  val defs = Cli.withProfileDefine(empty, Cli.ProfRelease)
+  assertEqualInt(defs.count, 1, "release profile contributes exactly one define")
+  assertEqual(defs[0], "build_profile=release", "release profile define")
+}
+
+test "withProfileDefine: debug contributes nothing (#6267)" {
+  val empty: List[String] = newList()
+  val defs = Cli.withProfileDefine(empty, Cli.ProfDebug)
+  assertEqualInt(
+    defs.count,
+    0,
+    "debug must NOT inject build_profile=release — pipeParseAndErase supplies the debug fallback"
+  )
+}
+
+test "withProfileDefine: a user define still wins under last-wins (#6267)" {
+  val user: List[String] = newList()
+  user.add("build_profile=CUSTOM")
+  val defs = Cli.withProfileDefine(user, Cli.ProfRelease)
+  assertEqualInt(defs.count, 2, "profile define plus the user's")
+  assertEqual(defs[0], "build_profile=release", "profile define goes first")
+  assertEqual(defs[1], "build_profile=CUSTOM", "user define goes last so last-wins keeps it")
+}
+
 // ─── the --release migration note (docs/63 §6 mitigation 2) ──────────────
 test "shouldPrintReleaseNote: bare --release resolving to a non-aot shape prints the note" {
   assertTrue(

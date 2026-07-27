@@ -1239,7 +1239,8 @@ func cmdBuild(argv: in slice[String]): Int {
         noDefaultFeatures,
         allFeatures,
         noRestore,
-        packageVersionArg
+        packageVersionArg,
+        axes.profile
       )
     }
     if shouldPrintReleaseNote(sawReleaseFlag, cliShapeNamed, axes.shape) {
@@ -1262,10 +1263,14 @@ func cmdBuild(argv: in slice[String]): Int {
     }
     // `--rid` only applies to the packaging shapes (Native AOT / self-contained);
     // warn here — the only project-mode path where ridArg is genuinely unused
-    // (#2022, re-scoped from `--release` per docs/63 §5.3).
-    match ridArg {
-      case Some(_) -> printErr("build: warning: --rid has no effect without --shape aot or --shape standalone")
-      case None -> ()
+    // (#2022, re-scoped from `--release` per docs/63 §5.3). Keyed on
+    // `usesPackagingPipeline` so the warning does not misfire on a legitimate
+    // `--rid --shape standalone` build once #6262 ships.
+    if not usesPackagingPipeline(axes.shape, target) {
+      match ridArg {
+        case Some(_) -> printErr("build: warning: --rid has no effect without --shape aot or --shape standalone")
+        case None -> ()
+      }
     }
     return buildProject(
       mfPath,
@@ -1325,13 +1330,18 @@ func cmdBuild(argv: in slice[String]): Int {
     // targets need the AOT-packaging hop.
     match target {
       case Native -> ()
-      case _ -> return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg)
+      case _ -> return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg, axes.profile)
     }
   }
 
   // `--rid` only applies to the packaging shapes; warn here so the flag isn't
   // silently dropped, mirroring the project-mode warning above (#4206).
-  if not isAotShape {
+  //
+  // Guards on `usesPackagingPipeline`, not on `isAotShape`: the message names
+  // both packaging shapes, and once `--shape standalone` ships (#6262) an
+  // `isAotShape` guard would fire this warning on a build where `--rid` is
+  // genuinely meaningful.
+  if not usesPackagingPipeline(axes.shape, target) {
     match ridArg {
       case Some(_) -> printErr("build: warning: --rid has no effect without --shape aot or --shape standalone")
       case None -> ()
@@ -1392,7 +1402,7 @@ func cmdBuild(argv: in slice[String]): Int {
 // already the fallback `pipeParseAndErase` injects, and appending it here would
 // override an explicit `--define build_profile=…` that the user passed on
 // purpose (`withWellKnownProfile` skips its fallback when the key is present).
-func withProfileDefine(defines: in List[String], profile: in BuildProfile): List[String] {
+pub func withProfileDefine(defines: in List[String], profile: in BuildProfile): List[String] {
   match profile {
     case ProfDebug -> defines
     case ProfRelease -> {
@@ -1415,13 +1425,19 @@ func withProfileDefine(defines: in List[String], profile: in BuildProfile): List
 // output is the source stem with no extension (an executable), next to the
 // source unless `-o` overrides it.
 // The compiler-injected well-known `build_profile=release` define for a
-// `--release`/AOT staging compile (docs/60 §3.3), as the `"KEY=VALUE"` form the
-// build path threads. A normal build gets the `"debug"` fallback injected in
-// `pipeParseAndErase`; the release paths thread this so last-wins reports
-// `release` for `@build_const("build_profile")` / `Std.BuildInfo.profile`.
-func releaseProfileDefines(): List[String] {
+// staging compile (docs/60 §3.3), as the `"KEY=VALUE"` form the build path
+// threads. A normal build gets the `"debug"` fallback injected in
+// `pipeParseAndErase`; the packaging paths thread the RESOLVED profile so
+// last-wins reports it for `@build_const("build_profile")` /
+// `Std.BuildInfo.profile`.
+//
+// This takes the profile as a parameter rather than hardcoding `release`
+// (#6267): shape and profile are independent axes, so `--debug --aot` — the
+// debuggable-AOT combination band B0 exists to unlock — must report `debug`,
+// not `release`.
+func profileOnlyDefines(profile: in BuildProfile): List[String] {
   val empty: List[String] = newList()
-  withProfileDefine(empty, ProfRelease)
+  withProfileDefine(empty, profile)
 }
 
 func buildReleaseSingle(
@@ -1430,6 +1446,7 @@ func buildReleaseSingle(
   target: in CompileTarget,
   ridArg: in Option[String],
   manifestArg: in Option[String],
+  profile: in BuildProfile,
 ): Int {
   // Native is unreachable here (cmdBuild rejects --release + --target native).
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
@@ -1492,7 +1509,7 @@ func buildReleaseSingle(
     newList(),
     false,
     false,
-    releaseProfileDefines()
+    profileOnlyDefines(profile)
   )
   if buildExit != 0 {
     return buildExit
@@ -1525,6 +1542,7 @@ func buildReleaseProject(
   allFeatures: in Bool,
   noRestore: in Bool,
   packageVersionOverride: in Option[String],
+  profile: in BuildProfile,
 ): Int {
   // Native is unreachable here (cmdBuild rejects --release + --target native).
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
@@ -1703,7 +1721,7 @@ func buildReleaseProject(
     noRestore,
     packageVersionOverride,
     Some(value = resolved),
-    releaseProfileDefines()
+    profileOnlyDefines(profile)
   )
   if buildExit != 0 {
     return buildExit
