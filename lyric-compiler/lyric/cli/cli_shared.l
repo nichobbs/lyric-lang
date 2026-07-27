@@ -519,6 +519,127 @@ func outputExt(target: in Emitter.CompileTarget, kind: in String): String {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Build profile and shape (docs/63 §3) — two axes that `--release` used to
+// conflate, and that are independent of each other and of `--target`.
+//
+// Every predicate below is pure and unit-tested in `cli_build_self_test.l`, so
+// the accept/reject matrix cannot silently regress the way the pre-refactor
+// `--define` gate did (#6139/#6188).
+// ─────────────────────────────────────────────────────────────────────────────
+/// Optimization and debug-symbol profile (docs/63 §3.1).
+pub union BuildProfile {
+  case ProfDebug
+  case ProfRelease
+}
+
+/// Packaging shape (docs/63 §3.2).  Ordered: `SAot` is strictly stronger than
+/// `SStandalone` (a Native AOT binary is self-contained by construction), which
+/// is why this is one enum rather than two independent booleans — it makes
+/// `--aot --portable` unrepresentable instead of an error case to adjudicate.
+pub union BuildShape {
+  case SPortable
+  case SStandalone
+  case SAot
+}
+
+pub func profileName(p: in BuildProfile): String {
+  match p {
+    case ProfDebug -> "debug"
+    case ProfRelease -> "release"
+  }
+}
+
+pub func shapeName(s: in BuildShape): String {
+  match s {
+    case SPortable -> "portable"
+    case SStandalone -> "standalone"
+    case SAot -> "aot"
+  }
+}
+
+pub func parseProfileName(s: in String): Option[BuildProfile] {
+  if s == "debug" {
+    Some(value = ProfDebug)
+  } else if s == "release" {
+    Some(value = ProfRelease)
+  } else {
+    None
+  }
+}
+
+pub func parseShapeName(s: in String): Option[BuildShape] {
+  if s == "portable" {
+    Some(value = SPortable)
+  } else if s == "standalone" {
+    Some(value = SStandalone)
+  } else if s == "aot" {
+    Some(value = SAot)
+  } else {
+    None
+  }
+}
+
+/// `F0033` — `--debug` and `--release` are mutually exclusive.
+pub func profileFlagConflictError(sawDebug: in Bool, sawRelease: in Bool): Option[String] {
+  if sawDebug and sawRelease {
+    Some(
+      value = "error[F0033]: --debug and --release are mutually exclusive (they select the same axis); " +
+        "pass exactly one, or neither for the default (--debug)"
+    )
+  } else {
+    None
+  }
+}
+
+/// `F0034` — conflicting spellings of the shape axis.  `--aot` / `--standalone`
+/// are sugar for `--shape aot` / `--shape standalone`; combining them with each
+/// other, or with a `--shape` naming a different value, is rejected rather than
+/// resolved by a precedence rule nobody would remember.
+///
+/// `shapeArg` is the raw `--shape` value ("" when absent) so the message can
+/// quote what the user actually typed.
+pub func shapeFlagConflictError(shapeArg: in String, sawAot: in Bool, sawStandalone: in Bool): Option[String] {
+  if sawAot and sawStandalone {
+    return Some(value = "error[F0034]: --aot and --standalone both select the packaging shape; pass exactly one")
+  }
+  if shapeArg.length == 0 {
+    return None
+  }
+  if sawAot and shapeArg != "aot" {
+    return Some(value = "error[F0034]: --aot conflicts with --shape " + shapeArg + "; pass one or the other")
+  }
+  if sawStandalone and shapeArg != "standalone" {
+    return Some(value = "error[F0034]: --standalone conflicts with --shape " + shapeArg + "; pass one or the other")
+  }
+  None
+}
+
+/// `F0036` — the requested shape is not valid for the requested target
+/// (docs/63 §5.1).  A native build is AOT by construction, so `portable` and
+/// `standalone` are meaningless there rather than merely unimplemented.
+pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
+  match target {
+    case Emitter.Native -> match shape { case SAot -> None; case _ -> Some(value = "error[F0036]: --target native does not support --shape " + shapeName(shape) + "; a native build is ahead-of-time compiled and needs no managed runtime, so `aot` is its " + "only shape (omit --shape, or pass --shape aot explicitly)") }
+    case _ -> None
+  }
+}
+
+/// `F0037` — the shape is valid for this target but its toolchain path is not
+/// implemented.  Fails loud rather than silently emitting the portable artifact
+/// a user did not ask for.
+///
+/// Today that is `standalone` on every target (no self-contained-publish or
+/// `jlink` path exists — issue #6262).  `aot` on `--target jvm` reaches
+/// `Lyric.Release`, which fails loud on its own for the missing GraalVM
+/// `native-image` invocation (#1975), so it is not rejected here.
+pub func shapeUnsupportedError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
+  match shape {
+    case SStandalone -> Some(value = "error[F0037]: --shape standalone is not implemented yet (issue #6262). Use --shape portable " + "for a framework-dependent artifact, or --shape aot for a self-contained native binary.")
+    case _ -> None
+  }
+}
+
 // Return the build kind from a manifest's [build] section, defaulting to "lib".
 func getBuildKind(m: in Mf.Manifest): String {
   match m.build {

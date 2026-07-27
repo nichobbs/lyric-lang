@@ -113,69 +113,202 @@ test "releaseFromDllIgnoredArgsWarning: empty list yields a warning with no file
 }
 
 // ─── defineBuildGateError accept/reject matrix (#5852 / #6139 / #6140) ────
+// docs/63 band B0 re-keyed both gates from the `--release` flag to the shape
+// axis: it is the packaging path that threads no defines, not the optimization
+// profile.
 test "defineBuildGateError: no defines is always allowed" {
-  match Cli.defineBuildGateError(false, false, true, true, true, "lyric.toml") {
+  match Cli.defineBuildGateError(false, false, true, Cli.SAot, "lyric.toml") {
     case None -> assertTrue(true, "no defines -> allowed regardless of other flags")
     case Some(msg) -> assertTrue(false, "no defines should be allowed, got: " + msg)
   }
 }
 
-test "defineBuildGateError: consumable dotnet/jvm project build is allowed" {
-  match Cli.defineBuildGateError(true, true, false, false, false, "lyric.toml") {
-    case None -> assertTrue(true, "consumable target, no watch/release/aot -> allowed")
+test "defineBuildGateError: consumable portable project build is allowed" {
+  match Cli.defineBuildGateError(true, true, false, Cli.SPortable, "lyric.toml") {
+    case None -> assertTrue(true, "consumable target, no watch, portable shape -> allowed")
     case Some(msg) -> assertTrue(false, "plain consumable project build should be allowed, got: " + msg)
   }
 }
 
 test "defineBuildGateError: --watch is rejected" {
-  match Cli.defineBuildGateError(true, true, true, false, false, "") {
+  match Cli.defineBuildGateError(true, true, true, Cli.SPortable, "") {
     case None -> assertTrue(false, "--watch should reject --define")
     case Some(msg) -> assertTrue(Str.contains(msg, "--watch"), "watch rejection names the flag, got: " + msg)
   }
 }
 
-test "defineBuildGateError: explicit --release is rejected" {
-  match Cli.defineBuildGateError(true, true, false, true, false, "") {
-    case None -> assertTrue(false, "--release should reject --define")
-    case Some(msg) -> assertTrue(Str.contains(msg, "--release"), "release rejection names the flag, got: " + msg)
+test "defineBuildGateError: --shape aot is rejected and names the shape" {
+  match Cli.defineBuildGateError(true, true, false, Cli.SAot, "") {
+    case None -> assertTrue(false, "--shape aot should reject --define")
+    case Some(msg) -> assertTrue(Str.contains(msg, "--shape aot"), "aot rejection names the shape, got: " + msg)
   }
 }
 
-test "defineBuildGateError: manifest kind = aot (autoAot) is rejected with the manifest path" {
-  match Cli.defineBuildGateError(true, true, false, false, true, "/proj/lyric.toml") {
-    case None -> assertTrue(false, "kind = aot should reject --define (#6139)")
-    case Some(msg) -> assertTrue(Str.contains(msg, "aot") and Str.contains(msg, "/proj/lyric.toml"), "aot rejection names kind=aot and the manifest path, got: " + msg)
+test "defineBuildGateError: --shape standalone is rejected" {
+  match Cli.defineBuildGateError(true, true, false, Cli.SStandalone, "") {
+    case None -> assertTrue(false, "--shape standalone should reject --define")
+    case Some(msg) -> assertTrue(Str.contains(msg, "--shape standalone"), "standalone rejection names the shape, got: " + msg)
+  }
+}
+
+test "defineBuildGateError: manifest-configured aot shape names the manifest path" {
+  match Cli.defineBuildGateError(true, true, false, Cli.SAot, "/proj/lyric.toml") {
+    case None -> assertTrue(false, "manifest shape = aot should reject --define (#6139)")
+    case Some(msg) -> assertTrue(Str.contains(msg, "--shape aot") and Str.contains(msg, "/proj/lyric.toml"), "aot rejection names the shape and the manifest path, got: " + msg)
+  }
+}
+
+// The headline docs/63 §5.3 regression: `--release` alone no longer rejects
+// `--define`. Before band B0 this combination was refused for a reason that
+// applied to the AOT path, not to the release profile.
+test "defineBuildGateError: release profile with a portable shape allows defines (docs/63 §5.3)" {
+  match Cli.defineBuildGateError(true, true, false, Cli.SPortable, "lyric.toml") {
+    case None -> assertTrue(true, "--release --shape portable --define is allowed after the re-scope")
+    case Some(msg) -> assertTrue(false, "release+portable must not reject --define, got: " + msg)
   }
 }
 
 // ─── manifestDefineGateError accept/reject matrix (#6188) ─────────────────
 test "manifestDefineGateError: no manifest defines is always allowed" {
-  match Cli.manifestDefineGateError(false, true, true, "/p/lyric.toml") {
+  match Cli.manifestDefineGateError(false, Cli.SAot, "/p/lyric.toml") {
     case None -> assertTrue(true, "no manifest defines -> allowed regardless of shape")
     case Some(msg) -> assertTrue(false, "no manifest defines should be allowed, got: " + msg)
   }
 }
 
-test "manifestDefineGateError: plain dotnet/jvm/native project build is allowed" {
-  // native now consumes manifest defines (#5977), like dotnet/jvm.
-  match Cli.manifestDefineGateError(true, false, false, "/p/lyric.toml") {
-    case None -> assertTrue(true, "consumable project build (incl. native) -> allowed")
+test "manifestDefineGateError: portable project build is allowed" {
+  // native consumes manifest defines (#5977), like dotnet/jvm.
+  match Cli.manifestDefineGateError(true, Cli.SPortable, "/p/lyric.toml") {
+    case None -> assertTrue(true, "portable project build (incl. native) -> allowed")
     case Some(msg) -> assertTrue(false, "plain project build should be allowed, got: " + msg)
   }
 }
 
-test "manifestDefineGateError: --release is rejected" {
-  match Cli.manifestDefineGateError(true, true, false, "/p/lyric.toml") {
-    case None -> assertTrue(false, "--release should reject manifest [build.define]")
-    case Some(msg) -> assertTrue(Str.contains(msg, "--release"), "release rejection names the flag, got: " + msg)
+test "manifestDefineGateError: aot shape is rejected" {
+  match Cli.manifestDefineGateError(true, Cli.SAot, "/p/lyric.toml") {
+    case None -> assertTrue(false, "aot shape should reject manifest [build.define]")
+    case Some(msg) -> assertTrue(Str.contains(msg, "aot"), "aot rejection names the shape, got: " + msg)
   }
 }
 
-test "manifestDefineGateError: [build] kind = aot is rejected" {
-  match Cli.manifestDefineGateError(true, false, true, "/p/lyric.toml") {
-    case None -> assertTrue(false, "kind = aot should reject manifest [build.define]")
-    case Some(msg) -> assertTrue(Str.contains(msg, "aot"), "aot rejection names kind=aot, got: " + msg)
+test "manifestDefineGateError: standalone shape is rejected" {
+  match Cli.manifestDefineGateError(true, Cli.SStandalone, "/p/lyric.toml") {
+    case None -> assertTrue(false, "standalone shape should reject manifest [build.define]")
+    case Some(msg) -> assertTrue(Str.contains(msg, "standalone"), "standalone rejection names the shape, got: " + msg)
   }
+}
+
+// ─── profile / shape flag matrix (docs/63 §4, F0033/F0034/F0036/F0037) ────
+test "profileFlagConflictError: --debug and --release together is F0033" {
+  match Cli.profileFlagConflictError(true, true) {
+    case None -> assertTrue(false, "--debug --release should conflict")
+    case Some(msg) -> assertTrue(Str.contains(msg, "F0033"), "conflict names F0033, got: " + msg)
+  }
+}
+
+test "profileFlagConflictError: either flag alone, or neither, is accepted" {
+  match Cli.profileFlagConflictError(true, false) {
+    case None -> assertTrue(true, "--debug alone is fine")
+    case Some(msg) -> assertTrue(false, "--debug alone should be accepted, got: " + msg)
+  }
+  match Cli.profileFlagConflictError(false, true) {
+    case None -> assertTrue(true, "--release alone is fine")
+    case Some(msg) -> assertTrue(false, "--release alone should be accepted, got: " + msg)
+  }
+  match Cli.profileFlagConflictError(false, false) {
+    case None -> assertTrue(true, "neither flag is fine (defaults to debug)")
+    case Some(msg) -> assertTrue(false, "no profile flag should be accepted, got: " + msg)
+  }
+}
+
+test "shapeFlagConflictError: --aot with --standalone is F0034" {
+  match Cli.shapeFlagConflictError("", true, true) {
+    case None -> assertTrue(false, "--aot --standalone should conflict")
+    case Some(msg) -> assertTrue(Str.contains(msg, "F0034"), "conflict names F0034, got: " + msg)
+  }
+}
+
+test "shapeFlagConflictError: sugar disagreeing with --shape is F0034" {
+  match Cli.shapeFlagConflictError("portable", true, false) {
+    case None -> assertTrue(false, "--aot --shape portable should conflict")
+    case Some(msg) -> assertTrue(Str.contains(msg, "F0034") and Str.contains(msg, "portable"), "conflict names F0034 and the shape, got: " + msg)
+  }
+  match Cli.shapeFlagConflictError("aot", false, true) {
+    case None -> assertTrue(false, "--standalone --shape aot should conflict")
+    case Some(msg) -> assertTrue(Str.contains(msg, "F0034"), "conflict names F0034, got: " + msg)
+  }
+}
+
+test "shapeFlagConflictError: sugar agreeing with --shape is accepted" {
+  match Cli.shapeFlagConflictError("aot", true, false) {
+    case None -> assertTrue(true, "--aot --shape aot agree, so no conflict")
+    case Some(msg) -> assertTrue(false, "agreeing spellings should be accepted, got: " + msg)
+  }
+  match Cli.shapeFlagConflictError("", false, false) {
+    case None -> assertTrue(true, "no shape flags at all is fine")
+    case Some(msg) -> assertTrue(false, "no shape flags should be accepted, got: " + msg)
+  }
+}
+
+test "shapeTargetError: --target native rejects portable and standalone (F0036)" {
+  match Cli.shapeTargetError(Cli.SPortable, Emitter.Native) {
+    case None -> assertTrue(false, "native + portable should be rejected")
+    case Some(msg) -> assertTrue(Str.contains(msg, "F0036"), "native/portable names F0036, got: " + msg)
+  }
+  match Cli.shapeTargetError(Cli.SStandalone, Emitter.Native) {
+    case None -> assertTrue(false, "native + standalone should be rejected")
+    case Some(msg) -> assertTrue(Str.contains(msg, "F0036"), "native/standalone names F0036, got: " + msg)
+  }
+}
+
+test "shapeTargetError: native accepts aot; managed targets accept every shape" {
+  match Cli.shapeTargetError(Cli.SAot, Emitter.Native) {
+    case None -> assertTrue(true, "native + aot is the only valid native pairing")
+    case Some(msg) -> assertTrue(false, "native + aot should be accepted, got: " + msg)
+  }
+  match Cli.shapeTargetError(Cli.SPortable, Emitter.Dotnet) {
+    case None -> assertTrue(true, "dotnet + portable is fine")
+    case Some(msg) -> assertTrue(false, "dotnet + portable should be accepted, got: " + msg)
+  }
+  match Cli.shapeTargetError(Cli.SAot, Emitter.Jvm) {
+    case None -> assertTrue(true, "jvm + aot is accepted here; Lyric.Release fails loud on GraalVM (#1975)")
+    case Some(msg) -> assertTrue(false, "jvm + aot should pass the target check, got: " + msg)
+  }
+}
+
+test "shapeUnsupportedError: standalone is F0037 until it is implemented (#6262)" {
+  match Cli.shapeUnsupportedError(Cli.SStandalone, Emitter.Dotnet) {
+    case None -> assertTrue(false, "standalone is not implemented and must fail loud")
+    case Some(msg) -> assertTrue(Str.contains(msg, "F0037") and Str.contains(msg, "6262"), "standalone names F0037 and the tracking issue, got: " + msg)
+  }
+  match Cli.shapeUnsupportedError(Cli.SPortable, Emitter.Dotnet) {
+    case None -> assertTrue(true, "portable is implemented")
+    case Some(msg) -> assertTrue(false, "portable should be supported, got: " + msg)
+  }
+  match Cli.shapeUnsupportedError(Cli.SAot, Emitter.Dotnet) {
+    case None -> assertTrue(true, "aot on dotnet is implemented")
+    case Some(msg) -> assertTrue(false, "dotnet aot should be supported, got: " + msg)
+  }
+}
+
+// ─── the --release migration note (docs/63 §6 mitigation 2) ──────────────
+test "shouldPrintReleaseNote: bare --release resolving to a non-aot shape prints the note" {
+  assertTrue(
+    Cli.shouldPrintReleaseNote(true, false, Cli.SPortable),
+    "bare --release now yields a portable artifact where it used to yield an AOT binary"
+  )
+}
+
+test "shouldPrintReleaseNote: silent when the shape was named, or resolves to aot, or no --release" {
+  assertFalse(
+    Cli.shouldPrintReleaseNote(true, true, Cli.SPortable),
+    "an explicit --shape means the user already knows the axes are separate"
+  )
+  assertFalse(
+    Cli.shouldPrintReleaseNote(true, false, Cli.SAot),
+    "manifest shape = aot preserves the old artifact, so there is nothing to warn about"
+  )
+  assertFalse(Cli.shouldPrintReleaseNote(false, false, Cli.SPortable), "no --release -> no note")
 }
 
 // ─── filterExtraRefs (#4282) ─────────────────────────────────────────

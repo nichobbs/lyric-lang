@@ -44,6 +44,108 @@ func readBuildKindFromManifest(manifestOpt: in Option[String]): String {
   }
 }
 
+// The `[build] shape` / `[build] profile` axes from a manifest (docs/63 §4.2),
+// defaulting to `portable` / `debug`.  Both swallow read and parse failures and
+// fall back to the default: a genuinely malformed manifest is reported by the
+// build path that parses it for real, and reporting it twice from here would
+// double up the diagnostic (the `readBuildKindFromManifest` precedent).
+// The `[build]` section of a manifest, or None when the path is absent, the
+// file is unreadable, the TOML is malformed, or no `[build]` table is present.
+func readBuildSection(manifestOpt: in Option[String]): Option[Mf.BuildSection] {
+  val absent: Option[Mf.BuildSection] = None
+  val mfPath = match manifestOpt { case None -> return absent; case Some(p) -> p }
+  val mfText = match File.readText(mfPath) { case Err(_) -> return absent; case Ok(t) -> t }
+  match Mf.parseManifest(mfText, mfPath) {
+    case Err(_) -> absent
+    case Ok(mf) -> mf.build
+  }
+}
+
+func readBuildShapeFromManifest(manifestOpt: in Option[String]): BuildShape {
+  val section = match readBuildSection(manifestOpt) { case None -> return SPortable; case Some(s) -> s }
+  match parseShapeName(section.shape) {
+    case Some(s) -> s
+    case None -> SPortable
+  }
+}
+
+func readBuildProfileFromManifest(manifestOpt: in Option[String]): BuildProfile {
+  val section = match readBuildSection(manifestOpt) { case None -> return ProfDebug; case Some(s) -> s }
+  match parseProfileName(section.profile) {
+    case Some(p) -> p
+    case None -> ProfDebug
+  }
+}
+
+// The resolved build axes for one `lyric build` invocation (docs/63 §3).
+record ResolvedAxes {
+  shape: BuildShape
+  profile: BuildProfile
+}
+
+// Resolve the shape and profile axes with CLI-over-manifest-over-default
+// precedence (docs/63 §4.2 — the same precedence rule docs/60 uses for defines,
+// so the toolchain has one rule and not two), then run the compatibility checks
+// that depend on the resolved value: `F0036` (shape invalid for the target) and
+// `F0037` (shape valid but unimplemented).
+//
+// `cliShape`/`cliProfile` are `None` when the user named neither on the command
+// line, which is what lets a manifest value win over the default without the
+// default silently overriding the manifest.
+func resolveBuildAxes(
+  cliShape: in Option[BuildShape],
+  cliProfile: in Option[BuildProfile],
+  manifestOpt: in Option[String],
+  target: in CompileTarget,
+): Result[ResolvedAxes, String] {
+  val shape = match cliShape { case Some(s) -> s; case None -> readBuildShapeFromManifest(manifestOpt) }
+  val profile = match cliProfile { case Some(p) -> p; case None -> readBuildProfileFromManifest(manifestOpt) }
+  match shapeTargetError(shape, target) {
+    case Some(msg) -> return Err(error = msg)
+    case None -> ()
+  }
+  match shapeUnsupportedError(shape, target) {
+    case Some(msg) -> return Err(error = msg)
+    case None -> ()
+  }
+  Ok(value = ResolvedAxes(shape = shape, profile = profile))
+}
+
+// `--target native` is AOT by construction (docs/63 §5.1), so a bare
+// `lyric build --target native` resolves to `SAot` rather than the `SPortable`
+// default. Applied before `resolveBuildAxes` so an explicit `--shape portable`
+// still reaches `F0036` instead of being silently upgraded.
+func defaultShapeForTarget(cliShape: in Option[BuildShape], target: in CompileTarget): Option[BuildShape] {
+  match cliShape {
+    case Some(_) -> cliShape
+    case None -> match target { case Native -> Some(value = SAot); case _ -> None }
+  }
+}
+
+// The one-version migration note for `--release` without an explicit shape
+// (docs/63 §6 mitigation 2). Before band B0 a bare `--release` also produced a
+// self-contained Native AOT binary; now it selects the optimization profile
+// only. Printed on a *successful* build — it is not a deprecation warning on a
+// legacy path, it is a heads-up that the artifact shape changed.
+pub func releaseProfileOnlyNote(): String {
+  "build: note: --release now selects the optimization profile only; it no longer implies a " +
+    "self-contained native binary. Pass --aot (or --shape aot) for that. See docs/63 §6."
+}
+
+// True iff a bare `--release` on this invocation changed artifact shape relative
+// to the pre-B0 behaviour — the user asked for `--release`, named no shape on
+// the CLI, and the resolved shape is not `aot`. Pure so the note's trigger
+// condition is unit-testable (docs/63 §6).
+pub func shouldPrintReleaseNote(sawReleaseFlag: in Bool, cliShapeNamed: in Bool, resolved: in BuildShape): Bool {
+  if (not sawReleaseFlag) or cliShapeNamed {
+    return false
+  }
+  match resolved {
+    case SAot -> false
+    case _ -> true
+  }
+}
+
 // True iff the manifest at `mfPath` declares a non-empty `[build.define]` table
 // (docs/60 §3.1). Used by `cmdBuild`'s gate to reject up front — rather than
 // silently drop — manifest defines on a build shape that cannot consume them
@@ -71,31 +173,29 @@ pub func manifestDefinesUnsupportedMsg(mfPath: in String, reason: in String): St
 
 // Pure accept/reject predicate for a manifest `[build.define]` table on a
 // project build (docs/60 §3.1 / #6139). Returns `Some(message)` when the manifest
-// declares defines and the build shape cannot consume them — `--release` or
-// `[build] kind = "aot"` (both route into the AOT-packaging path, which threads
-// no defines) — or `None` when the defines can be applied (a plain
-// `--target dotnet`/`jvm`/`native` project build, or no manifest defines at all).
-// `--target native` now consumes defines (#5977: list literals + module-level
-// `val` inlining). `--watch` is intentionally absent: `buildProject` reapplies
-// the manifest defines on every rebuild, so it is not a silent-drop shape.
+// declares defines and the build *shape* cannot consume them, or `None` when the
+// defines can be applied.
+//
+// docs/63 band B0 re-scoped this from the `--release` flag to the shape axis.
+// The AOT-packaging path is what threads no defines; the optimization profile
+// has nothing to do with it. So `--release --shape portable` now correctly
+// accepts manifest defines, where before it was rejected for the wrong reason.
+//
+// `--target native` consumes defines (#5977: list literals + module-level `val`
+// inlining). `--watch` is intentionally absent: `buildProject` reapplies the
+// manifest defines on every rebuild, so it is not a silent-drop shape.
 // Pulled out of `cmdBuild` so the reject matrix is unit-testable without a build
 // (#6188), mirroring `defineBuildGateError`.
-pub func manifestDefineGateError(
-  mfHasDefines: in Bool, release: in Bool, autoAot: in Bool, mfPath: in String
-): Option[String] {
+pub func manifestDefineGateError(mfHasDefines: in Bool, shape: in BuildShape, mfPath: in String): Option[String] {
   if not mfHasDefines {
     return None
   }
-  if release {
-    return Some(value = manifestDefinesUnsupportedMsg(mfPath, "--release (the AOT-packaging path threads no defines)"))
-  }
-  if autoAot {
-    return Some(
-      value = manifestDefinesUnsupportedMsg(
-        mfPath,
-        "[build] kind = \"aot\" (the AOT-packaging path threads no defines)"
-      )
+  match shape {
+    case SAot -> return Some(value = manifestDefinesUnsupportedMsg(mfPath, "--shape aot (the AOT-packaging path threads no defines)"))
+    case SStandalone -> return Some(
+      value = manifestDefinesUnsupportedMsg(mfPath, "--shape standalone (the packaging path threads no defines)")
     )
+    case SPortable -> ()
   }
   None
 }
@@ -157,38 +257,46 @@ pub func releaseFromDllIgnoredArgsWarning(positional: in List[String]): String {
 // shape, or `None` when it is allowed. All three backends consume defines now
 // (dotnet/jvm #5852, native #5977), so `targetConsumable` is `true` for every
 // current target (the parameter stays for a future non-consumable target).
-// Every path that would otherwise drop the defines silently is rejected up front:
+//
+// docs/63 band B0 re-scoped this from the `--release` flag to the shape axis:
+// it is the AOT-packaging path that threads no defines, not the optimization
+// profile. `--release --shape portable --define K=V` is therefore accepted now,
+// where before it was rejected for a reason that did not apply.
+//
+// Every path that would otherwise drop the defines silently is still rejected
+// up front:
 //   - a non-consumable target (none today),
-//   - `--watch` (the rebuild action carries no defines),
-//   - `--release` (the AOT-packaging path does not thread defines), and
-//   - `[build] kind = "aot"` in the manifest (`autoAot`), which routes into the
-//     same AOT-packaging path as an explicit `--release` (#6139).
+//   - `--watch` (the rebuild action carries no defines), and
+//   - a non-portable shape (the packaging paths thread no defines).
 // Pulled out of `cmdBuild` so the accept/reject matrix is unit-testable without
 // a manifest round-trip (#6140). `manifestPath` is only referenced by the
-// `autoAot` message; pass "" when it is not applicable.
+// shape message; pass "" when it is not applicable (a single-file build).
 pub func defineBuildGateError(
   hasDefines: in Bool,
   targetConsumable: in Bool,
   watch: in Bool,
-  release: in Bool,
-  autoAot: in Bool,
+  shape: in BuildShape,
   manifestPath: in String,
 ): Option[String] {
   if not hasDefines {
     return None
   }
-  if (not targetConsumable) or watch or release {
+  if (not targetConsumable) or watch {
     return Some(
-      value = "build: --define is supported on single-file and project (--manifest / lyric.toml) --target dotnet/jvm/native builds; it is not supported with --watch or --release"
+      value = "build: --define is supported on single-file and project (--manifest / lyric.toml) --target dotnet/jvm/native builds; it is not supported with --watch"
     )
   }
-  if autoAot {
-    return Some(
-      value = "build: --define is not supported with [build] kind = \"aot\" in " + manifestPath +
-        " (the AOT-packaging build path does not thread defines, #5852); remove --define or build without kind = \"aot\""
-    )
+  match shape {
+    case SPortable -> None
+    case _ -> {
+      val configuredIn = if manifestPath.length > 0 { " (configured in " + manifestPath + ")" } else { "" }
+      Some(
+        value = "build: --define is not supported with --shape " + shapeName(shape) + configuredIn +
+          " — the packaging build path does not thread defines (#5852); drop --define, or build with " +
+          "--shape portable"
+      )
+    }
   }
-  None
 }
 
 // Filter a `--extra-refs-dir` directory listing down to the extra references
@@ -766,7 +874,15 @@ func cmdBuild(argv: in slice[String]): Int {
   // docs/60 build defines: `--define K=V` (repeatable). Precedence-merged
   // with well-known defines inside `buildOneNativeWithFeatures`.
   val cliDefines: List[String] = newList()
-  var release: Bool = false
+  // docs/63 §4.1: the profile axis (`--debug`/`--release`) and the shape axis
+  // (`--shape`, plus the `--aot`/`--standalone` sugar). Both are captured as
+  // "did the user say it" here and resolved against the manifest below, so
+  // CLI-over-manifest precedence is explicit rather than implied by a default.
+  var sawDebugFlag: Bool = false
+  var sawReleaseFlag: Bool = false
+  var shapeArg: String = ""
+  var sawAotFlag: Bool = false
+  var sawStandaloneFlag: Bool = false
   var ridArg: Option[String] = None
   var noRestore: Bool = false
   var watch: Bool = false
@@ -820,7 +936,24 @@ func cmdBuild(argv: in slice[String]): Int {
       allFeatures = true
       i += 1
     } else if arg == "--release" {
-      release = true
+      sawReleaseFlag = true
+      i += 1
+    } else if arg == "--debug" {
+      sawDebugFlag = true
+      i += 1
+    } else if arg == "--shape" {
+      if i + 1 < argv.length {
+        shapeArg = argv[i + 1]
+        i += 2
+      } else {
+        printErr("build: --shape requires an argument (portable, standalone, or aot)")
+        return 1
+      }
+    } else if arg == "--aot" {
+      sawAotFlag = true
+      i += 1
+    } else if arg == "--standalone" {
+      sawStandaloneFlag = true
       i += 1
     } else if arg == "--define" {
       if i + 1 < argv.length {
@@ -924,6 +1057,50 @@ func cmdBuild(argv: in slice[String]): Int {
     case Some(v) -> match validatePackageVersionArg(v) { case Some(msg) -> { printErr("build: " + msg); return 1 }; case None -> () }
     case None -> ()
   }
+  // docs/63 §4: validate the profile/shape spellings before anything reads a
+  // manifest, so a conflicting invocation fails the same way in project mode
+  // and single-file mode.
+  match profileFlagConflictError(sawDebugFlag, sawReleaseFlag) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
+  match shapeFlagConflictError(shapeArg, sawAotFlag, sawStandaloneFlag) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
+  // `--shape <v>` wins its own spelling; `--aot`/`--standalone` are sugar that
+  // lowers to it (the conflict check above guarantees they agree).
+  var cliShape: Option[BuildShape] = None
+  if shapeArg.length > 0 {
+    val parsedShape = parseShapeName(shapeArg)
+    match parsedShape {
+      case Some(_) -> ()
+      case None -> {
+        printErr("build: --shape must be portable, standalone, or aot, got \"" + shapeArg + "\"")
+        return 1
+      }
+    }
+    cliShape = parsedShape
+  } else if sawAotFlag {
+    cliShape = Some(value = SAot)
+  } else if sawStandaloneFlag {
+    cliShape = Some(value = SStandalone)
+  }
+  val cliShapeNamed = match cliShape { case Some(_) -> true; case None -> false }
+  val cliProfile: Option[BuildProfile] = if sawReleaseFlag {
+    Some(value = ProfRelease)
+  } else if sawDebugFlag {
+    Some(value = ProfDebug)
+  } else {
+    None
+  }
+  val effCliShape = defaultShapeForTarget(cliShape, target)
   match releaseFromDll {
     case Some(dll) -> {
       if positional.count > 0 {
@@ -986,16 +1163,12 @@ func cmdBuild(argv: in slice[String]): Int {
   // single-file builds (#5977 — list-literal lowering + module-level `val`
   // inlining make `@build_const`/`Std.BuildInfo` work; native has no
   // multi-package/project build path, so `buildProject` rejects a native
-  // manifest build separately). `--define` is still rejected with `--watch` /
-  // `--release` (their rebuild / AOT-packaging paths thread no defines).
+  // manifest build separately).
+  //
+  // The `--define` gate itself now runs *after* the shape axis is resolved
+  // (docs/63 §5.3), inside each branch below — it keys off the packaging shape,
+  // which can come from the manifest, not off the `--release` flag.
   val consumableTarget = match target { case Dotnet -> true; case Jvm -> true; case Native -> true }
-  match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, release, false, "") {
-    case Some(msg) -> {
-      printErr(msg)
-      return 1
-    }
-    case None -> ()
-  }
   // Project-mode: `lyric build --manifest lyric.toml`, or no positional source
   // at all (discover the nearest lyric.toml by walking up from the cwd).
   if positional.count == 0 {
@@ -1007,33 +1180,54 @@ func cmdBuild(argv: in slice[String]): Int {
         return 1
       }
     }
-    // `[build] kind = "aot"` in lyric.toml triggers the native AOT pipeline
-    // even without `--release` on the command line.  Computed here — before the
-    // release/watch routing — so the manifest-define gate below covers it in one
-    // call; also reused for the `--watch` AOT reject (#4203) and the CLI-define
-    // gate further down.
-    val autoAot = match target {
-      case Dotnet -> readBuildKindFromManifest(Some(value = mfPath)) == "aot"
-      case Jvm -> false
-      case Native -> false
+    // docs/63: resolve both axes against this manifest. A `[build] shape = "aot"`
+    // routes into the AOT-packaging pipeline exactly as an explicit `--aot` does
+    // — the manifest is a default for the same axis, not a separate mechanism
+    // (which is what `kind = "aot"` used to be).
+    val axes = match resolveBuildAxes(effCliShape, cliProfile, Some(value = mfPath), target) {
+      case Ok(a) -> a
+      case Err(msg) -> {
+        printErr(msg)
+        return 1
+      }
     }
-    // docs/60 §3.1: manifest `[build.define]` is threaded through `buildProject`
-    // (--target dotnet/jvm/native, non-release, non-aot). Reject up front (no
-    // silent drop, #6139) on shapes that cannot consume it: --release and
-    // [build] kind = "aot" (both route into `buildReleaseProject`, which threads
-    // no defines). --target native now consumes defines (#5977). --watch is fine
-    // — `buildProject` reapplies the manifest defines on every rebuild.
-    // `manifestDefineGateError` is a pure predicate (unit-tested, #6188) so this
-    // reject matrix can't silently regress.
+    val isAotShape = match axes.shape { case SAot -> true; case _ -> false }
+    // docs/60 §3.1: manifest `[build.define]` is threaded through `buildProject`.
+    // Reject up front (no silent drop, #6139) on any shape that cannot consume
+    // it. `--watch` is fine — `buildProject` reapplies the manifest defines on
+    // every rebuild. `manifestDefineGateError` is a pure predicate (unit-tested,
+    // #6188) so this reject matrix can't silently regress.
     val mfHasDefines = manifestDeclaresBuildDefines(mfPath)
-    match manifestDefineGateError(mfHasDefines, release, autoAot, mfPath) {
+    match manifestDefineGateError(mfHasDefines, axes.shape, mfPath) {
       case Some(msg) -> {
         printErr(msg)
         return 1
       }
       case None -> ()
     }
-    if release {
+    match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, mfPath) {
+      case Some(msg) -> {
+        printErr(msg)
+        return 1
+      }
+      case None -> ()
+    }
+    // `--watch` is an inner-loop tool; the packaging shapes are far too slow to
+    // rebuild on every keystroke (#4203, re-scoped from `--release` per
+    // docs/63 §5.3).
+    if watch {
+      match axes.shape {
+        case SPortable -> ()
+        case _ -> {
+          printErr("build: --watch is not supported with --shape " + shapeName(axes.shape))
+          return 1
+        }
+      }
+    }
+    if isAotShape {
+      if shouldPrintReleaseNote(sawReleaseFlag, cliShapeNamed, axes.shape) {
+        printErr(releaseProfileOnlyNote())
+      }
       return buildReleaseProject(
         mfPath,
         explicitOut,
@@ -1046,23 +1240,8 @@ func cmdBuild(argv: in slice[String]): Int {
         packageVersionArg
       )
     }
-    // `[build] kind = "aot"` routes into `buildReleaseProject` below just like an
-    // explicit `--release`, and that AOT-packaging path does not thread `--define`
-    // (#5852). Reject up front rather than silently building with the in-source
-    // `@build_const` fallback — the same no-silent-drop contract the early gate
-    // above enforces for explicit `--release` (#6139). `targetConsumable`/`watch`/
-    // `release` are already cleared by the early gate when defines are present, so
-    // only `autoAot` can fire here.
-    match defineBuildGateError(cliDefines.count > 0, true, false, false, autoAot, mfPath) {
-      case Some(msg) -> {
-        printErr(msg)
-        return 1
-      }
-      case None -> ()
-    }
-    if watch and autoAot {
-      printErr("build: --watch is not supported with [build] kind = \"aot\" in " + mfPath)
-      return 1
+    if shouldPrintReleaseNote(sawReleaseFlag, cliShapeNamed, axes.shape) {
+      printErr(releaseProfileOnlyNote())
     }
     if watch {
       return watchLoop(
@@ -1079,23 +1258,11 @@ func cmdBuild(argv: in slice[String]): Int {
         )
       )
     }
-    if autoAot {
-      return buildReleaseProject(
-        mfPath,
-        explicitOut,
-        target,
-        ridArg,
-        cliFeatures,
-        noDefaultFeatures,
-        allFeatures,
-        noRestore,
-        packageVersionArg
-      )
-    }
-    // `--rid` only applies to `--release` / `kind = "aot"` (Native AOT); warn
-    // here — the only project-mode path where ridArg is genuinely unused (#2022).
+    // `--rid` only applies to the packaging shapes (Native AOT / self-contained);
+    // warn here — the only project-mode path where ridArg is genuinely unused
+    // (#2022, re-scoped from `--release` per docs/63 §5.3).
     match ridArg {
-      case Some(_) -> printErr("build: warning: --rid has no effect without --release")
+      case Some(_) -> printErr("build: warning: --rid has no effect without --shape aot or --shape standalone")
       case None -> ()
     }
     return buildProject(
@@ -1108,7 +1275,7 @@ func cmdBuild(argv: in slice[String]): Int {
       noRestore,
       packageVersionArg,
       None,
-      cliDefines
+      withProfileDefine(cliDefines, axes.profile)
     )
   }
 
@@ -1118,30 +1285,57 @@ func cmdBuild(argv: in slice[String]): Int {
     return 1
   }
 
-  if release and watch {
-    printErr("build: --watch is not supported with --release")
-    return 1
+  // docs/63: resolve both axes. A single-file build honours `[build] shape` /
+  // `[build] profile` from an explicitly-passed `--manifest` only; there is no
+  // manifest discovery on this path, matching `readBuildKindFromManifest`.
+  val axes = match resolveBuildAxes(effCliShape, cliProfile, manifestArg, target) {
+    case Ok(a) -> a
+    case Err(msg) -> {
+      printErr(msg)
+      return 1
+    }
+  }
+  val isAotShape = match axes.shape { case SAot -> true; case _ -> false }
+
+  match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, "") {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
   }
 
-  if release {
-    match target {
-      case Native -> {
-        printErr(
-          "build: --release is not needed with --target native (the build already produces a self-contained native binary)"
-        )
+  if watch {
+    match axes.shape {
+      case SPortable -> ()
+      case _ -> {
+        printErr("build: --watch is not supported with --shape " + shapeName(axes.shape))
         return 1
       }
-      case _ -> ()
     }
-    return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg)
   }
 
-  // `--rid` only applies to `--release` (single-file builds have no
-  // `kind = "aot"` auto-trigger); warn here so the flag isn't silently
-  // dropped, mirroring the project-mode warning above (#4206).
-  match ridArg {
-    case Some(_) -> printErr("build: warning: --rid has no effect without --release")
-    case None -> ()
+  if shouldPrintReleaseNote(sawReleaseFlag, cliShapeNamed, axes.shape) {
+    printErr(releaseProfileOnlyNote())
+  }
+
+  if isAotShape {
+    // `--target native` already resolves to `SAot` and produces its binary
+    // through the LLVM pipeline, not through `Lyric.Release`; only the managed
+    // targets need the AOT-packaging hop.
+    match target {
+      case Native -> ()
+      case _ -> return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg)
+    }
+  }
+
+  // `--rid` only applies to the packaging shapes; warn here so the flag isn't
+  // silently dropped, mirroring the project-mode warning above (#4206).
+  if not isAotShape {
+    match ridArg {
+      case Some(_) -> printErr("build: warning: --rid has no effect without --shape aot or --shape standalone")
+      case None -> ()
+    }
   }
 
   val outPath = match explicitOut {
@@ -1184,8 +1378,36 @@ func cmdBuild(argv: in slice[String]): Int {
     cliFeatures,
     noDefaultFeatures,
     allFeatures,
-    cliDefines
+    withProfileDefine(cliDefines, axes.profile)
   )
+}
+
+// Append the well-known `build_profile` define (docs/60 §3.3) for the resolved
+// profile, so `@build_const("build_profile")` and `Std.BuildInfo.profile` report
+// the profile axis rather than "did this build go through Lyric.Release".
+//
+// Before docs/63 band B0 the `release` value was injected only by the
+// AOT-packaging paths, so `--release --shape portable` — which was not
+// expressible — could not report it. Only `release` is appended: `debug` is
+// already the fallback `pipeParseAndErase` injects, and appending it here would
+// override an explicit `--define build_profile=…` that the user passed on
+// purpose (`withWellKnownProfile` skips its fallback when the key is present).
+func withProfileDefine(defines: in List[String], profile: in BuildProfile): List[String] {
+  match profile {
+    case ProfDebug -> defines
+    case ProfRelease -> {
+      val merged: List[String] = newList()
+      // The profile define goes first so an explicit `--define build_profile=X`
+      // still wins under the last-wins merge.
+      merged.add("build_profile=release")
+      var i = 0
+      while i < defines.count {
+        merged.add(defines[i])
+        i += 1
+      }
+      merged
+    }
+  }
 }
 
 // Single-file `lyric build --release <source.l>`: compile to a staging DLL,

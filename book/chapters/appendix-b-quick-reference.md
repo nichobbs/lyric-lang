@@ -867,15 +867,24 @@ lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
                                        # prints elapsed time on success: "built foo.dll in 342ms"
                                        # project mode: "built foo.dll (3 package(s), 1204ms)"
 lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)
-lyric build --release <file.l>         # single-file: self-contained Native AOT binary (no runtime needed)
-lyric build --release                  # project-mode: entry package auto-detected (func main())
-lyric build --release --manifest lyric.toml  # explicit project manifest
-lyric build --release <file.l> --rid <rid>   # override host runtime identifier
-lyric build --release <file.l> -o <bin>      # native binary output path
-lyric build --release --target jvm <file.l>  # GraalVM native-image over the bundled JAR.
+                                       # PROFILE axis (optimization + debug symbols):
+lyric build --debug <file.l>           # unoptimized, debug info retained (the default)
+lyric build --release <file.l>         # optimized, debug info stripped
+                                       # NOTE: --release no longer implies AOT. Pass --aot too.
+                                       # SHAPE axis (packaging), independent of profile and target:
+lyric build --shape portable <file.l>  # framework-dependent (default)
+lyric build --shape standalone <file.l>  # bundles a runtime (not implemented — F0037, #6262)
+lyric build --shape aot <file.l>       # native binary; --aot is sugar for this
+lyric build --release --aot <file.l>   # single-file: self-contained Native AOT binary
+lyric build --release --aot            # project-mode: entry package auto-detected (func main())
+lyric build --release --aot --manifest lyric.toml  # explicit project manifest
+lyric build --release --aot <file.l> --rid <rid>   # override host runtime identifier
+lyric build --release --aot <file.l> -o <bin>      # native binary output path
+lyric build --release --aot --target jvm <file.l>  # GraalVM native-image over the bundled JAR.
                                        # native-image found via $GRAALVM_HOME/bin, $JAVA_HOME/bin,
                                        # then PATH; always --no-fallback (never a JVM-requiring
                                        # image). Cannot cross-compile: --rid must name the host.
+lyric build --release --shape portable <file.l>    # optimized framework-dependent DLL
 lyric build --release-from-dll <dll>   # link a pre-built managed artifact to a native binary,
                                        # skipping source compilation entirely: ILC + clang on
                                        # --target dotnet, native-image on --target jvm (pass a .jar).
@@ -951,10 +960,12 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
                                        # explicit --define version=… overrides. The active backend
                                        # (dotnet/jvm/native) is auto-injected as the well-known
                                        # `target` define on every build (also override-able), and
-                                       # `build_profile` is auto-injected as debug (normal build) or
-                                       # release (--release/AOT). User --define with --watch,
-                                       # --release, and a manifest [build] kind = "aot" (#6139)
-                                       # are rejected (native --define works, #5977).
+                                       # `build_profile` is auto-injected from the PROFILE axis:
+                                       # debug (default) or release (--release), independent of
+                                       # shape — so --release --shape portable reports "release".
+                                       # User --define is rejected with --watch and with a
+                                       # non-portable --shape (docs/63 §5.3 re-scoped this off
+                                       # --release). Native --define works (#5977).
 
 # Build kind (manifest [build] kind, .NET target; default "lib")
 #   kind = "lib"     -> managed foo.dll + foo.runtimeconfig.json (run via `dotnet exec`)
@@ -963,15 +974,21 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
 #                       `lyric run` execs the launcher instead of `dotnet exec`; if the
 #                       launcher is missing it warns and falls back to `dotnet exec`.
 #   kind = "bundle"  -> self-contained (runtime bundled) — planned, build errors for now
-#   kind = "aot"     -> native AOT, no runtime — Linux (`x64`/`arm64`) and macOS; clang/ld64 required;
-#                       equivalent to `lyric build --release`; Windows tracked in #1975
+#   kind = "aot"     -> REMOVED (F0035). "aot" is a packaging shape, not an artifact kind:
+#                       use [build] shape = "aot". Hard error, never a silent remap.
+
+# Build shape and profile (manifest [build], docs/63) — axes independent of each other
+#   shape   = "portable" | "standalone" | "aot"   (default "portable")
+#   profile = "debug" | "release"                  (default "debug")
+#   # CLI over manifest over default. shape = "aot" -> native AOT, no runtime;
+#   # Linux (x64/arm64) and macOS, clang/ld64 required; Windows tracked in #1975.
 
 # Build defines (manifest [build.define] table; docs/60 §3.1)
 #   [build.define]
 #   build_channel = "stable"          # string values only; injected into @build_const("build_channel")
 #   api_base      = "https://api.example.com"
 #   # Layered beneath CLI --define (a --define of the same key wins). Applied on
-#   # --target dotnet/jvm project builds; rejected on --release/kind="aot".
+#   # --target dotnet/jvm project builds; rejected on a non-portable shape.
 #   # (native is single-file only, so [build.define] is dotnet/jvm; native uses
 #   #  single-file --define.)
 

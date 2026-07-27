@@ -1,9 +1,17 @@
 # 63 — Build profiles, output shapes, and the Lyric debugger
 
-**Status:** Unbacked design plan. Three framing decisions were settled during
-planning and are recorded as **settled** in §3.4, §4.4, and §8.1; everything
-else is open (Q-BP-001–Q-BP-011, §13). A decision-log entry codifying the band
-order lands with the first implementation PR (band B0).
+**Status:** **Band B0 shipped** (the flag surface: profile/shape axes,
+`--shape` + `--aot`/`--standalone` sugar, `[build] shape`/`profile` manifest
+keys, the re-scoped `--define`/`--watch`/`--rid` gates, `F0033`–`F0037`, and
+the `--release` migration note). Bands B1–B7 — span plumbing, debug-information
+emission, and the debugger — are unimplemented. Three framing decisions are
+recorded as **settled** in §3.4, §4.4, and §8.1; the rest is open
+(Q-BP-001–Q-BP-011, §13).
+
+Deferred out of B0 with tracked follow-ups: `--shape standalone` has no
+toolchain path on any target and fails loud with `F0037` (#6262); the profile
+axis does not yet reach codegen, so `--release` performs no optimization and
+does not relax overflow checking as the language reference describes (#6263).
 
 **Method.** The current-state findings in §2 were produced by auditing the code
 as source of truth. Every claim is grounded in a `file:line` reference, an
@@ -264,14 +272,15 @@ or `-Og`.
 
 ### 5.3 Gates that must be re-scoped, not preserved
 
-Three current rejections key off `release` when they should key off `shape ==
-aot`. Preserving them verbatim through the refactor would be a bug.
+Three current rejections key off `release` when they should key off the shape
+axis. Preserving them verbatim through the refactor would be a bug.
 
 | Gate | Today | After |
 |---|---|---|
-| `--define` | rejected when `release` (`cli_build.l:180-183`, `defineBuildGateError`) | rejected when `shape == aot`; `--release --shape portable --define K=V` works |
-| manifest `[build.define]` | rejected when `release` or `autoAot` (`manifestDefineGateError`) | rejected when `shape == aot` only |
+| `--define` | rejected when `release` (`cli_build.l:180-183`, `defineBuildGateError`) | rejected when `shape != portable`; `--release --shape portable --define K=V` works |
+| manifest `[build.define]` | rejected when `release` or `autoAot` (`manifestDefineGateError`) | rejected when `shape != portable` |
 | `--watch` | rejected when `release` (`cli_build.l:1116`) | rejected when `shape != portable` (watch is an inner-loop tool; AOT and standalone builds are too slow to watch) |
+| — | — | *(as shipped: both define gates reject every non-`portable` shape, not just `aot` — `standalone` is equally a packaging path that threads no defines. Unobservable today since `standalone` is rejected earlier by `F0037`, but the predicate and its tests encode the general rule.)* |
 | `--rid` | warned unless `release` (`cli_build.l:1092`, `cli_build.l:1137`) | warned unless `shape` is `standalone` or `aot` |
 
 `defineBuildGateError` and `manifestDefineGateError` are already pure,
@@ -434,7 +443,7 @@ transcripts without a running debuggee.
 
 | Band | Content | Gates |
 |---|---|---|
-| **B0** | Flag surface: profile/shape axes, `--shape` + sugar, manifest keys, re-scoped gates (§5.3), `F0033`–`F0037`, migration note, docs + book. **No debug info yet.** | — |
+| **B0** ✅ | Flag surface: profile/shape axes, `--shape` + sugar, manifest keys, re-scoped gates (§5.3), `F0033`–`F0037`, migration note, docs + book. **No debug info yet.** | — |
 | **B1** | Span plumbing (§2.5) and `SpanOrigin` provenance through the middle end (§2.6). | B0 |
 | **B2** | JVM debug info: `LineNumberTable`, `LocalVariableTable` in `classfile.l`. | B1 |
 | **B3** | dotnet: portable-PDB writer (`msil/pdb.l`), PE Debug Directory + RSDS in `pe.l`, `DebuggableAttribute`. | B1 |
