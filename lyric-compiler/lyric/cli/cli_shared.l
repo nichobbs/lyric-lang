@@ -630,9 +630,9 @@ pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget
 /// a user did not ask for.
 ///
 /// Today that is `standalone` on every target (no self-contained-publish or
-/// `jlink` path exists — issue #6262).  `aot` on `--target jvm` reaches
-/// `Lyric.Release`, which fails loud on its own for the missing GraalVM
-/// `native-image` invocation (#1975), so it is not rejected here.
+/// `jlink` path exists — issue #6262).  `aot` on `--target jvm` now ships via
+/// GraalVM `native-image` (D131), and `Lyric.Release` runs its own preflight
+/// for a missing driver or an unsupported host, so it is not rejected here.
 pub func shapeUnsupportedError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
   match shape {
     case SStandalone -> {
