@@ -331,6 +331,11 @@ Pre-defined launch configurations in `.vscode/launch.json`:
 - `Lyric: Test` (`lyric test`).
 - `Lyric: Prove` (`lyric prove` against the current source file).
 
+A `Lyric: Debug` launch configuration, backed by a `debuggers` contribution
+point and a DAP adapter, is designed in
+`docs/63-build-profiles-and-debugger.md` §8.2 (stage S1). It is gated on
+debug-information emission, which no target performs today (doc 63 §2.4).
+
 ## 7. Migration
 
 The bootstrap continues to walk for `lyric-stdlib/std/` as it does today —
@@ -377,3 +382,9 @@ For users:
   releases; Homebrew/winget/apt deferred until the self-hosted AOT binary
   ships (Q-dist-001).  This document specifies the *layout* all channels
   conform to; doc 34 specifies the channels themselves.
+- **Debug symbol distribution.** Once `--release` strips debug info to a
+  side symbol file rather than discarding it
+  (`docs/63-build-profiles-and-debugger.md` §10.2), the SDK layout and the
+  release-asset set need a home for `.pdb` / `.debug` / `.map` files, and
+  `SHASUMS256.txt` (§5.2) needs to cover them. Tracked as Q-BP-006 in doc
+  63; the layout consequence lands here.
