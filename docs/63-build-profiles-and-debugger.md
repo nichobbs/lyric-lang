@@ -320,8 +320,12 @@ note would be a lie.
 
 ## 7. Diagnostics
 
-New codes in the `F` family (`F0012`–`F0013` are cfg, `F0020`–`F0024` FFI
-interfaces, `F0030`–`F0032` build defines; `F0033`+ is free):
+New codes in the `F` family. The family is currently more crowded and less
+thematically coherent than its name suggests — the codes in use are `F0000`,
+`F0002`, `F0012`–`F0013` (cfg erasure), `F0015`, `F0020` (`?`-propagation, in
+`propagate.l` — *not* FFI, despite sitting immediately below the FFI block),
+`F0021`–`F0024` (FFI interfaces, docs/51), `F0025`–`F0027` (`@externTarget`
+diagnostics), and `F0030`–`F0032` (build defines). `F0033`+ is free:
 
 | Code | Condition |
 |---|---|
@@ -332,7 +336,11 @@ interfaces, `F0030`–`F0032` build defines; `F0033`+ is free):
 | `F0037` | shape requested whose toolchain is unavailable (GraalVM `native-image`, #1975) |
 
 Whether build-shape diagnostics deserve their own family letter rather than
-extending `F` is **Q-BP-004**.
+extending `F` is **Q-BP-004** — and the inventory above is an argument that they
+might. The `F` family currently spans `?`-propagation, conditional-compilation
+erasure, FFI interface validation, `@externTarget` warnings, and build defines,
+which is not one family so much as a default bucket. Adding a sixth unrelated
+concern to it is the path of least resistance, not obviously the right call.
 
 ---
 
