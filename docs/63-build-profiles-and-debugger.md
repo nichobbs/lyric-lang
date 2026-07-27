@@ -1,0 +1,576 @@
+# 63 — Build profiles, output shapes, and the Lyric debugger
+
+**Status:** Unbacked design plan. Three framing decisions were settled during
+planning and are recorded as **settled** in §3.4, §4.4, and §8.1; everything
+else is open (Q-BP-001–Q-BP-011, §13). A decision-log entry codifying the band
+order lands with the first implementation PR (band B0).
+
+**Method.** The current-state findings in §2 were produced by auditing the code
+as source of truth. Every claim is grounded in a `file:line` reference, an
+observed CLI behaviour, or an open issue number. Where a claim is *not* verified
+it is marked **[unverified]** — see §12 for the risk register.
+
+---
+
+## 1. Motivation
+
+The immediate goal is a Lyric debugger. The blocker is not the debugger itself:
+it is that **Lyric emits no debug information on any target**, and that the one
+flag which could reasonably gate debug-info emission — `--release` — does not
+mean what its name suggests.
+
+Today `--release` selects a *packaging mode* (self-contained Native AOT), not an
+*optimization/symbol profile*. That conflation has three costs:
+
+1. There is no way to ask for "optimized, no symbols" without also asking for
+   "AOT-compiled and self-contained". An optimized framework-dependent library
+   DLL — the artifact you would publish to NuGet — is unreachable today.
+2. There is no way to ask for "debug symbols" at all, because no flag means it
+   and no backend emits it.
+3. `--define`, `--watch`, and `--target native` are each rejected against
+   `--release` for reasons that are really about the *AOT path*, not about the
+   *release profile*. The rejections are correct today and would be wrong after
+   the axes are separated (§5.3).
+
+This document specifies the flag refactor, the debug-information emission work
+it gates, and the debugger architecture that consumes it.
+
+---
+
+## 2. Current state
+
+### 2.1 `--release` is a packaging mode
+
+`cli_build.l:1130` routes an explicit `--release` into `buildReleaseSingle`, and
+`cli_build.l:1031` routes the project form into `buildReleaseProject`. Both land
+in `Lyric.Release.buildRelease` (`release.l`), whose header states the intent
+plainly:
+
+> Produces a self-contained, optimized, standalone native executable from a
+> compiled Lyric program — no managed runtime required on the target machine.
+> Plain `lyric build` keeps emitting the fast framework-dependent DLL (the inner
+> loop); `--release` is the deployable-artifact path.
+
+So a single flag currently selects **four** independent properties at once:
+optimize, strip symbols, self-contain, and AOT-compile.
+
+The manifest carries the same conflation from the other direction:
+`manifest.l:884` accepts `[build] kind = "lib" | "exe" | "bundle" | "aot"`,
+mixing *what the artifact is* (lib/exe/bundle) with *how it is packaged* (aot).
+`cli_build.l:1010` treats `kind = "aot"` as an implicit `--release`.
+
+### 2.2 The profile concept already exists — bound to the wrong flag
+
+`build_defines.l:109-129` defines a well-known `build_profile` define with the
+values `debug` and `release`, surfaced to user code as
+`@build_const("build_profile")` and `Std.BuildInfo.profile` (docs/60 §3.3). Its
+value is currently derived *from the `--release` flag*:
+`cli_build.l:1196` injects `build_profile=release` on the release path, and
+`pipeline.l:112` injects the `debug` fallback otherwise.
+
+This is the strongest single argument that the refactor is a correction rather
+than an invention: **Lyric already has a profile axis**; it is simply wired to a
+flag that also changes the packaging.
+
+### 2.3 Release builds actively strip symbols
+
+`release.l:842` passes `-Wl,--strip-debug` and `release.l:838` passes
+`-Wl,--discard-all` on the Unix AOT link. Issue #4200 (closed) already noted
+that `-gz=zlib` at `release.l` is defeated by the same `--strip-debug`. The
+stripping behaviour is correct for a release artifact; it is listed here because
+after the refactor it must key off the *profile*, not off the code path.
+
+### 2.4 No target emits debug information
+
+| Target | Debug info today | Evidence |
+|---|---|---|
+| dotnet | None. No PDB is written; `msil/pe.l` emits no Debug Directory, so there is no CodeView/RSDS entry to point at one. | no `DebugDirectory`/`RSDS`/`codeview` match anywhere under `lyric-compiler/msil/` |
+| jvm | `SourceFile` only. No `LineNumberTable`, no `LocalVariableTable`. | `classfile.l:360` writes `SourceFile`; no line-table writer exists |
+| native | None. clang is invoked with `-O<n>` and never `-g`. | `llvm_bridge.l:596` builds `clangArgs` with `-O` and no `-g` |
+
+The `LyricSourceMap` attribute described in `docs/18-jvm-emission.md` Appendix C
+("source-line ↔ bytecode-offset mapping for the Lyric debugger") is
+specification-only; nothing emits it.
+
+### 2.5 The front end has the data; the back ends discard it
+
+`parser_ast.l` carries `span: Span` on `Statement` (`parser_ast.l:364-366`),
+and on every `Expr`, `Item`, and declaration node. `Span` is a start/end
+`Position` pair (`lexer.l:68`).
+
+None of it reaches codegen. The string `span` does not occur even once in
+`msil/lowering.l`, `jvm/lowering.l`, or `llvm_ir.l`. `MInsn`
+(`msil/lowering.l:501`) has no source-position case.
+
+### 2.6 The middle end destroys source fidelity
+
+This is the finding with the largest consequence for debugger quality, and it is
+independent of which debugger architecture is chosen.
+
+- `weaver/weaver.l:142` opens a section titled *"Synthetic AST nodes built at a
+  zero span"*, with a `synSpan()` helper used throughout (e.g.
+  `weaver.l:330`). Every woven wrapper body is therefore at line 0.
+- `contract_elaborator/elaborator.l` propagates `e.span` when rewriting existing
+  expressions (`elaborator.l:342-373`) but injects `__lyric_result_<n>`
+  bindings and `assert` statements that have no natural source location.
+- `Lyric.Mono` renames specialisations (`mapFoo` → `mapFoo__Int__String`), so
+  even a perfect line table yields a stack frame whose *name* is not a name the
+  user wrote.
+- `Lyric.WireExpand` splices whole template bodies across package boundaries.
+
+Contracts and aspects are load-bearing Lyric features. A debugger that maps
+woven or contract-checked code to line 0 is not a debugger for Lyric; it is a
+debugger for the subset of Lyric that uses neither. Fixing this is band B1 (§9)
+and is a prerequisite for every later band.
+
+---
+
+## 3. The axes
+
+The refactor's core claim is that today's `--release` is three orthogonal
+questions wearing one coat.
+
+### 3.1 Axis 1 — profile (optimization and symbols)
+
+| Value | Optimization | Debug info | `build_profile` define |
+|---|---|---|---|
+| `debug` **(default)** | none / minimal | full, emitted into or beside the artifact | `debug` |
+| `release` | full | stripped from the artifact; optionally written to a side symbol file (§10.2) | `release` |
+
+### 3.2 Axis 2 — shape (packaging and deployment)
+
+| Value | Meaning | dotnet | jvm |
+|---|---|---|---|
+| `portable` **(default)** | needs a runtime installed on the target machine | framework-dependent `.dll` | `.jar` |
+| `standalone` | bundles a runtime; still JIT/interpreted | self-contained publish (apphost + runtime) | `jlink` image or fat JAR |
+| `aot` | ahead-of-time compiled to native machine code | ILC / Native AOT (today's `--release`) | GraalVM `native-image` |
+
+`aot` is strictly stronger than `standalone` — a Native AOT binary is
+self-contained by construction. They are modelled as one ordered enum rather
+than two booleans precisely so that `--aot --portable` is unrepresentable
+rather than an error case to adjudicate.
+
+### 3.3 Axis 3 — target
+
+`--target dotnet | jvm | native`, unchanged. Target is *mostly* orthogonal to
+the other two, with the exceptions tabulated in §5.
+
+### 3.4 What this unlocks — settled
+
+Separating the axes makes two combinations reachable that are impossible today:
+
+- **`--release --shape portable`** — an optimized, framework-dependent library
+  DLL. This is the correct artifact for `lyric publish` to NuGet, and there is
+  no way to produce it at present.
+- **`--debug --shape aot`** — a debuggable AOT binary. AOT-only defects
+  (trimming, reflection, `ilc` behaviour) currently cannot be debugged at all.
+
+**Settled:** profile and shape are independent axes; all six combinations are
+valid and none is rejected on the grounds of the pairing alone.
+
+---
+
+## 4. Flag surface
+
+### 4.1 CLI
+
+```
+lyric build [<source.l>]
+            [--debug | --release]
+            [--shape portable|standalone|aot]
+            [--aot] [--standalone]
+            [--target dotnet|jvm|native]
+            ... existing flags unchanged ...
+```
+
+- `--debug` / `--release` set the profile. Mutually exclusive; passing both is
+  `F0033`.
+- `--shape <value>` is the canonical spelling of the shape axis. It mirrors
+  `--target`'s existing enum style and gives the manifest key an obvious name.
+- `--aot` and `--standalone` are sugar for `--shape aot` / `--shape standalone`.
+  They are provided because they are the spellings users reach for first, and
+  because Rust (`--release`) and Go (`CGO_ENABLED`/`-buildmode`) have trained
+  the boolean expectation. Combining sugar with a conflicting `--shape` is
+  `F0034`; combining the two sugar flags with each other is `F0034`.
+
+`--debug` is the default and never needs to be written; it exists so that a
+manifest-level `profile = "release"` can be overridden back on the command line.
+
+### 4.2 Manifest
+
+```toml
+[build]
+kind    = "lib"        # what the artifact IS   — lib | exe | bundle
+shape   = "portable"   # how it is PACKAGED     — portable | standalone | aot
+profile = "debug"      # optimization/symbols   — debug | release
+```
+
+`kind = "aot"` is removed. It is a hard error (`F0035`) naming
+`shape = "aot"` as the replacement — see §6.
+
+Precedence is **CLI > manifest > default**, matching docs/60's define
+precedence so there is one precedence rule in the toolchain, not two.
+
+### 4.3 Other commands
+
+`lyric run`, `lyric test`, and `lyric bench` accept `--debug`/`--release` and
+default to `debug`. `lyric test --release` is genuinely useful (optimized-build
+test runs catch a different class of defect) and costs nothing to support once
+`build` threads the profile.
+
+### 4.4 Why an enum and sugar rather than pure booleans — settled
+
+**Settled:** `--shape` is canonical; `--aot`/`--standalone` are sugar that
+lowers to it. The alternative — three independent booleans — makes
+`--aot --portable`, `--standalone --aot`, and `--portable --standalone`
+representable states requiring diagnostics and precedence rules. The enum makes
+them unrepresentable. Whether to keep the sugar at all is **Q-BP-001**.
+
+---
+
+## 5. Compatibility matrix
+
+### 5.1 shape × target
+
+|            | `--target dotnet` | `--target jvm` | `--target native` |
+|---|---|---|---|
+| `portable` | **default** — `.dll` | **default** — `.jar` | **error `F0036`** |
+| `standalone` | self-contained publish | `jlink` image / fat JAR | **error `F0036`** |
+| `aot` | ILC Native AOT | GraalVM `native-image` — **not implemented**, fails loud (#1975) | **default and only valid shape** |
+
+`--target native` fixes the shape at `aot`. Passing `--shape aot` explicitly is
+accepted as a no-op; `portable` and `standalone` are `F0036` with a message
+explaining that a native build is AOT by construction.
+
+This replaces today's message at `cli_build.l:1124` (*"`--release` is not needed
+with `--target native`"*), which becomes wrong once `--release` means "optimized
+and stripped" — a perfectly meaningful request for a native build.
+
+Note that a native binary is not *fully* static: `llvm_bridge.l:607-613` links
+`-lm`, `-lpthread`, and `-ldl` dynamically. "Standalone" here means "needs no
+*managed* runtime", not "no dynamic libraries". Fully-static linking
+(`-static`, musl) is out of scope and tracked as **Q-BP-002**.
+
+### 5.2 profile × target
+
+All four combinations are valid. Profile changes optimization level and
+debug-info emission only.
+
+For `--target native` the profile also sets the clang optimization default:
+`--debug` → `-O0`, `--release` → `-O2`. An explicit `--opt` continues to win
+over both, and `[native] opt_level` (N6.4) continues to sit between them at
+manifest precedence. **Q-BP-003** covers whether `--debug` should imply `-O0`
+or `-Og`.
+
+### 5.3 Gates that must be re-scoped, not preserved
+
+Three current rejections key off `release` when they should key off `shape ==
+aot`. Preserving them verbatim through the refactor would be a bug.
+
+| Gate | Today | After |
+|---|---|---|
+| `--define` | rejected when `release` (`cli_build.l:180-183`, `defineBuildGateError`) | rejected when `shape == aot`; `--release --shape portable --define K=V` works |
+| manifest `[build.define]` | rejected when `release` or `autoAot` (`manifestDefineGateError`) | rejected when `shape == aot` only |
+| `--watch` | rejected when `release` (`cli_build.l:1116`) | rejected when `shape != portable` (watch is an inner-loop tool; AOT and standalone builds are too slow to watch) |
+| `--rid` | warned unless `release` (`cli_build.l:1092`, `cli_build.l:1137`) | warned unless `shape` is `standalone` or `aot` |
+
+`defineBuildGateError` and `manifestDefineGateError` are already pure,
+unit-tested predicates (#6188, `cli_build_self_test.l`). Re-scoping them is a
+signature change plus test updates, not a rewrite — which is exactly why they
+were factored out.
+
+---
+
+## 6. Compatibility: clean break
+
+**Settled:** `--release` changes meaning in one step. There is no deprecation
+window and no version in which bare `--release` still implies AOT.
+
+Rationale: a deprecation window requires bare `--release` to keep producing an
+AOT binary while warning, which means the flag means two different things
+depending on the release you are on. For a pre-1.0 toolchain the silent-artifact-
+change risk is smaller than the cost of shipping and then removing a compat
+path. This is a deliberate acceptance of breakage, not an oversight.
+
+Mitigations, all required in band B0:
+
+1. **`kind = "aot"` is a hard error, not a silent behaviour change.** `F0035`
+   names `shape = "aot"` explicitly. A manifest user cannot be silently
+   downgraded to a portable DLL.
+2. **A one-line note on every `--release` build whose shape is `portable`,**
+   for one minor version: `note: --release now selects the optimization profile
+   only; pass --aot for a self-contained native binary (was implied before
+   <version>)`. This is a *note on a successful build*, not a deprecation
+   warning on a legacy path — it costs nothing and catches the scripted case.
+3. **`CHANGELOG` and `book/chapters/01-getting-started.md` migration table**
+   mapping every old invocation to its new spelling.
+
+| Old | New |
+|---|---|
+| `lyric build --release app.l` | `lyric build --release --aot app.l` |
+| `lyric build --release` (project) | `lyric build --release --aot` |
+| `[build] kind = "aot"` | `[build] shape = "aot"` (+ `profile = "release"` if desired) |
+| `lyric build app.l` | unchanged — now explicitly `--debug --shape portable` |
+
+Note that mitigation 2 is only reachable because the break is clean: under a
+deprecation window the same builds would still be producing AOT binaries and the
+note would be a lie.
+
+---
+
+## 7. Diagnostics
+
+New codes in the `F` family (`F0012`–`F0013` are cfg, `F0020`–`F0024` FFI
+interfaces, `F0030`–`F0032` build defines; `F0033`+ is free):
+
+| Code | Condition |
+|---|---|
+| `F0033` | `--debug` and `--release` both passed |
+| `F0034` | conflicting shape spellings (`--aot --standalone`, `--aot --shape portable`, …) |
+| `F0035` | `[build] kind = "aot"` — removed; use `shape = "aot"` |
+| `F0036` | shape incompatible with target (`--target native --shape portable`) |
+| `F0037` | shape requested whose toolchain is unavailable (GraalVM `native-image`, #1975) |
+
+Whether build-shape diagnostics deserve their own family letter rather than
+extending `F` is **Q-BP-004**.
+
+---
+
+## 8. Debugger architecture
+
+### 8.1 Settled: hybrid, staged
+
+**Settled:** the compiler emits **both** standard host debug formats **and**
+Lyric-owned side tables, from a single span-threading pass. A thin host-debugger
+shim ships first. A Lyric-aware DAP *proxy* — which rewrites the host debugger's
+frames and locals rather than replacing its execution control — is a defined
+later stage, not a rewrite.
+
+The reasoning that selected this over the two pure options:
+
+- **The expensive, risky parts of a debugger are execution control** —
+  breakpoint insertion, single-stepping, stack unwinding, thread suspension. A
+  Lyric-native debugger reimplements all of them three times. On .NET and the
+  JVM they cannot be implemented in Lyric at all: they require ICorDebug (COM,
+  out-of-process) or JVMTI (a C agent via `-agentpath`). `lyric-rt/` establishes
+  that C runtime code is acceptable in this repo, so it is not a hard block —
+  but it is a policy expansion for a component whose value is presentational.
+- **A pure host-format approach solves execution control for free but shows the
+  lowered program.** Given §2.6, users would see `__aspect_target` frames,
+  `mapFoo__Int__String`, `__Closure_*` environment classes (docs/53), and
+  `__lyric_result_0` locals. For a language whose headline features are
+  contracts and aspects, that is a poor first impression.
+- **Both approaches need the same span work (§2.5, §2.6), and once spans reach
+  codegen, writing a Lyric side table is the same plumbing into a second
+  encoder.** The marginal cost of keeping the option open is close to zero.
+- **Standard formats are needed regardless.** Crash symbolication, profilers,
+  `dotnet-dump`, `llvm-dwarfdump`, and IDE interop all consume them. A
+  Lyric-native debugger would not remove that requirement, so the pure-native
+  option is realistically "host formats *plus* a whole debugger".
+
+The proxy in stage S3 therefore buys most of the presentational benefit at a
+fraction of the cost, and never requires a JVMTI or ICorDebug agent.
+
+### 8.2 Stages
+
+**S1 — host-debugger shim.** `lyric debug [<source.l>]` builds with
+`--debug` and launches the program under the host debugger: `netcoredbg` for
+dotnet, JDWP (`-agentlib:jdwp`) for jvm, `lldb` for native. Lyric ships a thin
+DAP passthrough that fixes up source paths. `lyric-vscode/` gains a
+`debuggers` contribution point. At this stage the user sees lowered names, and
+that is an accepted, documented limitation.
+
+**S2 — side tables and symbol distribution.** `LyricSourceMap`-style tables
+(docs/18 Appendix C) are emitted alongside the host formats from the same pass.
+Release builds write symbols to a side file rather than discarding them (§10.2),
+enabling crash symbolication of stripped binaries — which is plausibly worth
+more to production users than interactive stepping.
+
+**S3 — Lyric-aware DAP proxy.** A Lyric process sits between the editor and the
+host debug adapter, rewriting DAP messages using the S2 tables:
+
+| Host debugger shows | Proxy shows |
+|---|---|
+| `mapFoo__Int__String` | `mapFoo[Int, String]` |
+| `__aspect_target` + wrapper frame | one frame, annotated with the applied aspect |
+| `__Closure_7` environment object | the captured variables, by their source names |
+| `__lyric_result_0` local | hidden |
+| opaque type's fields | `<opaque>`, per §10.1 policy |
+
+The proxy is pure Lyric, target-independent, and testable against recorded DAP
+transcripts without a running debuggee.
+
+---
+
+## 9. Bands
+
+| Band | Content | Gates |
+|---|---|---|
+| **B0** | Flag surface: profile/shape axes, `--shape` + sugar, manifest keys, re-scoped gates (§5.3), `F0033`–`F0037`, migration note, docs + book. **No debug info yet.** | — |
+| **B1** | Span plumbing (§2.5) and `SpanOrigin` provenance through the middle end (§2.6). | B0 |
+| **B2** | JVM debug info: `LineNumberTable`, `LocalVariableTable` in `classfile.l`. | B1 |
+| **B3** | dotnet: portable-PDB writer (`msil/pdb.l`), PE Debug Directory + RSDS in `pe.l`, `DebuggableAttribute`. | B1 |
+| **B4** | native: LLVM debug-metadata subsystem in `llvm_ir.l`, `-g` to clang, profile-gated `--strip-debug`. | B1 |
+| **B5** | `lyric debug` + DAP shim + VS Code contribution (S1). | any one of B2–B4 |
+| **B6** | `LyricSourceMap` side tables + symbol-file distribution (S2). | B2–B4 |
+| **B7** | Lyric-aware DAP proxy (S3). | B6 |
+
+### 9.1 Why B0 ships alone
+
+Band B0 is independently valuable and independently reviewable: it fixes the
+`--define`/`--release` mis-gating (§5.3), unlocks the optimized-portable-DLL
+artifact (§3.4), and removes the `kind` conflation — none of which depend on a
+single line of debug-info work. It is also the only band that breaks
+compatibility, so it should not be entangled with a large feature landing.
+
+### 9.2 Why JVM debug info goes first among B2–B4
+
+Deliberate sequencing, not alphabetical accident:
+
+- It adds attributes to an **existing, working class-file writer**
+  (`classfile.l` already emits `SourceFile` at line 360) rather than
+  introducing a new file format.
+- It is **independently verifiable with a standard tool** — `javap -l` prints
+  the line table, so B2 has a real oracle rather than "the debugger seemed to
+  work".
+- **JDWP is already in every JVM.** B2 plus B5 produces a working end-to-end
+  debug experience with no runtime agent written, which validates the whole
+  architecture — including the S3 presentation problems — before committing to
+  a portable-PDB writer (B3) or an LLVM metadata subsystem (B4).
+
+B3 and B4 are each substantially larger. `msil/pdb.l` is a new binary-format
+writer comparable in scope to the existing `pe.l`/`tables.l`. B4 is larger than
+it looks: `llvm_ir.l` currently has **zero** metadata support (no `!dbg`, no
+`metadata` occurrences at all), so DWARF requires building
+`!DICompileUnit`/`!DIFile`/`!DISubprogram`/`!DILocation`, the `!llvm.dbg.cu`
+named metadata, and the `Debug Info Version` module flag from scratch.
+
+### 9.3 `SpanOrigin` (band B1)
+
+The proposal for §2.6. Every AST node reaching codegen carries not just a span
+but its provenance:
+
+```
+union SpanOrigin {
+  case Direct(span: Span)
+  case Synthesized(from: Span, by: PassName)
+}
+```
+
+`Direct` is user-written code. `Synthesized` records the span of the construct
+that *caused* the synthesis — the `requires:` clause for an elaborated assert,
+the aspect declaration for a woven wrapper, the generic function for a
+specialisation. Debuggers default to stepping *over* synthesized code and
+attribute it to its cause, so a contract violation stops at the contract the
+user wrote rather than at line 0.
+
+This replaces `weaver.l`'s `synSpan()` and gives the S3 proxy the information it
+needs to collapse aspect frames. It is the single highest-leverage item in the
+plan and the one most likely to be underestimated.
+
+---
+
+## 10. Two policy questions the design must answer
+
+### 10.1 Opaque types versus debuggers
+
+`docs/00-overview.md` states that an opaque type's representation is
+unreachable — "not by reflection, not by serialization, **not by debugger
+hooks**". A standard portable PDB plus a standard debugger cracks an opaque type
+open: the fields are simply there.
+
+This is a genuine conflict with a stated design principle and must be resolved
+explicitly rather than by accident. The proposed resolution:
+
+1. The principle constrains **the artifact you ship**. `--release` strips debug
+   info, so the guarantee holds for shipped artifacts.
+2. `--debug` artifacts are development artifacts. Opaque fields are visible to a
+   raw host debugger, and this is documented, not hidden.
+3. Under S3 the proxy renders opaque fields as `<opaque>` **by default**, with
+   an explicit `lyric debug --show-opaque` opt-in for debugging an opaque type's
+   own package.
+
+This requires an amendment note in docs/00 and a decision-log entry. Adopting it
+without one would leave the codebase quietly contradicting its own overview.
+Tracked as **Q-BP-005**.
+
+### 10.2 Where release symbols go
+
+`--release` strips debug info from the artifact. It should not *discard* it:
+crash symbolication of a stripped production binary is arguably the highest-value
+debug-info use case. Proposal: `--release` writes symbols beside the artifact
+(`app.pdb`, `app.debug`, `app.jar.map`) and the artifact retains only the build
+ID needed to match them. Whether this is default-on or opt-in via
+`--symbols <dir>` is **Q-BP-006**.
+
+---
+
+## 11. Documentation obligations
+
+Per CLAUDE.md, a feature is not complete until docs and book reflect it. For
+band B0 that means, in the same PR:
+
+- `docs/01-language-reference.md` — the CLI section: profile/shape flags, the
+  compatibility matrix, `F0033`–`F0037`.
+- `book/chapters/01-getting-started.md` — toolchain table + migration table.
+- `book/chapters/appendix-b-quick-reference.md` — CLI reference.
+- `docs/10-bootstrap-progress.md` — tier status.
+- `docs/24-build-features.md` §8 and `docs/22-distribution-and-tooling.md` —
+  cross-links to this document.
+- `docs/60-build-defines.md` §3.3 — `build_profile` is now sourced from the
+  profile axis, not from the `--release` code path.
+
+Nothing in this document has shipped, so no such update is due yet.
+
+---
+
+## 12. Risk register
+
+| Risk | Severity | Note |
+|---|---|---|
+| `netcoredbg` may not handle a portable PDB from a non-Roslyn compiler | **high** | **[unverified]** — the central technical assumption of B3+B5 on dotnet. A spike must confirm this before B3 is scheduled. |
+| B1 (`SpanOrigin`) is larger than estimated | high | Touches weaver, elaborator, mono, wire-expand, and three backend IRs. Every later band depends on it. |
+| GraalVM `native-image` shape is unimplemented (#1975) | medium | `--shape aot --target jvm` must fail loud (`F0037`), never silently emit a JAR. |
+| MSIL/JVM divergence | medium | docs/59 documents one-sided fixes between the backends. Debug info doubles the surface where they can drift. |
+| Clean break surprises scripted users | medium | Accepted per §6; mitigated by `F0035` and the build note. |
+| Optimization at `--release` is currently a no-op for dotnet/jvm | low | Lyric has no IL/bytecode optimizer; `--release` on those targets means "strip symbols" only, and the docs must say so rather than implying optimization that does not happen. |
+
+---
+
+## 13. Open questions
+
+- **Q-BP-001:** Keep the `--aot`/`--standalone` sugar, or require `--shape`
+  only? Sugar is friendlier; enum-only is one spelling per concept (D051
+  precedent).
+- **Q-BP-002:** Fully-static native linking (`-static`, musl) — a fourth shape,
+  a `[native]` key, or out of scope?
+- **Q-BP-003:** Should `--debug --target native` use `-O0` or `-Og`?
+- **Q-BP-004:** Do build-shape diagnostics warrant their own family letter
+  rather than extending `F`?
+- **Q-BP-005:** Ratify the §10.1 opaque-type resolution and amend docs/00.
+- **Q-BP-006:** Are release symbol side-files default-on or opt-in?
+- **Q-BP-007:** Does `lyric publish` default to `--release --shape portable`
+  once that combination exists?
+- **Q-BP-008:** Should `[profile.dev]` / `[profile.release]` manifest tables
+  (Cargo-style, allowing per-profile `opt_level`) supersede the flat
+  `[build] profile` key?
+- **Q-BP-009:** Does the `debug` profile disable the contract-elision modes, or
+  are `[contracts]` flags fully independent of profile?
+- **Q-BP-010:** Should `LyricSourceMap` be a single cross-target format, or
+  three target-idiomatic encodings behind one reader interface?
+- **Q-BP-011:** Does `lyric debug` need a `--attach <pid>` mode in S1, or is
+  launch-only acceptable for the first release?
+
+---
+
+## 14. References
+
+- `docs/00-overview.md` — the opaque-type principle in tension with §10.1.
+- `docs/18-jvm-emission.md` Appendix C — `LyricSourceMap`, specified but unemitted.
+- `docs/22-distribution-and-tooling.md` — artifact distribution; consumes §10.2.
+- `docs/24-build-features.md` — `@cfg` erasure; sibling of the profile axis.
+- `docs/53-epic-1877-implementation-plan.md` — `__Closure_*` synthesis, an S3 rewrite case.
+- `docs/59-compiler-stdlib-deep-review.md` — MSIL/JVM divergence risk.
+- `docs/60-build-defines.md` §3.3 — the existing `build_profile` define.
+- Issues: #1975 (GraalVM `native-image`), #4200 (`-gz=zlib` vs `--strip-debug`),
+  #6188 (`defineBuildGateError` unit tests).

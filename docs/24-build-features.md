@@ -376,6 +376,17 @@ is erased without warning).
   stage beside `applyCfgErasure`); resolves Q-BD-001 – Q-BD-009. Unbacked
   pending a decision-log entry.
 
+- **Q-features-005:** Build *profile* and output *shape* as axes distinct
+  from features. `--release` currently selects a packaging mode (Native
+  AOT), not an optimization/symbol profile, so `@cfg`-style conditional
+  compilation is the only compile-time build axis Lyric exposes today.
+  Sketched in `docs/63-build-profiles-and-debugger.md` (`--debug`/
+  `--release` profile + `--shape portable|standalone|aot`, `[build]
+  profile`/`shape` manifest keys); note that the well-known
+  `build_profile` define this document's §3.3 defines is currently
+  sourced from the `--release` code path and would move to the profile
+  axis. Unbacked pending a decision-log entry.
+
 ---
 
 ## 9. References
