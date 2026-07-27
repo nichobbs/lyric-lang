@@ -236,7 +236,7 @@ them unrepresentable. Whether to keep the sugar at all is **Q-BP-001**.
 |---|---|---|---|
 | `portable` | **default** — `.dll` | **default** — `.jar` | **error `F0036`** |
 | `standalone` | self-contained publish | `jlink` image / fat JAR | **error `F0036`** |
-| `aot` | ILC Native AOT | GraalVM `native-image` — **not implemented**, fails loud (#1975) | **default and only valid shape** |
+| `aot` | ILC Native AOT | GraalVM `native-image` — **shipped** for Linux/macOS (D131; Windows still #1975) | **default and only valid shape** |
 
 `--target native` fixes the shape at `aot`. Passing `--shape aot` explicitly is
 accepted as a no-op; `portable` and `standalone` are `F0036` with a message
@@ -354,7 +354,7 @@ ABI restriction, and build defines. Proposed new codes:
 | `F0034` | conflicting shape spellings (`--aot --standalone`, `--aot --shape portable`, …) |
 | `F0035` | `[build] kind = "aot"` — removed; use `shape = "aot"` |
 | `F0036` | shape incompatible with target (`--target native --shape portable`) |
-| `F0037` | shape requested whose toolchain is unavailable (GraalVM `native-image`, #1975) |
+| `F0037` | shape requested whose toolchain is unavailable (e.g. GraalVM `native-image` absent from the host, or a Windows JVM host — #1975) |
 
 Whether build-shape diagnostics deserve their own family letter rather than
 extending `F` is **Q-BP-004** — and the table above is the argument that they
@@ -558,7 +558,7 @@ Nothing in this document has shipped, so no such update is due yet.
 |---|---|---|
 | `netcoredbg` may not handle a portable PDB from a non-Roslyn compiler | **high** | **[unverified]** — the central technical assumption of B3+B5 on dotnet. A spike must confirm this before B3 is scheduled. |
 | B1 (`SpanOrigin`) is larger than estimated | high | Touches weaver, elaborator, mono, wire-expand, and three backend IRs. Every later band depends on it. |
-| GraalVM `native-image` shape is unimplemented (#1975) | medium | `--shape aot --target jvm` must fail loud (`F0037`), never silently emit a JAR. |
+| GraalVM `native-image` shape is host-dependent (shipped Linux/macOS in D131; Windows #1975) | medium | `--shape aot --target jvm` must fail loud (`F0037`) when the toolchain is missing or the host is unsupported, never silently emit a JAR. `Lyric.Release.jvmReleasePreflightError` already implements this check for `--release`. |
 | MSIL/JVM divergence | medium | docs/59 documents one-sided fixes between the backends. Debug info doubles the surface where they can drift. |
 | Clean break surprises scripted users | medium | Accepted per §6; mitigated by `F0035` and the build note. |
 | Optimization at `--release` is currently a no-op for dotnet/jvm | low | Lyric has no IL/bytecode optimizer; `--release` on those targets means "strip symbols" only, and the docs must say so rather than implying optimization that does not happen. |
