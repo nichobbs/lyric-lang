@@ -1195,7 +1195,6 @@ func cmdBuild(argv: in slice[String]): Int {
         return 1
       }
     }
-    val isAotShape = match axes.shape { case SAot -> true; case _ -> false }
     // docs/60 §3.1: manifest `[build.define]` is threaded through `buildProject`.
     // Reject up front (no silent drop, #6139) on any shape that cannot consume
     // it. `--watch` is fine — `buildProject` reapplies the manifest defines on
@@ -1226,10 +1225,7 @@ func cmdBuild(argv: in slice[String]): Int {
       )
       return 1
     }
-    if isAotShape {
-      if shouldPrintReleaseNote(sawReleaseFlag, cliShapeNamed, axes.shape) {
-        printErr(releaseProfileOnlyNote())
-      }
+    if usesPackagingPipeline(axes.shape, target) {
       return buildReleaseProject(
         mfPath,
         explicitOut,
@@ -1257,7 +1253,8 @@ func cmdBuild(argv: in slice[String]): Int {
           noDef = noDefaultFeatures,
           allF = allFeatures,
           noRestore = noRestore,
-          pkgVer = packageVersionArg
+          pkgVer = packageVersionArg,
+          profile = axes.profile
         )
       )
     }
@@ -1302,7 +1299,6 @@ func cmdBuild(argv: in slice[String]): Int {
       return 1
     }
   }
-  val isAotShape = match axes.shape { case SAot -> true; case _ -> false }
 
   match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, target, "") {
     case Some(msg) -> {
@@ -1324,14 +1320,11 @@ func cmdBuild(argv: in slice[String]): Int {
     printErr(releaseProfileOnlyNote())
   }
 
-  if isAotShape {
-    // `--target native` already resolves to `SAot` and produces its binary
-    // through the LLVM pipeline, not through `Lyric.Release`; only the managed
-    // targets need the AOT-packaging hop.
-    match target {
-      case Native -> ()
-      case _ -> return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg, axes.profile)
-    }
+  // Routing uses the same predicate as the gates (#6271): `--target native`
+  // resolves to `SAot` but produces its binary through the LLVM pipeline, not
+  // through `Lyric.Release`, so only a genuine packaging pipeline takes the hop.
+  if usesPackagingPipeline(axes.shape, target) {
+    return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg, axes.profile)
   }
 
   // `--rid` only applies to the packaging shapes; warn here so the flag isn't
@@ -1373,7 +1366,8 @@ func cmdBuild(argv: in slice[String]): Int {
         nativeOpt = optArg,
         feats = cliFeatures,
         noDef = noDefaultFeatures,
-        allF = allFeatures
+        allF = allFeatures,
+        profile = axes.profile
       )
     )
   }

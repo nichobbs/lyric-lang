@@ -151,8 +151,8 @@ val WATCH_POLL_MS: Int = 400
 union WatchAction {
   case RunFile(sourcePath: String, userArgs: List[String], target: CompileTarget)
   case RunProj(mfPath: String, userArgs: List[String], target: CompileTarget)
-  case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool, pkgVer: Option[String])
-  case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String], nativeTriple: String, nativeOpt: String, feats: List[String], noDef: Bool, allF: Bool)
+  case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool, pkgVer: Option[String], profile: BuildProfile)
+  case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String], nativeTriple: String, nativeOpt: String, feats: List[String], noDef: Bool, allF: Bool, profile: BuildProfile)
 }
 
 // Build the program once and execute it.  Target-aware: Dotnet runs via
@@ -238,9 +238,9 @@ func runWatchAction(a: in WatchAction): Int {
   match a {
     case RunFile(sp, ua, t) -> runOnce(sp, ua, t)
     case RunProj(mp, ua, t) -> runProjectOnce(mp, ua, t)
-    case BuildProj(mf, o, t, f, nd, af, nr, pv) -> buildProject(mf, o, t, f, nd, af, nr, pv, None, newList())
-    case BuildFile(sp, o, t, m, tr, op, f, nd, af) -> {
-      val runDefines: List[String] = newList()
+    case BuildProj(mf, o, t, f, nd, af, nr, pv, prof) -> buildProject(mf, o, t, f, nd, af, nr, pv, None, withProfileDefine(newList(), prof))
+    case BuildFile(sp, o, t, m, tr, op, f, nd, af, prof) -> {
+      val runDefines: List[String] = withProfileDefine(newList(), prof)
       buildOneNativeWithFeatures(sp, o, t, m, tr, op, f, nd, af, runDefines)
     }
   }

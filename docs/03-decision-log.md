@@ -20431,3 +20431,84 @@ fails; there is no target where `--release` quietly yields a managed artifact.
 
 **Related:** #1975, #675, D079, `docs/44-jvm-production-readiness-plan.md` M-18,
 `docs/18-jvm-emission.md` (Stage B7), `docs/22-distribution-and-tooling.md`.
+
+## D132 — Build profile and output shape are independent axes; `--release` is no longer a packaging mode (docs/63 band B0)
+
+**Status:** Accepted 2026-07-27. Implements band B0 of
+`docs/63-build-profiles-and-debugger.md`; bands B1–B7 (span plumbing,
+debug-information emission, the debugger) remain unimplemented.
+
+**Context.** `--release` selected a *packaging mode* — self-contained Native
+AOT via `Lyric.Release` — not an optimization/symbol profile. A single flag
+chose four independent properties at once: optimize, strip symbols,
+self-contain, AOT-compile. `[build] kind` carried the same conflation from the
+other direction, mixing what the artifact *is* (`lib`/`exe`/`bundle`) with how
+it is *packaged* (`aot`).
+
+The immediate motivation was a Lyric debugger: no target emits debug
+information, and the one flag that could plausibly gate its emission did not
+mean what its name suggests. The audit behind docs/63 also found that Lyric
+*already had* a profile axis — the well-known `build_profile` define
+(`debug`/`release`, surfaced as `Std.BuildInfo.profile`) — wired to the
+`--release` code path rather than to a profile. That makes this a correction,
+not an invention.
+
+**Decision.**
+
+1. **Two independent axes**, both orthogonal to `--target`:
+   - *profile* — `--debug` (default) / `--release`, `[build] profile`.
+   - *shape* — `--shape portable` (default) `| standalone | aot`,
+     `[build] shape`, with `--aot` / `--standalone` as sugar.
+   All six combinations are valid. This makes two artifacts reachable that
+   were not: an optimized framework-dependent DLL (`--release --shape
+   portable`, the correct `lyric publish` output) and a debuggable AOT binary
+   (`--debug --aot`).
+
+2. **`--shape` is the canonical spelling**, with the booleans as sugar, so
+   `--aot --portable` is *unrepresentable* rather than an error case needing a
+   precedence rule. Resolution is CLI over manifest over default — the same
+   rule docs/60 uses for defines, so the toolchain has one precedence rule.
+
+3. **Clean break, no deprecation window.** `--release` means the profile only.
+   `[build] kind = "aot"` is removed and is the hard error `F0035` naming
+   `shape = "aot"` — never a silent remap, so a manifest cannot be quietly
+   downgraded to a portable DLL. A bare `--release` that resolves to a
+   non-`aot` shape prints a one-line migration note. Every `--release`
+   invocation in this repo's own CI was migrated in the same change.
+
+4. **The gates key on the packaging pipeline, not on the raw shape.**
+   `usesPackagingPipeline(shape, target)` is false for `--target native` at
+   every shape: native's shape is always `aot`, but that is its *only and
+   normal* path (Lyric → LLVM IR → clang), not a packaging hop layered on a
+   managed build. `--define`, `--watch`, `--rid`, and the AOT routing itself
+   all key on this predicate. Keying them on `shape != portable` instead was
+   the #6266/#6271 regression: it broke native `--define` (a shipped feature,
+   #5977) and misrouted native project builds into the managed AOT path.
+
+**Rationale for the clean break.** A deprecation window requires bare
+`--release` to keep producing an AOT binary while warning, which means the
+flag means two different things depending on the release you are on. For a
+pre-1.0 toolchain the silent-artifact-change risk is smaller than the cost of
+shipping and then removing a compat path — and the risk is mitigated where it
+actually bites: `kind = "aot"` hard-errors rather than changing behaviour
+silently.
+
+**Consequences.**
+
+- New diagnostics `F0033`–`F0037` (profile conflict, shape conflict, removed
+  `kind = "aot"`, shape invalid for target, shape unimplemented).
+- `build_profile` is sourced from the profile axis, so it is correct for every
+  profile × shape pairing rather than only for the AOT path.
+- `--shape standalone` has no toolchain path on any target and fails loud with
+  `F0037` (#6262) rather than silently emitting a portable artifact.
+- The profile does not yet reach codegen: `--release` performs no
+  optimization, does not relax overflow checking, and does not drive contract
+  elision as `docs/01` §2 and `book/chapters/17` §17.4 describe. Those
+  documents are annotated; #6263 tracks the work.
+- Manifest `[build] shape` is still silently overridden on `--target native`
+  instead of raising `F0036`; distinguishing "declared portable" from "declared
+  nothing" needs a `shapeDeclared` flag on `BuildSection` (#6268).
+
+**Related:** docs/63 (§3 axes, §5.3 re-scoped gates, §6 clean break, §9 bands),
+docs/60 §3.3 (`build_profile`), docs/24 Q-features-005, D045, D131, #6262,
+#6263, #6266, #6267, #6268, #6270–#6274.

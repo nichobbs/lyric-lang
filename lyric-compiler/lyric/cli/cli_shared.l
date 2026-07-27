@@ -244,11 +244,20 @@ func usageText(): String {
     "  lyric init    [<dir>] [--name <Name>] [--lib] [--force]\n" +
     "                (scaffold a new app (or --lib library) package: lyric.toml + src + .gitignore)\n" +
     "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--triple <llvm-triple>] [--opt 0|1|2|3|s] [--no-restore] [--watch] [--define KEY=VALUE]\n" +
-    "                 (--define injects a compile-time String into a @build_const val; single-file --target dotnet only, docs/60)\n" +
+    "                 (--define injects a compile-time String into a @build_const val, docs/60)\n" +
     "                (no source: builds the discovered project's [project.packages] into one DLL;\n" +
     "                 auto-restores deps when lyric.lock is missing or stale unless --no-restore)\n" +
-    "  lyric build   --release [<source.l>] [--manifest <lyric.toml>] [--rid <rid>] [-o <bin>]\n" +
-    "                (self-contained Native AOT binary; no source: builds the discovered project)\n" +
+    "  lyric build   [--debug | --release] [--shape portable|standalone|aot]\n" +
+    "                (two independent axes, both orthogonal to --target -- docs/63:\n" +
+    "                 PROFILE  --debug (default) unoptimized, debug info kept\n" +
+    "                          --release        optimized, debug info stripped\n" +
+    "                 SHAPE    --shape portable (default)  framework-dependent; needs a runtime\n" +
+    "                          --shape standalone          bundles a runtime -- not implemented (#6262)\n" +
+    "                          --shape aot                 native binary; --aot is sugar for this\n" +
+    "                 --standalone/--aot are sugar for the matching --shape)\n" +
+    "  lyric build   --release --aot [<source.l>] [--manifest <lyric.toml>] [--rid <rid>] [-o <bin>]\n" +
+    "                (self-contained native binary; no source: builds the discovered project.\n" +
+    "                 NOTE: --release alone no longer implies AOT -- it selects the profile only)\n" +
     "  lyric check   [<source.l>...] [--manifest <lyric.toml>] [--target dotnet|jvm]\n" +
     "                (type-check without producing a usable output artifact)\n" +
     "  lyric clean   [<dir>] [--manifest <lyric.toml>]\n" +

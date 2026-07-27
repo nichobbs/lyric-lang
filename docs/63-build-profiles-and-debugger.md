@@ -1,6 +1,6 @@
 # 63 — Build profiles, output shapes, and the Lyric debugger
 
-**Status:** **Band B0 shipped** (the flag surface: profile/shape axes,
+**Status:** **Band B0 shipped**, codified in **D132** (the flag surface: profile/shape axes,
 `--shape` + `--aot`/`--standalone` sugar, `[build] shape`/`profile` manifest
 keys, the re-scoped `--define`/`--watch`/`--rid` gates, `F0033`–`F0037`, and
 the `--release` migration note). Bands B1–B7 — span plumbing, debug-information

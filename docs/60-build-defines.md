@@ -27,7 +27,7 @@ manifest build is rejected by `buildProject`), so native `--define` is
 single-file; the well-known `version`/`build_profile` and manifest
 `[build.define]` are project-only and therefore remain MSIL/JVM. The gate widens
 to "single-file `--target dotnet`/`jvm`/`native`, plus project builds on
-`--target dotnet`/`jvm`" — only `--watch` and `--release`/`[build] kind = "aot"`
+`--target dotnet`/`jvm`" — only `--watch` and a non-`portable` `--shape` (docs/63)
 stay gated (their rebuild / AOT-packaging paths thread no defines).
 M1d — the auto-injected well-known **`version`** define
 (`BD.withWellKnownDefines`): the manifest's `[package].version` is injected as a
@@ -43,9 +43,9 @@ project bridges; `buildProject` gains a `cliDefines` param): `lyric build`
 now substitutes `@build_const`s and populates the define-sourced `Std.BuildInfo`
 fields on a project build, merged beneath the well-known `version` so an explicit
 `--define version=…` overrides the manifest. The CLI gate widens to "single-file
-or project, `--target dotnet`/`jvm`"; native (#5977), `--watch`, `--release`, and
-a manifest `[build] kind = "aot"` (which routes into the same AOT-packaging path
-as `--release`, #6139) stay gated — rejected up front rather than silently
+or project, `--target dotnet`/`jvm`"; native (#5977) is supported, while `--watch`
+and any non-`portable` `--shape` (`--aot`/`--standalone`/`[build] shape`) stay
+gated — rejected up front rather than silently
 dropped. M1f — the auto-injected well-known **`target`** define
 (`BD.withWellKnownTarget`): the active backend name (`dotnet` / `jvm` / `native`)
 is injected as a fallback define in `pipeParseAndErase` — the one pass that
@@ -60,8 +60,8 @@ strings, layered on a project build beneath CLI `--define`s (`BD.withManifestDef
 `version` fallback). A `[build.define]`-only manifest (no `[build]` header)
 parses with a default `kind = "lib"`; a non-string value is a manifest error
 (§4, String-only). Applied on `--target dotnet`/`jvm` project builds; rejected
-up front (no silent drop) on `--target native` (#5977), `--release`, and
-`[build] kind = "aot"` (the AOT-packaging path threads no defines). M1h — the
+up front (no silent drop) on any non-`portable` shape (the packaging path threads
+no defines; docs/63 band B0 re-scoped this off `--release`). M1h — the
 auto-injected well-known **`build_profile`** define (`BD.withWellKnownProfile`):
 `pipeParseAndErase` injects `build_profile=debug` on every compile as a fallback;
 a `--release`/AOT build injects `build_profile=release` into its staging compile

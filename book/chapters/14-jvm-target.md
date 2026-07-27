@@ -5,7 +5,7 @@ Lyric defaults to .NET, but it also targets the JVM. `lyric build --target jvm` 
 The two targets share the same language, the same type system, the same contracts, and the same standard library surface. What differs is the output format and the platform-specific kernel that implements I/O and other runtime services. Switching targets is a compiler flag, not a code change — unless your code imports platform-specific `extern` packages.
 
 ::: note
-**JVM status.** `lyric build --target jvm` is production-ready for the package shapes covered in this chapter. Maven dependency resolution (`[maven]` table in `lyric.toml`), `module-path.txt` generation, async generators with `await` in their bodies, `lyric run --target jvm`, `lyric bench --target jvm`, GraalVM native-image binaries (`lyric build --release --target jvm`, §14.6), and the `func main(args: slice[String]): Int` entry point (argv forwarded; the `Int` return becomes the process exit code via `System.exit`) are all implemented.
+**JVM status.** `lyric build --target jvm` is production-ready for the package shapes covered in this chapter. Maven dependency resolution (`[maven]` table in `lyric.toml`), `module-path.txt` generation, async generators with `await` in their bodies, `lyric run --target jvm`, `lyric bench --target jvm`, GraalVM native-image binaries (`lyric build --release --aot --target jvm`, §14.6), and the `func main(args: slice[String]): Int` entry point (argv forwarded; the `Int` return becomes the process exit code via `System.exit`) are all implemented.
 :::
 
 ## §14.1 Building for the JVM
@@ -243,21 +243,21 @@ For full details on the resolver protocol, version pinning, and the `[maven.opti
 
 ## §14.6 Native binaries with GraalVM
 
-A JAR still needs a JVM installed to run it. `lyric build --release --target jvm`
+A JAR still needs a JVM installed to run it. `lyric build --release --aot --target jvm`
 removes that requirement: it builds the ordinary bundled JAR into
 `.lyric-release/`, then compiles it ahead-of-time with GraalVM's `native-image`
 into a standalone executable.
 
 ```sh
 export GRAALVM_HOME=/path/to/graalvm-jdk-21
-lyric build --release --target jvm hello.l
+lyric build --release --aot --target jvm hello.l
 ./hello                     # no JVM on this machine required
 ```
 
 The image entry point is the JAR manifest's `Main-Class`, which the emitter
 already writes — there is no generated wrapper class. Restored `[maven]`
 dependencies are passed as the image classpath, so a project with Maven deps
-needs no extra flags. Project mode works the same way (`lyric build --release
+needs no extra flags. Project mode works the same way (`lyric build --release --aot
 --target jvm` with no source file), with the entry package auto-detected from
 whichever package declares `func main()`.
 
@@ -268,7 +268,7 @@ Three things are worth knowing:
   the build fails listing every location it looked at.
 - **`--no-fallback` is always passed.** Left to itself, `native-image` responds
   to a world it cannot close by silently emitting a *fallback image* — a
-  launcher that still requires a JVM. That would mean `--release` exits 0
+  launcher that still requires a JVM. That would mean the build exits 0
   having produced exactly the artifact you asked it to eliminate, so Lyric
   turns it into a build failure instead.
 - **There is no cross-compilation.** `native-image` always builds for the

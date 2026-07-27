@@ -1565,7 +1565,7 @@ serialisation, test discovery, mocking via `@stubbable`).
 
 ### 22.2 Native-image configuration
 
-**As shipped** (D131): `lyric build --release --target jvm` writes the
+**As shipped** (D131): `lyric build --release --aot --target jvm` writes the
 four configs into a staging `native-image-config/` directory beside the
 bundled JAR and passes it via `-H:ConfigurationFileDirectories=`, rather
 than embedding them per-package under `META-INF/native-image/lyric/<P>/`.
