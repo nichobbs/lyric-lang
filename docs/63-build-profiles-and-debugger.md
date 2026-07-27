@@ -320,12 +320,33 @@ note would be a lie.
 
 ## 7. Diagnostics
 
-New codes in the `F` family. The family is currently more crowded and less
-thematically coherent than its name suggests — the codes in use are `F0000`,
-`F0002`, `F0012`–`F0013` (cfg erasure), `F0015`, `F0020` (`?`-propagation, in
-`propagate.l` — *not* FFI, despite sitting immediately below the FFI block),
-`F0021`–`F0024` (FFI interfaces, docs/51), `F0025`–`F0027` (`@externTarget`
-diagnostics), and `F0030`–`F0032` (build defines). `F0033`+ is free:
+New codes in the `F` family. `F0033`+ is free: a sweep of quoted `"F00NN`
+literals across `lyric-compiler/` finds `F0002`, `F0012`–`F0013`,
+`F0015`, `F0020`–`F0027`, and `F0030`–`F0032` in use, and nothing above
+`F0032`.
+
+The family is worth looking at before extending it, because it is not one
+family:
+
+| Code | Meaning | Emitted at |
+|---|---|---|
+| `F0002` | conflicting `@externStatic` / `@externInstance` hints | `typechecker_stmts.l:779` |
+| `F0012`–`F0013` | `@cfg` erasure: malformed predicate, undeclared feature | `cfg.l:76`, `cfg.l:94` |
+| `F0015` | `@externTarget` signature mismatch (JVM variant `F0015-J`) | `msil/codegen.l:17418`, `jvm/codegen/04_calls.l:314` |
+| `F0020` | **two meanings** — `?` in a non-`Result`/`Option` function, *and* FFI "not an interface" | `propagate.l:266`, `msil/codegen.l:28765` |
+| `F0021` | **two meanings** — `for`-loop variable not irrefutable, *and* FFI missing impl method | `msil/codegen.l:14258`, `msil/codegen.l:28612` |
+| `F0022`–`F0024` | FFI interface validation: parameter, return, and shape mismatches (docs/51) | `msil/codegen.l:28641`, `:28670`, `:28744` |
+| `F0025` | try-catch-as-expression whose catch arm yields `Unit` (type-checker gap #2042) | `msil/codegen.l:15594` |
+| `F0026` | non-literal argument where a delegate-bridged parameter needs a lambda literal | `msil/codegen.l:12862` |
+| `F0027` | warning: hint-less `@externTarget` | `msil/codegen.l:28704` |
+| `F0030`–`F0032` | build defines (docs/60) | `build_defines.l:486` … |
+
+Two observations that bear on where the new codes should go. First, `F0020`
+and `F0021` are each **already double-assigned** to unrelated diagnostics —
+a pre-existing numbering collision, out of scope here but evidence that the
+family is not being administered. Second, the remaining codes span FFI hints,
+conditional compilation, pattern irrefutability, a type-checker gap, a lambda
+ABI restriction, and build defines. Proposed new codes:
 
 | Code | Condition |
 |---|---|
@@ -336,11 +357,10 @@ diagnostics), and `F0030`–`F0032` (build defines). `F0033`+ is free:
 | `F0037` | shape requested whose toolchain is unavailable (GraalVM `native-image`, #1975) |
 
 Whether build-shape diagnostics deserve their own family letter rather than
-extending `F` is **Q-BP-004** — and the inventory above is an argument that they
-might. The `F` family currently spans `?`-propagation, conditional-compilation
-erasure, FFI interface validation, `@externTarget` warnings, and build defines,
-which is not one family so much as a default bucket. Adding a sixth unrelated
-concern to it is the path of least resistance, not obviously the right call.
+extending `F` is **Q-BP-004** — and the table above is the argument that they
+might. `F` is not a family so much as a default bucket, and it already contains
+two double-assigned codes. Adding a seventh unrelated concern to it is the path
+of least resistance, not obviously the right call.
 
 ---
 
