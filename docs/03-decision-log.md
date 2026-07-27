@@ -20410,6 +20410,21 @@ materializes the output directory first.
   silently is a decision users should make. Revisit if distribution tooling
   needs it.
 
+**Verifying `--no-fallback` actually held** requires running the produced binary
+with **no JVM reachable at all** — an empty environment (`env -i`, no `PATH`,
+no `JAVA_HOME`), not merely a trimmed one. The first attempt used
+`env -i PATH=/usr/bin:/bin`, which is vacuous on any machine that has a JVM in
+`/usr/bin` (GitHub's runner image does): a fallback launcher would have found
+one and the assertion would have passed while proving nothing (caught in
+review, #6260). CI now also asserts the binary links no `libjvm`/`libjli`.
+
+**`--rid` host-matching compares the C-library flavor, not just OS and arch.**
+`ridOs`/`ridArch` both reduce `linux-musl-x64` and `linux-x64` to `linux`/`x64`,
+so a check built on those two would have admitted a musl RID on a glibc host —
+producing exactly the "host binary under a cross-target name" this decision
+rejects. `ridFlavor` extracts the middle segment and `ridMatchesHost` requires
+all three to agree.
+
 **Consequence:** every `--release` target now produces a standalone binary or
 fails; there is no target where `--release` quietly yields a managed artifact.
 `docs/44` M-18 closes.

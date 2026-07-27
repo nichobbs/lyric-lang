@@ -31411,15 +31411,38 @@ cross-compilation mode, so `--rid` is validated against the host and a mismatch
 is a hard error naming both platforms — not a silently-ignored flag and not a
 host binary emitted under a cross-target name.
 
-**Tests.** `release_self_test.l` gains coverage of the new pure helpers
-(`classpathSeparator`, `joinClasspath`, `buildNativeImageArgs` including the
-`--no-fallback` invariant and the `-cp`-omitted-when-empty case,
-`nativeImageNotFoundMessage`, `jvmCrossCompileMessage`). The CI "Release Native
-AOT e2e" step's negative assertion (JVM release must fail) is replaced by a real
-end-to-end build: GraalVM is installed by direct download of the release
+**Tests.** `release_self_test.l` grows from 26 to 47 cases, covering the new
+pure helpers: `classpathSeparator`, `joinClasspath`, `buildNativeImageArgs`
+(including the `--no-fallback` invariant and the `-cp`-omitted-when-empty
+case), `nativeImageNotFoundMessage`, `jvmCrossCompileMessage`, `findOnPath`,
+`ridFlavor` / `ridMatchesHost`, and `jvmReleasePreflightError`. `ridFlavor`
+exists because `ridOs` / `ridArch` alone cannot separate `linux-musl-x64` from
+`linux-x64` (both yield `linux` / `x64`), so a host-match check built on those
+two would have accepted a musl RID on a glibc host and emitted a glibc binary
+under a musl name — the precise mislabelling the `--rid` check exists to stop.
+`jvmReleasePreflightError` runs in the CLI *before* the managed build, so an
+unbuildable request costs no compile; `buildReleaseJvm` re-checks for callers
+that drive it directly.  `native_image_self_test.l` (7 cases) covers the config
+generators, and `cli_build_self_test.l` covers `filterExtraRefs` on `.jar` and
+`stagedMavenClasspath`.
+
+The toolchain-driving control flow in `buildReleaseJvm` itself (the
+output-exists check, config-dir retention on failure) has no direct unit
+coverage — it needs a real `native-image` — and is exercised by the CI e2e
+below instead.
+
+**CI.** The "Release Native AOT e2e" step's negative assertion (JVM release
+must fail) is replaced by a real end-to-end build of both single-file and
+project mode: GraalVM is installed by direct download of the release
 tarball with a pinned SHA-256 verified before extraction — deliberately *not*
 via `graalvm/setup-graalvm`, so the workflow's pin-every-action-by-SHA trust
 posture holds without adding a third-party action — a program is built with
-`--release --target jvm`, and the produced binary is executed under `env -i`
-(no JVM on PATH) with its output asserted, which is what actually proves
-`--no-fallback` held.
+`--release --target jvm`, and the produced binary is executed under a
+**completely empty environment** (`env -i`, no `PATH` and no `JAVA_HOME`) with
+its output asserted, plus an `ldd` check that it links no `libjvm`/`libjli`.
+
+The empty environment is load-bearing and was got wrong first: the original
+assertion used `env -i PATH=/usr/bin:/bin`, and GitHub's runner image ships
+`/usr/bin/java` — so a fallback launcher would have found a JVM and the check
+would have passed vacuously, defeating the one assertion meant to prove
+`--no-fallback` held (caught in review, #6260).

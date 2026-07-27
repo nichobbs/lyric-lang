@@ -176,6 +176,9 @@ func absPath(p: in String): String {
 /// `Std.ProcessCapture` surfaces a failed *launch* as a thrown host exception,
 /// not as a non-zero exit code, so probing a tool that is absent would abort
 /// the build with a raw .NET stack trace instead of an actionable diagnostic.
+/// That stdlib seam is the real defect and is tracked in #6261; this routes
+/// around it for the three tools the release paths probe, and does not fix it
+/// for any other caller.
 pub func findOnPath(name: in String, pathVar: in String, os: in String): Option[String] {
   if pathVar == "" {
     return None
@@ -1198,6 +1201,30 @@ pub func classpathSeparator(os: in String): String {
   }
 }
 
+/// The middle segment(s) of a RID between OS and arch — the C-library / distro
+/// qualifier.  `"linux-musl-x64"` → `"musl"`, `"linux-x64"` → `""`.
+///
+/// `ridOs` and `ridArch` alone cannot tell `linux-musl-x64` from `linux-x64`
+/// (both yield `linux` / `x64`), so a host-match check built on those two
+/// would accept `--rid linux-musl-x64` on a glibc host and emit a glibc binary
+/// under a musl RID name — exactly the mislabelling the JVM arm rejects `--rid`
+/// mismatches to prevent.
+pub func ridFlavor(rid: in String): String {
+  val first = match Str.indexOf(rid, "-") { case Some(i) -> i; case None -> return "" }
+  val last = match Str.lastIndexOf(rid, "-") { case Some(i) -> i; case None -> return "" }
+  if last <= first {
+    ""
+  } else {
+    Str.substring(rid, first + 1, last - first - 1)
+  }
+}
+
+/// Whether `rid` names the same platform as `hostRid` for native-image
+/// purposes: same OS, same arch, and same C-library flavor.
+pub func ridMatchesHost(rid: in String, hostRid: in String): Bool {
+  ridOs(rid) == ridOs(hostRid) and ridArch(rid) == ridArch(hostRid) and ridFlavor(rid) == ridFlavor(hostRid)
+}
+
 /// Join classpath entries with the host separator.  Returns "" for an empty
 /// list so callers can skip emitting `-cp` entirely.
 pub func joinClasspath(entries: in List[String], os: in String): String {
@@ -1348,6 +1375,42 @@ func writeNativeImageConfigs(configDir: in String): Result[Unit, String] {
   Ok(value = ())
 }
 
+/// Validate everything about a JVM release request that can be checked before
+/// the (slow) managed build runs: the `--rid` shape, that it names the host,
+/// and that the host platform is supported.  Returns the diagnostic to print,
+/// or `None` when the request is buildable.
+///
+/// Callers run this *before* staging the JAR so a bad `--rid` costs nothing;
+/// `buildReleaseJvm` re-checks so it stays correct when driven directly (e.g.
+/// `--release-from-dll`).
+pub func jvmReleasePreflightError(ridOpt: in Option[String], hostRid: in String): Option[String] {
+  if hostRid == "" {
+    return Some(value = "could not determine the host platform for the native-image build")
+  }
+  match ridOpt {
+    case Some(r) -> {
+      if not isValidRid(r) {
+        return Some(
+          value = "invalid RID '" + r +
+            "': a RID must contain only lowercase letters, digits, dots, and hyphens (e.g. linux-x64)"
+        )
+      }
+      if not ridMatchesHost(r, hostRid) {
+        return Some(value = jvmCrossCompileMessage(r, hostRid))
+      }
+    }
+    case None -> ()
+  }
+  val os = ridOs(hostRid)
+  if os != "linux" and os != "osx" {
+    return Some(
+      value = "'" + hostRid +
+        "' is not yet supported for `--release --target jvm` (Linux and macOS only); tracked in #1975"
+    )
+  }
+  None
+}
+
 /// Produce a native binary from an already-built bundled JAR via GraalVM
 /// `native-image`.
 ///
@@ -1367,39 +1430,18 @@ pub func buildReleaseJvm(
   }
 
   val hostRid = Environment.runtimeIdentifier()
-  if hostRid == "" {
-    releaseErr("could not determine the host platform for the native-image build")
-    return 1
-  }
-
-  // native-image builds for the host only; reject a mismatching --rid rather
-  // than producing a host binary under a cross-target name.
-  match ridOpt {
-    case Some(r) -> {
-      if not isValidRid(r) {
-        releaseErr(
-          "invalid RID '" + r + "': a RID must contain only lowercase letters, digits, dots, and hyphens (e.g. linux-x64)"
-        )
-        return 1
-      }
-      if ridOs(r) != ridOs(hostRid) or ridArch(r) != ridArch(hostRid) {
-        releaseErr(jvmCrossCompileMessage(r, hostRid))
-        return 1
-      }
+  // native-image builds for the host only, and only Linux/macOS are supported.
+  // The CLI runs this same preflight before staging the JAR so a bad request
+  // costs no build; re-checking here keeps `buildReleaseJvm` correct when
+  // driven directly (`--release-from-dll`).
+  match jvmReleasePreflightError(ridOpt, hostRid) {
+    case Some(msg) -> {
+      releaseErr(msg)
+      return 1
     }
     case None -> ()
   }
-
-  // Match the .NET arm's supported-platform allowlist: Linux and macOS.
-  // Windows native-image additionally requires an initialized MSVC toolchain
-  // environment, which this pipeline does not set up (#1975).
   val os = ridOs(hostRid)
-  if os != "linux" and os != "osx" {
-    releaseErr(
-      "'" + hostRid + "' is not yet supported for `--release --target jvm` (Linux and macOS only); tracked in #1975"
-    )
-    return 1
-  }
 
   val niBin = match findNativeImage() { case Ok(p) -> p; case Err(msg) -> { releaseErr(msg); return 1 } }
 

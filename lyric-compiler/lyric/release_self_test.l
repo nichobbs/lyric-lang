@@ -310,3 +310,71 @@ test "findOnPath: finds a tool that exists on the host PATH" {
     "resolves /bin/sh, skipping the earlier miss"
   )
 }
+
+// ── ridFlavor / ridMatchesHost (musl vs glibc) ───────────────────────────────
+// ridOs/ridArch alone cannot separate linux-musl-x64 from linux-x64 (both yield
+// linux/x64), which would let a musl RID through on a glibc host — the exact
+// mislabelling the JVM `--rid` check exists to prevent.
+test "ridFlavor: extracts the libc/distro qualifier between OS and arch" {
+  assertEqual(Release.ridFlavor("linux-musl-x64"), "musl", "linux-musl-x64")
+  assertEqual(Release.ridFlavor("linux-musl-arm64"), "musl", "linux-musl-arm64")
+  assertEqual(Release.ridFlavor("linux-x64"), "", "plain glibc RID has no flavor")
+  assertEqual(Release.ridFlavor("osx-arm64"), "", "osx-arm64")
+  assertEqual(Release.ridFlavor("linux"), "", "single-segment RID")
+}
+
+test "ridMatchesHost: musl and glibc on the same OS/arch are NOT the same host" {
+  assertTrue(not Release.ridMatchesHost("linux-musl-x64", "linux-x64"), "musl RID on a glibc host is a mismatch")
+  assertTrue(not Release.ridMatchesHost("linux-x64", "linux-musl-x64"), "glibc RID on a musl host is a mismatch")
+}
+
+test "ridMatchesHost: identical platforms match, differing OS or arch do not" {
+  assertTrue(Release.ridMatchesHost("linux-x64", "linux-x64"), "same RID")
+  assertTrue(Release.ridMatchesHost("linux-musl-x64", "linux-musl-x64"), "same musl RID")
+  assertTrue(not Release.ridMatchesHost("linux-arm64", "linux-x64"), "arch differs")
+  assertTrue(not Release.ridMatchesHost("osx-x64", "linux-x64"), "os differs")
+}
+
+// ── jvmReleasePreflightError ─────────────────────────────────────────────────
+// Runs before the managed build so a bad --rid costs no compile.
+test "jvmReleasePreflightError: accepts no --rid on a supported host" {
+  assertTrue(
+    match Release.jvmReleasePreflightError(None, "linux-x64") { case None -> true; case Some(_) -> false },
+    "host-targeting build is buildable"
+  )
+}
+
+test "jvmReleasePreflightError: accepts a --rid naming the host" {
+  assertTrue(
+    match Release.jvmReleasePreflightError(Some(value = "linux-x64"), "linux-x64") {
+      case None -> true
+      case Some(_) -> false
+    },
+    "explicit host RID is fine"
+  )
+}
+
+test "jvmReleasePreflightError: rejects a cross-target --rid" {
+  val msg = unwrapOr(Release.jvmReleasePreflightError(Some(value = "osx-arm64"), "linux-x64"), "")
+  assertTrue(Str.contains(msg, "cannot cross-compile"), "cross-compile rejected before any build")
+}
+
+test "jvmReleasePreflightError: rejects a musl --rid on a glibc host" {
+  val msg = unwrapOr(Release.jvmReleasePreflightError(Some(value = "linux-musl-x64"), "linux-x64"), "")
+  assertTrue(Str.contains(msg, "cannot cross-compile"), "musl/glibc mismatch rejected")
+}
+
+test "jvmReleasePreflightError: rejects a malformed --rid" {
+  val msg = unwrapOr(Release.jvmReleasePreflightError(Some(value = "Linux X64!"), "linux-x64"), "")
+  assertTrue(Str.contains(msg, "invalid RID"), "malformed RID rejected")
+}
+
+test "jvmReleasePreflightError: rejects an unsupported host platform" {
+  val msg = unwrapOr(Release.jvmReleasePreflightError(None, "win-x64"), "")
+  assertTrue(Str.contains(msg, "Linux and macOS only"), "Windows host rejected with the tracked-issue note")
+}
+
+test "jvmReleasePreflightError: rejects an undeterminable host" {
+  val msg = unwrapOr(Release.jvmReleasePreflightError(None, ""), "")
+  assertTrue(Str.contains(msg, "could not determine the host platform"), "empty host RID")
+}

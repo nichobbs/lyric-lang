@@ -1213,6 +1213,22 @@ func buildReleaseSingle(
   // Native is unreachable here (cmdBuild rejects --release + --target native).
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
 
+  // Reject an unbuildable JVM release request (bad/cross-target `--rid`,
+  // unsupported host) BEFORE the managed build, so a bad flag costs nothing
+  // rather than a full compile.
+  match releaseTarget {
+    case JvmNativeImage -> {
+      match Release.jvmReleasePreflightError(ridArg, Environment.runtimeIdentifier()) {
+        case Some(msg) -> {
+          printErr("release: " + msg)
+          return 1
+        }
+        case None -> ()
+      }
+    }
+    case DotnetAot -> ()
+  }
+
   val srcText = match File.readText(sourcePath) {
     case Ok(t) -> t
     case Err(e) -> {
@@ -1291,6 +1307,22 @@ func buildReleaseProject(
 ): Int {
   // Native is unreachable here (cmdBuild rejects --release + --target native).
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
+
+  // Reject an unbuildable JVM release request (bad/cross-target `--rid`,
+  // unsupported host) BEFORE the managed build, so a bad flag costs nothing
+  // rather than a full compile.
+  match releaseTarget {
+    case JvmNativeImage -> {
+      match Release.jvmReleasePreflightError(ridArg, Environment.runtimeIdentifier()) {
+        case Some(msg) -> {
+          printErr("release: " + msg)
+          return 1
+        }
+        case None -> ()
+      }
+    }
+    case DotnetAot -> ()
+  }
 
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
