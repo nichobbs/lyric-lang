@@ -28,7 +28,9 @@ Lyric has a conventional set of primitive types, with two entries worth a closer
 
 `Never` is covered in detail in §2.5.
 
-**Overflow behaviour** differs by build mode. In debug builds (the default when you run `lyric run` or `lyric build` without flags), integer arithmetic panics on overflow. In release builds (`lyric build --release`), overflow on *unconstrained* integer types wraps silently. Range-constrained subtypes — covered next — always panic on overflow regardless of build mode.
+**Overflow behaviour** differs by build mode. In debug builds (the default when you run `lyric run` or `lyric build` without flags), integer arithmetic panics on overflow. In release builds (`lyric build --release`), overflow on *unconstrained* integer types wraps silently. Range-constrained subtypes — covered next — always panic on overflow regardless of build mode. (**Not yet implemented:** no backend gates overflow checking on the build profile, so overflow currently panics in release builds too — see [#6263].)
+
+[#6263]: https://github.com/nichobbs/lyric-lang/issues/6263
 
 Floating-point follows IEEE 754-2019 with round-to-nearest-even and traps disabled. `NaN != NaN` is `true`, as the standard requires.
 

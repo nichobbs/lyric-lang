@@ -464,7 +464,7 @@ jobs:
 
       - name: Install Native AOT dependencies
         # clang and zlib1g-dev are required by the ILCompiler linker pass used by
-        # `lyric build --release` (the trampoline-elimination pipeline, #4139).
+        # `lyric build --release --aot` (the trampoline-elimination pipeline, #4139).
         # binutils provides ld.bfd, which release.l's buildLinkerArgsUnix passes
         # via -fuse-ld=bfd; buildReleaseDotnet explicitly checks for ld.bfd on
         # PATH before linking -- without it the release e2e step fails at that

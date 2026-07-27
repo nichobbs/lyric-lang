@@ -620,7 +620,7 @@ pub func shapeFlagConflictError(shapeArg: in String, sawAot: in Bool, sawStandal
 /// `standalone` are meaningless there rather than merely unimplemented.
 pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
   match target {
-    case Emitter.Native -> match shape { case SAot -> None; case _ -> Some(value = "error[F0036]: --target native does not support --shape " + shapeName(shape) + "; a native build is ahead-of-time compiled and needs no managed runtime, so `aot` is its " + "only shape (omit --shape, or pass --shape aot explicitly)") }
+    case Emitter.Native -> match shape { case SAot -> None; case _ -> { val msg = "error[F0036]: --target native does not support --shape " + shapeName(shape) + "; a native build is ahead-of-time compiled and needs no managed runtime, so `aot` is " + "its only shape (omit --shape, or pass --shape aot explicitly)"; Some(value = msg) } }
     case _ -> None
   }
 }
@@ -635,8 +635,34 @@ pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget
 /// `native-image` invocation (#1975), so it is not rejected here.
 pub func shapeUnsupportedError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
   match shape {
-    case SStandalone -> Some(value = "error[F0037]: --shape standalone is not implemented yet (issue #6262). Use --shape portable " + "for a framework-dependent artifact, or --shape aot for a self-contained native binary.")
+    case SStandalone -> {
+      val msg = "error[F0037]: --shape standalone is not implemented yet (issue #6262). " +
+        "Use --shape portable for a framework-dependent artifact, or --shape aot for a " +
+        "self-contained native binary."
+      Some(value = msg)
+    }
     case _ -> None
+  }
+}
+
+/// True when the resolved shape routes this build through a **packaging
+/// pipeline** — `Lyric.Release` (ILC / GraalVM) or a future self-contained
+/// publish — layered on top of the target's normal compile.  These are the
+/// paths that thread no `--define`s and are far too slow to `--watch`.
+///
+/// `--target native` is the subtlety, and getting it wrong was a real
+/// regression (#6266): native's shape is always `aot`, but that is its *only
+/// and normal* path (Lyric -> LLVM IR -> clang), not a packaging hop bolted
+/// onto a managed build.  A native build therefore threads defines (#5977, a
+/// shipped feature) and is watchable exactly like a portable managed build.
+///
+/// Keying the gates on this predicate rather than on `shape != portable`
+/// keeps "which shapes are slow packaging hops" in one place instead of
+/// duplicating the native carve-out at each call site.
+pub func usesPackagingPipeline(shape: in BuildShape, target: in Emitter.CompileTarget): Bool {
+  match target {
+    case Emitter.Native -> false
+    case _ -> match shape { case SPortable -> false; case _ -> true }
   }
 }
 

@@ -648,7 +648,7 @@ jobs:
           echo "$outtc" | grep -qx "target=custom" || { echo "::error::explicit --define target did not override the well-known target (#5852 M1f)"; exit 1; }
           # (M1h, #5852) well-known `build_profile` define: `debug` on a normal
           # build (pipeParseAndErase fallback), overridable by --define. The
-          # `release`-on-a-real-`--release`-build case needs clang/ILCompiler, so
+          # `release`-on-a-real-`--release --aot`-build case needs clang/ILCompiler, so
           # it is asserted in the dedicated `aot-smoke` job (which installs those
           # prerequisites), not here in the `build` job.
           cat > "$proj/src/prof.l" <<'LYR'
@@ -4102,7 +4102,7 @@ jobs:
           grep -qx "eof-after:2" <<< "$out" || { echo "::error::EOF line count wrong"; exit 1; }
           grep -qx "err-line" "$work/err.txt" || { echo "::error::stderr line missing"; exit 1; }
 
-  # Release Native AOT end-to-end — `lyric build --release` compiles a
+  # Release Native AOT end-to-end — `lyric build --release --aot` compiles a
   # hello-world Lyric program to a self-contained native binary via
   # `dotnet publish -p:PublishAot=true` and asserts it executes correctly
   # (#1975 / D079).  Isolated into its own job because it needs clang/lld
@@ -4152,7 +4152,7 @@ jobs:
       # Build a minimal hello-world Lyric program to a native binary, then run
       # it and assert the output.  This exercises the full pipeline:
       #   lyric build → F# emit → staging DLL → dotnet publish -p:PublishAot=true → native ELF
-      - name: Release Native AOT smoke test (lyric build --release, #1975)
+      - name: Release Native AOT smoke test (lyric build --release --aot, #1975)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4168,7 +4168,7 @@ jobs:
           dir="$(mktemp -d)"
           src="$dir/hello.l"
           # Also asserts the well-known `build_profile` define (docs/60 M1h,
-          # #5852): a real --release/AOT build injects build_profile=release into
+          # #5852): a real --release build injects build_profile=release into
           # the staging compile, so BuildInfo.profile reports "release" in the
           # native binary. This is the load-bearing guard for the release-path
           # injection, and this job (unlike `build`) has clang/ILCompiler.
@@ -4183,7 +4183,7 @@ jobs:
           }
           LYRIC
           native_bin="$dir/hello"
-          "$lyric_bin" build --release "$src" -o "$native_bin"
+          "$lyric_bin" build --release --aot "$src" -o "$native_bin"
           if [ ! -x "$native_bin" ]; then
             echo "::error::native binary not produced at $native_bin"
             exit 1
@@ -4191,11 +4191,11 @@ jobs:
           out="$("$native_bin" 2>&1)"
           echo "native AOT output: $out"
           echo "$out" | grep -qx "hello-aot" || { echo "::error::native AOT smoke test did not print hello-aot; got: '$out'"; exit 1; }
-          echo "$out" | grep -qx "profile=release" || { echo "::error::--release native build did not inject build_profile=release (#5852 M1h); got: '$out'"; exit 1; }
+          echo "$out" | grep -qx "profile=release" || { echo "::error::--release --aot build did not inject build_profile=release (#5852 M1h); got: '$out'"; exit 1; }
           echo "OK: native AOT binary produced and executed correctly (hello-aot + build_profile=release)." >> "$GITHUB_STEP_SUMMARY"
 
       # Regression test for #5782: `buildReleaseProject` (the manifest/
-      # multi-package `lyric build --release` path, as opposed to the
+      # multi-package `lyric build --release --aot` path, as opposed to the
       # single-file smoke test above) silently dropped every `[nuget]`
       # dependency from the ILC reference list, so any Native AOT binary
       # touching a `[nuget]`-resolved type crashed at runtime with
@@ -4258,7 +4258,7 @@ jobs:
           }
           LYRIC
           (cd "$dir" && "$OLDPWD/$lyric_bin" restore)
-          (cd "$dir" && "$OLDPWD/$lyric_bin" build --release --rid linux-x64)
+          (cd "$dir" && "$OLDPWD/$lyric_bin" build --release --aot --rid linux-x64)
           native_bin="$dir/ReleaseNugetSmoke"
           if [ ! -x "$native_bin" ]; then
             echo "::error::native binary not produced at $native_bin"
@@ -4479,8 +4479,8 @@ jobs:
 
       # Build a minimal hello-world Lyric program to a native binary, then run
       # it and assert the output.  This exercises the full custom lyric release pipeline
-      # on macOS: lyric build --release -> buildLinkerArgsMac -> resolveIlcPaths -> parseSdkPacksDir -> clang -> Mach-O
-      - name: Release Native AOT smoke test (lyric build --release, #4449)
+      # on macOS: lyric build --release --aot -> buildLinkerArgsMac -> resolveIlcPaths -> parseSdkPacksDir -> clang -> Mach-O
+      - name: Release Native AOT smoke test (lyric build --release --aot, #4449)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -4500,7 +4500,7 @@ jobs:
           }
           LYRIC
           native_bin="$dir/hello"
-          "$lyric_bin" build --release "$src" -o "$native_bin"
+          "$lyric_bin" build --release --aot "$src" -o "$native_bin"
           if [ ! -x "$native_bin" ]; then
             echo "::error::native binary not produced at $native_bin"
             exit 1
@@ -9057,7 +9057,7 @@ jobs:
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
       # clang and zlib1g-dev are required by the ILCompiler linker pass used by
-      # `lyric build --release` (the trampoline-elimination pipeline, #4139).
+      # `lyric build --release --aot` (the trampoline-elimination pipeline, #4139).
       # binutils provides ld.bfd, which release.l's buildLinkerArgsUnix passes
       # via -fuse-ld=bfd; buildReleaseDotnet explicitly checks for ld.bfd on
       # PATH before linking -- without it the release e2e step fails at that
@@ -9119,7 +9119,7 @@ jobs:
       # native `lyric test`.  The Lyric.Release compiler-package import is
       # resolved by linking the stage-1 bundle DLLs (#2364); no
       # `LYRIC_LOAD_COMPILER=1` recompile.  Part of #1975.
-      - name: Release Native AOT e2e (lyric build --release)
+      - name: Release Native AOT e2e (lyric build --release --aot)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -9142,7 +9142,7 @@ jobs:
             0
           }
           LYR
-          "$bin_abs" build --release "$work/hello.l"
+          "$bin_abs" build --release --aot "$work/hello.l"
           test -x "$work/hello" || { echo "expected native binary $work/hello"; exit 1; }
           out="$("$work/hello")"
           echo "binary output: $out"
@@ -9150,9 +9150,9 @@ jobs:
           # A --rid naming a platform other than the host is rejected up front
           # on the JVM target (native-image cannot cross-compile) -- asserted
           # here because it needs no GraalVM install.
-          if "$bin_abs" build --release --target jvm "$work/hello.l" --rid osx-arm64 \
+          if "$bin_abs" build --release --aot --target jvm "$work/hello.l" --rid osx-arm64 \
                >"$work/xcompile.out" 2>&1; then
-            echo "expected non-zero exit for --release --target jvm --rid osx-arm64"; exit 1
+            echo "expected non-zero exit for --release --aot --target jvm --rid osx-arm64"; exit 1
           fi
           grep -q "cannot cross-compile" "$work/xcompile.out" || {
             echo "expected a cross-compile diagnostic"; cat "$work/xcompile.out"; exit 1; }
@@ -9186,7 +9186,7 @@ jobs:
       # The no-JVM assertion is the load-bearing one: `--no-fallback` exists to
       # stop native-image silently emitting a launcher that still needs a JVM,
       # and only running without one proves it held.
-      - name: Release JVM native-image e2e (lyric build --release --target jvm)
+      - name: Release JVM native-image e2e (lyric build --release --aot --target jvm)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -9205,7 +9205,7 @@ jobs:
             0
           }
           LYR
-          "$bin_abs" build --release --target jvm "$work/hello.l"
+          "$bin_abs" build --release --aot --target jvm "$work/hello.l"
           test -x "$work/hello" || { echo "expected native binary $work/hello"; exit 1; }
           # Prove it is not a fallback image (a launcher that still needs a
           # JVM).  `env -i PATH=/usr/bin:/bin` would NOT prove this: the runner
@@ -9240,7 +9240,7 @@ jobs:
           TOML
           printf 'package Util\nimport Std.Core\npub func double(x: in Int): Int { x * 2 }\n' > "$proj/src/util/util.l"
           printf 'package App\nimport Std.Core\nimport Std.Console as Console\nimport Util\nfunc main(): Int { Console.println("project release: " + toString(double(21))); 0 }\n' > "$proj/src/app/app.l"
-          ( cd "$proj" && "$bin_abs" build --release --target jvm )
+          ( cd "$proj" && "$bin_abs" build --release --aot --target jvm )
           test -x "$proj/NiProj" || { echo "expected native binary $proj/NiProj"; exit 1; }
           pout="$(env -i "$proj/NiProj")"
           echo "project binary output: $pout"

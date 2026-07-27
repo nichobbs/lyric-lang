@@ -186,18 +186,24 @@ pub func manifestDefinesUnsupportedMsg(mfPath: in String, reason: in String): St
 // manifest defines on every rebuild, so it is not a silent-drop shape.
 // Pulled out of `cmdBuild` so the reject matrix is unit-testable without a build
 // (#6188), mirroring `defineBuildGateError`.
-pub func manifestDefineGateError(mfHasDefines: in Bool, shape: in BuildShape, mfPath: in String): Option[String] {
+pub func manifestDefineGateError(
+  mfHasDefines: in Bool,
+  shape: in BuildShape,
+  target: in CompileTarget,
+  mfPath: in String,
+): Option[String] {
   if not mfHasDefines {
     return None
   }
-  match shape {
-    case SAot -> return Some(value = manifestDefinesUnsupportedMsg(mfPath, "--shape aot (the AOT-packaging path threads no defines)"))
-    case SStandalone -> return Some(
-      value = manifestDefinesUnsupportedMsg(mfPath, "--shape standalone (the packaging path threads no defines)")
-    )
-    case SPortable -> ()
+  if not usesPackagingPipeline(shape, target) {
+    return None
   }
-  None
+  Some(
+    value = manifestDefinesUnsupportedMsg(
+      mfPath,
+      "--shape " + shapeName(shape) + " (the packaging path threads no defines)"
+    )
+  )
 }
 
 // Resolve the `[native]` config for a `--target native` build (N6.4):
@@ -276,6 +282,7 @@ pub func defineBuildGateError(
   targetConsumable: in Bool,
   watch: in Bool,
   shape: in BuildShape,
+  target: in CompileTarget,
   manifestPath: in String,
 ): Option[String] {
   if not hasDefines {
@@ -286,17 +293,14 @@ pub func defineBuildGateError(
       value = "build: --define is supported on single-file and project (--manifest / lyric.toml) --target dotnet/jvm/native builds; it is not supported with --watch"
     )
   }
-  match shape {
-    case SPortable -> None
-    case _ -> {
-      val configuredIn = if manifestPath.length > 0 { " (configured in " + manifestPath + ")" } else { "" }
-      Some(
-        value = "build: --define is not supported with --shape " + shapeName(shape) + configuredIn +
-          " — the packaging build path does not thread defines (#5852); drop --define, or build with " +
-          "--shape portable"
-      )
-    }
+  if not usesPackagingPipeline(shape, target) {
+    return None
   }
+  val configuredIn = if manifestPath.length > 0 { " (configured in " + manifestPath + ")" } else { "" }
+  Some(
+    value = "build: --define is not supported with --shape " + shapeName(shape) + configuredIn +
+      " — the packaging build path does not thread defines (#5852); drop --define, or build without --aot/--standalone"
+  )
 }
 
 // Filter a `--extra-refs-dir` directory listing down to the extra references
@@ -1198,14 +1202,14 @@ func cmdBuild(argv: in slice[String]): Int {
     // every rebuild. `manifestDefineGateError` is a pure predicate (unit-tested,
     // #6188) so this reject matrix can't silently regress.
     val mfHasDefines = manifestDeclaresBuildDefines(mfPath)
-    match manifestDefineGateError(mfHasDefines, axes.shape, mfPath) {
+    match manifestDefineGateError(mfHasDefines, axes.shape, target, mfPath) {
       case Some(msg) -> {
         printErr(msg)
         return 1
       }
       case None -> ()
     }
-    match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, mfPath) {
+    match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, target, mfPath) {
       case Some(msg) -> {
         printErr(msg)
         return 1
@@ -1215,14 +1219,12 @@ func cmdBuild(argv: in slice[String]): Int {
     // `--watch` is an inner-loop tool; the packaging shapes are far too slow to
     // rebuild on every keystroke (#4203, re-scoped from `--release` per
     // docs/63 §5.3).
-    if watch {
-      match axes.shape {
-        case SPortable -> ()
-        case _ -> {
-          printErr("build: --watch is not supported with --shape " + shapeName(axes.shape))
-          return 1
-        }
-      }
+    if watch and usesPackagingPipeline(axes.shape, target) {
+      printErr(
+        "build: --watch is not supported with --shape " + shapeName(axes.shape) +
+          " (the packaging build is far too slow to rerun on every edit)"
+      )
+      return 1
     }
     if isAotShape {
       if shouldPrintReleaseNote(sawReleaseFlag, cliShapeNamed, axes.shape) {
@@ -1297,7 +1299,7 @@ func cmdBuild(argv: in slice[String]): Int {
   }
   val isAotShape = match axes.shape { case SAot -> true; case _ -> false }
 
-  match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, "") {
+  match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, target, "") {
     case Some(msg) -> {
       printErr(msg)
       return 1
@@ -1305,14 +1307,12 @@ func cmdBuild(argv: in slice[String]): Int {
     case None -> ()
   }
 
-  if watch {
-    match axes.shape {
-      case SPortable -> ()
-      case _ -> {
-        printErr("build: --watch is not supported with --shape " + shapeName(axes.shape))
-        return 1
-      }
-    }
+  if watch and usesPackagingPipeline(axes.shape, target) {
+    printErr(
+      "build: --watch is not supported with --shape " + shapeName(axes.shape) +
+        " (the packaging build is far too slow to rerun on every edit)"
+    )
+    return 1
   }
 
   if shouldPrintReleaseNote(sawReleaseFlag, cliShapeNamed, axes.shape) {
@@ -1420,9 +1420,8 @@ func withProfileDefine(defines: in List[String], profile: in BuildProfile): List
 // `pipeParseAndErase`; the release paths thread this so last-wins reports
 // `release` for `@build_const("build_profile")` / `Std.BuildInfo.profile`.
 func releaseProfileDefines(): List[String] {
-  val d: List[String] = newList()
-  d.add("build_profile=release")
-  d
+  val empty: List[String] = newList()
+  withProfileDefine(empty, ProfRelease)
 }
 
 func buildReleaseSingle(
