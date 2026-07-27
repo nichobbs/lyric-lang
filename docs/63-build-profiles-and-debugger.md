@@ -339,7 +339,7 @@ family:
 | `F0025` | try-catch-as-expression whose catch arm yields `Unit` (type-checker gap #2042) | `msil/codegen.l:15594` |
 | `F0026` | non-literal argument where a delegate-bridged parameter needs a lambda literal | `msil/codegen.l:12862` |
 | `F0027` | warning: hint-less `@externTarget` | `msil/codegen.l:28704` |
-| `F0030`–`F0032` | build defines (docs/60) | `build_defines.l:486` … |
+| `F0030`–`F0032` | build defines: non-`String` `val`, non-module-level `val`, malformed define (docs/60) | `build_defines.l:486`, `:516`, `:479` |
 
 Two observations that bear on where the new codes should go. First, `F0020`
 and `F0021` are each **already double-assigned** to unrelated diagnostics —
