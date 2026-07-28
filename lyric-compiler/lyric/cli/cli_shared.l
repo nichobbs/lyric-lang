@@ -244,11 +244,20 @@ func usageText(): String {
     "  lyric init    [<dir>] [--name <Name>] [--lib] [--force]\n" +
     "                (scaffold a new app (or --lib library) package: lyric.toml + src + .gitignore)\n" +
     "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--triple <llvm-triple>] [--opt 0|1|2|3|s] [--no-restore] [--watch] [--define KEY=VALUE]\n" +
-    "                 (--define injects a compile-time String into a @build_const val; single-file --target dotnet only, docs/60)\n" +
+    "                 (--define injects a compile-time String into a @build_const val, docs/60)\n" +
     "                (no source: builds the discovered project's [project.packages] into one DLL;\n" +
     "                 auto-restores deps when lyric.lock is missing or stale unless --no-restore)\n" +
-    "  lyric build   --release [<source.l>] [--manifest <lyric.toml>] [--rid <rid>] [-o <bin>]\n" +
-    "                (self-contained Native AOT binary; no source: builds the discovered project)\n" +
+    "  lyric build   [--debug | --release] [--shape portable|standalone|aot]\n" +
+    "                (two independent axes, both orthogonal to --target -- docs/63:\n" +
+    "                 PROFILE  --debug (default) unoptimized, debug info kept\n" +
+    "                          --release        optimized, debug info stripped\n" +
+    "                 SHAPE    --shape portable (default)  framework-dependent; needs a runtime\n" +
+    "                          --shape standalone          bundles a runtime -- not implemented (#6262)\n" +
+    "                          --shape aot                 native binary; --aot is sugar for this\n" +
+    "                 --standalone/--aot are sugar for the matching --shape)\n" +
+    "  lyric build   --release --aot [<source.l>] [--manifest <lyric.toml>] [--rid <rid>] [-o <bin>]\n" +
+    "                (self-contained native binary; no source: builds the discovered project.\n" +
+    "                 NOTE: --release alone no longer implies AOT -- it selects the profile only)\n" +
     "  lyric check   [<source.l>...] [--manifest <lyric.toml>] [--target dotnet|jvm]\n" +
     "                (type-check without producing a usable output artifact)\n" +
     "  lyric clean   [<dir>] [--manifest <lyric.toml>]\n" +
@@ -516,6 +525,153 @@ func outputExt(target: in Emitter.CompileTarget, kind: in String): String {
     // A native build IS the executable; no extension on the Phase 1
     // POSIX targets (D-N-008).
     case Emitter.Native -> ""
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Build profile and shape (docs/63 §3) — two axes that `--release` used to
+// conflate, and that are independent of each other and of `--target`.
+//
+// Every predicate below is pure and unit-tested in `cli_build_self_test.l`, so
+// the accept/reject matrix cannot silently regress the way the pre-refactor
+// `--define` gate did (#6139/#6188).
+// ─────────────────────────────────────────────────────────────────────────────
+/// Optimization and debug-symbol profile (docs/63 §3.1).
+pub union BuildProfile {
+  case ProfDebug
+  case ProfRelease
+}
+
+/// Packaging shape (docs/63 §3.2).  Ordered: `SAot` is strictly stronger than
+/// `SStandalone` (a Native AOT binary is self-contained by construction), which
+/// is why this is one enum rather than two independent booleans — it makes
+/// `--aot --portable` unrepresentable instead of an error case to adjudicate.
+pub union BuildShape {
+  case SPortable
+  case SStandalone
+  case SAot
+}
+
+pub func profileName(p: in BuildProfile): String {
+  match p {
+    case ProfDebug -> "debug"
+    case ProfRelease -> "release"
+  }
+}
+
+pub func shapeName(s: in BuildShape): String {
+  match s {
+    case SPortable -> "portable"
+    case SStandalone -> "standalone"
+    case SAot -> "aot"
+  }
+}
+
+pub func parseProfileName(s: in String): Option[BuildProfile] {
+  if s == "debug" {
+    Some(value = ProfDebug)
+  } else if s == "release" {
+    Some(value = ProfRelease)
+  } else {
+    None
+  }
+}
+
+pub func parseShapeName(s: in String): Option[BuildShape] {
+  if s == "portable" {
+    Some(value = SPortable)
+  } else if s == "standalone" {
+    Some(value = SStandalone)
+  } else if s == "aot" {
+    Some(value = SAot)
+  } else {
+    None
+  }
+}
+
+/// `F0040` — `--debug` and `--release` are mutually exclusive.
+pub func profileFlagConflictError(sawDebug: in Bool, sawRelease: in Bool): Option[String] {
+  if sawDebug and sawRelease {
+    Some(
+      value = "error[F0040]: --debug and --release are mutually exclusive (they select the same axis); " +
+        "pass exactly one, or neither for the default (--debug)"
+    )
+  } else {
+    None
+  }
+}
+
+/// `F0041` — conflicting spellings of the shape axis.  `--aot` / `--standalone`
+/// are sugar for `--shape aot` / `--shape standalone`; combining them with each
+/// other, or with a `--shape` naming a different value, is rejected rather than
+/// resolved by a precedence rule nobody would remember.
+///
+/// `shapeArg` is the raw `--shape` value ("" when absent) so the message can
+/// quote what the user actually typed.
+pub func shapeFlagConflictError(shapeArg: in String, sawAot: in Bool, sawStandalone: in Bool): Option[String] {
+  if sawAot and sawStandalone {
+    return Some(value = "error[F0041]: --aot and --standalone both select the packaging shape; pass exactly one")
+  }
+  if shapeArg.length == 0 {
+    return None
+  }
+  if sawAot and shapeArg != "aot" {
+    return Some(value = "error[F0041]: --aot conflicts with --shape " + shapeArg + "; pass one or the other")
+  }
+  if sawStandalone and shapeArg != "standalone" {
+    return Some(value = "error[F0041]: --standalone conflicts with --shape " + shapeArg + "; pass one or the other")
+  }
+  None
+}
+
+/// `F0043` — the requested shape is not valid for the requested target
+/// (docs/63 §5.1).  A native build is AOT by construction, so `portable` and
+/// `standalone` are meaningless there rather than merely unimplemented.
+pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
+  match target {
+    case Emitter.Native -> match shape { case SAot -> None; case _ -> { val msg = "error[F0043]: --target native does not support --shape " + shapeName(shape) + "; a native build is ahead-of-time compiled and needs no managed runtime, so `aot` is " + "its only shape (omit --shape, or pass --shape aot explicitly)"; Some(value = msg) } }
+    case _ -> None
+  }
+}
+
+/// `F0044` — the shape is valid for this target but its toolchain path is not
+/// implemented.  Fails loud rather than silently emitting the portable artifact
+/// a user did not ask for.
+///
+/// Today that is `standalone` on every target (no self-contained-publish or
+/// `jlink` path exists — issue #6262).  `aot` on `--target jvm` now ships via
+/// GraalVM `native-image` (D131), and `Lyric.Release` runs its own preflight
+/// for a missing driver or an unsupported host, so it is not rejected here.
+pub func shapeUnsupportedError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
+  match shape {
+    case SStandalone -> {
+      val msg = "error[F0044]: --shape standalone is not implemented yet (issue #6262). " +
+        "Use --shape portable for a framework-dependent artifact, or --shape aot for a " +
+        "self-contained native binary."
+      Some(value = msg)
+    }
+    case _ -> None
+  }
+}
+
+/// True when the resolved shape routes this build through a **packaging
+/// pipeline** — `Lyric.Release` (ILC / GraalVM) or a future self-contained
+/// publish — layered on top of the target's normal compile.  These are the
+/// paths that thread no `--define`s and are far too slow to `--watch`.
+///
+/// `--target native` is the subtlety, and getting it wrong was a real
+/// regression (#6266): native's shape is always `aot`, but that is its *only
+/// and normal* path (Lyric -> LLVM IR -> clang), not a packaging hop bolted
+/// onto a managed build.  A native build therefore threads defines (#5977, a
+/// shipped feature) and is watchable exactly like a portable managed build.
+///
+/// Keying the gates on this predicate rather than on `shape != portable`
+/// keeps "which shapes are slow packaging hops" in one place instead of
+/// duplicating the native carve-out at each call site.
+pub func usesPackagingPipeline(shape: in BuildShape, target: in Emitter.CompileTarget): Bool {
+  match target {
+    case Emitter.Native -> false
+    case _ -> match shape { case SPortable -> false; case _ -> true }
   }
 }
 

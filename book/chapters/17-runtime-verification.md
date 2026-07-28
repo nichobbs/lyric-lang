@@ -97,6 +97,15 @@ The runtime overhead of contract checking is real: evaluating Boolean expression
 
 **Release builds** (`lyric build --release`) apply a more selective policy:
 
+> **Not yet implemented.** The build profile does not currently reach the
+> contract elaborator, so contracts are checked identically in `--debug` and
+> `--release`, and `--release-contracts` has no effect. The profile became an
+> independently selectable axis in docs/63 band B0; wiring it through to
+> codegen — for contract elision, overflow checking, and optimization alike —
+> is tracked in [#6263]. The policy below describes the intended design.
+
+[#6263]: https://github.com/nichobbs/lyric-lang/issues/6263
+
 - `requires:` on `pub` functions are **always checked**, even in release. A caller outside your package can always pass bad arguments; eliminating those checks would silently corrupt data in production.
 - `requires:` on non-`pub` (internal) functions are **elided**. By the time a value reaches an internal function, it has already passed through a public boundary that validated it.
 - `ensures:` clauses are **elided by default** in release. They are expensive (they run on every return) and primarily useful during development. To keep them in a release build, pass `--release-contracts` to the compiler.

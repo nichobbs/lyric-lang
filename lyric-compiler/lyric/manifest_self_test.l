@@ -567,6 +567,72 @@ func testBuildDefineWithKind(): Unit {
   }
 }
 
+// ─── [build] shape / profile axes (docs/63 band B0) ──────────────────────────
+// All three axes default independently when `[build]` is absent entirely.
+func testBuildAxesDefaults(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build.define]\nk = \"v\"\n"
+  val m = parseOk(toml)
+  match m.build {
+    case None -> assertTrue(false, "build-axes-defaults: expected Some(BuildSection)")
+    case Some(b) -> {
+      assertEqual(b.kind, "lib", "build-axes-defaults: kind defaults to lib")
+      assertEqual(b.shape, "portable", "build-axes-defaults: shape defaults to portable")
+      assertEqual(b.profile, "debug", "build-axes-defaults: profile defaults to debug")
+    }
+  }
+}
+
+// Each axis parses independently of the others.
+func testBuildAxesExplicit(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build]\nkind = \"exe\"\nshape = \"aot\"\nprofile = \"release\"\n"
+  val m = parseOk(toml)
+  match m.build {
+    case None -> assertTrue(false, "build-axes-explicit: expected Some(BuildSection)")
+    case Some(b) -> {
+      assertEqual(b.kind, "exe", "build-axes-explicit: kind")
+      assertEqual(b.shape, "aot", "build-axes-explicit: shape")
+      assertEqual(b.profile, "release", "build-axes-explicit: profile")
+    }
+  }
+}
+
+// Setting only `shape` leaves kind and profile at their defaults — the axes are
+// genuinely independent, not a single packed setting.
+func testBuildShapeOnly(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build]\nshape = \"standalone\"\n"
+  val m = parseOk(toml)
+  match m.build {
+    case None -> assertTrue(false, "build-shape-only: expected Some(BuildSection)")
+    case Some(b) -> {
+      assertEqual(b.kind, "lib", "build-shape-only: kind still defaults")
+      assertEqual(b.shape, "standalone", "build-shape-only: shape set")
+      assertEqual(b.profile, "debug", "build-shape-only: profile still defaults")
+    }
+  }
+}
+
+// docs/63 §6: `kind = "aot"` is a HARD ERROR naming F0042 and the replacement,
+// never a silent remap to shape = "aot". A manifest must not be quietly
+// downgraded to a portable DLL, nor quietly upgraded to an AOT build.
+func testBuildKindAotRejected(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build]\nkind = \"aot\"\n"
+  val msg = manifestErrorText(parseErr(toml))
+  assertTrue(Str.contains(msg, "F0042"), "kind-aot: names F0042, got: " + msg)
+  assertTrue(Str.contains(msg, "shape"), "kind-aot: names the shape replacement, got: " + msg)
+}
+
+func testBuildShapeInvalidRejected(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build]\nshape = \"wat\"\n"
+  val msg = manifestErrorText(parseErr(toml))
+  assertTrue(Str.contains(msg, "portable"), "bad-shape: lists the valid values, got: " + msg)
+}
+
+func testBuildProfileInvalidRejected(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build]\nprofile = \"fast\"\n"
+  val msg = manifestErrorText(parseErr(toml))
+  assertTrue(Str.contains(msg, "debug"), "bad-profile: lists the valid values, got: " + msg)
+}
+
 // A `[build.define]` table with no `[build]` header: kind defaults to "lib",
 // the defines are still collected.
 func testBuildDefineWithoutBuild(): Unit {
@@ -868,6 +934,30 @@ test "build.define with [build] kind" {
 
 test "build.define without [build] header" {
   testBuildDefineWithoutBuild()
+}
+
+test "[build] axes default independently" {
+  testBuildAxesDefaults()
+}
+
+test "[build] kind/shape/profile parse independently" {
+  testBuildAxesExplicit()
+}
+
+test "[build] shape alone leaves kind and profile at defaults" {
+  testBuildShapeOnly()
+}
+
+test "[build] kind = aot is a hard F0042 error (docs/63 clean break)" {
+  testBuildKindAotRejected()
+}
+
+test "[build] shape rejects an unknown value" {
+  testBuildShapeInvalidRejected()
+}
+
+test "[build] profile rejects an unknown value" {
+  testBuildProfileInvalidRejected()
 }
 
 test "build.define absent" {

@@ -1,9 +1,17 @@
 # 63 — Build profiles, output shapes, and the Lyric debugger
 
-**Status:** Unbacked design plan. Three framing decisions were settled during
-planning and are recorded as **settled** in §3.4, §4.4, and §8.1; everything
-else is open (Q-BP-001–Q-BP-011, §13). A decision-log entry codifying the band
-order lands with the first implementation PR (band B0).
+**Status:** **Band B0 shipped**, codified in **D132** (the flag surface: profile/shape axes,
+`--shape` + `--aot`/`--standalone` sugar, `[build] shape`/`profile` manifest
+keys, the re-scoped `--define`/`--watch`/`--rid` gates, `F0040`–`F0044`, and
+the `--release` migration note). Bands B1–B7 — span plumbing, debug-information
+emission, and the debugger — are unimplemented. Three framing decisions are
+recorded as **settled** in §3.4, §4.4, and §8.1; the rest is open
+(Q-BP-001–Q-BP-011, §13).
+
+Deferred out of B0 with tracked follow-ups: `--shape standalone` has no
+toolchain path on any target and fails loud with `F0044` (#6262); the profile
+axis does not yet reach codegen, so `--release` performs no optimization and
+does not relax overflow checking as the language reference describes (#6263).
 
 **Method.** The current-state findings in §2 were produced by auditing the code
 as source of truth. Every claim is grounded in a `file:line` reference, an
@@ -184,14 +192,14 @@ lyric build [<source.l>]
 ```
 
 - `--debug` / `--release` set the profile. Mutually exclusive; passing both is
-  `F0033`.
+  `F0040`.
 - `--shape <value>` is the canonical spelling of the shape axis. It mirrors
   `--target`'s existing enum style and gives the manifest key an obvious name.
 - `--aot` and `--standalone` are sugar for `--shape aot` / `--shape standalone`.
   They are provided because they are the spellings users reach for first, and
   because Rust (`--release`) and Go (`CGO_ENABLED`/`-buildmode`) have trained
   the boolean expectation. Combining sugar with a conflicting `--shape` is
-  `F0034`; combining the two sugar flags with each other is `F0034`.
+  `F0041`; combining the two sugar flags with each other is `F0041`.
 
 `--debug` is the default and never needs to be written; it exists so that a
 manifest-level `profile = "release"` can be overridden back on the command line.
@@ -205,7 +213,7 @@ shape   = "portable"   # how it is PACKAGED     — portable | standalone | aot
 profile = "debug"      # optimization/symbols   — debug | release
 ```
 
-`kind = "aot"` is removed. It is a hard error (`F0035`) naming
+`kind = "aot"` is removed. It is a hard error (`F0042`) naming
 `shape = "aot"` as the replacement — see §6.
 
 Precedence is **CLI > manifest > default**, matching docs/60's define
@@ -234,12 +242,12 @@ them unrepresentable. Whether to keep the sugar at all is **Q-BP-001**.
 
 |            | `--target dotnet` | `--target jvm` | `--target native` |
 |---|---|---|---|
-| `portable` | **default** — `.dll` | **default** — `.jar` | **error `F0036`** |
-| `standalone` | self-contained publish | `jlink` image / fat JAR | **error `F0036`** |
+| `portable` | **default** — `.dll` | **default** — `.jar` | **error `F0043`** |
+| `standalone` | self-contained publish | `jlink` image / fat JAR | **error `F0043`** |
 | `aot` | ILC Native AOT | GraalVM `native-image` — **shipped** for Linux/macOS (D131; Windows still #1975) | **default and only valid shape** |
 
 `--target native` fixes the shape at `aot`. Passing `--shape aot` explicitly is
-accepted as a no-op; `portable` and `standalone` are `F0036` with a message
+accepted as a no-op; `portable` and `standalone` are `F0043` with a message
 explaining that a native build is AOT by construction.
 
 This replaces today's message at `cli_build.l:1124` (*"`--release` is not needed
@@ -264,14 +272,15 @@ or `-Og`.
 
 ### 5.3 Gates that must be re-scoped, not preserved
 
-Three current rejections key off `release` when they should key off `shape ==
-aot`. Preserving them verbatim through the refactor would be a bug.
+Three current rejections key off `release` when they should key off the shape
+axis. Preserving them verbatim through the refactor would be a bug.
 
 | Gate | Today | After |
 |---|---|---|
-| `--define` | rejected when `release` (`cli_build.l:180-183`, `defineBuildGateError`) | rejected when `shape == aot`; `--release --shape portable --define K=V` works |
-| manifest `[build.define]` | rejected when `release` or `autoAot` (`manifestDefineGateError`) | rejected when `shape == aot` only |
+| `--define` | rejected when `release` (`cli_build.l:180-183`, `defineBuildGateError`) | rejected when `shape != portable`; `--release --shape portable --define K=V` works |
+| manifest `[build.define]` | rejected when `release` or `autoAot` (`manifestDefineGateError`) | rejected when `shape != portable` |
 | `--watch` | rejected when `release` (`cli_build.l:1116`) | rejected when `shape != portable` (watch is an inner-loop tool; AOT and standalone builds are too slow to watch) |
+| — | — | *(as shipped: both define gates reject every non-`portable` shape, not just `aot` — `standalone` is equally a packaging path that threads no defines. Unobservable today since `standalone` is rejected earlier by `F0044`, but the predicate and its tests encode the general rule.)* |
 | `--rid` | warned unless `release` (`cli_build.l:1092`, `cli_build.l:1137`) | warned unless `shape` is `standalone` or `aot` |
 
 `defineBuildGateError` and `manifestDefineGateError` are already pure,
@@ -294,7 +303,7 @@ path. This is a deliberate acceptance of breakage, not an oversight.
 
 Mitigations, all required in band B0:
 
-1. **`kind = "aot"` is a hard error, not a silent behaviour change.** `F0035`
+1. **`kind = "aot"` is a hard error, not a silent behaviour change.** `F0042`
    names `shape = "aot"` explicitly. A manifest user cannot be silently
    downgraded to a portable DLL.
 2. **A one-line note on every `--release` build whose shape is `portable`,**
@@ -320,7 +329,7 @@ note would be a lie.
 
 ## 7. Diagnostics
 
-New codes in the `F` family. `F0033`+ is free: a sweep of quoted `"F00NN`
+New codes in the `F` family. `F0040`+ is free: a sweep of quoted `"F00NN`
 literals across `lyric-compiler/` finds `F0002`, `F0012`–`F0013`,
 `F0015`, `F0020`–`F0027`, and `F0030`–`F0032` in use, and nothing above
 `F0032`.
@@ -350,11 +359,11 @@ ABI restriction, and build defines. Proposed new codes:
 
 | Code | Condition |
 |---|---|
-| `F0033` | `--debug` and `--release` both passed |
-| `F0034` | conflicting shape spellings (`--aot --standalone`, `--aot --shape portable`, …) |
-| `F0035` | `[build] kind = "aot"` — removed; use `shape = "aot"` |
-| `F0036` | shape incompatible with target (`--target native --shape portable`) |
-| `F0037` | shape requested whose toolchain is unavailable (e.g. GraalVM `native-image` absent from the host, or a Windows JVM host — #1975) |
+| `F0040` | `--debug` and `--release` both passed |
+| `F0041` | conflicting shape spellings (`--aot --standalone`, `--aot --shape portable`, …) |
+| `F0042` | `[build] kind = "aot"` — removed; use `shape = "aot"` |
+| `F0043` | shape incompatible with target (`--target native --shape portable`) |
+| `F0044` | shape requested whose implementation does not exist — `standalone` on every target today (#6262). A *toolchain* that is merely absent (e.g. GraalVM `native-image` not installed) is not this code: `Lyric.Release` runs its own preflight and reports that itself. |
 
 Whether build-shape diagnostics deserve their own family letter rather than
 extending `F` is **Q-BP-004** — and the table above is the argument that they
@@ -434,7 +443,7 @@ transcripts without a running debuggee.
 
 | Band | Content | Gates |
 |---|---|---|
-| **B0** | Flag surface: profile/shape axes, `--shape` + sugar, manifest keys, re-scoped gates (§5.3), `F0033`–`F0037`, migration note, docs + book. **No debug info yet.** | — |
+| **B0** ✅ | Flag surface: profile/shape axes, `--shape` + sugar, manifest keys, re-scoped gates (§5.3), `F0040`–`F0044`, migration note, docs + book. **No debug info yet.** | — |
 | **B1** | Span plumbing (§2.5) and `SpanOrigin` provenance through the middle end (§2.6). | B0 |
 | **B2** | JVM debug info: `LineNumberTable`, `LocalVariableTable` in `classfile.l`. | B1 |
 | **B3** | dotnet: portable-PDB writer (`msil/pdb.l`), PE Debug Directory + RSDS in `pe.l`, `DebuggableAttribute`. | B1 |
@@ -539,7 +548,7 @@ Per CLAUDE.md, a feature is not complete until docs and book reflect it. For
 band B0 that means, in the same PR:
 
 - `docs/01-language-reference.md` — the CLI section: profile/shape flags, the
-  compatibility matrix, `F0033`–`F0037`.
+  compatibility matrix, `F0040`–`F0044`.
 - `book/chapters/01-getting-started.md` — toolchain table + migration table.
 - `book/chapters/appendix-b-quick-reference.md` — CLI reference.
 - `docs/10-bootstrap-progress.md` — tier status.
@@ -558,9 +567,9 @@ Nothing in this document has shipped, so no such update is due yet.
 |---|---|---|
 | `netcoredbg` may not handle a portable PDB from a non-Roslyn compiler | **high** | **[unverified]** — the central technical assumption of B3+B5 on dotnet. A spike must confirm this before B3 is scheduled. |
 | B1 (`SpanOrigin`) is larger than estimated | high | Touches weaver, elaborator, mono, wire-expand, and three backend IRs. Every later band depends on it. |
-| GraalVM `native-image` shape is host-dependent (shipped Linux/macOS in D131; Windows #1975) | medium | `--shape aot --target jvm` must fail loud (`F0037`) when the toolchain is missing or the host is unsupported, never silently emit a JAR. `Lyric.Release.jvmReleasePreflightError` already implements this check for `--release`. |
+| GraalVM `native-image` shape is host-dependent (shipped Linux/macOS in D131; Windows #1975) | medium | `--shape aot --target jvm` must fail loud when the toolchain is missing or the host is unsupported, never silently emit a JAR. That is **not** `F0044`, which only covers a shape whose implementation does not exist at all (`standalone`): a merely-absent driver is reported by `Lyric.Release.jvmReleasePreflightError`, which already implements this check. |
 | MSIL/JVM divergence | medium | docs/59 documents one-sided fixes between the backends. Debug info doubles the surface where they can drift. |
-| Clean break surprises scripted users | medium | Accepted per §6; mitigated by `F0035` and the build note. |
+| Clean break surprises scripted users | medium | Accepted per §6; mitigated by `F0042` and the build note. |
 | Optimization at `--release` is currently a no-op for dotnet/jvm | low | Lyric has no IL/bytecode optimizer; `--release` on those targets means "strip symbols" only, and the docs must say so rather than implying optimization that does not happen. |
 
 ---

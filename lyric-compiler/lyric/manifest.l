@@ -12,7 +12,9 @@
 //!   [maven.options]     — repositories list and java_version
 //!   [features]          — declared feature flags ([] values in v1)
 //!   [native]            — --target native defaults (triple, opt_level, extra_libs)
-//!   [build]             — output kind configuration (kind: "lib" or "exe")
+//!   [build]             — artifact kind ("lib"/"exe"/"bundle"), packaging shape
+//!                         ("portable"/"standalone"/"aot"), and compile profile
+//!                         ("debug"/"release") — three independent axes, docs/63
 //!   [workspace]         — workspace root declaration (exclude list, overrides)
 //!   [workspace.overrides] — per-package path overrides for fork/patch workflows
 //!   [registry]          — custom registry feed URLs
@@ -200,17 +202,32 @@ pub record RegistryConfig {
   jvm: Option[String]
 }
 
-/// `[build]` section for output kind configuration.
-/// For the Dotnet target, `kind` selects the produced artifact:
+/// `[build]` section. Carries three independent axes (docs/63 §3): what the
+/// artifact *is* (`kind`), how it is *packaged* (`shape`), and how it is
+/// *compiled* (`profile`).
+///
+/// `kind` selects the produced artifact for the Dotnet target:
 ///   - `"lib"`    — managed `.dll` (default), run via `dotnet exec`.
 ///   - `"exe"`    — managed `.dll` plus a native apphost launcher and
 ///                  `.runtimeconfig.json`; runs directly (`./<name>`) but still
 ///                  needs a .NET runtime installed (framework-dependent).
 ///   - `"bundle"` — self-contained: launcher with the runtime bundled
 ///                  (planned; not yet emitted).
-///   - `"aot"`    — native ahead-of-time compiled binary, no runtime
-///                  dependency (planned; not yet emitted).
 /// For the Jvm target, `kind` is currently a no-op.
+///
+/// `"aot"` was removed from `kind` in docs/63 band B0: it described a
+/// *packaging* mode, not an artifact kind, and now lives on `shape`. It is a
+/// hard error (`F0042`) rather than a silent remap so a manifest cannot be
+/// quietly downgraded to a portable DLL.
+///
+/// `shape` selects packaging (docs/63 §3.2):
+///   - `"portable"`   — framework-dependent (default); needs a runtime installed.
+///   - `"standalone"` — bundles a runtime, still JIT/interpreted.
+///   - `"aot"`        — ahead-of-time compiled to native machine code.
+///
+/// `profile` selects optimization and debug symbols (docs/63 §3.1):
+///   - `"debug"`   — unoptimized, debug info retained (default).
+///   - `"release"` — optimized, debug info stripped.
 ///
 /// `defines` carries the `[build.define]` sub-table (docs/60 §3.1) as a
 /// `List[String]` of `"KEY=VALUE"` entries — the same cross-package-safe
@@ -219,6 +236,8 @@ pub record RegistryConfig {
 /// value is a manifest error.
 pub record BuildSection {
   kind: String
+  shape: String
+  profile: String
   defines: List[String]
 }
 
@@ -876,24 +895,91 @@ func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], Manife
   match collectBuildDefines(entries) {
     case Err(e) -> Err(error = e)
     case Ok(defines) -> {
-      // `kind` defaults to "lib" when the table is missing or `[build]` is
-      // absent entirely (a `[build.define]`-only manifest).
-      match findString(entries, "build", "kind") {
-        case Some(kind) -> {
-          // Validate: kind must be one of "lib", "exe", "bundle", or "aot".
-          if kind == "lib" or kind == "exe" or kind == "bundle" or kind == "aot" {
-            Ok(value = Some(value = BuildSection(kind = kind, defines = defines)))
-          } else {
-            Err(
-              error = InvalidField(
-                section = "build",
-                field = "kind",
-                message = "must be \"lib\", \"exe\", \"bundle\", or \"aot\", got \"" + kind + "\""
-              )
-            )
-          }
-        }
-        case None -> Ok(value = Some(value = BuildSection(kind = "lib", defines = defines)))
+      // Each axis defaults independently when its key (or `[build]` itself) is
+      // absent — a `[build.define]`-only manifest gets all three defaults.
+      match resolveBuildKind(entries) {
+        case Err(e) -> Err(error = e)
+        case Ok(kind) -> match resolveBuildShape(entries) { case Err(e) -> Err(error = e); case Ok(shape) -> match resolveBuildProfile(entries) { case Err(e) -> Err(error = e); case Ok(profile) -> Ok(value = Some(value = BuildSection(kind = kind, shape = shape, profile = profile, defines = defines))) } }
+      }
+    }
+  }
+}
+
+/// `[build] kind` — what the artifact *is*. `"aot"` is rejected outright
+/// (`F0042`, docs/63 §6): it was a packaging mode misfiled as an artifact
+/// kind, and silently remapping it to `shape = "aot"` would let a manifest
+/// mean something it does not say.
+///
+/// The code is written bare (`F0042: ...`) rather than in the CLI's
+/// `error[F0042]: ...` bracket form on purpose: this string is rendered
+/// through `ManifestError.message`, which already prefixes
+/// `[build] invalid value for 'kind': `, so the bracket form would read
+/// `... invalid value for 'kind': error[F0042]: ...` and double up the
+/// "error" prefix.
+func resolveBuildKind(entries: in List[Entry]): Result[String, ManifestError] {
+  match findString(entries, "build", "kind") {
+    case None -> Ok(value = "lib")
+    case Some(kind) -> {
+      if kind == "lib" or kind == "exe" or kind == "bundle" {
+        Ok(value = kind)
+      } else if kind == "aot" {
+        Err(
+          error = InvalidField(
+            section = "build",
+            field = "kind",
+            message = "F0042: kind = \"aot\" is no longer supported — \"aot\" is a packaging shape, not an " +
+              "artifact kind. Use `shape = \"aot\"` (and `profile = \"release\"` for an optimized binary). " +
+              "See docs/63 §6."
+          )
+        )
+      } else {
+        Err(
+          error = InvalidField(
+            section = "build",
+            field = "kind",
+            message = "must be \"lib\", \"exe\", or \"bundle\", got \"" + kind + "\""
+          )
+        )
+      }
+    }
+  }
+}
+
+/// `[build] shape` — how the artifact is packaged (docs/63 §3.2).
+func resolveBuildShape(entries: in List[Entry]): Result[String, ManifestError] {
+  match findString(entries, "build", "shape") {
+    case None -> Ok(value = "portable")
+    case Some(shape) -> {
+      if shape == "portable" or shape == "standalone" or shape == "aot" {
+        Ok(value = shape)
+      } else {
+        Err(
+          error = InvalidField(
+            section = "build",
+            field = "shape",
+            message = "must be \"portable\", \"standalone\", or \"aot\", got \"" + shape + "\""
+          )
+        )
+      }
+    }
+  }
+}
+
+/// `[build] profile` — optimization and debug symbols (docs/63 §3.1).
+func resolveBuildProfile(entries: in List[Entry]): Result[String, ManifestError] {
+  match findString(entries, "build", "profile") {
+    case None -> Ok(value = "debug")
+    case Some(profile) -> {
+      if profile == "debug" or profile == "release" {
+        Ok(value = profile)
+      } else {
+        Err(
+          error = InvalidField(
+            section = "build",
+            field = "profile",
+            message = "must be \"debug\" or \"release\", got \"" + profile + "\""
+          )
+        )
       }
     }
   }

@@ -129,7 +129,7 @@ A project can produce a directly-runnable launcher instead of a bare `.dll` by s
 kind = "exe"   # default: "lib"
 ```
 
-This emits a native *apphost* launcher beside the managed DLL — `bin/<name>` (or `<name>.exe` on Windows) — so the program starts with `./<name>` rather than `dotnet <name>.dll`, and `lyric run` execs it directly. It is still framework-dependent (a .NET runtime must be installed). The `bundle` (self-contained) kind is reserved for future use. `kind = "aot"` produces a native binary with no runtime dependency and is equivalent to `lyric build --release` (see §"Native binaries" below); it requires a system linker (`clang` or `ld64`) on `PATH` and supports Linux (`x64`/`arm64`) and macOS (Windows is tracked in #1975).
+This emits a native *apphost* launcher beside the managed DLL — `bin/<name>` (or `<name>.exe` on Windows) — so the program starts with `./<name>` rather than `dotnet <name>.dll`, and `lyric run` execs it directly. It is still framework-dependent (a .NET runtime must be installed). The `bundle` (self-contained) kind is reserved for future use. Packaging as a native binary is the *shape* axis, not a `kind`: set `[build] shape = "aot"` (or pass `--aot`) — see §"Build profile and output shape" below. It requires a system linker (`clang` or `ld64`) on `PATH` and supports Linux (`x64`/`arm64`) and macOS (Windows is tracked in #1975). `kind = "aot"` was removed and is now a hard error (`F0042`).
 
 Inside a project, you can drop the arguments entirely. Running `lyric` with no
 command builds the current project, and `lyric build` / `lyric restore` find the
@@ -168,14 +168,50 @@ from the directory name (capitalised to the `UpperCamelCase` convention) unless
 hint to pass `--name`. An existing `lyric.toml` is never overwritten without
 `--force`.
 
-### Native binaries — `lyric build --release`
+### Build profile and output shape
 
-For deployment, `lyric build --release hello.l` produces a **self-contained
-Native AOT binary** — a single executable with no .NET runtime required on the
-target machine:
+Two independent axes control how a build is compiled and how it is packaged.
+They are separate from `--target`, and from each other.
+
+**Profile** — how the code is compiled:
+
+| Flag | Meaning |
+|---|---|
+| `--debug` *(default)* | unoptimized, debug information retained |
+| `--release` | optimized, debug information stripped |
+
+**Shape** — how the artifact is packaged:
+
+| Flag | Meaning |
+|---|---|
+| `--shape portable` *(default)* | framework-dependent; needs a runtime installed |
+| `--shape standalone` / `--standalone` | bundles a runtime (not implemented yet — [#6262]) |
+| `--shape aot` / `--aot` | ahead-of-time compiled to a native binary |
+
+Any profile combines with any shape. `--release --shape portable` gives you an
+optimized framework-dependent DLL — the right artifact to publish to NuGet —
+and `--debug --aot` gives you a debuggable native binary.
+
+> **Changed in this release.** `--release` used to imply a self-contained
+> Native AOT binary. It now selects the optimization profile only. To get the
+> old behaviour, pass `--aot` as well:
+>
+> | Before | Now |
+> |---|---|
+> | `lyric build --release app.l` | `lyric build --release --aot app.l` |
+> | `[build] kind = "aot"` | `[build] shape = "aot"` |
+>
+> `[build] kind = "aot"` is a hard error (`F0042`) rather than a silent
+> remap, so a manifest can never be quietly downgraded to a portable DLL.
+
+### Native binaries — `lyric build --release --aot`
+
+For deployment, `lyric build --release --aot hello.l` produces a
+**self-contained Native AOT binary** — a single executable with no .NET runtime
+required on the target machine:
 
 ```sh
-lyric build --release hello.l
+lyric build --release --aot hello.l
 # Produces: hello   (a native executable)
 ./hello
 ```
@@ -186,17 +222,19 @@ Under the hood the compiler invokes `ilc` (the .NET Native AOT compiler) and
 Fedora). Any ILC trim/AOT warnings are shown. `--rid <rid>` selects a runtime
 identifier (default: your host), and `-o` overrides the output path.
 
-This is equivalent to setting `[build] kind = "aot"` in your `lyric.toml` and
+This is equivalent to setting `[build] shape = "aot"` in your `lyric.toml` and
 running `lyric build`.
 
-On the JVM target, `lyric build --release --target jvm hello.l` does the same
+[#6262]: https://github.com/nichobbs/lyric-lang/issues/6262
+
+On the JVM target, `lyric build --release --aot --target jvm hello.l` does the same
 job through GraalVM **`native-image`**: it builds the ordinary bundled JAR, then
 compiles that JAR ahead-of-time into a standalone executable that needs no JVM
 installed:
 
 ```sh
 export GRAALVM_HOME=/path/to/graalvm-jdk-21
-lyric build --release --target jvm hello.l
+lyric build --release --aot --target jvm hello.l
 ./hello
 ```
 
@@ -207,14 +245,14 @@ truly standalone image it fails rather than emitting a launcher that still
 requires a JVM. `native-image` cannot cross-compile, so `--rid` may only name
 your host platform.
 
-> **Scope today.** `--release` covers Linux (`x64`/`arm64`) and macOS (`x64`/`arm64`) on both the .NET and JVM targets. Windows is tracked in [#1975] and fails
+> **Scope today.** `--shape aot` covers Linux (`x64`/`arm64`) and macOS (`x64`/`arm64`) on both the .NET and JVM targets. Windows is tracked in [#1975] and fails
 > loud rather than emitting a managed artifact.
 
 [#1975]: https://github.com/nichobbs/lyric-lang/issues/1975
 
 ### The LLVM native target — `lyric build --target native`
 
-Distinct from `--release` (which AOT-compiles the *.NET* build with `ilc`),
+Distinct from `--aot` on the .NET target (which AOT-compiles the managed build with `ilc`),
 `lyric build --target native hello.l` compiles Lyric source directly to LLVM
 IR and drives `clang` to produce a self-contained POSIX executable with no
 managed runtime at all — no .NET, no JVM:
