@@ -640,19 +640,53 @@ path field to every `Item`.
 `collectEnsures` bind it to `_` and discard it, and the synthesized asserts are
 then anchored at `body.span` (requires) or the enclosing statement's span
 (ensures). `mkAssertCall` already takes a span argument, so the whole fix is
-preserving what the parser produced. One file, no schema change.
+preserving what the parser produced. One file, no schema change: all four
+functions are private to `elaborator.l` with no callers anywhere else in the
+tree, and no existing test pins the current (wrong) position. The pair is
+carried as a small `SpannedExpr` record rather than a tuple, following
+`lexer.l`'s `SpannedToken` and `llvm_ir.l`'s deliberate move away from tuples
+for values threaded through many match sites.
 
-**The weaver's 54 `synSpan()` sites split three ways, and none are irreducible.**
+B2's line tables make this verifiable end to end rather than by inspection: a
+`requires:` on line N now produces a table row on line N, which
+`assert-jvm-line-numbers.sh` asserts directly.
+
+**The weaver's `synSpan()` sites split three ways, and none are irreducible.**
 This corrects the framing in §9.3: there is no site where no real span exists.
-Roughly 24 already have a usable span sitting *unused in scope* — the two
-B′-mode builders take or hold a real span, use it in some places, and call
-`synSpan()` in others — making those a direct substitution with no plumbing.
-About 5 more need the span forwarded one call frame. The remaining ~25 are
-generic low-level AST builders with multiple callers each; every chain reaches
-a real `aspect.span` or target `FunctionDecl.span` within three frames, but
-threading them means a span parameter on ~15 helpers and ~90 call-site updates.
-That last group is the work `SpanOrigin` exists to absorb; the first two groups
-do not need `SpanOrigin` at all and can land ahead of it.
+
+But an earlier revision of this section made a worse error in the other
+direction, and it is worth recording because acting on it would have broken
+B2. It said ~24 sites "already have a usable span sitting unused in scope,
+making those a direct substitution." **Five of those are not substitutable at
+all** — `weaver.l:1759`, `3676`, `3904`, `3913`, and `3915` construct
+`Statement` nodes, and every `Statement` span feeds `lowerStmt`'s
+`isNoSourceSpan` guard (§2.6). Giving one a real span emits a `LineNumberTable`
+row for a statement the user never wrote, which is the #6285 defect again;
+substituting at `1759` alone would fail `assert-jvm-line-numbers.sh`'s
+`EXPECT_wovenAdd="25"`. The distinction is invisible from `weaver.l` — it only
+shows up by reading the JVM backend's guard and the oracle's fixture.
+
+So: **22 sites are safe**, being `Block`, `Param`, `TypeExpr`, `ModulePath`,
+`LambdaParam`, and non-statement `Expr` nodes that no backend turns into a line
+row. Two of them can do better than the obvious span —
+`buildBModeSpecializedFunction`'s synthetic params should take
+`paramTypes[pi].span` (the real original parameter type) rather than the
+whole-function span, and its `finalBody` should take `rewiredBody.span`,
+mirroring `buildWrapper`'s already-shipped choice for the identical field.
+
+The five `Statement` sites need `SpanOrigin`, not a raw span: what they want to
+record is "synthesized, caused by *this* aspect", which is a different claim
+from "this is a real source position" and is exactly the distinction §9.3
+exists to draw. The remaining sites are generic low-level AST builders with
+multiple callers each; every chain reaches a real `aspect.span` or target
+`FunctionDecl.span` within three frames, but threading them means a span
+parameter on ~15 helpers and ~90 call-site updates — also `SpanOrigin`'s job.
+
+Note the coverage asymmetry: `assert-jvm-line-numbers.sh` guards
+`buildWrapper`'s ordinary `matches:` path, so a mistake at `1759` fails CI. The
+B′-mode statement sites (`3676`, `3904`, `3913`, `3915`) have **no** automated
+guard — the case for leaving them alone rests on the backend's design, not on a
+test that would catch the error.
 
 **Monomorphizer spans are fine — the brief was wrong.** `specializeFunc` sets
 `span = decl.span` from the original generic declaration, and every

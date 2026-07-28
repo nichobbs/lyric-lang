@@ -20640,3 +20640,78 @@ names line 1, which holds only a comment — a synthesized span leaking a
 real-looking position surfaces as exactly that.
 
 **Related:** #6285, D-progress-714, docs/63 §2.6, §9.5.
+
+---
+
+### D-progress-716 — Contract asserts carry their own clause's span (docs/63 band B1, slice A)
+
+**Status:** Shipped.
+
+`CCRequires` and `CCEnsures` each carry the span of the clause the user wrote.
+`collectRequires` / `collectEnsures` bound that span to `_` and returned a bare
+`List[Expr]`, so every synthesized runtime `assert` was anchored somewhere else
+entirely: requires asserts at `body.span` (the function's opening brace), and
+ensures asserts at the span of whichever `return` statement happened to enclose
+them.
+
+The elaborator's own §3 header claims its helpers "construct Expr / Stmt
+fragments at the same `Span` as the source clause they correspond to, so
+downstream diagnostics keep pointing at user code." That was true of the
+expression rewrites and false of the asserts. `book/chapters/08-contracts.md`
+§8.7 likewise shows a violation reporting the clause's position — documenting
+behaviour the compiler did not have.
+
+**Change.** The collectors now return `List[SpannedExpr]`, a two-field record
+pairing each clause expression with its own span, and `mkAssertCall` — which
+already took a span argument — is handed the clause's rather than the
+enclosing construct's.
+
+A record rather than a raw tuple: the pair threads through ten functions in this
+file, which is the situation `llvm_ir.l` deliberately moved *away* from tuples
+for ("keeping match sites self-describing"), and it mirrors `lexer.l`'s
+`SpannedToken` — the same value-plus-its-own-span shape. Tuples are the local
+idiom for short accumulate-then-serialize loops (`contract_meta_emit.l`), which
+this is not.
+
+`appendEnsuresAssertsNoResult` keeps its `sp` parameter while
+`appendEnsuresAsserts` loses one: `sp` still anchors the synthetic
+`__lyric_result_unit` binding, which genuinely belongs to the return site rather
+than to any single clause. Only the asserts move to per-clause spans.
+
+**Scope.** Contained to `elaborator.l`. All four functions are private with no
+callers anywhere else in the tree, and no existing test pinned the old (wrong)
+position, so nothing needed updating to accommodate the change.
+
+**Verification — end to end, not by inspection.** This is the first B1 slice that
+B2's line tables make externally observable: a `requires:` on line N now produces
+a `LineNumberTable` row on line N. `scripts/assert-jvm-line-numbers.sh` grew a
+contract-bearing function and asserts it exactly:
+
+```
+OK  clamped -> 47,48,50,51
+```
+
+47 is the `requires:` line and 48 the `ensures:` line; 50 and 51 are the body.
+Before the change neither 47 nor 48 could appear, because those spans were
+discarded at the collector.
+
+Full sweep passing: `contract_elaborator`, `weaver`, `mono`, `typechecker`,
+`aspect_weave`, `bitwise`, `block_shadow` (the last three on both targets), and
+`lyric prove examples/pagination.l` (4/4 obligations discharged — the verifier
+runs the elaborator, so a span regression there would surface as a VC change).
+
+**Caveat on what a user sees.** The clause line now reaches the JVM line table,
+so a JVM stack trace points at the contract. MSIL emits no debug information at
+all yet (band B3), so the improvement is currently JVM-only; §8.7's example is
+still aspirational there.
+
+**Not in this slice.** The weaver's `synSpan()` sites. docs/63 §9.5 previously
+described ~24 of them as drop-in substitutions; that is wrong for five, which
+construct `Statement` nodes whose spans feed the JVM line table — giving those a
+real span would emit a row for a statement the user never wrote, reintroducing
+D-progress-715's defect. §9.5 is corrected in this change. The remaining 22 are
+safe but currently unobservable (no backend derives line information from
+`Block` / `Param` / `TypeExpr` nodes) and unguarded by any test, so they are
+deferred to the `SpanOrigin` work rather than landed as 22 unverifiable edits.
+
+**Related:** docs/63 §9.5, D-progress-714, D-progress-715, #6284.
