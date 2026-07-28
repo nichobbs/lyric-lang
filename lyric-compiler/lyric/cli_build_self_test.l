@@ -330,6 +330,15 @@ test "manifestDefineGateError: --target native keeps manifest defines working (#
   }
 }
 
+test "defineBuildGateError: manifest-sourced shape gets manifest-shaped advice" {
+  // Telling a user to "build without --aot" is useless when the shape came from
+  // their manifest and no such flag was ever passed.
+  match Cli.defineBuildGateError(true, true, false, Cli.SAot, Emitter.Dotnet, "/p/lyric.toml") {
+    case None -> assertTrue(false, "manifest aot shape should still reject --define")
+    case Some(msg) -> assertTrue(Str.contains(msg, "/p/lyric.toml") and Str.contains(msg, "in that manifest") and (not Str.contains(msg, "--aot/--standalone")), "manifest-sourced rejection points at the manifest, not at flags, got: " + msg)
+  }
+}
+
 test "defineBuildGateError: the rejection never suggests a shape the target refuses (#6266)" {
   // The old message said "build with --shape portable" — impossible on native
   // (F0036) and, on managed targets, phrased as a shape the user may not want.

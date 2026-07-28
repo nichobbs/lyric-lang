@@ -125,8 +125,11 @@ pub func defaultShapeForTarget(cliShape: in Option[BuildShape], target: in Compi
 // The one-version migration note for `--release` without an explicit shape
 // (docs/63 §6 mitigation 2). Before band B0 a bare `--release` also produced a
 // self-contained Native AOT binary; now it selects the optimization profile
-// only. Printed on a *successful* build — it is not a deprecation warning on a
-// legacy path, it is a heads-up that the artifact shape changed.
+// only. It is a heads-up that the artifact shape changed, not a deprecation
+// warning on a legacy path. Printed before the build runs, so it also appears
+// ahead of a compile failure — the shape decision is already made by then, and
+// deferring it until after a successful build would mean losing it exactly when
+// the user is iterating on errors.
 pub func releaseProfileOnlyNote(): String {
   "build: note: --release now selects the optimization profile only; it no longer implies a " +
     "self-contained native binary. Pass --aot (or --shape aot) for that. See docs/63 §6."
@@ -296,11 +299,16 @@ pub func defineBuildGateError(
   if not usesPackagingPipeline(shape, target) {
     return None
   }
-  val configuredIn = if manifestPath.length > 0 { " (configured in " + manifestPath + ")" } else { "" }
-  Some(
-    value = "build: --define is not supported with --shape " + shapeName(shape) + configuredIn +
-      " — the packaging build path does not thread defines (#5852); drop --define, or build without --aot/--standalone"
-  )
+  // The advice has to match how the shape was actually selected: telling a user
+  // to "build without --aot" is useless when the shape came from their manifest
+  // and no such flag was ever passed.
+  val fix = if manifestPath.length > 0 {
+    " (configured in " + manifestPath + ") — the packaging build path does not thread defines (#5852); " +
+      "drop --define, or set shape = \"portable\" in that manifest"
+  } else {
+    " — the packaging build path does not thread defines (#5852); drop --define, or build without " + "--aot/--standalone"
+  }
+  Some(value = "build: --define is not supported with --shape " + shapeName(shape) + fix)
 }
 
 // Filter a `--extra-refs-dir` directory listing down to the extra references
