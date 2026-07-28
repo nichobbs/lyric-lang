@@ -57,7 +57,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -791,7 +791,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Five `-ignore` patterns suppress known-benign findings rather than
       # failing on them forever silently; each is tracked in #5638 with the
@@ -849,7 +849,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -885,7 +885,7 @@ jobs:
     # to run.
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_ecosystem_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -953,7 +953,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -990,7 +990,7 @@ jobs:
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     continue-on-error: false  # Stage 2+: required gate — zero boxing must be maintained
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -1028,7 +1028,7 @@ jobs:
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     continue-on-error: false  # Stage 2+: required gate — zero boxing must be maintained
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -1070,7 +1070,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -1114,7 +1114,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -1146,7 +1146,7 @@ jobs:
     steps:
       - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
         run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -3206,7 +3206,7 @@ jobs:
     steps:
       - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
         run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -3426,7 +3426,7 @@ jobs:
     steps:
       - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
         run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -4190,7 +4190,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -4511,7 +4511,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -4684,7 +4684,7 @@ jobs:
     # those four libraries.
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_ecosystem_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -6539,7 +6539,7 @@ jobs:
           - { set: jvm, shard: 4/4 }
     name: numbered-self-tests (${{ matrix.set }} ${{ matrix.shard }})
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -6660,7 +6660,7 @@ jobs:
     # validated on a working CI run.
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -6945,7 +6945,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -7607,7 +7607,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -8607,7 +8607,7 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
