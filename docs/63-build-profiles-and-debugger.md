@@ -567,7 +567,7 @@ Nothing in this document has shipped, so no such update is due yet.
 |---|---|---|
 | `netcoredbg` may not handle a portable PDB from a non-Roslyn compiler | **high** | **[unverified]** — the central technical assumption of B3+B5 on dotnet. A spike must confirm this before B3 is scheduled. |
 | B1 (`SpanOrigin`) is larger than estimated | high | Touches weaver, elaborator, mono, wire-expand, and three backend IRs. Every later band depends on it. |
-| GraalVM `native-image` shape is host-dependent (shipped Linux/macOS in D131; Windows #1975) | medium | `--shape aot --target jvm` must fail loud (`F0044`) when the toolchain is missing or the host is unsupported, never silently emit a JAR. `Lyric.Release.jvmReleasePreflightError` already implements this check for `--release`. |
+| GraalVM `native-image` shape is host-dependent (shipped Linux/macOS in D131; Windows #1975) | medium | `--shape aot --target jvm` must fail loud when the toolchain is missing or the host is unsupported, never silently emit a JAR. That is **not** `F0044`, which only covers a shape whose implementation does not exist at all (`standalone`): a merely-absent driver is reported by `Lyric.Release.jvmReleasePreflightError`, which already implements this check. |
 | MSIL/JVM divergence | medium | docs/59 documents one-sided fixes between the backends. Debug info doubles the surface where they can drift. |
 | Clean break surprises scripted users | medium | Accepted per §6; mitigated by `F0042` and the build note. |
 | Optimization at `--release` is currently a no-op for dotnet/jvm | low | Lyric has no IL/bytecode optimizer; `--release` on those targets means "strip symbols" only, and the docs must say so rather than implying optimization that does not happen. |

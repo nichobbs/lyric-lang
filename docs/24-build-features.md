@@ -380,12 +380,13 @@ is erased without warning).
   from features. `--release` currently selects a packaging mode (Native
   AOT), not an optimization/symbol profile, so `@cfg`-style conditional
   compilation is the only compile-time build axis Lyric exposes today.
-  Sketched in `docs/63-build-profiles-and-debugger.md` (`--debug`/
-  `--release` profile + `--shape portable|standalone|aot`, `[build]
-  profile`/`shape` manifest keys); note that the well-known
-  `build_profile` define this document's §3.3 defines is currently
-  sourced from the `--release` code path and would move to the profile
-  axis. Unbacked pending a decision-log entry.
+  **Resolved** — specced in `docs/63-build-profiles-and-debugger.md` and
+  codified in **D132**; band B0 shipped (`--debug`/`--release` profile +
+  `--shape portable|standalone|aot`, `[build] profile`/`shape` manifest
+  keys, diagnostics `F0040`–`F0044`). The well-known `build_profile`
+  define is now sourced from the profile axis rather than from the
+  `--release` code path, so it is correct for every profile x shape
+  pairing.
 
 ---
 
