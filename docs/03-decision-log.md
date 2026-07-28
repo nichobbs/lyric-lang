@@ -20695,6 +20695,13 @@ OK  clamped -> 47,48,50,51
 Before the change neither 47 nor 48 could appear, because those spans were
 discarded at the collector.
 
+`contract_elaborator_self_test.l` additionally gained three ~2s assertions, so a
+regression in the `SpannedExpr` plumbing surfaces in the fast self-test loop
+rather than only in the slow JVM-only oracle. They are written to be
+unsatisfiable under the old code rather than merely wrong under it: two
+`requires:` clauses on adjacent lines must produce asserts on *different* lines,
+which no single shared `body.span` can do.
+
 Full sweep passing: `contract_elaborator`, `weaver`, `mono`, `typechecker`,
 `aspect_weave`, `bitwise`, `block_shadow` (the last three on both targets), and
 `lyric prove examples/pagination.l` (4/4 obligations discharged — the verifier
