@@ -63,20 +63,27 @@ trap "rm -rf '$WORK_DIR'" EXIT
 #
 # Line numbers are 1-based, counting the `//!` as line 1:
 #
-#    1 //! ...                     15   while i < n {
-#    2                             16     total = total + i
-#    3 package LyricB2Lines        17     i = i + 1
-#    4                             18   }
-#    5 func step(n: Int): Int {    19   return total
-#    6   val a = n + 1             20 }
-#    7   val b = a * 2             21
-#    8   val c = b - 3             22 func main(): Int {
-#    9   return c                  23   val x = step(5)
-#   10 }                           24   println("x=" ...)
-#   11                             25   val y = loopSum(4)
-#   12 func loopSum(n: Int): Int { 26   println("y=" ...)
-#   13   var total = 0             27   return 0
-#   14   var i = 0                 28 }
+#    1 //! ...                     22 aspect Traced {
+#    2                             23   matches: name in { wovenAdd }
+#    3 package LyricB2Lines        24   around(call) -> ret {
+#    4                             25     ret = proceed()
+#    5 func step(n: Int): Int {    26   }
+#    6   val a = n + 1             27 }
+#    7   val b = a * 2             28
+#    8   val c = b - 3             29 func wovenAdd(a: Int, b: Int): Int {
+#    9   return c                  30   val s = a + b
+#   10 }                           31   return s
+#   11                             32 }
+#   12 func loopSum(n: Int): Int { 33
+#   13   var total = 0             34 func main(): Int {
+#   14   var i = 0                 35   val x = step(5)
+#   15   while i < n {             36   println("x=" ...)
+#   16     total = total + i       37   val y = loopSum(4)
+#   17     i = i + 1               38   println("y=" ...)
+#   18   }                         39   val z = wovenAdd(20, 22)
+#   19   return total              40   println("z=" ...)
+#   20 }                           41   return 0
+#   21                             42 }
 # ---------------------------------------------------------------------------
 cat > "$WORK_DIR/lines.l" <<'EOF'
 //! Fixture for scripts/assert-jvm-line-numbers.sh (docs/63 band B2).
@@ -100,11 +107,25 @@ func loopSum(n: Int): Int {
   return total
 }
 
+aspect Traced {
+  matches: name in { wovenAdd }
+  around(call) -> ret {
+    ret = proceed()
+  }
+}
+
+func wovenAdd(a: Int, b: Int): Int {
+  val s = a + b
+  return s
+}
+
 func main(): Int {
   val x = step(5)
   println("x=" + x.toString())
   val y = loopSum(4)
   println("y=" + y.toString())
+  val z = wovenAdd(20, 22)
+  println("z=" + z.toString())
   return 0
 }
 EOF
@@ -121,12 +142,27 @@ EOF
 EXPECT_step="6,7,8,9"
 EXPECT_loopSum="13,14,15,16,17,19"
 
+# The weave case, and the regression guard for #6285.
+#
+# `wovenAdd` in the class file is the weaver's *wrapper*; the original body is
+# renamed to `wovenAdd__aspect_target`. The wrapper is built almost entirely
+# from synthesized statements (argument binding, the call to the target, return
+# plumbing) which correspond to no source text — the one real statement in it is
+# the aspect's own `ret = proceed()` on line 25.
+#
+# Before #6285 the weaver's synthesized spans claimed line 1 rather than "no
+# line", so the wrapper also carried spurious `line 1` rows. Pinning this to
+# exactly {25} is what makes that regression impossible to reintroduce
+# silently.
+EXPECT_wovenAdd="25"
+EXPECT_wovenAdd__aspect_target="30,31"
+
 # `main` is checked as a subset rather than exactly: the JVM backend also
 # emits a synthetic `main(String[])` entry-point bridge, so two methods share
 # the name and their rows land in one bucket. Every row must still fall on a
 # real statement line of the Lyric `main`, which is what catches a wrong-line
 # regression; the bridge contributes no rows of its own.
-EXPECT_main_ALLOWED="23,24,25,26,27"
+EXPECT_main_ALLOWED="35,36,37,38,39,40,41"
 EXPECT_main_MIN_ROWS=3
 
 cat > "$WORK_DIR/lyric.toml" <<'EOF'
@@ -163,13 +199,14 @@ if ! java -jar "$JAR" > "$RUN_OUT" 2>&1; then
   sed 's/^/  /' "$RUN_OUT" >&2
   exit 1
 fi
-# step(5) = ((5+1)*2)-3 = 9 ; loopSum(4) = 0+1+2+3 = 6
-if ! grep -qx "x=9" "$RUN_OUT" || ! grep -qx "y=6" "$RUN_OUT"; then
-  echo "FAIL: fixture produced wrong output (expected x=9 and y=6)" >&2
+# step(5) = ((5+1)*2)-3 = 9 ; loopSum(4) = 0+1+2+3 = 6 ; wovenAdd(20,22) = 42
+# (the last one also proves the woven wrapper still returns the target's value)
+if ! grep -qx "x=9" "$RUN_OUT" || ! grep -qx "y=6" "$RUN_OUT" || ! grep -qx "z=42" "$RUN_OUT"; then
+  echo "FAIL: fixture produced wrong output (expected x=9, y=6, z=42)" >&2
   sed 's/^/  /' "$RUN_OUT" >&2
   exit 1
 fi
-echo "[assert-jvm-line-numbers] OK  runtime output (x=9, y=6)"
+echo "[assert-jvm-line-numbers] OK  runtime output (x=9, y=6, z=42)"
 
 EXTRACT_DIR="$WORK_DIR/classes"
 mkdir -p "$EXTRACT_DIR"
@@ -200,11 +237,18 @@ fi
 #           line 9: 4
 # Method signature lines are the only ones indented by exactly two spaces and
 # starting with a letter, which is what delimits the regions.
+#
+# The name match is anchored on both sides. A plain substring search for
+# `m "("` would fold a method into the wrong bucket whenever one name is a
+# suffix of another — looking for `main` would also match `domain(`, since
+# "domain(" contains "main(". An oracle that claims to be exact cannot silently
+# merge two methods' rows, so require a non-identifier character (or line start)
+# immediately before the name.
 lines_for_method() {
   local method="$1"
   awk -v m="$method" '
     /^  [A-Za-z_$][^;]*\(.*\);[ ]*$/ {
-      inm = (index($0, m "(") > 0)
+      inm = ($0 ~ ("(^|[^A-Za-z0-9_$])" m "\\("))
       next
     }
     inm && /^ *line [0-9]+: [0-9]+$/ {
@@ -263,7 +307,23 @@ check_method_subset() {
 
 check_method_exact step "$EXPECT_step"
 check_method_exact loopSum "$EXPECT_loopSum"
+check_method_exact wovenAdd "$EXPECT_wovenAdd"
+check_method_exact wovenAdd__aspect_target "$EXPECT_wovenAdd__aspect_target"
 check_method_subset main "$EXPECT_main_ALLOWED" "$EXPECT_main_MIN_ROWS"
+
+# Belt-and-braces guard for #6285, independent of the per-method expectations
+# above: line 1 of the fixture is a `//!` comment, so no statement can live
+# there and no row may name it. A synthesized span leaking a real-looking
+# position tends to surface as exactly this, in whatever method happens to be
+# woven or elaborated.
+if grep -qE "^ *line 1: [0-9]+$" "$DISASM"; then
+  echo "FAIL: a row names line 1, which holds only a comment — a synthesized" >&2
+  echo "      span is being treated as a real source position (#6285)" >&2
+  grep -nE "^ *line 1: [0-9]+$" "$DISASM" | head -5 >&2
+  fail=1
+else
+  echo "[assert-jvm-line-numbers] OK  no rows on the comment-only line 1"
+fi
 
 # Known gap, tracked as the first slice of docs/63 band B1: no `SourceFile`
 # attribute is emitted, because `Jvm.Codegen.codegenPackage` receives a

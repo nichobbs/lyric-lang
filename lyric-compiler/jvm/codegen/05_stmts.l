@@ -837,13 +837,18 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
   // `lowerFuncImpl` can resolve the marker to a bytecode offset and build the
   // JVMS §4.7.12 LineNumberTable. Emits no bytecode.
   //
-  // Line 0 is skipped rather than recorded: middle-end passes that synthesize
-  // statements (the weaver's `synSpan()`, docs/63 §2.6) leave a zero span, and
-  // a bogus "line 0" row would point a debugger at nothing. Omitting the row
-  // makes such code inherit the previous statement's line, which is wrong but
-  // adjacent, instead of wrong and nonsensical.
+  // Statements synthesized by a middle-end pass — woven wrappers, elaborated
+  // contract asserts — get no row. They correspond to no source text, so any
+  // line attributed to them is a line the user did not write; omitting the row
+  // instead lets such code inherit the previous statement's line, which is
+  // approximate rather than actively wrong.
+  //
+  // The check goes through `isSyntheticSpan` rather than testing a line value
+  // directly: the weaver's synthesized spans previously claimed line 1, so a
+  // bare `line > 0` guard silently let every woven statement through and
+  // produced spurious line-1 rows (#6285).
   val stmtLine = stmt.span.startPos.line
-  if stmtLine > 0 {
+  if not isSyntheticSpan(stmt.span) {
     insns.add(LLineMarker(label = "__line_" + freshLabel(ctx), line = stmtLine))
   }
   match stmt.kind {

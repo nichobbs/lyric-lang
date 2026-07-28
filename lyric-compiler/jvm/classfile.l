@@ -352,8 +352,6 @@ pub func serializeClass(cf: in ClassFile): List[Byte] {
 }
 
 // ── Attribute builders ────────────────────────────────────────────────────────
-/// Build a `SourceFile` attribute.
-/// Used to map class files back to source for stack traces.
 /// One `LineNumberTable` row (JVMS §4.7.12): a bytecode offset within the
 /// enclosing `Code` attribute, and the 1-based source line it came from.
 pub record LineNumberEntry {
@@ -383,6 +381,8 @@ pub func makeLineNumberTableAttr(entries: in List[LineNumberEntry]): Attribute {
   attrFromWriter("LineNumberTable", w)
 }
 
+/// Build a `SourceFile` attribute.
+/// Used to map class files back to source for stack traces.
 pub func makeSourceFileAttr(pool: in Pool, fileName: in String): Attribute {
   val w = writerNew()
   writerU2(w, poolUtf8(pool, fileName))

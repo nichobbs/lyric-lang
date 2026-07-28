@@ -20577,3 +20577,53 @@ original files. Also tracked to B1.
 
 **Related:** docs/63 §9.2 (why the line-table slice preceded B1), §9.5 (the B1
 survey), D132, #6282.
+
+---
+
+### D-progress-715 — `synSpan()` claimed line 1, not "no line" (#6285)
+
+**Status:** Shipped, alongside D-progress-714.
+
+`Lyric.Weaver`'s `synSpan()` sits under a section header reading *"Synthetic
+AST nodes built at a zero span"*. It returned `initialPosition()`, which is
+`Position(offset = 0, line = 1, column = 1)` — not a zero span but a position
+that looks entirely real and points at the package declaration.
+
+Nothing read spans closely enough for this to matter until D-progress-714
+started emitting JVM line tables. Its guard skipped statements with
+`line <= 0`, on the strength of the section header; every woven statement
+sailed through it and produced a `LineNumberTable` row on line 1. Confirmed by
+compiling a one-aspect program to a JAR: the woven wrapper's table read
+`line 1: 0`, `line 8: 4`, `line 1: 11`, where only the middle row (the aspect's
+own `ret = proceed()`) is real. That is precisely the failure D-progress-714
+argued against — a table pointing at a statement the user did not write — and
+it would have hit every aspect-woven function across the ecosystem libraries.
+
+**Fix.** `Std`-side, two named functions next to `initialPosition()` in
+`lexer.l`:
+
+- `syntheticSpan()` — line 0, the conventional "no line information" value in
+  both JVMS §4.7.12 and DWARF, and unreachable by real 1-based positions.
+- `isSyntheticSpan(s)` — the predicate backends ask.
+
+`synSpan()` now delegates to `syntheticSpan()`, and the JVM guard asks
+`isSyntheticSpan(stmt.span)` instead of testing a line value it had to guess
+the meaning of. Checked before landing that no consumer depends on the old
+line-1 value: the LSP converts positions with `p.line - 1` but never runs the
+weaver, and `initialPosition()` itself is unchanged, so parser and emitter
+diagnostics that legitimately report `1:1` for an empty token stream are
+unaffected.
+
+This is a stopgap, and the code says so. It makes a synthesized node
+*detectable* but not *attributable* — it records that a node has no source
+position, not what caused it to exist. `SpanOrigin` (docs/63 §9.3) is still the
+real fix, and the ~24 weaver sites that already have a real span in scope
+(docs/63 §9.5) should use it rather than any sentinel.
+
+**Regression coverage.** `scripts/assert-jvm-line-numbers.sh` grew an aspect
+and a woven function; the wrapper's table is pinned to exactly the aspect's own
+statement line. A second, independent guard fails if *any* row in the fixture
+names line 1, which holds only a comment — a synthesized span leaking a
+real-looking position surfaces as exactly that.
+
+**Related:** #6285, D-progress-714, docs/63 §2.6, §9.5.

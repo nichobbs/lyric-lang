@@ -141,8 +141,20 @@ func globMatchAt(glob: in String, gi: in Int, name: in String, ni: in Int): Bool
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Synthetic AST nodes built at a zero span.
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// This used to return `initialPosition()`, which is line 1 column 1 — a
+// position that looks real and points at the package declaration. Nothing
+// consumed spans closely enough to notice until the JVM backend started
+// emitting line tables (docs/63 band B2) and every woven wrapper grew
+// spurious `line 1` rows. `syntheticSpan()` says "no source position" instead
+// of naming a real one.
+//
+// Still a stopgap: it records that a node was synthesized, not what caused
+// the synthesis. docs/63 §9.5 surveys the ~24 call sites below that already
+// have a real span in scope and should simply use it; `SpanOrigin` (§9.3)
+// covers the rest.
 func synSpan(): Span {
-  makeSpan(initialPosition(), initialPosition())
+  syntheticSpan()
 }
 
 func makePathExpr(segments: in List[String]): Expr {

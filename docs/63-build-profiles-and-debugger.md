@@ -115,9 +115,17 @@ None of it reaches codegen. The string `span` does not occur even once in
 This is the finding with the largest consequence for debugger quality, and it is
 independent of which debugger architecture is chosen.
 
-- `weaver/weaver.l:142` opens a section titled *"Synthetic AST nodes built at a
-  zero span"*, with a `synSpan()` helper used throughout (e.g.
-  `weaver.l:330`). Every woven wrapper body is therefore at line 0.
+- `weaver/weaver.l` opens a section titled *"Synthetic AST nodes built at a
+  zero span"*, with a `synSpan()` helper used throughout. The section title was
+  aspirational: `synSpan()` returned `initialPosition()`, which is line **1**,
+  column 1 — not a zero span but a position that looks entirely real and points
+  at the package declaration. Nothing read spans closely enough to notice until
+  band B2 started emitting line tables and every woven wrapper grew spurious
+  `line 1` rows (#6285). `synSpan()` now returns `syntheticSpan()` (line 0, the
+  conventional "no line information" value in both JVMS §4.7.12 and DWARF), and
+  backends ask `isSyntheticSpan` rather than testing a line value. That makes
+  synthesized nodes *detectable*; it does not make them *attributable*, which is
+  still what `SpanOrigin` (§9.3) is for.
 - `contract_elaborator/elaborator.l` propagates `e.span` when rewriting existing
   expressions (`elaborator.l:342-373`) but injects `__lyric_result_<n>`
   bindings and `assert` statements that have no natural source location.
@@ -127,7 +135,7 @@ independent of which debugger architecture is chosen.
 - `Lyric.WireExpand` splices whole template bodies across package boundaries.
 
 Contracts and aspects are load-bearing Lyric features. A debugger that maps
-woven or contract-checked code to line 0 is not a debugger for Lyric; it is a
+woven or contract-checked code to nowhere is not a debugger for Lyric; it is a
 debugger for the subset of Lyric that uses neither. Fixing this is band B1 (§9)
 and is a prerequisite for every later band.
 
@@ -520,7 +528,7 @@ that *caused* the synthesis — the `requires:` clause for an elaborated assert,
 the aspect declaration for a woven wrapper, the generic function for a
 specialisation. Debuggers default to stepping *over* synthesized code and
 attribute it to its cause, so a contract violation stops at the contract the
-user wrote rather than at line 0.
+user wrote rather than at no position at all.
 
 This replaces `weaver.l`'s `synSpan()` and gives the S3 proxy the information it
 needs to collapse aspect frames. It is the single highest-leverage item in the
@@ -640,7 +648,7 @@ do not need `SpanOrigin` at all and can land ahead of it.
 **Monomorphizer spans are fine — the brief was wrong.** `specializeFunc` sets
 `span = decl.span` from the original generic declaration, and every
 substitution helper threads the original per-node span through unchanged. The
-"line 0 in specialised code" problem is specific to the weaver and does not
+"synthetic span in specialised code" problem is specific to the weaver and does not
 apply here. What *is* missing is the original **name**: `FunctionDecl` has no
 display-name field, the specialised decl keeps only the mangled name, and the
 only two recovery paths are both unusable — `MonoResult.rewrites` is a
