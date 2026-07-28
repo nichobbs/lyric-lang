@@ -64,6 +64,12 @@ pub func buildDescriptor(params: in List[JvmType], ret: in JvmType): String {
 // ── LInsn ─────────────────────────────────────────────────────────────────────
 pub union LInsn {
   case LLabel(name: String)
+  /// Source-line marker (docs/63 band B2).  Produces no bytecode: it lowers to
+  /// a fresh assembler label so the existing two-pass assembler resolves it to
+  /// a real `start_pc`, which `lowerFuncImpl` then pairs with `line` to build
+  /// the JVMS §4.7.12 `LineNumberTable`.  Mirrors `LTryCatch`'s
+  /// "collected by lowerFunc, emits no bytecode" precedent.
+  case LLineMarker(label: String, line: Int)
   case LNop
   case LReturn
   case LIreturn
@@ -286,6 +292,9 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       emitLabel(asm, n)
       resetStack(asm)
     }
+    // No `resetStack`: a line marker is not a basic-block boundary, and
+    // treating it as one would corrupt the stackmap frames.
+    case LLineMarker(n, _) -> emitLabel(asm, n)
     case LNop -> emitNop(asm)
     case LReturn -> emitReturn(asm)
     case LIreturn -> {
@@ -1529,18 +1538,83 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
     writerU2(codeW, ct)
     tci = tci + 1
   }
+  // Code sub-attributes (JVMS §4.7.3 `attributes[]`).  This used to be
+  // hardcoded to "0, or exactly 1 and that 1 is StackMapTable"; docs/63 band
+  // B2 needs LineNumberTable alongside it, so the count is now real.
+  //
+  // Pass 1: resolve every `LLineMarker` to the bytecode offset the assembler
+  // gave its label.  `start_pc` and `line_number` are both u2, so anything
+  // that would not round-trip is dropped rather than truncated into a row that
+  // points a debugger at the wrong instruction.
+  val rawPc: List[Int] = newList()
+  val rawLine: List[Int] = newList()
+  var lmi = 0
+  while lmi < f.insns.count {
+    match f.insns[lmi] {
+      case LLineMarker(lbl, line) -> {
+        match mapGet(ar.labelOffsets, lbl) {
+          case Some(off) -> {
+            if line > 0 and off <= 65535 and line <= 65535 {
+              rawPc.add(off)
+              rawLine.add(line)
+            }
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    lmi = lmi + 1
+  }
+  // Pass 2: collapse.  The table wants one row per *line transition*, not one
+  // per statement, and two rules do that:
+  //   - A marker immediately followed by another at the same `start_pc` is
+  //     superseded: the statement it opened emitted no bytecode, so that
+  //     offset belongs to the later line.
+  //   - A row repeating the previous kept row's line adds nothing.
+  // Markers are collected in instruction order, so offsets are ascending and
+  // the resulting rows are too, as JVMS §4.7.12 expects.
+  val lineEntries: List[LineNumberEntry] = newList()
+  var lastLine = 0
+  var ri = 0
+  while ri < rawPc.count {
+    val off = rawPc[ri]
+    val ln = rawLine[ri]
+    val superseded = (ri + 1 < rawPc.count) and (rawPc[ri + 1] == off)
+    if (not superseded) and ln != lastLine {
+      // The first row starts at 0, not at the first statement's offset. A
+      // method body opens with a local-zeroing prologue that belongs to no
+      // statement, and the JVM resolves an address to the *nearest preceding*
+      // row — so a row starting later leaves the prologue attributed to
+      // nothing and a fault there reports an unknown line. Attributing it to
+      // the first statement is what javac does and costs no extra row.
+      val startPc = if lineEntries.count == 0 { 0 } else { off }
+      lineEntries.add(LineNumberEntry(startPc = startPc, lineNumber = ln))
+      lastLine = ln
+    }
+    ri = ri + 1
+  }
+  var subAttrCount = 0
   if smCount > 0 {
-    writerU2(codeW, 1)
-    // attributes_count = 1
+    subAttrCount = subAttrCount + 1
+  }
+  if lineEntries.count > 0 {
+    subAttrCount = subAttrCount + 1
+  }
+  writerU2(codeW, subAttrCount)
+  if smCount > 0 {
     writerU2(codeW, poolUtf8(pool, "StackMapTable"))
     val smBytes = writerToList(smBuf)
     writerU4(codeW, 2 + smBytes.count)
     // length = u2(count) + frames
     writerU2(codeW, smCount)
     writerByteList(codeW, smBytes)
-  } else {
-    writerU2(codeW, 0)
-    // attributes_count = 0
+  }
+  if lineEntries.count > 0 {
+    val lntBytes = makeLineNumberTableAttr(lineEntries).bytes
+    writerU2(codeW, poolUtf8(pool, "LineNumberTable"))
+    writerU4(codeW, lntBytes.count)
+    writerByteList(codeW, lntBytes)
   }
 
   val codeAttr = attrFromWriter("Code", codeW)

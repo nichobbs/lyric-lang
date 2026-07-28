@@ -354,6 +354,35 @@ pub func serializeClass(cf: in ClassFile): List[Byte] {
 // ── Attribute builders ────────────────────────────────────────────────────────
 /// Build a `SourceFile` attribute.
 /// Used to map class files back to source for stack traces.
+/// One `LineNumberTable` row (JVMS §4.7.12): a bytecode offset within the
+/// enclosing `Code` attribute, and the 1-based source line it came from.
+pub record LineNumberEntry {
+  startPc: Int
+  lineNumber: Int
+}
+
+/// `LineNumberTable` — a `Code`-attribute SUB-attribute (docs/63 band B2).
+///
+///   u2 line_number_table_length
+///   { u2 start_pc; u2 line_number } [line_number_table_length]
+///
+/// Emitting this is what lets `javap -l` and any JDWP debugger map bytecode
+/// back to Lyric source. Rows must be ascending by `start_pc`; the caller
+/// (`Jvm.Lowering.lowerFuncImpl`) is responsible for that ordering and for
+/// collapsing consecutive rows that share a line.
+pub func makeLineNumberTableAttr(entries: in List[LineNumberEntry]): Attribute {
+  val w = writerNew()
+  writerU2(w, entries.count)
+  var i = 0
+  while i < entries.count {
+    val e = entries[i]
+    writerU2(w, e.startPc)
+    writerU2(w, e.lineNumber)
+    i = i + 1
+  }
+  attrFromWriter("LineNumberTable", w)
+}
+
 pub func makeSourceFileAttr(pool: in Pool, fileName: in String): Attribute {
   val w = writerNew()
   writerU2(w, poolUtf8(pool, fileName))

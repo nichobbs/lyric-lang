@@ -833,6 +833,19 @@ func emitCountingForJvm(
 // §6. Statement lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): Unit {
+  // docs/63 band B2: mark this statement's source line before lowering it, so
+  // `lowerFuncImpl` can resolve the marker to a bytecode offset and build the
+  // JVMS §4.7.12 LineNumberTable. Emits no bytecode.
+  //
+  // Line 0 is skipped rather than recorded: middle-end passes that synthesize
+  // statements (the weaver's `synSpan()`, docs/63 §2.6) leave a zero span, and
+  // a bogus "line 0" row would point a debugger at nothing. Omitting the row
+  // makes such code inherit the previous statement's line, which is wrong but
+  // adjacent, instead of wrong and nonsensical.
+  val stmtLine = stmt.span.startPos.line
+  if stmtLine > 0 {
+    insns.add(LLineMarker(label = "__line_" + freshLabel(ctx), line = stmtLine))
+  }
   match stmt.kind {
 
     // ── Local bindings ─────────────────────────────────────────────────────
