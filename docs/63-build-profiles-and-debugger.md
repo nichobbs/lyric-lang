@@ -656,8 +656,15 @@ This corrects the framing in §9.3: there is no site where no real span exists.
 
 But an earlier revision of this section made a worse error in the other
 direction, and it is worth recording because acting on it would have broken
-B2. It said ~24 sites "already have a usable span sitting unused in scope,
-making those a direct substitution." **Five of those are not substitutable at
+B2. It said "~24" sites "already have a usable span sitting unused in scope,
+making those a direct substitution." Two things were wrong with that.
+
+The count itself was an estimate, and low. Counted exactly, the three functions
+hold **27** `synSpan()` call sites: 3 in `buildWrapper`, 15 in
+`buildBModeSpecializedFunction`, 9 in `buildBModeCallSite`. (The file has 59 in
+total; the other 32 are in the generic AST builders discussed below.)
+
+More importantly, **five of the 27 are not substitutable at
 all** — `weaver.l:1759`, `3676`, `3904`, `3913`, and `3915` construct
 `Statement` nodes, and every `Statement` span feeds `lowerStmt`'s
 `isNoSourceSpan` guard (§2.6). Giving one a real span emits a `LineNumberTable`
@@ -666,7 +673,7 @@ substituting at `1759` alone would fail `assert-jvm-line-numbers.sh`'s
 `EXPECT_wovenAdd="25"`. The distinction is invisible from `weaver.l` — it only
 shows up by reading the JVM backend's guard and the oracle's fixture.
 
-So: **22 sites are safe**, being `Block`, `Param`, `TypeExpr`, `ModulePath`,
+So of the 27: **22 are safe**, being `Block`, `Param`, `TypeExpr`, `ModulePath`,
 `LambdaParam`, and non-statement `Expr` nodes that no backend turns into a line
 row. Two of them can do better than the obvious span —
 `buildBModeSpecializedFunction`'s synthetic params should take
