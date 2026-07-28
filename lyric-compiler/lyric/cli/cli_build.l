@@ -321,7 +321,7 @@ pub func defineBuildGateError(
     " (configured in " + shapeManifestPath + ") — the packaging build path does not thread defines (#5852); " +
       "drop --define, or set shape = \"portable\" in that manifest"
   } else {
-    " — the packaging build path does not thread defines (#5852); drop --define, or build without " + "--aot/--standalone"
+    " — the packaging build path does not thread defines (#5852); drop --define, or build without --aot/--standalone"
   }
   Some(value = "build: --define is not supported with --shape " + shapeName(shape) + fix)
 }
