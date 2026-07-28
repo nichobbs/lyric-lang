@@ -478,6 +478,20 @@ test "resolveBuildAxes: standalone is rejected by F0044 wherever it comes from" 
   }
 }
 
+// ─── --rid warning wording per target ────────────────────────────────────
+test "ridNoEffectWarning: native points at --triple, not an unsatisfiable shape" {
+  val msg = Cli.ridNoEffectWarning(Emitter.Native)
+  assertTrue(
+    Str.contains(msg, "--triple") and (not Str.contains(msg, "--shape aot")),
+    "native --rid advice must not suggest a shape it already has, got: " + msg
+  )
+}
+
+test "ridNoEffectWarning: managed targets name the packaging shapes" {
+  val msg = Cli.ridNoEffectWarning(Emitter.Dotnet)
+  assertTrue(Str.contains(msg, "--shape aot"), "dotnet --rid advice names the shapes, got: " + msg)
+}
+
 // ─── the --release migration note (docs/63 §6 mitigation 2) ──────────────
 test "shouldPrintReleaseNote: bare --release resolving to a non-aot shape prints the note" {
   assertTrue(

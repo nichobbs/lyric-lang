@@ -122,6 +122,19 @@ pub func defaultShapeForTarget(cliShape: in Option[BuildShape], target: in Compi
   }
 }
 
+// The `--rid` "has no effect" warning, worded for the actual target.
+//
+// On `--target native` the remedy the managed message suggests is unsatisfiable:
+// native's shape is always `aot` (portable/standalone are `F0043` there) and
+// `--rid` still does nothing, because native cross-compiles via `--triple`.
+// Pointing at `--shape aot` would send the user in a circle.
+pub func ridNoEffectWarning(target: in CompileTarget): String {
+  match target {
+    case Native -> "build: warning: --rid has no effect on --target native; use --triple to select the target platform"
+    case _ -> "build: warning: --rid has no effect without --shape aot or --shape standalone"
+  }
+}
+
 // The one-version migration note for `--release` without an explicit shape
 // (docs/63 §6 mitigation 2). Before band B0 a bare `--release` also produced a
 // self-contained Native AOT binary; now it selects the optimization profile
@@ -1081,6 +1094,18 @@ func cmdBuild(argv: in slice[String]): Int {
     }
     case None -> ()
   }
+  // Validate the `--shape` VALUE before adjudicating conflicts: otherwise
+  // `--aot --shape bogus` reports an F0041 conflict (because "bogus" != "aot")
+  // instead of saying the value is not a shape at all.
+  if shapeArg.length > 0 {
+    match parseShapeName(shapeArg) {
+      case Some(_) -> ()
+      case None -> {
+        printErr("build: --shape must be portable, standalone, or aot, got \"" + shapeArg + "\"")
+        return 1
+      }
+    }
+  }
   match shapeFlagConflictError(shapeArg, sawAotFlag, sawStandaloneFlag) {
     case Some(msg) -> {
       printErr(msg)
@@ -1115,6 +1140,28 @@ func cmdBuild(argv: in slice[String]): Int {
     None
   }
   val effCliShape = defaultShapeForTarget(cliShape, target)
+  // `--release-from-dll` links a pre-built managed artifact; no source is
+  // compiled, so the profile axis has nothing to apply to, and the shape is
+  // `aot` by definition. Naming either is a request we cannot honour — reject
+  // it rather than silently ignore it (the same no-silent-drop contract the
+  // define gates enforce). `--shape aot` is accepted as a consistent no-op.
+  match releaseFromDll {
+    case Some(_) -> {
+      val badShape = match cliShape { case Some(SAot) -> false; case Some(_) -> true; case None -> false }
+      if badShape {
+        printErr(
+          "build: --release-from-dll always produces a native binary; --shape " + shapeArg +
+            " cannot be honoured (drop the flag, or pass --shape aot)"
+        )
+        return 1
+      }
+      if sawReleaseFlag or sawDebugFlag {
+        printErr("build: --release-from-dll compiles no source, so --debug/--release has nothing to apply to; drop it")
+        return 1
+      }
+    }
+    case None -> ()
+  }
   match releaseFromDll {
     case Some(dll) -> {
       if positional.count > 0 {
@@ -1270,16 +1317,13 @@ func cmdBuild(argv: in slice[String]): Int {
         )
       )
     }
-    // `--rid` only applies to the packaging shapes (Native AOT / self-contained);
-    // warn here — the only project-mode path where ridArg is genuinely unused
-    // (#2022, re-scoped from `--release` per docs/63 §5.3). Keyed on
-    // `usesPackagingPipeline` so the warning does not misfire on a legitimate
-    // `--rid --shape standalone` build once #6262 ships.
-    if not usesPackagingPipeline(axes.shape, target) {
-      match ridArg {
-        case Some(_) -> printErr("build: warning: --rid has no effect without --shape aot or --shape standalone")
-        case None -> ()
-      }
+    // `--rid` only applies to the packaging shapes (Native AOT / self-contained).
+    // Reached only when the shape is NOT one — the branch above returns for
+    // those — so `--rid` is genuinely unused here (#2022, re-scoped from
+    // `--release` per docs/63 §5.3).
+    match ridArg {
+      case Some(_) -> printErr(ridNoEffectWarning(target))
+      case None -> ()
     }
     return buildProject(
       mfPath,
@@ -1347,15 +1391,11 @@ func cmdBuild(argv: in slice[String]): Int {
   // `--rid` only applies to the packaging shapes; warn here so the flag isn't
   // silently dropped, mirroring the project-mode warning above (#4206).
   //
-  // Guards on `usesPackagingPipeline`, not on `isAotShape`: the message names
-  // both packaging shapes, and once `--shape standalone` ships (#6262) an
-  // `isAotShape` guard would fire this warning on a build where `--rid` is
-  // genuinely meaningful.
-  if not usesPackagingPipeline(axes.shape, target) {
-    match ridArg {
-      case Some(_) -> printErr("build: warning: --rid has no effect without --shape aot or --shape standalone")
-      case None -> ()
-    }
+  // Reached only when the shape is NOT a packaging pipeline — the branch above
+  // returns for those — so `--rid` is genuinely unused here.
+  match ridArg {
+    case Some(_) -> printErr(ridNoEffectWarning(target))
+    case None -> ()
   }
 
   val outPath = match explicitOut {

@@ -252,7 +252,7 @@ your host platform.
 
 ### The LLVM native target — `lyric build --target native`
 
-Distinct from `--release` (which AOT-compiles the *.NET* build with `ilc`),
+Distinct from `--aot` on the .NET target (which AOT-compiles the managed build with `ilc`),
 `lyric build --target native hello.l` compiles Lyric source directly to LLVM
 IR and drives `clang` to produce a self-contained POSIX executable with no
 managed runtime at all — no .NET, no JVM:
