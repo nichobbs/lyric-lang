@@ -78,7 +78,7 @@ func readBuildProfileFromManifest(manifestOpt: in Option[String]): BuildProfile 
 }
 
 // The resolved build axes for one `lyric build` invocation (docs/63 §3).
-record ResolvedAxes {
+pub record ResolvedAxes {
   shape: BuildShape
   profile: BuildProfile
 }
@@ -92,7 +92,7 @@ record ResolvedAxes {
 // `cliShape`/`cliProfile` are `None` when the user named neither on the command
 // line, which is what lets a manifest value win over the default without the
 // default silently overriding the manifest.
-func resolveBuildAxes(
+pub func resolveBuildAxes(
   cliShape: in Option[BuildShape],
   cliProfile: in Option[BuildProfile],
   manifestOpt: in Option[String],
@@ -115,7 +115,7 @@ func resolveBuildAxes(
 // `lyric build --target native` resolves to `SAot` rather than the `SPortable`
 // default. Applied before `resolveBuildAxes` so an explicit `--shape portable`
 // still reaches `F0036` instead of being silently upgraded.
-func defaultShapeForTarget(cliShape: in Option[BuildShape], target: in CompileTarget): Option[BuildShape] {
+pub func defaultShapeForTarget(cliShape: in Option[BuildShape], target: in CompileTarget): Option[BuildShape] {
   match cliShape {
     case Some(_) -> cliShape
     case None -> match target { case Native -> Some(value = SAot); case _ -> None }
@@ -149,7 +149,7 @@ pub func shouldPrintReleaseNote(sawReleaseFlag: in Bool, cliShapeNamed: in Bool,
 // True iff the manifest at `mfPath` declares a non-empty `[build.define]` table
 // (docs/60 §3.1). Used by `cmdBuild`'s gate to reject up front — rather than
 // silently drop — manifest defines on a build shape that cannot consume them
-// (`--release`/`kind = "aot"` route into `buildReleaseProject`, which threads
+// (a non-`portable` shape routes into `buildReleaseProject`, which threads
 // no defines). A read/parse failure degrades to `false`: the real build below
 // surfaces the manifest error with full diagnostics.
 func manifestDeclaresBuildDefines(mfPath: in String): Bool {

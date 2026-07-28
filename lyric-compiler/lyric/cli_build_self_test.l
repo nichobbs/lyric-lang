@@ -372,6 +372,83 @@ test "withProfileDefine: a user define still wins under last-wins (#6267)" {
   assertEqual(defs[1], "build_profile=CUSTOM", "user define goes last so last-wins keeps it")
 }
 
+// ─── axis composition: resolveBuildAxes / defaultShapeForTarget ──────────
+// Both #6266 and #6267 were composition bugs: every individual predicate was
+// tested, but the function that combines CLI-over-manifest precedence with the
+// native shape default was only covered end-to-end by hand. These pin the
+// composition itself.
+test "defaultShapeForTarget: bare --target native defaults to aot" {
+  val noShape: Option[Cli.BuildShape] = None
+  match Cli.defaultShapeForTarget(noShape, Emitter.Native) {
+    case Some(s) -> assertEqual(Cli.shapeName(s), "aot", "native with no --shape defaults to aot")
+    case None -> assertTrue(false, "native must get a default shape")
+  }
+}
+
+test "defaultShapeForTarget: managed targets get no default (manifest may still speak)" {
+  val noShape: Option[Cli.BuildShape] = None
+  match Cli.defaultShapeForTarget(noShape, Emitter.Dotnet) {
+    case None -> assertTrue(true, "dotnet defers to the manifest, then to portable")
+    case Some(s) -> assertTrue(false, "dotnet must not be forced to " + Cli.shapeName(s))
+  }
+}
+
+test "defaultShapeForTarget: an explicit CLI shape is never overridden" {
+  // Load-bearing for F0036: `--target native --shape portable` must survive to
+  // resolveBuildAxes so the error fires, rather than being silently upgraded.
+  val portable: Option[Cli.BuildShape] = Some(value = Cli.SPortable)
+  match Cli.defaultShapeForTarget(portable, Emitter.Native) {
+    case Some(s) -> assertEqual(Cli.shapeName(s), "portable", "explicit shape survives the native default")
+    case None -> assertTrue(false, "explicit shape must survive")
+  }
+}
+
+test "resolveBuildAxes: no CLI axes and no manifest -> portable/debug" {
+  val noShape: Option[Cli.BuildShape] = None
+  val noProfile: Option[Cli.BuildProfile] = None
+  val noMf: Option[String] = None
+  match Cli.resolveBuildAxes(noShape, noProfile, noMf, Emitter.Dotnet) {
+    case Ok(a) -> {
+      assertEqual(Cli.shapeName(a.shape), "portable", "default shape")
+      assertEqual(Cli.profileName(a.profile), "debug", "default profile")
+    }
+    case Err(m) -> assertTrue(false, "defaults must resolve, got: " + m)
+  }
+}
+
+test "resolveBuildAxes: CLI axes win, and the two are independent" {
+  val aot: Option[Cli.BuildShape] = Some(value = Cli.SAot)
+  val dbg: Option[Cli.BuildProfile] = Some(value = Cli.ProfDebug)
+  val noMf: Option[String] = None
+  match Cli.resolveBuildAxes(aot, dbg, noMf, Emitter.Dotnet) {
+    case Ok(a) -> {
+      assertEqual(Cli.shapeName(a.shape), "aot", "CLI shape wins")
+      assertEqual(Cli.profileName(a.profile), "debug", "debug survives an aot shape (#6267)")
+    }
+    case Err(m) -> assertTrue(false, "--debug --aot is a valid pairing, got: " + m)
+  }
+}
+
+test "resolveBuildAxes: native + explicit portable is F0036, not a silent upgrade" {
+  val portable: Option[Cli.BuildShape] = Some(value = Cli.SPortable)
+  val noProfile: Option[Cli.BuildProfile] = None
+  val noMf: Option[String] = None
+  match Cli.resolveBuildAxes(portable, noProfile, noMf, Emitter.Native) {
+    case Ok(a) -> assertTrue(false, "native + portable must fail, resolved to " + Cli.shapeName(a.shape))
+    case Err(m) -> assertTrue(Str.contains(m, "F0036"), "native + portable names F0036, got: " + m)
+  }
+}
+
+test "resolveBuildAxes: standalone is rejected by F0037 wherever it comes from" {
+  val standalone: Option[Cli.BuildShape] = Some(value = Cli.SStandalone)
+  val noProfile: Option[Cli.BuildProfile] = None
+  val noMf: Option[String] = None
+  match Cli.resolveBuildAxes(standalone, noProfile, noMf, Emitter.Dotnet) {
+    case Ok(_) -> assertTrue(false, "standalone is unimplemented and must fail")
+    case Err(m) -> assertTrue(Str.contains(m, "F0037"), "standalone names F0037, got: " + m)
+  }
+}
+
 // ─── the --release migration note (docs/63 §6 mitigation 2) ──────────────
 test "shouldPrintReleaseNote: bare --release resolving to a non-aot shape prints the note" {
   assertTrue(

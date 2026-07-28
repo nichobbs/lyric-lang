@@ -4168,7 +4168,7 @@ jobs:
           dir="$(mktemp -d)"
           src="$dir/hello.l"
           # Also asserts the well-known `build_profile` define (docs/60 M1h,
-          # #5852): a real --release build injects build_profile=release into
+          # #5852): a real --release --aot build injects build_profile=release into
           # the staging compile, so BuildInfo.profile reports "release" in the
           # native binary. This is the load-bearing guard for the release-path
           # injection, and this job (unlike `build`) has clang/ILCompiler.
