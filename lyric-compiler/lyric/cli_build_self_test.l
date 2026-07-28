@@ -340,6 +340,16 @@ test "defineBuildGateError: a CLI-sourced shape never gets manifest advice (#627
   }
 }
 
+test "defineBuildGateError: single-file --manifest shape is manifest-sourced too (#6278)" {
+  // Band B0 taught single-file builds to read `[build] shape` from an explicit
+  // `--manifest`, so that path can be manifest-sourced just like project mode;
+  // the call site must pass the manifest path, not "".
+  match Cli.defineBuildGateError(true, true, false, Cli.SAot, Emitter.Dotnet, "/p/custom.toml") {
+    case None -> assertTrue(false, "aot shape should still reject --define")
+    case Some(msg) -> assertTrue(Str.contains(msg, "/p/custom.toml") and (not Str.contains(msg, "--aot/--standalone")), "single-file manifest-sourced shape points at the manifest, got: " + msg)
+  }
+}
+
 test "defineBuildGateError: manifest-sourced shape gets manifest-shaped advice" {
   // Telling a user to "build without --aot" is useless when the shape came from
   // their manifest and no such flag was ever passed.

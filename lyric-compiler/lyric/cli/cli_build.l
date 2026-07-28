@@ -1312,7 +1312,12 @@ func cmdBuild(argv: in slice[String]): Int {
     }
   }
 
-  match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, target, "") {
+  // Same contract as the project branch (#6277/#6278): name the manifest only
+  // when the shape actually came from it. A single-file build reads
+  // `[build] shape` from an explicitly-passed `--manifest`, so that path can be
+  // manifest-sourced too.
+  val sfShapeSrc = if cliShapeNamed { "" } else { match manifestArg { case Some(mp) -> mp; case None -> "" } }
+  match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, target, sfShapeSrc) {
     case Some(msg) -> {
       printErr(msg)
       return 1
