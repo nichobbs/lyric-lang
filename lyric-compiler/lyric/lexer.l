@@ -81,6 +81,47 @@ pub func pointSpan(p: in Position): Span {
   Span(startPos = p, endPos = p)
 }
 
+/// The span carried by an AST node that a middle-end pass synthesized, and
+/// which therefore corresponds to no source text at all.
+///
+/// Line 0 is the marker, chosen because it is the conventional "no line
+/// information" value in both of the debug formats that consume these spans
+/// (JVMS §4.7.12 and DWARF), and because real positions are 1-based, so it
+/// cannot collide with one. Passes previously used `initialPosition()` for
+/// this, which claims line 1 column 1 — a position that both *looks* real and
+/// points at the package declaration, so a synthesized node was
+/// indistinguishable from a genuine statement at the top of the file.
+///
+/// **Not** `syntheticSpan`, despite naming the same idea: `Lyric.Parser`
+/// already exports a `syntheticSpan()` that returns `pointSpan(initialPosition())`
+/// — line 1 — for the different purpose of anchoring a diagnostic when the
+/// token stream is empty. Two public functions with one name and opposite
+/// semantics would resolve by import order with no ambiguity diagnostic
+/// (#6286), so this one carries a name that says what it means and collides
+/// with nothing.
+///
+/// This is a stopgap for the provenance that docs/63 §9.3's `SpanOrigin`
+/// will carry properly: it says "not real source" but not *what caused* the
+/// synthesis. Consumers should ask via `isNoSourceSpan` rather than
+/// comparing against this value.
+@stable(since = "0.1")
+pub func noSourceSpan(): Span {
+  val p = Position(offset = 0, line = 0, column = 0)
+  Span(startPos = p, endPos = p)
+}
+
+/// Whether `s` marks a node with no source position (see `noSourceSpan`).
+///
+/// Used by backends that must decide whether a node can be attributed to a
+/// source line — emitting a row for a synthesized statement points a debugger
+/// at whatever line the sentinel happens to name, which is worse than
+/// emitting no row at all.
+@pure
+@stable(since = "0.1")
+pub func isNoSourceSpan(s: in Span): Bool {
+  s.startPos.line <= 0
+}
+
 @pure
 @stable(since = "0.1")
 pub func spanLength(s: in Span): Int {

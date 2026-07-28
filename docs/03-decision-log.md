@@ -20512,3 +20512,131 @@ silently.
 **Related:** docs/63 (§3 axes, §5.3 re-scoped gates, §6 clean break, §9 bands),
 docs/60 §3.3 (`build_profile`), docs/24 Q-features-005, D045, D131, #6262,
 #6263, #6266, #6267, #6268, #6270–#6274.
+
+---
+
+### D-progress-714 — JVM `LineNumberTable` emission (docs/63 band B2, line-table slice)
+
+**Status:** Shipped.
+
+The self-hosted JVM backend now emits a JVMS §4.7.12 `LineNumberTable` as a
+`Code` sub-attribute for every method body, mapping bytecode offsets back to
+Lyric source lines. Before this, no JVM class file carried any debug
+information at all.
+
+**Mechanism.** A new zero-byte `LInsn` case, `LLineMarker(label, line)`, is
+appended by `Jvm.Codegen.lowerStmt` before each statement it lowers. It lowers
+to a bare assembler label, so the existing two-pass assembler resolves it to a
+real `start_pc` at no cost, and `lowerFuncImpl` then pairs each resolved offset
+with its line to build the table. This reuses the `LTryCatch` precedent —
+collected by `lowerFunc`, emits no bytecode — rather than introducing a
+parallel side-channel through the lowering.
+
+Two details were load-bearing:
+
+- `LLineMarker` must **not** call `resetStack`. `LLabel` does, because a label
+  is a basic-block boundary; a line marker is not, and treating it as one
+  corrupts the stackmap frames. Markers are never branch targets, so they add
+  no frames.
+- The `Code` attribute's sub-attribute count was hardcoded to "0, or exactly 1
+  and that 1 is `StackMapTable`". It is now counted for real, which is what
+  lets a second sub-attribute coexist.
+
+Rows are collapsed to one per line transition: a marker superseded by another
+at the same `start_pc` is dropped (its statement emitted no bytecode, so the
+offset belongs to the later line), as is a row repeating the previous line. The
+first row is pinned to offset 0 rather than to the first statement's offset,
+because a method body opens with a local-zeroing prologue that belongs to no
+statement — and since the JVM resolves an address to the nearest *preceding*
+row, a later first row would leave the prologue attributed to nothing.
+
+**Verification.** `scripts/assert-jvm-line-numbers.sh` compiles a fixture,
+asserts it still runs (a malformed `Code` attribute is rejected by the verifier
+at class load, so a clean run is a real check that the method bodies were not
+corrupted), then asserts via `javap -l` that each method's rows fall on exactly
+the expected source lines. Wired into CI as the `jvm-line-numbers` job. The
+check is exact rather than a smoke test: a table pointing at the wrong
+statement is worse for a debugger than no table.
+
+**Known gap, deliberately not papered over.** No `SourceFile` attribute is
+emitted, so `Throwable.printStackTrace` still prints `(Unknown Source)` — JDWP
+line breakpoints work off the tables, but stack traces do not benefit yet. This
+is not a missing call: `classfile.l` defines `makeSourceFileAttr` and nothing
+calls it because **there is no filename to pass**. `Jvm.Codegen.codegenPackage`
+receives a `SourceFile` AST node, which carries no path, and the real path is
+dropped in `cli_build.l` before `EmitRequest` is constructed. The same missing
+plumbing blocks MSIL's `Document` table and native's `DIFile`, so it is fixed
+once in band B1 rather than three times downstream. The oracle asserts the gap
+as a *pending* state — it fails if a `SourceFile` ever appears — so the
+expectation cannot go stale silently.
+
+Multi-file packages additionally inherit #6282: sources are concatenated into
+one blob before parsing, so their line numbers are merged-blob relative. Rows
+emitted for such packages are internally consistent but do not point at the
+original files. Also tracked to B1.
+
+**Related:** docs/63 §9.2 (why the line-table slice preceded B1), §9.5 (the B1
+survey), D132, #6282.
+
+---
+
+### D-progress-715 — `synSpan()` claimed line 1, not "no line" (#6285)
+
+**Status:** Shipped, alongside D-progress-714.
+
+`Lyric.Weaver`'s `synSpan()` sits under a section header reading *"Synthetic
+AST nodes built at a zero span"*. It returned `initialPosition()`, which is
+`Position(offset = 0, line = 1, column = 1)` — not a zero span but a position
+that looks entirely real and points at the package declaration.
+
+Nothing read spans closely enough for this to matter until D-progress-714
+started emitting JVM line tables. Its guard skipped statements with
+`line <= 0`, on the strength of the section header; every woven statement
+sailed through it and produced a `LineNumberTable` row on line 1. Confirmed by
+compiling a one-aspect program to a JAR: the woven wrapper's table read
+`line 1: 0`, `line 8: 4`, `line 1: 11`, where only the middle row (the aspect's
+own `ret = proceed()`) is real. That is precisely the failure D-progress-714
+argued against — a table pointing at a statement the user did not write — and
+it would have hit every aspect-woven function across the ecosystem libraries.
+
+**Fix.** Two named functions next to `initialPosition()` in `lexer.l`:
+
+- `noSourceSpan()` — line 0, the conventional "no line information" value in
+  both JVMS §4.7.12 and DWARF, and unreachable by real 1-based positions.
+- `isNoSourceSpan(s)` — the predicate backends ask.
+
+`synSpan()` now delegates to `noSourceSpan()`, and the JVM guard asks
+`isNoSourceSpan(stmt.span)` instead of testing a line value it had to guess
+the meaning of.
+
+The first attempt named these `syntheticSpan`/`isSyntheticSpan`, which review
+caught as #6286: `Lyric.Parser` already exports a `syntheticSpan()` returning
+`pointSpan(initialPosition())` — line 1 — to anchor a diagnostic when the token
+stream is empty. `weaver.l` imports `Lyric.Lexer` and `Lyric.Parser` both
+unqualified, and the self-hosted resolver registers imported symbols without a
+duplicate check, resolving a bare name last-registered-wins with no ambiguity
+diagnostic. Two public functions sharing a name with opposite semantics would
+therefore have let a bundling-order change silently restore the line-1
+behaviour this entry exists to remove. Renaming makes the collision impossible
+rather than merely currently-benign. Separately, `Jvm.Codegen` was calling the
+predicate with no import of `Lyric.Lexer` in the package at all — it resolved
+through the same fallback — so `05_stmts.l` now carries an explicit
+`import Lyric.Lexer as Lex` and qualifies the call. Checked before landing that no consumer depends on the old
+line-1 value: the LSP converts positions with `p.line - 1` but never runs the
+weaver, and `initialPosition()` itself is unchanged, so parser and emitter
+diagnostics that legitimately report `1:1` for an empty token stream are
+unaffected.
+
+This is a stopgap, and the code says so. It makes a synthesized node
+*detectable* but not *attributable* — it records that a node has no source
+position, not what caused it to exist. `SpanOrigin` (docs/63 §9.3) is still the
+real fix, and the ~24 weaver sites that already have a real span in scope
+(docs/63 §9.5) should use it rather than any sentinel.
+
+**Regression coverage.** `scripts/assert-jvm-line-numbers.sh` grew an aspect
+and a woven function; the wrapper's table is pinned to exactly the aspect's own
+statement line. A second, independent guard fails if *any* row in the fixture
+names line 1, which holds only a comment — a synthesized span leaking a
+real-looking position surfaces as exactly that.
+
+**Related:** #6285, D-progress-714, docs/63 §2.6, §9.5.

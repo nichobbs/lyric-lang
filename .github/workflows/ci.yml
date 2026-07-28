@@ -1,5 +1,23 @@
 name: CI
 
+# ---------------------------------------------------------------------------
+# SIZE LIMIT — keep this file well under 512 KB.
+#
+# GitHub silently stops creating runs for a workflow whose file exceeds its
+# size limit. There is no error, no queued run, and no annotation: the API
+# still reports the workflow as `active`, required checks simply never report,
+# and every PR sits unmergeable with nothing to point at. It looks like an
+# Actions outage rather than a problem with this file.
+#
+# That happened here. Observed boundary: 507,536 bytes ran normally; 515,219
+# bytes produced no run for any push or pull request, on `main` included.
+#
+# So: do not paste large shell blocks into a `run:`. A step needing more than
+# a few lines belongs in `scripts/ci/`, where it is also runnable locally and
+# diffable without 9,000 lines shifting under it. `scripts/ci/self-test.sh`
+# covers the common "run one self-test through the AOT binary" shape.
+# ---------------------------------------------------------------------------
+
 on:
   push:
     branches: [main]
@@ -1041,6 +1059,49 @@ jobs:
           fi
           exit $exit_code
 
+  # docs/63 band B2: the JVM backend must emit a LineNumberTable for every
+  # method body, with rows on the right source lines.  Asserted exactly (not
+  # as a smoke test) because a table pointing at the wrong statement is worse
+  # for a debugger than no table at all.
+  jvm-line-numbers:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Set up Java 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95  # v5.6.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+      - name: Assert JVM LineNumberTable correctness (docs/63 band B2)
+        working-directory: ${{ github.workspace }}
+        run: |
+          bash scripts/assert-jvm-line-numbers.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" || exit_code=$?
+          exit_code=${exit_code:-0}
+          # 77 means javap was unavailable.  This job installs a JDK, so that
+          # should not happen; treat it as a failure rather than a silent pass.
+          if [[ $exit_code -eq 77 ]]; then
+            echo "ERROR: javap unavailable despite setup-java; not skipping a required gate" >&2
+            exit 1
+          fi
+          exit $exit_code
+
   # Placeholder job retained for workflow structure. The F# test suites
   # (Lexer, Parser, TypeChecker, Emitter, CLI) were deleted when the F#
   # bootstrap compiler was decommissioned in favor of bootstrap-from-release.
@@ -1832,18 +1893,7 @@ jobs:
       - name: Inout-slice self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping inout-slice self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping inout-slice self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/inout_slice_self_test.l
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/inout_slice_self_test.l
 
       # Inout-field self-reassign self-test (#5936).  `h.field = h.field.slice(...)`
       # on an inout record param, inline (RHS reads the field being assigned),
@@ -1853,18 +1903,7 @@ jobs:
       - name: Inout-field self-reassign self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping inout-field-self-reassign self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping inout-field-self-reassign self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/inout_field_self_reassign_self_test.l
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/inout_field_self_reassign_self_test.l
 
       # Enum/closure/pattern-bind self-test (D-progress-623 / #5361, #5364).
       # Pins two self-hosted MSIL backend bugs: a payload-free `enum`
@@ -4680,18 +4719,7 @@ jobs:
       - name: Bitwise self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping bitwise JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping bitwise JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/bitwise_self_test.l
 
       # config-block self-test on JVM (#3228, wired in #6198) — the
       # load-bearing half: JVM `config { }` emission (static fields + a
@@ -4709,18 +4737,7 @@ jobs:
           LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_ENABLED: "true"
           LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_HOST: "override-host"
           LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_REQUIRED_SECRET: "s3cr3t"
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping config-block JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping config-block JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/config_block_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/config_block_self_test.l
 
       # JVM half of the compound-assign String self-test (#5657).  The JVM
       # `s += <Double>` path spills the rhs to a slot before the (branching)
@@ -4730,18 +4747,7 @@ jobs:
       - name: Compound-assign String self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping compound-assign JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping compound-assign JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/compound_string_assign_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/compound_string_assign_self_test.l
 
       # JVM half of the UFCS self-field self-test (#5565) — the load-bearing
       # target: before the fix, an out-of-body UFCS method reading a `self` field
@@ -4750,36 +4756,14 @@ jobs:
       - name: UFCS self-field self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping UFCS self-field JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping UFCS self-field JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/ufcs_self_field_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/ufcs_self_field_self_test.l
 
       # JVM half of the Bool stringification cross-target parity check
       # (#5552) — see the dotnet-side step above for the full rationale.
       - name: Bool stringification self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping bool_tostring JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping bool_tostring JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/bool_tostring_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/bool_tostring_self_test.l
 
       # #3693/#3705-shape generic-specialisation regression on the JVM
       # single-file build (docs/59 §5.4 item: JVM single-file mono decl
@@ -4822,18 +4806,7 @@ jobs:
       - name: Byte-arithmetic self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping byte-arithmetic JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping byte-arithmetic JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/byte_arithmetic_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/byte_arithmetic_self_test.l
 
       # Slice-ops self-test on JVM (#5244) — the JVM half of the dotnet-job
       # step of the same name.  JVM slices are uniformly `Object[]`
@@ -4844,18 +4817,7 @@ jobs:
       - name: Slice-ops self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping slice-ops JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping slice-ops JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/slice_ops_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/slice_ops_self_test.l
 
       # Block-shadow self-test on JVM (#5191 / D-progress-603) — the JVM half of
       # the dotnet-job step of the same name.  Pins the general nested-block
@@ -4863,18 +4825,7 @@ jobs:
       - name: Block-shadow self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping block-shadow JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping block-shadow JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/block_shadow_self_test.l
 
       # Try/finally early-exit self-test on JVM (#5765) — the JVM half of the
       # dotnet-job step of the same name, and the load-bearing target for this
@@ -4884,18 +4835,7 @@ jobs:
       - name: Try/finally early-exit self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping try/finally early-exit JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping try/finally early-exit JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/try_finally_early_exit_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/try_finally_early_exit_self_test.l
 
       # slice[Byte]-index lambda-argument self-test on JVM (#5934).  Runtime
       # regression pin for the MSIL Func-ABI box/unbox type mismatch: a
@@ -4907,18 +4847,7 @@ jobs:
       - name: slice[Byte] lambda-arg self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping slice-byte-lambda JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping slice-byte-lambda JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/slice_byte_lambda_arg_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/slice_byte_lambda_arg_self_test.l
 
       # Record omitted-default construction self-test on JVM (#5908/#5920 +
       # the #6146 non-trailing-omission field-alignment follow-up).  JVM is
@@ -4928,18 +4857,7 @@ jobs:
       - name: Record omitted-default self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping record-omitted-default JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping record-omitted-default JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/record_omitted_default_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/record_omitted_default_self_test.l
 
       # Lambda-Bool-if-condition self-test on JVM (#5935) — the JVM half of the
       # dotnet-job step of the same name; this is the load-bearing run (the
@@ -4947,18 +4865,7 @@ jobs:
       - name: Lambda-Bool-if-condition self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping lambda-Bool-if-condition JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping lambda-Bool-if-condition JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/lambda_bool_if_cond_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/lambda_bool_if_cond_self_test.l
 
       # Extra barrier (JVM batch 0-split): the first JVM sub-batch (before the
       # "JVM batch 1-split" barrier below) had grown to ~18 concurrent
@@ -4977,18 +4884,7 @@ jobs:
       - name: Qualified enum-case self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping qualified enum-case JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping qualified enum-case JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/qualified_enum_case_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/qualified_enum_case_self_test.l
 
       # Bare union-case match-arm resolution self-test on JVM.
       # qualified_union_case_self_test.l: #3840 (qualified construction) +
@@ -4998,18 +4894,7 @@ jobs:
       - name: Bare union-case match self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping union-case JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping union-case JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/qualified_union_case_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/qualified_union_case_self_test.l
 
       # HOF-returned-closure local self-test on JVM (#5796) — the JVM parity
       # control for the MSIL #5774 fix (un-annotated closure-typed locals
@@ -5018,18 +4903,7 @@ jobs:
       - name: Func-val local rettype self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping func-val rettype JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping func-val rettype JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/func_val_local_rettype_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/func_val_local_rettype_self_test.l
 
       # Stdlib-generic mono self-test on JVM (#5843) — the file's old header
       # claimed MSIL-only (#1707) but the whole suite passes on JVM now;
@@ -5038,18 +4912,7 @@ jobs:
       - name: Stdlib-generic mono self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping stdlib-generic mono JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping stdlib-generic mono JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/stdlib_generic_mono_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/stdlib_generic_mono_self_test.l
 
       # Inout-slice self-test on JVM (#5842) — the JVM half of the dotnet-job
       # step of the same name.  Pins the Object[]→ArrayList holder write-back
@@ -5057,18 +4920,7 @@ jobs:
       - name: Inout-slice self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping inout-slice JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping inout-slice JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/inout_slice_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/inout_slice_self_test.l
 
       # Inout-field self-reassign self-test on JVM (#5936) — the load-bearing
       # run (the VerifyError only reproduced on JVM's StackMapTable path); the
@@ -5076,18 +4928,7 @@ jobs:
       - name: Inout-field self-reassign self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping inout-field-self-reassign JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping inout-field-self-reassign JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/inout_field_self_reassign_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/inout_field_self_reassign_self_test.l
 
       # Self-field reassign in an impl method self-test on JVM (#6168) — the
       # implicit-receiver (`selfFieldType`) sibling of the inout-field fix
@@ -5100,18 +4941,7 @@ jobs:
       - name: Self-field reassign self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping self-field-reassign JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping self-field-reassign JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/self_field_reassign_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/self_field_reassign_jvm_self_test.l
 
       # Never-tail self-test on JVM (#5652) — the JVM half of the dotnet-job
       # step of the same name.  Pins the Never-in-tail-position default-value
@@ -5119,18 +4949,7 @@ jobs:
       - name: Never-tail self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping never-tail JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping never-tail JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/never_tail_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/never_tail_self_test.l
 
       # Module-val-deps self-test on JVM (#5955) — the JVM half of the
       # dotnet-job step of the same name.  JVM was never affected by the
@@ -5139,18 +4958,7 @@ jobs:
       - name: Module-val-deps self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping module-val-deps JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping module-val-deps JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/module_val_deps_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/module_val_deps_self_test.l
 
       # Annotated-binding unbox self-test on JVM (#5519) — the JVM half of the
       # dotnet-job step of the same name (JVM acts as the parity control for
@@ -5158,18 +4966,7 @@ jobs:
       - name: Annotated-binding unbox self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping annotated-binding unbox JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping annotated-binding unbox JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/annotated_binding_unbox_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/annotated_binding_unbox_self_test.l
 
       # Async spawn/scope/await self-test on JVM (D119 S4 / D120,
       # D-progress-602) — the JVM half of the dotnet-job step of the same name.
@@ -5230,18 +5027,7 @@ jobs:
       - name: BuildInfo self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping BuildInfo JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping BuildInfo JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/buildinfo_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/buildinfo_self_test.l
 
       # Std.Tls test coverage on JVM (#5876) — the JVM half of the
       # dotnet-job step of the same name (stdlib-builds). Certificate/
@@ -5639,18 +5425,7 @@ jobs:
       - name: Conversion-method self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping conversion-method JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping conversion-method JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/conv_methods_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/conv_methods_self_test.l
 
       # Pattern-lowering self-test (#2455).  Exercises the five match-arm pattern
       # forms that the self-hosted MSIL and JVM backends previously left
@@ -5682,18 +5457,7 @@ jobs:
       - name: Auto-FFI metadata self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping auto-FFI JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping auto-FFI JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/auto_ffi_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/auto_ffi_jvm_self_test.l
       # Negative test: an ambiguous primitive-array overload must fail loud,
       # not silently guess.  A Lyric slice[T] argument erases to Object[]
       # before the JVM auto-FFI resolver ever sees it, so java.lang.String's
@@ -5814,18 +5578,7 @@ jobs:
       - name: Hash self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping hash JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping hash JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/hash_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/hash_jvm_self_test.l
       # Stdlib JVM kernel migration off extern package (a no-op mechanism in
       # both the type checker and both codegens): environment_host.l,
       # process_host.l, log_host.l, unicode_host.l migrated onto plain
@@ -5835,18 +5588,7 @@ jobs:
       - name: Stdlib JVM kernels self-test (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping stdlib JVM kernels self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping stdlib JVM kernels self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l
       # Silent-miscompile guard (JVM, band J1 / #2664 / epic #2663): pins the
       # five JVM-backend codegen fixes that previously produced wrong-but-running
       # output — Float emitted as 32-bit (not double), complex assignment
@@ -5892,18 +5634,7 @@ jobs:
       - name: out/inout parameter self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping out/inout JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping out/inout JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/out_inout_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/out_inout_jvm_self_test.l
       # Middle-end-passes guard (band J2, docs/44 §5, #2665, epic #2663) —
       # exercises the target-agnostic middle-end passes J2 wired into the
       # self-hosted JVM bridge: `@cfg` erasure (an inactive-feature item is
@@ -5916,18 +5647,7 @@ jobs:
       - name: Middle-end-passes guard self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping middle-end-passes JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping middle-end-passes JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/middle_end_passes_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/middle_end_passes_jvm_self_test.l
       # J3 lowering self-test (JVM, band J3 / #2666 / epic #2663): pins the
       # codegen dispatch wired to the `jvm/lowering.l` capabilities that were
       # previously unreachable (silently dropped bodies) — opaque-type
@@ -5958,18 +5678,7 @@ jobs:
       - name: Defer self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping defer JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping defer JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/defer_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/defer_self_test.l
 
       # Extra barrier (JVM batch 3-split): keeps this group under the ~14-step
       # cap (was 15) so the runner's parallel-step status collection doesn't
@@ -5988,18 +5697,7 @@ jobs:
       - name: Range-for self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping range-for JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping range-for JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/range_for_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/range_for_jvm_self_test.l
       # Generic-codegen self-test on JVM (J4 M-1, epic #2663 / #2667 / #1707).
       # Pins the erased-generics correctness fix: generic `Result`/`Option` and
       # user generic records/unions now construct (boxing primitive payloads
@@ -6010,18 +5708,7 @@ jobs:
       - name: Generic-codegen self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping generic-codegen JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping generic-codegen JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/generic_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_jvm_self_test.l
       # Erased-generic-payload arithmetic self-test on JVM (J4, #4877).  An
       # unannotated `val` bound to an erased generic payload (`match`/`?` on a
       # `Result`/`Option`) was tracked as `java/lang/Object`, so `x + y`
@@ -6033,18 +5720,7 @@ jobs:
       - name: Erased-generic-arith self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping erased-generic-arith JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping erased-generic-arith JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/erased_generic_arith_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/erased_generic_arith_jvm_self_test.l
       # Method-call-scrutinee erased-payload self-test on JVM (J4, #4933).  The
       # third form of the #4877 bug: `match recv.method(...) { … }` where the
       # method returns a generic instantiation — the payload was boxed, so
@@ -6056,18 +5732,7 @@ jobs:
       - name: Method-scrutinee self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping method-scrutinee JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping method-scrutinee JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/method_scrutinee_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/method_scrutinee_jvm_self_test.l
       # Closure / lambda-value self-test on the JVM target (J2b / B-1, #2665,
       # epic #2663).  Pins the self-hosted JVM closure backend: a general
       # `ELambda` lowers to a `<pkg>$Lambda$<n>` inner class implementing the
@@ -6082,18 +5747,7 @@ jobs:
       - name: Closure-codegen self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping closure-codegen JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping closure-codegen JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
       # Zero-overhead closure self-test RUN on JVM (band J4, #4798/#2667).
       # The no-box gates above only DISASSEMBLE this module; this step runs
       # its 18 cases under java so the two-slot (Long/Double) capture paths —
@@ -6125,18 +5779,7 @@ jobs:
       - name: Record-method self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping record-method JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping record-method JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/record_method_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/record_method_jvm_self_test.l
 
       # Std.Http TLS client configuration test coverage on JVM (docs/61
       # §3.2 + §4, D128; phase 1.2, #5877) — the JVM half of the
@@ -6179,18 +5822,7 @@ jobs:
       - name: Control-flow terminator self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping control-flow JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping control-flow JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/control_flow_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/control_flow_jvm_self_test.l
 
       # Try/catch-as-expression self-test on JVM (#3193, epic #2663).  Pins
       # `lowerTryCatchExpr` (jvm/codegen/05_stmts.l): when every arm yields a
@@ -6204,18 +5836,7 @@ jobs:
       - name: Try/catch-expression self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping try/catch-expression JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping try/catch-expression JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/try_catch_expr_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/try_catch_expr_jvm_self_test.l
 
       # @projectable opaque-twin self-test on JVM (#3044) — JVM parity twin of
       # the MSIL m87 self-test (PR #3015): `<Name>View` class synthesis,
@@ -6229,18 +5850,7 @@ jobs:
       - name: Projectable opaque-twin self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping projectable JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping projectable JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/projectable_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/projectable_jvm_self_test.l
       # Synthesized-method-resolution self-test on JVM (#1499, #1507) — JVM
       # parity twin of the MSIL step above.  Pins the JVM `@derive(Equals/Show)`
       # free-function call path (the member-call fallback in `lowerMethodCall`
@@ -6252,18 +5862,7 @@ jobs:
       - name: Synthesized-method-resolution self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping synthesized-method-resolution JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping synthesized-method-resolution JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/synthesized_method_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/synthesized_method_self_test.l
       # NaN-comparison self-test on JVM (#2772) — pins IEEE 754 §5.11 ordered
       # comparisons for Float/Double: `lowerCmp`/`lowerCmpFail` must select the
       # `fcmpg`/`dcmpg` ("g") variant for `<`/`<=` (NaN -> +1 -> branch not taken
@@ -6293,18 +5892,7 @@ jobs:
       - name: Extern-handle-across-loop self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping extern-loop JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping extern-loop JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/extern_loop_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/extern_loop_jvm_self_test.l
       # Extern-type parameter/return self-test (#3334) — pins that an `extern
       # type` value used as a function parameter or return type resolves to the
       # real JVM class in the method descriptor (e.g. JBAOS ->
@@ -6315,18 +5903,7 @@ jobs:
       - name: Extern-type parameter self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping extern-param JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping extern-param JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/extern_param_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/extern_param_jvm_self_test.l
       # ProcessCapture JVM self-test (#1065) — pins `Std.ProcessCaptureHost` on
       # the JVM target: pure auto-FFI implementation using ProcessBuilder +
       # Process + InputStream/OutputStream drain loop, `JBAOS.toString("UTF-8")`
@@ -6339,18 +5916,7 @@ jobs:
       - name: ProcessCapture JVM self-test (native lyric test --target jvm, #1065)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping ProcessCapture JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping ProcessCapture JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/process_capture_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/process_capture_jvm_self_test.l
       # `lyric run --target jvm` end-to-end smoke (#674) — the first CI step to
       # exercise the `run` JVM convenience wrapper (vs. the `test --target jvm`
       # steps above).  Builds a no-arg `func main(): Int` program to a bundled
@@ -6927,54 +6493,21 @@ jobs:
       # bodies and holder-call sites through an interface-typed binding.
       - name: Interface default-method out/inout self-test on JVM (native lyric test --target jvm)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping interface default-method JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping interface default-method JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/iface_default_method_out_inout_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/iface_default_method_out_inout_jvm_self_test.l
 
       # Lazy __lyricCount emission self-test on JVM (#4803) — pins that the
       # helper is only emitted when an erased-receiver .count/.length call
       # actually needs it.
       - name: Lazy __lyricCount self-test on JVM (native lyric test --target jvm)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping lazy __lyricCount JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping lazy __lyricCount JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/lazy_lyric_count_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/lazy_lyric_count_jvm_self_test.l
 
       # Union-case-name collision self-test on JVM (#2535) — pins
       # collectFileCtors' own-package-scoped and union-qualified collision
       # keys via a real runtime construction/match.
       - name: Union-case collision self-test on JVM (native lyric test --target jvm)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping union-case collision JVM self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping union-case collision JVM self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/union_case_collision_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/union_case_collision_jvm_self_test.l
 
   # Numbered backend self-test corpus (docs/59 §9.5, H8) — the ~215 plain
   # `func main` regression programs (`lyric-compiler/msil/msil_self_test_m1..m84`

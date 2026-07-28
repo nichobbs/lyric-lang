@@ -9,6 +9,10 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Lyric.Parser
+// Aliased rather than plain: `Lyric.Lexer` and `Lyric.Parser` both export
+// span helpers, and an unqualified import would let a future name defined in
+// both resolve by registration order with no ambiguity diagnostic (#6286).
+import Lyric.Lexer as Lex
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
@@ -833,6 +837,24 @@ func emitCountingForJvm(
 // §6. Statement lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): Unit {
+  // docs/63 band B2: mark this statement's source line before lowering it, so
+  // `lowerFuncImpl` can resolve the marker to a bytecode offset and build the
+  // JVMS §4.7.12 LineNumberTable. Emits no bytecode.
+  //
+  // Statements synthesized by a middle-end pass — woven wrappers, elaborated
+  // contract asserts — get no row. They correspond to no source text, so any
+  // line attributed to them is a line the user did not write; omitting the row
+  // instead lets such code inherit the previous statement's line, which is
+  // approximate rather than actively wrong.
+  //
+  // The check goes through `isNoSourceSpan` rather than testing a line value
+  // directly: the weaver's synthesized spans previously claimed line 1, so a
+  // bare `line > 0` guard silently let every woven statement through and
+  // produced spurious line-1 rows (#6285).
+  val stmtLine = stmt.span.startPos.line
+  if not Lex.isNoSourceSpan(stmt.span) {
+    insns.add(LLineMarker(label = "__line_" + freshLabel(ctx), line = stmtLine))
+  }
   match stmt.kind {
 
     // ── Local bindings ─────────────────────────────────────────────────────

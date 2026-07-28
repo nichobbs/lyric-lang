@@ -92,8 +92,8 @@ after the refactor it must key off the *profile*, not off the code path.
 
 | Target | Debug info today | Evidence |
 |---|---|---|
-| dotnet | None. No PDB is written; `msil/pe.l` emits no Debug Directory, so there is no CodeView/RSDS entry to point at one. | no `DebugDirectory`/`RSDS`/`codeview` match anywhere under `lyric-compiler/msil/` |
-| jvm | `SourceFile` only. No `LineNumberTable`, no `LocalVariableTable`. | `classfile.l:360` writes `SourceFile`; no line-table writer exists |
+| dotnet | None. No PDB is written; the PE assembler emits no Debug Directory, so there is no CodeView/RSDS entry to point at one. | no `DebugDirectory`/`RSDS`/`codeview` match anywhere under `lyric-compiler/msil/` |
+| jvm | **None.** `classfile.l` has a `makeSourceFileAttr` builder, but nothing calls it, so not even `SourceFile` reaches a class file. No `LineNumberTable`, no `LocalVariableTable`. | `makeSourceFileAttr` has zero call sites tree-wide; no line-table writer exists |
 | native | None. clang is invoked with `-O<n>` and never `-g`. | `llvm_bridge.l:596` builds `clangArgs` with `-O` and no `-g` |
 
 The `LyricSourceMap` attribute described in `docs/18-jvm-emission.md` Appendix C
@@ -115,9 +115,26 @@ None of it reaches codegen. The string `span` does not occur even once in
 This is the finding with the largest consequence for debugger quality, and it is
 independent of which debugger architecture is chosen.
 
-- `weaver/weaver.l:142` opens a section titled *"Synthetic AST nodes built at a
-  zero span"*, with a `synSpan()` helper used throughout (e.g.
-  `weaver.l:330`). Every woven wrapper body is therefore at line 0.
+- `weaver/weaver.l` opens a section titled *"Synthetic AST nodes built at a
+  zero span"*, with a `synSpan()` helper used throughout. The section title was
+  aspirational: `synSpan()` returned `initialPosition()`, which is line **1**,
+  column 1 — not a zero span but a position that looks entirely real and points
+  at the package declaration. Nothing read spans closely enough to notice until
+  band B2 started emitting line tables and every woven wrapper grew spurious
+  `line 1` rows (#6285). `synSpan()` now returns `noSourceSpan()` (line 0, the
+  conventional "no line information" value in both JVMS §4.7.12 and DWARF), and
+  backends ask `isNoSourceSpan` rather than testing a line value. That makes
+  synthesized nodes *detectable*; it does not make them *attributable*, which is
+  still what `SpanOrigin` (§9.3) is for.
+
+  The names are deliberately not `syntheticSpan`/`isSyntheticSpan`:
+  `Lyric.Parser` already exports a `syntheticSpan()` returning line 1, for the
+  unrelated purpose of anchoring a diagnostic when the token stream is empty.
+  Two public functions sharing a name with opposite meanings resolve by
+  registration order with no ambiguity diagnostic in the self-hosted resolver
+  (#6286), so a bundling change could have silently restored the very bug being
+  fixed. Worth noting as a hazard beyond this one case: unqualified cross-package
+  names in the compiler tree are resolved last-registered-wins, silently.
 - `contract_elaborator/elaborator.l` propagates `e.span` when rewriting existing
   expressions (`elaborator.l:342-373`) but injects `__lyric_result_<n>`
   bindings and `assert` statements that have no natural source location.
@@ -127,7 +144,7 @@ independent of which debugger architecture is chosen.
 - `Lyric.WireExpand` splices whole template bodies across package boundaries.
 
 Contracts and aspects are load-bearing Lyric features. A debugger that maps
-woven or contract-checked code to line 0 is not a debugger for Lyric; it is a
+woven or contract-checked code to nowhere is not a debugger for Lyric; it is a
 debugger for the subset of Lyric that uses neither. Fixing this is band B1 (§9)
 and is a prerequisite for every later band.
 
@@ -444,9 +461,9 @@ transcripts without a running debuggee.
 | Band | Content | Gates |
 |---|---|---|
 | **B0** ✅ | Flag surface: profile/shape axes, `--shape` + sugar, manifest keys, re-scoped gates (§5.3), `F0040`–`F0044`, migration note, docs + book. **No debug info yet.** | — |
-| **B1** | Span plumbing (§2.5) and `SpanOrigin` provenance through the middle end (§2.6). | B0 |
-| **B2** | JVM debug info: `LineNumberTable`, `LocalVariableTable` in `classfile.l`. | B1 |
-| **B3** | dotnet: portable-PDB writer (`msil/pdb.l`), PE Debug Directory + RSDS in `pe.l`, `DebuggableAttribute`. | B1 |
+| **B1** | Span plumbing (§2.5) and `SpanOrigin` provenance through the middle end (§2.6). Also owns source-*path* threading, which three later bands need — see §9.5. | B0 |
+| **B2** | JVM debug info: `LineNumberTable` ✅, `SourceFile` (needs B1's path threading), `LocalVariableTable`. | partially B1 — see §9.2 |
+| **B3** | dotnet: portable-PDB writer (`msil/pdb.l`), PE Debug Directory + RSDS in `msil/assembler.l`, `DebuggableAttribute`. | B1 |
 | **B4** | native: LLVM debug-metadata subsystem in `llvm_ir.l`, `-g` to clang, profile-gated `--strip-debug`. | B1 |
 | **B5** | `lyric debug` + DAP shim + VS Code contribution (S1). | any one of B2–B4 |
 | **B6** | `LyricSourceMap` side tables + symbol-file distribution (S2). | B2–B4 |
@@ -464,9 +481,10 @@ compatibility, so it should not be entangled with a large feature landing.
 
 Deliberate sequencing, not alphabetical accident:
 
-- It adds attributes to an **existing, working class-file writer**
-  (`classfile.l` already emits `SourceFile` at line 360) rather than
-  introducing a new file format.
+- It adds attributes to an **existing, working class-file writer** rather than
+  introducing a new file format. (An earlier revision of this document said
+  `classfile.l` "already emits `SourceFile`" — it defines a builder for one,
+  which nothing calls. The writer is real; the attribute was not.)
 - It is **independently verifiable with a standard tool** — `javap -l` prints
   the line table, so B2 has a real oracle rather than "the debugger seemed to
   work".
@@ -475,8 +493,28 @@ Deliberate sequencing, not alphabetical accident:
   architecture — including the S3 presentation problems — before committing to
   a portable-PDB writer (B3) or an LLVM metadata subsystem (B4).
 
+**Why B2's line tables shipped before B1.** The band table originally gated all
+of B2 on B1. That gate turned out to be wrong for the line-table half: a
+statement's `stmt.span.startPos.line` is already correct where the JVM backend
+lowers it, so `LineNumberTable` needed no new span plumbing at all. What B1
+actually governs is *fidelity* — synthesized statements (woven, elaborated,
+specialised) carry a meaningless span and so are simply omitted from the table
+rather than given a wrong line, and multi-file packages inherit #6282's merged-
+blob line numbers. Those are real limits, and they are limits on *which*
+statements get rows, not on whether the rows that exist are right.
+
+The `SourceFile` half does gate on B1, for a reason worth recording: the
+backend has no filename to write. `Jvm.Codegen.codegenPackage` takes a
+`SourceFile` AST node, and that record has no path field; the real path is read
+in `cli_build.l` and dropped before `EmitRequest` is built. So the attribute is
+not a missing call to `makeSourceFileAttr` — it is missing data, and the fix is
+the same path-threading change #6282 needs. Until it lands, a JVM stack trace
+from Lyric code still prints `(Unknown Source)` even though JDWP line
+breakpoints work off the shipped tables.
+
 B3 and B4 are each substantially larger. `msil/pdb.l` is a new binary-format
-writer comparable in scope to the existing `pe.l`/`tables.l`. B4 is larger than
+writer comparable in scope to the existing `assembler.l`/`tables.l` — see §9.4
+for the surveyed detail. B4 is larger than
 it looks: `llvm_ir.l` currently has **zero** metadata support (no `!dbg`, no
 `metadata` occurrences at all), so DWARF requires building
 `!DICompileUnit`/`!DIFile`/`!DISubprogram`/`!DILocation`, the `!llvm.dbg.cu`
@@ -499,11 +537,199 @@ that *caused* the synthesis — the `requires:` clause for an elaborated assert,
 the aspect declaration for a woven wrapper, the generic function for a
 specialisation. Debuggers default to stepping *over* synthesized code and
 attribute it to its cause, so a contract violation stops at the contract the
-user wrote rather than at line 0.
+user wrote rather than at no position at all.
 
 This replaces `weaver.l`'s `synSpan()` and gives the S3 proxy the information it
 needs to collapse aspect frames. It is the single highest-leverage item in the
 plan and the one most likely to be underestimated.
+
+### 9.4 B3 survey: what a portable-PDB writer actually costs
+
+A code survey ahead of scheduling B3 settled four things the band table above
+could only estimate.
+
+**The PE writer to modify is `msil/assembler.l`, not `msil/pe.l`.** There are
+two PE writers in the tree; `pe.l` is a fixed-layout stage-M1 relic that emits
+one hardcoded program, while `assemblePe` in `assembler.l` is the generic
+writer every `lyric build --target dotnet` actually goes through. Earlier
+revisions of this document named the wrong one.
+
+The Debug Directory slot is available without disturbing the header layout:
+`writePeHdrs` zeroes data directories 0–13 as a single `bufZero(w, 112)`, so
+directory 6 becomes 24 zero bytes, an 8-byte entry, and 56 zero bytes — the
+same 112 total, leaving `SizeOfOptionalHeader` and the directory count
+untouched. The 28-byte `IMAGE_DEBUG_DIRECTORY` records themselves go in
+`.text` (the only section), which extends the `textVSize`/`mdRva` arithmetic in
+`assemblePe`.
+
+**Standalone `.pdb`, not embedded.** An embedded PDB must be DEFLATE-*compressed*
+into the PE. `lyric-compiler/jvm/deflate.l` is decompress-only — its entire
+public surface consumes a compressed bitstream, and no compressor exists
+anywhere in the repo for either target. Embedding is therefore not the cheaper
+option but a strictly larger one, gated on writing an LZ77 matcher and Huffman
+encoder first. B3 ships a sibling `.pdb` plus a CodeView RSDS entry; embedding
+is a later follow-up if it is ever wanted.
+
+**Heaps are reusable, tables are not.** `heaps.l`'s `#Strings`/`#Blob`/`#GUID`
+writers and its compressed-uint encoder carry straight over, and the
+sequence-point blob encoding reuses that same encoder. But `tables.l` is
+hardcoded per table — one row record, one `addX` allocator, and one hand-written
+serialization block each — with no table-id-generic path to extend, and the
+metadata-root writer is fixed at exactly five streams, so admitting a `#Pdb`
+stream means generalizing it. Document (0x30), MethodDebugInformation (0x31),
+LocalScope (0x32), and LocalVariable (0x33) are all absent, with nothing partial
+to build on. Realistic cost: **1200–1800 new lines of Lyric**, which is the
+band table's "comparable to `assembler.l`/`tables.l`" claim confirmed rather
+than revised.
+
+**IL offsets are free; source lines are not.** `serializeMethodBody`'s pass 1
+already computes an exact IL offset at every instruction boundary, which is
+precisely the input a sequence-point table needs — and `Insn` already has a
+zero-byte `Label(id)` case, the same shape B2 used on the JVM side. What is
+missing is the other half: no instruction is associated with a source line,
+because `Span` is dropped long before it reaches `Msil.Codegen`. B3's real
+prerequisite is B1, not the binary format. Plumbing it also means
+`serializeMethodBody` growing a second output channel — it returns `Unit`
+today and writes only to a `ByteWriter`.
+
+**Verification oracle.** `netcoredbg` is absent from this environment, as are
+`ildasm`, `monodis`, and `dotnet-symbol`; `llvm-pdbutil` is present but reads
+the MSF container format used by native PDBs, not ECMA-335 portable PDBs, so it
+is not the oracle it looks like. What *is* available is
+`System.Reflection.Metadata`, shipped inside the installed SDK: its
+`MetadataReaderProvider.FromPortablePdbStream` is a conformant reader and can
+assert that a produced PDB parses and that its method tokens resolve against
+the paired DLL. The stronger end-to-end check needs no tooling at all — run the
+assembly with its `.pdb` alongside and confirm the runtime's own stack-trace
+formatter prints `in <file>:line N`, since the .NET runtime consumes portable
+PDBs directly. That check also partially retires the `netcoredbg` risk in §12
+for the symbolication case, though not for interactive debugging.
+
+### 9.5 B1 survey: four sub-problems, only two of them large
+
+A survey of the four items §9.3 folds into B1 found the estimates uneven, and
+one of them wrong.
+
+**Source-path threading is the item everything else waits on.** No file path
+reaches any backend. `cli_build.l` reads the source by path and even passes
+that path to the generator preprocessor, then drops it when building
+`EmitRequest`. `Span`/`Position` (`lexer.l`) carry offset/line/column and no
+file identity; `Diagnostic` has no file field either, and `diagFormat` prints
+`severity[code] line:col: message` with no filename **even for single-file
+builds** — the finest attribution that exists today is the package name. This
+one gap is simultaneously B2's missing `SourceFile`, B3's `Document` table, and
+B4's `DIFile`, which is the argument for fixing it once here rather than three
+times downstream.
+
+**#6282 (multi-file line numbers) is confirmed and structural.**
+`ProjectPackage` holds `sources: List[String]` — file *contents*, no path — and
+`mergePackageSources` concatenates them into one blob before parsing, so every
+span in a multi-file package is relative to the merged text. The path is in
+scope at every `File.readText` call in `readProjectPackageSources` and thrown
+away immediately. Of the two candidate fixes, parsing each file separately and
+merging `SourceFile` ASTs is preferred over building line-offset tables and
+rebasing after the fact: it is correct by construction with no rebase
+arithmetic, and it deletes the string-splicing helpers in `emitter.l` that
+already carry scars from #4525 and #2514. It does not by itself give
+per-*item* file attribution — for that, a boundary table of
+`(itemStartIndex, path)` recorded at merge time is far smaller than adding a
+path field to every `Item`.
+
+**The contract-elaborator fix is small and self-contained — do it first.**
+`CCRequires`/`CCEnsures` already carry a per-clause span; `collectRequires` and
+`collectEnsures` bind it to `_` and discard it, and the synthesized asserts are
+then anchored at `body.span` (requires) or the enclosing statement's span
+(ensures). `mkAssertCall` already takes a span argument, so the whole fix is
+preserving what the parser produced. One file, no schema change.
+
+**The weaver's 54 `synSpan()` sites split three ways, and none are irreducible.**
+This corrects the framing in §9.3: there is no site where no real span exists.
+Roughly 24 already have a usable span sitting *unused in scope* — the two
+B′-mode builders take or hold a real span, use it in some places, and call
+`synSpan()` in others — making those a direct substitution with no plumbing.
+About 5 more need the span forwarded one call frame. The remaining ~25 are
+generic low-level AST builders with multiple callers each; every chain reaches
+a real `aspect.span` or target `FunctionDecl.span` within three frames, but
+threading them means a span parameter on ~15 helpers and ~90 call-site updates.
+That last group is the work `SpanOrigin` exists to absorb; the first two groups
+do not need `SpanOrigin` at all and can land ahead of it.
+
+**Monomorphizer spans are fine — the brief was wrong.** `specializeFunc` sets
+`span = decl.span` from the original generic declaration, and every
+substitution helper threads the original per-node span through unchanged. The
+"synthetic span in specialised code" problem is specific to the weaver and does not
+apply here. What *is* missing is the original **name**: `FunctionDecl` has no
+display-name field, the specialised decl keeps only the mangled name, and the
+only two recovery paths are both unusable — `MonoResult.rewrites` is a
+`Map[String, String]` that keeps just the first specialisation per generic
+(and its own comment claims it keeps the last, so comment and code disagree),
+and `extractBaseName` is a string heuristic with zero callers outside `mono.l`.
+B1 should replace that with a non-lossy per-specialisation record carrying
+`specName`, `originalName`, type arguments, and the declaration span, so a
+debugger is never asked to re-derive a user-facing name from a mangling
+convention.
+
+Suggested order: elaborator fix and the 24 drop-in weaver sites first (small,
+contained, independently valuable), then `SpanOrigin` designed once and applied
+to both the remaining weaver builders and mono's specialisation metadata, then
+the path-threading/#6282 change, which is the largest and the most independent.
+
+### 9.6 B4 survey: what LLVM actually requires, verified
+
+The DWARF requirements were checked empirically rather than from the LLVM
+reference, by hand-writing a minimal `.ll`, compiling it with the installed
+`clang` 18.1.3, and reading back the result with `llvm-dwarfdump --debug-line`
+and `gdb`.
+
+Four things are **strictly required**, and two of the failure modes are silent:
+
+- The `"Debug Info Version"` module flag. Without it clang warns and then
+  discards all debug info.
+- `!llvm.dbg.cu` listing the `!DICompileUnit`. Without it, same outcome, also
+  with a warning.
+- `!DICompileUnit` + `!DIFile`.
+- **`!DISubprogram` attached to the `define` itself via a trailing `!dbg`.**
+  This is the trap: with the module flags present, the CU listed, and correct
+  `!DILocation` on every instruction, removing *only* the function's own `!dbg`
+  attachment produces **no warning, exit 0, and an empty `.debug_line`**.
+  Per-instruction locations are silently inert unless their enclosing function
+  carries a `DISPFlagDefinition` subprogram.
+
+`"Dwarf Version"` turned out to be optional (clang picks a working default),
+and `!DILocalVariable`/`llvm.dbg.declare` are only needed for variable
+inspection, not for stepping.
+
+**Spans already reach the native lowering** — contrary to the reading that
+`llvm_ir.l` never mentions `span`, which is true only of the *renderer*.
+`llvm_codegen.l` already reads `expr.span`/`stmt.span` at several sites and
+threads a bare `line: Int` down through the lowering helpers — but only to bake
+into `lyric_panic_msg` calls, after which it is dropped. `NInsn` and `NFunc`
+carry no line field. So a first B4 slice can reuse data that already exists;
+the recommended shape is a single `NDbgMark(line)` case inserted at the sites
+that already compute a line, with the renderer forward-filling `!dbg` onto
+subsequent instructions — which avoids touching `emitInsn`'s 37-case match.
+(Note the panic path passes the *package name* where a file argument is
+expected, a pre-existing bug the same path-threading fix from §9.5 resolves.)
+
+**`-g` is passed nowhere.** The clang invocation in `llvm_bridge.l` has no
+`-g`, and `compileToNativeWithFlags` has no profile parameter at all, so B0's
+profile axis currently has no channel to reach the native compile — it only
+feeds a `build_profile` compile-time define. Separately, `lyric-rt/Makefile`
+compiles the runtime with `-O2 -std=c11 ... -fPIC` and **no `-g`**, so even a
+fully-DWARF'd user object links against a symbol-less runtime archive: every
+frame inside ARC, panic, or the collection kernels shows raw addresses. That
+file is in B4's blast radius even though it is not a `.l` file.
+
+**Native runs the full middle end**, contrary to what a direct grep of
+`llvm_bridge.l` suggests: mono, weaving, and contract elaboration are reached
+indirectly through `pipeMiddleEnd`. So the §2.6 provenance problem applies to
+native exactly as it does to MSIL and JVM, and B4's gate on B1 is real for
+woven/elaborated/generic code — but, as with B2, a first slice covering plain
+straight-line statements does not have to wait for it.
+
+Oracle: `llvm-dwarfdump --debug-line` for the cheap structural check, and
+`gdb -batch -ex "info line …"` for the real one. Both are installed, along with
+`objdump`, `readelf`, and `lldb`.
 
 ---
 
@@ -557,7 +783,16 @@ band B0 that means, in the same PR:
 - `docs/60-build-defines.md` §3.3 — `build_profile` is now sourced from the
   profile axis, not from the `--release` code path.
 
-Nothing in this document has shipped, so no such update is due yet.
+Band B0 shipped with all of the above landed in the same PR (D132).
+
+Band B2's line-table slice carries a lighter obligation, because it changes no
+user-facing surface: no new flag, no new diagnostic, no changed CLI output. The
+only externally visible effect is that JVM class files now contain a
+`LineNumberTable`, which is a prerequisite for a debugger rather than a feature
+a reader can use yet — stack traces still print `(Unknown Source)` until B1
+threads the source path (§9.2). It is recorded in `docs/10-bootstrap-progress.md`
+and the decision log's progress entries; the language reference and book get
+their update when the user-visible behaviour arrives with `SourceFile`.
 
 ---
 
@@ -565,7 +800,11 @@ Nothing in this document has shipped, so no such update is due yet.
 
 | Risk | Severity | Note |
 |---|---|---|
-| `netcoredbg` may not handle a portable PDB from a non-Roslyn compiler | **high** | **[unverified]** — the central technical assumption of B3+B5 on dotnet. A spike must confirm this before B3 is scheduled. |
+| `netcoredbg` may not handle a portable PDB from a non-Roslyn compiler | **high** | **[unverified]** — the central technical assumption of B3+B5 on dotnet. A spike must confirm this before B3 is scheduled, and `netcoredbg` is not installed in the current dev environment, so the spike needs it fetched first. §9.4 names a weaker check that *is* available (`System.Reflection.Metadata` + runtime stack traces); it covers symbolication, not interactive debugging, so it narrows this risk without closing it. |
+| An embedded PDB is unreachable without a DEFLATE compressor | low | Settled in §9.4: B3 ships a standalone `.pdb`. Recorded because "just embed it" reads as the simpler option and is not. |
+| No source path reaches any backend | **high** | §9.5. Blocks JVM `SourceFile`, MSIL `Document`, and native `DIFile` simultaneously, and is the same change #6282 needs. Fixing it once in B1 is the whole argument for B1's scope. |
+| `lyric_rt.a` is built without `-g` | medium | §9.6. B4 can give user code perfect DWARF and still show raw addresses for every ARC/panic/collection frame. The fix is in `lyric-rt/Makefile`, outside the `.l` tree, so it is easy to miss when scoping B4. |
+| A `!DILocation` without a `!DISubprogram` on its function fails silently | medium | §9.6. Verified: no warning, exit 0, empty `.debug_line`. A B4 implementation can look correct and emit nothing, so the `llvm-dwarfdump` assertion must be wired into CI from the first commit, not added later. |
 | B1 (`SpanOrigin`) is larger than estimated | high | Touches weaver, elaborator, mono, wire-expand, and three backend IRs. Every later band depends on it. |
 | GraalVM `native-image` shape is host-dependent (shipped Linux/macOS in D131; Windows #1975) | medium | `--shape aot --target jvm` must fail loud when the toolchain is missing or the host is unsupported, never silently emit a JAR. That is **not** `F0044`, which only covers a shape whose implementation does not exist at all (`standalone`): a merely-absent driver is reported by `Lyric.Release.jvmReleasePreflightError`, which already implements this check. |
 | MSIL/JVM divergence | medium | docs/59 documents one-sided fixes between the backends. Debug info doubles the surface where they can drift. |
