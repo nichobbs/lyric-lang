@@ -478,6 +478,27 @@ test "resolveBuildAxes: standalone is rejected by F0044 wherever it comes from" 
   }
 }
 
+// ─── shape naming under the sugar flags (#6281) ──────────────────────────
+// `--aot`/`--standalone` never populate the raw `--shape` string, so any
+// message built from that string prints a blank name. `shapeName` on the
+// RESOLVED shape is what messages must use.
+test "shapeName: every shape has a printable name (#6281)" {
+  assertEqual(Cli.shapeName(Cli.SPortable), "portable", "portable")
+  assertEqual(Cli.shapeName(Cli.SStandalone), "standalone", "standalone")
+  assertEqual(Cli.shapeName(Cli.SAot), "aot", "aot")
+}
+
+test "parseShapeName round-trips every shape through shapeName (#6281)" {
+  // Guarantees a message built from `shapeName(parseShapeName(x))` can never
+  // come out blank for a value the CLI accepted.
+  for nm in ["portable", "standalone", "aot"] {
+    match Cli.parseShapeName(nm) {
+      case Some(sh) -> assertEqual(Cli.shapeName(sh), nm, "round-trip " + nm)
+      case None -> assertTrue(false, "parseShapeName rejected a valid shape: " + nm)
+    }
+  }
+}
+
 // ─── --rid warning wording per target ────────────────────────────────────
 test "ridNoEffectWarning: native points at --triple, not an unsatisfiable shape" {
   val msg = Cli.ridNoEffectWarning(Emitter.Native)

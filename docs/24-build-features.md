@@ -377,10 +377,10 @@ is erased without warning).
   pending a decision-log entry.
 
 - **Q-features-005:** Build *profile* and output *shape* as axes distinct
-  from features. `--release` currently selects a packaging mode (Native
-  AOT), not an optimization/symbol profile, so `@cfg`-style conditional
-  compilation is the only compile-time build axis Lyric exposes today.
-  **Resolved** — specced in `docs/63-build-profiles-and-debugger.md` and
+  from features. When this was filed, `--release` selected a packaging mode
+  (Native AOT) rather than an optimization/symbol profile, which left
+  `@cfg`-style conditional compilation as the only compile-time build axis
+  Lyric exposed. **Resolved** — specced in `docs/63-build-profiles-and-debugger.md` and
   codified in **D132**; band B0 shipped (`--debug`/`--release` profile +
   `--shape portable|standalone|aot`, `[build] profile`/`shape` manifest
   keys, diagnostics `F0040`–`F0044`). The well-known `build_profile`

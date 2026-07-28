@@ -1097,14 +1097,17 @@ func cmdBuild(argv: in slice[String]): Int {
   // Validate the `--shape` VALUE before adjudicating conflicts: otherwise
   // `--aot --shape bogus` reports an F0041 conflict (because "bogus" != "aot")
   // instead of saying the value is not a shape at all.
+  var shapeFromArg: Option[BuildShape] = None
   if shapeArg.length > 0 {
-    match parseShapeName(shapeArg) {
+    val parsedShape = parseShapeName(shapeArg)
+    match parsedShape {
       case Some(_) -> ()
       case None -> {
         printErr("build: --shape must be portable, standalone, or aot, got \"" + shapeArg + "\"")
         return 1
       }
     }
+    shapeFromArg = parsedShape
   }
   match shapeFlagConflictError(shapeArg, sawAotFlag, sawStandaloneFlag) {
     case Some(msg) -> {
@@ -1117,15 +1120,7 @@ func cmdBuild(argv: in slice[String]): Int {
   // lowers to it (the conflict check above guarantees they agree).
   var cliShape: Option[BuildShape] = None
   if shapeArg.length > 0 {
-    val parsedShape = parseShapeName(shapeArg)
-    match parsedShape {
-      case Some(_) -> ()
-      case None -> {
-        printErr("build: --shape must be portable, standalone, or aot, got \"" + shapeArg + "\"")
-        return 1
-      }
-    }
-    cliShape = parsedShape
+    cliShape = shapeFromArg
   } else if sawAotFlag {
     cliShape = Some(value = SAot)
   } else if sawStandaloneFlag {
@@ -1149,8 +1144,12 @@ func cmdBuild(argv: in slice[String]): Int {
     case Some(_) -> {
       val badShape = match cliShape { case Some(SAot) -> false; case Some(_) -> true; case None -> false }
       if badShape {
+        // Name the RESOLVED shape, not the raw `--shape` string: the
+        // `--aot`/`--standalone` sugar never populates `shapeArg`, so using it
+        // here printed a blank name (#6281).
+        val namedShape = match cliShape { case Some(sh) -> shapeName(sh); case None -> "" }
         printErr(
-          "build: --release-from-dll always produces a native binary; --shape " + shapeArg +
+          "build: --release-from-dll always produces a native binary; --shape " + namedShape +
             " cannot be honoured (drop the flag, or pass --shape aot)"
         )
         return 1
