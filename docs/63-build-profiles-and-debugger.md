@@ -842,17 +842,31 @@ argument mode.
 
    One refinement from tracing the JVM bridge, which the "sibling parameter"
    phrasing above understates: the path must be a **`List[String]` parallel to
-   `pkgSrcs`**, not a single string.
+   `pkgSrcs`**, not a single string, and it must be resolved **per package
+   rather than per call site**.
+
    `compileProjectToJarBundledWithFeatures` parses every project package into
    `userFiles`, selects the entry package as `userFiles[mainIdx]`, and reaches
-   codegen through **two** distinct `codegenPackageInto` call sites — one for
-   user/project packages, one for the bundled stdlib closure. Each emitted
-   class must take the `SourceFile` of the package it actually came from, so
-   `codegenPackageInto` needs a per-package path parameter, and the stdlib call
-   site passes `""` (no path known, no attribute emitted) until stdlib source
-   paths are threaded too. A single scalar path would attribute every class in
-   the JAR — stdlib included — to the user's file, which is worse than emitting
-   nothing.
+   codegen through two distinct `codegenPackageInto` call sites. The tempting
+   reading — "one call site is the user's code, the other is stdlib" — is
+   wrong, and wrong in the common case. Only the *entry* package goes through
+   the first; every **sibling project package** is appended to `stdlibFiles` /
+   `stdlibByPkg` (with `projectOwners` marking it, purely to keep diagnostics
+   fatal rather than skippable) and reaches codegen through the *second*, the
+   same one real stdlib files use. Since one-file-per-package is the common
+   shape, most user code in a project build flows through the "stdlib" call
+   site.
+
+   So gating on the call site would blank `SourceFile` for sibling packages
+   whose paths are already known — they come from the same `pkgSrcs` list the
+   entry package's does. Key the lookup by package name instead (`stdlibByPkg`
+   is already keyed that way) and emit no attribute only where no path is
+   known, which today means genuine stdlib sources.
+
+   A single scalar path is the worse failure: it would attribute every class in
+   the JAR — stdlib included — to the user's file. Emitting nothing beats
+   emitting a confident wrong filename, for the same reason the multi-file
+   policy above lands where it does.
 3. **Multi-file policy**, after #6282's per-file parse.
 4. **Confirm the path reaches the MSIL and native bridge entry points**
    (`compileToMsilWithVersion`, `compileToNativeWithFlags`) so B3 and B4 do not
