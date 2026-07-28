@@ -772,6 +772,79 @@ Oracle: `llvm-dwarfdump --debug-line` for the cheap structural check, and
 `gdb -batch -ex "info line …"` for the real one. Both are installed, along with
 `objdump`, `readelf`, and `lldb`.
 
+### 9.7 Source-path threading survey (#6284): the plan, and two traps
+
+The single gap blocking JVM `SourceFile`, MSIL `Document`, and native `DIFile`
+at once. Surveyed before implementation; the findings change the obvious
+approach twice.
+
+**Do not add a path to `SourceFile` or `parse()`.** The obvious move — put the
+path on the AST root — costs 20 `SourceFile(` construction sites, which is
+survivable. The blocker is one level down: `parse(source: in String)` has
+**hundreds** of callers (every `*_self_test.l`, the LSP, `doc.l`), nearly all
+passing inline literal source with no file on disk. Adding a mandatory path
+parameter ripples through all of them for no benefit. Thread the path as a
+sibling parameter through the bridge layer instead, using the codebase's own
+`WithX`-suffix idiom (`compileToMsilWithVersion`,
+`compileToJarBundledWithFeatures`) so existing callers never change.
+
+**The JVM half is cheaper than it looks.** `ClassFile.attrs` is a
+`List[Attribute]`, and `.add()` mutates through an `in` binding (docs/01
+§766, §870). So a single loop after `lowerPackage` returns covers all 11
+`ClassFile(` construction sites in `lowering.l` — records, unions, enums,
+distinct/range wrappers, interfaces, closures, config blocks — with **zero**
+edits inside that file. `makeSourceFileAttr` already exists and is still
+uncalled.
+
+**Bounded, not unbounded.** Construction sites needing an explicit new field:
+`EmitRequest` 6, `ProjectPackage` 22, `EmitProjectRequest` 21 — **49 total**,
+43 of them cross-package. Mostly one-line additions in self-tests. That is the
+answer to "is this 6 edits or 200": it is 49, mechanical.
+
+**A caution that may be stale — verify before relying on it.** `EmitRequest`
+and `EmitProjectRequest` both carry a comment saying the seed miscompiles an
+*omitted* defaulted field on cross-package construction, so every site must set
+it explicitly. D-progress-704 (2026-07-19) fixed exactly that class of bug, and
+its own text says the in-bundle cross-package walk — which is our case — was
+never broken; the comment predates that fix by two days. It may still hold for
+the *seed binary* until re-baked, which is not verifiable without a bootstrap
+run. Set every field explicitly regardless: it is cheap, it matches the
+existing convention, and it avoids re-litigating a bootstrap invariant on a
+guess.
+
+**Multi-file is a design question, not an oversight.** JVMS §4.7.10 permits at
+most one `SourceFile` per class, so a package built from N files has no correct
+single answer. Options: pick the first file (arbitrary, actively misleading for
+members from later files); emit none (honest); or split into per-file classes
+plus a facade, as Kotlin's `@JvmMultifileClass` does (a much larger codegen
+change, orthogonal to this). **Recommendation: emit none for genuinely
+multi-file packages**, preserving today's PENDING state rather than shipping a
+plausible-looking wrong filename, and revisit when #6282's per-file parse lands.
+Note that `ProjectPackage.sources.count == 1` is the *common* case, so "single
+file" here means any package with one file — not just the CLI's single-file
+argument mode.
+
+**Slices, smallest first.**
+
+1. **Filename in diagnostics.** Independent of all codegen work. `Diagnostic`
+   has no file field and `diagFormat` prints `severity[code] line:col: message`
+   with no filename **even for single-file builds** — the finest attribution
+   available today is the package name. Reuse the existing
+   `diagReportAndAbortInPkg` prefix mechanism via `Lyric.Pipeline.gate`; note
+   `pipeParseAndErase` hardcodes `gate("", …)` three times, bypassing
+   `pkgLabel`, and it handles the *earliest* and most common diagnostics (parse
+   errors). ~15–20 sites. Acceptance: a syntax error prints the path.
+2. **JVM `SourceFile`** for single-file packages, per above. Acceptance: this
+   must rewrite `assert-jvm-line-numbers.sh`'s pending-guard **in the same
+   commit** — it currently asserts the attribute is *absent* and fails the
+   moment one appears — plus confirm `printStackTrace` stops saying
+   `(Unknown Source)`.
+3. **Multi-file policy**, after #6282's per-file parse.
+4. **Confirm the path reaches the MSIL and native bridge entry points**
+   (`compileToMsilWithVersion`, `compileToNativeWithFlags`) so B3 and B4 do not
+   re-derive this plumbing. No user-visible behaviour; verified by call-site
+   inspection.
+
 ---
 
 ## 10. Two policy questions the design must answer
