@@ -20599,16 +20599,29 @@ own `ret = proceed()`) is real. That is precisely the failure D-progress-714
 argued against — a table pointing at a statement the user did not write — and
 it would have hit every aspect-woven function across the ecosystem libraries.
 
-**Fix.** `Std`-side, two named functions next to `initialPosition()` in
-`lexer.l`:
+**Fix.** Two named functions next to `initialPosition()` in `lexer.l`:
 
-- `syntheticSpan()` — line 0, the conventional "no line information" value in
+- `noSourceSpan()` — line 0, the conventional "no line information" value in
   both JVMS §4.7.12 and DWARF, and unreachable by real 1-based positions.
-- `isSyntheticSpan(s)` — the predicate backends ask.
+- `isNoSourceSpan(s)` — the predicate backends ask.
 
-`synSpan()` now delegates to `syntheticSpan()`, and the JVM guard asks
-`isSyntheticSpan(stmt.span)` instead of testing a line value it had to guess
-the meaning of. Checked before landing that no consumer depends on the old
+`synSpan()` now delegates to `noSourceSpan()`, and the JVM guard asks
+`isNoSourceSpan(stmt.span)` instead of testing a line value it had to guess
+the meaning of.
+
+The first attempt named these `syntheticSpan`/`isSyntheticSpan`, which review
+caught as #6286: `Lyric.Parser` already exports a `syntheticSpan()` returning
+`pointSpan(initialPosition())` — line 1 — to anchor a diagnostic when the token
+stream is empty. `weaver.l` imports `Lyric.Lexer` and `Lyric.Parser` both
+unqualified, and the self-hosted resolver registers imported symbols without a
+duplicate check, resolving a bare name last-registered-wins with no ambiguity
+diagnostic. Two public functions sharing a name with opposite semantics would
+therefore have let a bundling-order change silently restore the line-1
+behaviour this entry exists to remove. Renaming makes the collision impossible
+rather than merely currently-benign. Separately, `Jvm.Codegen` was calling the
+predicate with no import of `Lyric.Lexer` in the package at all — it resolved
+through the same fallback — so `05_stmts.l` now carries an explicit
+`import Lyric.Lexer as Lex` and qualifies the call. Checked before landing that no consumer depends on the old
 line-1 value: the LSP converts positions with `p.line - 1` but never runs the
 weaver, and `initialPosition()` itself is unchanged, so parser and emitter
 diagnostics that legitimately report `1:1` for an empty token stream are

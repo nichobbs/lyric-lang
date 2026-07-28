@@ -121,11 +121,20 @@ independent of which debugger architecture is chosen.
   column 1 — not a zero span but a position that looks entirely real and points
   at the package declaration. Nothing read spans closely enough to notice until
   band B2 started emitting line tables and every woven wrapper grew spurious
-  `line 1` rows (#6285). `synSpan()` now returns `syntheticSpan()` (line 0, the
+  `line 1` rows (#6285). `synSpan()` now returns `noSourceSpan()` (line 0, the
   conventional "no line information" value in both JVMS §4.7.12 and DWARF), and
-  backends ask `isSyntheticSpan` rather than testing a line value. That makes
+  backends ask `isNoSourceSpan` rather than testing a line value. That makes
   synthesized nodes *detectable*; it does not make them *attributable*, which is
   still what `SpanOrigin` (§9.3) is for.
+
+  The names are deliberately not `syntheticSpan`/`isSyntheticSpan`:
+  `Lyric.Parser` already exports a `syntheticSpan()` returning line 1, for the
+  unrelated purpose of anchoring a diagnostic when the token stream is empty.
+  Two public functions sharing a name with opposite meanings resolve by
+  registration order with no ambiguity diagnostic in the self-hosted resolver
+  (#6286), so a bundling change could have silently restored the very bug being
+  fixed. Worth noting as a hazard beyond this one case: unqualified cross-package
+  names in the compiler tree are resolved last-registered-wins, silently.
 - `contract_elaborator/elaborator.l` propagates `e.span` when rewriting existing
   expressions (`elaborator.l:342-373`) but injects `__lyric_result_<n>`
   bindings and `assert` statements that have no natural source location.

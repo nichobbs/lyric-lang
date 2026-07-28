@@ -9,6 +9,10 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Lyric.Parser
+// Aliased rather than plain: `Lyric.Lexer` and `Lyric.Parser` both export
+// span helpers, and an unqualified import would let a future name defined in
+// both resolve by registration order with no ambiguity diagnostic (#6286).
+import Lyric.Lexer as Lex
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
@@ -843,12 +847,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
   // instead lets such code inherit the previous statement's line, which is
   // approximate rather than actively wrong.
   //
-  // The check goes through `isSyntheticSpan` rather than testing a line value
+  // The check goes through `isNoSourceSpan` rather than testing a line value
   // directly: the weaver's synthesized spans previously claimed line 1, so a
   // bare `line > 0` guard silently let every woven statement through and
   // produced spurious line-1 rows (#6285).
   val stmtLine = stmt.span.startPos.line
-  if not isSyntheticSpan(stmt.span) {
+  if not Lex.isNoSourceSpan(stmt.span) {
     insns.add(LLineMarker(label = "__line_" + freshLabel(ctx), line = stmtLine))
   }
   match stmt.kind {

@@ -146,15 +146,22 @@ func globMatchAt(glob: in String, gi: in Int, name: in String, ni: in Int): Bool
 // position that looks real and points at the package declaration. Nothing
 // consumed spans closely enough to notice until the JVM backend started
 // emitting line tables (docs/63 band B2) and every woven wrapper grew
-// spurious `line 1` rows. `syntheticSpan()` says "no source position" instead
+// spurious `line 1` rows. `noSourceSpan()` says "no source position" instead
 // of naming a real one.
+//
+// The name matters: this file imports `Lyric.Lexer` and `Lyric.Parser` both
+// unqualified, and `Lyric.Parser` exports its own `syntheticSpan()` returning
+// line 1 for an unrelated purpose. Calling a name defined in both would have
+// resolved by registration order with no ambiguity diagnostic, so a bundling
+// change could silently restore the old behaviour (#6286). `noSourceSpan` is
+// defined in exactly one package.
 //
 // Still a stopgap: it records that a node was synthesized, not what caused
 // the synthesis. docs/63 §9.5 surveys the ~24 call sites below that already
 // have a real span in scope and should simply use it; `SpanOrigin` (§9.3)
 // covers the rest.
 func synSpan(): Span {
-  syntheticSpan()
+  noSourceSpan()
 }
 
 func makePathExpr(segments: in List[String]): Expr {
