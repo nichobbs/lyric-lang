@@ -611,13 +611,13 @@ func testBuildShapeOnly(): Unit {
   }
 }
 
-// docs/63 §6: `kind = "aot"` is a HARD ERROR naming F0035 and the replacement,
+// docs/63 §6: `kind = "aot"` is a HARD ERROR naming F0042 and the replacement,
 // never a silent remap to shape = "aot". A manifest must not be quietly
 // downgraded to a portable DLL, nor quietly upgraded to an AOT build.
 func testBuildKindAotRejected(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build]\nkind = \"aot\"\n"
   val msg = manifestErrorText(parseErr(toml))
-  assertTrue(Str.contains(msg, "F0035"), "kind-aot: names F0035, got: " + msg)
+  assertTrue(Str.contains(msg, "F0042"), "kind-aot: names F0042, got: " + msg)
   assertTrue(Str.contains(msg, "shape"), "kind-aot: names the shape replacement, got: " + msg)
 }
 
@@ -948,7 +948,7 @@ test "[build] shape alone leaves kind and profile at defaults" {
   testBuildShapeOnly()
 }
 
-test "[build] kind = aot is a hard F0035 error (docs/63 clean break)" {
+test "[build] kind = aot is a hard F0042 error (docs/63 clean break)" {
   testBuildKindAotRejected()
 }
 

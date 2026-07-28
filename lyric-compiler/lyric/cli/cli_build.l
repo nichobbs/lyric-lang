@@ -86,8 +86,8 @@ pub record ResolvedAxes {
 // Resolve the shape and profile axes with CLI-over-manifest-over-default
 // precedence (docs/63 §4.2 — the same precedence rule docs/60 uses for defines,
 // so the toolchain has one rule and not two), then run the compatibility checks
-// that depend on the resolved value: `F0036` (shape invalid for the target) and
-// `F0037` (shape valid but unimplemented).
+// that depend on the resolved value: `F0043` (shape invalid for the target) and
+// `F0044` (shape valid but unimplemented).
 //
 // `cliShape`/`cliProfile` are `None` when the user named neither on the command
 // line, which is what lets a manifest value win over the default without the
@@ -114,7 +114,7 @@ pub func resolveBuildAxes(
 // `--target native` is AOT by construction (docs/63 §5.1), so a bare
 // `lyric build --target native` resolves to `SAot` rather than the `SPortable`
 // default. Applied before `resolveBuildAxes` so an explicit `--shape portable`
-// still reaches `F0036` instead of being silently upgraded.
+// still reaches `F0043` instead of being silently upgraded.
 pub func defaultShapeForTarget(cliShape: in Option[BuildShape], target: in CompileTarget): Option[BuildShape] {
   match cliShape {
     case Some(_) -> cliShape
@@ -171,7 +171,7 @@ func manifestDeclaresBuildDefines(mfPath: in String): Bool {
 // that cannot consume it (docs/60 §3.1). `reason` names the specific shape.
 pub func manifestDefinesUnsupportedMsg(mfPath: in String, reason: in String): String {
   "build: [build.define] in " + mfPath + " is not supported with " + reason +
-    "; manifest defines apply only on --target dotnet/jvm project builds (native is single-file only — use `lyric build <main.l> --target native --define`; #5852/#5977)"
+    "; manifest defines are threaded on portable-shape project builds (#5852/#5977)"
 }
 
 // Pure accept/reject predicate for a manifest `[build.define]` table on a
@@ -278,15 +278,17 @@ pub func releaseFromDllIgnoredArgsWarning(positional: in List[String]): String {
 //   - `--watch` (the rebuild action carries no defines), and
 //   - a non-portable shape (the packaging paths thread no defines).
 // Pulled out of `cmdBuild` so the accept/reject matrix is unit-testable without
-// a manifest round-trip (#6140). `manifestPath` is only referenced by the
-// shape message; pass "" when it is not applicable (a single-file build).
+// a manifest round-trip (#6140). `shapeManifestPath` names the manifest that
+// *configured the shape*, and only that: pass "" whenever the shape came from a
+// CLI flag, even in project mode, or the advice tells the user to edit a
+// manifest key they never set (#6277).
 pub func defineBuildGateError(
   hasDefines: in Bool,
   targetConsumable: in Bool,
   watch: in Bool,
   shape: in BuildShape,
   target: in CompileTarget,
-  manifestPath: in String,
+  shapeManifestPath: in String,
 ): Option[String] {
   if not hasDefines {
     return None
@@ -302,8 +304,8 @@ pub func defineBuildGateError(
   // The advice has to match how the shape was actually selected: telling a user
   // to "build without --aot" is useless when the shape came from their manifest
   // and no such flag was ever passed.
-  val fix = if manifestPath.length > 0 {
-    " (configured in " + manifestPath + ") — the packaging build path does not thread defines (#5852); " +
+  val fix = if shapeManifestPath.length > 0 {
+    " (configured in " + shapeManifestPath + ") — the packaging build path does not thread defines (#5852); " +
       "drop --define, or set shape = \"portable\" in that manifest"
   } else {
     " — the packaging build path does not thread defines (#5852); drop --define, or build without " + "--aot/--standalone"
@@ -1216,7 +1218,9 @@ func cmdBuild(argv: in slice[String]): Int {
       }
       case None -> ()
     }
-    match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, target, mfPath) {
+    // Only name the manifest when the shape actually came from it (#6277).
+    val shapeSrc = if cliShapeNamed { "" } else { mfPath }
+    match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, target, shapeSrc) {
       case Some(msg) -> {
         printErr(msg)
         return 1

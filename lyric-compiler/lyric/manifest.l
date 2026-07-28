@@ -217,7 +217,7 @@ pub record RegistryConfig {
 ///
 /// `"aot"` was removed from `kind` in docs/63 band B0: it described a
 /// *packaging* mode, not an artifact kind, and now lives on `shape`. It is a
-/// hard error (`F0035`) rather than a silent remap so a manifest cannot be
+/// hard error (`F0042`) rather than a silent remap so a manifest cannot be
 /// quietly downgraded to a portable DLL.
 ///
 /// `shape` selects packaging (docs/63 §3.2):
@@ -906,15 +906,15 @@ func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], Manife
 }
 
 /// `[build] kind` — what the artifact *is*. `"aot"` is rejected outright
-/// (`F0035`, docs/63 §6): it was a packaging mode misfiled as an artifact
+/// (`F0042`, docs/63 §6): it was a packaging mode misfiled as an artifact
 /// kind, and silently remapping it to `shape = "aot"` would let a manifest
 /// mean something it does not say.
 ///
-/// The code is written bare (`F0035: ...`) rather than in the CLI's
-/// `error[F0035]: ...` bracket form on purpose: this string is rendered
+/// The code is written bare (`F0042: ...`) rather than in the CLI's
+/// `error[F0042]: ...` bracket form on purpose: this string is rendered
 /// through `ManifestError.message`, which already prefixes
 /// `[build] invalid value for 'kind': `, so the bracket form would read
-/// `... invalid value for 'kind': error[F0035]: ...` and double up the
+/// `... invalid value for 'kind': error[F0042]: ...` and double up the
 /// "error" prefix.
 func resolveBuildKind(entries: in List[Entry]): Result[String, ManifestError] {
   match findString(entries, "build", "kind") {
@@ -927,7 +927,7 @@ func resolveBuildKind(entries: in List[Entry]): Result[String, ManifestError] {
           error = InvalidField(
             section = "build",
             field = "kind",
-            message = "F0035: kind = \"aot\" is no longer supported — \"aot\" is a packaging shape, not an " +
+            message = "F0042: kind = \"aot\" is no longer supported — \"aot\" is a packaging shape, not an " +
               "artifact kind. Use `shape = \"aot\"` (and `profile = \"release\"` for an optimized binary). " +
               "See docs/63 §6."
           )

@@ -20470,7 +20470,7 @@ not an invention.
    rule docs/60 uses for defines, so the toolchain has one precedence rule.
 
 3. **Clean break, no deprecation window.** `--release` means the profile only.
-   `[build] kind = "aot"` is removed and is the hard error `F0035` naming
+   `[build] kind = "aot"` is removed and is the hard error `F0042` naming
    `shape = "aot"` — never a silent remap, so a manifest cannot be quietly
    downgraded to a portable DLL. A bare `--release` that resolves to a
    non-`aot` shape prints a one-line migration note. Every `--release`
@@ -20495,18 +20495,18 @@ silently.
 
 **Consequences.**
 
-- New diagnostics `F0033`–`F0037` (profile conflict, shape conflict, removed
+- New diagnostics `F0040`–`F0044` (profile conflict, shape conflict, removed
   `kind = "aot"`, shape invalid for target, shape unimplemented).
 - `build_profile` is sourced from the profile axis, so it is correct for every
   profile × shape pairing rather than only for the AOT path.
 - `--shape standalone` has no toolchain path on any target and fails loud with
-  `F0037` (#6262) rather than silently emitting a portable artifact.
+  `F0044` (#6262) rather than silently emitting a portable artifact.
 - The profile does not yet reach codegen: `--release` performs no
   optimization, does not relax overflow checking, and does not drive contract
   elision as `docs/01` §2 and `book/chapters/17` §17.4 describe. Those
   documents are annotated; #6263 tracks the work.
 - Manifest `[build] shape` is still silently overridden on `--target native`
-  instead of raising `F0036`; distinguishing "declared portable" from "declared
+  instead of raising `F0043`; distinguishing "declared portable" from "declared
   nothing" needs a `shapeDeclared` flag on `BuildSection` (#6268).
 
 **Related:** docs/63 (§3 axes, §5.3 re-scoped gates, §6 clean break, §9 bands),

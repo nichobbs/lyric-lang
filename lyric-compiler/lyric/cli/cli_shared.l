@@ -589,11 +589,11 @@ pub func parseShapeName(s: in String): Option[BuildShape] {
   }
 }
 
-/// `F0033` — `--debug` and `--release` are mutually exclusive.
+/// `F0040` — `--debug` and `--release` are mutually exclusive.
 pub func profileFlagConflictError(sawDebug: in Bool, sawRelease: in Bool): Option[String] {
   if sawDebug and sawRelease {
     Some(
-      value = "error[F0033]: --debug and --release are mutually exclusive (they select the same axis); " +
+      value = "error[F0040]: --debug and --release are mutually exclusive (they select the same axis); " +
         "pass exactly one, or neither for the default (--debug)"
     )
   } else {
@@ -601,7 +601,7 @@ pub func profileFlagConflictError(sawDebug: in Bool, sawRelease: in Bool): Optio
   }
 }
 
-/// `F0034` — conflicting spellings of the shape axis.  `--aot` / `--standalone`
+/// `F0041` — conflicting spellings of the shape axis.  `--aot` / `--standalone`
 /// are sugar for `--shape aot` / `--shape standalone`; combining them with each
 /// other, or with a `--shape` naming a different value, is rejected rather than
 /// resolved by a precedence rule nobody would remember.
@@ -610,31 +610,31 @@ pub func profileFlagConflictError(sawDebug: in Bool, sawRelease: in Bool): Optio
 /// quote what the user actually typed.
 pub func shapeFlagConflictError(shapeArg: in String, sawAot: in Bool, sawStandalone: in Bool): Option[String] {
   if sawAot and sawStandalone {
-    return Some(value = "error[F0034]: --aot and --standalone both select the packaging shape; pass exactly one")
+    return Some(value = "error[F0041]: --aot and --standalone both select the packaging shape; pass exactly one")
   }
   if shapeArg.length == 0 {
     return None
   }
   if sawAot and shapeArg != "aot" {
-    return Some(value = "error[F0034]: --aot conflicts with --shape " + shapeArg + "; pass one or the other")
+    return Some(value = "error[F0041]: --aot conflicts with --shape " + shapeArg + "; pass one or the other")
   }
   if sawStandalone and shapeArg != "standalone" {
-    return Some(value = "error[F0034]: --standalone conflicts with --shape " + shapeArg + "; pass one or the other")
+    return Some(value = "error[F0041]: --standalone conflicts with --shape " + shapeArg + "; pass one or the other")
   }
   None
 }
 
-/// `F0036` — the requested shape is not valid for the requested target
+/// `F0043` — the requested shape is not valid for the requested target
 /// (docs/63 §5.1).  A native build is AOT by construction, so `portable` and
 /// `standalone` are meaningless there rather than merely unimplemented.
 pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
   match target {
-    case Emitter.Native -> match shape { case SAot -> None; case _ -> { val msg = "error[F0036]: --target native does not support --shape " + shapeName(shape) + "; a native build is ahead-of-time compiled and needs no managed runtime, so `aot` is " + "its only shape (omit --shape, or pass --shape aot explicitly)"; Some(value = msg) } }
+    case Emitter.Native -> match shape { case SAot -> None; case _ -> { val msg = "error[F0043]: --target native does not support --shape " + shapeName(shape) + "; a native build is ahead-of-time compiled and needs no managed runtime, so `aot` is " + "its only shape (omit --shape, or pass --shape aot explicitly)"; Some(value = msg) } }
     case _ -> None
   }
 }
 
-/// `F0037` — the shape is valid for this target but its toolchain path is not
+/// `F0044` — the shape is valid for this target but its toolchain path is not
 /// implemented.  Fails loud rather than silently emitting the portable artifact
 /// a user did not ask for.
 ///
@@ -645,7 +645,7 @@ pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget
 pub func shapeUnsupportedError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
   match shape {
     case SStandalone -> {
-      val msg = "error[F0037]: --shape standalone is not implemented yet (issue #6262). " +
+      val msg = "error[F0044]: --shape standalone is not implemented yet (issue #6262). " +
         "Use --shape portable for a framework-dependent artifact, or --shape aot for a " +
         "self-contained native binary."
       Some(value = msg)

@@ -869,11 +869,13 @@ lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
 lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)
                                        # PROFILE axis (optimization + debug symbols):
 lyric build --debug <file.l>           # unoptimized, debug info retained (the default)
-lyric build --release <file.l>         # optimized, debug info stripped
+lyric build --release <file.l>         # optimized, debug info stripped (NOT YET: the profile does
+                                       # not reach codegen yet -- no optimization, no overflow-check
+                                       # or contract-elision change. See #6263)
                                        # NOTE: --release no longer implies AOT. Pass --aot too.
                                        # SHAPE axis (packaging), independent of profile and target:
 lyric build --shape portable <file.l>  # framework-dependent (default)
-lyric build --shape standalone <file.l>  # bundles a runtime (not implemented — F0037, #6262)
+lyric build --shape standalone <file.l>  # bundles a runtime (not implemented — F0044, #6262)
 lyric build --shape aot <file.l>       # native binary; --aot is sugar for this
 lyric build --release --aot <file.l>   # single-file: self-contained Native AOT binary
 lyric build --release --aot            # project-mode: entry package auto-detected (func main())
@@ -974,7 +976,7 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
 #                       `lyric run` execs the launcher instead of `dotnet exec`; if the
 #                       launcher is missing it warns and falls back to `dotnet exec`.
 #   kind = "bundle"  -> self-contained (runtime bundled) — planned, build errors for now
-#   kind = "aot"     -> REMOVED (F0035). "aot" is a packaging shape, not an artifact kind:
+#   kind = "aot"     -> REMOVED (F0042). "aot" is a packaging shape, not an artifact kind:
 #                       use [build] shape = "aot". Hard error, never a silent remap.
 
 # Build shape and profile (manifest [build], docs/63) — axes independent of each other

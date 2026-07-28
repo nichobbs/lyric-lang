@@ -129,7 +129,7 @@ A project can produce a directly-runnable launcher instead of a bare `.dll` by s
 kind = "exe"   # default: "lib"
 ```
 
-This emits a native *apphost* launcher beside the managed DLL — `bin/<name>` (or `<name>.exe` on Windows) — so the program starts with `./<name>` rather than `dotnet <name>.dll`, and `lyric run` execs it directly. It is still framework-dependent (a .NET runtime must be installed). The `bundle` (self-contained) kind is reserved for future use. Packaging as a native binary is the *shape* axis, not a `kind`: set `[build] shape = "aot"` (or pass `--aot`) — see §"Build profile and output shape" below. It requires a system linker (`clang` or `ld64`) on `PATH` and supports Linux (`x64`/`arm64`) and macOS (Windows is tracked in #1975). `kind = "aot"` was removed and is now a hard error (`F0035`).
+This emits a native *apphost* launcher beside the managed DLL — `bin/<name>` (or `<name>.exe` on Windows) — so the program starts with `./<name>` rather than `dotnet <name>.dll`, and `lyric run` execs it directly. It is still framework-dependent (a .NET runtime must be installed). The `bundle` (self-contained) kind is reserved for future use. Packaging as a native binary is the *shape* axis, not a `kind`: set `[build] shape = "aot"` (or pass `--aot`) — see §"Build profile and output shape" below. It requires a system linker (`clang` or `ld64`) on `PATH` and supports Linux (`x64`/`arm64`) and macOS (Windows is tracked in #1975). `kind = "aot"` was removed and is now a hard error (`F0042`).
 
 Inside a project, you can drop the arguments entirely. Running `lyric` with no
 command builds the current project, and `lyric build` / `lyric restore` find the
@@ -201,7 +201,7 @@ and `--debug --aot` gives you a debuggable native binary.
 > | `lyric build --release app.l` | `lyric build --release --aot app.l` |
 > | `[build] kind = "aot"` | `[build] shape = "aot"` |
 >
-> `[build] kind = "aot"` is a hard error (`F0035`) rather than a silent
+> `[build] kind = "aot"` is a hard error (`F0042`) rather than a silent
 > remap, so a manifest can never be quietly downgraded to a portable DLL.
 
 ### Native binaries — `lyric build --release --aot`
