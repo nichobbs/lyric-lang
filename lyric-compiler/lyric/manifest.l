@@ -909,6 +909,13 @@ func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], Manife
 /// (`F0035`, docs/63 §6): it was a packaging mode misfiled as an artifact
 /// kind, and silently remapping it to `shape = "aot"` would let a manifest
 /// mean something it does not say.
+///
+/// The code is written bare (`F0035: ...`) rather than in the CLI's
+/// `error[F0035]: ...` bracket form on purpose: this string is rendered
+/// through `ManifestError.message`, which already prefixes
+/// `[build] invalid value for 'kind': `, so the bracket form would read
+/// `... invalid value for 'kind': error[F0035]: ...` and double up the
+/// "error" prefix.
 func resolveBuildKind(entries: in List[Entry]): Result[String, ManifestError] {
   match findString(entries, "build", "kind") {
     case None -> Ok(value = "lib")

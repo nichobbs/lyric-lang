@@ -1450,7 +1450,11 @@ func buildReleaseSingle(
   manifestArg: in Option[String],
   profile: in BuildProfile,
 ): Int {
-  // Native is unreachable here (cmdBuild rejects --release + --target native).
+  // Native is unreachable here because `usesPackagingPipeline` is false for
+  // every native shape, so cmdBuild never routes a native build into this
+  // function. It is NOT because the CLI rejects `--release --target native`:
+  // that combination is valid and simply sets the profile (native is AOT by
+  // construction). Do not re-add a rejection on that basis.
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
 
   // Reject an unbuildable JVM release request (bad/cross-target `--rid`,
@@ -1546,7 +1550,11 @@ func buildReleaseProject(
   packageVersionOverride: in Option[String],
   profile: in BuildProfile,
 ): Int {
-  // Native is unreachable here (cmdBuild rejects --release + --target native).
+  // Native is unreachable here because `usesPackagingPipeline` is false for
+  // every native shape, so cmdBuild never routes a native build into this
+  // function. It is NOT because the CLI rejects `--release --target native`:
+  // that combination is valid and simply sets the profile (native is AOT by
+  // construction). Do not re-add a rejection on that basis.
   val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
 
   // Reject an unbuildable JVM release request (bad/cross-target `--rid`,
