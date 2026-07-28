@@ -82,8 +82,18 @@ trap "rm -rf '$WORK_DIR'" EXIT
 #   17     i = i + 1               38   println("y=" ...)
 #   18   }                         39   val z = wovenAdd(20, 22)
 #   19   return total              40   println("z=" ...)
-#   20 }                           41   return 0
-#   21                             42 }
+#   20 }                           41   val w = clamped(7)
+#   21                             42   println("w=" ...)
+#                                  43   return 0
+#                                  44 }
+#                                  45
+#                                  46 func clamped(n: Int): Int
+#                                  47   requires: n >= 0
+#                                  48   ensures: result >= n
+#                                  49 {
+#                                  50   val r = n + 1
+#                                  51   return r
+#                                  52 }
 # ---------------------------------------------------------------------------
 cat > "$WORK_DIR/lines.l" <<'EOF'
 //! Fixture for scripts/assert-jvm-line-numbers.sh (docs/63 band B2).
@@ -126,7 +136,17 @@ func main(): Int {
   println("y=" + y.toString())
   val z = wovenAdd(20, 22)
   println("z=" + z.toString())
+  val w = clamped(7)
+  println("w=" + w.toString())
   return 0
+}
+
+func clamped(n: Int): Int
+  requires: n >= 0
+  ensures: result >= n
+{
+  val r = n + 1
+  return r
 }
 EOF
 
@@ -162,8 +182,22 @@ EXPECT_wovenAdd__aspect_target="30,31"
 # the name and their rows land in one bucket. Every row must still fall on a
 # real statement line of the Lyric `main`, which is what catches a wrong-line
 # regression; the bridge contributes no rows of its own.
-EXPECT_main_ALLOWED="35,36,37,38,39,40,41"
+EXPECT_main_ALLOWED="35,36,37,38,39,40,41,42,43"
 EXPECT_main_MIN_ROWS=3
+
+# The contract case, and the regression guard for docs/63 band B1 slice A.
+#
+# `clamped` carries `requires:` on line 47 and `ensures:` on line 48. The
+# elaborator lowers each into a runtime `assert`, and those asserts must be
+# anchored at the clause the user wrote — so a failing contract reports line 47
+# or 48, not the function's opening brace or its `return`.
+#
+# Before the fix, `collectRequires`/`collectEnsures` discarded the per-clause
+# span that `CCRequires`/`CCEnsures` already carry: requires asserts were
+# stamped with the body's span and ensures asserts with the enclosing return's,
+# so 47 and 48 appeared nowhere in the table. Their presence here is the whole
+# assertion.
+EXPECT_clamped="47,48,50,51"
 
 cat > "$WORK_DIR/lyric.toml" <<'EOF'
 [package]
@@ -199,14 +233,16 @@ if ! java -jar "$JAR" > "$RUN_OUT" 2>&1; then
   sed 's/^/  /' "$RUN_OUT" >&2
   exit 1
 fi
-# step(5) = ((5+1)*2)-3 = 9 ; loopSum(4) = 0+1+2+3 = 6 ; wovenAdd(20,22) = 42
-# (the last one also proves the woven wrapper still returns the target's value)
-if ! grep -qx "x=9" "$RUN_OUT" || ! grep -qx "y=6" "$RUN_OUT" || ! grep -qx "z=42" "$RUN_OUT"; then
-  echo "FAIL: fixture produced wrong output (expected x=9, y=6, z=42)" >&2
+# step(5) = ((5+1)*2)-3 = 9 ; loopSum(4) = 0+1+2+3 = 6 ; wovenAdd(20,22) = 42 ;
+# clamped(7) = 8. The last two also prove the woven wrapper still returns the
+# target's value and that the elaborated contract asserts do not fire.
+if ! grep -qx "x=9" "$RUN_OUT" || ! grep -qx "y=6" "$RUN_OUT" \
+   || ! grep -qx "z=42" "$RUN_OUT" || ! grep -qx "w=8" "$RUN_OUT"; then
+  echo "FAIL: fixture produced wrong output (expected x=9, y=6, z=42, w=8)" >&2
   sed 's/^/  /' "$RUN_OUT" >&2
   exit 1
 fi
-echo "[assert-jvm-line-numbers] OK  runtime output (x=9, y=6, z=42)"
+echo "[assert-jvm-line-numbers] OK  runtime output (x=9, y=6, z=42, w=8)"
 
 EXTRACT_DIR="$WORK_DIR/classes"
 mkdir -p "$EXTRACT_DIR"
@@ -307,6 +343,7 @@ check_method_subset() {
 
 check_method_exact step "$EXPECT_step"
 check_method_exact loopSum "$EXPECT_loopSum"
+check_method_exact clamped "$EXPECT_clamped"
 check_method_exact wovenAdd "$EXPECT_wovenAdd"
 check_method_exact wovenAdd__aspect_target "$EXPECT_wovenAdd__aspect_target"
 check_method_subset main "$EXPECT_main_ALLOWED" "$EXPECT_main_MIN_ROWS"

@@ -115,6 +115,25 @@ pub record RenameCounter {
   next: Int
 }
 
+/// A contract clause's expression together with the span of the clause it
+/// came from.
+///
+/// `CCRequires`/`CCEnsures` each carry their own span, but the collectors used
+/// to drop it and hand back a bare `List[Expr]`, so every synthesized `assert`
+/// was anchored at the enclosing function body or `return` statement instead of
+/// at the `requires:`/`ensures:` line the user wrote. §3's own comment claims
+/// helpers build "at the same `Span` as the source clause they correspond to";
+/// this is what makes that true for the asserts (docs/63 band B1).
+///
+/// A record rather than a raw tuple: the pair threads through ten functions
+/// here, which is the situation `llvm_ir.l` moved *away* from tuples for
+/// ("keeping match sites self-describing"), and it mirrors `lexer.l`'s
+/// `SpannedToken` — the same value-plus-its-own-span shape.
+record SpannedExpr {
+  expr: Expr
+  span: Span
+}
+
 pub func newRenameCounter(): RenameCounter {
   RenameCounter(next = 0)
 }
@@ -132,6 +151,18 @@ func freshResultName(c: inout RenameCounter): String {
 // ─────────────────────────────────────────────────────────────────────────────
 func mkUnit(sp: in Span): Expr {
   mkExpr(ELiteral(lit = LUnit), sp)
+}
+
+// Returns true iff any clause in the list contains an EResult node.
+func anyHaveResultSpanned(cs: in List[SpannedExpr]): Bool {
+  var i = 0
+  while i < cs.count {
+    if exprContainsResult(cs[i].expr) {
+      return true
+    }
+    i = i + 1
+  }
+  false
 }
 
 // Returns true iff any expression in the list contains an EResult node.
@@ -934,12 +965,12 @@ func replaceOldExprBinding(b: in LocalBinding, counter: inout RenameCounter): Lo
 //     clauses (`when:` / `decreases:` / `raises:`) are ignored —
 //     these aren't run-time-checked by the bootstrap either.
 // ─────────────────────────────────────────────────────────────────────────────
-func collectRequires(contracts: in List[ContractClause]): List[Expr] {
-  val xs: List[Expr] = newList()
+func collectRequires(contracts: in List[ContractClause]): List[SpannedExpr] {
+  val xs: List[SpannedExpr] = newList()
   var i = 0
   while i < contracts.count {
     match contracts[i] {
-      case CCRequires(e, _) -> xs.add(e)
+      case CCRequires(e, sp) -> xs.add(SpannedExpr(expr = e, span = sp))
       case _ -> {
       }
     }
@@ -948,12 +979,12 @@ func collectRequires(contracts: in List[ContractClause]): List[Expr] {
   xs
 }
 
-func collectEnsures(contracts: in List[ContractClause]): List[Expr] {
-  val xs: List[Expr] = newList()
+func collectEnsures(contracts: in List[ContractClause]): List[SpannedExpr] {
+  val xs: List[SpannedExpr] = newList()
   var i = 0
   while i < contracts.count {
     match contracts[i] {
-      case CCEnsures(e, _) -> xs.add(e)
+      case CCEnsures(e, sp) -> xs.add(SpannedExpr(expr = e, span = sp))
       case _ -> {
       }
     }
@@ -963,14 +994,17 @@ func collectEnsures(contracts: in List[ContractClause]): List[Expr] {
 }
 
 // Append `assert(<ensures with result -> name>)` statements for every
-// ensures clause to `acc`, anchored at `sp`.
-func appendEnsuresAsserts(
-  acc: in List[Statement], ensuresExprs: in List[Expr], resultName: in String, sp: in Span
-): Unit {
+// ensures clause to `acc`, each anchored at its own clause's span.
+//
+// No `sp` parameter: this used to take the enclosing `return` statement's
+// span and stamp it on every assert, so a failing `ensures:` reported the
+// return site rather than the clause (docs/63 band B1).
+func appendEnsuresAsserts(acc: in List[Statement], ensuresExprs: in List[SpannedExpr], resultName: in String): Unit {
   var i = 0
   while i < ensuresExprs.count {
-    val cond = substResult(ensuresExprs[i], resultName)
-    acc.add(mkAssertCall(cond, sp))
+    val ec = ensuresExprs[i]
+    val cond = substResult(ec.expr, resultName)
+    acc.add(mkAssertCall(cond, ec.span))
     i = i + 1
   }
 }
@@ -981,19 +1015,24 @@ func appendEnsuresAsserts(
 // codegen when the type-checker does not reject `ensures: result == …`
 // on a Unit-returning function.  Clauses that do not reference result
 // are emitted directly without extra bindings.
-func appendEnsuresAssertsNoResult(acc: in List[Statement], ensuresExprs: in List[Expr], sp: in Span): Unit {
+// `sp` is retained here, unlike `appendEnsuresAsserts`: it anchors the
+// synthetic `__lyric_result_unit` binding, which genuinely belongs to the
+// return site rather than to any one clause.  The asserts themselves are
+// anchored per clause.
+func appendEnsuresAssertsNoResult(acc: in List[Statement], ensuresExprs: in List[SpannedExpr], sp: in Span): Unit {
   if ensuresExprs.count == 0 {
     return
   }
-  val needUnit = anyHaveResult(ensuresExprs)
+  val needUnit = anyHaveResultSpanned(ensuresExprs)
   val dummyName = "__lyric_result_unit"
   if needUnit {
     acc.add(mkLetBinding(dummyName, mkUnit(sp), sp))
   }
   var i = 0
   while i < ensuresExprs.count {
-    val cond = if needUnit { substResult(ensuresExprs[i], dummyName) } else { ensuresExprs[i] }
-    acc.add(mkAssertCall(cond, sp))
+    val ec = ensuresExprs[i]
+    val cond = if needUnit { substResult(ec.expr, dummyName) } else { ec.expr }
+    acc.add(mkAssertCall(cond, ec.span))
     i = i + 1
   }
 }
@@ -1004,7 +1043,7 @@ func appendEnsuresAssertsNoResult(acc: in List[Statement], ensuresExprs: in List
 //   return __lyric_result_<n>
 func rewriteReturnSome(
   e: in Expr,
-  ensuresExprs: in List[Expr],
+  ensuresExprs: in List[SpannedExpr],
   counter: inout RenameCounter,
   sp: in Span,
   acc: in List[Statement],
@@ -1015,7 +1054,7 @@ func rewriteReturnSome(
   }
   val name = freshResultName(counter)
   acc.add(mkLetBinding(name, e, sp))
-  appendEnsuresAsserts(acc, ensuresExprs, name, sp)
+  appendEnsuresAsserts(acc, ensuresExprs, name)
   acc.add(mkStmt(SReturn(value = Some(value = mkPath(name, sp))), sp))
 }
 
@@ -1025,7 +1064,7 @@ func rewriteReturnSome(
 //   __lyric_result_<n>
 func rewriteTrailingSExpr(
   e: in Expr,
-  ensuresExprs: in List[Expr],
+  ensuresExprs: in List[SpannedExpr],
   counter: inout RenameCounter,
   sp: in Span,
   acc: in List[Statement],
@@ -1073,7 +1112,7 @@ func rewriteTrailingSExpr(
   }
   val name = freshResultName(counter)
   acc.add(mkLetBinding(name, newE, sp))
-  appendEnsuresAsserts(acc, ensuresExprs, name, sp)
+  appendEnsuresAsserts(acc, ensuresExprs, name)
   acc.add(mkStmt(SExpr(expr = mkPath(name, sp)), sp))
 }
 
@@ -1139,7 +1178,7 @@ func blockAlwaysExits(blk: in Block): Bool {
 //  side-effects or the value of the block expression).
 // ─────────────────────────────────────────────────────────────────────────────
 func elaborateExprOrBlockDeep(
-  eob: in ExprOrBlock, ensuresExprs: in List[Expr], counter: inout RenameCounter
+  eob: in ExprOrBlock, ensuresExprs: in List[SpannedExpr], counter: inout RenameCounter
 ): ExprOrBlock {
   match eob {
     case EOBBlock(body) -> EOBBlock(block = elaborateBlockDeep(body, ensuresExprs, counter))
@@ -1147,7 +1186,7 @@ func elaborateExprOrBlockDeep(
   }
 }
 
-func elaborateExprDeep(e: in Expr, ensuresExprs: in List[Expr], counter: inout RenameCounter): Expr {
+func elaborateExprDeep(e: in Expr, ensuresExprs: in List[SpannedExpr], counter: inout RenameCounter): Expr {
   match e.kind {
     case EIf(cond, thenBranch, elseBranch, thenForm) -> {
       val newThen = elaborateExprOrBlockDeep(thenBranch, ensuresExprs, counter)
@@ -1178,7 +1217,7 @@ func elaborateExprDeep(e: in Expr, ensuresExprs: in List[Expr], counter: inout R
   }
 }
 
-func elaborateBlockDeep(block: in Block, ensuresExprs: in List[Expr], counter: inout RenameCounter): Block {
+func elaborateBlockDeep(block: in Block, ensuresExprs: in List[SpannedExpr], counter: inout RenameCounter): Block {
   val outs: List[Statement] = newList()
   var i = 0
   while i < block.statements.count {
@@ -1194,7 +1233,7 @@ func elaborateBlockDeep(block: in Block, ensuresExprs: in List[Expr], counter: i
 // not function returns).
 func elaborateStmtDeep(
   s: in Statement,
-  ensuresExprs: in List[Expr],
+  ensuresExprs: in List[SpannedExpr],
   counter: inout RenameCounter,
   acc: in List[Statement],
 ): Unit {
@@ -1260,7 +1299,7 @@ func elaborateStmtDeep(
 func elaborateTopLevelStmt(
   s: in Statement,
   isLast: in Bool,
-  ensuresExprs: in List[Expr],
+  ensuresExprs: in List[SpannedExpr],
   counter: inout RenameCounter,
   acc: in List[Statement],
   isVoidReturn: in Bool,
@@ -1417,7 +1456,7 @@ func elaborateFunctionBody(
   val oldInners: List[Expr] = newList()
   var oei = 0
   while oei < ensuresExprs.count {
-    collectOldExpr(ensuresExprs[oei], oldInners)
+    collectOldExpr(ensuresExprs[oei].expr, oldInners)
     oei = oei + 1
   }
   var rewrittenEnsures = ensuresExprs
@@ -1428,19 +1467,25 @@ func elaborateFunctionBody(
       oi = oi + 1
     }
     val replCounter = newRenameCounter()
-    val rewritten: List[Expr] = newList()
+    val rewritten: List[SpannedExpr] = newList()
     var rei = 0
     while rei < ensuresExprs.count {
-      rewritten.add(replaceOldExpr(ensuresExprs[rei], replCounter))
+      // `replaceOldExpr` rewrites `EOld` leaves inside the clause expression;
+      // the clause's own span is a separate field and passes through unchanged.
+      val ec = ensuresExprs[rei]
+      rewritten.add(SpannedExpr(expr = replaceOldExpr(ec.expr, replCounter), span = ec.span))
       rei = rei + 1
     }
     rewrittenEnsures = rewritten
   }
 
-  // (1) Prepend requires asserts at the body's start span.
+  // (1) Prepend requires asserts, each at its own clause's span rather than
+  //     at the body's — a failing `requires:` should report the line the user
+  //     wrote it on, not the function's opening brace (docs/63 band B1).
   var ri = 0
   while ri < requiresExprs.count {
-    outs.add(mkAssertCall(requiresExprs[ri], body.span))
+    val rc = requiresExprs[ri]
+    outs.add(mkAssertCall(rc.expr, rc.span))
     ri = ri + 1
   }
 

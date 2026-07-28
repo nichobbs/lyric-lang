@@ -264,10 +264,12 @@ test "proof_required file skipped entirely" {
   // A @proof_required function with requires+ensures must NOT have runtime
   // asserts injected — the elaborator reconstructs the SourceFile but skips
   // calling elaborateFunction for IFunc items.
-  val src =
-    "@proof_required\n" + "package P\n" + "import Std.Core\n" +
-    "pub func f(x: in Bool): Bool\n" + "  requires: x\n" + "  ensures: result == true\n" +
-    "{\n" + "  return true\n" + "}\n"
+  val src = "@proof_required\n" + "package P\n" + "import Std.Core\n" + "pub func f(x: in Bool): Bool\n" +
+    "  requires: x\n" +
+    "  ensures: result == true\n" +
+    "{\n" +
+    "  return true\n" +
+    "}\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
   // Body should contain exactly the original `return true` — no synthetic
@@ -868,8 +870,7 @@ test "aliased Std.Core.Unit return (default alias name) is canonicalized" {
 }
 
 test "aliased Std.Core.Unit return (custom alias name) is canonicalized" {
-  val src = "package P\n" + "import Std.Core as SC\n" + "func f(): SC.Unit\n" + "  ensures: true\n" + "{\n" +
-    "  7\n" +
+  val src = "package P\n" + "import Std.Core as SC\n" + "func f(): SC.Unit\n" + "  ensures: true\n" + "{\n" + "  7\n" +
     "}\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
@@ -898,7 +899,10 @@ test "non-Std.Core alias is not canonicalized" {
   assertTrue(isLetBinding(blk.statements[0]), "non-core-alias: stmt[0] is a synthetic let-binding")
   assertEqual(letName(blk.statements[0]), "__lyric_result_0", "non-core-alias: synthetic result name")
   assertTrue(isAssertCall(blk.statements[1]), "non-core-alias: stmt[1] is the ensures assert")
-  assertTrue(isTrailingPathSExpr(blk.statements[2], "__lyric_result_0"), "non-core-alias: stmt[2] yields synthetic local")
+  assertTrue(
+    isTrailingPathSExpr(blk.statements[2], "__lyric_result_0"),
+    "non-core-alias: stmt[2] yields synthetic local"
+  )
 }
 
 test "old() in range bounds creates snapshot" {
@@ -919,4 +923,67 @@ test "old() in range bounds creates snapshot" {
   assertTrue(isLetBinding(blk.statements[1]), "old-range: stmt[1] is let binding")
   assertEqual(letName(blk.statements[0]), "__old_0", "old-range: stmt[0] is __old_0")
   assertEqual(letName(blk.statements[1]), "__old_1", "old-range: stmt[1] is __old_1")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §N. Clause spans (docs/63 band B1, D-progress-716).
+//
+// Each synthesized assert must be anchored at the span of the clause it came
+// from, not at the enclosing body or return statement. The sources below put
+// every clause on its own line so the assertion is exact and cannot pass by
+// coincidence: before the fix, requires asserts carried `body.span` and ensures
+// asserts the enclosing return's, so none of the clause lines could appear.
+//
+// This duplicates in ~2s what `scripts/assert-jvm-line-numbers.sh` proves end to
+// end through a real JVM compile — worth having both, since a regression in the
+// `SpannedExpr` plumbing would otherwise only surface in the slow JVM-only path.
+// ─────────────────────────────────────────────────────────────────────────────
+func stmtLine(s: in Statement): Int {
+  s.span.startPos.line
+}
+
+test "requires asserts carry their own clause span" {
+  // 1: package P
+  // 2: func f(...)
+  // 3:   requires: x > 0
+  // 4:   requires: y > 0
+  // 5: { x + y }
+  val src = "package P\n" + "func f(x: in Int, y: in Int): Int\n" + "  requires: x > 0\n" + "  requires: y > 0\n" +
+    "{ x + y }\n"
+  val file = parseAndElaborate(src)
+  val blk = bodyBlockOf(firstFunction(file, "f"))
+  assertTrue(isAssertCall(blk.statements[0]), "req-span: stmt[0] is assert")
+  assertTrue(isAssertCall(blk.statements[1]), "req-span: stmt[1] is assert")
+  assertEqualInt(stmtLine(blk.statements[0]), 3, "req-span: first assert at its own clause line")
+  assertEqualInt(stmtLine(blk.statements[1]), 4, "req-span: second assert at its own clause line")
+}
+
+test "ensures asserts carry their own clause span" {
+  // 1: package P
+  // 2: func f(): Int
+  // 3:   ensures: result >= 0
+  // 4: { 7 }
+  val src = "package P\n" + "func f(): Int\n" + "  ensures: result >= 0\n" + "{ 7 }\n"
+  val file = parseAndElaborate(src)
+  val blk = bodyBlockOf(firstFunction(file, "f"))
+  // [0] = let __lyric_result_0 = 7; [1] = assert(...); [2] = trailing.
+  assertTrue(isAssertCall(blk.statements[1]), "ens-span: stmt[1] is assert")
+  assertEqualInt(stmtLine(blk.statements[1]), 3, "ens-span: assert at the ensures clause line")
+}
+
+test "requires and ensures asserts do not share a span" {
+  // 1: package P
+  // 2: func f(x: in Int): Int
+  // 3:   requires: x > 0
+  // 4:   ensures: result > x
+  // 5: { x + 1 }
+  val src = "package P\n" + "func f(x: in Int): Int\n" + "  requires: x > 0\n" + "  ensures: result > x\n" +
+    "{ x + 1 }\n"
+  val file = parseAndElaborate(src)
+  val blk = bodyBlockOf(firstFunction(file, "f"))
+  // [0] = assert(requires); [1] = let __lyric_result_0; [2] = assert(ensures); [3] = trailing.
+  assertTrue(isAssertCall(blk.statements[0]), "mixed-span: stmt[0] is the requires assert")
+  assertTrue(isAssertCall(blk.statements[2]), "mixed-span: stmt[2] is the ensures assert")
+  assertEqualInt(stmtLine(blk.statements[0]), 3, "mixed-span: requires assert on its clause line")
+  assertEqualInt(stmtLine(blk.statements[2]), 4, "mixed-span: ensures assert on its clause line")
 }
