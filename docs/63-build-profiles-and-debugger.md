@@ -839,6 +839,20 @@ argument mode.
    commit** — it currently asserts the attribute is *absent* and fails the
    moment one appears — plus confirm `printStackTrace` stops saying
    `(Unknown Source)`.
+
+   One refinement from tracing the JVM bridge, which the "sibling parameter"
+   phrasing above understates: the path must be a **`List[String]` parallel to
+   `pkgSrcs`**, not a single string.
+   `compileProjectToJarBundledWithFeatures` parses every project package into
+   `userFiles`, selects the entry package as `userFiles[mainIdx]`, and reaches
+   codegen through **two** distinct `codegenPackageInto` call sites — one for
+   user/project packages, one for the bundled stdlib closure. Each emitted
+   class must take the `SourceFile` of the package it actually came from, so
+   `codegenPackageInto` needs a per-package path parameter, and the stdlib call
+   site passes `""` (no path known, no attribute emitted) until stdlib source
+   paths are threaded too. A single scalar path would attribute every class in
+   the JAR — stdlib included — to the user's file, which is worse than emitting
+   nothing.
 3. **Multi-file policy**, after #6282's per-file parse.
 4. **Confirm the path reaches the MSIL and native bridge entry points**
    (`compileToMsilWithVersion`, `compileToNativeWithFlags`) so B3 and B4 do not
