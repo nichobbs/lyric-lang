@@ -198,8 +198,12 @@ pub enum H2StreamState {
 ///     HPACK-decoded header block (request headers, or trailers when it
 ///     follows body data). `endStream` means the peer will send no more on
 ///     this stream.
-///   - `H2RequestData(streamId, data, endStream)` — a slice of request-body
-///     payload (padding already stripped by the frame layer).
+///   - `H2RequestData(streamId, data, endStream, wireLength)` — a slice of
+///     request-body payload (padding already stripped by the frame layer).
+///     `wireLength` is the full on-wire DATA payload length (padding
+///     included) that was debited from the receive windows; a consumer that
+///     grants window credit back MUST replenish by `wireLength`, not
+///     `data.length`, or padded frames drift the windows (RFC 9113 §6.9.1).
 ///   - `H2PingReceived(opaqueData)` — the peer sent a `PING`; a `PING` ACK has
 ///     been queued in `outbound`.
 ///   - `H2PingAcknowledged(opaqueData)` — the peer acknowledged our `PING`.
@@ -219,7 +223,7 @@ pub union H2Event {
   case H2SettingsReceived(settings: H2Settings)
   case H2SettingsAcknowledged
   case H2RequestHeaders(streamId: Int, headers: List[HeaderField], endStream: Bool)
-  case H2RequestData(streamId: Int, data: slice[Byte], endStream: Bool)
+  case H2RequestData(streamId: Int, data: slice[Byte], endStream: Bool, wireLength: Int)
   case H2PingReceived(opaqueData: slice[Byte])
   case H2PingAcknowledged(opaqueData: slice[Byte])
   case H2WindowUpdated(streamId: Int)
@@ -1078,7 +1082,7 @@ func receiveData(
     )
   } else {
     st.recvWindow = st.recvWindow - wireLength
-    events.add(H2RequestData(streamId = st.id, data = data, endStream = endStream))
+    events.add(H2RequestData(streamId = st.id, data = data, endStream = endStream, wireLength = wireLength))
     if endStream {
       markEndStreamReceived(state, st.id)
     }

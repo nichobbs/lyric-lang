@@ -323,7 +323,7 @@ func hasDataEvent(events: in List[H2.H2Event], streamId: in Int): Bool {
   var i = 0
   while i < events.count {
     match events[i] {
-      case H2RequestData(sid, _, _) -> {
+      case H2RequestData(sid, _, _, _) -> {
         if sid == streamId {
           found = true
         }
@@ -858,7 +858,14 @@ test "a padded DATA frame debits the full on-wire length, not just the decoded d
   var i = 0
   while i < r2.events.count {
     match r2.events[i] {
-      case H2RequestData(_, data, _) -> assertEqualInt(data.length, 10, "data event carries only the decoded (unpadded) body")
+      case H2RequestData(_, data, _, wireLength) -> {
+        assertEqualInt(data.length, 10, "data event carries only the decoded (unpadded) body")
+        assertEqualInt(
+          wireLength,
+          16,
+          "data event carries the full on-wire length so consumers replenish what was debited (#6305)"
+        )
+      }
       case _ -> ()
     }
     i = i + 1
