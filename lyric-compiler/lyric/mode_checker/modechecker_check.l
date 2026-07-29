@@ -2500,6 +2500,11 @@ record FieldWriteCtx {
   diag: List[Diagnostic]
   recordFields: Map[String, Map[String, Bool]]
   locals: Map[String, String]
+  // The enclosing record/protected type's name, when the body being walked is
+  // a method/entry on that type (`None` for a top-level `func` or an aspect's
+  // `around` advice, neither of which has an implicit `self`) — lets
+  // `checkFieldWriteTarget` resolve an `self.field = …` write (#6181).
+  selfType: Option[String] = None
 }
 
 func fieldWriteSimpleTypeName(t: in TypeExpr): String {
@@ -2541,6 +2546,28 @@ func recordFieldMutabilityMap(members: in List[RecordMember]): Map[String, Bool]
   m
 }
 
+// A protected type's `var`/`let`/plain field forms carry mutability directly
+// on `PFVar`/`PFLet` (no shared `FieldDecl.isMutable`, unlike `PFImmutable`).
+func protectedFieldMutabilityMap(members: in List[ProtectedMember]): Map[String, Bool] {
+  val m: Map[String, Bool] = newMap()
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case PMField(pf) -> {
+        match pf {
+          case PFVar(name, _, _, _, _, _) -> m.add(name, true)
+          case PFLet(name, _, _, _, _, _) -> m.add(name, false)
+          case PFImmutable(field) -> m.add(field.name, field.isMutable)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  m
+}
+
 func collectRecordFieldsOfFile(file: in SourceFile): Map[String, Map[String, Bool]] {
   val result: Map[String, Map[String, Bool]] = newMap()
   var i = 0
@@ -2548,6 +2575,7 @@ func collectRecordFieldsOfFile(file: in SourceFile): Map[String, Map[String, Boo
     match file.items[i].kind {
       case IRecord(decl) -> result.add(decl.name, recordFieldMutabilityMap(decl.members))
       case IExposedRec(decl) -> result.add(decl.name, recordFieldMutabilityMap(decl.members))
+      case IProtected(decl) -> result.add(decl.name, protectedFieldMutabilityMap(decl.members))
       case _ -> {
       }
     }
@@ -2720,6 +2748,43 @@ func fieldWriteTrackLocal(
   }
 }
 
+// Shared V0015 lookup/report for a `recv.field = …` write once `recordName`
+// (the receiver's resolved record/protected type) and `fieldName` are known.
+// `displayRecv` is the receiver text for the diagnostic message ("self" or the
+// local's name) — cosmetic only.
+func checkFieldMutability(
+  ctx: in FieldWriteCtx,
+  recordName: in String,
+  fieldName: in String,
+  displayRecv: in String,
+  span: in Span,
+): Unit {
+  match mapGet(ctx.recordFields, recordName) {
+    case Some(fieldsMap) -> {
+      match mapGet(fieldsMap, fieldName) {
+        case Some(isMut) -> {
+          if not isMut {
+            ctx.diag.add(
+              errorDiagnostic(
+                "V0015",
+                "cannot reassign immutable field '" + displayRecv + "." + fieldName + "'; declare it `var " + fieldName +
+                  "` on record '" +
+                  recordName +
+                  "' to allow mutation",
+                span
+              )
+            )
+          }
+        }
+        case None -> {
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+}
+
 func checkFieldWriteTarget(ctx: in FieldWriteCtx, target: in Expr): Unit {
   match target.kind {
     case EMember(recv, fieldName) -> {
@@ -2727,34 +2792,20 @@ func checkFieldWriteTarget(ctx: in FieldWriteCtx, target: in Expr): Unit {
         case EPath(path) -> {
           if path.segments.count == 1 {
             match mapGet(ctx.locals, path.segments[0]) {
-              case Some(recordName) -> {
-                match mapGet(ctx.recordFields, recordName) {
-                  case Some(fieldsMap) -> {
-                    match mapGet(fieldsMap, fieldName) {
-                      case Some(isMut) -> {
-                        if not isMut {
-                          ctx.diag.add(
-                            errorDiagnostic(
-                              "V0015",
-                              "cannot reassign immutable field '" + path.segments[0] + "." + fieldName + "'; declare it `var " + fieldName +
-                                "` on record '" +
-                                recordName +
-                                "' to allow mutation",
-                              target.span
-                            )
-                          )
-                        }
-                      }
-                      case None -> {
-                      }
-                    }
-                  }
-                  case None -> {
-                  }
-                }
-              }
+              case Some(recordName) -> checkFieldMutability(ctx, recordName, fieldName, path.segments[0], target.span)
               case None -> {
               }
+            }
+          }
+        }
+        // `self.field = …` inside a method/entry on a known enclosing type
+        // (#6181).  Unlike a bare `field = …` implicit-self write (deliberately
+        // NOT handled here — see the note below), `self` is a keyword, never a
+        // shadowable local name, so this receiver is unambiguous.
+        case ESelf -> {
+          match ctx.selfType {
+            case Some(recordName) -> checkFieldMutability(ctx, recordName, fieldName, "self", target.span)
+            case None -> {
             }
           }
         }
@@ -2762,6 +2813,18 @@ func checkFieldWriteTarget(ctx: in FieldWriteCtx, target: in Expr): Unit {
         }
       }
     }
+    // A bare implicit-self field write (`total = 0` inside an impl method,
+    // meaning the same as `self.total = 0`) is deliberately NOT handled here.
+    // Unlike `self.field = …`, a bare name is genuinely ambiguous from this
+    // narrow pass's data alone: `ctx.locals` only tracks `var` locals whose
+    // type resolves to an in-file record (the same narrowing
+    // `checkFuncForFieldWrite`'s header comment documents), so an ordinary
+    // scalar/param local reassignment (`count = count + 1`) is
+    // indistinguishable from an implicit-self field write without a full
+    // lexical scope of every declared name (not just record-typed ones) —
+    // building that safely (matching the existing per-scope snapshot/restore
+    // discipline for #6157/#6166/#6167/#6185) is a separately-scoped
+    // follow-up, not a safe "smallest diff" addition here.
     case _ -> {
     }
   }
@@ -3058,33 +3121,52 @@ func walkBlockForFieldWriteEvicting(ctx: in FieldWriteCtx, blk: in Block, evictN
   fieldWriteRestore(ctx, snap)
 }
 
+// Only `var` locals are tracked as write-capable record bindings — NOT
+// `inout` parameters.  A pervasive stdlib idiom (Std.Xml, Std.Yaml,
+// Std.Json, Std.HttpEngine: a cursor-style state record threaded
+// through a call chain of `st: inout StateRecord` helpers, each
+// mutating a field directly) writes non-`var` fields through `inout`
+// params at dozens of call sites; tracking `inout` here would flag all
+// of it and break the stdlib build.  See docs/01-language-reference.md
+// §2.4 — full write-site enforcement (including through `inout`) is
+// future T6+ work; this pass covers the narrower, unambiguous case of
+// a field write through a local the *same* function constructed.
+func checkFuncBodyForFieldWrite(
+  recordFields: in Map[String, Map[String, Bool]],
+  diag: in List[Diagnostic],
+  body: in FunctionBody,
+  selfType: in Option[String],
+): Unit {
+  val locals: Map[String, String] = newMap()
+  val ctx = FieldWriteCtx(diag = diag, recordFields = recordFields, locals = locals, selfType = selfType)
+  match body {
+    case FBExpr(e) -> walkExprForFieldWrite(ctx, e)
+    case FBBlock(blk) -> walkBlockForFieldWrite(ctx, blk)
+  }
+}
+
 func checkFuncForFieldWrite(
   recordFields: in Map[String, Map[String, Bool]],
   diag: in List[Diagnostic],
   fn: in FunctionDecl,
+  selfType: in Option[String],
 ): Unit {
   match fn.body {
     case None -> {
     }
-    case Some(body) -> {
-      // Only `var` locals are tracked as write-capable record bindings — NOT
-      // `inout` parameters.  A pervasive stdlib idiom (Std.Xml, Std.Yaml,
-      // Std.Json, Std.HttpEngine: a cursor-style state record threaded
-      // through a call chain of `st: inout StateRecord` helpers, each
-      // mutating a field directly) writes non-`var` fields through `inout`
-      // params at dozens of call sites; tracking `inout` here would flag all
-      // of it and break the stdlib build.  See docs/01-language-reference.md
-      // §2.4 — full write-site enforcement (including through `inout`) is
-      // future T6+ work; this pass covers the narrower, unambiguous case of
-      // a field write through a local the *same* function constructed.
-      val locals: Map[String, String] = newMap()
-      val ctx = FieldWriteCtx(diag = diag, recordFields = recordFields, locals = locals)
-      match body {
-        case FBExpr(e) -> walkExprForFieldWrite(ctx, e)
-        case FBBlock(blk) -> walkBlockForFieldWrite(ctx, blk)
-      }
-    }
+    case Some(body) -> checkFuncBodyForFieldWrite(recordFields, diag, body, selfType)
   }
+}
+
+// `EntryDecl.body` (unlike `FunctionDecl.body`) is a non-optional
+// `FunctionBody` — a protected type's `entry` members always have a body.
+func checkEntryForFieldWrite(
+  recordFields: in Map[String, Map[String, Bool]],
+  diag: in List[Diagnostic],
+  entry: in EntryDecl,
+  selfType: in Option[String],
+): Unit {
+  checkFuncBodyForFieldWrite(recordFields, diag, entry.body, selfType)
 }
 
 func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): Unit {
@@ -3092,15 +3174,17 @@ func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): 
   if mapIsEmpty(recordFields) {
     return
   }
+  val noSelf: Option[String] = None
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
-      case IFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn)
+      case IFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, noSelf)
       case IRecord(decl) | IExposedRec(decl) -> {
+        val selfTy = Some(value = decl.name)
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
-            case RMFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn)
+            case RMFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, selfTy)
             case _ -> {
             }
           }
@@ -3108,14 +3192,43 @@ func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): 
         }
       }
       case IImpl(decl) -> {
+        val implTypeName = fieldWriteSimpleTypeName(decl.target)
+        val selfTy: Option[String] = if implTypeName == "" { None } else { Some(value = implTypeName) }
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
-            case IMplFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn)
+            case IMplFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, selfTy)
             case _ -> {
             }
           }
           mi = mi + 1
+        }
+      }
+      case IProtected(decl) -> {
+        val selfTy = Some(value = decl.name)
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, selfTy)
+            case PMEntry(entryDecl) -> checkEntryForFieldWrite(recordFields, diag, entryDecl, selfTy)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IAspect(decl) -> {
+        // `around` advice's body is a plain `Block` (no enclosing function/
+        // record — an aspect is not a method), so it walks directly rather
+        // than through `checkFuncBodyForFieldWrite`.  The rest of `AspectDecl`
+        // (matchers, contracts, `config` fields) carries no executable body.
+        match decl.around {
+          case Some(around) -> {
+            val locals: Map[String, String] = newMap()
+            val ctx = FieldWriteCtx(diag = diag, recordFields = recordFields, locals = locals)
+            walkBlockForFieldWrite(ctx, around.body)
+          }
+          case None -> ()
         }
       }
       case _ -> {

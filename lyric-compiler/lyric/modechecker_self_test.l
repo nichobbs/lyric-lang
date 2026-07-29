@@ -723,3 +723,55 @@ test "catch-clause bind name shadowing a var-record local evicts the stale mappi
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "catch-bind-shadow write: no false-positive V0015")
 }
+
+// ── #6203: protected-type entry/func bodies were never visited at all ──────
+// `checkImmutableFieldWrites`'s catch-all silently skipped `IProtected` (and
+// `IAspect`), so a non-`var` protected-type field write through a `self.field`
+// receiver never fired V0015, regardless of #6181's ESelf support below.
+test "protected-type entry self-field write to a non-var field is V0015 (#6203)" {
+  val src = "package P\nprotected type Pt {\n  var n: Int\n  label: String\n\n  entry poke(): Unit {\n    self.label = \"x\"\n  }\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0015"), "protected-type entry self.label write: V0015 emitted")
+}
+
+test "protected-type entry self-field write to a var field is not V0015" {
+  val src = "package P\nprotected type Pt {\n  var n: Int\n\n  entry poke(): Unit {\n    self.n = 5\n  }\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "protected-type entry self.n (var) write: no V0015")
+}
+
+test "protected-type func member self-field write to a non-var field is V0015 (#6203)" {
+  val src = "package P\nprotected type Pt {\n  var n: Int\n  label: String\n\n  func reset(): Unit {\n    self.label = \"x\"\n  }\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0015"), "protected-type func self.label write: V0015 emitted")
+}
+
+// ── #6181: `self.field = …` inside a method was silently ignored ───────────
+// `checkFieldWriteTarget` only matched `EMember` over a single-segment
+// `EPath` local; an `ESelf` receiver was invisible to the check entirely.
+test "impl-method self-field write to a non-var field is V0015 (#6181)" {
+  val src = "package P\nrecord Counter2 {\n  total: Int\n}\ninterface Nudge {\n  func poke(): Unit\n}\nimpl Nudge for Counter2 {\n  func poke(): Unit {\n    self.total = 0\n  }\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0015"), "impl-method self.total write: V0015 emitted")
+}
+
+test "impl-method self-field write to a var field is not V0015" {
+  val src = "package P\nrecord Counter2 {\n  var total: Int\n}\ninterface Nudge {\n  func poke(): Unit\n}\nimpl Nudge for Counter2 {\n  func poke(): Unit {\n    self.total = 0\n  }\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "impl-method self.total (var) write: no V0015")
+}
+
+test "record inherent-method self-field write to a non-var field is V0015 (#6181)" {
+  val src = "package P\nrecord Counter3 {\n  total: Int\n\n  func reset(self: in Counter3): Unit {\n    self.total = 0\n  }\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0015"), "record inherent-method self.total write: V0015 emitted")
+}
+
+// A local variable of the same name as a field must not be confused with the
+// implicit-self bare form: this exercises the (still-supported) local-EPath
+// branch of `checkFieldWriteTarget`, unaffected by the new `ESelf` arm.
+test "local variable shadowing a field name is not affected by the ESelf write check" {
+  val src = "package P\nrecord Counter2 {\n  var total: Int\n}\ninterface Nudge {\n  func poke(): Unit\n}\nimpl Nudge for Counter2 {\n  func poke(): Unit {\n    var total = 9\n    total = total + 1\n  }\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "shadowing local `total` reassignment: no V0015")
+}
