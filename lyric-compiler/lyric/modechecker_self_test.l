@@ -298,6 +298,17 @@ test "discarded spawn in an aspect around body is V0014" {
   assertTrue(hasDiagCode(result, "V0014"), "dropped spawn in aspect around: V0014")
 }
 
+test "non-var field write on a var-record local in an aspect around body is V0015 (#6203)" {
+  // Same rationale as the V0014 case above: `around` advice is spliced into
+  // real functions during weaving (after mode checking), so a field write
+  // through a var-record local there must be caught here.  An aspect has no
+  // enclosing `self` (it isn't a method on a type), so this exercises the
+  // local-EPath receiver form, not the ESelf form #6181 added.
+  val src = "package P\nrecord Counter {\n  total: Int\n}\naspect A {\n  matches: name like \"f*\"\n  around(args) -> ret {\n    var c = Counter(total = 0)\n    c.total = 1\n    proceed(args)\n  }\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0015"), "non-var field write in aspect around body: V0015 emitted")
+}
+
 test "discarded spawn in a test body is V0014" {
   // #5159: `test { }` bodies are executed code and their value is discarded.
   val src = "package P\ntest \"t\" {\n  spawn g()\n  val done = 1\n}\nasync func g(): Unit {}\n"
