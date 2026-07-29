@@ -3331,6 +3331,8 @@ func lowerMethodCall(
     // class-load on the JVM).  The JDK intrinsic stays as the fallback for a
     // bundle without `Std.String` (where the checker could only have typed
     // the call against the JDK method through an extern receiver).
+    // The MSIL backend still lowers this to the raw BCL intrinsic and has not
+    // adopted this UFCS routing, so `--target dotnet` still diverges (#5625).
     // ...except inside `Std.String` itself: its wrapper body
     // (`val i = s.indexOf(substring); if i < 0 ...`) is the one legitimate
     // raw-JDK call site — routing it through its own registered sig would be
