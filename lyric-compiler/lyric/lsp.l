@@ -32,6 +32,7 @@ import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.Verifier
 import Lyric.Version as Ver
+import Lyric.Fmt
 import Msil.MetadataReader as Mdr
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -838,7 +839,7 @@ func renderSig(cr: in CheckResult, sig: in ResolvedSignature, name: in String): 
 }
 
 func itemSummary(item: in Item): String {
-  val v = match item.visibility { case Some(_) -> "pub "; case None -> "" }
+  val v = visibilityPrefixStr(item.visibility)
   match item.kind {
     case IFunc(fd) -> v + "func " + fd.name + "(...)"
     case IRecord(rd) -> v + "record " + rd.name
@@ -891,7 +892,7 @@ func symKind(sym: in Symbol): Int {
 }
 
 func symDetail(sym: in Symbol): String {
-  val v = match sym.visibility { case Some(_) -> "pub "; case None -> "" }
+  val v = visibilityPrefixStr(sym.visibility)
   match sym.kind {
     case DKFunc(_) -> v + "func " + sym.name + "(...)"
     case DKRecord(_, _) -> v + "record " + sym.name
