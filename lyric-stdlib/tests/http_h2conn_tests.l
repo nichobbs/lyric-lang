@@ -177,7 +177,39 @@ func continuationFrame(streamId: in Int, block: in slice[Byte], endHeaders: in B
 }
 
 func dataFrame(streamId: in Int, data: in slice[Byte], endStream: in Bool): slice[Byte] {
-  serializeFrame(DataFrame(streamId = streamId, data = data, endStream = endStream))
+  serializeFrame(DataFrame(streamId = streamId, data = data, endStream = endStream, wireLength = data.length))
+}
+
+/// Build a raw PADDED DATA frame's wire bytes directly (9-octet header +
+/// pad-length octet + `data` + `data.length` trailing pad octets), bypassing
+/// `serializeFrame` — which never emits padding on the send path — so window
+/// accounting can be exercised against a payload whose on-wire length exceeds
+/// its decoded `data.length` (#6063).
+func paddedDataFrame(streamId: in Int, data: in slice[Byte], padLen: in Int, endStream: in Bool): slice[Byte] {
+  val flags = if endStream { 9 } else { 8 }
+  val acc: List[Byte] = newList()
+  val payloadLen = 1 + data.length + padLen
+  acc.add(payloadLen.shr(16).and(255).toByte())
+  acc.add(payloadLen.shr(8).and(255).toByte())
+  acc.add(payloadLen.and(255).toByte())
+  acc.add(0u8)
+  acc.add(flags.and(255).toByte())
+  acc.add(streamId.shr(24).and(127).toByte())
+  acc.add(streamId.shr(16).and(255).toByte())
+  acc.add(streamId.shr(8).and(255).toByte())
+  acc.add(streamId.and(255).toByte())
+  acc.add(padLen.and(255).toByte())
+  var i = 0
+  while i < data.length {
+    acc.add(data[i])
+    i = i + 1
+  }
+  var j = 0
+  while j < padLen {
+    acc.add(0u8)
+    j = j + 1
+  }
+  acc.toArray()
 }
 
 func windowUpdateFrame(streamId: in Int, increment: in Int): slice[Byte] {
@@ -807,6 +839,32 @@ test "DATA is debited from the stream receive window" {
   assertEqualInt(H2.streamReceiveWindow(r2.conn, 1), 70, "receive window debited by 30")
 }
 
+test "a padded DATA frame debits the full on-wire length, not just the decoded data (#6063)" {
+  var conn = setup(customSettings(4096, 128, 200, 16384, 32768), emptySettingsFrame())
+  val r1 = H2.feed(conn, headersFrame(1, encodeBlock(requestHeaders()), false, true))
+  assertEqualInt(H2.connectionReceiveWindow(r1.conn), 65535, "initial connection receive window")
+  assertEqualInt(H2.streamReceiveWindow(r1.conn, 1), 200, "initial stream receive window")
+  // pad-length octet (1) + 10 data octets + 5 pad octets = 16 on-wire octets,
+  // but only 10 octets of decoded data.
+  val r2 = H2.feed(r1.conn, paddedDataFrame(1, mkBytes(10, 65), 5, false))
+  assertFalse(H2.isFailed(r2.conn), "well-formed padded DATA frame is not an error")
+  assertEqualInt(
+    H2.connectionReceiveWindow(r2.conn),
+    65535 - 16,
+    "connection window debited by the full 16 on-wire octets"
+  )
+  assertEqualInt(H2.streamReceiveWindow(r2.conn, 1), 200 - 16, "stream window debited by the full 16 on-wire octets")
+  assertTrue(hasDataEvent(r2.events, 1), "data event fires despite the padding")
+  var i = 0
+  while i < r2.events.count {
+    match r2.events[i] {
+      case H2RequestData(_, data, _) -> assertEqualInt(data.length, 10, "data event carries only the decoded (unpadded) body")
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
 test "DATA exceeding the connection receive window is a connection FLOW_CONTROL_ERROR" {
   var conn = setupDefault()
   val r1 = H2.feed(conn, headersFrame(1, encodeBlock(requestHeaders()), false, true))
@@ -854,6 +912,23 @@ test "sendData is bounded by the peer's stream window and replenished by WINDOW_
   match H2.sendData(r2.conn, 1, mkBytes(1, 66), false) {
     case Err(_) -> panic("sendData should succeed after replenishment")
     case Ok(_) -> assertEqualInt(H2.streamSendWindow(r2.conn, 1), 9, "send window debited after resend")
+  }
+}
+
+test "sendData across multiple streams debits the shared connection send window cumulatively (#6095)" {
+  var conn = setupDefault()
+  val r1 = H2.feed(conn, headersFrame(1, encodeBlock(requestHeaders()), false, true))
+  var c = r1.conn
+  val r2 = H2.feed(c, headersFrame(3, encodeBlock(requestHeaders()), false, true))
+  c = r2.conn
+  assertEqualInt(H2.connectionSendWindow(c), 65535, "connection send window starts at the default initial window")
+  match H2.sendData(c, 1, mkBytes(100, 65), false) {
+    case Err(_) -> panic("sendData on stream 1 should fit the window")
+    case Ok(_) -> assertEqualInt(H2.connectionSendWindow(c), 65435, "connection window debited by stream 1's 100 bytes")
+  }
+  match H2.sendData(c, 3, mkBytes(200, 66), false) {
+    case Err(_) -> panic("sendData on stream 3 should fit the window")
+    case Ok(_) -> assertEqualInt(H2.connectionSendWindow(c), 65235, "connection window further debited by stream 3's 200 bytes")
   }
 }
 
@@ -928,6 +1003,14 @@ test "grantStreamWindow rejects an increment that would overflow the receive win
   // Stream receive window is 100, so the largest legal increment is
   // h2MaxWindow() - 100; one larger violates the contract and must panic.
   assertPanics("grantStreamWindow overflow", { -> val ignored = H2.grantStreamWindow(c, 1, 2147483647) })
+}
+
+test "grantConnectionWindow rejects an increment that would overflow the receive window (#6094)" {
+  val conn = setupDefault()
+  // The connection receive window starts at h2InitialWindow(), so the largest
+  // legal increment is h2MaxWindow() - h2InitialWindow(); one larger (the max
+  // Int) violates the contract and must panic.
+  assertPanics("grantConnectionWindow overflow", { -> val ignored = H2.grantConnectionWindow(conn, 2147483647) })
 }
 
 test "WINDOW_UPDATE on an idle even (push) stream id below the high-water mark is a connection error (#6068)" {
@@ -1083,6 +1166,33 @@ test "a refused stream's header block is HPACK-decoded so the compression contex
   val b3 = encodeBlockWith(enc, customReq("x-b", "2"))
   val r3 = H2.feed(c, headersFrame(3, b3, true, true))
   expectStreamError(r3.events, 3, H2RefusedStream, "stream 3 refused by the concurrency limit")
+  val r4 = H2.feed(r3.conn, rstFrame(1, H2Cancel))
+  assertTrue(stateIs(H2.streamState(r4.conn, 1), "closed"), "stream 1 closed, freeing capacity")
+  val b5 = encodeBlockWith(enc, customReq("x-b", "2"))
+  val r5 = H2.feed(r4.conn, headersFrame(5, b5, true, true))
+  assertFalse(H2.isFailed(r5.conn), "no COMPRESSION_ERROR — the dynamic index resolved")
+  match findRequestHeaders(r5.events, 5) {
+    case None -> panic("expected request headers on stream 5")
+    case Some(hs) -> assertEqual(headerValueIn(hs, "x-b"), "2", "dynamic-indexed header resolved via the synced context")
+  }
+}
+
+test "a refused stream's header block split across HEADERS+CONTINUATION is HPACK-decoded so the compression context stays in sync (#6093)" {
+  // Same scenario as #6076, but stream 3's refused header block arrives split
+  // across a HEADERS(END_HEADERS=false) + CONTINUATION(END_HEADERS=true) pair
+  // rather than a single frame — the decode-and-discard path must still run
+  // once reassembly completes, not just for a single-frame refused block.
+  var conn = setup(customSettings(4096, 1, 65535, 16384, 32768), emptySettingsFrame())
+  var enc = newEncoder(4096, false)
+  val b1 = encodeBlockWith(enc, customReq("x-a", "1"))
+  val r1 = H2.feed(conn, headersFrame(1, b1, false, true))
+  var c = r1.conn
+  val b3 = encodeBlockWith(enc, customReq("x-b", "2"))
+  val half = b3.length / 2
+  val r3a = H2.feed(c, headersFrame(3, b3.slice(0, half), false, false))
+  expectStreamError(r3a.events, 3, H2RefusedStream, "stream 3 refused by the concurrency limit (first HEADERS frame)")
+  val r3 = H2.feed(r3a.conn, continuationFrame(3, b3.slice(half, b3.length), true))
+  assertFalse(H2.isFailed(r3.conn), "CONTINUATION completing a refused block is not itself an error")
   val r4 = H2.feed(r3.conn, rstFrame(1, H2Cancel))
   assertTrue(stateIs(H2.streamState(r4.conn, 1), "closed"), "stream 1 closed, freeing capacity")
   val b5 = encodeBlockWith(enc, customReq("x-b", "2"))
