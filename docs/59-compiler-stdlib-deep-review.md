@@ -226,6 +226,10 @@ parameter (none exists, which is why this is latent).
   `byte` parameter. JVM scalar `Byte` is a third representation (signed
   8-bit). Needs one decision (U1 matches docs and element paths) applied to
   `typeExprToMsilCtx`, arithmetic masking, and `argTyToSig`.
+  PR #6100 (#5934) fixed the Func-lambda-invoke-boxing manifestation of this
+  split via `funcAbiArgBoxTypeMsil` (`msil/codegen.l`); the `argTyToSig`
+  auto-FFI-scoring mismatch and the arithmetic-masking parts above remain
+  open.
 - **Locale-sensitive interpolation and `println(Double)`**: `toString(Double)`
   is pinned to InvariantCulture (#2462, `codegen.l:10620-10628`), but
   interpolation boxes and calls `Object.ToString()` (`:10194-10196`) and

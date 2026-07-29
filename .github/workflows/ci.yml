@@ -62,6 +62,13 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
+      # Guardrail for #6171: the ECO_DEPS declare -A table below and the
+      # ecosystem-tests matrix's `deps:` entries are hand-maintained
+      # duplicates with no other sync check. Fail fast, before the
+      # expensive build steps, if they drift apart.
+      - name: Check ECO_DEPS / ecosystem-tests matrix sync
+        run: bash scripts/check-eco-deps-sync.sh
+
       # Determine whether any non-docs files changed. When only book/,
       # docs/, or *.md files changed (docs-only PR), the expensive
       # build and test steps are skipped and the job exits green so
@@ -6580,12 +6587,13 @@ jobs:
 
   # Ecosystem-library security/regression tests. Split from one monolithic
   # ~25-command job (#6165) into a per-library matrix so libraries run
-  # in parallel and a PR touching only one library's directory skips every
-  # unrelated entry. Gating comes from `needs.build.outputs.ecosystem_run_map`
-  # (computed in `build`'s "Detect code changes" step from the ECO_DEPS
-  # table there) — `deps:` below mirrors that same table and drives the
-  # actual path-dependency build order, leaf-first, so keep the two in sync
-  # if a library's local-path dependencies change.
+  # in parallel. Gating is currently the coarse `has_code_changes` gate
+  # (see the NOTE below, ~line 6646) — every matrix entry runs on any code
+  # change; per-library gating via `needs.build.outputs.ecosystem_run_map`
+  # is not wired up yet. `deps:` below mirrors the `ECO_DEPS` table in
+  # `build`'s "Detect code changes" step and drives the actual
+  # path-dependency build order, leaf-first, so keep the two in sync if a
+  # library's local-path dependencies change.
   ecosystem-tests:
     runs-on: ubuntu-latest
     needs: [build]

@@ -61,6 +61,20 @@ download() {
   fi
 }
 
+# Prints the lowercase SHA-256 hex digest of a file, using whichever of
+# sha256sum (Linux/coreutils) or shasum -a 256 (macOS) is available —
+# mirroring the curl/wget download fallback above.
+sha256_of() {
+  file="$1"
+  if command -v sha256sum > /dev/null 2>&1; then
+    sha256sum "$file" | awk '{print tolower($1)}'
+  elif command -v shasum > /dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print tolower($1)}'
+  else
+    err "neither sha256sum nor shasum found; install one and retry"
+  fi
+}
+
 # ── Platform detection ────────────────────────────────────────────────────────
 
 detect_platform() {
@@ -117,6 +131,44 @@ install_lyric() {
 
   say "Downloading ${ARCHIVE_NAME}..."
   download "$DOWNLOAD_URL" "${TMPDIR_INST}/${ARCHIVE_NAME}"
+
+  # Verify the downloaded archive against the release's SHASUMS256.txt
+  # manifest (docs/22 §5.2). Fail closed: any download or parse failure,
+  # a missing manifest entry for this archive, or a digest mismatch aborts
+  # before extraction — never install unverified bytes.
+  SHASUMS_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/SHASUMS256.txt"
+  SHASUMS_FILE="${TMPDIR_INST}/SHASUMS256.txt"
+  say "Verifying checksum..."
+  # Wrapped in `if !` so a 404 (e.g. a release that predates SHASUMS256.txt
+  # publishing) surfaces this message instead of set -e aborting on curl.
+  if ! download "$SHASUMS_URL" "$SHASUMS_FILE" || [ ! -s "$SHASUMS_FILE" ]; then
+    rm -rf "$TMPDIR_INST"
+    err "failed to download SHASUMS256.txt from ${SHASUMS_URL} — releases published before checksum manifests existed cannot be verified; pass a newer --version"
+  fi
+
+  EXPECTED_HASH="$(awk -v name="$ARCHIVE_NAME" '$2 == name { print tolower($1) }' "$SHASUMS_FILE" | head -1)"
+  if [ -z "$EXPECTED_HASH" ]; then
+    rm -rf "$TMPDIR_INST"
+    err "no SHASUMS256.txt entry for ${ARCHIVE_NAME}; aborting rather than installing an unverified archive"
+  fi
+
+  # Tool check up front: sha256_of's own err runs in a command-substitution
+  # subshell below, where its exit would only empty ACTUAL_HASH instead of
+  # stopping the script with the right message.
+  if ! command -v sha256sum > /dev/null 2>&1 && ! command -v shasum > /dev/null 2>&1; then
+    rm -rf "$TMPDIR_INST"
+    err "neither sha256sum nor shasum found; install one and retry"
+  fi
+  ACTUAL_HASH="$(sha256_of "${TMPDIR_INST}/${ARCHIVE_NAME}")"
+  if [ -z "$ACTUAL_HASH" ]; then
+    rm -rf "$TMPDIR_INST"
+    err "could not compute SHA-256 of ${ARCHIVE_NAME}"
+  fi
+  if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+    rm -rf "$TMPDIR_INST"
+    err "checksum mismatch for ${ARCHIVE_NAME}: expected ${EXPECTED_HASH}, got ${ACTUAL_HASH}"
+  fi
+  say "Checksum OK."
 
   say "Extracting..."
   mkdir -p "$INSTALL_DIR"

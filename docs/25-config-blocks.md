@@ -7,7 +7,7 @@ blocks shipped (#3228): each field lowers to a `public static final` field
 plus a `<clinit>` that reads the env var and falls back to the declared
 default, mirroring the MSIL `.cctor`.  (The docs/58 config-*template* /
 wire-embedded layering remains `--target dotnet` only for now — a separate
-follow-up, unrelated to base config blocks.)  v1 surface (parser + AST +
+follow-up, unrelated to base config blocks, tracked in #6213.)  v1 surface (parser + AST +
 type-check + symbol table) implemented in the F# bootstrap and
 self-hosted compiler (PRs #206, #227).  v2 spec:
 `docs/29-config-v2-sketch.md` (D048, file source + layered

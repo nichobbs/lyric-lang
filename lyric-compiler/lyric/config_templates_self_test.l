@@ -5,7 +5,8 @@
 //! the value-position record-construction rewrite inside a wire graph.
 //!
 //! `--target dotnet` only: this test exercises the docs/58 config-*template*
-//! / wire-embedded layering, whose JVM lowering is a separate follow-up.
+//! / wire-embedded layering, whose JVM lowering is a separate follow-up
+//! (tracked in #6213).
 //! (Base module-scope `config { }` blocks now emit on JVM too — static
 //! fields + a `<clinit>` env-var reader — shipped in #3228; see
 //! `config_block_self_test.l`, which runs on both targets.)

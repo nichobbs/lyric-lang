@@ -310,9 +310,9 @@ typed `ServerTlsUnsupported` carrying the underlying reason on either target,
 never a silent failure.
 
 Cert/key/client-CA paths are runtime-configurable so a deployment can point
-them per environment without a rebuild. The `Web.WebTls` config block carries
-the paths (overridable via `LYRIC_CONFIG_*`), and `tlsServerConfigFromWebTls`
-loads them into a `TlsServerConfig`:
+them per environment without a rebuild. The `Web.WebTls` config template
+carries the paths, and `tlsServerConfigFromWebTls` loads them into a
+`TlsServerConfig`:
 
 | `WebTls` field | Type | Default | Description |
 |---|---|---|---|
@@ -320,6 +320,15 @@ loads them into a `TlsServerConfig`:
 | `keyPath` | `String` | (required) | PEM PKCS8 private key path |
 | `clientCaPath` | `String` | `""` | PEM client-CA path (mTLS; empty = off) |
 | `requireClientCert` | `Bool` | `false` | Require a client certificate (mTLS) |
+
+Env-var overrides attach where a consumer *materialises* the template, not
+to `Web.WebTls` itself. Deriving `config Deploy from Web.WebTls { ... }` in
+package `My.App` makes each field overridable as
+`LYRIC_CONFIG_MY_APP_DEPLOY_<FIELD>` — package dots become underscores, and
+the block and field names are uppercased verbatim, so `certPath` reads
+`LYRIC_CONFIG_MY_APP_DEPLOY_CERTPATH` (see `tests/webtls_config_tests.l`
+for a worked example). Constructing `Web.WebTls(...)` directly as a record
+literal, as the example below does, performs no env lookup at all.
 
 ```lyric
 val cfg = Web.WebTls(certPath = "server.pem", keyPath = "server.key", clientCaPath = "", requireClientCert = false)
