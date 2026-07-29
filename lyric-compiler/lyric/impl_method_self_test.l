@@ -154,3 +154,32 @@ test "mixed reference + value-type params" {
   assertEqual(f.line("x", 7, true), "x=7", "on")
   assertEqual(f.line("x", 7, false), "x=off", "off")
 }
+
+// ── Lambda literal inside an impl method body (#6119) ─────────────────────────
+// `liftLambdasMsil` (the pre-pass that extracts `ELambda` nodes into synthetic
+// top-level functions before codegen) walked IFunc/IVal/IConst/IRecord items
+// but had no IImpl case, so a lambda inside an impl method body was never
+// lifted and codegen panicked with "lambda token missing ... liftLambdasMsil
+// pre-pass was not run".
+interface Adder {
+  func addOne(): Int
+}
+
+record AdderImpl {
+  x: Int
+}
+
+func applyFn(g: () -> Int): Int {
+  g()
+}
+
+impl Adder for AdderImpl {
+  func addOne(): Int {
+    applyFn({ -> self.x + 1 })
+  }
+}
+
+test "lambda literal inside impl method body (#6119)" {
+  val r: Adder = AdderImpl(x = 10)
+  assertEqualInt(r.addOne(), 11, "lambda captures self field from within impl method")
+}
