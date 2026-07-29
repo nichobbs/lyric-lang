@@ -375,6 +375,107 @@ test "bare three-segment import referenced by its full Foo.Bar.Baz.qux() form re
   }
 }
 
+// A chain with member access PAST the matched package prefix must exercise
+// `rebuildQualifiedChain`'s multi-remainder branch: the qualified portion
+// collapses to a flat `EPath`, and every segment past it re-wraps as
+// `EMember` on top, rather than the whole chain becoming one over-long
+// `EPath` (which would wrongly claim `field` names part of the package).
+test "bare multi-segment import chain with trailing member access past the package rewrites (#6294)" {
+  val src = "package Test\nimport Foo.Bar\nfunc f(): Int {\n  Foo.Bar.someConst.field\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertTrue(block.statements.count > 0, "function body block must have at least one statement")
+              val stmt = block.statements[0]
+              match stmt.kind {
+                case SExpr(expr) -> {
+                  match expr.kind {
+                    case EMember(recv, memberName) -> {
+                      assertEqual(memberName, "field", "outermost node is still EMember for the trailing '.field' access")
+                      match recv.kind {
+                        case EPath(p) -> {
+                          assertEqualInt(p.segments.count, 3, "the qualified portion collapses to Foo.Bar.someConst")
+                          assertEqual(p.segments[0], "Foo", "rebuilt path keeps the package's first segment")
+                          assertEqual(p.segments[1], "Bar", "rebuilt path keeps the package's second segment")
+                          assertEqual(p.segments[2], "someConst", "rebuilt path keeps the package-level value name")
+                        }
+                        case EMember(_, _) -> assertTrue(false, "receiver is still a nested EMember — the qualified prefix was not collapsed (#6294)")
+                        case _ -> assertTrue(false, "receiver is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case EPath(_) -> assertTrue(false, "whole chain collapsed into one EPath — 'field' was wrongly folded into the package qualifier")
+                    case _ -> assertTrue(false, "expression is unexpected ExprKind after rewrite")
+                  }
+                }
+                case _ -> assertTrue(false, "first statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
+// Longest-prefix-wins precedence (#6294): with BOTH a bare `import Foo` and a
+// bare `import Foo.Bar` in scope, `Foo.Bar.baz()` must resolve against the
+// more specific `Foo.Bar` package (the longer, 2-segment match), not as a
+// member access into package `Foo`'s own exported `Bar` value. This mirrors
+// the codebase's existing no-diagnostic first-wins precedent for tail-alias
+// collisions (#3250) — the more specific import always wins silently, with
+// no ambiguity diagnostic.
+test "longest matching package prefix wins when a shorter sibling import is also in scope (#6294)" {
+  val src = "package Test\nimport Foo\nimport Foo.Bar\nfunc f(): Int {\n  Foo.Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertTrue(block.statements.count > 0, "function body block must have at least one statement")
+              val stmt = block.statements[0]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EPath(p) -> {
+                          assertEqualInt(p.segments.count, 3, "call fn is the fully-qualified Foo.Bar.baz path after rewrite")
+                          assertEqual(p.segments[0], "Foo", "rewritten path keeps the longer package's first segment")
+                          assertEqual(p.segments[1], "Bar", "rewritten path keeps the longer package's second segment (not collapsed as a member of bare Foo)")
+                        }
+                        case EMember(_, _) -> assertTrue(false, "call fn is still EMember — neither prefix length was matched (#6294)")
+                        case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "first statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
 // An explicit `as` alias claims its name before any bare import's implicit
 // tail alias: with `import Other.Thing as Bar` + bare `import Foo.Bar`, the
 // `Bar` head must rewrite to `Other.Thing`, not `Foo.Bar`.

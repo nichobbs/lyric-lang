@@ -20835,15 +20835,23 @@ alias still matches at chain depth 1 exactly as before (the `k = 1` case of
 the new longest-to-shortest loop), so #2929/#2930/#1834's existing behaviour
 is unchanged.
 
-**Verification.** `alias_rewriter_self_test.l` gained four cases: the
+**Verification.** `alias_rewriter_self_test.l` gained five cases: the
 full-dotted-form two-segment repro (asserting the rewritten `EPath` has the
 right 3 segments in order), a three-segment package's full form (guards
-against a depth-1-only regression), and a runtime end-to-end case
-(`Std.Console.println(...)`, the full form, alongside the pre-existing
-tail-only `Console.println(...)` case) proving the fix reaches real codegen,
-not just the rewriter's own AST shape. Confirmed against a minimal multi-package
-project repro mirroring the cloud-agents shape (a dotted-name package
-declaring a function whose return type failed to validate against an
+against a depth-1-only regression), a chain with member access PAST the
+matched package (exercises `rebuildQualifiedChain`'s multi-remainder branch —
+the qualified prefix collapses to a flat `EPath` and the trailing member
+re-wraps as `EMember` on top of it, rather than folding into one over-long
+path), a longest-prefix-wins precedence case (both a bare `import Foo` and a
+bare `import Foo.Bar` in scope; `Foo.Bar.baz()` resolves against the more
+specific 2-segment package, mirroring the codebase's existing no-diagnostic
+first-wins precedent for tail-alias collisions, #3250), and a runtime
+end-to-end case (`Std.Console.println(...)`, the full form, alongside the
+pre-existing tail-only `Console.println(...)` case) proving the fix reaches
+real codegen, not just the rewriter's own AST shape. Confirmed against a
+minimal multi-package project repro mirroring the cloud-agents shape (a
+dotted-name package declaring a function whose return type failed to
+validate against an
 incompatible field/argument type) before the fix — zero diagnostics, wrong
 type accepted; after the fix — correct T0104/T0043 diagnostics reported.
 
