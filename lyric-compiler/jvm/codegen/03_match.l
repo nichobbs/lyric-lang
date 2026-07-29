@@ -172,8 +172,31 @@ func annotationGenericArgs(te: in TypeExpr): List[TypeExpr] {
 // shadowing inner binding from inheriting an outer binding's stale args;
 // only non-empty arg lists are stored.
 func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr, tyOpt: in Option[TypeExpr]): Unit {
-  val fromAnnotation = match tyOpt { case Some(te) -> annotationGenericArgs(te); case None -> newList() }
-  val args = if fromAnnotation.count > 0 { fromAnnotation } else { scrutineeGenericArgs(ctx, init) }
+  // Prefer the INITIALISER-derived args when they resolve: for a real `func`
+  // call (`squareAsResult(): Result[Shape, String]`), `scrutineeGenericArgs`
+  // recovers them from the callee's registered `JvmFuncSig.retGenericArgs`,
+  // which `eagerlyResolveGenericArgs` already pre-resolved against the
+  // DECLARING file's own `pkgName`/`externTypes` at registration time (a bare
+  // interface name like `Shape` is rewritten to its full slash-form JVM class
+  // there). The raw annotation TypeExpr carries no such pre-resolution, so
+  // preferring it unconditionally regressed exactly this shape: `val r:
+  // Result[Shape, String] = squareAsResult()` recovered the annotation's bare
+  // `Shape` instead of the pre-resolved one, and `resolveConcreteTypeExpr`'s
+  // un-pre-resolved fallback path doesn't correctly resolve an interface name
+  // (#3613's stdlib_generic_iface_self_test.l JVM regression). Only fall back
+  // to the annotation when inference recovers nothing at all — the record/
+  // union-case CONSTRUCTOR-call case (#5045): `Box`/`Pair` etc. are never a
+  // registered `JvmFuncSig`, so `scrutineeGenericArgs` has nothing to recover
+  // there, and the annotation is the only available source.
+  val fromInit = scrutineeGenericArgs(ctx, init)
+  val args = if fromInit.count > 0 {
+    fromInit
+  } else {
+    match tyOpt {
+      case Some(te) -> annotationGenericArgs(te)
+      case None -> newList()
+    }
+  }
   if ctx.varGenericArgs.containsKey(name) {
     ctx.varGenericArgs.remove(name)
   }
