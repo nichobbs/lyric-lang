@@ -1108,7 +1108,17 @@ func sendH2Reject413(state: in H2ConnState, streamId: in Int): Unit {
   headers.add(HeaderField(name = ":status", value = "413"))
   headers.add(HeaderField(name = "content-length", value = "0"))
   match encodeResponseHeaders(state.h2, streamId, headers, true) {
-    case Err(_) -> ()
+    case Err(_) -> {
+      // The 413 headers could not be HPACK-encoded: rather than silently
+      // dropping the response and leaving the stream hanging, reset it with
+      // RST_STREAM(INTERNAL_ERROR) (RFC 9113 section 6.4) so the client sees a
+      // definite stream failure.
+      val rst = H2.sendRstStream(state.h2, streamId, H2InternalError)
+      if rst.length > 0 {
+        val _ = hostWrite(state.conn, rst);
+        ()
+      }
+    }
     case Ok(bytes) -> {
       val _ = hostWrite(state.conn, bytes);
       ()
