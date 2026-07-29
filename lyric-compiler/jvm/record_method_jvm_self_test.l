@@ -202,9 +202,10 @@ test "record method calls another method on self (intra-record dispatch)" {
 // Wide record constructor (#6089): a record with 15+ fields tripped the
 // top-level `LFunc`'s hardcoded `maxStack = 16` (every field push plus the
 // receiver dup/new overruns 16 slots), producing "Operand stack overflow"
-// VerifyError at class-load time.  `lowerFunc` (06_items.l) now passes
-// `maxStack = 0` so the automatic `asm.peakStack` inference (already used
-// everywhere else, B103) applies to the synthesized constructor too.
+// VerifyError at class-load time.  `lowerFuncImpl` (lowering.l) now takes
+// the larger of the caller-supplied floor and the inferred `asm.peakStack`,
+// so the flat 16 floor grows to cover a genuinely wider stack instead of
+// capping it.
 // ─────────────────────────────────────────────────────────────────────────────
 record Wide17 {
   f1: Int
