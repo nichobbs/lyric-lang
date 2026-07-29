@@ -98,7 +98,21 @@ func collectAliases(imports: in List[ImportDecl]): List[String] {
     val imp = imports[i]
     if not imp.isExtern {
       match asAliasOf(imp) {
-        case Some(name) -> entries.add(name + "=" + modulePathJoin(imp.path.segments))
+        case Some(name) -> {
+          val dotted = modulePathJoin(imp.path.segments)
+          entries.add(name + "=" + dotted)
+          // Self-mapped full-path key (#6294 follow-up): `import Pkg.Sub as X`
+          // makes `X.foo(...)` the idiomatic call form, but the ORIGINAL
+          // dotted name (`Pkg.Sub.foo(...)`) is still valid Lyric and parses
+          // the same way — a qualified-call `EMember` chain, not a
+          // single-segment `EPath` head. Without this, calling via the
+          // pre-alias name (instead of the alias) hits the exact #6294
+          // silent-`TyError` gap this fix exists to close, just reached
+          // through an aliased rather than bare import.
+          if not aliasContains(entries, dotted) {
+            entries.add(dotted + "=" + dotted)
+          }
+        }
         case None -> ()
       }
     }

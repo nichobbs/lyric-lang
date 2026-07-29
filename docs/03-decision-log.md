@@ -20926,5 +20926,17 @@ an incompatible field/argument type) before the fix — zero diagnostics,
 wrong type accepted; after the fix — correct T0104/T0043 diagnostics
 reported.
 
+**Follow-up (review feedback).** `collectAliases`'s self-mapped full-path
+key was originally only added for a BARE `import Pkg.Sub` (the no-`as`
+loop). `import Pkg.Sub as X` registered only the explicit alias key
+(`X=Pkg.Sub`) — so a file that imports a package under an alias but still
+calls it via its ORIGINAL dotted name (`Pkg.Sub.foo(...)`, valid Lyric
+alongside the idiomatic `X.foo(...)`) hit the exact same #6294 silent-
+`TyError` gap, just reached through an aliased rather than bare import.
+Fixed symmetrically: the explicit-alias loop now also registers a
+self-mapped `Pkg.Sub=Pkg.Sub` key alongside the alias key. Verified by a
+sixth `alias_rewriter_self_test.l` case (`import Foo.Bar as X` + a call via
+`Foo.Bar.baz()`, not `X.baz()`) — 17/17 total, all suites re-verified green.
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
 D-progress-018, #6294.

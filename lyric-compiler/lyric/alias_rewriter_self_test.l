@@ -577,6 +577,55 @@ test "explicit alias wins over a bare import's implicit tail alias (#2929)" {
   }
 }
 
+// An explicitly aliased import (#6294 follow-up) can ALSO still be called
+// through its original dotted name, not just through the alias — the
+// original name parses to exactly the same qualified-call `EMember` chain
+// shape a bare multi-segment import's full form does, so it needs the same
+// self-mapped full-path key `collectAliases` registers for bare imports.
+test "explicit alias import is also callable via its original dotted name (#6294)" {
+  val src = "package Test\nimport Foo.Bar as X\nfunc f(): Int {\n  Foo.Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertTrue(block.statements.count > 0, "function body block must have at least one statement")
+              val stmt = block.statements[0]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EPath(p) -> {
+                          assertEqualInt(p.segments.count, 3, "call fn is the fully-qualified Foo.Bar.baz path after rewrite")
+                          assertEqual(p.segments[0], "Foo", "rewritten path keeps the real package's first segment")
+                          assertEqual(p.segments[1], "Bar", "rewritten path keeps the real package's second segment")
+                          assertEqual(p.segments[2], "baz", "rewritten path keeps the call's own member name")
+                        }
+                        case EMember(_, _) -> assertTrue(false, "call fn is still EMember — calling via the original dotted name after aliasing was not collapsed (#6294)")
+                        case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "first statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
 // Two bare imports sharing a tail segment resolve first-wins in source
 // order with no diagnostic (documented in collectAliases, #3250): `Bar`
 // routes to `Foo.Bar`, the earlier import.
