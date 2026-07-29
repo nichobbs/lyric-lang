@@ -194,6 +194,10 @@ pub union LInsn {
   case LInvokevirtual(owner: String, name: String, params: List[JvmType], ret: JvmType)
   case LInvokespecial(owner: String, name: String, params: List[JvmType], ret: JvmType)
   case LInvokestatic(owner: String, name: String, params: List[JvmType], ret: JvmType)
+  // Static method declared on a JDK *interface* (e.g. List.of, Map.entry):
+  // same invokestatic opcode as LInvokestatic, but the constant pool entry
+  // must be CONSTANT_InterfaceMethodref, not CONSTANT_Methodref (#5521).
+  case LInvokestaticIface(owner: String, name: String, params: List[JvmType], ret: JvmType)
   case LInvokeinterface(owner: String, name: String, params: List[JvmType], ret: JvmType, argCount: Int)
 
   case LNew(className: String)
@@ -718,6 +722,12 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       // non-literal module-`val` initialiser, #2853), where peakStack would
       // otherwise stay 0 and the verifier rejects the method with a stack
       // overflow.  `trackStack` raises peakStack when the net delta is positive.
+      trackStack(asm, fieldSlotSize(ret) - slotSum(ps))
+    }
+    case LInvokestaticIface(owner, name, ps, ret) -> {
+      val idx = poolIfaceMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
+      emitInvokestatic(asm, idx)
+      // Same net-delta accounting as LInvokestatic — see its comment above.
       trackStack(asm, fieldSlotSize(ret) - slotSum(ps))
     }
     case LInvokeinterface(owner, name, ps, ret, argCount) -> {
