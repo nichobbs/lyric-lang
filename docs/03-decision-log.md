@@ -20722,3 +20722,48 @@ safe but currently unobservable (no backend derives line information from
 deferred to the `SpanOrigin` work rather than landed as 22 unverifiable edits.
 
 **Related:** docs/63 §9.5, D-progress-714, D-progress-715, #6284.
+
+---
+
+### D-progress-717 — HTTP/2 flow-control accounts the on-wire DATA length; frame-serialization contracts (PR #6300)
+
+**Date:** 2026-07-29. **Scope:** `Std.HttpEngine` / `Std.HttpEngine.H2Frame` /
+`Std.HttpEngine.H2Conn`, plus the dotnet `Std.HttpServer` h2 reject path.
+
+An issue-cleanup batch (fourteen tracked issues: #6151, #6012, #6014, #6011,
+#6022, #6036, #6038, #6023, #6035, #6093, #6094, #6095, #6063, #6055) landing
+one genuine runtime behavior change and a set of loud-failure contracts:
+
+- **Flow-control accounting (#6063).** RFC 9113 §6.9 counts the *entire* DATA
+  frame payload — padding included — against the receive windows, but
+  `handleData`/`receiveData` debited (and the error paths reclaimed) only the
+  decoded, unpadded `data.length`, under-accounting padded frames. A peer
+  padding its DATA frames could drift the connection/stream windows apart from
+  the sender's view. `H2Frame.DataFrame` now carries `wireLength`, populated in
+  `parseDataFrame` from the pre-`stripPadding` payload length, and every debit
+  and reclaim site in the H2Conn FSM uses it, keeping debit/reclaim symmetric.
+  Verified by a byte-built padded-DATA regression test (the send path never
+  emits padding, so the test constructs the frame manually).
+- **Serialization contracts (#6022, #6036).** `serializeFrame` gained
+  `framePayloadWellSized` (24-bit length-field ceiling, 0xFFFFFF) and
+  `priorityWeightWellSized` (PRIORITY weight 1..=256, wire-encoded as
+  `weight - 1`) `requires:` clauses, so a misconstructed frame fails loudly at
+  the serialization boundary instead of `push24`/`pushByte` silently
+  truncating/wrapping on the wire.
+- **HTTP/1.1 fixes.** `hasExpectContinue` tokenizes comma-separated `Expect`
+  headers (RFC 9110 §10.1.1, #6014); `sendH2Reject413` resets the stream with
+  `RST_STREAM(INTERNAL_ERROR)` on HPACK-encode failure instead of leaving it
+  hanging (#6151); `scanCrlfLine` dropped a provably-unreachable branch
+  (#6012).
+- The remainder of the batch is test coverage (response-splitting negative
+  tests, malformed-frame vectors, HPACK-context-sync with CONTINUATION,
+  window-overflow contracts, cumulative send-window debits) and a manifest
+  alignment fix; #6035's three malformed-frame vectors confirmed the existing
+  classification code was already RFC-correct, so tests only.
+
+All four affected suites pass on both targets (217 cases). One implementation
+note: a `priorityWeightWellSized` predicate shape tripped the known JVM
+erased-receiver bug (#5936) and is routed through the file's established
+typed-function-boundary idiom, documented inline.
+
+**Related:** PR #6300, D-progress-694 (Std.HttpEngine origin), docs/61.
