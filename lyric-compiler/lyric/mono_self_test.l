@@ -1243,6 +1243,47 @@ test "non generic return feeds inference" {
   assertTrue(hasFunc(res.file, "consume__Int"), "#349 non-generic-return: consume__Int via origin(): Int")
 }
 
+// ── Un-awaited async call return-type inference (#5727) ─────────────────────
+// `inferReturnFromName` (mono.l) special-cases an `async func` callee: the
+// un-awaited call's physical value is the Task/Task<T> the backend produces,
+// not the function's logical `decl.ret`. For a `Unit`-returning async func
+// that physical value is nameable as the bare `Task` extern type, so the
+// generic callee specialises on `Task` rather than mis-inferring `T=Unit`.
+test "un-awaited async call with Unit logical return infers Task (#5727)" {
+  val src = "package P\n" + "func consumeAsync[T](x: in T): T { x }\n" + "async func fetchThing(): Unit { }\n" +
+    "func caller(): Unit { val _ = consumeAsync(fetchThing()) }\n"
+  val res = runMono(src)
+  assertTrue(
+    hasFunc(res.file, "consumeAsync__Task"),
+    "un-awaited Unit-returning async call infers Task, not Unit (inferReturnFromName)"
+  )
+}
+
+// `async func f(): Unit {}` (the explicit `Unit` spelling, `TRef(["Unit"])`)
+// must count the same as the bodyless `()` spelling (`TUnit`) — both are
+// checked in `inferReturnFromName`'s `isUnitRet` match.
+test "un-awaited async call with explicit ': Unit' spelling also infers Task (#5727)" {
+  val src = "package P\n" + "func consumeAsync2[T](x: in T): T { x }\n" + "async func fetchThing2(): Unit { }\n" +
+    "func caller(): Unit { val _ = consumeAsync2(fetchThing2()) }\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "consumeAsync2__Task"), "explicit ': Unit' async return spelling also infers Task")
+}
+
+// A non-`Unit`-returning async func has no safely nameable physical Lyric
+// type (`Task<T>` has no corresponding public generic Lyric type to report
+// here), so `inferReturnFromName` degrades to `None` instead of guessing —
+// the callee is left unspecialised rather than mis-inferring `T=Int`.
+test "un-awaited async call with non-Unit logical return does not mis-infer (#5727)" {
+  val src = "package P\n" + "func consumeAsync3[T](x: in T): T { x }\n" + "async func fetchNumber(): Int { 7 }\n" +
+    "func caller(): Unit { val _ = consumeAsync3(fetchNumber()) }\n"
+  val res = runMono(src)
+  assertFalse(
+    hasFunc(res.file, "consumeAsync3__Int"),
+    "non-Unit async return must not mis-infer T=Int from the logical return type"
+  )
+  assertFalse(hasFunc(res.file, "consumeAsync3__Task"), "non-Unit async return must not infer T=Task either")
+}
+
 // ── Multi-segment qualified generic call (#2943) ──────────────────────────────
 // PR #2936 added handling for `Pkg.func(arg)` where `func[T]` is a generic
 // imported from `Pkg`.  Before the fix, only single-segment `func(arg)` call
