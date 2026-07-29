@@ -21049,5 +21049,43 @@ site elsewhere in the same function — an accepted, conservative false
 negative (never a false positive), now backed by a dedicated test rather
 than prose alone.
 
+**Fifth finding (review feedback, #6313): the scope-filtered aliases never
+reached contract clauses.** `rewriteFunctionDecl`, `rewriteEntryDecl`, and
+`rewriteAspectDecl` each compute a param/local-scoped `bodyAliases` (via
+`filterAliasesExcludingLocals`) and thread it into the function/entry
+BODY rewrite — but each still called `rewriteContracts(aliases, ...)`
+with the raw, unfiltered `aliases` for `requires:`/`ensures:`/`when:`/
+`decreases:` clauses. `rewriteFunctionSig` (body-less interface method
+signatures) had the identical gap and didn't build a params-derived
+locals list at all. Since contract clauses reference a function's own
+parameters directly, and `collectParamNames` already feeds those same
+parameter names into the locals set backing `bodyAliases`, this
+reproduced the exact #6311-class hazard one syntactic position over: a
+param whose name collides with a bare-imported package's first dotted
+segment could still be silently misrouted to the package inside a
+`requires:`/`ensures:` clause, even after #6311/#6312 closed the
+identical hazard for the body.
+
+Fixed by reusing the already-filtered alias list at all four sites:
+`rewriteFunctionDecl` and `rewriteEntryDecl` now pass `bodyAliases` (not
+`aliases`) to `rewriteContracts`; `rewriteFunctionSig` builds its own
+params-only `sigAliases` (no body to collect from); `rewriteAspectDecl`
+hoists the `around` block's `bodyAliases` out to a `contractAliases`
+variable so the aspect's OWN top-level `contracts` (which reference
+`args.<field>`/`ret`, the advice body's bound names) get the same
+filtering — falling back to the unfiltered `aliases` only when there's no
+`around` block to derive a scope from (matching prior, pre-#6311
+behavior for that case, since there's no `args`/`ret` scope to filter
+against). Verified by a 22nd `alias_rewriter_self_test.l` case: a
+function param `Foo` colliding with a bare-imported `Foo.Bar` package,
+referenced as `Foo.Bar.baz()` inside the function's own `requires:`
+clause — asserts the clause's callee stays the original nested `EMember`
+chain, unrewritten. All ten previously-established suites re-verified
+green again against the build carrying this fifth fix (`alias_rewriter`
+22/22, `msil_project_bridge` 34/34, `qualified_enum_case` 11/11,
+`qualified_union_case` 5/5, `typechecker` 283/283, `parser` 124/124,
+`mono` 48/48, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 84/84,
+`cfg` 12/12).
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
-D-progress-018, #6294, #6311, #6312.
+D-progress-018, #6294, #6311, #6312, #6313.

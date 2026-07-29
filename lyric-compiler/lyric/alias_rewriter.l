@@ -1184,7 +1184,11 @@ func rewriteFunctionDecl(aliases: in List[String], fn: in FunctionDecl): Functio
     params = ps,
     ret = ret,
     whereClause = rewriteWhereClauseOpt(aliases, fn.whereClause),
-    contracts = rewriteContracts(aliases, fn.contracts),
+    // #6313: contract clauses reference the function's own params directly
+    // (`requires:`/`ensures:`/`when:`/`decreases:`), so they need the same
+    // scope-aware filtering as the body — reuse `bodyAliases`, not the raw
+    // `aliases`.
+    contracts = rewriteContracts(bodyAliases, fn.contracts),
     body = body,
     span = fn.span
   )
@@ -1366,6 +1370,13 @@ func rewriteFunctionSig(aliases: in List[String], sig: in FunctionSig): Function
     ps.add(rewriteParam(aliases, sig.params[i]))
     i = i + 1
   }
+  // #6313: a body-less interface signature has no body to filter, but its
+  // own contract clauses (`requires:`/`ensures:`) still reference its
+  // params directly — same scope-aware filtering as rewriteFunctionDecl's
+  // `bodyAliases`, just param-only since there's no body to collect from.
+  val locals: List[String] = newList()
+  collectParamNames(sig.params, locals)
+  val sigAliases = filterAliasesExcludingLocals(aliases, locals)
   FunctionSig(
     docComments = sig.docComments,
     isAsync = sig.isAsync,
@@ -1374,7 +1385,7 @@ func rewriteFunctionSig(aliases: in List[String], sig: in FunctionSig): Function
     params = ps,
     ret = rewriteOptType(aliases, sig.ret),
     whereClause = rewriteWhereClauseOpt(aliases, sig.whereClause),
-    contracts = rewriteContracts(aliases, sig.contracts),
+    contracts = rewriteContracts(sigAliases, sig.contracts),
     span = sig.span
   )
 }
@@ -1402,7 +1413,8 @@ func rewriteEntryDecl(aliases: in List[String], ed: in EntryDecl): EntryDecl {
     name = ed.name,
     params = ps,
     ret = rewriteOptType(aliases, ed.ret),
-    contracts = rewriteContracts(aliases, ed.contracts),
+    // #6313 — see rewriteFunctionDecl's comment.
+    contracts = rewriteContracts(bodyAliases, ed.contracts),
     body = rewriteFunctionBody(bodyAliases, ed.body),
     span = ed.span
   )
@@ -1782,7 +1794,14 @@ func rewriteAspectDecl(aliases: in List[String], d: in AspectDecl): AspectDecl {
   // Scope-aware body rewrite (#6311) — see rewriteFunctionDecl's comment.
   // `argsName` / `retName` are the advice body's own bound names (the
   // synthesized `args` / `ret` locals), same shadowing hazard as a
-  // function's params.
+  // function's params. `contractAliases` carries the SAME filtered list out
+  // to `d.contracts` below (#6313) — the aspect's own `requires:`/`ensures:`
+  // reference `args.<field>`/`ret`, so they need the identical shadowing
+  // guard as the advice body, not the raw `aliases`. When there's no
+  // `around` block, there's no `args`/`ret` scope to filter against, so
+  // `contractAliases` stays the unfiltered `aliases` (matching prior,
+  // pre-#6311 behavior for that case).
+  var contractAliases: List[String] = aliases
   val ar = match d.around {
     case Some(a) -> {
       val locals: List[String] = newList()
@@ -1793,6 +1812,7 @@ func rewriteAspectDecl(aliases: in List[String], d: in AspectDecl): AspectDecl {
       }
       collectBlockLocalNames(a.body, locals)
       val bodyAliases = filterAliasesExcludingLocals(aliases, locals)
+      contractAliases = bodyAliases
       someAspectAround(
         AspectAround(
           argsName = a.argsName,
@@ -1812,7 +1832,8 @@ func rewriteAspectDecl(aliases: in List[String], d: in AspectDecl): AspectDecl {
     matches = d.matches,
     exceptNames = d.exceptNames,
     around = ar,
-    contracts = rewriteContracts(aliases, d.contracts),
+    // #6313 — see the comment above `contractAliases`'s declaration.
+    contracts = rewriteContracts(contractAliases, d.contracts),
     wraps = d.wraps,
     inside = d.inside,
     span = d.span

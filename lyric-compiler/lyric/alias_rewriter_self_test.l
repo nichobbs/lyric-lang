@@ -792,6 +792,64 @@ test "a module-level val shadowing a bare-imported package's dotted name is left
   }
 }
 
+// Scope-awareness regression, contract clauses (#6313): #6311's fix computes
+// a scope-filtered `bodyAliases` in `rewriteFunctionDecl` and threads it into
+// the function BODY rewrite — but `requires:`/`ensures:` clauses reference
+// the function's own params directly too, and the original fix still passed
+// them the raw, unfiltered `aliases`. A param whose name collides with a
+// bare-imported package's dotted name would still silently misroute inside
+// a `requires:`/`ensures:` clause even after #6311/#6312 closed the same
+// hazard for the body. Fixed by reusing the SAME `bodyAliases` (which
+// already includes every param name via `collectParamNames`) for
+// `rewriteContracts` too.
+test "a param shadowing a bare-imported package's dotted name is left untouched inside a requires: clause, not collapsed into the package (#6313)" {
+  val src = "package Test\nimport Foo.Bar\nfunc f(Foo: in Int): Int\n  requires: Foo.Bar.baz() > 0\n{\n  0\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      assertEqualInt(decl.contracts.count, 1, "function has exactly the one requires: clause")
+      match decl.contracts[0] {
+        case CCRequires(expr, _) -> {
+          match expr.kind {
+            case EBinop(_, lhs, _) -> {
+              match lhs.kind {
+                case ECall(fn, _) -> {
+                  match fn.kind {
+                    case EMember(receiver, memberName) -> {
+                      assertEqual(memberName, "baz", "outer member name is still the call's own 'baz'")
+                      match receiver.kind {
+                        case EMember(innerReceiver, innerMember) -> {
+                          assertEqual(innerMember, "Bar", "inner member name is still 'Bar' — chain was not flattened")
+                          match innerReceiver.kind {
+                            case EPath(p) -> {
+                              assertEqualInt(p.segments.count, 1, "innermost receiver is still the bare single-segment 'Foo'")
+                              assertEqual(p.segments[0], "Foo", "innermost receiver segment is still 'Foo', unrewritten")
+                            }
+                            case _ -> assertTrue(false, "innermost receiver is not EPath — chain shape changed unexpectedly (#6313 regression)")
+                          }
+                        }
+                        case _ -> assertTrue(false, "receiver is not EMember — chain was flattened despite the param shadow (#6313 regression)")
+                      }
+                    }
+                    case EPath(_) -> assertTrue(false, "requires: call was collapsed into a flat EPath — a param `Foo` should have suppressed the Foo.Bar package collapse (#6313 regression)")
+                    case _ -> assertTrue(false, "requires: call is unexpected ExprKind after rewrite")
+                  }
+                }
+                case _ -> assertTrue(false, "requires: lhs is not ECall")
+              }
+            }
+            case _ -> assertTrue(false, "requires: expr is not EBinop")
+          }
+        }
+        case _ -> assertTrue(false, "contract clause is not CCRequires")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
 // Review follow-up: the #6311/#6312 filtering has a beneficial side effect on
 // the DEPTH-1 non-call `EMember` arm too, since it strips a shadowed alias
 // from the shared `aliases` list before ANY arm (call or non-call) consults
