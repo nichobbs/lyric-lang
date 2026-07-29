@@ -17837,8 +17837,11 @@ independent of HTTP):**
    documented loss of compiler-enforced field-hiding, though bounded in
    practice: `ConnPhase` itself is not `pub`, so an external package can
    neither construct a `Connection` (it cannot supply a `phase` value) nor
-   destructure `.phase` — only read the non-sensitive scalar fields
-   (`buf`/`keepAlive`/`fatal`/`limits`) (#6013).
+   destructure `.phase` — the residual exposure is read-only access to the
+   remaining fields (`buf`/`keepAlive`/`fatal`/`limits`). Of these, `buf`
+   is the raw unparsed input buffer (`slice[Byte]`) and can transiently
+   hold not-yet-structured request bytes (e.g. an in-flight
+   `Authorization` header), so the loss is bounded but not nil (#6013).
    Accepted as the lesser evil versus not shipping the engine at all.
    `Connection`'s own doc comment explains the deviation and points here.
 5. **#5995 (both targets)** — a cross-package **enum** case-name
