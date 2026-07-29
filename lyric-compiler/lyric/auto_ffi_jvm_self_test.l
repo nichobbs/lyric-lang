@@ -537,3 +537,30 @@ test "Consumer: reference-arg void-return lambda through ArrayList.forEach" {
   assertEqualInt(seen, 2, "Consumer lambda visited every element")
   assertEqual(joined, "alphabeta", "Consumer lambda observed element values in order")
 }
+
+// ── slice[T] indexing where T is a registered extern alias of Object (#6016) ─
+//
+// `sameTypeExprElemFallback` (jvm/codegen/02_exprs.l) assumed that any bare
+// type name whose resolved JVM type is `java/lang/Object` must be an
+// unregistered same-package interface, and guessed `<pkg>/<name>` for the
+// indexed element's checkcast target. That guess is wrong when `<name>` is
+// instead a REGISTERED extern type genuinely aliased to `java.lang.Object`
+// (`extern type JObject = "java.lang.Object"`, the `lyric-web`
+// `AllTrustingHandler.invoke(args: in slice[JObject])` shape) — the checkcast
+// then targets a class that does not exist, and indexing throws
+// `NoClassDefFoundError` at runtime. The fix checks `ctx.externTypes` first
+// and leaves a registered extern type's resolution unchanged.
+extern type JObject = "java.lang.Object"
+
+func firstObjectToString(xs: in slice[JObject]): String {
+  xs[0].toString()
+}
+
+test "slice[JObject] parameter: indexed element resolves through the real java.lang.Object (#6016)" {
+  val o = JObject.new()
+  val xs: slice[JObject] = [o]
+  assertTrue(
+    firstObjectToString(xs).startsWith("java.lang.Object@"),
+    "xs[0].toString() resolves via java.lang.Object, not a NoClassDefFoundError same-package guess"
+  )
+}
