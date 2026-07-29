@@ -313,6 +313,17 @@ func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in 
     cursor = e
     match it.kind {
       case ITest(t) -> {
+        // #5609 item 4: preserve any annotation prefix (e.g. `@cfg(...)`)
+        // before the `test` keyword — mirrors the `IFixture` arm below.
+        // Previously the annotation text was dropped entirely by the
+        // rewrite, so a `@cfg`-gated `test { }` block always ran regardless
+        // of feature state (the erasure pass never saw the annotation on the
+        // synthesized `func`).
+        val testStart = t.span.startPos.offset
+        val annLen = testStart - s
+        if annLen > 0 {
+          sb = sb + source.substring(s, annLen)
+        }
         val bodyText = slice(source, t.body.span)
         val fname = "__lyric_test_" + toString(testIdx)
         testIdx = testIdx + 1
