@@ -20938,5 +20938,64 @@ self-mapped `Pkg.Sub=Pkg.Sub` key alongside the alias key. Verified by a
 sixth `alias_rewriter_self_test.l` case (`import Foo.Bar as X` + a call via
 `Foo.Bar.baz()`, not `X.baz()`) — 17/17 total, all suites re-verified green.
 
+**Third finding (review feedback, #6311): the `ECall`-callee generalization
+itself had no scope-awareness, and depth-2+ chains were newly exposed to
+it.** The whole-chain match added for #6294 treats ANY multi-segment
+call-callee chain that spells out a known package's full dotted path as
+that package — with no check that the chain's root segment is actually a
+local in the enclosing function. Confirmed as a real, NEW regression (not
+the file's pre-existing, documented depth-1 gap) via three-way empirical
+comparison: (a) a depth-1 collision (`Bar.baz()` after `import Foo.Bar`
+with a same-named local `Bar`) already silently favored the package on
+`stage0` — the pristine pre-#6294 release — matching this file's own
+"scope-blind" header disclaimer and *not* something this PR needs to fix;
+(b) the analogous depth-2 collision (`Foo.Bar.handle()` after `import
+Foo.Bar`, with a local `val Foo = LocalWrapper(Bar = LocalInner(x = 1))`
+whose own `Bar` field happens to be typed `LocalInner`, which has no
+`handle` method) correctly reported `error[T0113] no method 'handle' on
+type 'LocalInner'` on `stage0`, proving depth-2+ was SAFE before #6294; (c)
+the SAME depth-2 repro against the fixed (#6294-only) build silently
+printed `999` — the unrelated package's `Foo.Bar.handle()` return value —
+with no diagnostic at all, confirming the `ECall` generalization itself
+introduced the new hazard.
+
+Fixed by making the callee collapse scope-aware without adding a new
+parameter through the ~60 mutually-recursive rewrite functions: before
+rewriting a function-shaped scope's body (`rewriteFunctionDecl`,
+`rewriteEntryDecl`, `rewriteTestDecl`, `rewritePropertyDecl`, and an
+aspect's `AspectAround` body), collect every name bound ANYWHERE within it
+— params/binders, every `val`/`var`/`let`, every pattern binding (including
+match arms, for-loop patterns, and record shorthand fields), lambda params,
+catch binds, `scope` binds — and strip any alias entry whose key's FIRST
+dot-segment collides with one of those names from the `aliases` list
+threaded into the body before recursing. This reuses the alias rewriter's
+existing single threaded `aliases: List[String]` parameter rather than
+plumbing scope information through the whole file, and is deliberately
+coarser than real per-block scoping (a name bound in one `if` branch also
+suppresses the collapse in a sibling branch that never sees it) — but that
+imprecision is conservative and sound: it can only ever suppress a
+legitimate collapse (falling back to the existing, safe recursive
+per-`EMember`-arm behavior for that chain), never wrongly enable an
+incorrect one. Because the filtering happens once at the outermost
+function-shaped scope and collects names from the ENTIRE function body
+(including nested lambdas, matches, and blocks), a single filter pass
+covers every nested scope too — a lambda parameter's own shadowing hazard,
+for instance, is caught by the same collection pass without any separate
+per-lambda filtering.
+
+Verified by a seventh `alias_rewriter_self_test.l` case: `import Foo.Bar` +
+a function body binding `val Foo = 0` before calling `Foo.Bar.baz()` —
+asserts the callee stays the original nested `EMember` chain, unrewritten,
+rather than collapsing into a flat `EPath` — 18/18 total. Also re-confirmed
+against the depth-2 repro directly: `lyric build` on the minimal
+multi-package project from finding (b)/(c) above now correctly reports
+`error[T0113] no method 'handle' on type 'LocalInner'`, matching `stage0`'s
+original (correct) behavior, instead of silently accepting and misrouting
+to the unrelated package. All ten previously-established suites
+(`alias_rewriter` 18/18, `msil_project_bridge` 34/34, `qualified_enum_case`
+11/11, `qualified_union_case` 5/5, `typechecker` 283/283, `parser` 124/124,
+`mono` 48/48, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 84/84,
+`cfg` 12/12) re-verified green against the corrected build.
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
-D-progress-018, #6294.
+D-progress-018, #6294, #6311.

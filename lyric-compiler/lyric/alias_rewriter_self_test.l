@@ -299,22 +299,7 @@ test "bare multi-segment import referenced by its full Foo.Bar.baz() form rewrit
   // node using too wide a span is a real (if currently inert) regression
   // risk for any diagnostic or LSP feature that keys off it directly.
   val origReceiverSpan = match pr.file.items[0].kind {
-    case IFunc(origDecl) -> match origDecl.body {
-      case Some(origFb) -> match origFb {
-        case FBBlock(origBlock) -> match origBlock.statements[0].kind {
-          case SExpr(origCallExpr) -> match origCallExpr.kind {
-            case ECall(origFn, _) -> match origFn.kind {
-              case EMember(origReceiver, _) -> origReceiver.span
-              case _ -> origFn.span
-            }
-            case _ -> origCallExpr.span
-          }
-          case _ -> origBlock.span
-        }
-        case FBExpr(origExpr) -> origExpr.span
-      }
-      case None -> pointSpan(initialPosition())
-    }
+    case IFunc(origDecl) -> match origDecl.body { case Some(origFb) -> match origFb { case FBBlock(origBlock) -> match origBlock.statements[0].kind { case SExpr(origCallExpr) -> match origCallExpr.kind { case ECall(origFn, _) -> match origFn.kind { case EMember(origReceiver, _) -> origReceiver.span; case _ -> origFn.span }; case _ -> origCallExpr.span }; case _ -> origBlock.span }; case FBExpr(origExpr) -> origExpr.span }; case None -> pointSpan(initialPosition()) }
     case _ -> pointSpan(initialPosition())
   }
   val firstItem = rewritten.items[0]
@@ -511,7 +496,11 @@ test "longest matching package prefix wins when a shorter sibling import is also
                         case EPath(p) -> {
                           assertEqualInt(p.segments.count, 3, "call fn is the fully-qualified Foo.Bar.baz path after rewrite")
                           assertEqual(p.segments[0], "Foo", "rewritten path keeps the longer package's first segment")
-                          assertEqual(p.segments[1], "Bar", "rewritten path keeps the longer package's second segment (not collapsed as a member of bare Foo)")
+                          assertEqual(
+                            p.segments[1],
+                            "Bar",
+                            "rewritten path keeps the longer package's second segment (not collapsed as a member of bare Foo)"
+                          )
                         }
                         case EMember(_, _) -> assertTrue(false, "call fn is still EMember — neither prefix length was matched (#6294)")
                         case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
@@ -658,6 +647,75 @@ test "duplicate bare import tails: first bare import wins deterministically (#32
                   }
                 }
                 case _ -> assertTrue(false, "first statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
+// Scope-awareness regression (#6311): the `ECall`-callee generalization above
+// (#6294) treats ANY multi-segment chain spelling out a known package's full
+// dotted path as that package — but a local variable's own field-access call
+// chain can spell out the exact same dotted name by coincidence. Depth-1
+// collisions (`Bar.baz()` after `import Foo.Bar` with a local also named
+// `Bar`) are a pre-existing, documented gap (this file's header) predating
+// #6294 entirely — NOT what this test guards. This guards the NEW hazard
+// #6294 introduced: a depth-2+ chain (`Foo.Bar.baz()`) whose ROOT segment
+// (`Foo`) is a local in the SAME function must NOT be collapsed into the
+// unrelated `Foo.Bar` package's `EPath`, even though `import Foo.Bar`
+// registers exactly that dotted string as a self-mapped alias key. Before
+// the #6311 fix, this collapsed unconditionally; the fix collects every name
+// bound anywhere in the enclosing function and strips any alias whose key's
+// first segment collides with one of them before rewriting the body — see
+// `filterAliasesExcludingLocals` in alias_rewriter.l.
+test "a local shadowing a bare-imported package's dotted name is left untouched, not collapsed into the package (#6311)" {
+  val src = "package Test\nimport Foo.Bar\nfunc f(): Int {\n  val Foo = 0\n  Foo.Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertEqualInt(block.statements.count, 2, "function body has the local decl plus the call statement")
+              val stmt = block.statements[1]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EMember(receiver, memberName) -> {
+                          assertEqual(memberName, "baz", "outer member name is still the call's own 'baz'")
+                          match receiver.kind {
+                            case EMember(innerReceiver, innerMember) -> {
+                              assertEqual(innerMember, "Bar", "inner member name is still 'Bar' — chain was not flattened")
+                              match innerReceiver.kind {
+                                case EPath(p) -> {
+                                  assertEqualInt(p.segments.count, 1, "innermost receiver is still the bare single-segment 'Foo'")
+                                  assertEqual(p.segments[0], "Foo", "innermost receiver segment is still 'Foo', unrewritten")
+                                }
+                                case _ -> assertTrue(false, "innermost receiver is not EPath — chain shape changed unexpectedly (#6311 regression)")
+                              }
+                            }
+                            case _ -> assertTrue(false, "receiver is not EMember — chain was flattened despite the local shadow (#6311 regression)")
+                          }
+                        }
+                        case EPath(_) -> assertTrue(false, "call fn was collapsed into a flat EPath — a local `Foo` should have suppressed the Foo.Bar package collapse (#6311 regression)")
+                        case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "second statement is not SExpr")
               }
             }
             case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
