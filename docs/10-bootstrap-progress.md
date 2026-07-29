@@ -13385,10 +13385,20 @@ The parser now accepts `var name: Type` in record member declarations,
 preserving the `var` annotation in the AST. Mode-checker enforcement of
 write-to-non-`var` fields shipped as diagnostic `V0015` (#1815 part 1,
 `modechecker_check.l::checkImmutableFieldWrites`): a write to a non-`var`
-field of an in-file record `var` local is now rejected. The emitter-side
-enforcement (`initonly` field flags on MSIL / `ACC_FINAL` on JVM) and
-widening the check beyond `var` locals to `inout` params are tracked as
-part 2 in #6155.
+field is rejected both via an in-file record/protected-type `var` local
+(`r.field = …`) and via a `self.field = …` write inside a record's own
+inherent method, an `impl` block method, or a protected type's
+`entry`/`func` member (#6203/#6181 widened the check to protected-type
+and aspect `around` bodies — previously silently skipped — and to `self`
+receivers, previously invisible to the check entirely). A **bare**
+implicit-self write (`field = x` with no `self.` prefix) is still not
+tracked — distinguishing it from an ordinary local-variable reassignment
+of the same name needs a full lexical scope of every declared
+local/parameter, not just `var`-record-typed ones, and is left for future
+work. The emitter-side enforcement (`initonly` field flags on MSIL /
+`ACC_FINAL` on JVM) and widening the check beyond tracked locals/`self` to
+`inout` params, cross-file types, and bare implicit-self writes are
+tracked as part 2 in #6155.
 
 **Test results:** 792/792 emitter tests pass, 237/237 CLI tests pass.
 

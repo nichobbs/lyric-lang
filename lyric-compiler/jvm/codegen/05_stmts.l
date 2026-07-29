@@ -374,9 +374,23 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
         case JArray(elem) -> {
           match op {
             case AssEq -> {
-              // [arr]; push index; (coerced) RHS; Xastore.
+              // Spill arrayref + index + RHS to locals before reassembling
+              // [arr, index, (coerced) RHS] for Xastore — an unspilled arrayref
+              // and index left live on the operand stack across the RHS's own
+              // internal branches (`if`/`match`) breaks stack-map merging at
+              // the branch join points (same #5936 bug class as the compound
+              // arm below, here on the plain `=` write).
+              val arrSlot = allocSlot(ctx, "__idxasn_arr_" + freshLabel(ctx), recvTy)
+              emitStore(insns, arrSlot, recvTy)
               lowerExpr(ctx, insns, indices[0])
+              val idxSlot = allocSlot(ctx, "__idxasn_i_" + freshLabel(ctx), JInt)
+              emitStore(insns, idxSlot, JInt)
               val vTy = lowerExpr(ctx, insns, value)
+              val rhsSlot = allocSlot(ctx, "__idxasn_rhs_" + freshLabel(ctx), vTy)
+              emitStore(insns, rhsSlot, vTy)
+              emitLoad(insns, arrSlot, recvTy)
+              emitLoad(insns, idxSlot, JInt)
+              emitLoad(insns, rhsSlot, vTy)
               coerceArgTo(insns, vTy, elem)
               emitArrayStore(insns, elem)
             }
@@ -406,10 +420,24 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
             // Object (the Map[K, V] erased representation, #1707/m-5).
             match op {
               case AssEq -> {
+                // Spill map + boxed key + boxed RHS to locals before the
+                // `put` — an unspilled map/key left live on the operand stack
+                // across the RHS's own internal branches breaks stack-map
+                // merging at the branch join points (same #5936 bug class as
+                // the compound arm below, here on the plain `=` write).
+                val mapSlot = allocSlot(ctx, "__idxasn_map_" + freshLabel(ctx), recvTy)
+                emitStore(insns, mapSlot, recvTy)
                 val kTy = lowerExpr(ctx, insns, indices[0])
                 boxIfNeeded(insns, kTy)
+                val keySlot = allocSlot(ctx, "__idxasn_k_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
+                emitStore(insns, keySlot, JRef(className = "java/lang/Object"))
                 val vTy = lowerExpr(ctx, insns, value)
                 boxIfNeeded(insns, vTy)
+                val rhsSlot = allocSlot(ctx, "__idxasn_rhs_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
+                emitStore(insns, rhsSlot, JRef(className = "java/lang/Object"))
+                emitLoad(insns, mapSlot, recvTy)
+                emitLoad(insns, keySlot, JRef(className = "java/lang/Object"))
+                emitLoad(insns, rhsSlot, JRef(className = "java/lang/Object"))
                 emitMapPut(insns)
               }
               case _ -> {
@@ -443,9 +471,23 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               case AssEq -> {
                 // List-style element assignment via ArrayList.set(int, Object).
                 // Values are boxed to Object (the list-element representation).
+                // Spill list + index + boxed RHS to locals before the `set` —
+                // an unspilled list/index left live on the operand stack
+                // across the RHS's own internal branches breaks stack-map
+                // merging at the branch join points (same #5936 bug class as
+                // the compound arm below, here on the plain `=` write).
+                val listSlot = allocSlot(ctx, "__idxasn_list_" + freshLabel(ctx), recvTy)
+                emitStore(insns, listSlot, recvTy)
                 lowerExpr(ctx, insns, indices[0])
+                val idxSlot = allocSlot(ctx, "__idxasn_i_" + freshLabel(ctx), JInt)
+                emitStore(insns, idxSlot, JInt)
                 val vTy = lowerExpr(ctx, insns, value)
                 boxIfNeeded(insns, vTy)
+                val rhsSlot = allocSlot(ctx, "__idxasn_rhs_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
+                emitStore(insns, rhsSlot, JRef(className = "java/lang/Object"))
+                emitLoad(insns, listSlot, recvTy)
+                emitLoad(insns, idxSlot, JInt)
+                emitLoad(insns, rhsSlot, JRef(className = "java/lang/Object"))
                 emitListSet(insns)
               }
               case _ -> {
@@ -870,7 +912,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // (docs/59 §4.3 #5439 class).
           match pat.kind {
             case PBinding(nm, _) -> {
-              recordVarGenericArgs(ctx, nm, init)
+              recordVarGenericArgs(ctx, nm, init, tyOpt)
               recordSpawnResultType(ctx, nm, init)
               match tyOpt {
                 case Some(te) -> recordDeclaredElemType(ctx, nm, te, newList())
@@ -893,7 +935,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             coerceValueTo(ctx, insns, initTy, ty)
             val slot = allocSlot(ctx, name, ty)
             emitStore(insns, slot, ty)
-            recordVarGenericArgs(ctx, name, init)
+            recordVarGenericArgs(ctx, name, init, tyOpt)
             recordSpawnResultType(ctx, name, init)
             match tyOpt {
               case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
@@ -948,7 +990,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // across reassignments, so recording at the initialiser is stable.
               // An explicit `slice[Elem]`/`List[Elem]` annotation overrides them
               // with the declared element type (docs/59 §4.3 #5439 class).
-              recordVarGenericArgs(ctx, name, init)
+              recordVarGenericArgs(ctx, name, init, tyOpt)
               recordSpawnResultType(ctx, name, init)
               match tyOpt {
                 case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())

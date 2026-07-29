@@ -25,9 +25,9 @@
 //!   lyric test --target jvm lyric-compiler/jvm/string_methods_jvm_self_test.l
 //!
 //! Known cross-target divergence (NOT covered here — this file is CI-wired
-//! jvm-only): the MSIL backend still lowers `s.indexOf(x)` to the raw BCL
-//! `String.IndexOf` int against the checker's `Option[Int]`, and its lenient
-//! union match lets `case Some(_)` match the boxed int — so the two
+//! jvm-only) (#5625): the MSIL backend still lowers `s.indexOf(x)` to the raw
+//! BCL `String.IndexOf` int against the checker's `Option[Int]`, and its
+//! lenient union match lets `case Some(_)` match the boxed int — so the two
 //! None-expecting cases below fail on `--target dotnet` until the MSIL side
 //! adopts the same UFCS routing the JVM backend now has.
 @test_module

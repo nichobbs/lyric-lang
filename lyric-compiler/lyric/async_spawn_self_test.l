@@ -321,6 +321,36 @@ async func indexAwait(x: in Int): Int {
   return xs[await addOne(x) - 4]
 }
 
+// ── #5628: awaits inside an ASSIGNMENT TARGET (not just a read) ─────────────
+// `ahNeedsHoist`'s `EAssign`/`SAssign` arms ignored the target, so an await
+// inside an index/member write target was never spilled — unlike the
+// already-covered read-position case above (`indexAwait`).
+async func indexAssignTargetAwait(x: in Int): Int {
+  val xs: List[Int] = newList()
+  xs.add(10)
+  xs.add(20)
+  xs.add(30)
+  xs[await addOne(x) - 4] = 99
+  return xs[1]
+}
+
+record MutBox {
+  var n: Int
+}
+
+// A member-write target whose RECEIVER is itself an index expression that
+// needs hoisting (`boxes[await idx()]`) — exercises the `EMember` arm of the
+// target spine rewrite (recursing through the nested `EIndex`), not just the
+// top-level `EIndex` case above.
+async func memberAssignTargetAwait(x: in Int): Int {
+  val boxes: List[MutBox] = newList()
+  boxes.add(MutBox(n = 1))
+  boxes.add(MutBox(n = 2))
+  boxes.add(MutBox(n = 3))
+  boxes[await addOne(x) - 4].n = 77
+  return boxes[1].n
+}
+
 async func whileCondAwait(x: in Int): Int {
   var n = x
   var iters = 0
@@ -515,6 +545,20 @@ test "#5606: await in a list-literal element" {
 test "#5606: await in an index expression" {
   // xs[addOne(4) - 4] = xs[1] = 20
   assertEqualInt(await indexAwait(4), 20, "receiver stacked across an index await")
+}
+
+test "#5628: await inside an index-assignment target" {
+  // xs[addOne(4) - 4] = 99 writes xs[1]; the untouched xs[1] read after
+  // confirms the target's own await was hoisted and evaluated exactly once.
+  assertEqualInt(await indexAssignTargetAwait(4), 99, "await in the assignment target's index is hoisted, not dropped")
+}
+
+test "#5628: await inside a member-assignment target's index receiver" {
+  assertEqualInt(
+    await memberAssignTargetAwait(4),
+    77,
+    "await in boxes[await idx()].n's receiver is hoisted before the field write"
+  )
 }
 
 test "#5606: await in a while condition re-evaluates per iteration" {

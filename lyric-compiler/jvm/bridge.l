@@ -784,27 +784,22 @@ func isAspectWovenName(name: in String): Bool {
   Str.contains(name, "__aspect_")
 }
 
-// Register the sigs of aspect-weave-synthesised functions (`__aspect_target`
-// renamed targets + intermediate `__aspect_<Aspect>` wrappers) from the
-// POST-weave file, patching the registry built from the pre-weave `userFile`.
-// `proceed(args)` lowers to an UNQUALIFIED call to the inner target, so both
-// the bare name and the qualified `owner/name` key are registered (unlike
-// `collectDeriveFreeSigs`, whose derive functions are only called qualified).
-// Without this, the proceed call falls through to the `(…)Object` guess and
-// the JVM rejects the descriptor mismatch (NoSuchMethodError / VerifyError) —
-// the JVM analogue of the MSIL #3402 weave breakage.  The synthesised target /
-// wrappers keep the original function's params and return type, so an empty
-// `paramDefaults` is correct (the proceed substitution forwards every
-// parameter positionally) and avoids the stage-0 bootstrap
-// `List[Option[Expr]]` `.add()` miscompile (same rationale as
-// `collectDeriveFreeSigs`).  First-wins guard, matching `collectFileSigs`.
-func collectAspectWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
+// Shared body for `collectAspectWovenSigs` / `collectBModeWovenSigs`: both
+// walk a POST-middle-end file, pick out `IFunc` items whose name matches a
+// synthesis-specific predicate, and register their sigs under both the bare
+// and the qualified `owner/name` key (the callee is invoked unqualified —
+// `proceed(args)` for aspects, the shared specialised function for B'-mode —
+// so both keys must resolve to the same descriptor).  First-wins guard,
+// matching `collectFileSigs`.
+func collectWovenSigsMatching(
+  file: in SourceFile, into: in Map[String, JvmFuncSig], matchName: in (String) -> Bool
+): Unit {
   val owner = pkgJvmOwner(file.packageDecl.path)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(decl) -> {
-        if isAspectWovenName(decl.name) {
+        if matchName(decl.name) {
           val params: List[JvmType] = newList()
           val paramNames: List[String] = newList()
           var pi = 0
@@ -837,6 +832,24 @@ func collectAspectWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig
     }
     i = i + 1
   }
+}
+
+// Register the sigs of aspect-weave-synthesised functions (`__aspect_target`
+// renamed targets + intermediate `__aspect_<Aspect>` wrappers) from the
+// POST-weave file, patching the registry built from the pre-weave `userFile`.
+// `proceed(args)` lowers to an UNQUALIFIED call to the inner target, so both
+// the bare name and the qualified `owner/name` key are registered (unlike
+// `collectDeriveFreeSigs`, whose derive functions are only called qualified).
+// Without this, the proceed call falls through to the `(…)Object` guess and
+// the JVM rejects the descriptor mismatch (NoSuchMethodError / VerifyError) —
+// the JVM analogue of the MSIL #3402 weave breakage.  The synthesised target /
+// wrappers keep the original function's params and return type, so an empty
+// `paramDefaults` is correct (the proceed substitution forwards every
+// parameter positionally) and avoids the stage-0 bootstrap
+// `List[Option[Expr]]` `.add()` miscompile (same rationale as
+// `collectDeriveFreeSigs`).
+func collectAspectWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
+  collectWovenSigsMatching(file, into, { name -> isAspectWovenName(name) })
 }
 
 // Detect a B'-mode shape-keyed specialised function name (docs/55 §3.2):
@@ -858,44 +871,7 @@ func isBModeSpecializedName(name: in String): Bool {
 // called by BARE name (unqualified, same-package), so both the bare and the
 // qualified `owner/name` key are registered, mirroring `collectAspectWovenSigs`.
 func collectBModeWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
-  val owner = pkgJvmOwner(file.packageDecl.path)
-  var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
-      case IFunc(decl) -> {
-        if isBModeSpecializedName(decl.name) {
-          val params: List[JvmType] = newList()
-          val paramNames: List[String] = newList()
-          var pi = 0
-          while pi < decl.params.count {
-            params.add(typeExprToJvm(decl.params[pi].ty, owner))
-            paramNames.add(decl.params[pi].name)
-            pi = pi + 1
-          }
-          val ret = match decl.ret { case Some(te) -> typeExprToJvm(te, owner); case None -> JVoid }
-          val sig = JvmFuncSig(
-            owner = owner,
-            params = params,
-            ret = ret,
-            paramNames = paramNames,
-            paramDefaults = newList(),
-            paramModes = newList(),
-            isIface = false,
-            retGenericArgs = returnTypeGenericArgs(decl.ret)
-          )
-          val qkey = owner + "/" + decl.name
-          if not into.containsKey(qkey) {
-            into.add(qkey, sig)
-          }
-          if not into.containsKey(decl.name) {
-            into.add(decl.name, sig)
-          }
-        }
-      }
-      case _ -> ()
-    }
-    i = i + 1
-  }
+  collectWovenSigsMatching(file, into, { name -> isBModeSpecializedName(name) })
 }
 
 // Detect a monomorphizer-specialised function name.  `Lyric.Mono` mangles a

@@ -2636,7 +2636,26 @@ func validateImplTargetIsInterfaceJvm(
 ): Unit {
   match implIfaceExternDottedFqn(decl.iface, externTypes) {
     case None -> ()
-    case Some(javaFqn) -> match loadClass(autoFfi, javaFqn) { case None -> (); case Some(ci) -> { if not ci.isInterface { val targetName = typeExprToJvmClass(decl.target, pkgName).replace("/", "."); val pos = decl.span.startPos; panic("error[J006]: " + pos.line.toString() + ":" + pos.column.toString() + ": cannot `impl " + javaFqn + " for " + targetName + "`: '" + javaFqn + "' is a concrete or abstract JDK class, not an interface — only " + "interfaces can be implemented; subclassing external classes is not " + "yet supported on the JVM target") } } }
+    case Some(javaFqn) -> {
+      match loadClass(autoFfi, javaFqn) {
+        case None -> ()
+        case Some(ci) -> {
+          if not ci.isInterface {
+            val targetName = typeExprToJvmClass(decl.target, pkgName).replace("/", ".")
+            val pos = decl.span.startPos
+            panic(
+              "error[J006]: " + pos.line.toString() + ":" + pos.column.toString() + ": cannot `impl " + javaFqn + " for " +
+                targetName +
+                "`: '" +
+                javaFqn +
+                "' is a concrete or abstract JDK class, not an interface — only " +
+                "interfaces can be implemented; subclassing external classes is not " +
+                "yet supported on the JVM target"
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -3418,7 +3437,7 @@ pub func collectFileCasesExtern(
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, tps, externTypes), paramIdx = -1, dflt = f.dflt))
+              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(f.ty, tps), dflt = f.dflt))
               case _ -> {
               }
             }

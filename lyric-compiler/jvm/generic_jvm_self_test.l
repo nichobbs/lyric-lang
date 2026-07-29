@@ -43,6 +43,18 @@ union Tagged[T] {
   case Empty(reason: String)
 }
 
+// A concrete user record used as a generic payload below (#5045): its `.n`
+// field/method access proves the record-pattern bind resolved the payload to
+// the real `Coord` class rather than staying a boxed `Object`.
+record Coord {
+  n: Int
+}
+
+record Pair[A, B] {
+  first: A
+  second: B
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // `?`-propagation: each `?` early-returns on `Err` and unwraps the `Ok`
 // payload.  The chain returns `Result[Int, String]`, exercising the J2-parked
@@ -115,6 +127,46 @@ test "Generic record Box[Int] field read" {
 test "Generic record Box[String] field read" {
   val b = Box(value = "lyric")
   assertEqual(b.value, "lyric", "Box(lyric).value -> lyric")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic record PAYLOAD via a record PATTERN (#5045): before the fix, a
+// generic record's field registration always set `paramIdx = -1`, so the
+// pattern-match bind never resolved the scrutinee's concrete type argument —
+// the bound value stayed the erased `Object` (or a raw unchecked getfield),
+// and calling a field/method on the bound name (e.g. `v.n`) crashed with a
+// JVM `ClassCastException` instead of running against the real `Coord` class.
+//
+// JVM-only (this whole file is; see the header + ci.yml): a `Box[Coord]`/
+// `Pair[Coord, String]` shape — a generic record instantiated with ANOTHER
+// user record as its type argument — crashes on `--target dotnet` even
+// without any pattern match (plain construction + one field read is
+// enough), verified pre-existing against the pinned bootstrap release
+// binary predating this fix.  Unrelated to this JVM-side change; tracked
+// as #6306.
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic record pattern match (named field) resolves the concrete payload type" {
+  val b: Box[Coord] = Box(value = Coord(n = 9))
+  match b {
+    case Box { value = v } -> assertEqualInt(v.n, 9, "named record-pattern field keeps the concrete Coord type")
+  }
+}
+
+test "generic record pattern match (shorthand field) resolves the concrete payload type" {
+  val b: Box[Coord] = Box(value = Coord(n = 11))
+  match b {
+    case Box { value } -> assertEqualInt(value.n, 11, "shorthand record-pattern field keeps the concrete Coord type")
+  }
+}
+
+test "generic record pattern match with two independent type params (Pair[A, B])" {
+  val p: Pair[Coord, String] = Pair(first = Coord(n = 3), second = "label")
+  match p {
+    case Pair { first, second = s } -> {
+      assertEqualInt(first.n, 3, "Pair.first keeps its own concrete type param (Coord)")
+      assertEqual(s, "label", "Pair.second keeps its own concrete type param (String)")
+    }
+  }
 }
 
 test "Generic union Tagged extracts payload" {

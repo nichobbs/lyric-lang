@@ -406,7 +406,11 @@ func ahNeedsHoist(e: in Expr): Bool {
     case EYield(inner) -> ahNeedsHoist(inner)
     case ETypeApp(fn, _) -> ahNeedsHoist(fn)
     case EPropagate(inner) -> ahNeedsHoist(inner)
-    case EAssign(_, _, value) -> ahNeedsHoist(value)
+    // The target's own receiver/indices (`arr[await f()]`, `(await g()).field`)
+    // are evaluated too, and can carry an await needing the same hoist
+    // treatment as any other read context — `ahNeedsHoist` already handles
+    // that generically for `EIndex`/`EMember` (#5628).
+    case EAssign(target, _, value) -> ahNeedsHoist(target) or ahNeedsHoist(value)
     case EIf(cond, thenB, elseO, _) -> {
       if ahNeedsHoist(cond) or ahNeedsHoistEob(thenB) {
         true
@@ -487,7 +491,7 @@ func ahNeedsHoistStmt(s: in Statement): Bool {
         }
       }
     }
-    case SAssign(_, _, value) -> ahNeedsHoist(value)
+    case SAssign(target, _, value) -> ahNeedsHoist(target) or ahNeedsHoist(value)
     case SReturn(valOpt) -> {
       match valOpt {
         case Some(e) -> ahNeedsHoist(e)
@@ -679,7 +683,12 @@ func ahHoistSpine(e: in Expr, acc: in List[Statement], st: in HoistState): Expr 
     case EYield(inner) -> mkExpr(EYield(inner = ahHoistSpine(inner, acc, st)), e.span)
     case ETypeApp(fn, targs) -> mkExpr(ETypeApp(fn = ahHoistSpine(fn, acc, st), args = targs), e.span)
     case EPropagate(inner) -> mkExpr(EPropagate(inner = ahHoistSpine(inner, acc, st)), e.span)
-    case EAssign(target, op, value) -> mkExpr(EAssign(target = target, op = op, value = ahHoistSpine(value, acc, st)), e.span)
+    case EAssign(target, op, value) -> {
+      // Mirrors the `SAssign` statement rewrite: the target evaluates first,
+      // so its own await (`arr[await f()] = v`) is spilled before the value's.
+      val target2 = if ahNeedsHoist(target) { ahHoistSpine(target, acc, st) } else { target }
+      mkExpr(EAssign(target = target2, op = op, value = ahHoistSpine(value, acc, st)), e.span)
+    }
     case EIf(cond, thenB, elseO, thenForm) -> {
       // Arms are conditionally evaluated; rewrite them internally and bind
       // the whole `if` to a `val` — awaits inside a val-bound if/match arm
@@ -860,9 +869,16 @@ func ahStmt(s: in Statement, dest: in List[Statement], st: in HoistState): Unit 
       }
     }
     case SAssign(target, op, value) -> {
-      if ahNeedsHoist(value) {
-        val value2 = ahHoistTop(value, dest, st)
-        dest.add(mkStmt(SAssign(target = target, op = op, value = value2), s.span))
+      // Target evaluates before value (`arr[i] = v` reads `arr`/`i` first), so
+      // a target needing hoisting (e.g. `arr[await f()] = v`) is spilled via
+      // the same `EIndex`/`EMember` spine logic any other read context uses,
+      // BEFORE the value is hoisted (#5628).
+      val targetNeedsHoist = ahNeedsHoist(target)
+      val valueNeedsHoist = ahNeedsHoist(value)
+      if targetNeedsHoist or valueNeedsHoist {
+        val target2 = if targetNeedsHoist { ahHoistSpine(target, dest, st) } else { target }
+        val value2 = if valueNeedsHoist { ahHoistTop(value, dest, st) } else { value }
+        dest.add(mkStmt(SAssign(target = target2, op = op, value = value2), s.span))
       } else {
         dest.add(s)
       }

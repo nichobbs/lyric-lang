@@ -148,12 +148,55 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
   }
 }
 
-// Record the generic instantiation args of a `let`/`var` binding's initialiser
-// against the bound name, so a later `match <name>` recovers them (#4938).
-// Remove-then-add keeps a shadowing inner binding from inheriting an outer
-// binding's stale args; only non-empty arg lists are stored.
-func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr): Unit {
-  val args = scrutineeGenericArgs(ctx, init)
+// The (possibly parenthesised) type arguments of an explicit `TGenericApp`
+// annotation (`Box[Coord]` -> `[Coord]`); empty for every other shape.
+func annotationGenericArgs(te: in TypeExpr): List[TypeExpr] {
+  match te.kind {
+    case TGenericApp(_, args) -> typeArgsToTypeExprs(args)
+    case TParen(inner) -> annotationGenericArgs(inner)
+    case _ -> newList()
+  }
+}
+
+// Record the generic instantiation args of a `let`/`var` binding against the
+// bound name, so a later `match <name>` recovers them (#4938).  An explicit
+// `Box[Coord]`-shaped type ANNOTATION is preferred over inferring from the
+// initialiser expression: `scrutineeGenericArgs`'s `ECall` arm resolves a
+// call's instantiation via the callee's registered `JvmFuncSig` (a real
+// `func`), which a record/union-case CONSTRUCTOR call never is — leaving
+// `val b: Box[Coord] = Box(value = ...)` with no recovered args despite the
+// annotation spelling them out directly (#5045).  Falls back to the
+// initialiser-derived args when there is no annotation (or it isn't a
+// `TGenericApp`) — e.g. `val b = Box(value = ...)` with no annotation, or a
+// union case value the annotation doesn't cover.  Remove-then-add keeps a
+// shadowing inner binding from inheriting an outer binding's stale args;
+// only non-empty arg lists are stored.
+func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr, tyOpt: in Option[TypeExpr]): Unit {
+  // Prefer the INITIALISER-derived args when they resolve: for a real `func`
+  // call (`squareAsResult(): Result[Shape, String]`), `scrutineeGenericArgs`
+  // recovers them from the callee's registered `JvmFuncSig.retGenericArgs`,
+  // which `eagerlyResolveGenericArgs` already pre-resolved against the
+  // DECLARING file's own `pkgName`/`externTypes` at registration time (a bare
+  // interface name like `Shape` is rewritten to its full slash-form JVM class
+  // there). The raw annotation TypeExpr carries no such pre-resolution, so
+  // preferring it unconditionally regressed exactly this shape: `val r:
+  // Result[Shape, String] = squareAsResult()` recovered the annotation's bare
+  // `Shape` instead of the pre-resolved one, and `resolveConcreteTypeExpr`'s
+  // un-pre-resolved fallback path doesn't correctly resolve an interface name
+  // (#3613's stdlib_generic_iface_self_test.l JVM regression). Only fall back
+  // to the annotation when inference recovers nothing at all — the record/
+  // union-case CONSTRUCTOR-call case (#5045): `Box`/`Pair` etc. are never a
+  // registered `JvmFuncSig`, so `scrutineeGenericArgs` has nothing to recover
+  // there, and the annotation is the only available source.
+  val fromInit = scrutineeGenericArgs(ctx, init)
+  val args = if fromInit.count > 0 {
+    fromInit
+  } else {
+    match tyOpt {
+      case Some(te) -> annotationGenericArgs(te)
+      case None -> newList()
+    }
+  }
   if ctx.varGenericArgs.containsKey(name) {
     ctx.varGenericArgs.remove(name)
   }
@@ -1434,32 +1477,47 @@ func lowerPatternBind(
           emitLoad(insns, scrutSlot, scrutTy)
           insns.add(LCheckcast(className = recClass))
           emitStore(insns, castSlot, JRef(className = recClass))
+          // As the union-case arm above: resolve each field's erased-payload
+          // `paramIdx` against the scrutinee's own instantiation (`scrutTypeArgs`)
+          // so a generic record's `T` field binds as its concrete instantiated
+          // type instead of staying boxed `Object` (#5045).
+          val caseInfo: Option[List[JvmCaseField]] = mapGet(ctx.caseFields, recClass)
           var fi = 0
           while fi < fields.count {
             // A record pattern field binds by *field name* (`Point{x = a}` or the
             // short form `Point{x}`), not positionally.
-            match fields[fi] {
-              case RPFNamed(fieldName, subPat, _) -> {
-                val fty = match recordFieldType(ctx, recClass, fieldName) {
-                  case Some(t) -> t
-                  case None -> JRef(className = "java/lang/Object")
+            val fieldName = match fields[fi] { case RPFNamed(name, _, _) -> name; case RPFShort(name, _) -> name }
+            val fieldSpan = match fields[fi] { case RPFNamed(_, _, span) -> span; case RPFShort(_, span) -> span }
+            var fty: JvmType = JRef(className = "java/lang/Object")
+            var concreteTy: JvmType = JRef(className = "java/lang/Object")
+            var concreteTypeExprOpt: Option[TypeExpr] = None
+            match caseInfo {
+              case Some(flds) -> {
+                var ffi = 0
+                while ffi < flds.count {
+                  if flds[ffi].name == fieldName {
+                    fty = flds[ffi].ty
+                    concreteTy = fty
+                    val pIdx = flds[ffi].paramIdx
+                    if pIdx >= 0 and pIdx < scrutTypeArgs.count {
+                      concreteTy = resolveConcreteTypeExpr(ctx, scrutTypeArgs[pIdx])
+                      concreteTypeExprOpt = Some(value = scrutTypeArgs[pIdx])
+                    }
+                  }
+                  ffi = ffi + 1
                 }
-                bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, fty, None, subPat)
               }
-              case RPFShort(fieldName, _) -> {
-                // `Point{x}` binds local `x` to field `x`.
-                val fty = match recordFieldType(ctx, recClass, fieldName) {
-                  case Some(t) -> t
-                  case None -> JRef(className = "java/lang/Object")
-                }
-                emitLoad(insns, castSlot, JRef(className = recClass))
-                insns.add(LGetfield(owner = recClass, name = fieldName, t = fty))
-                match fty {
-                  case JByte -> maskByteUnsigned(insns)
-                  case _ -> ()
-                }
-                val fSlot = allocSlot(ctx, fieldName, fty)
-                emitStore(insns, fSlot, fty)
+              case None -> ()
+            }
+            match fields[fi] {
+              case RPFNamed(_, subPat, _) -> bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, concreteTy, concreteTypeExprOpt, subPat)
+              case RPFShort(_, _) -> {
+                // `Point{x}` binds local `x` to field `x` — reuse `bindCaseField`'s
+                // `PBinding` leaf (unboxing/slice-normalizing against `concreteTy`)
+                // instead of a raw getfield, so the shorthand form gets the same
+                // concrete-type resolution the named form does.
+                val subPat = Pattern(kind = PBinding(name = fieldName, inner = None), span = fieldSpan)
+                bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, concreteTy, concreteTypeExprOpt, subPat)
               }
             }
             fi = fi + 1
