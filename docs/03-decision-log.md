@@ -20997,5 +20997,42 @@ to the unrelated package. All ten previously-established suites
 `mono` 48/48, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 84/84,
 `cfg` 12/12) re-verified green against the corrected build.
 
+**Fourth finding (review feedback, #6312): the #6311 fix only covered
+function-local bindings, leaving the identical hazard open one scope level
+up.** `filterAliasesExcludingLocals` was wired in at every function-shaped
+scope (`rewriteFunctionDecl`, `rewriteEntryDecl`, `rewriteTestDecl`,
+`rewritePropertyDecl`, `rewriteFixtureDecl`, an aspect's `AspectAround`
+body), each filtering against names bound INSIDE that one function's own
+body — but a module-level `val`/`const` is visible, unqualified, from
+EVERY function in the file, not just one lexically near it (a real,
+existing pattern — e.g. `lyric-stdlib/std/http.l`'s
+`insecureAllowEnvVar`). A module-level `val Foo = ...` colliding with a
+bare-imported package's first dotted segment still collapsed
+unconditionally when called as `Foo.Bar.method()` from ANY function in the
+file, since that function's own per-function `locals` set never contained
+`Foo` — the exact #6311 hazard, just one scope level up, following the
+same "safe on `stage0`, unsafe only because of this PR's own
+generalization" pattern the third finding above already established.
+
+Fixed by computing a file-wide name set ONCE in `rewriteFile` —
+`collectModuleLevelValueNames` walks the file's own top-level `IVal`/
+`IConst` items (pattern-bound names for `IVal`, the plain name for
+`IConst`) — and filtering the aliases list with it BEFORE any item is
+rewritten, so every function-shaped scope's own per-function filter
+(#6311) further narrows an already-module-scope-filtered base rather than
+starting from the raw, unfiltered alias list. This mirrors how
+`collectAliases` itself already runs once per file rather than once per
+item.
+
+Verified by a 19th `alias_rewriter_self_test.l` case: a module-level
+`val Foo = 0` alongside `import Foo.Bar`, called as `Foo.Bar.baz()` from a
+function that declares no local named `Foo` itself — asserts the callee
+stays the original nested `EMember` chain, unrewritten. All ten
+previously-established suites re-verified green again against the build
+carrying this fourth fix (`alias_rewriter` 19/19, `msil_project_bridge`
+34/34, `qualified_enum_case` 11/11, `qualified_union_case` 5/5,
+`typechecker` 283/283, `parser` 124/124, `mono` 48/48, `weaver` 46/46,
+`aspect_weave` 7/7, `modechecker` 84/84, `cfg` 12/12).
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
-D-progress-018, #6294, #6311.
+D-progress-018, #6294, #6311, #6312.

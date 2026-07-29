@@ -728,6 +728,70 @@ test "a local shadowing a bare-imported package's dotted name is left untouched,
   }
 }
 
+// Scope-awareness regression, module scope (#6312): #6311 only collected
+// names bound INSIDE a function's own body/params, so a module-level
+// `val`/`const` whose name collides with a bare-imported package's first
+// dotted segment was still silently collapsed and misrouted when called
+// from a DIFFERENT function than the one it's textually declared next to —
+// module-level `val`s are visible, unqualified, from every function in the
+// file, not just a lexically-local one. `collectModuleLevelValueNames`
+// (computed once in `rewriteFile`, before any item is rewritten) closes
+// this the same way #6311 did for function-locals, just at file scope.
+test "a module-level val shadowing a bare-imported package's dotted name is left untouched in every function, not collapsed into the package (#6312)" {
+  val src = "package Test\nimport Foo.Bar\nval Foo = 0\nfunc f(): Int {\n  Foo.Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  assertEqualInt(rewritten.items.count, 2, "module val item plus the function item")
+  val fnItem = rewritten.items[1]
+  match fnItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertTrue(block.statements.count > 0, "function body block must have at least one statement")
+              val stmt = block.statements[0]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EMember(receiver, memberName) -> {
+                          assertEqual(memberName, "baz", "outer member name is still the call's own 'baz'")
+                          match receiver.kind {
+                            case EMember(innerReceiver, innerMember) -> {
+                              assertEqual(innerMember, "Bar", "inner member name is still 'Bar' — chain was not flattened")
+                              match innerReceiver.kind {
+                                case EPath(p) -> {
+                                  assertEqualInt(p.segments.count, 1, "innermost receiver is still the bare single-segment 'Foo'")
+                                  assertEqual(p.segments[0], "Foo", "innermost receiver segment is still 'Foo', unrewritten")
+                                }
+                                case _ -> assertTrue(false, "innermost receiver is not EPath — chain shape changed unexpectedly (#6312 regression)")
+                              }
+                            }
+                            case _ -> assertTrue(false, "receiver is not EMember — chain was flattened despite the module-level val shadow (#6312 regression)")
+                          }
+                        }
+                        case EPath(_) -> assertTrue(false, "call fn was collapsed into a flat EPath — a module-level val `Foo` should have suppressed the Foo.Bar package collapse (#6312 regression)")
+                        case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "first statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "second item is not IFunc")
+  }
+}
+
 // Runtime end-to-end for #2929: this module itself bare-imports `Std.Console`
 // (multi-segment, no `as`) in its header.  Before the fix, `Console.println`
 // compiled but threw "unsupported method 'println' on the receiver type" at

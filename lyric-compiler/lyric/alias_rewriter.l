@@ -1089,6 +1089,26 @@ func filterAliasesExcludingLocals(aliases: in List[String], locals: in List[Stri
   kept
 }
 
+// Module-level `val`/`const` names are visible, unqualified, from EVERY
+// function in the file — not just the one it's textually declared in — so
+// they need the same shadowing guard as function-locals, but computed once
+// for the whole file rather than per-function (#6312, the module-scope
+// counterpart to #6311: a module-level `val Foo = ...` colliding with a
+// bare-imported package's first dotted segment shadows `Foo.Bar.method()`
+// calls in ANY function of the file, not just the one `Foo` happens to be
+// declared next to).
+func collectModuleLevelValueNames(file: in SourceFile, acc: List[String]): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IConst(decl) -> acc.add(decl.name)
+      case IVal(decl) -> collectPatternLocalNames(decl.pattern, acc)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. Item-level rewriting.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1869,10 +1889,16 @@ pub func rewriteFile(file: in SourceFile): SourceFile {
   if aliases.count == 0 {
     return file
   }
+  // #6312: strip any alias a module-level val/const would shadow before
+  // rewriting ANY item — module-scope names are visible file-wide, unlike
+  // the per-function locals #6311 already guards against.
+  val moduleLocals: List[String] = newList()
+  collectModuleLevelValueNames(file, moduleLocals)
+  val fileAliases = filterAliasesExcludingLocals(aliases, moduleLocals)
   val items: List[Item] = newList()
   var i = 0
   while i < file.items.count {
-    items.add(rewriteItem(aliases, file.items[i]))
+    items.add(rewriteItem(fileAliases, file.items[i]))
     i = i + 1
   }
   SourceFile(
