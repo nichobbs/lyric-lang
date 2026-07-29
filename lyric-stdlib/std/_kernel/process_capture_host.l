@@ -295,12 +295,17 @@ pub func hostRunCapture(executable: in String, arguments: in String, stdinConten
 }
 
 // Variant of `hostRunCapture` with a caller-supplied `timeoutMs` wall-clock
-// cap.  Spawn failures propagate as exceptions (Lyric `Bug`) so the `Err`
-// return path in callers that wrap with `catch Bug` is reachable (#1062).
+// cap.  Spawn failures and I/O errors are silently absorbed, matching
+// `hostRunCapture`'s behaviour (#6261; previously propagated as exceptions,
+// which crashed callers instead of surfacing a failed `ProcessCaptureResult`).
 pub func hostRunCaptureTimeout(
   executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int
 ): ProcessCaptureResult {
-  runImpl(executable, arguments, stdinContent, timeoutMs)
+  try {
+    runImpl(executable, arguments, stdinContent, timeoutMs)
+  } catch Bug as _ {
+    ProcessCaptureResult(stdout = "", stderr = "", exitCode = -1, timedOut = false)
+  }
 }
 
 // =====================================================================
