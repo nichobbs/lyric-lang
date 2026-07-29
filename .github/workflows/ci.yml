@@ -1344,6 +1344,30 @@ jobs:
             exit 1
           fi
           bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
+
+      # Await-hoist self-test (#5606/#5628, #5630) — dedicated evaluation-order
+      # regression for `Lyric.AwaitHoist`, the statement-level ANF-style
+      # rewrite that keeps the async-SM `MoveNext`'s operand stack empty
+      # across a suspension.  `async_spawn_self_test.l` already covers every
+      # hoist shape's resulting VALUE; this file additionally asserts the
+      # exact operand evaluation ORDER via a shared log, so a hoist that
+      # silently reorders operands (not just miscomputes one) is caught too.
+      # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` here either.
+      - name: Await-hoist self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping await-hoist self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping await-hoist self-test"
+            exit 1
+          fi
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/await_hoist_self_test.l
       # Bool stringification cross-target parity (#5552): toString(Bool),
       # Bool.toString(), string concatenation, and string interpolation all
       # render lowercase "true"/"false" on both targets — the BCL's
@@ -4731,6 +4755,16 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # Await-hoist self-test on JVM (#5606/#5628, #5630) — JVM already
+      # compiled every hoist shape correctly before the rewrite (the rewrite
+      # is semantics-preserving there), so this pins that the shared rewrite
+      # doesn't regress evaluation order on this target either.  dotnet half
+      # (the load-bearing target) runs in the compiler-self-tests-dotnet-a job.
+      - name: Await-hoist self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/await_hoist_self_test.l
 
       # config-block self-test on JVM (#3228, wired in #6198) — the
       # load-bearing half: JVM `config { }` emission (static fields + a
