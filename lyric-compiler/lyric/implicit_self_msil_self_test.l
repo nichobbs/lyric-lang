@@ -96,6 +96,25 @@ record Deposit {
   }
 }
 
+// 7. A lambda literal inside an in-body method that reads `self` (#6119).
+// `self` lowers to a dedicated `ESelf` AST node (never a named-slot lookup),
+// so a lambda body that reads it must be captured as an implicit `"self"`
+// closure field once the lambda is lifted to a static `__lambda_*` method —
+// otherwise the lifted method's own slot 0 is no longer the receiver and
+// codegen either panics or emits invalid IL. This mirrors the `impl`-method
+// shape covered by impl_method_self_test.l, exercising the same fix via the
+// D037 in-body-method (`fctx.className`) codepath instead of `impl`.
+func applyFn(g: () -> Int): Int {
+  g()
+}
+
+record SelfCapture {
+  x: Int
+  func addOne(): Int {
+    applyFn({ -> self.x + 1 })
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -152,4 +171,9 @@ test "implicit self: in-body method with requires/ensures contracts, passing cal
     150,
     "Deposit(100).add(50) == 150, satisfying requires: x > 0 / ensures: result > self.balance"
   )
+}
+
+test "lambda literal inside an in-body method captures self (#6119)" {
+  val s = SelfCapture(x = 10)
+  assertEqualInt(s.addOne(), 11, "lambda captures self field from within a record in-body method")
 }

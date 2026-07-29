@@ -127,8 +127,22 @@ func appendDoc(acc: inout List[String], items: in List[String]): Unit {
   }
 }
 
+/// Visibility prefix (`pub ` / `internal ` / none) shared by every
+/// vis-bearing declaration form (#6039: the collapsing two-way match
+/// `Some(_) -> "pub "` used across this file silently rewrote every
+/// `internal` declaration to `pub`, tripping the formatter's own
+/// loss-check).
+@pure
+pub func visibilityPrefixStr(vis: in Option[Visibility]): String {
+  match vis {
+    case Some(VisPub(_)) -> "pub "
+    case Some(VisInternal(_)) -> "internal "
+    case None -> ""
+  }
+}
+
 pub func fieldDeclStr(fd: in FieldDecl): String {
-  val vis = match fd.visibility { case Some(_) -> "pub "; case None -> "" }
+  val vis = visibilityPrefixStr(fd.visibility)
   val defStr = match fd.dflt { case Some(e) -> " = " + exprInline(0, e); case None -> "" }
   val mutStr = if fd.isMutable { "var " } else { "" }
   vis + mutStr + fd.name + ": " + typeStr(fd.ty) + defStr
@@ -297,7 +311,7 @@ pub func recordMemberLines(m: in RecordMember, ctx: inout FmtCtx): List[String] 
   match m {
     case RMField(field) -> fieldMemberLines(field)
     case RMInvariant(inv) -> singleLineDoc("invariant: " + exprInline(0, inv.expr))
-    case RMFunc(fn) -> funcDoc("", fn, ctx)
+    case RMFunc(fn) -> funcDoc(visibilityPrefixStr(fn.visibility), fn, ctx)
   }
 }
 
@@ -575,7 +589,7 @@ func protectedFieldStr(pf: in ProtectedField): List[String] {
 func entryDoc(ed: in EntryDecl, ctx: inout FmtCtx): List[String] {
   val docLs = docLines(ed.docComments)
   val annoLines = annotationLines(ed.annotations)
-  val vStr = match ed.visibility { case Some(_) -> "pub "; case None -> "" }
+  val vStr = visibilityPrefixStr(ed.visibility)
   val params = paramsStr(ed.params)
   val retStr = match ed.ret { case Some(t) -> ": " + typeStr(t); case None -> "" }
   val sig = vStr + "entry " + ed.name + "(" + params + ")" + retStr
@@ -635,7 +649,7 @@ pub func protectedMemberDoc(pm: in ProtectedMember, ctx: inout FmtCtx): List[Str
     case PMField(pf) -> protectedFieldStr(pf)
     case PMInvariant(ic) -> singleLineDoc("invariant: " + exprInline(0, ic.expr))
     case PMEntry(ed) -> entryDoc(ed, ctx)
-    case PMFunc(fn) -> funcDoc("", fn, ctx)
+    case PMFunc(fn) -> funcDoc(visibilityPrefixStr(fn.visibility), fn, ctx)
   }
 }
 
@@ -643,7 +657,7 @@ pub func protectedMemberDoc(pm: in ProtectedMember, ctx: inout FmtCtx): List[Str
 // Top-level item dispatch.  Mirrors `itemDoc` in Fmt.fs.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
-  val visStr = match item.visibility { case Some(_) -> "pub "; case None -> "" }
+  val visStr = visibilityPrefixStr(item.visibility)
   val annoLines = annotationLines(item.annotations)
   val header = concatDoc(docLines(item.docComments), annoLines)
   match item.kind {
@@ -1094,13 +1108,7 @@ func annotationsHaveExposedTag(anns: in List[Annotation]): Bool {
 
 /// Visibility prefix for an extern member (`pub ` / `internal ` / none).
 @pure
-func externVisStr(vis: in Option[Visibility]): String {
-  match vis {
-    case Some(VisPub(_)) -> "pub "
-    case Some(VisInternal(_)) -> "internal "
-    case None -> ""
-  }
-}
+func externVisStr(vis: in Option[Visibility]): String = visibilityPrefixStr(vis)
 
 /// One extern-package member: leading non-doc trivia, its captured doc
 /// comments and annotations, then the declaration itself rendered at full

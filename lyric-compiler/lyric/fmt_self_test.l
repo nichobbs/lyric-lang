@@ -223,6 +223,88 @@ test "format pub func" {
   assertTrue(Str.contains(acc, "pub func foo(): Unit"), "format: pub visibility on func")
 }
 
+// #6039: the visibility renderers collapsed `Some(_) -> "pub "` regardless of
+// whether the underlying `Visibility` was `VisPub` or `VisInternal`, so every
+// `internal` declaration was silently rewritten to `pub` — tripping the
+// formatter's own loss-check (`token changed: internal -> pub`) and making
+// `internal`-bearing files unformattable.
+test "internal func round trips and is not rewritten to pub" {
+  val src = "package P\n\ninternal func foo(): Unit {}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "internal func: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "internal func foo(): Unit"), "internal func: visibility preserved verbatim")
+  assertTrue(not Str.contains(acc, "pub func foo"), "internal func: not rewritten to pub")
+  val twice = format(parse(acc))
+  assertEqual(acc, twice, "internal func: idempotent")
+}
+
+test "internal val round trips and is not rewritten to pub" {
+  val src = "package P\n\ninternal val pi: Double = 3.14\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "internal val: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "internal val pi: Double = 3.14"), "internal val: visibility preserved verbatim")
+  assertTrue(not Str.contains(acc, "pub val pi"), "internal val: not rewritten to pub")
+}
+
+test "internal record and internal record field round trip" {
+  val src = "package P\n\ninternal record Point {\n  internal x: Int\n  y: Int\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "internal record: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "internal record Point {"), "internal record: header visibility preserved")
+  assertTrue(Str.contains(acc, "internal x: Int"), "internal record: field visibility preserved")
+  assertTrue(Str.contains(acc, "y: Int"), "internal record: unmarked field stays unmarked")
+  assertTrue(not Str.contains(acc, "pub record Point"), "internal record: header not rewritten to pub")
+  assertTrue(not Str.contains(acc, "pub x: Int"), "internal record: field not rewritten to pub")
+}
+
+test "internal union round trips and is not rewritten to pub" {
+  val src = "package P\n\ninternal union Color { case Red; case Green }\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "internal union: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "internal union Color {"), "internal union: visibility preserved verbatim")
+  assertTrue(not Str.contains(acc, "pub union Color"), "internal union: not rewritten to pub")
+}
+
+test "internal enum round trips and is not rewritten to pub" {
+  val src = "package P\n\ninternal enum Dir { case North; case South }\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "internal enum: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "internal enum Dir {"), "internal enum: visibility preserved verbatim")
+  assertTrue(not Str.contains(acc, "pub enum Dir"), "internal enum: not rewritten to pub")
+}
+
+test "internal type alias round trips and is not rewritten to pub" {
+  val src = "package P\n\ninternal alias Name = String\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "internal alias: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "internal alias Name = String"), "internal alias: visibility preserved verbatim")
+  assertTrue(not Str.contains(acc, "pub alias Name"), "internal alias: not rewritten to pub")
+}
+
+test "internal distinct type round trips and is not rewritten to pub" {
+  val src = "package P\n\ninternal type UserId = Long\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "internal distinct type: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "internal type UserId = Long"), "internal distinct type: visibility preserved verbatim")
+  assertTrue(not Str.contains(acc, "pub type UserId"), "internal distinct type: not rewritten to pub")
+}
+
+test "internal opaque type round trips and is not rewritten to pub" {
+  val src = "package P\n\ninternal opaque type Token {\n  raw: String\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "internal opaque type: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "internal opaque type Token {"), "internal opaque type: visibility preserved verbatim")
+  assertTrue(not Str.contains(acc, "pub opaque type Token"), "internal opaque type: not rewritten to pub")
+}
+
 test "format union" {
   val src = "package P\nunion Color { case Red; case Green; case Blue }\n"
   val pr = parse(src)

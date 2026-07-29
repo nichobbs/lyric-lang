@@ -138,6 +138,18 @@ func testDiagnosticsSpawnFailure(): Unit {
   assertTrue(not r.timedOut, "spawn failure is not a timeout")
 }
 
+func testDiagnosticsTimeoutSpawnFailure(): Unit {
+  // #6261: a failed LAUNCH through the Timeout entry point must return a
+  // failed CaptureResult, not throw.  Before the fix, `hostRunCaptureTimeout`
+  // had no try/catch wrapper (unlike `hostRunCapture`), so this crashed with
+  // an unhandled exception instead of surfacing exitCode = -1.
+  val r = runCaptureWithDiagnosticsTimeout("__lyric_definitely_nonexistent_exe_xyz__", newList(), "", 5000)
+  assertEqualInt(r.exitCode, -1, "spawn failure via Timeout entry point reports exit code -1")
+  assertEqual(r.stdout, "", "spawn failure produces empty stdout")
+  assertEqual(r.stderr, "", "spawn failure produces empty stderr")
+  assertTrue(not r.timedOut, "spawn failure is not a timeout")
+}
+
 func main(): Int {
   testQuoteSimple()
   testQuoteWithSpaces()
@@ -154,6 +166,7 @@ func main(): Int {
   testDiagnosticsStdout()
   testDiagnosticsStderr()
   testDiagnosticsSpawnFailure()
+  testDiagnosticsTimeoutSpawnFailure()
   println("process_capture tests: ok")
   return 0
 }

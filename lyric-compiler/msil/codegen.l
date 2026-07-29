@@ -8096,20 +8096,50 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       panic("Msil.Codegen: EOld reached codegen — contract elaborator must run before emitting MSIL")
     }
     case ESelf -> {
-      insns.add(MLdarg(slot = 0))
-      // In a UFCS method (`func Outer.rd(self: in Outer)`) `self` is slot 0
-      // and its type is registered in fctx.types["self"] by lowerFuncMsil's
-      // parameter loop.  Use that type so chained reads `self.field.subfield`
-      // return the correct receiver type for the second ldfld (#3353).
-      // For impl methods, slot 0 is the implicit `this` (no named binding) and
-      // fctx.className carries the concrete implementing type — fall back to it.
-      match mapGet(fctx.types, "self") {
-        case Some(selfTy) -> selfTy
+      // #6119: a lambda literal inside a method body that reads `self` gets
+      // lifted (by `liftLambdasMsil`) into a static `__lambda_*` method, whose
+      // own slot 0 is no longer the receiver.  `lambdaCaptureNamesMsil`
+      // (collectRefNamesExpr's `ESelf` arm) treats a `self` reference as an
+      // implicit capture named `"self"` in that case, so when we're lowering
+      // the LIFTED body, read the receiver from the closure field instead of
+      // blindly emitting `ldarg.0` (which would read the closure/first real
+      // param, not `this`, and verify as invalid IL).
+      match mapGet(fctx.captureNameToIndex, "self") {
+        case Some(capIdx) -> {
+          val capsType = match mapGet(fctx.types, "__caps") { case Some(t) -> t; case None -> MObject }
+          match capsType {
+            case MClass(closureClassName) -> {
+              emitLoadVarMsil(fctx, insns, 0)
+              insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = "__f" + toString(capIdx)))
+            }
+            case _ -> {
+              emitLoadVarMsil(fctx, insns, 0)
+              insns.add(MLdcI4(v = capIdx))
+              insns.add(MLdelemRef)
+            }
+          }
+          match mapGet(fctx.captureNameToType, "self") {
+            case Some(t) -> t
+            case None -> MObject
+          }
+        }
         case None -> {
-          if fctx.className.length > 0 {
-            MClass(className = fctx.className)
-          } else {
-            MObject
+          insns.add(MLdarg(slot = 0))
+          // In a UFCS method (`func Outer.rd(self: in Outer)`) `self` is slot 0
+          // and its type is registered in fctx.types["self"] by lowerFuncMsil's
+          // parameter loop.  Use that type so chained reads `self.field.subfield`
+          // return the correct receiver type for the second ldfld (#3353).
+          // For impl methods, slot 0 is the implicit `this` (no named binding) and
+          // fctx.className carries the concrete implementing type — fall back to it.
+          match mapGet(fctx.types, "self") {
+            case Some(selfTy) -> selfTy
+            case None -> {
+              if fctx.className.length > 0 {
+                MClass(className = fctx.className)
+              } else {
+                MObject
+              }
+            }
           }
         }
       }
@@ -8184,7 +8214,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     "pre-pass missed it).  Please report this with a reproducer."
                 )
               }
-              capTypes.add(match mapGet(fctx.types, cn) { case Some(t) -> t; case None -> MObject })
+              // #6119: `self` is never in `fctx.types` (see `ESelf`'s own
+              // fallback) — its captured field type is the receiver's
+              // concrete class instead.
+              if cn == "self" {
+                capTypes.add(MClass(className = fctx.className))
+              } else {
+                capTypes.add(match mapGet(fctx.types, cn) { case Some(t) -> t; case None -> MObject })
+              }
             }
           }
         }
@@ -8359,6 +8396,13 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       case Some(s) -> emitLoadVarMsil(fctx, insns, s)
                       case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
                     }
+                  } else if capName == "self" {
+                    // #6119: `self` has no `fctx.slots` entry (it's the
+                    // implicit `this`) — load it exactly as `ESelf`'s own
+                    // non-captured fallback does, since we are still lowering
+                    // in the enclosing (non-lifted) method body here, where
+                    // slot 0 legitimately is the receiver.
+                    insns.add(MLdarg(slot = 0))
                   } else {
                     // Local capture: load the value (no boxing — closure field type matches capture type)
                     match mapGet(fctx.slots, capName) {
@@ -25549,6 +25593,13 @@ func collectRefNamesExpr(e: in Expr, acc: in List[String]): Unit {
         addNameOnce(acc, path.segments[0])
       }
     }
+    // #6119: a bare `self` inside a method body parses as the dedicated
+    // `ESelf` node (never `EPath(["self"])`, since `self` is a keyword), so
+    // it must be recorded under the sentinel name `"self"` or a lambda body
+    // reading `self` would be lifted with no capture for the receiver at all.
+    case ESelf -> {
+      addNameOnce(acc, "self")
+    }
     case ECall(fn, args) -> {
       collectRefNamesExpr(fn, acc)
       var ai = 0
@@ -26078,6 +26129,13 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
         // own captures.  Re-capture it so the inner lambda can read it via
         // its own __caps array (#1479).
         addNameOnce(caps, nm)
+      } else if nm == "self" and fctx.className.length > 0 {
+        // #6119: `self` is never registered in `fctx.slots` (it's the
+        // implicit `this`, read via `ldarg.0` — see `ESelf`), so it needs its
+        // own capture check.  `fctx.className` is only non-empty inside a
+        // real method body (`lowerRecordMethodMsil` / `lowerImplMethodMsil`),
+        // matching the same fallback `ESelf`'s own codegen already trusts.
+        addNameOnce(caps, nm)
       }
     }
     i = i + 1
@@ -26146,6 +26204,107 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
                   }
                 }
                 case None -> {
+                }
+              }
+            }
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IImpl(decl) -> {
+        // Walk impl-block method bodies (#6119: `impl` methods were never
+        // scanned, so a lambda literal inside one had no lifted token,
+        // crashing codegen with "lambda token missing").
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> {
+              match fn.body {
+                case Some(body) -> {
+                  match body {
+                    case FBBlock(block) -> {
+                      var si = 0
+                      while si < block.statements.count {
+                        collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                        si = si + 1
+                      }
+                    }
+                    case FBExpr(e) -> {
+                      collectLambdasBfsExpr(e, ticker, synths, deferred)
+                    }
+                  }
+                }
+                case None -> {
+                }
+              }
+            }
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IProtected(decl) -> {
+        // Walk protected-type member bodies (#6119 follow-up): both `PMFunc`
+        // (lowered via `lowerImplMethodMsil`, same self-capture shape as
+        // `IImpl`) and `PMEntry` (lowered via `lowerProtectedMsil` directly)
+        // were never scanned by this pre-pass, hitting the same "lambda
+        // token missing" panic.
+        //
+        // Bare field references in a protected member body are `EPath([name])`
+        // at parse time; `lowerProtectedMsil` rewrites them to
+        // `EMember(ESelf, name)` via `desugarProtectedFuncDecl`/
+        // `desugarProtectedFuncBody` — a SEPARATE, later pass over its own
+        // copy of the body — before actually lowering. If this pre-pass
+        // walked (and synthesized the lifted `__lambda_*` IFunc from) the
+        // RAW pre-desugar body instead, the lifted function's body would
+        // still contain the bare `EPath(["n"])` reference: not a real
+        // parameter, not a real capture (only the call-site's OWN desugared
+        // copy has the `ESelf` node the capture-name collector recognizes),
+        // so it would silently resolve to nothing meaningful instead of the
+        // captured field — a silent wrong-value miscompile, not a crash.
+        // Desugaring here first, exactly like `lowerProtectedMsil` does,
+        // keeps the synthesized lambda body byte-for-byte consistent with
+        // what the call site's own (independently, but identically,
+        // desugared) `ELambda` node captures.
+        val fieldNames = makeProtectedFieldNames(decl)
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMFunc(fn) -> {
+              val desugaredFn = desugarProtectedFuncDecl(fieldNames, fn)
+              match desugaredFn.body {
+                case Some(body) -> {
+                  match body {
+                    case FBBlock(block) -> {
+                      var si = 0
+                      while si < block.statements.count {
+                        collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                        si = si + 1
+                      }
+                    }
+                    case FBExpr(e) -> {
+                      collectLambdasBfsExpr(e, ticker, synths, deferred)
+                    }
+                  }
+                }
+                case None -> {
+                }
+              }
+            }
+            case PMEntry(entryDecl) -> {
+              match desugarProtectedFuncBody(fieldNames, entryDecl.body) {
+                case FBBlock(block) -> {
+                  var si = 0
+                  while si < block.statements.count {
+                    collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                    si = si + 1
+                  }
+                }
+                case FBExpr(e) -> {
+                  collectLambdasBfsExpr(e, ticker, synths, deferred)
                 }
               }
             }
