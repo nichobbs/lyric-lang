@@ -3437,7 +3437,7 @@ pub func collectFileCasesExtern(
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, tps, externTypes), paramIdx = -1, dflt = f.dflt))
+              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(f.ty, tps), dflt = f.dflt))
               case _ -> {
               }
             }

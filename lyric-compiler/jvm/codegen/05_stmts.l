@@ -912,7 +912,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // (docs/59 §4.3 #5439 class).
           match pat.kind {
             case PBinding(nm, _) -> {
-              recordVarGenericArgs(ctx, nm, init)
+              recordVarGenericArgs(ctx, nm, init, tyOpt)
               recordSpawnResultType(ctx, nm, init)
               match tyOpt {
                 case Some(te) -> recordDeclaredElemType(ctx, nm, te, newList())
@@ -935,7 +935,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             coerceValueTo(ctx, insns, initTy, ty)
             val slot = allocSlot(ctx, name, ty)
             emitStore(insns, slot, ty)
-            recordVarGenericArgs(ctx, name, init)
+            recordVarGenericArgs(ctx, name, init, tyOpt)
             recordSpawnResultType(ctx, name, init)
             match tyOpt {
               case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
@@ -990,7 +990,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // across reassignments, so recording at the initialiser is stable.
               // An explicit `slice[Elem]`/`List[Elem]` annotation overrides them
               // with the declared element type (docs/59 §4.3 #5439 class).
-              recordVarGenericArgs(ctx, name, init)
+              recordVarGenericArgs(ctx, name, init, tyOpt)
               recordSpawnResultType(ctx, name, init)
               match tyOpt {
                 case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
