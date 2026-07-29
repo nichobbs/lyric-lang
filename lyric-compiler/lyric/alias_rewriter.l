@@ -285,6 +285,13 @@ func rewriteRangeBound(aliases: in List[String], rb: in RangeBound): RangeBound 
 // `EMember`s ultimately rooted at one — into its full segment list.  `None`
 // for anything else (a call, index, literal, …), so the caller only ever
 // treats a genuine dotted-name chain as a package-qualification candidate.
+// Does NOT unwrap `EParen`: a parenthesized qualified callee
+// (`(Pkg.Sub).foo()`) still falls back to the pre-#6294 depth-1-only
+// behavior. Not a regression from #6294 — parens around a qualified callee
+// were never handled before it either — and narrow enough in practice
+// (nobody parenthesizes a bare package-qualified path) that it's left as a
+// known gap rather than risking new span/precedence edge cases for an
+// unobserved shape.
 func flattenPathExpr(e: in Expr): Option[List[String]] {
   match e.kind {
     case EPath(p) -> Some(value = p.segments)
@@ -1037,6 +1044,11 @@ func collectStatementLocalNames(s: in Statement, acc: List[String]): Unit {
       collectExprLocalNames(lhs, acc)
       collectExprLocalNames(rhs, acc)
     }
+    // A block-nested item declaration's own bound name is skipped here — but
+    // that's harmless today, not an oversight: `typechecker_stmts.l`'s own
+    // `SItem` handling in a block is itself a no-op, so a nested item can't
+    // bind a live name anywhere yet. If/when block-nested items become real,
+    // this collector needs the matching update.
     case SItem(_) -> ()
   }
 }
