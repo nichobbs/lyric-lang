@@ -17834,9 +17834,12 @@ independent of HTTP):**
    descriptor the class doesn't actually have. The identical field shape
    on a plain (non-`opaque`) `record` works correctly. Worked around by
    declaring `Connection` as a plain `record` instead of `opaque` — a real,
-   documented loss of compiler-enforced field-hiding (nothing stops an
-   external package from reaching into `Connection`'s fields today),
-   accepted as the lesser evil versus not shipping the engine at all.
+   documented loss of compiler-enforced field-hiding, though bounded in
+   practice: `ConnPhase` itself is not `pub`, so an external package can
+   neither construct a `Connection` (it cannot supply a `phase` value) nor
+   destructure `.phase` — only read the non-sensitive scalar fields
+   (`buf`/`keepAlive`/`fatal`/`limits`) (#6013).
+   Accepted as the lesser evil versus not shipping the engine at all.
    `Connection`'s own doc comment explains the deviation and points here.
 5. **#5995 (both targets)** — a cross-package **enum** case-name
    collision: `Std.Http`'s own `HttpVersion` enum (landed on `main` via
@@ -19578,7 +19581,8 @@ operand stack, honoring the JVM StackMapTable-builder invariant. New
 `jvm/lowering.l`; `configFieldTypes` threaded through the `FuncCtx`
 builders so an `EMember` read of a config field resolves to the
 `getstatic`. Scope boundary: the docs/58 config-*template* / wire-embedded
-layering's JVM lowering remains a separate follow-up (dotnet-only), so
+layering's JVM lowering remains a separate follow-up (dotnet-only, tracked
+in #6213), so
 `config_templates_self_test.l` stays `--target dotnet`; base blocks are
 covered by the new `config_block_self_test.l` on **both** targets (default
 path + env-var override, all field types).

@@ -314,12 +314,12 @@ them per environment without a rebuild. The `Web.WebTls` config block carries
 the paths (overridable via `LYRIC_CONFIG_*`), and `tlsServerConfigFromWebTls`
 loads them into a `TlsServerConfig`:
 
-| `WebTls` field | Type | Default | Description |
-|---|---|---|---|
-| `certPath` | `String` | (required) | PEM server certificate chain path |
-| `keyPath` | `String` | (required) | PEM PKCS8 private key path |
-| `clientCaPath` | `String` | `""` | PEM client-CA path (mTLS; empty = off) |
-| `requireClientCert` | `Bool` | `false` | Require a client certificate (mTLS) |
+| `WebTls` field | Env var | Type | Default | Description |
+|---|---|---|---|---|
+| `certPath` | `LYRIC_CONFIG_WEB_TLS_CERTPATH` | `String` | (required) | PEM server certificate chain path |
+| `keyPath` | `LYRIC_CONFIG_WEB_TLS_KEYPATH` | `String` | (required) | PEM PKCS8 private key path |
+| `clientCaPath` | `LYRIC_CONFIG_WEB_TLS_CLIENTCAPATH` | `String` | `""` | PEM client-CA path (mTLS; empty = off) |
+| `requireClientCert` | `LYRIC_CONFIG_WEB_TLS_REQUIRECLIENTCERT` | `Bool` | `false` | Require a client certificate (mTLS) |
 
 ```lyric
 val cfg = Web.WebTls(certPath = "server.pem", keyPath = "server.key", clientCaPath = "", requireClientCert = false)
