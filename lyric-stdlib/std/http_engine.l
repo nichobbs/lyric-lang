@@ -620,10 +620,11 @@ func scanCrlfLine(buf: in slice[Byte], limit: in Int): LineScan {
   while i < cap {
     val b = buf[i]
     if isLf(b) {
-      if i == 0 or not isCr(buf[i - 1]) {
-        return LsBareLf
-      }
-      return LsFound(contentEnd = i - 1, consumed = i + 1)
+      // A preceding CR is always consumed by the isCr branch below on the
+      // prior iteration (it returns LsFound before advancing past it), so a
+      // CR immediately before this LF can never be observed here — every LF
+      // reached with `isLf(b)` true is a bare LF.
+      return LsBareLf
     } else if isCr(b) {
       if i + 1 >= n {
         return LsNeedMore
@@ -995,11 +996,19 @@ func computeKeepAlive(version: in HttpVersion, headers: in List[HeaderField]): B
   }
 }
 
+/// RFC 9110 section 10.1.1: `Expect` is a comma-separated list of expectation
+/// tokens, so `100-continue` may appear alongside (or among) other tokens;
+/// matching the whole header value against the literal string misses that.
 func hasExpectContinue(headers: in List[HeaderField]): Bool {
-  match headerValue(headers, "Expect") {
-    case None -> false
-    case Some(v) -> equalsCaseInsensitive(trim(v), "100-continue")
+  val tokens = splitAndTrimTokens(headerValues(headers, "Expect"))
+  var i = 0
+  while i < tokens.count {
+    if equalsCaseInsensitive(tokens[i], "100-continue") {
+      return true
+    }
+    i = i + 1
   }
+  false
 }
 
 /// RFC 9112 section 3.2: an HTTP/1.1 request must carry exactly one `Host`
