@@ -308,8 +308,13 @@ func joinSegPrefix(segs: in List[String], upto: in Int): String {
 // value reference immediately off the package name), or as nested `EMember`s
 // re-wrapping every remaining segment on top of the qualified base otherwise
 // (a package-level `pub val`'s own field/member accessed further, e.g.
-// `Pkg.Sub.someRecordConst.field`).
-func rebuildQualifiedChain(pkgSegs: in List[String], remainder: in List[String], span: in Span): Expr {
+// `Pkg.Sub.someRecordConst.field`). `pathSpan` is the ORIGINAL receiver
+// chain's own span (just `Pkg.Sub`, not the trailing member(s)) — the
+// synthesized `ModulePath`'s span, matching what the single-segment-only
+// code this generalizes used (`p.span`, the bare alias identifier's span,
+// not the whole call's). `outerSpan` is the full original expression's span
+// (`e.span`), used for every synthesized `Expr` node exactly as before.
+func rebuildQualifiedChain(pkgSegs: in List[String], remainder: in List[String], pathSpan: in Span, outerSpan: in Span): Expr {
   val baseSegs: List[String] = newList()
   var i = 0
   while i < pkgSegs.count {
@@ -317,10 +322,10 @@ func rebuildQualifiedChain(pkgSegs: in List[String], remainder: in List[String],
     i = i + 1
   }
   baseSegs.add(remainder[0])
-  var acc = Expr(kind = EPath(path = ModulePath(segments = baseSegs, span = span)), span = span)
+  var acc = Expr(kind = EPath(path = ModulePath(segments = baseSegs, span = pathSpan)), span = outerSpan)
   var k = 1
   while k < remainder.count {
-    acc = Expr(kind = EMember(receiver = acc, memberName = remainder[k]), span = span)
+    acc = Expr(kind = EMember(receiver = acc, memberName = remainder[k]), span = outerSpan)
     k = k + 1
   }
   acc
@@ -332,10 +337,12 @@ func rebuildQualifiedChain(pkgSegs: in List[String], remainder: in List[String],
 // the longest match wins so a package name that is itself a prefix of a
 // longer sibling package's name never mis-fires. `trailingMember` is the
 // current node's own `memberName`, appended after `recvSegs` as the final
-// candidate segment. Returns `None` when no prefix matches any known
+// candidate segment. `recvSpan` is the flattened receiver's own span, passed
+// through to `rebuildQualifiedChain` as `pathSpan`; `outerSpan` is the whole
+// expression's span. Returns `None` when no prefix matches any known
 // package, so the caller falls back to its default (non-rewritten) shape.
 func rewriteQualifiedMemberChain(
-  aliases: in List[String], recvSegs: in List[String], trailingMember: in String, span: in Span
+  aliases: in List[String], recvSegs: in List[String], trailingMember: in String, recvSpan: in Span, outerSpan: in Span
 ): Option[Expr] {
   var k = recvSegs.count
   while k >= 1 {
@@ -349,7 +356,7 @@ func rewriteQualifiedMemberChain(
         i = i + 1
       }
       remainder.add(trailingMember)
-      return Some(value = rebuildQualifiedChain(pkgSegs, remainder, span))
+      return Some(value = rebuildQualifiedChain(pkgSegs, remainder, recvSpan, outerSpan))
     }
     k = k - 1
   }
@@ -385,7 +392,7 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
       // parsed as a depth-2 `EMember` chain, not a single-segment `EPath`
       // head) matches at whatever depth its own dotted name has (#6294).
       match flattenPathExpr(receiver) {
-        case Some(recvSegs) -> match rewriteQualifiedMemberChain(aliases, recvSegs, memberName, e.span) {
+        case Some(recvSegs) -> match rewriteQualifiedMemberChain(aliases, recvSegs, memberName, receiver.span, e.span) {
           case Some(rewritten) -> return rewritten
           case None -> ()
         }

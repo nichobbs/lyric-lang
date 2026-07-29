@@ -293,6 +293,30 @@ test "bare multi-segment import referenced by its full Foo.Bar.baz() form rewrit
   val pr = parse(src)
   val rewritten = rewriteFile(pr.file)
   assertEqualInt(rewritten.items.count, pr.file.items.count, "full-path form: item count preserved after rewrite")
+  // Pre-rewrite receiver span, navigated from the UNREWRITTEN tree: the
+  // synthesized `ModulePath`'s own span must match this exactly (just
+  // `Foo.Bar`), not the whole call's span (`Foo.Bar.baz()`) — a synthesized
+  // node using too wide a span is a real (if currently inert) regression
+  // risk for any diagnostic or LSP feature that keys off it directly.
+  val origReceiverSpan = match pr.file.items[0].kind {
+    case IFunc(origDecl) -> match origDecl.body {
+      case Some(origFb) -> match origFb {
+        case FBBlock(origBlock) -> match origBlock.statements[0].kind {
+          case SExpr(origCallExpr) -> match origCallExpr.kind {
+            case ECall(origFn, _) -> match origFn.kind {
+              case EMember(origReceiver, _) -> origReceiver.span
+              case _ -> origFn.span
+            }
+            case _ -> origCallExpr.span
+          }
+          case _ -> origBlock.span
+        }
+        case FBExpr(origExpr) -> origExpr.span
+      }
+      case None -> pointSpan(initialPosition())
+    }
+    case _ -> pointSpan(initialPosition())
+  }
   val firstItem = rewritten.items[0]
   match firstItem.kind {
     case IFunc(decl) -> {
@@ -312,6 +336,16 @@ test "bare multi-segment import referenced by its full Foo.Bar.baz() form rewrit
                           assertEqual(p.segments[0], "Foo", "rewritten path keeps the real package's first segment")
                           assertEqual(p.segments[1], "Bar", "rewritten path keeps the real package's second segment")
                           assertEqual(p.segments[2], "baz", "rewritten path keeps the call's own member name")
+                          assertEqualInt(
+                            p.span.startPos.offset,
+                            origReceiverSpan.startPos.offset,
+                            "synthesized ModulePath span starts where the original Foo.Bar receiver started, not the whole call"
+                          )
+                          assertEqualInt(
+                            p.span.endPos.offset,
+                            origReceiverSpan.endPos.offset,
+                            "synthesized ModulePath span ends where the original Foo.Bar receiver ended (excludes .baz() entirely)"
+                          )
                         }
                         case EMember(_, _) -> assertTrue(false, "call fn is still a nested EMember — the full-path form was not collapsed (#6294)")
                         case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
