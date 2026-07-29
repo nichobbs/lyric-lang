@@ -96,7 +96,7 @@ test "generic fn: Unit-yielding catch arm survives type-check on the abstract ty
   var panicked = false
   var caughtMessage = ""
   try {
-    compileToJarBundled(source, outPath, "TryCatchJ004", noStdlib)
+    compileToJarBundled(source, outPath, "TryCatchJ004", noStdlib, "")
   } catch Bug as b {
     panicked = true
     caughtMessage = b.message
@@ -133,7 +133,7 @@ test "generic fn: try/catch where every arm yields the type param still compiles
   var panicked = false
   var caughtMessage = ""
   val ok = try {
-    compileToJarBundled(source, outPath, "TryCatchOk", noStdlib)
+    compileToJarBundled(source, outPath, "TryCatchOk", noStdlib, "")
   } catch Bug as b {
     panicked = true
     caughtMessage = b.message

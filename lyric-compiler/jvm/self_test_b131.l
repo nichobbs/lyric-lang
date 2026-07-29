@@ -74,7 +74,7 @@ func main(): Unit {
     "}\n"
 
   val jarPath = outDir + "/enum.jar"
-  val ok = compileToJar(src, jarPath, "TestEnum131", newList())
+  val ok = compileToJar(src, jarPath, "TestEnum131", newList(), "")
   if ok {
     println("jar_written=true")
   } else {

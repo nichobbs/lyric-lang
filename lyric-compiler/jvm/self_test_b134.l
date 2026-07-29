@@ -38,7 +38,7 @@ func main(): Unit {
     "}\n"
 
   val jarPath = outDir + "/impl.jar"
-  val ok = compileToJar(src, jarPath, "TestImpl134", newList())
+  val ok = compileToJar(src, jarPath, "TestImpl134", newList(), "")
   if ok {
     println("jar_written=true")
   } else {

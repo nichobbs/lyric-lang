@@ -81,7 +81,11 @@ func mainReturns2SlotType(file: in SourceFile): Option[String] {
 /// resulting items to checkWithImports so that stdlib names like `List`, `Option`,
 /// `Result`, and `Map` resolve correctly rather than raising T0010 / T0014.
 pub func compileToJar(
-  source: in String, outputPath: in String, packageName: in String, stdlibSources: in List[String]
+  source: in String,
+  outputPath: in String,
+  packageName: in String,
+  stdlibSources: in List[String],
+  packageVersion: in String,
 ): Bool {
   // Parse + `@cfg` erasure with an empty active set (plus the `target.jvm`
   // pseudo-feature, D-N-013) — the same semantics a manifest build with no
@@ -215,10 +219,14 @@ pub func compileToJar(
     mainClassName = acc
   }
 
+  // Empty `packageVersion` (ad-hoc compiles with no manifest in scope, e.g.
+  // the internal self-tests) falls back to the legacy "0.1.0" default —
+  // matching `Msil.Bridge`'s empty-version fallback convention (#5834).
+  val jarVersion = if packageVersion.length == 0 { "0.1.0" } else { packageVersion }
   val req = BuildRequest(
     packageName = packageName,
     mainClass = mainClassName,
-    version = "0.1.0",
+    version = jarVersion,
     outPath = outputPath,
     classpathJars = newList()
   )
@@ -953,6 +961,7 @@ pub func compileToJarBundled(
   outputPath: in String,
   packageName: in String,
   stdlibSources: in List[String],
+  packageVersion: in String,
 ): Bool {
   val noFeatures: List[String] = newList()
   val noDepTemplateSrcs: List[String] = newList()
@@ -965,7 +974,8 @@ pub func compileToJarBundled(
     noFeatures,
     noFeatures,
     noDepTemplateSrcs,
-    noDefines
+    noDefines,
+    packageVersion
   )
 }
 
@@ -988,6 +998,7 @@ pub func compileToJarBundledWithFeatures(
   declaredFeatures: in List[String],
   depTemplateSrcs: in List[String],
   defines: in List[String],
+  packageVersion: in String,
 ): Bool {
   val one: List[String] = newList()
   one.add(source)
@@ -999,7 +1010,8 @@ pub func compileToJarBundledWithFeatures(
     activeFeatures,
     declaredFeatures,
     depTemplateSrcs,
-    defines
+    defines,
+    packageVersion
   )
 }
 
@@ -1048,6 +1060,7 @@ pub func compileProjectToJarBundledWithFeatures(
   declaredFeatures: in List[String],
   depTemplateSrcs: in List[String],
   defines: in List[String],
+  packageVersion: in String,
 ): Bool {
   if pkgSrcs.count == 0 {
     Console.error("error[J001]: JVM project build received no packages")
@@ -1638,10 +1651,13 @@ pub func compileProjectToJarBundledWithFeatures(
   // which passes `-cp` — can actually load Maven dependency classes at
   // runtime instead of throwing NoClassDefFoundError the moment a `[maven]`
   // dependency (e.g. Quartz) is actually used.
+  // Empty `packageVersion` falls back to the legacy "0.1.0" default — see
+  // the identical fallback in `compileToJar` (#5834).
+  val jarVersion = if packageVersion.length == 0 { "0.1.0" } else { packageVersion }
   val req = BuildRequest(
     packageName = packageName,
     mainClass = mainClassName,
-    version = "0.1.0",
+    version = jarVersion,
     outPath = outputPath,
     classpathJars = autoFfi.jarPaths
   )
