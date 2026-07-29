@@ -291,74 +291,60 @@ func flattenPathExpr(e: in Expr): Option[List[String]] {
   }
 }
 
-// Join `segs[0 ..< upto]` with "." — the candidate package-qualifier prefix
-// tried by `rewriteQualifiedMemberChain` at each chain depth.
-func joinSegPrefix(segs: in List[String], upto: in Int): String {
+// Join every segment of `segs` with "." — the candidate package-qualifier
+// tried by `rewriteQualifiedMemberChain`.
+func joinSegs(segs: in List[String]): String {
   var s = segs[0]
   var i = 1
-  while i < upto {
+  while i < segs.count {
     s = s + "." + segs[i]
     i = i + 1
   }
   s
 }
 
-// Rebuild `pkgSegs ++ remainder` as a flat `EPath` when exactly one segment
-// remains after the matched package prefix (the common case: a call or bare
-// value reference immediately off the package name), or as nested `EMember`s
-// re-wrapping every remaining segment on top of the qualified base otherwise
-// (a package-level `pub val`'s own field/member accessed further, e.g.
-// `Pkg.Sub.someRecordConst.field`). `pathSpan` is the ORIGINAL receiver
-// chain's own span (just `Pkg.Sub`, not the trailing member(s)) — the
-// synthesized `ModulePath`'s span, matching what the single-segment-only
-// code this generalizes used (`p.span`, the bare alias identifier's span,
-// not the whole call's). `outerSpan` is the full original expression's span
-// (`e.span`), used for every synthesized `Expr` node exactly as before.
-func rebuildQualifiedChain(pkgSegs: in List[String], remainder: in List[String], pathSpan: in Span, outerSpan: in Span): Expr {
+// Rebuild `pkgSegs ++ [trailingMember]` as a flat `EPath`. `pathSpan` is the
+// ORIGINAL receiver chain's own span (just `Pkg.Sub`, not the trailing
+// member) — the synthesized `ModulePath`'s span, matching what the
+// single-segment-only code this generalizes used (`p.span`, the bare alias
+// identifier's span, not the whole call's). `outerSpan` is the full original
+// expression's span (`e.span`), used for the synthesized `Expr` node exactly
+// as before.
+func rebuildQualifiedChain(pkgSegs: in List[String], trailingMember: in String, pathSpan: in Span, outerSpan: in Span): Expr {
   val baseSegs: List[String] = newList()
   var i = 0
   while i < pkgSegs.count {
     baseSegs.add(pkgSegs[i])
     i = i + 1
   }
-  baseSegs.add(remainder[0])
-  var acc = Expr(kind = EPath(path = ModulePath(segments = baseSegs, span = pathSpan)), span = outerSpan)
-  var k = 1
-  while k < remainder.count {
-    acc = Expr(kind = EMember(receiver = acc, memberName = remainder[k]), span = outerSpan)
-    k = k + 1
-  }
-  acc
+  baseSegs.add(trailingMember)
+  Expr(kind = EPath(path = ModulePath(segments = baseSegs, span = pathSpan)), span = outerSpan)
 }
 
-// The `Alias.foo` / `Pkg.Sub.foo` rewrite: given the ORIGINAL `EMember`'s
-// receiver chain fully flattened to `recvSegs`, try every prefix from longest
-// to shortest against the known alias/package-path keys (`aliasContains`);
-// the longest match wins so a package name that is itself a prefix of a
-// longer sibling package's name never mis-fires. `trailingMember` is the
-// current node's own `memberName`, appended after `recvSegs` as the final
-// candidate segment. `recvSpan` is the flattened receiver's own span, passed
-// through to `rebuildQualifiedChain` as `pathSpan`; `outerSpan` is the whole
-// expression's span. Returns `None` when no prefix matches any known
-// package, so the caller falls back to its default (non-rewritten) shape.
+// The `Alias.foo(...)` / `Pkg.Sub.foo(...)` CALL-CALLEE rewrite (invoked only
+// from the `ECall` arm — see its comment for why this never applies to a
+// plain, non-called qualified value reference): given a call's callee
+// `EMember`'s receiver chain fully flattened to `recvSegs`, collapse the
+// WHOLE chain into a flat `EPath` ONLY when it matches a known
+// alias/package-path key in its ENTIRETY (`aliasContains`) — never a partial
+// prefix, and never retried against a shorter prefix on a miss. A
+// single-segment package name or explicit alias trivially satisfies this
+// (`recvSegs` has exactly one element), exactly as the code this generalizes
+// did; a deeper call whose qualifier ISN'T itself wholly a known package
+// (`Pkg.Sub.someVal.method()`, a real method call on a package-level value)
+// returns `None`, and the `ECall` arm's caller falls back to the ordinary
+// (unspecialized, depth-1-only) `EMember`-arm recursion — correctly leaving
+// a genuine method call alone. `recvSpan` is the flattened receiver's own
+// span, passed through to `rebuildQualifiedChain` as `pathSpan`; `outerSpan`
+// is the callee `Expr`'s own span (the whole `Pkg.Sub.foo` chain, NOT
+// including the call's parens).
 func rewriteQualifiedMemberChain(
   aliases: in List[String], recvSegs: in List[String], trailingMember: in String, recvSpan: in Span, outerSpan: in Span
 ): Option[Expr] {
-  var k = recvSegs.count
-  while k >= 1 {
-    val candidate = joinSegPrefix(recvSegs, k)
-    if aliasContains(aliases, candidate) {
-      val pkgSegs = aliasPkgSegs(aliases, candidate)
-      val remainder: List[String] = newList()
-      var i = k
-      while i < recvSegs.count {
-        remainder.add(recvSegs[i])
-        i = i + 1
-      }
-      remainder.add(trailingMember)
-      return Some(value = rebuildQualifiedChain(pkgSegs, remainder, recvSpan, outerSpan))
-    }
-    k = k - 1
+  val candidate = joinSegs(recvSegs)
+  if aliasContains(aliases, candidate) {
+    val pkgSegs = aliasPkgSegs(aliases, candidate)
+    return Some(value = rebuildQualifiedChain(pkgSegs, trailingMember, recvSpan, outerSpan))
   }
   None
 }
@@ -379,24 +365,49 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
   match e.kind {
     case EPath(path) -> return Expr(kind = EPath(path = rewritePath(aliases, path)), span = e.span)
     case EMember(receiver, memberName) -> {
-      // `Alias.foo` / `Pkg.Sub.foo`: when the receiver is a pure dotted-name
-      // chain (an `EPath`, or nested `EMember`s bottoming out at one) whose
-      // flattened segments have a known alias/package-path prefix, surface
-      // the whole chain as a fully-qualified path (`<package>.foo`) so the
-      // post-rewrite typechecker resolves it against the declaring package's
-      // symbols — preserving the package keeps two same-name imports
-      // distinguishable (#1488 regex_safe). This covers a package name of
-      // ANY segment count: a single-segment alias/import matches at chain
-      // depth 1 (the historical case), and a multi-segment bare import
-      // (`import Pkg.Sub`, referenced via its full `Pkg.Sub.foo(...)` form —
-      // parsed as a depth-2 `EMember` chain, not a single-segment `EPath`
-      // head) matches at whatever depth its own dotted name has (#6294).
-      match flattenPathExpr(receiver) {
-        case Some(recvSegs) -> match rewriteQualifiedMemberChain(aliases, recvSegs, memberName, receiver.span, e.span) {
-          case Some(rewritten) -> return rewritten
-          case None -> ()
+      // `Alias.foo`: when the receiver is a single-segment `EPath` whose head
+      // is a known alias, surface the member as a fully-qualified path
+      // (`<package>.foo`) so the post-rewrite typechecker resolves it against
+      // the declaring package's symbols — preserving the package keeps two
+      // same-name imports distinguishable (#1488 regex_safe).
+      //
+      // Deliberately depth-1-only, even though a multi-segment bare import's
+      // FULL form (`Pkg.Sub.foo`, a depth-2+ `EMember` chain) needs the same
+      // treatment (#6294) — that generalization lives in the `ECall` arm
+      // below, applied ONLY to a call's own callee position, not here. This
+      // arm also fires for a plain (non-called) qualified VALUE reference
+      // (`Pkg.Sub.someVal`), and those already have their own scope-aware
+      // resolution downstream (`tryQualifiedStaticValNameMsil` /
+      // `tryQualifiedEnumOrdinalMsil` in MSIL codegen, walking the ORIGINAL
+      // un-flattened `EMember` chain with a "root name shadowed by a local"
+      // guard). This rewriter runs before typecheck and carries no scope
+      // information at all (`Coll` after `import X as Coll` already
+      // documented-collides with a same-named local, per this file's
+      // header) — eagerly flattening a deeper chain here would turn a
+      // local's OWN field-access chain that merely happens to spell out an
+      // unrelated package's dotted name into a bogus cross-package
+      // reference, bypassing the codegen guard that exists precisely to
+      // catch that. Confirmed as a real regression
+      // (`msil_project_bridge_self_test.l`'s "local shadowing a package
+      // name" case: a local `val ShadowVal = ...` whose own `Lib.secret`
+      // field chain collided with the unrelated bare-imported `ShadowVal.Lib`
+      // package's `pub val secret`) when an earlier version of this fix
+      // applied the deeper generalization here too.
+      match receiver.kind {
+        case EPath(p) -> {
+          if p.segments.count == 1 and aliasContains(aliases, p.segments[0]) {
+            val segs: List[String] = newList()
+            val pkg = aliasPkgSegs(aliases, p.segments[0])
+            var k = 0
+            while k < pkg.count {
+              segs.add(pkg[k])
+              k = k + 1
+            }
+            segs.add(memberName)
+            return Expr(kind = EPath(path = ModulePath(segments = segs, span = p.span)), span = e.span)
+          }
         }
-        case None -> ()
+        case _ -> ()
       }
       return Expr(kind = EMember(receiver = rewriteExpr(aliases, receiver), memberName = memberName), span = e.span)
     }
@@ -479,7 +490,29 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
         args2.add(rewriteCallArg(aliases, args[i]))
         i = i + 1
       }
-      return Expr(kind = ECall(fn = rewriteExpr(aliases, fn), args = args2), span = e.span)
+      // A qualified CALL specifically (`Pkg.Sub.foo(...)`, a package name of
+      // ANY segment count referenced by its full dotted form — #6294) needs
+      // its whole callee chain collapsed to a flat `EPath` here: codegen's
+      // call lowering (`lowerCallMsil` / its JVM analogue) only dispatches a
+      // user-defined package function through the `EPath` branch — an
+      // `EMember` callee falls into generic method-call lowering, which
+      // treats the receiver as a real value and fails (the #2929/#2930
+      // symptom this whole mechanism exists to prevent, at whatever segment
+      // depth the package name has). Scoped to the callee specifically (not
+      // generalized into the `EMember` arm above) so a plain qualified VALUE
+      // reference elsewhere keeps its existing, scope-aware resolution
+      // untouched (see that arm's comment for the regression this avoids).
+      val fn2 = match fn.kind {
+        case EMember(receiver, memberName) -> match flattenPathExpr(receiver) {
+          case Some(recvSegs) -> match rewriteQualifiedMemberChain(aliases, recvSegs, memberName, receiver.span, fn.span) {
+            case Some(rewritten) -> rewritten
+            case None -> rewriteExpr(aliases, fn)
+          }
+          case None -> rewriteExpr(aliases, fn)
+        }
+        case _ -> rewriteExpr(aliases, fn)
+      }
+      return Expr(kind = ECall(fn = fn2, args = args2), span = e.span)
     }
     case ETypeApp(fn, args) -> {
       val args2: List[TypeArg] = newList()

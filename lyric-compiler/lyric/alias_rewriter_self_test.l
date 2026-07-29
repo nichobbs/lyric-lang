@@ -409,13 +409,24 @@ test "bare three-segment import referenced by its full Foo.Bar.Baz.qux() form re
   }
 }
 
-// A chain with member access PAST the matched package prefix must exercise
-// `rebuildQualifiedChain`'s multi-remainder branch: the qualified portion
-// collapses to a flat `EPath`, and every segment past it re-wraps as
-// `EMember` on top, rather than the whole chain becoming one over-long
-// `EPath` (which would wrongly claim `field` names part of the package).
-test "bare multi-segment import chain with trailing member access past the package rewrites (#6294)" {
-  val src = "package Test\nimport Foo.Bar\nfunc f(): Int {\n  Foo.Bar.someConst.field\n}\n"
+// A NON-call qualified reference (bare value/field access, no trailing
+// `()`) into a multi-segment bare-imported package must NOT be touched by
+// the #6294 generalization at all, even though the SAME dotted chain would
+// collapse if it were a call. The deep-flatten rewrite lives only in the
+// `ECall` arm's callee handling (`alias_rewriter.l`), specifically so a
+// plain value/field-access chain keeps its existing, scope-aware resolution
+// downstream (MSIL's `tryQualifiedStaticValNameMsil`, which guards against a
+// LOCAL binding shadowing the chain's root — the aliaser itself has no scope
+// information to do that check safely). An earlier version of this fix
+// applied the generalization in the general `EMember` arm too, and broke
+// `msil_project_bridge_self_test.l`'s "local shadowing a package name"
+// regression case: a local `val ShadowVal = ...` whose own `Lib.secret`
+// field chain collided with the unrelated bare-imported `ShadowVal.Lib`
+// package's `pub val secret`, silently reading the wrong value. This test
+// asserts the non-call chain survives `rewriteFile` completely unchanged
+// (still the original nested `EMember`s) so that regression can't resurface.
+test "bare multi-segment import referenced by its full form as a non-call value reference is left untouched (#6294)" {
+  val src = "package Test\nimport Foo.Bar\nfunc f(): Int {\n  val x = Foo.Bar.someConst\n  0\n}\n"
   val pr = parse(src)
   val rewritten = rewriteFile(pr.file)
   val firstItem = rewritten.items[0]
@@ -428,26 +439,35 @@ test "bare multi-segment import chain with trailing member access past the packa
               assertTrue(block.statements.count > 0, "function body block must have at least one statement")
               val stmt = block.statements[0]
               match stmt.kind {
-                case SExpr(expr) -> {
-                  match expr.kind {
-                    case EMember(recv, memberName) -> {
-                      assertEqual(memberName, "field", "outermost node is still EMember for the trailing '.field' access")
-                      match recv.kind {
-                        case EPath(p) -> {
-                          assertEqualInt(p.segments.count, 3, "the qualified portion collapses to Foo.Bar.someConst")
-                          assertEqual(p.segments[0], "Foo", "rebuilt path keeps the package's first segment")
-                          assertEqual(p.segments[1], "Bar", "rebuilt path keeps the package's second segment")
-                          assertEqual(p.segments[2], "someConst", "rebuilt path keeps the package-level value name")
+                case SLocal(lb) -> {
+                  match lb {
+                    case LBVal(_, _, initExpr) -> {
+                      match initExpr.kind {
+                        case EMember(recv1, m1) -> {
+                          assertEqual(m1, "someConst", "outermost node is still EMember (unrewritten) for a non-call chain")
+                          match recv1.kind {
+                            case EMember(recv0, m0) -> {
+                              assertEqual(m0, "Bar", "middle node is still EMember (unrewritten)")
+                              match recv0.kind {
+                                case EPath(p0) -> {
+                                  assertEqualInt(p0.segments.count, 1, "innermost node is still the bare single-segment EPath")
+                                  assertEqual(p0.segments[0], "Foo", "innermost EPath still names the first raw segment")
+                                }
+                                case _ -> assertTrue(false, "innermost receiver is not EPath — chain was rewritten (#6294 regression)")
+                              }
+                            }
+                            case EPath(_) -> assertTrue(false, "chain was flattened into EPath — non-call qualified reference must stay untouched (#6294 regression)")
+                            case _ -> assertTrue(false, "middle receiver is unexpected ExprKind")
+                          }
                         }
-                        case EMember(_, _) -> assertTrue(false, "receiver is still a nested EMember — the qualified prefix was not collapsed (#6294)")
-                        case _ -> assertTrue(false, "receiver is unexpected ExprKind after rewrite")
+                        case EPath(_) -> assertTrue(false, "chain was flattened into EPath — non-call qualified reference must stay untouched (#6294 regression)")
+                        case _ -> assertTrue(false, "val initializer is unexpected ExprKind after rewrite")
                       }
                     }
-                    case EPath(_) -> assertTrue(false, "whole chain collapsed into one EPath — 'field' was wrongly folded into the package qualifier")
-                    case _ -> assertTrue(false, "expression is unexpected ExprKind after rewrite")
+                    case _ -> assertTrue(false, "local binding is not LBVal")
                   }
                 }
-                case _ -> assertTrue(false, "first statement is not SExpr")
+                case _ -> assertTrue(false, "first statement is not SLocal")
               }
             }
             case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
@@ -460,13 +480,16 @@ test "bare multi-segment import chain with trailing member access past the packa
   }
 }
 
-// Longest-prefix-wins precedence (#6294): with BOTH a bare `import Foo` and a
+// Longest-match-wins precedence (#6294): with BOTH a bare `import Foo` and a
 // bare `import Foo.Bar` in scope, `Foo.Bar.baz()` must resolve against the
-// more specific `Foo.Bar` package (the longer, 2-segment match), not as a
-// member access into package `Foo`'s own exported `Bar` value. This mirrors
-// the codebase's existing no-diagnostic first-wins precedent for tail-alias
-// collisions (#3250) — the more specific import always wins silently, with
-// no ambiguity diagnostic.
+// more specific `Foo.Bar` package, not as a member access into package
+// `Foo`'s own exported `Bar` value. `rewriteQualifiedMemberChain` checks the
+// WHOLE flattened receiver chain in one shot (never a partial prefix), so
+// the 2-segment match against the full `Foo.Bar.baz` chain is tried before
+// any shorter interpretation gets a chance via recursion — the more specific
+// import always wins silently, with no ambiguity diagnostic, mirroring the
+// codebase's existing no-diagnostic first-wins precedent for tail-alias
+// collisions (#3250).
 test "longest matching package prefix wins when a shorter sibling import is also in scope (#6294)" {
   val src = "package Test\nimport Foo\nimport Foo.Bar\nfunc f(): Int {\n  Foo.Bar.baz()\n}\n"
   val pr = parse(src)

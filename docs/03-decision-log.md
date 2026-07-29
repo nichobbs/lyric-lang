@@ -20814,45 +20814,117 @@ cross-package call resolution, so the program still builds and runs — only the
 type checker's validation of the call (arity, argument types, return-type
 propagation) silently never happened.
 
-**Fix.** `Lyric.AliasRewriter`:
+**Fix.** `Lyric.AliasRewriter`, scoped specifically to a call's own callee
+position (the `ECall` arm), never the general `EMember` arm:
   * `collectAliases` registers a self-mapped full-dotted-path key for every
     bare (non-`as`) import, alongside the existing tail-only key — e.g.
     `import PkgD.Repository` now registers both `Repository=PkgD.Repository`
     (#2929, unchanged) and `PkgD.Repository=PkgD.Repository` (new).
-  * `rewriteExpr`'s `EMember` arm now flattens the ENTIRE receiver chain
-    (`flattenPathExpr`, walking arbitrary-depth `EMember`s down to their
-    `EPath` root) instead of inspecting only the immediate receiver, and tries
-    every prefix from longest to shortest against the known alias/package-path
-    keys (`rewriteQualifiedMemberChain`) — the longest match wins so a package
-    name that is itself a prefix of a longer sibling's name never mis-fires.
-    A match rebuilds the qualified reference as a flat `EPath`, re-wrapping any
-    segments past the matched package as `EMember`s on top of it
-    (`rebuildQualifiedChain`) for the rare case of a package-level constant's
-    own field accessed further (`Pkg.Sub.someConst.field`).
+  * When `ECall`'s callee (`fn`) is an `EMember`, its receiver chain is
+    flattened in full (`flattenPathExpr`, walking arbitrary-depth `EMember`s
+    down to an `EPath` root) and checked against the known alias/package-path
+    keys as ONE WHOLE candidate (`rewriteQualifiedMemberChain` /
+    `aliasContains`) — never a partial prefix, and never retried against a
+    shorter prefix on a miss. A whole-chain match collapses the callee to a
+    flat `EPath` (`rebuildQualifiedChain`, always exactly `pkgSegs ++
+    [callName]`); a miss falls back to the ordinary (pre-existing,
+    depth-1-only) `EMember`-arm recursion, unmodified — correctly leaving a
+    genuine method call (`Pkg.Sub.someVal.method()`) alone.
+  * The general `EMember` arm (used for every NON-call qualified reference —
+    a bare value/const read, a field access) is **completely unchanged from
+    before this fix**: still depth-1-only, matching only a receiver that is
+    itself a single-segment bare `EPath`.
 
-This is a strict generalization: a single-segment package name or an explicit
-alias still matches at chain depth 1 exactly as before (the `k = 1` case of
-the new longest-to-shortest loop), so #2929/#2930/#1834's existing behaviour
-is unchanged.
+This asymmetry — generalizing only the call-callee position — is deliberate
+and was arrived at after two rounds of CI catching real regressions from
+broader versions of this fix, both fixed before merge:
+
+  1. **A first version generalized inside `rewriteQualifiedMemberChain`
+     itself: tried every prefix from longest to shortest, rewrapping any
+     segments past the matched prefix as `EMember`s on top of the collapsed
+     `EPath`.** That version passed every `alias_rewriter_self_test.l` case
+     but broke a real, pre-existing feature caught by CI's JVM self-test
+     suite: `qualified_enum_case_self_test.l`'s `Std.Errors.
+     ParseError.InvalidFormat(input = ..., expected = ...)` (#5943, a
+     package+type+case qualified union-case CONSTRUCTION) mis-collapsed to
+     `EMember(receiver = EPath(["Std","Errors","ParseError"]), memberName =
+     "InvalidFormat")` — a hybrid flat-`EPath`-wrapped-in-`EMember` shape
+     that neither the type checker's `unionCaseSymbolOf`/`constructorSymbolOf`
+     (only ever matched a *plain* `EPath` callee, never one nested inside an
+     `EMember`) nor JVM codegen's own qualified-construction walk (expects
+     EITHER a flat `EPath` OR a *pure* nested-`EMember` chain reaching an
+     `EPath` base, never a mix) could resolve; JVM codegen's fallback then
+     tried the whole thing as an auto-FFI static call and panicked with `JVM
+     auto-FFI: class 'Std.Errors.ParseError' not found in JDK jmods or
+     LYRIC_FFI_JARS`. Reproduced locally against `stage0` (the pristine
+     pre-fix release) to confirm the construction worked correctly before
+     any of this change, then against the broken intermediate build to
+     confirm the exact panic.
+  2. **A second version fixed (1) by requiring an EXACT whole-chain match
+     (no partial-prefix rewrap) and falling through to ordinary recursion on
+     a miss — but still applied generally in the `EMember` arm, for EVERY
+     qualified reference, not just calls.** CI's MSIL self-test suite then
+     caught `msil_project_bridge_self_test.l`'s pre-existing "local shadowing
+     a package name reads its own field, not the qualified static val"
+     regression test (#5265): a local `val ShadowVal = Outer(Lib = Inner(
+     secret = "local-not-static"))` (in a file that also bare-imports the
+     UNRELATED `ShadowVal.Lib` package, which happens to expose `pub val
+     secret`) read `ShadowVal.Lib.secret` and got `"from-package"` instead
+     of `"local-not-static"`. The alias rewriter runs *before* typecheck and
+     carries **no scope information at all** — it is documented scope-blind
+     in this very file's header (`import X as Coll` colliding with a
+     same-named local was always an accepted, narrow limitation) — so it
+     cannot tell that `ShadowVal` names a local here. MSIL codegen's OWN
+     qualified-static-val resolution (`tryQualifiedStaticValNameMsil`,
+     covering exactly this `Pkg.Sub.val.field`-shaped access) already has a
+     genuine, scope-aware "first-segment-is-a-local" guard — since it runs
+     downstream of typecheck and has real access to `FuncCtx`'s locals — but
+     that guard only gets a chance to run if the aliaser leaves the chain as
+     a nested `EMember` for it to walk. By collapsing `ShadowVal.Lib` (which
+     happens to spell out the unrelated package's own dotted name) into a
+     bare `EPath` pre-emptively, the generalized aliaser bypassed the guard
+     entirely, in a case a real, un-synthesized `EPath` could never have
+     reached (a source-level `EPath` is always parser-emitted from an
+     already-fully-qualified reference, never ambiguous with a local — only
+     a *rewritten* one can introduce this ambiguity). Function CALLS are
+     different: MSIL/JVM's call lowering (`lowerCallMsil`/its JVM analogue)
+     has NO analogous scope-aware fallback for an `EMember` callee — an
+     `EMember`-shaped call callee unconditionally falls into generic
+     method-call lowering and fails outright (the exact #2929/#2930
+     symptom) — so restricting the generalization to the callee position
+     specifically loses nothing calls need while leaving every scope-aware,
+     non-call resolution path (`tryQualifiedStaticValNameMsil`,
+     `tryQualifiedEnumOrdinalMsil`, ordinary field-access codegen) exactly as
+     it was.
+
+This is a strict generalization of #2929/#2930/#1834's existing behaviour:
+a single-segment package name or an explicit alias still matches at chain
+depth 1 exactly as before, in both the callee and non-callee positions.
 
 **Verification.** `alias_rewriter_self_test.l` gained five cases: the
-full-dotted-form two-segment repro (asserting the rewritten `EPath` has the
-right 3 segments in order), a three-segment package's full form (guards
-against a depth-1-only regression), a chain with member access PAST the
-matched package (exercises `rebuildQualifiedChain`'s multi-remainder branch —
-the qualified prefix collapses to a flat `EPath` and the trailing member
-re-wraps as `EMember` on top of it, rather than folding into one over-long
-path), a longest-prefix-wins precedence case (both a bare `import Foo` and a
-bare `import Foo.Bar` in scope; `Foo.Bar.baz()` resolves against the more
-specific 2-segment package, mirroring the codebase's existing no-diagnostic
-first-wins precedent for tail-alias collisions, #3250), and a runtime
-end-to-end case (`Std.Console.println(...)`, the full form, alongside the
-pre-existing tail-only `Console.println(...)` case) proving the fix reaches
-real codegen, not just the rewriter's own AST shape. Confirmed against a
-minimal multi-package project repro mirroring the cloud-agents shape (a
-dotted-name package declaring a function whose return type failed to
-validate against an
-incompatible field/argument type) before the fix — zero diagnostics, wrong
-type accepted; after the fix — correct T0104/T0043 diagnostics reported.
+full-dotted-form two-segment CALL repro (asserting the rewritten `EPath`
+has the right 3 segments in order, plus a span assertion that the
+synthesized `ModulePath`'s span matches the original receiver's own span,
+not the whole call's), a three-segment package's full-form CALL (guards
+against a depth-1-only regression), a longest-match-wins precedence CALL
+case (both a bare `import Foo` and a bare `import Foo.Bar` in scope;
+`Foo.Bar.baz()` resolves against the more specific 2-segment package), a
+runtime end-to-end CALL case (`Std.Console.println(...)`, the full form,
+alongside the pre-existing tail-only `Console.println(...)` case) proving
+the fix reaches real codegen, and — added after regression (2) above — a
+case proving a NON-call qualified reference into the SAME multi-segment
+bare-imported package is left completely untouched (still the original
+nested `EMember`s), guarding against ever re-widening the generalization
+past the callee position. `qualified_enum_case_self_test.l` and
+`qualified_union_case_self_test.l` (the #5943/#5769/#5845/#5971 family
+regression (1) above nearly broke) and `msil_project_bridge_self_test.l`
+(regression (2)'s own test, plus its 33 siblings) all re-verified green on
+both targets after both corrections. Confirmed against a minimal
+multi-package project repro mirroring the cloud-agents shape (a dotted-name
+package declaring a function whose return type failed to validate against
+an incompatible field/argument type) before the fix — zero diagnostics,
+wrong type accepted; after the fix — correct T0104/T0043 diagnostics
+reported.
 
-**Related:** #2929, #2930, #1834, #1488, D-progress-018, #6294.
+**Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
+D-progress-018, #6294.
