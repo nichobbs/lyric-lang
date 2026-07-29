@@ -26257,6 +26257,74 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
           mi = mi + 1
         }
       }
+      case IProtected(decl) -> {
+        // Walk protected-type member bodies (#6119 follow-up): both `PMFunc`
+        // (lowered via `lowerImplMethodMsil`, same self-capture shape as
+        // `IImpl`) and `PMEntry` (lowered via `lowerProtectedMsil` directly)
+        // were never scanned by this pre-pass, hitting the same "lambda
+        // token missing" panic.
+        //
+        // Bare field references in a protected member body are `EPath([name])`
+        // at parse time; `lowerProtectedMsil` rewrites them to
+        // `EMember(ESelf, name)` via `desugarProtectedFuncDecl`/
+        // `desugarProtectedFuncBody` — a SEPARATE, later pass over its own
+        // copy of the body — before actually lowering. If this pre-pass
+        // walked (and synthesized the lifted `__lambda_*` IFunc from) the
+        // RAW pre-desugar body instead, the lifted function's body would
+        // still contain the bare `EPath(["n"])` reference: not a real
+        // parameter, not a real capture (only the call-site's OWN desugared
+        // copy has the `ESelf` node the capture-name collector recognizes),
+        // so it would silently resolve to nothing meaningful instead of the
+        // captured field — a silent wrong-value miscompile, not a crash.
+        // Desugaring here first, exactly like `lowerProtectedMsil` does,
+        // keeps the synthesized lambda body byte-for-byte consistent with
+        // what the call site's own (independently, but identically,
+        // desugared) `ELambda` node captures.
+        val fieldNames = makeProtectedFieldNames(decl)
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMFunc(fn) -> {
+              val desugaredFn = desugarProtectedFuncDecl(fieldNames, fn)
+              match desugaredFn.body {
+                case Some(body) -> {
+                  match body {
+                    case FBBlock(block) -> {
+                      var si = 0
+                      while si < block.statements.count {
+                        collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                        si = si + 1
+                      }
+                    }
+                    case FBExpr(e) -> {
+                      collectLambdasBfsExpr(e, ticker, synths, deferred)
+                    }
+                  }
+                }
+                case None -> {
+                }
+              }
+            }
+            case PMEntry(entryDecl) -> {
+              match desugarProtectedFuncBody(fieldNames, entryDecl.body) {
+                case FBBlock(block) -> {
+                  var si = 0
+                  while si < block.statements.count {
+                    collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                    si = si + 1
+                  }
+                }
+                case FBExpr(e) -> {
+                  collectLambdasBfsExpr(e, ticker, synths, deferred)
+                }
+              }
+            }
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
       case _ -> {
       }
     }

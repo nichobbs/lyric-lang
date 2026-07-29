@@ -183,3 +183,37 @@ test "lambda literal inside impl method body (#6119)" {
   val r: Adder = AdderImpl(x = 10)
   assertEqualInt(r.addOne(), 11, "lambda captures self field from within impl method")
 }
+
+// ── Lambda literal inside a protected-type member body (#6119 follow-up) ──────
+// `liftLambdasMsil` also had no `IProtected` case, so a lambda inside a
+// `protected type` `func`/`entry` body hit the same "lambda token missing"
+// panic. A bare field reference inside a protected member body is
+// `EPath([name])` at parse time; `lowerProtectedMsil` rewrites it to
+// `EMember(ESelf, name)` in a SEPARATE, later desugar pass over its own copy
+// of the body before actually lowering. Fixing the lift pre-pass without also
+// desugaring its own walked copy would leave the lifted lambda's synthesized
+// body with the RAW (never-desugared) field reference — not a capture the
+// call site's own capture-name collector would recognize under the same
+// name, so it would silently resolve to nothing meaningful instead of the
+// captured field (a wrong-value miscompile, not a crash). Covers both
+// `PMFunc` (routed through `lowerImplMethodMsil`, the same shape as `IImpl`
+// above) and `PMEntry` (routed through `lowerProtectedMsil` directly).
+protected type Circuit {
+  var count: Int = 0
+  func peek(): Int {
+    applyFn({ -> count + 1 })
+  }
+  entry bump(): Int {
+    applyFn({ -> count + 1 })
+  }
+}
+
+test "lambda literal inside a protected-type func body (#6119 follow-up)" {
+  val c = Circuit()
+  assertEqualInt(c.peek(), 1, "lambda captures protected field from within a protected-type func")
+}
+
+test "lambda literal inside a protected-type entry body (#6119 follow-up)" {
+  val c = Circuit()
+  assertEqualInt(c.bump(), 1, "lambda captures protected field from within a protected-type entry")
+}
