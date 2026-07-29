@@ -16914,7 +16914,14 @@ func emitGenericExternMember(
         asi = asi + 1
       }
       if argSigsOk {
-        sigOpt = Mdr.resolveExternMethodScored(path, cleanFqn, r.memberName, argSigs)
+        sigOpt = Mdr.resolveExternMethodScoredCached(
+          cctx.metadataParsedPaths,
+          cctx.metadataParsedAssemblies,
+          path,
+          cleanFqn,
+          r.memberName,
+          argSigs
+        )
       }
       match sigOpt {
         case Some(_) -> ()
@@ -17740,7 +17747,7 @@ func emitExternTargetBody(
                   return true
                 }
                 case None -> {
-                  if Mdr.isStaticFieldExtern(asmPath, resolvedFqn, r.memberName) {
+                  if Mdr.isStaticFieldExternCached(cctx.metadataParsedPaths, cctx.metadataParsedAssemblies, asmPath, resolvedFqn, r.memberName) {
                     val fldSig = buildFieldSigWithCtx(ffiRetTy, cctx.lctx)
                     val frRow = ctxAddMemberRef(cctx.lctx, tRefRow, r.memberName, "ffifld_" + target, fldSig)
                     insns.add(MLdsfld(fieldToken = 0x0A000000 + frRow))
@@ -17792,7 +17799,7 @@ func emitExternTargetBody(
         match mapGet(cctx.metadataPathIndex, assemblyForTypeMsil(cctx, resolvedFqn)) {
           case None -> ()
           case Some(asmPath) -> {
-            match Mdr.resolveExternMethodScored(asmPath, resolvedFqn, r.memberName, argSigs) {
+            match Mdr.resolveExternMethodScoredCached(cctx.metadataParsedPaths, cctx.metadataParsedAssemblies, asmPath, resolvedFqn, r.memberName, argSigs) {
               case None -> ()
               case Some(msig) -> {
                 val mParams: List[MsilType] = newList()
@@ -22657,6 +22664,44 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
 //
 // The `MFunc.params` list excludes `this`; the signature builder
 // (`buildInstanceMethodSigWithCtx` in `lowerMRecord`) prepends the HASTHIS bit.
+// Shared parameter-registration loop for `lowerImplMethodMsil` and
+// `lowerRecordMethodMsil` (#4963): binds each param's slot index, tracks its
+// MSIL type CTX-AWARE (a param's concrete instantiation — e.g. `List<int32>`
+// vs `List<object>` — determines which BCL method overload the body's calls
+// to it must resolve, #1877), records byref-mode slots, and captures a
+// `TFunction`-typed param's parameter/return types for the typed-invoke ABI
+// (#1877 Phase 3).  Assumes `fctx.slotTicker` already reserved slot 0 for the
+// receiver (`this`/`self`); assigns slots 1..N in declaration order.
+func registerParamsMsil(cctx: in CodegenCtx, fctx: in FuncCtx, params: in List[Param], pkgName: in String): Unit {
+  var pi = 0
+  while pi < params.count {
+    val p = params[pi]
+    val paramTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    val slot = fctx.slotTicker.count
+    fctx.slots.add(p.name, slot)
+    fctx.types.add(p.name, paramTy)
+    if isByrefMode(p.mode) {
+      fctx.byrefSlotTypes.add(slot, paramTy)
+    }
+    match p.ty.kind {
+      case TFunction(paramTes, retTe) -> {
+        fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
+        val paramMsilTys: List[MsilType] = newList()
+        var pjj = 0
+        while pjj < paramTes.count {
+          paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pjj], pkgName))
+          pjj = pjj + 1
+        }
+        fctx.funcValParamTypes.add(p.name, paramMsilTys)
+      }
+      case _ -> {
+      }
+    }
+    fctx.slotTicker.add(0)
+    pi = pi + 1
+  }
+}
+
 pub func lowerImplMethodMsil(
   cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String, targetTypeName: in String
 ): MFunc {
@@ -22691,42 +22736,12 @@ pub func lowerImplMethodMsil(
 
   val insns: List[MInsn] = newList()
 
-  // Allocate slots 1..N for user parameters.
-  var pi = 0
-  while pi < implRealParams.count {
-    val p = implRealParams[pi]
-    // Body tracking must be CTX-aware: a `List[Int]` param is a concrete
-    // `List<int32>` instance at run time, so the body's `log.add(99)` must emit
-    // `List<int32>::Add(int32)`, not the legacy `List<object>::Add(object)` —
-    // the latter, called on a `List<int32>`, corrupts memory (different backing
-    // layout) and segfaults.
-    val paramTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
-    val slot = fctx.slotTicker.count  // 1, 2, …
-    fctx.slots.add(p.name, slot)
-    fctx.types.add(p.name, paramTy)
-    if isByrefMode(p.mode) {
-      fctx.byrefSlotTypes.add(slot, paramTy)
-    }
-    // Record the declared return type of a function-typed param (a `(A,...) -> R`
-    // value) so invoking it (`f()`) yields R rather than a bare object (#1877).
-    match p.ty.kind {
-      case TFunction(paramTes, retTe) -> {
-        fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
-        // Also track parameter types for typed invoke ABI (#1877 Phase 3)
-        val paramMsilTys: List[MsilType] = newList()
-        var pjj = 0
-        while pjj < paramTes.count {
-          paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pjj], pkgName))
-          pjj = pjj + 1
-        }
-        fctx.funcValParamTypes.add(p.name, paramMsilTys)
-      }
-      case _ -> {
-      }
-    }
-    fctx.slotTicker.add(0)
-    pi = pi + 1
-  }
+  // Allocate slots 1..N for user parameters.  Body tracking must be
+  // CTX-aware: a `List[Int]` param is a concrete `List<int32>` instance at
+  // run time, so the body's `log.add(99)` must emit `List<int32>::Add(int32)`,
+  // not the legacy `List<object>::Add(object)` — the latter, called on a
+  // `List<int32>`, corrupts memory (different backing layout) and segfaults.
+  registerParamsMsil(cctx, fctx, implRealParams, pkgName)
 
   // Reserve the epilogue label so a `return` inside a protected region can
   // `leave` to it (see SReturn / #1477).
@@ -22850,33 +22865,7 @@ pub func lowerRecordMethodMsil(
 
   val insns: List[MInsn] = newList()
 
-  var pi = 0
-  while pi < realParams.count {
-    val p = realParams[pi]
-    val paramTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
-    val slot = fctx.slotTicker.count
-    fctx.slots.add(p.name, slot)
-    fctx.types.add(p.name, paramTy)
-    if isByrefMode(p.mode) {
-      fctx.byrefSlotTypes.add(slot, paramTy)
-    }
-    match p.ty.kind {
-      case TFunction(paramTes, retTe) -> {
-        fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
-        val paramMsilTys: List[MsilType] = newList()
-        var pjj = 0
-        while pjj < paramTes.count {
-          paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pjj], pkgName))
-          pjj = pjj + 1
-        }
-        fctx.funcValParamTypes.add(p.name, paramMsilTys)
-      }
-      case _ -> {
-      }
-    }
-    fctx.slotTicker.add(0)
-    pi = pi + 1
-  }
+  registerParamsMsil(cctx, fctx, realParams, pkgName)
 
   fctx.epilogueLabel = freshLabelMsil(fctx)
 

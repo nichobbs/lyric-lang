@@ -10254,6 +10254,40 @@ func synthIfaceBoxDtor(ctx: in Ctx, ii: in NIfaceInfo): NFunc {
   )
 }
 
+/// The ordered subset of `idecl.members` that the native backend's vtable
+/// layout covers: non-generic `IMSig` signatures, skipping async methods
+/// (async interface dispatch is unimplemented on this backend) and any
+/// method with its own generics (MVAR is unbuildable, docs/43 Q-GEN-002).
+/// `registerInterfaceNames` (phase A, method-name list) and
+/// `registerInterfaceTypes` (phase B, param/return types + vtable field
+/// count) both derive from this SAME filtered, in-order list — the vtable
+/// slot at index `i` in phase A's `methodNames` must be the same method as
+/// index `i` in phase B's `methodParamTys`/`methodRetTys`, so any drift
+/// between the two filters would silently misalign a slot.
+func nonGenericSyncSigs(idecl: in InterfaceDecl): List[FunctionSig] {
+  val sigs: List[FunctionSig] = newList()
+  var mi = 0
+  while mi < idecl.members.count {
+    match idecl.members[mi] {
+      case IMSig(sig) -> {
+        match sig.generics {
+          case Some(_) -> {
+          }
+          case None -> {
+            if not sig.isAsync {
+              sigs.add(sig)
+            }
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    mi = mi + 1
+  }
+  sigs
+}
+
 /// Register interface box + vtable NAMES and method-name lists (phase A).
 /// Runs BEFORE records are registered so a record with an interface-typed
 /// field resolves the interface to its box type during layout (#4917), and
@@ -10271,24 +10305,11 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
         case None -> {
           val qualified = u.pkgName + "." + idecl.name
           val mangled = mangleIfaceName(qualified)
+          val sigs = nonGenericSyncSigs(idecl)
           val mnames: List[String] = newList()
           var mi = 0
-          while mi < idecl.members.count {
-            match idecl.members[mi] {
-              case IMSig(sig) -> {
-                match sig.generics {
-                  case Some(_) -> {
-                  }
-                  case None -> {
-                    if not sig.isAsync {
-                      mnames.add(sig.name)
-                    }
-                  }
-                }
-              }
-              case _ -> {
-              }
-            }
+          while mi < sigs.count {
+            mnames.add(sigs[mi].name)
             mi = mi + 1
           }
           val info = NIfaceInfo(
@@ -10331,30 +10352,18 @@ func registerInterfaceTypes(
           }
           val pTys: List[List[NType]] = newList()
           val rTys: List[NType] = newList()
+          val sigs = nonGenericSyncSigs(idecl)
           var mi = 0
-          while mi < idecl.members.count {
-            match idecl.members[mi] {
-              case IMSig(sig) -> {
-                match sig.generics {
-                  case Some(_) -> {
-                  }
-                  case None -> {
-                    if not sig.isAsync {
-                      val ps: List[NType] = newList()
-                      var pi = 0
-                      while pi < sig.params.count {
-                        ps.add(typeToN(ctx, sig.params[pi].ty))
-                        pi = pi + 1
-                      }
-                      pTys.add(ps)
-                      rTys.add(retTypeToN(ctx, sig.ret))
-                    }
-                  }
-                }
-              }
-              case _ -> {
-              }
+          while mi < sigs.count {
+            val sig = sigs[mi]
+            val ps: List[NType] = newList()
+            var pi = 0
+            while pi < sig.params.count {
+              ps.add(typeToN(ctx, sig.params[pi].ty))
+              pi = pi + 1
             }
+            pTys.add(ps)
+            rTys.add(retTypeToN(ctx, sig.ret))
             mi = mi + 1
           }
           val info = NIfaceInfo(

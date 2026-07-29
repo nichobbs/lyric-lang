@@ -20,6 +20,13 @@
 //!   Empty string "" signals a timeout (no message available).
 //!
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//!
+//! `@cfg(target = "dotnet")` (#3385): this kernel's externs are all BCL
+//! (`System.Collections.Concurrent.*`), so a `--target jvm` build must not
+//! pull it in even though `inmemory` is a `default` feature — `Mq.Kernel.Jvm`
+//! (this package's JVM counterpart) is the one gated with
+//! `@cfg(feature = "jvm")`.
+@cfg(target = "dotnet")
 package Mq.Kernel.Net
 
 import Std.Core

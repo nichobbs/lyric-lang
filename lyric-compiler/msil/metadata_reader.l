@@ -1172,6 +1172,24 @@ pub func isStaticFieldExtern(asmPath: in String, typeFqn: in String, fieldName: 
   }
 }
 
+// Cached counterpart of `isStaticFieldExtern` (#3952): routes the parse
+// through `loadParsedAssemblyCached` instead of re-reading and re-parsing
+// `asmPath` from disk on every call.  `cachePaths`/`cacheParsed` is the
+// caller-owned per-compilation cache (`CodegenCtx`'s
+// `metadataParsedPaths`/`metadataParsedAssemblies` in `codegen.l`).
+pub func isStaticFieldExternCached(
+  cachePaths: in List[String],
+  cacheParsed: in List[MdrParsedAssembly],
+  asmPath: in String,
+  typeFqn: in String,
+  fieldName: in String,
+): Bool {
+  match loadParsedAssemblyCached(cachePaths, cacheParsed, asmPath) {
+    case None -> false
+    case Some(p) -> isStaticFieldExternIn(p.img, p.layout, p.th, typeFqn, fieldName)
+  }
+}
+
 // Retrieves the constant value of an Int32 literal/enum field declared by typeFqn, or None.
 pub func getLiteralFieldInt32In(
   img: in PeImage,
@@ -3470,6 +3488,26 @@ pub func resolveExternMethodScored(
   }
 }
 
+// Cached counterpart of `resolveExternMethodScored` (#6199 / #3930): routes
+// the parse through `loadParsedAssemblyCached` instead of re-reading and
+// re-parsing `asmPath` from disk on every extern call site.
+// `cachePaths`/`cacheParsed` is the caller-owned per-compilation cache
+// (`CodegenCtx`'s `metadataParsedPaths`/`metadataParsedAssemblies` in
+// `codegen.l`).
+pub func resolveExternMethodScoredCached(
+  cachePaths: in List[String],
+  cacheParsed: in List[MdrParsedAssembly],
+  asmPath: in String,
+  typeFqn: in String,
+  member: in String,
+  fullArgTypes: in List[SigType],
+): Option[DecodedMethodSig] {
+  match loadParsedAssemblyCached(cachePaths, cacheParsed, asmPath) {
+    case None -> None
+    case Some(p) -> resolveExternMethodScoredIn(p.img, p.layout, p.th, typeFqn, member, fullArgTypes)
+  }
+}
+
 // ── Layer 5b: interface-impl conformance support (D105 Phase 2) ──────────────
 //
 // `TypeAttributes.ClassSemanticsMask` is the two-bit field at 0x20:
@@ -3716,6 +3754,19 @@ func resolveExternWalk(
   None
 }
 
+// Pass-order trade-off (#5633): the plain `noBases` pass runs first and, on
+// any hit, wins outright — including a hit against an `object`-typed
+// parameter overload, even when a second, more-specific overload only
+// becomes reachable via the Extends-chain upcast pass below.  C#'s overload
+// resolution instead ranks ALL applicable overloads (including those reached
+// through a base-class conversion) by specificity and picks the best one in
+// a single pass.  Reordering to match that would require computing upcast
+// chains up front for every call (not just on a first-pass miss), which
+// changes the common-case cost profile this two-pass split was built to
+// avoid (#5605).  In practice an exact/erased-object match beating a
+// same-arity base-typed overload has not been observed to misresolve a real
+// BCL call; if it ever does, the fix is to score both passes together
+// instead of committing to the first pass's winner.
 pub func resolveExtern(
   typeIndex: in Map[String, String],
   pathIndex: in Map[String, String],

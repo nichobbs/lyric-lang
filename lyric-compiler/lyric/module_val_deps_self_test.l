@@ -70,6 +70,15 @@ pub val modResult = derivedInt % 5
 
 pub val divResult = derivedInt / 6
 
+// 5b. Same BMod/BDiv arms with a Double-typed lhs (#5992): the field-type
+//     predictor must agree with `lowerBinopMsil`'s real result type for `%`
+//     and `/` over Double operands (MDouble), not just Int.
+pub val doubleBase = 5.5
+
+pub val doubleModResult = doubleBase % 2.0
+
+pub val doubleDivResult = doubleBase / 2.0
+
 // 6. Control: independent vals with no cross-references must keep working.
 pub val independentOne = 100
 
@@ -100,6 +109,11 @@ test "String-typed dependent module val" {
 test "BMod/BDiv dependent module vals predict the right field type (#5988)" {
   assertEqualInt(modResult, 2, "modResult (42 % 5)")
   assertEqualInt(divResult, 7, "divResult (42 / 6)")
+}
+
+test "Double-lhs BMod/BDiv dependent module vals predict the right field type (#5992)" {
+  assertTrue(doubleModResult == 1.5, "doubleModResult (5.5 % 2.0)")
+  assertTrue(doubleDivResult == 2.75, "doubleDivResult (5.5 / 2.0)")
 }
 
 test "independent module vals still work" {

@@ -11,6 +11,7 @@ package Lyric.VersionSelfTest
 
 import Std.Core
 import Std.Collections
+import Std.Environment
 import Std.Testing
 import Lyric.Version as Ver
 import Lyric.Cli as Cli
@@ -21,4 +22,9 @@ test "VERSION() is a valid semver" {
 
 test "VERSION() falls back to the dev placeholder when LYRIC_BUILD_VERSION is unset" {
   assertEqual(Ver.VERSION(), "0.1.0", "self-test runs carry no release override")
+}
+
+test "VERSION() reports LYRIC_BUILD_VERSION when the release trampoline sets it (#5826)" {
+  setVar("LYRIC_BUILD_VERSION", "9.9.9")
+  assertEqual(Ver.VERSION(), "9.9.9", "VERSION() must reflect a release-build override")
 }
