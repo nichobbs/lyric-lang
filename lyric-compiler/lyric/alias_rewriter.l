@@ -112,9 +112,23 @@ func collectAliases(imports: in List[ImportDecl]): List[String] {
         case Some(_) -> ()
         case None -> {
           if imp.path.segments.count >= 1 {
+            val dotted = modulePathJoin(imp.path.segments)
             val tail = imp.path.segments[imp.path.segments.count - 1]
             if not aliasContains(entries, tail) {
-              entries.add(tail + "=" + modulePathJoin(imp.path.segments))
+              entries.add(tail + "=" + dotted)
+            }
+            // Self-mapped full-path key (#6294): a bare `import Pkg.Sub` is
+            // also referenced at call sites by its FULL dotted spelling
+            // (`Pkg.Sub.func(...)`), which the expression parser produces as
+            // nested `EMember`s, not a single-segment `EPath` head — the
+            // tail-only key above only matches the one-dot-short form
+            // (`Sub.func(...)`). Registering the whole dotted path as its own
+            // key lets `rewriteExpr`'s EMember-chain flattening recognise the
+            // fully-qualified form too, for a package name of ANY segment
+            // count (a single-segment import's tail key already covers it,
+            // so this is a no-op there and only matters for segments.count >= 2).
+            if dotted != tail and not aliasContains(entries, dotted) {
+              entries.add(dotted + "=" + dotted)
             }
           }
         }
@@ -253,6 +267,95 @@ func rewriteRangeBound(aliases: in List[String], rb: in RangeBound): RangeBound 
   }
 }
 
+// Flatten a pure dotted-access expression — an `EPath` or a chain of
+// `EMember`s ultimately rooted at one — into its full segment list.  `None`
+// for anything else (a call, index, literal, …), so the caller only ever
+// treats a genuine dotted-name chain as a package-qualification candidate.
+func flattenPathExpr(e: in Expr): Option[List[String]] {
+  match e.kind {
+    case EPath(p) -> Some(value = p.segments)
+    case EMember(receiver, memberName) -> match flattenPathExpr(receiver) {
+      case Some(segs) -> {
+        val acc: List[String] = newList()
+        var i = 0
+        while i < segs.count {
+          acc.add(segs[i])
+          i = i + 1
+        }
+        acc.add(memberName)
+        Some(value = acc)
+      }
+      case None -> None
+    }
+    case _ -> None
+  }
+}
+
+// Join `segs[0 ..< upto]` with "." — the candidate package-qualifier prefix
+// tried by `rewriteQualifiedMemberChain` at each chain depth.
+func joinSegPrefix(segs: in List[String], upto: in Int): String {
+  var s = segs[0]
+  var i = 1
+  while i < upto {
+    s = s + "." + segs[i]
+    i = i + 1
+  }
+  s
+}
+
+// Rebuild `pkgSegs ++ remainder` as a flat `EPath` when exactly one segment
+// remains after the matched package prefix (the common case: a call or bare
+// value reference immediately off the package name), or as nested `EMember`s
+// re-wrapping every remaining segment on top of the qualified base otherwise
+// (a package-level `pub val`'s own field/member accessed further, e.g.
+// `Pkg.Sub.someRecordConst.field`).
+func rebuildQualifiedChain(pkgSegs: in List[String], remainder: in List[String], span: in Span): Expr {
+  val baseSegs: List[String] = newList()
+  var i = 0
+  while i < pkgSegs.count {
+    baseSegs.add(pkgSegs[i])
+    i = i + 1
+  }
+  baseSegs.add(remainder[0])
+  var acc = Expr(kind = EPath(path = ModulePath(segments = baseSegs, span = span)), span = span)
+  var k = 1
+  while k < remainder.count {
+    acc = Expr(kind = EMember(receiver = acc, memberName = remainder[k]), span = span)
+    k = k + 1
+  }
+  acc
+}
+
+// The `Alias.foo` / `Pkg.Sub.foo` rewrite: given the ORIGINAL `EMember`'s
+// receiver chain fully flattened to `recvSegs`, try every prefix from longest
+// to shortest against the known alias/package-path keys (`aliasContains`);
+// the longest match wins so a package name that is itself a prefix of a
+// longer sibling package's name never mis-fires. `trailingMember` is the
+// current node's own `memberName`, appended after `recvSegs` as the final
+// candidate segment. Returns `None` when no prefix matches any known
+// package, so the caller falls back to its default (non-rewritten) shape.
+func rewriteQualifiedMemberChain(
+  aliases: in List[String], recvSegs: in List[String], trailingMember: in String, span: in Span
+): Option[Expr] {
+  var k = recvSegs.count
+  while k >= 1 {
+    val candidate = joinSegPrefix(recvSegs, k)
+    if aliasContains(aliases, candidate) {
+      val pkgSegs = aliasPkgSegs(aliases, candidate)
+      val remainder: List[String] = newList()
+      var i = k
+      while i < recvSegs.count {
+        remainder.add(recvSegs[i])
+        i = i + 1
+      }
+      remainder.add(trailingMember)
+      return Some(value = rebuildQualifiedChain(pkgSegs, remainder, span))
+    }
+    k = k - 1
+  }
+  None
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Expr rewriting.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -269,26 +372,24 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
   match e.kind {
     case EPath(path) -> return Expr(kind = EPath(path = rewritePath(aliases, path)), span = e.span)
     case EMember(receiver, memberName) -> {
-      // `Alias.foo`: when the receiver is a single-segment `EPath` whose head
-      // is a known alias, surface the member as a fully-qualified path
-      // (`<package>.foo`) so the post-rewrite typechecker resolves it against
-      // the declaring package's symbols — preserving the package keeps two
-      // same-name imports distinguishable (#1488 regex_safe).
-      match receiver.kind {
-        case EPath(p) -> {
-          if p.segments.count == 1 and aliasContains(aliases, p.segments[0]) {
-            val segs: List[String] = newList()
-            val pkg = aliasPkgSegs(aliases, p.segments[0])
-            var k = 0
-            while k < pkg.count {
-              segs.add(pkg[k])
-              k = k + 1
-            }
-            segs.add(memberName)
-            return Expr(kind = EPath(path = ModulePath(segments = segs, span = p.span)), span = e.span)
-          }
+      // `Alias.foo` / `Pkg.Sub.foo`: when the receiver is a pure dotted-name
+      // chain (an `EPath`, or nested `EMember`s bottoming out at one) whose
+      // flattened segments have a known alias/package-path prefix, surface
+      // the whole chain as a fully-qualified path (`<package>.foo`) so the
+      // post-rewrite typechecker resolves it against the declaring package's
+      // symbols — preserving the package keeps two same-name imports
+      // distinguishable (#1488 regex_safe). This covers a package name of
+      // ANY segment count: a single-segment alias/import matches at chain
+      // depth 1 (the historical case), and a multi-segment bare import
+      // (`import Pkg.Sub`, referenced via its full `Pkg.Sub.foo(...)` form —
+      // parsed as a depth-2 `EMember` chain, not a single-segment `EPath`
+      // head) matches at whatever depth its own dotted name has (#6294).
+      match flattenPathExpr(receiver) {
+        case Some(recvSegs) -> match rewriteQualifiedMemberChain(aliases, recvSegs, memberName, e.span) {
+          case Some(rewritten) -> return rewritten
+          case None -> ()
         }
-        case _ -> ()
+        case None -> ()
       }
       return Expr(kind = EMember(receiver = rewriteExpr(aliases, receiver), memberName = memberName), span = e.span)
     }

@@ -20774,3 +20774,77 @@ erased-receiver bug (#5936) and is routed through the file's established
 typed-function-boundary idiom, documented inline.
 
 **Related:** PR #6300, D-progress-694 (Std.HttpEngine origin), docs/61.
+
+---
+
+### D-progress-718 — A qualified call into a dotted-name package's full form silently type-checked as `TyError` (#6294)
+
+**Status:** Shipped.
+
+Found while diagnosing a cloud-agents issue: `CloudAgents.SessionStore.getSessions()`
+— a `Result[AgentSessionArray, DbError]` — was assigned directly into a
+`sessions: slice[AgentSession]` record field with **no error or warning** from
+`lyric build` / `lyric check`. `AgentSessionArray` never converts to a Lyric
+`slice`, so the field's declared type and the assigned expression's type do not
+structurally match by any legitimate coercion rule — this should have been a
+hard T0104.
+
+**Root cause.** The expression parser never builds a multi-segment `EPath` for
+a qualified reference: `Foo.Bar.baz()` parses as nested `EMember`s
+(`ECall(EMember(EMember(EPath(["Foo"]), "Bar"), "baz"), [])`), not a flat
+`EPath(["Foo","Bar","baz"])`. `Lyric.AliasRewriter.rewriteExpr`'s `EMember` arm
+is what collapses a qualified reference back into a flat `EPath` before
+typecheck — but it only ever inspected a receiver that was *itself* a
+single-segment bare `EPath`, i.e. a package name of exactly one segment, or an
+explicit `as` alias (always a single token by construction). #2929 already
+fixed the *tail-only* short form (`Bar.baz()` after `import Foo.Bar`, via a
+tail-segment implicit alias) but never covered the FULL dotted form
+(`Foo.Bar.baz()`) for a bare (non-aliased) import whose own name has 2+
+segments — exactly this repo's own `Pkg.Sub`-style package-naming convention,
+and cloud-agents' (`CloudAgents.SessionStore`, `CloudAgents.Repository`, …).
+
+Left as nested `EMember`s, `typechecker_exprs.l`'s `ECall` arm can't find a
+direct signature (`findDirectSig` only matches a plain `EPath` callee), falls
+to the member-call path, `resolveMethodCallPick` bails immediately because the
+"receiver" (the package path, evaluated as a value) isn't a real `TyUser`, and
+the final fallback returns bare `TyError` with no diagnostic — `typeEquiv`
+treats `TyError` as a universal wildcard everywhere, so the mistyped call
+satisfies ANY expected type at its call site. Codegen has its own, separate
+cross-package call resolution, so the program still builds and runs — only the
+type checker's validation of the call (arity, argument types, return-type
+propagation) silently never happened.
+
+**Fix.** `Lyric.AliasRewriter`:
+  * `collectAliases` registers a self-mapped full-dotted-path key for every
+    bare (non-`as`) import, alongside the existing tail-only key — e.g.
+    `import PkgD.Repository` now registers both `Repository=PkgD.Repository`
+    (#2929, unchanged) and `PkgD.Repository=PkgD.Repository` (new).
+  * `rewriteExpr`'s `EMember` arm now flattens the ENTIRE receiver chain
+    (`flattenPathExpr`, walking arbitrary-depth `EMember`s down to their
+    `EPath` root) instead of inspecting only the immediate receiver, and tries
+    every prefix from longest to shortest against the known alias/package-path
+    keys (`rewriteQualifiedMemberChain`) — the longest match wins so a package
+    name that is itself a prefix of a longer sibling's name never mis-fires.
+    A match rebuilds the qualified reference as a flat `EPath`, re-wrapping any
+    segments past the matched package as `EMember`s on top of it
+    (`rebuildQualifiedChain`) for the rare case of a package-level constant's
+    own field accessed further (`Pkg.Sub.someConst.field`).
+
+This is a strict generalization: a single-segment package name or an explicit
+alias still matches at chain depth 1 exactly as before (the `k = 1` case of
+the new longest-to-shortest loop), so #2929/#2930/#1834's existing behaviour
+is unchanged.
+
+**Verification.** `alias_rewriter_self_test.l` gained four cases: the
+full-dotted-form two-segment repro (asserting the rewritten `EPath` has the
+right 3 segments in order), a three-segment package's full form (guards
+against a depth-1-only regression), and a runtime end-to-end case
+(`Std.Console.println(...)`, the full form, alongside the pre-existing
+tail-only `Console.println(...)` case) proving the fix reaches real codegen,
+not just the rewriter's own AST shape. Confirmed against a minimal multi-package
+project repro mirroring the cloud-agents shape (a dotted-name package
+declaring a function whose return type failed to validate against an
+incompatible field/argument type) before the fix — zero diagnostics, wrong
+type accepted; after the fix — correct T0104/T0043 diagnostics reported.
+
+**Related:** #2929, #2930, #1834, #1488, D-progress-018, #6294.

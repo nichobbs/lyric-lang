@@ -271,6 +271,110 @@ test "bare multi-segment import Foo.Bar registers implicit Bar=Foo.Bar alias (#2
   }
 }
 
+// ── Bare multi-segment import referenced by its FULL dotted form (#6294) ──────
+// `import Foo.Bar` (no `as`) registers BOTH the tail-only implicit alias
+// (`Bar=Foo.Bar`, #2929 above) and a self-mapped full-path key
+// (`Foo.Bar=Foo.Bar`, #6294): a call site can spell the qualifier out in
+// full, `Foo.Bar.baz()`, not just the short `Bar.baz()` form. The parser
+// produces the full form as a DEPTH-2 `EMember` chain
+// (`EMember(EMember(EPath(["Foo"]), "Bar"), "baz")`) — before #6294 the
+// rewriter's `EMember` arm only ever inspected a receiver that was itself a
+// single-segment bare `EPath`, so a two-dot chain like this fell through
+// unrewritten. That silently mistyped the whole expression: with no
+// resolvable callee, `ECall`'s final fallback returns bare `TyError` with
+// NO diagnostic (the same silent-wildcard mechanism `typeEquiv` uses
+// everywhere else), so a cross-package call into a dotted-name package's
+// function compiled clean yet its result satisfied ANY expected type at
+// every call site (a `Result[...]` return silently accepted into an
+// unrelated `slice[...]`-typed record field, for instance) — see
+// docs/03-decision-log.md's #6294 entry for the full trace.
+test "bare multi-segment import referenced by its full Foo.Bar.baz() form rewrites (#6294)" {
+  val src = "package Test\nimport Foo.Bar\nfunc f(): Int {\n  Foo.Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  assertEqualInt(rewritten.items.count, pr.file.items.count, "full-path form: item count preserved after rewrite")
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertTrue(block.statements.count > 0, "function body block must have at least one statement")
+              val stmt = block.statements[0]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EPath(p) -> {
+                          assertEqualInt(p.segments.count, 3, "call fn is the fully-qualified Foo.Bar.baz path after rewrite")
+                          assertEqual(p.segments[0], "Foo", "rewritten path keeps the real package's first segment")
+                          assertEqual(p.segments[1], "Bar", "rewritten path keeps the real package's second segment")
+                          assertEqual(p.segments[2], "baz", "rewritten path keeps the call's own member name")
+                        }
+                        case EMember(_, _) -> assertTrue(false, "call fn is still a nested EMember — the full-path form was not collapsed (#6294)")
+                        case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "first statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
+// A THREE-segment bare import (`import Foo.Bar.Baz`) referenced by its full
+// form must also collapse — #6294's fix walks the whole `EMember` chain, not
+// just one extra level, so this must not regress back to a depth-1-only fix.
+test "bare three-segment import referenced by its full Foo.Bar.Baz.qux() form rewrites (#6294)" {
+  val src = "package Test\nimport Foo.Bar.Baz\nfunc f(): Int {\n  Foo.Bar.Baz.qux()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertTrue(block.statements.count > 0, "function body block must have at least one statement")
+              val stmt = block.statements[0]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EPath(p) -> assertEqualInt(p.segments.count, 4, "call fn is the fully-qualified Foo.Bar.Baz.qux path after rewrite")
+                        case EMember(_, _) -> assertTrue(false, "call fn is still a nested EMember — the three-segment full-path form was not collapsed (#6294)")
+                        case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "first statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
 // An explicit `as` alias claims its name before any bare import's implicit
 // tail alias: with `import Other.Thing as Bar` + bare `import Foo.Bar`, the
 // `Bar` head must rewrite to `Other.Thing`, not `Foo.Bar`.
@@ -366,4 +470,15 @@ test "duplicate bare import tails: first bare import wins deterministically (#32
 test "runtime: bare `import Std.Console` routes Console.println correctly (#2929)" {
   Console.println("alias rewriter #2929: bare multi-segment import works")
   assertTrue(true, "Console.println via a bare multi-segment import did not throw")
+}
+
+// Runtime end-to-end for #6294: the SAME bare `import Std.Console`, but
+// called via its full `Std.Console.println(...)` form instead of the
+// tail-only `Console.println(...)` form above. Before #6294 this compiled
+// with no diagnostic yet silently mistyped as `TyError` (never reaching
+// codegen's real call), so this asserts the successful print as a live
+// end-to-end check that the fix's flattening reaches actual codegen.
+test "runtime: bare `import Std.Console` routes Std.Console.println correctly (#6294)" {
+  Std.Console.println("alias rewriter #6294: bare multi-segment import's full form works")
+  assertTrue(true, "Std.Console.println via a bare multi-segment import's full form did not throw")
 }
