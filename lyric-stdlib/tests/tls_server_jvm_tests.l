@@ -60,6 +60,8 @@ extern type JSSLSocketFactory = "javax.net.ssl.SSLSocketFactory"
 
 extern type JSSLSocket = "javax.net.ssl.SSLSocket"
 
+extern type JSSLSession = "javax.net.ssl.SSLSession"
+
 extern type JInputStream = "java.io.InputStream"
 
 extern type JOutputStream = "java.io.OutputStream"
@@ -222,6 +224,27 @@ func clientTrustContext(): JSSLContext {
   ctx
 }
 
+// Same trust setup as `clientTrustContext`, but the `SSLContext` itself is
+// restricted to the "TLSv1.3" protocol (rather than the negotiable "TLS"),
+// so a successful handshake here proves the server actually negotiated
+// 1.3 — not just that it accepted a handshake at some negotiable version.
+func clientTls13OnlyContext(): JSSLContext {
+  val cf: JCertificateFactory = JCertificateFactory.getInstance("X.509")
+  val certIn = JByteArrayInputStream.new(encodeUtf8(rsaCert))
+  val caCert: JX509Certificate = cf.generateCertificate(certIn)
+  val trustKs: JKeyStore = JKeyStore.getInstance("PKCS12")
+  val _load = invoke2(trustKs, "load", nullOfClass("java.io.InputStream"), emptyCharArrayObj())
+  trustKs.setCertificateEntry("ca", caCert)
+  val tmf: JTrustManagerFactory = JTrustManagerFactory.getInstance(JTrustManagerFactory.getDefaultAlgorithm())
+  tmf.init(trustKs)
+  val trustManagers: slice[JTrustManager] = tmf.getTrustManagers()
+  val tmArr = makeTypedArray1("javax.net.ssl.TrustManager", trustManagers[0])
+  val ctx: JSSLContext = JSSLContext.getInstance("TLSv1.3")
+  val random: JSecureRandom = JSecureRandom.new()
+  val _init = invoke3(ctx, "init", nullOfClass("[Ljavax.net.ssl.KeyManager;"), tmArr, random)
+  ctx
+}
+
 test "startListenerTls builds a real HttpsServer that starts and stops cleanly" {
   val tls = TlsServerConfig(identity = freshIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
   match startListenerTls("127.0.0.1", 8501, tls) {
@@ -240,13 +263,7 @@ test "startListenerTls terminates real TLS and serves a real HTTP response" {
     case Err(_) -> panic("expected Ok for a non-mTLS TlsServerConfig")
   }
 
-  val serverThread = JThread.new(
-    { ->
-      val ctx = nextContext(listener)
-      respondText(ctx, 200, "hello-tls")
-      ()
-    }
-  )
+  val serverThread = JThread.new({ -> val ctx = nextContext(listener); respondText(ctx, 200, "hello-tls"); () })
   serverThread.start()
   JThread.sleep(300i64)
 
@@ -273,13 +290,53 @@ test "startListenerTls terminates real TLS and serves a real HTTP response" {
   stopListener(listener)
 }
 
+// Same shape as the `minVersion = Tls12` test above, but `minVersion = Tls13`
+// on the server and a client `SSLContext` restricted to "TLSv1.3" (rather
+// than the negotiable "TLS") on the client (#5996): a successful handshake
+// and HTTP round trip here proves TLS 1.3 is actually negotiated end to
+// end, not merely accepted alongside 1.2.
+test "startListenerTls negotiates a real TLS 1.3 handshake" {
+  val tls = TlsServerConfig(identity = freshIdentity(), minVersion = Tls13, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 8506, tls) {
+    case Ok(l) -> l
+    case Err(_) -> panic("expected Ok for a non-mTLS TlsServerConfig")
+  }
+
+  val serverThread = JThread.new({ -> val ctx = nextContext(listener); respondText(ctx, 200, "hello-tls13"); () })
+  serverThread.start()
+  JThread.sleep(300i64)
+
+  val clientCtx = clientTls13OnlyContext()
+  val sf: JSSLSocketFactory = clientCtx.getSocketFactory()
+  val sock: JSSLSocket = sf.createSocket("127.0.0.1", 8506)
+  sock.startHandshake()
+
+  val session: JSSLSession = sock.getSession()
+  assertEqual(session.getProtocol(), "TLSv1.3", "handshake actually negotiated TLSv1.3")
+
+  val outStream: JOutputStream = sock.getOutputStream()
+  val req = encodeUtf8("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+  outStream.write(req)
+  outStream.flush()
+
+  sock.setSoTimeout(5000)
+  val ins: JInputStream = sock.getInputStream()
+  val respBytes = ins.readAllBytes()
+  val respStr = JString.new(respBytes, "UTF-8")
+  sock.close()
+  serverThread.join()
+
+  assertTrue(respStr.contains("HTTP/1.1 200 OK"), "TLS 1.3 response carries the 200 status line")
+  assertTrue(respStr.contains("hello-tls13"), "TLS 1.3 response carries the expected body")
+
+  stopListener(listener)
+}
+
 test "startListenerTls rejects requireClientCert as Unsupported" {
   val tls = TlsServerConfig(identity = freshIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = true)
   match startListenerTls("127.0.0.1", 8503, tls) {
     case Ok(_) -> panic("expected Err(NotSupportedOnTarget) for requireClientCert = true")
-    case Err(e) -> match e {
-      case NotSupportedOnTarget(message) -> assertTrue(message.contains("mutual TLS"), "NotSupportedOnTarget names mutual TLS")
-    }
+    case Err(e) -> match e { case NotSupportedOnTarget(message) -> assertTrue(message.contains("mutual TLS"), "NotSupportedOnTarget names mutual TLS") }
   }
 }
 
@@ -288,11 +345,14 @@ test "startListenerTls rejects a clientCa request as Unsupported" {
     case Ok(c) -> c
     case Err(e) -> panic("fixture cert load failed: " + TlsError.message(e))
   }
-  val tls = TlsServerConfig(identity = freshIdentity(), minVersion = Tls12, clientCa = Some(value = ca), requireClientCert = false)
+  val tls = TlsServerConfig(
+    identity = freshIdentity(),
+    minVersion = Tls12,
+    clientCa = Some(value = ca),
+    requireClientCert = false
+  )
   match startListenerTls("127.0.0.1", 8504, tls) {
     case Ok(_) -> panic("expected Err(NotSupportedOnTarget) for a clientCa request")
-    case Err(e) -> match e {
-      case NotSupportedOnTarget(message) -> assertTrue(message.contains("mutual TLS"), "NotSupportedOnTarget names mutual TLS")
-    }
+    case Err(e) -> match e { case NotSupportedOnTarget(message) -> assertTrue(message.contains("mutual TLS"), "NotSupportedOnTarget names mutual TLS") }
   }
 }
