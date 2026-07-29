@@ -139,10 +139,11 @@ install_lyric() {
   SHASUMS_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/SHASUMS256.txt"
   SHASUMS_FILE="${TMPDIR_INST}/SHASUMS256.txt"
   say "Verifying checksum..."
-  download "$SHASUMS_URL" "$SHASUMS_FILE"
-  if [ ! -s "$SHASUMS_FILE" ]; then
+  # Wrapped in `if !` so a 404 (e.g. a release that predates SHASUMS256.txt
+  # publishing) surfaces this message instead of set -e aborting on curl.
+  if ! download "$SHASUMS_URL" "$SHASUMS_FILE" || [ ! -s "$SHASUMS_FILE" ]; then
     rm -rf "$TMPDIR_INST"
-    err "failed to download SHASUMS256.txt from ${SHASUMS_URL}"
+    err "failed to download SHASUMS256.txt from ${SHASUMS_URL} — releases published before checksum manifests existed cannot be verified; pass a newer --version"
   fi
 
   EXPECTED_HASH="$(awk -v name="$ARCHIVE_NAME" '$2 == name { print tolower($1) }' "$SHASUMS_FILE" | head -1)"
@@ -151,7 +152,18 @@ install_lyric() {
     err "no SHASUMS256.txt entry for ${ARCHIVE_NAME}; aborting rather than installing an unverified archive"
   fi
 
+  # Tool check up front: sha256_of's own err runs in a command-substitution
+  # subshell below, where its exit would only empty ACTUAL_HASH instead of
+  # stopping the script with the right message.
+  if ! command -v sha256sum > /dev/null 2>&1 && ! command -v shasum > /dev/null 2>&1; then
+    rm -rf "$TMPDIR_INST"
+    err "neither sha256sum nor shasum found; install one and retry"
+  fi
   ACTUAL_HASH="$(sha256_of "${TMPDIR_INST}/${ARCHIVE_NAME}")"
+  if [ -z "$ACTUAL_HASH" ]; then
+    rm -rf "$TMPDIR_INST"
+    err "could not compute SHA-256 of ${ARCHIVE_NAME}"
+  fi
   if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
     rm -rf "$TMPDIR_INST"
     err "checksum mismatch for ${ARCHIVE_NAME}: expected ${EXPECTED_HASH}, got ${ACTUAL_HASH}"
