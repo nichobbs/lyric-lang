@@ -220,8 +220,10 @@ pub func compileToJar(
   }
 
   // Empty `packageVersion` (ad-hoc compiles with no manifest in scope, e.g.
-  // the internal self-tests) falls back to the legacy "0.1.0" default —
-  // matching `Msil.Bridge`'s empty-version fallback convention (#5834).
+  // the internal self-tests) falls back to the JVM path's legacy "0.1.0"
+  // default, kept for backward compatibility with existing no-manifest
+  // callers. Note `Msil.Bridge` uses "0.0.0" for the same situation — the
+  // placeholder values intentionally differ per target (#5834).
   val jarVersion = if packageVersion.length == 0 { "0.1.0" } else { packageVersion }
   val req = BuildRequest(
     packageName = packageName,
