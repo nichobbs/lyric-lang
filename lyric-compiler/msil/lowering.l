@@ -630,6 +630,13 @@ pub union MInsn {
   case MNewarr(typeToken: Int)         // newarr — allocate a 1-D array of the element type token
   case MStelemRef                      // stelem.ref — store into a reference-typed array element
   case MStelem(typeToken: Int)         // stelem <type> — store into an array element of any type (value or ref)
+  // stelem.i2 — store into a uint16 (char[]) array element.  A `Char` value
+  // pushes as a raw `ldc.i4` (I4 verification type); the typed, token-less
+  // `stelem.i2` opcode matches that directly, whereas the generic `stelem
+  // <System.Char>` form (`MStelem`) demands the CLR's exact Char verification
+  // type and ILVerify rejects the I4 operand (`StackUnexpected [found
+  // Char]`, #5563 item 1).  Mirrors the existing `MLdelemU2` char-array read.
+  case MStelemI2                       // stelem.i2 — uint16 array element (char[])
 
   // Misc
   case MDup
@@ -2263,6 +2270,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MNewarr(tok) -> emitNewarr(mb, tok)
     case MStelemRef -> emitStelem_Ref(mb)
     case MStelem(tok) -> emitStelem(mb, tok)
+    case MStelemI2 -> emitStelem_I2(mb)
     case MDup -> emitDup(mb)
     case MPop -> emitPop(mb)
     case MThrow -> emitThrow(mb)
