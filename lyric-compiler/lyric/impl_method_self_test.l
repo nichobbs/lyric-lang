@@ -217,3 +217,46 @@ test "lambda literal inside a protected-type entry body (#6119 follow-up)" {
   val c = Circuit()
   assertEqualInt(c.bump(), 1, "lambda captures protected field from within a protected-type entry")
 }
+
+// ── Bare self-field read/write in an impl method (#6173) ──────────────────────
+// A bare field reference/assignment inside an `impl` method body (no `self.`
+// prefix) is `this.<name>` — the receiver's field.  The MSIL codegen's EPath
+// read/write fallbacks previously had no "is this a receiver field?" check
+// (unlike the JVM `selfFieldType` path) and silently produced `MLdNull` for
+// the read and dropped the write (`MPop` on the RHS) — the value never
+// updated and every read returned `null`/0.
+interface Counter {
+  func bumpBy(n: Int): Int
+}
+
+record CounterImpl {
+  var x: Int
+}
+
+impl Counter for CounterImpl {
+  func bumpBy(n: Int): Int {
+    x = x + n
+    x
+  }
+}
+
+test "bare self-field read + write in an impl method (#6173)" {
+  val c: Counter = CounterImpl(x = 10)
+  assertEqualInt(c.bumpBy(5), 15, "bare field write persists and bare field read sees it")
+  assertEqualInt(c.bumpBy(1), 16, "second bump accumulates on the same instance")
+}
+
+// ── Bare self-field read/write in a record in-body method (#6173) ─────────────
+record Tally {
+  var total: Int
+  func add(n: Int): Int {
+    total = total + n
+    total
+  }
+}
+
+test "bare self-field read + write in a record in-body method (#6173)" {
+  val t = Tally(total = 100)
+  assertEqualInt(t.add(5), 105, "in-body method bare field write persists")
+  assertEqualInt(t.add(0 - 3), 102, "in-body method bare field write handles negative RHS")
+}

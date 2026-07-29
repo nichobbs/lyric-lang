@@ -7186,6 +7186,23 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       ty
                     }
                     case None -> {
+                      // #6173: a bare field reference inside an impl/record
+                      // in-body method is `self.<name>` — mirrors the JVM
+                      // `selfFieldType` fallback (`jvm/codegen/05_stmts.l`).
+                      // `fctx.className` is only set (to the receiver's
+                      // dotted FQN, e.g. "Pkg.MyRecord") inside a real method
+                      // body (`lowerImplMethodMsil`/`lowerRecordMethodMsil`);
+                      // a top-level func's `fctx.className` is the bare
+                      // package name, which never matches a `fieldTokens` key
+                      // (always "<pkg>.<TypeName>/<field>"), so this cannot
+                      // misfire on an ordinary module-level identifier.
+                      val selfFieldKey = fctx.className + "/" + name
+                      if fctx.className.length > 0 and cctx.fieldTokens.containsKey(selfFieldKey) {
+                        insns.add(MLdarg(slot = 0))
+                        val fldTok = match mapGet(cctx.fieldTokens, selfFieldKey) { case Some(t) -> t; case None -> 0 }
+                        insns.add(MLdfld(fieldToken = fldTok))
+                        return match mapGet(cctx.fieldMsilTypes, selfFieldKey) { case Some(fty) -> fty; case None -> MObject }
+                      }
                       // #5362: a bare top-level `func` used directly as a
                       // value (e.g. `apply(double, 21)`) has no codegen path
                       // that turns it into the uniform boxed
@@ -9615,6 +9632,35 @@ func lowerAssignExprMsil(
             }
             case None -> {
             }
+          }
+          // #6173: a bare field write inside an impl/record in-body method is
+          // `self.<name> = value` — mirrors the JVM `selfFieldType` fallback
+          // (`jvm/codegen/05_stmts.l`).  Same key-format safety argument as
+          // the read-side fallback above: `fctx.className` only matches a
+          // `fieldTokens` key ("<pkg>.<TypeName>/<field>") inside a real
+          // method body, never for a top-level func (whose `fctx.className`
+          // is the bare package name).
+          val selfAssignFieldKey = fctx.className + "/" + name
+          if fctx.className.length > 0 and cctx.fieldTokens.containsKey(selfAssignFieldKey) {
+            val fldTok = match mapGet(cctx.fieldTokens, selfAssignFieldKey) { case Some(t) -> t; case None -> 0 }
+            val fldTy = match mapGet(cctx.fieldMsilTypes, selfAssignFieldKey) { case Some(t) -> t; case None -> MObject }
+            match op {
+              case AssEq -> {
+                insns.add(MLdarg(slot = 0))
+                pushCollExpect(fctx, fldTy)
+                val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                popCollExpect(fctx)
+                insns.add(MStfld(fieldToken = fldTok))
+              }
+              case _ -> {
+                insns.add(MLdarg(slot = 0))
+                insns.add(MDup)
+                insns.add(MLdfld(fieldToken = fldTok))
+                emitCompoundCombineMsil(cctx, fctx, insns, op, fldTy, value)
+                insns.add(MStfld(fieldToken = fldTok))
+              }
+            }
+            return MVoid
           }
           lowerExprMsil(cctx, fctx, insns, value)
           insns.add(MPop)
