@@ -88,7 +88,28 @@ doONW2QlEIagNnVFFGh2abM=
 test "TlsServerConfig accepts explicit non-default values" {
   match Identity.fromPem(rsaCert, rsaKey) {
     case Err(e) -> panic("expected Ok building the identity: " + TlsError.message(e))
-    case Ok(identity) -> match Certificate.fromPem(rsaCert) { case Err(e) -> panic("expected Ok building the CA certificate: " + TlsError.message(e)); case Ok(ca) -> { val cfg = TlsServerConfig(identity = identity, minVersion = Tls13, clientCa = Some(value = ca), requireClientCert = true); match cfg.minVersion { case Tls13 -> assertTrue(true, "minVersion honors an explicit Tls13"); case Tls12 -> panic("expected explicit minVersion Tls13") }; match cfg.clientCa { case Some(_) -> assertTrue(true, "clientCa honors an explicit certificate"); case None -> panic("expected explicit clientCa Some") }; assertTrue(cfg.requireClientCert, "requireClientCert honors an explicit true") } }
+    case Ok(identity) -> {
+      match Certificate.fromPem(rsaCert) {
+        case Err(e) -> panic("expected Ok building the CA certificate: " + TlsError.message(e))
+        case Ok(ca) -> {
+          val cfg = TlsServerConfig(
+            identity = identity,
+            minVersion = Tls13,
+            clientCa = Some(value = ca),
+            requireClientCert = true
+          )
+          match cfg.minVersion {
+            case Tls13 -> assertTrue(true, "minVersion honors an explicit Tls13")
+            case Tls12 -> panic("expected explicit minVersion Tls13")
+          }
+          match cfg.clientCa {
+            case Some(_) -> assertTrue(true, "clientCa honors an explicit certificate")
+            case None -> panic("expected explicit clientCa Some")
+          }
+          assertTrue(cfg.requireClientCert, "requireClientCert honors an explicit true")
+        }
+      }
+    }
   }
 }
 
