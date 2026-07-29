@@ -232,6 +232,8 @@ The GitHub upgrade path implements strict security and reliability controls:
 3. **Download Exit-Code Validation**: The exit codes of `curl` and `wget` are verified (`exitCode == 0`) before continuing, ensuring error payload pages are never written to disk or executed.
 4. **Symlink/TOCTOU Prevention**: The downloaded script is written to a unique, temporary path containing a randomly-generated UUID (e.g., `lyric-install-<uuid>.sh`) in the system temp directory, preventing predictable path exploits. The file is cleanly removed in both success and failure paths.
 
+`install.sh` itself applies the same fail-closed pattern to the archive it downloads (#6242): after fetching the platform archive, it downloads that release's `SHASUMS256.txt` (§5.2), locates the archive's manifest line, and compares the archive's own SHA-256 digest (via `sha256sum` or `shasum -a 256`, case-insensitively) before extracting — a missing manifest entry or a digest mismatch aborts the install rather than extracting unverified bytes.
+
 ## 5.2. Release asset checksums (`SHASUMS256.txt`)
 
 Every GitHub Release also carries a `SHASUMS256.txt` asset covering the
