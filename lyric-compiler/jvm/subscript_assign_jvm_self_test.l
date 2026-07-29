@@ -160,3 +160,29 @@ test "list subscript compound-assign on Double values" {
   lst[0] += 1.5
   assertTrue(lst[0] == 4.0, "2.5 += 1.5 == 4.0")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. Plain `=` assignment through a Map/List subscript with a branching RHS
+//    (#6169). The receiver + index/key are live on the operand stack
+//    (unspilled) across the RHS's own internal branch in the pre-fix
+//    `lowerAssignExpr` AssEq arms — the same #5936 bug class as the
+//    compound-assign spill above, but on the plain `=` write.
+// ─────────────────────────────────────────────────────────────────────────────
+test "map subscript assignment with a branching RHS (#6169)" {
+  val m: Map[String, Int] = newMap()
+  var flag = true
+  m["k"] = if flag { 42 } else { -1 }
+  assertEqualInt(m["k"], 42, "map subscript set from a branching if-expression RHS")
+  m["k"] = match flag { case true -> 7; case false -> 8 }
+  assertEqualInt(m["k"], 7, "map subscript set from a branching match-expression RHS")
+}
+
+test "list subscript assignment with a branching RHS (#6169)" {
+  val lst: List[Int] = newList()
+  lst.add(0)
+  var flag = true
+  lst[0] = if flag { 42 } else { -1 }
+  assertEqualInt(lst[0], 42, "list subscript set from a branching if-expression RHS")
+  lst[0] = match flag { case true -> 7; case false -> 8 }
+  assertEqualInt(lst[0], 7, "list subscript set from a branching match-expression RHS")
+}

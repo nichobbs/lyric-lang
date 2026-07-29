@@ -152,6 +152,19 @@ test "slice element assignment is observed" {
   assertEqualInt(xs[2], 30, "xs[2] after element assignment")
 }
 
+test "slice element assignment with a branching RHS (#6169)" {
+  // The arrayref + index are live on the operand stack (unspilled) across the
+  // RHS's own internal branch — `lowerAssignExpr`'s plain `=` arm must spill
+  // them to locals the same way the compound-assign arm does, or the JVM
+  // verifier rejects the stack-map merge at the branch join point.
+  var xs = [1, 2, 3]
+  var flag = true
+  xs[1] = if flag { 99 } else { -1 }
+  assertEqualInt(xs[1], 99, "xs[1] set from a branching if-expression RHS")
+  xs[0] = match flag { case true -> 7; case false -> 8 }
+  assertEqualInt(xs[0], 7, "xs[0] set from a branching match-expression RHS")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. or-pattern variable binding (m-1).
 // ─────────────────────────────────────────────────────────────────────────────
