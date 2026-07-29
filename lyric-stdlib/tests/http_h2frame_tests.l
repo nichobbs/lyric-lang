@@ -337,6 +337,14 @@ test "PING ACK sets the ACK flag" {
   }
 }
 
+test "serializeFrame panics on a PingFrame with non-8-byte opaque data" {
+  val opq: slice[Byte] = [1u8, 2u8, 3u8]
+  assertPanics(
+    "PingFrame opaque data not 8 octets",
+    { -> val ignored = serializeFrame(PingFrame(opaqueData = opq, ack = false)) }
+  )
+}
+
 test "PING with a payload other than 8 octets is FRAME_SIZE_ERROR" {
   val payload: slice[Byte] = [1u8, 2u8, 3u8, 4u8]
   assertParseErr(hdr(6, 0, 0, 4), payload, H2FrameSizeError, true, "ping wrong length")
@@ -456,15 +464,16 @@ test "RST_STREAM on stream 0 is PROTOCOL_ERROR" {
 // ---------------------------------------------------------------------------
 test "DATA frame carries payload and the END_STREAM flag, round-trips" {
   val body: slice[Byte] = [104u8, 105u8]
-  val wire = serializeFrame(DataFrame(streamId = 1, data = body, endStream = true))
+  val wire = serializeFrame(DataFrame(streamId = 1, data = body, endStream = true, wireLength = body.length))
   val expected: slice[Byte] = [0u8, 0u8, 2u8, 0u8, 1u8, 0u8, 0u8, 0u8, 1u8, 104u8, 105u8]
   assertBytesEqual(wire, expected, "DATA wire form")
   val frame = singleDecoded(decodeWhole(false, wire), "data")
   match frame {
-    case DataFrame(streamId, data, endStream) -> {
+    case DataFrame(streamId, data, endStream, wireLength) -> {
       assertEqualInt(streamId, 1, "stream id")
       assertTrue(endStream, "END_STREAM")
       assertBytesEqual(data, body, "payload")
+      assertEqualInt(wireLength, 2, "unpadded wireLength equals the decoded data length")
     }
     case _ -> panic("expected DataFrame")
   }
@@ -475,9 +484,10 @@ test "a PADDED DATA frame strips the pad length and trailing padding (RFC 9113 6
   val payload: slice[Byte] = [3u8, 104u8, 105u8, 0u8, 0u8, 0u8]
   val frame = singleDecoded(decodeWhole(false, rawFrame(0, 8, 1, payload)), "data-padded")
   match frame {
-    case DataFrame(_, data, _) -> {
+    case DataFrame(_, data, _, wireLength) -> {
       val expected: slice[Byte] = [104u8, 105u8]
       assertBytesEqual(data, expected, "padding stripped, data preserved")
+      assertEqualInt(wireLength, 6, "wireLength is the full pre-padding-strip payload (#6063)")
     }
     case _ -> panic("expected DataFrame")
   }
@@ -492,6 +502,24 @@ test "a PADDED DATA frame with pad length >= payload is PROTOCOL_ERROR (RFC 9113
 test "DATA on stream 0 is PROTOCOL_ERROR" {
   val payload: slice[Byte] = [104u8]
   assertParseErr(hdr(0, 0, 0, 1), payload, H2ProtocolError, true, "data stream 0")
+}
+
+test "serializeFrame panics on a DATA payload exceeding the 24-bit frame-length field" {
+  val body: List[Byte] = newList()
+  var i = 0
+  while i < 16777216 {
+    body.add(97u8)
+    i = i + 1
+  }
+  val oversized = body.toArray()
+  assertPanics(
+    "DATA payload over 0xFFFFFF",
+    { ->
+      val ignored = serializeFrame(
+        DataFrame(streamId = 1, data = oversized, endStream = false, wireLength = oversized.length)
+      )
+    }
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -578,6 +606,13 @@ test "HEADERS on stream 0 is PROTOCOL_ERROR" {
   assertParseErr(hdr(1, 4, 0, 1), payload, H2ProtocolError, true, "headers stream 0")
 }
 
+test "HEADERS with the PRIORITY flag but fewer than 5 priority octets is FRAME_SIZE_ERROR" {
+  // PRIORITY flag (0x20) set, but only 4 octets of payload — one short of the
+  // 5-octet priority prefix (RFC 9113 6.2).
+  val payload: slice[Byte] = [0u8, 0u8, 0u8, 1u8]
+  assertParseErr(hdr(1, 32, 1, 4), payload, H2FrameSizeError, true, "headers priority flag short body")
+}
+
 // ---------------------------------------------------------------------------
 // PRIORITY (RFC 9113 §6.3) — deprecated but parsed.
 // ---------------------------------------------------------------------------
@@ -603,6 +638,65 @@ test "PRIORITY frame parses its 5 octets and round-trips" {
 test "PRIORITY with a length other than 5 is a stream FRAME_SIZE_ERROR" {
   val payload: slice[Byte] = [0u8, 0u8, 0u8, 1u8]
   assertParseErr(hdr(2, 0, 3, 4), payload, H2FrameSizeError, false, "priority wrong length")
+}
+
+test "PRIORITY on stream 0 is a connection PROTOCOL_ERROR (RFC 9113 6.3)" {
+  val payload: slice[Byte] = [0u8, 0u8, 0u8, 1u8, 15u8]
+  assertParseErr(hdr(2, 0, 0, 5), payload, H2ProtocolError, true, "priority stream 0")
+}
+
+test "serializeFrame panics on a PriorityFrame weight of 0 (below the 1..=256 domain)" {
+  val prio = PriorityInfo(exclusive = false, streamDependency = 1, weight = 0)
+  assertPanics(
+    "PriorityFrame weight 0",
+    { -> val ignored = serializeFrame(PriorityFrame(streamId = 3, priority = prio)) }
+  )
+}
+
+test "serializeFrame panics on a PriorityFrame weight of 257 (above the 1..=256 domain)" {
+  val prio = PriorityInfo(exclusive = false, streamDependency = 1, weight = 257)
+  assertPanics(
+    "PriorityFrame weight 257",
+    { -> val ignored = serializeFrame(PriorityFrame(streamId = 3, priority = prio)) }
+  )
+}
+
+test "serializeFrame panics on a HEADERS priority-prefix weight of 0" {
+  val prio = PriorityInfo(exclusive = false, streamDependency = 1, weight = 0)
+  val block: slice[Byte] = [130u8]
+  assertPanics(
+    "HEADERS priority weight 0",
+    { ->
+      val ignored = serializeFrame(
+        HeadersFrame(
+          streamId = 5,
+          headerBlockFragment = block,
+          endStream = false,
+          endHeaders = true,
+          priority = Some(value = prio)
+        )
+      )
+    }
+  )
+}
+
+test "serializeFrame panics on a HEADERS priority-prefix weight of 257" {
+  val prio = PriorityInfo(exclusive = false, streamDependency = 1, weight = 257)
+  val block: slice[Byte] = [130u8]
+  assertPanics(
+    "HEADERS priority weight 257",
+    { ->
+      val ignored = serializeFrame(
+        HeadersFrame(
+          streamId = 5,
+          headerBlockFragment = block,
+          endStream = false,
+          endHeaders = true,
+          priority = Some(value = prio)
+        )
+      )
+    }
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +736,12 @@ test "a PADDED PUSH_PROMISE strips padding around the fragment" {
 test "PUSH_PROMISE on stream 0 is PROTOCOL_ERROR" {
   val payload: slice[Byte] = [0u8, 0u8, 0u8, 2u8]
   assertParseErr(hdr(5, 4, 0, 4), payload, H2ProtocolError, true, "push-promise stream 0")
+}
+
+test "PUSH_PROMISE with fewer than 4 payload octets is FRAME_SIZE_ERROR" {
+  // Missing the 4-octet promised-stream-id field entirely.
+  val payload: slice[Byte] = [0u8, 0u8, 2u8]
+  assertParseErr(hdr(5, 4, 1, 3), payload, H2FrameSizeError, true, "push-promise short payload")
 }
 
 // ---------------------------------------------------------------------------
@@ -861,7 +961,7 @@ test "a truncated frame yields FrameNeedMore, not an error" {
 }
 
 test "a frame length exceeding SETTINGS_MAX_FRAME_SIZE is FRAME_SIZE_ERROR and poisons the decoder" {
-  // Claim a 0x010000 (65536) payload, one octet over the 16384 default.
+  // Claim a 0x010000 (65536) payload, 4x the 16384 default.
   val header: slice[Byte] = [1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 1u8]
   val decoder = newFrameDecoder(false)
   val result = feedFrames(decoder, header)
@@ -877,6 +977,27 @@ test "a frame length exceeding SETTINGS_MAX_FRAME_SIZE is FRAME_SIZE_ERROR and p
   }
 }
 
+test "a frame length exactly at the 16384 default ceiling is accepted" {
+  val body: List[Byte] = newList()
+  var i = 0
+  while i < 16384 {
+    body.add(97u8)
+    i = i + 1
+  }
+  val wire = serializeFrame(DataFrame(streamId = 1, data = body.toArray(), endStream = false, wireLength = body.count))
+  val decoder = newFrameDecoder(false)
+  val result = feedFrames(decoder, wire)
+  assertFalse(isDecoderFailed(result.decoder), "not poisoned at the exact default ceiling")
+  val frame = singleDecoded(result.events, "boundary-data")
+  match frame {
+    case DataFrame(_, data, _, _) -> {
+      val d: slice[Byte] = data
+      assertEqualInt(d.length, 16384, "full payload decoded at the boundary")
+    }
+    case _ -> panic("expected DataFrame")
+  }
+}
+
 test "a raised max-frame-size lets a larger frame through" {
   // The same 16385-octet DATA frame that the default ceiling rejects.
   val body: List[Byte] = newList()
@@ -885,13 +1006,13 @@ test "a raised max-frame-size lets a larger frame through" {
     body.add(97u8)
     i = i + 1
   }
-  val wire = serializeFrame(DataFrame(streamId = 1, data = body.toArray(), endStream = false))
+  val wire = serializeFrame(DataFrame(streamId = 1, data = body.toArray(), endStream = false, wireLength = body.count))
   val decoder = newFrameDecoderWithMaxSize(false, 16777215)
   val result = feedFrames(decoder, wire)
   assertFalse(isDecoderFailed(result.decoder), "not poisoned with a raised ceiling")
   val frame = singleDecoded(result.events, "large-data")
   match frame {
-    case DataFrame(_, data, _) -> {
+    case DataFrame(_, data, _, _) -> {
       val d: slice[Byte] = data
       assertEqualInt(d.length, 16385, "full payload decoded")
     }
@@ -902,7 +1023,7 @@ test "a raised max-frame-size lets a larger frame through" {
 test "several frames buffered together decode in order" {
   val ping: slice[Byte] = serializeFrame(PingFrame(opaqueData = [1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8], ack = false))
   val wu: slice[Byte] = serializeFrame(WindowUpdateFrame(streamId = 1, windowSizeIncrement = 100))
-  val data: slice[Byte] = serializeFrame(DataFrame(streamId = 1, data = [120u8], endStream = true))
+  val data: slice[Byte] = serializeFrame(DataFrame(streamId = 1, data = [120u8], endStream = true, wireLength = 1))
   val stream = ping.concat(wu).concat(data)
   val events = dropNeedMore(decodeWhole(false, stream))
   assertEqualInt(events.count, 3, "three frames")
@@ -911,7 +1032,7 @@ test "several frames buffered together decode in order" {
     case _ -> panic("expected decode")
   }
   match events[2] {
-    case FrameDecoded(f) -> match f { case DataFrame(_, _, _) -> assertTrue(true, "data"); case _ -> panic("expected data") }
+    case FrameDecoded(f) -> match f { case DataFrame(_, _, _, _) -> assertTrue(true, "data"); case _ -> panic("expected data") }
     case _ -> panic("expected decode")
   }
 }
