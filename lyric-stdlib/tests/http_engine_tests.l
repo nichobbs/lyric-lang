@@ -278,6 +278,18 @@ test "Expect: 100-continue emits ExpectContinue before the body" {
   assertRequestComplete(events[3], "100-continue")
 }
 
+test "Expect: 100-continue, foo emits ExpectContinue (comma-separated tokens)" {
+  val req = bytesOf(
+    "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\nExpect: 100-continue, foo\r\n\r\nabcd"
+  )
+  val events = dropNeedMore(feedWhole(EngineLimits.defaults(), req))
+  assertEqualInt(events.count, 4, "100-continue token-list event count")
+  assertRequestHead(events[0], "POST", "/submit", "100-continue token-list")
+  assertExpectContinue(events[1], "100-continue token-list")
+  assertBodyChunkText(events[2], "abcd", "100-continue token-list body")
+  assertRequestComplete(events[3], "100-continue token-list")
+}
+
 // ---------------------------------------------------------------------------
 // Chunked bodies: extensions and trailers.
 // ---------------------------------------------------------------------------
@@ -733,6 +745,42 @@ test "serializeResponseHead accepts an empty reason-phrase and HTAB in a header 
   headers.add(HeaderField(name = "X-Note", value = "a\tb"))
   val head = serializeResponseHead(Http1_1, 204, "", headers)
   assertEqual(textOf(head), "HTTP/1.1 204 \r\nX-Note: a\tb\r\n\r\n", "empty reason + HTAB header value")
+}
+
+test "serializeResponseHead panics on CR in a header value (response-splitting guard)" {
+  val headers: List[HeaderField] = newList()
+  headers.add(HeaderField(name = "X-Note", value = "a\rb"))
+  assertPanics("CR in header value", { -> val ignored = serializeResponseHead(Http1_1, 200, "OK", headers) })
+}
+
+test "serializeResponseHead panics on LF in a header value (response-splitting guard)" {
+  val headers: List[HeaderField] = newList()
+  headers.add(HeaderField(name = "X-Note", value = "a\nb"))
+  assertPanics("LF in header value", { -> val ignored = serializeResponseHead(Http1_1, 200, "OK", headers) })
+}
+
+test "serializeResponseHead panics on NUL in a header value (response-splitting guard)" {
+  val headers: List[HeaderField] = newList()
+  headers.add(HeaderField(name = "X-Note", value = "a\u{0000}b"))
+  assertPanics("NUL in header value", { -> val ignored = serializeResponseHead(Http1_1, 200, "OK", headers) })
+}
+
+test "serializeResponseHead panics on CR in the reason-phrase (response-splitting guard)" {
+  val headers: List[HeaderField] = newList()
+  assertPanics("CR in reason-phrase", { -> val ignored = serializeResponseHead(Http1_1, 200, "OK\rInjected", headers) })
+}
+
+test "serializeResponseHead panics on LF in the reason-phrase (response-splitting guard)" {
+  val headers: List[HeaderField] = newList()
+  assertPanics("LF in reason-phrase", { -> val ignored = serializeResponseHead(Http1_1, 200, "OK\nInjected", headers) })
+}
+
+test "serializeResponseHead panics on NUL in the reason-phrase (response-splitting guard)" {
+  val headers: List[HeaderField] = newList()
+  assertPanics(
+    "NUL in reason-phrase",
+    { -> val ignored = serializeResponseHead(Http1_1, 200, "OK\u{0000}Injected", headers) }
+  )
 }
 
 test "HEAD-response serialization has a head but no body bytes written" {

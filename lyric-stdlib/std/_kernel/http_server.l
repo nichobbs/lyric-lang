@@ -1108,7 +1108,17 @@ func sendH2Reject413(state: in H2ConnState, streamId: in Int): Unit {
   headers.add(HeaderField(name = ":status", value = "413"))
   headers.add(HeaderField(name = "content-length", value = "0"))
   match encodeResponseHeaders(state.h2, streamId, headers, true) {
-    case Err(_) -> ()
+    case Err(_) -> {
+      // The 413 headers could not be HPACK-encoded: rather than silently
+      // dropping the response and leaving the stream hanging, reset it with
+      // RST_STREAM(INTERNAL_ERROR) (RFC 9113 section 6.4) so the client sees a
+      // definite stream failure.
+      val rst = H2.sendRstStream(state.h2, streamId, H2InternalError)
+      if rst.length > 0 {
+        val _ = hostWrite(state.conn, rst);
+        ()
+      }
+    }
     case Ok(bytes) -> {
       val _ = hostWrite(state.conn, bytes);
       ()
@@ -1117,12 +1127,20 @@ func sendH2Reject413(state: in H2ConnState, streamId: in Int): Unit {
 }
 
 func onH2Data(
-  state: in H2ConnState, streamId: in Int, data: in slice[Byte], endStream: in Bool, work: in List[H2Event]
+  state: in H2ConnState,
+  streamId: in Int,
+  data: in slice[Byte],
+  endStream: in Bool,
+  wireLength: in Int,
+  work: in List[H2Event],
 ): Unit {
   // Every consumed DATA octet gives back connection-level receive window so the
   // shared window (and thus the other streams on the connection) never stalls,
-  // whether or not this stream's bytes are kept.
-  replenishConnWindow(state, data.length)
+  // whether or not this stream's bytes are kept. Credit must match the debit:
+  // the FSM debits the full on-wire length (padding included, RFC 9113
+  // §6.9.1), so replenish by wireLength — using data.length here would leak
+  // the padding octets and drift the window downward on padded frames (#6305).
+  replenishConnWindow(state, wireLength)
   if isRejectedStream(state, streamId) {
     // Already terminally rejected (#6144): drop further DATA (never buffer past
     // the cap); its END_STREAM closes the stream, so prune the marker.
@@ -1146,8 +1164,9 @@ func onH2Data(
   }
   appendBytes(accum.body, data)
   // Under the cap: also give back stream-level window so a large legal body can
-  // exceed the 64 KiB initial receive window.
-  replenishStreamWindow(state, streamId, data.length)
+  // exceed the 64 KiB initial receive window. Same wireLength symmetry as the
+  // connection-level credit above (#6305).
+  replenishStreamWindow(state, streamId, wireLength)
   if endStream {
     dispatchH2Stream(state, streamId, work)
   }
@@ -1176,7 +1195,7 @@ func processH2Event(state: in H2ConnState, ev: in H2Event, work: in List[H2Event
       state.open = false
     }
     case H2RequestHeaders(streamId, headers, endStream) -> onH2Headers(state, streamId, headers, endStream, work)
-    case H2RequestData(streamId, data, endStream) -> onH2Data(state, streamId, data, endStream, work)
+    case H2RequestData(streamId, data, endStream, wireLength) -> onH2Data(state, streamId, data, endStream, wireLength, work)
   }
 }
 

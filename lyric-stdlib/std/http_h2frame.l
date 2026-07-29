@@ -339,7 +339,14 @@ pub record H2FrameHeader {
 /// HPACK-compressed bytes (#5886 owns decompression).
 @experimental
 pub union H2Frame {
-  case DataFrame(streamId: Int, data: slice[Byte], endStream: Bool)
+  // `wireLength` is the on-wire DATA payload length *before* padding is
+  // stripped (pad-length octet + `data` + trailing pad octets, §6.1); `data`
+  // itself is the decoded, unpadded content. RFC 9113 §6.9.1 flow control
+  // accounts every octet the frame consumed on the wire, padding included —
+  // debiting/reclaiming by `data.length` alone under-accounts a padded frame
+  // and desyncs the receive window (#6063). A frame with no padding has
+  // `wireLength == data.length`.
+  case DataFrame(streamId: Int, data: slice[Byte], endStream: Bool, wireLength: Int)
   case HeadersFrame(streamId: Int, headerBlockFragment: slice[Byte], endStream: Bool, endHeaders: Bool, priority: Option[PriorityInfo])
   case PriorityFrame(streamId: Int, priority: PriorityInfo)
   case RstStreamFrame(streamId: Int, errorCode: H2ErrorCode)
@@ -614,7 +621,7 @@ func parseDataFrame(h: in H2FrameHeader, payload: in slice[Byte]): Result[H2Fram
   } else {
     match stripPadding(payload, flagPadded(h.flags)) {
       case Err(e) -> Err(error = e)
-      case Ok(data) -> Ok(value = DataFrame(streamId = h.streamId, data = data, endStream = flagEndStream(h.flags)))
+      case Ok(data) -> Ok(value = DataFrame(streamId = h.streamId, data = data, endStream = flagEndStream(h.flags), wireLength = payload.length))
     }
   }
 }
@@ -944,12 +951,19 @@ func serializeUnknownFrame(header: in H2FrameHeader, payload: in slice[Byte]): s
 /// # Contract
 /// A `PingFrame`'s opaque data is exactly 8 octets — this is a programmer
 /// error (a misconstructed frame), not wire content, so it is a `requires:`.
+/// The assembled payload must fit the 24-bit frame-length field (§4.1) and a
+/// `PRIORITY`-carrying frame's weight must fit the 1..=256 domain §6.3
+/// defines (the wire byte is `weight - 1`) — both are misconstructed-frame
+/// programmer errors, not wire content, caught here rather than silently
+/// truncated by `push24`/`pushByte`.
 @experimental
 pub func serializeFrame(frame: in H2Frame): slice[Byte]
   requires: pingDataWellSized(frame)
+  requires: framePayloadWellSized(frame)
+  requires: priorityWeightWellSized(frame)
 {
   match frame {
-    case DataFrame(streamId, data, endStream) -> serializeDataFrame(streamId, data, endStream)
+    case DataFrame(streamId, data, endStream, _) -> serializeDataFrame(streamId, data, endStream)
     case HeadersFrame(streamId, fragment, endStream, endHeaders, priority) -> serializeHeadersFrame(streamId, fragment, endStream, endHeaders, priority)
     case PriorityFrame(streamId, priority) -> serializePriorityFrame(streamId, priority)
     case RstStreamFrame(streamId, errorCode) -> serializeRstStreamFrame(streamId, errorCode)
@@ -970,6 +984,64 @@ pub func serializeFrame(frame: in H2Frame): slice[Byte]
 pub func pingDataWellSized(frame: in H2Frame): Bool {
   match frame {
     case PingFrame(opaqueData, _) -> opaqueData.length == 8
+    case _ -> true
+  }
+}
+
+/// The 24-bit frame-length field (§4.1) tops out at `0xFFFFFF`; `push24`
+/// silently masks off higher bits rather than erroring, so this predicate
+/// checks the assembled payload each frame variant will produce fits that
+/// limit before `serializeFrame` ever gets there. Frames with a fixed-size
+/// payload (`PriorityFrame`'s 5 octets, `RstStreamFrame`/`WindowUpdateFrame`'s
+/// 4, `PingFrame`'s 8) can never exceed it and are trivially well-sized.
+@pure
+@experimental
+pub func framePayloadWellSized(frame: in H2Frame): Bool {
+  val maxPayload = 16777215
+  match frame {
+    case DataFrame(_, data, _, _) -> data.length <= maxPayload
+    case HeadersFrame(_, fragment, _, _, priority) -> {
+      val prioLen = match priority { case Some(_) -> 5; case None -> 0 }
+      fragment.length + prioLen <= maxPayload
+    }
+    case PushPromiseFrame(_, _, fragment, _) -> fragment.length + 4 <= maxPayload
+    case GoAwayFrame(_, _, debugData) -> debugData.length + 8 <= maxPayload
+    case ContinuationFrame(_, fragment, _) -> fragment.length <= maxPayload
+    case UnknownFrame(_, payload) -> payload.length <= maxPayload
+    case SettingsFrame(settings, _) -> settings.count * 6 <= maxPayload
+    case _ -> true
+  }
+}
+
+// A direct `prio.weight` field read immediately off a `Some(prio)` binding
+// hits the self-hosted JVM backend's erased-receiver bug (#5936, see this
+// file's module header): `Option[T]`'s payload is generically erased to
+// `Object` on JVM, so the field access needs a concretely-`PriorityInfo`-typed
+// parameter boundary (a function call, not an inline field read) to force the
+// cast — mirroring `pushPriorityFields`'s existing `prio: in PriorityInfo`
+// parameter, which the same erasure doesn't affect.
+func priorityInfoWeightOk(prio: in PriorityInfo): Bool {
+  prio.weight >= 1 and prio.weight <= 256
+}
+
+func priorityWeightOk(priority: in Option[PriorityInfo]): Bool {
+  match priority {
+    case Some(prio) -> priorityInfoWeightOk(prio)
+    case None -> true
+  }
+}
+
+/// `pushPriorityFields` writes a `PriorityInfo`'s weight as `weight - 1`
+/// (§6.3's on-wire "weight minus one" encoding), so the logical weight must
+/// fall in `1..=256` or the subtraction under/overflows the wire octet.
+/// Applies to both frame shapes that carry a `PriorityInfo`: `PriorityFrame`
+/// and a `HeadersFrame` with the deprecated priority prefix set.
+@pure
+@experimental
+pub func priorityWeightWellSized(frame: in H2Frame): Bool {
+  match frame {
+    case PriorityFrame(_, priority) -> priorityInfoWeightOk(priority)
+    case HeadersFrame(_, _, _, _, priority) -> priorityWeightOk(priority)
     case _ -> true
   }
 }

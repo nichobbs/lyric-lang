@@ -198,8 +198,12 @@ pub enum H2StreamState {
 ///     HPACK-decoded header block (request headers, or trailers when it
 ///     follows body data). `endStream` means the peer will send no more on
 ///     this stream.
-///   - `H2RequestData(streamId, data, endStream)` — a slice of request-body
-///     payload (padding already stripped by the frame layer).
+///   - `H2RequestData(streamId, data, endStream, wireLength)` — a slice of
+///     request-body payload (padding already stripped by the frame layer).
+///     `wireLength` is the full on-wire DATA payload length (padding
+///     included) that was debited from the receive windows; a consumer that
+///     grants window credit back MUST replenish by `wireLength`, not
+///     `data.length`, or padded frames drift the windows (RFC 9113 §6.9.1).
 ///   - `H2PingReceived(opaqueData)` — the peer sent a `PING`; a `PING` ACK has
 ///     been queued in `outbound`.
 ///   - `H2PingAcknowledged(opaqueData)` — the peer acknowledged our `PING`.
@@ -219,7 +223,7 @@ pub union H2Event {
   case H2SettingsReceived(settings: H2Settings)
   case H2SettingsAcknowledged
   case H2RequestHeaders(streamId: Int, headers: List[HeaderField], endStream: Bool)
-  case H2RequestData(streamId: Int, data: slice[Byte], endStream: Bool)
+  case H2RequestData(streamId: Int, data: slice[Byte], endStream: Bool, wireLength: Int)
   case H2PingReceived(opaqueData: slice[Byte])
   case H2PingAcknowledged(opaqueData: slice[Byte])
   case H2WindowUpdated(streamId: Int)
@@ -964,9 +968,13 @@ func handleData(
   streamId: in Int,
   data: in slice[Byte],
   endStream: in Bool,
+  wireLength: in Int,
 ): Unit {
-  val len = data.length
-  if len > state.connRecvWindow {
+  // Flow control accounts the full on-wire DATA payload (pad-length octet +
+  // content + padding, §6.9.1), not just the decoded/unpadded `data` a padded
+  // frame yields — `wireLength` carries that (#6063); `data` itself is only
+  // ever used for its content below.
+  if wireLength > state.connRecvWindow {
     connFail(
       state,
       events,
@@ -976,7 +984,7 @@ func handleData(
     )
     return
   }
-  state.connRecvWindow = state.connRecvWindow - len
+  state.connRecvWindow = state.connRecvWindow - wireLength
   match findStream(state, streamId) {
     case None -> {
       if isIdleStreamId(state, streamId) {
@@ -990,10 +998,10 @@ func handleData(
         // (SETTINGS_MAX_CONCURRENT_STREAMS refusal, or a close). Reject just the
         // stream and reclaim the connection flow-control window the frame
         // consumed — do NOT kill the whole connection.
-        reclaimAndStreamFail(state, events, outb, streamId, len)
+        reclaimAndStreamFail(state, events, outb, streamId, wireLength)
       }
     }
-    case Some(st) -> dispatchDataToStream(state, events, outb, st, data, endStream)
+    case Some(st) -> dispatchDataToStream(state, events, outb, st, data, endStream, wireLength)
   }
 }
 
@@ -1004,13 +1012,14 @@ func dispatchDataToStream(
   st: in H2Stream,
   data: in slice[Byte],
   endStream: in Bool,
+  wireLength: in Int,
 ): Unit {
   match st.state {
-    case H2SOpen -> receiveData(state, events, outb, st, data, endStream)
-    case H2SHalfClosedLocal -> receiveData(state, events, outb, st, data, endStream)
-    case H2SIdle -> reclaimAndStreamFail(state, events, outb, st.id, data.length)
-    case H2SHalfClosedRemote -> reclaimAndStreamFail(state, events, outb, st.id, data.length)
-    case H2SClosed -> reclaimAndStreamFail(state, events, outb, st.id, data.length)
+    case H2SOpen -> receiveData(state, events, outb, st, data, endStream, wireLength)
+    case H2SHalfClosedLocal -> receiveData(state, events, outb, st, data, endStream, wireLength)
+    case H2SIdle -> reclaimAndStreamFail(state, events, outb, st.id, wireLength)
+    case H2SHalfClosedRemote -> reclaimAndStreamFail(state, events, outb, st.id, wireLength)
+    case H2SClosed -> reclaimAndStreamFail(state, events, outb, st.id, wireLength)
   }
 }
 
@@ -1055,14 +1064,14 @@ func receiveData(
   st: in H2Stream,
   data: in slice[Byte],
   endStream: in Bool,
+  wireLength: in Int,
 ): Unit {
-  val len = data.length
-  if len > st.recvWindow {
+  if wireLength > st.recvWindow {
     // The connection window was already debited for this DATA (in handleData);
     // the stream is being reset, so give those octets back to the connection
     // window rather than leaking them (#6074) — matches the reclaim the
     // closed-stream path already performs.
-    reclaimConnectionWindow(state, outb, len)
+    reclaimConnectionWindow(state, outb, wireLength)
     streamFail(
       state,
       events,
@@ -1072,8 +1081,8 @@ func receiveData(
       "DATA overruns a stream receive window (RFC 9113 section 6.9.1)"
     )
   } else {
-    st.recvWindow = st.recvWindow - len
-    events.add(H2RequestData(streamId = st.id, data = data, endStream = endStream))
+    st.recvWindow = st.recvWindow - wireLength
+    events.add(H2RequestData(streamId = st.id, data = data, endStream = endStream, wireLength = wireLength))
     if endStream {
       markEndStreamReceived(state, st.id)
     }
@@ -1352,7 +1361,7 @@ func dispatchDuringContinuation(
 
 func dispatchNormal(state: inout H2Connection, events: in List[H2Event], outb: in List[Byte], frame: in H2Frame): Unit {
   match frame {
-    case DataFrame(streamId, data, endStream) -> handleData(state, events, outb, streamId, data, endStream)
+    case DataFrame(streamId, data, endStream, wireLength) -> handleData(state, events, outb, streamId, data, endStream, wireLength)
     case HeadersFrame(streamId, fragment, endStream, endHeaders, _) -> handleHeaders(state, events, outb, streamId, fragment, endStream, endHeaders)
     case ContinuationFrame(_, _, _) -> connFail(state, events, outb, H2ProtocolError, "CONTINUATION with no preceding HEADERS (RFC 9113 section 6.10)")
     case PriorityFrame(_, _) -> ()
@@ -1659,6 +1668,12 @@ func streamWritable(s: in H2Stream): Bool {
   }
 }
 
+// `st` is the same `H2Stream` object `findStream` returned from `conn`'s own
+// stream table — records are reference types here, so writing `st.sendWindow`
+// through this `in`-bound parameter mutates the live stream state reachable
+// from the caller's `conn`, exactly like `state.connSendWindow` does through
+// `state: inout H2Connection`. Callers therefore see both debits reflected
+// immediately via the same `conn` value, with no reassignment needed.
 func sendDataToStream(
   state: inout H2Connection,
   st: in H2Stream,
@@ -1676,7 +1691,7 @@ func sendDataToStream(
     } else {
       state.connSendWindow = state.connSendWindow - len
       st.sendWindow = st.sendWindow - len
-      val bytes = serializeFrame(DataFrame(streamId = streamId, data = data, endStream = endStream))
+      val bytes = serializeFrame(DataFrame(streamId = streamId, data = data, endStream = endStream, wireLength = len))
       if endStream {
         markEndStreamSent(state, streamId)
       }
