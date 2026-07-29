@@ -3219,15 +3219,14 @@ func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): 
       }
       case IAspect(decl) -> {
         // `around` advice's body is a plain `Block` (no enclosing function/
-        // record — an aspect is not a method), so it walks directly rather
-        // than through `checkFuncBodyForFieldWrite`.  The rest of `AspectDecl`
-        // (matchers, contracts, `config` fields) carries no executable body.
+        // record — an aspect is not a method, hence `None` for `selfType`).
+        // Wrapping it as `FBBlock` reuses `checkFuncBodyForFieldWrite` like
+        // every other arm above, instead of hand-building a `FieldWriteCtx`.
+        // The rest of `AspectDecl` (matchers, contracts, `config` fields)
+        // carries no executable body.
+        val noSelfForAspect: Option[String] = None
         match decl.around {
-          case Some(around) -> {
-            val locals: Map[String, String] = newMap()
-            val ctx = FieldWriteCtx(diag = diag, recordFields = recordFields, locals = locals)
-            walkBlockForFieldWrite(ctx, around.body)
-          }
+          case Some(around) -> checkFuncBodyForFieldWrite(recordFields, diag, FBBlock(block = around.body), noSelfForAspect)
           case None -> ()
         }
       }
