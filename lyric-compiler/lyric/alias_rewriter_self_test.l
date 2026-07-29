@@ -792,6 +792,108 @@ test "a module-level val shadowing a bare-imported package's dotted name is left
   }
 }
 
+// Review follow-up: the #6311/#6312 filtering has a beneficial side effect on
+// the DEPTH-1 non-call `EMember` arm too, since it strips a shadowed alias
+// from the shared `aliases` list before ANY arm (call or non-call) consults
+// it. A tail alias (`Bar=Foo.Bar`, registered for the bare `import Foo.Bar`)
+// that collides with a function-local `val Bar` now stays uncollapsed for a
+// plain (non-call) value reference `Bar.baz`, not just for a call — this arm
+// itself is unmodified (see its updated comment above), but the alias list it
+// reads is already filtered by the time it runs. Locks in this side effect so
+// a future change can't silently regress it.
+test "a local shadowing a bare-imported package's tail alias also leaves a non-call value reference untouched (#6311/#6312 side effect)" {
+  val src = "package Test\nimport Foo.Bar\nfunc f(): Int {\n  val Bar = 0\n  Bar.baz\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertEqualInt(block.statements.count, 2, "function body has the local decl plus the value-reference statement")
+              val stmt = block.statements[1]
+              match stmt.kind {
+                case SExpr(refExpr) -> {
+                  match refExpr.kind {
+                    case EMember(receiver, memberName) -> {
+                      assertEqual(memberName, "baz", "member name is still the reference's own 'baz'")
+                      match receiver.kind {
+                        case EPath(p) -> {
+                          assertEqualInt(p.segments.count, 1, "receiver is still the bare single-segment 'Bar'")
+                          assertEqual(p.segments[0], "Bar", "receiver segment is still 'Bar', unrewritten")
+                        }
+                        case _ -> assertTrue(false, "receiver is not EPath — chain shape changed unexpectedly")
+                      }
+                    }
+                    case EPath(_) -> assertTrue(false, "value reference was collapsed into a flat EPath — a local `Bar` should have suppressed the Foo.Bar tail-alias collapse")
+                    case _ -> assertTrue(false, "value reference is unexpected ExprKind after rewrite")
+                  }
+                }
+                case _ -> assertTrue(false, "second statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
+// Review follow-up: locks in the documented, accepted coarse-scoping tradeoff
+// (D-progress-718's "Third finding") — `filterAliasesExcludingLocals` collects
+// names bound ANYWHERE in a function, not per-block, so a name bound only
+// inside one `if` branch also suppresses the qualified-call collapse at an
+// UNRELATED call site elsewhere in the same function that a real per-block
+// scope analysis would consider unshadowed. This is an accepted false
+// negative (falls back to the safe, pre-existing per-`EMember`-arm
+// recursion — never a false positive/silent-miscompile), not a bug; this
+// test exists so a future attempt at real per-block scoping has a concrete
+// case to compare against, and so this over-suppression doesn't get
+// "fixed" into a regression by accident.
+test "a name bound only inside one branch still suppresses an unrelated call site elsewhere in the same function (accepted coarse-scoping tradeoff)" {
+  val src = "package Test\nimport Foo.Bar\nfunc f(): Int {\n  if true {\n    val Foo = 0\n  }\n  Foo.Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertEqualInt(block.statements.count, 2, "function body has the if-statement plus the call statement")
+              val stmt = block.statements[1]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the branch-local `Foo` conservatively suppressed the collapse here too")
+                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — the coarse-scoping tradeoff should have suppressed this")
+                        case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "second statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function decl has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
 // Runtime end-to-end for #2929: this module itself bare-imports `Std.Console`
 // (multi-segment, no `as`) in its header.  Before the fix, `Console.println`
 // compiled but threw "unsupported method 'println' on the receiver type" at

@@ -388,19 +388,26 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
       // resolution downstream (`tryQualifiedStaticValNameMsil` /
       // `tryQualifiedEnumOrdinalMsil` in MSIL codegen, walking the ORIGINAL
       // un-flattened `EMember` chain with a "root name shadowed by a local"
-      // guard). This rewriter runs before typecheck and carries no scope
-      // information at all (`Coll` after `import X as Coll` already
-      // documented-collides with a same-named local, per this file's
-      // header) — eagerly flattening a deeper chain here would turn a
-      // local's OWN field-access chain that merely happens to spell out an
-      // unrelated package's dotted name into a bogus cross-package
-      // reference, bypassing the codegen guard that exists precisely to
-      // catch that. Confirmed as a real regression
+      // guard). This ARM's own logic is unchanged from before this PR and
+      // carries no scope information at all — eagerly flattening a deeper
+      // chain here would turn a local's OWN field-access chain that merely
+      // happens to spell out an unrelated package's dotted name into a
+      // bogus cross-package reference, bypassing the codegen guard that
+      // exists precisely to catch that. Confirmed as a real regression
       // (`msil_project_bridge_self_test.l`'s "local shadowing a package
       // name" case: a local `val ShadowVal = ...` whose own `Lib.secret`
       // field chain collided with the unrelated bare-imported `ShadowVal.Lib`
       // package's `pub val secret`) when an earlier version of this fix
-      // applied the deeper generalization here too.
+      // applied the deeper generalization here too. (Note: the `aliases`
+      // list this arm CONSULTS is no longer scope-blind top to bottom — the
+      // #6311/#6312 filtering upstream in `rewriteFunctionDecl` et al. and
+      // `rewriteFile` already strips any alias a local/module-level `val`
+      // would shadow before it ever reaches here, so a *shadowed* alias
+      // simply won't be in `aliases` by the time this arm runs. That's a
+      // sound, beneficial side effect for the depth-1 case this arm
+      // already covered — it can only ever suppress a collapse, never
+      // wrongly enable one — but this arm's OWN code makes no scope check;
+      // it just consults whatever `aliases` it's handed, same as always.)
       match receiver.kind {
         case EPath(p) -> {
           if p.segments.count == 1 and aliasContains(aliases, p.segments[0]) {

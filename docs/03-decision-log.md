@@ -21034,5 +21034,20 @@ carrying this fourth fix (`alias_rewriter` 19/19, `msil_project_bridge`
 `typechecker` 283/283, `parser` 124/124, `mono` 48/48, `weaver` 46/46,
 `aspect_weave` 7/7, `modechecker` 84/84, `cfg` 12/12).
 
+**Follow-up (review feedback, non-blocking).** Two SUGGESTIONs after the
+fourth finding: (1) the non-call `EMember` arm's comment claimed the
+rewriter "carries no scope information at all," which was true of the
+arm's own code but no longer true of its *effective* behavior — the
+#6311/#6312 filtering strips a shadowed alias from the shared `aliases`
+list before ANY arm consults it, so a local/module `val` colliding with a
+package's *tail* alias now also suppresses a plain, non-call value
+reference (`Bar.baz`), not just a call. Comment corrected to describe this
+side effect precisely; locked in by a new test. (2) The locals collection
+is function-body-wide, not real per-block lexical scope, so a name bound
+only inside one branch also suppresses the collapse at an unrelated call
+site elsewhere in the same function — an accepted, conservative false
+negative (never a false positive), now backed by a dedicated test rather
+than prose alone.
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
 D-progress-018, #6294, #6311, #6312.
