@@ -1,19 +1,24 @@
-//! src/server.l — Mcp.Server: MCP server surface (docs/62-jsonrpc-mcp.md §5.1).
+//! src/server.l — Mcp.Server: MCP server surface (docs/62-jsonrpc-mcp.md §5.1,
+//! docs/64-mcp-2026-stateless-migration.md §3.2).
 //!
 //! `McpServer` implements `JsonRpc.RpcHandler` directly (rather than
 //! wrapping a separate handler record) and is handed straight to
-//! `JsonRpc.newPeer`. Lifecycle: `initialize` is always accepted (subject
-//! to protocol-version negotiation, `Mcp.negotiateProtocolVersion`); every
-//! other request is rejected with `Mcp.serverNotInitialized` until the
-//! client's `notifications/initialized` notification has been received —
-//! see `onNotification` below.
+//! `JsonRpc.newPeer`. **Stateless core (docs/64 §3.2)**: there is no more
+//! readiness gate — every request is answerable immediately, with no
+//! `initialize`/`notifications/initialized` handshake required first.
+//! `initialize` remains an answerable method purely for legacy-peer
+//! tolerance (subject to protocol-version negotiation,
+//! `Mcp.negotiateProtocolVersion`) — it just no longer *does* anything a
+//! peer must wait for. `server/discover` is the stateless replacement for
+//! capability discovery.
 //!
-//! Capability derivation (docs/62 §5.1): the `InitializeResult`'s
-//! `capabilities` object includes a `tools`/`resources`/`prompts` entry
-//! (each `{"listChanged": false}` — v1 never sends list-changed
-//! notifications) only when at least one tool/resource/prompt was
-//! registered via `addTool`/`addResource`/`addPrompt` before `serveStdio`
-//! starts the loop.
+//! Capability derivation (docs/62 §5.1): the `capabilities` object (in
+//! both `initialize` and `server/discover` results) includes a
+//! `tools`/`resources`/`prompts` entry (each `{"listChanged": false}` — v1
+//! never sends list-changed notifications) only when at least one
+//! tool/resource/prompt was registered via
+//! `addTool`/`addResumableTool`/`addResource`/`addPrompt` before
+//! `serveStdio` starts the loop.
 @runtime_checked
 package Mcp.Server
 
@@ -24,46 +29,19 @@ import JsonRpc
 import JsonRpc.Stdio
 import Mcp
 
-// Same-package accessors standing in for two real, distinct self-hosted
-// `--target dotnet` bugs found while building this library (both filed
-// upstream against the compiler, not this library's own logic):
-//
-// 1. A package-qualified constant reference (`Mcp.serverNotInitialized`,
-//    `JsonRpc.invalidParams`, `JsonRpc.methodNotFound`) used *textually
-//    inside an `impl ... for McpServer { }` block* reproducibly crashed
-//    the whole type's JIT verification (`System.InvalidProgramException`,
-//    surfaced by `JsonRpc.dispatchRequest`'s `catch Bug` as `-32603
-//    Internal error` on *every* request, even ones whose handling never
-//    reached the qualified reference) — isolated in a from-scratch
-//    two-file minimal repro by bisecting `onRequest` piece by piece; a
-//    same-shape `impl` block using bare `Int` literals instead of
-//    qualified constants, and a plain top-level `func` using the exact
-//    same qualified references outside any `impl` block, both work fine.
-//    Routing every reference through a same-package (unqualified) `func`
-//    avoids it (`notInitializedCode()` below, called from `onRequest`).
-//
-// 2. Separately — and this is the reason `invalidParamsCode()` /
-//    `methodNotFoundCode()` below return *literal* `Int`s rather than
-//    reading `JsonRpc.invalidParams` / `JsonRpc.methodNotFound` the same
-//    way `notInitializedCode()` reads `Mcp.serverNotInitialized` — a
-//    package-level `pub val Int` read from a *workspace-restored
-//    cross-DLL dependency* (`JsonRpc`, a separately-published/restored
-//    package, unlike `Mcp` which is compiled together with `Mcp.Server`
-//    in the same project) silently evaluates to `0` at runtime instead of
-//    its real value, with **no compile-time or run-time error at all** —
-//    confirmed by direct experiment: `handleToolsCall`'s "unknown tool"
-//    branch measurably produced a wire response with `"code":0` instead
-//    of `-32602` until this literal-`Int` workaround was applied.
-//    `Mcp.serverNotInitialized` (same-project sibling package, not a
-//    restored DLL) does not exhibit this — only the cross-DLL case does.
-//    JSON-RPC 2.0's standard error codes are a fixed part of the spec
-//    (never going to change), so hardcoding them here is safe; `Mcp`'s
-//    own `serverNotInitialized` (an MCP-specific, not JSON-RPC-standard,
-//    code) still reads from its real source since that path is unaffected.
-func notInitializedCode(): Int {
-  Mcp.serverNotInitialized
-}
-
+// Same-package accessors standing in for a real self-hosted `--target
+// dotnet` compiler bug found while building this library (filed upstream
+// against the compiler, not this library's own logic): a package-level
+// `pub val Int` read from a *workspace-restored cross-DLL dependency*
+// (`JsonRpc`, a separately-published/restored package, unlike `Mcp` which
+// is compiled together with `Mcp.Server` in the same project) silently
+// evaluates to `0` at runtime instead of its real value, with **no
+// compile-time or run-time error at all** — confirmed by direct
+// experiment: `handleToolsCall`'s "unknown tool" branch measurably
+// produced a wire response with `"code":0` instead of `-32602` until this
+// literal-`Int` workaround was applied. JSON-RPC 2.0's standard error
+// codes are a fixed part of the spec (never going to change), so
+// hardcoding them here is safe.
 func invalidParamsCode(): Int {
   0 - 32602
 }
@@ -77,26 +55,44 @@ func methodNotFoundCode(): Int {
 pub record McpServer {
   info: McpImplementation
   var tools: List[McpToolDef]
+  var resumableTools: List[McpResumableToolDef]
   var resources: List[McpResourceDef]
   var prompts: List[McpPromptDef]
-  // Set once `notifications/initialized` is received (see `onNotification`).
-  // Every request other than `initialize` is rejected with
-  // `Mcp.serverNotInitialized` while this is `false`.
-  var ready: Bool
 }
 
 /// Construct an empty server. Register tools/resources/prompts with
-/// `addTool`/`addResource`/`addPrompt` before calling `serveStdio`.
+/// `addTool`/`addResumableTool`/`addResource`/`addPrompt` before calling
+/// `serveStdio` — a tool name registers via one or the other, not both;
+/// see `addTool`'s doc comment for what happens if it is. Stateless core
+/// (docs/64 §3.2): there is no more `ready`/handshake state to initialize
+/// here — every request the server can answer, it can answer starting
+/// from the very first message.
 @stable(since = "0.1")
 pub func newServer(info: in McpImplementation): McpServer {
-  McpServer(info = info, tools = newList(), resources = newList(), prompts = newList(), ready = false)
+  McpServer(info = info, tools = newList(), resumableTools = newList(), resources = newList(), prompts = newList())
 }
 
 /// Register a tool, reachable via `tools/list` / `tools/call` once the
-/// server starts serving.
+/// server starts serving. A tool name registers with `addTool` or
+/// `addResumableTool`, not both — there is no registration-time diagnostic
+/// against double-registering a name, and both `handleToolsCall` dispatch
+/// and `tools/list` (`Mcp.encodeAllToolDefsList`) resolve a same-named
+/// double-registration to the resumable definition alone, never a
+/// duplicate `tools/list` entry.
 @stable(since = "0.1")
 pub func addTool(server: in McpServer, tool: in McpToolDef): Unit {
   server.tools.add(tool)
+}
+
+/// Register a resumable tool — one that may answer `tools/call` with an
+/// `input_required` result instead of finishing in one round trip (docs/64
+/// §3.1/§3.2). Additive: registering a resumable tool never requires
+/// changing any plain `addTool` registration elsewhere. Takes precedence
+/// over a same-named plain `addTool` registration — see `addTool`'s doc
+/// comment.
+@stable(since = "0.2")
+pub func addResumableTool(server: in McpServer, tool: in McpResumableToolDef): Unit {
+  server.resumableTools.add(tool)
 }
 
 /// Register a resource, reachable via `resources/list` / `resources/read`.
@@ -150,7 +146,26 @@ func findPrompt(prompts: in List[McpPromptDef], name: in String): Option[McpProm
   found
 }
 
+func findResumableTool(tools: in List[McpResumableToolDef], name: in String): Option[McpResumableToolDef] {
+  var i = 0
+  var found: Option[McpResumableToolDef] = None
+  while i < tools.count {
+    if tools[i].name == name {
+      found = Some(value = tools[i])
+    }
+    i = i + 1
+  }
+  found
+}
+
+func hasAnyTools(server: in McpServer): Bool {
+  server.tools.count > 0 or server.resumableTools.count > 0
+}
+
 // ── Per-method handlers ─────────────────────────────────────────────────────
+// `initialize` remains answerable for legacy-peer tolerance (docs/64 §3.2)
+// but no longer gates anything — see `impl RpcHandler for McpServer` below,
+// which no longer has a readiness check at all.
 func handleInitialize(server: in McpServer, paramsOpt: in Option[JsonValue]): Result[JsonValue, RpcError] {
   match decodeInitializeParams(paramsOpt) {
     case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'initialize' requires a string 'protocolVersion'", data = None))
@@ -159,7 +174,7 @@ func handleInitialize(server: in McpServer, paramsOpt: in Option[JsonValue]): Re
       Ok(
         value = encodeInitializeResult(
           negotiated,
-          server.tools.count > 0,
+          hasAnyTools(server),
           server.resources.count > 0,
           server.prompts.count > 0,
           server.info
@@ -169,8 +184,74 @@ func handleInitialize(server: in McpServer, paramsOpt: in Option[JsonValue]): Re
   }
 }
 
+func handleServerDiscover(server: in McpServer): Result[JsonValue, RpcError] {
+  Ok(
+    value = encodeServerDiscoverResult(
+      hasAnyTools(server),
+      server.resources.count > 0,
+      server.prompts.count > 0,
+      server.info
+    )
+  )
+}
+
 func handleToolsList(server: in McpServer): Result[JsonValue, RpcError] {
-  Ok(value = JObject(fields = [JsonField(name = "tools", value = encodeToolDefList(server.tools))]))
+  Ok(
+    value = JObject(
+      fields = [JsonField(name = "tools", value = encodeAllToolDefsList(server.tools, server.resumableTools))]
+    )
+  )
+}
+
+// A resumed call is an ordinary `tools/call` whose params additionally
+// carry `requestState` (echoing what a prior `InputRequired` outcome
+// issued) and `inputResponses` (docs/64 §3.1/§3.4 — `JsonRpc` never sees
+// the difference, this is purely an `Mcp`-layer data-shape distinction).
+func dispatchResumableTool(
+  def: in McpResumableToolDef,
+  toolName: in String,
+  p: in JsonValue,
+  argsOpt: in Option[JsonValue],
+): Result[JsonValue, RpcError] {
+  // `requestState` present-but-not-a-string (e.g. `123`, `null`) must be
+  // rejected explicitly, not silently treated as absent — `getString`
+  // alone returns `None` for both cases, which would otherwise route a
+  // malformed resume request into a brand-new `call()` instead of an
+  // error, the same distinction the non-resumable-tool guard above
+  // already makes via `getField`.
+  match getField(p, "requestState") {
+    case Some(_) -> {
+      match getString(p, "requestState") {
+        case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'requestState' must be a string", data = None))
+        case Some(state) -> {
+          val inputResponses = match getField(p, "inputResponses") {
+            case Some(v) -> v
+            case None -> JObject(fields = newList())
+          }
+          val outcome: Result[McpToolCallOutcome, String] = try {
+            def.handler.resume(state, inputResponses)
+          } catch Bug as b {
+            Err(error = "tool '" + toolName + "' panicked during resume: " + b.message)
+          }
+          match outcome {
+            case Ok(result) -> Ok(value = encodeToolCallOutcome(result))
+            case Err(msg) -> Ok(value = encodeToolCallOutcome(ToolResult(value = toolErrorResult(msg))))
+          }
+        }
+      }
+    }
+    case None -> {
+      val outcome: Result[McpToolCallOutcome, String] = try {
+        def.handler.call(argsOpt)
+      } catch Bug as b {
+        Err(error = "tool '" + toolName + "' panicked: " + b.message)
+      }
+      match outcome {
+        case Ok(result) -> Ok(value = encodeToolCallOutcome(result))
+        case Err(msg) -> Ok(value = encodeToolCallOutcome(ToolResult(value = toolErrorResult(msg))))
+      }
+    }
+  }
 }
 
 func handleToolsCall(server: in McpServer, paramsOpt: in Option[JsonValue]): Result[JsonValue, RpcError] {
@@ -180,21 +261,32 @@ func handleToolsCall(server: in McpServer, paramsOpt: in Option[JsonValue]): Res
       case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'tools/call' requires a string 'name'", data = None))
       case Some(toolName) -> {
         val argsOpt = getField(p, "arguments")
-        match findTool(server.tools, toolName) {
-          case None -> Err(error = RpcError(code = invalidParamsCode(), message = "unknown tool: '" + toolName + "'", data = None))
-          case Some(def) -> {
-            // Per docs/62 §5.1: a tool-execution failure — whether returned
-            // as `Err` or raised as a panic — is reported as a successful
-            // `CallToolResult` with `isError: true`, never a protocol
-            // error.
-            val outcome: Result[McpToolResult, String] = try {
-              def.handler.call(argsOpt)
-            } catch Bug as b {
-              Err(error = "tool '" + toolName + "' panicked: " + b.message)
-            }
-            match outcome {
-              case Ok(result) -> Ok(value = encodeToolResult(result))
-              case Err(msg) -> Ok(value = encodeToolResult(toolErrorResult(msg)))
+        match findResumableTool(server.resumableTools, toolName) {
+          case Some(def) -> dispatchResumableTool(def, toolName, p, argsOpt)
+          case None -> match findTool(server.tools, toolName) {
+            case None -> Err(error = RpcError(code = invalidParamsCode(), message = "unknown tool: '" + toolName + "'", data = None))
+            case Some(def) -> match getField(p, "requestState") {
+              // `requestState` is only meaningful against a tool registered
+              // via `addResumableTool` — a peer attempting to "resume" a
+              // plain tool would otherwise silently fall through to an
+              // ordinary `call()`, ignoring `requestState` entirely and
+              // returning a misleadingly plain success.
+              case Some(_) -> Err(error = RpcError(code = invalidParamsCode(), message = "tool '" + toolName + "' is not resumable — 'requestState' is only valid against a tool registered with addResumableTool", data = None))
+              case None -> {
+                // Per docs/62 §5.1: a tool-execution failure — whether returned
+                // as `Err` or raised as a panic — is reported as a successful
+                // `CallToolResult` with `isError: true`, never a protocol
+                // error.
+                val outcome: Result[McpToolResult, String] = try {
+                  def.handler.call(argsOpt)
+                } catch Bug as b {
+                  Err(error = "tool '" + toolName + "' panicked: " + b.message)
+                }
+                match outcome {
+                  case Ok(result) -> Ok(value = encodeToolResult(result))
+                  case Err(msg) -> Ok(value = encodeToolResult(toolErrorResult(msg)))
+                }
+              }
             }
           }
         }
@@ -265,17 +357,14 @@ func handlePromptsGet(server: in McpServer, paramsOpt: in Option[JsonValue]): Re
 
 // ── RpcHandler ───────────────────────────────────────────────────────────────
 impl RpcHandler for McpServer {
+  // Stateless core (docs/64 §3.2): no readiness gate. Every method is
+  // answerable from the first message the peer sends — `initialize`
+  // included, but no longer required before anything else.
   func onRequest(method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError] {
-    if not self.ready and method != "initialize" {
-      Err(
-        error = RpcError(
-          code = notInitializedCode(),
-          message = "server not initialized: 'initialize' and its follow-up 'notifications/initialized' must complete before other requests",
-          data = None
-        )
-      )
-    } else if method == "initialize" {
+    if method == "initialize" {
       handleInitialize(self, params)
+    } else if method == "server/discover" {
+      handleServerDiscover(self)
     } else if method == "ping" {
       Ok(value = JObject(fields = newList()))
     } else if method == "tools/list" {
@@ -295,10 +384,11 @@ impl RpcHandler for McpServer {
     }
   }
 
+  // Every notification is a no-op, unconditionally — there's no method
+  // check here at all, so this covers `notifications/initialized`
+  // (legacy-peer tolerance; there is no readiness state left to flip)
+  // and any other inbound notification a peer might send.
   func onNotification(method: in String, params: in Option[JsonValue]): Unit {
-    if method == "notifications/initialized" {
-      self.ready = true
-    }
   }
 }
 

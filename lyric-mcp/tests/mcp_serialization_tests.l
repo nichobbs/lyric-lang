@@ -2,10 +2,10 @@
 //! message this library encodes/decodes. Each case asserts the *exact*
 //! wire text (field names, nesting, discriminator values) against a
 //! hand-written fixture — not just "it round-trips" — per
-//! docs/62-jsonrpc-mcp.md §5 and the MCP 2025-06-18 schema. No transport,
-//! no process, no peer: pure `Mcp` encode/decode functions over
-//! `JsonRpc.Json` values, so this suite is expected to pass identically on
-//! both targets.
+//! docs/62-jsonrpc-mcp.md §5, docs/64-mcp-2026-stateless-migration.md §3,
+//! and the MCP 2026-07-28 schema. No transport, no process, no peer: pure
+//! `Mcp` encode/decode functions over `JsonRpc.Json` values, so this suite
+//! is expected to pass identically on both targets.
 //!
 //! NOTE: assertions compare `Option[T]` via `match`, never `==` — see
 //! lyric-jsonrpc/README.md "Known upstream issues" #4 (`Option[T] ==
@@ -49,6 +49,19 @@ impl McpPromptHandler for NoopPromptHandler {
   }
 }
 
+record NoopResumableToolHandler {
+}
+
+impl McpResumableToolHandler for NoopResumableToolHandler {
+  func call(args: in Option[JsonValue]): Result[McpToolCallOutcome, String] {
+    Ok(value = ToolResult(value = toolTextResult("")))
+  }
+
+  func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String] {
+    Ok(value = ToolResult(value = toolTextResult("")))
+  }
+}
+
 func assertJsonEqual(actual: in JsonValue, expected: in String, label: in String): Unit {
   assertEqual(writeValue(actual), expected, label)
 }
@@ -66,7 +79,7 @@ test "encodeInitializeResult: exact field names and capability derivation" {
   val encoded = encodeInitializeResult(protocolVersionLatest, true, false, true, serverInfo)
   assertJsonEqual(
     encoded,
-    "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{\"listChanged\":false},\"prompts\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"test-server\",\"version\":\"1.0.0\"}}",
+    "{\"protocolVersion\":\"2026-07-28\",\"capabilities\":{\"tools\":{\"listChanged\":false},\"prompts\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"test-server\",\"version\":\"1.0.0\"}}",
     "initialize result shape"
   )
 }
@@ -76,7 +89,7 @@ test "encodeInitializeResult: no capabilities registered -> empty capabilities o
   val encoded = encodeInitializeResult(protocolVersionLatest, false, false, false, serverInfo)
   assertJsonEqual(
     encoded,
-    "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"s\",\"version\":\"0.0.1\"}}",
+    "{\"protocolVersion\":\"2026-07-28\",\"capabilities\":{},\"serverInfo\":{\"name\":\"s\",\"version\":\"0.0.1\"}}",
     "empty capabilities"
   )
 }
@@ -86,18 +99,58 @@ test "encodeInitializeParams: exact field names" {
   val encoded = encodeInitializeParams(protocolVersionLatest, clientInfo)
   assertJsonEqual(
     encoded,
-    "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test-client\",\"version\":\"0.1.0\"}}",
+    "{\"protocolVersion\":\"2026-07-28\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test-client\",\"version\":\"0.1.0\"}}",
     "initialize params shape"
   )
 }
 
+test "encodeServerDiscoverResult: exact field names, no protocolVersion (docs/64 §3.1)" {
+  val serverInfo = McpImplementation(name = "test-server", version = "1.0.0")
+  val encoded = encodeServerDiscoverResult(true, false, true, serverInfo)
+  assertJsonEqual(
+    encoded,
+    "{\"serverInfo\":{\"name\":\"test-server\",\"version\":\"1.0.0\"},\"capabilities\":{\"tools\":{\"listChanged\":false},\"prompts\":{\"listChanged\":false}}}",
+    "server/discover result shape"
+  )
+}
+
+test "decodeServerDiscoverResult: parses serverInfo, empty capabilities decode to all-false" {
+  match parseValue("{\"serverInfo\":{\"name\":\"srv\",\"version\":\"2.0.0\"},\"capabilities\":{}}") {
+    case Err(e) -> assertTrue(false, "fixture failed to parse: " + e.message())
+    case Ok(v) -> {
+      val result = decodeServerDiscoverResult(v)
+      assertEqual(result.serverInfo.name, "srv", "serverInfo.name decoded")
+      assertEqual(result.serverInfo.version, "2.0.0", "serverInfo.version decoded")
+      assertFalse(result.capabilities.hasTools, "hasTools false when capabilities is empty")
+      assertFalse(result.capabilities.hasResources, "hasResources false when capabilities is empty")
+      assertFalse(result.capabilities.hasPrompts, "hasPrompts false when capabilities is empty")
+    }
+  }
+}
+
+// A copy-paste field mixup in decodeCapabilities (e.g. hasResources reading
+// the "prompts" key) would still pass every other capabilities test in this
+// file, since they only ever exercise hasTools — assert all three
+// independently against a fixture where each key is present exactly once.
+test "decodeServerDiscoverResult: hasTools/hasResources/hasPrompts each decode from their own capability key" {
+  match parseValue("{\"serverInfo\":{\"name\":\"srv\",\"version\":\"1.0.0\"},\"capabilities\":{\"tools\":{\"listChanged\":false},\"resources\":{\"listChanged\":false},\"prompts\":{\"listChanged\":false}}}") {
+    case Err(e) -> assertTrue(false, "fixture failed to parse: " + e.message())
+    case Ok(v) -> {
+      val result = decodeServerDiscoverResult(v)
+      assertTrue(result.capabilities.hasTools, "hasTools true when 'tools' key is present")
+      assertTrue(result.capabilities.hasResources, "hasResources true when 'resources' key is present")
+      assertTrue(result.capabilities.hasPrompts, "hasPrompts true when 'prompts' key is present")
+    }
+  }
+}
+
 test "decodeInitializeResult: parses protocolVersion and serverInfo" {
-  val text = "{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"srv\",\"version\":\"2.0.0\"}}"
+  val text = "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"srv\",\"version\":\"2.0.0\"}}"
   match parseValue(text) {
     case Err(e) -> assertTrue(false, "fixture failed to parse: " + e.message())
     case Ok(v) -> {
       val result = decodeInitializeResult(v)
-      assertEqual(result.protocolVersion, "2025-03-26", "protocolVersion decoded")
+      assertEqual(result.protocolVersion, "2025-06-18", "protocolVersion decoded")
       assertEqual(result.serverInfo.name, "srv", "serverInfo.name decoded")
       assertEqual(result.serverInfo.version, "2.0.0", "serverInfo.version decoded")
     }
@@ -119,12 +172,12 @@ test "decodeInitializeParams: decodes protocolVersion and clientInfo" {
 }
 
 test "negotiateProtocolVersion: echoes a supported version, refuses an unsupported one" {
-  assertEqual(negotiateProtocolVersion("2025-06-18"), "2025-06-18", "latest echoed")
-  assertEqual(negotiateProtocolVersion("2025-03-26"), "2025-03-26", "legacy echoed")
+  assertEqual(negotiateProtocolVersion("2026-07-28"), "2026-07-28", "latest echoed")
+  assertEqual(negotiateProtocolVersion("2025-06-18"), "2025-06-18", "legacy echoed")
   assertEqual(
-    negotiateProtocolVersion("2024-01-01"),
+    negotiateProtocolVersion("2025-03-26"),
     protocolVersionLatest,
-    "unsupported version refused, responds with latest"
+    "a version older than the accepted legacy one is refused, responds with latest"
   )
 }
 
@@ -144,6 +197,51 @@ test "encodeToolDefList: exact field names, description omitted when empty" {
     encodeToolDefList(noDescTools),
     "[{\"name\":\"bare\",\"inputSchema\":{}}]",
     "empty description omitted"
+  )
+}
+
+test "encodeAllToolDefsList: plain and resumable tools share one wire shape (docs/64 §3.2)" {
+  val plain = oneToolList()
+  val schema = JObject(fields = [JsonField(name = "type", value = JString(value = "object"))])
+  val resumable: List[McpResumableToolDef] = newList()
+  resumable.add(
+    McpResumableToolDef(
+      name = "confirm_delete",
+      description = "Deletes with confirmation",
+      inputSchema = schema,
+      handler = NoopResumableToolHandler()
+    )
+  )
+  assertJsonEqual(
+    encodeAllToolDefsList(plain, resumable),
+    "[{\"name\":\"echo\",\"description\":\"Echo back\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"confirm_delete\",\"description\":\"Deletes with confirmation\",\"inputSchema\":{\"type\":\"object\"}}]",
+    "combined tools array"
+  )
+}
+
+// #6341 — a tool name double-registered via both addTool and addResumableTool
+// must contribute exactly one tools/list entry (the resumable one), never
+// two same-named entries.
+test "encodeAllToolDefsList: a name registered via both addTool and addResumableTool contributes one entry, the resumable one" {
+  val schema = JObject(fields = [JsonField(name = "type", value = JString(value = "object"))])
+  val plain: List[McpToolDef] = newList()
+  plain.add(McpToolDef(name = "echo", description = "plain echo", inputSchema = schema, handler = NoopToolHandler()))
+  plain.add(
+    McpToolDef(name = "other", description = "unaffected plain tool", inputSchema = schema, handler = NoopToolHandler())
+  )
+  val resumable: List[McpResumableToolDef] = newList()
+  resumable.add(
+    McpResumableToolDef(
+      name = "echo",
+      description = "resumable echo",
+      inputSchema = schema,
+      handler = NoopResumableToolHandler()
+    )
+  )
+  assertJsonEqual(
+    encodeAllToolDefsList(plain, resumable),
+    "[{\"name\":\"other\",\"description\":\"unaffected plain tool\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"resumable echo\",\"inputSchema\":{\"type\":\"object\"}}]",
+    "the plain 'echo' registration is dropped; only the resumable 'echo' entry (and the unaffected plain 'other' tool) survive"
   )
 }
 
@@ -196,6 +294,35 @@ test "decodeToolResult: parses content and isError" {
         case _ -> assertTrue(false, "expected TextContent")
       }
     }
+  }
+}
+
+test "encodeToolCallOutcome: ToolResult encodes exactly like a plain CallToolResult" {
+  val outcome = ToolResult(value = McpToolResult(content = newList(), isError = false))
+  assertJsonEqual(encodeToolCallOutcome(outcome), "{\"content\":[],\"isError\":false}", "ToolResult outcome shape")
+}
+
+test "encodeToolCallOutcome / decodeToolCallOutcome: InputRequired round-trips (docs/64 §3.1)" {
+  val ir = McpInputRequired(
+    inputRequests = JObject(fields = [JsonField(name = "confirm", value = JBool(value = true))]),
+    requestState = "opaque-token-123"
+  )
+  val encoded = encodeToolCallOutcome(InputRequired(value = ir))
+  assertJsonEqual(
+    encoded,
+    "{\"resultType\":\"input_required\",\"inputRequests\":{\"confirm\":true},\"requestState\":\"opaque-token-123\"}",
+    "InputRequired outcome shape"
+  )
+  match decodeToolCallOutcome(encoded) {
+    case InputRequired(decoded) -> assertEqual(decoded.requestState, "opaque-token-123", "requestState round-trip")
+    case ToolResult(_) -> assertTrue(false, "expected InputRequired to decode back to InputRequired")
+  }
+}
+
+test "decodeToolCallOutcome: a plain result with no resultType decodes as ToolResult" {
+  match decodeToolCallOutcome(JObject(fields = [JsonField(name = "content", value = JArray(items = newList())), JsonField(name = "isError", value = JBool(value = false))])) {
+    case ToolResult(r) -> assertFalse(r.isError, "decoded as a plain ToolResult")
+    case InputRequired(_) -> assertTrue(false, "expected ToolResult")
   }
 }
 
@@ -317,9 +444,4 @@ test "decodePromptResult: parses description and messages" {
       }
     }
   }
-}
-
-// ── MCP-specific error code ─────────────────────────────────────────────────
-test "serverNotInitialized is a distinct, negative, non-standard JSON-RPC code" {
-  assertTrue(serverNotInitialized == 0 - 32002, "serverNotInitialized value")
 }

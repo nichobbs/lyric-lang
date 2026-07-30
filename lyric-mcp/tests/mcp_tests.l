@@ -2,6 +2,12 @@
 //! (`McpServer`) driven over an in-memory transport pair connected
 //! back-to-back, no real process or socket involved.
 //!
+//! **Stateless core (docs/64-mcp-2026-stateless-migration.md §3.2)**: most
+//! tests below deliberately do NOT call `initialize` first — that is the
+//! point being tested. `initialize` remains answerable (a couple of tests
+//! cover it directly, for legacy-peer tolerance), but no request needs it
+//! to precede anything else anymore.
+//!
 //! Synchronization: `JsonRpc.RpcTransport.receive()` is documented as
 //! blocking ("block until the next complete message arrives"), and this
 //! suite runs single-threaded with no real concurrency and no transport
@@ -38,9 +44,9 @@
 //! it with `Mcp`'s decode functions — the same "feed, then dispatch, then
 //! read the outbox" shape `lyric-jsonrpc/tests/jsonrpc_tests.l` already
 //! uses successfully. The one test that needs a genuine `Mcp.Client`
-//! (`"a real McpClient round-trips initialize + tools/list against a real
-//! McpServer"` below) gets there by *pre-staging* each response the
-//! client's `JsonRpc.call()` will need — computed via the same safe
+//! (`"a real McpClient round-trips tools/list against a real McpServer,
+//! no handshake needed"` below) gets there by *pre-staging* each response
+//! the client's `JsonRpc.call()` will need — computed via the same safe
 //! non-recursive `stage()` helper, using `JsonRpc`'s own deterministic,
 //! auto-incrementing request ids (1, 2, 3, ...) to predict exactly which
 //! response `call()`'s inline read loop will be looking for — so `call()`
@@ -60,13 +66,7 @@
 //! current `RpcHandler` interface for a handler to detect "this call is
 //! part of an inbound batch" and reject the envelope as a whole. Adding
 //! one would be a new cross-cutting feature in `lyric-jsonrpc`, out of
-//! scope for a "small, test-proven fix" to that library. What IS verified
-//! here (`"a batch is not exempt from the initialization gate"` below) is
-//! that MCP's own per-request rules (`serverNotInitialized`, unknown
-//! method, ...) still apply independently to every element of an inbound
-//! batch, so a batch can never be used to bypass them — a batch is not
-//! *specially* rejected, but it cannot get further than a single message
-//! could.
+//! scope for a "small, test-proven fix" to that library.
 //!
 //! NOTE: assertions compare `Option[T]` via `match`, never `==` — see
 //! lyric-jsonrpc/README.md "Known upstream issues" #4.
@@ -244,6 +244,92 @@ impl McpPromptHandler for GreetPromptHandler {
   }
 }
 
+// A resumable "confirm delete" tool: the canonical permission-prompt shape
+// docs/64 §1/§3.1 motivate `McpResumableToolHandler` with. `call` always
+// asks for confirmation first; `resume` honors whatever the peer answered.
+record ConfirmDeleteHandler {
+}
+
+impl McpResumableToolHandler for ConfirmDeleteHandler {
+  func call(args: in Option[JsonValue]): Result[McpToolCallOutcome, String] {
+    val path = match args {
+      case Some(a) -> match getString(a, "path") { case Some(p) -> p; case None -> "" }
+      case None -> ""
+    }
+    val inputRequests = JObject(fields = [JsonField(name = "confirm", value = JBool(value = true))])
+    Ok(value = InputRequired(value = McpInputRequired(inputRequests = inputRequests, requestState = "delete:" + path)))
+  }
+
+  func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String] {
+    val confirmed = match getBool(inputResponses, "confirm") { case Some(b) -> b; case None -> false }
+    if confirmed {
+      Ok(value = ToolResult(value = toolTextResult("deleted (state=" + requestState + ")")))
+    } else {
+      Ok(value = ToolResult(value = toolErrorResult("deletion not confirmed")))
+    }
+  }
+}
+
+// A resumable tool that needs TWO resume round trips before finishing —
+// every other resumable-tool test/fixture in this file resolves in exactly
+// one call + one resume; this exercises the chained
+// InputRequired -> InputRequired -> ToolResult shape the pattern allows
+// but nothing here previously verified.
+record TwoStepResumableHandler {
+}
+
+impl McpResumableToolHandler for TwoStepResumableHandler {
+  func call(args: in Option[JsonValue]): Result[McpToolCallOutcome, String] {
+    val inputRequests = JObject(fields = [JsonField(name = "step", value = JString(value = "confirm-intent"))])
+    Ok(value = InputRequired(value = McpInputRequired(inputRequests = inputRequests, requestState = "step1")))
+  }
+
+  func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String] {
+    if requestState == "step1" {
+      val proceed = match getBool(inputResponses, "proceed") { case Some(b) -> b; case None -> false }
+      if proceed {
+        val inputRequests2 = JObject(fields = [JsonField(name = "step", value = JString(value = "final-confirm"))])
+        Ok(value = InputRequired(value = McpInputRequired(inputRequests = inputRequests2, requestState = "step2")))
+      } else {
+        Ok(value = ToolResult(value = toolErrorResult("cancelled at step1")))
+      }
+    } else if requestState == "step2" {
+      val confirmed = match getBool(inputResponses, "confirm") { case Some(b) -> b; case None -> false }
+      if confirmed {
+        Ok(value = ToolResult(value = toolTextResult("done after two resumes")))
+      } else {
+        Ok(value = ToolResult(value = toolErrorResult("cancelled at step2")))
+      }
+    } else {
+      Ok(value = ToolResult(value = toolErrorResult("unknown requestState: " + requestState)))
+    }
+  }
+}
+
+// ── #6341 regression fixtures: a name registered via both addTool and
+// addResumableTool, distinguishable by which handler answered ─────────────
+record CollisionPlainHandler {
+}
+
+impl McpToolHandler for CollisionPlainHandler {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    Ok(value = toolTextResult("plain"))
+  }
+}
+
+record CollisionResumableHandler {
+}
+
+impl McpResumableToolHandler for CollisionResumableHandler {
+  func call(args: in Option[JsonValue]): Result[McpToolCallOutcome, String] {
+    Ok(value = ToolResult(value = toolTextResult("resumable")))
+  }
+
+  func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String] {
+    Ok(value = ToolResult(value = toolTextResult("resumable-resume")))
+  }
+}
+
 func newTestServer(): McpServer {
   val server = newServer(McpImplementation(name = "test-server", version = "1.0.0"))
   val schema = JObject(fields = [JsonField(name = "type", value = JString(value = "object"))])
@@ -258,6 +344,15 @@ func newTestServer(): McpServer {
   addTool(
     server,
     McpToolDef(name = "boom", description = "Always panics", inputSchema = schema, handler = PanickingToolHandler())
+  )
+  addResumableTool(
+    server,
+    McpResumableToolDef(
+      name = "confirm_delete",
+      description = "Deletes a path after confirmation",
+      inputSchema = schema,
+      handler = ConfirmDeleteHandler()
+    )
   )
   addResource(
     server,
@@ -276,49 +371,62 @@ func newTestServer(): McpServer {
   server
 }
 
-// Runs the full initialize handshake directly against `serverPeer`
-// (non-recursive) and returns the negotiated protocol version. Leaves the
-// server `ready`.
-func handshake(serverPeer: inout RpcPeer, box: in Mailbox, requestedVersion: in String): String {
+// ── Lifecycle: initialize (legacy-peer tolerance, docs/64 §3.2) ────────────
+test "initialize negotiation: a supported version is echoed back" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
   stage(
     serverPeer,
     box,
     reqText(
       1i64,
       "initialize",
-      Some(value = encodeInitializeParams(requestedVersion, McpImplementation(name = "c", version = "1")))
+      Some(value = encodeInitializeParams(protocolVersionLatest, McpImplementation(name = "c", version = "1")))
     )
   )
-  val resp = popResponse(box, "initialize")
-  val result = assertResultField(resp, "initialize")
-  stage(serverPeer, box, notifyText("notifications/initialized", None))
-  match getString(result, "protocolVersion") {
-    case Some(v) -> v
-    case None -> ""
-  }
-}
-
-// ── Lifecycle: initialize / notifications/initialized ──────────────────────
-test "initialize negotiation: a supported version is echoed back" {
-  val box = newMailbox()
-  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  val negotiated = handshake(serverPeer, box, protocolVersionLatest)
-  assertEqual(negotiated, protocolVersionLatest, "primary version echoed back")
+  val result = assertResultField(popResponse(box, "initialize"), "initialize")
+  assertEqual(
+    match getString(result, "protocolVersion") { case Some(v) -> v; case None -> "" },
+    protocolVersionLatest,
+    "primary version echoed back"
+  )
 }
 
 test "initialize negotiation: the legacy version is also echoed back" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  val negotiated = handshake(serverPeer, box, protocolVersionLegacy)
-  assertEqual(negotiated, protocolVersionLegacy, "legacy version echoed back")
+  stage(
+    serverPeer,
+    box,
+    reqText(
+      1i64,
+      "initialize",
+      Some(value = encodeInitializeParams(protocolVersionLegacy, McpImplementation(name = "c", version = "1")))
+    )
+  )
+  val result = assertResultField(popResponse(box, "initialize"), "initialize")
+  assertEqual(
+    match getString(result, "protocolVersion") { case Some(v) -> v; case None -> "" },
+    protocolVersionLegacy,
+    "legacy version echoed back"
+  )
 }
 
 test "initialize negotiation: an unsupported version is refused (server responds with its own primary version)" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  val negotiated = handshake(serverPeer, box, "1999-01-01")
+  stage(
+    serverPeer,
+    box,
+    reqText(
+      1i64,
+      "initialize",
+      Some(value = encodeInitializeParams("1999-01-01", McpImplementation(name = "c", version = "1")))
+    )
+  )
+  val result = assertResultField(popResponse(box, "initialize"), "initialize")
   assertEqual(
-    negotiated,
+    match getString(result, "protocolVersion") { case Some(v) -> v; case None -> "" },
     protocolVersionLatest,
     "server refuses the requested version and responds with its own primary version"
   )
@@ -356,37 +464,48 @@ test "initialize response includes capabilities derived from registered tools/re
   }
 }
 
-test "request before initialize completes gets serverNotInitialized" {
+// ── Stateless core (docs/64 §3.2): no handshake required for anything ─────
+test "tools/list works immediately, with no prior initialize or server/discover call" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
   stage(serverPeer, box, reqText(1i64, "tools/list", None))
-  assertErrorCode(popResponse(box, "tools/list"), 0i64 - 32002i64, "serverNotInitialized")
-}
-
-test "ping before initialize also gets serverNotInitialized" {
-  val box = newMailbox()
-  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  stage(serverPeer, box, reqText(1i64, "ping", None))
-  assertErrorCode(popResponse(box, "ping"), 0i64 - 32002i64, "serverNotInitialized")
-}
-
-// ── Tools ────────────────────────────────────────────────────────────────────
-test "tools/list: returns every registered tool" {
-  val box = newMailbox()
-  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  handshake(serverPeer, box, protocolVersionLatest)
-  stage(serverPeer, box, reqText(2i64, "tools/list", None))
   val result = assertResultField(popResponse(box, "tools/list"), "tools/list")
   match getArray(result, "tools") {
     case None -> assertTrue(false, "expected a 'tools' array")
-    case Some(tools) -> assertEqualInt(tools.count, 3, "three tools registered")
+    case Some(tools) -> assertEqualInt(tools.count, 4, "three plain tools plus one resumable tool")
   }
 }
 
+test "ping works immediately, with no prior initialize call" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  stage(serverPeer, box, reqText(1i64, "ping", None))
+  val ignored = assertResultField(popResponse(box, "ping"), "ping")
+}
+
+test "server/discover: returns serverInfo and derived capabilities, answerable immediately" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  stage(serverPeer, box, reqText(1i64, "server/discover", None))
+  val result = assertResultField(popResponse(box, "server/discover"), "server/discover")
+  match getField(result, "serverInfo") {
+    case None -> assertTrue(false, "expected a serverInfo object")
+    case Some(si) -> assertEqual(match getString(si, "name") { case Some(n) -> n; case None -> "" }, "test-server", "serverInfo.name")
+  }
+  match getField(result, "capabilities") {
+    case None -> assertTrue(false, "expected a capabilities object")
+    case Some(caps) -> match getField(caps, "tools") { case None -> assertTrue(false, "expected tools capability"); case Some(_) -> () }
+  }
+  match getField(result, "protocolVersion") {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "server/discover is not a negotiation and must not carry a protocolVersion field")
+  }
+}
+
+// ── Tools ────────────────────────────────────────────────────────────────────
 test "tools/call: a successful call returns content with isError: false" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  handshake(serverPeer, box, protocolVersionLatest)
   val callParams = JObject(
     fields = [
       JsonField(name = "name", value = JString(value = "echo")),
@@ -398,7 +517,7 @@ test "tools/call: a successful call returns content with isError: false" {
       )
     ]
   )
-  stage(serverPeer, box, reqText(2i64, "tools/call", Some(value = callParams)))
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
   val result = assertResultField(popResponse(box, "tools/call"), "tools/call")
   val toolResult = decodeToolResult(result)
   assertFalse(toolResult.isError, "successful call is not an error")
@@ -409,12 +528,42 @@ test "tools/call: a successful call returns content with isError: false" {
   }
 }
 
+// #6341 — a live McpServer, not just the pure encodeAllToolDefsList encoder,
+// must dispatch a name registered via both addTool and addResumableTool to
+// the resumable handler, matching the tools/list dedup precedence.
+test "tools/call: a name registered via both addTool and addResumableTool dispatches to the resumable handler" {
+  val box = newMailbox()
+  val schema = JObject(fields = [JsonField(name = "type", value = JString(value = "object"))])
+  val server = newServer(McpImplementation(name = "collision-server", version = "1.0.0"))
+  addTool(
+    server,
+    McpToolDef(name = "collide", description = "plain", inputSchema = schema, handler = CollisionPlainHandler())
+  )
+  addResumableTool(
+    server,
+    McpResumableToolDef(
+      name = "collide",
+      description = "resumable",
+      inputSchema = schema,
+      handler = CollisionResumableHandler()
+    )
+  )
+  var serverPeer = newPeer(ServerSideTransport(box = box), server)
+  val callParams = JObject(fields = [JsonField(name = "name", value = JString(value = "collide"))])
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
+  val result = assertResultField(popResponse(box, "tools/call"), "tools/call")
+  val toolResult = decodeToolResult(result)
+  match toolResult.content[0] {
+    case TextContent(t) -> assertEqual(t, "resumable", "collision resolves to the resumable handler's answer, not the plain one")
+    case _ -> assertTrue(false, "expected TextContent")
+  }
+}
+
 test "tools/call: a handler Err becomes a result with isError: true, not a protocol error" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  handshake(serverPeer, box, protocolVersionLatest)
   val callParams = JObject(fields = [JsonField(name = "name", value = JString(value = "fail"))])
-  stage(serverPeer, box, reqText(2i64, "tools/call", Some(value = callParams)))
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
   val resp = popResponse(box, "tools/call")
   match getField(resp, "error") {
     case Some(_) -> assertTrue(false, "expected a successful (isError-true) result, not a protocol error")
@@ -432,18 +581,17 @@ test "tools/call: a handler Err becomes a result with isError: true, not a proto
 test "tools/call: a handler panic also becomes an isError result, never kills the connection" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  handshake(serverPeer, box, protocolVersionLatest)
   val callParams = JObject(fields = [JsonField(name = "name", value = JString(value = "boom"))])
-  stage(serverPeer, box, reqText(2i64, "tools/call", Some(value = callParams)))
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
   val resp = popResponse(box, "tools/call")
   match getField(resp, "error") {
     case Some(_) -> assertTrue(false, "expected a successful (isError-true) result, not a protocol error")
     case None -> assertTrue(decodeToolResult(assertResultField(resp, "tools/call")).isError, "panic surfaces as isError, not a crash")
   }
   // The connection must still be usable afterward.
-  stage(serverPeer, box, reqText(3i64, "tools/list", None))
+  stage(serverPeer, box, reqText(2i64, "tools/list", None))
   match getArray(assertResultField(popResponse(box, "tools/list"), "tools/list"), "tools") {
-    case Some(tools) -> assertEqualInt(tools.count, 3, "still three tools after the panic")
+    case Some(tools) -> assertEqualInt(tools.count, 4, "still four tools after the panic")
     case None -> assertTrue(false, "expected a 'tools' array")
   }
 }
@@ -451,25 +599,136 @@ test "tools/call: a handler panic also becomes an isError result, never kills th
 test "tools/call: an unknown tool name is a protocol error (-32602)" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  handshake(serverPeer, box, protocolVersionLatest)
   val callParams = JObject(fields = [JsonField(name = "name", value = JString(value = "does-not-exist"))])
-  stage(serverPeer, box, reqText(2i64, "tools/call", Some(value = callParams)))
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
   assertErrorCode(popResponse(box, "tools/call"), 0i64 - 32602i64, "invalidParams for an unknown tool")
+}
+
+// A tools/call carrying requestState against a name registered only via
+// addTool (never addResumableTool) must not silently fall through to an
+// ordinary call() — that would ignore requestState entirely and return a
+// misleadingly plain success for a peer that thinks it's resuming.
+test "tools/call: requestState against a non-resumable tool is a protocol error, not a silent plain call" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  val callParams = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "echo")),
+      JsonField(name = "requestState", value = JString(value = "bogus")),
+      JsonField(name = "inputResponses", value = JObject(fields = newList()))
+    ]
+  )
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
+  assertErrorCode(
+    popResponse(box, "tools/call"),
+    0i64 - 32602i64,
+    "invalidParams for requestState against a non-resumable tool"
+  )
+}
+
+// getString(p, "requestState") alone can't distinguish "absent" from
+// "present but not a string" — both decode to None. A malformed resume
+// request (requestState present as the wrong JSON type) must be rejected
+// explicitly, not silently treated as a brand-new call().
+test "tools/call: a non-string requestState against a resumable tool is a protocol error, not a silent fresh call" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  val callParams = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "confirm_delete")),
+      JsonField(name = "requestState", value = JInt(value = 123i64)),
+      JsonField(name = "inputResponses", value = JObject(fields = newList()))
+    ]
+  )
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
+  assertErrorCode(popResponse(box, "tools/call"), 0i64 - 32602i64, "invalidParams for a non-string requestState")
+}
+
+// ── Resumable tools: input_required multi-round-trip (docs/64 §3.1) ────────
+test "tools/call against a resumable tool answers with input_required, not a finished result" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  val callParams = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "confirm_delete")),
+      JsonField(
+        name = "arguments",
+        value = JObject(
+          fields = [JsonField(name = "path", value = JString(value = "/tmp/x"))]
+        )
+      )
+    ]
+  )
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
+  val result = assertResultField(popResponse(box, "tools/call"), "tools/call")
+  match decodeToolCallOutcome(result) {
+    case InputRequired(ir) -> assertEqual(ir.requestState, "delete:/tmp/x", "requestState carries the original call's context")
+    case ToolResult(_) -> assertTrue(false, "expected InputRequired on the first call")
+  }
+}
+
+test "tools/call resume: echoing requestState + confirm:true finishes the deletion" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  val resumeParams = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "confirm_delete")),
+      JsonField(name = "requestState", value = JString(value = "delete:/tmp/x")),
+      JsonField(
+        name = "inputResponses",
+        value = JObject(fields = [JsonField(name = "confirm", value = JBool(value = true))])
+      )
+    ]
+  )
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = resumeParams)))
+  val result = assertResultField(popResponse(box, "tools/call"), "tools/call")
+  match decodeToolCallOutcome(result) {
+    case ToolResult(r) -> {
+      assertFalse(r.isError, "confirmed deletion is not an error")
+      match r.content[0] {
+        case TextContent(t) -> assertEqual(t, "deleted (state=delete:/tmp/x)", "resume used the echoed requestState")
+        case _ -> assertTrue(false, "expected TextContent")
+      }
+    }
+    case InputRequired(_) -> assertTrue(false, "expected a finished ToolResult after resume")
+  }
+}
+
+test "tools/call resume: confirm:false is reported as isError, not a protocol error" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  val resumeParams = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "confirm_delete")),
+      JsonField(name = "requestState", value = JString(value = "delete:/tmp/y")),
+      JsonField(
+        name = "inputResponses",
+        value = JObject(
+          fields = [JsonField(name = "confirm", value = JBool(value = false))]
+        )
+      )
+    ]
+  )
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = resumeParams)))
+  val result = assertResultField(popResponse(box, "tools/call"), "tools/call")
+  match decodeToolCallOutcome(result) {
+    case ToolResult(r) -> assertTrue(r.isError, "refused confirmation surfaces as isError")
+    case InputRequired(_) -> assertTrue(false, "expected a finished ToolResult after resume")
+  }
 }
 
 // ── Resources ────────────────────────────────────────────────────────────────
 test "resources/list and resources/read: round-trip a registered resource" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  handshake(serverPeer, box, protocolVersionLatest)
-  stage(serverPeer, box, reqText(2i64, "resources/list", None))
+  stage(serverPeer, box, reqText(1i64, "resources/list", None))
   val listResult = assertResultField(popResponse(box, "resources/list"), "resources/list")
   match getArray(listResult, "resources") {
     case Some(resources) -> assertEqualInt(resources.count, 1, "one resource registered")
     case None -> assertTrue(false, "expected a 'resources' array")
   }
   val readParams = JObject(fields = [JsonField(name = "uri", value = JString(value = "test:///greeting"))])
-  stage(serverPeer, box, reqText(3i64, "resources/read", Some(value = readParams)))
+  stage(serverPeer, box, reqText(2i64, "resources/read", Some(value = readParams)))
   val readResult = assertResultField(popResponse(box, "resources/read"), "resources/read")
   match getArray(readResult, "contents") {
     case None -> assertTrue(false, "expected a 'contents' array")
@@ -483,9 +742,8 @@ test "resources/list and resources/read: round-trip a registered resource" {
 test "resources/read: an unknown uri is a protocol error" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  handshake(serverPeer, box, protocolVersionLatest)
   val readParams = JObject(fields = [JsonField(name = "uri", value = JString(value = "test:///does-not-exist"))])
-  stage(serverPeer, box, reqText(2i64, "resources/read", Some(value = readParams)))
+  stage(serverPeer, box, reqText(1i64, "resources/read", Some(value = readParams)))
   assertErrorCode(popResponse(box, "resources/read"), 0i64 - 32602i64, "invalidParams for an unknown resource")
 }
 
@@ -493,55 +751,23 @@ test "resources/read: an unknown uri is a protocol error" {
 test "prompts/list and prompts/get: round-trip a registered prompt" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  handshake(serverPeer, box, protocolVersionLatest)
-  stage(serverPeer, box, reqText(2i64, "prompts/list", None))
+  stage(serverPeer, box, reqText(1i64, "prompts/list", None))
   match getArray(assertResultField(popResponse(box, "prompts/list"), "prompts/list"), "prompts") {
     case Some(prompts) -> assertEqualInt(prompts.count, 1, "one prompt registered")
     case None -> assertTrue(false, "expected a 'prompts' array")
   }
   val getParams = JObject(fields = [JsonField(name = "name", value = JString(value = "greet"))])
-  stage(serverPeer, box, reqText(3i64, "prompts/get", Some(value = getParams)))
+  stage(serverPeer, box, reqText(2i64, "prompts/get", Some(value = getParams)))
   val result = decodePromptResult(assertResultField(popResponse(box, "prompts/get"), "prompts/get"))
   assertEqual(result.description, "A greeting prompt", "prompt description")
   assertEqualInt(result.messages.count, 1, "one message")
   assertEqual(result.messages[0].role, "user", "message role")
 }
 
-// ── Ping ─────────────────────────────────────────────────────────────────────
-test "ping: succeeds once initialized" {
-  val box = newMailbox()
-  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  handshake(serverPeer, box, protocolVersionLatest)
-  stage(serverPeer, box, reqText(2i64, "ping", None))
-  val ignored = assertResultField(popResponse(box, "ping"), "ping")
-}
-
 // ── Batch handling ───────────────────────────────────────────────────────────
-test "a batch is not exempt from the initialization gate (see module doc's spec-deviation note)" {
+test "batch: every element is handled normally, with no prior handshake needed" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  stage(
-    serverPeer,
-    box,
-    "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}]"
-  )
-  match asArray(popResponse(box, "batch")) {
-    case None -> assertTrue(false, "expected a JSON array")
-    case Some(items) -> {
-      assertEqualInt(items.count, 2, "both batch elements produced a response")
-      var i = 0
-      while i < items.count {
-        assertErrorCode(items[i], 0i64 - 32002i64, "batch element " + i.toString() + " gets serverNotInitialized")
-        i = i + 1
-      }
-    }
-  }
-}
-
-test "batch: once initialized, every batch element is handled normally" {
-  val box = newMailbox()
-  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  handshake(serverPeer, box, protocolVersionLatest)
   stage(
     serverPeer,
     box,
@@ -553,7 +779,7 @@ test "batch: once initialized, every batch element is handled normally" {
       assertEqualInt(items.count, 2, "both batch elements produced a response")
       assertResultField(items[0], "batch[0] (ping)")
       match getArray(assertResultField(items[1], "batch[1] (tools/list)"), "tools") {
-        case Some(tools) -> assertEqualInt(tools.count, 3, "three tools listed")
+        case Some(tools) -> assertEqualInt(tools.count, 4, "four tools listed")
         case None -> assertTrue(false, "expected a 'tools' array")
       }
     }
@@ -567,39 +793,224 @@ test "batch: once initialized, every batch element is handled normally" {
 // function that triggers the matching `call()` is invoked, so `call()`'s
 // own inline read loop finds it immediately without any transport ever
 // recursing into the server's dispatch machinery.
-test "a real McpClient round-trips initialize + tools/list against a real McpServer" {
+test "a real McpClient round-trips server/discover + tools/list against a real McpServer, no handshake needed" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
-  val clientInfo = McpImplementation(name = "real-client", version = "1.0.0")
-
-  // Pre-stage the "initialize" response `connectTransport`'s internal
-  // `call()` (id 1, deterministic — the peer's first call) will read.
-  stage(
-    serverPeer,
-    box,
-    reqText(1i64, "initialize", Some(value = encodeInitializeParams(protocolVersionLatest, clientInfo)))
-  )
 
   match connectTransport(ClientSideTransport(box = box)) {
     case Err(e) -> assertTrue(false, "connectTransport failed: " + e)
     case Ok(clientVal) -> {
       var client = clientVal
-      assertEqual(client.protocolVersion, protocolVersionLatest, "negotiated protocol version")
-      assertEqual(client.serverInfo.name, "test-server", "serverInfo.name")
+      assertEqual(client.serverInfo.name, "", "serverInfo is empty until discoverServer is called")
 
-      // `connectTransport` also sent `notifications/initialized`, still
-      // sitting unread in `box.toServer` alongside the harmless duplicate
-      // "initialize" `call()` itself sent — sweep both up now.
-      runLoop(serverPeer)
+      // Pre-stage the "server/discover" response the next `call()` (id 1,
+      // deterministic — the peer's first call) will read.
+      stage(serverPeer, box, reqText(1i64, "server/discover", None))
+      match discoverServer(client) {
+        case Err(e) -> assertTrue(false, "discoverServer failed: " + e)
+        case Ok(discovered) -> {
+          assertEqual(discovered.serverInfo.name, "test-server", "discovered serverInfo.name")
+          assertTrue(discovered.capabilities.hasTools, "discovered capabilities.hasTools (server has 4 tools registered)")
+        }
+      }
+      assertEqual(client.serverInfo.name, "test-server", "client.serverInfo updated in place")
 
       // Pre-stage the "tools/list" response the next `call()` (id 2) will
-      // read.
+      // read — no `initialize`/`notifications/initialized` round trip was
+      // ever needed for either call above.
       stage(serverPeer, box, reqText(2i64, "tools/list", None))
       match listTools(client) {
         case Err(e) -> assertTrue(false, "listTools failed: " + e)
         case Ok(tools) -> {
-          assertEqualInt(tools.count, 3, "three tools registered")
+          assertEqualInt(tools.count, 4, "four tools registered")
           assertEqual(tools[0].name, "echo", "first tool name")
+        }
+      }
+    }
+  }
+}
+
+test "a real McpClient drives the full input_required resume loop against a real McpServer" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+
+  match connectTransport(ClientSideTransport(box = box)) {
+    case Err(e) -> assertTrue(false, "connectTransport failed: " + e)
+    case Ok(clientVal) -> {
+      var client = clientVal
+      val args = JObject(fields = [JsonField(name = "path", value = JString(value = "/tmp/z"))])
+
+      // Pre-stage the exact wire request `callResumableTool` sends, matching
+      // its own params construction (see `Mcp.Client.callResumableTool`).
+      val callWireParams = JObject(
+        fields = [
+          JsonField(name = "name", value = JString(value = "confirm_delete")),
+          JsonField(name = "arguments", value = args)
+        ]
+      )
+      stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callWireParams)))
+      match callResumableTool(client, "confirm_delete", Some(value = args)) {
+        case Err(e) -> assertTrue(false, "callResumableTool failed: " + e)
+        case Ok(outcome) -> match outcome {
+          case InputRequired(ir) -> {
+            assertEqual(ir.requestState, "delete:/tmp/z", "requestState from the first call")
+            val inputResponses = JObject(fields = [JsonField(name = "confirm", value = JBool(value = true))])
+            // Pre-stage the exact wire request `resumeToolCall` sends.
+            val resumeWireParams = JObject(
+              fields = [
+                JsonField(name = "name", value = JString(value = "confirm_delete")),
+                JsonField(name = "requestState", value = JString(value = ir.requestState)),
+                JsonField(name = "inputResponses", value = inputResponses)
+              ]
+            )
+            stage(serverPeer, box, reqText(2i64, "tools/call", Some(value = resumeWireParams)))
+            match resumeToolCall(client, "confirm_delete", ir.requestState, inputResponses) {
+              case Err(e) -> assertTrue(false, "resumeToolCall failed: " + e)
+              case Ok(resumed) -> match resumed { case ToolResult(r) -> assertFalse(r.isError, "resumed call finished successfully"); case InputRequired(_) -> assertTrue(false, "expected a finished ToolResult after resume") }
+            }
+          }
+          case ToolResult(_) -> assertTrue(false, "expected InputRequired on the first call")
+        }
+      }
+    }
+  }
+}
+
+// A resumable tool that itself answers a resume with a SECOND
+// InputRequired (rather than finishing) before finally completing on the
+// third round trip — verifies the chained-resume shape works, not just a
+// single call + single resume.
+test "tools/call chained resume: InputRequired -> InputRequired -> ToolResult across two resume round trips" {
+  val box = newMailbox()
+  val schema = JObject(fields = [JsonField(name = "type", value = JString(value = "object"))])
+  val server = newServer(McpImplementation(name = "two-step-server", version = "1.0.0"))
+  addResumableTool(
+    server,
+    McpResumableToolDef(
+      name = "two_step",
+      description = "two-step confirm",
+      inputSchema = schema,
+      handler = TwoStepResumableHandler()
+    )
+  )
+  var serverPeer = newPeer(ServerSideTransport(box = box), server)
+
+  val callParams = JObject(fields = [JsonField(name = "name", value = JString(value = "two_step"))])
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
+  val resp1 = assertResultField(popResponse(box, "tools/call (initial call)"), "tools/call (initial call)")
+  match getString(resp1, "resultType") {
+    case Some(rt) -> assertEqual(rt, "input_required", "first response is input_required")
+    case None -> assertTrue(false, "expected resultType on first response")
+  }
+  val requestState1 = match getString(resp1, "requestState") { case Some(s) -> s; case None -> "" }
+  assertEqual(requestState1, "step1", "first requestState")
+
+  val resume1Params = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "two_step")),
+      JsonField(name = "requestState", value = JString(value = requestState1)),
+      JsonField(
+        name = "inputResponses",
+        value = JObject(
+          fields = [JsonField(name = "proceed", value = JBool(value = true))]
+        )
+      )
+    ]
+  )
+  stage(serverPeer, box, reqText(2i64, "tools/call", Some(value = resume1Params)))
+  val resp2 = assertResultField(popResponse(box, "tools/call (first resume)"), "tools/call (first resume)")
+  match getString(resp2, "resultType") {
+    case Some(rt) -> assertEqual(rt, "input_required", "second response is still input_required (chained)")
+    case None -> assertTrue(false, "expected resultType on second response")
+  }
+  val requestState2 = match getString(resp2, "requestState") { case Some(s) -> s; case None -> "" }
+  assertEqual(requestState2, "step2", "second requestState")
+
+  val resume2Params = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "two_step")),
+      JsonField(name = "requestState", value = JString(value = requestState2)),
+      JsonField(
+        name = "inputResponses",
+        value = JObject(
+          fields = [JsonField(name = "confirm", value = JBool(value = true))]
+        )
+      )
+    ]
+  )
+  stage(serverPeer, box, reqText(3i64, "tools/call", Some(value = resume2Params)))
+  val resp3 = assertResultField(popResponse(box, "tools/call (second resume)"), "tools/call (second resume)")
+  match getField(resp3, "resultType") {
+    case Some(_) -> assertTrue(false, "expected no resultType field on a finished ToolResult")
+    case None -> {
+      val toolResult = decodeToolResult(resp3)
+      assertFalse(toolResult.isError, "finished successfully after two resumes")
+      match toolResult.content[0] {
+        case TextContent(t) -> assertEqual(t, "done after two resumes", "final text")
+        case _ -> assertTrue(false, "expected TextContent")
+      }
+    }
+  }
+}
+
+// #6334 — a resumable tool's `input_required` answer must never reach the
+// plain `callTool`/`decodeToolResult` path silently: before this fix,
+// `decodeToolResult`'s lenient defaulting would turn the missing
+// `content`/`isError` fields into a false-success `McpToolResult(content =
+// [], isError = false)`, indistinguishable from "the tool ran and produced
+// no output" — dangerous for a permission-gated tool like `confirm_delete`.
+test "callTool against a resumable tool's input_required answer returns Err, not a false-success empty result" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+
+  match connectTransport(ClientSideTransport(box = box)) {
+    case Err(e) -> assertTrue(false, "connectTransport failed: " + e)
+    case Ok(clientVal) -> {
+      var client = clientVal
+      val args = JObject(fields = [JsonField(name = "path", value = JString(value = "/tmp/z"))])
+      val callWireParams = JObject(
+        fields = [
+          JsonField(name = "name", value = JString(value = "confirm_delete")),
+          JsonField(name = "arguments", value = args)
+        ]
+      )
+      stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callWireParams)))
+      match callTool(client, "confirm_delete", Some(value = args)) {
+        case Err(e) -> assertTrue(e.contains("input_required"), "callTool's Err should reference input_required, got: " + e)
+        case Ok(result) -> assertTrue(false, "expected an Err — callTool instead returned Ok(McpToolResult(content.count = " + result.content.count.toString() + ")), a false-success (#6334 regression)")
+      }
+    }
+  }
+}
+
+// Happy-path counterpart to the #6334 regression test above: a plain
+// (non-resumable) tool's ordinary result has no `resultType` field at all,
+// so callTool's resultType guard must not fire on it — confirms the guard
+// only rejects a genuine input_required response, not every response.
+test "callTool against a plain tool's ordinary result returns Ok with the expected content" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+
+  match connectTransport(ClientSideTransport(box = box)) {
+    case Err(e) -> assertTrue(false, "connectTransport failed: " + e)
+    case Ok(clientVal) -> {
+      var client = clientVal
+      val args = JObject(fields = [JsonField(name = "text", value = JString(value = "hi there"))])
+      val callWireParams = JObject(
+        fields = [
+          JsonField(name = "name", value = JString(value = "echo")),
+          JsonField(name = "arguments", value = args)
+        ]
+      )
+      stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callWireParams)))
+      match callTool(client, "echo", Some(value = args)) {
+        case Err(e) -> assertTrue(false, "callTool failed: " + e)
+        case Ok(result) -> {
+          assertFalse(result.isError, "successful call is not an error")
+          match result.content[0] {
+            case TextContent(t) -> assertEqual(t, "hi there", "echoed text")
+            case _ -> assertTrue(false, "expected TextContent")
+          }
         }
       }
     }

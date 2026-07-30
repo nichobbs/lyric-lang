@@ -21733,3 +21733,174 @@ per the discovered-bug note above, confirmed pre-existing);
 
 **Related:** #5455, #5976, #5903, #5995, #6287, #6122, #6328, #2535, #4802,
 #5982, #5943, D-progress-434.
+
+## D133 — `lyric-mcp` migrates to MCP spec revision `2026-07-28` (stateless core, docs/64) — Phase A
+
+**Context.** The MCP specification's `2026-07-28` revision — billed
+upstream as the largest protocol revision since MCP launched — ships a
+stateless protocol core, removing the `initialize`/`initialized`
+handshake and `Mcp-Session-Id` entirely. `lyric-mcp` targeted `2025-06-18`
+(D129); adopting the new revision directly (rather than building toward
+`2025-06-18`'s now-abandoned `notifications/cancelled` answer to
+long-blocking tools) resolves docs/62's Q-MCP-002, the actual motivation
+for this library (cloud-agents' permission-callback MCP server). Full
+design: `docs/64-mcp-2026-stateless-migration.md`.
+
+**Decisions** (Phase A of docs/64 §2; Phases B/C/D are separate, later
+tracks):
+
+1. **`protocolVersionLatest` becomes `"2026-07-28"`,
+   `protocolVersionLegacy` becomes `"2025-06-18"`** — `2025-03-26` support
+   is dropped outright (not wire-compatible with the stateless core).
+2. **The `McpServer` readiness gate is deleted.** Every request
+   (`tools/list`, `tools/call`, `resources/*`, `prompts/*`, `ping`) is
+   answerable from the first message a peer sends — no
+   `initialize`/`notifications/initialized` round trip required first.
+   `Mcp.serverNotInitialized` (`-32002`) is removed along with it — there
+   is no more "not initialized" state to report. `initialize` remains
+   answerable, purely for legacy-peer tolerance, but no longer gates
+   anything; `notifications/initialized` is accepted and is now a no-op.
+3. **`server/discover` is the new stateless capability-discovery method**
+   (`{serverInfo, capabilities}`, no `protocolVersion` field — it is a
+   query, not a negotiation).
+4. **`McpToolCallOutcome`/`McpResumableToolHandler` implement the
+   `input_required` multi-round-trip pattern** that resolves Q-MCP-002: a
+   resumable tool answers `tools/call` with either a finished
+   `ToolResult` or an `InputRequired` (`inputRequests` + an opaque
+   `requestState`); the client reissues `tools/call` with the echoed
+   `requestState` + `inputResponses` to resume. Purely additive — a new
+   `Mcp.Server.addResumableTool`/`McpResumableToolDef` registration
+   alongside (never replacing) the existing `addTool`/`McpToolDef`, so no
+   existing plain-tool registration (cloud-agents' `shim/` included)
+   needs to change. `ToolResult`'s payload field is named `value`, not
+   `result` — the same P0050 union-case-field-name parser bug
+   `RpcResponse.RpcSuccess` already works around (`lyric-jsonrpc/README.md`
+   "Known upstream issues").
+5. **`Mcp.Client.connectTransport`/`connectStdio` no longer perform any
+   round trip** — connecting is a pure local operation. `McpClient` no
+   longer carries a `protocolVersion` field (nothing to pin per-connection
+   anymore); `serverInfo` starts empty and is populated by the new,
+   optional `discoverServer` (wraps `server/discover`).
+6. **Roots/Sampling/Logging deprecation is a no-op for this library** —
+   none were ever implemented (docs/62 §5.3 "out of scope v1"), so
+   `2026-07-28`'s deprecation of all three closes Q-MCP-001 (sampling) by
+   removing the target rather than building toward it.
+7. **Streamable HTTP (docs/64 §4, Phase B), the Tasks extension (docs/64
+   §5, Phase C), and OAuth/auth-hardening (docs/64 §7, still Q-MCP-003)
+   are explicitly out of scope of this entry** — each is its own
+   follow-up track.
+8. **Review-round hardening (#6339, #6340, #6341).** `server/discover`'s
+   `capabilities` half is now decodable client-side: a new
+   `McpCapabilities` record + `decodeCapabilities`, wired into
+   `McpDiscoverResult`, and `discoverServer`'s return type widened from
+   `Result[McpImplementation, String]` to `Result[McpDiscoverResult,
+   String]` so a caller can inspect `hasTools`/`hasResources`/`hasPrompts`
+   (#6340 — the server encoded `capabilities` on the wire from the start,
+   but nothing on the client decoded it). `tools/list`
+   (`Mcp.encodeAllToolDefsList`) now dedupes a tool name registered via
+   both `addTool` and `addResumableTool` down to its single resumable
+   entry, matching `handleToolsCall`'s own resumable-first dispatch
+   precedence, instead of shipping two same-named `tools/list` entries
+   (#6341). `McpResumableToolHandler.resume`'s doc comment no longer
+   claims `requestState` was validated as previously issued by the
+   handler — the dispatcher never checks provenance, so a peer can call
+   `resume` directly with a fabricated `requestState` (#6339); the
+   correct opaque-token framing already in docs/64 §3.1 and the README is
+   now also the interface doc a resumable-tool author actually reads.
+9. **Doc-accuracy correction (#6342, #6343).** docs/64 §3.1 had
+   described a per-request `_meta.protocolVersion`/capability decoding
+   helper that was never implemented — `McpServer.onRequest` dispatches
+   purely on `method` name, with `Mcp.negotiateProtocolVersion` invoked
+   only inside the legacy `initialize` method itself. §3.1 now
+   describes the real (simpler) shipped behavior; the aspirational
+   per-request negotiation idea is tracked as a deferred follow-up in
+   #6344, not shipped silently as if it existed. §3.3 also had two
+   stale claims — a nonexistent `McpClient.protocolVersion` field with
+   a fictional lazy-population mechanism, and a `resumeToolCall`
+   signature missing its load-bearing `name` parameter — both
+   corrected to match `client.l`.
+10. **Final review-round hardening.** The #6334 regression test's
+    `Err(_)` match was over-broad (passed on any error, not specifically
+    the `input_required` guard) — tightened to assert the message
+    references `input_required`. `handleToolsCall` gained a guard: a
+    `tools/call` carrying `requestState` against a name registered only
+    via `addTool` (never `addResumableTool`) now returns `invalidParams`
+    instead of silently falling through to an ordinary `call()` that
+    ignores `requestState` entirely. `docs/62-jsonrpc-mcp.md` §5's
+    protocol-revision line still said `2025-06-18`/`2025-03-26`,
+    stale since this entry bumps the accepted versions to
+    `2026-07-28`/`2025-06-18`.
+11. **`requestState` type-validation consistency.** `dispatchResumableTool`
+    read `requestState` via `getString(p, "requestState")` alone, which
+    returns `None` both when the field is absent and when it's present
+    but the wrong JSON type (`123`, `null`, ...) — a malformed resume
+    request silently fell through to a brand-new `call()` instead of
+    erroring, inconsistent with the non-resumable-tool guard a few lines
+    above (which rejects mere presence via `getField` regardless of
+    type). `dispatchResumableTool` now checks `getField` first and
+    returns `invalidParams` for a present-but-non-string `requestState`,
+    matching that guard's strictness.
+12. **De-duplicated the `input_required` sentinel; chained-resume
+    coverage.** `Mcp.Client.callTool` re-derived its own
+    `resultType == "input_required"` check via a raw `getString` read
+    instead of reusing `decodeToolCallOutcome` (the same decoder
+    `callResumableTool` already used) — now matches on the decoded
+    `McpToolCallOutcome` directly, so the `"input_required"` string
+    literal lives in exactly one place. `newServer`'s doc comment now
+    points at `addTool`'s "registers via one or the other, not both"
+    caveat up front, rather than leaving it discoverable only by reading
+    `addTool`'s own doc. Every existing resumable-tool test resolved in
+    exactly one `call` + one `resume`; added a chained
+    `InputRequired -> InputRequired -> ToolResult` test (a resumable
+    tool whose `resume` itself answers with a second `InputRequired`
+    before finally finishing on the third round trip) to verify the
+    multi-hop shape the pattern allows but nothing previously exercised.
+13. **Doc/spec-drift corrections (#6352, #6353, #6354) and remaining
+    review-cycle findings.** docs/64 §3.2 falsely claimed `handleInitialize`
+    was deleted (only the `ready` field / readiness-gate logic was —
+    `handleInitialize` itself remains, for legacy-peer tolerance, matching
+    §3.1/§6). docs/62 §5.1/§5.2 still described the deleted readiness gate
+    (`-32002`) and a handshaking `connectStdio`; both now carry an inline
+    "superseded by docs/64" note. docs/64 §2's Phase A phase-table row
+    still listed `_meta`-carried negotiation as delivered, contradicting
+    §3.1's own (correct) statement that it was deferred (#6344) — row
+    corrected to match. Also: `protocolVersionLatest`/`protocolVersionLegacy`
+    had `@stable(since = "0.2")` even though the symbols existed since 0.1
+    (only their values changed) — reverted to `since = "0.1"` so
+    `public-api-diff` doesn't misreport them as newly-stabilized.
+    `CLAUDE.md`'s pre-existing docs/62 index entry still said `lyric-mcp`
+    targets `2025-06-18` with all of Q-MCP-001–003 open — updated to note
+    the docs/64 supersession and which Q-MCP items are now
+    addressed/superseded vs. still open. docs/64 §4 (Phase B) now flags
+    that `requestState`'s forgery risk widens under a shared multi-peer
+    HTTP server (§3.1's framing was written against Phase A's 1:1 stdio
+    transport) so Phase B doesn't silently inherit an insufficient
+    mitigation. Added `decodeServerDiscoverResult` tests asserting
+    `hasResources`/`hasPrompts` individually (previously only `hasTools`
+    was ever exercised end-to-end). Corrected an over-count: D133's
+    verification claimed "5 new cases for `server/discover`"; the real
+    count is 2 in the lifecycle suite plus 2 in serialization (4 total).
+
+**Verification.** All `--target dotnet` suites green:
+`lyric-mcp` 59/59 (26 lifecycle, including 2 new cases for `server/discover`
+(plus 2 more in the serialization suite, 4 total across both),
+the full `input_required`/resume round trip against a real
+`Mcp.Client`/`Mcp.Server` pair, the #6334 regression test for `callTool`
+against an `input_required` response, a #6341 live-`McpServer` case proving
+a name registered via both `addTool` and `addResumableTool` dispatches to
+the resumable handler, a `callTool` happy-path case confirming its
+`resultType` guard doesn't fire on an ordinary plain-tool result, and a
+case proving `requestState` against a non-resumable tool is rejected
+rather than silently falling through to an ordinary call, and a case
+proving a non-string `requestState` against a resumable tool is likewise
+rejected rather than silently falling through to a fresh `call()`, and a
+chained `InputRequired -> InputRequired -> ToolResult` case across two
+resume round trips; 28 serialization, including the #6341
+`encodeAllToolDefsList` name-collision dedup case and the two new
+per-capability-key decode tests; 5 real-subprocess), and
+`lyric-jsonrpc`'s existing 15/15 unaffected (this track touched no
+`lyric-jsonrpc` code — the multi-round-trip pattern is a pure `Mcp`-layer
+data-shape change, `JsonRpc` never sees the difference). JVM gaps are
+unchanged and untouched by this track — `lyric-mcp`'s entire test suite
+still fails to type-check under `--target jvm` (pre-existing, tracked
+separately, not this track's job).
