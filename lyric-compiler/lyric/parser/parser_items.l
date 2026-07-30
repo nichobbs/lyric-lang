@@ -354,21 +354,26 @@ func parseRecordBody(st: inout ParseState, genericsPrefix: Option[GenericParams]
 
 func parseUnionField(st: inout ParseState): UnionField {
   val saved = mark(st)
-  match peekToken(st) {
-    case TIdent(_) -> {
-      val nameTok = advance(st)
+  // #6118: a named field is disambiguated from a positional one by a
+  // trailing `:`.  The name itself must accept `result` and the other
+  // contextual keywords (`tryEatIdentOrContextual`) — not just `TIdent` —
+  // exactly like a record field (`parseFieldDecl` -> `readIdent` ->
+  // `tryEatIdentOrContextual`); `case Bar(result: Int)` previously fell to
+  // the `case _` positional arm, which tried to parse `result` itself as a
+  // type expression and failed at the following `:` (P0050).
+  match tryEatIdentOrContextual(st) {
+    case Some(ns) -> {
       if isPunct(peekToken(st), Colon) {
         val _ = advance(st)
         val ty = parseTypeExpr(st)
-        val fieldName = identStr(nameTok.token)
-        UFNamed(name = fieldName, ty = ty, span = joinSpans(nameTok.span, ty.span))
+        UFNamed(name = ns.name, ty = ty, span = joinSpans(ns.span, ty.span))
       } else {
         reset(st, saved)
         val ty = parseTypeExpr(st)
         UFPos(ty = ty, span = ty.span)
       }
     }
-    case _ -> {
+    case None -> {
       val ty = parseTypeExpr(st)
       UFPos(ty = ty, span = ty.span)
     }

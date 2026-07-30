@@ -4928,7 +4928,14 @@ pub func finishHoistedCellMsil(
         insns.add(MLdloc(slot = arraySlot - fctx.paramCount))      // Push array-ref-2 → [array-ref-1, array-ref-2]
         insns.add(MLdcI4(v = 0))                                   // Push index → [array-ref-1, array-ref-2, 0]
         insns.add(MLdloc(slot = valueSlot - fctx.paramCount))      // Push value → [array-ref-1, array-ref-2, 0, value]
-        insns.add(MStelem(typeToken = elemToken))                  // stelem pops [value, 0, array-ref-2] → [array-ref-1]
+        // #5563 item 1: `stelem.i2` (token-less) matches a `Char`'s `ldc.i4`-
+        // pushed I4 verification type; the generic `stelem <System.Char>`
+        // form fails strict ILVerify (`StackUnexpected [found Char]`).
+        if elemTy == MChar {
+          insns.add(MStelemI2)
+        } else {
+          insns.add(MStelem(typeToken = elemToken))                  // stelem pops [value, 0, array-ref-2] → [array-ref-1]
+        }
         // Allocate cell slot with array type
         val arrayTy = match elemTy {
           case MInt -> MArray(MInt)
@@ -7186,6 +7193,23 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       ty
                     }
                     case None -> {
+                      // #6173: a bare field reference inside an impl/record
+                      // in-body method is `self.<name>` — mirrors the JVM
+                      // `selfFieldType` fallback (`jvm/codegen/05_stmts.l`).
+                      // `fctx.className` is only set (to the receiver's
+                      // dotted FQN, e.g. "Pkg.MyRecord") inside a real method
+                      // body (`lowerImplMethodMsil`/`lowerRecordMethodMsil`);
+                      // a top-level func's `fctx.className` is the bare
+                      // package name, which never matches a `fieldTokens` key
+                      // (always "<pkg>.<TypeName>/<field>"), so this cannot
+                      // misfire on an ordinary module-level identifier.
+                      val selfFieldKey = fctx.className + "/" + name
+                      if fctx.className.length > 0 and cctx.fieldTokens.containsKey(selfFieldKey) {
+                        insns.add(MLdarg(slot = 0))
+                        val fldTok = match mapGet(cctx.fieldTokens, selfFieldKey) { case Some(t) -> t; case None -> 0 }
+                        insns.add(MLdfld(fieldToken = fldTok))
+                        return match mapGet(cctx.fieldMsilTypes, selfFieldKey) { case Some(fty) -> fty; case None -> MObject }
+                      }
                       // #5362: a bare top-level `func` used directly as a
                       // value (e.g. `apply(double, 21)`) has no codegen path
                       // that turns it into the uniform boxed
@@ -7743,7 +7767,13 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   case MObject -> boxIfNeededMsil(cctx, insns, aeTy)
                   case _ -> ()
                 }
-                insns.add(MStelem(typeToken = elemTok))
+                // #5563 item 1: `stelem.i2` for a `Char` element — see the
+                // `finishHoistedCellMsil` comment above.
+                if e == MChar {
+                  insns.add(MStelemI2)
+                } else {
+                  insns.add(MStelem(typeToken = elemTok))
+                }
                 ali = ali + 1
               }
               MArray(elemTy = e)
@@ -7790,8 +7820,13 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     val aeTy4 = lowerExprMsil(cctx, fctx, insns, exprs[ali4])
                     popCollExpect(fctx)
                     // e is a simple type (never MObject) so `stelem <T>` stores
-                    // the element unboxed — no box needed.
-                    insns.add(MStelem(typeToken = elemTok))
+                    // the element unboxed — no box needed.  #5563 item 1:
+                    // `stelem.i2` for a `Char` element.
+                    if e == MChar {
+                      insns.add(MStelemI2)
+                    } else {
+                      insns.add(MStelem(typeToken = elemTok))
+                    }
                     ali4 = ali4 + 1
                   }
                   MArray(elemTy = e)
@@ -9437,8 +9472,13 @@ func emitCellAssignMsil(
       // Store the value: for typed arrays use stelem, for List[object] use set_Item.
       match arrayElemTokenOpt(cctx, elemTy) {
         case Some(elemToken) -> {
-          // Typed array: store directly without boxing
-          insns.add(MStelem(typeToken = elemToken))
+          // Typed array: store directly without boxing.  #5563 item 1:
+          // `stelem.i2` for a `Char` cell element.
+          if elemTy == MChar {
+            insns.add(MStelemI2)
+          } else {
+            insns.add(MStelem(typeToken = elemToken))
+          }
         }
         case None -> {
           // List[object]: box and call set_Item
@@ -9485,8 +9525,13 @@ func emitCellAssignMsil(
       // Store to cell[0]
       match arrayElemTokenOpt(cctx, elemTy) {
         case Some(elemToken) -> {
-          // Typed array: store directly without boxing
-          insns.add(MStelem(typeToken = elemToken))
+          // Typed array: store directly without boxing.  #5563 item 1:
+          // `stelem.i2` for a `Char` cell element.
+          if elemTy == MChar {
+            insns.add(MStelemI2)
+          } else {
+            insns.add(MStelem(typeToken = elemToken))
+          }
         }
         case None -> {
           // List[object]: box and call set_Item
@@ -9615,6 +9660,35 @@ func lowerAssignExprMsil(
             }
             case None -> {
             }
+          }
+          // #6173: a bare field write inside an impl/record in-body method is
+          // `self.<name> = value` — mirrors the JVM `selfFieldType` fallback
+          // (`jvm/codegen/05_stmts.l`).  Same key-format safety argument as
+          // the read-side fallback above: `fctx.className` only matches a
+          // `fieldTokens` key ("<pkg>.<TypeName>/<field>") inside a real
+          // method body, never for a top-level func (whose `fctx.className`
+          // is the bare package name).
+          val selfAssignFieldKey = fctx.className + "/" + name
+          if fctx.className.length > 0 and cctx.fieldTokens.containsKey(selfAssignFieldKey) {
+            val fldTok = match mapGet(cctx.fieldTokens, selfAssignFieldKey) { case Some(t) -> t; case None -> 0 }
+            val fldTy = match mapGet(cctx.fieldMsilTypes, selfAssignFieldKey) { case Some(t) -> t; case None -> MObject }
+            match op {
+              case AssEq -> {
+                insns.add(MLdarg(slot = 0))
+                pushCollExpect(fctx, fldTy)
+                val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                popCollExpect(fctx)
+                insns.add(MStfld(fieldToken = fldTok))
+              }
+              case _ -> {
+                insns.add(MLdarg(slot = 0))
+                insns.add(MDup)
+                insns.add(MLdfld(fieldToken = fldTok))
+                emitCompoundCombineMsil(cctx, fctx, insns, op, fldTy, value)
+                insns.add(MStfld(fieldToken = fldTok))
+              }
+            }
+            return MVoid
           }
           lowerExprMsil(cctx, fctx, insns, value)
           insns.add(MPop)
@@ -13118,7 +13192,12 @@ func emitSliceCopyLoopMsil(
       insns.add(MAdd)
       emitListGetItem(cctx, insns, srcTy)
       castObjectToMsil(cctx, insns, dstElem)
-      insns.add(MStelem(typeToken = tok))
+      // #5563 item 1: `stelem.i2` for a `Char` destination element.
+      if dstElem == MChar {
+        insns.add(MStelemI2)
+      } else {
+        insns.add(MStelem(typeToken = tok))
+      }
     }
     case None -> {
       emitLoadSlot(insns, dstSlot, fctx.paramCount)
@@ -13211,7 +13290,12 @@ func lowerSliceAppendMsil(
         // (#5254).
         coerceCallArgMsil(cctx, insns, argTy, e)
       }
-      insns.add(MStelem(typeToken = tok))
+      // #5563 item 1: `stelem.i2` for a `Char` element.
+      if e == MChar {
+        insns.add(MStelemI2)
+      } else {
+        insns.add(MStelem(typeToken = tok))
+      }
       emitLoadSlot(insns, newSlot, fctx.paramCount)
       MArray(elemTy = e)
     }
@@ -15989,6 +16073,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MNewarr(_) -> 0
     case MStelemRef -> -3
     case MStelem(_) -> -3
+    case MStelemI2 -> -3
     case MDup -> 1
     case MPop -> -1
     case MThrow -> 0

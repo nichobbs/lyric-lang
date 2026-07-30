@@ -131,3 +131,44 @@ test "Char slice literal builds as genuine Char[] (arrayElemTokenOpt MChar branc
 test "Byte slice literal builds as genuine Byte[] (arrayElemTokenOpt MByte branch)" {
   assertEqualInt(sumByteSlice([10.toByte(), 20.toByte(), 30.toByte()]), 60, "sumByte == 60")
 }
+
+// ── #5563 item 1: `slice[Char]` writes fail strict ILVerify ──────────────────
+// Every element-write site that builds/mutates a genuine `Char[]` (array
+// literal, `.append`, a hoisted `var` cell) emitted a generic `stelem <System.
+// Char>` (`MStelem`) paired with the `ldc.i4` a `Char` literal pushes.  The CLR
+// JIT tolerates the mismatch at runtime (Char and Int32 share a verification-
+// friendly bit pattern), so these bugs were invisible to a plain `dotnet exec`
+// run — only `ilverify` catches them (`StackUnexpected [found Char]`).  The
+// fix routes a `Char` element through the token-less `stelem.i2` opcode
+// instead, matching the existing `MLdelemU2` char-array read.  These tests
+// assert the (unaffected) runtime values; `scripts/ilverify-selfhosted.sh`
+// (or a direct `ilverify` run against the emitted DLL) is what actually
+// catches a regression here — a bare `dotnet exec`/`lyric test` pass does not.
+func firstCharCode(xs: in slice[Char]): Int {
+  xs[0].toInt()
+}
+
+test "Char slice literal element write (EList MArray branch, #5563)" {
+  val cs: slice[Char] = ['a', 'b', 'c']
+  assertEqualInt(cs.count, 3, "3-element Char slice")
+  assertEqualInt(firstCharCode(cs), 97, "cs[0] == 'a' (97)")
+}
+
+test "slice[Char].append builds a new Char[] via stelem (#5563)" {
+  val cs: slice[Char] = ['x', 'y']
+  val cs2 = cs.append('z')
+  assertEqualInt(cs2.count, 3, "appended slice has 3 elements")
+  assertEqualInt(cs2[0].toInt(), 120, "cs2[0] == 'x'")
+  assertEqualInt(cs2[2].toInt(), 122, "cs2[2] == 'z' (appended element)")
+}
+
+func mutateHoistedChar(): Int {
+  var c = 'a'
+  val bump = { -> c = 'b' }
+  bump()
+  c.toInt()
+}
+
+test "hoisted `var: Char` reassigned from a closure (finishHoistedCellMsil/emitCellAssignMsil, #5563)" {
+  assertEqualInt(mutateHoistedChar(), 98, "hoisted Char cell reassigned to 'b' (98)")
+}

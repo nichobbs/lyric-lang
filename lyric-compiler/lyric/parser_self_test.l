@@ -2010,3 +2010,47 @@ test "result inside ensures clause still resolves to EResult (#5754)" {
   assertEqualInt(diagCount(pr), 0, "ensures-result: no diagnostics")
   assertEqual(firstFuncFirstEnsuresExprKind(pr), "result", "ensures-result: bare 'result' inside ensures: is EResult")
 }
+
+// #6118: `result` (a contextual keyword) as a union case field NAME.
+// `parseUnionField` used to match only `TIdent` for the "is this a named
+// field?" lookahead, so `result:` fell to the positional-field arm and tried
+// (and failed) to parse `result` itself as a type expression — `case
+// Bar(result: Int)` produced a P0050 cascade.  Fixed by routing through the
+// same `tryEatIdentOrContextual` helper `parseFieldDecl` (record fields)
+// already uses.
+func firstUnionFirstCaseFirstFieldName(pr: in ParseResult): String {
+  if pr.file.items.count == 0 {
+    return "<none>"
+  }
+  match pr.file.items[0].kind {
+    case IUnion(decl) -> {
+      if decl.cases.count == 0 {
+        return "<no-case>"
+      }
+      val c = decl.cases[0]
+      if c.fields.count == 0 {
+        return "<no-field>"
+      }
+      match c.fields[0] {
+        case UFNamed(name, _, _) -> name
+        case UFPos(_, _) -> "<positional>"
+      }
+    }
+    case _ -> "<not-union>"
+  }
+}
+
+test "union case field named 'result' parses as a named field (#6118)" {
+  val pr = parse("package P\npub union U {\n  case Bar(result: Int)\n}\n")
+  assertEqualInt(diagCount(pr), 0, "union-field-result: no diagnostics")
+  assertEqual(
+    firstUnionFirstCaseFirstFieldName(pr),
+    "result",
+    "union-field-result: field name resolves to 'result', not a failed positional-type parse"
+  )
+}
+
+test "record field named 'result' still parses (no regression, #6118)" {
+  val pr = parse("package P\npub record R {\n  result: Int\n}\n")
+  assertEqualInt(diagCount(pr), 0, "record-field-result: no diagnostics")
+}

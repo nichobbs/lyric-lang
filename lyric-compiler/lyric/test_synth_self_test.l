@@ -44,6 +44,32 @@ func propertySource(): String {
   "@test_module\npackage P\n\nimport Std.Testing\n\ntest \"unit\" { assertTrue(true, \"x\") }\nproperty \"prop\" forall (n: Int) { assertTrue(true, \"x\") }\n"
 }
 
+// #5609 item 4: a `@cfg(...)`-annotated `test { }` block must keep its
+// annotation on the synthesized `func` — mirrors `annotatedFixtureSource`
+// above for `fixture`.  Before the fix, the `ITest` rewrite arm dropped the
+// annotation text entirely, so a feature-gated test whose body referenced a
+// symbol that only exists under that feature (`nonexistentSymbol` here)
+// would fail to type-check even with the feature inactive: the erasure pass
+// (which runs on the REWRITTEN source, after `synthesize`) never saw the
+// `@cfg` annotation on `__lyric_test_0` and so never dropped it.
+func annotatedCfgTestSource(): String {
+  "@test_module\npackage P\n\nimport Std.Testing\n\n@cfg(feature = \"exp\")\ntest \"a\" { assertTrue(nonexistentSymbol, \"x\") }\ntest \"b\" { assertTrue(true, \"y\") }\n"
+}
+
+func testSynthesisesAnnotatedCfgTest(): Unit {
+  match synthesize(annotatedCfgTestSource(), Some(value = "")) {
+    case Synthesised(rewritten, n, sk) -> {
+      assertEqualInt(n, 2, "both tests detected (synthesis itself doesn't erase — cfg erasure is a later pipeline stage)")
+      assertEqualInt(sk, 0, "no skips")
+      assertTrue(
+        Str.contains(rewritten, "@cfg(feature = \"exp\")\nfunc __lyric_test_0(): Unit"),
+        "cfg annotation preserved directly before the synthesized func, so the later erasure pass can see and act on it"
+      )
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+}
+
 func testSynthesisesPassingTwoTests(): Unit {
   // Use Some(value = "") rather than None: both mean "no active filter"
   // (empty string is a substring of every title), but Some avoids the
