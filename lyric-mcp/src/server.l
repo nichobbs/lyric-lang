@@ -218,7 +218,26 @@ func dispatchResumableTool(
   // error, the same distinction the non-resumable-tool guard above
   // already makes via `getField`.
   match getField(p, "requestState") {
-    case Some(_) -> match getString(p, "requestState") { case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'requestState' must be a string", data = None)); case Some(state) -> { val inputResponses = match getField(p, "inputResponses") { case Some(v) -> v; case None -> JObject(fields = newList()) }; val outcome: Result[McpToolCallOutcome, String] = try { def.handler.resume(state, inputResponses) } catch Bug as b { Err(error = "tool '" + toolName + "' panicked during resume: " + b.message) }; match outcome { case Ok(result) -> Ok(value = encodeToolCallOutcome(result)); case Err(msg) -> Ok(value = encodeToolCallOutcome(ToolResult(value = toolErrorResult(msg)))) } } }
+    case Some(_) -> {
+      match getString(p, "requestState") {
+        case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'requestState' must be a string", data = None))
+        case Some(state) -> {
+          val inputResponses = match getField(p, "inputResponses") {
+            case Some(v) -> v
+            case None -> JObject(fields = newList())
+          }
+          val outcome: Result[McpToolCallOutcome, String] = try {
+            def.handler.resume(state, inputResponses)
+          } catch Bug as b {
+            Err(error = "tool '" + toolName + "' panicked during resume: " + b.message)
+          }
+          match outcome {
+            case Ok(result) -> Ok(value = encodeToolCallOutcome(result))
+            case Err(msg) -> Ok(value = encodeToolCallOutcome(ToolResult(value = toolErrorResult(msg))))
+          }
+        }
+      }
+    }
     case None -> {
       val outcome: Result[McpToolCallOutcome, String] = try {
         def.handler.call(argsOpt)

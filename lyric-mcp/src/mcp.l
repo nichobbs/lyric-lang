@@ -335,6 +335,11 @@ pub func decodeToolCallOutcome(v: in JsonValue): McpToolCallOutcome {
     case Some(rt) -> {
       if rt == "input_required" {
         val inputRequests = match getField(v, "inputRequests") { case Some(x) -> x; case None -> JObject(fields = newList()) }
+        // A missing `requestState` on a genuine `input_required` response is
+        // a malformed/buggy server, not a case this client tries to detect —
+        // consistent with this decoder's lenient philosophy elsewhere, the
+        // empty-string default is echoed back verbatim by a later `resume`
+        // call, which the server is free to reject on its own terms.
         val requestState = match getString(v, "requestState") { case Some(s) -> s; case None -> "" }
         InputRequired(value = McpInputRequired(inputRequests = inputRequests, requestState = requestState))
       } else {
