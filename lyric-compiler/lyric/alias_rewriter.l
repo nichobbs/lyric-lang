@@ -1131,6 +1131,14 @@ func filterAliasesForExpr(aliases: in List[String], e: in Expr): List[String] {
 // bare-imported package's first dotted segment shadows `Foo.Bar.method()`
 // calls in ANY function of the file, not just the one `Foo` happens to be
 // declared next to).
+//
+// `IFunc` is deliberately NOT collected here (review follow-up, #6321): a
+// top-level function's own NAME can't collide with this hazard the way a
+// `val`/`const` name can — `Foo.Bar.baz()` only ever gets read back as a
+// qualified-chain CALL, and a bare function name is never itself a valid
+// receiver for `.field`/`.method` access the way a record-typed `val` is,
+// so there is no `Foo.Bar.baz()` shape a same-named top-level `func Foo`
+// could ever shadow.
 func collectModuleLevelValueNames(file: in SourceFile, acc: List[String]): Unit {
   var i = 0
   while i < file.items.count {

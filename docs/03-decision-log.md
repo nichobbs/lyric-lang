@@ -21272,5 +21272,16 @@ against the build carrying this eighth fix (`alias_rewriter` 31/31,
 build, unlike the parser/modechecker drift the seventh finding's own
 addendum called out from an intervening `main` rebase).
 
+**Follow-up (review feedback, non-blocking).** SUGGESTION after the eighth
+finding: `collectModuleLevelValueNames` only walks top-level `IConst`/
+`IVal` items, not `IFunc`, with no comment explaining why — worth calling
+out explicitly given how exhaustively every other binding kind was
+enumerated across findings #6311–#6321. Addressed with a one-line comment:
+a top-level function's own name can't reproduce this hazard, since a bare
+function reference is never a valid receiver for `.field`/`.method`
+access the way a record-typed `val` is — there is no `Foo.Bar.baz()` shape
+a same-named top-level `func Foo` could shadow. No code or test change;
+re-verified `alias_rewriter` stays 31/31 after the comment-only edit.
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
 D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320, #6321.
