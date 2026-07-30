@@ -2551,6 +2551,64 @@ func lowerVirtualCallWithHolders(
   sig.ret
 }
 
+// Resolve a general (non-construction, non-self) call's `JvmFuncSig` from the
+// cross-package function registry.  Two-stage lookup: a qualified call site
+// (`Std.Testing.assertEqualInt`, or an aliased import already expanded to its
+// real package by `Lyric.AliasRewriter`) tries the `owner/funcName` key
+// first, so it resolves to the explicit package even when another package in
+// the bundle exports the same short name; an unqualified call falls back to
+// the bare-name key (the legacy single-package shape, #1680). Exact-arity
+// keys (`…@<argc>`) are tried before the name keys so same-name overloads
+// pick the descriptor matching this call's argument count; a call that
+// relies on parameter defaults misses the arity key and falls back to the
+// name key exactly as before.
+//
+// Shared by `lowerGeneralStaticCall` (the actual call site) and
+// `scrutineeGenericArgs` (03_match.l's generic-instantiation recovery for a
+// `match callee(...) { … }` scrutinee) so both agree on which package's
+// signature a qualified call resolves to (#5976 follow-up): before this was
+// extracted, `scrutineeGenericArgs` had its OWN, bare-name-only lookup
+// (`mapGet(ctx.funcSigs, lastSegment(path))`) that ignored the call's own
+// qualifier entirely — two same-simple-name functions in different packages
+// (`Std.Regex.tryCompile` / `Std.RegexSafe.tryCompile`) raced for the SAME
+// bare `funcSigs` key, so a `match Rx.tryCompile(...) { case Err(e) -> … }`
+// could recover the WRONG package's `retGenericArgs` for the `Err` payload's
+// concrete type and checkcast a real `Std.Regex.RegexError$InvalidPattern`
+// value against `Std.RegexSafe.RegexError` at the bind site.
+pub func resolveGeneralFuncSig(
+  ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
+): Option[JvmFuncSig] {
+  val argcSuffix = "@" + toString(argc)
+  if path.segments.count > 1 {
+    val ownerSegs: List[String] = newList()
+    var si = 0
+    while si < path.segments.count - 1 {
+      ownerSegs.add(path.segments[si])
+      si = si + 1
+    }
+    val qkey = joinSegments(ownerSegs, "/") + "/" + funcName
+    match mapGet(ctx.funcSigs, qkey + argcSuffix) {
+      case Some(sig) -> Some(value = sig)
+      case None -> {
+        match mapGet(ctx.funcSigs, qkey) {
+          case Some(sig) -> Some(value = sig)
+          case None -> {
+            match mapGet(ctx.funcSigs, funcName + argcSuffix) {
+              case Some(sig) -> Some(value = sig)
+              case None -> mapGet(ctx.funcSigs, funcName)
+            }
+          }
+        }
+      }
+    }
+  } else {
+    match mapGet(ctx.funcSigs, funcName + argcSuffix) {
+      case Some(sig) -> Some(value = sig)
+      case None -> mapGet(ctx.funcSigs, funcName)
+    }
+  }
+}
+
 func lowerGeneralStaticCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -2640,45 +2698,7 @@ func lowerGeneralStaticCall(
   // `Object` value (e.g. a tuple element) satisfies a primitive / reference
   // parameter.  This is what makes an imported call (`assertEqualInt` from
   // `Std.Testing`) and a void-returning call link correctly.
-  //
-  // Two-stage lookup: a qualified call site (`Std.Testing.assertEqualInt`)
-  // tries the `owner/funcName` key first so it resolves to the explicit
-  // package, even if another package in the bundle exports the same short
-  // name; an unqualified call falls back to the bare-name key (the legacy
-  // single-package shape).  #1680.
-  // Exact-arity keys (`…@<argc>`) are tried before the name keys so
-  // same-name overloads pick the descriptor matching this call's argument
-  // count; a call that relies on parameter defaults misses the arity key
-  // and falls back to the name key exactly as before.
-  val argcSuffix = "@" + toString(args.count)
-  val sigOpt = if path.segments.count > 1 {
-    val ownerSegs: List[String] = newList()
-    var si = 0
-    while si < path.segments.count - 1 {
-      ownerSegs.add(path.segments[si])
-      si = si + 1
-    }
-    val qkey = joinSegments(ownerSegs, "/") + "/" + funcName
-    match mapGet(ctx.funcSigs, qkey + argcSuffix) {
-      case Some(sig) -> Some(value = sig)
-      case None -> {
-        match mapGet(ctx.funcSigs, qkey) {
-          case Some(sig) -> Some(value = sig)
-          case None -> {
-            match mapGet(ctx.funcSigs, funcName + argcSuffix) {
-              case Some(sig) -> Some(value = sig)
-              case None -> mapGet(ctx.funcSigs, funcName)
-            }
-          }
-        }
-      }
-    }
-  } else {
-    match mapGet(ctx.funcSigs, funcName + argcSuffix) {
-      case Some(sig) -> Some(value = sig)
-      case None -> mapGet(ctx.funcSigs, funcName)
-    }
-  }
+  val sigOpt = resolveGeneralFuncSig(ctx, funcName, path, args.count)
   match sigOpt {
     case Some(sig) -> {
       // Std.Core's generic Option/Result predicates lower to `instanceof`

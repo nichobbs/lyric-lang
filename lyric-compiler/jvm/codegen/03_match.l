@@ -100,9 +100,20 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
     // `Result[slice[Byte], String]`), so the instantiation passes through
     // (#5570 — `val bb = await HttpResponse.bodyBytes(resp); match bb { … }`).
     case EAwait(inner) -> scrutineeGenericArgs(ctx, inner)
-    case ECall(fn, _) -> {
+    case ECall(fn, callArgs) -> {
       match fn.kind {
-        case EPath(path) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, lastSegment(path)))
+        // Qualified-first resolution (#5976 follow-up): a bare-name-only
+        // lookup here raced against every other same-simple-name function
+        // in the bundle for the shared `funcSigs` bare key, independently of
+        // whichever package the call's own qualifier (or an alias already
+        // expanded by `Lyric.AliasRewriter`) named — recovering the WRONG
+        // package's `retGenericArgs` for a scrutinee like `Rx.tryCompile(…)`
+        // (Rx = Std.Regex) whenever some OTHER bundled package also declared
+        // a same-named function, and mis-casting the bind site's payload
+        // against that wrong package's type.  `resolveGeneralFuncSig`
+        // mirrors the actual call site's own (already qualifier-aware)
+        // resolution in `lowerGeneralStaticCall`, so both agree.
+        case EPath(path) -> funcSigRetGenericArgs(resolveGeneralFuncSig(ctx, lastSegment(path), path, callArgs.count))
         // `recv.method(...)` — an in-body / `impl` method registers under
         // `<receiverClass>#<method>` with its `retGenericArgs`; resolve the
         // receiver's class (local/param/`self`) to find it, else stay boxed.
