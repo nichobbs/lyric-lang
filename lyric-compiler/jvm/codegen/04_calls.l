@@ -3324,35 +3324,43 @@ func lowerMethodCall(
     return retT
   }
   if isStringRecv and args.count == 1 and (memberName == "indexOf" or memberName == "lastIndexOf") {
-    // Lyric's `s.indexOf(needle)` / `s.lastIndexOf(needle)` is UFCS sugar for
-    // `Std.String.indexOf(s, needle): Option[Int]` ONLY when the FILE making
-    // the call has `import Std.String` in scope — that is what the type
-    // checker's own (import-scoped) UFCS resolution assigns the call in that
-    // case. Route through the registered free function then: the raw JDK
-    // `String.indexOf(String)I` intrinsic below silently diverged from the
-    // checker (int, -1 sentinel), so `match s.indexOf(x) { case Some(i) ->
-    // ... }` emitted `instanceof` on an int and failed bytecode verification
-    // the moment the class loaded (hit by `Web.parseQueryPair` once
-    // #5610/#5444 let lyric-web reach class-load on the JVM).
+    // Lyric's `s.indexOf(needle)` / `s.lastIndexOf(needle)` is intended as
+    // UFCS sugar for `Std.String.indexOf(s, needle): Option[Int]` when the
+    // FILE making the call has `import Std.String` in scope — but this is a
+    // CODEGEN-side design decision, not something the type checker enforces
+    // or even distinguishes: a `String` receiver is `TyPrim`, and
+    // `typechecker_exprs.l`'s method-call resolution
+    // (`resolveMethodCallPick`, `methodCandidatesFor`, `dotNamedCandidatesFor`)
+    // only ever considers a `TyUser` receiver, while `builtinMember`'s
+    // `TyPrim(PtString)` arm knows only `"length"`/`"isEmpty"` — so
+    // `s.indexOf(x)` types as lenient `TyError` on EITHER side of the
+    // import, and `match s.indexOf(x) { case Some(i) -> ... }` only
+    // type-checks at all because `TyError` participates leniently in
+    // pattern-exhaustiveness/binop checking. There is no checker invariant
+    // to "diverge from" here; codegen alone decides what `.indexOf` means.
     //
-    // `ctx.funcSigs` is a BUNDLE-WIDE registry (any package anywhere in the
-    // compile that imports `Std.String` seeds `Std/String/indexOf@2` for
-    // every OTHER file's `FuncCtx` too), so a bare presence check there
-    // cannot distinguish "this file's `.indexOf` call resolves to the
-    // Option[Int] UFCS form" from "some unrelated file's does" — the type
-    // checker never routed THIS call through Std.String at all when this
-    // file doesn't import it (it falls back to the same raw JDK intrinsic
-    // typing below). Trusting the bundle-wide registry alone silently
-    // rerouted a plain `Int`-typed `.indexOf` call through the Option[Int]
-    // form whenever some OTHER file happened to import `Std.String`,
-    // corrupting the local's runtime value (#6124:
+    // Without SOME per-file gate, routing every `.indexOf` unconditionally
+    // through `Std.String`'s registered signature broke `match s.indexOf(x)
+    // { case Some(i) -> ... }`: the raw JDK `String.indexOf(String)I`
+    // intrinsic below emitted `instanceof` on a plain int and failed
+    // bytecode verification the moment the class loaded (hit by
+    // `Web.parseQueryPair` once #5610/#5444 let lyric-web reach class-load
+    // on the JVM). Fixing that by routing through the registered free
+    // function whenever `Std/String/indexOf@2` was present ANYWHERE in the
+    // bundle-wide `ctx.funcSigs` over-corrected: any package anywhere in the
+    // compile that imports `Std.String` seeds that registry for every OTHER
+    // file's `FuncCtx` too, so a file that never imports `Std.String` still
+    // had its `.indexOf` call silently rerouted through the Option[Int] form
+    // whenever some UNRELATED file in the same bundle happened to import
+    // `Std.String`, corrupting the local's runtime value (#6124:
     // `ClassCastException: Option$Some cannot be cast to Integer`).
     // `ctx.importsStdString` (`FuncCtx`, computed once per file from its own
-    // `import` list) is the additional, file-scoped gate that fixes this.
+    // `import` list) is the additional, file-scoped gate that fixes this —
+    // it implements the intended per-file import-scoped semantics that the
+    // checker's leniency leaves entirely up to codegen to decide.
     //
     // The JDK intrinsic stays as the fallback for a file that does not
-    // import `Std.String` (where the checker could only have typed the call
-    // against the JDK method through the built-in String surface).
+    // import `Std.String`.
     // The MSIL backend still lowers this to the raw BCL intrinsic and has not
     // adopted this UFCS routing, so `--target dotnet` still diverges (#5625).
     // ...except inside `Std.String` itself: its wrapper body

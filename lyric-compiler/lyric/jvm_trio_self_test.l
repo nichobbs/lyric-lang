@@ -42,16 +42,23 @@
 //! the bogus value was used. Root cause: `04_calls.l`'s `.indexOf`/
 //! `.lastIndexOf` UFCS routing checked only "is `Std/String/indexOf@2`
 //! registered ANYWHERE in the bundle-wide `ctx.funcSigs`", not "does THIS
-//! FILE actually import `Std.String`" — the type checker's own resolution
-//! IS import-scoped (a file without the import gets the raw JDK
-//! `String.indexOf(String)I` intrinsic, `Int`, -1 sentinel), so the two
-//! disagreed. Fixed by `FuncCtx.importsStdString`, computed once per file
-//! from its own `import` list and threaded through every function/method/
+//! FILE actually import `Std.String`". This is NOT a divergence from any
+//! type-checker invariant — a `String` receiver's `.indexOf` types as
+//! lenient `TyError` on either side of the import (`typechecker_exprs.l`'s
+//! method-call resolution only ever considers a `TyUser` receiver), so the
+//! checker never distinguished the two cases at all; `.indexOf`'s
+//! Option[Int]-when-imported behavior is purely a codegen-side design
+//! choice. Fixed by `FuncCtx.importsStdString`, computed once per file from
+//! its own `import` list and threaded through every function/method/
 //! wire-binding lowered.  This file imports `Std.Testing.Snapshot`
 //! (transitively `Std.String`) WITHOUT importing `Std.String` itself, so
 //! `Std/String/indexOf@2` is present in the bundle-wide registry exactly as
 //! it was in the real `lyric-jsonrpc` build, reproducing the cross-file
-//! condition.
+//! condition. The companion positive path — a file that DOES import
+//! `Std.String` still getting the `Option[Int]` routing — lives in
+//! `jvm_trio_positive_self_test.l` (it needs `Std.String` imported directly,
+//! which would defeat this file's deliberate no-direct-import setup for the
+//! negative cases above).
 @test_module
 package Lyric.JvmTrioSelfTest
 
@@ -183,6 +190,53 @@ test "if-chain: the arm after the panic arm still resolves correctly (#6123)" {
     case ReplyOk(_) -> assertTrue(false, "expected ReplyErr, got ReplyOk")
     case ReplyErr(msg) -> assertEqual(msg, "method not found", "unknown-method arm still resolves")
   }
+}
+
+// A terminating then-arm paired with a genuinely VOID (non-terminating)
+// else-arm: the whole if-expression must stay correctly void (mirrors the
+// `case JVoid ->` sub-branch of the `thenTerminated` split in `lowerIfExpr`,
+// as opposed to the value-producing else-arm the tests above exercise). The
+// `if` here is used purely for effect — its own value is never read — and
+// `count` is read from a SEPARATE trailing statement, so a stack-discipline
+// regression in the void path would surface as a class-load VerifyError
+// (bad operand stack) rather than a wrong value.
+func voidThenTerminated(method: in String): Int {
+  var count = 0
+  if method == "boom" {
+    panic("deliberate panic")
+  } else {
+    count = 42
+  }
+  count
+}
+
+test "if-chain: terminating then-arm + void else-arm stays void (#6123)" {
+  assertEqualInt(voidThenTerminated("ok"), 42, "void else-arm's side effect still applies")
+}
+
+// A doubly-nested constructor pattern: `Ok(Some(Ok(x)))` vs
+// `Ok(Some(Err(e)))` exercises `testCaseFieldJvm`'s recursion into a
+// SECOND level of refutable sub-pattern (the outer `Ok`'s field is itself an
+// `Option` whose `Some` field is itself a `Result`), not just the one level
+// the tests above cover.
+func classifyNested(r: in Result[Option[Result[Int, String]], String]): String {
+  match r {
+    case Ok(Some(Ok(x))) -> "double-ok:" + toString(x)
+    case Ok(Some(Err(e))) -> "inner-err:" + e
+    case Ok(None) -> "ok-none"
+    case Err(e) -> "outer-err:" + e
+  }
+}
+
+test "match: doubly-nested constructor pattern discriminates correctly (#6122)" {
+  assertEqual(classifyNested(Ok(value = Some(value = Ok(value = 7)))), "double-ok:7", "Ok(Some(Ok(x))) picked")
+  assertEqual(
+    classifyNested(Ok(value = Some(value = Err(error = "bad")))),
+    "inner-err:bad",
+    "Ok(Some(Err(e))) picked, not Ok(Some(Ok(x)))"
+  )
+  assertEqual(classifyNested(Ok(value = None)), "ok-none", "Ok(None) picked, not either Some(..) arm")
+  assertEqual(classifyNested(Err(error = "outer")), "outer-err:outer", "Err(e) picked")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

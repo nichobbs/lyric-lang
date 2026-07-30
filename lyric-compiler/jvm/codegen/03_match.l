@@ -673,20 +673,24 @@ func testCaseFieldJvm(
   if not patternIsRefutableJvm(ctx, fieldPat) {
     return
   }
+  // Guard on real field info being resolved, mirroring MSIL's
+  // `testCaseFieldMsil`'s `if fTok > 0` guard: an unresolved `caseClass`/`fi`
+  // (no registered `JvmCaseField` at this index) must not emit a guessed
+  // `getfield` — the guessed name/type could reference a field the class
+  // doesn't actually declare (NoSuchFieldError) — so skip the test entirely
+  // rather than falling back to a synthetic "fieldN"/`Object` guess.
   val caseInfo: Option[List[JvmCaseField]] = mapGet(ctx.caseFields, caseClass)
-  var realName = "field" + toString(fi)
-  var fty: JvmType = JRef(className = "java/lang/Object")
   match caseInfo {
     case Some(flds) -> {
       if fi < flds.count {
-        realName = flds[fi].name
-        fty = flds[fi].ty
+        val realName = flds[fi].name
+        val fty = flds[fi].ty
+        val fSlot = extractClassField(ctx, insns, castSlot, JRef(className = caseClass), caseClass, realName, fty)
+        lowerPatternTest(ctx, insns, fieldPat, fSlot, fty, failLabel)
       }
     }
     case None -> ()
   }
-  val fSlot = extractClassField(ctx, insns, castSlot, JRef(className = caseClass), caseClass, realName, fty)
-  lowerPatternTest(ctx, insns, fieldPat, fSlot, fty, failLabel)
 }
 
 func lowerPatternTest(
