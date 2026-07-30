@@ -5577,6 +5577,15 @@ func tryQualifiedConfigFieldNameMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr
 // the segments alone, so bailing whenever `segs[0]` is independently a real
 // value name (however it's held) is required to avoid misdiagnosing that
 // pattern.
+//
+// #6351: this exclusion list is enumeration-based (each new legitimate
+// resolution tier — the T0115 jobqueue false positive being the first
+// concrete instance — needs its own bail-out added here), not derived from
+// the actual codegen fallback chain firing at `ldnull`. A structurally
+// sound alternative would fire this diagnostic AT the `ldnull` fallback
+// itself (whichever short-circuit chain member last runs before it) instead
+// of re-deriving "did anything else already resolve this" from scratch —
+// deliberately not attempted in this PR; tracked for a follow-up.
 func diagnoseUnresolvedQualifiedValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr): Option[String] {
   match expr.kind {
     case EMember(_, memberName) -> {

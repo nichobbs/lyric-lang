@@ -172,6 +172,54 @@ test "a union case payload carrying a function type still emits the package's Ly
   )
 }
 
+test "an impl-block method's function-typed parameter still emits the package's Lyric$Lambda interface (#6350)" {
+  val dir = freshTempDir("impl-callback")
+  defer {
+    cleanup(dir)
+  }
+  val source = "package Fixture.ImplCallback\n" + "\n" +
+    "extern type JIntPredicate = \"java.util.function.IntPredicate\"\n" +
+    "\n" +
+    "record MyHandler { tag: Int }\n" +
+    "\n" +
+    "impl JIntPredicate for MyHandler {\n" +
+    "  func test(self: in Self, value: Int, pred: (Int) -> Bool): Bool {\n" +
+    "    pred(value)\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(0)\n" +
+    "}\n"
+  val names = jarEntryNames(dir, "ImplCallback", source)
+  assertTrue(
+    containsName(names, "Fixture/ImplCallback/Lyric$Lambda.class"),
+    "Fixture/ImplCallback/Lyric$Lambda.class must be present when an impl-block method's own parameter carries a function type — this is the ONLY signature source for a method implementing an external interface (no IInterface item exists in the file for that case)"
+  )
+}
+
+test "a protected-type method's function-typed parameter still emits the package's Lyric$Lambda interface (#6350)" {
+  val dir = freshTempDir("protected-callback")
+  defer {
+    cleanup(dir)
+  }
+  val source = "package Fixture.ProtectedCallback\n" + "\n" + "protected type Dispatcher {\n" + "  var tag: Int\n" +
+    "\n" +
+    "  func dispatch(pred: (Int) -> Bool): Bool {\n" +
+    "    pred(tag)\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(0)\n" +
+    "}\n"
+  val names = jarEntryNames(dir, "ProtectedCallback", source)
+  assertTrue(
+    containsName(names, "Fixture/ProtectedCallback/Lyric$Lambda.class"),
+    "Fixture/ProtectedCallback/Lyric$Lambda.class must be present when a protected type's func member carries a function-typed parameter, even with no lambda literal or other function-typed signature elsewhere"
+  )
+}
+
 test "a package with no function type at all never emits a Lyric$Lambda interface" {
   val dir = freshTempDir("no-function-type")
   defer {
