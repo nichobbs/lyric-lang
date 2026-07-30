@@ -6665,6 +6665,31 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/union_case_collision_jvm_self_test.l
 
+      # Cross-package bare-name collision self-test (#5455, #5976) — exercises
+      # `Jvm.Bridge.compileProjectToJarBundledWithFeatures` in-process (the
+      # outer test program itself runs on the default --target dotnet, like
+      # `msil_project_bridge_self_test.l`; it builds and runs its own nested
+      # multi-package JVM programs via `java -jar`).  Pins: a package-qualified
+      # case construction resolving through the full dotted path instead of
+      # the bundle-wide first-wins bare `ctors` entry (#5455, including the
+      # cross-package `impl`-method shape that originally surfaced it), and a
+      # file's own declared type no longer being shadowed by a same-named type
+      # it imports (#5976's `ownAwareExternTypes` fix).
+      - name: Cross-package collision self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping cross-package collision self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping cross-package collision self-test"
+            exit 1
+          fi
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/jvm_cross_package_collision_self_test.l
+
   # Numbered backend self-test corpus (docs/59 §9.5, H8) — the ~215 plain
   # `func main` regression programs (`lyric-compiler/msil/msil_self_test_m1..m84`
   # and `lyric-compiler/jvm/self_test_b3..b134`, ~40k lines) whose F# Expecto
