@@ -1398,6 +1398,115 @@ test "a local bound inside a range pattern's hi-bound lambda shadows a bare-impo
   }
 }
 
+// Scope-awareness regression, range-subtype declaration bound (#6325): a
+// `type Age = Int range lo..=hi` declaration's own `hi` (or `lo`) bound is
+// an ordinary Expr (`parseRangeBound` calls the fully general `parseExpr`)
+// and shares the exact same self-referential hazard the #6324 pattern-range
+// fix already closed for match-arm range patterns.
+test "a local bound inside a range-subtype declaration's hi-bound lambda shadows a bare-imported package's dotted name, left untouched (#6325)" {
+  val src = "package Test\nimport Foo.Bar\ntype Age = Int range 0 ..= {\n  val Foo = 0\n  Foo.Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IDistinctType(decl) -> {
+      match decl.rangeClause {
+        case Some(rb) -> {
+          match rb {
+            case RBClosed(_, hi) -> {
+              match hi.kind {
+                case ELambda(_, block) -> {
+                  assertEqualInt(block.statements.count, 2, "hi-bound lambda body has the local decl plus the call statement")
+                  val stmt = block.statements[1]
+                  match stmt.kind {
+                    case SExpr(callExpr) -> {
+                      match callExpr.kind {
+                        case ECall(fn, _) -> {
+                          match fn.kind {
+                            case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
+                            case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6325 regression)")
+                            case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
+                          }
+                        }
+                        case _ -> assertTrue(false, "statement expression is not ECall")
+                      }
+                    }
+                    case _ -> assertTrue(false, "second statement is not SExpr")
+                  }
+                }
+                case _ -> assertTrue(false, "hi bound is not ELambda")
+              }
+            }
+            case _ -> assertTrue(false, "range clause is not RBClosed")
+          }
+        }
+        case None -> assertTrue(false, "distinct type has no range clause")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IDistinctType")
+  }
+}
+
+// Scope-awareness regression, const-generic type-arg value (#6325): an
+// `array[SIZE, Elem]` field's `SIZE` is a `TAValue` whose expr is parsed via
+// the fully general `parseExpr` starting from a leading literal token, so a
+// binop RHS embedded in that expr can itself be a lambda introducing its
+// own shadowing local.
+test "a local bound inside an array-size type-arg's embedded lambda shadows a bare-imported package's dotted name, left untouched (#6325 coverage)" {
+  val src = "package Test\nimport Foo.Bar\nrecord Buf {\n  bytes: array[0 + {\n    val Foo = 0\n    Foo.Bar.baz()\n  }, Int]\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IRecord(decl) -> {
+      assertEqualInt(decl.members.count, 1, "record has exactly the one field")
+      match decl.members[0] {
+        case RMField(field) -> {
+          match field.ty.kind {
+            case TArray(size, _) -> {
+              match size {
+                case TAValue(sizeExpr) -> {
+                  match sizeExpr.kind {
+                    case EBinop(_, _, rhs) -> {
+                      match rhs.kind {
+                        case ELambda(_, block) -> {
+                          assertEqualInt(block.statements.count, 2, "size-arg lambda body has the local decl plus the call statement")
+                          val stmt = block.statements[1]
+                          match stmt.kind {
+                            case SExpr(callExpr) -> {
+                              match callExpr.kind {
+                                case ECall(fn, _) -> {
+                                  match fn.kind {
+                                    case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
+                                    case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6325 regression)")
+                                    case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
+                                  }
+                                }
+                                case _ -> assertTrue(false, "statement expression is not ECall")
+                              }
+                            }
+                            case _ -> assertTrue(false, "second statement is not SExpr")
+                          }
+                        }
+                        case _ -> assertTrue(false, "binop rhs is not ELambda")
+                      }
+                    }
+                    case _ -> assertTrue(false, "size expr is not EBinop")
+                  }
+                }
+                case _ -> assertTrue(false, "array size is not TAValue")
+              }
+            }
+            case _ -> assertTrue(false, "field type is not TArray")
+          }
+        }
+        case _ -> assertTrue(false, "record member is not RMField")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IRecord")
+  }
+}
+
 // Review follow-up: the #6311/#6312 filtering has a beneficial side effect on
 // the DEPTH-1 non-call `EMember` arm too, since it strips a shadowed alias
 // from the shared `aliases` list before ANY arm (call or non-call) consults

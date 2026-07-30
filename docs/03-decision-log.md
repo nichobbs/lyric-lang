@@ -21407,6 +21407,53 @@ exact unfiltered-call literal string — has zero remaining matches in the
 file; both of `rewriteOptExpr`'s own call sites pass an already-scoped
 variable (`bodyAliases`, `defaultAliases`), never raw `aliases`.
 
+**Eleventh finding (review feedback, #6325): two more positions structurally
+identical to #6324's just-fixed `PRange` were missed by that very fix's own
+commit.** `rewriteTypeArg`'s `TAValue` case (a const-generic type argument's
+value expr, e.g. `array[SIZE, Elem]`'s `SIZE`) and `rewriteRangeBound`'s
+`lo`/`hi` (used by BOTH `ERange` expressions, `lo..hi`, and — the more
+directly reachable of the two — a range-subtype declaration's own bound,
+`type Age = Int range lo..=hi`) both still called `rewriteExpr(aliases,
+...)` with the raw, unfiltered `aliases`. `parseTypeArg`'s `TAValue` branch
+and `parseRangeBound` both ultimately call the fully general `parseExpr`,
+so either position can embed a lambda (a leading-literal-then-binop-RHS
+lambda for `TAValue`, since a bare `{` doesn't itself start a `TAValue`; a
+direct bare-lambda bound for `RangeBound`) introducing its own shadowing
+local — the same #6294 bug class, an eleventh time. Concretely: `type Age
+= Int range 0 ..= { val Foo = 0; Foo.Bar.baz() }` with `import Foo.Bar` in
+scope silently collapsed `Foo.Bar.baz()` to the package call.
+
+This is the THIRD "is this really the last gap?" claim on this PR that a
+subsequent review round falsified (the eighth falsified the seventh's, the
+tenth falsified the ninth's) — each time via an audit methodology that
+was itself slightly incomplete. Naming the pattern rather than re-asserting
+confidence a fourth time: every one of these eleven findings has been
+structurally identical (a standalone `Expr`-typed sub-position parsed via
+the fully general `parseExpr`/`parseLiteralOrRangePat`/etc., rewritten via
+a raw, unfiltered `rewriteExpr(aliases, ...)`/`rewriteOptExpr(aliases,
+...)` call instead of `filterAliasesForExpr`), and each was found by
+re-deriving the AST from `parser_ast.l` and `parser_exprs.l`/
+`parser_items.l` structurally, not by trusting a prior "audit" claim.
+
+Fixed by routing `TAValue`'s `expr` and both of `rewriteRangeBound`'s four
+arms' `lo`/`hi` bounds through `filterAliasesForExpr`, exactly the #6324
+pattern — each bound gets its OWN independent filter pass (not a single
+shared one) since `lo` and `hi` could each bind a different local.
+
+Verified by two new `alias_rewriter_self_test.l` cases (35 total): a
+range-subtype declaration (`type Age = Int range 0 ..= { ... }`) whose
+`hi` bound is a lambda binding its own local `Foo`, and an `array[SIZE,
+Int]` record field whose `SIZE` (`0 + { ... }`, a binop with a
+lambda-valued RHS — the only shape a `TAValue` can embed a bare lambda in,
+since the grammar requires a leading literal/`-` token) does the same —
+both assert the callee stays the original nested `EMember` chain,
+unrewritten. All ten previously-established suites re-verified green again
+against the build carrying this eleventh fix (`alias_rewriter` 35/35,
+`msil_project_bridge` 34/34, `qualified_enum_case` 11/11,
+`qualified_union_case` 5/5, `typechecker` 283/283, `parser` 126/126,
+`mono` 54/54, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 92/92,
+`cfg` 12/12 — no drift in any of these from the tenth finding's build).
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
 D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320, #6321, #6323,
-#6324.
+#6324, #6325.

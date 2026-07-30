@@ -265,19 +265,27 @@ func rewriteTypeExpr(aliases: in List[String], te: in TypeExpr): TypeExpr {
   TypeExpr(kind = kind, span = te.span)
 }
 
+// #6325 — see filterAliasesForExpr's comment: a const-generic type arg's
+// value expr can itself be a lambda introducing its own shadowing locals,
+// same as every other standalone-expression position in this file.
 func rewriteTypeArg(aliases: in List[String], a: in TypeArg): TypeArg {
   match a {
     case TAType(ty) -> TAType(ty = rewriteTypeExpr(aliases, ty))
-    case TAValue(expr) -> TAValue(expr = rewriteExpr(aliases, expr))
+    case TAValue(expr) -> TAValue(expr = rewriteExpr(filterAliasesForExpr(aliases, expr), expr))
   }
 }
 
+// #6325 — see filterAliasesForExpr's comment: a range-subtype declaration's
+// (`type Age = Int range lo..=hi`) own `lo`/`hi` bound is an ordinary Expr
+// and can itself be a lambda introducing its own shadowing locals — each
+// bound gets its own independent filter pass since `lo` and `hi` could each
+// bind a different local.
 func rewriteRangeBound(aliases: in List[String], rb: in RangeBound): RangeBound {
   match rb {
-    case RBClosed(lo, hi) -> RBClosed(lo = rewriteExpr(aliases, lo), hi = rewriteExpr(aliases, hi))
-    case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = rewriteExpr(aliases, lo), hi = rewriteExpr(aliases, hi))
-    case RBLowerOpen(hi) -> RBLowerOpen(hi = rewriteExpr(aliases, hi))
-    case RBUpperOpen(lo) -> RBUpperOpen(lo = rewriteExpr(aliases, lo))
+    case RBClosed(lo, hi) -> RBClosed(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo), hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
+    case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo), hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
+    case RBLowerOpen(hi) -> RBLowerOpen(hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
+    case RBUpperOpen(lo) -> RBUpperOpen(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo))
   }
 }
 
