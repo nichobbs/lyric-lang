@@ -323,6 +323,15 @@ func flattenPathExpr(e: in Expr): Option[List[String]] {
 // Join every segment of `segs` with "." — the candidate package-qualifier
 // tried by `rewriteQualifiedMemberChain`.
 func joinSegs(segs: in List[String]): String {
+  // Guard against a zero-segment `ModulePath` (unconfirmed whether parser
+  // error recovery can ever produce one, but `rewritePath` guards the
+  // analogous case with its own `count < 2` check, and `flattenPathExpr`'s
+  // `EPath` arm always returns `Some` regardless of segment count) — an
+  // empty string never matches a real alias key, so this is a safe no-op
+  // fallback rather than an index-out-of-bounds panic (review follow-up).
+  if segs.count == 0 {
+    return ""
+  }
   var s = segs[0]
   var i = 1
   while i < segs.count {
@@ -1182,6 +1191,15 @@ func collectModuleLevelValueNames(file: in SourceFile, acc: List[String]): Unit 
       // rely on that ordering forever, so an `IFixture` is treated exactly
       // like the `IVal` it's synthesized from.
       case IFixture(decl) -> acc.add(decl.name)
+      // #6327 — a module-level `config`/`wire` block's own name is a
+      // module-scope binding exactly like a `val`/`const`: it can collide
+      // with a bare-imported package's first dotted segment the same way,
+      // reachable via plain field access (`ConfigName.field`) on any target
+      // and, for `config`, on the native/LLVM bridge where `Lyric.WireExpand`
+      // isn't run (`runWireExpand = false`) so the block's name is never
+      // expanded away before this pass sees it.
+      case IConfig(decl) -> acc.add(decl.name)
+      case IWire(decl) -> acc.add(decl.name)
       case _ -> ()
     }
     i = i + 1
@@ -1194,10 +1212,7 @@ func collectModuleLevelValueNames(file: in SourceFile, acc: List[String]): Unit 
 func rewriteParam(aliases: in List[String], p: in Param): Param {
   // #6320 — see filterAliasesForExpr's comment: a param default can itself
   // be a lambda (a bare `{ ... }`) introducing its own shadowing locals.
-  val d = match p.dflt {
-    case Some(e) -> Some(value = rewriteExpr(filterAliasesForExpr(aliases, e), e))
-    case None -> p.dflt
-  }
+  val d = rewriteOptExprSelfFiltered(aliases, p.dflt)
   Param(
     mode = p.mode,
     modeExplicit = p.modeExplicit,
@@ -1276,10 +1291,7 @@ func rewriteExternFuncDecl(aliases: in List[String], ef: in ExternFuncDecl): Ext
 func rewriteFieldDecl(aliases: in List[String], f: in FieldDecl): FieldDecl {
   // #6320 — see filterAliasesForExpr's comment: a field default can itself
   // be a lambda (a bare `{ ... }`) introducing its own shadowing locals.
-  val d = match f.dflt {
-    case Some(e) -> Some(value = rewriteExpr(filterAliasesForExpr(aliases, e), e))
-    case None -> f.dflt
-  }
+  val d = rewriteOptExprSelfFiltered(aliases, f.dflt)
   FieldDecl(
     docComments = f.docComments,
     annotations = f.annotations,
@@ -1406,13 +1418,18 @@ func rewriteWhereClauseOpt(aliases: in List[String], wc: in Option[WhereClause])
 
 // `requires:` / `ensures:` / `when:` / `decreases:` carry an `Expr`, and
 // `raises:` carries a `List[TypeExpr]` — all of which can reference aliased
-// names (#1861).
+// names (#1861). Each clause's own expr also gets `filterAliasesForExpr`
+// (#6326) on top of the already-scoped `bodyAliases`/`contractAliases`/
+// `sigAliases` the caller threads in here (#6313): a clause expr can itself
+// be a lambda or a quantifier (`forall`/`exists`) binder introducing its
+// own shadowing locals, same as every other standalone-expression position
+// in this file.
 func rewriteContractClause(aliases: in List[String], c: in ContractClause): ContractClause {
   match c {
-    case CCRequires(expr, span) -> return CCRequires(expr = rewriteExpr(aliases, expr), span = span)
-    case CCEnsures(expr, span) -> return CCEnsures(expr = rewriteExpr(aliases, expr), span = span)
-    case CCWhen(expr, span) -> return CCWhen(expr = rewriteExpr(aliases, expr), span = span)
-    case CCDecreases(expr, span) -> return CCDecreases(expr = rewriteExpr(aliases, expr), span = span)
+    case CCRequires(expr, span) -> return CCRequires(expr = rewriteExpr(filterAliasesForExpr(aliases, expr), expr), span = span)
+    case CCEnsures(expr, span) -> return CCEnsures(expr = rewriteExpr(filterAliasesForExpr(aliases, expr), expr), span = span)
+    case CCWhen(expr, span) -> return CCWhen(expr = rewriteExpr(filterAliasesForExpr(aliases, expr), expr), span = span)
+    case CCDecreases(expr, span) -> return CCDecreases(expr = rewriteExpr(filterAliasesForExpr(aliases, expr), expr), span = span)
     case CCRaises(types, span) -> {
       val ts: List[TypeExpr] = newList()
       var i = 0
@@ -1888,13 +1905,12 @@ func rewriteFixtureDecl(aliases: in List[String], d: in FixtureDecl): FixtureDec
 // IConfig / IAspect ──────────────────────────────────────────────────────────────
 func rewriteConfigField(aliases: in List[String], f: in ConfigField): ConfigField {
   // #6316 — see filterAliasesForExpr's comment.
-  val defaultAliases = match f.default { case Some(e) -> filterAliasesForExpr(aliases, e); case None -> aliases }
   ConfigField(
     docComments = f.docComments,
     annotations = f.annotations,
     name = f.name,
     ty = rewriteTypeExpr(aliases, f.ty),
-    default = rewriteOptExpr(defaultAliases, f.default),
+    default = rewriteOptExprSelfFiltered(aliases, f.default),
     span = f.span
   )
 }

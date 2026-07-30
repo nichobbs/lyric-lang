@@ -21407,6 +21407,17 @@ exact unfiltered-call literal string — has zero remaining matches in the
 file; both of `rewriteOptExpr`'s own call sites pass an already-scoped
 variable (`bodyAliases`, `defaultAliases`), never raw `aliases`.
 
+**CORRECTION (review feedback, added at the twelfth finding below):** the
+paragraph above was itself wrong — `rewriteContractClause`'s four
+`CCRequires`/`CCEnsures`/`CCWhen`/`CCDecreases` arms are a literal,
+unmissable match for the exact `rewriteExpr(aliases, ...)` grep this
+paragraph claims to have exhaustively re-run, and were not caught. Left
+in place rather than deleted (per this doc's append-only convention) as a
+concrete demonstration of exactly the failure mode it warns about: an
+"audit re-run" claim is only as good as actually re-running it, and this
+one wasn't. See the twelfth finding for the real fix and the actual
+current grep output.
+
 **Eleventh finding (review feedback, #6325): two more positions structurally
 identical to #6324's just-fixed `PRange` were missed by that very fix's own
 commit.** `rewriteTypeArg`'s `TAValue` case (a const-generic type argument's
@@ -21454,6 +21465,80 @@ against the build carrying this eleventh fix (`alias_rewriter` 35/35,
 `mono` 54/54, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 92/92,
 `cfg` 12/12 — no drift in any of these from the tenth finding's build).
 
+**Twelfth finding (review feedback, #6326 and #6327 — two findings closed
+together this round, plus three non-blocking SUGGESTIONs).**
+
+- **#6326**: `rewriteContractClause`'s `CCRequires`/`CCEnsures`/`CCWhen`/
+  `CCDecreases` arms still rewrote each clause's own expr via plain
+  `rewriteExpr(aliases, expr)` — the already-scoped `bodyAliases`/
+  `contractAliases`/`sigAliases` #6313 threads in here handles collisions
+  with the enclosing function's OWN params/locals, but a clause expr can
+  ALSO be a self-contained lambda (or a `forall`/`exists` quantifier
+  binder) introducing a shadowing local of its own, the same
+  self-referential hazard `filterAliasesForExpr` exists to guard against
+  everywhere else. This is the exact literal-grep-match the ninth
+  finding's "post-fix audit" claimed to have exhaustively checked and
+  didn't (see the CORRECTION note above).
+- **#6327**: `collectModuleLevelValueNames` collected `IConst`/`IVal`/
+  `IFixture` names but not `IConfig`/`IWire` — a module-level `config`/
+  `wire` block's own name is a module-scope binding exactly like a
+  `val`/`const` (#6312's own concern), reachable via plain field access
+  (`ConfigName.field`) on any target, and doubly so on the native/LLVM
+  bridge where `Lyric.WireExpand` isn't run (`runWireExpand = false`) so
+  the block's name is never expanded away before this pass ever sees it.
+
+Fixed #6326 by routing all four contract-clause arms through
+`filterAliasesForExpr`. Fixed #6327 by adding `IConfig`/`IWire` arms to
+`collectModuleLevelValueNames`, alongside the existing `IConst`/`IVal`/
+`IFixture` ones.
+
+Also addressed, same round, three additional review SUGGESTIONs:
+  * `joinSegs` indexed `segs[0]` with no empty-list guard — `flattenPathExpr`
+    always returns `Some` for an `EPath` regardless of segment count, so a
+    zero-segment `ModulePath` (unconfirmed whether parser error recovery
+    can ever produce one) would have panicked here, unlike `rewritePath`'s
+    analogous `count < 2` guard. Added a `segs.count == 0` guard returning
+    `""` (a safe no-op: an empty string never matches a real alias key).
+  * `rewriteOptExprSelfFiltered` (added at the ninth finding for
+    `rewriteProtectedField`'s two `Option[Expr]` sites) was only used
+    there — `rewriteParam`, `rewriteFieldDecl`, and `rewriteConfigField`'s
+    `default` each hand-inlined the identical collect-then-filter pattern.
+    Routed all three onto the shared helper, removing the duplication.
+  * The third SUGGESTION (collapsing ~10 near-identical inline WHY-comments
+    to a single pointer back to `filterAliasesForExpr`'s own definition)
+    was reviewed and deliberately NOT applied: each comment's issue-number
+    citation is itself load-bearing context for a reader landing on that
+    one call site cold (which finding introduced it, why THIS specific
+    position needed it), and collapsing them would lose that per-site
+    provenance for a marginal duplication saving.
+
+**Actual, current grep output** (not a repeated prose claim — see the
+CORRECTION above for why that distinction matters here specifically): as
+of this fix, `rewriteExpr(aliases, ...)` appears 42 times in
+`alias_rewriter.l`, every remaining instance either internal recursion
+inside `rewriteExpr`/`rewriteStatement`/`rewriteBlock`/`rewritePattern`'s
+own sub-expression traversal, or a function/entry body's own top-level
+rewrite (both already correctly scoped by their caller); `rewriteOptExpr(
+aliases, ...)` — the raw, unfiltered form — has zero matches, and its
+sole remaining call site (`PropertyDecl.guardExpr`, a property-test's
+`forall`-guard) already passes a locals-filtered `bodyAliases`, never raw
+`aliases` — `rewriteConfigField`'s `default` was the last of `rewriteOptExpr`'s
+call sites still passing raw `aliases`, and it moved onto
+`rewriteOptExprSelfFiltered` as part of this same round's dedup SUGGESTION.
+
+Verified by two new `alias_rewriter_self_test.l` cases (37 total): a
+function whose `requires:` clause is itself a lambda binding its own local
+`Foo` before calling `Foo.Bar.check(x)`, and a module-level `config Foo {
+... }` block whose name `Foo` collides with a bare-imported `Foo.Bar`
+package, referenced from an unrelated function's body — both assert the
+callee stays the original nested `EMember` chain, unrewritten. All ten
+previously-established suites re-verified green again against the build
+carrying this twelfth fix (`alias_rewriter` 37/37, `msil_project_bridge`
+34/34, `qualified_enum_case` 11/11, `qualified_union_case` 5/5,
+`typechecker` 283/283, `parser` 126/126, `mono` 54/54, `weaver` 46/46,
+`aspect_weave` 7/7, `modechecker` 92/92, `cfg` 12/12 — no drift in any of
+these from the eleventh finding's build).
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
 D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320, #6321, #6323,
-#6324, #6325.
+#6324, #6325, #6326, #6327.
