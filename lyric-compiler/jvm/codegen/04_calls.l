@@ -2560,7 +2560,21 @@ func lowerGeneralStaticCall(
 ): JvmType {
   // Construction: a call whose head names a record or union case lowers to a
   // real `new`/`invokespecial` rather than a (non-existent) static method.
-  match ctorClassFor(ctx, funcName) {
+  // A package-qualified construction (`IfacePkg.Text(value = ...)`, parsed
+  // as a flat multi-segment EPath) must resolve through the FULL dotted
+  // path first: the bare-name `ctorClassFor` lookup below is bundle-global
+  // first-wins and silently picks an unrelated same-named case from
+  // whichever OTHER package happened to register that bare name earlier
+  // (#5455) — e.g. a cross-package `impl` method's own package-qualified
+  // construction of its interface's payload type resolving to some
+  // unrelated stdlib case sharing the same bare name.
+  if path.segments.count >= 2 {
+    match mapGet(ctx.ctors, joinSegments(path.segments, ".")) {
+      case Some(qcls) -> return lowerConstruction(ctx, insns, qcls, args)
+      case None -> ()
+    }
+  }
+  match ctorClassForExpecting(ctx, funcName) {
     case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
     case None -> ()
   }
@@ -2767,8 +2781,18 @@ func lowerGeneralStaticCall(
       }
       var ai = 0
       while ai < callArgs.count {
+        // Push the resolved parameter type's owning package as an
+        // expected-constructor hint (#5976) so a bare ambiguous case/record
+        // construction nested directly in this argument (`errorMessage(
+        // TimedOut(...))`) resolves against the SAME package `errorMessage`'s
+        // own (declared) parameter type names, not the bundle-global
+        // first-registered same-named case.
+        if ai < sig.params.count {
+          pushCtorExpect(ctx, sig.params[ai])
+        }
         val aTy = lowerCallArg(ctx, insns, callArgs[ai])
         if ai < sig.params.count {
+          popCtorExpect(ctx)
           coerceArgTo(insns, aTy, sig.params[ai])
         }
         ai = ai + 1

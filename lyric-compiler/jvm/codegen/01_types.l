@@ -577,6 +577,22 @@ pub record FuncCtx {
   // `BlockScope`.  No default per the no-defaulted-field rule; initialised
   // `newList()` at every construction site.
   scopeUndo: List[ScopeUndo]
+  // Expected-constructor-owner hint stack (#5976): the JVM package (slash
+  // form, e.g. "Std/RegexSafe") of the parameter type a call argument is
+  // about to be coerced to, pushed by the general static-call argument loop
+  // immediately before lowering each argument and popped after.  A BARE
+  // (unqualified) case/record construction expression lowered while this is
+  // non-empty prefers the owner-scoped `<owner>::<name>` ctors entry over
+  // the bundle-global first-wins bare entry, so `errorMessage(TimedOut(...))`
+  // constructs the SAME package's `RegexError` that `errorMessage`'s own
+  // (now correctly own-package-resolved, #5976) parameter type declares,
+  // instead of whichever OTHER same-named-case package registered first.
+  // Mirrors MSIL's `collExpect`-driven tier in `pickCaseFqnByQualifier`,
+  // narrowly scoped to the one call-argument site that needs it rather than
+  // a full expected-type-propagation mechanism. No default per the
+  // JVM-codegen no-defaulted-field rule; initialised `newList()` at every
+  // construction site.
+  ctorExpectStack: List[String]
 }
 
 // A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a
@@ -1206,6 +1222,53 @@ pub func ctorClassFor(ctx: in FuncCtx, name: in String): Option[String] {
   match mapGet(ctx.ctors, ctx.pkgName + "::" + name) {
     case Some(cls) -> Some(value = cls)
     case None -> mapGet(ctx.ctors, name)
+  }
+}
+
+// As `ctorClassFor`, but consulting `ctx.ctorExpectStack`'s top entry (the
+// declaring package of a directly-enclosing call's expected parameter type,
+// see `FuncCtx.ctorExpectStack`) BEFORE the bundle-global bare-name fallback
+// — a same-simple-name case/record from another package must never shadow
+// the one the call actually expects (#5976).  Still tries the current
+// package's own declaration first, exactly like `ctorClassFor`.
+pub func ctorClassForExpecting(ctx: in FuncCtx, name: in String): Option[String] {
+  match mapGet(ctx.ctors, ctx.pkgName + "::" + name) {
+    case Some(cls) -> return Some(value = cls)
+    case None -> ()
+  }
+  if ctx.ctorExpectStack.count > 0 {
+    val expectedOwner = ctx.ctorExpectStack[ctx.ctorExpectStack.count - 1]
+    if expectedOwner.length > 0 {
+      match mapGet(ctx.ctors, expectedOwner + "::" + name) {
+        case Some(cls2) -> return Some(value = cls2)
+        case None -> ()
+      }
+    }
+  }
+  mapGet(ctx.ctors, name)
+}
+
+// The owning JVM package (slash form) of class `cls` — everything before the
+// last "/" — or "" for a top-level (package-less) class name.  Used to
+// derive the `ctorExpectStack` hint from a resolved parameter's JRef class.
+pub func jvmClassOwnerPkg(cls: in String): String {
+  match lastIndexOf(cls, "/") {
+    case Some(i) -> substring(cls, 0, i)
+    case None -> ""
+  }
+}
+
+// Push an expected-constructor-owner hint (see `FuncCtx.ctorExpectStack`)
+// derived from `paramTy`: the owning package of a `JRef` parameter type, or
+// "" (a no-op hint) for any other shape.  Always pair with `popCtorExpect`.
+pub func pushCtorExpect(ctx: in FuncCtx, paramTy: in JvmType): Unit {
+  val owner = match paramTy { case JRef(cls) -> jvmClassOwnerPkg(cls); case _ -> "" }
+  ctx.ctorExpectStack.add(owner)
+}
+
+pub func popCtorExpect(ctx: in FuncCtx): Unit {
+  if ctx.ctorExpectStack.count > 0 {
+    ctx.ctorExpectStack.removeAt(ctx.ctorExpectStack.count - 1)
   }
 }
 

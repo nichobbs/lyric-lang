@@ -90,7 +90,8 @@ func makeFuncCtx(
     scopeExecSlots = newList(),
     spawnResultTypes = newMap(),
     scopeBase = 0,
-    scopeUndo = newList()
+    scopeUndo = newList(),
+    ctorExpectStack = newList()
   )
 }
 
@@ -137,7 +138,8 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     scopeExecSlots = ctx.scopeExecSlots,
     spawnResultTypes = ctx.spawnResultTypes,
     scopeBase = ctx.scopeBase,
-    scopeUndo = ctx.scopeUndo
+    scopeUndo = ctx.scopeUndo,
+    ctorExpectStack = ctx.ctorExpectStack
   )
 }
 
@@ -205,7 +207,8 @@ func makeFuncCtxForGenerator(
     scopeExecSlots = newList(),
     spawnResultTypes = newMap(),
     scopeBase = 0,
-    scopeUndo = newList()
+    scopeUndo = newList(),
+    ctorExpectStack = newList()
   )
 }
 
@@ -275,7 +278,8 @@ func makeFuncCtxInstance(
     scopeExecSlots = newList(),
     spawnResultTypes = newMap(),
     scopeBase = 0,
-    scopeUndo = newList()
+    scopeUndo = newList(),
+    ctorExpectStack = newList()
   )
 }
 
@@ -2752,6 +2756,55 @@ pub func mergeExternSeed(own: in Map[String, String], seed: in Map[String, Strin
   merged
 }
 
+// The full type-resolution seed for `file`'s own signature/field/codegen
+// passes: `externSeed` (the extern-type + declared-type maps of every
+// package `file` imports) as the base, with `file`'s OWN declared record/
+// union/protected/opaque/interface/enum types layered on top ONLY where one
+// actually collides by simple name with something in `externSeed` (own
+// declarations win such a collision), and `file`'s own `extern type` alias
+// declarations on top of that.
+//
+// Every one of `typeExprToJvmExtern`'s callers used to build this seed as
+// plain `mergeExternSeed(collectExternTypesFromFile(file), externSeed)` —
+// which only merges the file's own `extern type` ALIASES over the seed, not
+// its own plain type DECLARATIONS.  A file that both imports a package and
+// declares its OWN type of the identical simple name (e.g. `Std.RegexSafe`
+// importing `Std.Regex` while also declaring its own `RegexError` union)
+// had its own declaration silently SHADOWED by the import's same-named
+// type: every bare reference to its OWN `RegexError` — including in ITS OWN
+// function signatures — resolved to the imported package's class instead,
+// producing a cross-package type-descriptor mismatch (wrong owning class on
+// the emitted method, `ClassCastException`/`NoSuchMethodError` at runtime,
+// #5976).
+//
+// Only a COLLIDING own declaration is added — not every own-declared type
+// unconditionally — because `ctx.externTypes` (the map this seed becomes)
+// is ALSO read by `lowerMethodCall`'s auto-FFI receiver gate (docs/44 m-58):
+// any key present there is treated as "this EPath receiver names a foreign
+// JDK type", so injecting a NON-colliding own type (say `StoreError`, which
+// no import shares) made `StoreError.UserNotFound(...)` — an ordinary
+// same-package qualified union-case construction — misroute through
+// `lowerAutoFfiStaticCall` and panic looking it up in the JDK, instead of
+// falling through to the qualified-case-construction path a few lines
+// below that already handles this exact shape.  Restricting the override to
+// genuine collisions keeps every non-colliding own type entirely absent from
+// `externTypes`, preserving that gate's existing behaviour for the
+// overwhelming common case while still fixing the #5976 collision.
+pub func ownAwareExternTypes(file: in SourceFile, externSeed: in Map[String, String]): Map[String, String] {
+  val ownDeclared: Map[String, String] = newMap()
+  collectFileDeclaredTypeFqns(file, ownDeclared)
+  val collidingOwn: Map[String, String] = newMap()
+  for k in mapKeys(ownDeclared) {
+    if externSeed.containsKey(k) {
+      match mapGet(ownDeclared, k) {
+        case Some(v) -> collidingOwn.add(k, v)
+        case None -> ()
+      }
+    }
+  }
+  mergeExternSeed(collectExternTypesFromFile(file), mergeExternSeed(collidingOwn, externSeed))
+}
+
 // As `collectFileSigs`, but resolving extern-type aliases against the file's
 // own declarations UNION `externSeed` — the extern types of the packages the
 // file imports (own declarations win).  A public signature written against an
@@ -2767,7 +2820,7 @@ pub func collectFileSigsSeeded(
   // (e.g. `JBAOS` -> `java/io/ByteArrayOutputStream`), not `<pkg>/<Alias>`
   // (#3334).  The emitted method descriptor in `lowerFunc` resolves the same
   // way, so the registered sig and the method stay in lockstep.
-  val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
+  val externTypes = ownAwareExternTypes(file, externSeed)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -3689,13 +3742,20 @@ pub func collectFileCtors(file: in SourceFile, into: in Map[String, String]): Un
   }
 }
 
-// Register a constructable type under both its bare name (bundle-global,
-// first wins — the legacy single-package shape) and a package-scoped key
-// (`<owner>::<name>`).  `ctorClassFor` tries the scoped key first, so a
-// package's OWN case wins over a same-named case another bundled package
-// registered earlier (`InvalidDocument` exists in both `Std.Xml`'s
-// XmlError and `Std.Yaml`'s YamlError — the bare first-wins entry gave
-// Yaml's code Xml's class: NoClassDefFoundError at runtime).
+// Register a constructable type under its bare name (bundle-global, first
+// wins — the legacy single-package shape), a package-scoped key
+// (`<owner>::<name>`), and a package-DOTTED-qualified key (`<dotted
+// owner>.<name>`, e.g. "IfacePkg.Text").  `ctorClassFor` tries the scoped
+// key first, so a package's OWN case wins over a same-named case another
+// bundled package registered earlier (`InvalidDocument` exists in both
+// `Std.Xml`'s XmlError and `Std.Yaml`'s YamlError — the bare first-wins
+// entry gave Yaml's code Xml's class: NoClassDefFoundError at runtime).
+// The dotted-qualified key lets a CALL SITE that spells out the declaring
+// package (`IfacePkg.Text(value = ...)`, parsed as a flat multi-segment
+// `EPath`) resolve to the real declaring class even when some OTHER
+// bundled package registered the same bare case/record name first (#5455):
+// `lowerGeneralStaticCall` looks up the full dotted path before falling
+// back to the bare bundle-global entry.
 func addCtorKeys(into: in Map[String, String], owner: in String, name: in String, cls: in String): Unit {
   if not into.containsKey(name) {
     into.add(name, cls)
@@ -3703,6 +3763,10 @@ func addCtorKeys(into: in Map[String, String], owner: in String, name: in String
   val scopedKey = owner + "::" + name
   if not into.containsKey(scopedKey) {
     into.add(scopedKey, cls)
+  }
+  val dottedKey = owner.replace("/", ".") + "." + name
+  if not into.containsKey(dottedKey) {
+    into.add(dottedKey, cls)
   }
 }
 
@@ -4258,7 +4322,7 @@ pub func codegenPackageWithSigsSeeded(
   val importsStdString = fileImportsStdString(file)
 
   // Collect extern-type declarations: alias → Java FQN.
-  val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
+  val externTypes = ownAwareExternTypes(file, externSeed)
 
   // m-2: collect the module-level `val NAME` declarations up front (name → JVM
   // type) so a bare reference to one resolves to `getstatic <hostClass>.<name>`
