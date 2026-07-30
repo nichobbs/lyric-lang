@@ -95,6 +95,16 @@ Tracked as the (still open) Q-MCP-003.
   }
   ```
 
+  `requestState` is an opaque echo token, not a capability or
+  authorization credential: nothing in the protocol or in `Mcp.Server`
+  binds it to the peer or session that received it, so a client can
+  fabricate one and call `resume` directly without ever having seen the
+  original `InputRequired` outcome. A resumable handler that encodes a
+  security-sensitive target in `requestState` (the shipped
+  `confirm_delete` example does, for illustration) must still perform
+  its own authorization check inside `resume` — the round trip is a
+  UX/retry pattern, not a security boundary.
+
   `McpToolHandler.call` gains no new method — a handler that needs
   mid-call input returns `Ok(value = ToolResult(...))` wrapping an
   `InputRequired` today is expressed by widening the existing

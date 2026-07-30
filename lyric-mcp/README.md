@@ -353,6 +353,15 @@ impl McpResumableToolHandler for DeleteFileHandler {
 // the same tools/call method and appear together in tools/list.
 ```
 
+`requestState` above (`"delete:" + path`) is an opaque echo token, not a
+capability or authorization credential — nothing in the protocol binds
+it to the peer that received it, so a client could fabricate a
+`requestState` and call `resume` directly without ever having gone
+through `call`. A resumable handler with a security-sensitive `resume`
+(deleting a file, as here) must perform its own authorization check
+inside `resume` itself; don't treat the round trip as a substitute for
+that check.
+
 ### Connecting to a server (client, `.NET` only — see "Known JVM gaps")
 
 ```lyric
