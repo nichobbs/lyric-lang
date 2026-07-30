@@ -1633,32 +1633,6 @@ jobs:
           bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet lyric-compiler/lyric/config_block_self_test.l
           echo "config-block self-test ran: config_block_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
-      # Required-field-missing exit(78) self-test (#6200), split out of
-      # config_block_self_test.l: pulls in `Lyric.Emitter` to compile+run a
-      # nested subprocess fixture (the abort happens inside a static
-      # initializer that runs before `main`, so it can't be observed
-      # in-process), which the JVM type checker can't currently resolve a
-      # qualified `Emitter.ProjectPackage` type reference from — dotnet-only
-      # for the OUTER test module, but the two test bodies target the NESTED
-      # fixture at both `Emitter.Dotnet` and `Emitter.Jvm`, so both targets'
-      # exit(78) behavior are covered by this one (dotnet-compiled) run.
-      - name: config-block required-field-missing self-test (native lyric test)
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping config-block required-field-missing self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping config-block required-field-missing self-test"
-            exit 1
-          fi
-          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/config_block_missing_required_self_test.l
-          echo "config-block required-field-missing self-test ran (both dotnet+jvm fixture exit codes)" >> "$GITHUB_STEP_SUMMARY"
-
       # Slice-ops self-test (#5244).  `slice[T].append`/`.concat`/`.slice` —
       # the compiler's own documented canonical `slice[T]` example
       # (docs/agent/reference.md) — threw "unsupported method" at runtime on
@@ -4151,6 +4125,39 @@ jobs:
             exit 1
           fi
           bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/generic_extern_valuetype_instance_self_test.l
+
+      # Required-field-missing exit(78) self-test (#6200), split out of
+      # config_block_self_test.l: pulls in `Lyric.Emitter` to compile+run TWO
+      # nested subprocess fixtures (one per target) in-process — the same
+      # heavy `Lyric.Emitter.emitProject` surface as `emitter_project_self_test.l`
+      # and `generic_extern_valuetype_instance_self_test.l` above, so it needs
+      # the same exclusive-resource placement (moved out of
+      # compiler-self-tests-dotnet-a, #6319 follow-up: running it there
+      # alongside ~40 other concurrent `background: true` steps starved the
+      # nested MSIL+JVM compiles under memory pressure and produced a
+      # corrupted/incomplete JVM fixture — exit 1 instead of the documented
+      # 78 — even though the SAME code passes reliably in an unloaded
+      # environment). The abort happens inside a static initializer that runs
+      # before `main`, so it can't be observed in-process; the JVM type
+      # checker also can't currently resolve a qualified
+      # `Emitter.ProjectPackage` type reference, so this file (the OUTER test
+      # module) compiles dotnet-only — its two test bodies still target the
+      # NESTED fixture at both `Emitter.Dotnet` and `Emitter.Jvm`, covering
+      # both targets' exit(78) behavior from this one run.
+      - name: Config-block required-field-missing self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping config-block required-field-missing self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping config-block required-field-missing self-test"
+            exit 1
+          fi
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/config_block_missing_required_self_test.l
 
       - name: Init self-test (native lyric test)
         background: true

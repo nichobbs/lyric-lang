@@ -23,6 +23,19 @@
 //! fixture at `Emitter.Dotnet` and `Emitter.Jvm` respectively, run via
 //! `dotnet exec` / `java -jar`.
 //!
+//! CI placement (#6319 follow-up): this does the SAME kind of heavy nested
+//! in-process compile as `emitter_project_self_test.l` and
+//! `generic_extern_valuetype_instance_self_test.l`, so it runs alongside
+//! them in `compiler-self-tests-dotnet-b`, gated behind that job's "wait for
+//! parallel tests before heavy project self-tests" barrier — NOT in
+//! `compiler-self-tests-dotnet-a`'s `background: true` pool. Running it
+//! there once, competing with ~40 other concurrent background steps,
+//! produced a corrupted/incomplete JVM fixture under memory pressure (exit 1
+//! instead of the documented 78) even though the identical code passes
+//! reliably unloaded — the exact class of failure that barrier exists to
+//! prevent (see the "batch-2a-split" comments elsewhere in ci.yml for the
+//! same root cause hitting a different pair of tests).
+//!
 //!   lyric test lyric-compiler/lyric/config_block_missing_required_self_test.l
 @test_module
 package Lyric.ConfigBlockMissingRequiredSelfTest
@@ -123,6 +136,13 @@ test "required field with no default and no env var exits 78 (subprocess, dotnet
   args.add("exec")
   args.add(dllPath)
   val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  // Always print stdout/stderr (not just embedded in the assertion's failure
+  // message) — the child's OWN diagnostics are the only way to tell "genuine
+  // exit(78) mismatch" apart from "the fixture crashed before it even got
+  // there" when this runs somewhere the fixture behaves unexpectedly (#6319
+  // follow-up).
+  println("dotnet fixture stdout: " + captured.stdout)
+  println("dotnet fixture stderr: " + captured.stderr)
   assertEqualInt(
     captured.exitCode,
     78,
@@ -163,6 +183,9 @@ test "required field with no default and no env var exits 78 (subprocess, jvm)" 
   args.add("-jar")
   args.add(jarPath)
   val captured = Capture.runCaptureWithDiagnostics("java", args, "")
+  // See the dotnet test above for why these are printed unconditionally.
+  println("jvm fixture stdout: " + captured.stdout)
+  println("jvm fixture stderr: " + captured.stderr)
   assertEqualInt(
     captured.exitCode,
     78,
