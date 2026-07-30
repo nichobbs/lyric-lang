@@ -1680,6 +1680,31 @@ jobs:
           fi
           bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/block_shadow_self_test.l
 
+      # JVM-trio self-test (#6122/#6123/#6124).  Runtime regression test for
+      # three JVM-only silent-miscompiles found building `lyric-jsonrpc`
+      # (docs/62): a `while`+`match` with mixed loop-continuing/loop-ending
+      # arms stopping after one iteration, a value-producing arm after a
+      # mid-chain `panic` in an `if`/`else if`/`else` losing its value, and
+      # `.indexOf`/`.lastIndexOf` on a String receiver silently rerouted
+      # through `Std.String`'s `Option[Int]` UFCS form whenever some OTHER
+      # file in the bundle imported `Std.String`.  Run via native `lyric
+      # test` (imports only `Std.*`), asserting every runtime value.
+      - name: JVM-trio self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping jvm-trio self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping jvm-trio self-test"
+            exit 1
+          fi
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/jvm_trio_self_test.l
+
       # Try/finally early-exit self-test (#5765).  Runtime regression test
       # pinning that a `return`/`break`/`continue` inside a try body or catch
       # arm still runs the enclosing `finally` on the self-hosted backends
@@ -4931,6 +4956,32 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+
+      # JVM-trio self-test on JVM (#6122/#6123/#6124) — the JVM half of the
+      # dotnet-job step of the same name, and the load-bearing target for all
+      # three fixes: a `while`+`match` with mixed loop-continuing/loop-ending
+      # arms (nested-constructor pattern TEST recursion in `03_match.l`), a
+      # value-producing arm after a mid-chain `panic` in an
+      # `if`/`else if`/`else` (terminating-arm type inference in
+      # `02_exprs.l`), and `.indexOf`/`.lastIndexOf` file-scoped
+      # `Std.String` UFCS routing (`FuncCtx.importsStdString` in
+      # `04_calls.l`/`06_items.l`).
+      - name: JVM-trio self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/jvm_trio_self_test.l
+
+      # JVM-trio positive-path self-test (#6124) — JVM-only by design (see the
+      # file's own header): confirms a file that DOES import `Std.String`
+      # still gets `.indexOf`/`.lastIndexOf` routed through the `Option[Int]`
+      # UFCS form, i.e. `FuncCtx.importsStdString`'s file-scoped gate did not
+      # regress the working case alongside fixing the cross-file corruption.
+      # `--target dotnet` is not run here: MSIL never adopted this UFCS
+      # routing at all (#5625, pre-existing and unrelated to this PR).
+      - name: JVM-trio positive-path self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/jvm_trio_positive_self_test.l
 
       # Try/finally early-exit self-test on JVM (#5765) — the JVM half of the
       # dotnet-job step of the same name, and the load-bearing target for this

@@ -117,12 +117,14 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
           } else {
             // `s.indexOf(x)` / `s.lastIndexOf(x)` on a String receiver routes
             // to the UFCS `Std.String.<member>(s, x): Option[Int]` free
-            // function (lowerMethodCall's String arm) — follow the same
-            // routing here so `match s.indexOf(x) { case Some(i) -> ... }`
-            // unboxes the erased Int payload instead of leaving it a boxed
-            // Object.
+            // function (lowerMethodCall's String arm) only when THIS FILE
+            // imports `Std.String` (#6124 — `ctx.importsStdString` mirrors
+            // the same file-scoped gate `lowerMethodCall`'s indexOf/
+            // lastIndexOf arm uses) — follow the same routing here so
+            // `match s.indexOf(x) { case Some(i) -> ... }` unboxes the erased
+            // Int payload instead of leaving it a boxed Object.
             val isStrRecv = match receiverClassOf(ctx, recv) { case Some(c) -> c == "java/lang/String"; case None -> false }
-            if isStrRecv and (memberName == "indexOf" or memberName == "lastIndexOf") {
+            if isStrRecv and ctx.importsStdString and (memberName == "indexOf" or memberName == "lastIndexOf") {
               funcSigRetGenericArgs(mapGet(ctx.funcSigs, "Std/String/" + memberName + "@2"))
             } else {
               match recv.kind {
@@ -582,6 +584,115 @@ func emitStringLiteralTest(
 
 // Emit a runtime test for a pattern.  Jumps to `failLabel` if the test
 // fails.  The scrutinee is in local slot `scrutSlot` with type `scrutTy`.
+// True when a bare `name` (no constructor args) denotes a known nullary union
+// case or enum variant — used by `patternIsRefutableJvm` to decide whether a
+// `PBinding(name, None)` sub-pattern needs a runtime test (mirrors MSIL's
+// `nameIsNullaryCaseMsil`).
+func nameIsNullaryCaseJvm(ctx: in FuncCtx, name: in String): Bool {
+  val isCase = match ctorClassFor(ctx, name) { case Some(cls) -> jvmClassIsUnionCase(cls); case None -> false }
+  if isCase {
+    true
+  } else {
+    match enumCaseClassBare(ctx, name) {
+      case Some(_) -> true
+      case None -> false
+    }
+  }
+}
+
+// True when matching `pat` can fail at runtime (so the test phase must emit a
+// check).  Plain variable binds and wildcards are irrefutable; constructor /
+// literal / range / nullary-case sub-patterns are refutable.  Used by the
+// `PConstructor` test arm to decide whether a positional field needs a
+// recursive test — without this a nested `Ok(None)` silently matched any
+// `Ok(..)` value (the first `Ok(..)` arm in source order swallowed every
+// `Ok(Some(..))` scrutinee too, #6122), mirroring MSIL's
+// `patternIsRefutableMsil`.
+func patternIsRefutableJvm(ctx: in FuncCtx, pat: in Pattern): Bool {
+  match pat.kind {
+    case PWildcard -> false
+    case PBinding(name, innerOpt) -> {
+      match innerOpt {
+        case Some(inner) -> patternIsRefutableJvm(ctx, inner)
+        case None -> nameIsNullaryCaseJvm(ctx, name)
+      }
+    }
+    case PParen(inner) -> patternIsRefutableJvm(ctx, inner)
+    case PConstructor(_, _) -> true
+    case PLiteral(_) -> true
+    case PConstRef(_) -> true
+    case PRange(_, _, _) -> true
+    case PTypeTest(_, _) -> true
+    case PTuple(elems) -> {
+      var ti = 0
+      var anyRef = false
+      while ti < elems.count {
+        if patternIsRefutableJvm(ctx, elems[ti]) {
+          anyRef = true
+        }
+        ti = ti + 1
+      }
+      anyRef
+    }
+    case PRecord(_, fields, _) -> {
+      var ri = 0
+      var anyRefR = false
+      while ri < fields.count {
+        match fields[ri] {
+          case RPFNamed(_, subPat, _) -> {
+            if patternIsRefutableJvm(ctx, subPat) {
+              anyRefR = true
+            }
+          }
+          case RPFShort(_, _) -> ()
+        }
+        ri = ri + 1
+      }
+      anyRefR
+    }
+    case POr(_) -> true
+    case PError -> false
+  }
+}
+
+// Test phase analogue of `lowerPatternBind`'s `PConstructor` field loop:
+// extract positional field `fi` (by its registered case-field name/type) from
+// the already-cast `castSlot` and recursively test its sub-pattern, jumping to
+// `failLabel` on mismatch.  Only refutable sub-patterns emit any code — an
+// irrefutable bind/wildcard needs no field read here (the bind phase performs
+// the actual extraction).
+func testCaseFieldJvm(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  castSlot: in Int,
+  caseClass: in String,
+  fi: in Int,
+  fieldPat: in Pattern,
+  failLabel: in String,
+): Unit {
+  if not patternIsRefutableJvm(ctx, fieldPat) {
+    return
+  }
+  // Guard on real field info being resolved, mirroring MSIL's
+  // `testCaseFieldMsil`'s `if fTok > 0` guard: an unresolved `caseClass`/`fi`
+  // (no registered `JvmCaseField` at this index) must not emit a guessed
+  // `getfield` — the guessed name/type could reference a field the class
+  // doesn't actually declare (NoSuchFieldError) — so skip the test entirely
+  // rather than falling back to a synthetic "fieldN"/`Object` guess.
+  val caseInfo: Option[List[JvmCaseField]] = mapGet(ctx.caseFields, caseClass)
+  match caseInfo {
+    case Some(flds) -> {
+      if fi < flds.count {
+        val realName = flds[fi].name
+        val fty = flds[fi].ty
+        val fSlot = extractClassField(ctx, insns, castSlot, JRef(className = caseClass), caseClass, realName, fty)
+        lowerPatternTest(ctx, insns, fieldPat, fSlot, fty, failLabel)
+      }
+    }
+    case None -> ()
+  }
+}
+
 func lowerPatternTest(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -779,7 +890,7 @@ func lowerPatternTest(
         }
       }
     }
-    case PConstructor(head, _) -> {
+    case PConstructor(head, fields) -> {
       // `case Direction.North ->` parses as a PConstructor; when the
       // penultimate segment names a declared enum carrying this case, it is an
       // enum-variant identity test, not a union-case isinst — deriving
@@ -831,6 +942,36 @@ func lowerPatternTest(
         emitLoad(insns, scrutSlot, scrutTy)
         insns.add(LInstanceof(className = caseClass))
         insns.add(LIfeq(label = failLabel))
+        // Recurse the test into refutable positional sub-patterns (#6122): the
+        // isinst above only proves the OUTER case (e.g. `Ok`), not that a
+        // nested payload (`Ok(None)` vs `Ok(Some(x))`) actually holds the
+        // tested shape.  Without this the first `Ok(..)` arm in source order
+        // silently swallowed every `Ok` value regardless of its payload,
+        // because the field itself was only ever BOUND (lowerPatternBind),
+        // never TESTED.
+        var anyFieldRefutable = false
+        var rfi = 0
+        while rfi < fields.count {
+          if patternIsRefutableJvm(ctx, fields[rfi]) {
+            anyFieldRefutable = true
+          }
+          rfi = rfi + 1
+        }
+        if anyFieldRefutable {
+          val castSlot = allocSlot(
+            ctx,
+            "__casttest_" + lastSegment(head) + "_" + toString(ctx.slotTicker.count),
+            JRef(className = caseClass)
+          )
+          emitLoad(insns, scrutSlot, scrutTy)
+          insns.add(LCheckcast(className = caseClass))
+          emitStore(insns, castSlot, JRef(className = caseClass))
+          var tfi = 0
+          while tfi < fields.count {
+            testCaseFieldJvm(ctx, insns, castSlot, caseClass, tfi, fields[tfi], failLabel)
+            tfi = tfi + 1
+          }
+        }
       } else {
         insns.add(LNop)
       }

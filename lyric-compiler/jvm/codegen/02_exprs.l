@@ -2215,77 +2215,110 @@ func lowerIfExpr(
       // past-end bytecode offset, and the StackMapTable frame the verifier emits
       // for it points past the method body (VerifyError: bad offset, #2870).
       val thenTerminated = endsWithReturn(insns)
-      match thenTy {
-        case JVoid -> {
-          // Void if-expression: nothing on the stack at the `afterL` join.
-          if not thenTerminated {
-            insns.add(LGoto(label = afterL))
+      // A terminating then-arm (`return` / `panic(...)` / a body ending in
+      // `throw`) never reaches the join, so its OWN reported type must not
+      // decide the if-expression's type: `panic(...)` reports `JVoid` as a
+      // pure codegen convention (see 04_calls.l) despite being a bottom-typed
+      // terminator, and the `match thenTy { case JVoid -> … }` dispatch below
+      // treated that JVoid as "this if is void", discarding whatever the
+      // else-arm actually produced — silently voiding the WHOLE if-expression
+      // (and, one level up, the value a caller relied on) whenever a
+      // terminating arm sat before a value-producing one in an `if … else if
+      // … else …` chain (#6123: `handler.onRequest` mid-chain `panic("boom")`
+      // corrupted the JVM-erased `Result[JsonValue, RpcError]` a LATER arm
+      // returned, surfacing far downstream as "match not exhaustive").  When
+      // the then-arm terminated, the if-expression's type is therefore
+      // determined SOLELY by the else-arm, mirroring `lowerMatchExpr`'s
+      // "fix the result type from the first non-terminating arm" rule.
+      if thenTerminated {
+        insns.add(LLabel(name = elseL))
+        val elseTy = lowerExprOrBlock(ctx, insns, elseBranch)
+        val elseTerminated = endsWithReturn(insns)
+        match elseTy {
+          case JVoid -> {
+            if not elseTerminated {
+              insns.add(LLabel(name = afterL))
+            }
+            JVoid
           }
-          insns.add(LLabel(name = elseL))
-          val elseValTy = lowerExprOrBlock(ctx, insns, elseBranch)
-          val elseTerminated = endsWithReturn(insns)
-          // The else-arm may still have produced a value even though the
-          // then-arm typed the whole `if` as void — discard it so the join's
-          // empty-stack frame holds (same leak as the if-without-else form).
-          if not elseTerminated {
-            discardValue(insns, elseValTy)
-          }
-          // Only land the join label when at least one arm can reach it.  When
-          // both arms terminated, the whole `if` is terminating: emitting the
-          // join would create the past-end unreachable frame described above.
-          if not (thenTerminated and elseTerminated) {
-            insns.add(LLabel(name = afterL))
-          }
-          JVoid
-        }
-        case _ -> {
-          // Value-producing if-expression: route both branch values through a
-          // result local so the operand stack is *empty* at the `afterL` join.
-          // The JVM StackMapTable this backend emits declares an empty operand
-          // stack at every branch target, so leaving a value on the stack there
-          // fails verification ("Inconsistent stackmap frames at branch target").
-          // Storing into a local in each arm and reloading after the join keeps
-          // the stack empty at the merge point.
-          val rslot = allocSlot(ctx, "__if_r_" + afterL, thenTy)
-          // A terminating then-arm (e.g. `if c { return x } else { … }`) already
-          // transferred control and left nothing on the stack — its value never
-          // reaches the join, so skip the result store + dead `goto`.
-          if not thenTerminated {
-            emitStore(insns, rslot, thenTy)
-            insns.add(LGoto(label = afterL))
-          }
-          insns.add(LLabel(name = elseL))
-          val elseTy = lowerExprOrBlock(ctx, insns, elseBranch)
-          val elseTerminated = endsWithReturn(insns)
-          // Mixed-arm if: the then-arm yields a value but the else-arm is
-          // void (e.g. `if a { xs.add(true) } else if b { xs.add(false) }` —
-          // the trailing else-if has no else, so it lowers as JVoid and
-          // leaves NOTHING on the stack).  The checker only admits this
-          // shape in statement position, so the whole `if` degrades to
-          // void: there is no else-value to store, and reloading the
-          // result after the join would hand the caller a value the
-          // else-path never produced (the store below underflowed —
-          // VerifyError, hit by Std.JsonHost's bool slice reader).
-          val elseVoidMixed = match elseTy { case JVoid -> not elseTerminated; case _ -> false }
-          if not elseTerminated {
-            if not elseVoidMixed {
-              coerceArgTo(insns, elseTy, thenTy)
-              emitStore(insns, rslot, thenTy)
+          case _ -> {
+            if elseTerminated {
+              // Both arms terminated: the if-expression itself is
+              // terminating.  Do not land the join (past-end frame, #2870)
+              // or route the (unreachable) value through a result local.
+              elseTy
+            } else {
+              val rslot = allocSlot(ctx, "__if_r_" + afterL, elseTy)
+              emitStore(insns, rslot, elseTy)
+              insns.add(LLabel(name = afterL))
+              emitResultLoad(insns, rslot, elseTy)
+              elseTy
             }
           }
-          // When both arms terminated, the `if` is itself terminating: do not
-          // land the join label (and its past-end frame) and do not reload the
-          // result, since control never arrives here (#2870).
-          if not (thenTerminated and elseTerminated) {
+        }
+      } else {
+        match thenTy {
+          case JVoid -> {
+            // Void if-expression: nothing on the stack at the `afterL` join.
+            insns.add(LGoto(label = afterL))
+            insns.add(LLabel(name = elseL))
+            val elseValTy = lowerExprOrBlock(ctx, insns, elseBranch)
+            val elseTerminated = endsWithReturn(insns)
+            // The else-arm may still have produced a value even though the
+            // then-arm typed the whole `if` as void — discard it so the join's
+            // empty-stack frame holds (same leak as the if-without-else form).
+            if not elseTerminated {
+              discardValue(insns, elseValTy)
+            }
+            // Land the join unconditionally: the then-arm here did NOT
+            // terminate (we are in the `else` of the `thenTerminated` split
+            // above), so its `goto afterL` always reaches this label even
+            // when the else-arm itself terminated.
+            insns.add(LLabel(name = afterL))
+            JVoid
+          }
+          case _ -> {
+            // Value-producing if-expression: route both branch values through a
+            // result local so the operand stack is *empty* at the `afterL` join.
+            // The JVM StackMapTable this backend emits declares an empty operand
+            // stack at every branch target, so leaving a value on the stack there
+            // fails verification ("Inconsistent stackmap frames at branch target").
+            // Storing into a local in each arm and reloading after the join keeps
+            // the stack empty at the merge point.
+            val rslot = allocSlot(ctx, "__if_r_" + afterL, thenTy)
+            emitStore(insns, rslot, thenTy)
+            insns.add(LGoto(label = afterL))
+            insns.add(LLabel(name = elseL))
+            val elseTy = lowerExprOrBlock(ctx, insns, elseBranch)
+            val elseTerminated = endsWithReturn(insns)
+            // Mixed-arm if: the then-arm yields a value but the else-arm is
+            // void (e.g. `if a { xs.add(true) } else if b { xs.add(false) }` —
+            // the trailing else-if has no else, so it lowers as JVoid and
+            // leaves NOTHING on the stack).  The checker only admits this
+            // shape in statement position, so the whole `if` degrades to
+            // void: there is no else-value to store, and reloading the
+            // result after the join would hand the caller a value the
+            // else-path never produced (the store below underflowed —
+            // VerifyError, hit by Std.JsonHost's bool slice reader).
+            val elseVoidMixed = match elseTy { case JVoid -> not elseTerminated; case _ -> false }
+            if not elseTerminated {
+              if not elseVoidMixed {
+                coerceArgTo(insns, elseTy, thenTy)
+                emitStore(insns, rslot, thenTy)
+              }
+            }
+            // Land the join unconditionally: the then-arm here did NOT
+            // terminate, so its `goto afterL` always reaches this label
+            // even when the else-arm itself terminated.
             insns.add(LLabel(name = afterL))
             if not elseVoidMixed {
               emitResultLoad(insns, rslot, thenTy)
             }
-          }
-          if elseVoidMixed {
-            JVoid
-          } else {
-            thenTy
+            if elseVoidMixed {
+              JVoid
+            } else {
+              thenTy
+            }
           }
         }
       }
@@ -3247,7 +3280,8 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     ctx.configFieldTypes,
     ctx.opaqueTypes,
     ctx.closureAcc,
-    ctx.usesLyricCount
+    ctx.usesLyricCount,
+    ctx.importsStdString
   )
   // Propagate the enclosing scope's recorded generic instantiations into the
   // closure body so a captured var-bound `match`/`?` scrutinee still unboxes its
@@ -3610,7 +3644,8 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
     ctx.configFieldTypes,
     ctx.opaqueTypes,
     ctx.closureAcc,
-    ctx.usesLyricCount
+    ctx.usesLyricCount,
+    ctx.importsStdString
   )
   // Carry the enclosing scope's recorded generic instantiations so a captured
   // var-bound `match`/`?` scrutinee still unboxes its erased payload (#4945).

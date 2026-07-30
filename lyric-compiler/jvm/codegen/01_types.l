@@ -391,6 +391,30 @@ pub record FuncCtx {
   ctors: Map[String, String]
   // Extern-type alias → Java FQN, e.g. "Math" → "java.lang.Math".
   externTypes: Map[String, String]
+  // Whether the file currently being lowered has `import Std.String` in
+  // scope.  A String receiver's `.indexOf`/`.lastIndexOf` is NOT actually
+  // typed against `Std.String`'s `Option[Int]`-returning signature by the
+  // checker: `typechecker_exprs.l`'s method-call resolution
+  // (`resolveMethodCallPick`, `methodCandidatesFor`, `dotNamedCandidatesFor`)
+  // only ever considers a `TyUser` receiver, and `builtinMember`'s
+  // `TyPrim(PtString)` arm knows only `"length"`/`"isEmpty"` — so
+  // `s.indexOf(x)` types as lenient `TyError` regardless of whether
+  // `Std.String` is imported. `importsStdString` is therefore a purely
+  // codegen-side heuristic implementing the INTENDED per-file import-scoped
+  // UFCS extension (`Std.String.indexOf` should apply when the file imports
+  // it, the raw JDK `String.indexOf(String)I` intrinsic otherwise) — it does
+  // not mirror any checker-side invariant. `Std/String/indexOf@2`/
+  // `Std/String/lastIndexOf@2` are registered in `funcSigs` bundle-wide (any
+  // package pulling in `Std.String` seeds the shared registry for every
+  // OTHER file's `FuncCtx` too), so a bare presence check there cannot tell
+  // "should THIS file's `.indexOf` call resolve to the Option[Int] form" from
+  // "some unrelated file's does" — the two return different erasures on the
+  // stack. #6124: a file that never imports `Std.String` had its plain
+  // `Int`-typed `.indexOf` call silently rerouted through the Option[Int]
+  // form whenever some OTHER file in the same bundle imported `Std.String`,
+  // corrupting the local's runtime value (`ClassCastException: Option$Some
+  // cannot be cast to Integer`).  See `04_calls.l`'s indexOf/lastIndexOf arm.
+  importsStdString: Bool
   // Auto-FFI resolution context for JDK class loading.
   autoFfi: AutoFfiCtx
   // Declared JVM return type of the function being lowered.  An explicit

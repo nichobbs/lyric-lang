@@ -3324,24 +3324,50 @@ func lowerMethodCall(
     return retT
   }
   if isStringRecv and args.count == 1 and (memberName == "indexOf" or memberName == "lastIndexOf") {
-    // Lyric's `s.indexOf(needle)` / `s.lastIndexOf(needle)` is UFCS sugar for
-    // `Std.String.indexOf(s, needle): Option[Int]` — that is the type the
-    // checker assigned this call.  Route through the registered free function
-    // when `Std.String` is in the bundle: the raw JDK `String.indexOf(String)I`
-    // intrinsic below silently diverged from the checker (int, -1 sentinel),
-    // so `match s.indexOf(x) { case Some(i) -> ... }` emitted `instanceof` on
-    // an int and failed bytecode verification the moment the class loaded
-    // (hit by `Web.parseQueryPair` once #5610/#5444 let lyric-web reach
-    // class-load on the JVM).  The JDK intrinsic stays as the fallback for a
-    // bundle without `Std.String` (where the checker could only have typed
-    // the call against the JDK method through an extern receiver).
+    // Lyric's `s.indexOf(needle)` / `s.lastIndexOf(needle)` is intended as
+    // UFCS sugar for `Std.String.indexOf(s, needle): Option[Int]` when the
+    // FILE making the call has `import Std.String` in scope — but this is a
+    // CODEGEN-side design decision, not something the type checker enforces
+    // or even distinguishes: a `String` receiver is `TyPrim`, and
+    // `typechecker_exprs.l`'s method-call resolution
+    // (`resolveMethodCallPick`, `methodCandidatesFor`, `dotNamedCandidatesFor`)
+    // only ever considers a `TyUser` receiver, while `builtinMember`'s
+    // `TyPrim(PtString)` arm knows only `"length"`/`"isEmpty"` — so
+    // `s.indexOf(x)` types as lenient `TyError` on EITHER side of the
+    // import, and `match s.indexOf(x) { case Some(i) -> ... }` only
+    // type-checks at all because `TyError` participates leniently in
+    // pattern-exhaustiveness/binop checking. There is no checker invariant
+    // to "diverge from" here; codegen alone decides what `.indexOf` means.
+    //
+    // Without SOME per-file gate, routing every `.indexOf` unconditionally
+    // through `Std.String`'s registered signature broke `match s.indexOf(x)
+    // { case Some(i) -> ... }`: the raw JDK `String.indexOf(String)I`
+    // intrinsic below emitted `instanceof` on a plain int and failed
+    // bytecode verification the moment the class loaded (hit by
+    // `Web.parseQueryPair` once #5610/#5444 let lyric-web reach class-load
+    // on the JVM). Fixing that by routing through the registered free
+    // function whenever `Std/String/indexOf@2` was present ANYWHERE in the
+    // bundle-wide `ctx.funcSigs` over-corrected: any package anywhere in the
+    // compile that imports `Std.String` seeds that registry for every OTHER
+    // file's `FuncCtx` too, so a file that never imports `Std.String` still
+    // had its `.indexOf` call silently rerouted through the Option[Int] form
+    // whenever some UNRELATED file in the same bundle happened to import
+    // `Std.String`, corrupting the local's runtime value (#6124:
+    // `ClassCastException: Option$Some cannot be cast to Integer`).
+    // `ctx.importsStdString` (`FuncCtx`, computed once per file from its own
+    // `import` list) is the additional, file-scoped gate that fixes this —
+    // it implements the intended per-file import-scoped semantics that the
+    // checker's leniency leaves entirely up to codegen to decide.
+    //
+    // The JDK intrinsic stays as the fallback for a file that does not
+    // import `Std.String`.
     // The MSIL backend still lowers this to the raw BCL intrinsic and has not
     // adopted this UFCS routing, so `--target dotnet` still diverges (#5625).
     // ...except inside `Std.String` itself: its wrapper body
     // (`val i = s.indexOf(substring); if i < 0 ...`) is the one legitimate
     // raw-JDK call site — routing it through its own registered sig would be
     // infinite recursion (StackOverflowError).
-    if ctx.pkgName != "Std/String" {
+    if ctx.pkgName != "Std/String" and ctx.importsStdString {
       match mapGet(ctx.funcSigs, "Std/String/" + memberName + "@2") {
         case Some(ufcsSig) -> {
           val needleTy = lowerCallArg(ctx, insns, args[0])
