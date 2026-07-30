@@ -5477,6 +5477,146 @@ func tryQualifiedStaticValNameMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: 
   }
 }
 
+// As `tryQualifiedStaticValNameMsil`, but for a QUALIFIED reference to a
+// restored dependency's literal-foldable `pub val`/`pub const` — registered
+// under a package-qualified `constValues` key (`Pkg.NAME`) rather than
+// `staticValTokens` (#6133).  A restored artifact's inlinable constants are
+// registered into `constValues`, never `staticValTokens` (that map only ever
+// holds this BUNDLE's own compiled static fields) — see the registration
+// loop's comment ("Pass 3: cross-package compile-time constant inlining").
+// Before this existed, `Pkg.NAME` for a restored literal fell through to the
+// same silent-null fallback as a genuinely non-literal restored `pub val`,
+// even though the UNQUALIFIED bare form (`NAME` after `import Pkg`) already
+// correctly inlined via `constValues`'s bare-name key.
+func tryQualifiedConstValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr): String {
+  match expr.kind {
+    case EMember(_, _) -> {
+      val segs = flattenPathExprSegs(expr)
+      if segs.count < 2 {
+        return ""
+      }
+      if fctx.slots.containsKey(segs[0]) or fctx.hoistedCellSlot.containsKey(segs[0]) or fctx.captureNameToIndex.containsKey(segs[0]) {
+        return ""
+      }
+      val qualifiedName = joinSegsMsil(segs, ".")
+      if cctx.constValues.containsKey(qualifiedName) {
+        qualifiedName
+      } else {
+        ""
+      }
+    }
+    case _ -> ""
+  }
+}
+
+// #6133/#5275: detect a qualified value reference (`Pkg.Sub.name`, 2+
+// flattened segments) that resolves to NOTHING the compiler can verify —
+// neither an in-bundle static val, a restored literal constant (the two
+// checks immediately above, at the `tryQualifiedStaticValNameMsil` /
+// `tryQualifiedConstValueMsil` call sites), a config-block field, an extern
+// static member, nor a nullary union/enum case.  Left unchecked, such a
+// reference silently falls all the way through the generic `EMember`/`EPath`
+// fallback chain to a bare `ldnull` (verified via the `App.Util.invalidParams`
+// repro from #6133's triage comment: a restored-dependency non-literal
+// `pub val` reads as `null` at runtime with zero compile-time diagnostic).
+// The two realistic producers of this shape are a typo and a cross-DLL
+// non-literal `pub val`/`pub const` — docs/45's contract-metadata schema
+// only round-trips literal-foldable values across a restored-dependency
+// boundary (a full fix needs a schema change, tracked there and gated on
+// #2580) — so this can't tell the two apart from metadata alone; the message
+// names both possibilities and the workaround (wrap the value in a `pub
+// func` in the producing package and call that instead).
+//
+// Deliberately conservative: every exclusion below is a POSITIVE-match bail
+// (skip firing, matching #5362's revert history — see
+// `tryDiagnoseUnresolvedQualifiedValueMsil`'s call site comment) so this
+// never second-guesses a legitimate resolution path, only the case where
+// every one of them has already been tried and missed.  `segs[0]` matching
+// a real static val / const / same-package function's bare name is excluded
+// separately (not just "is a local") because `Foo.bar` where `Foo` is
+// itself a record-typed module `pub val` (chained field access, e.g.
+// `globalConfig.host`) produces the exact same flattened-segment shape as a
+// genuine package-qualified reference — the two are indistinguishable from
+// the segments alone, so bailing whenever `segs[0]` is independently a real
+// value name (however it's held) is required to avoid misdiagnosing that
+// pattern.
+func diagnoseUnresolvedQualifiedValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr): Option[String] {
+  match expr.kind {
+    case EMember(_, memberName) -> {
+      val segs = flattenPathExprSegs(expr)
+      if segs.count < 2 {
+        return None
+      }
+      val head = segs[0]
+      if fctx.slots.containsKey(head) or fctx.hoistedCellSlot.containsKey(head) or fctx.captureNameToIndex.containsKey(head) {
+        return None
+      }
+      // `head` is independently a real value under some other mechanism
+      // (module val, restored/in-bundle const, extern-type alias, or a
+      // same-package function used bare-as-a-value, #5362) — this is
+      // ordinary field/member access on that value, not an unresolvable
+      // qualified reference.
+      if cctx.staticValTokens.containsKey(head) or cctx.constValues.containsKey(head) or cctx.externTypeNames.containsKey(head) {
+        return None
+      }
+      if cctx.funcTokens.containsKey(fctx.pkgName + "." + head) {
+        return None
+      }
+      // A nullary union/enum case reference (`Pkg.MyUnion.Case`, `MyEnum.Case`)
+      // — resolved by the EMember/EPath arms below via `unionCaseCtorByName`
+      // / `enumCaseOrdinals`, keyed by the case name regardless of chain depth.
+      if cctx.unionCaseCtorByName.containsKey(memberName) or cctx.enumCaseOrdinals.containsKey(memberName) {
+        return None
+      }
+      // A single-level config-block field access (`BlockName.field`) — the
+      // only shape the config-block short-circuit ever handles.
+      if segs.count == 2 and cctx.configFieldTokens.containsKey(head + "/" + memberName) {
+        return None
+      }
+      // Any PROPER PREFIX of the flattened chain resolving is further
+      // member/method access on an already-qualified static val or const —
+      // e.g. `Pkg.Sub.GREETING.length` flattens to 4 segments, but the real
+      // qualified value is the 3-segment prefix `Pkg.Sub.GREETING`; `.length`
+      // is a `String` method called on the resolved value, not part of its
+      // name (msil_project_bridge_self_test.l's "multi-segment qualified
+      // static val resolves correctly" — confirmed reachable here without
+      // this scan). Scanning every prefix length (not just the full
+      // flattened name) is required because the qualified value's OWN name
+      // can end at any depth before the final member(s).
+      var pfxLen = 2
+      var prefixResolved = false
+      while pfxLen <= segs.count and not prefixResolved {
+        val prefixSegs: List[String] = newList()
+        var pi = 0
+        while pi < pfxLen {
+          prefixSegs.add(segs[pi])
+          pi = pi + 1
+        }
+        val prefixName = joinSegsMsil(prefixSegs, ".")
+        if cctx.staticValTokens.containsKey(prefixName) or cctx.constValues.containsKey(prefixName) {
+          prefixResolved = true
+        }
+        pfxLen = pfxLen + 1
+      }
+      if prefixResolved {
+        return None
+      }
+      val qualifiedName = joinSegsMsil(segs, ".")
+      Some(
+        value = "error[T0115]: cannot resolve qualified reference '" + qualifiedName +
+          "' — it does not name a value, function, type, or member this compilation can verify. " +
+          "If '" +
+          qualifiedName +
+          "' is a typo, check the spelling. If it names a `pub val`/`pub const` in a workspace or restored " +
+          "dependency, only a literal-foldable initializer round-trips across the assembly boundary today " +
+          "(docs/45); a non-literal `pub val` cannot be read this way. Workaround: wrap the value in a `pub func` " +
+          "in the producing package and call that instead of reading the field directly."
+      )
+    }
+    case _ -> None
+  }
+}
+
 // Cross-package type-name resolution (#1183 codegen port, scope tiers
 // added in #3085).  Given a simple type name like "Maybe" referenced in
 // `pkgName`, find the FQN to use for the resulting `MClass`.
@@ -6867,6 +7007,26 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     val qTy = match mapGet(cctx.staticValMsilTypes, qStaticValName) { case Some(t) -> t; case None -> MObject }
     insns.add(MLdsfld(fieldToken = qFieldTok))
     return qTy
+  }
+  // Cross-package qualified reference to a restored dependency's
+  // literal-foldable `pub val`/`pub const` (#6133): a sibling short-circuit
+  // to the one immediately above, checking `constValues`'s qualified key
+  // instead of `staticValTokens` (see `tryQualifiedConstValueMsil`).
+  val qConstName = tryQualifiedConstValueMsil(cctx, fctx, expr)
+  if qConstName.length > 0 {
+    val qConstVal = match mapGet(cctx.constValues, qConstName) { case Some(v) -> v; case None -> 0 }
+    insns.add(MLdcI4(v = qConstVal))
+    return MInt
+  }
+  // #6133/#5275 fail-loudly stopgap: a qualified reference that resolves
+  // through NEITHER of the two checks immediately above, nor any of the
+  // other legitimate qualified-access shapes `diagnoseUnresolvedQualifiedValueMsil`
+  // checks for, would otherwise silently fall through the generic
+  // `EMember`/`EPath` chain below to a bare `ldnull` — converted here into a
+  // loud compile-time abort instead of a silent wrong-value read.
+  match diagnoseUnresolvedQualifiedValueMsil(cctx, fctx, expr) {
+    case Some(msg) -> panic(msg)
+    case None -> ()
   }
   match expr.kind {
 
@@ -31144,6 +31304,19 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
   // (a no-op unless the stdlib contract carries inlinable constants, since
   // const inlining emits `ldc.i4` with no cross-assembly ref — the reason
   // Std.* is skipped in passes 1/2 does not apply here).
+  //
+  // Both a bare key (`name`) and a package-qualified key
+  // (`art.packageName + "." + name`) are registered, mirroring
+  // `staticValTokens`'s in-bundle qualified-key convention (#2627 /
+  // `cctx.staticValTokens.add(pkgName + "." + decl.name, fieldTok)` above).
+  // Before the qualified key existed here, a QUALIFIED reference to a
+  // restored literal-foldable val/const (`Pkg.NAME`, as opposed to a bare
+  // `NAME` after `import Pkg`) fell through `tryQualifiedStaticValNameMsil`
+  // (which only ever checked `staticValTokens`) all the way to the generic
+  // `EMember`/`EPath` field-access fallback and silently evaluated to
+  // `null` at runtime — the same silent-miscompile family as #6133/#5275,
+  // just for the sub-case where the value WOULD otherwise correctly inline
+  // through the bare-name path (#6133).
   var ac = 0
   while ac < cctx.restoredArtifacts.count {
     val art = cctx.restoredArtifacts[ac]
@@ -31151,11 +31324,16 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     while ci < art.source.items.count {
       match art.source.items[ci].kind {
         case IConst(decl) -> {
+          val cVal = foldConstInitToInt(cctx, art.packageName, decl.init)
           if not cctx.constValues.containsKey(decl.name) {
-            cctx.constValues.add(decl.name, foldConstInitToInt(cctx, art.packageName, decl.init))
+            cctx.constValues.add(decl.name, cVal)
+          }
+          val cQualKey = art.packageName + "." + decl.name
+          if not cctx.constValues.containsKey(cQualKey) {
+            cctx.constValues.add(cQualKey, cVal)
           }
         }
-        case IVal(decl) -> match decl.pattern.kind { case PBinding(name, _) -> { if not cctx.constValues.containsKey(name) { cctx.constValues.add(name, foldConstInitToInt(cctx, art.packageName, decl.init)) } }; case _ -> () }
+        case IVal(decl) -> match decl.pattern.kind { case PBinding(name, _) -> { val vVal = foldConstInitToInt(cctx, art.packageName, decl.init); if not cctx.constValues.containsKey(name) { cctx.constValues.add(name, vVal) }; val vQualKey = art.packageName + "." + name; if not cctx.constValues.containsKey(vQualKey) { cctx.constValues.add(vQualKey, vVal) } }; case _ -> () }
         case _ -> ()
       }
       ci = ci + 1

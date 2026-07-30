@@ -2860,6 +2860,31 @@ jobs:
           fi
           LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/restored_async_self_test.l
 
+      # Restored-dependency qualified `pub val` self-test (#6133/#5275).  A
+      # QUALIFIED reference (`Pkg.NAME`) to a restored dep's literal-foldable
+      # `pub val` now inlines correctly (a package-qualified `constValues`
+      # key, mirroring `staticValTokens`'s in-bundle convention); a QUALIFIED
+      # reference to a restored dep's NON-literal `pub val` now fails to
+      # compile with `error[T0115]` instead of silently reading null/0 at
+      # runtime.  Same two-stage PRODUCER/CONSUMER harness as the restored
+      # async self-test above.  Uses `Lyric.Emitter`, so LYRIC_LOAD_COMPILER=1
+      # is needed.
+      - name: Restored-dependency qualified pub val self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping restored qualified pub val self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping restored qualified pub val self-test"
+            exit 1
+          fi
+          LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/msil_restored_qualified_val_self_test.l
+
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
       # Before this fix, @externTarget async func left Task<T> on the stack where
