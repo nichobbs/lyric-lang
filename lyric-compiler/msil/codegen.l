@@ -11026,23 +11026,33 @@ func lowerPatternTestMsil(
     case PRecord(head, fields, _) -> {
       // A record is single-shape, so the structural test is a no-op; recurse the
       // test into each named field's sub-pattern so refutable field patterns
-      // (`Point{x = 0}`) are honoured.
-      val recClass = match scrutTy {
+      // (`Point{x = 0}`) are honoured.  For a GENERIC record instantiation
+      // (`MGenericInst`/`MGenericInstByName`, e.g. `Box[Rect]`), the field read
+      // must go through the closed-TypeSpec `MLdfldGeneric` — a plain
+      // `MCastclassByName` + `MLdfld(fieldToken)` narrows to the bare (open,
+      // uninstantiated) generic TypeDef, which the CLR rejects at JIT with
+      // `TypeLoadException: Could not load type 'Ns.Box`1'` (#6233).
+      // `emitCaseFieldLoad`/`resolveConcreteMsilFieldTy` already implement this
+      // generic-vs-non-generic dispatch for union-case fields; reuse them here
+      // since the underlying `fieldTokens`/`fieldSigBytes`/`fieldVarIndices`
+      // maps are keyed identically ("PlainClassName/fieldName") for records.
+      val plainRecClass = match scrutTy {
         case MClass(c) -> c
         case MGenericInst(_, fqn, _) -> fqn
+        case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
         case _ -> fctx.pkgName + "." + lastSegmentMsil(head)
       }
+      val recClassBt = match scrutTy { case MGenericInstByName(fqn, _) -> fqn; case _ -> plainRecClass }
       var rfi = 0
       while rfi < fields.count {
         match fields[rfi] {
           case RPFNamed(fname, subPat, _) -> {
-            val rkey = recClass + "/" + fname
+            val rkey = plainRecClass + "/" + fname
             match mapGet(cctx.fieldTokens, rkey) {
               case Some(fTok) -> {
-                val fty = match mapGet(cctx.fieldMsilTypes, rkey) { case Some(t) -> t; case None -> MObject }
-                emitLoadSlot(insns, scrutSlot, fctx.paramCount)
-                insns.add(MCastclassByName(className = recClass))
-                insns.add(MLdfld(fieldToken = fTok))
+                val fSig = match mapGet(cctx.fieldSigBytes, rkey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+                val fty = resolveConcreteMsilFieldTy(cctx, scrutTy, rkey)
+                emitCaseFieldLoad(insns, scrutTy, scrutSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fSig, fname)
                 val tSlot = allocSlotMsil(fctx, "__rtest_" + fname + "_" + toString(fctx.slotTicker.count), fty)
                 emitStoreSlot(insns, tSlot, fctx.paramCount)
                 lowerPatternTestMsil(cctx, fctx, insns, subPat, tSlot, fty, failLabel)
@@ -11477,33 +11487,46 @@ func lowerPatternBindMsil(
     case PRecord(head, fields, _) -> {
       // Downcast to the record class and bind each named field by its declared
       // field token (records are single-shape, so no case selector is needed).
-      val recClass = match scrutTy {
+      // For a GENERIC record instantiation, `rCastSlot` must be declared with
+      // the closed generic `scrutTy` itself (not a bare `MClass`) and cast via
+      // `MCastclassGeneric`, so the subsequent per-field `emitCaseFieldLoad`
+      // (which emits `MLdfldGeneric` off that slot with no further cast) sees a
+      // verifiably-closed-TypeSpec-typed value — a bare `MCastclassByName` +
+      // `MLdfld(fieldToken)` against the open generic TypeDef mis-emits a bare
+      // (uninstantiated) type reference, rejected at JIT with
+      // `TypeLoadException: Could not load type 'Ns.Box`1'` (#6233).
+      val plainRecClass = match scrutTy {
         case MClass(c) -> c
         case MGenericInst(_, fqn, _) -> fqn
+        case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
         case _ -> fctx.pkgName + "." + lastSegmentMsil(head)
       }
-      val rCastSlot = allocSlotMsil(fctx, "__reccast_" + toString(fctx.slotTicker.count), MClass(className = recClass))
+      val recClassBt = match scrutTy { case MGenericInstByName(fqn, _) -> fqn; case _ -> plainRecClass }
+      val rCastSlot = allocSlotMsil(fctx, "__reccast_" + toString(fctx.slotTicker.count), scrutTy)
       emitLoadSlot(insns, scrutSlot, fctx.paramCount)
-      insns.add(MCastclassByName(className = recClass))
+      match scrutTy {
+        case MGenericInst(_, fqn, typeArgs) -> insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
+        case MGenericInstByName(fqn, typeArgs) -> insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
+        case _ -> insns.add(MCastclassByName(className = plainRecClass))
+      }
       emitStoreSlot(insns, rCastSlot, fctx.paramCount)
       var rbi = 0
       while rbi < fields.count {
         match fields[rbi] {
           case RPFNamed(fname, subPat, _) -> {
-            val rkey = recClass + "/" + fname
+            val rkey = plainRecClass + "/" + fname
             match mapGet(cctx.fieldTokens, rkey) {
               case Some(fTok) -> {
-                val fty = match mapGet(cctx.fieldMsilTypes, rkey) { case Some(t) -> t; case None -> MObject }
+                val fSig = match mapGet(cctx.fieldSigBytes, rkey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+                val fty = resolveConcreteMsilFieldTy(cctx, scrutTy, rkey)
                 match subPat.kind {
                   case PBinding(bname, _) -> {
-                    emitLoadSlot(insns, rCastSlot, fctx.paramCount)
-                    insns.add(MLdfld(fieldToken = fTok))
+                    emitCaseFieldLoad(insns, scrutTy, rCastSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fSig, fname)
                     val bSlot = allocSlotMsil(fctx, bname, fty)
                     emitStoreSlot(insns, bSlot, fctx.paramCount)
                   }
                   case _ -> {
-                    emitLoadSlot(insns, rCastSlot, fctx.paramCount)
-                    insns.add(MLdfld(fieldToken = fTok))
+                    emitCaseFieldLoad(insns, scrutTy, rCastSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fSig, fname)
                     val tSlot = allocSlotMsil(fctx, "__rfld_" + fname + "_" + toString(fctx.slotTicker.count), fty)
                     emitStoreSlot(insns, tSlot, fctx.paramCount)
                     lowerPatternBindMsil(cctx, fctx, insns, subPat, tSlot, fty)
@@ -11515,12 +11538,12 @@ func lowerPatternBindMsil(
             }
           }
           case RPFShort(fname, _) -> {
-            val rkey = recClass + "/" + fname
+            val rkey = plainRecClass + "/" + fname
             match mapGet(cctx.fieldTokens, rkey) {
               case Some(fTok) -> {
-                val fty = match mapGet(cctx.fieldMsilTypes, rkey) { case Some(t) -> t; case None -> MObject }
-                emitLoadSlot(insns, rCastSlot, fctx.paramCount)
-                insns.add(MLdfld(fieldToken = fTok))
+                val fSig = match mapGet(cctx.fieldSigBytes, rkey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+                val fty = resolveConcreteMsilFieldTy(cctx, scrutTy, rkey)
+                emitCaseFieldLoad(insns, scrutTy, rCastSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fSig, fname)
                 val bSlot = allocSlotMsil(fctx, fname, fty)
                 emitStoreSlot(insns, bSlot, fctx.paramCount)
               }
