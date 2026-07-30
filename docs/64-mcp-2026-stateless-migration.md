@@ -1,7 +1,7 @@
 # 64 — Migrating `lyric-mcp` to MCP spec revision `2026-07-28`
 
 Status: Phase A (§3, stateless core) specced and implemented in D133 —
-`--target dotnet` fully tested (54/54 across `lyric-mcp`'s three suites).
+`--target dotnet` fully tested (55/55 across `lyric-mcp`'s three suites).
 Phases B (§4, streamable HTTP), C (§5, Tasks extension), and D (§7,
 out of scope) remain open/unbacked. Extends `docs/62-jsonrpc-mcp.md`
 (D129), which
@@ -128,14 +128,18 @@ Tracked as the (still open) Q-MCP-003.
   `{serverInfo, capabilities}`.
 - **The `ready` gate goes away.** `McpServer.ready` and the
   `serverNotInitialized` rejection path are deleted — every request
-  (`tools/call`, `resources/read`, ...) is answerable immediately;
-  version/client identity travel in `_meta` on the request object
-  itself (`getField(paramsObj, "_meta")`, decoded once per request by a
-  shared helper) rather than being pinned once at handshake time. A
-  request with no `_meta.protocolVersion` is treated as the latest
-  revision (permissive default — the spec has no wire-level version
-  mismatch error, per the existing `negotiateProtocolVersion` doc
-  comment, and that stays true here).
+  (`tools/call`, `resources/read`, ...) is answerable immediately, with
+  no per-request version or client-identity check of any kind:
+  `onRequest` dispatches purely on `method` name. `Mcp.negotiateProtocolVersion`
+  still runs, but only inside the legacy `initialize` method itself
+  (kept answerable for legacy-peer tolerance, no longer gating
+  anything) — there is no per-request `_meta.protocolVersion`
+  inspection or shared decoding helper of any kind. A real per-request
+  `_meta`-based version/capability negotiation (so a single stateless
+  server could serve different protocol revisions to different peers
+  without a handshake) was considered while drafting this migration
+  but was not implemented — no known consumer needs it today; tracked
+  as a deferred follow-up in #6344.
 - `notifications/initialized` is no longer sent/expected — removed from
   `Mcp.Client`.
 
@@ -162,13 +166,18 @@ Tracked as the (still open) Q-MCP-003.
 
 - `connectTransport`/`connectStdio` drop the `initialize` round-trip
   entirely — constructing an `McpClient` becomes a pure local
-  operation (wrap the transport, done). `serverInfo`/`protocolVersion`
-  on `McpClient` become populated lazily from the first response that
-  carries them, or fetched eagerly via a new `discoverServer` call
-  wrapping `server/discover` (recommended, not required, before the
-  first `listTools`/`callTool`).
-- `callTool` gains a `resumeToolCall(client, requestState, inputResponses)`
-  sibling for driving the `input_required` retry loop.
+  operation (wrap the transport, done). `McpClient` no longer carries a
+  `protocolVersion` field at all (nothing to pin per-connection
+  anymore); `serverInfo` starts empty and is populated only by an
+  explicit `discoverServer` call wrapping `server/discover`
+  (recommended, not required, before the first `listTools`/`callTool`)
+  — there is no lazy population from arbitrary responses.
+- `callResumableTool(client, name, args)` drives a resumable tool's
+  initial call and decodes whichever `McpToolCallOutcome` it answers
+  with; a `resumeToolCall(client, name, requestState, inputResponses)`
+  sibling answers a prior `InputRequired` outcome to continue the retry
+  loop — `name` is load-bearing (it re-selects the tool on the resume
+  request), not optional.
 
 ### 3.4 What does not change
 
@@ -256,6 +265,14 @@ ships Phase A:
   known today, but worth grepping for at migration time) goes away.
 - Existing `McpToolHandler` implementations need no changes — the
   resumable interface is additive (§3.1).
+- Legacy-peer tolerance is **server-side only, not symmetric**:
+  `Mcp.Server` still answers `initialize` for a peer that sends it, but
+  `Mcp.Client` no longer performs any handshake at all — it cannot
+  drive a legacy `2025-06-18`-only server that still enforces a
+  readiness gate before answering anything else. No known consumer is
+  affected today (cloud-agents upgrades both ends of its own
+  client/server pair together), but a future client-only or
+  server-only upgrade would need to account for this.
 - The permission-callback tools that actually need multi-round-trip
   behavior (this is the entire reason this track exists — see §1.1)
   are the intended first adopters of `McpResumableToolHandler`; that

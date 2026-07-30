@@ -21807,15 +21807,29 @@ tracks):
    `resume` directly with a fabricated `requestState` (#6339); the
    correct opaque-token framing already in docs/64 §3.1 and the README is
    now also the interface doc a resumable-tool author actually reads.
+9. **Doc-accuracy correction (#6342, #6343).** docs/64 §3.1 had
+   described a per-request `_meta.protocolVersion`/capability decoding
+   helper that was never implemented — `McpServer.onRequest` dispatches
+   purely on `method` name, with `Mcp.negotiateProtocolVersion` invoked
+   only inside the legacy `initialize` method itself. §3.1 now
+   describes the real (simpler) shipped behavior; the aspirational
+   per-request negotiation idea is tracked as a deferred follow-up in
+   #6344, not shipped silently as if it existed. §3.3 also had two
+   stale claims — a nonexistent `McpClient.protocolVersion` field with
+   a fictional lazy-population mechanism, and a `resumeToolCall`
+   signature missing its load-bearing `name` parameter — both
+   corrected to match `client.l`.
 
 **Verification.** All `--target dotnet` suites green:
-`lyric-mcp` 54/54 (22 lifecycle, including 5 new cases for `server/discover`,
+`lyric-mcp` 55/55 (23 lifecycle, including 5 new cases for `server/discover`,
 the full `input_required`/resume round trip against a real
 `Mcp.Client`/`Mcp.Server` pair, the #6334 regression test for `callTool`
-against an `input_required` response, and a #6341 live-`McpServer` case
-proving a name registered via both `addTool` and `addResumableTool`
-dispatches to the resumable handler; 27 serialization, including the #6341
-`encodeAllToolDefsList` name-collision dedup case; 5 real-subprocess), and
+against an `input_required` response, a #6341 live-`McpServer` case proving
+a name registered via both `addTool` and `addResumableTool` dispatches to
+the resumable handler, and a `callTool` happy-path case confirming its
+`resultType` guard doesn't fire on an ordinary plain-tool result; 27
+serialization, including the #6341 `encodeAllToolDefsList` name-collision
+dedup case; 5 real-subprocess), and
 `lyric-jsonrpc`'s existing 15/15 unaffected (this track touched no
 `lyric-jsonrpc` code — the multi-round-trip pattern is a pure `Mcp`-layer
 data-shape change, `JsonRpc` never sees the difference). JVM gaps are

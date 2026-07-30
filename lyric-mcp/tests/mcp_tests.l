@@ -829,3 +829,37 @@ test "callTool against a resumable tool's input_required answer returns Err, not
     }
   }
 }
+
+// Happy-path counterpart to the #6334 regression test above: a plain
+// (non-resumable) tool's ordinary result has no `resultType` field at all,
+// so callTool's resultType guard must not fire on it — confirms the guard
+// only rejects a genuine input_required response, not every response.
+test "callTool against a plain tool's ordinary result returns Ok with the expected content" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+
+  match connectTransport(ClientSideTransport(box = box)) {
+    case Err(e) -> assertTrue(false, "connectTransport failed: " + e)
+    case Ok(clientVal) -> {
+      var client = clientVal
+      val args = JObject(fields = [JsonField(name = "text", value = JString(value = "hi there"))])
+      val callWireParams = JObject(
+        fields = [
+          JsonField(name = "name", value = JString(value = "echo")),
+          JsonField(name = "arguments", value = args)
+        ]
+      )
+      stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callWireParams)))
+      match callTool(client, "echo", Some(value = args)) {
+        case Err(e) -> assertTrue(false, "callTool failed: " + e)
+        case Ok(result) -> {
+          assertFalse(result.isError, "successful call is not an error")
+          match result.content[0] {
+            case TextContent(t) -> assertEqual(t, "hi there", "echoed text")
+            case _ -> assertTrue(false, "expected TextContent")
+          }
+        }
+      }
+    }
+  }
+}

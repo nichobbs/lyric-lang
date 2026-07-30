@@ -818,7 +818,12 @@ pub func encodeInitializeResult(
   )
 }
 
-/// Decoded `InitializeResult` (client-side).
+/// Decoded `InitializeResult` (client-side). No `Mcp.Client` function
+/// calls this today — `connectTransport`/`connectStdio` no longer
+/// perform the `initialize` round-trip at all (docs/64 §3.3). Kept
+/// `@stable` (not dead code to remove) for a consumer that hand-rolls
+/// legacy `initialize` support against a peer that still requires it;
+/// `Mcp.Server.handleInitialize` still answers the method server-side.
 @stable(since = "0.1")
 pub record McpInitializeResult {
   protocolVersion: String

@@ -46,7 +46,7 @@ start section below.
 | Package | `.NET` | JVM |
 |---|---|---|
 | `Mcp` (types, encode/decode) | full, 27/27 pure-serialization tests pass | pure Lyric, no I/O — but see gap #3: this library's own test suite does not type-check under `--target jvm` at all, so this is unverified in practice, not merely undertested |
-| `Mcp.Server` (`serveStdio`) | full, 22/22 in-memory lifecycle tests pass | unverified (gap #3) |
+| `Mcp.Server` (`serveStdio`) | full, 23/23 in-memory lifecycle tests pass | unverified (gap #3) |
 | `Mcp.Client` (`connectStdio`) | full, tested against a real spawned process (5/5 process tests) | unverified (gap #3); the underlying `Std.Process` piped-spawn kernel also has its own separate, real JVM gap (#1) even setting #3 aside |
 | `Mcp.Stdio` (`PipedNdjsonTransport`) | full | unverified (gap #3); also gap #1 |
 | `Std.Process.spawnPiped` / `pipedReadLine` / `pipedWriteLine` (stdlib seam this library needed and added) | full, tested with a real `cat` subprocess | compiles; **spawning and writing work, reading back a line from the child does not reliably work** — gap #1 |
@@ -340,6 +340,11 @@ impl McpResumableToolHandler for DeleteFileHandler {
   }
 
   func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String] {
+    // SECURITY: requestState is an unauthenticated, unvalidated opaque
+    // echo token — a peer can call resume directly with a fabricated
+    // one, skipping call entirely. A real handler must re-authorize the
+    // requestState-encoded target (here, the path) before acting, not
+    // just check inputResponses.confirm.
     val confirmed = match getBool(inputResponses, "confirm") { case Some(b) -> b; case None -> false }
     if confirmed {
       Ok(value = ToolResult(value = toolTextResult("deleted")))

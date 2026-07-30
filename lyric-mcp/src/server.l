@@ -353,8 +353,10 @@ impl RpcHandler for McpServer {
     }
   }
 
-  // `notifications/initialized` is accepted (legacy-peer tolerance) but is
-  // now a pure no-op — there is no readiness state left to flip.
+  // Every notification is a no-op, unconditionally — there's no method
+  // check here at all, so this covers `notifications/initialized`
+  // (legacy-peer tolerance; there is no readiness state left to flip)
+  // and any other inbound notification a peer might send.
   func onNotification(method: in String, params: in Option[JsonValue]): Unit {
   }
 }
