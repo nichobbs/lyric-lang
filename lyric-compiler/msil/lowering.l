@@ -204,6 +204,66 @@ pub func msilArrayElemHasRealToken(e: in MsilType): Bool {
   }
 }
 
+// True when `e` is a generic type-parameter reference (`MTypeVar`). An
+// `MArray` whose element is a bare type parameter (e.g. `List<T>.ToArray()`'s
+// `!0[]` return, or a user generic function's own `slice[T]` signature slot)
+// is a GENUINELY generic array — the concrete element is only known at the
+// call site's closed instantiation, so it must always encode SZARRAY, never
+// degrade. Only a CONCRETE element with no array token (a record/union/
+// extern-struct named directly, not through a type parameter) is degraded by
+// `bufMsilTypeSigSlot`/`bufMsilTypeWithCtxSigSlot` below (#6332).
+func msilArrayElemIsTypeVar(e: in MsilType): Bool {
+  match e {
+    case MTypeVar(_) -> true
+    case _ -> false
+  }
+}
+
+// Encode `t` via `bufMsilType`, except when `t` is an `MArray` whose element
+// is a CONCRETE type with no genuine array token (record/union/extern-struct
+// — `msilArrayElemHasRealToken` false — and NOT a generic type parameter,
+// which must stay a real SZARRAY per `msilArrayElemIsTypeVar` above). Use
+// this (not `bufMsilType` directly) for every top-level field/return/param
+// SIGNATURE SLOT of a Lyric-declared member (`buildFieldSig`/
+// `buildStaticMethodSig`/`buildInstanceMethodSig`) so a `slice[Record]` field,
+// parameter, or return type matches the boxed `List<object>` runtime value
+// codegen actually builds for it — the same LocalVarSig-vs-runtime-value
+// mismatch #6322 fixed for locals, extended to every OTHER signature position
+// (#6332). Deliberately NOT folded into the shared `bufMsilType` itself: that
+// function also encodes the `!0[]` return of the real BCL
+// `List<T>.ToArray()` MemberRef (a genuinely-generic array, `elem =
+// MTypeVar(0)`, correctly excluded here) and any other context-free
+// encoding site — blanket-degrading `bufMsilType`'s `MArray` arm broke that
+// call in testing before this fix was properly scoped.
+func bufMsilTypeSigSlot(w: in ByteWriter, t: in MsilType): Unit {
+  match t {
+    case MArray(elem) -> {
+      if msilArrayElemIsTypeVar(elem) or msilArrayElemHasRealToken(elem) {
+        bufMsilType(w, t)
+      } else {
+        bufU1(w, 0x1C)  // ELEMENT_TYPE_OBJECT (#6332)
+      }
+    }
+    case _ -> bufMsilType(w, t)
+  }
+}
+
+// Context-aware twin of `bufMsilTypeSigSlot`, used by the `WithCtx` signature
+// builders (`buildFieldSigWithCtx`/`buildStaticMethodSigWithCtx`/
+// `buildInstanceMethodSigWithCtx`).
+func bufMsilTypeWithCtxSigSlot(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): Unit {
+  match t {
+    case MArray(elem) -> {
+      if msilArrayElemIsTypeVar(elem) or msilArrayElemHasRealToken(elem) {
+        bufMsilTypeWithCtx(w, t, ctx)
+      } else {
+        bufU1(w, 0x1C)  // ELEMENT_TYPE_OBJECT (#6332)
+      }
+    }
+    case _ -> bufMsilTypeWithCtx(w, t, ctx)
+  }
+}
+
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
 // For MClass, returns 0x12 (CLASS element type prefix — caller must follow
 // with a compressed TypeDefOrRef token; this helper returns the prefix only).
@@ -379,14 +439,16 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
 }
 
 // Encode a FieldSig blob for the given field type.
-// Format: 0x06 (FIELD) + bufMsilType(t).
+// Format: 0x06 (FIELD) + bufMsilTypeSigSlot(t).
 // MClass degrades to ELEMENT_TYPE_OBJECT (0x1C) via bufMsilType so that
 // field access uses object-typed fields throughout (matching the bootstrap
 // emitter's object-typed approach and avoiding a malformed CLASS+token entry).
+// `MArray` of a concrete no-array-token element (e.g. `slice[Record]`) is
+// degraded the same way — see `bufMsilTypeSigSlot` (#6332).
 pub func buildFieldSig(t: in MsilType): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x06)          // FIELD
-  bufMsilType(w, t)
+  bufMsilTypeSigSlot(w, t)
   bufToList(w)
 }
 
@@ -448,14 +510,17 @@ pub func enumTypeToken(ctx: in LoweringCtx): Int {
 
 // Encode a MethodSig blob (DEFAULT, no HASTHIS for static methods).
 // Format: CALLCONV(0x00), paramCount, retType, params...
+// `MArray` of a concrete no-array-token element degrades to Object via
+// `bufMsilTypeSigSlot` — see #6332; a genuinely-generic `MArray(MTypeVar(_))`
+// return/param (e.g. `List<T>.ToArray()`'s `!0[]`) is left as a real SZARRAY.
 pub func buildStaticMethodSig(params: in List[MsilType], ret: in MsilType): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x00)                     // DEFAULT call convention (static)
   writeCompressedInt(w, params.count) // param count (ECMA-335 §II.23.2.1: compressed; >127 needs 2 bytes)
-  bufMsilType(w, ret)                // return type
+  bufMsilTypeSigSlot(w, ret)          // return type
   var i = 0
   while i < params.count {
-    bufMsilType(w, params[i])
+    bufMsilTypeSigSlot(w, params[i])
     i = i + 1
   }
   bufToList(w)
@@ -464,14 +529,15 @@ pub func buildStaticMethodSig(params: in List[MsilType], ret: in MsilType): List
 // Encode a MethodSig blob with HASTHIS (for instance methods and ctors).
 // Format: CALLCONV(0x20|HASTHIS), paramCount, retType, params...
 // Note: the implicit `this` parameter is NOT counted in paramCount.
+// See `buildStaticMethodSig`'s comment re: the `MArray` signature-slot degrade.
 pub func buildInstanceMethodSig(params: in List[MsilType], ret: in MsilType): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x20)                     // HASTHIS
   writeCompressedInt(w, params.count) // explicit param count (this excluded; compressed per ECMA-335)
-  bufMsilType(w, ret)                // return type
+  bufMsilTypeSigSlot(w, ret)          // return type
   var i = 0
   while i < params.count {
-    bufMsilType(w, params[i])
+    bufMsilTypeSigSlot(w, params[i])
     i = i + 1
   }
   bufToList(w)
@@ -482,38 +548,44 @@ pub func buildInstanceMethodSig(params: in List[MsilType], ret: in MsilType): Li
 // by name via `bufMsilTypeWithCtx`) instead of degrading to `ELEMENT_TYPE_OBJECT`.
 // This produces the same encoding the F# bootstrap emitter does, which is the
 // precondition for cross-assembly binding against an F#-compiled producer.
+// `MArray` of a concrete no-array-token element still degrades to Object via
+// `bufMsilTypeWithCtxSigSlot` (#6332).
 pub func buildFieldSigWithCtx(t: in MsilType, ctx: in LoweringCtx): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x06)          // FIELD
-  bufMsilTypeWithCtx(w, t, ctx)
+  bufMsilTypeWithCtxSigSlot(w, t, ctx)
   bufToList(w)
 }
 
 // Context-aware variant of `buildStaticMethodSig`.  Encodes `MClass`
-// parameters/returns concretely (CLASS + TypeDefOrRef) via `bufMsilTypeWithCtx`.
+// parameters/returns concretely (CLASS + TypeDefOrRef) via `bufMsilTypeWithCtx`;
+// `MArray` signature slots degrade the same way `buildStaticMethodSig` does
+// (#6332).
 pub func buildStaticMethodSigWithCtx(params: in List[MsilType], ret: in MsilType, ctx: in LoweringCtx): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x00)                     // DEFAULT call convention (static)
   writeCompressedInt(w, params.count) // param count (compressed per ECMA-335 §II.23.2.1)
-  bufMsilTypeWithCtx(w, ret, ctx)    // return type
+  bufMsilTypeWithCtxSigSlot(w, ret, ctx)    // return type
   var i = 0
   while i < params.count {
-    bufMsilTypeWithCtx(w, params[i], ctx)
+    bufMsilTypeWithCtxSigSlot(w, params[i], ctx)
     i = i + 1
   }
   bufToList(w)
 }
 
 // Context-aware variant of `buildInstanceMethodSig` (HASTHIS).  Encodes `MClass`
-// parameters/returns concretely (CLASS + TypeDefOrRef) via `bufMsilTypeWithCtx`.
+// parameters/returns concretely (CLASS + TypeDefOrRef) via `bufMsilTypeWithCtx`;
+// `MArray` signature slots degrade the same way `buildInstanceMethodSig` does
+// (#6332).
 pub func buildInstanceMethodSigWithCtx(params: in List[MsilType], ret: in MsilType, ctx: in LoweringCtx): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x20)                     // HASTHIS
   writeCompressedInt(w, params.count) // explicit param count (this excluded; compressed per ECMA-335)
-  bufMsilTypeWithCtx(w, ret, ctx)    // return type
+  bufMsilTypeWithCtxSigSlot(w, ret, ctx)    // return type
   var i = 0
   while i < params.count {
-    bufMsilTypeWithCtx(w, params[i], ctx)
+    bufMsilTypeWithCtxSigSlot(w, params[i], ctx)
     i = i + 1
   }
   bufToList(w)

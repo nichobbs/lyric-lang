@@ -202,3 +202,70 @@ func appendPlanItemsLoop(total: in Int): Int {
 test "#6322: slice[record] local survives many .append reassignments (OSR promotion)" {
   assertEqualInt(appendPlanItemsLoop(50000), 50000, "50000 record appends land in a 50000-length slice")
 }
+
+// ── #6332: slice[record] as a RECORD FIELD / function PARAMETER or RETURN —
+// the same LocalVarSig-vs-runtime-value mismatch #6322 fixed for locals, but
+// in the FieldSig / MethodDef signature builders instead. A `slice[Record]`
+// field/param/return still encoded SZARRAY<Record> while the actual runtime
+// value is the boxed `List<object>` fallback (record elements have no array
+// token — `arrayElemTokenOpt` -> `None`, same root cause as #6322).
+// Deterministic under `DOTNET_TieredCompilation=0` (verified manually against
+// the built assembly — `field.count`/`param+return.count` read as garbage /
+// threw `IndexOutOfRangeException` before this fix, both fixed after it).
+// These tests assert value correctness under default tiering; the loop in
+// `exerciseFieldParamReturn6332` calls the small helpers below enough times
+// to promote them via call-count tiering, exercising the same crash class
+// under the harness's own default-tiering run (mirroring how #6322's
+// OSR-triggering loop exercises its local-variable case above).
+record Item6332 {
+  note: String
+}
+
+record Holder6332 {
+  items: slice[Item6332]
+}
+
+func makeHolder6332(n: in Int): Holder6332 {
+  var acc: slice[Item6332] = []
+  acc = acc.append(Item6332(note = "item" + n.toString()))
+  Holder6332(items = acc)
+}
+
+func passThrough6332(xs: in slice[Item6332]): slice[Item6332] {
+  var acc: slice[Item6332] = []
+  var i = 0
+  while i < xs.count {
+    acc = acc.append(xs[i])
+    i = i + 1
+  }
+  acc
+}
+
+func exerciseFieldParamReturn6332(total: in Int): Int {
+  var lastCount = 0
+  var i = 0
+  while i < total {
+    val h = makeHolder6332(i)
+    val ys = passThrough6332(h.items)
+    lastCount = ys.count
+    i = i + 1
+  }
+  lastCount
+}
+
+test "#6332: slice[record] record field round-trips through construction and read" {
+  val h = makeHolder6332(1)
+  assertEqualInt(h.items.count, 1, "Holder6332.items has one element")
+  assertEqual(h.items[0].note, "item1", "Holder6332.items[0].note")
+}
+
+test "#6332: slice[record] function parameter and return type round-trip" {
+  val h = makeHolder6332(2)
+  val ys = passThrough6332(h.items)
+  assertEqualInt(ys.count, 1, "passThrough6332 returns a 1-element slice")
+  assertEqual(ys[0].note, "item2", "passThrough6332[0].note")
+}
+
+test "#6332: slice[record] field/param/return survive many calls (call-count tiering)" {
+  assertEqualInt(exerciseFieldParamReturn6332(50000), 1, "50000 construct+field-read+param/return round-trips")
+}
