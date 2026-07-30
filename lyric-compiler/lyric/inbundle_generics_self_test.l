@@ -137,6 +137,32 @@ test "#6233: Box[Rect6233] record-pattern match extracts a user-record-typed gen
   }
 }
 
+// #6231 (partial): a generic record's field type may itself be ANOTHER generic
+// instantiation over the SAME enclosing type parameters (`res: Result[T, E]`
+// on `Holder[T, E]`), not just a bare parameter (`value: T`). Reading such a
+// field previously returned the OPEN generic form (`Result<T,E>`, with
+// dangling type-var references) as its static codegen type instead of
+// substituting the instantiation's concrete `typeArgs` — downstream generic
+// dispatch (e.g. `isOk`) then specialised against the wrong (unsubstituted)
+// shape. Fixed for plain field access (`h.res`); `match h.res { ... }`
+// directly on such a field still crashes (`InvalidProgramException` /
+// `MissingFieldException` depending on shape) — a deeper, separate gap in the
+// same family as #4870, not yet fixed here.
+record Holder6231[T, E] {
+  res: Result[T, E]
+}
+
+func makeHolder6231(): Holder6231[Int, String] {
+  val r: Result[Int, String] = Ok(value = 42)
+  Holder6231(res = r)
+}
+
+test "#6231: generic record field typed by a nested Result[T,E] substitutes concrete args on read" {
+  val h = makeHolder6231()
+  val r = h.res
+  assertTrue(isOk(r), "isOk(h.res) after substitution")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // In-bundle generic UNIONS (#2362).  Each case is a generic case class extending
 // the open base instantiation; nullary cases carry the union's type parameters

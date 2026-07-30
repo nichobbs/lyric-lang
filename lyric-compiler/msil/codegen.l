@@ -7439,8 +7439,15 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     MObject
                   }
                 } else {
+                  // #6231: the field's declared type may reference the
+                  // enclosing type's own parameters NESTED inside another
+                  // generic instantiation (e.g. `res: Result[T, E]` on
+                  // `Holder[T, E]`) rather than as a bare parameter — the
+                  // registered `fieldMsilTypes` entry is the OPEN generic
+                  // form, so substitute this instantiation's concrete
+                  // `typeArgs` before handing the type to the caller.
                   match mapGet(cctx.fieldMsilTypes, key) {
-                    case Some(fty) -> fty
+                    case Some(fty) -> substituteTypeVarsMsil(fty, typeArgs)
                     case None -> MObject
                   }
                 }
@@ -7472,8 +7479,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     MObject
                   }
                 } else {
+                  // #6231: see the matching MGenericInst comment above — the
+                  // field's declared type may nest the record's own
+                  // parameters inside another generic instantiation, so
+                  // substitute this instantiation's concrete `typeArgs`.
                   match mapGet(cctx.fieldMsilTypes, key) {
-                    case Some(fty) -> fty
+                    case Some(fty) -> substituteTypeVarsMsil(fty, typeArgs)
                     case None -> MObject
                   }
                 }
@@ -11135,11 +11146,69 @@ func resolveConcreteMsilFieldTy(cctx: in CodegenCtx, castTy: in MsilType, sigLoo
       }
       case _ -> ()
     }
+  } else {
+    // #6231: the field's declared type is not a BARE type parameter (`vi < 0`
+    // — e.g. `res: Result[T, E]` on `Holder[T, E]`, as opposed to `value: T`)
+    // but may still reference the enclosing type's parameters NESTED inside
+    // another generic instantiation. `fieldMsilTypes` only ever registers the
+    // field's type as declared (an OPEN generic like `Result<T,E>` carrying
+    // dangling `MTypeVar` indices), so it must be substituted with the
+    // scrutinee's concrete `typeArgs` here — otherwise a downstream `match`
+    // computes its scrutinee TypeSpec against the wrong (unsubstituted) open
+    // generic shape and panics "match not exhaustive" / faults with
+    // `InvalidProgramException`.
+    match castTy {
+      case MGenericInst(_, _, typeArgs) -> {
+        fieldTy = substituteTypeVarsMsil(fieldTy, typeArgs)
+      }
+      case MGenericInstByName(_, typeArgs) -> {
+        fieldTy = substituteTypeVarsMsil(fieldTy, typeArgs)
+      }
+      case _ -> ()
+    }
   }
   match fieldTy {
     case MVoid -> MObject
     case _ -> fieldTy
   }
+}
+
+// Recursively substitute the enclosing generic type's own parameters
+// (`MTypeVar` indices) with the caller's concrete `typeArgs` — needed when a
+// field's DECLARED type references those parameters NESTED inside another
+// generic instantiation (e.g. `res: Result[T, E]` on `Holder[T, E]`), not
+// just as a bare parameter (`value: T`, already handled by the `fieldVarIndices`
+// direct-index path above). Without this, reading such a field keeps the OPEN
+// generic form (`Result<T,E>` with dangling type-var references) as its
+// static codegen type — #6231.
+func substituteTypeVarsMsil(ty: in MsilType, typeArgs: in List[MsilType]): MsilType {
+  match ty {
+    case MTypeVar(idx) -> if idx < typeArgs.count { typeArgs[idx] } else { ty }
+    case MArray(elem) -> MArray(elemTy = substituteTypeVarsMsil(elem, typeArgs))
+    case MByRef(inner) -> MByRef(inner = substituteTypeVarsMsil(inner, typeArgs))
+    case MGenericInst(trc, fqn, tas) -> MGenericInst(typeRefCode = trc, headFqn = fqn, typeArgs = substituteTypeVarListMsil(tas, typeArgs))
+    case MValueTypeGenericInst(trc, fqn, tas) -> MValueTypeGenericInst(typeRefCode = trc, headFqn = fqn, typeArgs = substituteTypeVarListMsil(tas, typeArgs))
+    case MGenericInstByName(fqn, tas) -> MGenericInstByName(headFqn = fqn, typeArgs = substituteTypeVarListMsil(tas, typeArgs))
+    case MConcreteList(e) -> MConcreteList(elemTy = substituteTypeVarsMsil(e, typeArgs))
+    case MConcreteMap(k, v) -> MConcreteMap(keyTy = substituteTypeVarsMsil(k, typeArgs), valTy = substituteTypeVarsMsil(v, typeArgs))
+    case MListOf(e) -> MListOf(elemTy = substituteTypeVarsMsil(e, typeArgs))
+    case MMapOf(k, v) -> MMapOf(keyTy = substituteTypeVarsMsil(k, typeArgs), valTy = substituteTypeVarsMsil(v, typeArgs))
+    case MSetOf(e) -> MSetOf(elemTy = substituteTypeVarsMsil(e, typeArgs))
+    case MIAsyncEnumerable(e) -> MIAsyncEnumerable(elemTy = substituteTypeVarsMsil(e, typeArgs))
+    case MExternEnumerable(e) -> MExternEnumerable(elemTy = substituteTypeVarsMsil(e, typeArgs))
+    case MTuple(elems) -> MTuple(elems = substituteTypeVarListMsil(elems, typeArgs))
+    case _ -> ty
+  }
+}
+
+func substituteTypeVarListMsil(tys: in List[MsilType], typeArgs: in List[MsilType]): List[MsilType] {
+  val result: List[MsilType] = newList()
+  var i = 0
+  while i < tys.count {
+    result.add(substituteTypeVarsMsil(tys[i], typeArgs))
+    i = i + 1
+  }
+  result
 }
 
 // Emit the MSIL instructions to load one field of a union case from
