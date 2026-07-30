@@ -21283,5 +21283,69 @@ access the way a record-typed `val` is — there is no `Foo.Bar.baz()` shape
 a same-named top-level `func Foo` could shadow. No code or test change;
 re-verified `alias_rewriter` stays 31/31 after the comment-only edit.
 
+**Ninth finding (review feedback, #6323): `rewriteProtectedField`'s `PFVar`/
+`PFLet` init was the one standalone-expression position the eighth
+finding's own audit missed.** `rewriteProtectedField` still rewrote a
+protected `var`/`let` field's `init` via plain `rewriteOptExpr(aliases,
+init)` — the pre-`filterAliasesForExpr` pattern every sibling position
+(field `dflt`, param `dflt`, all three invariant-clause kinds, wire-member
+init/provider, include-adjustment `value`, fixture `init`, config
+`default`, module `val`/`const` init) had already been migrated off of.
+`PMInvariant`, two lines below the defect in `rewriteProtectedMember`, got
+the eighth finding's fix; the immediately-preceding `PFVar`/`PFLet` case
+in `rewriteProtectedField` did not. A protected field's bare `{ ... }`
+init lambda binding its own shadowing local reproduced the exact #6294
+bug class, unfixed. This falsifies the eighth finding's own closing claim
+("this really is the last standalone-expression gap") — the audit that
+backed that claim enumerated call sites by grepping for the *pattern*
+`rewriteExpr(aliases, ...)`, which is exactly what `rewriteOptExpr`'s own
+body already handles, so a raw `rewriteOptExpr(aliases, init)` call site
+one layer removed from that literal text wasn't independently checked.
+
+Fixed with a small new helper, `rewriteOptExprSelfFiltered`, wrapping the
+`Some`/`None` match around `filterAliasesForExpr` + `rewriteExpr` (the
+same shape `rewriteParam`/`rewriteFieldDecl` already inline directly, but
+factored out here since `rewriteProtectedField` has two `Option[Expr]`
+call sites needing it) and swapping both `PFVar`/`PFLet` arms onto it.
+
+Also addressed, same round, three additional review SUGGESTIONs found
+during a fresh audit of the file:
+  * `collectModuleLevelValueNames` didn't collect `IFixture` names. This
+    is masked today — `Lyric.TestSynth` rewrites `fixture X` to `val X`
+    before the alias rewriter ever runs — but the collector shouldn't
+    silently depend on that pass ordering forever. Added an `IFixture`
+    arm alongside `IVal`, with a comment explaining why it was
+    previously safe to omit.
+  * `flattenPathExpr`'s `EPath` base case returned the parsed AST's own
+    `p.segments` list BY REFERENCE, unlike the sibling `EMember` arm,
+    which always builds a fresh list. No current caller mutates the
+    returned list, so this was latent, not live — but the asymmetry
+    invited a future caller to corrupt a parsed `ModulePath` in place.
+    Fixed to copy, matching the `EMember` arm.
+  * Documented (no code change) why `collectModuleLevelValueNames`
+    deliberately excludes `IFunc`: a bare top-level function reference is
+    never a valid receiver for `.field`/`.method` access the way a
+    record-typed `val` is, so there's no `Foo.Bar.baz()` shape a
+    same-named top-level `func Foo` could ever shadow.
+
+Verified by a new `alias_rewriter_self_test.l` case (32 total): a
+protected type's `var` field with an init lambda binding its own local
+`Foo` before calling `Foo.Bar.baz()`, asserting the callee stays the
+original nested `EMember` chain, unrewritten. All ten previously-
+established suites re-verified green again against the build carrying
+this ninth fix (`alias_rewriter` 32/32, `msil_project_bridge` 34/34,
+`qualified_enum_case` 11/11, `qualified_union_case` 5/5, `typechecker`
+283/283, `parser` 126/126, `mono` 54/54, `weaver` 46/46, `aspect_weave`
+7/7, `modechecker` 92/92, `cfg` 12/12 — `mono`'s count moved from 48 to
+54 from an unrelated `main` rebase between the eighth and ninth findings,
+not from anything in this fix). This is the second time this PR's own
+"is this really the last gap?" claim has been falsified by a subsequent
+review round (the eighth finding falsified the seventh's); the actual
+closing condition is a literal grep for every `rewriteExpr`/`rewriteOptExpr`
+call site in the file against raw `aliases` (not `bodyAliases`/
+`contractAliases`/`sigAliases`/`memberAliases`/a `filterAliasesForExpr`
+result), not a prose argument about which positions "should" have been
+covered.
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
-D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320, #6321.
+D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320, #6321, #6323.

@@ -294,7 +294,19 @@ func rewriteRangeBound(aliases: in List[String], rb: in RangeBound): RangeBound 
 // unobserved shape.
 func flattenPathExpr(e: in Expr): Option[List[String]] {
   match e.kind {
-    case EPath(p) -> Some(value = p.segments)
+    // Copy, not the parsed AST's own `p.segments` by reference — matches the
+    // `EMember` arm below, which always builds a fresh list. No current
+    // caller mutates the result, but returning the original list here would
+    // be a latent aliasing hazard for a future one (review follow-up, #6323).
+    case EPath(p) -> {
+      val acc: List[String] = newList()
+      var i = 0
+      while i < p.segments.count {
+        acc.add(p.segments[i])
+        i = i + 1
+      }
+      Some(value = acc)
+    }
     case EMember(receiver, memberName) -> match flattenPathExpr(receiver) { case Some(segs) -> { val acc: List[String] = newList(); var i = 0; while i < segs.count { acc.add(segs[i]); i = i + 1 }; acc.add(memberName); Some(value = acc) }; case None -> None }
     case _ -> None
   }
@@ -1145,6 +1157,12 @@ func collectModuleLevelValueNames(file: in SourceFile, acc: List[String]): Unit 
     match file.items[i].kind {
       case IConst(decl) -> acc.add(decl.name)
       case IVal(decl) -> collectPatternLocalNames(decl.pattern, acc)
+      // #6323 SUGGESTION follow-up: `Lyric.TestSynth` already rewrites
+      // `fixture X` to `val X` before the alias rewriter runs today, so this
+      // arm is currently unreachable — but the collector shouldn't silently
+      // rely on that ordering forever, so an `IFixture` is treated exactly
+      // like the `IVal` it's synthesized from.
+      case IFixture(decl) -> acc.add(decl.name)
       case _ -> ()
     }
     i = i + 1
@@ -1574,12 +1592,22 @@ func rewriteOpaqueTypeDecl(aliases: in List[String], d: in OpaqueTypeDecl): Opaq
 }
 
 // IProtected ────────────────────────────────────────────────────────────────────
+// #6323 — see filterAliasesForExpr's comment: a protected var/let field's
+// own init can itself be a lambda (a bare `{ ... }`) introducing its own
+// shadowing locals, same as every other standalone-expression position.
+func rewriteOptExprSelfFiltered(aliases: in List[String], oe: in Option[Expr]): Option[Expr] {
+  match oe {
+    case Some(e) -> Some(value = rewriteExpr(filterAliasesForExpr(aliases, e), e))
+    case None -> oe
+  }
+}
+
 func rewriteProtectedField(aliases: in List[String], pf: in ProtectedField): ProtectedField {
   match pf {
     case PFVar(name, ty, init, docComments, annotations, span) -> return PFVar(
       name = name,
       ty = rewriteTypeExpr(aliases, ty),
-      init = rewriteOptExpr(aliases, init),
+      init = rewriteOptExprSelfFiltered(aliases, init),
       docComments = docComments,
       annotations = annotations,
       span = span
@@ -1587,7 +1615,7 @@ func rewriteProtectedField(aliases: in List[String], pf: in ProtectedField): Pro
     case PFLet(name, ty, init, docComments, annotations, span) -> return PFLet(
       name = name,
       ty = rewriteTypeExpr(aliases, ty),
-      init = rewriteOptExpr(aliases, init),
+      init = rewriteOptExprSelfFiltered(aliases, init),
       docComments = docComments,
       annotations = annotations,
       span = span

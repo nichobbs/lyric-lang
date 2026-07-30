@@ -1278,6 +1278,59 @@ test "a local bound inside a record invariant's lambda shadows a bare-imported p
   }
 }
 
+// Scope-awareness regression, protected var-field init (#6323): `rewriteProtectedField`'s
+// `PFVar`/`PFLet` `init` shares the exact same self-referential hazard every
+// other standalone-expression position in this file already guards against.
+test "a local bound inside a protected type's var-field init lambda shadows a bare-imported package's dotted name, left untouched (#6323)" {
+  val src = "package Test\nimport Foo.Bar\nprotected type P {\n  var x: Int = {\n    val Foo = 0\n    Foo.Bar.baz()\n  }\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IProtected(decl) -> {
+      assertEqualInt(decl.members.count, 1, "protected type has exactly the one var field")
+      match decl.members[0] {
+        case PMField(field) -> {
+          match field {
+            case PFVar(_, _, init, _, _, _) -> {
+              match init {
+                case Some(defaultExpr) -> {
+                  match defaultExpr.kind {
+                    case ELambda(_, block) -> {
+                      assertEqualInt(block.statements.count, 2, "var-field init lambda body has the local decl plus the call statement")
+                      val stmt = block.statements[1]
+                      match stmt.kind {
+                        case SExpr(callExpr) -> {
+                          match callExpr.kind {
+                            case ECall(fn, _) -> {
+                              match fn.kind {
+                                case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
+                                case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6323 regression)")
+                                case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
+                              }
+                            }
+                            case _ -> assertTrue(false, "statement expression is not ECall")
+                          }
+                        }
+                        case _ -> assertTrue(false, "second statement is not SExpr")
+                      }
+                    }
+                    case _ -> assertTrue(false, "var-field init is not ELambda")
+                  }
+                }
+                case None -> assertTrue(false, "var field has no init")
+              }
+            }
+            case _ -> assertTrue(false, "protected field is not PFVar")
+          }
+        }
+        case _ -> assertTrue(false, "protected member is not PMField")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IProtected")
+  }
+}
+
 // Review follow-up: the #6311/#6312 filtering has a beneficial side effect on
 // the DEPTH-1 non-call `EMember` arm too, since it strips a shadowed alias
 // from the shared `aliases` list before ANY arm (call or non-call) consults
