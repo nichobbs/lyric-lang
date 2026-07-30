@@ -1108,6 +1108,21 @@ func filterAliasesExcludingLocals(aliases: in List[String], locals: in List[Stri
   kept
 }
 
+// #6316: a standalone expression position (a config field's `default`, a
+// wire-include adjustment's `value`) can itself be an arbitrary block or
+// lambda expression that introduces its own local bindings — the same
+// self-referential collect-then-filter pattern `rewriteFixtureDecl` already
+// uses for its `init` (collect every name bound ANYWHERE inside `e` from
+// the ORIGINAL pre-rewrite tree, then rewrite `e` with those names excluded
+// from `aliases`). Reused here so every free-standing expression position
+// gets the same #6311-class shadowing guard as a function body, not just
+// the four function-shaped scopes #6311/#6312/#6313 already cover.
+func filterAliasesForExpr(aliases: in List[String], e: in Expr): List[String] {
+  val locals: List[String] = newList()
+  collectExprLocalNames(e, locals)
+  filterAliasesExcludingLocals(aliases, locals)
+}
+
 // Module-level `val`/`const` names are visible, unqualified, from EVERY
 // function in the file — not just the one it's textually declared in — so
 // they need the same shadowing guard as function-locals, but computed once
@@ -1627,19 +1642,27 @@ func rewriteIncludeAdjusts(aliases: in List[String], xs: in List[IncludeAdjust])
   var i = 0
   while i < xs.count {
     match xs[i] {
-      case IAProvided(name, value, span) -> ys.add(IAProvided(name = name, value = rewriteExpr(aliases, value), span = span))
+      // #6316 — see filterAliasesForExpr's comment: each of these `value`
+      // exprs can itself be an arbitrary block/lambda introducing its own
+      // shadowing locals.
+      case IAProvided(name, value, span) -> ys.add(IAProvided(name = name, value = rewriteExpr(filterAliasesForExpr(aliases, value), value), span = span))
       case IAConfigOverride(name, fields, span) -> {
         val fs: List[ConfigFieldOverride] = newList()
         var j = 0
         while j < fields.count {
+          val fieldAliases = filterAliasesForExpr(aliases, fields[j].value)
           fs.add(
-            ConfigFieldOverride(name = fields[j].name, value = rewriteExpr(aliases, fields[j].value), span = fields[j].span)
+            ConfigFieldOverride(
+              name = fields[j].name,
+              value = rewriteExpr(fieldAliases, fields[j].value),
+              span = fields[j].span
+            )
           )
           j = j + 1
         }
         ys.add(IAConfigOverride(name = name, fields = fs, span = span))
       }
-      case IAReplace(name, value, span) -> ys.add(IAReplace(name = name, value = rewriteExpr(aliases, value), span = span))
+      case IAReplace(name, value, span) -> ys.add(IAReplace(name = name, value = rewriteExpr(filterAliasesForExpr(aliases, value), value), span = span))
       case IARemove(name, span) -> ys.add(IARemove(name = name, span = span))
       case IAReorder(name, ordering, span) -> ys.add(IAReorder(name = name, ordering = ordering, span = span))
     }
@@ -1655,10 +1678,31 @@ func rewriteWireDecl(aliases: in List[String], d: in WireDecl): WireDecl {
     ps.add(rewriteParam(aliases, d.params[i]))
     i = i + 1
   }
+  // #6316: `WireDecl.params` is a function-like parameter scope (exactly
+  // analogous to `FunctionDecl.params`, #6311) visible to every member's own
+  // `init`/`provider` expression — collect param names, plus each member's
+  // own bound name (visible to sibling members, same coarse function-body-
+  // wide spirit as #6311's `collectFunctionBodyLocalNames`), before
+  // rewriting member bodies.
+  val locals: List[String] = newList()
+  collectParamNames(d.params, locals)
+  var k = 0
+  while k < d.members.count {
+    match d.members[k] {
+      case WMProvided(name, _, _) -> locals.add(name)
+      case WMSingleton(name, _, _, _) -> locals.add(name)
+      case WMScoped(_, name, _, _, _) -> locals.add(name)
+      case WMLocal(name, _, _, _) -> locals.add(name)
+      case WMContributes(_, name, _, _, _, _) -> locals.add(name)
+      case _ -> ()
+    }
+    k = k + 1
+  }
+  val memberAliases = filterAliasesExcludingLocals(aliases, locals)
   val ms: List[WireMember] = newList()
   var j = 0
   while j < d.members.count {
-    ms.add(rewriteWireMember(aliases, d.members[j]))
+    ms.add(rewriteWireMember(memberAliases, d.members[j]))
     j = j + 1
   }
   WireDecl(name = d.name, params = ps, members = ms, span = d.span)
@@ -1742,12 +1786,14 @@ func rewriteFixtureDecl(aliases: in List[String], d: in FixtureDecl): FixtureDec
 
 // IConfig / IAspect ──────────────────────────────────────────────────────────────
 func rewriteConfigField(aliases: in List[String], f: in ConfigField): ConfigField {
+  // #6316 — see filterAliasesForExpr's comment.
+  val defaultAliases = match f.default { case Some(e) -> filterAliasesForExpr(aliases, e); case None -> aliases }
   ConfigField(
     docComments = f.docComments,
     annotations = f.annotations,
     name = f.name,
     ty = rewriteTypeExpr(aliases, f.ty),
-    default = rewriteOptExpr(aliases, f.default),
+    default = rewriteOptExpr(defaultAliases, f.default),
     span = f.span
   )
 }

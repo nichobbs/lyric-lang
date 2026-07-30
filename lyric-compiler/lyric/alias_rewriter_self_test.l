@@ -850,6 +850,103 @@ test "a param shadowing a bare-imported package's dotted name is left untouched 
   }
 }
 
+// Scope-awareness regression, wire params (#6316): `WireDecl.params` is a
+// function-like parameter scope — exactly analogous to `FunctionDecl.params`
+// (#6311) — visible to every member's own `init` expression, but
+// `rewriteWireDecl` never collected it into a locals set before this fix, so
+// a wire param colliding with a bare-imported package's dotted name still
+// collapsed unconditionally inside a `singleton` member's init.
+test "a wire param shadowing a bare-imported package's dotted name is left untouched inside a singleton member's init, not collapsed into the package (#6316)" {
+  val src = "package Test\nimport Foo.Bar\nwire W(Foo: in Int) {\n  singleton x: Int = Foo.Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IWire(decl) -> {
+      assertEqualInt(decl.members.count, 1, "wire has exactly the one singleton member")
+      match decl.members[0] {
+        case WMSingleton(_, _, init, _) -> {
+          match init.kind {
+            case ECall(fn, _) -> {
+              match fn.kind {
+                case EMember(receiver, memberName) -> {
+                  assertEqual(memberName, "baz", "outer member name is still the call's own 'baz'")
+                  match receiver.kind {
+                    case EMember(innerReceiver, innerMember) -> {
+                      assertEqual(innerMember, "Bar", "inner member name is still 'Bar' — chain was not flattened")
+                      match innerReceiver.kind {
+                        case EPath(p) -> {
+                          assertEqualInt(p.segments.count, 1, "innermost receiver is still the bare single-segment 'Foo'")
+                          assertEqual(p.segments[0], "Foo", "innermost receiver segment is still 'Foo', unrewritten")
+                        }
+                        case _ -> assertTrue(false, "innermost receiver is not EPath — chain shape changed unexpectedly (#6316 regression)")
+                      }
+                    }
+                    case _ -> assertTrue(false, "receiver is not EMember — chain was flattened despite the wire param shadow (#6316 regression)")
+                  }
+                }
+                case EPath(_) -> assertTrue(false, "singleton init was collapsed into a flat EPath — a wire param `Foo` should have suppressed the Foo.Bar package collapse (#6316 regression)")
+                case _ -> assertTrue(false, "singleton init is unexpected ExprKind after rewrite")
+              }
+            }
+            case _ -> assertTrue(false, "singleton init is not ECall")
+          }
+        }
+        case _ -> assertTrue(false, "wire member is not WMSingleton")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IWire")
+  }
+}
+
+// Scope-awareness regression, config field default (#6316): a config field's
+// `default` expression can itself be an arbitrary lambda (a bare `{ ... }` in
+// expression position parses as a zero-arg `ELambda`, not `EBlock` —
+// `parsePrimaryExpr`'s `LBrace` arm always goes through `parseLambdaExpr`)
+// introducing its own local bindings, exactly like `rewriteFixtureDecl`'s
+// `init` (which already gets this self-referential filtering). Before this
+// fix, `rewriteConfigField` rewrote `default` with the raw, unfiltered
+// `aliases`.
+test "a local bound inside a config field's default lambda shadows a bare-imported package's dotted name, left untouched (#6316)" {
+  val src = "package Test\nimport Foo.Bar\nconfig C {\n  x: Int = {\n    val Foo = 0\n    Foo.Bar.baz()\n  }\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IConfig(decl) -> {
+      assertEqualInt(decl.fields.count, 1, "config has exactly the one field")
+      match decl.fields[0].default {
+        case Some(defaultExpr) -> {
+          match defaultExpr.kind {
+            case ELambda(_, block) -> {
+              assertEqualInt(block.statements.count, 2, "default lambda body has the local decl plus the call statement")
+              val stmt = block.statements[1]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
+                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6316 regression)")
+                        case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "second statement is not SExpr")
+              }
+            }
+            case _ -> assertTrue(false, "default expr is not ELambda")
+          }
+        }
+        case None -> assertTrue(false, "config field has no default")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IConfig")
+  }
+}
+
 // Review follow-up: the #6311/#6312 filtering has a beneficial side effect on
 // the DEPTH-1 non-call `EMember` arm too, since it strips a shadowed alias
 // from the shared `aliases` list before ANY arm (call or non-call) consults

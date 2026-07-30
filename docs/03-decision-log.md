@@ -21087,5 +21087,47 @@ green again against the build carrying this fifth fix (`alias_rewriter`
 `mono` 48/48, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 84/84,
 `cfg` 12/12).
 
+**Sixth finding (review feedback, #6316): wire params and standalone
+default/value expressions never reached the scope filter at all.**
+`WireDecl.params` is a function-like parameter scope — exactly analogous
+to `FunctionDecl.params` (#6311) — visible to every wire member's own
+`init`/`provider` expression, but `rewriteWireDecl` never collected it
+into a locals set before this fix, so a wire param colliding with a
+bare-imported package's dotted name still collapsed unconditionally
+inside a member's init. Separately, `rewriteConfigField`'s `default:
+Option[Expr]` and `rewriteIncludeAdjusts`'s `IAProvided`/
+`IAConfigOverride`/`IAReplace` `value: Expr` fields were rewritten with
+the raw, unfiltered `aliases` even though the grammar permits these to be
+arbitrary lambda expressions (a bare `{ ... }` in expression position
+parses as a zero-arg `ELambda`, not a block — `parsePrimaryExpr`'s
+`LBrace` arm always goes through `parseLambdaExpr`) that can introduce
+their own shadowing locals, the same self-contained-expression hazard
+`rewriteFixtureDecl`'s `init` already guards against.
+
+Fixed two ways: (1) `rewriteWireDecl` now collects `d.params` plus every
+member's own bound name (`WMProvided`/`WMSingleton`/`WMScoped`/`WMLocal`/
+`WMContributes`, in the same coarse function-body-wide spirit as
+`collectFunctionBodyLocalNames`) into a `memberAliases` list threaded into
+every member rewrite. (2) A new shared helper, `filterAliasesForExpr`,
+extracts the self-referential collect-then-filter pattern
+`rewriteFixtureDecl` already used inline (collect every name bound
+ANYWHERE inside the expression from the ORIGINAL pre-rewrite tree, then
+filter `aliases` against it before rewriting that same expression) so it
+can be reused at `rewriteConfigField`'s `default` and every `value` field
+`rewriteIncludeAdjusts` rewrites, without duplicating the pattern
+per-site.
+
+Verified by two new `alias_rewriter_self_test.l` cases (24 total): a wire
+param `Foo` colliding with a bare-imported `Foo.Bar` package, referenced
+as `Foo.Bar.baz()` inside a `singleton` member's init; and a config
+field's default lambda binding its own local `Foo` before calling
+`Foo.Bar.baz()`. Both assert the callee stays the original nested
+`EMember` chain, unrewritten. All ten previously-established suites
+re-verified green again against the build carrying this sixth fix
+(`alias_rewriter` 24/24, `msil_project_bridge` 34/34, `qualified_enum_case`
+11/11, `qualified_union_case` 5/5, `typechecker` 283/283, `parser` 124/124,
+`mono` 48/48, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 84/84,
+`cfg` 12/12).
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
-D-progress-018, #6294, #6311, #6312, #6313.
+D-progress-018, #6294, #6311, #6312, #6313, #6316.
