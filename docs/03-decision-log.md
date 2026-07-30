@@ -20774,3 +20774,771 @@ erased-receiver bug (#5936) and is routed through the file's established
 typed-function-boundary idiom, documented inline.
 
 **Related:** PR #6300, D-progress-694 (Std.HttpEngine origin), docs/61.
+
+---
+
+### D-progress-718 — A qualified call into a dotted-name package's full form silently type-checked as `TyError` (#6294)
+
+**Status:** Shipped.
+
+Found while diagnosing a cloud-agents issue: `CloudAgents.SessionStore.getSessions()`
+— a `Result[AgentSessionArray, DbError]` — was assigned directly into a
+`sessions: slice[AgentSession]` record field with **no error or warning** from
+`lyric build` / `lyric check`. `AgentSessionArray` never converts to a Lyric
+`slice`, so the field's declared type and the assigned expression's type do not
+structurally match by any legitimate coercion rule — this should have been a
+hard T0104.
+
+**Root cause.** The expression parser never builds a multi-segment `EPath` for
+a qualified reference: `Foo.Bar.baz()` parses as nested `EMember`s
+(`ECall(EMember(EMember(EPath(["Foo"]), "Bar"), "baz"), [])`), not a flat
+`EPath(["Foo","Bar","baz"])`. `Lyric.AliasRewriter.rewriteExpr`'s `EMember` arm
+is what collapses a qualified reference back into a flat `EPath` before
+typecheck — but it only ever inspected a receiver that was *itself* a
+single-segment bare `EPath`, i.e. a package name of exactly one segment, or an
+explicit `as` alias (always a single token by construction). #2929 already
+fixed the *tail-only* short form (`Bar.baz()` after `import Foo.Bar`, via a
+tail-segment implicit alias) but never covered the FULL dotted form
+(`Foo.Bar.baz()`) for a bare (non-aliased) import whose own name has 2+
+segments — exactly this repo's own `Pkg.Sub`-style package-naming convention,
+and cloud-agents' (`CloudAgents.SessionStore`, `CloudAgents.Repository`, …).
+
+Left as nested `EMember`s, `typechecker_exprs.l`'s `ECall` arm can't find a
+direct signature (`findDirectSig` only matches a plain `EPath` callee), falls
+to the member-call path, `resolveMethodCallPick` bails immediately because the
+"receiver" (the package path, evaluated as a value) isn't a real `TyUser`, and
+the final fallback returns bare `TyError` with no diagnostic — `typeEquiv`
+treats `TyError` as a universal wildcard everywhere, so the mistyped call
+satisfies ANY expected type at its call site. Codegen has its own, separate
+cross-package call resolution, so the program still builds and runs — only the
+type checker's validation of the call (arity, argument types, return-type
+propagation) silently never happened.
+
+**Fix.** `Lyric.AliasRewriter`, scoped specifically to a call's own callee
+position (the `ECall` arm), never the general `EMember` arm:
+  * `collectAliases` registers a self-mapped full-dotted-path key for every
+    bare (non-`as`) import, alongside the existing tail-only key — e.g.
+    `import PkgD.Repository` now registers both `Repository=PkgD.Repository`
+    (#2929, unchanged) and `PkgD.Repository=PkgD.Repository` (new).
+  * When `ECall`'s callee (`fn`) is an `EMember`, its receiver chain is
+    flattened in full (`flattenPathExpr`, walking arbitrary-depth `EMember`s
+    down to an `EPath` root) and checked against the known alias/package-path
+    keys as ONE WHOLE candidate (`rewriteQualifiedMemberChain` /
+    `aliasContains`) — never a partial prefix, and never retried against a
+    shorter prefix on a miss. A whole-chain match collapses the callee to a
+    flat `EPath` (`rebuildQualifiedChain`, always exactly `pkgSegs ++
+    [callName]`); a miss falls back to the ordinary (pre-existing,
+    depth-1-only) `EMember`-arm recursion, unmodified — correctly leaving a
+    genuine method call (`Pkg.Sub.someVal.method()`) alone.
+  * The general `EMember` arm (used for every NON-call qualified reference —
+    a bare value/const read, a field access) is **completely unchanged from
+    before this fix**: still depth-1-only, matching only a receiver that is
+    itself a single-segment bare `EPath`.
+
+This asymmetry — generalizing only the call-callee position — is deliberate
+and was arrived at after two rounds of CI catching real regressions from
+broader versions of this fix, both fixed before merge:
+
+  1. **A first version generalized inside `rewriteQualifiedMemberChain`
+     itself: tried every prefix from longest to shortest, rewrapping any
+     segments past the matched prefix as `EMember`s on top of the collapsed
+     `EPath`.** That version passed every `alias_rewriter_self_test.l` case
+     but broke a real, pre-existing feature caught by CI's JVM self-test
+     suite: `qualified_enum_case_self_test.l`'s `Std.Errors.
+     ParseError.InvalidFormat(input = ..., expected = ...)` (#5943, a
+     package+type+case qualified union-case CONSTRUCTION) mis-collapsed to
+     `EMember(receiver = EPath(["Std","Errors","ParseError"]), memberName =
+     "InvalidFormat")` — a hybrid flat-`EPath`-wrapped-in-`EMember` shape
+     that neither the type checker's `unionCaseSymbolOf`/`constructorSymbolOf`
+     (only ever matched a *plain* `EPath` callee, never one nested inside an
+     `EMember`) nor JVM codegen's own qualified-construction walk (expects
+     EITHER a flat `EPath` OR a *pure* nested-`EMember` chain reaching an
+     `EPath` base, never a mix) could resolve; JVM codegen's fallback then
+     tried the whole thing as an auto-FFI static call and panicked with `JVM
+     auto-FFI: class 'Std.Errors.ParseError' not found in JDK jmods or
+     LYRIC_FFI_JARS`. Reproduced locally against `stage0` (the pristine
+     pre-fix release) to confirm the construction worked correctly before
+     any of this change, then against the broken intermediate build to
+     confirm the exact panic.
+  2. **A second version fixed (1) by requiring an EXACT whole-chain match
+     (no partial-prefix rewrap) and falling through to ordinary recursion on
+     a miss — but still applied generally in the `EMember` arm, for EVERY
+     qualified reference, not just calls.** CI's MSIL self-test suite then
+     caught `msil_project_bridge_self_test.l`'s pre-existing "local shadowing
+     a package name reads its own field, not the qualified static val"
+     regression test (#5265): a local `val ShadowVal = Outer(Lib = Inner(
+     secret = "local-not-static"))` (in a file that also bare-imports the
+     UNRELATED `ShadowVal.Lib` package, which happens to expose `pub val
+     secret`) read `ShadowVal.Lib.secret` and got `"from-package"` instead
+     of `"local-not-static"`. The alias rewriter runs *before* typecheck and
+     carries **no scope information at all** — it is documented scope-blind
+     in this very file's header (`import X as Coll` colliding with a
+     same-named local was always an accepted, narrow limitation) — so it
+     cannot tell that `ShadowVal` names a local here. MSIL codegen's OWN
+     qualified-static-val resolution (`tryQualifiedStaticValNameMsil`,
+     covering exactly this `Pkg.Sub.val.field`-shaped access) already has a
+     genuine, scope-aware "first-segment-is-a-local" guard — since it runs
+     downstream of typecheck and has real access to `FuncCtx`'s locals — but
+     that guard only gets a chance to run if the aliaser leaves the chain as
+     a nested `EMember` for it to walk. By collapsing `ShadowVal.Lib` (which
+     happens to spell out the unrelated package's own dotted name) into a
+     bare `EPath` pre-emptively, the generalized aliaser bypassed the guard
+     entirely, in a case a real, un-synthesized `EPath` could never have
+     reached (a source-level `EPath` is always parser-emitted from an
+     already-fully-qualified reference, never ambiguous with a local — only
+     a *rewritten* one can introduce this ambiguity). Function CALLS are
+     different: MSIL/JVM's call lowering (`lowerCallMsil`/its JVM analogue)
+     has NO analogous scope-aware fallback for an `EMember` callee — an
+     `EMember`-shaped call callee unconditionally falls into generic
+     method-call lowering and fails outright (the exact #2929/#2930
+     symptom) — so restricting the generalization to the callee position
+     specifically loses nothing calls need while leaving every scope-aware,
+     non-call resolution path (`tryQualifiedStaticValNameMsil`,
+     `tryQualifiedEnumOrdinalMsil`, ordinary field-access codegen) exactly as
+     it was.
+
+This is a strict generalization of #2929/#2930/#1834's existing behaviour:
+a single-segment package name or an explicit alias still matches at chain
+depth 1 exactly as before, in both the callee and non-callee positions.
+
+**Verification.** `alias_rewriter_self_test.l` gained five cases: the
+full-dotted-form two-segment CALL repro (asserting the rewritten `EPath`
+has the right 3 segments in order, plus a span assertion that the
+synthesized `ModulePath`'s span matches the original receiver's own span,
+not the whole call's), a three-segment package's full-form CALL (guards
+against a depth-1-only regression), a longest-match-wins precedence CALL
+case (both a bare `import Foo` and a bare `import Foo.Bar` in scope;
+`Foo.Bar.baz()` resolves against the more specific 2-segment package), a
+runtime end-to-end CALL case (`Std.Console.println(...)`, the full form,
+alongside the pre-existing tail-only `Console.println(...)` case) proving
+the fix reaches real codegen, and — added after regression (2) above — a
+case proving a NON-call qualified reference into the SAME multi-segment
+bare-imported package is left completely untouched (still the original
+nested `EMember`s), guarding against ever re-widening the generalization
+past the callee position. `qualified_enum_case_self_test.l` and
+`qualified_union_case_self_test.l` (the #5943/#5769/#5845/#5971 family
+regression (1) above nearly broke) and `msil_project_bridge_self_test.l`
+(regression (2)'s own test, plus its 33 siblings) all re-verified green on
+both targets after both corrections. Confirmed against a minimal
+multi-package project repro mirroring the cloud-agents shape (a dotted-name
+package declaring a function whose return type failed to validate against
+an incompatible field/argument type) before the fix — zero diagnostics,
+wrong type accepted; after the fix — correct T0104/T0043 diagnostics
+reported.
+
+**Follow-up (review feedback).** `collectAliases`'s self-mapped full-path
+key was originally only added for a BARE `import Pkg.Sub` (the no-`as`
+loop). `import Pkg.Sub as X` registered only the explicit alias key
+(`X=Pkg.Sub`) — so a file that imports a package under an alias but still
+calls it via its ORIGINAL dotted name (`Pkg.Sub.foo(...)`, valid Lyric
+alongside the idiomatic `X.foo(...)`) hit the exact same #6294 silent-
+`TyError` gap, just reached through an aliased rather than bare import.
+Fixed symmetrically: the explicit-alias loop now also registers a
+self-mapped `Pkg.Sub=Pkg.Sub` key alongside the alias key. Verified by a
+sixth `alias_rewriter_self_test.l` case (`import Foo.Bar as X` + a call via
+`Foo.Bar.baz()`, not `X.baz()`) — 17/17 total, all suites re-verified green.
+
+**Third finding (review feedback, #6311): the `ECall`-callee generalization
+itself had no scope-awareness, and depth-2+ chains were newly exposed to
+it.** The whole-chain match added for #6294 treats ANY multi-segment
+call-callee chain that spells out a known package's full dotted path as
+that package — with no check that the chain's root segment is actually a
+local in the enclosing function. Confirmed as a real, NEW regression (not
+the file's pre-existing, documented depth-1 gap) via three-way empirical
+comparison: (a) a depth-1 collision (`Bar.baz()` after `import Foo.Bar`
+with a same-named local `Bar`) already silently favored the package on
+`stage0` — the pristine pre-#6294 release — matching this file's own
+"scope-blind" header disclaimer and *not* something this PR needs to fix;
+(b) the analogous depth-2 collision (`Foo.Bar.handle()` after `import
+Foo.Bar`, with a local `val Foo = LocalWrapper(Bar = LocalInner(x = 1))`
+whose own `Bar` field happens to be typed `LocalInner`, which has no
+`handle` method) correctly reported `error[T0113] no method 'handle' on
+type 'LocalInner'` on `stage0`, proving depth-2+ was SAFE before #6294; (c)
+the SAME depth-2 repro against the fixed (#6294-only) build silently
+printed `999` — the unrelated package's `Foo.Bar.handle()` return value —
+with no diagnostic at all, confirming the `ECall` generalization itself
+introduced the new hazard.
+
+Fixed by making the callee collapse scope-aware without adding a new
+parameter through the ~60 mutually-recursive rewrite functions: before
+rewriting a function-shaped scope's body (`rewriteFunctionDecl`,
+`rewriteEntryDecl`, `rewriteTestDecl`, `rewritePropertyDecl`, and an
+aspect's `AspectAround` body), collect every name bound ANYWHERE within it
+— params/binders, every `val`/`var`/`let`, every pattern binding (including
+match arms, for-loop patterns, and record shorthand fields), lambda params,
+catch binds, `scope` binds — and strip any alias entry whose key's FIRST
+dot-segment collides with one of those names from the `aliases` list
+threaded into the body before recursing. This reuses the alias rewriter's
+existing single threaded `aliases: List[String]` parameter rather than
+plumbing scope information through the whole file, and is deliberately
+coarser than real per-block scoping (a name bound in one `if` branch also
+suppresses the collapse in a sibling branch that never sees it) — but that
+imprecision is conservative and sound: it can only ever suppress a
+legitimate collapse (falling back to the existing, safe recursive
+per-`EMember`-arm behavior for that chain), never wrongly enable an
+incorrect one. Because the filtering happens once at the outermost
+function-shaped scope and collects names from the ENTIRE function body
+(including nested lambdas, matches, and blocks), a single filter pass
+covers every nested scope too — a lambda parameter's own shadowing hazard,
+for instance, is caught by the same collection pass without any separate
+per-lambda filtering.
+
+Verified by a seventh `alias_rewriter_self_test.l` case: `import Foo.Bar` +
+a function body binding `val Foo = 0` before calling `Foo.Bar.baz()` —
+asserts the callee stays the original nested `EMember` chain, unrewritten,
+rather than collapsing into a flat `EPath` — 18/18 total. Also re-confirmed
+against the depth-2 repro directly: `lyric build` on the minimal
+multi-package project from finding (b)/(c) above now correctly reports
+`error[T0113] no method 'handle' on type 'LocalInner'`, matching `stage0`'s
+original (correct) behavior, instead of silently accepting and misrouting
+to the unrelated package. All ten previously-established suites
+(`alias_rewriter` 18/18, `msil_project_bridge` 34/34, `qualified_enum_case`
+11/11, `qualified_union_case` 5/5, `typechecker` 283/283, `parser` 124/124,
+`mono` 48/48, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 84/84,
+`cfg` 12/12) re-verified green against the corrected build.
+
+**Fourth finding (review feedback, #6312): the #6311 fix only covered
+function-local bindings, leaving the identical hazard open one scope level
+up.** `filterAliasesExcludingLocals` was wired in at every function-shaped
+scope (`rewriteFunctionDecl`, `rewriteEntryDecl`, `rewriteTestDecl`,
+`rewritePropertyDecl`, `rewriteFixtureDecl`, an aspect's `AspectAround`
+body), each filtering against names bound INSIDE that one function's own
+body — but a module-level `val`/`const` is visible, unqualified, from
+EVERY function in the file, not just one lexically near it (a real,
+existing pattern — e.g. `lyric-stdlib/std/http.l`'s
+`insecureAllowEnvVar`). A module-level `val Foo = ...` colliding with a
+bare-imported package's first dotted segment still collapsed
+unconditionally when called as `Foo.Bar.method()` from ANY function in the
+file, since that function's own per-function `locals` set never contained
+`Foo` — the exact #6311 hazard, just one scope level up, following the
+same "safe on `stage0`, unsafe only because of this PR's own
+generalization" pattern the third finding above already established.
+
+Fixed by computing a file-wide name set ONCE in `rewriteFile` —
+`collectModuleLevelValueNames` walks the file's own top-level `IVal`/
+`IConst` items (pattern-bound names for `IVal`, the plain name for
+`IConst`) — and filtering the aliases list with it BEFORE any item is
+rewritten, so every function-shaped scope's own per-function filter
+(#6311) further narrows an already-module-scope-filtered base rather than
+starting from the raw, unfiltered alias list. This mirrors how
+`collectAliases` itself already runs once per file rather than once per
+item.
+
+Verified by a 19th `alias_rewriter_self_test.l` case: a module-level
+`val Foo = 0` alongside `import Foo.Bar`, called as `Foo.Bar.baz()` from a
+function that declares no local named `Foo` itself — asserts the callee
+stays the original nested `EMember` chain, unrewritten. All ten
+previously-established suites re-verified green again against the build
+carrying this fourth fix (`alias_rewriter` 19/19, `msil_project_bridge`
+34/34, `qualified_enum_case` 11/11, `qualified_union_case` 5/5,
+`typechecker` 283/283, `parser` 124/124, `mono` 48/48, `weaver` 46/46,
+`aspect_weave` 7/7, `modechecker` 84/84, `cfg` 12/12).
+
+**Follow-up (review feedback, non-blocking).** Two SUGGESTIONs after the
+fourth finding: (1) the non-call `EMember` arm's comment claimed the
+rewriter "carries no scope information at all," which was true of the
+arm's own code but no longer true of its *effective* behavior — the
+#6311/#6312 filtering strips a shadowed alias from the shared `aliases`
+list before ANY arm consults it, so a local/module `val` colliding with a
+package's *tail* alias now also suppresses a plain, non-call value
+reference (`Bar.baz`), not just a call. Comment corrected to describe this
+side effect precisely; locked in by a new test. (2) The locals collection
+is function-body-wide, not real per-block lexical scope, so a name bound
+only inside one branch also suppresses the collapse at an unrelated call
+site elsewhere in the same function — an accepted, conservative false
+negative (never a false positive), now backed by a dedicated test rather
+than prose alone.
+
+**Fifth finding (review feedback, #6313): the scope-filtered aliases never
+reached contract clauses.** `rewriteFunctionDecl`, `rewriteEntryDecl`, and
+`rewriteAspectDecl` each compute a param/local-scoped `bodyAliases` (via
+`filterAliasesExcludingLocals`) and thread it into the function/entry
+BODY rewrite — but each still called `rewriteContracts(aliases, ...)`
+with the raw, unfiltered `aliases` for `requires:`/`ensures:`/`when:`/
+`decreases:` clauses. `rewriteFunctionSig` (body-less interface method
+signatures) had the identical gap and didn't build a params-derived
+locals list at all. Since contract clauses reference a function's own
+parameters directly, and `collectParamNames` already feeds those same
+parameter names into the locals set backing `bodyAliases`, this
+reproduced the exact #6311-class hazard one syntactic position over: a
+param whose name collides with a bare-imported package's first dotted
+segment could still be silently misrouted to the package inside a
+`requires:`/`ensures:` clause, even after #6311/#6312 closed the
+identical hazard for the body.
+
+Fixed by reusing the already-filtered alias list at all four sites:
+`rewriteFunctionDecl` and `rewriteEntryDecl` now pass `bodyAliases` (not
+`aliases`) to `rewriteContracts`; `rewriteFunctionSig` builds its own
+params-only `sigAliases` (no body to collect from); `rewriteAspectDecl`
+hoists the `around` block's `bodyAliases` out to a `contractAliases`
+variable so the aspect's OWN top-level `contracts` (which reference
+`args.<field>`/`ret`, the advice body's bound names) get the same
+filtering — falling back to the unfiltered `aliases` only when there's no
+`around` block to derive a scope from (matching prior, pre-#6311
+behavior for that case, since there's no `args`/`ret` scope to filter
+against). Verified by a 22nd `alias_rewriter_self_test.l` case: a
+function param `Foo` colliding with a bare-imported `Foo.Bar` package,
+referenced as `Foo.Bar.baz()` inside the function's own `requires:`
+clause — asserts the clause's callee stays the original nested `EMember`
+chain, unrewritten. All ten previously-established suites re-verified
+green again against the build carrying this fifth fix (`alias_rewriter`
+22/22, `msil_project_bridge` 34/34, `qualified_enum_case` 11/11,
+`qualified_union_case` 5/5, `typechecker` 283/283, `parser` 124/124,
+`mono` 48/48, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 84/84,
+`cfg` 12/12).
+
+**Sixth finding (review feedback, #6316): wire params and standalone
+default/value expressions never reached the scope filter at all.**
+`WireDecl.params` is a function-like parameter scope — exactly analogous
+to `FunctionDecl.params` (#6311) — visible to every wire member's own
+`init`/`provider` expression, but `rewriteWireDecl` never collected it
+into a locals set before this fix, so a wire param colliding with a
+bare-imported package's dotted name still collapsed unconditionally
+inside a member's init. Separately, `rewriteConfigField`'s `default:
+Option[Expr]` and `rewriteIncludeAdjusts`'s `IAProvided`/
+`IAConfigOverride`/`IAReplace` `value: Expr` fields were rewritten with
+the raw, unfiltered `aliases` even though the grammar permits these to be
+arbitrary lambda expressions (a bare `{ ... }` in expression position
+parses as a zero-arg `ELambda`, not a block — `parsePrimaryExpr`'s
+`LBrace` arm always goes through `parseLambdaExpr`) that can introduce
+their own shadowing locals, the same self-contained-expression hazard
+`rewriteFixtureDecl`'s `init` already guards against.
+
+Fixed two ways: (1) `rewriteWireDecl` now collects `d.params` plus every
+member's own bound name (`WMProvided`/`WMSingleton`/`WMScoped`/`WMLocal`/
+`WMContributes`, in the same coarse function-body-wide spirit as
+`collectFunctionBodyLocalNames`) into a `memberAliases` list threaded into
+every member rewrite. (2) A new shared helper, `filterAliasesForExpr`,
+extracts the self-referential collect-then-filter pattern
+`rewriteFixtureDecl` already used inline (collect every name bound
+ANYWHERE inside the expression from the ORIGINAL pre-rewrite tree, then
+filter `aliases` against it before rewriting that same expression) so it
+can be reused at `rewriteConfigField`'s `default` and every `value` field
+`rewriteIncludeAdjusts` rewrites, without duplicating the pattern
+per-site.
+
+Verified by two new `alias_rewriter_self_test.l` cases (24 total): a wire
+param `Foo` colliding with a bare-imported `Foo.Bar` package, referenced
+as `Foo.Bar.baz()` inside a `singleton` member's init; and a config
+field's default lambda binding its own local `Foo` before calling
+`Foo.Bar.baz()`. Both assert the callee stays the original nested
+`EMember` chain, unrewritten. All ten previously-established suites
+re-verified green again against the build carrying this sixth fix
+(`alias_rewriter` 24/24, `msil_project_bridge` 34/34, `qualified_enum_case`
+11/11, `qualified_union_case` 5/5, `typechecker` 283/283, `parser` 124/124,
+`mono` 48/48, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 84/84,
+`cfg` 12/12).
+
+**Note on the sixth finding's tallies above.** "24 total" / `alias_rewriter`
+24/24 were accurate when that finding landed, but a follow-up SUGGESTION
+round (dedupe `rewriteFixtureDecl`'s own filtering onto the shared
+`filterAliasesForExpr` helper, plus closing an analogous locals gap in
+`WMInclude`/`WMConfigInst`) added two more cases before the seventh
+finding below, bringing the file to 26. The seventh finding's own tallies
+are the current, accurate counts — treat any earlier count in this entry
+as a snapshot of that point in time, not the file's present size.
+
+**Seventh finding (review feedback, #6320): `rewriteParam`'s and
+`rewriteFieldDecl`'s `dflt`, and `rewriteWireMember`'s `init`/`provider`
+expressions, never got the same self-contained-expression filtering the
+sixth finding gave `rewriteConfigField`'s `default` and
+`rewriteIncludeAdjusts`'s `value`.** All five expression positions share
+the identical hazard: the grammar allows a bare `{ ... }` there, which
+parses as a zero-arg `ELambda` (never `EBlock` — `parsePrimaryExpr`'s
+`LBrace` arm always routes through `parseLambdaExpr`), and that lambda's
+own body can bind a local colliding with a bare-imported package's dotted
+name. `filterAliasesForExpr` was applied at `rewriteFixtureDecl`'s `init`,
+`rewriteConfigField`'s `default`, and `rewriteIncludeAdjusts`'s `value`
+(sixth finding) but not at the three structurally identical sites: a
+function/extern-func/entry/wire/impl-method PARAM's own `dflt`
+(`rewriteParam`), a record/opaque/protected-type FIELD's own `dflt`
+(`rewriteFieldDecl`), and a wire member's `init`/`provider`
+(`rewriteWireMember`'s `WMSingleton`/`WMScoped`/`WMBind`/`WMLocal`/
+`WMContributes` arms) — each of which stayed on the raw, unfiltered
+`aliases` passed in from the enclosing scope. A wire `singleton x: T =
+{ ... }` is docs/58's own idiomatic construction syntax, making this the
+most reachable of the three in practice.
+
+Fixed by routing all three through the existing `filterAliasesForExpr`
+helper, exactly as the sixth finding's two sites already do: `rewriteParam`
+now computes `filterAliasesForExpr(aliases, e)` for its `dflt` before
+calling `rewriteExpr`; `rewriteFieldDecl` does the same for its `dflt`;
+`rewriteWireMember`'s five init/provider-bearing cases each do the same for
+their own expression, layered on top of (not a replacement for) the
+wire-level `memberAliases` filtering `rewriteWireDecl` already threads in
+here (a different, nested concern — locals bound INSIDE the init/provider
+expression itself, vs. wire-level param/sibling-member-name collisions).
+
+**A test-authoring bug surfaced by this fix, worth recording.** The first
+attempt at the record-field-default regression test asserted against
+`decl.fields[0].dflt` after matching `IRecord(decl)` — but `RecordDecl` has
+no `fields` field; it has `members: List[RecordMember]`, and a field
+default lives at `RMField(field).dflt`. This is precisely the class of bug
+this whole PR fixes: the bogus `.fields` access degraded silently to
+`TyError` instead of a compile error, so `.count`/`[0]`/`.dflt` on it kept
+right on "type-checking" as the universal wildcard — the test file built
+cleanly and even ran, but the test crashed the CLR at runtime ("Common
+Language Runtime detected an invalid program") instead of failing an
+assertion. Corrected to match `decl.members[0]` against `RMField(field)`
+and read `field.dflt`. Left here because it is a live, self-inflicted
+demonstration of the exact silent-failure mode #6294 reported in the first
+place — this fix does not (and structurally cannot, short of a much larger
+change to reject unknown member access outright) close that door; it only
+closes the narrower `ECall`-qualified-chain-collapse door for legitimate
+field/member names.
+
+Verified by three new `alias_rewriter_self_test.l` cases (29 total): a
+function param default lambda, a record field default lambda, and a wire
+singleton's init lambda, each binding its own local `Foo` before calling
+`Foo.Bar.baz()` where `Foo.Bar` is a bare-imported package — all three
+assert the callee stays the original nested `EMember` chain, unrewritten.
+Confirming the `make stage1-fast` (`SKIP_CLI_BUNDLE=1`) gotcha this PR has
+hit before: it does not rebuild the self-hosted compiler DLLs `lyric test`
+links against, so the fix only actually took effect (and the
+test-authoring bug above was only caught) after a full `make lyric`
+rebuild — the three new cases still failed against a `stage1-fast`-only
+build, matching the same class of false-confidence risk this repo's
+`CLAUDE.md` already flags for that shortcut. All ten previously-established
+suites re-verified green again against the build carrying this seventh fix,
+rebased onto `main` (`alias_rewriter` 29/29, `msil_project_bridge` 34/34,
+`qualified_enum_case` 11/11, `qualified_union_case` 5/5, `typechecker`
+283/283, `parser` 126/126, `mono` 48/48, `weaver` 46/46, `aspect_weave`
+7/7, `modechecker` 92/92, `cfg` 12/12 — `parser` and `modechecker` each
+picked up a couple of extra cases from unrelated `main` commits landed
+during the rebase, not from anything in this fix).
+
+**Eighth finding (review feedback, #6321): module-level `val`/`const`
+initializers, and record/opaque/protected-type `invariant:` clauses, had
+the same standalone-expression gap as the seventh finding.** `rewriteItem`'s
+`IConst`/`IVal` arms still called `rewriteExpr(aliases, decl.init)`
+directly, unfiltered — a module-level `val X = { val Foo = 0; Foo.Bar.baz()
+}` (ordinary Lyric: `parseModuleValBody` uses the fully general `parseExpr`,
+and a bare `{ ... }` in expression position always parses as a zero-arg
+`ELambda`) still silently collapsed `Foo.Bar.baz()` into the unrelated
+bare-imported `Foo.Bar` package's call, bypassing the local `Foo` — the
+exact #6294 silent-misroute bug, reached through a position none of
+findings #6311–#6320 had enumerated. The review also flagged a SUGGESTION
+of the same shape one level further out: `RMInvariant`/`OMInvariant`/
+`PMInvariant` (record/opaque/protected-type `invariant:` clauses) were
+rewritten via plain `rewriteExpr(aliases, inv.expr)`, and `invariant:`
+also parses its clause via general `parseExpr`, so a lambda-bodied
+invariant with its own shadowing local hits the identical gap — lower
+priority since a bare-block-lambda invariant is a much rarer pattern than
+a module-level `val`/`const` initializer, but the same one-line fix.
+
+Fixed by routing all five sites through the existing `filterAliasesForExpr`
+helper: `rewriteItem`'s `IConst` and `IVal` arms, and the `RMInvariant`/
+`OMInvariant`/`PMInvariant` arms in `rewriteRecordDecl`/
+`rewriteOpaqueMember`/`rewriteProtectedMember`.
+
+Audited the file's remaining `rewriteExpr(aliases, ...)` call sites (per
+the review's own suggested audit approach — "is this reachable from a
+scope that already ran a locals-collection pass?") to confirm this really
+is the last standalone-expression gap: every other `rewriteExpr` call site
+either (a) already receives a locals-filtered `aliases`/`bodyAliases`/
+`sigAliases`/`contractAliases`/`memberAliases` from an enclosing
+function-shaped or wire-shaped scope (findings #6311–#6313/#6316), (b) is
+itself one of the now-nine `filterAliasesForExpr` call sites (fixture
+`init`, config field `default`, include-adjustment `value`, param `dflt`,
+field `dflt`, five wire-member `init`/`provider` arms, `IConst`/`IVal`
+`init`, three invariant-clause `expr`s), or (c) rewrites a type expr /
+pattern / constraint ref, none of which can themselves be a `{ ... }`
+lambda under the grammar.
+
+Also confirmed, while writing the regression test, that `IConst`/
+`ConstDecl` has **no keyword production in the lexer at all** — there is
+no `KwConst` in `lexer.l`'s keyword table, and no self-test suite in the
+repo contains a real `"const ..."` source snippet. `IConst` is therefore
+dead AST surface, unreachable from any real parsed source today (only ever
+constructed by non-parser code, per a repo-wide grep of every `IConst(`
+call site: `contract_meta.l`, `llvm_bridge.l`/`llvm_codegen.l`, `lsp.l`,
+`doc.l`, `fmt_items.l`, `lint.l`, `typechecker_checker.l` all only ever
+*match* an already-parsed `IConst`, never construct one from source text).
+The `IConst` arm's fix lands anyway (it mirrors its `IVal` sibling exactly
+and costs nothing, matching the review's suggested one-line fix at both
+arms symmetrically) but has no independent regression test for this
+reason — a `val` case covers the real, reachable half of the gap.
+
+Verified by three new `alias_rewriter_self_test.l` cases (31 total): a
+module-level `val` initializer lambda binding its own local `Foo` before
+calling `Foo.Bar.baz()`, and a record `invariant:` clause doing the same —
+both assert the callee stays the original nested `EMember` chain,
+unrewritten. All ten previously-established suites re-verified green again
+against the build carrying this eighth fix (`alias_rewriter` 31/31,
+`msil_project_bridge` 34/34, `qualified_enum_case` 11/11,
+`qualified_union_case` 5/5, `typechecker` 283/283, `parser` 126/126,
+`mono` 48/48, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 92/92,
+`cfg` 12/12 — no drift in any of these counts from the seventh finding's
+build, unlike the parser/modechecker drift the seventh finding's own
+addendum called out from an intervening `main` rebase).
+
+**Follow-up (review feedback, non-blocking).** SUGGESTION after the eighth
+finding: `collectModuleLevelValueNames` only walks top-level `IConst`/
+`IVal` items, not `IFunc`, with no comment explaining why — worth calling
+out explicitly given how exhaustively every other binding kind was
+enumerated across findings #6311–#6321. Addressed with a one-line comment:
+a top-level function's own name can't reproduce this hazard, since a bare
+function reference is never a valid receiver for `.field`/`.method`
+access the way a record-typed `val` is — there is no `Foo.Bar.baz()` shape
+a same-named top-level `func Foo` could shadow. No code or test change;
+re-verified `alias_rewriter` stays 31/31 after the comment-only edit.
+
+**Ninth finding (review feedback, #6323): `rewriteProtectedField`'s `PFVar`/
+`PFLet` init was the one standalone-expression position the eighth
+finding's own audit missed.** `rewriteProtectedField` still rewrote a
+protected `var`/`let` field's `init` via plain `rewriteOptExpr(aliases,
+init)` — the pre-`filterAliasesForExpr` pattern every sibling position
+(field `dflt`, param `dflt`, all three invariant-clause kinds, wire-member
+init/provider, include-adjustment `value`, fixture `init`, config
+`default`, module `val`/`const` init) had already been migrated off of.
+`PMInvariant`, two lines below the defect in `rewriteProtectedMember`, got
+the eighth finding's fix; the immediately-preceding `PFVar`/`PFLet` case
+in `rewriteProtectedField` did not. A protected field's bare `{ ... }`
+init lambda binding its own shadowing local reproduced the exact #6294
+bug class, unfixed. This falsifies the eighth finding's own closing claim
+("this really is the last standalone-expression gap") — the audit that
+backed that claim enumerated call sites by grepping for the *pattern*
+`rewriteExpr(aliases, ...)`, which is exactly what `rewriteOptExpr`'s own
+body already handles, so a raw `rewriteOptExpr(aliases, init)` call site
+one layer removed from that literal text wasn't independently checked.
+
+Fixed with a small new helper, `rewriteOptExprSelfFiltered`, wrapping the
+`Some`/`None` match around `filterAliasesForExpr` + `rewriteExpr` (the
+same shape `rewriteParam`/`rewriteFieldDecl` already inline directly, but
+factored out here since `rewriteProtectedField` has two `Option[Expr]`
+call sites needing it) and swapping both `PFVar`/`PFLet` arms onto it.
+
+Also addressed, same round, three additional review SUGGESTIONs found
+during a fresh audit of the file:
+  * `collectModuleLevelValueNames` didn't collect `IFixture` names. This
+    is masked today — `Lyric.TestSynth` rewrites `fixture X` to `val X`
+    before the alias rewriter ever runs — but the collector shouldn't
+    silently depend on that pass ordering forever. Added an `IFixture`
+    arm alongside `IVal`, with a comment explaining why it was
+    previously safe to omit.
+  * `flattenPathExpr`'s `EPath` base case returned the parsed AST's own
+    `p.segments` list BY REFERENCE, unlike the sibling `EMember` arm,
+    which always builds a fresh list. No current caller mutates the
+    returned list, so this was latent, not live — but the asymmetry
+    invited a future caller to corrupt a parsed `ModulePath` in place.
+    Fixed to copy, matching the `EMember` arm.
+  * Documented (no code change) why `collectModuleLevelValueNames`
+    deliberately excludes `IFunc`: a bare top-level function reference is
+    never a valid receiver for `.field`/`.method` access the way a
+    record-typed `val` is, so there's no `Foo.Bar.baz()` shape a
+    same-named top-level `func Foo` could ever shadow.
+
+Verified by a new `alias_rewriter_self_test.l` case (32 total): a
+protected type's `var` field with an init lambda binding its own local
+`Foo` before calling `Foo.Bar.baz()`, asserting the callee stays the
+original nested `EMember` chain, unrewritten. All ten previously-
+established suites re-verified green again against the build carrying
+this ninth fix (`alias_rewriter` 32/32, `msil_project_bridge` 34/34,
+`qualified_enum_case` 11/11, `qualified_union_case` 5/5, `typechecker`
+283/283, `parser` 126/126, `mono` 54/54, `weaver` 46/46, `aspect_weave`
+7/7, `modechecker` 92/92, `cfg` 12/12 — `mono`'s count moved from 48 to
+54 from an unrelated `main` rebase between the eighth and ninth findings,
+not from anything in this fix). This is the second time this PR's own
+"is this really the last gap?" claim has been falsified by a subsequent
+review round (the eighth finding falsified the seventh's); the actual
+closing condition is a literal grep for every `rewriteExpr`/`rewriteOptExpr`
+call site in the file against raw `aliases` (not `bodyAliases`/
+`contractAliases`/`sigAliases`/`memberAliases`/a `filterAliasesForExpr`
+result), not a prose argument about which positions "should" have been
+covered.
+
+**Tenth finding (review feedback, #6324): the "literal grep for
+`rewriteExpr(aliases, ...)`/`rewriteOptExpr(aliases, ...)`" closing test
+the ninth finding proposed was still incomplete — it missed a call site
+one syntactic layer further removed than either.** `rewritePattern`'s
+`PRange` arm rewrote a range pattern's `lo`/`hi` bounds via plain
+`rewriteExpr(aliases, lo)` / `rewriteExpr(aliases, hi)` — a LITERAL match
+for the grep pattern the ninth finding's audit was supposed to run, and
+somehow still missed in that pass. `parseLiteralOrRangePat` parses a range
+pattern's `hi` (and `lo`) via the fully general `parseExpr`, so either
+bound can be a bare `{ ... }` lambda binding its own shadowing local —
+`case 0..{ val Foo = 0; Foo.Bar.baz() } -> ...` silently collapsed
+`Foo.Bar.baz()` into the unrelated bare-imported `Foo.Bar` package,
+bypassing the local `Foo`, the same #6294 bug class yet again. A second,
+independent gap in the same neighborhood: `collectPatternLocalNames`'s
+`PRange(_, _, _) -> ()` arm discarded `lo`/`hi` entirely instead of
+recursing into them — so even where a caller DOES route through
+`filterAliasesForExpr` around an expression containing a match with a
+range-pattern arm, a local bound inside that arm's own `lo`/`hi` lambda
+was never collected into the ambient locals set either.
+
+This is the SECOND time a "this closes every gap" claim on this PR was
+run through an actual audit methodology and the audit itself still missed
+something — worth naming honestly rather than re-asserting confidence a
+third time: a `grep -n "rewriteExpr(aliases,\|rewriteOptExpr(aliases,"
+alias_rewriter.l` run as an audit AFTER this finding's fix, reported at
+the end of this entry, shows the current, empirically-verified state of
+that grep, not a prose claim about it.
+
+Fixed by routing `PRange`'s `lo`/`hi` through `filterAliasesForExpr`
+independently (each bound gets its own self-contained collect-then-filter
+pass, since `lo` and `hi` are two separate standalone expressions that
+could each introduce different shadowing locals) in `rewritePattern`, and
+by making `collectPatternLocalNames`'s `PRange` arm recurse into both
+bounds via `collectExprLocalNames`, mirroring how every other sub-`Expr`
+this collector visits is already handled.
+
+Verified by a new `alias_rewriter_self_test.l` case (33 total): a `match`
+with a range-pattern arm (`case 0..{ ... } -> 1`) whose `hi` bound is a
+lambda binding its own local `Foo` before calling `Foo.Bar.baz()`,
+asserting the callee stays the original nested `EMember` chain,
+unrewritten. All ten previously-established suites re-verified green
+again against the build carrying this tenth fix (`alias_rewriter` 33/33,
+`msil_project_bridge` 34/34, `qualified_enum_case` 11/11,
+`qualified_union_case` 5/5, `typechecker` 283/283, `parser` 126/126,
+`mono` 54/54, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 92/92,
+`cfg` 12/12 — no drift in any of these from the ninth finding's build).
+
+**Post-fix audit** (the actual, current state of the grep the ninth
+finding's own closing paragraph proposed, re-run after this fix, not a
+repeated prose assertion): every `rewriteExpr(aliases, ...)` call site
+remaining in `alias_rewriter.l` is internal recursion INSIDE `rewriteExpr`/
+`rewriteStatement`/`rewriteBlock`/`rewritePattern`'s own sub-expression
+traversal (a sub-node of an expression tree already being rewritten under
+a caller-supplied, correctly-scoped `aliases`, not a new standalone entry
+point), or a function/entry body's own top-level rewrite (already
+correctly scoped by its caller). `rewriteOptExpr(aliases, ...)` — the
+exact unfiltered-call literal string — has zero remaining matches in the
+file; both of `rewriteOptExpr`'s own call sites pass an already-scoped
+variable (`bodyAliases`, `defaultAliases`), never raw `aliases`.
+
+**CORRECTION (review feedback, added at the twelfth finding below):** the
+paragraph above was itself wrong — `rewriteContractClause`'s four
+`CCRequires`/`CCEnsures`/`CCWhen`/`CCDecreases` arms are a literal,
+unmissable match for the exact `rewriteExpr(aliases, ...)` grep this
+paragraph claims to have exhaustively re-run, and were not caught. Left
+in place rather than deleted (per this doc's append-only convention) as a
+concrete demonstration of exactly the failure mode it warns about: an
+"audit re-run" claim is only as good as actually re-running it, and this
+one wasn't. See the twelfth finding for the real fix and the actual
+current grep output.
+
+**Eleventh finding (review feedback, #6325): two more positions structurally
+identical to #6324's just-fixed `PRange` were missed by that very fix's own
+commit.** `rewriteTypeArg`'s `TAValue` case (a const-generic type argument's
+value expr, e.g. `array[SIZE, Elem]`'s `SIZE`) and `rewriteRangeBound`'s
+`lo`/`hi` (used by BOTH `ERange` expressions, `lo..hi`, and — the more
+directly reachable of the two — a range-subtype declaration's own bound,
+`type Age = Int range lo..=hi`) both still called `rewriteExpr(aliases,
+...)` with the raw, unfiltered `aliases`. `parseTypeArg`'s `TAValue` branch
+and `parseRangeBound` both ultimately call the fully general `parseExpr`,
+so either position can embed a lambda (a leading-literal-then-binop-RHS
+lambda for `TAValue`, since a bare `{` doesn't itself start a `TAValue`; a
+direct bare-lambda bound for `RangeBound`) introducing its own shadowing
+local — the same #6294 bug class, an eleventh time. Concretely: `type Age
+= Int range 0 ..= { val Foo = 0; Foo.Bar.baz() }` with `import Foo.Bar` in
+scope silently collapsed `Foo.Bar.baz()` to the package call.
+
+This is the THIRD "is this really the last gap?" claim on this PR that a
+subsequent review round falsified (the eighth falsified the seventh's, the
+tenth falsified the ninth's) — each time via an audit methodology that
+was itself slightly incomplete. Naming the pattern rather than re-asserting
+confidence a fourth time: every one of these eleven findings has been
+structurally identical (a standalone `Expr`-typed sub-position parsed via
+the fully general `parseExpr`/`parseLiteralOrRangePat`/etc., rewritten via
+a raw, unfiltered `rewriteExpr(aliases, ...)`/`rewriteOptExpr(aliases,
+...)` call instead of `filterAliasesForExpr`), and each was found by
+re-deriving the AST from `parser_ast.l` and `parser_exprs.l`/
+`parser_items.l` structurally, not by trusting a prior "audit" claim.
+
+Fixed by routing `TAValue`'s `expr` and both of `rewriteRangeBound`'s four
+arms' `lo`/`hi` bounds through `filterAliasesForExpr`, exactly the #6324
+pattern — each bound gets its OWN independent filter pass (not a single
+shared one) since `lo` and `hi` could each bind a different local.
+
+Verified by two new `alias_rewriter_self_test.l` cases (35 total): a
+range-subtype declaration (`type Age = Int range 0 ..= { ... }`) whose
+`hi` bound is a lambda binding its own local `Foo`, and an `array[SIZE,
+Int]` record field whose `SIZE` (`0 + { ... }`, a binop with a
+lambda-valued RHS — the only shape a `TAValue` can embed a bare lambda in,
+since the grammar requires a leading literal/`-` token) does the same —
+both assert the callee stays the original nested `EMember` chain,
+unrewritten. All ten previously-established suites re-verified green again
+against the build carrying this eleventh fix (`alias_rewriter` 35/35,
+`msil_project_bridge` 34/34, `qualified_enum_case` 11/11,
+`qualified_union_case` 5/5, `typechecker` 283/283, `parser` 126/126,
+`mono` 54/54, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 92/92,
+`cfg` 12/12 — no drift in any of these from the tenth finding's build).
+
+**Twelfth finding (review feedback, #6326 and #6327 — two findings closed
+together this round, plus three non-blocking SUGGESTIONs).**
+
+- **#6326**: `rewriteContractClause`'s `CCRequires`/`CCEnsures`/`CCWhen`/
+  `CCDecreases` arms still rewrote each clause's own expr via plain
+  `rewriteExpr(aliases, expr)` — the already-scoped `bodyAliases`/
+  `contractAliases`/`sigAliases` #6313 threads in here handles collisions
+  with the enclosing function's OWN params/locals, but a clause expr can
+  ALSO be a self-contained lambda (or a `forall`/`exists` quantifier
+  binder) introducing a shadowing local of its own, the same
+  self-referential hazard `filterAliasesForExpr` exists to guard against
+  everywhere else. This is the exact literal-grep-match the ninth
+  finding's "post-fix audit" claimed to have exhaustively checked and
+  didn't (see the CORRECTION note above).
+- **#6327**: `collectModuleLevelValueNames` collected `IConst`/`IVal`/
+  `IFixture` names but not `IConfig`/`IWire` — a module-level `config`/
+  `wire` block's own name is a module-scope binding exactly like a
+  `val`/`const` (#6312's own concern), reachable via plain field access
+  (`ConfigName.field`) on any target, and doubly so on the native/LLVM
+  bridge where `Lyric.WireExpand` isn't run (`runWireExpand = false`) so
+  the block's name is never expanded away before this pass ever sees it.
+
+Fixed #6326 by routing all four contract-clause arms through
+`filterAliasesForExpr`. Fixed #6327 by adding `IConfig`/`IWire` arms to
+`collectModuleLevelValueNames`, alongside the existing `IConst`/`IVal`/
+`IFixture` ones.
+
+Also addressed, same round, three additional review SUGGESTIONs:
+  * `joinSegs` indexed `segs[0]` with no empty-list guard — `flattenPathExpr`
+    always returns `Some` for an `EPath` regardless of segment count, so a
+    zero-segment `ModulePath` (unconfirmed whether parser error recovery
+    can ever produce one) would have panicked here, unlike `rewritePath`'s
+    analogous `count < 2` guard. Added a `segs.count == 0` guard returning
+    `""` (a safe no-op: an empty string never matches a real alias key).
+  * `rewriteOptExprSelfFiltered` (added at the ninth finding for
+    `rewriteProtectedField`'s two `Option[Expr]` sites) was only used
+    there — `rewriteParam`, `rewriteFieldDecl`, and `rewriteConfigField`'s
+    `default` each hand-inlined the identical collect-then-filter pattern.
+    Routed all three onto the shared helper, removing the duplication.
+  * The third SUGGESTION (collapsing ~10 near-identical inline WHY-comments
+    to a single pointer back to `filterAliasesForExpr`'s own definition)
+    was reviewed and deliberately NOT applied: each comment's issue-number
+    citation is itself load-bearing context for a reader landing on that
+    one call site cold (which finding introduced it, why THIS specific
+    position needed it), and collapsing them would lose that per-site
+    provenance for a marginal duplication saving.
+
+**Actual, current grep output** (not a repeated prose claim — see the
+CORRECTION above for why that distinction matters here specifically): as
+of this fix, `rewriteExpr(aliases, ...)` appears 42 times in
+`alias_rewriter.l`, every remaining instance either internal recursion
+inside `rewriteExpr`/`rewriteStatement`/`rewriteBlock`/`rewritePattern`'s
+own sub-expression traversal, or a function/entry body's own top-level
+rewrite (both already correctly scoped by their caller); `rewriteOptExpr(
+aliases, ...)` — the raw, unfiltered form — has zero matches, and its
+sole remaining call site (`PropertyDecl.guardExpr`, a property-test's
+`forall`-guard) already passes a locals-filtered `bodyAliases`, never raw
+`aliases` — `rewriteConfigField`'s `default` was the last of `rewriteOptExpr`'s
+call sites still passing raw `aliases`, and it moved onto
+`rewriteOptExprSelfFiltered` as part of this same round's dedup SUGGESTION.
+
+Verified by two new `alias_rewriter_self_test.l` cases (37 total): a
+function whose `requires:` clause is itself a lambda binding its own local
+`Foo` before calling `Foo.Bar.check(x)`, and a module-level `config Foo {
+... }` block whose name `Foo` collides with a bare-imported `Foo.Bar`
+package, referenced from an unrelated function's body — both assert the
+callee stays the original nested `EMember` chain, unrewritten. All ten
+previously-established suites re-verified green again against the build
+carrying this twelfth fix (`alias_rewriter` 37/37, `msil_project_bridge`
+34/34, `qualified_enum_case` 11/11, `qualified_union_case` 5/5,
+`typechecker` 283/283, `parser` 126/126, `mono` 54/54, `weaver` 46/46,
+`aspect_weave` 7/7, `modechecker` 92/92, `cfg` 12/12 — no drift in any of
+these from the eleventh finding's build).
+
+**Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
+D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320, #6321, #6323,
+#6324, #6325, #6326, #6327.

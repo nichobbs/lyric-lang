@@ -98,7 +98,21 @@ func collectAliases(imports: in List[ImportDecl]): List[String] {
     val imp = imports[i]
     if not imp.isExtern {
       match asAliasOf(imp) {
-        case Some(name) -> entries.add(name + "=" + modulePathJoin(imp.path.segments))
+        case Some(name) -> {
+          val dotted = modulePathJoin(imp.path.segments)
+          entries.add(name + "=" + dotted)
+          // Self-mapped full-path key (#6294 follow-up): `import Pkg.Sub as X`
+          // makes `X.foo(...)` the idiomatic call form, but the ORIGINAL
+          // dotted name (`Pkg.Sub.foo(...)`) is still valid Lyric and parses
+          // the same way — a qualified-call `EMember` chain, not a
+          // single-segment `EPath` head. Without this, calling via the
+          // pre-alias name (instead of the alias) hits the exact #6294
+          // silent-`TyError` gap this fix exists to close, just reached
+          // through an aliased rather than bare import.
+          if not aliasContains(entries, dotted) {
+            entries.add(dotted + "=" + dotted)
+          }
+        }
         case None -> ()
       }
     }
@@ -112,9 +126,23 @@ func collectAliases(imports: in List[ImportDecl]): List[String] {
         case Some(_) -> ()
         case None -> {
           if imp.path.segments.count >= 1 {
+            val dotted = modulePathJoin(imp.path.segments)
             val tail = imp.path.segments[imp.path.segments.count - 1]
             if not aliasContains(entries, tail) {
-              entries.add(tail + "=" + modulePathJoin(imp.path.segments))
+              entries.add(tail + "=" + dotted)
+            }
+            // Self-mapped full-path key (#6294): a bare `import Pkg.Sub` is
+            // also referenced at call sites by its FULL dotted spelling
+            // (`Pkg.Sub.func(...)`), which the expression parser produces as
+            // nested `EMember`s, not a single-segment `EPath` head — the
+            // tail-only key above only matches the one-dot-short form
+            // (`Sub.func(...)`). Registering the whole dotted path as its own
+            // key lets `rewriteExpr`'s EMember-chain flattening recognise the
+            // fully-qualified form too, for a package name of ANY segment
+            // count (a single-segment import's tail key already covers it,
+            // so this is a no-op there and only matters for segments.count >= 2).
+            if dotted != tail and not aliasContains(entries, dotted) {
+              entries.add(dotted + "=" + dotted)
             }
           }
         }
@@ -237,20 +265,132 @@ func rewriteTypeExpr(aliases: in List[String], te: in TypeExpr): TypeExpr {
   TypeExpr(kind = kind, span = te.span)
 }
 
+// #6325 — see filterAliasesForExpr's comment: a const-generic type arg's
+// value expr can itself be a lambda introducing its own shadowing locals,
+// same as every other standalone-expression position in this file.
 func rewriteTypeArg(aliases: in List[String], a: in TypeArg): TypeArg {
   match a {
     case TAType(ty) -> TAType(ty = rewriteTypeExpr(aliases, ty))
-    case TAValue(expr) -> TAValue(expr = rewriteExpr(aliases, expr))
+    case TAValue(expr) -> TAValue(expr = rewriteExpr(filterAliasesForExpr(aliases, expr), expr))
   }
 }
 
+// #6325 — see filterAliasesForExpr's comment: a range-subtype declaration's
+// (`type Age = Int range lo..=hi`) own `lo`/`hi` bound is an ordinary Expr
+// and can itself be a lambda introducing its own shadowing locals — each
+// bound gets its own independent filter pass since `lo` and `hi` could each
+// bind a different local.
 func rewriteRangeBound(aliases: in List[String], rb: in RangeBound): RangeBound {
   match rb {
-    case RBClosed(lo, hi) -> RBClosed(lo = rewriteExpr(aliases, lo), hi = rewriteExpr(aliases, hi))
-    case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = rewriteExpr(aliases, lo), hi = rewriteExpr(aliases, hi))
-    case RBLowerOpen(hi) -> RBLowerOpen(hi = rewriteExpr(aliases, hi))
-    case RBUpperOpen(lo) -> RBUpperOpen(lo = rewriteExpr(aliases, lo))
+    case RBClosed(lo, hi) -> RBClosed(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo), hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
+    case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo), hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
+    case RBLowerOpen(hi) -> RBLowerOpen(hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
+    case RBUpperOpen(lo) -> RBUpperOpen(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo))
   }
+}
+
+// Flatten a pure dotted-access expression — an `EPath` or a chain of
+// `EMember`s ultimately rooted at one — into its full segment list.  `None`
+// for anything else (a call, index, literal, …), so the caller only ever
+// treats a genuine dotted-name chain as a package-qualification candidate.
+// Does NOT unwrap `EParen`: a parenthesized qualified callee
+// (`(Pkg.Sub).foo()`) still falls back to the pre-#6294 depth-1-only
+// behavior. Not a regression from #6294 — parens around a qualified callee
+// were never handled before it either — and narrow enough in practice
+// (nobody parenthesizes a bare package-qualified path) that it's left as a
+// known gap rather than risking new span/precedence edge cases for an
+// unobserved shape.
+func flattenPathExpr(e: in Expr): Option[List[String]] {
+  match e.kind {
+    // Copy, not the parsed AST's own `p.segments` by reference — matches the
+    // `EMember` arm below, which always builds a fresh list. No current
+    // caller mutates the result, but returning the original list here would
+    // be a latent aliasing hazard for a future one (review follow-up, #6323).
+    case EPath(p) -> {
+      val acc: List[String] = newList()
+      var i = 0
+      while i < p.segments.count {
+        acc.add(p.segments[i])
+        i = i + 1
+      }
+      Some(value = acc)
+    }
+    case EMember(receiver, memberName) -> match flattenPathExpr(receiver) { case Some(segs) -> { val acc: List[String] = newList(); var i = 0; while i < segs.count { acc.add(segs[i]); i = i + 1 }; acc.add(memberName); Some(value = acc) }; case None -> None }
+    case _ -> None
+  }
+}
+
+// Join every segment of `segs` with "." — the candidate package-qualifier
+// tried by `rewriteQualifiedMemberChain`.
+func joinSegs(segs: in List[String]): String {
+  // Guard against a zero-segment `ModulePath` (unconfirmed whether parser
+  // error recovery can ever produce one, but `rewritePath` guards the
+  // analogous case with its own `count < 2` check, and `flattenPathExpr`'s
+  // `EPath` arm always returns `Some` regardless of segment count) — an
+  // empty string never matches a real alias key, so this is a safe no-op
+  // fallback rather than an index-out-of-bounds panic (review follow-up).
+  if segs.count == 0 {
+    return ""
+  }
+  var s = segs[0]
+  var i = 1
+  while i < segs.count {
+    s = s + "." + segs[i]
+    i = i + 1
+  }
+  s
+}
+
+// Rebuild `pkgSegs ++ [trailingMember]` as a flat `EPath`. `pathSpan` is the
+// ORIGINAL receiver chain's own span (just `Pkg.Sub`, not the trailing
+// member) — the synthesized `ModulePath`'s span, matching what the
+// single-segment-only code this generalizes used (`p.span`, the bare alias
+// identifier's span, not the whole call's). `outerSpan` is the full original
+// expression's span (`e.span`), used for the synthesized `Expr` node exactly
+// as before.
+func rebuildQualifiedChain(
+  pkgSegs: in List[String], trailingMember: in String, pathSpan: in Span, outerSpan: in Span
+): Expr {
+  val baseSegs: List[String] = newList()
+  var i = 0
+  while i < pkgSegs.count {
+    baseSegs.add(pkgSegs[i])
+    i = i + 1
+  }
+  baseSegs.add(trailingMember)
+  Expr(kind = EPath(path = ModulePath(segments = baseSegs, span = pathSpan)), span = outerSpan)
+}
+
+// The `Alias.foo(...)` / `Pkg.Sub.foo(...)` CALL-CALLEE rewrite (invoked only
+// from the `ECall` arm — see its comment for why this never applies to a
+// plain, non-called qualified value reference): given a call's callee
+// `EMember`'s receiver chain fully flattened to `recvSegs`, collapse the
+// WHOLE chain into a flat `EPath` ONLY when it matches a known
+// alias/package-path key in its ENTIRETY (`aliasContains`) — never a partial
+// prefix, and never retried against a shorter prefix on a miss. A
+// single-segment package name or explicit alias trivially satisfies this
+// (`recvSegs` has exactly one element), exactly as the code this generalizes
+// did; a deeper call whose qualifier ISN'T itself wholly a known package
+// (`Pkg.Sub.someVal.method()`, a real method call on a package-level value)
+// returns `None`, and the `ECall` arm's caller falls back to the ordinary
+// (unspecialized, depth-1-only) `EMember`-arm recursion — correctly leaving
+// a genuine method call alone. `recvSpan` is the flattened receiver's own
+// span, passed through to `rebuildQualifiedChain` as `pathSpan`; `outerSpan`
+// is the callee `Expr`'s own span (the whole `Pkg.Sub.foo` chain, NOT
+// including the call's parens).
+func rewriteQualifiedMemberChain(
+  aliases: in List[String],
+  recvSegs: in List[String],
+  trailingMember: in String,
+  recvSpan: in Span,
+  outerSpan: in Span,
+): Option[Expr] {
+  val candidate = joinSegs(recvSegs)
+  if aliasContains(aliases, candidate) {
+    val pkgSegs = aliasPkgSegs(aliases, candidate)
+    return Some(value = rebuildQualifiedChain(pkgSegs, trailingMember, recvSpan, outerSpan))
+  }
+  None
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -274,6 +414,36 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
       // (`<package>.foo`) so the post-rewrite typechecker resolves it against
       // the declaring package's symbols — preserving the package keeps two
       // same-name imports distinguishable (#1488 regex_safe).
+      //
+      // Deliberately depth-1-only, even though a multi-segment bare import's
+      // FULL form (`Pkg.Sub.foo`, a depth-2+ `EMember` chain) needs the same
+      // treatment (#6294) — that generalization lives in the `ECall` arm
+      // below, applied ONLY to a call's own callee position, not here. This
+      // arm also fires for a plain (non-called) qualified VALUE reference
+      // (`Pkg.Sub.someVal`), and those already have their own scope-aware
+      // resolution downstream (`tryQualifiedStaticValNameMsil` /
+      // `tryQualifiedEnumOrdinalMsil` in MSIL codegen, walking the ORIGINAL
+      // un-flattened `EMember` chain with a "root name shadowed by a local"
+      // guard). This ARM's own logic is unchanged from before this PR and
+      // carries no scope information at all — eagerly flattening a deeper
+      // chain here would turn a local's OWN field-access chain that merely
+      // happens to spell out an unrelated package's dotted name into a
+      // bogus cross-package reference, bypassing the codegen guard that
+      // exists precisely to catch that. Confirmed as a real regression
+      // (`msil_project_bridge_self_test.l`'s "local shadowing a package
+      // name" case: a local `val ShadowVal = ...` whose own `Lib.secret`
+      // field chain collided with the unrelated bare-imported `ShadowVal.Lib`
+      // package's `pub val secret`) when an earlier version of this fix
+      // applied the deeper generalization here too. (Note: the `aliases`
+      // list this arm CONSULTS is no longer scope-blind top to bottom — the
+      // #6311/#6312 filtering upstream in `rewriteFunctionDecl` et al. and
+      // `rewriteFile` already strips any alias a local/module-level `val`
+      // would shadow before it ever reaches here, so a *shadowed* alias
+      // simply won't be in `aliases` by the time this arm runs. That's a
+      // sound, beneficial side effect for the depth-1 case this arm
+      // already covered — it can only ever suppress a collapse, never
+      // wrongly enable one — but this arm's OWN code makes no scope check;
+      // it just consults whatever `aliases` it's handed, same as always.)
       match receiver.kind {
         case EPath(p) -> {
           if p.segments.count == 1 and aliasContains(aliases, p.segments[0]) {
@@ -371,7 +541,23 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
         args2.add(rewriteCallArg(aliases, args[i]))
         i = i + 1
       }
-      return Expr(kind = ECall(fn = rewriteExpr(aliases, fn), args = args2), span = e.span)
+      // A qualified CALL specifically (`Pkg.Sub.foo(...)`, a package name of
+      // ANY segment count referenced by its full dotted form — #6294) needs
+      // its whole callee chain collapsed to a flat `EPath` here: codegen's
+      // call lowering (`lowerCallMsil` / its JVM analogue) only dispatches a
+      // user-defined package function through the `EPath` branch — an
+      // `EMember` callee falls into generic method-call lowering, which
+      // treats the receiver as a real value and fails (the #2929/#2930
+      // symptom this whole mechanism exists to prevent, at whatever segment
+      // depth the package name has). Scoped to the callee specifically (not
+      // generalized into the `EMember` arm above) so a plain qualified VALUE
+      // reference elsewhere keeps its existing, scope-aware resolution
+      // untouched (see that arm's comment for the regression this avoids).
+      val fn2 = match fn.kind {
+        case EMember(receiver, memberName) -> match flattenPathExpr(receiver) { case Some(recvSegs) -> match rewriteQualifiedMemberChain(aliases, recvSegs, memberName, receiver.span, fn.span) { case Some(rewritten) -> rewritten; case None -> rewriteExpr(aliases, fn) }; case None -> rewriteExpr(aliases, fn) }
+        case _ -> rewriteExpr(aliases, fn)
+      }
+      return Expr(kind = ECall(fn = fn2, args = args2), span = e.span)
     }
     case ETypeApp(fn, args) -> {
       val args2: List[TypeArg] = newList()
@@ -485,7 +671,12 @@ func rewritePattern(aliases: in List[String], p: in Pattern): Pattern {
       val inner2 = match inner { case Some(p2) -> Some(value = rewritePattern(aliases, p2)); case None -> inner }
       PBinding(name = name, inner = inner2)
     }
-    case PRange(lo, inclusive, hi) -> PRange(lo = rewriteExpr(aliases, lo), inclusive = inclusive, hi = rewriteExpr(aliases, hi))
+    // #6324 — see filterAliasesForExpr's comment: a range pattern's own
+    // `lo`/`hi` bound is an ordinary Expr (`parseLiteralOrRangePat` calls
+    // the fully general `parseExpr`) and so can itself be a lambda
+    // introducing its own shadowing locals, same as every other
+    // standalone-expression position in this file.
+    case PRange(lo, inclusive, hi) -> PRange(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo), inclusive = inclusive, hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
     case PWildcard -> PWildcard
     case PLiteral(lit) -> PLiteral(lit = lit)
     case PConstRef(name) -> PConstRef(name = name)
@@ -593,10 +784,435 @@ func rewriteLocalBinding(aliases: in List[String], lb: in LocalBinding): LocalBi
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §6b. Scope-awareness for the ECall qualified-chain collapse (#6311).
+// ─────────────────────────────────────────────────────────────────────────────
+// `rewriteQualifiedMemberChain` (invoked from the `ECall` arm above) treats
+// ANY multi-segment dotted call-callee chain that spells out a known
+// package's full path as that package — but a local variable's own
+// field-access call chain can spell out the exact same dotted name by
+// coincidence (`val Foo = ...; Foo.Bar.handle()` when `import Foo.Bar` is
+// ALSO in scope). Pre-existing (depth-1) codegen already carries a
+// scope-aware "shadowed by a local" guard for this very case
+// (`tryQualifiedStaticValNameMsil` et al. in MSIL codegen), but that guard
+// only ever sees a genuine, un-flattened `EMember` chain reaching codegen —
+// once this rewriter collapses a chain into a flat `EPath`, the guard never
+// runs. Confirmed as a genuine regression at chain-depth 2+ introduced by
+// the `ECall` generalization (#6311): a depth-1 collision already silently
+// favored the package before #6294 (an accepted, pre-existing gap — see
+// this file's header), but a depth-2+ collision was safe until the `ECall`
+// generalization started flattening those chains too.
+//
+// Fix: before rewriting a function-shaped scope's body, collect every name
+// bound ANYWHERE within it (params/binders, every `val`/`var`/`let`, every
+// pattern binding — including match arms, for-loop patterns, and record
+// shorthand fields — lambda params, catch binds, `scope` binds) and strip
+// any alias entry whose key's FIRST dot-segment collides with one of those
+// names from the `aliases` list threaded into the body. This is coarser
+// than real per-block scoping (a name bound in one `if` branch also
+// suppresses the collapse in a sibling branch that never sees it), but
+// that's a conservative, SOUND direction: it can only ever suppress a
+// legitimate collapse (falling back to the pre-existing, safe recursive
+// per-`EMember`-arm behavior), never wrongly enable an incorrect one.
+func collectPatternLocalNames(p: in Pattern, acc: List[String]): Unit {
+  match p.kind {
+    case PBinding(name, inner) -> {
+      acc.add(name)
+      match inner {
+        case Some(p2) -> collectPatternLocalNames(p2, acc)
+        case None -> ()
+      }
+    }
+    case PConstructor(_, args) -> {
+      var i = 0
+      while i < args.count {
+        collectPatternLocalNames(args[i], acc)
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, pattern, _) -> collectPatternLocalNames(pattern, acc)
+          case RPFShort(name, _) -> acc.add(name)
+        }
+        i = i + 1
+      }
+    }
+    case PTuple(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        collectPatternLocalNames(patterns[i], acc)
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> collectPatternLocalNames(inner, acc)
+    case PTypeTest(inner, _) -> collectPatternLocalNames(inner, acc)
+    case POr(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        collectPatternLocalNames(patterns[i], acc)
+        i = i + 1
+      }
+    }
+    // #6324 — a range pattern's `lo`/`hi` bound is an ordinary Expr and can
+    // itself bind locals (e.g. a lambda), same as every other sub-Expr this
+    // collector already descends into.
+    case PRange(lo, _, hi) -> {
+      collectExprLocalNames(lo, acc)
+      collectExprLocalNames(hi, acc)
+    }
+    case PWildcard -> ()
+    case PLiteral(_) -> ()
+    case PConstRef(_) -> ()
+    case PError -> ()
+  }
+}
+
+func collectExprListLocalNames(xs: in List[Expr], acc: List[String]): Unit {
+  var i = 0
+  while i < xs.count {
+    collectExprLocalNames(xs[i], acc)
+    i = i + 1
+  }
+}
+
+func collectExprOrBlockLocalNames(eob: in ExprOrBlock, acc: List[String]): Unit {
+  match eob {
+    case EOBExpr(expr) -> collectExprLocalNames(expr, acc)
+    case EOBBlock(block) -> collectBlockLocalNames(block, acc)
+  }
+}
+
+func collectExprLocalNames(e: in Expr, acc: List[String]): Unit {
+  match e.kind {
+    case EParen(inner) -> collectExprLocalNames(inner, acc)
+    case ETuple(exprs) -> collectExprListLocalNames(exprs, acc)
+    case EList(exprs) -> collectExprListLocalNames(exprs, acc)
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      collectExprLocalNames(cond, acc)
+      collectExprOrBlockLocalNames(thenBranch, acc)
+      match elseBranch {
+        case Some(eob) -> collectExprOrBlockLocalNames(eob, acc)
+        case None -> ()
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      collectExprLocalNames(scrutinee, acc)
+      var i = 0
+      while i < arms.count {
+        collectPatternLocalNames(arms[i].pattern, acc)
+        match arms[i].guard {
+          case Some(g) -> collectExprLocalNames(g, acc)
+          case None -> ()
+        }
+        collectExprOrBlockLocalNames(arms[i].body, acc)
+        i = i + 1
+      }
+    }
+    case EAwait(inner) -> collectExprLocalNames(inner, acc)
+    case EYield(inner) -> collectExprLocalNames(inner, acc)
+    case ESpawn(inner) -> collectExprLocalNames(inner, acc)
+    case ETry(inner) -> collectExprLocalNames(inner, acc)
+    case EOld(inner) -> collectExprLocalNames(inner, acc)
+    case EForall(binders, whereExpr, body) -> {
+      var i = 0
+      while i < binders.count {
+        acc.add(binders[i].name)
+        i = i + 1
+      }
+      match whereExpr {
+        case Some(w) -> collectExprLocalNames(w, acc)
+        case None -> ()
+      }
+      collectExprLocalNames(body, acc)
+    }
+    case EExists(binders, whereExpr, body) -> {
+      var i = 0
+      while i < binders.count {
+        acc.add(binders[i].name)
+        i = i + 1
+      }
+      match whereExpr {
+        case Some(w) -> collectExprLocalNames(w, acc)
+        case None -> ()
+      }
+      collectExprLocalNames(body, acc)
+    }
+    case ELambda(lambdaParams, body) -> {
+      var i = 0
+      while i < lambdaParams.count {
+        acc.add(lambdaParams[i].name)
+        i = i + 1
+      }
+      collectBlockLocalNames(body, acc)
+    }
+    case ECall(fn, args) -> {
+      collectExprLocalNames(fn, acc)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(_, value, _) -> collectExprLocalNames(value, acc)
+          case CAPositional(value) -> collectExprLocalNames(value, acc)
+        }
+        i = i + 1
+      }
+    }
+    case ETypeApp(fn, _) -> collectExprLocalNames(fn, acc)
+    case EIndex(receiver, indices) -> {
+      collectExprLocalNames(receiver, acc)
+      collectExprListLocalNames(indices, acc)
+    }
+    case EMember(receiver, _) -> collectExprLocalNames(receiver, acc)
+    case EPropagate(inner) -> collectExprLocalNames(inner, acc)
+    case EPrefix(_, operand) -> collectExprLocalNames(operand, acc)
+    case EBinop(_, lhs, rhs) -> {
+      collectExprLocalNames(lhs, acc)
+      collectExprLocalNames(rhs, acc)
+    }
+    case EAssign(target, _, value) -> {
+      collectExprLocalNames(target, acc)
+      collectExprLocalNames(value, acc)
+    }
+    case EBlock(block) -> collectBlockLocalNames(block, acc)
+    case EUnsafe(block) -> collectBlockLocalNames(block, acc)
+    case EInterpolated(segments) -> {
+      var i = 0
+      while i < segments.count {
+        match segments[i] {
+          case ISExpr(expr) -> collectExprLocalNames(expr, acc)
+          case ISText(_, _) -> ()
+        }
+        i = i + 1
+      }
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          collectExprLocalNames(lo, acc)
+          collectExprLocalNames(hi, acc)
+        }
+        case RBHalfOpen(lo, hi) -> {
+          collectExprLocalNames(lo, acc)
+          collectExprLocalNames(hi, acc)
+        }
+        case RBLowerOpen(hi) -> collectExprLocalNames(hi, acc)
+        case RBUpperOpen(lo) -> collectExprLocalNames(lo, acc)
+      }
+    }
+    case EPath(_) -> ()
+    case ELiteral(_) -> ()
+    case ESelf -> ()
+    case EResult -> ()
+    case EError -> ()
+  }
+}
+
+func collectLocalBindingNames(lb: in LocalBinding, acc: List[String]): Unit {
+  match lb {
+    case LBVal(pat, _, init) -> {
+      collectPatternLocalNames(pat, acc)
+      collectExprLocalNames(init, acc)
+    }
+    case LBVar(name, _, init) -> {
+      acc.add(name)
+      match init {
+        case Some(e) -> collectExprLocalNames(e, acc)
+        case None -> ()
+      }
+    }
+    case LBLet(name, _, init) -> {
+      acc.add(name)
+      collectExprLocalNames(init, acc)
+    }
+  }
+}
+
+func collectStatementLocalNames(s: in Statement, acc: List[String]): Unit {
+  match s.kind {
+    case SLocal(binding) -> collectLocalBindingNames(binding, acc)
+    case SAssign(target, _, value) -> {
+      collectExprLocalNames(target, acc)
+      collectExprLocalNames(value, acc)
+    }
+    case SReturn(value) -> {
+      match value {
+        case Some(e) -> collectExprLocalNames(e, acc)
+        case None -> ()
+      }
+    }
+    case SBreak(_) -> ()
+    case SContinue(_) -> ()
+    case SThrow(expr) -> collectExprLocalNames(expr, acc)
+    case STry(body, catches, finally_) -> {
+      collectBlockLocalNames(body, acc)
+      var i = 0
+      while i < catches.count {
+        match catches[i].bindName {
+          case Some(n) -> acc.add(n)
+          case None -> ()
+        }
+        collectBlockLocalNames(catches[i].body, acc)
+        i = i + 1
+      }
+      match finally_ {
+        case Some(blk) -> collectBlockLocalNames(blk, acc)
+        case None -> ()
+      }
+    }
+    case SDefer(body) -> collectBlockLocalNames(body, acc)
+    case SScope(binding, body) -> {
+      match binding {
+        case Some(n) -> acc.add(n)
+        case None -> ()
+      }
+      collectBlockLocalNames(body, acc)
+    }
+    case SFor(_, pat, iter, body) -> {
+      collectPatternLocalNames(pat, acc)
+      collectExprLocalNames(iter, acc)
+      collectBlockLocalNames(body, acc)
+    }
+    case SWhile(_, cond, body) -> {
+      collectExprLocalNames(cond, acc)
+      collectBlockLocalNames(body, acc)
+    }
+    case SLoop(_, body) -> collectBlockLocalNames(body, acc)
+    case SInvariant(expr) -> collectExprLocalNames(expr, acc)
+    case SExpr(expr) -> collectExprLocalNames(expr, acc)
+    case SRule(lhs, rhs) -> {
+      collectExprLocalNames(lhs, acc)
+      collectExprLocalNames(rhs, acc)
+    }
+    // A block-nested item declaration's own bound name is skipped here — but
+    // that's harmless today, not an oversight: `typechecker_stmts.l`'s own
+    // `SItem` handling in a block is itself a no-op, so a nested item can't
+    // bind a live name anywhere yet. If/when block-nested items become real,
+    // this collector needs the matching update.
+    case SItem(_) -> ()
+  }
+}
+
+func collectBlockLocalNames(b: in Block, acc: List[String]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectStatementLocalNames(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectParamNames(params: in List[Param], acc: List[String]): Unit {
+  var i = 0
+  while i < params.count {
+    acc.add(params[i].name)
+    i = i + 1
+  }
+}
+
+func collectFunctionBodyLocalNames(body: in FunctionBody, acc: List[String]): Unit {
+  match body {
+    case FBExpr(expr) -> collectExprLocalNames(expr, acc)
+    case FBBlock(block) -> collectBlockLocalNames(block, acc)
+  }
+}
+
+func aliasKeyFirstSegment(entry: in String): String {
+  val kv = Str.split(entry, "=")
+  val segs = Str.split(kv[0], ".")
+  segs[0]
+}
+
+// Remove every alias entry whose key's first dot-segment collides with a
+// name in `locals` — see the section header above for why this is sound.
+func filterAliasesExcludingLocals(aliases: in List[String], locals: in List[String]): List[String] {
+  if locals.count == 0 {
+    return aliases
+  }
+  val kept: List[String] = newList()
+  var i = 0
+  while i < aliases.count {
+    val head = aliasKeyFirstSegment(aliases[i])
+    var shadowed = false
+    var j = 0
+    while j < locals.count {
+      if locals[j] == head {
+        shadowed = true
+      }
+      j = j + 1
+    }
+    if not shadowed {
+      kept.add(aliases[i])
+    }
+    i = i + 1
+  }
+  kept
+}
+
+// #6316: a standalone expression position (a config field's `default`, a
+// wire-include adjustment's `value`) can itself be an arbitrary block or
+// lambda expression that introduces its own local bindings — the same
+// self-referential collect-then-filter pattern `rewriteFixtureDecl` already
+// uses for its `init` (collect every name bound ANYWHERE inside `e` from
+// the ORIGINAL pre-rewrite tree, then rewrite `e` with those names excluded
+// from `aliases`). Reused here so every free-standing expression position
+// gets the same #6311-class shadowing guard as a function body, not just
+// the four function-shaped scopes #6311/#6312/#6313 already cover.
+func filterAliasesForExpr(aliases: in List[String], e: in Expr): List[String] {
+  val locals: List[String] = newList()
+  collectExprLocalNames(e, locals)
+  filterAliasesExcludingLocals(aliases, locals)
+}
+
+// Module-level `val`/`const` names are visible, unqualified, from EVERY
+// function in the file — not just the one it's textually declared in — so
+// they need the same shadowing guard as function-locals, but computed once
+// for the whole file rather than per-function (#6312, the module-scope
+// counterpart to #6311: a module-level `val Foo = ...` colliding with a
+// bare-imported package's first dotted segment shadows `Foo.Bar.method()`
+// calls in ANY function of the file, not just the one `Foo` happens to be
+// declared next to).
+//
+// `IFunc` is deliberately NOT collected here (review follow-up, #6321): a
+// top-level function's own NAME can't collide with this hazard the way a
+// `val`/`const` name can — `Foo.Bar.baz()` only ever gets read back as a
+// qualified-chain CALL, and a bare function name is never itself a valid
+// receiver for `.field`/`.method` access the way a record-typed `val` is,
+// so there is no `Foo.Bar.baz()` shape a same-named top-level `func Foo`
+// could ever shadow.
+func collectModuleLevelValueNames(file: in SourceFile, acc: List[String]): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IConst(decl) -> acc.add(decl.name)
+      case IVal(decl) -> collectPatternLocalNames(decl.pattern, acc)
+      // #6323 SUGGESTION follow-up: `Lyric.TestSynth` already rewrites
+      // `fixture X` to `val X` before the alias rewriter runs today, so this
+      // arm is currently unreachable — but the collector shouldn't silently
+      // rely on that ordering forever, so an `IFixture` is treated exactly
+      // like the `IVal` it's synthesized from.
+      case IFixture(decl) -> acc.add(decl.name)
+      // #6327 — a module-level `config`/`wire` block's own name is a
+      // module-scope binding exactly like a `val`/`const`: it can collide
+      // with a bare-imported package's first dotted segment the same way,
+      // reachable via plain field access (`ConfigName.field`) on any target
+      // and, for `config`, on the native/LLVM bridge where `Lyric.WireExpand`
+      // isn't run (`runWireExpand = false`) so the block's name is never
+      // expanded away before this pass sees it.
+      case IConfig(decl) -> acc.add(decl.name)
+      case IWire(decl) -> acc.add(decl.name)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §7. Item-level rewriting.
 // ─────────────────────────────────────────────────────────────────────────────
 func rewriteParam(aliases: in List[String], p: in Param): Param {
-  val d = match p.dflt { case Some(e) -> Some(value = rewriteExpr(aliases, e)); case None -> p.dflt }
+  // #6320 — see filterAliasesForExpr's comment: a param default can itself
+  // be a lambda (a bare `{ ... }`) introducing its own shadowing locals.
+  val d = rewriteOptExprSelfFiltered(aliases, p.dflt)
   Param(
     mode = p.mode,
     modeExplicit = p.modeExplicit,
@@ -628,7 +1244,16 @@ func rewriteFunctionDecl(aliases: in List[String], fn: in FunctionDecl): Functio
     i = i + 1
   }
   val ret = match fn.ret { case Some(te) -> Some(value = rewriteTypeExpr(aliases, te)); case None -> fn.ret }
-  val body = match fn.body { case Some(b) -> Some(value = rewriteFunctionBody(aliases, b)); case None -> fn.body }
+  // Scope-aware body rewrite (#6311): strip any alias a local declared
+  // anywhere in this function would shadow before recursing into the body.
+  val locals: List[String] = newList()
+  collectParamNames(fn.params, locals)
+  match fn.body {
+    case Some(b) -> collectFunctionBodyLocalNames(b, locals)
+    case None -> ()
+  }
+  val bodyAliases = filterAliasesExcludingLocals(aliases, locals)
+  val body = match fn.body { case Some(b) -> Some(value = rewriteFunctionBody(bodyAliases, b)); case None -> fn.body }
   FunctionDecl(
     docComments = fn.docComments,
     annotations = fn.annotations,
@@ -639,7 +1264,11 @@ func rewriteFunctionDecl(aliases: in List[String], fn: in FunctionDecl): Functio
     params = ps,
     ret = ret,
     whereClause = rewriteWhereClauseOpt(aliases, fn.whereClause),
-    contracts = rewriteContracts(aliases, fn.contracts),
+    // #6313: contract clauses reference the function's own params directly
+    // (`requires:`/`ensures:`/`when:`/`decreases:`), so they need the same
+    // scope-aware filtering as the body — reuse `bodyAliases`, not the raw
+    // `aliases`.
+    contracts = rewriteContracts(bodyAliases, fn.contracts),
     body = body,
     span = fn.span
   )
@@ -660,7 +1289,9 @@ func rewriteExternFuncDecl(aliases: in List[String], ef: in ExternFuncDecl): Ext
 }
 
 func rewriteFieldDecl(aliases: in List[String], f: in FieldDecl): FieldDecl {
-  val d = match f.dflt { case Some(e) -> Some(value = rewriteExpr(aliases, e)); case None -> f.dflt }
+  // #6320 — see filterAliasesForExpr's comment: a field default can itself
+  // be a lambda (a bare `{ ... }`) introducing its own shadowing locals.
+  val d = rewriteOptExprSelfFiltered(aliases, f.dflt)
   FieldDecl(
     docComments = f.docComments,
     annotations = f.annotations,
@@ -680,7 +1311,10 @@ func rewriteRecordDecl(aliases: in List[String], rd: in RecordDecl): RecordDecl 
     ms.add(
       match rd.members[i] {
         case RMField(field) -> RMField(field = rewriteFieldDecl(aliases, field))
-        case RMInvariant(inv) -> RMInvariant(inv = InvariantClause(expr = rewriteExpr(aliases, inv.expr), span = inv.span))
+        // #6321 SUGGESTION follow-up — see filterAliasesForExpr's comment:
+        // an invariant clause's own expr can itself be a lambda introducing
+        // its own shadowing locals, same as every other standalone position.
+        case RMInvariant(inv) -> RMInvariant(inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span))
         case RMFunc(fn) -> RMFunc(fn = rewriteFunctionDecl(aliases, fn))
       }
     )
@@ -784,13 +1418,18 @@ func rewriteWhereClauseOpt(aliases: in List[String], wc: in Option[WhereClause])
 
 // `requires:` / `ensures:` / `when:` / `decreases:` carry an `Expr`, and
 // `raises:` carries a `List[TypeExpr]` — all of which can reference aliased
-// names (#1861).
+// names (#1861). Each clause's own expr also gets `filterAliasesForExpr`
+// (#6326) on top of the already-scoped `bodyAliases`/`contractAliases`/
+// `sigAliases` the caller threads in here (#6313): a clause expr can itself
+// be a lambda or a quantifier (`forall`/`exists`) binder introducing its
+// own shadowing locals, same as every other standalone-expression position
+// in this file.
 func rewriteContractClause(aliases: in List[String], c: in ContractClause): ContractClause {
   match c {
-    case CCRequires(expr, span) -> return CCRequires(expr = rewriteExpr(aliases, expr), span = span)
-    case CCEnsures(expr, span) -> return CCEnsures(expr = rewriteExpr(aliases, expr), span = span)
-    case CCWhen(expr, span) -> return CCWhen(expr = rewriteExpr(aliases, expr), span = span)
-    case CCDecreases(expr, span) -> return CCDecreases(expr = rewriteExpr(aliases, expr), span = span)
+    case CCRequires(expr, span) -> return CCRequires(expr = rewriteExpr(filterAliasesForExpr(aliases, expr), expr), span = span)
+    case CCEnsures(expr, span) -> return CCEnsures(expr = rewriteExpr(filterAliasesForExpr(aliases, expr), expr), span = span)
+    case CCWhen(expr, span) -> return CCWhen(expr = rewriteExpr(filterAliasesForExpr(aliases, expr), expr), span = span)
+    case CCDecreases(expr, span) -> return CCDecreases(expr = rewriteExpr(filterAliasesForExpr(aliases, expr), expr), span = span)
     case CCRaises(types, span) -> {
       val ts: List[TypeExpr] = newList()
       var i = 0
@@ -821,6 +1460,13 @@ func rewriteFunctionSig(aliases: in List[String], sig: in FunctionSig): Function
     ps.add(rewriteParam(aliases, sig.params[i]))
     i = i + 1
   }
+  // #6313: a body-less interface signature has no body to filter, but its
+  // own contract clauses (`requires:`/`ensures:`) still reference its
+  // params directly — same scope-aware filtering as rewriteFunctionDecl's
+  // `bodyAliases`, just param-only since there's no body to collect from.
+  val locals: List[String] = newList()
+  collectParamNames(sig.params, locals)
+  val sigAliases = filterAliasesExcludingLocals(aliases, locals)
   FunctionSig(
     docComments = sig.docComments,
     isAsync = sig.isAsync,
@@ -829,7 +1475,7 @@ func rewriteFunctionSig(aliases: in List[String], sig: in FunctionSig): Function
     params = ps,
     ret = rewriteOptType(aliases, sig.ret),
     whereClause = rewriteWhereClauseOpt(aliases, sig.whereClause),
-    contracts = rewriteContracts(aliases, sig.contracts),
+    contracts = rewriteContracts(sigAliases, sig.contracts),
     span = sig.span
   )
 }
@@ -845,6 +1491,11 @@ func rewriteEntryDecl(aliases: in List[String], ed: in EntryDecl): EntryDecl {
     ps.add(rewriteParam(aliases, ed.params[i]))
     i = i + 1
   }
+  // Scope-aware body rewrite (#6311) — see rewriteFunctionDecl's comment.
+  val locals: List[String] = newList()
+  collectParamNames(ed.params, locals)
+  collectFunctionBodyLocalNames(ed.body, locals)
+  val bodyAliases = filterAliasesExcludingLocals(aliases, locals)
   EntryDecl(
     docComments = ed.docComments,
     annotations = ed.annotations,
@@ -852,8 +1503,9 @@ func rewriteEntryDecl(aliases: in List[String], ed: in EntryDecl): EntryDecl {
     name = ed.name,
     params = ps,
     ret = rewriteOptType(aliases, ed.ret),
-    contracts = rewriteContracts(aliases, ed.contracts),
-    body = rewriteFunctionBody(aliases, ed.body),
+    // #6313 — see rewriteFunctionDecl's comment.
+    contracts = rewriteContracts(bodyAliases, ed.contracts),
+    body = rewriteFunctionBody(bodyAliases, ed.body),
     span = ed.span
   )
 }
@@ -949,7 +1601,10 @@ func rewriteUnionDecl(aliases: in List[String], d: in UnionDecl): UnionDecl {
 func rewriteOpaqueMember(aliases: in List[String], m: in OpaqueMember): OpaqueMember {
   match m {
     case OMField(field) -> return OMField(field = rewriteFieldDecl(aliases, field))
-    case OMInvariant(inv) -> return OMInvariant(inv = InvariantClause(expr = rewriteExpr(aliases, inv.expr), span = inv.span))
+    // #6321 SUGGESTION follow-up — see filterAliasesForExpr's comment.
+    case OMInvariant(inv) -> return OMInvariant(
+      inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span)
+    )
   }
   return m
 }
@@ -973,12 +1628,22 @@ func rewriteOpaqueTypeDecl(aliases: in List[String], d: in OpaqueTypeDecl): Opaq
 }
 
 // IProtected ────────────────────────────────────────────────────────────────────
+// #6323 — see filterAliasesForExpr's comment: a protected var/let field's
+// own init can itself be a lambda (a bare `{ ... }`) introducing its own
+// shadowing locals, same as every other standalone-expression position.
+func rewriteOptExprSelfFiltered(aliases: in List[String], oe: in Option[Expr]): Option[Expr] {
+  match oe {
+    case Some(e) -> Some(value = rewriteExpr(filterAliasesForExpr(aliases, e), e))
+    case None -> oe
+  }
+}
+
 func rewriteProtectedField(aliases: in List[String], pf: in ProtectedField): ProtectedField {
   match pf {
     case PFVar(name, ty, init, docComments, annotations, span) -> return PFVar(
       name = name,
       ty = rewriteTypeExpr(aliases, ty),
-      init = rewriteOptExpr(aliases, init),
+      init = rewriteOptExprSelfFiltered(aliases, init),
       docComments = docComments,
       annotations = annotations,
       span = span
@@ -986,7 +1651,7 @@ func rewriteProtectedField(aliases: in List[String], pf: in ProtectedField): Pro
     case PFLet(name, ty, init, docComments, annotations, span) -> return PFLet(
       name = name,
       ty = rewriteTypeExpr(aliases, ty),
-      init = rewriteOptExpr(aliases, init),
+      init = rewriteOptExprSelfFiltered(aliases, init),
       docComments = docComments,
       annotations = annotations,
       span = span
@@ -999,7 +1664,10 @@ func rewriteProtectedField(aliases: in List[String], pf: in ProtectedField): Pro
 func rewriteProtectedMember(aliases: in List[String], m: in ProtectedMember): ProtectedMember {
   match m {
     case PMField(field) -> return PMField(field = rewriteProtectedField(aliases, field))
-    case PMInvariant(inv) -> return PMInvariant(inv = InvariantClause(expr = rewriteExpr(aliases, inv.expr), span = inv.span))
+    // #6321 SUGGESTION follow-up — see filterAliasesForExpr's comment.
+    case PMInvariant(inv) -> return PMInvariant(
+      inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span)
+    )
     case PMEntry(entryDecl) -> return PMEntry(entryDecl = rewriteEntryDecl(aliases, entryDecl))
     case PMFunc(fn) -> return PMFunc(fn = rewriteFunctionDecl(aliases, fn))
   }
@@ -1023,24 +1691,42 @@ func rewriteProtectedTypeDecl(aliases: in List[String], d: in ProtectedTypeDecl)
 }
 
 // IWire ─────────────────────────────────────────────────────────────────────────
+// #6320 — see filterAliasesForExpr's comment: a wire member's own
+// `init`/`provider` expression can itself be a lambda (a bare `{ ... }`)
+// introducing its own shadowing locals, on top of the wire-level
+// `memberAliases` filtering `rewriteWireDecl` already threads in here.
 func rewriteWireMember(aliases: in List[String], m: in WireMember): WireMember {
   match m {
     case WMProvided(name, ty, span) -> return WMProvided(name = name, ty = rewriteTypeExpr(aliases, ty), span = span)
-    case WMSingleton(name, ty, init, span) -> return WMSingleton(name = name, ty = rewriteTypeExpr(aliases, ty), init = rewriteExpr(aliases, init), span = span)
+    case WMSingleton(name, ty, init, span) -> return WMSingleton(
+      name = name,
+      ty = rewriteTypeExpr(aliases, ty),
+      init = rewriteExpr(filterAliasesForExpr(aliases, init), init),
+      span = span
+    )
     case WMScoped(scopeName, name, ty, init, span) -> return WMScoped(
       scopeName = scopeName,
       name = name,
       ty = rewriteTypeExpr(aliases, ty),
-      init = rewriteExpr(aliases, init),
+      init = rewriteExpr(filterAliasesForExpr(aliases, init), init),
       span = span
     )
-    case WMBind(iface, provider, span) -> return WMBind(iface = rewriteTypeExpr(aliases, iface), provider = rewriteExpr(aliases, provider), span = span)
+    case WMBind(iface, provider, span) -> return WMBind(
+      iface = rewriteTypeExpr(aliases, iface),
+      provider = rewriteExpr(filterAliasesForExpr(aliases, provider), provider),
+      span = span
+    )
     case WMExpose(name, span) -> return WMExpose(name = name, span = span)
-    case WMLocal(name, ty, init, span) -> return WMLocal(name = name, ty = rewriteOptType(aliases, ty), init = rewriteExpr(aliases, init), span = span)
+    case WMLocal(name, ty, init, span) -> return WMLocal(
+      name = name,
+      ty = rewriteOptType(aliases, ty),
+      init = rewriteExpr(filterAliasesForExpr(aliases, init), init),
+      span = span
+    )
     case WMContributes(iface, name, init, ordering, isSealed, span) -> return WMContributes(
       iface = rewriteTypeExpr(aliases, iface),
       name = name,
-      init = rewriteExpr(aliases, init),
+      init = rewriteExpr(filterAliasesForExpr(aliases, init), init),
       ordering = ordering,
       isSealed = isSealed,
       span = span
@@ -1065,19 +1751,27 @@ func rewriteIncludeAdjusts(aliases: in List[String], xs: in List[IncludeAdjust])
   var i = 0
   while i < xs.count {
     match xs[i] {
-      case IAProvided(name, value, span) -> ys.add(IAProvided(name = name, value = rewriteExpr(aliases, value), span = span))
+      // #6316 — see filterAliasesForExpr's comment: each of these `value`
+      // exprs can itself be an arbitrary block/lambda introducing its own
+      // shadowing locals.
+      case IAProvided(name, value, span) -> ys.add(IAProvided(name = name, value = rewriteExpr(filterAliasesForExpr(aliases, value), value), span = span))
       case IAConfigOverride(name, fields, span) -> {
         val fs: List[ConfigFieldOverride] = newList()
         var j = 0
         while j < fields.count {
+          val fieldAliases = filterAliasesForExpr(aliases, fields[j].value)
           fs.add(
-            ConfigFieldOverride(name = fields[j].name, value = rewriteExpr(aliases, fields[j].value), span = fields[j].span)
+            ConfigFieldOverride(
+              name = fields[j].name,
+              value = rewriteExpr(fieldAliases, fields[j].value),
+              span = fields[j].span
+            )
           )
           j = j + 1
         }
         ys.add(IAConfigOverride(name = name, fields = fs, span = span))
       }
-      case IAReplace(name, value, span) -> ys.add(IAReplace(name = name, value = rewriteExpr(aliases, value), span = span))
+      case IAReplace(name, value, span) -> ys.add(IAReplace(name = name, value = rewriteExpr(filterAliasesForExpr(aliases, value), value), span = span))
       case IARemove(name, span) -> ys.add(IARemove(name = name, span = span))
       case IAReorder(name, ordering, span) -> ys.add(IAReorder(name = name, ordering = ordering, span = span))
     }
@@ -1093,10 +1787,40 @@ func rewriteWireDecl(aliases: in List[String], d: in WireDecl): WireDecl {
     ps.add(rewriteParam(aliases, d.params[i]))
     i = i + 1
   }
+  // #6316: `WireDecl.params` is a function-like parameter scope (exactly
+  // analogous to `FunctionDecl.params`, #6311) visible to every member's own
+  // `init`/`provider` expression — collect param names, plus each member's
+  // own bound name (visible to sibling members, same coarse function-body-
+  // wide spirit as #6311's `collectFunctionBodyLocalNames`), before
+  // rewriting member bodies.
+  val locals: List[String] = newList()
+  collectParamNames(d.params, locals)
+  var k = 0
+  while k < d.members.count {
+    match d.members[k] {
+      case WMProvided(name, _, _) -> locals.add(name)
+      case WMSingleton(name, _, _, _) -> locals.add(name)
+      case WMScoped(_, name, _, _, _) -> locals.add(name)
+      case WMLocal(name, _, _, _) -> locals.add(name)
+      case WMContributes(_, name, _, _, _, _) -> locals.add(name)
+      // `WMInclude`/`WMConfigInst` also introduce named bindings (a spliced
+      // template's alias, a nested config instance's name). On the
+      // dotnet/jvm paths `Lyric.WireExpand` always consumes `WMInclude`
+      // before the alias rewriter runs, so this rarely matters there — but
+      // the native/LLVM bridge invokes `pipeExpandAndRewrite` with
+      // `runWireExpand = false`, so an unexpanded `WMInclude` CAN still
+      // reach here.
+      case WMInclude(_, aliasName, _, _, _) -> match aliasName { case Some(n) -> locals.add(n); case None -> () }
+      case WMConfigInst(decl, _) -> locals.add(decl.name)
+      case _ -> ()
+    }
+    k = k + 1
+  }
+  val memberAliases = filterAliasesExcludingLocals(aliases, locals)
   val ms: List[WireMember] = newList()
   var j = 0
   while j < d.members.count {
-    ms.add(rewriteWireMember(aliases, d.members[j]))
+    ms.add(rewriteWireMember(memberAliases, d.members[j]))
     j = j + 1
   }
   WireDecl(name = d.name, params = ps, members = ms, span = d.span)
@@ -1124,7 +1848,11 @@ func rewriteDistinctTypeDecl(aliases: in List[String], d: in DistinctTypeDecl): 
 
 // ITest / IProperty / IFixture ───────────────────────────────────────────────────
 func rewriteTestDecl(aliases: in List[String], d: in TestDecl): TestDecl {
-  TestDecl(title = d.title, body = rewriteBlock(aliases, d.body), span = d.span)
+  // Scope-aware body rewrite (#6311) — see rewriteFunctionDecl's comment.
+  val locals: List[String] = newList()
+  collectBlockLocalNames(d.body, locals)
+  val bodyAliases = filterAliasesExcludingLocals(aliases, locals)
+  TestDecl(title = d.title, body = rewriteBlock(bodyAliases, d.body), span = d.span)
 }
 
 func rewritePropertyBinder(aliases: in List[String], pb: in PropertyBinder): PropertyBinder {
@@ -1138,33 +1866,51 @@ func rewritePropertyDecl(aliases: in List[String], d: in PropertyDecl): Property
     bs.add(rewritePropertyBinder(aliases, d.forAll[i]))
     i = i + 1
   }
+  // Scope-aware body rewrite (#6311) — see rewriteFunctionDecl's comment.
+  val locals: List[String] = newList()
+  var j = 0
+  while j < d.forAll.count {
+    locals.add(d.forAll[j].name)
+    j = j + 1
+  }
+  match d.guardExpr {
+    case Some(g) -> collectExprLocalNames(g, locals)
+    case None -> ()
+  }
+  collectBlockLocalNames(d.body, locals)
+  val bodyAliases = filterAliasesExcludingLocals(aliases, locals)
   PropertyDecl(
     title = d.title,
     forAll = bs,
-    guardExpr = rewriteOptExpr(aliases, d.guardExpr),
-    body = rewriteBlock(aliases, d.body),
+    guardExpr = rewriteOptExpr(bodyAliases, d.guardExpr),
+    body = rewriteBlock(bodyAliases, d.body),
     span = d.span
   )
 }
 
 func rewriteFixtureDecl(aliases: in List[String], d: in FixtureDecl): FixtureDecl {
+  // Scope-aware body rewrite (#6311) — see rewriteFunctionDecl's comment.
+  // Uses the shared self-referential helper (#6316's `filterAliasesForExpr`)
+  // rather than inlining the same collect-then-filter pattern again.
+  val bodyAliases = filterAliasesForExpr(aliases, d.init)
   FixtureDecl(
     name = d.name,
     nameSpan = d.nameSpan,
     ty = rewriteOptType(aliases, d.ty),
-    init = rewriteExpr(aliases, d.init),
+    init = rewriteExpr(bodyAliases, d.init),
     span = d.span
   )
 }
 
 // IConfig / IAspect ──────────────────────────────────────────────────────────────
 func rewriteConfigField(aliases: in List[String], f: in ConfigField): ConfigField {
+  // #6316 — see filterAliasesForExpr's comment.
   ConfigField(
     docComments = f.docComments,
     annotations = f.annotations,
     name = f.name,
     ty = rewriteTypeExpr(aliases, f.ty),
-    default = rewriteOptExpr(aliases, f.default),
+    default = rewriteOptExprSelfFiltered(aliases, f.default),
     span = f.span
   )
 }
@@ -1208,8 +1954,38 @@ func rewriteAspectDecl(aliases: in List[String], d: in AspectDecl): AspectDecl {
   // construction in this package, producing a value that matches neither
   // `Some` nor `None` downstream, which silently un-weaves every aspect
   // in an import-bearing file (#1298 investigation).
+  // Scope-aware body rewrite (#6311) — see rewriteFunctionDecl's comment.
+  // `argsName` / `retName` are the advice body's own bound names (the
+  // synthesized `args` / `ret` locals), same shadowing hazard as a
+  // function's params. `contractAliases` carries the SAME filtered list out
+  // to `d.contracts` below (#6313) — the aspect's own `requires:`/`ensures:`
+  // reference `args.<field>`/`ret`, so they need the identical shadowing
+  // guard as the advice body, not the raw `aliases`. When there's no
+  // `around` block, there's no `args`/`ret` scope to filter against, so
+  // `contractAliases` stays the unfiltered `aliases` (matching prior,
+  // pre-#6311 behavior for that case).
+  var contractAliases: List[String] = aliases
   val ar = match d.around {
-    case Some(a) -> someAspectAround(AspectAround(argsName = a.argsName, retName = a.retName, argsRow = rewriteArgsRow(aliases, a.argsRow), body = rewriteBlock(aliases, a.body), span = a.span))
+    case Some(a) -> {
+      val locals: List[String] = newList()
+      locals.add(a.argsName)
+      match a.retName {
+        case Some(n) -> locals.add(n)
+        case None -> ()
+      }
+      collectBlockLocalNames(a.body, locals)
+      val bodyAliases = filterAliasesExcludingLocals(aliases, locals)
+      contractAliases = bodyAliases
+      someAspectAround(
+        AspectAround(
+          argsName = a.argsName,
+          retName = a.retName,
+          argsRow = rewriteArgsRow(aliases, a.argsRow),
+          body = rewriteBlock(bodyAliases, a.body),
+          span = a.span
+        )
+      )
+    }
     case None -> d.around
   }
   AspectDecl(
@@ -1219,7 +1995,8 @@ func rewriteAspectDecl(aliases: in List[String], d: in AspectDecl): AspectDecl {
     matches = d.matches,
     exceptNames = d.exceptNames,
     around = ar,
-    contracts = rewriteContracts(aliases, d.contracts),
+    // #6313 — see the comment above `contractAliases`'s declaration.
+    contracts = rewriteContracts(contractAliases, d.contracts),
     wraps = d.wraps,
     inside = d.inside,
     span = d.span
@@ -1265,10 +2042,21 @@ func rewriteItem(aliases: in List[String], it: in Item): Item {
     case IFunc(decl) -> IFunc(decl = rewriteFunctionDecl(aliases, decl))
     case IRecord(decl) -> IRecord(decl = rewriteRecordDecl(aliases, decl))
     case IExposedRec(decl) -> IExposedRec(decl = rewriteRecordDecl(aliases, decl))
-    case IConst(decl) -> IConst(decl = ConstDecl(name = decl.name, ty = rewriteTypeExpr(aliases, decl.ty), init = rewriteExpr(aliases, decl.init), span = decl.span))
+    // #6321 — see filterAliasesForExpr's comment: a module-level val/const's
+    // own init can itself be a lambda (a bare `{ ... }`) introducing its own
+    // shadowing locals, exactly like every other standalone-expression
+    // position #6316/#6320 already cover.
+    case IConst(decl) -> IConst(decl = ConstDecl(name = decl.name, ty = rewriteTypeExpr(aliases, decl.ty), init = rewriteExpr(filterAliasesForExpr(aliases, decl.init), decl.init), span = decl.span))
     case IVal(decl) -> {
       val t = match decl.ty { case Some(te) -> Some(value = rewriteTypeExpr(aliases, te)); case None -> decl.ty }
-      IVal(decl = ValDecl(pattern = decl.pattern, ty = t, init = rewriteExpr(aliases, decl.init), span = decl.span))
+      IVal(
+        decl = ValDecl(
+          pattern = decl.pattern,
+          ty = t,
+          init = rewriteExpr(filterAliasesForExpr(aliases, decl.init), decl.init),
+          span = decl.span
+        )
+      )
     }
     case ITypeAlias(decl) -> ITypeAlias(decl = rewriteTypeAliasDecl(aliases, decl))
     case IDistinctType(decl) -> IDistinctType(decl = rewriteDistinctTypeDecl(aliases, decl))
@@ -1315,10 +2103,16 @@ pub func rewriteFile(file: in SourceFile): SourceFile {
   if aliases.count == 0 {
     return file
   }
+  // #6312: strip any alias a module-level val/const would shadow before
+  // rewriting ANY item — module-scope names are visible file-wide, unlike
+  // the per-function locals #6311 already guards against.
+  val moduleLocals: List[String] = newList()
+  collectModuleLevelValueNames(file, moduleLocals)
+  val fileAliases = filterAliasesExcludingLocals(aliases, moduleLocals)
   val items: List[Item] = newList()
   var i = 0
   while i < file.items.count {
-    items.add(rewriteItem(aliases, file.items[i]))
+    items.add(rewriteItem(fileAliases, file.items[i]))
     i = i + 1
   }
   SourceFile(
