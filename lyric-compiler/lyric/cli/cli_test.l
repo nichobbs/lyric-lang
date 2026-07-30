@@ -1048,9 +1048,46 @@ func cmdTestManifest(
           printErr("test: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml + "'")
         }
       }
+      case Workspace(_) -> {
+        // A `{ workspace = true }` dep's DLL is already covered by `wsDepDlls`
+        // above (built for Dotnet, deliberately skipped for Jvm — see
+        // `buildWorkspaceDeps`'s header comment). Collect its source into
+        // `depTemplatePkgsList` regardless of target — on Dotnet this feeds
+        // cross-package aspect/wire-template resolution (parity with a
+        // `path = "..."` dep, #3498); on Jvm it is additionally compiled as a
+        // real bundle package below (`jvmDepPkgs`), since the JVM backend
+        // never reads `restoredDllPaths` and has no other way to see a
+        // workspace dependency's symbols (#6136).
+        match wsCtxOpt {
+          case None -> ()
+          case Some(wsCtx) -> {
+            match Ws.resolveDep(dep.name, wsCtx) {
+              case None -> ()
+              case Some(depDir) -> collectDepTemplateSources(depDir, dep.name, depTemplatePkgsList)
+            }
+          }
+        }
+      }
       case _ -> ()
     }
     di += 1
+  }
+
+  // On Jvm, a workspace/path dependency's own packages must be compiled
+  // as real bundle packages (not just scanned for templates): the JVM
+  // backend has no restored-DLL symbol resolution path at all (#6136), so
+  // `depTemplatePkgsList` — collected above for both dep source forms — is
+  // the only source of the dependency's types/functions available to the
+  // consumer's test/library packages.  Harmless to also keep populating it
+  // for the template-scan use below: `Weaver.collectAspectTemplates` /
+  // `WireExpand.collectWireTemplates` simply re-scan the same source a
+  // second time.
+  if targetJvm {
+    var jdpi = 0
+    while jdpi < depTemplatePkgsList.count {
+      libPkgs.add(depTemplatePkgsList[jdpi])
+      jdpi += 1
+    }
   }
 
   // Include the bootstrap CLI DLL directory in the runtime probing paths so

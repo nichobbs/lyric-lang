@@ -235,6 +235,67 @@ pub func collectTransitiveDepDlls(
   }
 }
 
+/// Read every `[project.packages]` source file under `depDir`'s manifest and
+/// append it to `depTemplatePkgsList` as a `ProjectPackage`, tagged with
+/// `depName`.  Shared by `resolveManifestDependencies`'s workspace-dep branch
+/// (a `path = "..."` dep has always inlined this same read-and-collect logic
+/// directly; this extraction only exists so the workspace-dep branch doesn't
+/// duplicate it a third time — see `cmdTestManifest`'s own copy in cli_test.l).
+/// Read failures print a warning and are otherwise non-fatal: a workspace
+/// dep's DLL-based restored-dependency resolution (dotnet) or the caller's own
+/// unbuilt-dep diagnostics already cover the fatal cases; this is purely an
+/// additive source of symbols/templates for cross-package resolution.
+func collectDepTemplateSources(
+  depDir: in String, depName: in String, depTemplatePkgsList: in List[ProjectPackage]
+): Unit {
+  val depToml = Path.join(depDir, "lyric.toml")
+  match File.readText(depToml) {
+    case Err(_) -> ()
+    case Ok(depMfText) -> {
+      match Mf.parseManifest(depMfText, depToml) {
+        case Err(_) -> ()
+        case Ok(depMf) -> {
+          match depMf.project {
+            case None -> ()
+            case Some(proj) -> {
+              var pki = 0
+              while pki < proj.packages.count {
+                val pkgEntry = proj.packages[pki]
+                val srcList: List[String] = newList()
+                if pkgEntry.paths.count > 0 {
+                  var fi = 0
+                  while fi < pkgEntry.paths.count {
+                    val srcPath = if Path.isAbsolute(pkgEntry.paths[fi]) {
+                      pkgEntry.paths[fi]
+                    } else {
+                      Path.join(depDir, pkgEntry.paths[fi])
+                    }
+                    match File.readText(srcPath) {
+                      case Ok(srcText) -> srcList.add(srcText)
+                      case Err(e) -> printErr("build: workspace dep '" + depName + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                    }
+                    fi += 1
+                  }
+                } else {
+                  val srcPath = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(depDir, pkgEntry.path) }
+                  match File.readText(srcPath) {
+                    case Ok(srcText) -> srcList.add(srcText)
+                    case Err(e) -> printErr("build: workspace dep '" + depName + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                  }
+                }
+                if srcList.count > 0 {
+                  depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList))
+                }
+                pki += 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 /// Build a single workspace dependency and return its DLL path.
 /// Returns Err(error) on any failure.
 /// buildStack tracks the dependency chain to detect circular dependencies.
@@ -697,7 +758,26 @@ pub func resolveManifestDependencies(
           hadUnbuiltLocalDep = true
         }
       }
-      case Mf.DepSource.Workspace(_) -> ()
+      case Mf.DepSource.Workspace(_) -> {
+        // Unlike a `path = "..."` dep (handled above), a `{ workspace = true }`
+        // dep's DLL is only built here for the Dotnet target — `buildWorkspaceDeps`
+        // deliberately skips building it for Jvm (the JVM bundled compile consumes
+        // cross-package code from source via `depTemplateSrcs`, never
+        // `restoredDllPaths`; see `buildWorkspaceDeps`'s header comment). Without
+        // this branch, a workspace dep's source never reached `depTemplateSrcs` on
+        // ANY target, so a `--target jvm` build/test of a workspace-dep consumer
+        // saw every cross-package symbol as unknown even though the identical
+        // `--target dotnet` build passed via the restored-DLL path (#6136).
+        match wsCtxOpt {
+          case None -> ()
+          case Some(wsCtx) -> {
+            match Ws.resolveDep(dep.name, wsCtx) {
+              case None -> ()
+              case Some(depDir) -> collectDepTemplateSources(depDir, dep.name, depTemplatePkgsList)
+            }
+          }
+        }
+      }
       case _ -> ()
     }
     di += 1

@@ -402,3 +402,188 @@ test "injectMavenClasspathForJvm: existing classpath file injects LYRIC_FFI_JARS
   val afterRestore = match Environment.getVar("LYRIC_FFI_JARS") { case Ok(v) -> v; case Err(_) -> "" }
   assertEqual(afterRestore, prevFfi, "restoreMavenClasspath: LYRIC_FFI_JARS restored to its prior value")
 }
+
+// ─── #6136: a `{ workspace = true }` dependency's symbols on --target jvm ──
+// Before this fix, `resolveManifestDependencies`'s dependency loop only
+// handled `Mf.DepSource.Path` — a `Workspace` dep's source never reached
+// `depTemplateSrcs`, and the JVM backend has no restored-DLL symbol
+// resolution path at all (`buildWorkspaceDeps` deliberately skips building a
+// workspace dep's DLL for Jvm). So a `--target jvm` build/test of a
+// workspace-dep consumer saw every cross-package symbol from the dep as
+// "unknown" even though the identical `--target dotnet` build passed via the
+// restored-DLL path. Fixture: a two-package workspace, Producer exposing one
+// `pub func`, Consumer declaring `"Fixture.WsProducer" = { workspace = true
+// }` and calling it.
+func writeWs6136Fixture(root: in String): (String, String) {
+  // `exclude = []` is required, not decorative: a bare `[workspace]` header
+  // with no key/value line under it produces zero parsed `Entry` rows
+  // (the same #5865-class gap `textHasPackageSection`'s doc comment
+  // documents for `[package]`), so `hasSection(entries, "workspace")` sees
+  // nothing and `assembleWorkspace` returns `None` — `findWorkspaceRoot`
+  // then treats this file as "not a workspace root" and keeps walking
+  // up the real filesystem tree past `/tmp` until it hits this repo's own
+  // root `lyric.toml` instead.
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[workspace]\nexclude = []\n")
+  val producerDir = mkPackageDir(
+    root,
+    "Producer",
+    "[package]\n" + "name = \"Fixture.WsProducer\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.WsProducer\"\n" +
+      "output_assembly = \"WsProducer.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.WsProducer\" = \"src/producer.l\"\n"
+  )
+  match File.createDir(Path.join(producerDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create producer src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(producerDir, "src/producer.l"),
+    "package Fixture.WsProducer\n\npub func producerGreeting(): String {\n  \"hello-from-producer\"\n}\n"
+  )
+
+  val consumerDir = mkPackageDir(
+    root,
+    "Consumer",
+    "[package]\n" + "name = \"Fixture.WsConsumer\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.WsConsumer\"\n" +
+      "output_assembly = \"WsConsumer.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.WsConsumer\" = \"src/consumer.l\"\n" +
+      "\n" +
+      "[dependencies]\n" +
+      "\"Fixture.WsProducer\" = { workspace = true }\n"
+  )
+  match File.createDir(Path.join(consumerDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create consumer src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(consumerDir, "src/consumer.l"),
+    "package Fixture.WsConsumer\n\nimport Fixture.WsProducer\n\npub func consumerCallsProducer(): String {\n  producerGreeting()\n}\n"
+  );
+  (producerDir, consumerDir)
+}
+
+test "resolveManifestDependencies: a { workspace = true } dependency's source is collected into depTemplateSrcs (#6136)" {
+  val root = freshTempDir("ws6136-deps")
+  defer {
+    cleanup(root)
+  }
+  val (producerDir, consumerDir) = writeWs6136Fixture(root)
+
+  val consumerMfPath = Path.join(consumerDir, "lyric.toml")
+  val consumerMfText = match File.readText(consumerMfPath) {
+    case Ok(t) -> t
+    case Err(e) -> panic("cannot read consumer manifest: " + IOError.message(e))
+  }
+  val consumerManifest = match Mf.parseManifest(consumerMfText, consumerMfPath) {
+    case Ok(m) -> m
+    case Err(e) -> panic("cannot parse consumer manifest: " + ManifestError.message(e))
+  }
+
+  val noFeatures: List[String] = newList()
+  // The Jvm target is the load-bearing case: it never reads `restoredDlls`,
+  // so `depTemplateSrcs` is the ONLY channel through which a workspace dep's
+  // symbols reach the consumer.
+  val resolved = Cli.resolveManifestDependencies(consumerManifest, consumerMfPath, Emitter.Jvm, noFeatures, false)
+  assertFalse(
+    resolved.hadWorkspaceError,
+    "resolveManifestDependencies: no workspace error resolving Fixture.WsProducer"
+  )
+  assertEqualInt(
+    resolved.depTemplateSrcs.count,
+    1,
+    "resolveManifestDependencies: the workspace dep's package is collected into depTemplateSrcs"
+  )
+  val producerPkg = resolved.depTemplateSrcs[0]
+  assertEqual(
+    producerPkg.name,
+    "Fixture.WsProducer",
+    "resolveManifestDependencies: dep template package is named after its own [project.packages] entry"
+  )
+  assertTrue(
+    producerPkg.sources.count > 0 and Str.contains(producerPkg.sources[0], "producerGreeting"),
+    "resolveManifestDependencies: dep template source contains the producer's function"
+  )
+}
+
+test "buildProject: a Jvm build compiles a { workspace = true } dependency's symbols into the bundle (#6136)" {
+  val root = freshTempDir("ws6136-jvm-build")
+  defer {
+    cleanup(root)
+  }
+  val (producerDir, consumerDir) = writeWs6136Fixture(root)
+
+  val noFeatures: List[String] = newList()
+  val noDefines: List[String] = newList()
+  val noPre: Option[Cli.ResolvedManifestDeps] = None
+  val rc = Cli.buildProject(
+    Path.join(consumerDir, "lyric.toml"),
+    None,
+    Emitter.Jvm,
+    noFeatures,
+    false,
+    false,
+    // noRestore = true: this fixture has no lyric.lock, and auto-restore's
+    // `{ workspace = true }` handling is a separate, unrelated gap
+    // (`runRestore` doesn't resolve workspace-form deps against the
+    // on-disk member index the way `Ws.resolveDep` does) — irrelevant to
+    // what this test is proving, so it is bypassed rather than routed
+    // around.
+    true,
+    None,
+    noPre,
+    noDefines
+  )
+  assertEqualInt(
+    rc,
+    0,
+    "buildProject: a --target jvm build of a workspace-dep consumer succeeds — previously every cross-package " +
+      "symbol from the dependency type-checked as 'unknown' (#6136)"
+  )
+  val outArtifact = Path.join(Path.join(consumerDir, "bin"), "WsConsumer.dll")
+  assertTrue(File.fileExists(outArtifact), "buildProject: the Jvm build produced an output artifact")
+  // Jvm never builds a workspace dep's own DLL (`buildWorkspaceDeps` skips
+  // it deliberately) — the fix works purely by compiling the dep's SOURCE
+  // into the consumer's bundle, so no Producer artifact should exist.
+  assertFalse(
+    File.fileExists(Path.join(Path.join(producerDir, "bin"), "WsProducer.dll")),
+    "buildProject: Jvm never builds the workspace dep's own DLL — it is only ever consumed as bundled source"
+  )
+}
+
+test "buildProject: the same workspace-dep fixture still builds on --target dotnet (regression guard)" {
+  val root = freshTempDir("ws6136-dotnet-build")
+  defer {
+    cleanup(root)
+  }
+  val (producerDir, consumerDir) = writeWs6136Fixture(root)
+
+  val noFeatures: List[String] = newList()
+  val noDefines: List[String] = newList()
+  val noPre: Option[Cli.ResolvedManifestDeps] = None
+  val rc = Cli.buildProject(
+    Path.join(consumerDir, "lyric.toml"),
+    None,
+    Emitter.Dotnet,
+    noFeatures,
+    false,
+    false,
+    true,
+    None,
+    noPre,
+    noDefines
+  )
+  assertEqualInt(
+    rc,
+    0,
+    "buildProject: --target dotnet still builds the workspace-dep fixture via the restored-DLL path"
+  )
+  assertTrue(
+    File.fileExists(Path.join(Path.join(producerDir, "bin"), "WsProducer.dll")),
+    "buildProject: --target dotnet builds the workspace dep's own DLL (the restored-dependency path)"
+  )
+}
