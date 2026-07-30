@@ -21733,3 +21733,70 @@ per the discovered-bug note above, confirmed pre-existing);
 
 **Related:** #5455, #5976, #5903, #5995, #6287, #6122, #6328, #2535, #4802,
 #5982, #5943, D-progress-434.
+
+## D133 — `lyric-mcp` migrates to MCP spec revision `2026-07-28` (stateless core, docs/64) — Phase A
+
+**Context.** The MCP specification's `2026-07-28` revision — billed
+upstream as the largest protocol revision since MCP launched — ships a
+stateless protocol core, removing the `initialize`/`initialized`
+handshake and `Mcp-Session-Id` entirely. `lyric-mcp` targeted `2025-06-18`
+(D129); adopting the new revision directly (rather than building toward
+`2025-06-18`'s now-abandoned `notifications/cancelled` answer to
+long-blocking tools) resolves docs/62's Q-MCP-002, the actual motivation
+for this library (cloud-agents' permission-callback MCP server). Full
+design: `docs/64-mcp-2026-stateless-migration.md`.
+
+**Decisions** (Phase A of docs/64 §2; Phases B/C/D are separate, later
+tracks):
+
+1. **`protocolVersionLatest` becomes `"2026-07-28"`,
+   `protocolVersionLegacy` becomes `"2025-06-18"`** — `2025-03-26` support
+   is dropped outright (not wire-compatible with the stateless core).
+2. **The `McpServer` readiness gate is deleted.** Every request
+   (`tools/list`, `tools/call`, `resources/*`, `prompts/*`, `ping`) is
+   answerable from the first message a peer sends — no
+   `initialize`/`notifications/initialized` round trip required first.
+   `Mcp.serverNotInitialized` (`-32002`) is removed along with it — there
+   is no more "not initialized" state to report. `initialize` remains
+   answerable, purely for legacy-peer tolerance, but no longer gates
+   anything; `notifications/initialized` is accepted and is now a no-op.
+3. **`server/discover` is the new stateless capability-discovery method**
+   (`{serverInfo, capabilities}`, no `protocolVersion` field — it is a
+   query, not a negotiation).
+4. **`McpToolCallOutcome`/`McpResumableToolHandler` implement the
+   `input_required` multi-round-trip pattern** that resolves Q-MCP-002: a
+   resumable tool answers `tools/call` with either a finished
+   `ToolResult` or an `InputRequired` (`inputRequests` + an opaque
+   `requestState`); the client reissues `tools/call` with the echoed
+   `requestState` + `inputResponses` to resume. Purely additive — a new
+   `Mcp.Server.addResumableTool`/`McpResumableToolDef` registration
+   alongside (never replacing) the existing `addTool`/`McpToolDef`, so no
+   existing plain-tool registration (cloud-agents' `shim/` included)
+   needs to change. `ToolResult`'s payload field is named `value`, not
+   `result` — the same P0050 union-case-field-name parser bug
+   `RpcResponse.RpcSuccess` already works around (`lyric-jsonrpc/README.md`
+   "Known upstream issues").
+5. **`Mcp.Client.connectTransport`/`connectStdio` no longer perform any
+   round trip** — connecting is a pure local operation. `McpClient` no
+   longer carries a `protocolVersion` field (nothing to pin per-connection
+   anymore); `serverInfo` starts empty and is populated by the new,
+   optional `discoverServer` (wraps `server/discover`).
+6. **Roots/Sampling/Logging deprecation is a no-op for this library** —
+   none were ever implemented (docs/62 §5.3 "out of scope v1"), so
+   `2026-07-28`'s deprecation of all three closes Q-MCP-001 (sampling) by
+   removing the target rather than building toward it.
+7. **Streamable HTTP (docs/64 §4, Phase B), the Tasks extension (docs/64
+   §5, Phase C), and OAuth/auth-hardening (docs/64 §7, still Q-MCP-003)
+   are explicitly out of scope of this entry** — each is its own
+   follow-up track.
+
+**Verification.** All `--target dotnet` suites green:
+`lyric-mcp` 51/51 (20 lifecycle, including 5 new cases for `server/discover`
+and the full `input_required`/resume round trip against a real
+`Mcp.Client`/`Mcp.Server` pair; 26 serialization; 5 real-subprocess), and
+`lyric-jsonrpc`'s existing 15/15 unaffected (this track touched no
+`lyric-jsonrpc` code — the multi-round-trip pattern is a pure `Mcp`-layer
+data-shape change, `JsonRpc` never sees the difference). JVM gaps are
+unchanged and untouched by this track — `lyric-mcp`'s entire test suite
+still fails to type-check under `--target jvm` (pre-existing, tracked
+separately, not this track's job).

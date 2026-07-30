@@ -1,11 +1,22 @@
 //! src/mcp.l — Mcp: shared types for the Model Context Protocol.
 //!
-//! Protocol revision 2025-06-18 (primary) with 2025-03-26 accepted during
-//! version negotiation — see `negotiateProtocolVersion`. Everything both
-//! `Mcp.Server` and `Mcp.Client` need lives here: protocol constants,
-//! content blocks, tool/resource/prompt wire shapes, and the JSON
-//! encode/decode helpers for every MCP message shape this library
-//! implements (docs/62-jsonrpc-mcp.md §5).
+//! Protocol revision 2026-07-28 (primary) with 2025-06-18 accepted during
+//! version negotiation — see `negotiateProtocolVersion`. This is the
+//! stateless-core revision (docs/64-mcp-2026-stateless-migration.md):
+//! there is no more `initialize`/`initialized` lifecycle gate — every
+//! request is answerable immediately (`Mcp.Server` still *answers*
+//! `initialize` for legacy-peer tolerance, it just no longer requires it
+//! before serving anything else). `server/discover` replaces the
+//! handshake's capability-discovery role for peers that want it without
+//! pinning a version. `McpToolCallOutcome`/`McpResumableToolHandler`
+//! implement the `input_required` multi-round-trip pattern that resolves
+//! docs/62's Q-MCP-002 (long-blocking permission-prompt tools) — the
+//! reason this library exists per docs/62 §1.
+//!
+//! Everything both `Mcp.Server` and `Mcp.Client` need lives here: protocol
+//! constants, content blocks, tool/resource/prompt wire shapes, and the
+//! JSON encode/decode helpers for every MCP message shape this library
+//! implements (docs/62-jsonrpc-mcp.md §5, docs/64 §3).
 //!
 //! Spec deviation: `McpToolDef`/`McpResourceDef`/`McpPromptDef` carry an
 //! interface-typed `handler` field (`McpToolHandler`/`McpResourceHandler`/
@@ -32,12 +43,14 @@ import JsonRpc.Json
 
 // ── Protocol version ────────────────────────────────────────────────────────
 /// This library's primary protocol revision.
-@stable(since = "0.1")
-pub val protocolVersionLatest: String = "2025-06-18"
+@stable(since = "0.2")
+pub val protocolVersionLatest: String = "2026-07-28"
 
-/// Older revision accepted during negotiation.
-@stable(since = "0.1")
-pub val protocolVersionLegacy: String = "2025-03-26"
+/// Older revision accepted during negotiation (the previous primary —
+/// `2025-03-26` support was dropped: `2026-07-28`'s stateless core is not
+/// wire-compatible with a peer old enough to still need `2025-03-26`).
+@stable(since = "0.2")
+pub val protocolVersionLegacy: String = "2025-06-18"
 
 @stable(since = "0.1")
 pub func isSupportedProtocolVersion(v: in String): Bool {
@@ -52,6 +65,9 @@ pub func isSupportedProtocolVersion(v: in String): Bool {
 /// is no wire-level error for a mismatch, only a response whose
 /// `protocolVersion` does not echo what was requested, which the peer is
 /// responsible for noticing and disconnecting on if it cannot continue.
+/// Only meaningful for a legacy peer that still sends `initialize` — under
+/// `2026-07-28` there is no per-connection version to pin, since there is
+/// no more connection lifecycle (docs/64 §3.1).
 @stable(since = "0.1")
 pub func negotiateProtocolVersion(requested: in String): String {
   if isSupportedProtocolVersion(requested) {
@@ -60,14 +76,6 @@ pub func negotiateProtocolVersion(requested: in String): String {
     protocolVersionLatest
   }
 }
-
-// ── MCP-specific error codes ────────────────────────────────────────────────
-/// Not part of the JSON-RPC 2.0 standard code set (`JsonRpc.parseError`
-/// etc.) — the MCP convention for "a request other than `initialize`
-/// arrived before the lifecycle's `notifications/initialized` was
-/// received" (docs/62-jsonrpc-mcp.md §5.1).
-@stable(since = "0.1")
-pub val serverNotInitialized: Int = -32002
 
 // ── Implementation info (clientInfo / serverInfo) ───────────────────────────
 @stable(since = "0.1")
@@ -281,6 +289,151 @@ pub func decodeToolInfoList(v: in JsonValue): List[McpToolInfo] {
     }
   }
   acc
+}
+
+// ── Resumable tools (input_required multi-round-trip, docs/64 §3.1) ────────
+/// The server's answer to `tools/call` when the tool needs the peer to
+/// supply more input mid-call (the permission-prompt case). `requestState`
+/// is an opaque token the caller must echo back verbatim on the follow-up
+/// `tools/call` (see `Mcp.Client.resumeToolCall`); this library never
+/// interprets it, only carries it.
+@stable(since = "0.2")
+pub record McpInputRequired {
+  inputRequests: JsonValue
+  requestState: String
+}
+
+/// What a resumable tool call answers with: either a normal finished
+/// result, or a request for more input. Additive to the plain
+/// `McpToolResult` shape (docs/64 §3.1) — a non-resumable tool never
+/// produces this union at all.
+@stable(since = "0.2")
+pub union McpToolCallOutcome {
+  //
+  // NOTE: `ToolResult`'s payload field is named `value`, not `result` — see
+  // `jsonrpc.l`'s `RpcResponse.RpcSuccess` for why: the self-hosted parser
+  // rejects `result` as a union case payload field name specifically (a
+  // bare union case field named `result` fails with "expected a type" —
+  // P0050). Filed upstream; see `lyric-jsonrpc/README.md` "Known upstream
+  // issues".
+  case ToolResult(value: McpToolResult)
+  case InputRequired(value: McpInputRequired)
+}
+
+pub func encodeToolCallOutcome(outcome: in McpToolCallOutcome): JsonValue {
+  match outcome {
+    case ToolResult(result) -> encodeToolResult(result)
+    case InputRequired(ir) -> JObject(fields = [JsonField(name = "resultType", value = JString(value = "input_required")), JsonField(name = "inputRequests", value = ir.inputRequests), JsonField(name = "requestState", value = JString(value = ir.requestState))])
+  }
+}
+
+/// Decode a `tools/call` result that may be either shape: an
+/// `input_required` object (`"resultType": "input_required"`) or a plain
+/// `CallToolResult`.
+pub func decodeToolCallOutcome(v: in JsonValue): McpToolCallOutcome {
+  match getString(v, "resultType") {
+    case Some(rt) -> {
+      if rt == "input_required" {
+        val inputRequests = match getField(v, "inputRequests") { case Some(x) -> x; case None -> JObject(fields = newList()) }
+        val requestState = match getString(v, "requestState") { case Some(s) -> s; case None -> "" }
+        InputRequired(value = McpInputRequired(inputRequests = inputRequests, requestState = requestState))
+      } else {
+        ToolResult(value = decodeToolResult(v))
+      }
+    }
+    case None -> ToolResult(value = decodeToolResult(v))
+  }
+}
+
+/// Implemented by a tool that may need mid-call input instead of finishing
+/// in one round trip — the permission-prompt shape docs/62 §1 motivated
+/// this whole library with. Registered via `Mcp.Server.addResumableTool`
+/// alongside (never instead of — see that function's doc) plain
+/// `McpToolHandler` registrations, so no existing `McpToolDef`/
+/// `McpToolHandler` caller needs to change.
+@stable(since = "0.2")
+pub interface McpResumableToolHandler {
+  /// Handle the initial `tools/call` invocation.
+  func call(args: in Option[JsonValue]): Result[McpToolCallOutcome, String]
+  /// Handle a follow-up `tools/call` that echoes back a `requestState`
+  /// this handler previously issued, along with the peer's
+  /// `inputResponses` answering the earlier `inputRequests`.
+  func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String]
+}
+
+/// A registered resumable tool: same wire-visible shape as `McpToolDef`,
+/// but dispatched through `McpResumableToolHandler` instead of
+/// `McpToolHandler` (see that interface's doc for why this is a separate
+/// registration rather than a field added to `McpToolDef`).
+@stable(since = "0.2")
+pub record McpResumableToolDef {
+  name: String
+  description: String
+  inputSchema: JsonValue
+  handler: McpResumableToolHandler
+}
+
+func encodeResumableToolDef(t: in McpResumableToolDef): JsonValue {
+  val fields: List[JsonField] = newList()
+  fields.add(JsonField(name = "name", value = JString(value = t.name)))
+  if t.description.length > 0 {
+    fields.add(JsonField(name = "description", value = JString(value = t.description)))
+  }
+  fields.add(JsonField(name = "inputSchema", value = t.inputSchema))
+  JObject(fields = fields)
+}
+
+/// Encode the `tools` array for `tools/list`, combining plain and
+/// resumable tool registrations (the wire shape is identical either way —
+/// only dispatch differs, see `Mcp.Server.handleToolsCall`).
+@stable(since = "0.2")
+pub func encodeAllToolDefsList(tools: in List[McpToolDef], resumableTools: in List[McpResumableToolDef]): JsonValue {
+  val acc: List[JsonValue] = newList()
+  var i = 0
+  while i < tools.count {
+    acc.add(encodeToolDef(tools[i]))
+    i = i + 1
+  }
+  var j = 0
+  while j < resumableTools.count {
+    acc.add(encodeResumableToolDef(resumableTools[j]))
+    j = j + 1
+  }
+  JArray(items = acc)
+}
+
+// ── server/discover (docs/64 §3.1) ──────────────────────────────────────────
+/// Encode a `server/discover` result: the same `serverInfo`/`capabilities`
+/// shape `initialize` used to return, minus the lifecycle bookkeeping —
+/// answerable at any time, not gated on anything, and not itself a
+/// negotiation (no `protocolVersion` field; see the module doc).
+@stable(since = "0.2")
+pub func encodeServerDiscoverResult(
+  hasTools: in Bool,
+  hasResources: in Bool,
+  hasPrompts: in Bool,
+  serverInfo: in McpImplementation,
+): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "serverInfo", value = encodeImplementation(serverInfo)),
+      JsonField(name = "capabilities", value = encodeCapabilities(hasTools, hasResources, hasPrompts))
+    ]
+  )
+}
+
+/// Decoded `server/discover` result (client-side).
+@stable(since = "0.2")
+pub record McpDiscoverResult {
+  serverInfo: McpImplementation
+}
+
+pub func decodeServerDiscoverResult(v: in JsonValue): McpDiscoverResult {
+  val serverInfo = match getField(v, "serverInfo") {
+    case Some(si) -> decodeImplementation(si)
+    case None -> McpImplementation(name = "", version = "")
+  }
+  McpDiscoverResult(serverInfo = serverInfo)
 }
 
 // ── Resources ────────────────────────────────────────────────────────────────

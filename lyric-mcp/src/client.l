@@ -1,15 +1,21 @@
-//! src/client.l — Mcp.Client: MCP client surface (docs/62-jsonrpc-mcp.md §5.2).
+//! src/client.l — Mcp.Client: MCP client surface (docs/62-jsonrpc-mcp.md §5.2,
+//! docs/64-mcp-2026-stateless-migration.md §3.3).
 //!
-//! `connectStdio` spawns the server process over `Std.Process.spawnPiped`
-//! (via `Mcp.Stdio.newPipedNdjsonTransport`) and performs the
-//! `initialize` / `notifications/initialized` handshake before returning.
-//! Every other operation (`listTools`, `callTool`, ...) is a thin
-//! `JsonRpc.call` wrapper that encodes params with `Mcp`'s encoders and
-//! decodes the result with `Mcp`'s decoders.
+//! **Stateless core (docs/64 §3.3)**: `connectStdio`/`connectTransport` no
+//! longer perform any handshake — wrapping a transport is a pure local
+//! operation. Call `discoverServer` afterward (recommended, not required)
+//! to fetch `serverInfo` via `server/discover`. Every other operation
+//! (`listTools`, `callTool`, ...) is a thin `JsonRpc.call` wrapper that
+//! encodes params with `Mcp`'s encoders and decodes the result with
+//! `Mcp`'s decoders. `callResumableTool`/`resumeToolCall` drive the
+//! `input_required` multi-round-trip pattern (docs/64 §3.1) against a
+//! resumable tool.
 //!
-//! v1 has no server -> client requests (sampling/elicitation are out of
-//! scope per docs/62 §5.3), so the peer's `RpcHandler` is a `NullHandler`
-//! that refuses any inbound request and ignores inbound notifications.
+//! Sampling/elicitation (server -> client requests) are out of scope —
+//! `2026-07-28` deprecates both outright (docs/64 §1), so this is now moot
+//! rather than merely deferred — so the peer's `RpcHandler` is a
+//! `NullHandler` that refuses any inbound request and ignores inbound
+//! notifications.
 @runtime_checked
 package Mcp.Client
 
@@ -48,46 +54,53 @@ impl RpcHandler for NullHandler {
 
 val clientImplementationName: String = "lyric-mcp"
 
-val clientImplementationVersion: String = "0.1.0"
+val clientImplementationVersion: String = "0.2.0"
+
+val unknownServerInfo: McpImplementation = McpImplementation(name = "", version = "")
 
 // ── Client ───────────────────────────────────────────────────────────────────
 @stable(since = "0.1")
 pub record McpClient {
   var peer: RpcPeer
-  serverInfo: McpImplementation
-  protocolVersion: String
+  var serverInfo: McpImplementation
 }
 
-/// Perform the `initialize` / `notifications/initialized` lifecycle
-/// handshake over an already-constructed transport and return the
-/// resulting `McpClient`. `connectStdio` is a thin wrapper of this over
-/// `Mcp.Stdio.newPipedNdjsonTransport`; exposed directly so tests (and any
-/// caller with a non-stdio `RpcTransport`, e.g. a future streamable-HTTP
-/// transport) can drive the same handshake without spawning a process.
+/// Wrap an already-constructed transport in an `McpClient`. Stateless core
+/// (docs/64 §3.3): this is now a pure local operation — no handshake, no
+/// round trip, cannot fail on its own (still `Result`-returning for
+/// signature stability with `connectStdio`, which can fail on spawn).
+/// `serverInfo` starts empty; call `discoverServer` to populate it.
 @stable(since = "0.1")
 pub func connectTransport(transport: in RpcTransport): Result[McpClient, String] {
-  var peer = newPeer(transport, NullHandler())
-  val clientInfo = McpImplementation(name = clientImplementationName, version = clientImplementationVersion)
-  match call(peer, "initialize", Some(value = encodeInitializeParams(protocolVersionLatest, clientInfo))) {
-    case Err(e) -> Err(error = "'initialize' failed: " + e.message)
-    case Ok(resultValue) -> {
-      val initResult = decodeInitializeResult(resultValue)
-      match notify(peer, "notifications/initialized", None) {
-        case Err(e) -> Err(error = "'notifications/initialized' failed: " + e)
-        case Ok(_) -> Ok(value = McpClient(peer = peer, serverInfo = initResult.serverInfo, protocolVersion = initResult.protocolVersion))
-      }
-    }
-  }
+  val peer = newPeer(transport, NullHandler())
+  Ok(value = McpClient(peer = peer, serverInfo = unknownServerInfo))
 }
 
-/// Spawn `command args...`, connect its piped stdin/stdout as the MCP
-/// stdio transport, and perform the `initialize` / `notifications/initialized`
-/// lifecycle handshake before returning.
+/// Spawn `command args...` and connect its piped stdin/stdout as the MCP
+/// stdio transport (`Mcp.Stdio.newPipedNdjsonTransport`). No handshake is
+/// performed — see `connectTransport`.
 @stable(since = "0.1")
 pub func connectStdio(command: in String, args: in List[String]): Result[McpClient, String] {
   match newPipedNdjsonTransport(command, args) {
     case Err(e) -> Err(error = "failed to spawn '" + command + "': " + e)
     case Ok(transport) -> connectTransport(transport)
+  }
+}
+
+/// Fetch the server's identity and capability summary via `server/discover`
+/// and record it on `client.serverInfo`. Optional (docs/64 §3.3) — every
+/// other `Mcp.Client` function works without ever calling this — but
+/// recommended before the first `listTools`/`callTool` if the caller wants
+/// to display or log which server it is talking to.
+@stable(since = "0.2")
+pub func discoverServer(client: inout McpClient): Result[McpImplementation, String] {
+  match call(client.peer, "server/discover", None) {
+    case Ok(v) -> {
+      val discovered = decodeServerDiscoverResult(v)
+      client.serverInfo = discovered.serverInfo
+      Ok(value = discovered.serverInfo)
+    }
+    case Err(e) -> Err(error = "'server/discover' failed: " + e.message)
   }
 }
 
@@ -109,6 +122,44 @@ pub func callTool(client: inout McpClient, name: in String, args: in Option[Json
   }
   match call(client.peer, "tools/call", Some(value = JObject(fields = fields))) {
     case Ok(v) -> Ok(value = decodeToolResult(v))
+    case Err(e) -> Err(error = "'tools/call' failed: " + e.message)
+  }
+}
+
+/// Call a resumable tool's initial `tools/call` and decode whichever shape
+/// it answers with — a finished `ToolResult` or an `InputRequired` request
+/// for more input (docs/64 §3.1). Use `resumeToolCall` to answer an
+/// `InputRequired` outcome.
+@stable(since = "0.2")
+pub func callResumableTool(
+  client: inout McpClient, name: in String, args: in Option[JsonValue]
+): Result[McpToolCallOutcome, String] {
+  val fields: List[JsonField] = newList()
+  fields.add(JsonField(name = "name", value = JString(value = name)))
+  match args {
+    case Some(a) -> fields.add(JsonField(name = "arguments", value = a))
+    case None -> ()
+  }
+  match call(client.peer, "tools/call", Some(value = JObject(fields = fields))) {
+    case Ok(v) -> Ok(value = decodeToolCallOutcome(v))
+    case Err(e) -> Err(error = "'tools/call' failed: " + e.message)
+  }
+}
+
+/// Answer a prior `InputRequired` outcome by reissuing `tools/call` with
+/// the echoed `requestState` and the caller's `inputResponses` (docs/64
+/// §3.1). May itself answer with another `InputRequired` outcome if the
+/// tool needs a further round trip.
+@stable(since = "0.2")
+pub func resumeToolCall(
+  client: inout McpClient, name: in String, requestState: in String, inputResponses: in JsonValue
+): Result[McpToolCallOutcome, String] {
+  val fields: List[JsonField] = newList()
+  fields.add(JsonField(name = "name", value = JString(value = name)))
+  fields.add(JsonField(name = "requestState", value = JString(value = requestState)))
+  fields.add(JsonField(name = "inputResponses", value = inputResponses))
+  match call(client.peer, "tools/call", Some(value = JObject(fields = fields))) {
+    case Ok(v) -> Ok(value = decodeToolCallOutcome(v))
     case Err(e) -> Err(error = "'tools/call' failed: " + e.message)
   }
 }

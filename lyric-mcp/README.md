@@ -2,20 +2,44 @@
 
 Model Context Protocol (MCP) client and server for Lyric, built on
 [`lyric-jsonrpc`](../lyric-jsonrpc). Implements protocol revision
-`2025-06-18` (primary), accepting `2025-03-26` during version negotiation.
-See `docs/62-jsonrpc-mcp.md` §5 for the agreed build spec this library
-implements. First consumer: `nichobbs/cloud-agents`' in-container
+`2026-07-28` (primary), accepting `2025-06-18` during version negotiation
+— the stateless-core revision (see "Migrating from 2025-06-18" below).
+See `docs/62-jsonrpc-mcp.md` §5 and
+`docs/64-mcp-2026-stateless-migration.md` for the agreed build spec this
+library implements. First consumer: `nichobbs/cloud-agents`' in-container
 permission-callback MCP server.
 
-> **Status**: `@experimental`. `.NET` is fully implemented and tested:
-> all 44 tests across all three suites pass on `--target dotnet`
-> (`./bin/lyric test --manifest lyric-mcp/lyric.toml`), including a real
-> spawned-child-process round trip. **JVM is not currently usable for this
-> library at all** — every one of this library's own test files fails to
-> even type-check under `--target jvm` (see "Known JVM gaps" #3 below), a
-> deeper and more fundamental gap than anticipated going in. See "Known
-> JVM gaps" before depending on the JVM target for anything in this
-> library.
+> **Status**: `@experimental`. `.NET` is fully implemented and tested on
+> `--target dotnet` (`./bin/lyric test --manifest lyric-mcp/lyric.toml`),
+> including a real spawned-child-process round trip. **JVM is not
+> currently usable for this library at all** — every one of this
+> library's own test files fails to even type-check under `--target jvm`
+> (see "Known JVM gaps" #3 below), a deeper and more fundamental gap than
+> anticipated going in, predating and unaffected by the `2026-07-28`
+> migration. See "Known JVM gaps" before depending on the JVM target for
+> anything in this library.
+
+## Migrating from `2025-06-18` (stateless core, docs/64)
+
+The `initialize`/`notifications/initialized` handshake is no longer
+required before anything else works — every request (`tools/list`,
+`tools/call`, ...) is answerable from the very first message. `initialize`
+remains answerable (for legacy-peer tolerance) but no longer gates
+readiness, and `Mcp.serverNotInitialized` / the `-32002` "not initialized"
+error no longer exist — there is no more "not initialized" state to report.
+`server/discover` is the stateless replacement for capability discovery;
+`Mcp.Client.connectTransport`/`connectStdio` no longer perform any round
+trip (call `Mcp.Client.discoverServer` afterward if you want
+`client.serverInfo` populated). `McpClient` no longer carries a
+`protocolVersion` field — there is nothing to negotiate per-connection
+anymore. See `docs/64-mcp-2026-stateless-migration.md` §3 and §6 for the
+full design and breaking-change notes.
+
+A tool that needs mid-call user input instead of finishing in one round
+trip (the permission-prompt case this library exists for) registers via
+the new `Mcp.Server.addResumableTool`/`Mcp.Server.McpResumableToolHandler`
+instead of `addTool`/`McpToolHandler` — see docs/64 §3.1 and the Quick
+start section below.
 
 ## Platform parity
 
@@ -250,9 +274,9 @@ hardcoded per bug #2.
 
 | Package | Purpose |
 |---|---|
-| `Mcp` | Shared types: protocol version negotiation, MCP-specific error codes, content blocks (`McpContent`), tool/resource/prompt wire shapes, and every JSON encode/decode helper both the server and client use |
-| `Mcp.Server` | `McpServer` builder (`newServer` / `addTool` / `addResource` / `addPrompt`) + `serveStdio` |
-| `Mcp.Client` | `McpClient`, `connectStdio` (and the lower-level `connectTransport`), `listTools` / `callTool` / `listResources` / `readResource` / `listPrompts` / `getPrompt` / `ping` / `disconnect` |
+| `Mcp` | Shared types: protocol version negotiation, content blocks (`McpContent`), tool/resource/prompt wire shapes, the `McpToolCallOutcome`/`McpResumableToolHandler` `input_required` shapes, and every JSON encode/decode helper both the server and client use |
+| `Mcp.Server` | `McpServer` builder (`newServer` / `addTool` / `addResumableTool` / `addResource` / `addPrompt`) + `serveStdio` |
+| `Mcp.Client` | `McpClient`, `connectStdio` (and the lower-level `connectTransport`), `discoverServer`, `listTools` / `callTool` / `callResumableTool` / `resumeToolCall` / `listResources` / `readResource` / `listPrompts` / `getPrompt` / `ping` / `disconnect` |
 | `Mcp.Stdio` | Client-side piped-child-process NDJSON transport (`Std.Process.PipedProcess` wrapped as a `JsonRpc.RpcTransport`, reusing `JsonRpc.Stdio`'s framing helpers rather than re-implementing them) |
 
 ## Installation
@@ -301,6 +325,34 @@ func main(): Unit {
 }
 ```
 
+### A resumable tool (permission-prompt pattern, docs/64 §3.1)
+
+```lyric
+record DeleteFileHandler {
+}
+
+impl McpResumableToolHandler for DeleteFileHandler {
+  func call(args: in Option[JsonValue]): Result[McpToolCallOutcome, String] {
+    val path = match args { case Some(a) -> match getString(a, "path") { case Some(p) -> p; case None -> "" }; case None -> "" }
+    val inputRequests = JObject(fields = [JsonField(name = "confirm", value = JBool(value = true))])
+    Ok(value = InputRequired(value = McpInputRequired(inputRequests = inputRequests, requestState = "delete:" + path)))
+  }
+
+  func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String] {
+    val confirmed = match getBool(inputResponses, "confirm") { case Some(b) -> b; case None -> false }
+    if confirmed {
+      Ok(value = ToolResult(value = toolTextResult("deleted")))
+    } else {
+      Ok(value = ToolResult(value = toolErrorResult("not confirmed")))
+    }
+  }
+}
+
+// registered with addResumableTool(server, McpResumableToolDef(name = "delete_file", ...))
+// alongside the plain addTool registrations above — both dispatch through
+// the same tools/call method and appear together in tools/list.
+```
+
 ### Connecting to a server (client, `.NET` only — see "Known JVM gaps")
 
 ```lyric
@@ -314,6 +366,11 @@ func main(): Unit {
     case Err(e) -> println("connect failed: " + e)
     case Ok(clientVal) -> {
       var client = clientVal
+      // Optional (docs/64 §3.3) — populates client.serverInfo.
+      match discoverServer(client) {
+        case Ok(info) -> println("connected to " + info.name + " " + info.version)
+        case Err(e) -> println("server/discover failed: " + e)
+      }
       match listTools(client) {
         case Ok(tools) -> {
           var i = 0
@@ -361,12 +418,7 @@ func main(): Unit {
   for a handler to detect "this call is part of an inbound batch" and
   reject the envelope as a whole. Adding one would be a new cross-cutting
   feature in `lyric-jsonrpc`, out of scope for this track's "small,
-  test-proven fix only" boundary on that library. What *is* true, and
-  verified by `tests/mcp_tests.l`'s batch tests: every element of an
-  inbound batch is still independently subject to MCP's own rules (the
-  `serverNotInitialized` lifecycle gate, unknown-method/unknown-tool
-  errors, ...) — a batch cannot be used to bypass them, it just isn't
-  specially rejected as a whole envelope.
+  test-proven fix only" boundary on that library.
 - **Resource contents are text-only** (`McpResourceContent` has no
   `BlobResourceContents`/base64 binary variant), and **prompt message
   content omits the `AudioContent` block** (only `text`/`image`/`resource`
@@ -374,27 +426,31 @@ func main(): Unit {
   intentional protocol restrictions — extending `McpContent` and
   `McpResourceContent` to cover the remaining schema variants is
   straightforward follow-up work.
-- **Milestone 2 (streamable HTTP transport, docs/62 §5.3) is not
-  implemented** — see "Sequencing" below.
+- **Milestone 2 (streamable HTTP transport, docs/62 §5.3, updated for
+  `2026-07-28` in docs/64 §4) is not implemented** — see "Sequencing"
+  below.
+- **The Tasks extension (docs/64 §5) is not implemented** — poll-based
+  long-running (but non-interactive) work has no dedicated support yet;
+  use a resumable tool (`addResumableTool`) for interactive long-blocking
+  work instead.
 
-## Out of scope (v1, per docs/62 §5.3)
+## Out of scope, per docs/64 §1/§7
 
-Sampling and elicitation (server -> client requests), `listChanged` /
-resource-subscription notifications, roots, OAuth on the HTTP transport,
-and cancellation/progress notifications (`notifications/cancelled`) are
-all out of scope for this track, matching the agreed spec.
+`2026-07-28` deprecates Roots, Sampling, and Logging outright — these were
+already unimplemented (docs/62 §5.3 "out of scope v1"), so there is
+nothing to migrate off. OAuth 2.1 resource-server support on the
+streamable HTTP transport is still fully out of scope (docs/64 §7,
+Q-MCP-003) — building it is its own epic, orthogonal to this library's
+wire-protocol migration.
 
 ## Sequencing
 
-This track (PR-4 in docs/62-jsonrpc-mcp.md §8) implements the **stdio
-transport only** (v1, required). **Streamable HTTP (milestone 2, PR-5) is
-not attempted** — per the task brief, it was explicitly scoped to "attempt
-only after stdio is fully done and tested," and stdio (plus the
-`Std.Process` piped-spawn stdlib seam it needed, including chasing down
-the JVM read-side gap documented above) consumed the available budget for
-this track. It is left for a dedicated follow-up PR, building on
-`lyric-web`'s SSE support (server side) and `Std.Http` (client side) per
-docs/62 §5.3.
+Phase A (docs/64 §3, stateless core: no more `initialize` gate,
+`server/discover`, `input_required` multi-round-trip via
+`addResumableTool`/`McpResumableToolHandler`) is implemented and tested on
+`--target dotnet`. **Streamable HTTP (docs/64 §4, Phase B) and the Tasks
+extension (docs/64 §5, Phase C) are not attempted in this track** — each
+is left for a dedicated follow-up PR per docs/64 §2's phasing.
 
 ## Package layout
 

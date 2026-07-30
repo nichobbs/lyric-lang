@@ -9,6 +9,14 @@ gaps are tracked in #6118–#6124, #6127, #6133–#6136. First consumer:
 agreed build spec for three coordinated tracks; each track lands as its
 own PR series and cites this doc.
 
+**Superseding note (2026-07-30):** MCP spec revision `2026-07-28`
+shipped — the largest protocol revision since MCP launched (stateless
+core, removed `initialize` handshake, extensions framework). §5.3's
+still-open "milestone 2" (streamable HTTP) and Q-MCP-001/Q-MCP-002 below
+are addressed by targeting the new revision directly rather than
+`2025-06-18`; see `docs/64-mcp-2026-stateless-migration.md` for the
+migration plan. Q-MCP-003 (OAuth) stays open and unaddressed by either doc.
+
 Extends: `docs/16-lsp-vscode-plan.md` (the only existing JSON-RPC
 implementation, embedded in `lyric-compiler/lyric/lsp.l`),
 `docs/57-stdlib-ecosystem-library-review.md` (lyric-ws / lyric-web
@@ -310,8 +318,14 @@ PR-4 (when the MCP surface is real).
 - Q-RPC-001: migrate `JsonRpc.Json` into a cross-target `Std.Json` v2?
 - Q-RPC-002: migrate `lsp.l` onto `JsonRpc` + `ContentLengthFraming`?
 - Q-MCP-001: sampling/elicitation (server→client requests) — needs
-  interleaved dispatch beyond the v1 single-threaded loop.
+  interleaved dispatch beyond the v1 single-threaded loop. _Superseded
+  by docs/64 §1: MCP `2026-07-28` deprecates sampling outright, so this
+  is now moot rather than resolved._
 - Q-MCP-002: `notifications/cancelled` + progress tokens — required
   before long-blocking tools (permission prompts) are polite citizens.
+  _Addressed by docs/64 §3 (Phase A): `2026-07-28`'s `input_required`
+  multi-round-trip result shape replaces this need structurally rather
+  than via cancellation/progress notifications._
 - Q-WS-001: JVM kernel fragmentation/ping-keepalive parity follow-up.
 - Q-MCP-003: OAuth 2.1 resource-server support on streamable HTTP.
+  _Still open — docs/64 §7 explicitly keeps this out of its scope too._
