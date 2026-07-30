@@ -174,9 +174,11 @@ UTF-8 payloads and split reads.
 
 ## 5. `lyric-mcp` — protocol layer
 
-Protocol revision: `2025-06-18` primary, `2025-03-26` accepted from
+Protocol revision: `2026-07-28` primary, `2025-06-18` accepted from
 peers during version negotiation (respond with the newest mutually
-supported revision; refuse others per spec).
+supported revision; refuse others per spec) — see docs/64 for the
+`2026-07-28` stateless-core migration this superseded the original
+`2025-06-18`/`2025-03-26` scheme with.
 
 ### 5.1 Server surface
 

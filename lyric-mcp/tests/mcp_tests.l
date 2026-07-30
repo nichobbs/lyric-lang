@@ -568,6 +568,28 @@ test "tools/call: an unknown tool name is a protocol error (-32602)" {
   assertErrorCode(popResponse(box, "tools/call"), 0i64 - 32602i64, "invalidParams for an unknown tool")
 }
 
+// A tools/call carrying requestState against a name registered only via
+// addTool (never addResumableTool) must not silently fall through to an
+// ordinary call() — that would ignore requestState entirely and return a
+// misleadingly plain success for a peer that thinks it's resuming.
+test "tools/call: requestState against a non-resumable tool is a protocol error, not a silent plain call" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  val callParams = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "echo")),
+      JsonField(name = "requestState", value = JString(value = "bogus")),
+      JsonField(name = "inputResponses", value = JObject(fields = newList()))
+    ]
+  )
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
+  assertErrorCode(
+    popResponse(box, "tools/call"),
+    0i64 - 32602i64,
+    "invalidParams for requestState against a non-resumable tool"
+  )
+}
+
 // ── Resumable tools: input_required multi-round-trip (docs/64 §3.1) ────────
 test "tools/call against a resumable tool answers with input_required, not a finished result" {
   val box = newMailbox()
@@ -823,7 +845,7 @@ test "callTool against a resumable tool's input_required answer returns Err, not
       )
       stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callWireParams)))
       match callTool(client, "confirm_delete", Some(value = args)) {
-        case Err(_) -> assertTrue(true, "callTool surfaces an explicit Err instead of a false-success result")
+        case Err(e) -> assertTrue(e.contains("input_required"), "callTool's Err should reference input_required, got: " + e)
         case Ok(result) -> assertTrue(false, "expected an Err — callTool instead returned Ok(McpToolResult(content.count = " + result.content.count.toString() + ")), a false-success (#6334 regression)")
       }
     }

@@ -21819,15 +21819,28 @@ tracks):
    a fictional lazy-population mechanism, and a `resumeToolCall`
    signature missing its load-bearing `name` parameter — both
    corrected to match `client.l`.
+10. **Final review-round hardening.** The #6334 regression test's
+    `Err(_)` match was over-broad (passed on any error, not specifically
+    the `input_required` guard) — tightened to assert the message
+    references `input_required`. `handleToolsCall` gained a guard: a
+    `tools/call` carrying `requestState` against a name registered only
+    via `addTool` (never `addResumableTool`) now returns `invalidParams`
+    instead of silently falling through to an ordinary `call()` that
+    ignores `requestState` entirely. `docs/62-jsonrpc-mcp.md` §5's
+    protocol-revision line still said `2025-06-18`/`2025-03-26`,
+    stale since this entry bumps the accepted versions to
+    `2026-07-28`/`2025-06-18`.
 
 **Verification.** All `--target dotnet` suites green:
-`lyric-mcp` 55/55 (23 lifecycle, including 5 new cases for `server/discover`,
+`lyric-mcp` 56/56 (24 lifecycle, including 5 new cases for `server/discover`,
 the full `input_required`/resume round trip against a real
 `Mcp.Client`/`Mcp.Server` pair, the #6334 regression test for `callTool`
 against an `input_required` response, a #6341 live-`McpServer` case proving
 a name registered via both `addTool` and `addResumableTool` dispatches to
-the resumable handler, and a `callTool` happy-path case confirming its
-`resultType` guard doesn't fire on an ordinary plain-tool result; 27
+the resumable handler, a `callTool` happy-path case confirming its
+`resultType` guard doesn't fire on an ordinary plain-tool result, and a
+case proving `requestState` against a non-resumable tool is rejected
+rather than silently falling through to an ordinary call; 27
 serialization, including the #6341 `encodeAllToolDefsList` name-collision
 dedup case; 5 real-subprocess), and
 `lyric-jsonrpc`'s existing 15/15 unaffected (this track touched no

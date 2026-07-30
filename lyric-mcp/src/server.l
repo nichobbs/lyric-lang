@@ -242,19 +242,27 @@ func handleToolsCall(server: in McpServer, paramsOpt: in Option[JsonValue]): Res
           case Some(def) -> dispatchResumableTool(def, toolName, p, argsOpt)
           case None -> match findTool(server.tools, toolName) {
             case None -> Err(error = RpcError(code = invalidParamsCode(), message = "unknown tool: '" + toolName + "'", data = None))
-            case Some(def) -> {
-              // Per docs/62 §5.1: a tool-execution failure — whether returned
-              // as `Err` or raised as a panic — is reported as a successful
-              // `CallToolResult` with `isError: true`, never a protocol
-              // error.
-              val outcome: Result[McpToolResult, String] = try {
-                def.handler.call(argsOpt)
-              } catch Bug as b {
-                Err(error = "tool '" + toolName + "' panicked: " + b.message)
-              }
-              match outcome {
-                case Ok(result) -> Ok(value = encodeToolResult(result))
-                case Err(msg) -> Ok(value = encodeToolResult(toolErrorResult(msg)))
+            case Some(def) -> match getField(p, "requestState") {
+              // `requestState` is only meaningful against a tool registered
+              // via `addResumableTool` — a peer attempting to "resume" a
+              // plain tool would otherwise silently fall through to an
+              // ordinary `call()`, ignoring `requestState` entirely and
+              // returning a misleadingly plain success.
+              case Some(_) -> Err(error = RpcError(code = invalidParamsCode(), message = "tool '" + toolName + "' is not resumable — 'requestState' is only valid against a tool registered with addResumableTool", data = None))
+              case None -> {
+                // Per docs/62 §5.1: a tool-execution failure — whether returned
+                // as `Err` or raised as a panic — is reported as a successful
+                // `CallToolResult` with `isError: true`, never a protocol
+                // error.
+                val outcome: Result[McpToolResult, String] = try {
+                  def.handler.call(argsOpt)
+                } catch Bug as b {
+                  Err(error = "tool '" + toolName + "' panicked: " + b.message)
+                }
+                match outcome {
+                  case Ok(result) -> Ok(value = encodeToolResult(result))
+                  case Err(msg) -> Ok(value = encodeToolResult(toolErrorResult(msg)))
+                }
               }
             }
           }
