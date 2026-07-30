@@ -4262,6 +4262,136 @@ func makeAwaitHelperFunc(): LFunc {
   LFunc(flags = 0x0009, name = awaitHelperName(), params = ps, ret = objTy, insns = insns, maxStack = 0, maxLocals = 1)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §8b. Lambda-interface emission gate (#6113).
+// ─────────────────────────────────────────────────────────────────────────────
+// True when `ty` is, or (recursively) contains, a function type (`(A) -> B`).
+// Syntax-only (no type-check info needed): used to decide, ahead of codegen,
+// whether a package needs to emit its own `Lyric$Lambda` interface even when
+// it lowers no lambda LITERAL of its own. A function whose parameter is
+// itself a function type (e.g. `Std.Core.countWhere(xs, pred: (Int) ->
+// Bool)`) still emits a `checkcast`/`invokeinterface` against the package's
+// OWN `Lyric$Lambda` the moment that parameter is called (`lowerLambdaInvoke`
+// in `04_calls.l`) — even though the closure literal that eventually flows in
+// was created in a DIFFERENT (calling) package. The previous gate
+// (`closureAcc.count > 0`, populated only when THIS package's own code
+// lowers a lambda literal) missed every stdlib-style higher-order function
+// that merely calls a caller-supplied predicate, so the interface class was
+// never written to the JAR and the first call threw
+// `NoClassDefFoundError: <Pkg>/Lyric$Lambda` at runtime — confirmed via
+// `Std.Core.countWhere` (#6113): `core.l` declares zero lambda literals of
+// its own, so `closureAcc` for that package's codegen pass was always empty.
+func typeExprMentionsFunctionType(ty: in TypeExpr): Bool {
+  match ty.kind {
+    case TFunction(_, _) -> true
+    case TGenericApp(_, args) -> {
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(inner) -> {
+            if typeExprMentionsFunctionType(inner) {
+              return true
+            }
+          }
+          case TAValue(_) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TArray(_, element) -> typeExprMentionsFunctionType(element)
+    case TSlice(element) -> typeExprMentionsFunctionType(element)
+    case TTuple(types) -> {
+      var i = 0
+      while i < types.count {
+        if typeExprMentionsFunctionType(types[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TNullable(inner) -> typeExprMentionsFunctionType(inner)
+    case TParen(inner) -> typeExprMentionsFunctionType(inner)
+    case _ -> false
+  }
+}
+
+func paramsOrRetMentionFunctionType(params: in List[Param], ret: in Option[TypeExpr]): Bool {
+  var i = 0
+  while i < params.count {
+    if typeExprMentionsFunctionType(params[i].ty) {
+      return true
+    }
+    i = i + 1
+  }
+  match ret {
+    case Some(t) -> typeExprMentionsFunctionType(t)
+    case None -> false
+  }
+}
+
+// True when any function signature this package declares — a top-level
+// `func`, a record field/method, or an interface method/signature — mentions
+// a function type.  A conservative (syntax-only) over-approximation: it does
+// not verify the parameter is actually ever CALLED, only that it COULD be —
+// so a package with an unused function-typed field emits one harmless,
+// never-instantiated interface class rather than risk missing a real one.
+func fileNeedsLambdaIface(file: in SourceFile): Bool {
+  var i = 0
+  while i < file.items.count {
+    val item = file.items[i]
+    match item.kind {
+      case IFunc(decl) -> {
+        if paramsOrRetMentionFunctionType(decl.params, decl.ret) {
+          return true
+        }
+      }
+      case IRecord(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMField(f) -> {
+              if typeExprMentionsFunctionType(f.ty) {
+                return true
+              }
+            }
+            case RMFunc(fn) -> {
+              if paramsOrRetMentionFunctionType(fn.params, fn.ret) {
+                return true
+              }
+            }
+            case _ -> ()
+          }
+          mi = mi + 1
+        }
+      }
+      case IInterface(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMSig(sig) -> {
+              if paramsOrRetMentionFunctionType(sig.params, sig.ret) {
+                return true
+              }
+            }
+            case IMFunc(fn) -> {
+              if paramsOrRetMentionFunctionType(fn.params, fn.ret) {
+                return true
+              }
+            }
+            case _ -> ()
+          }
+          mi = mi + 1
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
 // Backward-compatible single-package entry: the registry carries only this
 // file's own functions (enough to resolve intra-package calls — including
 // void-returning ones the legacy guess mis-resolved).
@@ -5109,10 +5239,12 @@ pub func codegenPackageWithSigsSeeded(
   items.add(LPFuncs(funcsClass = funcsClass, fns = fns, staticVals = staticVals))
 
   // J2b closures (#2665): drain the accumulated lambda closures into package
-  // items, and — if any lambda was emitted — add the one shared functional
-  // interface `<pkg>/Lyric$Lambda` they all implement
+  // items, and — if any lambda was emitted, OR this package's own signatures
+  // call through a function type it never itself instantiates (#6113,
+  // `fileNeedsLambdaIface`) — add the one shared functional interface
+  // `<pkg>/Lyric$Lambda` they all implement
   // (`invoke([Ljava/lang/Object;)Ljava/lang/Object;`).
-  if closureAcc.count > 0 {
+  if closureAcc.count > 0 or fileNeedsLambdaIface(file) {
     val ifaceName = lambdaIfaceName(pkgName)
     val ifaceParams: List[JvmType] = newList()
     ifaceParams.add(JArray(elem = JRef(className = "java/lang/Object")))
