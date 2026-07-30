@@ -195,6 +195,40 @@ test "instance calls through a JDK interface-typed receiver use invokeinterface"
   assertTrue(not one.isEmpty(), "singletonList(\"x\") is not empty")
 }
 
+// ── Static methods DECLARED on a JDK interface (#5521) ───────────────────────
+//
+// `List.of(...)` / `Map.of(...)` are `static` methods declared directly on
+// the INTERFACE (`java.util.List` / `java.util.Map`), not on some concrete
+// class returning the interface type (contrast `JCollections.emptyList()`
+// above, where the interface only shows up as the return type).
+// `lowerAutoFfiStaticCall` always emitted a plain `invokestatic` serialized
+// as `CONSTANT_Methodref` regardless of the owner's kind; the JVM rejects
+// that at link time when the owner is actually an interface
+// (`IncompatibleClassChangeError`) because a static interface method needs
+// `CONSTANT_InterfaceMethodref` (same `invokestatic` opcode, different
+// constant-pool tag).  The fix consults `ClassInfo.isInterface` at the
+// static-call site too and routes to `LInvokestaticIface`.
+// (`Map.entry(...)` — the other JDK-interface-static-method example this bug
+// class is normally described with — hits an unrelated, pre-existing parser
+// gap: `entry` is only a CONTEXTUAL keyword in binding/statement position
+// (`contextualIdentKeyword`, D093), not yet after `.` in member-access
+// position, so `JMap.entry(...)` fails to parse with "expected an identifier
+// after '.'" independent of auto-FFI. `Map.of(...)` exercises the identical
+// static-interface-method codegen path without that unrelated gap.)
+extern type JList = "java.util.List"
+
+extern type JMap = "java.util.Map"
+
+test "static methods declared on a JDK interface resolve via invokestatic/InterfaceMethodref" {
+  val xs = JList.of(1, 2, 3)
+  assertEqualInt(xs.size(), 3, "List.of(1,2,3).size() == 3")
+  assertTrue(not xs.isEmpty(), "List.of(1,2,3) is not empty")
+
+  val m = JMap.of("k", 42)
+  assertEqualInt(m.size(), 1, "Map.of(\"k\", 42).size() == 1")
+  assertEqualInt(m.get("k"), 42, "Map.of(\"k\", 42).get(\"k\") == 42")
+}
+
 // Phase 5 (F0015-J): @externTarget with metadata-verified signature.
 // The function names follow the Maven TypeName_methodName convention so
 // isStaticExternByName returns true, matching the emitted invokestatic.
@@ -502,4 +536,31 @@ test "Consumer: reference-arg void-return lambda through ArrayList.forEach" {
   items.forEach({ x: String -> seen = seen + 1; joined = joined + x })
   assertEqualInt(seen, 2, "Consumer lambda visited every element")
   assertEqual(joined, "alphabeta", "Consumer lambda observed element values in order")
+}
+
+// ── slice[T] indexing where T is a registered extern alias of Object (#6016) ─
+//
+// `sameTypeExprElemFallback` (jvm/codegen/02_exprs.l) assumed that any bare
+// type name whose resolved JVM type is `java/lang/Object` must be an
+// unregistered same-package interface, and guessed `<pkg>/<name>` for the
+// indexed element's checkcast target. That guess is wrong when `<name>` is
+// instead a REGISTERED extern type genuinely aliased to `java.lang.Object`
+// (`extern type JObject = "java.lang.Object"`, the `lyric-web`
+// `AllTrustingHandler.invoke(args: in slice[JObject])` shape) — the checkcast
+// then targets a class that does not exist, and indexing throws
+// `NoClassDefFoundError` at runtime. The fix checks `ctx.externTypes` first
+// and leaves a registered extern type's resolution unchanged.
+extern type JObject = "java.lang.Object"
+
+func firstObjectToString(xs: in slice[JObject]): String {
+  xs[0].toString()
+}
+
+test "slice[JObject] parameter: indexed element resolves through the real java.lang.Object (#6016)" {
+  val o = JObject.new()
+  val xs: slice[JObject] = [o]
+  assertTrue(
+    firstObjectToString(xs).startsWith("java.lang.Object@"),
+    "xs[0].toString() resolves via java.lang.Object, not a NoClassDefFoundError same-package guess"
+  )
 }

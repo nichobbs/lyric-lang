@@ -378,6 +378,23 @@ func enumPatternClass(ctx: in FuncCtx, scrutTy: in JvmType, caseName: in String)
   }
 }
 
+// Shared two-step case-class derivation used by both `resolveBareCaseClassJvm`
+// and `resolveCaseClassJvm`: first trust a `<baseCls>$<name>` guess that is a
+// REGISTERED case class (`ctx.caseFields`), then fall back to the
+// union-name-qualified `ctx.ctors` registry (`<Union>$<name>`, authoritative
+// across the whole bundle — see `resolveCaseClassJvm`'s doc comment for why).
+// Returns `None` when neither registry knows `name` under `baseCls`; callers
+// each apply their own distinct terminal fallback.
+func deriveScrutineeCaseClass(ctx: in FuncCtx, baseCls: in String, name: in String): Option[String] {
+  val derived = baseCls + "$" + name
+  if ctx.caseFields.containsKey(derived) {
+    Some(value = derived)
+  } else {
+    val unionName = jvmSimpleName(baseCls)
+    mapGet(ctx.ctors, unionName + "$" + name)
+  }
+}
+
 // Resolve the JVM case-class name for a BARE `case <Name> ->` nullary-case
 // TEST, consulting the scrutinee's own static union type first (#5982): two
 // same-package unions sharing a nullary case name (`union A { case Internal
@@ -399,15 +416,9 @@ func resolveBareCaseClassJvm(ctx: in FuncCtx, name: in String, scrutTy: in JvmTy
   match scrutTy {
     case JRef(baseCls) -> {
       if not (baseCls == "java/lang/Object") and not (baseCls == "java/util/ArrayList") {
-        val derived = baseCls + "$" + name
-        if ctx.caseFields.containsKey(derived) {
-          Some(value = derived)
-        } else {
-          val unionName = jvmSimpleName(baseCls)
-          match mapGet(ctx.ctors, unionName + "$" + name) {
-            case Some(cls) -> Some(value = cls)
-            case None -> ctorClassFor(ctx, name)
-          }
+        match deriveScrutineeCaseClass(ctx, baseCls, name) {
+          case Some(cls) -> Some(value = cls)
+          case None -> ctorClassFor(ctx, name)
         }
       } else {
         ctorClassFor(ctx, name)
@@ -430,26 +441,18 @@ func resolveCaseClassJvm(ctx: in FuncCtx, head: in ModulePath, scrutTy: in JvmTy
         // load).  The derived name is trusted only when it is a registered
         // case class; otherwise the ctor registry — built from the actual
         // union declarations across the whole bundle — is authoritative.
-        val derived = baseCls + "$" + caseName
-        if ctx.caseFields.containsKey(derived) {
-          derived
-        } else {
-          // The guess carries the right UNION name with the wrong package
-          // (`Std/JsonHost/YamlError` for Std.Yaml's `YamlError`): the
-          // `ctors` registry carries a union-name-qualified key
-          // (`<Union>$<case>`, e.g. "YamlError$InvalidDocument") for every
-          // registered case class (see `collectFileCtors`'s `IUnion`
-          // branch), built once at bundle setup time. A single `mapGet`
-          // resolves the match on an imported union to its declaring
-          // package even when ANOTHER package registered a same-named case
-          // first (`InvalidDocument` exists in both XmlError and
-          // YamlError) — O(1) instead of a linear scan over every
-          // registered case class per match arm (#4802).
-          val unionName = jvmSimpleName(baseCls)
-          match mapGet(ctx.ctors, unionName + "$" + caseName) {
-            case Some(cls) -> cls
-            case None -> match ctorClassFor(ctx, caseName) { case Some(cls) -> cls; case None -> derived }
-          }
+        // The `ctors` registry carries a union-name-qualified key
+        // (`<Union>$<case>`, e.g. "YamlError$InvalidDocument") for every
+        // registered case class (see `collectFileCtors`'s `IUnion`
+        // branch), built once at bundle setup time. A single `mapGet`
+        // resolves the match on an imported union to its declaring
+        // package even when ANOTHER package registered a same-named case
+        // first (`InvalidDocument` exists in both XmlError and
+        // YamlError) — O(1) instead of a linear scan over every
+        // registered case class per match arm (#4802).
+        match deriveScrutineeCaseClass(ctx, baseCls, caseName) {
+          case Some(cls) -> cls
+          case None -> match ctorClassFor(ctx, caseName) { case Some(cls) -> cls; case None -> baseCls + "$" + caseName }
         }
       } else {
         match ctorClassFor(ctx, caseName) {

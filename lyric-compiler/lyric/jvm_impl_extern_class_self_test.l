@@ -86,7 +86,7 @@ test "impl <abstract JDK class HttpsConfigurator> for Record aborts compilation 
   var panicked = false
   var caughtMessage = ""
   try {
-    compileToJarBundled(source, outPath, "HttpsConfiguratorImpl", noStdlib)
+    compileToJarBundled(source, outPath, "HttpsConfiguratorImpl", noStdlib, "")
   } catch Bug as b {
     panicked = true
     caughtMessage = b.message
@@ -122,7 +122,7 @@ test "impl <concrete JDK class java.lang.Object> for Record also aborts under er
   var panicked = false
   var caughtMessage = ""
   try {
-    compileToJarBundled(source, outPath, "ObjectImpl", noStdlib)
+    compileToJarBundled(source, outPath, "ObjectImpl", noStdlib, "")
   } catch Bug as b {
     panicked = true
     caughtMessage = b.message
@@ -152,7 +152,7 @@ test "impl <real JDK interface java.lang.Runnable> for Record still compiles fin
   var panicked = false
   var caughtMessage = ""
   val ok = try {
-    compileToJarBundled(source, outPath, "RunnableImpl", noStdlib)
+    compileToJarBundled(source, outPath, "RunnableImpl", noStdlib, "")
   } catch Bug as b {
     panicked = true
     caughtMessage = b.message

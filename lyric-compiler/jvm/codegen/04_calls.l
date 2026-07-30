@@ -1536,7 +1536,11 @@ func lowerAutoFfiStaticCall(
             paramJvms.add(descStrToJvmType(paramDesc))
             j = j + 1
           }
-          insns.add(LInvokestatic(owner = ci.binaryName, name = methodName, params = paramJvms, ret = retJvm))
+          if ci.isInterface {
+            insns.add(LInvokestaticIface(owner = ci.binaryName, name = methodName, params = paramJvms, ret = retJvm))
+          } else {
+            insns.add(LInvokestatic(owner = ci.binaryName, name = methodName, params = paramJvms, ret = retJvm))
+          }
           // A byte-returning JDK method yields the signed byte; mask to the
           // canonical unsigned form (see maskByteUnsigned).
           match retJvm {

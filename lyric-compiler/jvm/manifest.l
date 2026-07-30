@@ -93,6 +93,12 @@ pub func makeManifestMf(meta: in PackageMeta): String {
     "Lyric-Version: " +
     meta.version +
     "\n" +
+    // Standard JAR manifest attribute (`Package.getImplementationVersion()`,
+    // #5834) so the package's own version is also readable through the
+    // conventional JDK API, alongside the Lyric-specific `Lyric-Version`.
+    "Implementation-Version: " +
+    meta.version +
+    "\n" +
     classPathLine +
     "\n"
 }

@@ -24,7 +24,9 @@
 //!   • a record method whose field is used inside a larger expression
 //!     (field read through `this`);
 //!   • a record method returning `Result[Int, String]` (drives J4 erased
-//!     generics through an instance method: payload boxing + checkcast/unbox).
+//!     generics through an instance method: payload boxing + checkcast/unbox);
+//!   • a 17-field record constructor (#6089: the synthesized ctor's hardcoded
+//!     `maxStack = 16` overflowed the operand stack for wide records).
 //!
 //! Run in CI via the native `lyric test --target jvm`: the runnable program
 //! synthesised from the `test` blocks is compiled IN-PROCESS through the
@@ -194,4 +196,58 @@ test "record method calls another method on self (intra-record dispatch)" {
   val c = Chain(n = 10)
   assertEqualInt(c.step(), 11, "Chain(10).step() == 11")
   assertEqualInt(c.jump(), 12, "Chain(10).jump() == step() + 1 == 12")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wide record constructor (#6089): a record with 15+ fields tripped the
+// top-level `LFunc`'s hardcoded `maxStack = 16` (every field push plus the
+// receiver dup/new overruns 16 slots), producing "Operand stack overflow"
+// VerifyError at class-load time.  `lowerFuncImpl` (lowering.l) now takes
+// the larger of the caller-supplied floor and the inferred `asm.peakStack`,
+// so the flat 16 floor grows to cover a genuinely wider stack instead of
+// capping it.
+// ─────────────────────────────────────────────────────────────────────────────
+record Wide17 {
+  f1: Int
+  f2: Int
+  f3: Int
+  f4: Int
+  f5: Int
+  f6: Int
+  f7: Int
+  f8: Int
+  f9: Int
+  f10: Int
+  f11: Int
+  f12: Int
+  f13: Int
+  f14: Int
+  f15: Int
+  f16: Int
+  f17: Int
+}
+
+test "17-field record constructor does not overflow the operand stack" {
+  val w = Wide17(
+    f1 = 1,
+    f2 = 2,
+    f3 = 3,
+    f4 = 4,
+    f5 = 5,
+    f6 = 6,
+    f7 = 7,
+    f8 = 8,
+    f9 = 9,
+    f10 = 10,
+    f11 = 11,
+    f12 = 12,
+    f13 = 13,
+    f14 = 14,
+    f15 = 15,
+    f16 = 16,
+    f17 = 17
+  )
+  assertEqualInt(w.f1, 1, "Wide17.f1 == 1")
+  assertEqualInt(w.f9, 9, "Wide17.f9 == 9")
+  assertEqualInt(w.f17, 17, "Wide17.f17 == 17")
 }

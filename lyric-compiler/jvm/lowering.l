@@ -194,6 +194,10 @@ pub union LInsn {
   case LInvokevirtual(owner: String, name: String, params: List[JvmType], ret: JvmType)
   case LInvokespecial(owner: String, name: String, params: List[JvmType], ret: JvmType)
   case LInvokestatic(owner: String, name: String, params: List[JvmType], ret: JvmType)
+  // Static method declared on a JDK *interface* (e.g. List.of, Map.entry):
+  // same invokestatic opcode as LInvokestatic, but the constant pool entry
+  // must be CONSTANT_InterfaceMethodref, not CONSTANT_Methodref (#5521).
+  case LInvokestaticIface(owner: String, name: String, params: List[JvmType], ret: JvmType)
   case LInvokeinterface(owner: String, name: String, params: List[JvmType], ret: JvmType, argCount: Int)
 
   case LNew(className: String)
@@ -718,6 +722,12 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       // non-literal module-`val` initialiser, #2853), where peakStack would
       // otherwise stay 0 and the verifier rejects the method with a stack
       // overflow.  `trackStack` raises peakStack when the net delta is positive.
+      trackStack(asm, fieldSlotSize(ret) - slotSum(ps))
+    }
+    case LInvokestaticIface(owner, name, ps, ret) -> {
+      val idx = poolIfaceMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
+      emitInvokestatic(asm, idx)
+      // Same net-delta accounting as LInvokestatic — see its comment above.
       trackStack(asm, fieldSlotSize(ret) - slotSum(ps))
     }
     case LInvokeinterface(owner, name, ps, ret, argCount) -> {
@@ -1351,9 +1361,21 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
     lowerInsn(insn, asm)
   }
 
-  // Use caller-supplied maxStack/maxLocals when > 0; otherwise infer from the
-  // assembled instruction sequence (B103 feature).
-  val actualMaxStack = if f.maxStack > 0 then f.maxStack else asm.peakStack
+  // Use the LARGER of the caller-supplied maxStack and the inferred peak
+  // (B103 feature) rather than treating a positive caller-supplied value as
+  // an override: `asm.peakStack`'s tracking under-counts the true peak for
+  // at least one real shape (a function containing a `try`/`catch`, e.g.
+  // `Std.Testing.runAndCapturePanic` — verified: a bare `f.maxStack > 0 then
+  // f.maxStack else asm.peakStack` either/or, with every top-level `func`
+  // passing `maxStack = 0`, regresses that shape build-wide with a runtime
+  // "Operand stack overflow" VerifyError, #6089 follow-up). A caller passing
+  // 0 (records/protected-type/impl methods, B103's original inference-only
+  // callers) is unaffected (`max(0, peak) == peak`); a caller passing an
+  // explicit floor (top-level funcs' `16`, or a hand-computed value like `2`)
+  // now only ever grows to cover a genuinely wider stack (e.g. a 15+ field
+  // record constructor call whose `new`+`dup`+argument push sequence exceeds
+  // 16), never shrinks below its known-safe floor.
+  val actualMaxStack = if f.maxStack > asm.peakStack then f.maxStack else asm.peakStack
 
   // -- B5: stack-map computation -----------------------------------------
   // Assemble code bytes and collect label offsets.

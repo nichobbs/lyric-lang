@@ -38,7 +38,7 @@ func main(): Unit {
     "}\n"
 
   val jarPath = outDir + "/iface.jar"
-  val ok = compileToJar(src, jarPath, "TestIface133", newList())
+  val ok = compileToJar(src, jarPath, "TestIface133", newList(), "")
   if ok {
     println("jar_written=true")
   } else {

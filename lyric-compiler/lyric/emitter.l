@@ -2250,7 +2250,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
       req.activeFeatures,
       req.declaredFeatures,
       depTemplateNames,
-      projDefinesJvm
+      projDefinesJvm,
+      req.packageVersion
     )
     if okP {
       return EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
@@ -2274,7 +2275,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
     req.activeFeatures,
     req.declaredFeatures,
     depTemplateNames,
-    projDefinesJvm1
+    projDefinesJvm1,
+    req.packageVersion
   )
 
   if ok {
@@ -2381,7 +2383,8 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
     noFeatures,
     noFeatures,
     noDepTemplateSrcsJvm,
-    req.defines
+    req.defines,
+    req.packageVersion
   )
   if ok {
     val okDiags: List[Diagnostic] = newList()

@@ -271,7 +271,14 @@ func sameTypeExprElemFallback(ctx: in FuncCtx, te: in TypeExpr, resolved: in Jvm
               if isPrimitiveTypeKeyword(seg) or seg.contains("/") {
                 resolved
               } else {
-                JRef(className = ctx.pkgName + "/" + seg)
+                // `seg` may instead be a REGISTERED extern type aliased to
+                // `java.lang.Object` (e.g. `extern type JObject = "java.lang.Object"`,
+                // #6016) — that's a real resolved type, not an unregistered
+                // same-package interface guess.  Leave it unchanged.
+                match mapGet(ctx.externTypes, seg) {
+                  case Some(_) -> resolved
+                  case None -> JRef(className = ctx.pkgName + "/" + seg)
+                }
               }
             } else {
               resolved

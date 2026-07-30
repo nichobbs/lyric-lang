@@ -113,7 +113,7 @@ test "T.new() on an abstract JDK class aborts compilation under error[J005], not
   var panicked = false
   var caughtMessage = ""
   try {
-    compileToJarBundled(source, outPath, "AbstractCtor", noStdlib)
+    compileToJarBundled(source, outPath, "AbstractCtor", noStdlib, "")
   } catch Bug as b {
     panicked = true
     caughtMessage = b.message
@@ -145,7 +145,7 @@ test "T.new() on a concrete JDK class still compiles fine (no false-positive J00
   var panicked = false
   var caughtMessage = ""
   val ok = try {
-    compileToJarBundled(source, outPath, "ConcreteCtor", noStdlib)
+    compileToJarBundled(source, outPath, "ConcreteCtor", noStdlib, "")
   } catch Bug as b {
     panicked = true
     caughtMessage = b.message

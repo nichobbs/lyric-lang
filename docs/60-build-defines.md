@@ -465,16 +465,16 @@ exposes:
 | Target | Standard slot | Today | Gap |
 |---|---|---|---|
 | .NET | Assembly row version + `AssemblyInformationalVersionAttribute` | `msil/bridge.l` parses `packageVersion` (`--package-version` / manifest `[package].version`) into the Assembly row's major/minor (`bridge.l:701`) and the contract-meta resource | The Assembly row is numeric only, so a pre-release semver (`1.4.2-rc1`) truncates; emitting `AssemblyInformationalVersionAttribute` (a free-form string) would preserve the full version. |
-| JVM | `META-INF/MANIFEST.MF` `Implementation-Version` | `jvm/manifest.l` writes a **non-standard** `Lyric-Version:` header, and the single-file bridge path **hardcodes `"0.1.0"`** (`jvm/bridge.l:219`, `:1573`) — `packageVersion` is not threaded through | `lyric build --target jvm --package-version X` produces a jar whose manifest reports `0.1.0`, a one-platform inconsistency vs. MSIL. Fix: thread `packageVersion` through, and emit the standard `Implementation-Version:` alongside (or instead of) `Lyric-Version:`. |
+| JVM | `META-INF/MANIFEST.MF` `Implementation-Version` | **Fixed (#5834)**: `packageVersion` is threaded through `Jvm.Bridge` (single-file and bundled paths), and `jvm/manifest.l` emits the standard `Implementation-Version:` alongside the legacy `Lyric-Version:` header. An empty version (ad-hoc no-manifest compiles) falls back to the legacy `"0.1.0"` placeholder. | None remaining for the manifest slot. |
 
-Both gaps are **pre-existing** and independent of this sketch — build
+Both gaps were **pre-existing** and independent of this sketch — build
 defines do not depend on them and are not blocked by them — but they are
 the natural companion work: once `version` is a first-class well-known
 define (§3.3), a single resolved value feeds the runtime constant *and*
-both platform metadata slots. The JVM hardcode is tracked as **#5834**
-(silent one-platform version drop); the .NET
-`AssemblyInformationalVersionAttribute` refinement is a sibling candidate.
-Neither is fixed by this docs-only change.
+both platform metadata slots. The JVM hardcode (**#5834**, silent
+one-platform version drop) is now fixed as described in the table; the
+.NET `AssemblyInformationalVersionAttribute` refinement remains a sibling
+candidate.
 
 ### 9.2 The `Std.BuildInfo` layer — one type for all build metadata
 

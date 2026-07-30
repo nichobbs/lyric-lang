@@ -302,10 +302,7 @@ pub enum TlsCaMode {
 pub func resolveCaMode(caCertificate: in Option[Certificate], exclusiveCaCertificate: in Option[Certificate]): TlsCaMode {
   match exclusiveCaCertificate {
     case Some(_) -> ExclusiveCa
-    case None -> match caCertificate {
-      case Some(_) -> AdditiveCa
-      case None -> NoCaConfigured
-    }
+    case None -> match caCertificate { case Some(_) -> AdditiveCa; case None -> NoCaConfigured }
   }
 }
 
@@ -326,18 +323,8 @@ pub func resolveTlsValidationDecision(
   } else {
     match caMode {
       case ExclusiveCa -> TryCustomChain
-      case AdditiveCa ->
-        if chainAlreadyOk {
-          AcceptWithoutCustomChain
-        } else {
-          TryCustomChain
-        }
-      case NoCaConfigured ->
-        if chainAlreadyOk {
-          AcceptWithoutCustomChain
-        } else {
-          RejectImmediately
-        }
+      case AdditiveCa -> if chainAlreadyOk { AcceptWithoutCustomChain } else { TryCustomChain }
+      case NoCaConfigured -> if chainAlreadyOk { AcceptWithoutCustomChain } else { RejectImmediately }
     }
   }
 }
@@ -421,12 +408,21 @@ func findMethodByNameAndArity(cls: in JClass, name: in String, arity: in Int): J
   val methods: slice[JMethod] = cls.getMethods()
   var i = 0
   var found: Option[JMethod] = None
+  var matchCount = 0
   while i < methods.length {
     val m = methods[i]
     if m.getName() == name and m.getParameterCount() == arity {
       found = Some(value = m)
+      matchCount = matchCount + 1
     }
     i = i + 1
+  }
+  if matchCount > 1 {
+    panic(
+      "Std.HttpHost: ambiguous reflective method lookup for " + name + "/" + arity.toString() + " — " +
+        matchCount.toString() +
+        " overloads matched"
+    )
   }
   match found {
     case Some(m) -> m
@@ -438,19 +434,30 @@ func findMethodByNameAndArity(cls: in JClass, name: in String, arity: in Int): J
 // (`init(KeyStore)` / `init(ManagerFactoryParameters)`); arity alone does
 // not disambiguate them, so this variant also matches the first
 // parameter's declared type name.
-func findMethodByNameArityAndParamType(cls: in JClass, name: in String, arity: in Int, paramClassName: in String): JMethod {
+func findMethodByNameArityAndParamType(
+  cls: in JClass, name: in String, arity: in Int, paramClassName: in String
+): JMethod {
   val methods: slice[JMethod] = cls.getMethods()
   var i = 0
   var found: Option[JMethod] = None
+  var matchCount = 0
   while i < methods.length {
     val m = methods[i]
     if m.getName() == name and m.getParameterCount() == arity {
       val ptypes: slice[JClass] = m.getParameterTypes()
       if ptypes[0].getName() == paramClassName {
         found = Some(value = m)
+        matchCount = matchCount + 1
       }
     }
     i = i + 1
+  }
+  if matchCount > 1 {
+    panic(
+      "Std.HttpHost: ambiguous reflective method lookup for " + name + " with param type " + paramClassName + " — " +
+        matchCount.toString() +
+        " overloads matched"
+    )
   }
   match found {
     case Some(m) -> m
@@ -528,7 +535,9 @@ func invoke3[A, B, C, D](target: in A, methodName: in String, arg0: in B, arg1: 
   m.invoke(target, argsList.toArray())
 }
 
-func invoke4[A, B, C, D, E](target: in A, methodName: in String, arg0: in B, arg1: in C, arg2: in D, arg3: in E): JObject {
+func invoke4[A, B, C, D, E](
+  target: in A, methodName: in String, arg0: in B, arg1: in C, arg2: in D, arg3: in E
+): JObject {
   val cls: JClass = target.getClass()
   val m = findMethodByNameAndArity(cls, methodName, 4)
   val argsList: List[JObject] = newList()
@@ -799,14 +808,8 @@ func buildClientSslContext(
     makeTypedArray1("javax.net.ssl.TrustManager", buildAllTrustingTrustManager())
   } else {
     val tmf = match resolveCaMode(caCertificate, exclusiveCaCertificate) {
-      case ExclusiveCa -> match exclusiveCaCertificate {
-        case Some(cert) -> trustManagerFactoryFor(buildExclusiveTrustKeyStore(Certificate.rawHandle(cert).cert))
-        case None -> defaultTrustManagerFactory()
-      }
-      case AdditiveCa -> match caCertificate {
-        case Some(cert) -> trustManagerFactoryFor(buildAdditiveTrustKeyStore(Certificate.rawHandle(cert).cert))
-        case None -> defaultTrustManagerFactory()
-      }
+      case ExclusiveCa -> match exclusiveCaCertificate { case Some(cert) -> trustManagerFactoryFor(buildExclusiveTrustKeyStore(Certificate.rawHandle(cert).cert)); case None -> defaultTrustManagerFactory() }
+      case AdditiveCa -> match caCertificate { case Some(cert) -> trustManagerFactoryFor(buildAdditiveTrustKeyStore(Certificate.rawHandle(cert).cert)); case None -> defaultTrustManagerFactory() }
       case NoCaConfigured -> defaultTrustManagerFactory()
     }
     val tmObj: JObject = tmf.getTrustManagers()
@@ -848,17 +851,13 @@ func buildClientSslContext(
 // ("disables peer chain verification and hostname matching together"), not
 // a gap: there is no way to construct the unsafe combination this target's
 // design explicitly warns against.
-func buildClientSslParameters(ctx: in JSSLContext, minVersion: in Option[TlsVersion], insecureSkipVerify: in Bool): JSSLParameters {
+func buildClientSslParameters(
+  ctx: in JSSLContext, minVersion: in Option[TlsVersion], insecureSkipVerify: in Bool
+): JSSLParameters {
   val params: JSSLParameters = ctx.getDefaultSSLParameters()
   val protocolValues: List[String] = newList()
   match minVersion {
-    case Some(v) -> match v {
-      case Tls13 -> protocolValues.add("TLSv1.3")
-      case Tls12 -> {
-        protocolValues.add("TLSv1.2")
-        protocolValues.add("TLSv1.3")
-      }
-    }
+    case Some(v) -> match v { case Tls13 -> protocolValues.add("TLSv1.3"); case Tls12 -> { protocolValues.add("TLSv1.2"); protocolValues.add("TLSv1.3") } }
     case None -> {
       protocolValues.add("TLSv1.2")
       protocolValues.add("TLSv1.3")
@@ -903,11 +902,7 @@ pub func hostClientWithTls(
       case None -> true
     }
   }
-  val version: JHttpVersion = if pinHttp11 {
-    JHttpVersion.HTTP_1_1
-  } else {
-    JHttpVersion.HTTP_2
-  }
+  val version: JHttpVersion = if pinHttp11 { JHttpVersion.HTTP_1_1 } else { JHttpVersion.HTTP_2 }
   val b: JHttpClientBuilder = HttpClientHandle.newBuilder()
   val withRedirect: JHttpClientBuilder = if followRedirects {
     b.followRedirects(JRedirect.NORMAL)
@@ -1014,7 +1009,12 @@ func doSend(client: in HttpClientHandle, request: in HttpRequestMessage): HttpRe
   val resp: JHttpResponse = client.send(jreq, JBodyHandlers.ofInputStream())
   val ins: JInputStream = resp.body()
   val bytes = readAllAndClose(ins)
-  HttpResponseMessage(status = resp.statusCode(), jheaders = resp.headers(), bodyBytes = bytes, version = resp.version())
+  HttpResponseMessage(
+    status = resp.statusCode(),
+    jheaders = resp.headers(),
+    bodyBytes = bytes,
+    version = resp.version()
+  )
 }
 
 // Apply a `makeCancelSourceTimeout` deadline as the JDK request timeout

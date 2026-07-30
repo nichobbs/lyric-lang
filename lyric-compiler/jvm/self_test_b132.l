@@ -40,7 +40,7 @@ func main(): Unit {
     "}\n"
 
   val jarPath = outDir + "/distinct.jar"
-  val ok = compileToJar(src, jarPath, "TestDistinct132", newList())
+  val ok = compileToJar(src, jarPath, "TestDistinct132", newList(), "")
   if ok {
     println("jar_written=true")
   } else {
