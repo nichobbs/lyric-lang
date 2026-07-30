@@ -21542,3 +21542,194 @@ these from the eleventh finding's build).
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
 D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320, #6321, #6323,
 #6324, #6325, #6326, #6327.
+
+### D-progress-719 — JVM bare-name cross-package collision family: resolution order, two shipped fixes, two documented non-fixes (#5455, #5976, #5903, #5976, #5995, #6287)
+
+**Status:** Partially shipped.
+
+Five tracked issues share one root cause: bare (unqualified or thinly
+qualified) simple names are registered in flat, bundle-global registries
+— the type checker's symbol tables and the JVM/MSIL backends' case/ctor/
+type-descriptor maps — with first- or last-registered-wins semantics and
+no per-package scoping or ambiguity detection. The design direction taken
+here (per the assigning brief): **resolution is scope-aware first,
+diagnostic second** — where context identifies the declaring package (an
+explicit qualifier, the file's own declaration, a resolved call's own
+parameter type), resolve through that identity; only genuinely ambiguous
+bare references without any disambiguating context should ever need a new
+diagnostic. This entry covers the JVM-backend half; the type-checker-side
+ambiguity diagnostic (#6287) and the enum-ordinal half (#5995) were
+investigated and are reported, not fixed — see "Not fixed" below.
+
+**Fixed: #5455 — package-qualified construction ignored its own qualifier.**
+`Jvm.Codegen.lowerGeneralStaticCall`'s construction check
+(`ctorClassFor(ctx, funcName)`) resolved a call's callee purely by its bare
+last path segment, discarding the `ModulePath` qualifier the parser had
+already given it. `IfacePkg.Text(value = "hello")` (a flat multi-segment
+`EPath`, the call-site shape a qualified reference always takes) resolved
+through the same bundle-global first-wins `ctors` bare key as any
+unqualified `Text(...)`, so it silently picked up whichever OTHER bundled
+package happened to register a case named `Text` first — the live repro
+constructed `Std.Xml.XmlNode$Text` from a two-package fixture with no
+`Std.Xml` import in sight, `NoClassDefFoundError` at runtime, no compile
+error. Confirmed to reproduce identically for the issue's own cross-package
+`impl`-method framing (a third-package union parameter) and for the bare
+construction alone, with no `impl` involved — the impl-method machinery
+was never actually implicated; the construction-call path was.
+
+Fix (`06_items.l` `addCtorKeys`, `04_calls.l` `lowerGeneralStaticCall`):
+`addCtorKeys` now also registers a package-DOTTED-qualified key
+(`<dotted owner>.<name>`, e.g. `"IfacePkg.Text"`) alongside the existing
+bare and `<owner>::<name>` scoped keys. `lowerGeneralStaticCall` tries
+`ctx.ctors[joinSegments(path.segments, ".")]` first when the callee path
+has 2+ segments, before falling through to the unqualified `ctorClassFor`
+path (unchanged for the common bare-name case — zero behavioural change
+when there is no qualifier to consult).
+
+**Partially fixed: #5976 — a file's own declared type could be shadowed by
+a same-named type it imports.** Root cause (traced from the `regex_safe_tests`
+live repro, `Std.RegexSafe` importing `Std.Regex` while independently
+declaring its own `RegexError`): every one of six near-identical call sites
+across `bridge.l`/`06_items.l` built a file's type-resolution seed as
+`mergeExternSeed(collectExternTypesFromFile(file), externSeed)` —
+`collectExternTypesFromFile` only captures the file's own `extern type`
+ALIAS declarations, never its own plain record/union/enum DECLARATIONS, so
+a file's own `RegexError` had no way to out-rank an imported package's
+same-named `RegexError` already sitting in `externSeed`. `Std.RegexSafe`'s
+OWN function signature (`errorMessage(e: RegexError)`) resolved its own
+bare `RegexError` reference to `Std.Regex`'s class instead of its own —
+a cross-package type-descriptor mismatch, `ClassCastException` at runtime,
+no compile error.
+
+Fix: a new shared helper, `ownAwareExternTypes(file, externSeed)`
+(`06_items.l`), replacing all six call sites' `mergeExternSeed(
+collectExternTypesFromFile(file), externSeed)`. It layers the file's own
+declared-type map (`collectFileDeclaredTypeFqns`) between the seed and the
+file's own extern aliases — but **only for a name that actually collides**
+with something already in `externSeed`, not unconditionally for every
+own-declared type. The narrower, collision-only form was required: an
+unconditional merge regressed `qualified_union_case_self_test.l` — JVM's
+`lowerMethodCall` reads this SAME `externTypes` map as an "is this EPath
+receiver a foreign JDK type" gate (docs/44 m-58), so injecting even a
+NON-colliding own type (`StoreError`, shared with no import) made
+`StoreError.UserNotFound(...)` — an ordinary same-package qualified
+union-case construction — misroute through the auto-FFI JDK-metadata
+lookup and panic, instead of falling through to the qualified-case-
+construction path a few lines below that already handles this shape. This
+is exactly the "partial fix un-masks the collision at another site instead
+of resolving it" failure mode a prior attempt at this same issue (PR
+#6052, documented in the issue's own comment thread) hit and was reverted
+for — restricting the injection to genuine collisions avoided repeating it
+(verified: both `jvm_cross_package_collision_self_test.l`'s new cases and
+`qualified_union_case_self_test.l`'s existing 5 stayed green together).
+
+A second, smaller mechanism closes the other half of the same collision:
+once `errorMessage`'s OWN signature correctly names its own `RegexError`,
+a BARE (unqualified) ambiguous case construction passed directly as that
+call's argument (`errorMessage(TimedOut(...))`, no qualifier at all) still
+resolved via the bundle-wide first-wins `ctors` bare entry, now picking the
+WRONG package in the other direction (a "see-saw", not a net regression —
+confirmed the suite was still 0/N passing either way, just failing at a
+different assertion). Added a narrowly-scoped expected-constructor-owner
+hint: `FuncCtx.ctorExpectStack` (a `List[String]` of JVM package names),
+pushed by the general resolved-signature call-argument loop with the
+declaring package of the parameter the argument is about to satisfy
+(derived from `sig.params[ai]`'s own class name), and consulted by
+`ctorClassForExpecting` (mirrors MSIL's `collExpect`-driven tier in
+`pickCaseFqnByQualifier`, deliberately scoped to the ONE call-argument
+site that needed it rather than a general expected-type-propagation
+mechanism across every call shape).
+
+**Why "partially" fixed:** the acceptance bar in #5976 itself
+(`lyric-stdlib/tests/regex_safe_tests.l` passing end-to-end on
+`--target jvm`) is not met — the suite gets three tests further than
+before (both directions of the `RegexError` collision now construct and
+call correctly) but then hits an UNRELATED, pre-existing bug: `Std.
+RegexSafe.tryIsMatch(r: in RxKernel.Regex, ...)` (`RxKernel` = `Std.
+RegexHost`, which DOES have full JVM parity — `extern type Regex =
+"java.util.regex.Pattern"`) resolves `Regex`'s JVM type incorrectly to the
+CALLING test file's own package guess (`Std/RegexSafe/Tests/Regex`,
+`NoClassDefFoundError`) when the calling file does not itself import
+`Std.RegexHost` directly — some generic-arg / local-binding type recovery
+path re-derives the type from raw `TypeExpr` AST using the caller's own
+(more limited) `externTypes` instead of consulting the already-correctly-
+registered callee signature. This is a genuinely different bug (multi-
+segment ALIAS-qualified extern-type resolution in a caller that doesn't
+import the declaring package), not part of the bare-name collision family;
+reported here rather than folded into an unreviewed additional fix.
+
+**Verified fixed, no new mechanism needed: #5903's headline symptom** (a
+nested union-case pattern, e.g. `case Some(A) ->` inside another
+constructor's payload, matching unconditionally regardless of the actual
+payload) was already fixed on this branch by PR #6328 (`patternIsRefutableJvm`
+/ `testCaseFieldJvm` in `jvm/codegen/03_match.l`, tracked there as #6122).
+The issue's OTHER framing — a cross-package case-name collision
+(`TlsError.FileNotFound` vs `Std.Errors.IOError.FileNotFound`) — is already
+handled correctly by the existing scrutinee-scoped `resolveCaseClassJvm`
+family (`deriveScrutineeCaseClass`) whenever the scrutinee's static class is
+concrete (the common case for a `match` over a typed `Result`/union value);
+no additional fix needed for that half either.
+
+**Not fixed — reported, not attempted:**
+
+- **#5995** (enum case-name collision, e.g. two `pub enum HttpVersion`
+  declarations in different packages both declaring `Http11`): reproduced
+  live on **both** targets with a fresh two-package/enum fixture — a
+  `match` over one enum's `Http10` case silently dispatches as if it were
+  the OTHER enum's `Http11` case (wrong boolean returned), on `--target
+  dotnet` as well as `--target jvm`. Root cause is presumed to be the
+  bare/last-wins enum-ordinal registry (`enumCaseOrdinals` in MSIL,
+  `enum:`/`enumcase:` keys in JVM) never getting the same scrutinee-scoped
+  disambiguation `resolveCaseClassJvm`/`pickCaseFqnByScrutinee` already
+  gives UNION cases — but confirming and fixing that requires
+  understanding and modifying enum-ordinal resolution in BOTH backends
+  independently (MSIL's `enumCaseOrdinals` path and JVM's `enum:`/
+  `enumcase:` `funcSigs` overlay are separate codegen mechanisms with no
+  shared registry), a materially larger and riskier undertaking than the
+  time available for this pass allowed to complete with confidence. Left
+  open with this decision-log entry as a dated, evidenced pointer rather
+  than a rushed cross-backend change.
+- **#6287** (type-checker ambiguity diagnostic for cross-package bare-name
+  collisions in general): the issue's own 2026-07-29 triage comment
+  already scoped this as type-checker-core surgery with real blast radius
+  across every multi-import file in the repo — "appropriately scoped as
+  its own tracked effort rather than folded into" an adjacent pass. This
+  session's own investigation reinforces that scoping: a synthetic repro
+  (two packages each declaring a union with a colliding case name, a third
+  package constructing one PACKAGE-QUALIFIED, `ErrPkgA.FileNotFound(...)`)
+  produced a hard `T0043` argument-type mismatch — the type checker
+  resolved the qualified reference to the WRONG package's case DESPITE the
+  explicit qualifier, a checker-level manifestation of the same family
+  that no JVM/MSIL-backend-only fix could reach. Left open per the
+  assigning brief's explicit "stop that sub-part cleanly and report why"
+  instruction rather than attempting type-checker symbol-table surgery
+  under this pass's remaining budget.
+
+**New bug discovered, unrelated to this family (reported, not fixed):**
+`lyric test lyric-compiler/lyric/jvm_trio_positive_self_test.l` (no
+`--target` flag, i.e. `--target dotnet`) crashes with a .NET
+`AccessViolationException` inside `CastHelpers.IsInstanceOfClass` on its
+FIRST test (`String.indexOf WITH Std.String imported still returns
+Option[Int]`). Verified present on a clean `git stash` of every change in
+this entry (confirmed NOT a regression from this session's JVM-only
+diffs, which never touch `msil/*.l`) — a genuine, separate MSIL-backend
+memory-corruption bug, most likely a latent gap in the #6124 fix
+(`jvm_trio_self_test.l`'s sibling positive-path pin) that was apparently
+never verified on `--target dotnet` before landing. Filed here for
+visibility; not investigated further.
+
+**Verification.** New file `lyric-compiler/lyric/jvm_cross_package_collision_self_test.l`
+(3 cases: the #5455 impl-method shape, the #5455 minimal qualified-
+construction shape, and the #5976 own-type-not-shadowed shape), wired into
+CI's `compiler-self-tests-jvm` job. Regression sweep, all green on the
+build carrying every fix in this entry: `typechecker` 283/283, `modechecker`
+92/92, `parser` 126/126, `mono` 54/54, `inbundle_generics` 20/20,
+`msil_project_bridge` 34/34 (dotnet); `bitwise` 10/10, `block_shadow`
+20/20, `aspect_weave` 7/7, `jvm_trio` 9/9 (both `--target dotnet` and
+`--target jvm`); `jvm_trio_positive` 3/3 on `--target jvm` (dotnet crashes
+per the discovered-bug note above, confirmed pre-existing);
+`union_case_collision_jvm_self_test.l` 3/3 and `qualified_union_case_self_test.l`
+5/5 (`--target jvm`); `lyric-jsonrpc` 79/79 (46+18+15, `--target jvm`).
+
+**Related:** #5455, #5976, #5903, #5995, #6287, #6122, #6328, #2535, #4802,
+#5982, #5943, D-progress-434.
