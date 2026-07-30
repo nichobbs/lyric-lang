@@ -1284,6 +1284,67 @@ test "un-awaited async call with non-Unit logical return does not mis-infer (#57
   assertFalse(hasFunc(res.file, "consumeAsync3__Task"), "non-Unit async return must not infer T=Task either")
 }
 
+// ── if/match initializers feed bindingEnvTE (#5631) ──────────────────────────
+// `bindingEnvTE` only looked through a DIRECT single-segment call initializer
+// to override a (possibly misleading) `val` annotation with the callee's real
+// return type (#5604's `andThenResult(...)` motivation). Extended to look
+// through an `if`/`match` initializer too: every branch's tail expression is
+// checked the same way, and the annotation is overridden only when every
+// branch agrees on the exact same call-derived type.
+test "if-initializer whose branches agree on a call-derived type overrides a differing annotation (#5631)" {
+  val src = "package P\n" + "func consumeIf[T](x: in T): T { x }\n" + "func leftInt(): Int { 1 }\n" +
+    "func rightInt(): Int { 2 }\n" +
+    "func caller(cond: in Bool): Int {\n" +
+    "  val v: String = if cond { leftInt() } else { rightInt() }\n" +
+    "  consumeIf(v)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(
+    hasFunc(res.file, "consumeIf__Int"),
+    "#5631: both if/else branches call an Int-returning function, overriding the misleading String annotation"
+  )
+  assertFalse(
+    hasFunc(res.file, "consumeIf__String"),
+    "#5631: must not specialise on the annotation once every branch agrees on a differing call-derived type"
+  )
+}
+
+test "match-initializer whose arms agree on a call-derived type overrides a differing annotation (#5631)" {
+  val src = "package P\n" + "func consumeMatch[T](x: in T): T { x }\n" + "func fromA(): Int { 1 }\n" +
+    "func fromB(): Int { 2 }\n" +
+    "func fromC(): Int { 3 }\n" +
+    "func caller(n: in Int): Int {\n" +
+    "  val v: String = match n {\n" +
+    "    case 0 -> fromA()\n" +
+    "    case 1 -> fromB()\n" +
+    "    case _ -> fromC()\n" +
+    "  }\n" +
+    "  consumeMatch(v)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(
+    hasFunc(res.file, "consumeMatch__Int"),
+    "#5631: every match arm agrees on Int, overriding the misleading String annotation"
+  )
+  assertFalse(hasFunc(res.file, "consumeMatch__String"), "#5631: must not specialise on the annotation on agreement")
+}
+
+test "if-initializer whose branches disagree bails to the annotation (#5631)" {
+  val src = "package P\n" + "func consumeDisagree[T](x: in T): T { x }\n" + "func leftInt2(): Int { 1 }\n" +
+    "func rightStr(): String { \"x\" }\n" +
+    "func caller(cond: in Bool): Bool {\n" +
+    "  val v: Bool = if cond { leftInt2() } else { rightStr() }\n" +
+    "  consumeDisagree(v)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(
+    hasFunc(res.file, "consumeDisagree__Bool"),
+    "#5631: branches disagree (Int vs String), so the conservative default (the Bool annotation) is kept"
+  )
+  assertFalse(hasFunc(res.file, "consumeDisagree__Int"), "#5631: disagreement must not pick either branch's type")
+  assertFalse(hasFunc(res.file, "consumeDisagree__String"), "#5631: disagreement must not pick either branch's type")
+}
+
 // ── Multi-segment qualified generic call (#2943) ──────────────────────────────
 // PR #2936 added handling for `Pkg.func(arg)` where `func[T]` is a generic
 // imported from `Pkg`.  Before the fix, only single-segment `func(arg)` call

@@ -3524,7 +3524,12 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
 // (#5604).  A DIRECT construction initializer keeps the annotation: codegen
 // threads the annotation into the construction as its per-slot hint, so
 // there the annotation IS the runtime instantiation.
-func bindingEnvTE(state: in MonoState, env: in Map[String, TypeExpr], annoTe: in TypeExpr, init: in Expr): TypeExpr {
+// The single-call check `bindingEnvTE` applies to its top-level `init`,
+// factored out so `ifMatchBranchesAgreeTE` (#5631) can apply the exact same
+// check to each branch of an `if`/`match` initializer.  `None` means "not a
+// direct call to a known non-ctor-synth function" — the caller should keep
+// looking (or bail to the annotation), not treat it as a resolved `Unit`/etc.
+func directCallEnvTE(state: in MonoState, env: in Map[String, TypeExpr], init: in Expr): Option[TypeExpr] {
   val callFnName = match unwrapParenExprMono(init).kind {
     case ECall(fn, _) -> {
       match fn.kind {
@@ -3535,16 +3540,106 @@ func bindingEnvTE(state: in MonoState, env: in Map[String, TypeExpr], annoTe: in
     case _ -> ""
   }
   if callFnName.length == 0 {
-    return annoTe
+    return None
   }
   val isNonCtorCall = match mapGet(state.funcDecls, callFnName) {
     case Some(d) -> not annsInferenceOnlyMono(d.annotations)
     case None -> false
   }
   if not isNonCtorCall {
-    return annoTe
+    return None
   }
-  match inferExprTE(state, env, init) {
+  inferExprTE(state, env, init)
+}
+
+// The tail expression of an `if`/`match` branch body: a bare expression
+// form's own expr, or a block's own trailing expression-statement / explicit
+// `return` (the implicit-return shapes `directCallEnvTE`'s single-call check
+// can actually see). Anything else (a block with no trailing expr, or one
+// ending in some other statement kind) yields `None` — there is no call to
+// check, so the branch cannot contribute a call-derived type.
+func tailExprOfEOB(eob: in ExprOrBlock): Option[Expr] {
+  match eob {
+    case EOBExpr(e) -> Some(value = e)
+    case EOBBlock(blk) -> tailExprOfBlock(blk)
+  }
+}
+
+func tailExprOfBlock(blk: in Block): Option[Expr] {
+  if blk.statements.count == 0 {
+    return None
+  }
+  match blk.statements[blk.statements.count - 1].kind {
+    case SExpr(e) -> Some(value = e)
+    case SReturn(valOpt) -> valOpt
+    case _ -> None
+  }
+}
+
+// `directCallEnvTE` applied to one branch's tail expression.
+func branchCallEnvTE(state: in MonoState, env: in Map[String, TypeExpr], eob: in ExprOrBlock): Option[TypeExpr] {
+  match tailExprOfEOB(eob) {
+    case None -> None
+    case Some(e) -> directCallEnvTE(state, env, e)
+  }
+}
+
+// `Some` only when both sides are `Some` AND structurally the same type
+// (`teKeysEqual`) — either side missing, or the two disagreeing, yields
+// `None` so the caller bails to the conservative default.
+func agreeTE(a: in Option[TypeExpr], b: in Option[TypeExpr]): Option[TypeExpr] {
+  match a {
+    case None -> None
+    case Some(ta) -> {
+      match b {
+        case None -> None
+        case Some(tb) -> if teKeysEqual(ta, tb) { Some(value = ta) } else { None }
+      }
+    }
+  }
+}
+
+// #5631: when a `val x: T = <init>` initializer is an `if`/`match` (rather
+// than a direct call itself), look through EVERY branch with the same
+// single-call check `directCallEnvTE` applies to a plain initializer.
+// Overrides the annotation only when every branch agrees on the exact same
+// call-derived type — e.g. `val r: Result[Int, Int] = if c { andThenResult(a) }
+// else { andThenResult(b) }` — so the same #5604 concern (the annotation
+// naming an instantiation the runtime value never actually has) is caught
+// through a conditional initializer, not just a bare call. Any branch that
+// doesn't resolve to a call-derived type (an unrelated expression, a
+// non-call branch, disagreement between branches) makes the whole
+// initializer bail to `annoTe`, preserving today's conservative default.
+func ifMatchBranchesAgreeTE(state: in MonoState, env: in Map[String, TypeExpr], init: in Expr): Option[TypeExpr] {
+  match unwrapParenExprMono(init).kind {
+    case EIf(_, thenBranch, elseBranch, _) -> {
+      match elseBranch {
+        case None -> None
+        case Some(eb) -> agreeTE(branchCallEnvTE(state, env, thenBranch), branchCallEnvTE(state, env, eb))
+      }
+    }
+    case EMatch(_, arms) -> {
+      if arms.count == 0 {
+        return None
+      }
+      var acc = branchCallEnvTE(state, env, arms[0].body)
+      var i = 1
+      while i < arms.count {
+        acc = agreeTE(acc, branchCallEnvTE(state, env, arms[i].body))
+        i = i + 1
+      }
+      acc
+    }
+    case _ -> None
+  }
+}
+
+func bindingEnvTE(state: in MonoState, env: in Map[String, TypeExpr], annoTe: in TypeExpr, init: in Expr): TypeExpr {
+  match directCallEnvTE(state, env, init) {
+    case Some(te) -> return te
+    case None -> ()
+  }
+  match ifMatchBranchesAgreeTE(state, env, init) {
     case Some(te) -> te
     case None -> annoTe
   }
