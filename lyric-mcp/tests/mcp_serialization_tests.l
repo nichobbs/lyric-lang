@@ -200,6 +200,32 @@ test "encodeAllToolDefsList: plain and resumable tools share one wire shape (doc
   )
 }
 
+// #6341 — a tool name double-registered via both addTool and addResumableTool
+// must contribute exactly one tools/list entry (the resumable one), never
+// two same-named entries.
+test "encodeAllToolDefsList: a name registered via both addTool and addResumableTool contributes one entry, the resumable one" {
+  val schema = JObject(fields = [JsonField(name = "type", value = JString(value = "object"))])
+  val plain: List[McpToolDef] = newList()
+  plain.add(McpToolDef(name = "echo", description = "plain echo", inputSchema = schema, handler = NoopToolHandler()))
+  plain.add(
+    McpToolDef(name = "other", description = "unaffected plain tool", inputSchema = schema, handler = NoopToolHandler())
+  )
+  val resumable: List[McpResumableToolDef] = newList()
+  resumable.add(
+    McpResumableToolDef(
+      name = "echo",
+      description = "resumable echo",
+      inputSchema = schema,
+      handler = NoopResumableToolHandler()
+    )
+  )
+  assertJsonEqual(
+    encodeAllToolDefsList(plain, resumable),
+    "[{\"name\":\"other\",\"description\":\"unaffected plain tool\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"resumable echo\",\"inputSchema\":{\"type\":\"object\"}}]",
+    "the plain 'echo' registration is dropped; only the resumable 'echo' entry (and the unaffected plain 'other' tool) survive"
+  )
+}
+
 test "decodeToolInfoList: parses the tools/list result shape" {
   val text = "{\"tools\":[{\"name\":\"a\",\"description\":\"A\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"b\",\"inputSchema\":{}}]}"
   match parseValue(text) {

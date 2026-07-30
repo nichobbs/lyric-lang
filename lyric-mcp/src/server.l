@@ -72,9 +72,11 @@ pub func newServer(info: in McpImplementation): McpServer {
 
 /// Register a tool, reachable via `tools/list` / `tools/call` once the
 /// server starts serving. A tool name registers with `addTool` or
-/// `addResumableTool`, not both — `handleToolsCall` checks the resumable
-/// list first, so registering the same name via both silently resolves to
-/// the resumable definition with no diagnostic.
+/// `addResumableTool`, not both — there is no registration-time diagnostic
+/// against double-registering a name, and both `handleToolsCall` dispatch
+/// and `tools/list` (`Mcp.encodeAllToolDefsList`) resolve a same-named
+/// double-registration to the resumable definition alone, never a
+/// duplicate `tools/list` entry.
 @stable(since = "0.1")
 pub func addTool(server: in McpServer, tool: in McpToolDef): Unit {
   server.tools.add(tool)

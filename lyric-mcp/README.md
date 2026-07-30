@@ -45,7 +45,7 @@ start section below.
 
 | Package | `.NET` | JVM |
 |---|---|---|
-| `Mcp` (types, encode/decode) | full, 26/26 pure-serialization tests pass | pure Lyric, no I/O — but see gap #3: this library's own test suite does not type-check under `--target jvm` at all, so this is unverified in practice, not merely undertested |
+| `Mcp` (types, encode/decode) | full, 27/27 pure-serialization tests pass | pure Lyric, no I/O — but see gap #3: this library's own test suite does not type-check under `--target jvm` at all, so this is unverified in practice, not merely undertested |
 | `Mcp.Server` (`serveStdio`) | full, 21/21 in-memory lifecycle tests pass | unverified (gap #3) |
 | `Mcp.Client` (`connectStdio`) | full, tested against a real spawned process (5/5 process tests) | unverified (gap #3); the underlying `Std.Process` piped-spawn kernel also has its own separate, real JVM gap (#1) even setting #3 aside |
 | `Mcp.Stdio` (`PipedNdjsonTransport`) | full | unverified (gap #3); also gap #1 |
@@ -376,9 +376,15 @@ func main(): Unit {
     case Err(e) -> println("connect failed: " + e)
     case Ok(clientVal) -> {
       var client = clientVal
-      // Optional (docs/64 §3.3) — populates client.serverInfo.
+      // Optional (docs/64 §3.3) — populates client.serverInfo and returns
+      // serverInfo + capabilities.
       match discoverServer(client) {
-        case Ok(info) -> println("connected to " + info.name + " " + info.version)
+        case Ok(discovered) -> {
+          println("connected to " + discovered.serverInfo.name + " " + discovered.serverInfo.version)
+          if discovered.capabilities.hasTools {
+            println("server advertises tools")
+          }
+        }
         case Err(e) -> println("server/discover failed: " + e)
       }
       match listTools(client) {

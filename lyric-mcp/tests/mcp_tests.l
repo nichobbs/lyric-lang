@@ -677,7 +677,10 @@ test "a real McpClient round-trips server/discover + tools/list against a real M
       stage(serverPeer, box, reqText(1i64, "server/discover", None))
       match discoverServer(client) {
         case Err(e) -> assertTrue(false, "discoverServer failed: " + e)
-        case Ok(info) -> assertEqual(info.name, "test-server", "discovered serverInfo.name")
+        case Ok(discovered) -> {
+          assertEqual(discovered.serverInfo.name, "test-server", "discovered serverInfo.name")
+          assertTrue(discovered.capabilities.hasTools, "discovered capabilities.hasTools (server has 4 tools registered)")
+        }
       }
       assertEqual(client.serverInfo.name, "test-server", "client.serverInfo updated in place")
 

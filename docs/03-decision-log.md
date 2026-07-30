@@ -21789,12 +21789,31 @@ tracks):
    §5, Phase C), and OAuth/auth-hardening (docs/64 §7, still Q-MCP-003)
    are explicitly out of scope of this entry** — each is its own
    follow-up track.
+8. **Review-round hardening (#6339, #6340, #6341).** `server/discover`'s
+   `capabilities` half is now decodable client-side: a new
+   `McpCapabilities` record + `decodeCapabilities`, wired into
+   `McpDiscoverResult`, and `discoverServer`'s return type widened from
+   `Result[McpImplementation, String]` to `Result[McpDiscoverResult,
+   String]` so a caller can inspect `hasTools`/`hasResources`/`hasPrompts`
+   (#6340 — the server encoded `capabilities` on the wire from the start,
+   but nothing on the client decoded it). `tools/list`
+   (`Mcp.encodeAllToolDefsList`) now dedupes a tool name registered via
+   both `addTool` and `addResumableTool` down to its single resumable
+   entry, matching `handleToolsCall`'s own resumable-first dispatch
+   precedence, instead of shipping two same-named `tools/list` entries
+   (#6341). `McpResumableToolHandler.resume`'s doc comment no longer
+   claims `requestState` was validated as previously issued by the
+   handler — the dispatcher never checks provenance, so a peer can call
+   `resume` directly with a fabricated `requestState` (#6339); the
+   correct opaque-token framing already in docs/64 §3.1 and the README is
+   now also the interface doc a resumable-tool author actually reads.
 
 **Verification.** All `--target dotnet` suites green:
-`lyric-mcp` 52/52 (21 lifecycle, including 5 new cases for `server/discover`,
+`lyric-mcp` 53/53 (21 lifecycle, including 5 new cases for `server/discover`,
 the full `input_required`/resume round trip against a real
 `Mcp.Client`/`Mcp.Server` pair, and the #6334 regression test for `callTool`
-against an `input_required` response; 26 serialization; 5 real-subprocess), and
+against an `input_required` response; 27 serialization, including the #6341
+addTool/addResumableTool name-collision dedup case; 5 real-subprocess), and
 `lyric-jsonrpc`'s existing 15/15 unaffected (this track touched no
 `lyric-jsonrpc` code — the multi-round-trip pattern is a pure `Mcp`-layer
 data-shape change, `JsonRpc` never sees the difference). JVM gaps are

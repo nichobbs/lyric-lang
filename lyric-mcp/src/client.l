@@ -83,18 +83,21 @@ pub func connectStdio(command: in String, args: in List[String]): Result[McpClie
   }
 }
 
-/// Fetch the server's identity and capability summary via `server/discover`
-/// and record it on `client.serverInfo`. Optional (docs/64 §3.3) — every
-/// other `Mcp.Client` function works without ever calling this — but
-/// recommended before the first `listTools`/`callTool` if the caller wants
-/// to display or log which server it is talking to.
+/// Fetch the server's identity and capability summary via `server/discover`,
+/// record `serverInfo` on `client.serverInfo`, and return the full result
+/// (`serverInfo` + `capabilities`) so a caller can inspect which of
+/// `tools`/`resources`/`prompts` the server advertises. Optional (docs/64
+/// §3.3) — every other `Mcp.Client` function works without ever calling
+/// this — but recommended before the first `listTools`/`callTool` if the
+/// caller wants to display or log which server it is talking to, or branch
+/// on capabilities before calling tools/resources/prompts.
 @stable(since = "0.2")
-pub func discoverServer(client: inout McpClient): Result[McpImplementation, String] {
+pub func discoverServer(client: inout McpClient): Result[McpDiscoverResult, String] {
   match call(client.peer, "server/discover", None) {
     case Ok(v) -> {
       val discovered = decodeServerDiscoverResult(v)
       client.serverInfo = discovered.serverInfo
-      Ok(value = discovered.serverInfo)
+      Ok(value = discovered)
     }
     case Err(e) -> Err(error = "'server/discover' failed: " + e.message)
   }

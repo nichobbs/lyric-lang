@@ -355,9 +355,16 @@ pub func decodeToolCallOutcome(v: in JsonValue): McpToolCallOutcome {
 pub interface McpResumableToolHandler {
   /// Handle the initial `tools/call` invocation.
   func call(args: in Option[JsonValue]): Result[McpToolCallOutcome, String]
-  /// Handle a follow-up `tools/call` that echoes back a `requestState`
-  /// this handler previously issued, along with the peer's
-  /// `inputResponses` answering the earlier `inputRequests`.
+  /// Handle a follow-up `tools/call` carrying a `requestState` string and
+  /// the peer's `inputResponses` answering the earlier `inputRequests`.
+  /// `requestState` is an unauthenticated, unvalidated opaque echo token
+  /// — the dispatcher (`Mcp.Server`) routes to `resume` purely because
+  /// the incoming params include a `requestState` field, with no check
+  /// that this (or any) handler ever issued it. A peer can call `resume`
+  /// directly with a fabricated `requestState`, skipping `call` entirely.
+  /// A handler encoding a security-sensitive target in `requestState`
+  /// must independently verify/authorize inside `resume` itself before
+  /// acting — never assume the runtime already validated provenance.
   func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String]
 }
 
@@ -383,15 +390,33 @@ func encodeResumableToolDef(t: in McpResumableToolDef): JsonValue {
   JObject(fields = fields)
 }
 
+func hasResumableToolNamed(resumableTools: in List[McpResumableToolDef], name: in String): Bool {
+  var i = 0
+  var found = false
+  while i < resumableTools.count {
+    if resumableTools[i].name == name {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// Encode the `tools` array for `tools/list`, combining plain and
 /// resumable tool registrations (the wire shape is identical either way —
-/// only dispatch differs, see `Mcp.Server.handleToolsCall`).
+/// only dispatch differs, see `Mcp.Server.handleToolsCall`). A name
+/// registered via both `addTool` and `addResumableTool` (see `addTool`'s
+/// doc comment) contributes exactly one entry here — the resumable one —
+/// matching `handleToolsCall`'s own resumable-first dispatch precedence,
+/// rather than shipping two same-named entries in `tools/list`.
 @stable(since = "0.2")
 pub func encodeAllToolDefsList(tools: in List[McpToolDef], resumableTools: in List[McpResumableToolDef]): JsonValue {
   val acc: List[JsonValue] = newList()
   var i = 0
   while i < tools.count {
-    acc.add(encodeToolDef(tools[i]))
+    if not hasResumableToolNamed(resumableTools, tools[i].name) {
+      acc.add(encodeToolDef(tools[i]))
+    }
     i = i + 1
   }
   var j = 0
@@ -422,10 +447,31 @@ pub func encodeServerDiscoverResult(
   )
 }
 
+/// Decoded `capabilities` shape from `server/discover` (or `initialize`):
+/// which of `tools`/`resources`/`prompts` the server advertises at least
+/// one registration for. Mirrors `encodeCapabilities` — each field is
+/// present on the wire object only when the server has a registration
+/// for it (docs/62 §5.1), so decoding is presence-of-key, not a nested
+/// value read.
+@stable(since = "0.2")
+pub record McpCapabilities {
+  hasTools: Bool
+  hasResources: Bool
+  hasPrompts: Bool
+}
+
+func decodeCapabilities(v: in JsonValue): McpCapabilities {
+  val hasTools = match getField(v, "tools") { case Some(_) -> true; case None -> false }
+  val hasResources = match getField(v, "resources") { case Some(_) -> true; case None -> false }
+  val hasPrompts = match getField(v, "prompts") { case Some(_) -> true; case None -> false }
+  McpCapabilities(hasTools = hasTools, hasResources = hasResources, hasPrompts = hasPrompts)
+}
+
 /// Decoded `server/discover` result (client-side).
 @stable(since = "0.2")
 pub record McpDiscoverResult {
   serverInfo: McpImplementation
+  capabilities: McpCapabilities
 }
 
 pub func decodeServerDiscoverResult(v: in JsonValue): McpDiscoverResult {
@@ -433,7 +479,11 @@ pub func decodeServerDiscoverResult(v: in JsonValue): McpDiscoverResult {
     case Some(si) -> decodeImplementation(si)
     case None -> McpImplementation(name = "", version = "")
   }
-  McpDiscoverResult(serverInfo = serverInfo)
+  val capabilities = match getField(v, "capabilities") {
+    case Some(c) -> decodeCapabilities(c)
+    case None -> McpCapabilities(hasTools = false, hasResources = false, hasPrompts = false)
+  }
+  McpDiscoverResult(serverInfo = serverInfo, capabilities = capabilities)
 }
 
 // ── Resources ────────────────────────────────────────────────────────────────
