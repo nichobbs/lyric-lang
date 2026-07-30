@@ -2885,6 +2885,30 @@ jobs:
           fi
           LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/msil_restored_qualified_val_self_test.l
 
+      # Restored-dependency List[slice[Byte]] return self-test (#5575
+      # residual finding).  PR #6329's #6332 extension already fixed the
+      # underlying array-signature degrade; this pins it specifically across
+      # a genuine restored-DLL boundary (the shape #5575 is about), which
+      # that PR's same-bundle-only regression coverage does not exercise.
+      # Same two-stage PRODUCER/CONSUMER harness as the restored async
+      # self-test above.  Uses `Lyric.Emitter`, so LYRIC_LOAD_COMPILER=1 is
+      # needed.
+      - name: Restored dependency List[slice[Byte]] return self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping restored slice-list-return self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping restored slice-list-return self-test"
+            exit 1
+          fi
+          LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/restored_slice_list_return_self_test.l
+
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
       # Before this fix, @externTarget async func left Task<T> on the stack where
