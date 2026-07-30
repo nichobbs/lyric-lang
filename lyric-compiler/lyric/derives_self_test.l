@@ -1032,6 +1032,43 @@ test "ord record distinct field compares by value at runtime (#3186)" {
   assertEqualInt(r2.compare(q1), 1, "runtime-ord: name comparison reversed")
 }
 
+// Runtime coverage (#5727, following the #3186 precedent above): this module
+// itself is compiled through the self-hosted pipeline, so the synthesised
+// `toJson`/`fromJson` below round-trip for real at runtime — a scalar field,
+// a `slice[String]` field, and a nested `@generate(Json)` record field.
+@generate(Json)
+record JsonAddress {
+  city: String
+  zip: Int
+}
+
+@generate(Json)
+record JsonPerson {
+  name: String
+  age: Int
+  tags: slice[String]
+  address: JsonAddress
+}
+
+test "generate(Json) round-trips scalar/slice/nested-record fields at runtime (#5727)" {
+  val tags: slice[String] = ["red", "green", "blue"]
+  val original = JsonPerson(name = "Ada", age = 36, tags = tags, address = JsonAddress(city = "London", zip = 10001))
+  val json = original.toJson()
+  match JsonPerson.fromJson(json) {
+    case Ok(decoded) -> {
+      assertEqual(decoded.name, "Ada", "json-roundtrip: scalar String field")
+      assertEqualInt(decoded.age, 36, "json-roundtrip: scalar Int field")
+      assertEqualInt(decoded.tags.length, 3, "json-roundtrip: slice[String] field length")
+      assertEqual(decoded.tags[0], "red", "json-roundtrip: slice[String] field element 0")
+      assertEqual(decoded.tags[1], "green", "json-roundtrip: slice[String] field element 1")
+      assertEqual(decoded.tags[2], "blue", "json-roundtrip: slice[String] field element 2")
+      assertEqual(decoded.address.city, "London", "json-roundtrip: nested record scalar field")
+      assertEqualInt(decoded.address.zip, 10001, "json-roundtrip: nested record Int field")
+    }
+    case Err(e) -> assertTrue(false, "json-roundtrip: fromJson failed: " + e)
+  }
+}
+
 test "mono retains derived helpers" {
   val src = "package P\n" + "@derive(Equals)\n@derive(Hash)\n@derive(Show)\n" + "record Point { x: Int; y: Int }\n" +
     "func gid[T](v: in T): T { v }\n"

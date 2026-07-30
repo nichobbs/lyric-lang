@@ -42,6 +42,7 @@
 //!   export LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_ENABLED=true
 //!   export LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_HOST=override-host
 //!   export LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_REQUIRED_SECRET=s3cr3t
+//!   export LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_EMPTYOVERRIDE_HOST=
 //!   lyric test lyric-compiler/lyric/config_block_self_test.l
 //!   lyric test --target jvm lyric-compiler/lyric/config_block_self_test.l
 //!
@@ -53,9 +54,19 @@
 //! exercising the `EPrefix(PreNeg, ELiteral(...))` folding path), an
 //! env-var override for every supported field type (Int/Long/Float/Double/
 //! Bool/String — both the default path and the env-override "present" path
-//! through each field's branchy `<clinit>` are exercised), and a required
-//! field satisfied by an env var.
+//! through each field's branchy `<clinit>` are exercised), a required
+//! field satisfied by an env var, and an env var explicitly set to the
+//! empty string (`IsNullOrEmpty`/`isEmpty` treats "" the same as "absent",
+//! so this must fall back to the declared default rather than trying to
+//! parse "" — #6204).
 //!
+//! The required-field-missing exit(78) path (#6200) needs a genuinely
+//! separate subprocess (the abort happens inside a static initializer
+//! that runs before `main`, so it can't be observed in-process) and pulls
+//! in `Lyric.Emitter`, which the JVM checker can't currently resolve a
+//! qualified `Emitter.ProjectPackage` type reference from — so that case
+//! lives in the dotnet-only companion file `config_block_missing_required_self_test.l`
+//! instead of here, to keep this file's dual-target coverage intact.
 //! Imports only `Std.*`.
 @test_module
 package Lyric.ConfigBlockSelfTest
@@ -86,6 +97,13 @@ config Required {
   secret: String
 }
 
+// #6204: an env var explicitly set to "" must be treated the same as an
+// absent env var (both backends check IsNullOrEmpty/isEmpty before
+// attempting to parse), so this still reads back the declared default.
+config EmptyOverride {
+  host: String = "default-host"
+}
+
 test "defaulted fields read back their declared defaults" {
   assertEqualInt(Defaults.port, 8080, "Int default")
   assertEqualLong(Defaults.limit, 1099511627776, "Long default")
@@ -107,4 +125,8 @@ test "env-var override wins over the declared default for every field type" {
 
 test "required field satisfied by env var reads back the set value" {
   assertEqual(Required.secret, "s3cr3t", "required field")
+}
+
+test "env var explicitly set to empty string falls back to the declared default" {
+  assertEqual(EmptyOverride.host, "default-host", "empty-string env var must not win over the default")
 }

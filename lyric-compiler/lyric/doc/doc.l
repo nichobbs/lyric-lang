@@ -8,6 +8,7 @@ import Std.Collections
 import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Fmt
 
 func pathStr(mp: in ModulePath): String {
   if mp.segments.count == 0 {
@@ -130,7 +131,7 @@ func functionSignature(fn: in FunctionDecl): String {
 }
 
 func fieldStr(f: in FieldDecl): String {
-  val vis = match f.visibility { case None -> ""; case Some(_) -> "pub " }
+  val vis = visibilityPrefixStr(f.visibility)
   "  " + vis + f.name + ": " + typeStr(f.ty)
 }
 

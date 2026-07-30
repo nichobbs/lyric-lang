@@ -62,18 +62,29 @@ func readBuildSection(manifestOpt: in Option[String]): Option[Mf.BuildSection] {
 }
 
 func readBuildShapeFromManifest(manifestOpt: in Option[String]): BuildShape {
-  val section = match readBuildSection(manifestOpt) { case None -> return SPortable; case Some(s) -> s }
-  match parseShapeName(section.shape) {
-    case Some(s) -> s
-    case None -> SPortable
-  }
+  readBuildShapeFromSection(readBuildSection(manifestOpt))
 }
 
 func readBuildProfileFromManifest(manifestOpt: in Option[String]): BuildProfile {
-  val section = match readBuildSection(manifestOpt) { case None -> return ProfDebug; case Some(s) -> s }
-  match parseProfileName(section.profile) {
-    case Some(p) -> p
+  readBuildProfileFromSection(readBuildSection(manifestOpt))
+}
+
+// Manifest-value variants of the two helpers above: same default-on-absence
+// behavior, but read the `[build]` section straight out of an already-parsed
+// manifest instead of re-reading/re-parsing the file. Lets a caller who
+// already parsed `lyric.toml` once (`cmdBuild`'s project-mode branch, #6193)
+// avoid a redundant re-parse per axis.
+func readBuildShapeFromSection(section: in Option[Mf.BuildSection]): BuildShape {
+  match section {
+    case None -> SPortable
+    case Some(s) -> match parseShapeName(s.shape) { case Some(sh) -> sh; case None -> SPortable }
+  }
+}
+
+func readBuildProfileFromSection(section: in Option[Mf.BuildSection]): BuildProfile {
+  match section {
     case None -> ProfDebug
+    case Some(s) -> match parseProfileName(s.profile) { case Some(p) -> p; case None -> ProfDebug }
   }
 }
 
@@ -98,8 +109,38 @@ pub func resolveBuildAxes(
   manifestOpt: in Option[String],
   target: in CompileTarget,
 ): Result[ResolvedAxes, String] {
-  val shape = match cliShape { case Some(s) -> s; case None -> readBuildShapeFromManifest(manifestOpt) }
-  val profile = match cliProfile { case Some(p) -> p; case None -> readBuildProfileFromManifest(manifestOpt) }
+  val section = readBuildSection(manifestOpt)
+  val shape = match cliShape { case Some(s) -> s; case None -> readBuildShapeFromSection(section) }
+  val profile = match cliProfile { case Some(p) -> p; case None -> readBuildProfileFromSection(section) }
+  resolveAxesChecked(shape, profile, target)
+}
+
+// Manifest-value variant of `resolveBuildAxes`: same precedence and
+// compatibility checks, but reads the `[build]` section straight out of an
+// already-parsed manifest instead of re-reading/re-parsing `mfPath` — lets
+// `cmdBuild`'s project-mode branch parse `lyric.toml` once and thread that
+// single parse through the shape/profile axis resolution too (#6193).
+pub func resolveBuildAxesFromManifest(
+  cliShape: in Option[BuildShape],
+  cliProfile: in Option[BuildProfile],
+  manifest: in Option[Manifest],
+  target: in CompileTarget,
+): Result[ResolvedAxes, String] {
+  // Explicitly typed `absent` (rather than a bare `None` arm) sidesteps a
+  // match fall-through type-inference quirk (W0004/#1663): an untyped
+  // `None` arm can infer its `Option[T]` from the scrutinee (`Option[Manifest]`)
+  // instead of the sibling arm's actual type (`Option[BuildSection]`).
+  val absent: Option[Mf.BuildSection] = None
+  val section = match manifest { case None -> absent; case Some(m) -> m.build }
+  val shape = match cliShape { case Some(s) -> s; case None -> readBuildShapeFromSection(section) }
+  val profile = match cliProfile { case Some(p) -> p; case None -> readBuildProfileFromSection(section) }
+  resolveAxesChecked(shape, profile, target)
+}
+
+// Shared compatibility-check tail of `resolveBuildAxes`/`resolveBuildAxesFromManifest`.
+func resolveAxesChecked(
+  shape: in BuildShape, profile: in BuildProfile, target: in CompileTarget
+): Result[ResolvedAxes, String] {
   match shapeTargetError(shape, target) {
     case Some(msg) -> return Err(error = msg)
     case None -> ()
@@ -174,10 +215,17 @@ func manifestDeclaresBuildDefines(mfPath: in String): Bool {
     case Ok(mfText) -> {
       match Mf.parseManifest(mfText, mfPath) {
         case Err(_) -> false
-        case Ok(mf) -> Mf.getManifestBuildDefines(mf).count > 0
+        case Ok(mf) -> manifestDeclaresBuildDefinesValue(mf)
       }
     }
   }
+}
+
+// Manifest-value variant of `manifestDeclaresBuildDefines`: same predicate,
+// but against an already-parsed manifest instead of re-reading/re-parsing
+// `mfPath` (#6193).
+func manifestDeclaresBuildDefinesValue(manifest: in Manifest): Bool {
+  Mf.getManifestBuildDefines(manifest).count > 0
 }
 
 // The rejection message for a manifest `[build.define]` table on a build shape
@@ -1240,11 +1288,24 @@ func cmdBuild(argv: in slice[String]): Int {
         return 1
       }
     }
+    // Parse `lyric.toml` once here and thread the value through the axis
+    // resolution / defines-gate / plain-build calls below, instead of each of
+    // those helpers re-reading and re-parsing the same file (#6193 — this
+    // branch used to parse the manifest 4-5x per build). A read/parse
+    // failure degrades to `None`, matching the old per-helper default-on-
+    // failure contract (`readBuildSection`'s doc comment); the real
+    // diagnostic still surfaces below, from whichever build call ends up
+    // re-parsing it for real.
+    val mfText = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> "" }
+    val manifestValOpt: Option[Manifest] = match Mf.parseManifest(mfText, mfPath) {
+      case Ok(m) -> Some(value = m)
+      case Err(_) -> None
+    }
     // docs/63: resolve both axes against this manifest. A `[build] shape = "aot"`
     // routes into the AOT-packaging pipeline exactly as an explicit `--aot` does
     // — the manifest is a default for the same axis, not a separate mechanism
     // (which is what `kind = "aot"` used to be).
-    val axes = match resolveBuildAxes(effCliShape, cliProfile, Some(value = mfPath), target) {
+    val axes = match resolveBuildAxesFromManifest(effCliShape, cliProfile, manifestValOpt, target) {
       case Ok(a) -> a
       case Err(msg) -> {
         printErr(msg)
@@ -1256,7 +1317,7 @@ func cmdBuild(argv: in slice[String]): Int {
     // it. `--watch` is fine — `buildProject` reapplies the manifest defines on
     // every rebuild. `manifestDefineGateError` is a pure predicate (unit-tested,
     // #6188) so this reject matrix can't silently regress.
-    val mfHasDefines = manifestDeclaresBuildDefines(mfPath)
+    val mfHasDefines = match manifestValOpt { case Some(mv) -> manifestDeclaresBuildDefinesValue(mv); case None -> false }
     match manifestDefineGateError(mfHasDefines, axes.shape, target, mfPath) {
       case Some(msg) -> {
         printErr(msg)
@@ -1324,18 +1385,42 @@ func cmdBuild(argv: in slice[String]): Int {
       case Some(_) -> printErr(ridNoEffectWarning(target))
       case None -> ()
     }
-    return buildProject(
-      mfPath,
-      explicitOut,
-      target,
-      cliFeatures,
-      noDefaultFeatures,
-      allFeatures,
-      noRestore,
-      packageVersionArg,
-      None,
-      withProfileDefine(cliDefines, axes.profile)
-    )
+    // Reuse the manifest already parsed above when it parsed cleanly (the
+    // common case); fall back to `buildProject`'s own re-parse otherwise so a
+    // genuinely malformed manifest still gets a real diagnostic instead of a
+    // silently-defaulted build (#6193).
+    match manifestValOpt {
+      case Some(manifestVal) -> {
+        return buildProjectFromManifest(
+          mfPath,
+          mfText,
+          manifestVal,
+          explicitOut,
+          target,
+          cliFeatures,
+          noDefaultFeatures,
+          allFeatures,
+          noRestore,
+          packageVersionArg,
+          None,
+          withProfileDefine(cliDefines, axes.profile)
+        )
+      }
+      case None -> {
+        return buildProject(
+          mfPath,
+          explicitOut,
+          target,
+          cliFeatures,
+          noDefaultFeatures,
+          allFeatures,
+          noRestore,
+          packageVersionArg,
+          None,
+          withProfileDefine(cliDefines, axes.profile)
+        )
+      }
+    }
   }
 
   val sourcePath = positional[0]
@@ -1837,7 +1922,22 @@ func buildReleaseProject(
 
   val stem = stemOf(artifactBase, 4)
   val outNative = match explicitOut { case Some(o) -> o; case None -> Path.join(mfDir, stem) }
-  Release.buildRelease(releaseTarget, stagingArtifact, extraRefs, ridArg, outNative)
+  val releaseExit = Release.buildRelease(releaseTarget, stagingArtifact, extraRefs, ridArg, outNative)
+  // Stage restored NuGet native runtime assets (e.g. SQLite's libe_sqlite3)
+  // beside the native binary, same as the plain (non-release) path does at
+  // the `Dotnet` build-project call site — the release path never called
+  // this, so a native-AOT release binary silently missed its P/Invoke
+  // runtime assets at startup (#5783). No-op on JVM: native assets are
+  // resolved from `[nuget]`, a .NET-only concept.
+  match target {
+    case Jvm -> ()
+    case _ -> {
+      if releaseExit == 0 {
+        copyNugetNativeAssetsBeside(outNative, resolved.nativeAssetPaths)
+      }
+    }
+  }
+  releaseExit
 }
 
 // Read the restored Maven classpath a JVM `buildProject` wrote beside its
@@ -2025,7 +2125,6 @@ pub func buildProject(
   preResolvedDeps: in Option[ResolvedManifestDeps],
   cliDefines: in List[String],
 ): Int {
-  val buildStart = Time.now()
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e) -> {
@@ -2040,6 +2139,43 @@ pub func buildProject(
       return 1
     }
   }
+  buildProjectFromManifest(
+    mfPath,
+    mfText,
+    manifest,
+    explicitOut,
+    target,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures,
+    noRestore,
+    packageVersionOverride,
+    preResolvedDeps,
+    cliDefines
+  )
+}
+
+// Same as `buildProject`, but takes an already-read/parsed manifest instead
+// of re-reading and re-parsing `mfPath` from disk. `cmdBuild`'s project-mode
+// branch parses `lyric.toml` once up front (for the shape/profile axes and
+// the build-defines gate) and threads that single parse all the way through
+// via this entry point, instead of `buildProject`'s own redundant re-parse
+// — the manifest was being parsed 4-5x per project build before (#6193).
+pub func buildProjectFromManifest(
+  mfPath: in String,
+  mfText: in String,
+  manifest: in Manifest,
+  explicitOut: in Option[String],
+  target: in CompileTarget,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+  noRestore: in Bool,
+  packageVersionOverride: in Option[String],
+  preResolvedDeps: in Option[ResolvedManifestDeps],
+  cliDefines: in List[String],
+): Int {
+  val buildStart = Time.now()
   val proj: ProjectSection = match manifest.project {
     case Some(p) -> p
     case None -> {
