@@ -741,3 +741,33 @@ test "a real McpClient drives the full input_required resume loop against a real
     }
   }
 }
+
+// #6334 — a resumable tool's `input_required` answer must never reach the
+// plain `callTool`/`decodeToolResult` path silently: before this fix,
+// `decodeToolResult`'s lenient defaulting would turn the missing
+// `content`/`isError` fields into a false-success `McpToolResult(content =
+// [], isError = false)`, indistinguishable from "the tool ran and produced
+// no output" — dangerous for a permission-gated tool like `confirm_delete`.
+test "callTool against a resumable tool's input_required answer returns Err, not a false-success empty result" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+
+  match connectTransport(ClientSideTransport(box = box)) {
+    case Err(e) -> assertTrue(false, "connectTransport failed: " + e)
+    case Ok(clientVal) -> {
+      var client = clientVal
+      val args = JObject(fields = [JsonField(name = "path", value = JString(value = "/tmp/z"))])
+      val callWireParams = JObject(
+        fields = [
+          JsonField(name = "name", value = JString(value = "confirm_delete")),
+          JsonField(name = "arguments", value = args)
+        ]
+      )
+      stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callWireParams)))
+      match callTool(client, "confirm_delete", Some(value = args)) {
+        case Err(_) -> assertTrue(true, "callTool surfaces an explicit Err instead of a false-success result")
+        case Ok(result) -> assertTrue(false, "expected an Err — callTool instead returned Ok(McpToolResult(content.count = " + result.content.count.toString() + ")), a false-success (#6334 regression)")
+      }
+    }
+  }
+}

@@ -112,6 +112,15 @@ pub func listTools(client: inout McpClient): Result[List[McpToolInfo], String] {
   }
 }
 
+// #6334 — a resumable tool (registered via `addResumableTool`) can answer
+// `tools/call` with an `input_required` object instead of a plain result,
+// indistinguishable from a normal tool at the wire level until the
+// response itself arrives. `decodeToolResult` has no concept of
+// `resultType` and (following this file's own lenient-decoder pattern)
+// would silently default `content`/`isError` to an empty success — a
+// dangerous false-success for a permission-gated tool. Detect the
+// `input_required` shape here and surface it as an explicit `Err` instead
+// of ever reaching `decodeToolResult` with it.
 @stable(since = "0.1")
 pub func callTool(client: inout McpClient, name: in String, args: in Option[JsonValue]): Result[McpToolResult, String] {
   val fields: List[JsonField] = newList()
@@ -121,7 +130,21 @@ pub func callTool(client: inout McpClient, name: in String, args: in Option[Json
     case None -> ()
   }
   match call(client.peer, "tools/call", Some(value = JObject(fields = fields))) {
-    case Ok(v) -> Ok(value = decodeToolResult(v))
+    case Ok(v) -> {
+      match getString(v, "resultType") {
+        case Some(rt) -> {
+          if rt == "input_required" {
+            Err(
+              error = "'" + name +
+                "' is a resumable tool waiting for more input (resultType: input_required) — call it with Mcp.Client.callResumableTool/resumeToolCall instead of callTool"
+            )
+          } else {
+            Ok(value = decodeToolResult(v))
+          }
+        }
+        case None -> Ok(value = decodeToolResult(v))
+      }
+    }
     case Err(e) -> Err(error = "'tools/call' failed: " + e.message)
   }
 }
