@@ -947,6 +947,112 @@ test "a local bound inside a config field's default lambda shadows a bare-import
   }
 }
 
+// Coverage follow-up (#6313): the fifth finding's fix threads `contractAliases`
+// into an `AspectDecl`'s own top-level `contracts` too, not just its `around`
+// body — this locks that in with a dedicated case (the #6313 test only
+// covered function/entry/sig `requires:`). `argsName` is chosen as `Foo` so it
+// collides with the bare-imported `Foo.Bar` package's first dotted segment;
+// the aspect's own `requires:` references `Foo.Bar.baz()` directly.
+test "an aspect's own requires: clause with an args-name colliding with a bare-imported package's dotted name is left untouched (#6313 coverage)" {
+  val src = "package Test\nimport Foo.Bar\naspect Guard {\n  matches: name like \"handle*\"\n  requires: Foo.Bar.baz() > 0\n  around(Foo) -> ret {\n    ret = proceed(Foo)\n  }\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IAspect(decl) -> {
+      assertEqualInt(decl.contracts.count, 1, "aspect has exactly the one requires: clause")
+      match decl.contracts[0] {
+        case CCRequires(expr, _) -> {
+          match expr.kind {
+            case EBinop(_, lhs, _) -> {
+              match lhs.kind {
+                case ECall(fn, _) -> {
+                  match fn.kind {
+                    case EMember(receiver, memberName) -> {
+                      assertEqual(memberName, "baz", "outer member name is still the call's own 'baz'")
+                      match receiver.kind {
+                        case EMember(innerReceiver, innerMember) -> {
+                          assertEqual(innerMember, "Bar", "inner member name is still 'Bar' — chain was not flattened")
+                          match innerReceiver.kind {
+                            case EPath(p) -> {
+                              assertEqualInt(p.segments.count, 1, "innermost receiver is still the bare single-segment 'Foo'")
+                              assertEqual(p.segments[0], "Foo", "innermost receiver segment is still 'Foo', unrewritten")
+                            }
+                            case _ -> assertTrue(false, "innermost receiver is not EPath — chain shape changed unexpectedly")
+                          }
+                        }
+                        case _ -> assertTrue(false, "receiver is not EMember — chain was flattened despite the args-name shadow")
+                      }
+                    }
+                    case EPath(_) -> assertTrue(false, "requires: call was collapsed into a flat EPath — the aspect's own args-name `Foo` should have suppressed the Foo.Bar package collapse")
+                    case _ -> assertTrue(false, "requires: call is unexpected ExprKind after rewrite")
+                  }
+                }
+                case _ -> assertTrue(false, "requires: lhs is not ECall")
+              }
+            }
+            case _ -> assertTrue(false, "requires: expr is not EBinop")
+          }
+        }
+        case _ -> assertTrue(false, "contract clause is not CCRequires")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IAspect")
+  }
+}
+
+// Coverage follow-up (#6316): `rewriteIncludeAdjusts`'s `IAProvided`/
+// `IAConfigOverride`/`IAReplace` value-filtering shares the same
+// `filterAliasesForExpr` call as the wire-singleton/config-default cases
+// already tested — this locks in the `IAReplace` form specifically. The
+// adjustment's own value is a lambda (`{ ... }`) binding a local `Foo` before
+// calling `Foo.Bar.baz()`, exactly like the config-field-default case above.
+test "an include adjustment's value binding its own local shadows a bare-imported package's dotted name, left untouched (#6316 coverage)" {
+  val src = "package Test\nimport Foo.Bar\nwire W {\n  include Some.Template {\n    someName = {\n      val Foo = 0\n      Foo.Bar.baz()\n    }\n  }\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IWire(decl) -> {
+      assertEqualInt(decl.members.count, 1, "wire has exactly the one include member")
+      match decl.members[0] {
+        case WMInclude(_, _, adjustments, _, _) -> {
+          assertEqualInt(adjustments.count, 1, "include has exactly the one adjustment")
+          match adjustments[0] {
+            case IAReplace(_, value, _) -> {
+              match value.kind {
+                case ELambda(_, block) -> {
+                  assertEqualInt(block.statements.count, 2, "adjustment lambda body has the local decl plus the call statement")
+                  val stmt = block.statements[1]
+                  match stmt.kind {
+                    case SExpr(callExpr) -> {
+                      match callExpr.kind {
+                        case ECall(fn, _) -> {
+                          match fn.kind {
+                            case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
+                            case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6316 regression)")
+                            case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
+                          }
+                        }
+                        case _ -> assertTrue(false, "statement expression is not ECall")
+                      }
+                    }
+                    case _ -> assertTrue(false, "second statement is not SExpr")
+                  }
+                }
+                case _ -> assertTrue(false, "adjustment value is not ELambda")
+              }
+            }
+            case _ -> assertTrue(false, "adjustment is not IAReplace")
+          }
+        }
+        case _ -> assertTrue(false, "wire member is not WMInclude")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IWire")
+  }
+}
+
 // Review follow-up: the #6311/#6312 filtering has a beneficial side effect on
 // the DEPTH-1 non-call `EMember` arm too, since it strips a shadowed alias
 // from the shared `aliases` list before ANY arm (call or non-call) consults

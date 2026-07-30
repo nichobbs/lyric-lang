@@ -1694,6 +1694,15 @@ func rewriteWireDecl(aliases: in List[String], d: in WireDecl): WireDecl {
       case WMScoped(_, name, _, _, _) -> locals.add(name)
       case WMLocal(name, _, _, _) -> locals.add(name)
       case WMContributes(_, name, _, _, _, _) -> locals.add(name)
+      // `WMInclude`/`WMConfigInst` also introduce named bindings (a spliced
+      // template's alias, a nested config instance's name). On the
+      // dotnet/jvm paths `Lyric.WireExpand` always consumes `WMInclude`
+      // before the alias rewriter runs, so this rarely matters there — but
+      // the native/LLVM bridge invokes `pipeExpandAndRewrite` with
+      // `runWireExpand = false`, so an unexpanded `WMInclude` CAN still
+      // reach here.
+      case WMInclude(_, aliasName, _, _, _) -> match aliasName { case Some(n) -> locals.add(n); case None -> () }
+      case WMConfigInst(decl, _) -> locals.add(decl.name)
       case _ -> ()
     }
     k = k + 1
@@ -1772,9 +1781,9 @@ func rewritePropertyDecl(aliases: in List[String], d: in PropertyDecl): Property
 
 func rewriteFixtureDecl(aliases: in List[String], d: in FixtureDecl): FixtureDecl {
   // Scope-aware body rewrite (#6311) — see rewriteFunctionDecl's comment.
-  val locals: List[String] = newList()
-  collectExprLocalNames(d.init, locals)
-  val bodyAliases = filterAliasesExcludingLocals(aliases, locals)
+  // Uses the shared self-referential helper (#6316's `filterAliasesForExpr`)
+  // rather than inlining the same collect-then-filter pattern again.
+  val bodyAliases = filterAliasesForExpr(aliases, d.init)
   FixtureDecl(
     name = d.name,
     nameSpan = d.nameSpan,
