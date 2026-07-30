@@ -21347,5 +21347,66 @@ call site in the file against raw `aliases` (not `bodyAliases`/
 result), not a prose argument about which positions "should" have been
 covered.
 
+**Tenth finding (review feedback, #6324): the "literal grep for
+`rewriteExpr(aliases, ...)`/`rewriteOptExpr(aliases, ...)`" closing test
+the ninth finding proposed was still incomplete — it missed a call site
+one syntactic layer further removed than either.** `rewritePattern`'s
+`PRange` arm rewrote a range pattern's `lo`/`hi` bounds via plain
+`rewriteExpr(aliases, lo)` / `rewriteExpr(aliases, hi)` — a LITERAL match
+for the grep pattern the ninth finding's audit was supposed to run, and
+somehow still missed in that pass. `parseLiteralOrRangePat` parses a range
+pattern's `hi` (and `lo`) via the fully general `parseExpr`, so either
+bound can be a bare `{ ... }` lambda binding its own shadowing local —
+`case 0..{ val Foo = 0; Foo.Bar.baz() } -> ...` silently collapsed
+`Foo.Bar.baz()` into the unrelated bare-imported `Foo.Bar` package,
+bypassing the local `Foo`, the same #6294 bug class yet again. A second,
+independent gap in the same neighborhood: `collectPatternLocalNames`'s
+`PRange(_, _, _) -> ()` arm discarded `lo`/`hi` entirely instead of
+recursing into them — so even where a caller DOES route through
+`filterAliasesForExpr` around an expression containing a match with a
+range-pattern arm, a local bound inside that arm's own `lo`/`hi` lambda
+was never collected into the ambient locals set either.
+
+This is the SECOND time a "this closes every gap" claim on this PR was
+run through an actual audit methodology and the audit itself still missed
+something — worth naming honestly rather than re-asserting confidence a
+third time: a `grep -n "rewriteExpr(aliases,\|rewriteOptExpr(aliases,"
+alias_rewriter.l` run as an audit AFTER this finding's fix, reported at
+the end of this entry, shows the current, empirically-verified state of
+that grep, not a prose claim about it.
+
+Fixed by routing `PRange`'s `lo`/`hi` through `filterAliasesForExpr`
+independently (each bound gets its own self-contained collect-then-filter
+pass, since `lo` and `hi` are two separate standalone expressions that
+could each introduce different shadowing locals) in `rewritePattern`, and
+by making `collectPatternLocalNames`'s `PRange` arm recurse into both
+bounds via `collectExprLocalNames`, mirroring how every other sub-`Expr`
+this collector visits is already handled.
+
+Verified by a new `alias_rewriter_self_test.l` case (33 total): a `match`
+with a range-pattern arm (`case 0..{ ... } -> 1`) whose `hi` bound is a
+lambda binding its own local `Foo` before calling `Foo.Bar.baz()`,
+asserting the callee stays the original nested `EMember` chain,
+unrewritten. All ten previously-established suites re-verified green
+again against the build carrying this tenth fix (`alias_rewriter` 33/33,
+`msil_project_bridge` 34/34, `qualified_enum_case` 11/11,
+`qualified_union_case` 5/5, `typechecker` 283/283, `parser` 126/126,
+`mono` 54/54, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 92/92,
+`cfg` 12/12 — no drift in any of these from the ninth finding's build).
+
+**Post-fix audit** (the actual, current state of the grep the ninth
+finding's own closing paragraph proposed, re-run after this fix, not a
+repeated prose assertion): every `rewriteExpr(aliases, ...)` call site
+remaining in `alias_rewriter.l` is internal recursion INSIDE `rewriteExpr`/
+`rewriteStatement`/`rewriteBlock`/`rewritePattern`'s own sub-expression
+traversal (a sub-node of an expression tree already being rewritten under
+a caller-supplied, correctly-scoped `aliases`, not a new standalone entry
+point), or a function/entry body's own top-level rewrite (already
+correctly scoped by its caller). `rewriteOptExpr(aliases, ...)` — the
+exact unfiltered-call literal string — has zero remaining matches in the
+file; both of `rewriteOptExpr`'s own call sites pass an already-scoped
+variable (`bodyAliases`, `defaultAliases`), never raw `aliases`.
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
-D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320, #6321, #6323.
+D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320, #6321, #6323,
+#6324.

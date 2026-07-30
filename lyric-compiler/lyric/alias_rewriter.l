@@ -654,7 +654,12 @@ func rewritePattern(aliases: in List[String], p: in Pattern): Pattern {
       val inner2 = match inner { case Some(p2) -> Some(value = rewritePattern(aliases, p2)); case None -> inner }
       PBinding(name = name, inner = inner2)
     }
-    case PRange(lo, inclusive, hi) -> PRange(lo = rewriteExpr(aliases, lo), inclusive = inclusive, hi = rewriteExpr(aliases, hi))
+    // #6324 — see filterAliasesForExpr's comment: a range pattern's own
+    // `lo`/`hi` bound is an ordinary Expr (`parseLiteralOrRangePat` calls
+    // the fully general `parseExpr`) and so can itself be a lambda
+    // introducing its own shadowing locals, same as every other
+    // standalone-expression position in this file.
+    case PRange(lo, inclusive, hi) -> PRange(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo), inclusive = inclusive, hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
     case PWildcard -> PWildcard
     case PLiteral(lit) -> PLiteral(lit = lit)
     case PConstRef(name) -> PConstRef(name = name)
@@ -833,7 +838,13 @@ func collectPatternLocalNames(p: in Pattern, acc: List[String]): Unit {
         i = i + 1
       }
     }
-    case PRange(_, _, _) -> ()
+    // #6324 — a range pattern's `lo`/`hi` bound is an ordinary Expr and can
+    // itself bind locals (e.g. a lambda), same as every other sub-Expr this
+    // collector already descends into.
+    case PRange(lo, _, hi) -> {
+      collectExprLocalNames(lo, acc)
+      collectExprLocalNames(hi, acc)
+    }
     case PWildcard -> ()
     case PLiteral(_) -> ()
     case PConstRef(_) -> ()

@@ -1331,6 +1331,73 @@ test "a local bound inside a protected type's var-field init lambda shadows a ba
   }
 }
 
+// Scope-awareness regression, range-pattern bound (#6324): a `PRange`
+// pattern's `hi` (or `lo`) bound is an ordinary Expr (`parseLiteralOrRangePat`
+// calls the fully general `parseExpr`) and shares the exact same
+// self-referential hazard every other standalone-expression position in
+// this file already guards against.
+test "a local bound inside a range pattern's hi-bound lambda shadows a bare-imported package's dotted name, left untouched (#6324)" {
+  val src = "package Test\nimport Foo.Bar\nfunc f(x: in Int): Int {\n  match x {\n    case 0..{\n      val Foo = 0\n      Foo.Bar.baz()\n    } -> 1\n    case _ -> 0\n  }\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(fb) -> {
+          match fb {
+            case FBBlock(block) -> {
+              assertEqualInt(block.statements.count, 1, "function body has exactly the match statement")
+              val stmt = block.statements[0]
+              match stmt.kind {
+                case SExpr(matchExpr) -> {
+                  match matchExpr.kind {
+                    case EMatch(_, arms) -> {
+                      assertEqualInt(arms.count, 2, "match has exactly the range arm plus the wildcard arm")
+                      match arms[0].pattern.kind {
+                        case PRange(_, _, hi) -> {
+                          match hi.kind {
+                            case ELambda(_, hiBlock) -> {
+                              assertEqualInt(hiBlock.statements.count, 2, "hi-bound lambda body has the local decl plus the call statement")
+                              val hiStmt = hiBlock.statements[1]
+                              match hiStmt.kind {
+                                case SExpr(callExpr) -> {
+                                  match callExpr.kind {
+                                    case ECall(fn, _) -> {
+                                      match fn.kind {
+                                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
+                                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6324 regression)")
+                                        case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
+                                      }
+                                    }
+                                    case _ -> assertTrue(false, "statement expression is not ECall")
+                                  }
+                                }
+                                case _ -> assertTrue(false, "second statement is not SExpr")
+                              }
+                            }
+                            case _ -> assertTrue(false, "hi bound is not ELambda")
+                          }
+                        }
+                        case _ -> assertTrue(false, "first arm's pattern is not PRange")
+                      }
+                    }
+                    case _ -> assertTrue(false, "match statement's expr is not EMatch")
+                  }
+                }
+                case _ -> assertTrue(false, "function body's single statement is not SExpr")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "function body is FBExpr, expected FBBlock")
+          }
+        }
+        case None -> assertTrue(false, "function has no body")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IFunc")
+  }
+}
+
 // Review follow-up: the #6311/#6312 filtering has a beneficial side effect on
 // the DEPTH-1 non-call `EMember` arm too, since it strips a shadowed alias
 // from the shared `aliases` list before ANY arm (call or non-call) consults
