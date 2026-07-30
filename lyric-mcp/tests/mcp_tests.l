@@ -270,6 +270,30 @@ impl McpResumableToolHandler for ConfirmDeleteHandler {
   }
 }
 
+// ── #6341 regression fixtures: a name registered via both addTool and
+// addResumableTool, distinguishable by which handler answered ─────────────
+record CollisionPlainHandler {
+}
+
+impl McpToolHandler for CollisionPlainHandler {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    Ok(value = toolTextResult("plain"))
+  }
+}
+
+record CollisionResumableHandler {
+}
+
+impl McpResumableToolHandler for CollisionResumableHandler {
+  func call(args: in Option[JsonValue]): Result[McpToolCallOutcome, String] {
+    Ok(value = ToolResult(value = toolTextResult("resumable")))
+  }
+
+  func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String] {
+    Ok(value = ToolResult(value = toolTextResult("resumable-resume")))
+  }
+}
+
 func newTestServer(): McpServer {
   val server = newServer(McpImplementation(name = "test-server", version = "1.0.0"))
   val schema = JObject(fields = [JsonField(name = "type", value = JString(value = "object"))])
@@ -464,6 +488,37 @@ test "tools/call: a successful call returns content with isError: false" {
   assertEqualInt(toolResult.content.count, 1, "one content block")
   match toolResult.content[0] {
     case TextContent(t) -> assertEqual(t, "hi there", "echoed text")
+    case _ -> assertTrue(false, "expected TextContent")
+  }
+}
+
+// #6341 — a live McpServer, not just the pure encodeAllToolDefsList encoder,
+// must dispatch a name registered via both addTool and addResumableTool to
+// the resumable handler, matching the tools/list dedup precedence.
+test "tools/call: a name registered via both addTool and addResumableTool dispatches to the resumable handler" {
+  val box = newMailbox()
+  val schema = JObject(fields = [JsonField(name = "type", value = JString(value = "object"))])
+  val server = newServer(McpImplementation(name = "collision-server", version = "1.0.0"))
+  addTool(
+    server,
+    McpToolDef(name = "collide", description = "plain", inputSchema = schema, handler = CollisionPlainHandler())
+  )
+  addResumableTool(
+    server,
+    McpResumableToolDef(
+      name = "collide",
+      description = "resumable",
+      inputSchema = schema,
+      handler = CollisionResumableHandler()
+    )
+  )
+  var serverPeer = newPeer(ServerSideTransport(box = box), server)
+  val callParams = JObject(fields = [JsonField(name = "name", value = JString(value = "collide"))])
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
+  val result = assertResultField(popResponse(box, "tools/call"), "tools/call")
+  val toolResult = decodeToolResult(result)
+  match toolResult.content[0] {
+    case TextContent(t) -> assertEqual(t, "resumable", "collision resolves to the resumable handler's answer, not the plain one")
     case _ -> assertTrue(false, "expected TextContent")
   }
 }

@@ -37,7 +37,7 @@ full design and breaking-change notes.
 
 A tool that needs mid-call user input instead of finishing in one round
 trip (the permission-prompt case this library exists for) registers via
-the new `Mcp.Server.addResumableTool`/`Mcp.Server.McpResumableToolHandler`
+the new `Mcp.Server.addResumableTool`/`Mcp.McpResumableToolHandler`
 instead of `addTool`/`McpToolHandler` — see docs/64 §3.1 and the Quick
 start section below.
 
@@ -46,7 +46,7 @@ start section below.
 | Package | `.NET` | JVM |
 |---|---|---|
 | `Mcp` (types, encode/decode) | full, 27/27 pure-serialization tests pass | pure Lyric, no I/O — but see gap #3: this library's own test suite does not type-check under `--target jvm` at all, so this is unverified in practice, not merely undertested |
-| `Mcp.Server` (`serveStdio`) | full, 21/21 in-memory lifecycle tests pass | unverified (gap #3) |
+| `Mcp.Server` (`serveStdio`) | full, 22/22 in-memory lifecycle tests pass | unverified (gap #3) |
 | `Mcp.Client` (`connectStdio`) | full, tested against a real spawned process (5/5 process tests) | unverified (gap #3); the underlying `Std.Process` piped-spawn kernel also has its own separate, real JVM gap (#1) even setting #3 aside |
 | `Mcp.Stdio` (`PipedNdjsonTransport`) | full | unverified (gap #3); also gap #1 |
 | `Std.Process.spawnPiped` / `pipedReadLine` / `pipedWriteLine` (stdlib seam this library needed and added) | full, tested with a real `cat` subprocess | compiles; **spawning and writing work, reading back a line from the child does not reliably work** — gap #1 |
@@ -210,7 +210,7 @@ Confirmed by direct experiment: `handleToolsCall`'s "unknown tool" branch,
 using `code = JsonRpc.invalidParams` even *outside* an `impl` block (i.e.
 with bug #1 above worked around), measurably produced a wire response
 with `"code":0` instead of `-32602`. The same pattern reading
-`Mcp.serverNotInitialized` — a `pub val` from `Mcp`, a *sibling package
+`Mcp.protocolVersionLatest` — a `pub val` from `Mcp`, a *sibling package
 compiled together in the same project*, not a separately-restored
 workspace DLL — works correctly. Only the cross-DLL case (reading a
 `pub val` from `Lyric.JsonRpc`, resolved via `{ workspace = true }` and

@@ -21809,11 +21809,13 @@ tracks):
    now also the interface doc a resumable-tool author actually reads.
 
 **Verification.** All `--target dotnet` suites green:
-`lyric-mcp` 53/53 (21 lifecycle, including 5 new cases for `server/discover`,
+`lyric-mcp` 54/54 (22 lifecycle, including 5 new cases for `server/discover`,
 the full `input_required`/resume round trip against a real
-`Mcp.Client`/`Mcp.Server` pair, and the #6334 regression test for `callTool`
-against an `input_required` response; 27 serialization, including the #6341
-addTool/addResumableTool name-collision dedup case; 5 real-subprocess), and
+`Mcp.Client`/`Mcp.Server` pair, the #6334 regression test for `callTool`
+against an `input_required` response, and a #6341 live-`McpServer` case
+proving a name registered via both `addTool` and `addResumableTool`
+dispatches to the resumable handler; 27 serialization, including the #6341
+`encodeAllToolDefsList` name-collision dedup case; 5 real-subprocess), and
 `lyric-jsonrpc`'s existing 15/15 unaffected (this track touched no
 `lyric-jsonrpc` code — the multi-round-trip pattern is a pure `Mcp`-layer
 data-shape change, `JsonRpc` never sees the difference). JVM gaps are
