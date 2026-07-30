@@ -270,6 +270,42 @@ impl McpResumableToolHandler for ConfirmDeleteHandler {
   }
 }
 
+// A resumable tool that needs TWO resume round trips before finishing —
+// every other resumable-tool test/fixture in this file resolves in exactly
+// one call + one resume; this exercises the chained
+// InputRequired -> InputRequired -> ToolResult shape the pattern allows
+// but nothing here previously verified.
+record TwoStepResumableHandler {
+}
+
+impl McpResumableToolHandler for TwoStepResumableHandler {
+  func call(args: in Option[JsonValue]): Result[McpToolCallOutcome, String] {
+    val inputRequests = JObject(fields = [JsonField(name = "step", value = JString(value = "confirm-intent"))])
+    Ok(value = InputRequired(value = McpInputRequired(inputRequests = inputRequests, requestState = "step1")))
+  }
+
+  func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String] {
+    if requestState == "step1" {
+      val proceed = match getBool(inputResponses, "proceed") { case Some(b) -> b; case None -> false }
+      if proceed {
+        val inputRequests2 = JObject(fields = [JsonField(name = "step", value = JString(value = "final-confirm"))])
+        Ok(value = InputRequired(value = McpInputRequired(inputRequests = inputRequests2, requestState = "step2")))
+      } else {
+        Ok(value = ToolResult(value = toolErrorResult("cancelled at step1")))
+      }
+    } else if requestState == "step2" {
+      val confirmed = match getBool(inputResponses, "confirm") { case Some(b) -> b; case None -> false }
+      if confirmed {
+        Ok(value = ToolResult(value = toolTextResult("done after two resumes")))
+      } else {
+        Ok(value = ToolResult(value = toolErrorResult("cancelled at step2")))
+      }
+    } else {
+      Ok(value = ToolResult(value = toolErrorResult("unknown requestState: " + requestState)))
+    }
+  }
+}
+
 // ── #6341 regression fixtures: a name registered via both addTool and
 // addResumableTool, distinguishable by which handler answered ─────────────
 record CollisionPlainHandler {
@@ -835,6 +871,83 @@ test "a real McpClient drives the full input_required resume loop against a real
           }
           case ToolResult(_) -> assertTrue(false, "expected InputRequired on the first call")
         }
+      }
+    }
+  }
+}
+
+// A resumable tool that itself answers a resume with a SECOND
+// InputRequired (rather than finishing) before finally completing on the
+// third round trip — verifies the chained-resume shape works, not just a
+// single call + single resume.
+test "tools/call chained resume: InputRequired -> InputRequired -> ToolResult across two resume round trips" {
+  val box = newMailbox()
+  val schema = JObject(fields = [JsonField(name = "type", value = JString(value = "object"))])
+  val server = newServer(McpImplementation(name = "two-step-server", version = "1.0.0"))
+  addResumableTool(
+    server,
+    McpResumableToolDef(
+      name = "two_step",
+      description = "two-step confirm",
+      inputSchema = schema,
+      handler = TwoStepResumableHandler()
+    )
+  )
+  var serverPeer = newPeer(ServerSideTransport(box = box), server)
+
+  val callParams = JObject(fields = [JsonField(name = "name", value = JString(value = "two_step"))])
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
+  val resp1 = assertResultField(popResponse(box, "tools/call (initial call)"), "tools/call (initial call)")
+  match getString(resp1, "resultType") {
+    case Some(rt) -> assertEqual(rt, "input_required", "first response is input_required")
+    case None -> assertTrue(false, "expected resultType on first response")
+  }
+  val requestState1 = match getString(resp1, "requestState") { case Some(s) -> s; case None -> "" }
+  assertEqual(requestState1, "step1", "first requestState")
+
+  val resume1Params = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "two_step")),
+      JsonField(name = "requestState", value = JString(value = requestState1)),
+      JsonField(
+        name = "inputResponses",
+        value = JObject(
+          fields = [JsonField(name = "proceed", value = JBool(value = true))]
+        )
+      )
+    ]
+  )
+  stage(serverPeer, box, reqText(2i64, "tools/call", Some(value = resume1Params)))
+  val resp2 = assertResultField(popResponse(box, "tools/call (first resume)"), "tools/call (first resume)")
+  match getString(resp2, "resultType") {
+    case Some(rt) -> assertEqual(rt, "input_required", "second response is still input_required (chained)")
+    case None -> assertTrue(false, "expected resultType on second response")
+  }
+  val requestState2 = match getString(resp2, "requestState") { case Some(s) -> s; case None -> "" }
+  assertEqual(requestState2, "step2", "second requestState")
+
+  val resume2Params = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "two_step")),
+      JsonField(name = "requestState", value = JString(value = requestState2)),
+      JsonField(
+        name = "inputResponses",
+        value = JObject(
+          fields = [JsonField(name = "confirm", value = JBool(value = true))]
+        )
+      )
+    ]
+  )
+  stage(serverPeer, box, reqText(3i64, "tools/call", Some(value = resume2Params)))
+  val resp3 = assertResultField(popResponse(box, "tools/call (second resume)"), "tools/call (second resume)")
+  match getField(resp3, "resultType") {
+    case Some(_) -> assertTrue(false, "expected no resultType field on a finished ToolResult")
+    case None -> {
+      val toolResult = decodeToolResult(resp3)
+      assertFalse(toolResult.isError, "finished successfully after two resumes")
+      match toolResult.content[0] {
+        case TextContent(t) -> assertEqual(t, "done after two resumes", "final text")
+        case _ -> assertTrue(false, "expected TextContent")
       }
     }
   }

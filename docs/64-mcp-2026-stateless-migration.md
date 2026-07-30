@@ -1,7 +1,7 @@
 # 64 — Migrating `lyric-mcp` to MCP spec revision `2026-07-28`
 
 Status: Phase A (§3, stateless core) specced and implemented in D133 —
-`--target dotnet` fully tested (57/57 across `lyric-mcp`'s three suites).
+`--target dotnet` fully tested (58/58 across `lyric-mcp`'s three suites).
 Phases B (§4, streamable HTTP), C (§5, Tasks extension), and D (§7,
 out of scope) remain open/unbacked. Extends `docs/62-jsonrpc-mcp.md`
 (D129), which

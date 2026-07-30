@@ -117,9 +117,10 @@ pub func listTools(client: inout McpClient): Result[List[McpToolInfo], String] {
 // response itself arrives. `decodeToolResult` has no concept of
 // `resultType` and (following this file's own lenient-decoder pattern)
 // would silently default `content`/`isError` to an empty success — a
-// dangerous false-success for a permission-gated tool. Detect the
-// `input_required` shape here and surface it as an explicit `Err` instead
-// of ever reaching `decodeToolResult` with it.
+// dangerous false-success for a permission-gated tool. Decode via
+// `decodeToolCallOutcome` (the same decoder `callResumableTool` uses)
+// rather than re-deriving the `resultType == "input_required"` check
+// here, so the sentinel string lives in exactly one place.
 @stable(since = "0.1")
 pub func callTool(client: inout McpClient, name: in String, args: in Option[JsonValue]): Result[McpToolResult, String] {
   val fields: List[JsonField] = newList()
@@ -130,18 +131,9 @@ pub func callTool(client: inout McpClient, name: in String, args: in Option[Json
   }
   match call(client.peer, "tools/call", Some(value = JObject(fields = fields))) {
     case Ok(v) -> {
-      match getString(v, "resultType") {
-        case Some(rt) -> {
-          if rt == "input_required" {
-            Err(
-              error = "'" + name +
-                "' is a resumable tool waiting for more input (resultType: input_required) — call it with Mcp.Client.callResumableTool/resumeToolCall instead of callTool"
-            )
-          } else {
-            Ok(value = decodeToolResult(v))
-          }
-        }
-        case None -> Ok(value = decodeToolResult(v))
+      match decodeToolCallOutcome(v) {
+        case ToolResult(result) -> Ok(value = result)
+        case InputRequired(_) -> Err(error = "'" + name + "' is a resumable tool waiting for more input (resultType: input_required) — call it with Mcp.Client.callResumableTool/resumeToolCall instead of callTool")
       }
     }
     case Err(e) -> Err(error = "'tools/call' failed: " + e.message)

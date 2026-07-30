@@ -21840,9 +21840,24 @@ tracks):
     type). `dispatchResumableTool` now checks `getField` first and
     returns `invalidParams` for a present-but-non-string `requestState`,
     matching that guard's strictness.
+12. **De-duplicated the `input_required` sentinel; chained-resume
+    coverage.** `Mcp.Client.callTool` re-derived its own
+    `resultType == "input_required"` check via a raw `getString` read
+    instead of reusing `decodeToolCallOutcome` (the same decoder
+    `callResumableTool` already used) — now matches on the decoded
+    `McpToolCallOutcome` directly, so the `"input_required"` string
+    literal lives in exactly one place. `newServer`'s doc comment now
+    points at `addTool`'s "registers via one or the other, not both"
+    caveat up front, rather than leaving it discoverable only by reading
+    `addTool`'s own doc. Every existing resumable-tool test resolved in
+    exactly one `call` + one `resume`; added a chained
+    `InputRequired -> InputRequired -> ToolResult` test (a resumable
+    tool whose `resume` itself answers with a second `InputRequired`
+    before finally finishing on the third round trip) to verify the
+    multi-hop shape the pattern allows but nothing previously exercised.
 
 **Verification.** All `--target dotnet` suites green:
-`lyric-mcp` 57/57 (25 lifecycle, including 5 new cases for `server/discover`,
+`lyric-mcp` 58/58 (26 lifecycle, including 5 new cases for `server/discover`,
 the full `input_required`/resume round trip against a real
 `Mcp.Client`/`Mcp.Server` pair, the #6334 regression test for `callTool`
 against an `input_required` response, a #6341 live-`McpServer` case proving
@@ -21852,9 +21867,10 @@ the resumable handler, a `callTool` happy-path case confirming its
 case proving `requestState` against a non-resumable tool is rejected
 rather than silently falling through to an ordinary call, and a case
 proving a non-string `requestState` against a resumable tool is likewise
-rejected rather than silently falling through to a fresh `call()`; 27
-serialization, including the #6341 `encodeAllToolDefsList` name-collision
-dedup case; 5 real-subprocess), and
+rejected rather than silently falling through to a fresh `call()`, and a
+chained `InputRequired -> InputRequired -> ToolResult` case across two
+resume round trips; 27 serialization, including the #6341
+`encodeAllToolDefsList` name-collision dedup case; 5 real-subprocess), and
 `lyric-jsonrpc`'s existing 15/15 unaffected (this track touched no
 `lyric-jsonrpc` code — the multi-round-trip pattern is a pure `Mcp`-layer
 data-shape change, `JsonRpc` never sees the difference). JVM gaps are

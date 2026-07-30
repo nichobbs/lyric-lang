@@ -62,9 +62,11 @@ pub record McpServer {
 
 /// Construct an empty server. Register tools/resources/prompts with
 /// `addTool`/`addResumableTool`/`addResource`/`addPrompt` before calling
-/// `serveStdio`. Stateless core (docs/64 §3.2): there is no more
-/// `ready`/handshake state to initialize here — every request the server
-/// can answer, it can answer starting from the very first message.
+/// `serveStdio` — a tool name registers via one or the other, not both;
+/// see `addTool`'s doc comment for what happens if it is. Stateless core
+/// (docs/64 §3.2): there is no more `ready`/handshake state to initialize
+/// here — every request the server can answer, it can answer starting
+/// from the very first message.
 @stable(since = "0.1")
 pub func newServer(info: in McpImplementation): McpServer {
   McpServer(info = info, tools = newList(), resumableTools = newList(), resources = newList(), prompts = newList())
