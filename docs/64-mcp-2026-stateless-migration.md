@@ -105,12 +105,12 @@ Tracked as the (still open) Q-MCP-003.
   its own authorization check inside `resume` — the round trip is a
   UX/retry pattern, not a security boundary.
 
-  `McpToolHandler.call` gains no new method — a handler that needs
-  mid-call input returns `Ok(value = ToolResult(...))` wrapping an
-  `InputRequired` today is expressed by widening the existing
-  `Result[McpToolResult, String]` return type is **not** how this
-  lands: instead `McpToolHandler` gets a second, optional-to-implement
-  companion interface `McpResumableToolHandler` with `call` returning
+  `McpToolHandler.call` gains no new method. A handler that needs
+  mid-call input is **not** expressed by widening `call`'s existing
+  `Result[McpToolResult, String]` return type to also carry
+  `InputRequired` — instead `McpToolHandler` gets a second,
+  optional-to-implement companion interface `McpResumableToolHandler`
+  with `call` returning
   `Result[McpToolCallOutcome, String]` and a `resume(requestState: in
   String, inputResponses: in JsonValue): Result[McpToolCallOutcome,
   String]`. `McpToolDef` carries `Option[McpResumableToolHandler]`

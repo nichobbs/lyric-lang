@@ -198,10 +198,10 @@ inside any `impl` block) using the *exact same* qualified references also
 works fine — the trigger is specifically a package-qualified constant
 textually inside an `impl` method body. **Workaround**: `server.l` and
 `client.l` route every such reference through a same-package,
-unqualified `func` (`notInitializedCode()`, `invalidParamsCode()`,
-`methodNotFoundCode()` in `server.l`; see their doc comments for the full
-account) called from inside the `impl` block, rather than writing the
-qualified form there directly.
+unqualified `func` (`invalidParamsCode()`, `methodNotFoundCode()` in
+`server.l`; see their doc comments for the full account) called from
+inside the `impl` block, rather than writing the qualified form there
+directly.
 
 **2. A `pub val Int` read from a workspace-restored cross-DLL dependency
 silently evaluates to `0` at runtime — no compile error, no exception.**
