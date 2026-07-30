@@ -21830,9 +21830,19 @@ tracks):
     protocol-revision line still said `2025-06-18`/`2025-03-26`,
     stale since this entry bumps the accepted versions to
     `2026-07-28`/`2025-06-18`.
+11. **`requestState` type-validation consistency.** `dispatchResumableTool`
+    read `requestState` via `getString(p, "requestState")` alone, which
+    returns `None` both when the field is absent and when it's present
+    but the wrong JSON type (`123`, `null`, ...) — a malformed resume
+    request silently fell through to a brand-new `call()` instead of
+    erroring, inconsistent with the non-resumable-tool guard a few lines
+    above (which rejects mere presence via `getField` regardless of
+    type). `dispatchResumableTool` now checks `getField` first and
+    returns `invalidParams` for a present-but-non-string `requestState`,
+    matching that guard's strictness.
 
 **Verification.** All `--target dotnet` suites green:
-`lyric-mcp` 56/56 (24 lifecycle, including 5 new cases for `server/discover`,
+`lyric-mcp` 57/57 (25 lifecycle, including 5 new cases for `server/discover`,
 the full `input_required`/resume round trip against a real
 `Mcp.Client`/`Mcp.Server` pair, the #6334 regression test for `callTool`
 against an `input_required` response, a #6341 live-`McpServer` case proving
@@ -21840,7 +21850,9 @@ a name registered via both `addTool` and `addResumableTool` dispatches to
 the resumable handler, a `callTool` happy-path case confirming its
 `resultType` guard doesn't fire on an ordinary plain-tool result, and a
 case proving `requestState` against a non-resumable tool is rejected
-rather than silently falling through to an ordinary call; 27
+rather than silently falling through to an ordinary call, and a case
+proving a non-string `requestState` against a resumable tool is likewise
+rejected rather than silently falling through to a fresh `call()`; 27
 serialization, including the #6341 `encodeAllToolDefsList` name-collision
 dedup case; 5 real-subprocess), and
 `lyric-jsonrpc`'s existing 15/15 unaffected (this track touched no

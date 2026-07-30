@@ -590,6 +590,24 @@ test "tools/call: requestState against a non-resumable tool is a protocol error,
   )
 }
 
+// getString(p, "requestState") alone can't distinguish "absent" from
+// "present but not a string" — both decode to None. A malformed resume
+// request (requestState present as the wrong JSON type) must be rejected
+// explicitly, not silently treated as a brand-new call().
+test "tools/call: a non-string requestState against a resumable tool is a protocol error, not a silent fresh call" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  val callParams = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "confirm_delete")),
+      JsonField(name = "requestState", value = JInt(value = 123i64)),
+      JsonField(name = "inputResponses", value = JObject(fields = newList()))
+    ]
+  )
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
+  assertErrorCode(popResponse(box, "tools/call"), 0i64 - 32602i64, "invalidParams for a non-string requestState")
+}
+
 // ── Resumable tools: input_required multi-round-trip (docs/64 §3.1) ────────
 test "tools/call against a resumable tool answers with input_required, not a finished result" {
   val box = newMailbox()

@@ -211,23 +211,25 @@ func dispatchResumableTool(
   p: in JsonValue,
   argsOpt: in Option[JsonValue],
 ): Result[JsonValue, RpcError] {
-  val outcome: Result[McpToolCallOutcome, String] = match getString(p, "requestState") {
-    case Some(state) -> {
-      val inputResponses = match getField(p, "inputResponses") {
-        case Some(v) -> v
-        case None -> JObject(fields = newList())
-      }
-      try {
-        def.handler.resume(state, inputResponses)
+  // `requestState` present-but-not-a-string (e.g. `123`, `null`) must be
+  // rejected explicitly, not silently treated as absent — `getString`
+  // alone returns `None` for both cases, which would otherwise route a
+  // malformed resume request into a brand-new `call()` instead of an
+  // error, the same distinction the non-resumable-tool guard above
+  // already makes via `getField`.
+  match getField(p, "requestState") {
+    case Some(_) -> match getString(p, "requestState") { case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'requestState' must be a string", data = None)); case Some(state) -> { val inputResponses = match getField(p, "inputResponses") { case Some(v) -> v; case None -> JObject(fields = newList()) }; val outcome: Result[McpToolCallOutcome, String] = try { def.handler.resume(state, inputResponses) } catch Bug as b { Err(error = "tool '" + toolName + "' panicked during resume: " + b.message) }; match outcome { case Ok(result) -> Ok(value = encodeToolCallOutcome(result)); case Err(msg) -> Ok(value = encodeToolCallOutcome(ToolResult(value = toolErrorResult(msg)))) } } }
+    case None -> {
+      val outcome: Result[McpToolCallOutcome, String] = try {
+        def.handler.call(argsOpt)
       } catch Bug as b {
-        Err(error = "tool '" + toolName + "' panicked during resume: " + b.message)
+        Err(error = "tool '" + toolName + "' panicked: " + b.message)
+      }
+      match outcome {
+        case Ok(result) -> Ok(value = encodeToolCallOutcome(result))
+        case Err(msg) -> Ok(value = encodeToolCallOutcome(ToolResult(value = toolErrorResult(msg))))
       }
     }
-    case None -> try { def.handler.call(argsOpt) } catch Bug as b { Err(error = "tool '" + toolName + "' panicked: " + b.message) }
-  }
-  match outcome {
-    case Ok(result) -> Ok(value = encodeToolCallOutcome(result))
-    case Err(msg) -> Ok(value = encodeToolCallOutcome(ToolResult(value = toolErrorResult(msg))))
   }
 }
 
