@@ -90,7 +90,7 @@ Tracked as the (still open) Q-MCP-003.
     requestState: String          // opaque token, echoed back verbatim
   }
   pub union McpToolCallOutcome {
-    case ToolResult(result: McpToolResult)
+    case ToolResult(value: McpToolResult)
     case InputRequired(value: McpInputRequired)
   }
   ```

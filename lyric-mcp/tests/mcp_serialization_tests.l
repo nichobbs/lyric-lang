@@ -126,12 +126,12 @@ test "decodeServerDiscoverResult: parses serverInfo" {
 }
 
 test "decodeInitializeResult: parses protocolVersion and serverInfo" {
-  val text = "{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"srv\",\"version\":\"2.0.0\"}}"
+  val text = "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"srv\",\"version\":\"2.0.0\"}}"
   match parseValue(text) {
     case Err(e) -> assertTrue(false, "fixture failed to parse: " + e.message())
     case Ok(v) -> {
       val result = decodeInitializeResult(v)
-      assertEqual(result.protocolVersion, "2025-03-26", "protocolVersion decoded")
+      assertEqual(result.protocolVersion, "2025-06-18", "protocolVersion decoded")
       assertEqual(result.serverInfo.name, "srv", "serverInfo.name decoded")
       assertEqual(result.serverInfo.version, "2.0.0", "serverInfo.version decoded")
     }
