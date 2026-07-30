@@ -1254,7 +1254,10 @@ func rewriteRecordDecl(aliases: in List[String], rd: in RecordDecl): RecordDecl 
     ms.add(
       match rd.members[i] {
         case RMField(field) -> RMField(field = rewriteFieldDecl(aliases, field))
-        case RMInvariant(inv) -> RMInvariant(inv = InvariantClause(expr = rewriteExpr(aliases, inv.expr), span = inv.span))
+        // #6321 SUGGESTION follow-up — see filterAliasesForExpr's comment:
+        // an invariant clause's own expr can itself be a lambda introducing
+        // its own shadowing locals, same as every other standalone position.
+        case RMInvariant(inv) -> RMInvariant(inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span))
         case RMFunc(fn) -> RMFunc(fn = rewriteFunctionDecl(aliases, fn))
       }
     )
@@ -1536,7 +1539,10 @@ func rewriteUnionDecl(aliases: in List[String], d: in UnionDecl): UnionDecl {
 func rewriteOpaqueMember(aliases: in List[String], m: in OpaqueMember): OpaqueMember {
   match m {
     case OMField(field) -> return OMField(field = rewriteFieldDecl(aliases, field))
-    case OMInvariant(inv) -> return OMInvariant(inv = InvariantClause(expr = rewriteExpr(aliases, inv.expr), span = inv.span))
+    // #6321 SUGGESTION follow-up — see filterAliasesForExpr's comment.
+    case OMInvariant(inv) -> return OMInvariant(
+      inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span)
+    )
   }
   return m
 }
@@ -1586,7 +1592,10 @@ func rewriteProtectedField(aliases: in List[String], pf: in ProtectedField): Pro
 func rewriteProtectedMember(aliases: in List[String], m: in ProtectedMember): ProtectedMember {
   match m {
     case PMField(field) -> return PMField(field = rewriteProtectedField(aliases, field))
-    case PMInvariant(inv) -> return PMInvariant(inv = InvariantClause(expr = rewriteExpr(aliases, inv.expr), span = inv.span))
+    // #6321 SUGGESTION follow-up — see filterAliasesForExpr's comment.
+    case PMInvariant(inv) -> return PMInvariant(
+      inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span)
+    )
     case PMEntry(entryDecl) -> return PMEntry(entryDecl = rewriteEntryDecl(aliases, entryDecl))
     case PMFunc(fn) -> return PMFunc(fn = rewriteFunctionDecl(aliases, fn))
   }
@@ -1962,10 +1971,21 @@ func rewriteItem(aliases: in List[String], it: in Item): Item {
     case IFunc(decl) -> IFunc(decl = rewriteFunctionDecl(aliases, decl))
     case IRecord(decl) -> IRecord(decl = rewriteRecordDecl(aliases, decl))
     case IExposedRec(decl) -> IExposedRec(decl = rewriteRecordDecl(aliases, decl))
-    case IConst(decl) -> IConst(decl = ConstDecl(name = decl.name, ty = rewriteTypeExpr(aliases, decl.ty), init = rewriteExpr(aliases, decl.init), span = decl.span))
+    // #6321 — see filterAliasesForExpr's comment: a module-level val/const's
+    // own init can itself be a lambda (a bare `{ ... }`) introducing its own
+    // shadowing locals, exactly like every other standalone-expression
+    // position #6316/#6320 already cover.
+    case IConst(decl) -> IConst(decl = ConstDecl(name = decl.name, ty = rewriteTypeExpr(aliases, decl.ty), init = rewriteExpr(filterAliasesForExpr(aliases, decl.init), decl.init), span = decl.span))
     case IVal(decl) -> {
       val t = match decl.ty { case Some(te) -> Some(value = rewriteTypeExpr(aliases, te)); case None -> decl.ty }
-      IVal(decl = ValDecl(pattern = decl.pattern, ty = t, init = rewriteExpr(aliases, decl.init), span = decl.span))
+      IVal(
+        decl = ValDecl(
+          pattern = decl.pattern,
+          ty = t,
+          init = rewriteExpr(filterAliasesForExpr(aliases, decl.init), decl.init),
+          span = decl.span
+        )
+      )
     }
     case ITypeAlias(decl) -> ITypeAlias(decl = rewriteTypeAliasDecl(aliases, decl))
     case IDistinctType(decl) -> IDistinctType(decl = rewriteDistinctTypeDecl(aliases, decl))

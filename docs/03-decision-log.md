@@ -21207,5 +21207,70 @@ rebased onto `main` (`alias_rewriter` 29/29, `msil_project_bridge` 34/34,
 picked up a couple of extra cases from unrelated `main` commits landed
 during the rebase, not from anything in this fix).
 
+**Eighth finding (review feedback, #6321): module-level `val`/`const`
+initializers, and record/opaque/protected-type `invariant:` clauses, had
+the same standalone-expression gap as the seventh finding.** `rewriteItem`'s
+`IConst`/`IVal` arms still called `rewriteExpr(aliases, decl.init)`
+directly, unfiltered — a module-level `val X = { val Foo = 0; Foo.Bar.baz()
+}` (ordinary Lyric: `parseModuleValBody` uses the fully general `parseExpr`,
+and a bare `{ ... }` in expression position always parses as a zero-arg
+`ELambda`) still silently collapsed `Foo.Bar.baz()` into the unrelated
+bare-imported `Foo.Bar` package's call, bypassing the local `Foo` — the
+exact #6294 silent-misroute bug, reached through a position none of
+findings #6311–#6320 had enumerated. The review also flagged a SUGGESTION
+of the same shape one level further out: `RMInvariant`/`OMInvariant`/
+`PMInvariant` (record/opaque/protected-type `invariant:` clauses) were
+rewritten via plain `rewriteExpr(aliases, inv.expr)`, and `invariant:`
+also parses its clause via general `parseExpr`, so a lambda-bodied
+invariant with its own shadowing local hits the identical gap — lower
+priority since a bare-block-lambda invariant is a much rarer pattern than
+a module-level `val`/`const` initializer, but the same one-line fix.
+
+Fixed by routing all five sites through the existing `filterAliasesForExpr`
+helper: `rewriteItem`'s `IConst` and `IVal` arms, and the `RMInvariant`/
+`OMInvariant`/`PMInvariant` arms in `rewriteRecordDecl`/
+`rewriteOpaqueMember`/`rewriteProtectedMember`.
+
+Audited the file's remaining `rewriteExpr(aliases, ...)` call sites (per
+the review's own suggested audit approach — "is this reachable from a
+scope that already ran a locals-collection pass?") to confirm this really
+is the last standalone-expression gap: every other `rewriteExpr` call site
+either (a) already receives a locals-filtered `aliases`/`bodyAliases`/
+`sigAliases`/`contractAliases`/`memberAliases` from an enclosing
+function-shaped or wire-shaped scope (findings #6311–#6313/#6316), (b) is
+itself one of the now-nine `filterAliasesForExpr` call sites (fixture
+`init`, config field `default`, include-adjustment `value`, param `dflt`,
+field `dflt`, five wire-member `init`/`provider` arms, `IConst`/`IVal`
+`init`, three invariant-clause `expr`s), or (c) rewrites a type expr /
+pattern / constraint ref, none of which can themselves be a `{ ... }`
+lambda under the grammar.
+
+Also confirmed, while writing the regression test, that `IConst`/
+`ConstDecl` has **no keyword production in the lexer at all** — there is
+no `KwConst` in `lexer.l`'s keyword table, and no self-test suite in the
+repo contains a real `"const ..."` source snippet. `IConst` is therefore
+dead AST surface, unreachable from any real parsed source today (only ever
+constructed by non-parser code, per a repo-wide grep of every `IConst(`
+call site: `contract_meta.l`, `llvm_bridge.l`/`llvm_codegen.l`, `lsp.l`,
+`doc.l`, `fmt_items.l`, `lint.l`, `typechecker_checker.l` all only ever
+*match* an already-parsed `IConst`, never construct one from source text).
+The `IConst` arm's fix lands anyway (it mirrors its `IVal` sibling exactly
+and costs nothing, matching the review's suggested one-line fix at both
+arms symmetrically) but has no independent regression test for this
+reason — a `val` case covers the real, reachable half of the gap.
+
+Verified by three new `alias_rewriter_self_test.l` cases (31 total): a
+module-level `val` initializer lambda binding its own local `Foo` before
+calling `Foo.Bar.baz()`, and a record `invariant:` clause doing the same —
+both assert the callee stays the original nested `EMember` chain,
+unrewritten. All ten previously-established suites re-verified green again
+against the build carrying this eighth fix (`alias_rewriter` 31/31,
+`msil_project_bridge` 34/34, `qualified_enum_case` 11/11,
+`qualified_union_case` 5/5, `typechecker` 283/283, `parser` 126/126,
+`mono` 48/48, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 92/92,
+`cfg` 12/12 — no drift in any of these counts from the seventh finding's
+build, unlike the parser/modechecker drift the seventh finding's own
+addendum called out from an intervening `main` rebase).
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
-D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320.
+D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320, #6321.

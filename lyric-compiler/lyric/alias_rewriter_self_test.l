@@ -1189,6 +1189,95 @@ test "a local bound inside a wire singleton's init lambda shadows a bare-importe
   }
 }
 
+// Scope-awareness regression, module-level val/const init (#6321): a
+// module-level `val`/`const`'s own `init` can itself be a lambda (a bare
+// `{ ... }`) introducing its own shadowing locals, exactly like every
+// other standalone-expression position #6316/#6320 already cover.
+test "a local bound inside a module-level val's init lambda shadows a bare-imported package's dotted name, left untouched (#6321)" {
+  val src = "package Test\nimport Foo.Bar\nval x: Int = {\n  val Foo = 0\n  Foo.Bar.baz()\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IVal(decl) -> {
+      match decl.init.kind {
+        case ELambda(_, block) -> {
+          assertEqualInt(block.statements.count, 2, "val init lambda body has the local decl plus the call statement")
+          val stmt = block.statements[1]
+          match stmt.kind {
+            case SExpr(callExpr) -> {
+              match callExpr.kind {
+                case ECall(fn, _) -> {
+                  match fn.kind {
+                    case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
+                    case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6321 regression)")
+                    case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
+                  }
+                }
+                case _ -> assertTrue(false, "statement expression is not ECall")
+              }
+            }
+            case _ -> assertTrue(false, "second statement is not SExpr")
+          }
+        }
+        case _ -> assertTrue(false, "val init is not ELambda")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IVal")
+  }
+}
+
+// No analogous `const` case: `IConst`/`ConstDecl` has no keyword production
+// in the lexer at all (no `KwConst` — confirmed by grepping the keyword
+// table and every self-test suite in the repo for a real `"const ..."`
+// source snippet; none exists). It is unreachable dead AST surface from
+// real parsed source today, so a `const`-flavored regression test here
+// would test nothing real. The `rewriteItem` `IConst` arm fix lands anyway
+// (mirrors its `IVal` sibling, costs nothing, and is future-proofed for
+// whenever/if `const` gains a real surface syntax) but isn't independently
+// covered by a test for that reason.
+// #6321 SUGGESTION follow-up: a record invariant clause's own expr can
+// likewise be a lambda introducing its own shadowing locals.
+test "a local bound inside a record invariant's lambda shadows a bare-imported package's dotted name, left untouched (#6321 coverage)" {
+  val src = "package Test\nimport Foo.Bar\nrecord R {\n  x: Int\n  invariant: {\n    val Foo = 0\n    Foo.Bar.baz()\n  }\n}\n"
+  val pr = parse(src)
+  val rewritten = rewriteFile(pr.file)
+  val firstItem = rewritten.items[0]
+  match firstItem.kind {
+    case IRecord(decl) -> {
+      assertEqualInt(decl.members.count, 2, "record has the field plus the invariant member")
+      match decl.members[1] {
+        case RMInvariant(inv) -> {
+          match inv.expr.kind {
+            case ELambda(_, block) -> {
+              assertEqualInt(block.statements.count, 2, "invariant lambda body has the local decl plus the call statement")
+              val stmt = block.statements[1]
+              match stmt.kind {
+                case SExpr(callExpr) -> {
+                  match callExpr.kind {
+                    case ECall(fn, _) -> {
+                      match fn.kind {
+                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
+                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6321 regression)")
+                        case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
+                      }
+                    }
+                    case _ -> assertTrue(false, "statement expression is not ECall")
+                  }
+                }
+                case _ -> assertTrue(false, "second statement is not SExpr")
+              }
+            }
+            case _ -> assertTrue(false, "invariant expr is not ELambda")
+          }
+        }
+        case _ -> assertTrue(false, "second record member is not RMInvariant")
+      }
+    }
+    case _ -> assertTrue(false, "first item is not IRecord")
+  }
+}
+
 // Review follow-up: the #6311/#6312 filtering has a beneficial side effect on
 // the DEPTH-1 non-call `EMember` arm too, since it strips a shadowed alias
 // from the shared `aliases` list before ANY arm (call or non-call) consults
