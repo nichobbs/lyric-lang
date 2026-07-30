@@ -5509,6 +5509,43 @@ func tryQualifiedConstValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in 
   }
 }
 
+// As `tryQualifiedStaticValNameMsil`, but for a config-block field accessed
+// through a FULL package-qualified spelling (`Pkg.BlockName.field`, 3+
+// flattened segments), as opposed to the bare tail-alias form (`BlockName.field`,
+// a single-segment `EPath` receiver) the `EMember` arm's existing
+// `cfKey`/config-block short-circuit already handles.  `configFieldTokens` is
+// registered under `BlockName/field` only (`IConfig` in `addPackageTokens`) —
+// no package-qualified variant — so this checks the LAST TWO flattened
+// segments regardless of how many package-qualifying segments precede them:
+// `examples/jobqueue`'s `JobQueue.Worker.Worker.pollIntervalMs` (package
+// `JobQueue.Worker`'s tail alias `Worker`, doubled with the `Worker` config
+// block's own name) is exactly this shape — a 4-segment chain whose receiver
+// is a nested `EMember`, never a bare single-segment `EPath`, so it silently
+// missed the existing single-segment-only short-circuit and fell through to
+// `ldnull` even before #6133/#5275's fail-loudly stopgap existed to notice.
+func tryQualifiedConfigFieldNameMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr): String {
+  match expr.kind {
+    case EMember(_, _) -> {
+      val segs = flattenPathExprSegs(expr)
+      if segs.count < 2 {
+        return ""
+      }
+      if fctx.slots.containsKey(segs[0]) or fctx.hoistedCellSlot.containsKey(segs[0]) or fctx.captureNameToIndex.containsKey(segs[0]) {
+        return ""
+      }
+      val blockName = segs[segs.count - 2]
+      val fieldName = segs[segs.count - 1]
+      val cfKey = blockName + "/" + fieldName
+      if cctx.configFieldTokens.containsKey(cfKey) {
+        cfKey
+      } else {
+        ""
+      }
+    }
+    case _ -> ""
+  }
+}
+
 // #6133/#5275: detect a qualified value reference (`Pkg.Sub.name`, 2+
 // flattened segments) that resolves to NOTHING the compiler can verify —
 // neither an in-bundle static val, a restored literal constant (the two
@@ -5568,11 +5605,10 @@ func diagnoseUnresolvedQualifiedValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       if cctx.unionCaseCtorByName.containsKey(memberName) or cctx.enumCaseOrdinals.containsKey(memberName) {
         return None
       }
-      // A single-level config-block field access (`BlockName.field`) — the
-      // only shape the config-block short-circuit ever handles.
-      if segs.count == 2 and cctx.configFieldTokens.containsKey(head + "/" + memberName) {
-        return None
-      }
+      // A config-block field access, bare or package-qualified — resolved
+      // by `tryQualifiedConfigFieldNameMsil`'s own short-circuit at this
+      // function's call site, which always runs BEFORE this diagnostic is
+      // ever reached; no separate exclusion is needed here.
       // Any PROPER PREFIX of the flattened chain resolving is further
       // member/method access on an already-qualified static val or const —
       // e.g. `Pkg.Sub.GREETING.length` flattens to 4 segments, but the real
@@ -7018,8 +7054,21 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     insns.add(MLdcI4(v = qConstVal))
     return MInt
   }
+  // A config-block field reached through a FULL package-qualified spelling
+  // (`Pkg.BlockName.field`, examples/jobqueue's `JobQueue.Worker.Worker.pollIntervalMs`
+  // shape) — a sibling short-circuit checking `configFieldTokens`'s
+  // `BlockName/field` key against the chain's LAST TWO segments regardless
+  // of how many package-qualifying segments precede them (see
+  // `tryQualifiedConfigFieldNameMsil`).
+  val qConfigKey = tryQualifiedConfigFieldNameMsil(cctx, fctx, expr)
+  if qConfigKey.length > 0 {
+    val qConfigTok = match mapGet(cctx.configFieldTokens, qConfigKey) { case Some(t) -> t; case None -> 0 }
+    val qConfigTy = match mapGet(cctx.configFieldMsilTypes, qConfigKey) { case Some(t) -> t; case None -> MObject }
+    insns.add(MLdsfld(fieldToken = qConfigTok))
+    return qConfigTy
+  }
   // #6133/#5275 fail-loudly stopgap: a qualified reference that resolves
-  // through NEITHER of the two checks immediately above, nor any of the
+  // through NEITHER of the three checks immediately above, nor any of the
   // other legitimate qualified-access shapes `diagnoseUnresolvedQualifiedValueMsil`
   // checks for, would otherwise silently fall through the generic
   // `EMember`/`EPath` chain below to a bare `ldnull` — converted here into a
