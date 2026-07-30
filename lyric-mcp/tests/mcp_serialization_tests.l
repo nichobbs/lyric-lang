@@ -114,13 +114,32 @@ test "encodeServerDiscoverResult: exact field names, no protocolVersion (docs/64
   )
 }
 
-test "decodeServerDiscoverResult: parses serverInfo" {
+test "decodeServerDiscoverResult: parses serverInfo, empty capabilities decode to all-false" {
   match parseValue("{\"serverInfo\":{\"name\":\"srv\",\"version\":\"2.0.0\"},\"capabilities\":{}}") {
     case Err(e) -> assertTrue(false, "fixture failed to parse: " + e.message())
     case Ok(v) -> {
       val result = decodeServerDiscoverResult(v)
       assertEqual(result.serverInfo.name, "srv", "serverInfo.name decoded")
       assertEqual(result.serverInfo.version, "2.0.0", "serverInfo.version decoded")
+      assertFalse(result.capabilities.hasTools, "hasTools false when capabilities is empty")
+      assertFalse(result.capabilities.hasResources, "hasResources false when capabilities is empty")
+      assertFalse(result.capabilities.hasPrompts, "hasPrompts false when capabilities is empty")
+    }
+  }
+}
+
+// A copy-paste field mixup in decodeCapabilities (e.g. hasResources reading
+// the "prompts" key) would still pass every other capabilities test in this
+// file, since they only ever exercise hasTools — assert all three
+// independently against a fixture where each key is present exactly once.
+test "decodeServerDiscoverResult: hasTools/hasResources/hasPrompts each decode from their own capability key" {
+  match parseValue("{\"serverInfo\":{\"name\":\"srv\",\"version\":\"1.0.0\"},\"capabilities\":{\"tools\":{\"listChanged\":false},\"resources\":{\"listChanged\":false},\"prompts\":{\"listChanged\":false}}}") {
+    case Err(e) -> assertTrue(false, "fixture failed to parse: " + e.message())
+    case Ok(v) -> {
+      val result = decodeServerDiscoverResult(v)
+      assertTrue(result.capabilities.hasTools, "hasTools true when 'tools' key is present")
+      assertTrue(result.capabilities.hasResources, "hasResources true when 'resources' key is present")
+      assertTrue(result.capabilities.hasPrompts, "hasPrompts true when 'prompts' key is present")
     }
   }
 }

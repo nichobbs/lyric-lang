@@ -21855,9 +21855,35 @@ tracks):
     tool whose `resume` itself answers with a second `InputRequired`
     before finally finishing on the third round trip) to verify the
     multi-hop shape the pattern allows but nothing previously exercised.
+13. **Doc/spec-drift corrections (#6352, #6353, #6354) and remaining
+    review-cycle findings.** docs/64 §3.2 falsely claimed `handleInitialize`
+    was deleted (only the `ready` field / readiness-gate logic was —
+    `handleInitialize` itself remains, for legacy-peer tolerance, matching
+    §3.1/§6). docs/62 §5.1/§5.2 still described the deleted readiness gate
+    (`-32002`) and a handshaking `connectStdio`; both now carry an inline
+    "superseded by docs/64" note. docs/64 §2's Phase A phase-table row
+    still listed `_meta`-carried negotiation as delivered, contradicting
+    §3.1's own (correct) statement that it was deferred (#6344) — row
+    corrected to match. Also: `protocolVersionLatest`/`protocolVersionLegacy`
+    had `@stable(since = "0.2")` even though the symbols existed since 0.1
+    (only their values changed) — reverted to `since = "0.1"` so
+    `public-api-diff` doesn't misreport them as newly-stabilized.
+    `CLAUDE.md`'s pre-existing docs/62 index entry still said `lyric-mcp`
+    targets `2025-06-18` with all of Q-MCP-001–003 open — updated to note
+    the docs/64 supersession and which Q-MCP items are now
+    addressed/superseded vs. still open. docs/64 §4 (Phase B) now flags
+    that `requestState`'s forgery risk widens under a shared multi-peer
+    HTTP server (§3.1's framing was written against Phase A's 1:1 stdio
+    transport) so Phase B doesn't silently inherit an insufficient
+    mitigation. Added `decodeServerDiscoverResult` tests asserting
+    `hasResources`/`hasPrompts` individually (previously only `hasTools`
+    was ever exercised end-to-end). Corrected an over-count: D133's
+    verification claimed "5 new cases for `server/discover`"; the real
+    count is 2 in the lifecycle suite plus 2 in serialization (4 total).
 
 **Verification.** All `--target dotnet` suites green:
-`lyric-mcp` 58/58 (26 lifecycle, including 5 new cases for `server/discover`,
+`lyric-mcp` 59/59 (26 lifecycle, including 2 new cases for `server/discover`
+(plus 2 more in the serialization suite, 4 total across both),
 the full `input_required`/resume round trip against a real
 `Mcp.Client`/`Mcp.Server` pair, the #6334 regression test for `callTool`
 against an `input_required` response, a #6341 live-`McpServer` case proving
@@ -21869,8 +21895,9 @@ rather than silently falling through to an ordinary call, and a case
 proving a non-string `requestState` against a resumable tool is likewise
 rejected rather than silently falling through to a fresh `call()`, and a
 chained `InputRequired -> InputRequired -> ToolResult` case across two
-resume round trips; 27 serialization, including the #6341
-`encodeAllToolDefsList` name-collision dedup case; 5 real-subprocess), and
+resume round trips; 28 serialization, including the #6341
+`encodeAllToolDefsList` name-collision dedup case and the two new
+per-capability-key decode tests; 5 real-subprocess), and
 `lyric-jsonrpc`'s existing 15/15 unaffected (this track touched no
 `lyric-jsonrpc` code — the multi-round-trip pattern is a pure `Mcp`-layer
 data-shape change, `JsonRpc` never sees the difference). JVM gaps are

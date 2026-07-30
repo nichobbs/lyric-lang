@@ -210,14 +210,20 @@ registered — `tools`, `resources`, `prompts`, each with
 `isError: true`**, not protocol errors; protocol errors (`-32602` on
 unknown tool, etc.) follow the spec. Requests arriving before
 `initialize` completes get `-32002`-style server-not-initialized
-errors per spec.
+errors per spec. **Superseded by docs/64 §3.2**: the readiness gate and
+`-32002` error described here were deleted as part of the `2026-07-28`
+stateless-core migration — every request is now answerable immediately,
+with no `initialize`/`initialized` handshake required first.
 
 ### 5.2 Client surface
 
 ```lyric
 pub record McpClient { ... }
 pub func connectStdio(command: in String, args: in List[String]): Result[McpClient, String]
-   // spawns the server process, performs initialize/initialized
+   // spawns the server process; per docs/64 §3.3 (2026-07-28 stateless
+   // core, superseding this passage), performs no initialize/initialized
+   // round trip at all — call discoverServer afterward if you want
+   // serverInfo populated
 pub func listTools(client: inout McpClient): Result[List[McpToolInfo], String]
 pub func callTool(client: inout McpClient, name: in String, args: in Option[JsonValue]): Result[McpToolResult, String]
 pub func listResources / readResource / listPrompts / getPrompt / ping / disconnect

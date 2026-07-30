@@ -1,7 +1,7 @@
 # 64 — Migrating `lyric-mcp` to MCP spec revision `2026-07-28`
 
 Status: Phase A (§3, stateless core) specced and implemented in D133 —
-`--target dotnet` fully tested (58/58 across `lyric-mcp`'s three suites).
+`--target dotnet` fully tested (59/59 across `lyric-mcp`'s three suites).
 Phases B (§4, streamable HTTP), C (§5, Tasks extension), and D (§7,
 out of scope) remain open/unbacked. Extends `docs/62-jsonrpc-mcp.md`
 (D129), which
@@ -56,7 +56,7 @@ Four tracks. Each lands as its own PR, same discipline as docs/62 §8.
 
 | Phase | What | Depends on |
 |---|---|---|
-| **A** | Stateless core: remove `initialize`/`initialized` requirement, `_meta`-carried version/capabilities, `server/discover`, `input_required` multi-round-trip | nothing — stdio only, no new transport |
+| **A** | Stateless core: remove `initialize`/`initialized` requirement, `server/discover`, `input_required` multi-round-trip. Per-request `_meta`-carried version/capability negotiation was considered but **not implemented** — deferred (#6344) | nothing — stdio only, no new transport |
 | **B** | Streamable HTTP transport (`Mcp.Http`): `Mcp-Method`/`Mcp-Name` headers, `ttlMs`/`cacheScope`, W3C trace context | Phase A (stateless core is a prerequisite — HTTP transport built session-ful would need re-doing) |
 | **C** | Tasks extension (`Mcp.Tasks`): poll-based `tasks/get`/`tasks/update`/`tasks/cancel` | Phase A |
 | **D** | Auth hardening (RFC 9207 `iss` validation, DCR `application_type`, CIMD) | **out of scope of this doc** — see §7 |
@@ -145,8 +145,10 @@ Tracked as the (still open) Q-MCP-003.
 
 ### 3.2 What changes in `Mcp.Server`
 
-- `handleInitialize` / the `ready` field / `notInitializedCode` are
-  deleted.
+- The `ready` field and `notInitializedCode`/readiness-gate logic are
+  deleted. `handleInitialize` itself is **not** deleted — it remains
+  dispatched from `onRequest` for legacy-peer tolerance (§3.1, §6), it
+  just no longer gates anything a peer must wait for.
 - New `handleServerDiscover`.
 - `handleToolsCall` gains the resumable branch: it first looks up the
   tool name in `resumableTools`; if found there, and the incoming
@@ -222,6 +224,18 @@ Builds `docs/62` §5.3's deferred milestone, updated for `2026-07-28`:
   whatever base URL / default headers the caller configured once.
 - No `Mcp-Session-Id`, no GET/DELETE session-lifecycle routes — those
   were `2025-06-18`-only and are gone in `2026-07-28`.
+- **`requestState` forgery risk widens under a shared HTTP server.**
+  §3.1's opaque-echo-token framing was written against Phase A's 1:1
+  stdio transport, where the only peer that could ever call `resume`
+  is the one process on the other end of the pipe. A streamable-HTTP
+  server serves multiple independent peers over one process; without
+  per-peer binding, an unauthenticated `requestState` lets peer B
+  resume peer A's pending `input_required` action by guessing or
+  observing the token, not just fabricate one from nothing. Phase B's
+  design must either bind `requestState` to the issuing peer/connection
+  or explicitly re-state (not silently inherit) Phase A's "the handler
+  must authorize inside `resume`" mitigation for the multi-peer case —
+  do not ship Phase B assuming Phase A's framing still fully covers it.
 
 ## 5. Phase C — Tasks extension (`Mcp.Tasks`)
 

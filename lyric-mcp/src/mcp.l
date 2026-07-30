@@ -43,13 +43,13 @@ import JsonRpc.Json
 
 // ── Protocol version ────────────────────────────────────────────────────────
 /// This library's primary protocol revision.
-@stable(since = "0.2")
+@stable(since = "0.1")
 pub val protocolVersionLatest: String = "2026-07-28"
 
 /// Older revision accepted during negotiation (the previous primary —
 /// `2025-03-26` support was dropped: `2026-07-28`'s stateless core is not
 /// wire-compatible with a peer old enough to still need `2025-03-26`).
-@stable(since = "0.2")
+@stable(since = "0.1")
 pub val protocolVersionLegacy: String = "2025-06-18"
 
 @stable(since = "0.1")

@@ -45,7 +45,7 @@ start section below.
 
 | Package | `.NET` | JVM |
 |---|---|---|
-| `Mcp` (types, encode/decode) | full, 27/27 pure-serialization tests pass | pure Lyric, no I/O — but see gap #3: this library's own test suite does not type-check under `--target jvm` at all, so this is unverified in practice, not merely undertested |
+| `Mcp` (types, encode/decode) | full, 28/28 pure-serialization tests pass | pure Lyric, no I/O — but see gap #3: this library's own test suite does not type-check under `--target jvm` at all, so this is unverified in practice, not merely undertested |
 | `Mcp.Server` (`serveStdio`) | full, 26/26 in-memory lifecycle tests pass | unverified (gap #3) |
 | `Mcp.Client` (`connectStdio`) | full, tested against a real spawned process (5/5 process tests) | unverified (gap #3); the underlying `Std.Process` piped-spawn kernel also has its own separate, real JVM gap (#1) even setting #3 aside |
 | `Mcp.Stdio` (`PipedNdjsonTransport`) | full | unverified (gap #3); also gap #1 |
