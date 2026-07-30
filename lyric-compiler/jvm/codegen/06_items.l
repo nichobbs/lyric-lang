@@ -42,6 +42,7 @@ func makeFuncCtx(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -77,6 +78,7 @@ func makeFuncCtx(
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     usesLyricCount = usesLyricCount,
+    importsStdString = importsStdString,
     holderArraySlot = newMap(),
     holderElemType = newMap(),
     hoistedVarNames = newList(),
@@ -123,6 +125,7 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     opaqueTypes = ctx.opaqueTypes,
     closureAcc = ctx.closureAcc,
     usesLyricCount = ctx.usesLyricCount,
+    importsStdString = ctx.importsStdString,
     holderArraySlot = ctx.holderArraySlot,
     holderElemType = ctx.holderElemType,
     hoistedVarNames = ctx.hoistedVarNames,
@@ -153,6 +156,7 @@ func makeFuncCtxForGenerator(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -189,6 +193,7 @@ func makeFuncCtxForGenerator(
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     usesLyricCount = usesLyricCount,
+    importsStdString = importsStdString,
     holderArraySlot = newMap(),
     holderElemType = newMap(),
     hoistedVarNames = newList(),
@@ -221,6 +226,7 @@ func makeFuncCtxInstance(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -257,6 +263,7 @@ func makeFuncCtxInstance(
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
     usesLyricCount = usesLyricCount,
+    importsStdString = importsStdString,
     holderArraySlot = newMap(),
     holderElemType = newMap(),
     hoistedVarNames = newList(),
@@ -792,6 +799,7 @@ pub func lowerFunc(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
 ): LFunc {
   val retTy = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
 
@@ -808,7 +816,8 @@ pub func lowerFunc(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount
+    usesLyricCount,
+    importsStdString
   )
 
   // Hoisting pre-pass: detect `var` bindings referenced inside lambdas.
@@ -1137,6 +1146,7 @@ pub func lowerRecord(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
 ): LRecord {
   val className = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (docs/44 M-1 / Q-J001) so a `T`-typed
@@ -1204,7 +1214,8 @@ pub func lowerRecord(
                 configFieldTypes,
                 opaqueTypes,
                 closureAcc,
-                usesLyricCount
+                usesLyricCount,
+                importsStdString
               )
             )
           }
@@ -1339,6 +1350,7 @@ func lowerProtectedMethod(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
 ): LFunc {
   val retTy = match retOpt { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
   // Lambdas inside a protected-type entry/helper register their synthesised
@@ -1358,7 +1370,8 @@ func lowerProtectedMethod(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount
+    usesLyricCount,
+    importsStdString
   )
   val insns: List[LInsn] = newList()
   val noTps: List[String] = newList()
@@ -1409,6 +1422,7 @@ func lowerRecordMethod(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
 ): LFunc {
   // Extern/import-resolving on ret + params (#5610): the registered
   // `<class>#<method>` sig (`registerInstanceSigErased`, #5051) resolves
@@ -1433,7 +1447,8 @@ func lowerRecordMethod(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount
+    usesLyricCount,
+    importsStdString
   )
   val insns: List[LInsn] = newList()
   val filteredParams = stripLeadingSelfParam(fn.params)
@@ -1462,6 +1477,7 @@ func lowerImplMethod(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
 ): LFunc {
   val body = match fn.body {
     case Some(b) -> b
@@ -1485,7 +1501,8 @@ func lowerImplMethod(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount
+    usesLyricCount,
+    importsStdString
   )
   val insns: List[LInsn] = newList()
   val noTpsImpl: List[String] = newList()
@@ -1522,6 +1539,7 @@ func buildProtected(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
 ): LPackageItem {
   val className = pkgName + "/" + decl.name
   val fields: List[LField] = newList()
@@ -1555,7 +1573,8 @@ func buildProtected(
             configFieldTypes,
             opaqueTypes,
             closureAcc,
-            usesLyricCount
+            usesLyricCount,
+            importsStdString
           )
         )
       }
@@ -1580,7 +1599,8 @@ func buildProtected(
                 configFieldTypes,
                 opaqueTypes,
                 closureAcc,
-                usesLyricCount
+                usesLyricCount,
+                importsStdString
               )
             )
           }
@@ -1970,6 +1990,7 @@ func buildWire(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
 ): LWire {
   val className = pkgName + "/" + decl.name
   val bindings: List[LWireBinding] = newList()
@@ -2036,6 +2057,7 @@ func buildWire(
           opaqueTypes,
           closureAcc,
           usesLyricCount,
+          importsStdString,
           initInsns,
           init,
           bty
@@ -2062,6 +2084,7 @@ func buildWire(
           opaqueTypes,
           closureAcc,
           usesLyricCount,
+          importsStdString,
           initInsns,
           init,
           bty
@@ -2091,6 +2114,7 @@ func buildWire(
           opaqueTypes,
           closureAcc,
           usesLyricCount,
+          importsStdString,
           initInsns,
           provider,
           bty
@@ -2137,6 +2161,7 @@ func lowerWireBindingInit(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
   insns: in List[LInsn],
   init: in Expr,
   expectedTy: in JvmType,
@@ -2172,7 +2197,8 @@ func lowerWireBindingInit(
       configFieldTypes,
       opaqueTypes,
       closureAcc,
-      usesLyricCount
+      usesLyricCount,
+      importsStdString
     )
     // #5013: an earlier binding referenced from a *nested* expression position
     // (e.g. `contents = widget` as a named constructor argument, not the bare
@@ -2409,6 +2435,7 @@ func lowerGeneratorBody(
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
 ): List[LInsn] {
   val insns: List[LInsn] = newList()
   // #2856: thread the real `moduleVals` / `opaqueTypes` maps into the generator
@@ -2426,7 +2453,8 @@ func lowerGeneratorBody(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount
+    usesLyricCount,
+    importsStdString
   )
 
   // `out`/`inout` parameters on an async generator are not supported on the
@@ -2677,6 +2705,19 @@ pub func collectExternTypesFromFile(file: in SourceFile): Map[String, String] {
     eti = eti + 1
   }
   externTypes
+}
+
+// True when `file` has `import Std.String` (or `import Std.String as X`) in
+// scope — see `FuncCtx.importsStdString` / #6124.
+func fileImportsStdString(file: in SourceFile): Bool {
+  var ii = 0
+  while ii < file.imports.count {
+    if dottedPathOfSegments(file.imports[ii].path.segments) == "Std.String" {
+      return true
+    }
+    ii = ii + 1
+  }
+  false
 }
 
 // Collect every top-level `func` item's JVM call signature from `file` into
@@ -4211,6 +4252,11 @@ pub func codegenPackageWithSigsSeeded(
   val pkgName = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
 
+  // #6124: whether THIS FILE has `import Std.String` in scope — see
+  // `FuncCtx.importsStdString`.  Computed once per file and threaded through
+  // every function/method/wire-binding lowered below.
+  val importsStdString = fileImportsStdString(file)
+
   // Collect extern-type declarations: alias → Java FQN.
   val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
 
@@ -4262,7 +4308,8 @@ pub func codegenPackageWithSigsSeeded(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount
+    usesLyricCount,
+    importsStdString
   )
   // #2853: lower every module-level `val` once, now, and overwrite `moduleVals`
   // with the real field type before any function (or the `<clinit>` itself) is
@@ -4317,7 +4364,8 @@ pub func codegenPackageWithSigsSeeded(
                   configFieldTypes,
                   opaqueTypes,
                   closureAcc,
-                  usesLyricCount
+                  usesLyricCount,
+                  importsStdString
                 )
               )
             }
@@ -4355,7 +4403,8 @@ pub func codegenPackageWithSigsSeeded(
             configFieldTypes,
             opaqueTypes,
             closureAcc,
-            usesLyricCount
+            usesLyricCount,
+            importsStdString
           )
           val genParams: List[LGenParam] = newList()
           var pi = 0
@@ -4395,7 +4444,8 @@ pub func codegenPackageWithSigsSeeded(
               configFieldTypes,
               opaqueTypes,
               closureAcc,
-              usesLyricCount
+              usesLyricCount,
+              importsStdString
             )
           )
           if isMainFunc(decl) {
@@ -4437,7 +4487,8 @@ pub func codegenPackageWithSigsSeeded(
           configFieldTypes,
           opaqueTypes,
           closureAcc,
-          usesLyricCount
+          usesLyricCount,
+          importsStdString
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -4493,7 +4544,8 @@ pub func codegenPackageWithSigsSeeded(
           configFieldTypes,
           opaqueTypes,
           closureAcc,
-          usesLyricCount
+          usesLyricCount,
+          importsStdString
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -4615,7 +4667,8 @@ pub func codegenPackageWithSigsSeeded(
             configFieldTypes,
             opaqueTypes,
             closureAcc,
-            usesLyricCount
+            usesLyricCount,
+            importsStdString
           )
         )
       }
@@ -4679,7 +4732,8 @@ pub func codegenPackageWithSigsSeeded(
                   configFieldTypes,
                   opaqueTypes,
                   closureAcc,
-                  usesLyricCount
+                  usesLyricCount,
+                  importsStdString
                 )
               )
             }
@@ -4716,7 +4770,8 @@ pub func codegenPackageWithSigsSeeded(
               configFieldTypes,
               opaqueTypes,
               closureAcc,
-              usesLyricCount
+              usesLyricCount,
+              importsStdString
             )
           )
         )

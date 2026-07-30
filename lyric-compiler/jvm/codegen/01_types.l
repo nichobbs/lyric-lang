@@ -391,6 +391,20 @@ pub record FuncCtx {
   ctors: Map[String, String]
   // Extern-type alias → Java FQN, e.g. "Math" → "java.lang.Math".
   externTypes: Map[String, String]
+  // Whether the file currently being lowered has `import Std.String` in
+  // scope.  `Std/String/indexOf@2`/`Std/String/lastIndexOf@2` are registered
+  // in `funcSigs` bundle-wide (any package pulling in `Std.String` seeds the
+  // shared registry for every OTHER file's `FuncCtx` too), so a bare presence
+  // check there cannot tell "does THIS file's `.indexOf` call resolve to
+  // Std.String's `Option[Int]`-returning UFCS form" from "does it resolve to
+  // the raw JDK `String.indexOf(String)I` intrinsic the type checker assigns
+  // when Std.String is not imported" — the two return different erasures on
+  // the stack.  #6124: a file that never imports `Std.String` had its plain
+  // `Int`-typed `.indexOf` call silently rerouted through the Option[Int]
+  // form whenever some OTHER file in the same bundle imported `Std.String`,
+  // corrupting the local's runtime value (`ClassCastException: Option$Some
+  // cannot be cast to Integer`).  See `04_calls.l`'s indexOf/lastIndexOf arm.
+  importsStdString: Bool
   // Auto-FFI resolution context for JDK class loading.
   autoFfi: AutoFfiCtx
   // Declared JVM return type of the function being lowered.  An explicit
