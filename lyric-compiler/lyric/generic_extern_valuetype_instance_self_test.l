@@ -24,6 +24,19 @@
 //! `lyric test` to resolve it:
 //!
 //!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/generic_extern_valuetype_instance_self_test.l
+//!
+//! `msil_project_bridge_self_test.l` ("instance call on a value-type
+//! generic-declaring extern panics at build time, not silently") already
+//! covers #5809/#5825, but through a deliberately different surface: it
+//! calls `Msil.Bridge.compileProjectToMsil` directly against a CONCRETE
+//! extern type (`ValueTaskOfObj`, the CLR instantiation baked into the
+//! extern's declared string) with an explicit `@externInstance` hint. This
+//! file instead exercises a Lyric-level GENERIC extern type (`VT[T]`)
+//! through the higher-level `Lyric.Emitter.emitProject` entry point, with
+//! no `@externInstance` hint, so the panic is also proven to survive
+//! `Lyric.Mono`'s monomorphization (`vtResult[T]` specializing to a
+//! concrete `vtResult__Int` copy) before codegen ever sees it. Keep both —
+//! they are not redundant.
 @test_module
 package Lyric.GenericExternValueTypeInstanceSelfTest
 

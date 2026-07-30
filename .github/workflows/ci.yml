@@ -1292,7 +1292,9 @@ jobs:
             lyric-compiler/lyric/deflate_zip_self_test.l \
             lyric-compiler/lyric/generator/generator_self_test.l \
             lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l \
-            lyric-compiler/lyric/jvm_impl_extern_class_self_test.l ; do
+            lyric-compiler/lyric/jvm_impl_extern_class_self_test.l \
+            lyric-compiler/lyric/lsp_self_test.l \
+            lyric-compiler/lyric/doc_self_test.l ; do
             echo "=== $t ==="
             bash scripts/ci-retry-on-signal.sh "$lyric_bin" test "$t"
             ran="$ran $t"
@@ -4128,6 +4130,27 @@ jobs:
             exit 1
           fi
           bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/emitter_project_self_test.l
+
+      # Value-type-generic instance-extern build-panic self-test (#5825).
+      # Same in-process `Lyric.Emitter.emitProject` surface as
+      # `emitter_project_self_test.l` above (not `msil_project_bridge_self_test.l`'s
+      # `Msil.Bridge.compileProjectToMsil*` surface, which is a different bridge
+      # entry point) — kept as its own file since it asserts a build-time PANIC
+      # (assertPanicsWith) rather than a successful compile+run.
+      - name: Generic extern value-type instance self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping generic extern value-type instance self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping generic extern value-type instance self-test"
+            exit 1
+          fi
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/generic_extern_valuetype_instance_self_test.l
 
       - name: Init self-test (native lyric test)
         background: true
