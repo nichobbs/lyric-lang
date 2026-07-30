@@ -746,7 +746,7 @@ func collectDeriveFreeSigs(
   file: in SourceFile, into: in Map[String, JvmFuncSig], externSeed: in Map[String, String]
 ): Unit {
   val owner = pkgJvmOwner(file.packageDecl.path)
-  val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
+  val externTypes = ownAwareExternTypes(file, externSeed)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -915,7 +915,7 @@ func collectMonoSpecializedSigs(
   externSeed: in Map[String, String],
 ): Unit {
   val owner = pkgJvmOwner(file.packageDecl.path)
-  val externTypes = mergeExternSeed(collectExternTypesFromFile(file), externSeed)
+  val externTypes = ownAwareExternTypes(file, externSeed)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -1244,7 +1244,7 @@ pub func compileProjectToJarBundledWithFeatures(
   collectFileCasesExtern(
     userFile,
     caseReg,
-    mergeExternSeed(collectExternTypesFromFile(userFile), externSeedForFile(userFile, extPkgNames, extPkgMaps))
+    ownAwareExternTypes(userFile, externSeedForFile(userFile, extPkgNames, extPkgMaps))
   )
   val ctorReg: Map[String, String] = newMap()
   collectFileCtors(userFile, ctorReg)
@@ -1260,10 +1260,7 @@ pub func compileProjectToJarBundledWithFeatures(
     collectFileCasesExtern(
       stdlibFiles[ri],
       caseReg,
-      mergeExternSeed(
-        collectExternTypesFromFile(stdlibFiles[ri]),
-        externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps)
-      )
+      ownAwareExternTypes(stdlibFiles[ri], externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps))
     )
     collectFileCtors(stdlibFiles[ri], ctorReg)
     collectFileProjectables(stdlibFiles[ri], allProjFqns)

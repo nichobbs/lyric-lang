@@ -2551,6 +2551,64 @@ func lowerVirtualCallWithHolders(
   sig.ret
 }
 
+// Resolve a general (non-construction, non-self) call's `JvmFuncSig` from the
+// cross-package function registry.  Two-stage lookup: a qualified call site
+// (`Std.Testing.assertEqualInt`, or an aliased import already expanded to its
+// real package by `Lyric.AliasRewriter`) tries the `owner/funcName` key
+// first, so it resolves to the explicit package even when another package in
+// the bundle exports the same short name; an unqualified call falls back to
+// the bare-name key (the legacy single-package shape, #1680). Exact-arity
+// keys (`…@<argc>`) are tried before the name keys so same-name overloads
+// pick the descriptor matching this call's argument count; a call that
+// relies on parameter defaults misses the arity key and falls back to the
+// name key exactly as before.
+//
+// Shared by `lowerGeneralStaticCall` (the actual call site) and
+// `scrutineeGenericArgs` (03_match.l's generic-instantiation recovery for a
+// `match callee(...) { … }` scrutinee) so both agree on which package's
+// signature a qualified call resolves to (#5976 follow-up): before this was
+// extracted, `scrutineeGenericArgs` had its OWN, bare-name-only lookup
+// (`mapGet(ctx.funcSigs, lastSegment(path))`) that ignored the call's own
+// qualifier entirely — two same-simple-name functions in different packages
+// (`Std.Regex.tryCompile` / `Std.RegexSafe.tryCompile`) raced for the SAME
+// bare `funcSigs` key, so a `match Rx.tryCompile(...) { case Err(e) -> … }`
+// could recover the WRONG package's `retGenericArgs` for the `Err` payload's
+// concrete type and checkcast a real `Std.Regex.RegexError$InvalidPattern`
+// value against `Std.RegexSafe.RegexError` at the bind site.
+pub func resolveGeneralFuncSig(
+  ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
+): Option[JvmFuncSig] {
+  val argcSuffix = "@" + toString(argc)
+  if path.segments.count > 1 {
+    val ownerSegs: List[String] = newList()
+    var si = 0
+    while si < path.segments.count - 1 {
+      ownerSegs.add(path.segments[si])
+      si = si + 1
+    }
+    val qkey = joinSegments(ownerSegs, "/") + "/" + funcName
+    match mapGet(ctx.funcSigs, qkey + argcSuffix) {
+      case Some(sig) -> Some(value = sig)
+      case None -> {
+        match mapGet(ctx.funcSigs, qkey) {
+          case Some(sig) -> Some(value = sig)
+          case None -> {
+            match mapGet(ctx.funcSigs, funcName + argcSuffix) {
+              case Some(sig) -> Some(value = sig)
+              case None -> mapGet(ctx.funcSigs, funcName)
+            }
+          }
+        }
+      }
+    }
+  } else {
+    match mapGet(ctx.funcSigs, funcName + argcSuffix) {
+      case Some(sig) -> Some(value = sig)
+      case None -> mapGet(ctx.funcSigs, funcName)
+    }
+  }
+}
+
 func lowerGeneralStaticCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -2560,7 +2618,21 @@ func lowerGeneralStaticCall(
 ): JvmType {
   // Construction: a call whose head names a record or union case lowers to a
   // real `new`/`invokespecial` rather than a (non-existent) static method.
-  match ctorClassFor(ctx, funcName) {
+  // A package-qualified construction (`IfacePkg.Text(value = ...)`, parsed
+  // as a flat multi-segment EPath) must resolve through the FULL dotted
+  // path first: the bare-name `ctorClassFor` lookup below is bundle-global
+  // first-wins and silently picks an unrelated same-named case from
+  // whichever OTHER package happened to register that bare name earlier
+  // (#5455) — e.g. a cross-package `impl` method's own package-qualified
+  // construction of its interface's payload type resolving to some
+  // unrelated stdlib case sharing the same bare name.
+  if path.segments.count >= 2 {
+    match mapGet(ctx.ctors, joinSegments(path.segments, ".")) {
+      case Some(qcls) -> return lowerConstruction(ctx, insns, qcls, args)
+      case None -> ()
+    }
+  }
+  match ctorClassForExpecting(ctx, funcName) {
     case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
     case None -> ()
   }
@@ -2626,45 +2698,7 @@ func lowerGeneralStaticCall(
   // `Object` value (e.g. a tuple element) satisfies a primitive / reference
   // parameter.  This is what makes an imported call (`assertEqualInt` from
   // `Std.Testing`) and a void-returning call link correctly.
-  //
-  // Two-stage lookup: a qualified call site (`Std.Testing.assertEqualInt`)
-  // tries the `owner/funcName` key first so it resolves to the explicit
-  // package, even if another package in the bundle exports the same short
-  // name; an unqualified call falls back to the bare-name key (the legacy
-  // single-package shape).  #1680.
-  // Exact-arity keys (`…@<argc>`) are tried before the name keys so
-  // same-name overloads pick the descriptor matching this call's argument
-  // count; a call that relies on parameter defaults misses the arity key
-  // and falls back to the name key exactly as before.
-  val argcSuffix = "@" + toString(args.count)
-  val sigOpt = if path.segments.count > 1 {
-    val ownerSegs: List[String] = newList()
-    var si = 0
-    while si < path.segments.count - 1 {
-      ownerSegs.add(path.segments[si])
-      si = si + 1
-    }
-    val qkey = joinSegments(ownerSegs, "/") + "/" + funcName
-    match mapGet(ctx.funcSigs, qkey + argcSuffix) {
-      case Some(sig) -> Some(value = sig)
-      case None -> {
-        match mapGet(ctx.funcSigs, qkey) {
-          case Some(sig) -> Some(value = sig)
-          case None -> {
-            match mapGet(ctx.funcSigs, funcName + argcSuffix) {
-              case Some(sig) -> Some(value = sig)
-              case None -> mapGet(ctx.funcSigs, funcName)
-            }
-          }
-        }
-      }
-    }
-  } else {
-    match mapGet(ctx.funcSigs, funcName + argcSuffix) {
-      case Some(sig) -> Some(value = sig)
-      case None -> mapGet(ctx.funcSigs, funcName)
-    }
-  }
+  val sigOpt = resolveGeneralFuncSig(ctx, funcName, path, args.count)
   match sigOpt {
     case Some(sig) -> {
       // Std.Core's generic Option/Result predicates lower to `instanceof`
@@ -2767,8 +2801,18 @@ func lowerGeneralStaticCall(
       }
       var ai = 0
       while ai < callArgs.count {
+        // Push the resolved parameter type's owning package as an
+        // expected-constructor hint (#5976) so a bare ambiguous case/record
+        // construction nested directly in this argument (`errorMessage(
+        // TimedOut(...))`) resolves against the SAME package `errorMessage`'s
+        // own (declared) parameter type names, not the bundle-global
+        // first-registered same-named case.
+        if ai < sig.params.count {
+          pushCtorExpect(ctx, sig.params[ai])
+        }
         val aTy = lowerCallArg(ctx, insns, callArgs[ai])
         if ai < sig.params.count {
+          popCtorExpect(ctx)
           coerceArgTo(insns, aTy, sig.params[ai])
         }
         ai = ai + 1
