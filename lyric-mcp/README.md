@@ -45,15 +45,16 @@ start section below.
 
 | Package | `.NET` | JVM |
 |---|---|---|
-| `Mcp` (types, encode/decode) | full, 21/21 pure-serialization tests pass | pure Lyric, no I/O — but see gap #3: this library's own test suite does not type-check under `--target jvm` at all, so this is unverified in practice, not merely undertested |
-| `Mcp.Server` (`serveStdio`) | full, 18/18 in-memory lifecycle tests pass | unverified (gap #3) |
+| `Mcp` (types, encode/decode) | full, 26/26 pure-serialization tests pass | pure Lyric, no I/O — but see gap #3: this library's own test suite does not type-check under `--target jvm` at all, so this is unverified in practice, not merely undertested |
+| `Mcp.Server` (`serveStdio`) | full, 21/21 in-memory lifecycle tests pass | unverified (gap #3) |
 | `Mcp.Client` (`connectStdio`) | full, tested against a real spawned process (5/5 process tests) | unverified (gap #3); the underlying `Std.Process` piped-spawn kernel also has its own separate, real JVM gap (#1) even setting #3 aside |
 | `Mcp.Stdio` (`PipedNdjsonTransport`) | full | unverified (gap #3); also gap #1 |
 | `Std.Process.spawnPiped` / `pipedReadLine` / `pipedWriteLine` (stdlib seam this library needed and added) | full, tested with a real `cat` subprocess | compiles; **spawning and writing work, reading back a line from the child does not reliably work** — gap #1 |
 
-`Mcp.Server`'s protocol logic (initialize negotiation, capability
-derivation, tools/resources/prompts dispatch, the `serverNotInitialized`
-lifecycle gate, batch handling) is exercised end-to-end by
+`Mcp.Server`'s protocol logic (`server/discover` capability derivation,
+tools/resources/prompts dispatch, resumable-tool `input_required`/resume
+handling, batch handling — no more initialize/readiness gate to exercise,
+per "Migrating from `2025-06-18`" above) is exercised end-to-end by
 `tests/mcp_tests.l` over an in-memory transport pair — no process or
 socket involved. It is `.NET`-only in practice today (gap #3), though
 nothing about its own design is target-specific.

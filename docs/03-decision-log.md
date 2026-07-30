@@ -21791,9 +21791,10 @@ tracks):
    follow-up track.
 
 **Verification.** All `--target dotnet` suites green:
-`lyric-mcp` 51/51 (20 lifecycle, including 5 new cases for `server/discover`
-and the full `input_required`/resume round trip against a real
-`Mcp.Client`/`Mcp.Server` pair; 26 serialization; 5 real-subprocess), and
+`lyric-mcp` 52/52 (21 lifecycle, including 5 new cases for `server/discover`,
+the full `input_required`/resume round trip against a real
+`Mcp.Client`/`Mcp.Server` pair, and the #6334 regression test for `callTool`
+against an `input_required` response; 26 serialization; 5 real-subprocess), and
 `lyric-jsonrpc`'s existing 15/15 unaffected (this track touched no
 `lyric-jsonrpc` code — the multi-round-trip pattern is a pure `Mcp`-layer
 data-shape change, `JsonRpc` never sees the difference). JVM gaps are

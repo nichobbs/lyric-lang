@@ -1,7 +1,7 @@
 # 64 — Migrating `lyric-mcp` to MCP spec revision `2026-07-28`
 
 Status: Phase A (§3, stateless core) specced and implemented in D133 —
-`--target dotnet` fully tested (51/51 across `lyric-mcp`'s three suites).
+`--target dotnet` fully tested (52/52 across `lyric-mcp`'s three suites).
 Phases B (§4, streamable HTTP), C (§5, Tasks extension), and D (§7,
 out of scope) remain open/unbacked. Extends `docs/62-jsonrpc-mcp.md`
 (D129), which
@@ -108,17 +108,20 @@ Tracked as the (still open) Q-MCP-003.
   `McpToolHandler.call` gains no new method. A handler that needs
   mid-call input is **not** expressed by widening `call`'s existing
   `Result[McpToolResult, String]` return type to also carry
-  `InputRequired` — instead `McpToolHandler` gets a second,
-  optional-to-implement companion interface `McpResumableToolHandler`
-  with `call` returning
+  `InputRequired` — instead there is a separate companion interface
+  `McpResumableToolHandler` with `call` returning
   `Result[McpToolCallOutcome, String]` and a `resume(requestState: in
   String, inputResponses: in JsonValue): Result[McpToolCallOutcome,
-  String]`. `McpToolDef` carries `Option[McpResumableToolHandler]`
-  alongside the existing plain `handler` — a tool registers one or the
-  other, not both. This keeps every existing `McpToolHandler`
-  implementation (cloud-agents' `shim/` included) compiling unchanged;
-  only a tool that actually needs the permission-prompt pattern opts
-  into the resumable interface.
+  String]`. A resumable tool is registered as its own record
+  `McpResumableToolDef` (the same `name`/`description`/`inputSchema`
+  fields as `McpToolDef`, but `handler: McpResumableToolHandler`), kept
+  in a separate `resumableTools: List[McpResumableToolDef]` list on
+  `McpServer` alongside the existing plain `tools: List[McpToolDef]` —
+  not a field added to `McpToolDef` itself. This keeps every existing
+  `McpToolHandler`/`McpToolDef`/`addTool` implementation (cloud-agents'
+  `shim/` included) compiling unchanged; only a tool that actually
+  needs the permission-prompt pattern registers via the new
+  `addResumableTool`/`McpResumableToolDef` instead.
 - `server/discover`: a new zero-params request, answerable at any time
   (no readiness gate — see next bullet), returning the same shape
   `initialize` used to return minus the lifecycle bookkeeping:
@@ -141,11 +144,13 @@ Tracked as the (still open) Q-MCP-003.
 - `handleInitialize` / the `ready` field / `notInitializedCode` are
   deleted.
 - New `handleServerDiscover`.
-- `handleToolsCall` gains the resumable branch: if the resolved
-  `McpToolDef` carries `Some(resumableHandler)` and the incoming params
-  include `resumeState` (a well-known params field, not `_meta` — this
-  is ordinary MCP-message data, not protocol metadata), dispatch to
-  `resumableHandler.resume(...)` instead of `plainHandler.call(...)`.
+- `handleToolsCall` gains the resumable branch: it first looks up the
+  tool name in `resumableTools`; if found there, and the incoming
+  params include `requestState` (a well-known params field, not
+  `_meta` — this is ordinary MCP-message data, not protocol metadata),
+  dispatch to `resumableHandler.resume(...)` instead of
+  `resumableHandler.call(...)`; a resumable tool name always takes
+  precedence over a same-named entry in the plain `tools` list.
   An `InputRequired` outcome encodes to
   `{resultType: "input_required", inputRequests, requestState}`; a
   `ToolResult` outcome encodes exactly like today's plain result (no
