@@ -21129,5 +21129,83 @@ re-verified green again against the build carrying this sixth fix
 `mono` 48/48, `weaver` 46/46, `aspect_weave` 7/7, `modechecker` 84/84,
 `cfg` 12/12).
 
+**Note on the sixth finding's tallies above.** "24 total" / `alias_rewriter`
+24/24 were accurate when that finding landed, but a follow-up SUGGESTION
+round (dedupe `rewriteFixtureDecl`'s own filtering onto the shared
+`filterAliasesForExpr` helper, plus closing an analogous locals gap in
+`WMInclude`/`WMConfigInst`) added two more cases before the seventh
+finding below, bringing the file to 26. The seventh finding's own tallies
+are the current, accurate counts — treat any earlier count in this entry
+as a snapshot of that point in time, not the file's present size.
+
+**Seventh finding (review feedback, #6320): `rewriteParam`'s and
+`rewriteFieldDecl`'s `dflt`, and `rewriteWireMember`'s `init`/`provider`
+expressions, never got the same self-contained-expression filtering the
+sixth finding gave `rewriteConfigField`'s `default` and
+`rewriteIncludeAdjusts`'s `value`.** All five expression positions share
+the identical hazard: the grammar allows a bare `{ ... }` there, which
+parses as a zero-arg `ELambda` (never `EBlock` — `parsePrimaryExpr`'s
+`LBrace` arm always routes through `parseLambdaExpr`), and that lambda's
+own body can bind a local colliding with a bare-imported package's dotted
+name. `filterAliasesForExpr` was applied at `rewriteFixtureDecl`'s `init`,
+`rewriteConfigField`'s `default`, and `rewriteIncludeAdjusts`'s `value`
+(sixth finding) but not at the three structurally identical sites: a
+function/extern-func/entry/wire/impl-method PARAM's own `dflt`
+(`rewriteParam`), a record/opaque/protected-type FIELD's own `dflt`
+(`rewriteFieldDecl`), and a wire member's `init`/`provider`
+(`rewriteWireMember`'s `WMSingleton`/`WMScoped`/`WMBind`/`WMLocal`/
+`WMContributes` arms) — each of which stayed on the raw, unfiltered
+`aliases` passed in from the enclosing scope. A wire `singleton x: T =
+{ ... }` is docs/58's own idiomatic construction syntax, making this the
+most reachable of the three in practice.
+
+Fixed by routing all three through the existing `filterAliasesForExpr`
+helper, exactly as the sixth finding's two sites already do: `rewriteParam`
+now computes `filterAliasesForExpr(aliases, e)` for its `dflt` before
+calling `rewriteExpr`; `rewriteFieldDecl` does the same for its `dflt`;
+`rewriteWireMember`'s five init/provider-bearing cases each do the same for
+their own expression, layered on top of (not a replacement for) the
+wire-level `memberAliases` filtering `rewriteWireDecl` already threads in
+here (a different, nested concern — locals bound INSIDE the init/provider
+expression itself, vs. wire-level param/sibling-member-name collisions).
+
+**A test-authoring bug surfaced by this fix, worth recording.** The first
+attempt at the record-field-default regression test asserted against
+`decl.fields[0].dflt` after matching `IRecord(decl)` — but `RecordDecl` has
+no `fields` field; it has `members: List[RecordMember]`, and a field
+default lives at `RMField(field).dflt`. This is precisely the class of bug
+this whole PR fixes: the bogus `.fields` access degraded silently to
+`TyError` instead of a compile error, so `.count`/`[0]`/`.dflt` on it kept
+right on "type-checking" as the universal wildcard — the test file built
+cleanly and even ran, but the test crashed the CLR at runtime ("Common
+Language Runtime detected an invalid program") instead of failing an
+assertion. Corrected to match `decl.members[0]` against `RMField(field)`
+and read `field.dflt`. Left here because it is a live, self-inflicted
+demonstration of the exact silent-failure mode #6294 reported in the first
+place — this fix does not (and structurally cannot, short of a much larger
+change to reject unknown member access outright) close that door; it only
+closes the narrower `ECall`-qualified-chain-collapse door for legitimate
+field/member names.
+
+Verified by three new `alias_rewriter_self_test.l` cases (29 total): a
+function param default lambda, a record field default lambda, and a wire
+singleton's init lambda, each binding its own local `Foo` before calling
+`Foo.Bar.baz()` where `Foo.Bar` is a bare-imported package — all three
+assert the callee stays the original nested `EMember` chain, unrewritten.
+Confirming the `make stage1-fast` (`SKIP_CLI_BUNDLE=1`) gotcha this PR has
+hit before: it does not rebuild the self-hosted compiler DLLs `lyric test`
+links against, so the fix only actually took effect (and the
+test-authoring bug above was only caught) after a full `make lyric`
+rebuild — the three new cases still failed against a `stage1-fast`-only
+build, matching the same class of false-confidence risk this repo's
+`CLAUDE.md` already flags for that shortcut. All ten previously-established
+suites re-verified green again against the build carrying this seventh fix,
+rebased onto `main` (`alias_rewriter` 29/29, `msil_project_bridge` 34/34,
+`qualified_enum_case` 11/11, `qualified_union_case` 5/5, `typechecker`
+283/283, `parser` 126/126, `mono` 48/48, `weaver` 46/46, `aspect_weave`
+7/7, `modechecker` 92/92, `cfg` 12/12 — `parser` and `modechecker` each
+picked up a couple of extra cases from unrelated `main` commits landed
+during the rebase, not from anything in this fix).
+
 **Related:** #2929, #2930, #1834, #1488, #5943, #5769, #5845, #5971, #5265,
-D-progress-018, #6294, #6311, #6312, #6313, #6316.
+D-progress-018, #6294, #6311, #6312, #6313, #6316, #6320.

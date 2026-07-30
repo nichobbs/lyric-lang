@@ -1147,7 +1147,12 @@ func collectModuleLevelValueNames(file: in SourceFile, acc: List[String]): Unit 
 // §7. Item-level rewriting.
 // ─────────────────────────────────────────────────────────────────────────────
 func rewriteParam(aliases: in List[String], p: in Param): Param {
-  val d = match p.dflt { case Some(e) -> Some(value = rewriteExpr(aliases, e)); case None -> p.dflt }
+  // #6320 — see filterAliasesForExpr's comment: a param default can itself
+  // be a lambda (a bare `{ ... }`) introducing its own shadowing locals.
+  val d = match p.dflt {
+    case Some(e) -> Some(value = rewriteExpr(filterAliasesForExpr(aliases, e), e))
+    case None -> p.dflt
+  }
   Param(
     mode = p.mode,
     modeExplicit = p.modeExplicit,
@@ -1224,7 +1229,12 @@ func rewriteExternFuncDecl(aliases: in List[String], ef: in ExternFuncDecl): Ext
 }
 
 func rewriteFieldDecl(aliases: in List[String], f: in FieldDecl): FieldDecl {
-  val d = match f.dflt { case Some(e) -> Some(value = rewriteExpr(aliases, e)); case None -> f.dflt }
+  // #6320 — see filterAliasesForExpr's comment: a field default can itself
+  // be a lambda (a bare `{ ... }`) introducing its own shadowing locals.
+  val d = match f.dflt {
+    case Some(e) -> Some(value = rewriteExpr(filterAliasesForExpr(aliases, e), e))
+    case None -> f.dflt
+  }
   FieldDecl(
     docComments = f.docComments,
     annotations = f.annotations,
@@ -1600,24 +1610,42 @@ func rewriteProtectedTypeDecl(aliases: in List[String], d: in ProtectedTypeDecl)
 }
 
 // IWire ─────────────────────────────────────────────────────────────────────────
+// #6320 — see filterAliasesForExpr's comment: a wire member's own
+// `init`/`provider` expression can itself be a lambda (a bare `{ ... }`)
+// introducing its own shadowing locals, on top of the wire-level
+// `memberAliases` filtering `rewriteWireDecl` already threads in here.
 func rewriteWireMember(aliases: in List[String], m: in WireMember): WireMember {
   match m {
     case WMProvided(name, ty, span) -> return WMProvided(name = name, ty = rewriteTypeExpr(aliases, ty), span = span)
-    case WMSingleton(name, ty, init, span) -> return WMSingleton(name = name, ty = rewriteTypeExpr(aliases, ty), init = rewriteExpr(aliases, init), span = span)
+    case WMSingleton(name, ty, init, span) -> return WMSingleton(
+      name = name,
+      ty = rewriteTypeExpr(aliases, ty),
+      init = rewriteExpr(filterAliasesForExpr(aliases, init), init),
+      span = span
+    )
     case WMScoped(scopeName, name, ty, init, span) -> return WMScoped(
       scopeName = scopeName,
       name = name,
       ty = rewriteTypeExpr(aliases, ty),
-      init = rewriteExpr(aliases, init),
+      init = rewriteExpr(filterAliasesForExpr(aliases, init), init),
       span = span
     )
-    case WMBind(iface, provider, span) -> return WMBind(iface = rewriteTypeExpr(aliases, iface), provider = rewriteExpr(aliases, provider), span = span)
+    case WMBind(iface, provider, span) -> return WMBind(
+      iface = rewriteTypeExpr(aliases, iface),
+      provider = rewriteExpr(filterAliasesForExpr(aliases, provider), provider),
+      span = span
+    )
     case WMExpose(name, span) -> return WMExpose(name = name, span = span)
-    case WMLocal(name, ty, init, span) -> return WMLocal(name = name, ty = rewriteOptType(aliases, ty), init = rewriteExpr(aliases, init), span = span)
+    case WMLocal(name, ty, init, span) -> return WMLocal(
+      name = name,
+      ty = rewriteOptType(aliases, ty),
+      init = rewriteExpr(filterAliasesForExpr(aliases, init), init),
+      span = span
+    )
     case WMContributes(iface, name, init, ordering, isSealed, span) -> return WMContributes(
       iface = rewriteTypeExpr(aliases, iface),
       name = name,
-      init = rewriteExpr(aliases, init),
+      init = rewriteExpr(filterAliasesForExpr(aliases, init), init),
       ordering = ordering,
       isSealed = isSealed,
       span = span
