@@ -174,6 +174,36 @@ pub union MsilType {
   case MTuple(elems: List[MsilType])
 }
 
+// True when `e` gets a genuine ELEMENT_TYPE array-element encoding — i.e. the
+// codegen array-producing paths (`arrayElemTokenOpt` in Msil.Codegen) build a
+// real CLR `e[]` (via `newarr`/`stelem`) for this element type, rather than
+// falling back to a boxed `List<object>` instance (every `.append`/`.concat`/
+// `.slice`/list-literal site in `codegen.l` degrades to `List<object>` when
+// `arrayElemTokenOpt` returns `None` — record/union/extern-struct element
+// types have no array token, #2539). MUST mirror `arrayElemTokenOpt`'s arms
+// exactly (`Some`-cases here, `None`-cases there): `bufMsilType` /
+// `bufMsilTypeWithCtx`'s `MArray` arm uses this to decide whether to emit
+// ELEMENT_TYPE_SZARRAY (matching the real array codegen builds) or degrade to
+// ELEMENT_TYPE_OBJECT (matching the `List<object>` fallback). Emitting
+// SZARRAY unconditionally produced a LocalVarSig/field/method-signature entry
+// that disagreed with the actual boxed `List<object>` runtime value for
+// record element types — the tolerant tier-0 quick JIT let it slide, but the
+// optimizing JIT miscompiled it (OverflowException / AccessViolation /
+// "COM is not supported", #6322).
+pub func msilArrayElemHasRealToken(e: in MsilType): Bool {
+  match e {
+    case MInt -> true
+    case MLong -> true
+    case MDouble -> true
+    case MBool -> true
+    case MChar -> true
+    case MByte -> true
+    case MString -> true
+    case MObject -> true
+    case _ -> false
+  }
+}
+
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
 // For MClass, returns 0x12 (CLASS element type prefix — caller must follow
 // with a compressed TypeDefOrRef token; this helper returns the prefix only).
@@ -293,6 +323,14 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
       bufU1(w, 0x12)   // ELEMENT_TYPE_CLASS
       writeCompressedInt(w, typeRefCode)
     }
+    // NOTE: `MArray` also encodes the return type of BCL `List<T>.ToArray()`
+    // MemberRef signatures via `buildInstanceMethodSig` (`lowering.l`'s
+    // `ListTokens` synthesis, `!0[]` — a genuinely-generic `MTypeVar`
+    // element), which must ALWAYS stay SZARRAY regardless of the element
+    // type — so this arm cannot special-case "no array token" elements
+    // (see `buildLocalVarSig`/`buildLocalVarSigWithCtx` instead, which is
+    // where a `slice[T]`-local's LocalVarSig entry is degraded to Object
+    // for such elements, #6322).
     case MArray(elem) -> {
       bufU1(w, 0x1D)   // ELEMENT_TYPE_SZARRAY
       bufMsilType(w, elem)
@@ -1723,6 +1761,11 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
       writeCompressedInt(w, typeRefCode)
     }
+    // See the matching `bufMsilType` comment: `MArray` also encodes real
+    // BCL-generic-array-return signatures (`List<T>.ToArray()`'s `!0[]`)
+    // that must stay SZARRAY unconditionally, so this arm cannot special-
+    // case "no array token" elements — that degrade lives in
+    // `buildLocalVarSig`/`buildLocalVarSigWithCtx` instead (#6322).
     case MArray(elem) -> {
       bufU1(w, 0x1D)  // ELEMENT_TYPE_SZARRAY
       bufMsilTypeWithCtx(w, elem, ctx)
@@ -2382,14 +2425,33 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
       case MClass(_) -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
       case MGenericInst(_, _, _) -> bufU1(w, 0x1C)  // same: TypeRef token not valid in LocalVarSig
       case MValueTypeGenericInst(_, _, _) -> bufU1(w, 0x1C)  // struct generics also degrade (rare as locals)
-      // A slice/array local is encoded concretely as SZARRAY + element type
-      // (e.g. `byte[]` = 0x1D 0x05) — NOT degraded to Object.  Codegen tracks
-      // slice locals as `MArray`, so an object-typed slot desynced the verifier:
-      // `ldloc` yielded `object` where a `T[]` was expected (StackUnexpected,
-      // e.g. the metadata reader's `val b = img.bytes` → `rdU8(b, ...)`, #3943).
-      // `bufMsilType` writes the SZARRAY prefix *with* its element type, so the
-      // signature is well-formed (the earlier bare-0x1D worry doesn't apply).
-      case MArray(_) -> bufMsilType(w, locals[i])
+      // A slice/array local whose element type has a genuine array token
+      // (`arrayElemTokenOpt` in Msil.Codegen — primitives/String/Object) is
+      // encoded concretely as SZARRAY + element type (e.g. `byte[]` =
+      // 0x1D 0x05) — NOT degraded to Object.  Codegen tracks slice locals as
+      // `MArray`, so an object-typed slot desynced the verifier: `ldloc`
+      // yielded `object` where a `T[]` was expected (StackUnexpected, e.g.
+      // the metadata reader's `val b = img.bytes` → `rdU8(b, ...)`, #3943).
+      // `bufMsilType` writes the SZARRAY prefix *with* its element type, so
+      // the signature is well-formed (the earlier bare-0x1D worry doesn't
+      // apply).
+      //
+      // An element type with NO array token (a user record/union — #2539)
+      // has no such genuine array: every array-producing codegen site
+      // (`.append`/`.concat`/`.slice`/list-literal in `codegen.l`) falls
+      // back to a boxed `List<object>` runtime instance for it instead, so
+      // an SZARRAY<record> LocalVarSig entry disagreed with the actual
+      // stored value's real CLR type — the tolerant tier-0 quick JIT
+      // tolerated it, but the optimizing JIT miscompiled the store
+      // (OverflowException / AccessViolation / "COM is not supported",
+      // #6322). Degrade to Object here to match the actual runtime value.
+      case MArray(elem) -> {
+        if msilArrayElemHasRealToken(elem) {
+          bufMsilType(w, locals[i])
+        } else {
+          bufU1(w, 0x1C)  // ELEMENT_TYPE_OBJECT (#6322)
+        }
+      }
       // Concrete collections degrade to Object in LocalVarSig like MGenericInst:
       // the local slot is an object reference that op sites `castclass` to the
       // concrete TypeSpec; the open GENERICINST token is not valid in a
@@ -2474,8 +2536,17 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
       case MValueTypeGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       // Slice/array locals encode concretely as SZARRAY + element (#3943); see
       // the base `buildLocalVarSig`.  `bufMsilTypeWithCtx` types reference
-      // element types via their TypeRef/TypeDef token where available.
-      case MArray(_) -> bufMsilTypeWithCtx(w, locals[i], ctx)
+      // element types via their TypeRef/TypeDef token where available.  An
+      // element type with no array token degrades to Object instead, to
+      // match the boxed `List<object>` fallback runtime value codegen
+      // actually stores there (#6322) — see the base `buildLocalVarSig`.
+      case MArray(elem) -> {
+        if msilArrayElemHasRealToken(elem) {
+          bufMsilTypeWithCtx(w, locals[i], ctx)
+        } else {
+          bufU1(w, 0x1C)  // ELEMENT_TYPE_OBJECT (#6322)
+        }
+      }
       // A concrete-collection local holds a genuine `List`1<elem>` /
       // `Dictionary`2<k,v>` at run time (`MListOp(LoCtor)` emits
       // `newobj List`1<elem>`), and codegen tracks the slot concretely, so

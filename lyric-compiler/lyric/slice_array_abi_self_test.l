@@ -172,3 +172,33 @@ func mutateHoistedChar(): Int {
 test "hoisted `var: Char` reassigned from a closure (finishHoistedCellMsil/emitCellAssignMsil, #5563)" {
   assertEqualInt(mutateHoistedChar(), 98, "hoisted Char cell reassigned to 'b' (98)")
 }
+
+// ── #6322: slice[record].append local reassignment survives OSR promotion ──
+// A record element type has no array token (`arrayElemTokenOpt` -> `None`
+// above), so `slice[record]` codegen always falls back to a boxed
+// `List<object>` runtime instance — but the LOCAL's LocalVarSig entry was
+// still unconditionally encoded as SZARRAY<record>, disagreeing with the
+// actual stored `List<object>` value.  The tolerant tier-0 quick JIT
+// tolerated the mismatch; OSR promotion of a long-running loop (or the
+// optimizing JIT under `DOTNET_TieredCompilation=0`) miscompiled the store
+// (OverflowException / AccessViolation / "COM is not supported").  A loop
+// long enough to trigger OSR promotion reproduces this deterministically
+// even under default tiering.
+record PlanItem6322 {
+  note: String
+  status: String
+}
+
+func appendPlanItemsLoop(total: in Int): Int {
+  var acc: slice[PlanItem6322] = []
+  var i = 0
+  while i < total {
+    acc = acc.append(PlanItem6322(note = "hit", status = "pending"))
+    i = i + 1
+  }
+  acc.length.toInt()
+}
+
+test "#6322: slice[record] local survives many .append reassignments (OSR promotion)" {
+  assertEqualInt(appendPlanItemsLoop(50000), 50000, "50000 record appends land in a 50000-length slice")
+}
