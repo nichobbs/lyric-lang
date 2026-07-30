@@ -4385,6 +4385,29 @@ func fileNeedsLambdaIface(file: in SourceFile): Bool {
           mi = mi + 1
         }
       }
+      // #6349: a union case payload field can itself carry a function type
+      // (e.g. `case OnClick(cb: (Int) -> Bool)`). A package that only ever
+      // INVOKES such a payload-extracted closure — no lambda literal, no
+      // function-typed func/record-field/interface-method signature
+      // anywhere else in the file — still lowers that call to
+      // `invokeinterface <Pkg>/Lyric$Lambda.invoke`, reproducing the exact
+      // #6113 NoClassDefFoundError via the union-payload shape instead of
+      // the higher-order-function shape.
+      case IUnion(decl) -> {
+        var ci = 0
+        while ci < decl.cases.count {
+          val uc = decl.cases[ci]
+          var fi = 0
+          while fi < uc.fields.count {
+            val fieldTy = match uc.fields[fi] { case UFNamed(_, ty, _) -> ty; case UFPos(ty, _) -> ty }
+            if typeExprMentionsFunctionType(fieldTy) {
+              return true
+            }
+            fi = fi + 1
+          }
+          ci = ci + 1
+        }
+      }
       case _ -> ()
     }
     i = i + 1

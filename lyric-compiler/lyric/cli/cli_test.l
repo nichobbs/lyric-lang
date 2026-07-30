@@ -1055,7 +1055,7 @@ func cmdTestManifest(
         // `depTemplatePkgsList` regardless of target — on Dotnet this feeds
         // cross-package aspect/wire-template resolution (parity with a
         // `path = "..."` dep, #3498); on Jvm it is additionally compiled as a
-        // real bundle package below (`jvmDepPkgs`), since the JVM backend
+        // real bundle package below (folded into `libPkgs`), since the JVM backend
         // never reads `restoredDllPaths` and has no other way to see a
         // workspace dependency's symbols (#6136).
         match wsCtxOpt {

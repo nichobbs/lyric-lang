@@ -148,6 +148,30 @@ test "a package with a function-typed parameter AND a same-package literal still
   assertEqualInt(ifaceCount, 1, "exactly one Lyric$Lambda interface entry, not zero or a duplicate")
 }
 
+test "a union case payload carrying a function type still emits the package's Lyric$Lambda interface (#6349)" {
+  val dir = freshTempDir("union-payload")
+  defer {
+    cleanup(dir)
+  }
+  val source = "package Fixture.UnionPayload\n" + "\n" + "union Event {\n" + "  case OnClick(cb: (Int) -> Bool)\n" +
+    "}\n" +
+    "\n" +
+    "pub func fire(e: in Event, x: Int): Bool {\n" +
+    "  match e {\n" +
+    "    case OnClick(cb) -> cb(x)\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(0)\n" +
+    "}\n"
+  val names = jarEntryNames(dir, "UnionPayload", source)
+  assertTrue(
+    containsName(names, "Fixture/UnionPayload/Lyric$Lambda.class"),
+    "Fixture/UnionPayload/Lyric$Lambda.class must be present when a union case payload field carries a function type, even with no lambda literal or function-typed func/record/interface signature elsewhere"
+  )
+}
+
 test "a package with no function type at all never emits a Lyric$Lambda interface" {
   val dir = freshTempDir("no-function-type")
   defer {
