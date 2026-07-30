@@ -52,10 +52,6 @@ impl RpcHandler for NullHandler {
   }
 }
 
-val clientImplementationName: String = "lyric-mcp"
-
-val clientImplementationVersion: String = "0.2.0"
-
 val unknownServerInfo: McpImplementation = McpImplementation(name = "", version = "")
 
 // ── Client ───────────────────────────────────────────────────────────────────

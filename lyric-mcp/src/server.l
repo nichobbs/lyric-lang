@@ -71,7 +71,10 @@ pub func newServer(info: in McpImplementation): McpServer {
 }
 
 /// Register a tool, reachable via `tools/list` / `tools/call` once the
-/// server starts serving.
+/// server starts serving. A tool name registers with `addTool` or
+/// `addResumableTool`, not both — `handleToolsCall` checks the resumable
+/// list first, so registering the same name via both silently resolves to
+/// the resumable definition with no diagnostic.
 @stable(since = "0.1")
 pub func addTool(server: in McpServer, tool: in McpToolDef): Unit {
   server.tools.add(tool)
@@ -80,7 +83,9 @@ pub func addTool(server: in McpServer, tool: in McpToolDef): Unit {
 /// Register a resumable tool — one that may answer `tools/call` with an
 /// `input_required` result instead of finishing in one round trip (docs/64
 /// §3.1/§3.2). Additive: registering a resumable tool never requires
-/// changing any plain `addTool` registration elsewhere.
+/// changing any plain `addTool` registration elsewhere. Takes precedence
+/// over a same-named plain `addTool` registration — see `addTool`'s doc
+/// comment.
 @stable(since = "0.2")
 pub func addResumableTool(server: in McpServer, tool: in McpResumableToolDef): Unit {
   server.resumableTools.add(tool)
