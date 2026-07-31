@@ -108,3 +108,7 @@ lyric-rt/build/
 
 # Ephemeral lyric build/check output
 .lyric-check/
+*.dll
+*.runtimeconfig.json
+worktrees/
+.worktrees/
