@@ -4262,6 +4262,404 @@ func makeAwaitHelperFunc(): LFunc {
   LFunc(flags = 0x0009, name = awaitHelperName(), params = ps, ret = objTy, insns = insns, maxStack = 0, maxLocals = 1)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §8b. Lambda-interface emission gate (#6113).
+// ─────────────────────────────────────────────────────────────────────────────
+// True when `ty` is, or (recursively) contains, a function type (`(A) -> B`).
+// Syntax-only (no type-check info needed): used to decide, ahead of codegen,
+// whether a package needs to emit its own `Lyric$Lambda` interface even when
+// it lowers no lambda LITERAL of its own. A function whose parameter is
+// itself a function type (e.g. `Std.Core.countWhere(xs, pred: (Int) ->
+// Bool)`) still emits a `checkcast`/`invokeinterface` against the package's
+// OWN `Lyric$Lambda` the moment that parameter is called (`lowerLambdaInvoke`
+// in `04_calls.l`) — even though the closure literal that eventually flows in
+// was created in a DIFFERENT (calling) package. The previous gate
+// (`closureAcc.count > 0`, populated only when THIS package's own code
+// lowers a lambda literal) missed every stdlib-style higher-order function
+// that merely calls a caller-supplied predicate, so the interface class was
+// never written to the JAR and the first call threw
+// `NoClassDefFoundError: <Pkg>/Lyric$Lambda` at runtime — confirmed via
+// `Std.Core.countWhere` (#6113): `core.l` declares zero lambda literals of
+// its own, so `closureAcc` for that package's codegen pass was always empty.
+func typeExprMentionsFunctionType(ty: in TypeExpr): Bool {
+  match ty.kind {
+    case TFunction(_, _) -> true
+    case TGenericApp(_, args) -> {
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(inner) -> {
+            if typeExprMentionsFunctionType(inner) {
+              return true
+            }
+          }
+          case TAValue(_) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TArray(_, element) -> typeExprMentionsFunctionType(element)
+    case TSlice(element) -> typeExprMentionsFunctionType(element)
+    case TTuple(types) -> {
+      var i = 0
+      while i < types.count {
+        if typeExprMentionsFunctionType(types[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TNullable(inner) -> typeExprMentionsFunctionType(inner)
+    case TParen(inner) -> typeExprMentionsFunctionType(inner)
+    case _ -> false
+  }
+}
+
+func paramsOrRetMentionFunctionType(params: in List[Param], ret: in Option[TypeExpr]): Bool {
+  var i = 0
+  while i < params.count {
+    if typeExprMentionsFunctionType(params[i].ty) {
+      return true
+    }
+    i = i + 1
+  }
+  match ret {
+    case Some(t) -> typeExprMentionsFunctionType(t)
+    case None -> false
+  }
+}
+
+func recordDeclNeedsLambdaIface(decl: in RecordDecl): Bool {
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case RMField(f) -> {
+        if typeExprMentionsFunctionType(f.ty) {
+          return true
+        }
+      }
+      case RMFunc(fn) -> {
+        if paramsOrRetMentionFunctionType(fn.params, fn.ret) {
+          return true
+        }
+      }
+      case RMInvariant(_) -> ()
+    }
+    mi = mi + 1
+  }
+  false
+}
+
+func configFieldsNeedLambdaIface(fields: in List[ConfigField]): Bool {
+  var i = 0
+  while i < fields.count {
+    if typeExprMentionsFunctionType(fields[i].ty) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// True when any function signature this package declares mentions a
+// function type. A conservative (syntax-only) over-approximation: it does
+// not verify the parameter is actually ever CALLED, only that it COULD be —
+// so a package with an unused function-typed field emits one harmless,
+// never-instantiated interface class rather than risk missing a real one.
+//
+// The `match item.kind` below is deliberately EXHAUSTIVE against every
+// `ItemKind` case in `parser_ast.l` — no catch-all `case _`. Each excluded
+// case carries a one-line justification so a future new `ItemKind` variant
+// fails to compile here (forcing a conscious decision) rather than silently
+// falling through a wildcard, which is exactly how #6349 and #6350 (missed
+// `IUnion`, then missed `IImpl`/`IProtected`) slipped through twice.
+func fileNeedsLambdaIface(file: in SourceFile): Bool {
+  var i = 0
+  while i < file.items.count {
+    val item = file.items[i]
+    match item.kind {
+      case IConst(decl) -> {
+        if typeExprMentionsFunctionType(decl.ty) {
+          return true
+        }
+      }
+      case IVal(decl) -> {
+        match decl.ty {
+          case Some(ty) -> {
+            if typeExprMentionsFunctionType(ty) {
+              return true
+            }
+          }
+          case None -> ()
+        }
+      }
+      case IFunc(decl) -> {
+        if paramsOrRetMentionFunctionType(decl.params, decl.ret) {
+          return true
+        }
+      }
+      // A type alias only renames an existing type — it declares no new
+      // field or parameter of its own for this scan to see. Whatever USES
+      // the alias is a different item, already covered by its own arm.
+      case ITypeAlias(_) -> ()
+      // Same reasoning as ITypeAlias: a distinct-type wrapper renames one
+      // existing type without declaring a field or parameter.
+      case IDistinctType(_) -> ()
+      case IRecord(decl) -> {
+        if recordDeclNeedsLambdaIface(decl) {
+          return true
+        }
+      }
+      // `IExposedRec` carries the identical `RecordDecl` shape as `IRecord`
+      // (docs glossary: an exposed record is the flat, host-visible twin of
+      // an opaque type) — same scan.
+      case IExposedRec(decl) -> {
+        if recordDeclNeedsLambdaIface(decl) {
+          return true
+        }
+      }
+      // #6349: a union case payload field can itself carry a function type
+      // (e.g. `case OnClick(cb: (Int) -> Bool)`). A package that only ever
+      // INVOKES such a payload-extracted closure — no lambda literal, no
+      // function-typed func/record-field/interface-method signature
+      // anywhere else in the file — still lowers that call to
+      // `invokeinterface <Pkg>/Lyric$Lambda.invoke`, reproducing the exact
+      // #6113 NoClassDefFoundError via the union-payload shape instead of
+      // the higher-order-function shape.
+      case IUnion(decl) -> {
+        var ci = 0
+        while ci < decl.cases.count {
+          val uc = decl.cases[ci]
+          var fi = 0
+          while fi < uc.fields.count {
+            val fieldTy = match uc.fields[fi] { case UFNamed(_, ty, _) -> ty; case UFPos(ty, _) -> ty }
+            if typeExprMentionsFunctionType(fieldTy) {
+              return true
+            }
+            fi = fi + 1
+          }
+          ci = ci + 1
+        }
+      }
+      // Enum cases (`EnumCase`) are bare tags with no associated `TypeExpr`
+      // at all — unlike union cases, which carry payload fields (see the
+      // `IUnion` arm above). Nothing to scan.
+      case IEnum(_) -> ()
+      case IOpaque(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case OMField(field) -> {
+              if typeExprMentionsFunctionType(field.ty) {
+                return true
+              }
+            }
+            case OMInvariant(_) -> ()
+          }
+          mi = mi + 1
+        }
+      }
+      // #6350: a `ProtectedTypeDecl` member can carry a function type via a
+      // field (`PMField` — `var`/`let`/immutable), an entry method
+      // (`PMEntry`), or a plain method (`PMFunc`) — mirroring the
+      // `IRecord`/`IInterface` arms.
+      case IProtected(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMField(field) -> {
+              val fieldTy = match field {
+                case PFVar(_, ty, _, _, _, _) -> ty
+                case PFLet(_, ty, _, _, _, _) -> ty
+                case PFImmutable(fd) -> fd.ty
+              }
+              if typeExprMentionsFunctionType(fieldTy) {
+                return true
+              }
+            }
+            case PMEntry(entryDecl) -> {
+              if paramsOrRetMentionFunctionType(entryDecl.params, entryDecl.ret) {
+                return true
+              }
+            }
+            case PMFunc(fn) -> {
+              if paramsOrRetMentionFunctionType(fn.params, fn.ret) {
+                return true
+              }
+            }
+            case PMInvariant(_) -> ()
+          }
+          mi = mi + 1
+        }
+      }
+      case IInterface(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMSig(sig) -> {
+              if paramsOrRetMentionFunctionType(sig.params, sig.ret) {
+                return true
+              }
+            }
+            case IMFunc(fn) -> {
+              if paramsOrRetMentionFunctionType(fn.params, fn.ret) {
+                return true
+              }
+            }
+            case _ -> ()
+          }
+          mi = mi + 1
+        }
+      }
+      // #6350: an `impl <Iface> for Type { ... }` block's own `IMplFunc`
+      // members are the ONLY source of a method's signature when `<Iface>`
+      // is an external/CLR interface (docs/51) — there is no corresponding
+      // `IInterface` item in the same file for the `IInterface` arm above
+      // to catch.
+      case IImpl(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> {
+              if paramsOrRetMentionFunctionType(fn.params, fn.ret) {
+                return true
+              }
+            }
+            case IMplAssoc(_) -> ()
+          }
+          mi = mi + 1
+        }
+      }
+      // Wire declarations (docs/58) are expanded away by `Lyric.WireExpand`
+      // before codegen runs, so an `IWire` item should not normally survive
+      // to this scan — but the check is cheap and defensive in case an
+      // unexpanded one ever reaches it (e.g. a future bridge path that
+      // skips wire expansion).
+      case IWire(decl) -> {
+        if paramsOrRetMentionFunctionType(decl.params, None) {
+          return true
+        }
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case WMProvided(_, ty, _) -> {
+              if typeExprMentionsFunctionType(ty) {
+                return true
+              }
+            }
+            case WMSingleton(_, ty, _, _) -> {
+              if typeExprMentionsFunctionType(ty) {
+                return true
+              }
+            }
+            case WMScoped(_, _, ty, _, _) -> {
+              if typeExprMentionsFunctionType(ty) {
+                return true
+              }
+            }
+            case WMBind(iface, _, _) -> {
+              if typeExprMentionsFunctionType(iface) {
+                return true
+              }
+            }
+            case WMLocal(_, tyOpt, _, _) -> {
+              match tyOpt {
+                case Some(ty) -> {
+                  if typeExprMentionsFunctionType(ty) {
+                    return true
+                  }
+                }
+                case None -> ()
+              }
+            }
+            case WMContributes(iface, _, _, _, _, _) -> {
+              if typeExprMentionsFunctionType(iface) {
+                return true
+              }
+            }
+            case WMConfigInst(cfgDecl, _) -> {
+              if configFieldsNeedLambdaIface(cfgDecl.fields) {
+                return true
+              }
+            }
+            case _ -> ()
+          }
+          mi = mi + 1
+        }
+      }
+      // `{ name, span }` only — nothing to scan.
+      case IScopeKind(_) -> ()
+      // Extern/FFI-boundary declarations describe the host (.NET/JVM) ABI;
+      // any function-typed parameter there is resolved through the
+      // auto-FFI / `@externTarget` bridge, never lowered to `invokeinterface
+      // <Pkg>/Lyric$Lambda` — a wholly separate call-lowering path.
+      case IExtern(_) -> ()
+      case IExternType(_) -> ()
+      // `extern func ... = "symbol"` is a native-target C-ABI declaration
+      // (docs/N4 / D-N-007); its parameters describe the C calling
+      // convention, not the JVM `Lyric$Lambda` closure ABI.
+      case IExternFunc(_) -> ()
+      // Test bodies declare no params of their own; any function value used
+      // inside one is either a literal (caught by `closureAcc` when the
+      // body is lowered) or flows in through an already-scanned typed
+      // declaration elsewhere in the file.
+      case ITest(_) -> ()
+      case IProperty(decl) -> {
+        var bi = 0
+        while bi < decl.forAll.count {
+          if typeExprMentionsFunctionType(decl.forAll[bi].ty) {
+            return true
+          }
+          bi = bi + 1
+        }
+      }
+      case IFixture(decl) -> {
+        match decl.ty {
+          case Some(ty) -> {
+            if typeExprMentionsFunctionType(ty) {
+              return true
+            }
+          }
+          case None -> ()
+        }
+      }
+      case IConfig(decl) -> {
+        if configFieldsNeedLambdaIface(decl.fields) {
+          return true
+        }
+      }
+      case IAspect(decl) -> {
+        if configFieldsNeedLambdaIface(decl.config) {
+          return true
+        }
+        match decl.around {
+          case Some(around) -> {
+            match around.argsRow {
+              case Some(rowFields) -> {
+                var ri = 0
+                while ri < rowFields.count {
+                  if typeExprMentionsFunctionType(rowFields[ri].ty) {
+                    return true
+                  }
+                  ri = ri + 1
+                }
+              }
+              case None -> ()
+            }
+          }
+          case None -> ()
+        }
+      }
+      // Parse-error placeholder — no payload.
+      case IError -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
 // Backward-compatible single-package entry: the registry carries only this
 // file's own functions (enough to resolve intra-package calls — including
 // void-returning ones the legacy guess mis-resolved).
@@ -5109,10 +5507,12 @@ pub func codegenPackageWithSigsSeeded(
   items.add(LPFuncs(funcsClass = funcsClass, fns = fns, staticVals = staticVals))
 
   // J2b closures (#2665): drain the accumulated lambda closures into package
-  // items, and — if any lambda was emitted — add the one shared functional
-  // interface `<pkg>/Lyric$Lambda` they all implement
+  // items, and — if any lambda was emitted, OR this package's own signatures
+  // call through a function type it never itself instantiates (#6113,
+  // `fileNeedsLambdaIface`) — add the one shared functional interface
+  // `<pkg>/Lyric$Lambda` they all implement
   // (`invoke([Ljava/lang/Object;)Ljava/lang/Object;`).
-  if closureAcc.count > 0 {
+  if closureAcc.count > 0 or fileNeedsLambdaIface(file) {
     val ifaceName = lambdaIfaceName(pkgName)
     val ifaceParams: List[JvmType] = newList()
     ifaceParams.add(JArray(elem = JRef(className = "java/lang/Object")))

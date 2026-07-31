@@ -704,6 +704,21 @@ func emitSingleFileOrProject(
     opi += 1
   }
 
+  // Jvm parity with `buildProjectFromManifest`: a workspace/path dependency's
+  // own packages must ride the same bundled compile as `pkgs` (the JVM
+  // backend never reads `restoredDllPaths`) — see that function's comment
+  // for the full rationale (#6136).
+  match req.target {
+    case Jvm -> {
+      var jdpi = 0
+      while jdpi < resolvedDeps.depTemplateSrcs.count {
+        pkgs.add(resolvedDeps.depTemplateSrcs[jdpi])
+        jdpi += 1
+      }
+    }
+    case _ -> ()
+  }
+
   val projReq = EmitProjectRequest(
     packages = pkgs,
     assemblyName = req.assemblyName,
@@ -2303,6 +2318,27 @@ pub func buildProjectFromManifest(
   val depTemplatePkgsList = resolved.depTemplateSrcs
   val nugetThirdPartyPaths = resolved.nugetThirdPartyPaths
   val nativeAssetPaths = resolved.nativeAssetPaths
+
+  // On Jvm, a workspace/path dependency's own packages must ride the same
+  // bundled compile as `pkgs`: the JVM backend never reads `restoredDllPaths`
+  // (the .NET restored-DLL symbol-resolution path has no JVM analog) and only
+  // scans `depTemplateSrcs` for aspect/wire templates, not full declarations
+  // — so without this, a `--target jvm` build of a workspace-dep consumer saw
+  // every cross-package symbol from the dep as unknown even though the
+  // identical `--target dotnet` build passed via the restored-DLL path
+  // (#6136). Harmless duplication on Dotnet is avoided by gating on target:
+  // there, the dep is already resolved through `restoredDlls`, and compiling
+  // its source a second time into the SAME bundle would double-declare it.
+  match target {
+    case Jvm -> {
+      var jdpi = 0
+      while jdpi < depTemplatePkgsList.count {
+        pkgs.add(depTemplatePkgsList[jdpi])
+        jdpi += 1
+      }
+    }
+    case _ -> ()
+  }
 
   val asmName = stemOf(Path.basename(outPath), 4)
   val projReq = EmitProjectRequest(

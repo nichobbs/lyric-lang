@@ -21904,3 +21904,188 @@ data-shape change, `JsonRpc` never sees the difference). JVM gaps are
 unchanged and untouched by this track — `lyric-mcp`'s entire test suite
 still fails to type-check under `--target jvm` (pre-existing, tracked
 separately, not this track's job).
+
+### D-progress-720 — Restored-package boundary batch: JVM workspace-dep symbol resolution, JVM Lyric$Lambda interface emission, cross-DLL qualified pub val (#6136, #6113, #6133, #5275, #5575, #3273)
+
+**Status:** Shipped (#6136, #6113, #6133/#5275 partial-with-stopgap,
+#5575-residual verified already fixed by #6329); #3273 partially fixed,
+two sub-parts and one bare-func-reference item left open (see below).
+
+Six-issue batch of the restored-package/cross-assembly boundary family
+(docs/44 §JVM production readiness, #1470 Band 4).
+
+**#6136 (JVM workspace-dep symbol resolution).** `lyric test`/`lyric build
+--target jvm` on a project with a `{ workspace = true }` dependency saw
+every cross-package symbol from the dep as `unknown` (dozens of T0010/T0020
+errors), even though the identical `--target dotnet` build passed via the
+restored-DLL path. Root cause: `resolveManifestDependencies`
+(`cli/workspace_builder.l`) and `cmdTestManifest`'s inline dependency loop
+(`cli/cli_test.l`) only ever handled `Mf.DepSource.Path` when collecting
+`depTemplateSrcs` — a `Workspace` dep's source never reached it. Worse,
+`depTemplateSrcs` itself is JVM-parsed only for aspect/wire-template
+collection (`Weaver.collectAspectTemplates` / `WireExpand.collectWireTemplates`),
+never compiled as a real symbol-providing package — the doc comment in
+`buildWorkspaceDeps` claiming "the JVM bundled compile consumes cross-
+package code from source via `depTemplateSrcs`" was aspirational, not
+actual. Fix: (1) `resolveManifestDependencies` and `cmdTestManifest` now
+collect a `Workspace` dep's package sources into `depTemplateSrcs` via a
+new shared `collectDepTemplateSources` helper (mirroring the existing
+`path`-dep read-and-collect logic); (2) for `--target jvm` specifically,
+`buildProjectFromManifest` (`cli_build.l`), `emitSingleFileOrProject`
+(`cli_build.l`), and `cmdTestManifest` (`cli_test.l`) now additionally
+compile those collected dep-template packages as REAL bundle packages
+(appended to `pkgs`/`libPkgs`) — the only way JVM ever sees a workspace
+dep's symbols, since it never reads `restoredDllPaths` at all. Gated on
+`target == Jvm` so Dotnet's restored-DLL path (and the existing
+depTemplateSrcs-for-templates channel) is untouched. Verified against the
+real `lyric-mcp` / `lyric-jsonrpc` repro from #6136's triage: `lyric build
+--target jvm` and `lyric test --manifest lyric-mcp/lyric.toml --target jvm
+--features jvm` both now type-check and proceed to real codegen (previously
+failed at type-check with dozens of T0010/T0020). Full `lyric test` still
+does not go fully green — it surfaces two SEPARATE, pre-existing JVM
+codegen defects newly reachable now that compilation gets past type-check:
+a bytecode verifier "Inconsistent stackmap frames" failure in
+`Mcp.Server.handleInitialize`, and an unhandled `.NET` exception ("member
+'name' cannot be resolved on an erased receiver") compiling
+`mcp_serialization_tests.l` that aborts the whole `lyric test` process.
+Neither is a restored-boundary bug; both are reported as newly-discovered
+bugs, not fixed here (see final report). Regression: `cli_workspace_builder_self_test.l`
+gained 3 new tests (`resolveManifestDependencies` collects the dep's source;
+a real `--target jvm` build of the fixture succeeds; the `--target dotnet`
+build of the same fixture still passes via the restored-DLL path).
+
+**#6113 (JVM Lyric$Lambda interface omitted for restored packages).**
+`lyric run --target jvm lyric-stdlib/tests/core_tests.l` threw
+`NoClassDefFoundError: Std/Core/Lyric$Lambda`. The triage's "restored-
+package bundler omits a class" framing was disproven by direct
+investigation: `Std.Core` is recompiled from SOURCE every run (JVM has no
+"restored/precompiled" stdlib bundle), and the actual root cause is a gap
+in `Jvm.Codegen.codegenPackageWithSigsSeeded`'s emission gate for a
+package's OWN `<Pkg>/Lyric$Lambda` functional interface: it fired only when
+`closureAcc.count > 0` — non-empty exclusively when the package's OWN code
+lowers an `ELambda` LITERAL. `Std.Core.countWhere(xs, pred: (Int) -> Bool)`
+declares zero lambda literals of its own (the CALLER supplies the closure),
+so `Std.Core`'s interface was never emitted, even though `countWhere`'s own
+body invokes `pred(x)` via `invokeinterface Std/Core/Lyric$Lambda.invoke`.
+Fix: a new syntax-only pre-scan, `fileNeedsLambdaIface` (`jvm/codegen/06_items.l`),
+walks every top-level func, record field/method, and interface method/sig
+for a `TFunction`-shaped type (recursing through generic args, arrays,
+slices, tuples, nullable, parens); the emission gate is now
+`closureAcc.count > 0 or fileNeedsLambdaIface(file)`. Deliberately
+conservative (declares, not "is ever called") — a package with an unused
+function-typed field emits one harmless never-instantiated interface
+rather than risk missing a real one. Fixing this exposed a SEPARATE,
+already-documented JVM ABI gap: cross-package closure passing throws
+`ClassCastException` because each package's `Lyric$Lambda` is a distinct
+nominal type (`lyric-jsonrpc/README.md` "Known upstream issues" #3) — out
+of scope here (a full ABI redesign), reported as a still-open finding.
+Regression: new `jvm_lambda_iface_bundling_self_test.l` (3 cases) drives
+`Jvm.Bridge.compileToJarBundled` in-process and inspects the produced JAR's
+ZIP central directory directly (a structural, build-time check, sidestepping
+the separate cross-package-closure ABI gap entirely).
+
+**#6133 / #5275 (cross-DLL qualified `pub val`).** A qualified reference
+(`Pkg.NAME`) to a workspace/restored dependency's module-level `pub val`
+silently read `null`/an uninitialised value at runtime with zero compile-
+time diagnostic — confirmed for BOTH a non-literal initializer (`0 -
+32602`) and, more broadly than either issue described, a literal-foldable
+one (`Int = 5`) referenced in QUALIFIED form; only the UNQUALIFIED (bare,
+post-`import`) form of a literal already worked (`#2592` slice 1). Root
+cause, traced precisely: `tryQualifiedStaticValNameMsil` (`msil/codegen.l`)
+— the short-circuit `lowerExprMsil` consults for a flattened qualified
+value reference — only ever checked `cctx.staticValTokens` (this bundle's
+own compiled statics); a restored artifact's inlinable const/val values are
+registered into `cctx.constValues` under a BARE key only (`Pass 3: cross-
+package compile-time constant inlining`), never a qualified one. A miss
+there falls through the generic `EMember`/`EPath` chain all the way to a
+bare `ldnull` — the same silent-`MLdNull`-fallback family #3273 item 5
+documents for bare function references, but reached via a different
+receiver shape (an unresolved single-segment package-name identifier mid-
+chain, e.g. `App` in `App.Util.invalidParams`). Two fixes: (1) **real fix**
+— the restored-artifact registration loop now ALSO adds a package-qualified
+`constValues` key (`art.packageName + "." + name`), mirroring
+`staticValTokens`'s existing in-bundle convention; a new sibling helper
+`tryQualifiedConstValueMsil` checks it right alongside
+`tryQualifiedStaticValNameMsil`. This makes a qualified reference to a
+restored literal-foldable value inline correctly — previously broken
+regardless of whether the value was literal or not. (2) **fail-loudly
+stopgap** for the genuinely-unresolvable case (a non-literal `pub val`, or a
+typo) — a new `diagnoseUnresolvedQualifiedValueMsil` check, gated
+EXTREMELY conservatively after a documented false-positive discovery during
+development (a flattened 2+-segment chain like `Pkg.Sub.GREETING.length`
+misfired because `.length` is further chained access on an ALREADY-resolved
+qualified static val, not part of its name — fixed by scanning every
+PROPER PREFIX of the flattened chain, not just the full name, for a hit
+before concluding it's unresolvable). Also excludes: a local/captured
+receiver, `segs[0]` independently resolving as any real value (module val,
+const, extern-type alias, or a same-package function per #5362's revert
+history), a nullary union/enum case by member name, and a single-level
+config-block field. Raises `error[T0115]` (new diagnostic, documented in
+`book/chapters/appendix-b-quick-reference.md`) naming both realistic causes
+(typo vs. non-literal cross-DLL `pub val`) and the workaround (wrap the
+value in a `pub func`). Verified false-positive-free by rebuilding the
+ENTIRE self-hosted compiler + stdlib (`make lyric`) and every ecosystem
+library at the repo root (`lyric-web` through `lyric-generator-sdk`, ~25
+libraries) with zero new diagnostics. Regression:
+`msil_restored_qualified_val_self_test.l` (4 cases — qualified literal now
+inlines, qualified non-literal now aborts with T0115 naming the reference,
+chained member access on a qualified literal still resolves without a false
+positive, and the pre-existing bare/unqualified literal path still works).
+
+**#5575-residual (verified fixed, no new work).** The `List[slice[Byte]]`-
+returning-function-across-a-restored-boundary `InvalidCastException` (the
+`collectBytes` shape) is confirmed FIXED on current `main` by the already-
+merged PR #6329's #6332 extension (`bufMsilTypeSigSlot` degrading an
+`MArray`-typed field/param/return signature slot to `Object` when the
+element has no genuine CLR array token) — that fix's own regression
+coverage (`slice_array_abi_self_test.l`) is same-bundle only, so a new
+`restored_slice_list_return_self_test.l` (1 case) pins the identical fix
+specifically across a genuine restored-DLL boundary via the two-stage
+producer/consumer harness, reproducing #5575's exact `collectBytes` shape.
+
+**#3273 (multi-part audit, re-verified against current main).** 4 of 5
+sub-bugs are FIXED (confirmed via a fresh two-package restored-path-dep
+repro, not previously built): (1) enum-typed record field, restored and
+matched by qualified case name — no `InvalidProgramException`. (2) a
+payload-free restored union matched in the consumer resolves the correct
+case (no always-true `isinst`/W0003 fallback). (3) payload-bearing restored
+union case extraction binds the declared field correctly in BOTH
+directions (library-side and consumer-side match). (4) stdlib `Result`
+identity is MOSTLY fixed — a consumer closure invoked and matched inside
+the library correctly dispatches for both a function-call body
+(`{ -> someFunc() }`, Ok or Err) and a direct `Err(...)` literal body; **but
+a direct `Ok(...)` literal closure body (`{ -> Ok(value = X) }`, any
+payload type, not Unit-specific as originally described) still panics**
+`Msil.Codegen: match not exhaustive ... scr=GStd.Core.Result<...>` inside
+the library — a narrower residual than originally reported (the "silently
+matches Ok" symptom for Err is gone), left open as a distinct, deeper
+generic-dispatch defect not attempted here. (5) the bare top-level function
+reference `NullReferenceException` (`val f: () -> Int = someFunc; f()`) is
+CONFIRMED STILL BROKEN, unchanged from every prior triage pass — this one
+is single-assembly, not restored-dependency-specific, and its own tracked
+issue (#5362) documents a previously-reverted fix attempt (an earlier
+"panic on any known top-level function reaching this fallback" version
+false-positived on monomorphizer-specialised call sites); not reattempted
+here given that history. Not closing #3273: two genuinely distinct defects
+(the Ok-literal-closure Result-identity panic, the bare-function-reference
+NRE) remain, per-part status recorded above rather than a blanket "still
+open."
+
+**Regression sweep (both targets where applicable):** `typechecker` 283/283,
+`msil_project_bridge` 34/34 (the fix for #6133/#5275 required adding the
+constValues-prefix-scan after this suite caught an initial false positive
+on its own "multi-segment qualified static val resolves correctly" case),
+`restored_async` 4/4, `cross_package_generics` 7/7, `cli_build` 77/77,
+`contract_meta` 39/39, `restored_packages` 18/18, `cli_workspace_builder`
+19/19, `bitwise` 10/10 (dotnet + jvm), `block_shadow` 20/20 (dotnet + jvm),
+`closure_jvm` 14/14 (jvm), `jvm_lambda_iface_bundling` 3/3,
+`msil_restored_qualified_val` 4/4, `restored_slice_list_return` 1/1.
+`lyric-jsonrpc` suite 44+79 assertions across dotnet/jvm — unchanged green.
+`lyric-mcp` dotnet suite 44/44 — unchanged green; `--target jvm` build now
+succeeds (was failing) and `lyric test --target jvm` now type-checks (see
+#6136 above for the residual JVM codegen bugs it surfaces). Every
+ecosystem library at the repo root builds cleanly against the new T0115
+check (zero false positives across ~25 libraries).
+
+**Related:** #6136, #6113, #6133, #5275, #5575, #3273, #5258, #5262, #2592,
+#5362, #6329, #6332, docs/44, docs/45, #2580.

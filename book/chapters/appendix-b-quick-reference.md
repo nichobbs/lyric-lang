@@ -1262,6 +1262,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0110` | Generic constructor's type parameter(s) cannot be inferred from the arguments (add explicit type arguments) |
 | `T0111` | Unknown constraint name in a `where` clause (warning) |
 | `T0112` | Refutable pattern in a `for` loop binding (only names, `_`, parentheses, and tuples of those) |
+| `T0115` | A qualified reference (`Pkg.name`) does not resolve to anything the compiler can verify — most commonly a `pub val` in a workspace/restored dependency whose initializer isn't a literal (only literal-foldable `pub val`/`pub const` values round-trip across a restored-dependency boundary today, docs/45); the fix is to wrap the value in a `pub func` in the producing package and call that instead. Raised at MSIL codegen time (`Msil.Codegen`), not by the type checker proper — the check catches the reference just before it would otherwise fall through to a silent `null`/uninitialized read. |
 
 ### Type checker warnings (W-series)
 
