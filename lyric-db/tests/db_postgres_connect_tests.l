@@ -12,6 +12,7 @@ package Db.PostgresConnectTests
 
 import Std.Core
 import Std.Testing
+import Std.Environment
 import Db
 
 test "connectPostgres: connecting to a closed port returns CONNECT_ERROR, not a panic" {
@@ -33,6 +34,41 @@ test "connectPostgres: connecting to a closed port returns CONNECT_ERROR, not a 
 
 test "connect: postgres:// DSN scheme dispatches to the Npgsql driver and fails the same way" {
   match Db.connect("postgres://baduser:badpass@127.0.0.1:1/nonexistent") {
+    case Ok(conn) -> {
+      conn.close()
+      assertTrue(false, "expected connect failure against a closed port")
+    }
+    case Err(e) -> assertEqual(e.code, "CONNECT_ERROR", "error code")
+  }
+}
+
+// #6359: `connectFromEnv` previously ignored `LYRIC_CONFIG_DB_CONNECTION_
+// POOLSIZE`/`_CONNECTTIMEOUTMS`/`_PASSWORD` entirely (silently using
+// connectDsn's hardcoded poolSize=10/connectTimeoutMs=5000/password="").
+// These two cases exercise the env-var-driven path end to end (still
+// against the same closed-port target, so no live server is needed) and
+// specifically probe the out-of-range clamp: an unclamped POOLSIZE=0
+// would violate connectPostgres's `requires: poolSize >= 1` and panic
+// instead of returning a CONNECT_ERROR.
+test "connectFromEnv: reads POOLSIZE/CONNECTTIMEOUTMS/PASSWORD and still fails cleanly against a closed port" {
+  setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "postgres://baduser:badpass@127.0.0.1:1/nonexistent")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_POOLSIZE", "5")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_CONNECTTIMEOUTMS", "500")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_PASSWORD", "override-pass")
+  match Db.connectFromEnv() {
+    case Ok(conn) -> {
+      conn.close()
+      assertTrue(false, "expected connect failure against a closed port")
+    }
+    case Err(e) -> assertEqual(e.code, "CONNECT_ERROR", "error code")
+  }
+}
+
+test "connectFromEnv: an out-of-range POOLSIZE is clamped, not passed through to violate connectPostgres's contract" {
+  setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "postgres://baduser:badpass@127.0.0.1:1/nonexistent")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_POOLSIZE", "0")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_CONNECTTIMEOUTMS", "999999")
+  match Db.connectFromEnv() {
     case Ok(conn) -> {
       conn.close()
       assertTrue(false, "expected connect failure against a closed port")

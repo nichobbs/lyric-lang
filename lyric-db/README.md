@@ -69,7 +69,7 @@ import Db
 // Requires the "postgres" feature and LYRIC_CONFIG_DB_CONNECTION_URL
 val conn = Db.connectFromEnv()?
 
-match conn.query("SELECT id, name FROM users WHERE id = $1", ["42"]) {
+match conn.query("SELECT id, name FROM users WHERE id = @p0", ["42"]) {
   case Ok(rows) ->
     for row in rows {
       match Db.col(row, "name") {
@@ -82,6 +82,8 @@ match conn.query("SELECT id, name FROM users WHERE id = $1", ["42"]) {
 
 conn.close()
 ```
+
+**Placeholder syntax:** always use named placeholders (`@p0`, `@p1`, …, matching each parameter's zero-based position in the `params` array) in your SQL text, for both Postgres and SQLite. Positional `$1`/`$2`-style placeholders do **not** work against the Postgres driver here — passing a named parameter against `$N`-style SQL text makes Npgsql silently bind zero parameters, deterministically, on every call (`PostgresException 08P01`). See `Db.Kernel.Net`'s header comment for the full explanation.
 
 ## Features
 
@@ -248,7 +250,7 @@ rather than a dedicated typed variant.
 ```lyric
 val tx = conn.transaction()?
 
-match tx.execute("INSERT INTO events (name) VALUES ($1)", ["login"]) {
+match tx.execute("INSERT INTO events (name) VALUES (@p0)", ["login"]) {
   case Ok(_)  -> tx.commit()?
   case Err(e) -> { tx.rollback(); Err(e) }
 }

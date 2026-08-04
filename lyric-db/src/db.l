@@ -25,7 +25,7 @@
 //!   import Db
 //!
 //!   val conn = Db.connect("postgres://...")?
-//!   match conn.query("SELECT id, name FROM users WHERE id = $1", ["42"]) {
+//!   match conn.query("SELECT id, name FROM users WHERE id = @p0", ["42"]) {
 //!     case Ok(rows) ->
 //!       for row in rows {
 //!         match Db.col(row, "name") {
@@ -46,6 +46,8 @@ import Std.Collections
 import Std.Json as StdJson
 import Std.Environment as Environment
 import Std.Encoding
+import Std.String as Str
+import Std.Parse
 import Db.Kernel.Net as DbKernel
 import extern System.{Convert}
 
@@ -109,7 +111,7 @@ pub func col(row: in DbRow, colName: in String): DbValue
 /// Intended for PostgreSQL `SELECT … FOR UPDATE SKIP LOCKED` job-claim patterns:
 ///
 ///   match Db.queryOne(conn,
-///     "SELECT id, payload FROM jobs WHERE status = $1
+///     "SELECT id, payload FROM jobs WHERE status = @p0
 ///      ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED",
 ///     ["pending"]) { ... }
 ///
@@ -264,6 +266,25 @@ pub func connect(connStr: in String): Result[DbConnection, DbError]
   }
 }
 
+/// Read an `LYRIC_CONFIG_DB_CONNECTION_<suffix>` integer env var, clamped
+/// to `[lo, hi]`. An unset, empty, or unparseable value falls back to
+/// `dflt`; an in-range-but-out-of-bounds value is clamped rather than
+/// rejected, matching README.md "Configuration"'s documented bounds.
+func envIntClamped(suffix: in String, dflt: in Int, lo: in Int, hi: in Int): Int {
+  val raw = Environment.getVarOrDefault("LYRIC_CONFIG_DB_CONNECTION_" + suffix, "")
+  val v = match Std.Parse.parseOptInt(raw) {
+    case Some(n) -> n
+    case None -> dflt
+  }
+  if v < lo {
+    lo
+  } else if v > hi {
+    hi
+  } else {
+    v
+  }
+}
+
 /// Open a connection from the `LYRIC_CONFIG_DB_CONNECTION_URL` environment
 /// variable.  This is the zero-argument convenience the services in
 /// `examples/` and the book's database chapter use: the DSN lives in
@@ -272,13 +293,32 @@ pub func connect(connStr: in String): Result[DbConnection, DbError]
 /// a `CONFIG_ERROR` `DbError` when the variable is unset or empty so the
 /// caller can fail fast with a clear message instead of dereferencing an
 /// empty DSN.
+///
+/// Also reads `LYRIC_CONFIG_DB_CONNECTION_POOLSIZE` (default `10`, clamped
+/// to 1-100), `..._CONNECTTIMEOUTMS` (default `5000`, clamped to
+/// 100-30000), and `..._PASSWORD` (default `""`, `@sensitive`) — matching
+/// README.md "Configuration". These previously had no effect: this
+/// function delegated to `connect`, which always used `connectDsn`'s
+/// hardcoded `poolSize=10, connectTimeoutMs=5000, password=""` regardless
+/// of what an operator configured (#6359). `LYRIC_CONFIG_DB_CONNECTION_
+/// QUERYTIMEOUTMS` is still not wired to anything — no kernel code sets
+/// `DbCommand.CommandTimeout` yet; that remains a tracked follow-up.
 @stable(since = "0.1")
 pub func connectFromEnv(): Result[DbConnection, DbError] {
   val url = Environment.getVarOrDefault("LYRIC_CONFIG_DB_CONNECTION_URL", "")
   if url.length == 0 {
     return Err(DbError(message = "LYRIC_CONFIG_DB_CONNECTION_URL is not set", code = "CONFIG_ERROR"))
   }
-  connect(url)
+  val poolSize = envIntClamped("POOLSIZE", 10, 1, 100)
+  val connectTimeoutMs = envIntClamped("CONNECTTIMEOUTMS", 5000, 100, 30000)
+  val password = Environment.getVarOrDefault("LYRIC_CONFIG_DB_CONNECTION_PASSWORD", "")
+  if Str.startsWith(url, "postgres://") or Str.startsWith(url, "postgresql://") {
+    return connectPostgres(url, poolSize, connectTimeoutMs, password)
+  }
+  if Str.startsWith(url, "sqlite://") or url == "sqlite::memory:" {
+    return connectSqlite(url, connectTimeoutMs)
+  }
+  Err(DbError(message = "unrecognized DSN scheme (expected postgres://, postgresql://, or sqlite://)", code = "CONFIG_ERROR"))
 }
 
 /// Open a PostgreSQL connection directly, bypassing DSN scheme sniffing.
@@ -339,6 +379,9 @@ pub func connectSqlite(url: in String, connectTimeoutMs: in Int): Result[DbConne
 // JsonValueKind ordinals: 0=Undefined 1=Object 2=Array 3=String 4=Number 5=True 6=False 7=Null
 func parseRows(json: in String): Result[slice[DbRow], DbError] {
   val doc = StdJson.parseJson(json)
+  defer {
+    StdJson.disposeJson(doc)
+  }
   val root = StdJson.rootElement(doc)
   if StdJson.valueKind(root) != 2 {
     return Err(DbError(message = "expected JSON array from query", code = "PARSE_ERROR"))
@@ -367,6 +410,9 @@ func parseRows(json: in String): Result[slice[DbRow], DbError] {
 // Re-parses the raw text so JsonElement does not escape this module.
 func parseDbValue(raw: in String): DbValue {
   val doc = StdJson.parseJson(raw)
+  defer {
+    StdJson.disposeJson(doc)
+  }
   val elem = StdJson.rootElement(doc)
   val kind = StdJson.valueKind(elem)
   match kind {
