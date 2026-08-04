@@ -844,13 +844,21 @@ type; types imported from other packages are currently checked leniently
 
 Field-style access `x.name` (no call parens) to a name that exists **only**
 as a D037 dot-named (UFCS) function — never as a real record/union field — is
-always a compile error (**T0116**), naming the receiver type and the
-call-syntax fix (`x.name(...)`), regardless of whether the receiver type is
-locally declared or imported: dot-named function signatures are known
-globally (unlike record-field enumeration, which T0113 restricts to
-locally-declared types), so this check also catches cross-package receivers
-such as the standard library's `IOError` union (`e.message` must be written
-`e.message()`).
+a compile error (**T0116**), naming the receiver type and the call-syntax
+fix (`x.name(...)`), regardless of whether the receiver type is locally
+declared or imported: dot-named function signatures are known globally
+(unlike record-field enumeration, which T0113 restricts to locally-declared
+types), so this check also catches cross-package receivers such as the
+standard library's `IOError` union (`e.message` must be written
+`e.message()`). One narrow exception: inside an **opaque type**'s own
+declaring package, a same-named accessor function's own body reading its
+private field field-style (`pub func Config.path(config: in Config): String
+{ config.path }`) is not flagged — opaque fields are only visible within
+their declaring package, so this in-package pattern is indistinguishable
+from genuine UFCS-only access and is deliberately left as lenient as before
+this check existed. The same access from *outside* the opaque type's
+declaring package is still T0116, since a real field is never legitimately
+reachable there in the first place.
 
 ### 5.2 Parameter modes
 

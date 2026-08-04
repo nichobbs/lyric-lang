@@ -1787,7 +1787,7 @@ func inferMember(
         diag.add(
           errorDiagnostic(
             "T0116",
-            "no field '" + name + "' on type '" + tname + "' — '" + name + "' is a function; call it as '" + name + "(...)'",
+            "no field '" + name + "' on type '" + tname + "' -- '" + name + "' is a function; call it as '" + name + "(...)'",
             span
           )
         )
