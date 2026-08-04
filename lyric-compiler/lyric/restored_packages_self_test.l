@@ -399,6 +399,50 @@ func testSynthesiseArtifactNonStdQualifiedStillErrors(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §4b. Async-ness round-trips through contract metadata (#6372)
+// ─────────────────────────────────────────────────────────────────────────────
+// Before the fix, `reprForFunc` never emitted the `async` keyword, so a
+// restored `async func`'s reconstructed signature silently downgraded to a
+// synchronous one. `synthesiseArtifact` drives the REAL pipeline
+// (`Meta.buildContractFromFile` -> `synthesiseSource` -> re-parse), pinning
+// the fix at both ends: the repr text itself, and the re-parsed AST flag
+// every downstream consumer (`Msil.Codegen.registerStdlibFunc` in
+// particular — see `restored_stdlib_async_self_test.l`) relies on.
+func testBuildContractFromFileAsyncFuncCarriesAsyncKeyword(): Unit {
+  val src = "package MyApp.AsyncLib\n\npub async func fetchAsync(x: in Int): Int {\n  x\n}\n"
+  val pr = parse(src)
+  val contract = Meta.buildContractFromFile(pr.file, "1.0.0")
+  assertEqualInt(contract.decls.count, 1, "build_contract_async: exactly one decl")
+  val d = contract.decls[0]
+  assertTrue(
+    Str.contains(d.repr, "pub async func fetchAsync"),
+    "build_contract_async: repr carries the 'async' keyword (got: " + d.repr + ")"
+  )
+}
+
+func testSynthesiseArtifactAsyncFuncRoundTripsIsAsyncFlag(): Unit {
+  val src = "package MyApp.AsyncLib2\n\npub async func fetchAsync(x: in Int): Int {\n  x\n}\n"
+  val pr = parse(src)
+  val contract = Meta.buildContractFromFile(pr.file, "1.0.0")
+  val art = RestoredArtifact(
+    packageName = "MyApp.AsyncLib2",
+    version = "1.0.0",
+    dllPath = "/tmp/MyApp.AsyncLib2.dll",
+    contract = contract
+  )
+  match synthesiseArtifact(art, emptyDecls()) {
+    case Err(e) -> panic("synth_artifact_async_roundtrip: unexpected error: " + errorMessage(e))
+    case Ok(sa) -> {
+      assertEqualInt(sa.source.items.count, 1, "synth_artifact_async_roundtrip: one item parsed")
+      match sa.source.items[0].kind {
+        case IFunc(decl) -> assertTrue(decl.isAsync, "synth_artifact_async_roundtrip: isAsync survives synthesise + re-parse")
+        case _ -> panic("synth_artifact_async_roundtrip: expected an IFunc item")
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §5. Test items
 // ─────────────────────────────────────────────────────────────────────────────
 // Note: a warnings-only scenario (synthesiseArtifact succeeds when typecheck
@@ -477,4 +521,12 @@ test "synthesise artifact whitelisted aliased Std-qualified T0014 filtered (#584
 
 test "synthesise artifact non-Std qualified still errors" {
   testSynthesiseArtifactNonStdQualifiedStillErrors()
+}
+
+test "build contract from file: async func repr carries 'async' keyword (#6372)" {
+  testBuildContractFromFileAsyncFuncCarriesAsyncKeyword()
+}
+
+test "synthesise artifact: async func isAsync flag round-trips through repr (#6372)" {
+  testSynthesiseArtifactAsyncFuncRoundTripsIsAsyncFlag()
 }
