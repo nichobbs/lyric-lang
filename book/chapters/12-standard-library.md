@@ -2,7 +2,7 @@
 
 Lyric ships a curated standard library that covers the runtime needs of application development without exposing the full .NET BCL surface. The design goal is a library you can use without surprises: predictable error handling, no hidden exceptions, and a consistent interface story for anything that touches the outside world.
 
-A thread you will notice running through the library is that anything involving I/O — files, HTTP, time — is expressed as an interface rather than a concrete type. `Std.File` exports functions, but `Std.Time` exports a `Clock` interface alongside the concrete `SystemClock`. This is not incidental. It is what makes tests easy: inject the real implementation in production, inject a stub in tests. Chapter 15 covers the testing infrastructure; this chapter covers the library itself.
+A thread you will notice running through the library is that anything involving I/O — files, HTTP, time — is expressed as an interface rather than a concrete type where a swappable implementation matters, e.g. `Std.Http`'s `HttpClient` interface. This is not incidental. It is what makes tests easy: inject the real implementation in production, inject a stub in tests. Chapter 15 covers the testing infrastructure; this chapter covers the library itself.
 
 The stdlib is separate from the compiler and versioned independently. Every `pub` item carries a `@stable` or `@experimental` annotation. If something is marked `@experimental`, expect its shape to change before v1.0.
 
@@ -19,7 +19,7 @@ Here is the full module inventory:
 | `Std.String` | `trim`, `split`, `join`, case conversion, `substring`, `startsWith`, `endsWith` |
 | `Std.Parse` | `tryParseInt`, `tryParseLong`, `tryParseDouble`, `tryParseBool` |
 | `Std.Format` | `toHexString`, `formatFixed`, `zeroPad`, `padLeft`, `padRight` |
-| `Std.Char` | `isLetter`, `isDigit`, `isWhiteSpace`, `toUpperCase`, `toLowerCase`, `digitValue` |
+| `Std.Char` | `isLetter`, `isDigit`, `isWhiteSpace`, `toUpper`, `toLower`, `digitValue` |
 | `Std.Errors` | `ParseError`, `IOError`, `HttpError` |
 | `Std.File` | `readText`, `writeText`, `fileExists`, `createDir` |
 | `Std.Console` | `print`, `println`, `error`, `readLine` |
@@ -34,19 +34,19 @@ Here is the full module inventory:
 | `Std.Collections` | `List[T]`, `Map[K, V]` |
 | `Std.Set` | `Set[T]`, `setContains`, `setAdd`, `setRemove`, `setUnion`, `setIntersection` |
 | `Std.Sort` | `sort[T](xs, cmp)`, `sortInts`, `sortLongs`, `sortStrings` |
-| `Std.Iter` | `map`, `filter`, `fold`, `zip`, `take`, `drop` over slices |
-| `Std.Math` | `abs`, `sqrt`, `pow`, `min`, `max`, `floor`, `ceil` |
+| `Std.Iter` | `map`, `filter`, `fold`, `find`, `take`, `drop` over slices |
+| `Std.Math` | `absDouble`, `sqrt`, `pow`, `minPairDouble`, `maxPairDouble`, `floor`, `ceiling` |
 | `Std.Random` | seeded RNG: `makeRandom`, `nextInt`, `nextDouble` |
 | `Std.SecureRandom` | CSPRNG: `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |
 | `Std.Hash` | SHA-512: `sha512OfBytes(slice[Byte]) -> String`, `sha512OfFile(path) -> Result[String, String]` |
 | `Std.Encoding` | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `encodeUtf8` |
 | `Std.Uuid` | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
-| `Std.Time` | `Instant`, `Duration`, `Clock` interface, ISO 8601 parsing |
+| `Std.Time` | `Instant`, `Duration`, `now`, ISO 8601 parsing |
 | `Std.Json` | `toJson`, `fromJson` for `@generate(Json)` types |
 | `Std.Http` | HTTP client and server primitives |
 | `Std.Rest` | Typed REST client built on `Std.Http` (`RestClient`, `RestAuth`, `RestError`) |
 | `Std.Testing` | `expect`, `expectEq`, `expectErr`, `fail` |
-| `Std.Testing.Property` | Property-based testing: `forAllIntRange`, `forAllBool`, `forAllDouble` |
+| `Std.Testing.Property` | Property-based testing: `forAllInt`, `forAllBool`, `forAllDouble` |
 | `Std.Testing.Snapshot` | `snapshot(label, actual)`, `snapshotMatch` |
 | `Std.Testing.Mocking` | `StubCounter`, `makeStubCounter`, `stubCounterIncrement` |
 | `Std.BuildInfo` | `BuildInfo` build-metadata record; the compiler synthesizes `buildInfo(): BuildInfo` into any file that imports it (docs/60 §9.2) |
