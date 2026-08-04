@@ -1075,7 +1075,11 @@ pub async func sendWithCancelAsync(
 /// not yet fixed; see #6367 for the confirmed repro and diagnosis. Callers
 /// needing a timeout should build their own `CancellationTokenSource`
 /// around `sendWithCancelAsync`, which does not exhibit this bug.
-@stable(since = "1.0")
+///
+/// Downgraded from `@stable` to `@experimental` until #6367 lands — a
+/// `@stable` tag reads as "safe for production use," which this function
+/// currently is not (it unconditionally throws at runtime on `dotnet`).
+@experimental
 pub async func sendWithTimeoutAsync(request: in HttpRequest, timeoutMs: in Int): Result[HttpResponse, HttpError]
   requires: timeoutMs > 0
 {
@@ -1108,8 +1112,8 @@ pub async func getWithCancelAsync(url: in String, token: in CancellationToken): 
 /// that function's doc comment for why disposal is inlined rather than
 /// `defer`red, and for the still-open `InvalidProgramException` bug
 /// (#6367) this function shares — use `getWithCancelAsync` instead until
-/// that lands.
-@stable(since = "1.0")
+/// that lands.  Downgraded to `@experimental` for the same reason.
+@experimental
 pub async func getWithTimeoutAsync(url: in String, timeoutMs: in Int): Result[HttpResponse, HttpError]
   requires: timeoutMs > 0
 {
@@ -1141,8 +1145,8 @@ pub async func postWithCancelAsync(
 /// `sendWithTimeoutAsync`'s doc comment for why disposal is inlined
 /// rather than `defer`red, and for the still-open `InvalidProgramException`
 /// bug (#6367) this function shares — use `postWithCancelAsync` instead
-/// until that lands.
-@stable(since = "1.0")
+/// until that lands.  Downgraded to `@experimental` for the same reason.
+@experimental
 pub async func postWithTimeoutAsync(url: in String, body: in String, timeoutMs: in Int): Result[HttpResponse, HttpError]
   requires: timeoutMs > 0
 {

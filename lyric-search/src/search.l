@@ -13,13 +13,17 @@
 //! `com.meilisearch.sdk`, etc.) — both engines speak plain HTTP + JSON, so
 //! the implementation is pure Lyric over `Std.Http` / `Std.Json`. It is
 //! built directly on `Std.Http` rather than the higher-level `Std.Rest`:
-//! `Std.Rest.RestClient` still throws at runtime today (`fullUrl` calls a
-//! `String.charAt` method that isn't part of the current `Std.String` API —
-//! see this file's own `joinUrl`, which uses index syntax instead — a
-//! `Std.Rest`-internal bug, unrelated to `Std.Http`). `Std.Http` itself no
-//! longer has the cross-package free-async-function/interface-dispatch
-//! defects this comment used to describe — see `HttpConfig`'s doc comment
-//! below (#6358). See README.md "Platform parity" for why the earlier
+//! `Std.Rest.RestClient` still throws at runtime today. `fullUrl` calls
+//! `.charAt(...)` via UFCS, but `rest.l` never `import`s `Std.String` (the
+//! package `charAt` is actually declared in — see this file's own
+//! `joinUrl`, which uses index syntax instead and needs no such import) —
+//! the call fails at runtime with "unsupported method 'charAt' on the
+//! receiver type", not a compile-time error, since the unqualified UFCS
+//! call has no visible candidate to resolve against. A `Std.Rest`-internal
+//! bug, unrelated to `Std.Http`. `Std.Http` itself no longer has the
+//! cross-package free-async-function/interface-dispatch defects this
+//! comment used to describe — see `HttpConfig`'s doc comment below
+//! (#6358). See README.md "Platform parity" for why the earlier
 //! `extern package` native-SDK approach was abandoned (issues #5067,
 //! #5324, #5408).
 //!

@@ -123,10 +123,6 @@ extern type MemStreamT = "System.IO.MemoryStream"
 func connOpen(c: in DbConn): Unit = ()
 
 @externInstance
-@externTarget("System.Data.Common.DbConnection.Close")
-func connClose(c: in DbConn): Unit = ()
-
-@externInstance
 @externTarget("System.Data.Common.DbConnection.CreateCommand")
 func connCreateCommand(c: in DbConn): DbCmd = ()
 

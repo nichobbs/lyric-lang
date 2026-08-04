@@ -76,3 +76,31 @@ test "connectFromEnv: an out-of-range POOLSIZE is clamped, not passed through to
     case Err(e) -> assertEqual(e.code, "CONNECT_ERROR", "error code")
   }
 }
+
+// connectFromEnv's scheme sniffing (postgres:// / postgresql:// / sqlite:// /
+// sqlite::memory:) is now duplicated in db.l rather than delegated to
+// Db.Kernel.Net.connectDsn (needed so the env-var-read poolSize/
+// connectTimeoutMs/password can flow into the right branch) — these two
+// cases pin the sqlite:: and unrecognized-scheme branches so the
+// duplication can't silently drift from connectDsn's behaviour.
+test "connectFromEnv: sqlite::memory: scheme dispatches to the SQLite driver and succeeds" {
+  setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "sqlite::memory:")
+  match Db.connectFromEnv() {
+    case Err(e) -> assertTrue(false, "connect failed: " + e.message)
+    case Ok(conn) -> conn.close()
+  }
+}
+
+test "connectFromEnv: an unrecognized DSN scheme returns a CONFIG_ERROR, not a panic" {
+  setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "mysql://user:pass@127.0.0.1:3306/db")
+  match Db.connectFromEnv() {
+    case Ok(conn) -> {
+      conn.close()
+      assertTrue(false, "expected an unrecognized-scheme error")
+    }
+    case Err(e) -> {
+      assertEqual(e.code, "CONFIG_ERROR", "error code")
+      assertTrue(e.message.length > 0, "error message should be non-empty")
+    }
+  }
+}

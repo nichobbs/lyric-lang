@@ -296,11 +296,16 @@ func envIntClamped(suffix: in String, dflt: in Int, lo: in Int, hi: in Int): Int
 ///
 /// Also reads `LYRIC_CONFIG_DB_CONNECTION_POOLSIZE` (default `10`, clamped
 /// to 1-100), `..._CONNECTTIMEOUTMS` (default `5000`, clamped to
-/// 100-30000), and `..._PASSWORD` (default `""`, `@sensitive`) — matching
-/// README.md "Configuration". These previously had no effect: this
-/// function delegated to `connect`, which always used `connectDsn`'s
-/// hardcoded `poolSize=10, connectTimeoutMs=5000, password=""` regardless
-/// of what an operator configured (#6359). `LYRIC_CONFIG_DB_CONNECTION_
+/// 100-30000), and `..._PASSWORD` (default `""`) — matching README.md
+/// "Configuration". These previously had no effect: this function
+/// delegated to `connect`, which always used `connectDsn`'s hardcoded
+/// `poolSize=10, connectTimeoutMs=5000, password=""` regardless of what
+/// an operator configured (#6359). Unlike a `config { }` block's
+/// `@sensitive` field annotation (docs/25-config-blocks.md §9 — itself
+/// declared but inert in v1: no actual log/diagnostic redaction is
+/// implemented anywhere yet), `password` here is a plain local `val` with
+/// no annotation support at all — nothing redacts it if it ends up in a
+/// `DbError.message` or elsewhere. `LYRIC_CONFIG_DB_CONNECTION_
 /// QUERYTIMEOUTMS` is still not wired to anything — no kernel code sets
 /// `DbCommand.CommandTimeout` yet; that remains a tracked follow-up.
 @stable(since = "0.1")

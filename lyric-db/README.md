@@ -137,7 +137,13 @@ All fields are read from env vars with the prefix `LYRIC_CONFIG_DB_CONNECTION_`:
 | `QUERYTIMEOUTMS` | `30000` | Query timeout in ms (100–300000) |
 | `PASSWORD` | `""` | Password override (empty = use URL) |
 
-`PASSWORD` is marked `@sensitive` and will not appear in logs or diagnostics.
+`POOLSIZE`/`CONNECTTIMEOUTMS`/`PASSWORD` are read by `connectFromEnv`
+(#6359). `QUERYTIMEOUTMS` is parsed nowhere yet — no kernel code sets
+`DbCommand.CommandTimeout` — tracked as a follow-up. `PASSWORD` is **not**
+currently redacted from logs/diagnostics: nothing in this library
+implements that today (a `config { }` block's `@sensitive` field
+annotation exists per docs/25-config-blocks.md, but is declared-and-inert
+in v1, and doesn't apply to a plain env-var read like this one regardless).
 
 ## DbConnection interface
 
