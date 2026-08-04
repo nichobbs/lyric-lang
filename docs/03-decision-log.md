@@ -22354,7 +22354,7 @@ checks on `--target jvm`) against the tightened check.
 **Related:** #6361, docs/42, docs/45, `lyric-stdlib/std/process.l`,
 `lyric-grpc/src/_kernel/net/grpc_kernel.l`.
 
-### D-progress-722 — Third companion gap from D-progress-721's tightened check: `lyric-testing`'s own test suite hit a bare-import tail-segment alias collision
+### D-progress-724 — Third companion gap from D-progress-723's tightened check: `lyric-testing`'s own test suite hit a bare-import tail-segment alias collision
 
 **Status:** Shipped.
 
@@ -22371,7 +22371,7 @@ aliases resolved the tail key `Testing` to `Std.Testing` — imported first in
 the file's import list — so every `Testing.newTestContext()`-shaped call
 site in the test file was silently rewritten to
 `Std.Testing.newTestContext`, a name that doesn't exist in that module.
-Before D-progress-721 this fell through `resolveExprPath`'s blanket
+Before D-progress-723 this fell through `resolveExprPath`'s blanket
 `TyError` leniency with no diagnostic, so the affected `test` blocks
 type-checked (and ran) without ever exercising real assertions; the
 tightened `T0020` check correctly surfaced the collision as a hard compile
@@ -22391,11 +22391,11 @@ clause — so the tail key `Testing` now resolves solely to the local
 all 39 `Testing.TestingTests` cases pass (previously 63 `T0020` compile
 errors, zero tests run).
 
-**Related:** #6361, D-progress-721, `lyric-testing/tests/testing_tests.l`,
+**Related:** #6361, D-progress-723, `lyric-testing/tests/testing_tests.l`,
 `lyric-compiler/lyric/alias_rewriter.l` (`collectAliases` first-wins
 tail-collision behavior, tracked for disambiguation follow-up as #3250).
 
-### D-progress-723 — Fourth companion gap from D-progress-721's tightened check: `lyric-generator-sdk` called a `Std.Console` function that never existed (`readAll`)
+### D-progress-725 — Fourth companion gap from D-progress-723's tightened check: `lyric-generator-sdk` called a `Std.Console` function that never existed (`readAll`)
 
 **Status:** Shipped.
 
@@ -22404,10 +22404,10 @@ stdin/stdout driver for custom source generators, `docs/40`) called
 `Console.readAll()` (aliased `Std.Console`) to read the whole JSON request
 piped over stdin. `Std.Console` never declared a `readAll` function — only
 `print`/`println`/`error`/`readLine` — so this call had always been dead on
-arrival; the tightened `T0020` check (D-progress-721) correctly flagged it
+arrival; the tightened `T0020` check (D-progress-723) correctly flagged it
 as `error[T0020] 542:14: unknown name 'Std.Console.readAll'`, failing the
 `stdlib-builds` CI job on PR #6373 (`lyric-generator-sdk` is one of the
-tier-0 ecosystem libraries that job builds). Before D-progress-721 this
+tier-0 ecosystem libraries that job builds). Before D-progress-723 this
 call fell through `resolveExprPath`'s blanket `TyError` leniency with no
 diagnostic, so `lyric-generator-sdk` silently "built" a `runGenerator` that
 could never actually have worked at runtime (a `MissingMethodException`
@@ -22450,6 +22450,6 @@ observation that stdlib core-I/O test coverage has pre-existing gaps —
 automating stdin injection for `lyric test`/self-test consumers is a
 tracked follow-up, not something improvised here as a one-off.
 
-**Related:** #6361, D-progress-721, D-progress-722, `lyric-stdlib/std/console.l`,
+**Related:** #6361, D-progress-723, D-progress-724, `lyric-stdlib/std/console.l`,
 `lyric-generator-sdk/src/generator_sdk.l`, `docs/40-source-generators.md`,
 `docs/57-stdlib-ecosystem-library-review.md` (stdlib core-I/O test gaps).
