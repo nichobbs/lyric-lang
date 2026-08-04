@@ -181,6 +181,16 @@ pub record SymbolTable {
   /// indistinguishable from a genuine unknown name to
   /// `resolveExprPath`'s qualified-name check.
   externBlockMembers: Map[String, Bool]
+  /// `<originPackage>` present ⇒ at least one ordinary symbol (via
+  /// `symTableAdd`, any `DeclKind`) was registered under that package.
+  /// Side index so `symTablePackageHasAnySymbol` (consulted on every
+  /// multi-segment qualified reference the checker resolves, #6361) is O(1)
+  /// instead of a linear scan over `symbols`.
+  symbolPackages: Map[String, Bool]
+  /// `<originPackage>|<name>` present ⇒ a symbol named `name` was registered
+  /// under that package. Side index so `symTablePackageHasMember` is O(1)
+  /// instead of a linear scan over `symbols`.
+  symbolPackageMembers: Map[String, Bool]
   /// `<originPackage>` present ⇒ that package contributed at least one
   /// `extern package { ... }` block member to `externBlockMembers` (#6378).
   /// A package whose file consists ENTIRELY of `extern package { ... }`
@@ -231,7 +241,9 @@ pub func newSymbolTable(): SymbolTable {
     methodSigIndex = newMap(),
     memberCompleteTypes = newMap(),
     externBlockMembers = newMap(),
-    externBlockPackages = newMap()
+    externBlockPackages = newMap(),
+    symbolPackages = newMap(),
+    symbolPackageMembers = newMap()
   )
 }
 
@@ -383,6 +395,13 @@ pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
     }
     case _ -> {
     }
+  }
+  if not tbl.symbolPackages.containsKey(sym.originPackage) {
+    tbl.symbolPackages.add(sym.originPackage, true)
+  }
+  val memberKey = sym.originPackage + "|" + sym.name
+  if not tbl.symbolPackageMembers.containsKey(memberKey) {
+    tbl.symbolPackageMembers.add(memberKey, true)
   }
   tbl.symbols.add(sym)
 }

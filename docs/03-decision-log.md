@@ -22522,3 +22522,44 @@ to regress); its `--features jvm` build hits an unrelated, pre-existing
 `lyric-compiler/lyric/type_checker/typechecker_symbols.l`,
 `lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
 `lyric-aws-xray/src/_kernel/xray_kernel_jvm.l`.
+
+### D-progress-727 — `symTablePackageHasAnySymbol`/`symTablePackageHasMember` indexed to O(1), closing a SUGGESTION raised on three separate PR #6373 review passes
+
+**Status:** Shipped.
+
+**The suggestion.** `symTablePackageHasAnySymbol`/`symTablePackageHasMember`
+(D-progress-723's `T0020` gate, `typechecker_exprs.l`) each did an `O(n)`
+linear scan over `SymbolTable.symbols` — invoked on *every* multi-segment
+qualified reference the checker resolves, which after alias-rewriting is
+most `Std.X.y(...)`/`Pkg.X.y(...)` call sites in the codebase. Three
+independent `claude-review` passes on PR #6373 flagged this as a
+non-blocking follow-up, each noting the PR had already made the opposite,
+`O(1)` choice for the analogous extern-block check
+(`externBlockMembers`/`externBlockPackages`, also D-progress-723).
+
+**The fix.** Added two side indices to `SymbolTable`
+(`typechecker_symbols.l`), populated at the single call site that ever
+appends to `symbols` (`symTableAdd`, confirmed via a repo-wide grep — no
+other code path adds to `tbl.symbols`): `symbolPackages: Map[String, Bool]`
+(keyed by `originPackage`, mirroring `externBlockPackages`) and
+`symbolPackageMembers: Map[String, Bool]` (keyed by `originPackage + "|" +
+name`, mirroring `externBlockMembers`). `symTablePackageHasAnySymbol` and
+`symTablePackageHasMember` now do a single `Map.containsKey` each instead of
+scanning the full symbol list — this also subsumes the reviewers'
+secondary suggestion (collapsing the two near-identical scans into one
+pass), since two `O(1)` lookups have nothing left to gain from being
+merged.
+
+**Verification.** Full regression sweep after rebuilding via `make lyric`:
+`typechecker_self_test.l` 289/289 (unchanged pass count — pure performance
+change, no behavior change), `alias_rewriter_self_test.l` 37/37,
+`mono_self_test.l` 54/54, `weaver_self_test.l` 46/46,
+`modechecker_self_test.l` 92/92, `parser_self_test.l` 126/126,
+`contract_elaborator_self_test.l` 36/36, `lyric-testing` 39/39,
+`lyric-generator-sdk` builds clean, and the `#6378` all-extern-block-package
+end-to-end repro (typo → `T0020`, correct name → clean) still behaves
+identically.
+
+**Related:** #6361, D-progress-723, D-progress-726,
+`lyric-compiler/lyric/type_checker/typechecker_symbols.l`,
+`lyric-compiler/lyric/type_checker/typechecker_exprs.l`.

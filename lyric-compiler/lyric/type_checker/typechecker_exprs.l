@@ -1741,29 +1741,23 @@ func inferMember(
 // collapsed multi-segment `EPath` (see `resolveExprPath` below) — used to
 // gate the unknown-qualified-name diagnostic so it only ever fires against a
 // package the checker has full member knowledge of, never a placeholder.
+//
+// O(1) via `SymbolTable.symbolPackages`, a side index `symTableAdd` populates
+// alongside `symbols` (review follow-up on PR #6373: this and
+// `symTablePackageHasMember` were originally an O(n) scan over `symbols` on
+// every multi-segment qualified reference the checker resolves — the same
+// tradeoff `externBlockMembers`/`externBlockPackages` already made for the
+// extern-block side of this same check).
 func symTablePackageHasAnySymbol(tbl: in SymbolTable, pkg: in String): Bool {
-  var i = 0
-  while i < tbl.symbols.count {
-    if tbl.symbols[i].originPackage == pkg {
-      return true
-    }
-    i = i + 1
-  }
-  false
+  tbl.symbolPackages.containsKey(pkg)
 }
 
 // #6361: does package `pkg` declare a symbol named `name` (any kind, any
 // arity)?  Arity-blind by design — the caller only wants to know whether the
-// trailing segment names anything real in that package at all.
+// trailing segment names anything real in that package at all. O(1) via
+// `SymbolTable.symbolPackageMembers` (see `symTablePackageHasAnySymbol`).
 func symTablePackageHasMember(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
-  var i = 0
-  while i < tbl.symbols.count {
-    if tbl.symbols[i].originPackage == pkg and tbl.symbols[i].name == name {
-      return true
-    }
-    i = i + 1
-  }
-  false
+  tbl.symbolPackageMembers.containsKey(pkg + "|" + name)
 }
 
 func resolveExprPath(
