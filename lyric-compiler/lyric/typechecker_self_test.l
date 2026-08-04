@@ -2850,3 +2850,33 @@ test "field-style access to an opaque type's own field, inside its same-named ac
   assertTrue(not hasDiagCode(cr, "T0116"), "opaque field read inside its own same-named accessor: no T0116")
   assertEqualInt(diagCount(cr), 0, "opaque field read inside its own same-named accessor: no diagnostics at all")
 }
+
+// #6382 (review follow-up on #6362): the same-package opaque exemption above
+// must NOT extend to an IMPORTED opaque type's own accessor. Outside its
+// declaring package, an opaque type's representation is never legitimately
+// readable field-style at all (that's the whole point of `opaque` — see this
+// repo's glossary), so `cfg.path` here can only mean the UFCS function
+// `Config.path`, exactly like the union case above. Confirmed end-to-end
+// against the real `Std.App.Config` shape before this fix: compiled cleanly
+// and crashed at runtime with `InvalidProgramException`, the exact bug class
+// #6362 exists to close.
+test "field-style access to an imported opaque type's accessor is T0116, not exempted like the local case (#6382)" {
+  val imp = importedItemsOf(
+    "package Lib\npub opaque type Config {\n  path: String\n}\npub func Config.path(config: in Config): String {\n  return config.path\n}\n"
+  )
+  val src = "package App\nimport Lib\nfunc consume(cfg: in Config): String { cfg.path }\n"
+  val cr = checkWithImports(parse(src).file, imp)
+  assertTrue(hasDiagCode(cr, "T0116"), "field-style access to an imported opaque type's UFCS-only accessor: T0116")
+  assertTrue(diagMessageFor(cr, "T0116").contains("Config"), "T0116 names the receiver type")
+  assertTrue(diagMessageFor(cr, "T0116").contains("path"), "T0116 names the field")
+}
+
+test "call-style access to the same imported opaque accessor still compiles cleanly (#6382 regression guard)" {
+  val imp = importedItemsOf(
+    "package Lib\npub opaque type Config {\n  path: String\n}\npub func Config.path(config: in Config): String {\n  return config.path\n}\n"
+  )
+  val src = "package App\nimport Lib\nfunc consume(cfg: in Config): String { cfg.path() }\n"
+  val cr = checkWithImports(parse(src).file, imp)
+  assertTrue(not hasDiagCode(cr, "T0116"), "call-style cfg.path(): no T0116")
+  assertEqualInt(diagCount(cr), 0, "call-style cfg.path(): no diagnostics at all")
+}

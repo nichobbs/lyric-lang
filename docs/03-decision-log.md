@@ -22771,3 +22771,70 @@ is untouched. Full regression sweep after `make lyric`:
 **Related:** #6362, #6361, D-progress-723, docs/59 §5.1 A4/A5, D037,
 `lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
 `lyric-stdlib/std/errors.l`.
+
+### D-progress-729 — Companion gap from D-progress-728, found in review (#6382): the opaque-type exemption reopened #6362 for every IMPORTED opaque type
+
+**Status:** Shipped.
+
+**The bug.** D-progress-728's `isOpaqueTypeId` guard exempted the new T0116
+dot-named-only check for *every* opaque-type receiver, unconditionally. The
+guard's real purpose was narrower: a same-package accessor's own body
+(`pub func Config.path(config: in Config): String { config.path }`,
+`lyric-stdlib/std/app.l`'s real shape) reads its own opaque type's private
+field, which `fieldsOfRecord` can never enumerate (opaque fields are visible
+only within the declaring package via the separate `ctorAllFields`
+construction path) — so `inferMemberBase` always returns `TyError` there
+regardless of whether the field genuinely exists, and the dot-named check
+can't tell that apart from genuine UFCS-only access. But the guard did
+nothing to scope this to the SAME package: for an opaque type consumed from
+a *different* package (e.g. a caller doing `cfg.path` on a `Std.App.Config`
+obtained from `Std.App.withConfig(...)`), the exact same silent leniency
+applied — reopening #6362's `InvalidProgramException` for every imported
+opaque type's accessor. Confirmed end-to-end against the real
+`Std.App.Config` shape before this fix: `Std.App.withConfig(p)` →
+`match ... { case Ok(cfg) -> cfg.path; ... }` (missing parens) built cleanly
+and crashed at runtime with the exact same `InvalidProgramException` D-progress-728
+exists to close.
+
+**Why this matters more for opaque types than it first appears.** An opaque
+type's whole design point (this repo's glossary: "a type whose representation
+is invisible outside its package") means a field on an opaque type imported
+from another package is *never* legitimately readable field-style at all —
+unlike a record, where a field could theoretically be `pub` and readable
+cross-package, an opaque field has no such escape hatch. So for an imported
+opaque receiver, a `sigs.containsKey(tname + "." + name)` hit is exactly as
+unambiguous a "this can only be the UFCS function" signal as it is for a
+record or union — there was no principled reason for the guard to cover this
+case, only an accidental one (the same helper function happened to be
+reached via both paths).
+
+**The fix.** `isOpaqueTypeId` now also checks the matched `DKOpaque` symbol's
+`isImported` flag, mirroring the exact `not sym.isImported` "declared in the
+file being checked" test this same file already uses for `memberCompleteTypes`
+(docs/59 A5) and for T0100's "cannot construct opaque type outside its
+declaring package" diagnostic just above it. The guard now only exempts a
+LOCAL opaque type's own accessor body — an imported opaque type's field
+access falls through to the same T0116 check as records/unions, exactly as
+D-progress-728 intended before the unconditional guard accidentally widened
+it.
+
+**Verification.** Two new self-tests in `typechecker_self_test.l`, mirroring
+the existing local-opaque-accessor regression guard but with the fixture
+IMPORTED via `importedItemsOf` instead of declared locally: field-style
+access to the imported accessor now raises T0116 naming the type and field;
+the call form (`cfg.path()`) on the identical fixture stays fully clean.
+Re-verified the real `Std.App.Config` end-to-end repro directly: builds
+with `error[T0116] ...: no field 'path' on type 'Config' — 'path' is a
+function; call it as 'path(...)'` after this fix (previously: silent build,
+`InvalidProgramException` at runtime). Confirmed the pre-existing local-opaque
+regression guard (`Config.path`'s own body) still passes unchanged, and
+`lyric-stdlib`'s own full build (which contains that exact same-package
+shape in `std/app.l`) still builds clean. Full regression sweep after
+`make lyric`: `typechecker_self_test.l` 296/296 (2 new for #6382),
+`modechecker_self_test.l` 92/92, `parser_self_test.l` 126/126,
+`mono_self_test.l` 54/54, `weaver_self_test.l` 46/46,
+`contract_elaborator_self_test.l` 36/36, `alias_rewriter_self_test.l` 37/37.
+
+**Related:** #6382, #6362, D-progress-728, T0100, T0102, docs/59 §5.1 A5,
+`lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
+`lyric-stdlib/std/app.l`.

@@ -1692,23 +1692,38 @@ func maybeUnknownMemberDiag(
   }
 }
 
-// True when `tid` names an `opaque type` declaration. Opaque-type field
-// reads are NOT covered by `fieldsOfRecord`/`fieldsOfRecordInstantiated`
-// (those only walk `DKRecord`/`DKExposedRec` — opaque fields are visible
-// only within the declaring package, via a separate `ctorAllFields`
-// construction-only path), so `inferMemberBase` always returns `TyError`
-// for a field read on an opaque receiver regardless of whether the field
-// genuinely exists. #6362's dot-named-only check must not run for opaque
-// receivers: a same-named accessor UFCS function wrapping a private field
-// (`pub func Config.path(config: in Config): String { config.path }`, the
-// exact shape in `lyric-stdlib/std/app.l`) is a legitimate, common pattern,
-// and without this guard the field read *inside* the accessor's own body
-// would misfire as "field-style access to a UFCS-only function".
+// True when `tid` names an `opaque type` declaration that is LOCAL to the
+// file being checked (declared there, not imported from another package).
+// Opaque-type field reads are NOT covered by
+// `fieldsOfRecord`/`fieldsOfRecordInstantiated` (those only walk
+// `DKRecord`/`DKExposedRec` — opaque fields are visible only within the
+// declaring package, via a separate `ctorAllFields` construction-only
+// path), so `inferMemberBase` always returns `TyError` for a field read on
+// an opaque receiver regardless of whether the field genuinely exists.
+// #6362's dot-named-only check must not run for a LOCAL opaque receiver: a
+// same-named accessor UFCS function wrapping a private field (`pub func
+// Config.path(config: in Config): String { config.path }`, the exact shape
+// in `lyric-stdlib/std/app.l`) is a legitimate, common pattern, and without
+// this guard the field read *inside* the accessor's own body would misfire
+// as "field-style access to a UFCS-only function".
+//
+// Scoped to `not isImported` (mirroring T0100/T0102's declaring-package
+// check just above): a field on an opaque type IMPORTED from another
+// package is never legitimately readable field-style from outside its
+// declaring package in the first place — the type's whole design point is
+// that its representation is invisible outside its package (see this
+// repo's glossary). So for an imported opaque receiver, a `sigs` hit is
+// just as unambiguous a "this is UFCS-only" signal as it is for a record
+// or union; only the SAME-package accessor-body case needs the exemption
+// (review follow-up on #6362, filed as #6382 — a real end-to-end repro via
+// `Std.App.Config` confirmed the unscoped guard reopened the exact
+// `InvalidProgramException` bug this PR fixes for every cross-package
+// opaque type).
 func isOpaqueTypeId(tbl: in SymbolTable, tid: in TypeId): Bool {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
-      case DKOpaque(did, _) -> if typeIdEq(did, tid) { return true }
+      case DKOpaque(did, _) -> if typeIdEq(did, tid) and not tbl.symbols[i].isImported { return true }
       case _ -> {
       }
     }
