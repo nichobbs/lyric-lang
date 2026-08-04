@@ -13,13 +13,15 @@
 //! `com.meilisearch.sdk`, etc.) — both engines speak plain HTTP + JSON, so
 //! the implementation is pure Lyric over `Std.Http` / `Std.Json`. It is
 //! built directly on `Std.Http` rather than the higher-level `Std.Rest`:
-//! `Std.Rest`'s `RestClient` verbs throw `System.MissingMethodException`
-//! at runtime (a pre-existing `Std.Http`/`Std.Rest` cross-package
-//! free-async-function defect, documented in detail in
-//! `lyric-lambda/src/dispatch.l`'s header and confirmed independently
-//! here — see `HttpConfig`'s doc comment below). See README.md "Platform
-//! parity" for why the earlier `extern package` native-SDK approach was
-//! abandoned (issues #5067, #5324, #5408).
+//! `Std.Rest.RestClient` still throws at runtime today (`fullUrl` calls a
+//! `String.charAt` method that isn't part of the current `Std.String` API —
+//! see this file's own `joinUrl`, which uses index syntax instead — a
+//! `Std.Rest`-internal bug, unrelated to `Std.Http`). `Std.Http` itself no
+//! longer has the cross-package free-async-function/interface-dispatch
+//! defects this comment used to describe — see `HttpConfig`'s doc comment
+//! below (#6358). See README.md "Platform parity" for why the earlier
+//! `extern package` native-SDK approach was abandoned (issues #5067,
+//! #5324, #5408).
 //!
 //! Typical usage:
 //!
@@ -519,64 +521,30 @@ func jsonScalarToString(v: in JsonElement): String {
 }
 
 // ─── HTTP transport (direct Std.Http, not Std.Rest) ──────────────────────────
-// `Std.Rest.RestClient`'s `get`/`post`/`put`/`patch`/`delete` are plain
-// top-level `pub async func`s. They throw `System.MissingMethodException`
-// at runtime when reached through `Std.Rest`'s own `sendRequest`, which
-// itself calls `Std.Http`'s free async functions (`sendAsync`/`getAsync`/
-// `postAsync`) — the exact cross-package free-async-function defect
-// `lyric-lambda/src/dispatch.l`'s header comment documents in detail
-// (reproduced there with a 10-line, zero-Lambda-code repro). This package
-// builds its HTTP layer directly on `Std.Http` instead — but two more,
-// previously-undocumented defects in `Std.Http`/interface-async-dispatch
-// were found and characterized while doing that (each reproduced
-// standalone with a ~15-line repro carrying zero Search code):
+// Update (#6358): the three `Std.Http`/interface-async-dispatch defects this
+// section used to document — (1) `HttpClient.send(req)` throwing
+// "unsupported method 'send' on the receiver type" from another package
+// when called inside an `async func`, (2) any `async func` that itself
+// `await`s a call dispatched through an interface throwing
+// `System.InvalidProgramException`, and (3) `HttpResponse.bodyText`
+// throwing an uncatchable `System.MissingMethodException` cross-package —
+// were re-verified against current `main` with live-server repros
+// (`client.send(req)` and `HttpResponse.bodyText` both called from inside
+// an `async func` in a standalone cross-assembly package) and **no longer
+// reproduce**. `sendCatching`/`sendRequest`/`sendRequestRaw`/the
+// `index`/`search`/`searchSimple`/`delete`/`suggest` convenience wrappers
+// below are still plain (non-`async`) funcs — that shape is harmless and
+// not worth re-churning — but the `try`/`catch Bug` wrapping in
+// `sendCatching` is no longer covering a live compiler defect, just
+// ordinary transport-error handling.
 //
-//   1. `HttpClient.send(req)` (an *interface* method, not a free
-//      function) ALSO throws at runtime ("unsupported method 'send' on
-//      the receiver type...") when called from any package other than
-//      `Std.Http` itself — from *inside* an `async func`. Calling it from
-//      a plain (non-async) function wrapped in `try { await
-//      client.send(req) } catch Bug as bug { ... }` reliably catches it
-//      as an ordinary `Bug` — V0012 forbids that same `try`/`await`
-//      combination inside an `async func` ("await inside a try/catch/
-//      finally... emits invalid IL"), which is *why* `sendRequest`/
-//      `sendRequestRaw` below (and `sendCatching`, which they share) are
-//      plain funcs, not `async func`, despite calling an async interface
-//      method internally (a direct call to an async function "awaits in
-//      place" from a synchronous caller — see
-//      docs/01-language-reference.md's async section). WORKED AROUND.
-//   2. An `async func` that itself `await`s a call dispatched through
-//      *any* interface (this reproduces with `Search`'s own
-//      `SearchClient`, not just `Std.Http`'s `HttpClient` — it is not
-//      `Std.Http`-specific) throws `System.InvalidProgramException` (bad
-//      IL) at runtime. Calling the same interface method from a plain
-//      (non-async) function does not. This is *why* the convenience
-//      wrappers below (`index`/`search`/`searchSimple`/`delete`/
-//      `suggest`) are plain funcs rather than `async func`, even though
-//      each is a one-line forward to `client.<method>(...)`. WORKED
-//      AROUND for this package's own call sites; a caller who writes
-//      their *own* `async func` wrapping a raw `client.search(...)` call
-//      (bypassing these helpers) can still hit it.
-//   3. `HttpResponse.bodyText(response)` throws a raw
-//      `System.MissingMethodException` (not a Lyric `Bug`) under the same
-//      cross-package condition as defect 1 — `try`/`catch Bug` does NOT
-//      catch it, in an `async func` or otherwise. NOT WORKED AROUND: no
-//      catchable failure mode was found, and `HttpResponse`'s internals
-//      are opaque to this package, so there is no lower-level escape
-//      hatch either. Reading a real response body from outside
-//      `Std.Http` is not currently possible. `readJsonBody` below is
-//      therefore unavoidably a hard crash if a request actually reaches a
-//      live server that returns a body — every code path this package's
-//      own tests exercise fails before reaching that point (connection
-//      refused at `send`, caught by defect 1's workaround), so this crash
-//      is untested-but-real, not merely theoretical, and is the one
-//      remaining live-connectivity blocker.
-//
-// None of the three can be fixed from this directory (all are
-// `lyric-compiler`/`lyric-stdlib` bugs, each reproduced with zero Search
-// code). This also means `Search` cannot use `Std.Rest.RestAuth`/
-// `RestClient`'s base-URL-plus-headers convenience; `HttpConfig` below is
-// this package's own (much smaller) equivalent.
+// A different, narrower bug remains open in `Std.Http`'s *timeout* family
+// specifically (`sendWithTimeoutAsync`/`getWithTimeoutAsync`/
+// `postWithTimeoutAsync`; this package does not call them) — see those
+// functions' doc comments in `lyric-stdlib/std/http.l` and issue #6367 /
+// #2494's family. `Search` builds its HTTP layer directly on `Std.Http`
+// rather than `Std.Rest.RestClient`/`RestAuth`; `HttpConfig` below is this
+// package's own base-URL-plus-headers convenience.
 /// Everything a backend needs to send an authenticated request: the
 /// shared `HttpClient`, the connection's base URL, and an optional single
 /// auth header (`authHeaderName` empty means no auth header is sent).
@@ -660,11 +628,10 @@ func buildRequest(
   }
 }
 
-/// Call `client.send(req)`, catching the cross-package `HttpClient.send`
-/// dispatch defect described at the top of this file (defect 1). Must be
-/// a plain (non-`async`) function: V0012 rejects `await` inside `try` in
-/// an `async func`, but a synchronous caller may freely `await` an async
-/// call ("awaits in place").
+/// Call `client.send(req)`, mapping any transport-level failure to a
+/// `ConnectionFailed`. Must be a plain (non-`async`) function: V0012
+/// rejects `await` inside `try` in an `async func`, but a synchronous
+/// caller may freely `await` an async call ("awaits in place").
 func sendCatching(client: in HttpClient, req: in HttpRequest, url: in String): Result[HttpResponse, HttpError] {
   return try {
     await client.send(req)
@@ -672,8 +639,7 @@ func sendCatching(client: in HttpClient, req: in HttpRequest, url: in String): R
     Err(
       error = ConnectionFailed(
         url = url,
-        message = "Std.Http cross-package `HttpClient.send` dispatch failure (compiler defect, see this file's header): " +
-          bug.message
+        message = bug.message
       )
     )
   }
@@ -719,14 +685,6 @@ pub func sendRequestRaw(
 
 /// Read a response body and parse it as JSON, tagging any failure with
 /// `code`.  Caller MUST `disposeJson` the returned doc.
-///
-/// UNLIKE `sendRequest`/`sendRequestRaw`, this has no defensive wrapper:
-/// `HttpResponse.bodyText` throws a raw `System.MissingMethodException`
-/// (defect 2 above), which `try`/`catch Bug` cannot catch on any target.
-/// Reaching this function against a real, reachable server is a hard
-/// crash today. Every path this package's tests exercise fails at
-/// `sendRequest`/`sendCatching` first (closed port / no configured
-/// server), so the crash is real but not exercised by CI.
 pub async func readJsonBody(response: in HttpResponse, code: in String): Result[JsonDoc, SearchError] {
   match await HttpResponse.bodyText(response) {
     case Err(e) -> return Err(error = SearchError(message = IOError.message(e), code = code, statusCode = 0))

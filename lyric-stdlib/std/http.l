@@ -1054,16 +1054,35 @@ pub async func sendWithCancelAsync(
 /// `CancellationTokenSource` fires after `timeoutMs`; the request is
 /// cancelled, surfacing as `ConnectionFailed` with a "cancelled"
 /// message.  The source is disposed when the call returns.
+///
+/// Disposal is inlined rather than `defer`red: `defer` desugars to a
+/// `try/finally` around every statement that follows it, and the MSIL
+/// emitter cannot emit an async state-machine resume label inside a CLR
+/// protected region (#2737) — `await`ing a genuinely async callee (as
+/// `hostSendWithCancelSafe` is) after a `defer` here would land its resume
+/// label inside that synthesized `finally`, producing an invalid program.
+/// `hostSendWithCancelSafe` never lets an exception escape (it wraps its
+/// own `await` in `try/catch Bug` and returns `Result`), so disposing
+/// `src` unconditionally right after the `await` is equivalent to what
+/// `defer` would have done.
+///
+/// KNOWN BUG (#6367, the `#2494` generic-signature-degradation family):
+/// this function currently throws `System.InvalidProgramException` at
+/// runtime regardless of the `defer` fix above — a separate MSIL emitter
+/// defect where the `await`ed `Task<Result[HttpResponse, HttpError]>`'s
+/// `GetAwaiter`/`GetResult` resolve against the degraded `Task<object>`
+/// instead of the correctly-closed generic instantiation. Root-caused but
+/// not yet fixed; see #6367 for the confirmed repro and diagnosis. Callers
+/// needing a timeout should build their own `CancellationTokenSource`
+/// around `sendWithCancelAsync`, which does not exhibit this bug.
 @stable(since = "1.0")
 pub async func sendWithTimeoutAsync(request: in HttpRequest, timeoutMs: in Int): Result[HttpResponse, HttpError]
   requires: timeoutMs > 0
 {
   val src = makeCancelSourceTimeout(timeoutMs)
   val tok = sourceToken(src)
-  defer {
-    disposeSource(src)
-  }
   val result = await HostHttp.hostSendWithCancelSafe(HostHttp.hostDefaultClient(), request.handle, tok)
+  disposeSource(src)
   match result {
     case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
     case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
@@ -1085,17 +1104,20 @@ pub async func getWithCancelAsync(url: in String, token: in CancellationToken): 
   }
 }
 
-/// GET a URL with a timeout.  Same shape as `sendWithTimeoutAsync`.
+/// GET a URL with a timeout.  Same shape as `sendWithTimeoutAsync`; see
+/// that function's doc comment for why disposal is inlined rather than
+/// `defer`red, and for the still-open `InvalidProgramException` bug
+/// (#6367) this function shares — use `getWithCancelAsync` instead until
+/// that lands.
 @stable(since = "1.0")
 pub async func getWithTimeoutAsync(url: in String, timeoutMs: in Int): Result[HttpResponse, HttpError]
   requires: timeoutMs > 0
 {
   val src = makeCancelSourceTimeout(timeoutMs)
   val tok = sourceToken(src)
-  defer {
-    disposeSource(src)
-  }
-  return await getWithCancelAsync(url, tok)
+  val result = await getWithCancelAsync(url, tok)
+  disposeSource(src)
+  return result
 }
 
 /// POST a UTF-8 text body to a URL with explicit cancellation.
@@ -1115,17 +1137,20 @@ pub async func postWithCancelAsync(
   }
 }
 
-/// POST a UTF-8 text body to a URL with a timeout.
+/// POST a UTF-8 text body to a URL with a timeout.  See
+/// `sendWithTimeoutAsync`'s doc comment for why disposal is inlined
+/// rather than `defer`red, and for the still-open `InvalidProgramException`
+/// bug (#6367) this function shares — use `postWithCancelAsync` instead
+/// until that lands.
 @stable(since = "1.0")
 pub async func postWithTimeoutAsync(url: in String, body: in String, timeoutMs: in Int): Result[HttpResponse, HttpError]
   requires: timeoutMs > 0
 {
   val src = makeCancelSourceTimeout(timeoutMs)
   val tok = sourceToken(src)
-  defer {
-    disposeSource(src)
-  }
-  return await postWithCancelAsync(url, body, tok)
+  val result = await postWithCancelAsync(url, body, tok)
+  disposeSource(src)
+  return result
 }
 
 /// Read the response body as text, honouring cancellation.  Same

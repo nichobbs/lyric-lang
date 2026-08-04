@@ -63,30 +63,28 @@
 //! practice (the JVM managed-runtime kernel does not use this file at all —
 //! see `lambda_kernel_jvm.l`).
 //!
-//! ## A verified pre-existing `Std.Http` gap blocks runtime-testing the `aws`
-//! ## client path specifically (not this file's own logic)
+//! ## Update (#6358): the `Std.Http` cross-package gap this section used to
+//! ## describe is fixed on `main`
 //!
-//! `getNextInvocation`/`postJson` call `Std.Http`'s free async functions
-//! (`getAsync`/`sendAsync`) rather than an `HttpClient` interface value —
-//! `defaultClient(): HttpClient` followed by `client.get(url)` from any
-//! package other than `Std.Http` itself throws "unsupported method 'get' on
-//! the receiver type" at runtime (reproduced with a 10-line repro, zero
-//! Lambda code). Switching to the free functions avoids *that* bug, but
-//! uncovered a second, more fundamental one: calling `Std.Http.getAsync`
-//! (or any of `Std.Http`'s async free functions) from *any* Lyric program
-//! throws `System.MissingMethodException` at runtime — reproduced with an
-//! equally trivial standalone program with no Lambda code and no assembly
-//! boundary of any kind. `lyric-stdlib/tests/http_tests.l`'s own header
-//! comment already flags this surface as never actually exercised
-//! ("Actually sending a request ... needs a live server and is out of scope
-//! here — see docs/57 §5.2"), which is consistent with nothing in this repo
-//! having hit it before. Both bugs live in `lyric-stdlib`/`lyric-compiler`,
-//! outside `lyric-lambda`'s scope to fix. Net effect: the `aws` feature's
-//! client-side GET-next/POST-response loop is believed correct against the
-//! documented protocol (mirrors the request/response shape verified
-//! end-to-end for the `local` feature, which uses `Std.HttpServer` instead
-//! and is unaffected) but could not be runtime-verified in this sandbox.
-//! See this change's implementation report for the exact repro commands.
+//! This section previously reported two runtime bugs blocking
+//! runtime-testing of the `aws` client path: (1) `defaultClient(): HttpClient`
+//! followed by `client.get(url)` from any package other than `Std.Http`
+//! itself throwing "unsupported method 'get' on the receiver type", and (2)
+//! calling `Std.Http.getAsync` (or any of `Std.Http`'s async free functions)
+//! from *any* Lyric program throwing `System.MissingMethodException`. Both
+//! were re-verified against current `main` with live-server repros (a
+//! standalone cross-assembly package calling `getAsync`/`bodyText` and,
+//! separately, `defaultClient().get(url)`/`bodyText`) and **no longer
+//! reproduce** — both now correctly read the response body. `getNextInvocation`/
+//! `postJson`'s use of the free async functions here is a stylistic choice,
+//! not a workaround for either bug anymore.
+//!
+//! A different, narrower bug remains open in the *timeout* family
+//! specifically (`sendWithTimeoutAsync`/`getWithTimeoutAsync`/
+//! `postWithTimeoutAsync`, not used by this file): see the doc comments on
+//! those functions in `lyric-stdlib/std/http.l` and issue #6367 /
+//! #2494's family. `getNextInvocation`/`postJson` do not call the timeout
+//! variants, so this file is unaffected either way.
 //!
 //! See docs/35-lambda-library.md, decision log D062/D064/D099.
 package Lambda.Dispatch
