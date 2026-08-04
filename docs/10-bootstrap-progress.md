@@ -20315,8 +20315,14 @@ single-segment path that follows the **UpperCamelCase module/type naming
 convention** and does not resolve — e.g. a `Std.String as Str` alias that
 survived alias-rewriting in a multi-file / `LYRIC_LOAD_COMPILER` bundle — the
 `EMember` receiver is treated as a **module reference** (`TyError`, lenient)
-rather than a hard `T0020`, consistent with multi-segment qualified paths which
-were already lenient.  A *lowercase* receiver is a value, so a typo like
+rather than a hard `T0020`. This is a narrower, deliberately-scoped leniency
+than the blanket multi-segment leniency `resolveExprPath` used to have before
+D-progress-723 (#6361) closed it: that fix only tightened the *qualified-path*
+(`EPath`) arm for a package the checker already has full member knowledge
+of — this single-segment `EMember`-receiver case is a different code path
+(this same file, the `EMember` arm) and stays lenient on purpose, since a
+bare uppercase receiver here may be an alias the checker has no visibility
+into at all (see D-progress-723 for the full before/after).  A *lowercase* receiver is a value, so a typo like
 `stirng.method()` still surfaces its `T0020` (the leniency is narrow by design,
 #2127).  Without this the `weaver_self_test.l` self-
 application (compiling the whole compiler through itself) false-failed on a

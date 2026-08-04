@@ -281,6 +281,11 @@ pub func pipeMiddleEnd(
 ///     distinct types, interfaces, type aliases, opaques;
 ///   * `extern type` / `protected type` declarations (kernel boundary types
 ///     referenced by importing signatures — #1488, #2377);
+///   * `extern package { ... }` blocks (#6361 — a kernel file's callers
+///     address these body-less members through the enclosing package's own
+///     qualified path, e.g. `Grpc.Kernel.Net.netOpenChannel(...)` from a
+///     sibling in-project package; without this the block was invisible to
+///     every cross-package consumer, not just the type checker);
 ///   * `impl Iface for T` conformances (interface subsumption on
 ///     cross-package calls; keyed by `TypeId`, ignored by
 ///     `addSigsFromItems`, so carrying them is sound and additive);
@@ -299,6 +304,7 @@ pub func pipeIsCrossPackageItem(it: in Item): Bool {
     case IExternType(_) -> true
     case IProtected(_) -> true
     case IImpl(_) -> true
+    case IExtern(_) -> true
     case _ -> false
   }
   if isType {

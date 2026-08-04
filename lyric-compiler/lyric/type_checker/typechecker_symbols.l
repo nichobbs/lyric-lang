@@ -171,6 +171,38 @@ pub record SymbolTable {
   /// method members, so an unknown-member error there would be a false
   /// positive.
   memberCompleteTypes: Map[String, Bool]
+  /// `"<originPackage>|<name>"` present ⇒ `name` is declared as a member of
+  /// an `extern package <Path> { ... }` block somewhere in package
+  /// `originPackage` (#6361). `registerItem`'s `IExtern` arm never adds these
+  /// to `symbols` — the block's body-less signatures are resolved by codegen
+  /// directly, not through the ordinary symbol table — so without this index
+  /// a fully-qualified call into one (e.g. `Grpc.Kernel.Net.netOpenChannel`,
+  /// called from the enclosing file's own package path) would look
+  /// indistinguishable from a genuine unknown name to
+  /// `resolveExprPath`'s qualified-name check.
+  externBlockMembers: Map[String, Bool]
+  /// `<originPackage>` present ⇒ at least one ordinary symbol (via
+  /// `symTableAdd`, any `DeclKind`) was registered under that package.
+  /// Side index so `symTablePackageHasAnySymbol` (consulted on every
+  /// multi-segment qualified reference the checker resolves, #6361) is O(1)
+  /// instead of a linear scan over `symbols`.
+  symbolPackages: Map[String, Bool]
+  /// `<originPackage>|<name>` present ⇒ a symbol named `name` was registered
+  /// under that package. Side index so `symTablePackageHasMember` is O(1)
+  /// instead of a linear scan over `symbols`.
+  symbolPackageMembers: Map[String, Bool]
+  /// `<originPackage>` present ⇒ that package contributed at least one
+  /// `extern package { ... }` block member to `externBlockMembers` (#6378).
+  /// A package whose file consists ENTIRELY of `extern package { ... }`
+  /// block(s) — e.g. `AwsXRay.Kernel.Net` in `lyric-aws-xray/src/_kernel/
+  /// xray_kernel_jvm.l` — never adds anything to `symbols` at all, so
+  /// `symTablePackageHasAnySymbol` alone can't tell "package known, name
+  /// typo'd" apart from "package never even resolved" for it;
+  /// `resolveExprPath`'s #6361 T0020 gate consults this side index too so a
+  /// typo'd qualified call into such a package is still flagged instead of
+  /// silently falling through (the exact #6361 bug, reopened for this one
+  /// package shape).
+  externBlockPackages: Map[String, Bool]
   // One `impl Iface for Target` conformance, by resolved `TypeId`.
 }
 
@@ -207,8 +239,37 @@ pub func newSymbolTable(): SymbolTable {
     externDelegateFlags = newMap(),
     methodSigs = newList(),
     methodSigIndex = newMap(),
-    memberCompleteTypes = newMap()
+    memberCompleteTypes = newMap(),
+    externBlockMembers = newMap(),
+    externBlockPackages = newMap(),
+    symbolPackages = newMap(),
+    symbolPackageMembers = newMap()
   )
+}
+
+// Record that `name` is a member of an `extern package { ... }` block
+// declared within package `pkg` (#6361). Idempotent.
+pub func symTableAddExternBlockMember(tbl: in SymbolTable, pkg: in String, name: in String): Unit {
+  val key = pkg + "|" + name
+  if not tbl.externBlockMembers.containsKey(key) {
+    tbl.externBlockMembers.add(key, true)
+  }
+  if not tbl.externBlockPackages.containsKey(pkg) {
+    tbl.externBlockPackages.add(pkg, true)
+  }
+}
+
+// True when `name` was registered as an extern-package-block member of `pkg`.
+pub func symTableHasExternBlockMember(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
+  tbl.externBlockMembers.containsKey(pkg + "|" + name)
+}
+
+// True when `pkg` contributed at least one `extern package { ... }` block
+// member (#6378) — i.e. the package is known to the checker even though it
+// may have added nothing to `tbl.symbols` (a file that is nothing but one
+// or more `extern package { ... }` blocks never does).
+pub func symTablePackageHasAnyExternBlockMember(tbl: in SymbolTable, pkg: in String): Bool {
+  tbl.externBlockPackages.containsKey(pkg)
 }
 
 // Register one method signature for `entry.owner`, probing `@0`, `@1`, … for
@@ -334,6 +395,13 @@ pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
     }
     case _ -> {
     }
+  }
+  if not tbl.symbolPackages.containsKey(sym.originPackage) {
+    tbl.symbolPackages.add(sym.originPackage, true)
+  }
+  val memberKey = sym.originPackage + "|" + sym.name
+  if not tbl.symbolPackageMembers.containsKey(memberKey) {
+    tbl.symbolPackageMembers.add(memberKey, true)
   }
   tbl.symbols.add(sym)
 }

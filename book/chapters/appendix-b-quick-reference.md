@@ -758,7 +758,7 @@ output_assembly = "myapp.dll"
 | `Std.Testing.Mocking` | Stub call-count tracking | `StubCounter`, `makeStubCounter`, `stubCounterGet`, `stubCounterIncrement`, `stubCounterReset` |
 | `Std.Iter` | Lazy iteration | `map`, `filter`, `fold`, `take`, `drop`, `find` |
 | `Std.App` | Application entry and config | `run(main: func Unit): Int`, `withConfig`, `Config` (opaque), `Config.path`, `Config.rawText` |
-| `Std.Console` | Console I/O | `print`, `println`, `error`, `readLine` |
+| `Std.Console` | Console I/O | `print`, `println`, `error`, `readLine`, `readAll` |
 | `Std.Directory` | Directory operations | `exists`, `create`, `createRecursive`, `enumerate`, `enumerateFiles`, `enumerateDirectories`, `delete`, `deleteRecursive` |
 | `Std.Environment` | Process environment | `getVar`, `getVarOrDefault`, `args`, `exitCode` |
 | `Std.Log` | Structured logging | `LogLevel` enum, `Logger` interface, `LogField`, `log`, `debug`, `info`, `warn`, `error`, `field` |

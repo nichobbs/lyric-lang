@@ -22268,3 +22268,298 @@ alongside but was distinct from), D-progress-720 ("restored_async 4/4"),
 docs/45 (contract-metadata direct resolution — no schema/formatVersion
 change was needed here), docs/57 (`Std.Http` test-coverage gap), docs/59
 (JVM `Std.Http` non-functional finding).
+
+### D-progress-723 — Unknown qualified-package call silently compiled to `TyError` instead of erroring (#6361)
+
+**Status:** Shipped.
+
+**The bug (#6361).** A qualified call into a *known, fully-imported* Lyric
+package whose trailing segment doesn't exist anywhere in that package —
+e.g. `Std.Char.isUpperCase('a')`, a typo/stale spelling of `Std.Char.isUpper`
+— compiled cleanly and silently misbehaved at runtime (returned `true` for
+every input) instead of raising a compile-time unknown-name error. Root
+cause: `resolveExprPath` (`type_checker/typechecker_exprs.l`) special-cased
+every multi-segment `ModulePath` with `if path.segments.count != 1 { return
+TyError }` — no diagnostic, ever. A multi-segment `EPath` reaching this
+function is always the result of `Lyric.AliasRewriter.rewriteQualifiedMemberChain`
+collapsing a dotted `EMember` chain rooted at a real Lyric package import
+(`collectAliases`'s `not imp.isExtern` guard means an `import extern` /
+`extern type` never contributes an alias, so this path never carries a
+deferred auto-FFI lookup) — so by the time a multi-segment `EPath` exists,
+the checker has full member knowledge of the named package and unconditional
+leniency there was never protecting anything real.
+
+**The fix.** `resolveExprPath` now looks up the package (the dotted prefix)
+and the trailing segment against `tbl.symbols` (`symTablePackageHasAnySymbol`
++ `symTablePackageHasMember`, new in `typechecker_symbols.l`): when the
+package contributes at least one symbol to the checker but none of them is
+the named segment, it's a genuine unknown name (`T0020`), not something
+codegen might still resolve. `findDirectSig`'s existing multi-segment
+handling (`Std.RegexSafe.tryCompile`-style overload disambiguation) is
+untouched — this only closes the silent-fallthrough gap in the plain
+value/path-reference arm.
+
+**Two companion fixes surfaced by the new diagnostic.** Building the
+self-hosted compiler bundle and every ecosystem library against the tightened
+check (production-readiness standard: land the check *and* fix what it
+finds, not just the narrow repro) surfaced two pre-existing, unrelated gaps
+the same silent-`TyError` leniency had been masking:
+
+1. `lyric-compiler/lyric/cli/cli_upgrade.l` calls `Process.buildArgString(...)`
+   (aliased `Std.Process`) to render a shell-quoted "dry-run" command
+   preview — but `buildArgString` in `lyric-stdlib/std/process.l` was
+   package-private. This cross-package reference to a non-`pub` stdlib
+   helper had always silently "worked" only because codegen resolves the
+   compiled MSIL method directly (Lyric-level `pub` is enforced solely by
+   the type checker, not CLR accessibility) — a latent instance of the very
+   bug class #6361 describes, just leaking a private name instead of
+   flagging a typo'd one. Fixed by exporting `buildArgString` as `pub`
+   (`@stable(since = "1.0")`, matching every other public function in the
+   file) — it's a genuinely reusable helper, not a refactor-away duplicate.
+2. Every ecosystem library that calls into a sibling in-project package's
+   `extern package { ... }` block through the ENCLOSING file's own
+   qualified path (e.g. `lyric-grpc`'s `grpc.l` calling
+   `Grpc.Kernel.Net.netOpenChannel(...)`, a `_kernel/`-file pattern used
+   throughout the ecosystem) newly tripped the new `T0020` — not because
+   the call is illegitimate, but because `registerItem`'s `IExtern` arm has
+   always been a complete no-op (these body-less members are resolved by
+   codegen directly, never through `tbl.symbols`) AND
+   `Lyric.Pipeline.pipeIsCrossPackageItem` never counted an `extern package`
+   block as cross-package-visible in the first place, so a consumer
+   package's view of a kernel package never even saw the block. Fixed with
+   two small, targeted additions: `pipeIsCrossPackageItem` now returns true
+   for `IExtern(_)` (so the block reaches a sibling package's `registerItem`
+   pass at all — this also benefits the JVM bridge, which shares the same
+   function), and `registerItem`'s `IExtern` arm now indexes each member's
+   bare name under the enclosing file's `originPackage` into a new
+   `SymbolTable.externBlockMembers` side table (`symTableAddExternBlockMember`
+   / `symTableHasExternBlockMember`) that `resolveExprPath`'s new check
+   consults before concluding a qualified name is unknown. This does not
+   change codegen or add new visibility enforcement for extern-package-block
+   members (they carry none today) — it only stops the type checker from
+   mistaking a legitimate reference for a typo.
+
+**Verification.** New self-tests in `typechecker_self_test.l`: the exact
+`Std.Char.isUpperCase` repro now yields `T0020` naming the full qualified
+path; the correctly-spelled equivalent (`Std.Char.isUpper`) stays clean; and
+a dedicated extern-package-block cross-package case (built with
+`Lyric.Pipeline.pipeAddCrossPackageItems`, the same filter the real MSIL/JVM
+bridges use) confirms `Grpc.Kernel.Net`-shaped calls stay clean too. End to
+end: `make lyric` (full self-hosted compiler + stdlib bundle, including the
+`--internal-compiler-bundle-build` step that compiles `Lyric.Cli` against
+the stdlib) and every ecosystem library at the repo root build cleanly
+(zero `T0020` regressions across 22 libraries, `--target dotnet` and spot
+checks on `--target jvm`) against the tightened check.
+
+**Related:** #6361, docs/42, docs/45, `lyric-stdlib/std/process.l`,
+`lyric-grpc/src/_kernel/net/grpc_kernel.l`.
+
+### D-progress-724 — Third companion gap from D-progress-723's tightened check: `lyric-testing`'s own test suite hit a bare-import tail-segment alias collision
+
+**Status:** Shipped.
+
+**The bug.** `lyric-testing/tests/testing_tests.l` bare-imports both
+`Std.Testing` (the stdlib's `assertEqual`/`assertEqualInt`/`assertTrue`/…
+panic-based helpers, used unqualified throughout the file) and the local
+`Testing` package under test (`lyric-testing/src/testing.l`, `package
+Testing`, providing `newTestContext`/`sentCount`/`assertEq`/… and referenced
+throughout the file via its qualified form, `Testing.newTestContext()`
+etc.). Both packages' bare-import tail segment is the single word
+`Testing`. `Lyric.AliasRewriter.collectAliases`'s documented (see the file's
+own `#3250` comment) first-wins-in-source-order rule for colliding bare-tail
+aliases resolved the tail key `Testing` to `Std.Testing` — imported first in
+the file's import list — so every `Testing.newTestContext()`-shaped call
+site in the test file was silently rewritten to
+`Std.Testing.newTestContext`, a name that doesn't exist in that module.
+Before D-progress-723 this fell through `resolveExprPath`'s blanket
+`TyError` leniency with no diagnostic, so the affected `test` blocks
+type-checked (and ran) without ever exercising real assertions; the
+tightened `T0020` check correctly surfaced the collision as a hard compile
+error, failing CI on PR #6373 (`ecosystem-tests (testing, …)`).
+
+**The fix.** `lyric-testing/tests/testing_tests.l` never references
+`Std.Testing` by its qualified name — only via the bare unqualified
+`assertEqualInt`/`assertTrue`/etc. calls that ordinary (non-aliased) import
+resolution already provides regardless of the `AliasRewriter`'s alias
+table. Aliasing the stdlib import (`import Std.Testing as StdTesting`)
+removes it from the bare-tail-collision pool entirely — `collectAliases`
+only auto-registers a tail-segment alias for imports with no explicit `as`
+clause — so the tail key `Testing` now resolves solely to the local
+`Testing` package, with no change to any bare-name symbol resolution.
+
+**Verification.** `./bin/lyric test --manifest lyric-testing/lyric.toml`:
+all 39 `Testing.TestingTests` cases pass (previously 63 `T0020` compile
+errors, zero tests run).
+
+**Related:** #6361, D-progress-723, `lyric-testing/tests/testing_tests.l`,
+`lyric-compiler/lyric/alias_rewriter.l` (`collectAliases` first-wins
+tail-collision behavior, tracked for disambiguation follow-up as #3250).
+
+### D-progress-725 — Fourth companion gap from D-progress-723's tightened check: `lyric-generator-sdk` called a `Std.Console` function that never existed (`readAll`)
+
+**Status:** Shipped.
+
+**The bug.** `lyric-generator-sdk/src/generator_sdk.l`'s `runGenerator` (the
+stdin/stdout driver for custom source generators, `docs/40`) called
+`Console.readAll()` (aliased `Std.Console`) to read the whole JSON request
+piped over stdin. `Std.Console` never declared a `readAll` function — only
+`print`/`println`/`error`/`readLine` — so this call had always been dead on
+arrival; the tightened `T0020` check (D-progress-723) correctly flagged it
+as `error[T0020] 542:14: unknown name 'Std.Console.readAll'`, failing the
+`stdlib-builds` CI job on PR #6373 (`lyric-generator-sdk` is one of the
+tier-0 ecosystem libraries that job builds). Before D-progress-723 this
+call fell through `resolveExprPath`'s blanket `TyError` leniency with no
+diagnostic, so `lyric-generator-sdk` silently "built" a `runGenerator` that
+could never actually have worked at runtime (a `MissingMethodException`
+waiting to happen the first time any generator subprocess actually ran) —
+this is a real, previously-undetected functional gap, not a false positive
+from the tightened check.
+
+**The fix.** Added `pub func readAll(): Result[String, IOError]` to
+`Std.Console` (`lyric-stdlib/std/console.l`), implemented as a loop over
+the module's own existing `readLine()` (itself backed by the already
+cross-target `hostReadLineOpt`/`hostConsoleReadLine` kernel boundary),
+joining lines with `"\n"` via `Std.String.joinList` until EOF
+(`Err(EndOfInput(_))`) or a genuine host read failure
+(`Err(IoError(...))`, propagated as-is). This needed **no new kernel
+externs on either target** — `readLine` already works identically on
+`--target dotnet` and `--target jvm`, so `readAll` gets the same parity for
+free by composition rather than adding a third `hostConsoleReadToEnd`-style
+primitive to `_kernel/console_host.l` and `_kernel_jvm/console_host.l`
+(native's console INPUT boundary is a separate, already-documented,
+already-tracked gap — see `_kernel_native/console_host.l`'s own header —
+and out of scope here). Reconstructing input by joining lines rather than
+tracking each line's original terminator means a final line lacking a
+trailing newline is indistinguishable on read-back from one that had
+one — acceptable for the motivating JSON-payload-over-stdin use case,
+where trailing whitespace is insignificant to the parser. Updated the
+`runGenerator` call site to match on the `Result` (mirroring the file's
+existing `jsonGetString` `Option`-matching style) instead of treating the
+old bodyless call's `TyError` placeholder as a bare `String`.
+
+**Verification.** Manual end-to-end check (piped stdin) against a small
+Lyric program calling `readAll()` directly: multi-line input round-trips
+correctly (`"line one\nline two\nline three"` in, same string out), and
+empty stdin returns `Ok("")`. `lyric-generator-sdk` now builds clean
+(`lyric build --manifest lyric-generator-sdk/lyric.toml`). No dedicated
+automated self-test was added for this function: console stdin reads have
+no existing precedent anywhere in the self-test suite (no file under
+`lyric-stdlib/tests/` or any `*_self_test.l` exercises `readLine`/
+`hostConsoleRead` today), consistent with `docs/57-stdlib-ecosystem-library-review.md`'s
+observation that stdlib core-I/O test coverage has pre-existing gaps —
+automating stdin injection for `lyric test`/self-test consumers is a
+tracked follow-up, not something improvised here as a one-off.
+
+**Related:** #6361, D-progress-723, D-progress-724, `lyric-stdlib/std/console.l`,
+`lyric-generator-sdk/src/generator_sdk.l`, `docs/40-source-generators.md`,
+`docs/57-stdlib-ecosystem-library-review.md` (stdlib core-I/O test gaps).
+
+### D-progress-726 — Fifth companion gap from D-progress-723's tightened check, found in review (#6378): the T0020 gate itself silently no-oped for all-extern-package-block packages
+
+**Status:** Shipped.
+
+**The bug (review finding on PR #6373, filed as #6378).** `resolveExprPath`'s
+new `T0020` gate (D-progress-723) was `symTablePackageHasAnySymbol(tbl, pkg)
+and not symTablePackageHasMember(tbl, pkg, name) and not
+symTableHasExternBlockMember(tbl, pkg, name)`. `symTablePackageHasAnySymbol`
+only scans `tbl.symbols` — but a package whose file is NOTHING BUT one or
+more `extern package { ... }` block(s) (no ordinary `pub func`/`pub val`/etc.
+at all) never adds anything to `tbl.symbols` at all; `registerItem`'s
+`IExtern` arm only ever writes to the separate `externBlockMembers` side
+table. For such a package, `symTablePackageHasAnySymbol` is unconditionally
+`false`, so the whole gate short-circuits and a typo'd qualified call into it
+is never flagged — reopening #6361's exact silent-`TyError` bug for this one
+package shape. Not hypothetical: `lyric-aws-xray/src/_kernel/xray_kernel_jvm.l`
+(package `AwsXRay.Kernel.Net`, `@cfg(feature = "jvm")`) is precisely this
+shape today — a bare `import` plus a single `extern package` block, nothing
+else. Confirmed end-to-end: a two-package project mirroring this exact shape
+(`Lib.OnlyExtern` = an import + one `extern package` block, consumed by
+`App.doThingTypo()`) built cleanly with no diagnostic before this fix.
+
+**The fix.** Added a second side index to `SymbolTable`
+(`typechecker_symbols.l`): `externBlockPackages: Map[String, Bool]`, written
+by `symTableAddExternBlockMember` alongside the existing per-member
+`externBlockMembers` key, and read by a new
+`symTablePackageHasAnyExternBlockMember(tbl, pkg): Bool`. `resolveExprPath`'s
+gate now computes `pkgKnown = symTablePackageHasAnySymbol(tbl, pkg) or
+symTablePackageHasAnyExternBlockMember(tbl, pkg)` — a package known ONLY via
+extern-block members is now correctly treated as "known" for the purposes of
+flagging a typo'd trailing segment, without changing anything about how a
+LEGITIMATE extern-block member reference resolves (`not
+symTableHasExternBlockMember(tbl, pkg, name)` is unchanged).
+
+**Why the existing #6361 self-test didn't catch this.** The original
+cross-package extern-block self-test (`typechecker_self_test.l`, "qualified
+call into a cross-package extern-package-block member has no T0020")
+deliberately gave its fixture package an `other(): Int` helper alongside the
+extern block specifically so `symTablePackageHasAnySymbol` would already be
+true — its own comment says so ("guarantees `symTablePackageHasAnySymbol`
+... is true ... rather than vacuously passing"). That was the right call for
+what it was testing (the extern-block-member-recognition half of #6361), but
+it meant no self-test ever exercised a package that is *purely* an extern
+block, the shape that actually exists in `lyric-aws-xray`.
+
+**Verification.** Two new self-tests in `typechecker_self_test.l` mirror the
+existing pair but with NO `other()` helper — an all-extern-package-block
+fixture: a typo'd call now correctly raises `T0020` naming the full path, and
+the correctly-spelled call stays clean. Also verified against the real-shape
+end-to-end repro (a two-package `lyric build`, not just the self-test
+harness): typo now fails with `error[T0020] ...: unknown name
+'Lib.OnlyExtern.doThingTypo'`; the correct call builds clean. Full
+regression sweep after rebuilding via `make lyric`: `typechecker_self_test.l`
+289/289 (2 new), `alias_rewriter_self_test.l` 37/37, `mono_self_test.l`
+54/54, `weaver_self_test.l` 46/46, `modechecker_self_test.l` 92/92,
+`parser_self_test.l` 126/126, `contract_elaborator_self_test.l` 36/36,
+`lyric-testing` 39/39, `lyric-generator-sdk` builds clean.
+`lyric-aws-xray`'s default (no-feature) build is unaffected
+(`AwsXRay.Kernel.Net` isn't reachable through any in-repo qualified call
+today — confirmed via `grep`, zero hits — so there was no existing call site
+to regress); its `--features jvm` build hits an unrelated, pre-existing
+`T0001` duplicate-name error, confirmed identical on unpatched `main` via
+`git stash` (nothing to do with this fix).
+
+**Related:** #6361, #6378, D-progress-723, D-progress-724, D-progress-725,
+`lyric-compiler/lyric/type_checker/typechecker_symbols.l`,
+`lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
+`lyric-aws-xray/src/_kernel/xray_kernel_jvm.l`.
+
+### D-progress-727 — `symTablePackageHasAnySymbol`/`symTablePackageHasMember` indexed to O(1), closing a SUGGESTION raised on three separate PR #6373 review passes
+
+**Status:** Shipped.
+
+**The suggestion.** `symTablePackageHasAnySymbol`/`symTablePackageHasMember`
+(D-progress-723's `T0020` gate, `typechecker_exprs.l`) each did an `O(n)`
+linear scan over `SymbolTable.symbols` — invoked on *every* multi-segment
+qualified reference the checker resolves, which after alias-rewriting is
+most `Std.X.y(...)`/`Pkg.X.y(...)` call sites in the codebase. Three
+independent `claude-review` passes on PR #6373 flagged this as a
+non-blocking follow-up, each noting the PR had already made the opposite,
+`O(1)` choice for the analogous extern-block check
+(`externBlockMembers`/`externBlockPackages`, also D-progress-723).
+
+**The fix.** Added two side indices to `SymbolTable`
+(`typechecker_symbols.l`), populated at the single call site that ever
+appends to `symbols` (`symTableAdd`, confirmed via a repo-wide grep — no
+other code path adds to `tbl.symbols`): `symbolPackages: Map[String, Bool]`
+(keyed by `originPackage`, mirroring `externBlockPackages`) and
+`symbolPackageMembers: Map[String, Bool]` (keyed by `originPackage + "|" +
+name`, mirroring `externBlockMembers`). `symTablePackageHasAnySymbol` and
+`symTablePackageHasMember` now do a single `Map.containsKey` each instead of
+scanning the full symbol list — this also subsumes the reviewers'
+secondary suggestion (collapsing the two near-identical scans into one
+pass), since two `O(1)` lookups have nothing left to gain from being
+merged.
+
+**Verification.** Full regression sweep after rebuilding via `make lyric`:
+`typechecker_self_test.l` 289/289 (unchanged pass count — pure performance
+change, no behavior change), `alias_rewriter_self_test.l` 37/37,
+`mono_self_test.l` 54/54, `weaver_self_test.l` 46/46,
+`modechecker_self_test.l` 92/92, `parser_self_test.l` 126/126,
+`contract_elaborator_self_test.l` 36/36, `lyric-testing` 39/39,
+`lyric-generator-sdk` builds clean, and the `#6378` all-extern-block-package
+end-to-end repro (typo → `T0020`, correct name → clean) still behaves
+identically.
+
+**Related:** #6361, D-progress-723, D-progress-726,
+`lyric-compiler/lyric/type_checker/typechecker_symbols.l`,
+`lyric-compiler/lyric/type_checker/typechecker_exprs.l`.
