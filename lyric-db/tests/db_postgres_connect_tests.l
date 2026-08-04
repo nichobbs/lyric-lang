@@ -50,6 +50,11 @@ test "connect: postgres:// DSN scheme dispatches to the Npgsql driver and fails 
 // specifically probe the out-of-range clamp: an unclamped POOLSIZE=0
 // would violate connectPostgres's `requires: poolSize >= 1` and panic
 // instead of returning a CONNECT_ERROR.
+// `Std.Environment` has no `unsetVar`, and these tests share a process
+// with every other test in this module — each case below sets ALL four
+// `connectFromEnv`-read vars explicitly (not just the ones it's probing),
+// so no test can accidentally pass or fail based on a value a previous
+// case left behind.
 test "connectFromEnv: reads POOLSIZE/CONNECTTIMEOUTMS/PASSWORD and still fails cleanly against a closed port" {
   setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "postgres://baduser:badpass@127.0.0.1:1/nonexistent")
   setVar("LYRIC_CONFIG_DB_CONNECTION_POOLSIZE", "5")
@@ -64,10 +69,14 @@ test "connectFromEnv: reads POOLSIZE/CONNECTTIMEOUTMS/PASSWORD and still fails c
   }
 }
 
+// #6359's own repro: an unclamped POOLSIZE=0 would violate
+// connectPostgres's `requires: poolSize >= 1` and panic instead of
+// returning a CONNECT_ERROR. envIntClamped(POOLSIZE=0, lo=1) -> 1.
 test "connectFromEnv: an out-of-range POOLSIZE is clamped, not passed through to violate connectPostgres's contract" {
   setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "postgres://baduser:badpass@127.0.0.1:1/nonexistent")
   setVar("LYRIC_CONFIG_DB_CONNECTION_POOLSIZE", "0")
   setVar("LYRIC_CONFIG_DB_CONNECTION_CONNECTTIMEOUTMS", "999999")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_PASSWORD", "")
   match Db.connectFromEnv() {
     case Ok(conn) -> {
       conn.close()
@@ -85,6 +94,9 @@ test "connectFromEnv: an out-of-range POOLSIZE is clamped, not passed through to
 // duplication can't silently drift from connectDsn's behaviour.
 test "connectFromEnv: sqlite::memory: scheme dispatches to the SQLite driver and succeeds" {
   setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "sqlite::memory:")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_POOLSIZE", "10")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_CONNECTTIMEOUTMS", "5000")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_PASSWORD", "")
   match Db.connectFromEnv() {
     case Err(e) -> assertTrue(false, "connect failed: " + e.message)
     case Ok(conn) -> conn.close()
@@ -93,6 +105,9 @@ test "connectFromEnv: sqlite::memory: scheme dispatches to the SQLite driver and
 
 test "connectFromEnv: an unrecognized DSN scheme returns a CONFIG_ERROR, not a panic" {
   setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "mysql://user:pass@127.0.0.1:3306/db")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_POOLSIZE", "10")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_CONNECTTIMEOUTMS", "5000")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_PASSWORD", "")
   match Db.connectFromEnv() {
     case Ok(conn) -> {
       conn.close()

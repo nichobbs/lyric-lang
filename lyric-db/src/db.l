@@ -269,7 +269,10 @@ pub func connect(connStr: in String): Result[DbConnection, DbError]
 /// Read an `LYRIC_CONFIG_DB_CONNECTION_<suffix>` integer env var, clamped
 /// to `[lo, hi]`. An unset, empty, or unparseable value falls back to
 /// `dflt`; an in-range-but-out-of-bounds value is clamped rather than
-/// rejected, matching README.md "Configuration"'s documented bounds.
+/// rejected, matching README.md "Configuration"'s documented bounds. E.g.
+/// `envIntClamped("POOLSIZE", 10, 1, 100)` with `POOLSIZE=0` set returns
+/// `1`, not `0` — see `db_postgres_connect_tests.l`'s clamp regression
+/// test for why an unclamped `0` would panic downstream instead.
 func envIntClamped(suffix: in String, dflt: in Int, lo: in Int, hi: in Int): Int {
   val raw = Environment.getVarOrDefault("LYRIC_CONFIG_DB_CONNECTION_" + suffix, "")
   val v = match Std.Parse.parseOptInt(raw) {
