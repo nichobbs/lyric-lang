@@ -239,6 +239,8 @@ pub func example(): Unit {
 
 The `lyric-resolver.jar` tool resolves coordinates, handles transitive dependencies, and stores downloaded JARs in the local Maven cache. It must be available beside the `lyric` binary, or pointed to via `LYRIC_MAVEN_RESOLVER`. Both official distribution channels (the GitHub release archive and the `dotnet tool install lyric` NuGet package) bundle `lyric-resolver.jar` automatically, so a normal install needs no extra step. If it is not found (e.g. a from-source checkout that hasn't run `make maven-resolver`), `lyric restore` emits a note and succeeds (`.NET` builds are unaffected); a subsequent `lyric build --target jvm` will see no `LYRIC_FFI_JARS` and fail at type-resolution if Maven extern types are used.
 
+`lyric-resolver.jar` itself is compiled for **Java 21** (class-file version 65.0), independent of the project's own `java_version`/`jvm_target` setting. Running `lyric restore` on a `lyric.toml` with a `[maven]` table therefore needs a Java 21+ JRE on `PATH` — CI images that still default to Java 17 fail with `UnsupportedClassVersionError` before any coordinate resolves.
+
 For full details on the resolver protocol, version pinning, and the `[maven.options]` table, see `docs/31-maven-linking.md`.
 
 ## §14.6 Native binaries with GraalVM

@@ -12,6 +12,7 @@ package Db.PostgresConnectTests
 
 import Std.Core
 import Std.Testing
+import Std.Environment
 import Db
 
 test "connectPostgres: connecting to a closed port returns CONNECT_ERROR, not a panic" {
@@ -38,5 +39,83 @@ test "connect: postgres:// DSN scheme dispatches to the Npgsql driver and fails 
       assertTrue(false, "expected connect failure against a closed port")
     }
     case Err(e) -> assertEqual(e.code, "CONNECT_ERROR", "error code")
+  }
+}
+
+// #6359: `connectFromEnv` previously ignored `LYRIC_CONFIG_DB_CONNECTION_
+// POOLSIZE`/`_CONNECTTIMEOUTMS`/`_PASSWORD` entirely (silently using
+// connectDsn's hardcoded poolSize=10/connectTimeoutMs=5000/password="").
+// These two cases exercise the env-var-driven path end to end (still
+// against the same closed-port target, so no live server is needed) and
+// specifically probe the out-of-range clamp: an unclamped POOLSIZE=0
+// would violate connectPostgres's `requires: poolSize >= 1` and panic
+// instead of returning a CONNECT_ERROR.
+// `Std.Environment` has no `unsetVar`, and these tests share a process
+// with every other test in this module — each case below sets ALL four
+// `connectFromEnv`-read vars explicitly (not just the ones it's probing),
+// so no test can accidentally pass or fail based on a value a previous
+// case left behind.
+test "connectFromEnv: reads POOLSIZE/CONNECTTIMEOUTMS/PASSWORD and still fails cleanly against a closed port" {
+  setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "postgres://baduser:badpass@127.0.0.1:1/nonexistent")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_POOLSIZE", "5")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_CONNECTTIMEOUTMS", "500")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_PASSWORD", "override-pass")
+  match Db.connectFromEnv() {
+    case Ok(conn) -> {
+      conn.close()
+      assertTrue(false, "expected connect failure against a closed port")
+    }
+    case Err(e) -> assertEqual(e.code, "CONNECT_ERROR", "error code")
+  }
+}
+
+// #6359's own repro: an unclamped POOLSIZE=0 would violate
+// connectPostgres's `requires: poolSize >= 1` and panic instead of
+// returning a CONNECT_ERROR. envIntClamped(POOLSIZE=0, lo=1) -> 1.
+test "connectFromEnv: an out-of-range POOLSIZE is clamped, not passed through to violate connectPostgres's contract" {
+  setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "postgres://baduser:badpass@127.0.0.1:1/nonexistent")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_POOLSIZE", "0")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_CONNECTTIMEOUTMS", "999999")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_PASSWORD", "")
+  match Db.connectFromEnv() {
+    case Ok(conn) -> {
+      conn.close()
+      assertTrue(false, "expected connect failure against a closed port")
+    }
+    case Err(e) -> assertEqual(e.code, "CONNECT_ERROR", "error code")
+  }
+}
+
+// connectFromEnv's scheme sniffing (postgres:// / postgresql:// / sqlite:// /
+// sqlite::memory:) is now duplicated in db.l rather than delegated to
+// Db.Kernel.Net.connectDsn (needed so the env-var-read poolSize/
+// connectTimeoutMs/password can flow into the right branch) — these two
+// cases pin the sqlite:: and unrecognized-scheme branches so the
+// duplication can't silently drift from connectDsn's behaviour.
+test "connectFromEnv: sqlite::memory: scheme dispatches to the SQLite driver and succeeds" {
+  setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "sqlite::memory:")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_POOLSIZE", "10")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_CONNECTTIMEOUTMS", "5000")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_PASSWORD", "")
+  match Db.connectFromEnv() {
+    case Err(e) -> assertTrue(false, "connect failed: " + e.message)
+    case Ok(conn) -> conn.close()
+  }
+}
+
+test "connectFromEnv: an unrecognized DSN scheme returns a CONFIG_ERROR, not a panic" {
+  setVar("LYRIC_CONFIG_DB_CONNECTION_URL", "mysql://user:pass@127.0.0.1:3306/db")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_POOLSIZE", "10")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_CONNECTTIMEOUTMS", "5000")
+  setVar("LYRIC_CONFIG_DB_CONNECTION_PASSWORD", "")
+  match Db.connectFromEnv() {
+    case Ok(conn) -> {
+      conn.close()
+      assertTrue(false, "expected an unrecognized-scheme error")
+    }
+    case Err(e) -> {
+      assertEqual(e.code, "CONFIG_ERROR", "error code")
+      assertTrue(e.message.length > 0, "error message should be non-empty")
+    }
   }
 }

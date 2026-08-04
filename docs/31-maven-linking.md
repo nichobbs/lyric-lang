@@ -93,6 +93,14 @@ Maven support extends the same command for JVM targets:
    `java` must be on `PATH` (which is guaranteed for any JVM-targeted
    build). `mvn` is not required.
 
+   **Host JRE requirement:** `lyric-resolver.jar` is compiled for Java 21
+   (class-file version 65.0) regardless of the project's `java_version`
+   setting, which only governs classifier-JAR selection for the resolved
+   *artifacts*. Running `lyric restore` against a `[maven]` table therefore
+   requires a **Java 21 or newer JRE on `PATH`** — invoking it under an
+   older JRE (Java 17 is still common on default CI images) fails fast with
+   `UnsupportedClassVersionError` before any coordinate is resolved.
+
 3. **Materialise JARs.** The resolver writes resolved JARs into
    `target/restore/jars/` and caches them at
    `$LYRIC_USER_CACHE/maven/<group>/<artifact>/<version>/`.

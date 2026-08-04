@@ -44,19 +44,25 @@
 //!
 //! Every parameter gets a synthetic name `p0, p1, p2, …` matching its
 //! zero-based position in `params` (`Db.Kernel.Net`-internal only, never
-//! caller-visible). The **caller's SQL text** uses each driver's own
-//! placeholder syntax: Npgsql resolves `$1, $2, …` positionally — by
-//! parameter *order*, ignoring the synthetic name — so `p0`/`p1`/… work
-//! unchanged there. Microsoft.Data.Sqlite has no working bare-`?` binding
-//! path through the `System.Data.Common` abstract API (`SqliteParameterCollection.Add`
-//! throws `"ParameterName must be set."` for an unnamed/empty-named
-//! parameter — verified empirically; see #5407) — SQLite callers must use
-//! named placeholders `@p0, @p1, …` (the `@` sigil is optional in the
-//! parameter's `.ParameterName` but required in the SQL text) matching
-//! this synthetic naming exactly. Every parameter value is bound as
-//! a `String` (matching the public `DbConnection.query`/`execute` signature,
-//! which only accepts `slice[String]` params) — never string-interpolated
-//! into the SQL text, so this remains injection-safe.
+//! caller-visible). The **caller's SQL text must use named placeholders**
+//! `@p0, @p1, …` (the `@` sigil is optional in the parameter's
+//! `.ParameterName` but required in the SQL text) matching this synthetic
+//! naming exactly — for BOTH drivers. Microsoft.Data.Sqlite has no working
+//! bare-`?` binding path through the `System.Data.Common` abstract API
+//! (`SqliteParameterCollection.Add` throws `"ParameterName must be set."`
+//! for an unnamed/empty-named parameter — verified empirically; see
+//! #5407). Npgsql's positional `$1, $2, …` syntax does **not** work here
+//! despite every parameter having a distinct, correctly-ordered name:
+//! passing a *named* `NpgsqlParameter` against `$N`-style SQL text makes
+//! Npgsql send zero bound parameters at bind time (`PostgresException
+//! 08P01: bind message supplies 0 parameters, but prepared statement
+//! requires N`), deterministically, on the very first call — confirmed
+//! independently of Lyric via raw C#/Npgsql (#6359). Named placeholders
+//! (`@p0, @p1, …`) work correctly for Npgsql too, verified against a live
+//! server. Every parameter value is bound as a `String` (matching the
+//! public `DbConnection.query`/`execute` signature, which only accepts
+//! `slice[String]` params) — never string-interpolated into the SQL text,
+//! so this remains injection-safe.
 //!
 //! Error strings surface the driver exception's `.message` (SQLSTATE-bearing
 //! for Postgres via `PostgresException`); `Db.connect` / `Db.dbQuery` /
@@ -115,10 +121,6 @@ extern type MemStreamT = "System.IO.MemoryStream"
 @externInstance
 @externTarget("System.Data.Common.DbConnection.Open")
 func connOpen(c: in DbConn): Unit = ()
-
-@externInstance
-@externTarget("System.Data.Common.DbConnection.Close")
-func connClose(c: in DbConn): Unit = ()
 
 @externInstance
 @externTarget("System.Data.Common.DbConnection.CreateCommand")
@@ -254,6 +256,10 @@ func cmdDispose(c: in DbCmd): Unit = ()
 @externInstance
 @externTarget("System.Data.Common.DbDataReader.Dispose")
 func readerDispose(r: in DbReader): Unit = ()
+
+@externInstance
+@externTarget("System.Data.Common.DbConnection.Dispose")
+func connDispose(c: in DbConn): Unit = ()
 
 // ─── Culture-invariant text formatting ───────────────────────────────────────
 // The row wire format is JSON; every numeric/date value must render in a
@@ -790,7 +796,7 @@ pub func rollbackTransaction(tx: in DbTxT): Result[Unit, String] {
 
 pub func close(conn: in DbConn): Unit {
   try {
-    connClose(conn)
+    connDispose(conn)
   } catch Bug as _ {
     ()
   }
