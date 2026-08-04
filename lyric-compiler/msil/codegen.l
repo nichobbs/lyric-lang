@@ -14114,7 +14114,24 @@ func lowerMethodCallMsil(
                   result
                 }
                 case _ -> {
-                  lowerCallArgMsil(cctx, fctx, insns, args[i])
+                  // A concrete-collection parameter must push its expected type
+                  // so a list-literal argument builds exactly the representation
+                  // the callee's signature declares.  Without this, an argument
+                  // like `["a", b.toString()]` passed to a `slice[String]`
+                  // parameter falls through `EList`'s no-hint path and builds a
+                  // `List<object>` — which the interface slot's signature then
+                  // reinterprets as `string[]`.  The CLR accepts the call (both
+                  // are object references) but every subsequent `params.length`
+                  // / `params[i]` reads the `List<object>` object's memory at
+                  // array-layout offsets, yielding garbage: nondeterministic
+                  // `IndexOutOfRangeException` / `OverflowException` once the
+                  // heap shifts under load (#6369).  The free-function path in
+                  // `lowerBuiltinOrStaticCallMsil` already does exactly this;
+                  // the instance/interface dispatch path was the gap.
+                  pushCollExpect(fctx, paramTy)
+                  val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                  popCollExpect(fctx)
+                  argTy
                 }
               }
               // The method signature declares each parameter's concrete type

@@ -105,17 +105,20 @@ func buildListQuery(category: in String, inStockOnly: in Bool, pageSize: in Int)
   val base = "SELECT " + productCols() + " FROM products"
   if category.length > 0 and inStockOnly {
     return ListQuery(
-      sql = base + " WHERE category = $1 AND in_stock = true ORDER BY name LIMIT $2",
+      sql = base + " WHERE category = @p0 AND in_stock = true ORDER BY name LIMIT @p1",
       params = [category, pageSize.toString()]
     )
   }
   if category.length > 0 {
-    return ListQuery(sql = base + " WHERE category = $1 ORDER BY name LIMIT $2", params = [category, pageSize.toString()])
+    return ListQuery(
+      sql = base + " WHERE category = @p0 ORDER BY name LIMIT @p1",
+      params = [category, pageSize.toString()]
+    )
   }
   if inStockOnly {
-    return ListQuery(sql = base + " WHERE in_stock = true ORDER BY name LIMIT $1", params = [pageSize.toString()])
+    return ListQuery(sql = base + " WHERE in_stock = true ORDER BY name LIMIT @p0", params = [pageSize.toString()])
   }
-  return ListQuery(sql = base + " ORDER BY name LIMIT $1", params = [pageSize.toString()])
+  return ListQuery(sql = base + " ORDER BY name LIMIT @p0", params = [pageSize.toString()])
 }
 
 // ─── GetProduct ───────────────────────────────────────────────────────────────
@@ -128,7 +131,7 @@ pub func getProduct(req: in GetProductRequest, authToken: in String): Result[Pro
   match openDb() {
     case Err(s) -> return Err(s)
     case Ok(db) -> {
-      val result = Db.queryOne(db, "SELECT " + productCols() + " FROM products WHERE id = $1", [req.id.toString()])
+      val result = Db.queryOne(db, "SELECT " + productCols() + " FROM products WHERE id = @p0", [req.id.toString()])
       db.close()
       match result {
         case Err(e) -> return Err(dbErrToStatus(e))
@@ -189,7 +192,7 @@ pub func createProduct(req: in CreateProductRequest, authToken: in String): Resu
     case Ok(db) -> {
       val result = Db.queryOne(
         db,
-        "INSERT INTO products (name, description, category, price_cents, in_stock, stock_count, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING " +
+        "INSERT INTO products (name, description, category, price_cents, in_stock, stock_count, created_at) VALUES (@p0, @p1, @p2, @p3, @p4, @p5, NOW()) RETURNING " +
           productCols(),
         [
           req.name,
@@ -231,7 +234,7 @@ pub func updateProduct(req: in UpdateProductRequest, authToken: in String): Resu
     case Ok(db) -> {
       val result = Db.queryOne(
         db,
-        "UPDATE products SET price_cents = $1, in_stock = $2, stock_count = $3 WHERE id = $4 RETURNING " +
+        "UPDATE products SET price_cents = @p0, in_stock = @p1, stock_count = @p2 WHERE id = @p3 RETURNING " +
           productCols(),
         [req.priceCents.toString(), req.inStock.toString(), req.stockCount.toString(), req.id.toString()]
       )
@@ -255,7 +258,7 @@ pub func deleteProduct(req: in DeleteProductRequest, authToken: in String): Resu
   match openDb() {
     case Err(s) -> return Err(s)
     case Ok(db) -> {
-      val result = Db.dbExecute(db, "DELETE FROM products WHERE id = $1", [req.id.toString()])
+      val result = Db.dbExecute(db, "DELETE FROM products WHERE id = @p0", [req.id.toString()])
       db.close()
       match result {
         case Err(e) -> return Err(dbErrToStatus(e))

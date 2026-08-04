@@ -38,7 +38,7 @@ conn.close()
 ## Queries
 
 ```lyric
-match conn.query("SELECT id, name FROM users WHERE id = $1", ["42"]) {
+match conn.query("SELECT id, name FROM users WHERE id = @p0", ["42"]) {
   case Ok(rows) ->
     for row in rows {
       val name = Db.col(row, "name")
@@ -55,7 +55,7 @@ match conn.query("SELECT id, name FROM users WHERE id = $1", ["42"]) {
 ## DML (INSERT / UPDATE / DELETE)
 
 ```lyric
-match conn.execute("INSERT INTO events (name) VALUES ($1)", ["login"]) {
+match conn.execute("INSERT INTO events (name) VALUES (@p0)", ["login"]) {
   case Ok(n)  -> println("inserted " + n.toString() + " rows")
   case Err(e) -> eprintln("insert failed: " + e.message)
 }
@@ -68,9 +68,9 @@ match conn.execute("INSERT INTO events (name) VALUES ($1)", ["login"]) {
 ```lyric
 val tx = conn.transaction()?
 
-match tx.execute("INSERT INTO orders (user_id) VALUES ($1)", [userId]) {
+match tx.execute("INSERT INTO orders (user_id) VALUES (@p0)", [userId]) {
   case Ok(_) ->
-    match tx.execute("UPDATE users SET order_count = order_count + 1 WHERE id = $1", [userId]) {
+    match tx.execute("UPDATE users SET order_count = order_count + 1 WHERE id = @p0", [userId]) {
       case Ok(_)  -> tx.commit()?
       case Err(e) -> { tx.rollback(); return Err(e) }
     }

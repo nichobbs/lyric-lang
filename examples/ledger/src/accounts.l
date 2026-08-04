@@ -21,7 +21,7 @@ pub func createAccount(
   requires: name.length > 0
   requires: currency.length > 0
 {
-  val sql = "INSERT INTO accounts (name, kind, currency) VALUES ($1, $2, $3) " +
+  val sql = "INSERT INTO accounts (name, kind, currency) VALUES (@p0, @p1, @p2) " +
     "RETURNING id, name, kind, currency, created_at"
   val params = [name, accountKindLabel(kind), currency]
   match conn.query(sql, params) {
@@ -33,7 +33,7 @@ pub func createAccount(
 // ─── Lookup ───────────────────────────────────────────────────────────────────
 /// Fetch a single account by primary key.
 pub func getById(conn: in DbConnection, id: in Long): Result[Option[Account], LedgerError] {
-  val sql = "SELECT id, name, kind, currency, created_at FROM accounts WHERE id = $1"
+  val sql = "SELECT id, name, kind, currency, created_at FROM accounts WHERE id = @p0"
   match conn.query(sql, [id.toString()]) {
     case Err(e) -> Err(LedgerError.DatabaseError(message = e.message))
     case Ok(rows) -> if rows.count == 0 { Ok(None) } else { val r = rows[0]; Ok(Some(value = rowToAccount(r))) }
@@ -61,7 +61,7 @@ pub func listAll(conn: in DbConnection): Result[List[Account], LedgerError] {
 /// standard ledger view: positive = net credit (inflow), negative = net debit (outflow).
 pub func getBalance(conn: in DbConnection, id: in Long): Result[Long, LedgerError] {
   val sql = "SELECT COALESCE(SUM(CASE WHEN side = 'credit' THEN amount ELSE -amount END), 0) AS balance " +
-    "FROM ledger_entries WHERE account_id = $1"
+    "FROM ledger_entries WHERE account_id = @p0"
   match conn.query(sql, [id.toString()]) {
     case Err(e) -> Err(LedgerError.DatabaseError(message = e.message))
     case Ok(rows) -> if rows.count == 0 { Ok(0) } else { val r = rows[0]; match Db.col(r, "balance") { case DbValue.DbLong(v) -> Ok(v); case DbValue.DbInt(v) -> Ok(v.toLong()); case _ -> Ok(0) } }

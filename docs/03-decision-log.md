@@ -22563,3 +22563,94 @@ identically.
 **Related:** #6361, D-progress-723, D-progress-726,
 `lyric-compiler/lyric/type_checker/typechecker_symbols.l`,
 `lyric-compiler/lyric/type_checker/typechecker_exprs.l`.
+
+---
+
+## D-progress-728 — Interface/record method call arguments never received the callee's parameter-type expectation: a list literal passed to a `slice[T]` parameter was emitted as `List<object>` and silently misread as `T[]` (#6369, root cause of #6359)
+
+**Context.** #6359 reported that a long-running service on `lyric-db` +
+Postgres "wedges" under sustained load: after enough cumulative requests
+every *multi-parameter* query started failing with nondeterministic CLR
+exceptions (`Index was outside the bounds of the array.`, `Arithmetic
+operation resulted in an overflow.`) while single-parameter `SELECT`s kept
+working. It never appeared in the Postgres server log and always cleared on
+process restart, so it was filed — reasonably — as client-side Npgsql
+connection-pool corruption.
+
+**It is not a pooling bug, and not driver-specific.** Reproduced here
+against a real PostgreSQL 16 server *and* a real SQLite database, then
+narrowed with a four-way controlled A/B (identical SQL, params, driver and
+connect/query/close lifecycle; only the call path varied):
+
+| variant | dispatch | params built in | `parseRows` | result |
+|---|---|---|---|---|
+| kernel | direct `Db.Kernel.Net` | `Db.dll` | no | 6000 clean |
+| parse | direct `Db.Kernel.Net` | `Db.dll` | yes | 6000 clean |
+| callerparams | direct `Db.Kernel.Net` | consumer asm | no | 6000 clean |
+| iface | **`DbConnection` interface** | consumer asm | yes | **fails @1130** |
+
+That exonerates Npgsql, SQLite, `Std.Json`/`parseRows` (a standalone 20 000
+-iteration `Std.Json` stress mirroring `parseRows`/`parseDbValue` is clean),
+and the assembly boundary. Interface dispatch was the sole remaining
+variable.
+
+**Root cause.** `lowerMethodCallMsil`'s per-argument loop
+(`lyric-compiler/msil/codegen.l`) reads the callee's declared parameter type
+from `cctx.methodParamTypes` — which *is* populated for interface methods —
+but only pushed it as a collection expectation for the `MConcreteMap` case.
+Every other parameter type, including `slice[T]` (`MArray`), fell through to
+a bare `lowerCallArgMsil` with no expectation. A list-literal argument whose
+elements aren't bare literals or names — e.g. `["item" + n.toString(),
+n.toString()]`, which `inferHomogeneousListElemTypeMsil` cannot type — then
+took `EList`'s no-hint fallback and built a `List<object>`, while the
+interface slot's signature still declared `string[]`. Confirmed by
+disassembly: the call site emitted `List`1<object>::Add` twice and then
+`callvirt … DbConnection::execute(string, string[])`.
+
+The CLR accepts that call — both operands are ordinary object references —
+so this was a **silent miscompile**, not a load-time failure. Inside the
+callee, `params.length` and `params[i]` read the `List<object>` instance at
+array-layout offsets, returning whatever the adjacent heap happened to hold.
+That explains every reported symptom: nondeterministic onset (it depends on
+heap layout, so it survives ~1000-2500 iterations first), the specific
+`IndexOutOfRange`/`Overflow` pair, "clears on restart", invisibility in the
+server log, and why *multi*-parameter queries broke while single-parameter
+ones often survived. `lyric-db`'s `DbConnection.query`/`execute(sql,
+params)` are exactly this shape, so every parameterised query through the
+public interface was passing a malformed array.
+
+The free-function path (`lowerBuiltinOrStaticCallMsil`) has always pushed
+the expectation unconditionally — which is why the identical call became
+correct merely by being routed through a free function.
+
+**Decision.** Give the instance/interface dispatch path the same treatment
+the free-function path already had: push the declared parameter type as the
+collection expectation around each argument's lowering, then pop it. Scope
+is deliberately minimal — the `case _` arm that previously discarded the
+expectation — leaving the existing `MConcreteMap` special case untouched.
+
+**Not a JVM bug.** The JVM backend lowers every `EList` uniformly to
+`java/util/ArrayList`, so it never had the `T[]`-vs-`List<object>`
+divergence; no parity gap is introduced.
+
+**Coverage.** `lyric-compiler/lyric/iface_slice_arg_self_test.l` (6 cases,
+both targets, wired into CI): non-inferable two-element, single-element,
+empty and `Int`-element literals through an interface method; an
+interface-vs-free-function agreement check; and a 2000-call loop asserting
+every result, since the defect only surfaced once heap churn shifted what
+the misread object contained. Verified end to end: the original Postgres
+repro (previously failing at ~1400-2000) and the SQLite repro (previously
+failing at 1130) both now run clean, and the pre-existing compiler
+self-tests (typechecker 289, fmt 131, parser 126, modechecker 92, lexer 56,
+mono 54, derives 49, cfg 12, bitwise 10, stubbable 9, aspect_weave 7) plus
+`lyric-db`'s 37 and `Std.Http`'s 10 all still pass.
+
+**Note on the toolchain loop.** Emitter changes are invisible to stage 1 —
+the stage-0 seed resolves `Msil.*` from its own bundled DLLs, so
+`lyric-compiler/msil/**` edits only take effect once **stage 2** rebuilds
+the compiler with itself (`./scripts/bootstrap.sh --stage 2`, then use
+`.bootstrap/stage2/bin/lyric`). Verifying an emitter fix against `make
+lyric` alone silently tests the unmodified seed.
+
+**Related:** #6369, #6359, #6371, `lyric-compiler/msil/codegen.l`
+(`lowerMethodCallMsil`), `lyric-compiler/lyric/iface_slice_arg_self_test.l`.
