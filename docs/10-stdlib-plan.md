@@ -427,7 +427,7 @@ Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or
 | `Std.Core` (`core.l`) | no `pub` items | Option/Result are compiler-intrinsic; accessed by all importers without `pub`. |
 | `Std.Collections` (`collections.l`) | mixed | `mapGet` is `@stable` (maps fundamental); `mapSize`, `mapIsEmpty` are `@experimental` (pending JVM parity validation #3577). Iteration functions `mapKeys`, `mapValues`, `mapEntries`, `mapForEach`, `mapPutAll` are all `@stable(since = "1.0")` (shipped via codegen epics #3511/#3512); `mapKeys`/`mapValues` return `List[K]`/`List[V]` snapshots (the host key/value views stay `_kernel/`-private, no BCL nested type leaks into public signatures). |
 | `Std.String` (`string.l`) | `@stable` | All string helpers; well-tested, stable API. |
-| `Std.Console` (`console.l`) | `@stable` | `print`, `println`, `error`, `readLine` — basic I/O. |
+| `Std.Console` (`console.l`) | `@stable` | `print`, `println`, `error`, `readLine`, `readAll` — basic I/O. |
 | `Std.File` (`file.l`) | `@stable` | `readText`, `writeText`, `fileExists`, `dirExists`, `createDir`. |
 | `Std.Directory` (`directory.l`) | `@stable` | `exists`, `create`, `createRecursive`, `enumerate`, `delete`, `deleteRecursive`. |
 | `Std.Iter` (`iter.l`) | `@stable` | All slice combinators (`map`, `filter`, `fold`, `find`, etc.). |

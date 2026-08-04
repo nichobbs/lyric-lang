@@ -22,7 +22,7 @@ Here is the full module inventory:
 | `Std.Char` | `isLetter`, `isDigit`, `isWhiteSpace`, `toUpper`, `toLower`, `digitValue` |
 | `Std.Errors` | `ParseError`, `IOError`, `HttpError` |
 | `Std.File` | `readText`, `writeText`, `fileExists`, `createDir` |
-| `Std.Console` | `print`, `println`, `error`, `readLine` |
+| `Std.Console` | `print`, `println`, `error`, `readLine`, `readAll` |
 | `Std.Directory` | `exists`, `create`, `createRecursive`, `enumerate`, `enumerateFiles`, `delete` |
 | `Std.Path` | Pure path helpers: `join`, `extension`, `basename`, `dirname`, `isAbsolute` |
 | `Std.Environment` | `getVar`, `getVarOrDefault`, `setVar`, `args`, `exitCode` |
