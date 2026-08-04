@@ -22654,3 +22654,120 @@ lyric` alone silently tests the unmodified seed.
 
 **Related:** #6369, #6359, #6371, `lyric-compiler/msil/codegen.l`
 (`lowerMethodCallMsil`), `lyric-compiler/lyric/iface_slice_arg_self_test.l`.
+
+---
+
+### D-progress-730 — Field-style access of a UFCS function (`e.message` vs `e.message()`) compiled to invalid IL instead of erroring (#6362)
+
+**Status:** Shipped.
+
+**The bug (#6362).** `IOError.message` is a D037 dot-named (UFCS) function
+(`pub func IOError.message(e: in IOError): String`, `lyric-stdlib/std/errors.l`)
+— callable method-style as `e.message()`. Accessing it FIELD-style, with no
+call parens (`e.message`), also compiled cleanly and produced
+`System.InvalidProgramException` at runtime instead of a compile-time error.
+This is a different shape from #6361 (D-progress-723): there the referenced
+*name* never resolved at all; here the name genuinely exists — as a
+function, not a field — so field-style access should be rejected regardless.
+
+**Root cause.** `EMember` (a bare `recv.name` expression, not wrapped in an
+`ECall`) is type-checked by `inferMember` (`typechecker_exprs.l`), distinct
+from the `ECall` arm's member-callee handling. When `name` isn't a real
+field/builtin member (`inferMemberBase` returns `TyError`) and isn't a
+record-body/`impl`-block/interface method (`methodCandidatesFor` returns no
+candidates), `inferMember` fell through to `maybeUnknownMemberDiag` — the
+same A5 "unknown member" helper the `ECall` arm calls with `isCall = true`
+after `resolveMethodCallPick` fails. That helper's dot-named-function check
+(`sigs.containsKey(tname + "." + name)`) was written for the CALL arm, where
+a dot-named function's existence is exactly the right reason to stay silent
+(the call already resolved through `resolveMethodCallPick`/
+`dotNamedCandidatesFor`, or arity/type mismatches get their own T0042/T0043).
+`inferMember`'s FIELD-access arm reused the same helper with `isCall = false`
+and inherited the identical leniency for a receiver shape it was never meant
+to cover: a dot-named function is *never* a valid field read, call syntax or
+not. The result was a silently-`TyError`-typed member read reaching codegen
+with no diagnostic at all.
+
+A second wrinkle made this easy to miss for the exact repro shape: `IOError`
+is a **union**, and unions are categorically excluded from
+`symTableIsMemberComplete`'s `memberCompleteTypes` gate (`symTableAdd`'s
+`DKUnion` arm never adds a union to that side index — unions have no
+top-level "fields" the way records do, since fields belong to individual
+cases). `maybeUnknownMemberDiag` early-returns before ever reaching the
+dot-named check when the receiver isn't member-complete, so the fix could
+**not** live inside that helper's existing gate without first widening
+`memberCompleteTypes` to cover unions — a much bigger, riskier change (union
+field enumeration is genuinely per-case, not a flat list) that this fix does
+not need. `IOError` is also **imported** (declared in `Std.Errors`, consumed
+by any file that transitively pulls it in via `Std.File`/`Std.Core`) —
+`memberCompleteTypes` deliberately excludes every imported type too (docs/59
+A5: imported contract metadata drops method members from record reprs).
+Dot-named function *existence*, unlike field enumeration, does not share
+either limitation: `sigs` (`Map[String, ResolvedSignature]`) is populated
+from `addSigsFromItems` for every imported package's items exactly the same
+way as the user's own file, so `sigs.containsKey(tname + "." + name)` is a
+fully reliable, package-independent signal — the fix runs this check
+directly in `inferMember`, ahead of and independent of the member-complete
+gate, rather than trying to extend that gate to unions.
+
+**The fix.** `inferMember` (`typechecker_exprs.l`) now checks
+`sigs.containsKey(tname + "." + name)` itself, immediately after
+`methodCandidatesFor` finds no record-body/impl/interface method candidate
+and before falling back to `maybeUnknownMemberDiag`. A hit means `name`
+resolves *only* as a dot-named function — never a real field — so
+field-style access is always wrong; a new diagnostic, **T0116**, fires
+naming the receiver type, the field name, and the call-syntax fix
+(`"no field '" + name + "' on type '" + tname + "' — '" + name + "' is a
+function; call it as '" + name + "(...)'"`). Reusing T0113 was considered
+and rejected: T0113 is documented and self-tested as scoped specifically to
+member-complete (locally-declared, non-union) receivers — firing it here too
+would blur that documented boundary for a semantically distinct condition
+(dot-named-function-shadows-field, not member-completeness). The `ECall`
+arm's own `maybeUnknownMemberDiag(..., true)` call site is untouched — call
+resolution (`e.message()`) is unaffected, on both local and imported
+receivers, on both records and unions.
+
+**A companion false positive, found by the mandatory full-stdlib rebuild
+(production-readiness standard: land the check *and* fix/guard against what
+it finds).** An initial version of this fix — checked `sigs` unconditionally
+for any `TyUser` receiver — broke `lyric-stdlib/std/app.l`: `Config` is an
+`opaque type` with fields `path`/`rawText`, plus accessor UFCS functions of
+the exact same names (`pub func Config.path(config: in Config): String {
+config.path }`) that just return the field. `fieldsOfRecord`/
+`fieldsOfRecordInstantiated` (what `inferMemberBase` consults for a real
+field) only walk `DKRecord`/`DKExposedRec` — opaque fields are visible only
+within the declaring package through a separate construction-only path
+(`ctorAllFields`), so `inferMemberBase` always returns `TyError` for a field
+read on an opaque receiver regardless of whether the field genuinely exists.
+That means the field read *inside `Config.path`'s own body* (`config.path`)
+never resolved as a real field to begin with — it fell to the new dot-named
+check, which correctly found `sigs` contains `"Config.path"` (the accessor
+itself!) and misfired T0116 on legitimate code. Fixed with a narrow guard,
+`isOpaqueTypeId` (`typechecker_exprs.l`): the new dot-named check is skipped
+entirely for opaque receivers, leaving them exactly as lenient as they were
+before this fix (a pre-existing, unrelated, out-of-scope gap — opaque field
+enumeration in the type checker — not something this PR attempts to close).
+Records, exposed records, and unions are unaffected: their field/case
+knowledge is already complete via `fieldsOfRecord`, so `inferMemberBase`
+returns the real field type before `inferMember` ever reaches the new check.
+
+**Verification.** New self-tests in `typechecker_self_test.l` (mirroring the
+existing docs/59 A4/A5 fixture style): field-style access to a UFCS-only
+function on a cross-package union (`IOError`-shaped, via `importedItemsOf`)
+raises T0116 naming both the type and the field; the call form (`e.message()`)
+on the identical fixture stays fully clean (zero diagnostics); a real record
+field accessed field-style stays clean even when an unrelated dot-named
+function exists on the same type (`Point.length` alongside `p.x`); and a
+record field reached through a union-case-bound local (`case Wrap(inner) ->
+inner.x`) stays clean, confirming ordinary pattern-destructured field access
+is untouched. Full regression sweep after `make lyric`:
+`typechecker_self_test.l` all green (4 new cases), plus
+`modechecker_self_test.l`, `parser_self_test.l`, `mono_self_test.l`,
+`weaver_self_test.l`, `contract_elaborator_self_test.l`,
+`alias_rewriter_self_test.l`, and the UFCS-adjacent
+`bitwise_self_test.l`/`aspect_weave_self_test.l` (`--target dotnet` and
+`--target jvm`) unaffected.
+
+**Related:** #6362, #6361, D-progress-723, docs/59 §5.1 A4/A5, D037,
+`lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
+`lyric-stdlib/std/errors.l`.

@@ -842,6 +842,16 @@ record, or interface is a compile error (**T0113**) naming the receiver
 type; types imported from other packages are currently checked leniently
 (their contract metadata does not yet carry method signatures).
 
+Field-style access `x.name` (no call parens) to a name that exists **only**
+as a D037 dot-named (UFCS) function — never as a real record/union field — is
+always a compile error (**T0116**), naming the receiver type and the
+call-syntax fix (`x.name(...)`), regardless of whether the receiver type is
+locally declared or imported: dot-named function signatures are known
+globally (unlike record-field enumeration, which T0113 restricts to
+locally-declared types), so this check also catches cross-package receivers
+such as the standard library's `IOError` union (`e.message` must be written
+`e.message()`).
+
 ### 5.2 Parameter modes
 
 - `in`: parameter is read-only inside the function. **Default mode** when no keyword is given. The compiler may pass by value or by reference; the function cannot mutate.

@@ -1692,6 +1692,31 @@ func maybeUnknownMemberDiag(
   }
 }
 
+// True when `tid` names an `opaque type` declaration. Opaque-type field
+// reads are NOT covered by `fieldsOfRecord`/`fieldsOfRecordInstantiated`
+// (those only walk `DKRecord`/`DKExposedRec` — opaque fields are visible
+// only within the declaring package, via a separate `ctorAllFields`
+// construction-only path), so `inferMemberBase` always returns `TyError`
+// for a field read on an opaque receiver regardless of whether the field
+// genuinely exists. #6362's dot-named-only check must not run for opaque
+// receivers: a same-named accessor UFCS function wrapping a private field
+// (`pub func Config.path(config: in Config): String { config.path }`, the
+// exact shape in `lyric-stdlib/std/app.l`) is a legitimate, common pattern,
+// and without this guard the field read *inside* the accessor's own body
+// would misfire as "field-style access to a UFCS-only function".
+func isOpaqueTypeId(tbl: in SymbolTable, tid: in TypeId): Bool {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKOpaque(did, _) -> if typeIdEq(did, tid) { return true }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
 func inferMember(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -1714,7 +1739,7 @@ func inferMember(
   // gets the A5 diagnostic.
   val recv = unrefine(recvRaw)
   match recv {
-    case TyUser(_, _, _) -> {
+    case TyUser(tid, tname, _) -> {
       val cands = methodCandidatesFor(tbl, recv, name)
       if cands.count > 0 {
         val ms = cands[0]
@@ -1725,6 +1750,33 @@ func inferMember(
           k = k + 1
         }
         return TyFunction(params = pts, ret = ms.returnTy, isAsync = ms.isAsync)
+      }
+      // #6362: a name that resolves ONLY as a top-level D037 dot-named
+      // (UFCS) function — e.g. `pub func IOError.message(e: in IOError):
+      // String` — is never valid FIELD-style access; it requires call
+      // syntax (`e.message()`).  `sigs` carries dot-named signatures for
+      // every type name regardless of which package declares the receiver
+      // (unlike `memberCompleteTypes`, which — by design, docs/59 A5 —
+      // only covers record/interface FIELD enumeration for types declared
+      // in the file being checked), so this check also catches cross-package
+      // receivers like the stdlib's `IOError` union that `maybeUnknownMemberDiag`
+      // stays lenient about. Checked ahead of that lenient A5 path so a
+      // real UFCS function's existence is never silently misread as "valid
+      // field access" the way it was before this fix (the bug produced a
+      // `TyError` with no diagnostic, which reached codegen as invalid IL).
+      // Excluded for opaque receivers (`isOpaqueTypeId`): their real fields
+      // are invisible to `fieldsOfRecord`, so a same-named accessor UFCS
+      // function wrapping a private field is indistinguishable here from a
+      // genuine UFCS-only name — see `isOpaqueTypeId`'s comment.
+      if not isOpaqueTypeId(tbl, tid) and sigs.containsKey(tname + "." + name) {
+        diag.add(
+          errorDiagnostic(
+            "T0116",
+            "no field '" + name + "' on type '" + tname + "' — '" + name + "' is a function; call it as '" + name + "(...)'",
+            span
+          )
+        )
+        return TyError
       }
       maybeUnknownMemberDiag(tbl, sigs, diag, recvRaw, name, span, false)
       TyError
