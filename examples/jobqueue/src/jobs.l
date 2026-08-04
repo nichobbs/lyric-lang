@@ -61,7 +61,7 @@ pub func enqueue(conn: in DbConnection, kind: in String, payload: in String, max
   requires: maxRetries >= 0
   requires: maxRetries <= 10
 {
-  val sql = "INSERT INTO jobs (kind, payload, max_retries) VALUES ($1, $2, $3) " +
+  val sql = "INSERT INTO jobs (kind, payload, max_retries) VALUES (@p0, @p1, @p2) " +
     "RETURNING id, kind, payload, status, retry_count, max_retries, worker_id, error, created_at"
   match conn.query(sql, [kind, payload, maxRetries.toString()]) {
     case Err(e) -> Err(JobError.DatabaseError(message = e.message))
@@ -89,8 +89,8 @@ pub func claimNext(conn: in DbConnection, workerId: in String): Result[Option[Jo
     case Ok(None) -> Ok(None)
     case Ok(Some(row)) -> {
       val job = rowToJob(row)
-      val updateSql = "UPDATE jobs SET status = 'running', worker_id = $1, claimed_at = now() " +
-        "WHERE id = $2 AND status = 'pending'"
+      val updateSql = "UPDATE jobs SET status = 'running', worker_id = @p0, claimed_at = now() " +
+        "WHERE id = @p1 AND status = 'pending'"
       match conn.execute(updateSql, [workerId, job.id.toString()]) {
         case Err(e) -> Err(JobError.DatabaseError(message = e.message))
         case Ok(_) -> Ok(Some(value = Job(id = job.id, kind = job.kind, payload = job.payload, status = JobStatus.Running, retryCount = job.retryCount, maxRetries = job.maxRetries, workerId = workerId, error = "", createdAt = job.createdAt)))
@@ -102,7 +102,7 @@ pub func claimNext(conn: in DbConnection, workerId: in String): Result[Option[Jo
 // ─── Complete ─────────────────────────────────────────────────────────────────
 /// Mark a running job as Completed.
 pub func complete(conn: in DbConnection, jobId: in Long): Result[Unit, JobError] {
-  val sql = "UPDATE jobs SET status = 'completed', completed_at = now() " + "WHERE id = $1 AND status = 'running'"
+  val sql = "UPDATE jobs SET status = 'completed', completed_at = now() " + "WHERE id = @p0 AND status = 'running'"
   match conn.execute(sql, [jobId.toString()]) {
     case Err(e) -> Err(JobError.DatabaseError(message = e.message))
     case Ok(0) -> Err(JobError.JobNotFound(id = jobId))
@@ -118,13 +118,13 @@ pub func failOrRetry(conn: in DbConnection, job: in Job, errorMsg: in String): R
   if job.retryCount < job.maxRetries {
     val _ = JobQueue.Domain.retryAllowed(job.retryCount, job.maxRetries)
     val sql = "UPDATE jobs SET status = 'pending', retry_count = retry_count + 1, " +
-      "worker_id = '', error = $1 WHERE id = $2 AND status = 'running'"
+      "worker_id = '', error = @p0 WHERE id = @p1 AND status = 'running'"
     match conn.execute(sql, [errorMsg, job.id.toString()]) {
       case Err(e) -> Err(JobError.DatabaseError(message = e.message))
       case Ok(_) -> Ok(())
     }
   } else {
-    val sql = "UPDATE jobs SET status = 'failed', error = $1 WHERE id = $2 AND status = 'running'"
+    val sql = "UPDATE jobs SET status = 'failed', error = @p0 WHERE id = @p1 AND status = 'running'"
     match conn.execute(sql, [errorMsg, job.id.toString()]) {
       case Err(e) -> Err(JobError.DatabaseError(message = e.message))
       case Ok(_) -> Ok(())
@@ -135,7 +135,7 @@ pub func failOrRetry(conn: in DbConnection, job: in Job, errorMsg: in String): R
 // ─── Queries ──────────────────────────────────────────────────────────────────
 pub func getById(conn: in DbConnection, jobId: in Long): Result[Option[Job], JobError] {
   val sql = "SELECT id, kind, payload, status, retry_count, max_retries, worker_id, error, created_at " +
-    "FROM jobs WHERE id = $1"
+    "FROM jobs WHERE id = @p0"
   match Db.queryOne(conn, sql, [jobId.toString()]) {
     case Err(e) -> Err(JobError.DatabaseError(message = e.message))
     case Ok(None) -> Ok(None)
@@ -145,7 +145,7 @@ pub func getById(conn: in DbConnection, jobId: in Long): Result[Option[Job], Job
 
 pub func listByStatus(conn: in DbConnection, status: in String): Result[List[Job], JobError] {
   val sql = "SELECT id, kind, payload, status, retry_count, max_retries, worker_id, error, created_at " +
-    "FROM jobs WHERE status = $1 ORDER BY created_at DESC LIMIT 100"
+    "FROM jobs WHERE status = @p0 ORDER BY created_at DESC LIMIT 100"
   match conn.query(sql, [status]) {
     case Err(e) -> Err(JobError.DatabaseError(message = e.message))
     case Ok(rows) -> {

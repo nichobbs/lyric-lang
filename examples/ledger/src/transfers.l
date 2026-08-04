@@ -53,7 +53,7 @@ pub func recordTransfer(
 
 // ─── Retrieve ─────────────────────────────────────────────────────────────────
 pub func getById(conn: in DbConnection, id: in Long): Result[Option[Transfer], LedgerError] {
-  val sql = "SELECT id, from_id, to_id, amount, note, created_at " + "FROM transfers WHERE id = $1"
+  val sql = "SELECT id, from_id, to_id, amount, note, created_at " + "FROM transfers WHERE id = @p0"
   match conn.query(sql, [id.toString()]) {
     case Err(e) -> Err(LedgerError.DatabaseError(message = e.message))
     case Ok(rows) -> if rows.count == 0 { Ok(None) } else { val r = rows[0]; Ok(Some(value = rowToTransfer(r))) }
@@ -62,7 +62,7 @@ pub func getById(conn: in DbConnection, id: in Long): Result[Option[Transfer], L
 
 pub func getEntriesForAccount(conn: in DbConnection, id: in Long): Result[List[LedgerEntry], LedgerError] {
   val sql = "SELECT id, transfer_id, account_id, amount, side, created_at " +
-    "FROM ledger_entries WHERE account_id = $1 ORDER BY id"
+    "FROM ledger_entries WHERE account_id = @p0 ORDER BY id"
   match conn.query(sql, [id.toString()]) {
     case Err(e) -> Err(LedgerError.DatabaseError(message = e.message))
     case Ok(rows) -> {
@@ -111,7 +111,7 @@ func writeAtomically(
   tx: in DbTransaction, fromId: in Long, toId: in Long, amount: in Long, note: in String
 ): Result[Transfer, LedgerError] {
   // Insert the transfer header.
-  val insertSql = "INSERT INTO transfers (from_id, to_id, amount, note) " + "VALUES ($1, $2, $3, $4) " +
+  val insertSql = "INSERT INTO transfers (from_id, to_id, amount, note) " + "VALUES (@p0, @p1, @p2, @p3) " +
     "RETURNING id, from_id, to_id, amount, note, created_at"
   match tx.query(insertSql, [fromId.toString(), toId.toString(), amount.toString(), note]) {
     case Err(e) -> {
@@ -140,7 +140,7 @@ func writeAtomically(
 }
 
 func insertEntry(tx: in DbTransaction, ent: in LedgerEntry): Result[Unit, LedgerError] {
-  val sql = "INSERT INTO ledger_entries (transfer_id, account_id, amount, side) " + "VALUES ($1, $2, $3, $4)"
+  val sql = "INSERT INTO ledger_entries (transfer_id, account_id, amount, side) " + "VALUES (@p0, @p1, @p2, @p3)"
   val params = [ent.transferId.toString(), ent.accountId.toString(), ent.amount.toString(), ent.side]
   match tx.execute(sql, params) {
     case Err(e) -> Err(LedgerError.DatabaseError(message = e.message))
