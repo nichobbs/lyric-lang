@@ -1348,6 +1348,29 @@ jobs:
           fi
           bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
+      # Interface slice-argument self-test (#6369) — pins that a list-literal
+      # argument to an interface/record method with a `slice[T]` parameter is
+      # emitted as a real `T[]`, not a `List<object>` the callee's signature
+      # then misreads as an array.  This was a SILENT miscompile (valid-looking
+      # IL, garbage at run time) that surfaced downstream as nondeterministic
+      # IndexOutOfRange/Overflow under load and was mis-filed as an Npgsql
+      # connection-pool defect (#6359).
+      - name: Interface slice-arg self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping interface slice-arg self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping interface slice-arg self-test"
+            exit 1
+          fi
+          bash scripts/ci-retry-on-signal.sh "$lyric_bin" test lyric-compiler/lyric/iface_slice_arg_self_test.l
+
       # Await-hoist self-test (#5606/#5628, #5630) — dedicated evaluation-order
       # regression for `Lyric.AwaitHoist`, the statement-level ANF-style
       # rewrite that keeps the async-SM `MoveNext`'s operand stack empty
@@ -4884,6 +4907,15 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # Interface slice-arg self-test on JVM (#6369) — JVM lowers every list
+      # literal to a uniform `ArrayList`, so it never had the MSIL
+      # `T[]`-vs-`List<object>` divergence; this pins that the MSIL-side fix
+      # didn't skew the two targets apart.
+      - name: Interface slice-arg self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/iface_slice_arg_self_test.l
 
       # Await-hoist self-test on JVM (#5606/#5628, #5630) — JVM already
       # compiled every hoist shape correctly before the rewrite (the rewrite

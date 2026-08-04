@@ -110,7 +110,10 @@ func buildListQuery(category: in String, inStockOnly: in Bool, pageSize: in Int)
     )
   }
   if category.length > 0 {
-    return ListQuery(sql = base + " WHERE category = @p0 ORDER BY name LIMIT @p1", params = [category, pageSize.toString()])
+    return ListQuery(
+      sql = base + " WHERE category = @p0 ORDER BY name LIMIT @p1",
+      params = [category, pageSize.toString()]
+    )
   }
   if inStockOnly {
     return ListQuery(sql = base + " WHERE in_stock = true ORDER BY name LIMIT @p0", params = [pageSize.toString()])
