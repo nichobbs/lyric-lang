@@ -726,25 +726,25 @@ output_assembly = "myapp.dll"
 | Module | Provides | Key names |
 |---|---|---|
 | `Std.Core` | `Result`, `Option`, built-in ops | `Ok`, `Err`, `Some`, `None`, `println`, `panic`, `assert`, `expect`, `toString`, `default`, `mapResult`, `mapResultErr`, `mapOption`, `andThenResult`, `unwrapResultOr`, `unwrapErrOr`, `unwrapResult`, `unwrapOption`, `unwrapOr`, `isOk`, `isErr`, `isSome`, `isNone` |
-| `Std.Core.Proof` | Proof-required witness functions | `identity`, `fst`, `snd`, `minInt`, `maxInt` (all `@pure @experimental`) |
-| `Std.String` | String manipulation | `trim`, `split`, `join`, `contains`, `startsWith`, `toUpperCase`, `substring` |
+| `Std.Core.Proof` | Proof-required witness functions | `identity`, `pickFirst`, `pickSecond`, `trueLit`, `falseLit`, `tag`, `assertEq`, `wrappedIdentity` (all `@pure @stable(since="1.0")`) |
+| `Std.String` | String manipulation | `trim`, `split`, `join`, `contains`, `startsWith`, `toUpper`, `substring` |
 | `Std.Parse` | Numeric parsing | `tryParseInt`, `tryParseLong`, `tryParseDouble`, `tryParseBool` |
 | `Std.Errors` | Standard error types | `ParseError`, `IOError`, `HttpError` |
 | `Std.File` | File system | `readText`, `writeText`, `fileExists`, `createDir` |
-| `Std.Collections` | Generic growable containers | `List[T]` (`add`, `count`, `get`), `Map[K,V]` (`[]`, `containsKey`, `remove`) |
+| `Std.Collections` | Generic growable containers | `List[T]` (`add`, `[]`, `count`), `Map[K,V]` (`[]`, `containsKey`, `remove`) |
 | `Std.Set` | Hash set | `Set[T]`, `setContains`, `setAdd`, `setRemove`, `setSize`, `setFromSlice`, `setUnion`, `setIntersection`, `setDifference` |
 | `Std.Sort` | Stable sort | `sort[T](xs, cmp)`, `sortInts`, `sortLongs`, `sortStrings` |
-| `Std.Math` | Numeric utilities | `abs`, `min`, `max`, `sqrt`, `pow`, `floor`, `ceil` |
+| `Std.Math` | Numeric utilities | `absDouble`, `minPairDouble`, `maxPairDouble`, `sqrt`, `pow`, `floor`, `ceiling` |
 | `Std.Random` | Pseudo-random values | `nextInt`, `nextDouble`, `nextBool` |
 | `Std.SecureRandom` | Cryptographically-strong randomness | `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |
 | `Std.Hash` | Cryptographic hashing | `sha256OfBytes`, `sha512OfBytes`, `sha512OfFile` |
-| `Std.Char` | Unicode character utilities | `isLetter`, `isDigit`, `isWhiteSpace`, `isUpperCase`, `isLowerCase`, `toUpperCase`, `toLowerCase`, `toInt`, `fromInt`, `digitValue`, `hexDigitValue` |
+| `Std.Char` | Unicode character utilities | `isLetter`, `isDigit`, `isWhiteSpace`, `isUpper`, `isLower`, `toUpper`, `toLower`, `toInt`, `fromInt`, `digitValue`, `hexDigitValue` |
 | `Std.Format` | Number and string formatting | `toHexString`, `toHexStringUpper`, `formatFixed`, `zeroPad`, `hexPad`, `padLeft`, `padRight` |
 | `Std.Encoding` | Byte-level encoding | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `tryDecodeHex`, `encodeUtf8`, `tryDecodeUtf8` |
 | `Std.Uuid` | UUID generation and parsing | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Stream` | I/O stream interfaces | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` |
-| `Std.Time` | Instants and durations | `Instant`, `Duration`, `Clock` interface, `now`, ISO-8601 parsing |
-| `Std.Json` | RFC 8259 JSON | `serialize`, `deserialize`, `JsonValue` |
+| `Std.Time` | Instants and durations | `Instant`, `Duration`, `now`, `toIsoString`, ISO-8601 parsing |
+| `Std.Json` | RFC 8259 JSON | `JsonDoc`, `JsonElement`, `parseJson`, `tryParseJson`, `getString`, `getInt32` |
 | `Std.Http` | HTTP client/server primitives | `get`, `post`, `HttpRequest`, `HttpResponse`, `statusCode`, `HttpClientBuilder`, `withHttpVersion`, `HttpVersion`, `negotiatedVersion`, `withCaCertificate`, `withExclusiveCaCertificate`, `withClientIdentity`, `withMinTlsVersion`, `withInsecureSkipVerify`, `tlsConfigSupported`, `resolveInsecureVerifyPolicy` |
 | `Std.Tls` | PEM certificate/private-key loading | `Certificate`, `Identity`, `TlsVersion`, `TlsServerConfig`, `Certificate.fromPemFile`/`fromPem`, `Identity.fromPemFiles`/`fromPem` |
 | `Std.HttpServer` | Low-level HTTP(S) server (`lyric-web` builds on this); on `--target dotnet` a pure-Lyric sans-IO engine over `System.Net.Sockets`/`SslStream` (the `HttpListener` server was retired, docs/61 §6). Over TLS it advertises `h2` then `http/1.1` via ALPN and serves **HTTP/2** end-to-end through `Std.HttpEngine.H2Conn` when the client offers it, falling back to HTTP/1.1 otherwise — same handlers, no code change (docs/61 §6.4) | `startListener`, `startListenerTls` (real TLS + h2 on `--target dotnet`, real TLS on `--target jvm`; dotnet returns `InvalidConfig` for a `requireClientCert`-without-`clientCa` mTLS misconfig, docs/61 §6.3), `startListenerWithLimits`/`startListenerTlsWithLimits` (raise the engine's request-size caps, e.g. the default 10 MiB body limit), `nextContext`, `respondText`/`respondJson`/`respondBytesWithHeaders` |
@@ -754,9 +754,9 @@ output_assembly = "myapp.dll"
 | `Std.HttpEngine.H2Conn` | Pure-Lyric sans-IO HTTP/2 (RFC 9113) server connection/stream state machine + flow control | `newServerConnection`, `serverInitialFrame`, `feed`, `H2Connection`, `H2Event`, `H2Settings`, `H2StreamState`, `streamState`, `sendData`, `encodeResponseHeaders`, `grantConnectionWindow`, `grantStreamWindow`, `sendGoAway`, `isFailed` |
 | `Std.Testing` | Test assertions | `assertTrue`, `assertEqual`, `assertEqualInt`, `assertPanics`, `assertPanicsWith` |
 | `Std.Testing.Snapshot` | Snapshot testing | `snapshot(label, actual)`, `snapshotMatch(label, actual)` |
-| `Std.Testing.Property` | Property-based testing | `forAllIntRange`, `forAllBool`, `forAllDouble`, `forAllIntPair` |
+| `Std.Testing.Property` | Property-based testing | `forAllInt`, `forAllBool`, `forAllDouble`, `forAllIntPair` |
 | `Std.Testing.Mocking` | Stub call-count tracking | `StubCounter`, `makeStubCounter`, `stubCounterGet`, `stubCounterIncrement`, `stubCounterReset` |
-| `Std.Iter` | Lazy iteration | `map`, `filter`, `fold`, `take`, `skip`, `collect` |
+| `Std.Iter` | Lazy iteration | `map`, `filter`, `fold`, `take`, `drop`, `find` |
 | `Std.App` | Application entry and config | `run(main: func Unit): Int`, `withConfig`, `Config` (opaque), `Config.path`, `Config.rawText` |
 | `Std.Console` | Console I/O | `print`, `println`, `error`, `readLine` |
 | `Std.Directory` | Directory operations | `exists`, `create`, `createRecursive`, `enumerate`, `enumerateFiles`, `enumerateDirectories`, `delete`, `deleteRecursive` |

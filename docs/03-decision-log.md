@@ -22089,3 +22089,53 @@ check (zero false positives across ~25 libraries).
 
 **Related:** #6136, #6113, #6133, #5275, #5575, #3273, #5258, #5262, #2592,
 #5362, #6329, #6332, docs/44, docs/45, #2580.
+
+### D-progress-721 — Book appendix B §B.9 stdlib rows swept against shipped stdlib source (#6366)
+
+Doc staleness found while porting `nichobbs/ambienta` against Lyric 0.5.0:
+`book/chapters/appendix-b-quick-reference.md` §B.9 ("Standard library
+modules") had drifted from the actual `pub` surface of
+`lyric-stdlib/std/*.l`. Dangerous in combination with #6361 (a
+since-fixed compiler bug where an unknown qualified name silently
+compiled instead of erroring): a book-copied name that doesn't exist
+would previously compile and misbehave instead of failing loudly.
+Every row in §B.9 was cross-checked against `pub func`/`pub record`/
+`pub union`/`pub type` declarations in the corresponding stdlib source
+file (not `_kernel`/`_kernel_jvm` internal extern-target names). Rows
+corrected:
+
+- `Std.Char` — `isUpperCase`/`isLowerCase` don't exist; the real names
+  are `isUpper`/`isLower` (`toUpperCase`/`toLowerCase` → `toUpper`/`toLower`).
+- `Std.Collections` — `List[T]` has no `get` method; element access is
+  indexing (`xs[i]`) and `count` is a property, not a call. Row now
+  reads `add`, `[]`, `count`.
+- `Std.Core.Proof` — the listed names (`fst`, `snd`, `minInt`, `maxInt`)
+  don't exist at all; the module actually exports `identity`,
+  `pickFirst`, `pickSecond`, `trueLit`, `falseLit`, `tag`, `assertEq`,
+  `wrappedIdentity`, all `@pure @stable(since="1.0")` (not `@experimental`).
+- `Std.String` — `toUpperCase` doesn't exist; the real name is `toUpper`.
+- `Std.Math` — `abs`/`min`/`max` don't exist bare (every arithmetic
+  helper is type-suffixed, e.g. `absDouble`/`minPairDouble`/
+  `maxPairDouble`); `ceil` doesn't exist, the real name is `ceiling`.
+- `Std.Time` — no `Clock` interface is exported by `Std.Time` (that
+  name only appears as an illustrative example in `@stubbable`-related
+  doc comments elsewhere); row now lists `now`/`toIsoString` instead.
+- `Std.Json` — `serialize`/`deserialize`/`JsonValue` don't exist
+  anywhere in the module; the real surface is `JsonDoc`/`JsonElement`
+  plus `parseJson`/`tryParseJson`/`getString`/`getInt32`.
+- `Std.Testing.Property` — `forAllIntRange` doesn't exist; the real
+  name is `forAllInt`.
+- `Std.Iter` — `skip` doesn't exist (`drop` is the real name) and
+  `collect` doesn't exist at all; row now lists `drop`/`find`.
+
+All other §B.9 stdlib rows (`Std.Core`, `Std.Parse`, `Std.Errors`,
+`Std.File`, `Std.Set`, `Std.Sort`, `Std.Random`, `Std.SecureRandom`,
+`Std.Hash`, `Std.Format`, `Std.Encoding`, `Std.Uuid`, `Std.Stream`,
+`Std.Http`, `Std.Tls`, `Std.HttpServer`, `Std.HttpEngine` (+ `.Hpack`,
+`.H2Frame`, `.H2Conn`), `Std.Testing`, `.Snapshot`, `.Mocking`,
+`Std.App`, `Std.Console`, `Std.Directory`, `Std.Environment`,
+`Std.Log`, `Std.Path`, `Std.BuildInfo`) were verified accurate against
+source and left unchanged. The same `toUpperCase`/`toLowerCase`,
+`Clock`-interface, `forAllIntRange`, `zip`, and `abs`/`min`/`max`/`ceil`
+staleness was also found and fixed in `book/chapters/12-standard-library.md`'s
+module inventory table, which draws from the same stale copy.
