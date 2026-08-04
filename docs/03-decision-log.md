@@ -22394,3 +22394,62 @@ errors, zero tests run).
 **Related:** #6361, D-progress-721, `lyric-testing/tests/testing_tests.l`,
 `lyric-compiler/lyric/alias_rewriter.l` (`collectAliases` first-wins
 tail-collision behavior, tracked for disambiguation follow-up as #3250).
+
+### D-progress-723 — Fourth companion gap from D-progress-721's tightened check: `lyric-generator-sdk` called a `Std.Console` function that never existed (`readAll`)
+
+**Status:** Shipped.
+
+**The bug.** `lyric-generator-sdk/src/generator_sdk.l`'s `runGenerator` (the
+stdin/stdout driver for custom source generators, `docs/40`) called
+`Console.readAll()` (aliased `Std.Console`) to read the whole JSON request
+piped over stdin. `Std.Console` never declared a `readAll` function — only
+`print`/`println`/`error`/`readLine` — so this call had always been dead on
+arrival; the tightened `T0020` check (D-progress-721) correctly flagged it
+as `error[T0020] 542:14: unknown name 'Std.Console.readAll'`, failing the
+`stdlib-builds` CI job on PR #6373 (`lyric-generator-sdk` is one of the
+tier-0 ecosystem libraries that job builds). Before D-progress-721 this
+call fell through `resolveExprPath`'s blanket `TyError` leniency with no
+diagnostic, so `lyric-generator-sdk` silently "built" a `runGenerator` that
+could never actually have worked at runtime (a `MissingMethodException`
+waiting to happen the first time any generator subprocess actually ran) —
+this is a real, previously-undetected functional gap, not a false positive
+from the tightened check.
+
+**The fix.** Added `pub func readAll(): Result[String, IOError]` to
+`Std.Console` (`lyric-stdlib/std/console.l`), implemented as a loop over
+the module's own existing `readLine()` (itself backed by the already
+cross-target `hostReadLineOpt`/`hostConsoleReadLine` kernel boundary),
+joining lines with `"\n"` via `Std.String.joinList` until EOF
+(`Err(EndOfInput(_))`) or a genuine host read failure
+(`Err(IoError(...))`, propagated as-is). This needed **no new kernel
+externs on either target** — `readLine` already works identically on
+`--target dotnet` and `--target jvm`, so `readAll` gets the same parity for
+free by composition rather than adding a third `hostConsoleReadToEnd`-style
+primitive to `_kernel/console_host.l` and `_kernel_jvm/console_host.l`
+(native's console INPUT boundary is a separate, already-documented,
+already-tracked gap — see `_kernel_native/console_host.l`'s own header —
+and out of scope here). Reconstructing input by joining lines rather than
+tracking each line's original terminator means a final line lacking a
+trailing newline is indistinguishable on read-back from one that had
+one — acceptable for the motivating JSON-payload-over-stdin use case,
+where trailing whitespace is insignificant to the parser. Updated the
+`runGenerator` call site to match on the `Result` (mirroring the file's
+existing `jsonGetString` `Option`-matching style) instead of treating the
+old bodyless call's `TyError` placeholder as a bare `String`.
+
+**Verification.** Manual end-to-end check (piped stdin) against a small
+Lyric program calling `readAll()` directly: multi-line input round-trips
+correctly (`"line one\nline two\nline three"` in, same string out), and
+empty stdin returns `Ok("")`. `lyric-generator-sdk` now builds clean
+(`lyric build --manifest lyric-generator-sdk/lyric.toml`). No dedicated
+automated self-test was added for this function: console stdin reads have
+no existing precedent anywhere in the self-test suite (no file under
+`lyric-stdlib/tests/` or any `*_self_test.l` exercises `readLine`/
+`hostConsoleRead` today), consistent with `docs/57-stdlib-ecosystem-library-review.md`'s
+observation that stdlib core-I/O test coverage has pre-existing gaps —
+automating stdin injection for `lyric test`/self-test consumers is a
+tracked follow-up, not something improvised here as a one-off.
+
+**Related:** #6361, D-progress-721, D-progress-722, `lyric-stdlib/std/console.l`,
+`lyric-generator-sdk/src/generator_sdk.l`, `docs/40-source-generators.md`,
+`docs/57-stdlib-ecosystem-library-review.md` (stdlib core-I/O test gaps).

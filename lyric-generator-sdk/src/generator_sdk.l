@@ -539,7 +539,13 @@ func parseFieldDescriptors(fieldsContent: in String): slice[FieldDescriptor] {
 // GeneratorRequest, calls `generate`, and writes the GeneratorResponse JSON
 // to stdout.  Exit code 0 = success; 1 = parse failure (message on stderr).
 pub func runGenerator(generate: (GeneratorRequest) -> GeneratorResponse): Int {
-  val json = Console.readAll()
+  val json = match Console.readAll() {
+    case Ok(s) -> s
+    case Err(e) -> {
+      Console.error("GeneratorSdk: failed to read request from stdin: " + e.message())
+      return 1
+    }
+  }
   val version = match jsonGetString(json, "schemaVersion") {
     case None -> {
       Console.error("GeneratorSdk: missing schemaVersion in request")

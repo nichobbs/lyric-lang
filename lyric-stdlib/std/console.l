@@ -10,6 +10,7 @@ package Std.Console
 import Std.Core
 import Std.Errors
 import Std.ConsoleHost
+import Std.String as Str
 
 /// Write a string to stdout without appending a newline.
 ///
@@ -55,6 +56,45 @@ pub func readLine(): Result[String, IOError] {
     }
   } catch Bug as b {
     Err(error = IoError(path = "stdin", message = b.message))
+  }
+}
+
+/// Read all remaining stdin as a single string, until EOF.
+///
+/// Implemented as a loop over `readLine`, joining lines with `"\n"` — this
+/// reuses the existing cross-target `readLine`/`hostReadLineOpt` boundary
+/// instead of adding a new host primitive, so it needs no kernel changes on
+/// either target. Reconstructing by joining (rather than tracking each
+/// line's original terminator) means a final line lacking a trailing
+/// newline reads back indistinguishably from one that had it — fine for
+/// this function's motivating use case (deserializing a JSON payload piped
+/// over stdin), where trailing whitespace is insignificant.
+///
+/// # Errors
+/// - `IoError("stdin", message)`: host console read failure. `EndOfInput`
+///   is not surfaced as an error here — reaching EOF is how this function
+///   knows it is done, not a failure; `Ok("")` is returned for stdin that
+///   is already at EOF with no data.
+@stable(since = "1.0")
+pub func readAll(): Result[String, IOError] {
+  val lines: List[String] = newList()
+  var err: Option[IOError] = None
+  var reading = true
+  while reading {
+    match readLine() {
+      case Ok(line) -> lines.add(line)
+      case Err(EndOfInput(_)) -> {
+        reading = false
+      }
+      case Err(e) -> {
+        err = Some(value = e)
+        reading = false
+      }
+    }
+  }
+  match err {
+    case Some(e) -> Err(error = e)
+    case None -> Ok(value = Str.joinList("\n", lines))
   }
 }
 
