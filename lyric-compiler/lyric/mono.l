@@ -2518,7 +2518,7 @@ func annsInferenceOnlyMono(anns: in List[Annotation]): Bool {
   var i = 0
   while i < anns.count {
     val segs = anns[i].name.segments
-    if segs.count == 1 and segs[0] == "__lyric_union_ctor_infer" {
+    if segs.count == 1 and (segs[0] == "__lyric_union_ctor_infer" or segs[0] == "__lyric_inference_only") {
       return true
     }
     i = i + 1
@@ -3530,8 +3530,10 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
 // direct call to a known non-ctor-synth function" — the caller should keep
 // looking (or bail to the annotation), not treat it as a resolved `Unit`/etc.
 func directCallEnvTE(state: in MonoState, env: in Map[String, TypeExpr], init: in Expr): Option[TypeExpr] {
+  var callArgCount = 0
   val callFnName = match unwrapParenExprMono(init).kind {
-    case ECall(fn, _) -> {
+    case ECall(fn, callArgs) -> {
+      callArgCount = callArgs.count
       match fn.kind {
         case EPath(fp) -> if fp.segments.count == 1 { fp.segments[0] } else { "" }
         case _ -> ""
@@ -3541,6 +3543,37 @@ func directCallEnvTE(state: in MonoState, env: in Map[String, TypeExpr], init: i
   }
   if callFnName.length == 0 {
     return None
+  }
+  // A ZERO-ARGUMENT call to a GENERIC function (e.g. `newMap()`, `newList()`,
+  // `newSet()`) can pin none of its type parameters from real argument
+  // evidence — every one of them is necessarily filled by
+  // `inferReturnFromName`'s Object-defaulting fallback (#5604's own
+  // "importedFill" mechanism), so the "trust the callee's instantiation"
+  // rationale this function exists for does not apply: there is no real
+  // instantiation to trust, only an all-`Object` placeholder.  Worse, these
+  // three constructors are never actually monomorphised — codegen
+  // intrinsically inlines them using the surrounding CONTEXT HINT (the
+  // binding's own annotation, via `collExpectTop`), so the runtime value's
+  // true instantiation IS the annotation, not this all-`Object` guess.
+  // Overriding the annotation with it corrupted a LATER generic call's own
+  // inference (e.g. `mapValues(m)` unifying against `Map[Object, Object]`
+  // instead of the real `Map[String, Widget]`, specialising the wrong,
+  // uncallable instantiation and crashing at runtime — #6364).  Falling
+  // through to `None` here lets `bindingEnvTE` fall back to the annotation.
+  //
+  // Scoped to GENERIC callees only (#5631 regression guard): a zero-arg
+  // call to a NON-generic function (`val v: String = leftInt()`) has no type
+  // parameters to default at all — its return type is a concrete, correct
+  // fact about the runtime value, and #5631 depends on exactly this case
+  // overriding a stale/misleading annotation.
+  if callArgCount == 0 {
+    val calleeIsGeneric = match mapGet(state.funcDecls, callFnName) {
+      case Some(d) -> match d.generics { case Some(_) -> true; case None -> false }
+      case None -> false
+    }
+    if calleeIsGeneric {
+      return None
+    }
   }
   val isNonCtorCall = match mapGet(state.funcDecls, callFnName) {
     case Some(d) -> not annsInferenceOnlyMono(d.annotations)

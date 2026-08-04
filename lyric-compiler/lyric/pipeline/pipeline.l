@@ -367,6 +367,20 @@ pub func pipeAnnsBlockSpecialization(anns: in List[Annotation]): Bool {
 /// monomorphized copy would rename the call, bypass the intrinsic, and
 /// copy a body that calls the un-lowerable generic kernel extern
 /// `tryGetValue`.  `pkgName` is only consulted for that exclusion.
+///
+/// The intrinsic is excluded from SPECIALISATION (never added as a real
+/// candidate mono could rewrite a call site onto) but still contributes an
+/// INFERENCE-ONLY copy (`Lyric.Mono.annsInferenceOnlyMono`'s
+/// `__lyric_inference_only` marker, mirroring the union-ctor-synth
+/// mechanism): `mapGet`'s return type (`Option[V]`) is real, useful type
+/// information for anything downstream that infers a generic call's type
+/// argument from a `mapGet(...)`-derived binding.  Dropping it from
+/// inference ENTIRELY (the prior behaviour) left such a binding untracked,
+/// so a later generic call — e.g. `isSome(g)` where
+/// `val g = Std.Collections.mapGet(m, "a")` — had no type evidence at all
+/// and defaulted its own type parameter to `Object`, producing a
+/// specialisation for an instantiation the runtime value never had and
+/// crashing with a non-exhaustive-match panic at the call site (#6364).
 pub func pipeAddGenericFuncs(
   items: in List[Item],
   pkgName: in String,
@@ -385,7 +399,11 @@ pub func pipeAddGenericFuncs(
         val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
         val hasBody = match decl.body { case Some(_) -> true; case None -> false }
         val isIntrinsic = excludeIntrinsics and decl.name == "mapGet" and pkgName == "Std.Collections"
-        if pubOk and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) and not isIntrinsic {
+        if isIntrinsic {
+          if pubOk and isGeneric and not pipeAnnsBlockSpecialization(decl.annotations) {
+            dest.add(pipeInferenceOnlyFuncDecl(decl))
+          }
+        } else if pubOk and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
           dest.add(decl)
         }
       }
@@ -393,6 +411,44 @@ pub func pipeAddGenericFuncs(
     }
     i = i + 1
   }
+}
+
+/// Copy `decl` tagged with the `__lyric_inference_only` marker annotation
+/// `Lyric.Mono.annsInferenceOnlyMono` recognises (alongside the pre-existing
+/// `__lyric_union_ctor_infer` union-ctor-synth marker): the monomorphizer's
+/// import merge adds a marked decl to its inference table (`funcDecls`) but
+/// never to its specialisation candidates (`genDecls`), exactly like a
+/// union-ctor synth.  `body` is dropped (`None`) — a codegen intrinsic's
+/// declaration is never specialised, so there is no body to specialise
+/// FROM, and keeping a body around risks a future accidental consumer
+/// treating this as a real, callable definition.
+func pipeInferenceOnlyFuncDecl(decl: in FunctionDecl): FunctionDecl {
+  val marker: List[Annotation] = newList()
+  var ai = 0
+  while ai < decl.annotations.count {
+    marker.add(decl.annotations[ai])
+    ai = ai + 1
+  }
+  val markerSegs: List[String] = newList()
+  markerSegs.add("__lyric_inference_only")
+  val markerArgs: List[AnnotationArg] = newList()
+  marker.add(
+    Annotation(name = ModulePath(segments = markerSegs, span = decl.span), args = markerArgs, span = decl.span)
+  )
+  FunctionDecl(
+    docComments = decl.docComments,
+    annotations = marker,
+    visibility = decl.visibility,
+    isAsync = decl.isAsync,
+    name = decl.name,
+    generics = decl.generics,
+    params = decl.params,
+    ret = decl.ret,
+    whereClause = decl.whereClause,
+    contracts = decl.contracts,
+    body = None,
+    span = decl.span
+  )
 }
 
 /// Append every non-generic block-bodied `pub func` in `items` to `dest`.

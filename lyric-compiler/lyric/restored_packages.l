@@ -167,6 +167,21 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
 func renderDecl(d: in Meta.ContractDecl): String {
   if d.kind == "interface" and d.repr.indexOf("{") < 0 {
     d.repr + " {}\n"
+  } else if d.kind == "func" {
+    // A GENERIC function's `repr` is a bodyless head (see
+    // `Lyric.ContractMeta.reprForFunc`); splice its real body back in
+    // when the contract carries one (`Lyric.ContractMeta.funcDecl`) so
+    // `Lyric.Mono.monoFileWithImports` can specialise a consumer's call
+    // site into a concrete copy — the only way to call a Lyric-level
+    // generic function across a compiled-package boundary.  Without
+    // this, a restored generic stdlib call (e.g. `Std.Core.unwrapOr`,
+    // `Std.Core.isSome`, `Std.Collections.mapValues`) has no callable
+    // cross-assembly MemberRef to bind to and degrades into unbalanced
+    // IL at the caller (#6363, #6364, #6365).
+    match d.body {
+      case Some(b) -> d.repr + " " + b + "\n"
+      case None -> d.repr + "\n"
+    }
   } else {
     d.repr + "\n"
   }

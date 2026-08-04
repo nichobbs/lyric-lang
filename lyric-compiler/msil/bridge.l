@@ -271,9 +271,13 @@ pub func compileToMsilWithVersion(
   // Empty `packageVersion` falls back to "0.0.0" so ad-hoc compiles
   // without a manifest behave like the legacy path; callers threading
   // a manifest version (#1364) pass the declared semver verbatim and
-  // it ends up in the embedded contract.
+  // it ends up in the embedded contract.  `file0` is the PRE-mono file
+  // (straight out of `pipeExpandAndRewrite`) — `withGenericFuncsForContract`
+  // re-attaches its pub generic `IFunc` items (mono strips them from
+  // `liftedFile` unconditionally) so the contract carries them, body
+  // included (#6363, #6364, #6365).
   val resourceVersion = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
-  embedLyricContract(cctx.lctx, liftedFile, "Lyric.Contract", resourceVersion)
+  embedLyricContract(cctx.lctx, withGenericFuncsForContract(file0, liftedFile), "Lyric.Contract", resourceVersion)
 
   // Lower the package IR to raw PE bytes using the pre-seeded context.
   val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)
@@ -874,9 +878,18 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     // surface them per-package (matching the F# bundled-DLL layout).
     // `packageVersion` carries the manifest's `[package].version` for
     // the bundle; per-package versioning is out of scope for #1364 and
-    // tracked separately.
+    // tracked separately.  `parsedPkgs[li].file` is this package's
+    // PRE-mono file — `withGenericFuncsForContract` re-attaches its pub
+    // generic `IFunc` items (mono strips them from `lifted`
+    // unconditionally) so the contract carries them, body included
+    // (#6363, #6364, #6365).
     val bundleVer = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
-    embedLyricContract(cctx.lctx, lifted, "Lyric.Contract." + perPkgNames[li], bundleVer)
+    embedLyricContract(
+      cctx.lctx,
+      withGenericFuncsForContract(parsedPkgs[li].file, lifted),
+      "Lyric.Contract." + perPkgNames[li],
+      bundleVer
+    )
     liftedFiles.add(lifted)
     li = li + 1
   }
@@ -1520,6 +1533,51 @@ func bundleNameMatches(bundleNames: in List[String], name: in String): Bool {
 // Join path segments with "." — e.g. ["My", "Package"] → "My.Package".
 func segmentsToString(segments: in List[String]): String {
   modulePathJoin(segments)
+}
+
+// `Lyric.Mono` unconditionally strips every originally-generic `IFunc` item
+// out of the file it returns (generic functions have no callable MSIL body —
+// only their call-site specialisations survive), so by the time a package's
+// post-mono/woven/lifted file reaches `embedLyricContract`, its generic pub
+// functions are gone and never make it into the contract at all — not even
+// bodyless.  A restored consumer can then never resolve, let alone
+// specialise, a call to that generic function (#6363, #6364, #6365: the
+// exact shape of `Std.Core.unwrapOr`/`isSome`, `Std.Collections.mapKeys`/
+// `mapValues` disappearing from `Lyric.Stdlib.dll`'s embedded contract).
+// Re-attach the PRE-mono file's pub generic `IFunc` items (their real bodies
+// intact) onto the post-mono item list before building the contract — every
+// other decl kind is untouched by mono, so this only ever ADDS the missing
+// generic functions back, never duplicates or shadows anything mono kept.
+func withGenericFuncsForContract(preMono: in SourceFile, postMono: in SourceFile): SourceFile {
+  val items: List[Item] = newList()
+  var pi = 0
+  while pi < postMono.items.count {
+    items.add(postMono.items[pi])
+    pi = pi + 1
+  }
+  var gi = 0
+  while gi < preMono.items.count {
+    val it = preMono.items[gi]
+    match it.kind {
+      case IFunc(decl) -> {
+        val isPub = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+        val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+        if isPub and isGeneric {
+          items.add(it)
+        }
+      }
+      case _ -> ()
+    }
+    gi = gi + 1
+  }
+  SourceFile(
+    moduleDoc = postMono.moduleDoc,
+    fileAnnotations = postMono.fileAnnotations,
+    packageDecl = postMono.packageDecl,
+    imports = postMono.imports,
+    items = items,
+    span = postMono.span
+  )
 }
 
 // Return the MethodDef token of `main` if it was registered, or 0 for libraries.

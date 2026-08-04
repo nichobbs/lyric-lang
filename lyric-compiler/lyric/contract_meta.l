@@ -903,9 +903,15 @@ func reprForRecord(decl: in RecordDecl): String {
 }
 
 // Build the `pub func name(p1: T1, p2: T2): Ret` repr for a function.
-// Bodies are omitted — the parser accepts a bodyless head (treated as
-// abstract / extern-style by the typechecker, which is sufficient for
-// the synth+typecheck round-trip the bridge does).
+// Bodies are omitted from the repr itself — the parser accepts a bodyless
+// head (treated as abstract / extern-style by the typechecker), which is
+// sufficient for the synth+typecheck round-trip the bridge does.  A
+// GENERIC function's real body travels separately via `ContractDecl.body`
+// (see `funcBodyText`/`funcDecl`) because a bodyless generic decl can be
+// type-checked but never CALLED from a restored consumer: the self-hosted
+// MSIL/JVM backends never emit a real generic-method (MVAR) body for a
+// Lyric-level `[T]` function, so there is no cross-assembly MemberRef a
+// consumer's call site could bind to (docs/59 FFI capability matrix).
 //
 // `async` must be carried into the repr (#6372): an `async func` compiles
 // to a Task-returning kickoff method, never the bare declared return type.
@@ -930,6 +936,89 @@ func reprForFunc(fn: in FunctionDecl): String {
   val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
   val asyncPrefix = if fn.isAsync { "async " } else { "" }
   "pub " + asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
+}
+
+// Render a generic function's body as re-parseable source text — one
+// statement at a time via `Lyric.Fmt.stmtInline` for a block body, or the
+// single expression via `Lyric.Fmt.exprInline` for an expression body.
+// Mirrors `aspectBodyText`'s approach for `@inline_template` aspect
+// advice.  Returns `None` when the function has no body at all (an
+// `@axiom` signature — nothing to specialise from either way).
+func funcBodyText(fn: in FunctionDecl): Option[String] {
+  match fn.body {
+    case None -> None
+    case Some(fb) -> match fb {
+      case FBExpr(e) -> Some(value = "= " + Fmt.exprInline(0, e))
+      case FBBlock(b) -> {
+        var body = ""
+        var i = 0
+        while i < b.statements.count {
+          if i > 0 {
+            // Match `Lyric.Fmt.blockInline`'s "; " join so the rendered
+            // body re-parses as a valid multi-statement block.
+            body = body + "; "
+          }
+          body = body + Fmt.stmtInline(b.statements[i])
+          i = i + 1
+        }
+        Some(value = "{ " + body + " }")
+      }
+    }
+  }
+}
+
+// True iff `anns` carries `@externTarget`: the function's body is a
+// required-but-fake placeholder (`= ()`) — the BCL/JDK member named by the
+// annotation is its real implementation, resolved by the FFI/auto-FFI
+// codegen path (or, for a handful of kernel collection primitives, a
+// compiler-recognised intrinsic keyed on the function's bare name —
+// `newList`/`newMap`/`newSet`/`dictGetKeys`/`dictGetValues`).  Feeding that
+// placeholder body into `Lyric.Mono` as if it were real Lyric source would
+// have the monomorphizer synthesise a specialised copy whose body actually
+// computes and returns `()`, silently discarding the FFI dispatch and
+// producing a genuine return-type mismatch (a `Unit` value where the
+// declared return type is a real BCL/JDK type) baked into working IL.
+func hasExternTargetAnnotation(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count > 0 and segs[segs.count - 1] == "externTarget" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Build the `ContractDecl` for a `func` item.  A GENERIC function also
+// carries its real body (`funcBodyText`) so a restored consumer's
+// `Lyric.Mono.monoFileWithImports` can specialise a call site into a
+// concrete copy — the only way to call a Lyric-level generic function
+// across a compiled-package boundary (see `reprForFunc`'s comment).
+// Non-generic functions, and `@externTarget` FFI wrappers of any arity
+// (`hasExternTargetAnnotation`), keep `body = None`: a non-generic function
+// compiles to a genuine cross-assembly MemberRef, and an `@externTarget`
+// wrapper's `= ()` body is a placeholder with no real Lyric semantics to
+// specialise from — both cases call (or intrinsically inline) the real
+// implementation directly, and neither needs its implementation
+// reconstructed from source.
+func funcDecl(fn: in FunctionDecl, vis: in Option[Visibility]): ContractDecl {
+  val isGeneric = match fn.generics { case Some(_) -> true; case None -> false }
+  val isExternWrapper = hasExternTargetAnnotation(fn.annotations)
+  val bodyText = if isGeneric and not isExternWrapper { funcBodyText(fn) } else { None }
+  ContractDecl(
+    kind = "func",
+    name = fn.name,
+    repr = reprForFunc(fn),
+    visibility = visibilityStr(vis),
+    isPure = false,
+    stability = "",
+    requiresClauses = newList(),
+    ensuresClauses = newList(),
+    body = bodyText,
+    params = newList(),
+    bmode = false
+  )
 }
 
 // Build the `pub union Name { case A, case B(x: T) }` repr for a union.
@@ -1447,7 +1536,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     if isPubVis(it.visibility) {
       match it.kind {
         case IRecord(r) -> decls.add(basicDecl("record", r.name, reprForRecord(r), it.visibility))
-        case IFunc(f) -> decls.add(basicDecl("func", f.name, reprForFunc(f), it.visibility))
+        case IFunc(f) -> decls.add(funcDecl(f, it.visibility))
         case IUnion(u) -> decls.add(basicDecl("union", u.name, reprForUnion(u), it.visibility))
         case IEnum(e) -> decls.add(basicDecl("enum", e.name, reprForEnum(e), it.visibility))
         case IInterface(ix) -> decls.add(basicDecl("interface", ix.name, reprForInterface(ix), it.visibility))
