@@ -171,6 +171,16 @@ pub record SymbolTable {
   /// method members, so an unknown-member error there would be a false
   /// positive.
   memberCompleteTypes: Map[String, Bool]
+  /// `"<originPackage>|<name>"` present ⇒ `name` is declared as a member of
+  /// an `extern package <Path> { ... }` block somewhere in package
+  /// `originPackage` (#6361). `registerItem`'s `IExtern` arm never adds these
+  /// to `symbols` — the block's body-less signatures are resolved by codegen
+  /// directly, not through the ordinary symbol table — so without this index
+  /// a fully-qualified call into one (e.g. `Grpc.Kernel.Net.netOpenChannel`,
+  /// called from the enclosing file's own package path) would look
+  /// indistinguishable from a genuine unknown name to
+  /// `resolveExprPath`'s qualified-name check.
+  externBlockMembers: Map[String, Bool]
   // One `impl Iface for Target` conformance, by resolved `TypeId`.
 }
 
@@ -207,8 +217,23 @@ pub func newSymbolTable(): SymbolTable {
     externDelegateFlags = newMap(),
     methodSigs = newList(),
     methodSigIndex = newMap(),
-    memberCompleteTypes = newMap()
+    memberCompleteTypes = newMap(),
+    externBlockMembers = newMap()
   )
+}
+
+// Record that `name` is a member of an `extern package { ... }` block
+// declared within package `pkg` (#6361). Idempotent.
+pub func symTableAddExternBlockMember(tbl: in SymbolTable, pkg: in String, name: in String): Unit {
+  val key = pkg + "|" + name
+  if not tbl.externBlockMembers.containsKey(key) {
+    tbl.externBlockMembers.add(key, true)
+  }
+}
+
+// True when `name` was registered as an extern-package-block member of `pkg`.
+pub func symTableHasExternBlockMember(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
+  tbl.externBlockMembers.containsKey(pkg + "|" + name)
 }
 
 // Register one method signature for `entry.owner`, probing `@0`, `@1`, … for

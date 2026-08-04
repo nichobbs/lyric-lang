@@ -22268,3 +22268,88 @@ alongside but was distinct from), D-progress-720 ("restored_async 4/4"),
 docs/45 (contract-metadata direct resolution — no schema/formatVersion
 change was needed here), docs/57 (`Std.Http` test-coverage gap), docs/59
 (JVM `Std.Http` non-functional finding).
+
+### D-progress-723 — Unknown qualified-package call silently compiled to `TyError` instead of erroring (#6361)
+
+**Status:** Shipped.
+
+**The bug (#6361).** A qualified call into a *known, fully-imported* Lyric
+package whose trailing segment doesn't exist anywhere in that package —
+e.g. `Std.Char.isUpperCase('a')`, a typo/stale spelling of `Std.Char.isUpper`
+— compiled cleanly and silently misbehaved at runtime (returned `true` for
+every input) instead of raising a compile-time unknown-name error. Root
+cause: `resolveExprPath` (`type_checker/typechecker_exprs.l`) special-cased
+every multi-segment `ModulePath` with `if path.segments.count != 1 { return
+TyError }` — no diagnostic, ever. A multi-segment `EPath` reaching this
+function is always the result of `Lyric.AliasRewriter.rewriteQualifiedMemberChain`
+collapsing a dotted `EMember` chain rooted at a real Lyric package import
+(`collectAliases`'s `not imp.isExtern` guard means an `import extern` /
+`extern type` never contributes an alias, so this path never carries a
+deferred auto-FFI lookup) — so by the time a multi-segment `EPath` exists,
+the checker has full member knowledge of the named package and unconditional
+leniency there was never protecting anything real.
+
+**The fix.** `resolveExprPath` now looks up the package (the dotted prefix)
+and the trailing segment against `tbl.symbols` (`symTablePackageHasAnySymbol`
++ `symTablePackageHasMember`, new in `typechecker_symbols.l`): when the
+package contributes at least one symbol to the checker but none of them is
+the named segment, it's a genuine unknown name (`T0020`), not something
+codegen might still resolve. `findDirectSig`'s existing multi-segment
+handling (`Std.RegexSafe.tryCompile`-style overload disambiguation) is
+untouched — this only closes the silent-fallthrough gap in the plain
+value/path-reference arm.
+
+**Two companion fixes surfaced by the new diagnostic.** Building the
+self-hosted compiler bundle and every ecosystem library against the tightened
+check (production-readiness standard: land the check *and* fix what it
+finds, not just the narrow repro) surfaced two pre-existing, unrelated gaps
+the same silent-`TyError` leniency had been masking:
+
+1. `lyric-compiler/lyric/cli/cli_upgrade.l` calls `Process.buildArgString(...)`
+   (aliased `Std.Process`) to render a shell-quoted "dry-run" command
+   preview — but `buildArgString` in `lyric-stdlib/std/process.l` was
+   package-private. This cross-package reference to a non-`pub` stdlib
+   helper had always silently "worked" only because codegen resolves the
+   compiled MSIL method directly (Lyric-level `pub` is enforced solely by
+   the type checker, not CLR accessibility) — a latent instance of the very
+   bug class #6361 describes, just leaking a private name instead of
+   flagging a typo'd one. Fixed by exporting `buildArgString` as `pub`
+   (`@stable(since = "1.0")`, matching every other public function in the
+   file) — it's a genuinely reusable helper, not a refactor-away duplicate.
+2. Every ecosystem library that calls into a sibling in-project package's
+   `extern package { ... }` block through the ENCLOSING file's own
+   qualified path (e.g. `lyric-grpc`'s `grpc.l` calling
+   `Grpc.Kernel.Net.netOpenChannel(...)`, a `_kernel/`-file pattern used
+   throughout the ecosystem) newly tripped the new `T0020` — not because
+   the call is illegitimate, but because `registerItem`'s `IExtern` arm has
+   always been a complete no-op (these body-less members are resolved by
+   codegen directly, never through `tbl.symbols`) AND
+   `Lyric.Pipeline.pipeIsCrossPackageItem` never counted an `extern package`
+   block as cross-package-visible in the first place, so a consumer
+   package's view of a kernel package never even saw the block. Fixed with
+   two small, targeted additions: `pipeIsCrossPackageItem` now returns true
+   for `IExtern(_)` (so the block reaches a sibling package's `registerItem`
+   pass at all — this also benefits the JVM bridge, which shares the same
+   function), and `registerItem`'s `IExtern` arm now indexes each member's
+   bare name under the enclosing file's `originPackage` into a new
+   `SymbolTable.externBlockMembers` side table (`symTableAddExternBlockMember`
+   / `symTableHasExternBlockMember`) that `resolveExprPath`'s new check
+   consults before concluding a qualified name is unknown. This does not
+   change codegen or add new visibility enforcement for extern-package-block
+   members (they carry none today) — it only stops the type checker from
+   mistaking a legitimate reference for a typo.
+
+**Verification.** New self-tests in `typechecker_self_test.l`: the exact
+`Std.Char.isUpperCase` repro now yields `T0020` naming the full qualified
+path; the correctly-spelled equivalent (`Std.Char.isUpper`) stays clean; and
+a dedicated extern-package-block cross-package case (built with
+`Lyric.Pipeline.pipeAddCrossPackageItems`, the same filter the real MSIL/JVM
+bridges use) confirms `Grpc.Kernel.Net`-shaped calls stay clean too. End to
+end: `make lyric` (full self-hosted compiler + stdlib bundle, including the
+`--internal-compiler-bundle-build` step that compiles `Lyric.Cli` against
+the stdlib) and every ecosystem library at the repo root build cleanly
+(zero `T0020` regressions across 22 libraries, `--target dotnet` and spot
+checks on `--target jvm`) against the tightened check.
+
+**Related:** #6361, docs/42, docs/45, `lyric-stdlib/std/process.l`,
+`lyric-grpc/src/_kernel/net/grpc_kernel.l`.

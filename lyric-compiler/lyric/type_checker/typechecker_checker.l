@@ -196,6 +196,21 @@ func findExternTypeIdByClr(tbl: in SymbolTable, clrName: in String): Option[Type
   None
 }
 
+// The declared name of one `extern package { ... }` member, whatever kind
+// it is (#6361 — feeds `symTableAddExternBlockMember`).
+func externMemberDeclName(m: in ExternMember): String {
+  match m {
+    case EMRecord(decl) -> decl.name
+    case EMExposedRec(decl) -> decl.name
+    case EMUnion(decl) -> decl.name
+    case EMEnum(decl) -> decl.name
+    case EMOpaque(decl) -> decl.name
+    case EMSig(sig) -> sig.name
+    case EMTypeAlias(decl) -> decl.name
+    case EMDistinctType(decl) -> decl.name
+  }
+}
+
 func registerItem(
   tbl: in SymbolTable,
   ctr: in TypeIdCounter,
@@ -364,7 +379,18 @@ func registerItem(
     case IAspect(decl) -> {
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKAspect(decl = decl), vis, span)
     }
-    case IExtern(_) -> {
+    case IExtern(decl) -> {
+      // Body-less `extern package <Path> { ... }` members are resolved by
+      // codegen directly (never through `sigs`/`tbl.symbols`), but a caller
+      // addresses them through the ENCLOSING file's own package path (e.g.
+      // `Grpc.Kernel.Net.netOpenChannel(...)`), not `decl.path`. Index each
+      // member's name under `originPkg` so a qualified reference to one
+      // isn't mistaken for a genuine unknown name (#6361).
+      var mi = 0
+      while mi < decl.members.count {
+        symTableAddExternBlockMember(tbl, originPkg, externMemberDeclName(decl.members[mi].kind))
+        mi = mi + 1
+      }
     }
     case IImpl(_) -> {
     }

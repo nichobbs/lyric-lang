@@ -9,6 +9,8 @@ import Std.String as Str
 import Std.Testing
 import Lyric.Parser
 import Lyric.TypeChecker
+import Lyric.AliasRewriter
+import Lyric.Pipeline
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
@@ -2636,4 +2638,77 @@ test "interface method signature stays accepted" {
 test "Unit function with absent body stays accepted" {
   val src = "package P\nfunc f(): Unit\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0114"), "Unit body-less func: no T0114")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6361: a qualified call into a fully-known Lyric package (an import, not an
+// extern type) whose trailing segment doesn't exist anywhere in that package
+// must be a compile-time T0020, not a silently-swallowed `TyError` that lets
+// codegen (or nothing at all) decide what the call means at runtime.  The
+// multi-segment `EPath` `resolveExprPath` sees here is exactly the shape
+// `Lyric.AliasRewriter.rewriteFile` produces for a bare `import Std.Char` +
+// `Std.Char.isUpperCase(...)` call site, so the rewriter runs first.
+// ─────────────────────────────────────────────────────────────────────────────
+test "unknown qualified name on a known package is T0020, not silently swallowed (#6361)" {
+  val pkg = ImportedPackage(
+    name = "Std.Char",
+    items = importedItemsOf("package Std.Char\npub func isUpper(c: in Char): Bool { true }\n"),
+    imports = newList()
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(pkg)
+  val src = "package App\nimport Std.Char\nfunc consume(): Bool { Std.Char.isUpperCase('a') }\n"
+  val rewritten = rewriteFile(parse(src).file)
+  val cr = checkWithImportedPackages(rewritten, packages)
+  assertTrue(hasDiagCode(cr, "T0020"), "typo'd qualified stdlib call ('isUpperCase' vs 'isUpper'): T0020")
+  assertTrue(diagMessageFor(cr, "T0020").contains("Std.Char.isUpperCase"), "T0020 names the full qualified path")
+}
+
+test "correctly-spelled qualified name on a known package has no T0020 (#6361 regression guard)" {
+  val pkg = ImportedPackage(
+    name = "Std.Char",
+    items = importedItemsOf("package Std.Char\npub func isUpper(c: in Char): Bool { true }\n"),
+    imports = newList()
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(pkg)
+  val src = "package App\nimport Std.Char\nfunc consume(): Bool { Std.Char.isUpper('a') }\n"
+  val rewritten = rewriteFile(parse(src).file)
+  val cr = checkWithImportedPackages(rewritten, packages)
+  assertTrue(not hasDiagCode(cr, "T0020"), "correctly-spelled qualified call: no T0020")
+}
+
+// A qualified call into an `extern package { ... }` block member, addressed
+// through the ENCLOSING file's own package path (the real-world shape:
+// `lyric-grpc`'s `grpc.l` calls `Grpc.Kernel.Net.netOpenChannel(...)`, a
+// sibling in-project package's `_kernel/` file whose body-less signature
+// lives inside such a block). `registerItem`'s `IExtern` arm never adds
+// these to `symbols` — they're resolved by codegen, not the ordinary call
+// path — so this exercises the same #6361 tightening from the other side:
+// the checker must recognise the block member as legitimate (via
+// `symTableHasExternBlockMember`), not just typos as illegitimate. Uses
+// `Lyric.Pipeline.pipeAddCrossPackageItems` to build `items` exactly as the
+// real MSIL/JVM bridges do, so an `extern package` block reaches the
+// consumer's `registerItem` pass only if it survives that same filter.
+test "qualified call into a cross-package extern-package-block member has no T0020 (#6361)" {
+  // `other` guarantees `symTablePackageHasAnySymbol(tbl, "Lib.Kernel")` is
+  // true via an ordinary registered symbol, so the assertion below actually
+  // exercises `symTableHasExternBlockMember` for `doThing` rather than
+  // vacuously passing because the package looked entirely unknown.
+  val kernelSrc = "package Lib.Kernel\n" + "pub func other(): Int { 1 }\n" + "@axiom(\"test axiom\")\n" +
+    "extern package Foo.Bar {\n" +
+    "  pub func doThing(): Int\n" +
+    "}\n"
+  val kernelItems: List[Item] = newList()
+  pipeAddCrossPackageItems(parse(kernelSrc).file, kernelItems)
+  val pkg = ImportedPackage(name = "Lib.Kernel", items = kernelItems, imports = newList())
+  val packages: List[ImportedPackage] = newList()
+  packages.add(pkg)
+  val src = "package App\nimport Lib.Kernel\nfunc consume(): Int { Lib.Kernel.doThing() }\n"
+  val rewritten = rewriteFile(parse(src).file)
+  val cr = checkWithImportedPackages(rewritten, packages)
+  assertTrue(
+    not hasDiagCode(cr, "T0020"),
+    "qualified call into a sibling package's extern-package-block member: no T0020"
+  )
 }

@@ -18,10 +18,15 @@ import Std.ProcessHost
 import Std.ProcessCaptureHost
 import Std.ProcessPipedHost
 
-// Build an argument string for inherited-stdio spawning.
-// Arguments that require quoting (contain spaces, quotes, or backslashes)
-// are wrapped in double-quotes with backslash-escaping.
-func buildArgString(args: in List[String]): String {
+/// Build an argument string for inherited-stdio spawning.
+///
+/// Arguments that require quoting (contain spaces, quotes, or backslashes)
+/// are wrapped in double-quotes with backslash-escaping. Exposed (not just
+/// used internally by `run`/`runCapture`) so callers can render the same
+/// shell-quoted command line for display purposes (e.g. a `--dry-run`
+/// preview of the command that would be spawned).
+@stable(since = "1.0")
+pub func buildArgString(args: in List[String]): String {
   var result = ""
   var i = 0
   val count = args.count

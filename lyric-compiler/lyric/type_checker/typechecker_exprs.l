@@ -1736,6 +1736,36 @@ func inferMember(
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Expression path resolution.
 // ─────────────────────────────────────────────────────────────────────────────
+// #6361: does package `pkg` (a dotted `originPackage` value) contribute any
+// symbol at all to `tbl`?  True for every package actually reachable from a
+// collapsed multi-segment `EPath` (see `resolveExprPath` below) — used to
+// gate the unknown-qualified-name diagnostic so it only ever fires against a
+// package the checker has full member knowledge of, never a placeholder.
+func symTablePackageHasAnySymbol(tbl: in SymbolTable, pkg: in String): Bool {
+  var i = 0
+  while i < tbl.symbols.count {
+    if tbl.symbols[i].originPackage == pkg {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// #6361: does package `pkg` declare a symbol named `name` (any kind, any
+// arity)?  Arity-blind by design — the caller only wants to know whether the
+// trailing segment names anything real in that package at all.
+func symTablePackageHasMember(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
+  var i = 0
+  while i < tbl.symbols.count {
+    if tbl.symbols[i].originPackage == pkg and tbl.symbols[i].name == name {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 func resolveExprPath(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -1745,6 +1775,31 @@ func resolveExprPath(
   span: in Span,
 ): Type {
   if path.segments.count != 1 {
+    // A multi-segment `EPath` reaching here was always collapsed by
+    // `Lyric.AliasRewriter.rewriteQualifiedMemberChain` from a dotted member
+    // chain rooted at a real Lyric package import — the rewriter's alias
+    // table excludes every `import extern` (`collectAliases`'s
+    // `not imp.isExtern` guard), so this never fires for a deferred
+    // auto-FFI/extern-type lookup. When the leading segments name a package
+    // the checker actually has symbols for, but none of them is the
+    // trailing segment, the reference is a genuine unknown name (#6361 —
+    // e.g. `Std.Char.isUpperCase`, a typo'd/stale spelling of `isUpper`)
+    // rather than something codegen might still resolve, so it must be
+    // flagged instead of silently falling through to `TyError`.
+    if path.segments.count == 0 {
+      return TyError
+    }
+    val name = path.segments[path.segments.count - 1]
+    val prefix: List[String] = newList()
+    var pi = 0
+    while pi < path.segments.count - 1 {
+      prefix.add(path.segments[pi])
+      pi = pi + 1
+    }
+    val pkg = modulePathJoin(prefix)
+    if symTablePackageHasAnySymbol(tbl, pkg) and not symTablePackageHasMember(tbl, pkg, name) and not symTableHasExternBlockMember(tbl, pkg, name) {
+      diag.add(errorDiagnostic("T0020", "unknown name '" + pkg + "." + name + "'", span))
+    }
     return TyError
   }
   val name = path.segments[0]
