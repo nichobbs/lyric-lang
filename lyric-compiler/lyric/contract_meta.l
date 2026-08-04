@@ -906,6 +906,17 @@ func reprForRecord(decl: in RecordDecl): String {
 // Bodies are omitted — the parser accepts a bodyless head (treated as
 // abstract / extern-style by the typechecker, which is sufficient for
 // the synth+typecheck round-trip the bridge does).
+//
+// `async` must be carried into the repr (#6372): an `async func` compiles
+// to a Task-returning kickoff method, never the bare declared return type.
+// Every consumer that reconstructs this decl from `repr` — the general
+// restored-package synthesis path AND `Lyric.Emitter.stdlibSourcesFromCompiledBundle`'s
+// release-install stdlib fallback — relies on the re-parsed `isAsync` flag
+// to decide whether to Task-wrap the cross-assembly MemberRef signature
+// (`Msil.Codegen.registerStdlibFunc`'s `isSm` computation in particular).
+// Dropping the keyword here silently degrades every restored async
+// function to a synchronous signature, producing a `MissingMethodException`
+// at runtime against the real (Task-wrapped) compiled method.
 func reprForFunc(fn: in FunctionDecl): String {
   var params = ""
   var i = 0
@@ -917,7 +928,8 @@ func reprForFunc(fn: in FunctionDecl): String {
     i = i + 1
   }
   val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
-  "pub func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
+  val asyncPrefix = if fn.isAsync { "async " } else { "" }
+  "pub " + asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
 }
 
 // Build the `pub union Name { case A, case B(x: T) }` repr for a union.
@@ -1062,6 +1074,7 @@ func reprForInterface(decl: in InterfaceDecl): String {
 }
 
 // Render a FunctionSig (interface-method head form, no body).
+// Carries `async` forward for the same reason `reprForFunc` does (#6372).
 func reprForFunctionSig(sig: in FunctionSig): String {
   var params = ""
   var i = 0
@@ -1073,7 +1086,8 @@ func reprForFunctionSig(sig: in FunctionSig): String {
     i = i + 1
   }
   val retStr = match sig.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
-  "func " + sig.name + renderGenerics(sig.generics) + "(" + params + ")" + retStr
+  val asyncPrefix = if sig.isAsync { "async " } else { "" }
+  asyncPrefix + "func " + sig.name + renderGenerics(sig.generics) + "(" + params + ")" + retStr
 }
 
 // `pub type Name = <underlying>` for distinct types.  Renders the

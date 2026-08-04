@@ -22139,3 +22139,132 @@ source and left unchanged. The same `toUpperCase`/`toLowerCase`,
 `Clock`-interface, `forAllIntRange`, `zip`, and `abs`/`min`/`max`/`ceil`
 staleness was also found and fixed in `book/chapters/12-standard-library.md`'s
 module inventory table, which draws from the same stale copy.
+
+---
+
+## D-progress-722 — `await` of a restored-stdlib `async func` emitted a synchronous call site (`MissingMethodException`); root cause was a contract-metadata repr gap, not a codegen bug (#6372)
+
+**Symptom.** A single-file program compiled with `--target dotnet` against a
+release-installed toolchain (`dotnet tool install -g lyric` / the standalone
+SDK — no `lyric-stdlib/std/` source tree available) crashed on its first real
+`await` of a `Std.Http` async entry point:
+
+```
+System.MissingMethodException: Method not found: 'Std.Core.Result`2
+Std.Http.Program.sendAsync(Std.Http.HttpRequest)'.
+```
+
+Every `Std.Http` client entry point (`sendAsync`, `getAsync`, `postAsync`,
+`HttpResponse.bodyText`, …) was affected — any release-installed program
+that made an HTTP request crashed on first use. In-workspace builds (the
+monorepo's own tests, CI, `lyric-stdlib/tests/http_tests.l`) never saw
+this: they compile `Std.Http` fresh from `lyric-stdlib/std/http.l` source,
+so the real, parsed `isAsync = true` flag reaches codegen directly.
+
+**Reproduction.** Confirmed with a two-step, no-network-dependency-required
+setup: (1) copy a built `bootstrap/src/Lyric.Cli.Aot` output directory (the
+CLI + its bundled `Lyric.Stdlib.dll`, no accompanying `lyric-stdlib/`
+source tree) to a scratch directory outside the repo; (2) from a CWD with no
+`lyric-stdlib` ancestor, run the issue's exact repro program (`await
+sendAsync(req)` against `http://127.0.0.1:1/`). Against unfixed `main` this
+reproduced the exact `MissingMethodException` above; against the fix it
+produces the expected `expected transport err: ...Connection refused...`.
+This forces `Lyric.Emitter.findStdlibSourcesForTarget` down its
+compiled-bundle fallback (`stdlibSourcesFromCompiledBundle`), the code path
+every release install actually takes, distinct from the in-workspace
+source-compile path every CI job and self-test exercises.
+
+**Root cause.** `Lyric.ContractMeta.reprForFunc` (`lyric-compiler/lyric/contract_meta.l`)
+— the function that renders a `FunctionDecl` back into a `pub func name(...):
+Ret` text signature for embedding in a compiled DLL's `Lyric.Contract`
+metadata resource — never consulted `FunctionDecl.isAsync`. Every restored
+function's reconstructed repr therefore always read `pub func`, never `pub
+async func`, regardless of the original declaration. `reprForFunctionSig`
+(the interface-method-signature analog) had the identical gap.
+
+This is a genuine metadata-content bug, not a codegen bug — `repr` already
+carries a function's full signature as literal re-parseable Lyric source
+text (`ContractDecl.repr: String`), so the `async` keyword was simply
+dropped from that text at emission time. No new field, no `ContractDecl`
+schema change, and no `formatVersion` bump were needed: the fix is
+entirely a matter of rendering the keyword that was already-available on
+the AST node into the text that already exists for this purpose.
+
+**Why the general restored-package path was unaffected.** The self-hosted
+MSIL bridge has TWO separate registration paths for cross-assembly restored
+functions, and only one of them consults the reconstructed (repr-derived)
+`isAsync` flag:
+
+- `Msil.Codegen.registerRestoredFunc` (general restored `[dependencies]` /
+  NuGet packages) deliberately does NOT trust the reconstructed AST's
+  `isAsync` — it independently re-derives asyncness from the producer DLL's
+  own real MethodDef metadata (`Msil.MetadataReader.dllTaskReturningFuncs`,
+  #5561, D-progress-720's "restored_async 4/4"). This was chosen precisely
+  because "DLLs built by older compilers would lack the [isAsync] flag even
+  if the repr grew one" — so this path stays correct regardless of this fix,
+  by design, and `restored_async_self_test.l`'s 4 cases never exercised the
+  bug (confirmed by code inspection: no branch there reads `fn.isAsync`).
+- `Msil.Codegen.registerStdlibFunc` (the `Std.*` stdlib-specific
+  registration path, invoked via `registerStdlibArtifactTokens`) DOES trust
+  the passed-in `FunctionDecl.isAsync` directly, on the documented
+  assumption that "stdlib sources are parsed with bodies here, so
+  `fn.isAsync` is the real declared flag (unlike restored contract-metadata
+  decls)" — true for the in-workspace source-compile path
+  (`findStdlibSourcesForTarget`'s primary branch), but false for the
+  compiled-bundle fallback (`stdlibSourcesFromCompiledBundle`), which feeds
+  it exactly the same repr-round-tripped, bodyless `FunctionDecl`s the
+  general path deliberately distrusts. This is the actual defect: one
+  documented design assumption ("stdlib decls always come from real source")
+  silently broke the moment a release install forced the fallback branch.
+
+**Fix.** `reprForFunc` and `reprForFunctionSig` now prepend `async ` (after
+`pub `, matching the grammar's `[Visibility] [ 'async' ] 'func'` ordering)
+whenever the declaration's `isAsync` flag is set. This makes the
+compiled-bundle stdlib fallback produce identical `isAsync` values to the
+in-workspace source-compile path, so `registerStdlibFunc`'s existing
+Task-wrapping logic (`isSm = fn.isAsync and not isGen and not
+hasExternTargetMsil(...)`) now correctly encodes the Task-wrapped
+cross-assembly `MemberRef` return type for a restored `Std.*` async
+function, matching the real compiled method's signature.
+
+**JVM parity.** N/A for this specific bug, verified by code reading, not
+assumed: `Lyric.Emitter.findStdlibSourcesForTarget(forJvm = true)` has no
+compiled-bundle fallback at all (line: `return if forJvm { sources } else {
+stdlibSourcesFromCompiledBundle() }`) — on JVM, a missing
+`lyric-stdlib/std/` source tree yields an empty stdlib source list, a
+separate, already-known gap, not a miscompile. Additionally, `Std.Http` is
+already non-functional on JVM independent of this bug (docs/59's phantom
+`_kernel_jvm` finding), so there is no reachable JVM manifestation of #6372
+to fix or regress. The shared front-end fix (`reprForFunc`/
+`reprForFunctionSig` in `contract_meta.l`) is nonetheless target-agnostic
+and equally correct for a future JVM compiled-bundle fallback, should one
+ever be added.
+
+**Regression tests.** `restored_packages_self_test.l` gained 2 cases:
+`buildContractFromFile` on a real parsed `async func` now emits `pub async
+func` in the repr (directly pins `reprForFunc`), and `synthesiseArtifact`'s
+full synth-source-then-reparse round trip preserves `isAsync = true` (pins
+the AST-level round trip every downstream consumer relies on). A new
+`restored_stdlib_async_self_test.l` (2 cases) drives
+`Lyric.Emitter.stdlibSourcesFromCompiledBundle()` directly against this
+checkout's own built `Lyric.Stdlib.dll` and asserts `Std.Http.sendAsync` /
+`Std.Http.HttpResponse.bodyText` reconstruct with `isAsync = true` — the
+exact integration point `registerStdlibFunc` depends on. All three
+`(reprForFunc, reprForFunctionSig, and the round trip through
+synthesiseArtifact)` were verified to fail against unfixed `main` (manually
+confirmed: reverted the fix, rebuilt via `make lyric`, reproduced the exact
+`MissingMethodException`; restored the fix, rebuilt, confirmed the correct
+transport-error output) before being checked in passing.
+
+**Regression sweep:** `contract_meta` 39/39, `restored_packages` 20/20
+(18 pre-existing + 2 new), `restored_stdlib_async` 2/2 (new file),
+`restored_async` 4/4 (unchanged — confirms the general restored-package
+path was never affected), `msil_project_bridge` 34/34,
+`cross_package_generics` 7/7, `msil_restored_qualified_val` 4/4,
+`restored_slice_list_return` 1/1.
+
+**Related:** #6372, #5561 (the general restored-async fix this bug sat
+alongside but was distinct from), D-progress-720 ("restored_async 4/4"),
+docs/45 (contract-metadata direct resolution — no schema/formatVersion
+change was needed here), docs/57 (`Std.Http` test-coverage gap), docs/59
+(JVM `Std.Http` non-functional finding).
