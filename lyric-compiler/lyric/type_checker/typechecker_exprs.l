@@ -1797,7 +1797,15 @@ func resolveExprPath(
       pi = pi + 1
     }
     val pkg = modulePathJoin(prefix)
-    if symTablePackageHasAnySymbol(tbl, pkg) and not symTablePackageHasMember(tbl, pkg, name) and not symTableHasExternBlockMember(tbl, pkg, name) {
+    // #6378: a package known ONLY via `extern package { ... }` block members
+    // (its file has no ordinary `pub func`/`pub val`/… at all, e.g.
+    // `AwsXRay.Kernel.Net`) never adds anything to `tbl.symbols`, so
+    // `symTablePackageHasAnySymbol` alone can't tell it apart from a package
+    // that was never resolved at all — checking
+    // `symTablePackageHasAnyExternBlockMember` too closes that gap without
+    // reopening #6361 for this package shape.
+    val pkgKnown = symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)
+    if pkgKnown and not symTablePackageHasMember(tbl, pkg, name) and not symTableHasExternBlockMember(tbl, pkg, name) {
       diag.add(errorDiagnostic("T0020", "unknown name '" + pkg + "." + name + "'", span))
     }
     return TyError

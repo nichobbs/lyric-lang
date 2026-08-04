@@ -22453,3 +22453,72 @@ tracked follow-up, not something improvised here as a one-off.
 **Related:** #6361, D-progress-723, D-progress-724, `lyric-stdlib/std/console.l`,
 `lyric-generator-sdk/src/generator_sdk.l`, `docs/40-source-generators.md`,
 `docs/57-stdlib-ecosystem-library-review.md` (stdlib core-I/O test gaps).
+
+### D-progress-726 — Fifth companion gap from D-progress-723's tightened check, found in review (#6378): the T0020 gate itself silently no-oped for all-extern-package-block packages
+
+**Status:** Shipped.
+
+**The bug (review finding on PR #6373, filed as #6378).** `resolveExprPath`'s
+new `T0020` gate (D-progress-723) was `symTablePackageHasAnySymbol(tbl, pkg)
+and not symTablePackageHasMember(tbl, pkg, name) and not
+symTableHasExternBlockMember(tbl, pkg, name)`. `symTablePackageHasAnySymbol`
+only scans `tbl.symbols` — but a package whose file is NOTHING BUT one or
+more `extern package { ... }` block(s) (no ordinary `pub func`/`pub val`/etc.
+at all) never adds anything to `tbl.symbols` at all; `registerItem`'s
+`IExtern` arm only ever writes to the separate `externBlockMembers` side
+table. For such a package, `symTablePackageHasAnySymbol` is unconditionally
+`false`, so the whole gate short-circuits and a typo'd qualified call into it
+is never flagged — reopening #6361's exact silent-`TyError` bug for this one
+package shape. Not hypothetical: `lyric-aws-xray/src/_kernel/xray_kernel_jvm.l`
+(package `AwsXRay.Kernel.Net`, `@cfg(feature = "jvm")`) is precisely this
+shape today — a bare `import` plus a single `extern package` block, nothing
+else. Confirmed end-to-end: a two-package project mirroring this exact shape
+(`Lib.OnlyExtern` = an import + one `extern package` block, consumed by
+`App.doThingTypo()`) built cleanly with no diagnostic before this fix.
+
+**The fix.** Added a second side index to `SymbolTable`
+(`typechecker_symbols.l`): `externBlockPackages: Map[String, Bool]`, written
+by `symTableAddExternBlockMember` alongside the existing per-member
+`externBlockMembers` key, and read by a new
+`symTablePackageHasAnyExternBlockMember(tbl, pkg): Bool`. `resolveExprPath`'s
+gate now computes `pkgKnown = symTablePackageHasAnySymbol(tbl, pkg) or
+symTablePackageHasAnyExternBlockMember(tbl, pkg)` — a package known ONLY via
+extern-block members is now correctly treated as "known" for the purposes of
+flagging a typo'd trailing segment, without changing anything about how a
+LEGITIMATE extern-block member reference resolves (`not
+symTableHasExternBlockMember(tbl, pkg, name)` is unchanged).
+
+**Why the existing #6361 self-test didn't catch this.** The original
+cross-package extern-block self-test (`typechecker_self_test.l`, "qualified
+call into a cross-package extern-package-block member has no T0020")
+deliberately gave its fixture package an `other(): Int` helper alongside the
+extern block specifically so `symTablePackageHasAnySymbol` would already be
+true — its own comment says so ("guarantees `symTablePackageHasAnySymbol`
+... is true ... rather than vacuously passing"). That was the right call for
+what it was testing (the extern-block-member-recognition half of #6361), but
+it meant no self-test ever exercised a package that is *purely* an extern
+block, the shape that actually exists in `lyric-aws-xray`.
+
+**Verification.** Two new self-tests in `typechecker_self_test.l` mirror the
+existing pair but with NO `other()` helper — an all-extern-package-block
+fixture: a typo'd call now correctly raises `T0020` naming the full path, and
+the correctly-spelled call stays clean. Also verified against the real-shape
+end-to-end repro (a two-package `lyric build`, not just the self-test
+harness): typo now fails with `error[T0020] ...: unknown name
+'Lib.OnlyExtern.doThingTypo'`; the correct call builds clean. Full
+regression sweep after rebuilding via `make lyric`: `typechecker_self_test.l`
+289/289 (2 new), `alias_rewriter_self_test.l` 37/37, `mono_self_test.l`
+54/54, `weaver_self_test.l` 46/46, `modechecker_self_test.l` 92/92,
+`parser_self_test.l` 126/126, `contract_elaborator_self_test.l` 36/36,
+`lyric-testing` 39/39, `lyric-generator-sdk` builds clean.
+`lyric-aws-xray`'s default (no-feature) build is unaffected
+(`AwsXRay.Kernel.Net` isn't reachable through any in-repo qualified call
+today — confirmed via `grep`, zero hits — so there was no existing call site
+to regress); its `--features jvm` build hits an unrelated, pre-existing
+`T0001` duplicate-name error, confirmed identical on unpatched `main` via
+`git stash` (nothing to do with this fix).
+
+**Related:** #6361, #6378, D-progress-723, D-progress-724, D-progress-725,
+`lyric-compiler/lyric/type_checker/typechecker_symbols.l`,
+`lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
+`lyric-aws-xray/src/_kernel/xray_kernel_jvm.l`.

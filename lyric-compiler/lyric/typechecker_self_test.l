@@ -2737,3 +2737,49 @@ test "qualified call into a cross-package extern-package-block member has no T00
     "qualified call into a sibling package's extern-package-block member: no T0020"
   )
 }
+
+// #6378: a package whose file is NOTHING BUT one or more `extern package
+// { ... }` blocks (no ordinary `pub func`/`pub val`/etc. at all — the real
+// shape of `AwsXRay.Kernel.Net` in `lyric-aws-xray/src/_kernel/xray_kernel_jvm.l`)
+// never adds anything to `tbl.symbols`, so `symTablePackageHasAnySymbol`
+// alone can't distinguish "package known, name typo'd" from "package never
+// resolved at all" — reopening #6361's exact silent-TyError gap for this one
+// package shape. `symTablePackageHasAnyExternBlockMember` closes it. Unlike
+// the `Lib.Kernel` case above, this kernel package has NO `other()` helper —
+// the whole point is that `tbl.symbols` never gets an entry for it at all.
+test "typo'd qualified call into an all-extern-package-block package is T0020 (#6378)" {
+  val kernelSrc = "package Lib.OnlyExtern\n" + "@axiom(\"test axiom\")\n" + "extern package Foo.Bar {\n" +
+    "  pub func doThing(): Int\n" +
+    "}\n"
+  val kernelItems: List[Item] = newList()
+  pipeAddCrossPackageItems(parse(kernelSrc).file, kernelItems)
+  val pkg = ImportedPackage(name = "Lib.OnlyExtern", items = kernelItems, imports = newList())
+  val packages: List[ImportedPackage] = newList()
+  packages.add(pkg)
+  val src = "package App\nimport Lib.OnlyExtern\nfunc consume(): Int { Lib.OnlyExtern.doThingTypo() }\n"
+  val rewritten = rewriteFile(parse(src).file)
+  val cr = checkWithImportedPackages(rewritten, packages)
+  assertTrue(
+    hasDiagCode(cr, "T0020"),
+    "typo'd qualified call into an all-extern-package-block package: T0020, not silently swallowed"
+  )
+  assertTrue(diagMessageFor(cr, "T0020").contains("Lib.OnlyExtern.doThingTypo"), "T0020 names the full qualified path")
+}
+
+test "correctly-spelled qualified call into an all-extern-package-block package has no T0020 (#6378 regression guard)" {
+  val kernelSrc = "package Lib.OnlyExtern\n" + "@axiom(\"test axiom\")\n" + "extern package Foo.Bar {\n" +
+    "  pub func doThing(): Int\n" +
+    "}\n"
+  val kernelItems: List[Item] = newList()
+  pipeAddCrossPackageItems(parse(kernelSrc).file, kernelItems)
+  val pkg = ImportedPackage(name = "Lib.OnlyExtern", items = kernelItems, imports = newList())
+  val packages: List[ImportedPackage] = newList()
+  packages.add(pkg)
+  val src = "package App\nimport Lib.OnlyExtern\nfunc consume(): Int { Lib.OnlyExtern.doThing() }\n"
+  val rewritten = rewriteFile(parse(src).file)
+  val cr = checkWithImportedPackages(rewritten, packages)
+  assertTrue(
+    not hasDiagCode(cr, "T0020"),
+    "correctly-spelled qualified call into an all-extern-package-block package: no T0020"
+  )
+}

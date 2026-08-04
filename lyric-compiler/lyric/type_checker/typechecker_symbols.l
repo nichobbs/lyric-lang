@@ -181,6 +181,18 @@ pub record SymbolTable {
   /// indistinguishable from a genuine unknown name to
   /// `resolveExprPath`'s qualified-name check.
   externBlockMembers: Map[String, Bool]
+  /// `<originPackage>` present ⇒ that package contributed at least one
+  /// `extern package { ... }` block member to `externBlockMembers` (#6378).
+  /// A package whose file consists ENTIRELY of `extern package { ... }`
+  /// block(s) — e.g. `AwsXRay.Kernel.Net` in `lyric-aws-xray/src/_kernel/
+  /// xray_kernel_jvm.l` — never adds anything to `symbols` at all, so
+  /// `symTablePackageHasAnySymbol` alone can't tell "package known, name
+  /// typo'd" apart from "package never even resolved" for it;
+  /// `resolveExprPath`'s #6361 T0020 gate consults this side index too so a
+  /// typo'd qualified call into such a package is still flagged instead of
+  /// silently falling through (the exact #6361 bug, reopened for this one
+  /// package shape).
+  externBlockPackages: Map[String, Bool]
   // One `impl Iface for Target` conformance, by resolved `TypeId`.
 }
 
@@ -218,7 +230,8 @@ pub func newSymbolTable(): SymbolTable {
     methodSigs = newList(),
     methodSigIndex = newMap(),
     memberCompleteTypes = newMap(),
-    externBlockMembers = newMap()
+    externBlockMembers = newMap(),
+    externBlockPackages = newMap()
   )
 }
 
@@ -229,11 +242,22 @@ pub func symTableAddExternBlockMember(tbl: in SymbolTable, pkg: in String, name:
   if not tbl.externBlockMembers.containsKey(key) {
     tbl.externBlockMembers.add(key, true)
   }
+  if not tbl.externBlockPackages.containsKey(pkg) {
+    tbl.externBlockPackages.add(pkg, true)
+  }
 }
 
 // True when `name` was registered as an extern-package-block member of `pkg`.
 pub func symTableHasExternBlockMember(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
   tbl.externBlockMembers.containsKey(pkg + "|" + name)
+}
+
+// True when `pkg` contributed at least one `extern package { ... }` block
+// member (#6378) — i.e. the package is known to the checker even though it
+// may have added nothing to `tbl.symbols` (a file that is nothing but one
+// or more `extern package { ... }` blocks never does).
+pub func symTablePackageHasAnyExternBlockMember(tbl: in SymbolTable, pkg: in String): Bool {
+  tbl.externBlockPackages.containsKey(pkg)
 }
 
 // Register one method signature for `entry.owner`, probing `@0`, `@1`, … for
