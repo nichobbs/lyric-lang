@@ -4,7 +4,7 @@
 package Testing.TestingTests
 
 import Std.Core
-import Std.Testing
+import Std.Testing as StdTesting
 import Std.Collections
 import Testing
 import Mail

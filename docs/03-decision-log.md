@@ -22353,3 +22353,44 @@ checks on `--target jvm`) against the tightened check.
 
 **Related:** #6361, docs/42, docs/45, `lyric-stdlib/std/process.l`,
 `lyric-grpc/src/_kernel/net/grpc_kernel.l`.
+
+### D-progress-722 — Third companion gap from D-progress-721's tightened check: `lyric-testing`'s own test suite hit a bare-import tail-segment alias collision
+
+**Status:** Shipped.
+
+**The bug.** `lyric-testing/tests/testing_tests.l` bare-imports both
+`Std.Testing` (the stdlib's `assertEqual`/`assertEqualInt`/`assertTrue`/…
+panic-based helpers, used unqualified throughout the file) and the local
+`Testing` package under test (`lyric-testing/src/testing.l`, `package
+Testing`, providing `newTestContext`/`sentCount`/`assertEq`/… and referenced
+throughout the file via its qualified form, `Testing.newTestContext()`
+etc.). Both packages' bare-import tail segment is the single word
+`Testing`. `Lyric.AliasRewriter.collectAliases`'s documented (see the file's
+own `#3250` comment) first-wins-in-source-order rule for colliding bare-tail
+aliases resolved the tail key `Testing` to `Std.Testing` — imported first in
+the file's import list — so every `Testing.newTestContext()`-shaped call
+site in the test file was silently rewritten to
+`Std.Testing.newTestContext`, a name that doesn't exist in that module.
+Before D-progress-721 this fell through `resolveExprPath`'s blanket
+`TyError` leniency with no diagnostic, so the affected `test` blocks
+type-checked (and ran) without ever exercising real assertions; the
+tightened `T0020` check correctly surfaced the collision as a hard compile
+error, failing CI on PR #6373 (`ecosystem-tests (testing, …)`).
+
+**The fix.** `lyric-testing/tests/testing_tests.l` never references
+`Std.Testing` by its qualified name — only via the bare unqualified
+`assertEqualInt`/`assertTrue`/etc. calls that ordinary (non-aliased) import
+resolution already provides regardless of the `AliasRewriter`'s alias
+table. Aliasing the stdlib import (`import Std.Testing as StdTesting`)
+removes it from the bare-tail-collision pool entirely — `collectAliases`
+only auto-registers a tail-segment alias for imports with no explicit `as`
+clause — so the tail key `Testing` now resolves solely to the local
+`Testing` package, with no change to any bare-name symbol resolution.
+
+**Verification.** `./bin/lyric test --manifest lyric-testing/lyric.toml`:
+all 39 `Testing.TestingTests` cases pass (previously 63 `T0020` compile
+errors, zero tests run).
+
+**Related:** #6361, D-progress-721, `lyric-testing/tests/testing_tests.l`,
+`lyric-compiler/lyric/alias_rewriter.l` (`collectAliases` first-wins
+tail-collision behavior, tracked for disambiguation follow-up as #3250).
