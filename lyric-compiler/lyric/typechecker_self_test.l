@@ -2783,3 +2783,122 @@ test "correctly-spelled qualified call into an all-extern-package-block package 
     "correctly-spelled qualified call into an all-extern-package-block package: no T0020"
   )
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6362: field-style access (`e.message`, no call parens) to a name that
+// exists ONLY as a D037 dot-named (UFCS) function — never as a real record
+// field or union field — silently typed as `TyError` with no diagnostic
+// (the `sigs.containsKey(tname + "." + name)` leniency in
+// `maybeUnknownMemberDiag` was written for the CALL arm's `resolveMethodCallPick`
+// fallback, but `inferMember`'s field-access arm reused the same helper and
+// inherited the same leniency for a receiver shape it was never meant to
+// cover). Reached codegen as a `TyError`-typed member read and produced
+// `InvalidProgramException` at runtime. The exact repro is the stdlib's own
+// `IOError.message` (`lyric-stdlib/std/errors.l`), a cross-package union —
+// `inferMember` now checks `sigs` for a dot-named match BEFORE falling back to
+// `maybeUnknownMemberDiag`, so this fires regardless of whether the receiver
+// type is locally declared or imported (dot-named signatures are known
+// globally, unlike record-field enumeration, which `T0113`/`memberCompleteTypes`
+// restricts to locally-declared types — see docs/59 A5).
+// ─────────────────────────────────────────────────────────────────────────────
+test "field-style access to a UFCS-only function on an imported union is T0116 (#6362)" {
+  val imp = importedItemsOf(
+    "package Std.Errors\npub union IOError {\n  case NotFound(path: String)\n}\npub func IOError.message(e: in IOError): String {\n  match e {\n    case NotFound(path) -> \"not found: \" + path\n  }\n}\n"
+  )
+  val src = "package App\nimport Std.Errors\nfunc consume(e: in IOError): String { e.message }\n"
+  val cr = checkWithImports(parse(src).file, imp)
+  assertTrue(hasDiagCode(cr, "T0116"), "field-style access to UFCS-only 'message' on IOError: T0116")
+  assertTrue(diagMessageFor(cr, "T0116").contains("IOError"), "T0116 names the receiver type")
+  assertTrue(diagMessageFor(cr, "T0116").contains("message"), "T0116 names the field")
+}
+
+test "call-style access to the same UFCS function still compiles cleanly (#6362 regression guard)" {
+  val imp = importedItemsOf(
+    "package Std.Errors\npub union IOError {\n  case NotFound(path: String)\n}\npub func IOError.message(e: in IOError): String {\n  match e {\n    case NotFound(path) -> \"not found: \" + path\n  }\n}\n"
+  )
+  val src = "package App\nimport Std.Errors\nfunc consume(e: in IOError): String { e.message() }\n"
+  val cr = checkWithImports(parse(src).file, imp)
+  assertTrue(not hasDiagCode(cr, "T0116"), "call-style e.message(): no T0116")
+  assertTrue(not hasDiagCode(cr, "T0113"), "call-style e.message(): no T0113")
+  assertEqualInt(diagCount(cr), 0, "call-style e.message(): no diagnostics at all")
+}
+
+test "field-style access to a real record field alongside an unrelated UFCS function stays clean (#6362 regression guard)" {
+  val src = "package P\nrecord Point {\n  x: Int\n}\nfunc Point.length(p: in Point): Int { p.x }\nfunc consume(p: in Point): Int { p.x }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0116"), "real field 'x' access: no T0116 even though 'Point.length' exists")
+  assertEqualInt(diagCount(cr), 0, "real field access: no diagnostics at all")
+}
+
+test "field-style access to a record field bound through a union case pattern stays clean (#6362 regression guard)" {
+  val src = "package P\nrecord Point {\n  x: Int\n}\nunion Wrapper {\n  case Wrap(inner: Point)\n}\nfunc consume(w: in Wrapper): Int {\n  match w {\n    case Wrap(inner) -> inner.x\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0116"), "field access on a union-case-bound record: no T0116")
+  assertEqualInt(diagCount(cr), 0, "field access on a union-case-bound record: no diagnostics at all")
+}
+
+// `lyric-stdlib/std/app.l`'s real shape: an opaque type whose accessor UFCS
+// function shares its wrapped field's name and reads it field-style inside
+// its own body. Opaque fields aren't enumerated by `fieldsOfRecord` (they're
+// visible only within the declaring package, via the construction-only
+// `ctorAllFields` path), so `inferMemberBase` always returns `TyError` for
+// them — the #6362 fix's dot-named check must not treat that as proof the
+// name is UFCS-only, or this exact stdlib pattern misfires T0116.
+test "field-style access to an opaque type's own field, inside its same-named accessor, stays clean (#6362 regression guard)" {
+  val src = "package P\nopaque type Config {\n  path: String\n}\nfunc Config.path(config: in Config): String {\n  config.path\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0116"), "opaque field read inside its own same-named accessor: no T0116")
+  assertEqualInt(diagCount(cr), 0, "opaque field read inside its own same-named accessor: no diagnostics at all")
+}
+
+// #6382 (review follow-up on #6362): the same-package opaque exemption above
+// must NOT extend to an IMPORTED opaque type's own accessor. Outside its
+// declaring package, an opaque type's representation is never legitimately
+// readable field-style at all (that's the whole point of `opaque` — see this
+// repo's glossary), so `cfg.path` here can only mean the UFCS function
+// `Config.path`, exactly like the union case above. Confirmed end-to-end
+// against the real `Std.App.Config` shape before this fix: compiled cleanly
+// and crashed at runtime with `InvalidProgramException`, the exact bug class
+// #6362 exists to close.
+test "field-style access to an imported opaque type's accessor is T0116, not exempted like the local case (#6382)" {
+  val imp = importedItemsOf(
+    "package Lib\npub opaque type Config {\n  path: String\n}\npub func Config.path(config: in Config): String {\n  return config.path\n}\n"
+  )
+  val src = "package App\nimport Lib\nfunc consume(cfg: in Config): String { cfg.path }\n"
+  val cr = checkWithImports(parse(src).file, imp)
+  assertTrue(hasDiagCode(cr, "T0116"), "field-style access to an imported opaque type's UFCS-only accessor: T0116")
+  assertTrue(diagMessageFor(cr, "T0116").contains("Config"), "T0116 names the receiver type")
+  assertTrue(diagMessageFor(cr, "T0116").contains("path"), "T0116 names the field")
+}
+
+test "call-style access to the same imported opaque accessor still compiles cleanly (#6382 regression guard)" {
+  val imp = importedItemsOf(
+    "package Lib\npub opaque type Config {\n  path: String\n}\npub func Config.path(config: in Config): String {\n  return config.path\n}\n"
+  )
+  val src = "package App\nimport Lib\nfunc consume(cfg: in Config): String { cfg.path() }\n"
+  val cr = checkWithImports(parse(src).file, imp)
+  assertTrue(not hasDiagCode(cr, "T0116"), "call-style cfg.path(): no T0116")
+  assertEqualInt(diagCount(cr), 0, "call-style cfg.path(): no diagnostics at all")
+}
+
+// #6383 (second review follow-up on #6362): the local-opaque exemption must
+// be scoped to the field's OWN name, not "any name on a local opaque type."
+// `isOpaqueOwnFieldName` checks the accessed name against `ctorAllFields`
+// (the same, only-visible-in-declaring-package field list) rather than
+// exempting every field-style read on a local opaque receiver — an
+// unrelated dot-named function sharing the type stays subject to T0116
+// exactly like it would on a record or union.
+test "field-style access to an unrelated UFCS function on a local opaque type is T0116, not exempted (#6383)" {
+  val src = "package P\nopaque type Config {\n  path: String\n}\nfunc Config.summary(c: in Config): String {\n  return \"config\"\n}\nfunc consume(c: in Config): String {\n  c.summary\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0116"), "field-style access to an unrelated UFCS function on a local opaque type: T0116")
+  assertTrue(diagMessageFor(cr, "T0116").contains("Config"), "T0116 names the receiver type")
+  assertTrue(diagMessageFor(cr, "T0116").contains("summary"), "T0116 names the field")
+}
+
+test "call-style access to the same unrelated local-opaque UFCS function still compiles cleanly (#6383 regression guard)" {
+  val src = "package P\nopaque type Config {\n  path: String\n}\nfunc Config.summary(c: in Config): String {\n  return \"config\"\n}\nfunc consume(c: in Config): String {\n  c.summary()\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0116"), "call-style c.summary(): no T0116")
+  assertEqualInt(diagCount(cr), 0, "call-style c.summary(): no diagnostics at all")
+}

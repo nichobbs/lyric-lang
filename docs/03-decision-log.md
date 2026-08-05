@@ -22654,3 +22654,241 @@ lyric` alone silently tests the unmodified seed.
 
 **Related:** #6369, #6359, #6371, `lyric-compiler/msil/codegen.l`
 (`lowerMethodCallMsil`), `lyric-compiler/lyric/iface_slice_arg_self_test.l`.
+
+---
+
+### D-progress-730 — Field-style access of a UFCS function (`e.message` vs `e.message()`) compiled to invalid IL instead of erroring (#6362)
+
+**Status:** Shipped.
+
+**The bug (#6362).** `IOError.message` is a D037 dot-named (UFCS) function
+(`pub func IOError.message(e: in IOError): String`, `lyric-stdlib/std/errors.l`)
+— callable method-style as `e.message()`. Accessing it FIELD-style, with no
+call parens (`e.message`), also compiled cleanly and produced
+`System.InvalidProgramException` at runtime instead of a compile-time error.
+This is a different shape from #6361 (D-progress-723): there the referenced
+*name* never resolved at all; here the name genuinely exists — as a
+function, not a field — so field-style access should be rejected regardless.
+
+**Root cause.** `EMember` (a bare `recv.name` expression, not wrapped in an
+`ECall`) is type-checked by `inferMember` (`typechecker_exprs.l`), distinct
+from the `ECall` arm's member-callee handling. When `name` isn't a real
+field/builtin member (`inferMemberBase` returns `TyError`) and isn't a
+record-body/`impl`-block/interface method (`methodCandidatesFor` returns no
+candidates), `inferMember` fell through to `maybeUnknownMemberDiag` — the
+same A5 "unknown member" helper the `ECall` arm calls with `isCall = true`
+after `resolveMethodCallPick` fails. That helper's dot-named-function check
+(`sigs.containsKey(tname + "." + name)`) was written for the CALL arm, where
+a dot-named function's existence is exactly the right reason to stay silent
+(the call already resolved through `resolveMethodCallPick`/
+`dotNamedCandidatesFor`, or arity/type mismatches get their own T0042/T0043).
+`inferMember`'s FIELD-access arm reused the same helper with `isCall = false`
+and inherited the identical leniency for a receiver shape it was never meant
+to cover: a dot-named function is *never* a valid field read, call syntax or
+not. The result was a silently-`TyError`-typed member read reaching codegen
+with no diagnostic at all.
+
+A second wrinkle made this easy to miss for the exact repro shape: `IOError`
+is a **union**, and unions are categorically excluded from
+`symTableIsMemberComplete`'s `memberCompleteTypes` gate (`symTableAdd`'s
+`DKUnion` arm never adds a union to that side index — unions have no
+top-level "fields" the way records do, since fields belong to individual
+cases). `maybeUnknownMemberDiag` early-returns before ever reaching the
+dot-named check when the receiver isn't member-complete, so the fix could
+**not** live inside that helper's existing gate without first widening
+`memberCompleteTypes` to cover unions — a much bigger, riskier change (union
+field enumeration is genuinely per-case, not a flat list) that this fix does
+not need. `IOError` is also **imported** (declared in `Std.Errors`, consumed
+by any file that transitively pulls it in via `Std.File`/`Std.Core`) —
+`memberCompleteTypes` deliberately excludes every imported type too (docs/59
+A5: imported contract metadata drops method members from record reprs).
+Dot-named function *existence*, unlike field enumeration, does not share
+either limitation: `sigs` (`Map[String, ResolvedSignature]`) is populated
+from `addSigsFromItems` for every imported package's items exactly the same
+way as the user's own file, so `sigs.containsKey(tname + "." + name)` is a
+fully reliable, package-independent signal — the fix runs this check
+directly in `inferMember`, ahead of and independent of the member-complete
+gate, rather than trying to extend that gate to unions.
+
+**The fix.** `inferMember` (`typechecker_exprs.l`) now checks
+`sigs.containsKey(tname + "." + name)` itself, immediately after
+`methodCandidatesFor` finds no record-body/impl/interface method candidate
+and before falling back to `maybeUnknownMemberDiag`. A hit means `name`
+resolves *only* as a dot-named function — never a real field — so
+field-style access is always wrong; a new diagnostic, **T0116**, fires
+naming the receiver type, the field name, and the call-syntax fix
+(`"no field '" + name + "' on type '" + tname + "' — '" + name + "' is a
+function; call it as '" + name + "(...)'"`). Reusing T0113 was considered
+and rejected: T0113 is documented and self-tested as scoped specifically to
+member-complete (locally-declared, non-union) receivers — firing it here too
+would blur that documented boundary for a semantically distinct condition
+(dot-named-function-shadows-field, not member-completeness). The `ECall`
+arm's own `maybeUnknownMemberDiag(..., true)` call site is untouched — call
+resolution (`e.message()`) is unaffected, on both local and imported
+receivers, on both records and unions.
+
+**A companion false positive, found by the mandatory full-stdlib rebuild
+(production-readiness standard: land the check *and* fix/guard against what
+it finds).** An initial version of this fix — checked `sigs` unconditionally
+for any `TyUser` receiver — broke `lyric-stdlib/std/app.l`: `Config` is an
+`opaque type` with fields `path`/`rawText`, plus accessor UFCS functions of
+the exact same names (`pub func Config.path(config: in Config): String {
+config.path }`) that just return the field. `fieldsOfRecord`/
+`fieldsOfRecordInstantiated` (what `inferMemberBase` consults for a real
+field) only walk `DKRecord`/`DKExposedRec` — opaque fields are visible only
+within the declaring package through a separate construction-only path
+(`ctorAllFields`), so `inferMemberBase` always returns `TyError` for a field
+read on an opaque receiver regardless of whether the field genuinely exists.
+That means the field read *inside `Config.path`'s own body* (`config.path`)
+never resolved as a real field to begin with — it fell to the new dot-named
+check, which correctly found `sigs` contains `"Config.path"` (the accessor
+itself!) and misfired T0116 on legitimate code. Fixed with a narrow guard,
+`isOpaqueTypeId` (`typechecker_exprs.l`): the new dot-named check is skipped
+entirely for opaque receivers, leaving them exactly as lenient as they were
+before this fix (a pre-existing, unrelated, out-of-scope gap — opaque field
+enumeration in the type checker — not something this PR attempts to close).
+Records, exposed records, and unions are unaffected: their field/case
+knowledge is already complete via `fieldsOfRecord`, so `inferMemberBase`
+returns the real field type before `inferMember` ever reaches the new check.
+
+**Verification.** New self-tests in `typechecker_self_test.l` (mirroring the
+existing docs/59 A4/A5 fixture style): field-style access to a UFCS-only
+function on a cross-package union (`IOError`-shaped, via `importedItemsOf`)
+raises T0116 naming both the type and the field; the call form (`e.message()`)
+on the identical fixture stays fully clean (zero diagnostics); a real record
+field accessed field-style stays clean even when an unrelated dot-named
+function exists on the same type (`Point.length` alongside `p.x`); and a
+record field reached through a union-case-bound local (`case Wrap(inner) ->
+inner.x`) stays clean, confirming ordinary pattern-destructured field access
+is untouched. Full regression sweep after `make lyric`:
+`typechecker_self_test.l` all green (4 new cases), plus
+`modechecker_self_test.l`, `parser_self_test.l`, `mono_self_test.l`,
+`weaver_self_test.l`, `contract_elaborator_self_test.l`,
+`alias_rewriter_self_test.l`, and the UFCS-adjacent
+`bitwise_self_test.l`/`aspect_weave_self_test.l` (`--target dotnet` and
+`--target jvm`) unaffected.
+
+**Related:** #6362, #6361, D-progress-723, docs/59 §5.1 A4/A5, D037,
+`lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
+`lyric-stdlib/std/errors.l`.
+
+### D-progress-729 — Companion gap from D-progress-730, found in review (#6382): the opaque-type exemption reopened #6362 for every IMPORTED opaque type
+
+**Status:** Shipped.
+
+**The bug.** D-progress-730's `isOpaqueTypeId` guard exempted the new T0116
+dot-named-only check for *every* opaque-type receiver, unconditionally. The
+guard's real purpose was narrower: a same-package accessor's own body
+(`pub func Config.path(config: in Config): String { config.path }`,
+`lyric-stdlib/std/app.l`'s real shape) reads its own opaque type's private
+field, which `fieldsOfRecord` can never enumerate (opaque fields are visible
+only within the declaring package via the separate `ctorAllFields`
+construction path) — so `inferMemberBase` always returns `TyError` there
+regardless of whether the field genuinely exists, and the dot-named check
+can't tell that apart from genuine UFCS-only access. But the guard did
+nothing to scope this to the SAME package: for an opaque type consumed from
+a *different* package (e.g. a caller doing `cfg.path` on a `Std.App.Config`
+obtained from `Std.App.withConfig(...)`), the exact same silent leniency
+applied — reopening #6362's `InvalidProgramException` for every imported
+opaque type's accessor. Confirmed end-to-end against the real
+`Std.App.Config` shape before this fix: `Std.App.withConfig(p)` →
+`match ... { case Ok(cfg) -> cfg.path; ... }` (missing parens) built cleanly
+and crashed at runtime with the exact same `InvalidProgramException` D-progress-730
+exists to close.
+
+**Why this matters more for opaque types than it first appears.** An opaque
+type's whole design point (this repo's glossary: "a type whose representation
+is invisible outside its package") means a field on an opaque type imported
+from another package is *never* legitimately readable field-style at all —
+unlike a record, where a field could theoretically be `pub` and readable
+cross-package, an opaque field has no such escape hatch. So for an imported
+opaque receiver, a `sigs.containsKey(tname + "." + name)` hit is exactly as
+unambiguous a "this can only be the UFCS function" signal as it is for a
+record or union — there was no principled reason for the guard to cover this
+case, only an accidental one (the same helper function happened to be
+reached via both paths).
+
+**The fix.** `isOpaqueTypeId` now also checks the matched `DKOpaque` symbol's
+`isImported` flag, mirroring the exact `not sym.isImported` "declared in the
+file being checked" test this same file already uses for `memberCompleteTypes`
+(docs/59 A5) and for T0100's "cannot construct opaque type outside its
+declaring package" diagnostic just above it. The guard now only exempts a
+LOCAL opaque type's own accessor body — an imported opaque type's field
+access falls through to the same T0116 check as records/unions, exactly as
+D-progress-730 intended before the unconditional guard accidentally widened
+it.
+
+**Verification.** Two new self-tests in `typechecker_self_test.l`, mirroring
+the existing local-opaque-accessor regression guard but with the fixture
+IMPORTED via `importedItemsOf` instead of declared locally: field-style
+access to the imported accessor now raises T0116 naming the type and field;
+the call form (`cfg.path()`) on the identical fixture stays fully clean.
+Re-verified the real `Std.App.Config` end-to-end repro directly: builds
+with `error[T0116] ...: no field 'path' on type 'Config' — 'path' is a
+function; call it as 'path(...)'` after this fix (previously: silent build,
+`InvalidProgramException` at runtime). Confirmed the pre-existing local-opaque
+regression guard (`Config.path`'s own body) still passes unchanged, and
+`lyric-stdlib`'s own full build (which contains that exact same-package
+shape in `std/app.l`) still builds clean. Full regression sweep after
+`make lyric`: `typechecker_self_test.l` 296/296 (2 new for #6382),
+`modechecker_self_test.l` 92/92, `parser_self_test.l` 126/126,
+`mono_self_test.l` 54/54, `weaver_self_test.l` 46/46,
+`contract_elaborator_self_test.l` 36/36, `alias_rewriter_self_test.l` 37/37.
+
+**Related:** #6382, #6362, D-progress-730, T0100, T0102, docs/59 §5.1 A5,
+`lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
+`lyric-stdlib/std/app.l`.
+
+---
+
+### D-progress-731 — Third companion gap from D-progress-730, found in review (#6383): the local-opaque exemption was scoped by package but not by field name
+
+**Status:** Shipped.
+
+**The bug.** D-progress-729's fix scoped the opaque exemption to
+`not isImported` (a LOCAL opaque type only), closing #6382. It did not
+scope the exemption any further: `isOpaqueTypeId(tbl, tid)` returned true
+for *any* field-style access to a local opaque receiver, regardless of
+whether the accessed name was actually a field of that type. A local
+opaque type with a sibling UFCS function of an unrelated name — e.g.
+`opaque type Config { path: String }` alongside
+`func Config.summary(c: in Config): String { "config" }` — let
+`c.summary` (no call parens) through with zero diagnostics, the exact
+`InvalidProgramException`-at-runtime bug class #6362 exists to close, just
+narrowed to same-package opaque receivers instead of imported ones.
+
+**Root cause.** The guard answered "is `tid` a local opaque type?" when the
+question it needed to answer was "is `name` a real field of `tid`?" Those
+only coincide for the specific accessor-body shape D-progress-728 was
+written to protect (`Config.path` reading `config.path`, where the accessed
+name IS the field the function is named after); any other name on the same
+receiver fell through the same unconditional exemption with no field-name
+check at all.
+
+**The fix.** Renamed `isOpaqueTypeId` to `isOpaqueOwnFieldName` and added a
+`name: in String` parameter. Instead of returning as soon as a matching
+local, non-imported `DKOpaque` symbol is found, it now walks that symbol's
+fields via `ctorAllFields` (the same construction-only path that already
+makes opaque fields visible within their declaring package) and returns
+true only when `name` matches an actual field. A local opaque type's own
+accessor body reading its own field still exempts cleanly (D-progress-728's
+original case, `lyric-stdlib/std/app.l`'s real shape); an unrelated
+dot-named function on the same local opaque type now falls through to the
+dot-named check exactly like it would on a record, union, or imported
+opaque type.
+
+**Verification.** Two new self-tests in `typechecker_self_test.l`: field-style
+access to an unrelated UFCS function on a local opaque type raises T0116
+naming the type and the field; the call form on the identical fixture stays
+fully clean. Confirmed the pre-existing local-opaque accessor-body
+regression guard (`Config.path`'s own body, D-progress-728) and the
+imported-opaque regression guard (D-progress-729) both still pass
+unchanged, and `lyric-stdlib`'s own full build (which contains the real
+`Config.path` accessor-body shape) still builds clean. Full regression
+sweep after `make lyric`: `typechecker_self_test.l` 298/298 (2 new for
+#6383), `modechecker_self_test.l` 92/92, `parser_self_test.l` 126/126,
+`mono_self_test.l` 54/54, `weaver_self_test.l` 46/46,
+`contract_elaborator_self_test.l` 36/36, `alias_rewriter_self_test.l` 37/37.
+
+**Related:** #6383, #6382, #6362, D-progress-730, D-progress-729, T0100,
+T0102, docs/59 §5.1 A5, `lyric-compiler/lyric/type_checker/typechecker_exprs.l`.

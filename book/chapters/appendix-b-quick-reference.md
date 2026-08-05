@@ -1263,6 +1263,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0111` | Unknown constraint name in a `where` clause (warning) |
 | `T0112` | Refutable pattern in a `for` loop binding (only names, `_`, parentheses, and tuples of those) |
 | `T0115` | A qualified reference (`Pkg.name`) does not resolve to anything the compiler can verify — most commonly a `pub val` in a workspace/restored dependency whose initializer isn't a literal (only literal-foldable `pub val`/`pub const` values round-trip across a restored-dependency boundary today, docs/45); the fix is to wrap the value in a `pub func` in the producing package and call that instead. Raised at MSIL codegen time (`Msil.Codegen`), not by the type checker proper — the check catches the reference just before it would otherwise fall through to a silent `null`/uninitialized read. |
+| `T0116` | Field-style access (`x.name`, no call parens) to a name that exists only as a D037 dot-named (UFCS) function, never as a real field — e.g. `e.message` where `message` is declared as `pub func IOError.message(e: in IOError): String`. Call it instead (`e.message()`). Fires for both locally-declared and imported/cross-package receiver types, since dot-named function signatures are known globally. |
 
 ### Type checker warnings (W-series)
 
