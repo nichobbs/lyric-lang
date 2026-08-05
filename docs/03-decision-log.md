@@ -23169,3 +23169,58 @@ as the working alternative. Confirmed out of scope for this entry.
 **Related:** #6377, #6363, #6364, #6365, #6368, D-progress-729, #5604,
 #6367, `lyric-compiler/lyric/pipeline/pipeline.l`, `lyric-compiler/msil/bridge.l`,
 `lyric-compiler/jvm/bridge.l`.
+
+---
+
+### D-progress-732 — Second companion regression from D-progress-729's own fix, found in review (#6384): `withGenericFuncsForContract` duplicated `@externTarget`-kept generic funcs in the embedded contract
+
+**Status:** Shipped.
+
+**The bug.** D-progress-729's `withGenericFuncsForContract` (the helper
+that re-attaches the pre-mono file's pub generic `IFunc` items onto the
+post-mono file before building the `Lyric.Contract` resource, so a generic
+function's real body isn't lost from the contract) unconditionally
+appended every pub generic `IFunc` from the pre-mono file, with no check
+for whether `Lyric.Mono`'s Phase 2 rewrite had already kept that same decl
+in the post-mono file for an unrelated reason. `Lyric.Mono.annsKeepGenericExternMono`
+keeps a generic `@externTarget` extern un-specialised (with its original
+body, unrewritten) when its target type carries a CLR arity suffix
+(`` List`1``, `` Dictionary`2``) — `newList`/`newMap`/`newSet`/
+`dictGetKeys`/`dictGetValues`, the stdlib's collection-kernel externs, are
+exactly this shape, so they already survive into `postMono.items`.
+`withGenericFuncsForContract` then re-added every one of them a second
+time from `preMono`, producing a duplicate `pub func newList[T](): List[T]`
+(and its four siblings) in the embedded contract's rendered function list.
+
+**Why this mattered.** A restored consumer's contract-driven preamble
+synthesis (`Lyric.RestoredPackages`) has no dedup step, so a duplicate
+contract entry becomes a duplicate synthesised `pub func` declaration in
+the consumer's own type-checked source — a `T0001` "duplicate name" error
+on re-typecheck. `newList()`/`newMap()` are the exact bare-name idiom
+exercised directly from consumer code (this PR's own
+`cross_package_generics_self_test.l` cases), so this was not a narrow
+corner case.
+
+**The fix.** `withGenericFuncsForContract` now builds a `Map[String, Bool]`
+of every generic `IFunc` name already present in `postMono.items` while
+copying it into the result, then skips any pre-mono candidate whose name
+is already in that set. This only ever ADDS the generic functions mono
+actually stripped (the D-progress-729 fix's original purpose), never a
+decl mono chose to keep for its own reason.
+
+**Verification.** Dumped the `Lyric.Contract` resource embedded in the
+rebuilt `Lyric.Stdlib.dll` (via a small reflection-based reader) and
+confirmed exactly one `func newList[T](): List[T]` / `func newMap[K, V]():
+Map[K, V]` entry each (previously two). Full regression sweep after
+`make lyric`: `contract_meta_self_test.l` 43/43, `restored_packages_self_test.l`
+22/22, `cross_package_generics_self_test.l` 10/10, `mono_self_test.l` 54/54.
+Re-verified the `examples/rest_service.l` end-to-end repro (D-progress-731's
+`appendExtraHeaders` fix) is unaffected — `mapGet__String__String` still
+appears 6× in the rebuilt stdlib IL and the server responds `200 OK`.
+
+**Also, in the same review pass:** hoisted `directCallEnvTE`'s two separate
+`mapGet(state.funcDecls, callFnName)` lookups (`lyric-compiler/lyric/mono.l`)
+into one shared `calleeDecl` binding — a SUGGESTION, no behavior change.
+
+**Related:** #6384, #6377, D-progress-729, `lyric-compiler/msil/bridge.l`,
+`lyric-compiler/lyric/mono.l`.

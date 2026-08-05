@@ -3544,6 +3544,7 @@ func directCallEnvTE(state: in MonoState, env: in Map[String, TypeExpr], init: i
   if callFnName.length == 0 {
     return None
   }
+  val calleeDecl = mapGet(state.funcDecls, callFnName)
   // A ZERO-ARGUMENT call to a GENERIC function (e.g. `newMap()`, `newList()`,
   // `newSet()`) can pin none of its type parameters from real argument
   // evidence — every one of them is necessarily filled by
@@ -3567,7 +3568,7 @@ func directCallEnvTE(state: in MonoState, env: in Map[String, TypeExpr], init: i
   // fact about the runtime value, and #5631 depends on exactly this case
   // overriding a stale/misleading annotation.
   if callArgCount == 0 {
-    val calleeIsGeneric = match mapGet(state.funcDecls, callFnName) {
+    val calleeIsGeneric = match calleeDecl {
       case Some(d) -> match d.generics { case Some(_) -> true; case None -> false }
       case None -> false
     }
@@ -3575,10 +3576,7 @@ func directCallEnvTE(state: in MonoState, env: in Map[String, TypeExpr], init: i
       return None
     }
   }
-  val isNonCtorCall = match mapGet(state.funcDecls, callFnName) {
-    case Some(d) -> not annsInferenceOnlyMono(d.annotations)
-    case None -> false
-  }
+  val isNonCtorCall = match calleeDecl { case Some(d) -> not annsInferenceOnlyMono(d.annotations); case None -> false }
   if not isNonCtorCall {
     return None
   }

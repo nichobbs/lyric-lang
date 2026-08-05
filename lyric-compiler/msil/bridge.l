@@ -1586,14 +1586,36 @@ func segmentsToString(segments: in List[String]): String {
 // exact shape of `Std.Core.unwrapOr`/`isSome`, `Std.Collections.mapKeys`/
 // `mapValues` disappearing from `Lyric.Stdlib.dll`'s embedded contract).
 // Re-attach the PRE-mono file's pub generic `IFunc` items (their real bodies
-// intact) onto the post-mono item list before building the contract — every
-// other decl kind is untouched by mono, so this only ever ADDS the missing
-// generic functions back, never duplicates or shadows anything mono kept.
+// intact) onto the post-mono item list before building the contract.
+//
+// One exception mono does NOT strip: a generic `@externTarget` extern whose
+// target type carries a CLR arity suffix (`` List`1``) survives Phase 2
+// verbatim (`annsKeepGenericExternMono`, `Lyric.Mono` ~4175) because some of
+// its call sites — a zero-arg ctor extern invoked from a module-level `val`
+// initializer — are never walked by the monomorphizer and would resolve to
+// nothing if the generic definition were dropped.  `newList`/`newMap`/
+// `newSet`/`dictGetKeys`/`dictGetValues` are exactly this shape, so they are
+// ALREADY present in `postMono.items` by the time this runs.  Re-adding them
+// unconditionally from `preMono` produced a duplicate `pub func` decl in the
+// embedded contract (#6384) — a restored consumer's synthesised preamble
+// then declared the same generic twice.  Dedupe by name against what
+// `postMono` already carries so this only ever ADDS the functions mono
+// actually removed.
 func withGenericFuncsForContract(preMono: in SourceFile, postMono: in SourceFile): SourceFile {
   val items: List[Item] = newList()
+  val postFuncNames: Map[String, Bool] = newMap()
   var pi = 0
   while pi < postMono.items.count {
-    items.add(postMono.items[pi])
+    val it = postMono.items[pi]
+    match it.kind {
+      case IFunc(decl) -> {
+        if not postFuncNames.containsKey(decl.name) {
+          postFuncNames.add(decl.name, true)
+        }
+      }
+      case _ -> ()
+    }
+    items.add(it)
     pi = pi + 1
   }
   var gi = 0
@@ -1603,7 +1625,7 @@ func withGenericFuncsForContract(preMono: in SourceFile, postMono: in SourceFile
       case IFunc(decl) -> {
         val isPub = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
         val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-        if isPub and isGeneric {
+        if isPub and isGeneric and not postFuncNames.containsKey(decl.name) {
           items.add(it)
         }
       }
