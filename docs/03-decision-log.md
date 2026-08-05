@@ -22654,3 +22654,80 @@ lyric` alone silently tests the unmodified seed.
 
 **Related:** #6369, #6359, #6371, `lyric-compiler/msil/codegen.l`
 (`lowerMethodCallMsil`), `lyric-compiler/lyric/iface_slice_arg_self_test.l`.
+
+---
+
+## D-progress-729 — Generic TypeSpec blobs are interned during codegen, before lowering assigns TypeDef rows: 275 degraded `<object>` signatures in the stdlib, repaired by a deferred re-encode (#6367, the `#2494` family)
+
+**Context.** #6367 reported that `Std.Http`'s `sendWithTimeoutAsync` /
+`getWithTimeoutAsync` / `postWithTimeoutAsync` throw
+`InvalidProgramException` before executing a statement, and that the
+`defer`→inline-disposal fix from D-progress-727 was necessary but not
+sufficient.
+
+**Root cause (confirmed by instrumentation, not inference).** Temporarily
+instrumenting `bufMsilTypeWithCtx`'s `W0005` branch and building the stdlib
+with a **stage-2** compiler produced the same line 284 times:
+
+```
+DIAG: plainFqn='Std.Core.Result' typeDefKeys=0 hasSuffixed=false
+      hasPlain=false discovering=0
+```
+
+`typeDefKeys=0` is the finding: `ctx.typeDefRowByFqn` is *entirely empty* at
+that moment. Not an arity-suffix mismatch (`Std.Core.Result`2<T, E>` exists
+as a proper generic TypeDef in the output) and not a broken discovery pass —
+these TypeSpecs are interned during **codegen (Phase 3)**, while user TypeDef
+rows are only assigned during **lowering (Phase 5)**. `MGenericInstByName`
+exists precisely so a head can resolve late; `emitGetAwaiterCallPB` and its
+siblings defeated that by calling `buildGenericInstBlobWithCtx` →
+`ctxAddTypeSpec` eagerly.
+
+That produces an *internally inconsistent* state machine — exactly what a JIT
+rejects: the `__aw0` awaiter **field**, encoded at table-emission time, is
+correctly `TaskAwaiter`1<Result`2<…>>`, while the `GetAwaiter` MemberRef
+**parent**, encoded during codegen, degrades to `Task`1<object>`.
+
+**Decision.** Rather than convert each site to a bespoke deferred instruction,
+add a general mechanism: `ctxAddTypeSpecGeneric` records the (head, typeArgs,
+isValueType) triple alongside the row it creates, and `fixupDeferredTypeSpecs`
+— run at the end of each `lowerMPackage*` entry point, after every TypeDef row
+exists — re-encodes each blob and repoints the row. The row index never
+changes, so MemberRefs that reference it are unaffected; a re-encode that is
+byte-identical is skipped, making this a no-op for every instantiation that
+never degraded. 23 eager `Task`1` / `TaskAwaiter`1` /
+`AsyncTaskMethodBuilder`1` / `ValueTask`1` sites were converted.
+
+**Measured effect.** Degraded `(Task|TaskAwaiter|AsyncTaskMethodBuilder)`1<object>`
+parents in the compiled stdlib bundle: **275 before, 0 after.**
+
+**Honest scope note — this is not demonstrated to be the fix for #6367 as it
+reproduces today.** The `InvalidProgramException` observed while diagnosing
+#6367 came from a stdlib emitted by the **stage-0 seed (the published 0.5.0
+release)**, which is also the binary the issue was filed against. Built from
+current source, all three timeout functions already ran correctly *before*
+this change — verified against a live HTTP server with a pre-fix stage-2
+stdlib. So something between 0.5.0 and now had already made the degradation
+non-fatal on this path; what this change does, verifiably, is remove the
+degraded signatures themselves rather than rely on them being harmless. The
+`@experimental` downgrades from D-progress-727 are reverted to `@stable`
+because the functions demonstrably work, not because this entry proves it
+fixed them.
+
+**Coverage.** `http_roundtrip_self_test.l` gains three cases driving
+`getWithTimeoutAsync` / `postWithTimeoutAsync` / `sendWithTimeoutAsync`
+against the live child-process server — previously-untested public API on the
+path that actually reproduced. A standalone self-test was written first and
+**deliberately deleted**: it passed against the published 0.5.0 seed, so it
+did not reproduce the defect. The degradation only bites when the generic head
+is *in-bundle*; a single-file user program resolves `Std.Core.Result`
+cross-assembly through a TypeRef and never degrades, which is why this class
+of bug is invisible to ordinary user-program self-tests and must be exercised
+through a stdlib-bundle build.
+
+**Regression check.** typechecker 289, async_sm 65, parser 126, mono 54,
+derives 49, bitwise 10, iface_slice_arg 6 — all pass; `http_roundtrip` 6/6.
+
+**Related:** #6367, #2494, D-progress-727, D-progress-728,
+`lyric-compiler/msil/lowering.l` (`ctxAddTypeSpecGeneric`,
+`fixupDeferredTypeSpecs`), `lyric-compiler/msil/codegen.l`.

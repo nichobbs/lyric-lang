@@ -542,13 +542,10 @@ func jsonScalarToString(v: in JsonElement): String {
 // `sendCatching` is no longer covering a live compiler defect, just
 // ordinary transport-error handling.
 //
-// A different, narrower bug remains open in `Std.Http`'s *timeout* family
-// specifically (`sendWithTimeoutAsync`/`getWithTimeoutAsync`/
-// `postWithTimeoutAsync`; this package does not call them) — see those
-// functions' doc comments in `lyric-stdlib/std/http.l` and issue #6367 /
-// #2494's family. `Search` builds its HTTP layer directly on `Std.Http`
-// rather than `Std.Rest.RestClient`/`RestAuth`; `HttpConfig` below is this
-// package's own base-URL-plus-headers convenience.
+// `Std.Http`'s `*WithTimeoutAsync` family, still flagged as broken when this
+// note was written, works on current `main`.  `Search` builds its HTTP layer
+// directly on `Std.Http` rather than `Std.Rest.RestClient`/`RestAuth`;
+// `HttpConfig` below is this package's own base-URL-plus-headers convenience.
 /// Everything a backend needs to send an authenticated request: the
 /// shared `HttpClient`, the connection's base URL, and an optional single
 /// auth header (`authHeaderName` empty means no auth header is sent).

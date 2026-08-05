@@ -397,3 +397,80 @@ test "sendAsync round-trip: a custom request header reaches the server" {
   stopServer(srv)
   cleanup(tmpDir)
 }
+
+// ─── #6367: the *WithTimeoutAsync family ─────────────────────────────────────
+// These three await a callee whose `Task[T]` has T = `Result[HttpResponse,
+// HttpError]` — an IN-BUNDLE generic instantiation of `Std.Core.Result`.
+// Codegen interns the `Task`1<T>` / `TaskAwaiter`1<T>` /
+// `AsyncTaskMethodBuilder`1<T>` TypeSpec blobs before lowering assigns that
+// TypeDef row, so every one of those parents degraded to `<object>` while the
+// state machine's own awaiter field (encoded late) stayed correctly typed.
+// The JIT rejected the resulting inconsistency, so all three threw
+// `InvalidProgramException` before executing a single statement.
+//
+// This has to live HERE rather than in a standalone self-test: the defect only
+// manifests when the generic head is in-bundle, which for `Result` means a
+// build of the stdlib bundle itself.  A single-file user program resolves
+// `Std.Core.Result` cross-assembly through a TypeRef, never degrades, and so
+// passes even against a compiler that still has the bug — verified against the
+// published 0.5.0 seed.  These cases run against the compiled stdlib the run
+// links (see this file's CI-wiring note at the top), which is the path that
+// actually reproduced.
+test "#6367: getWithTimeoutAsync completes and its body is readable" {
+  val tmpDir = freshTempDir("gettmo")
+  val srv = startServer(tmpDir)
+  val url = "http://127.0.0.1:" + toString(srv.port) + "/hello"
+  match await getWithTimeoutAsync(url, 10000) {
+    case Err(e) -> panic("getWithTimeoutAsync " + url + " failed: " + HttpError.message(e))
+    case Ok(resp) -> {
+      assertEqualInt(resp.statusCode(), 200, "getWithTimeoutAsync status is 200")
+      match await resp.bodyText() {
+        case Ok(body) -> assertEqual(body, "GET|/hello||", "getWithTimeoutAsync body round-trips")
+        case Err(e) -> panic("bodyText failed: " + IOError.message(e))
+      }
+    }
+  }
+  stopServer(srv)
+  cleanup(tmpDir)
+}
+
+test "#6367: postWithTimeoutAsync completes and its body is readable" {
+  val tmpDir = freshTempDir("posttmo")
+  val srv = startServer(tmpDir)
+  val url = "http://127.0.0.1:" + toString(srv.port) + "/submit"
+  match await postWithTimeoutAsync(url, "tmo-9", 10000) {
+    case Err(e) -> panic("postWithTimeoutAsync " + url + " failed: " + HttpError.message(e))
+    case Ok(resp) -> {
+      assertEqualInt(resp.statusCode(), 201, "postWithTimeoutAsync status is 201")
+      match await resp.bodyText() {
+        case Ok(body) -> assertEqual(body, "POST|/submit||tmo-9", "postWithTimeoutAsync body round-trips")
+        case Err(e) -> panic("bodyText failed: " + IOError.message(e))
+      }
+    }
+  }
+  stopServer(srv)
+  cleanup(tmpDir)
+}
+
+test "#6367: sendWithTimeoutAsync completes and its body is readable" {
+  val tmpDir = freshTempDir("sendtmo")
+  val srv = startServer(tmpDir)
+  val urlStr = "http://127.0.0.1:" + toString(srv.port) + "/probe"
+  val url = match Url.tryFrom(urlStr) {
+    case Ok(u) -> u
+    case Err(e) -> panic("unexpected InvalidUrl: " + HttpError.message(e))
+  }
+  val req = withHeader(request(GET, url), "X-Probe", "tmo-probe")
+  match await sendWithTimeoutAsync(req, 10000) {
+    case Err(e) -> panic("sendWithTimeoutAsync " + urlStr + " failed: " + HttpError.message(e))
+    case Ok(resp) -> {
+      assertEqualInt(resp.statusCode(), 200, "sendWithTimeoutAsync status is 200")
+      match await resp.bodyText() {
+        case Ok(body) -> assertEqual(body, "GET|/probe|tmo-probe|", "sendWithTimeoutAsync body round-trips")
+        case Err(e) -> panic("bodyText failed: " + IOError.message(e))
+      }
+    }
+  }
+  stopServer(srv)
+  cleanup(tmpDir)
+}

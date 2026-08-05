@@ -79,12 +79,8 @@
 //! `postJson`'s use of the free async functions here is a stylistic choice,
 //! not a workaround for either bug anymore.
 //!
-//! A different, narrower bug remains open in the *timeout* family
-//! specifically (`sendWithTimeoutAsync`/`getWithTimeoutAsync`/
-//! `postWithTimeoutAsync`, not used by this file): see the doc comments on
-//! those functions in `lyric-stdlib/std/http.l` and issue #6367 /
-//! #2494's family. `getNextInvocation`/`postJson` do not call the timeout
-//! variants, so this file is unaffected either way.
+//! The `*WithTimeoutAsync` family, which was still broken when this note
+//! was first written, is fixed too (#6367).
 //!
 //! See docs/35-lambda-library.md, decision log D062/D064/D099.
 package Lambda.Dispatch

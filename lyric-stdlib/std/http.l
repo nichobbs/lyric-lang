@@ -1065,21 +1065,7 @@ pub async func sendWithCancelAsync(
 /// own `await` in `try/catch Bug` and returns `Result`), so disposing
 /// `src` unconditionally right after the `await` is equivalent to what
 /// `defer` would have done.
-///
-/// KNOWN BUG (#6367, the `#2494` generic-signature-degradation family):
-/// this function currently throws `System.InvalidProgramException` at
-/// runtime regardless of the `defer` fix above — a separate MSIL emitter
-/// defect where the `await`ed `Task<Result[HttpResponse, HttpError]>`'s
-/// `GetAwaiter`/`GetResult` resolve against the degraded `Task<object>`
-/// instead of the correctly-closed generic instantiation. Root-caused but
-/// not yet fixed; see #6367 for the confirmed repro and diagnosis. Callers
-/// needing a timeout should build their own `CancellationTokenSource`
-/// around `sendWithCancelAsync`, which does not exhibit this bug.
-///
-/// Downgraded from `@stable` to `@experimental` until #6367 lands — a
-/// `@stable` tag reads as "safe for production use," which this function
-/// currently is not (it unconditionally throws at runtime on `dotnet`).
-@experimental
+@stable(since = "1.0")
 pub async func sendWithTimeoutAsync(request: in HttpRequest, timeoutMs: in Int): Result[HttpResponse, HttpError]
   requires: timeoutMs > 0
 {
@@ -1110,10 +1096,8 @@ pub async func getWithCancelAsync(url: in String, token: in CancellationToken): 
 
 /// GET a URL with a timeout.  Same shape as `sendWithTimeoutAsync`; see
 /// that function's doc comment for why disposal is inlined rather than
-/// `defer`red, and for the still-open `InvalidProgramException` bug
-/// (#6367) this function shares — use `getWithCancelAsync` instead until
-/// that lands.  Downgraded to `@experimental` for the same reason.
-@experimental
+/// `defer`red.
+@stable(since = "1.0")
 pub async func getWithTimeoutAsync(url: in String, timeoutMs: in Int): Result[HttpResponse, HttpError]
   requires: timeoutMs > 0
 {
@@ -1143,10 +1127,8 @@ pub async func postWithCancelAsync(
 
 /// POST a UTF-8 text body to a URL with a timeout.  See
 /// `sendWithTimeoutAsync`'s doc comment for why disposal is inlined
-/// rather than `defer`red, and for the still-open `InvalidProgramException`
-/// bug (#6367) this function shares — use `postWithCancelAsync` instead
-/// until that lands.  Downgraded to `@experimental` for the same reason.
-@experimental
+/// rather than `defer`red.
+@stable(since = "1.0")
 pub async func postWithTimeoutAsync(url: in String, body: in String, timeoutMs: in Int): Result[HttpResponse, HttpError]
   requires: timeoutMs > 0
 {

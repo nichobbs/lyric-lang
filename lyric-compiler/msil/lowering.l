@@ -1165,6 +1165,15 @@ pub record LoweringCtx {
   // `MValueTypeRef` local uses row M, causing a token-identity mismatch the
   // CLR JIT rejects as `BadImageFormatException`.
   typeSpecRowByKey: Map[String, Int]
+  // Generic-instantiation TypeSpec rows whose blob must be RE-ENCODED once
+  // every in-bundle TypeDef row exists (#6367).  Codegen (Phase 3) interns
+  // these blobs long before lowering (Phase 5) assigns user TypeDef rows, so
+  // `bufMsilTypeWithCtx` sees an empty `typeDefRowByFqn` and degrades any
+  // in-bundle `MGenericInstByName` argument to `ELEMENT_TYPE_OBJECT` (the
+  // `#2494` W0005).  The row index is stable — only the blob it points at is
+  // wrong — so `fixupDeferredTypeSpecs` re-encodes each one at the end of
+  // lowering and repoints the row.  Recorded by `ctxAddTypeSpecGeneric`.
+  pendingTypeSpecs: List[PendingTypeSpec]
   // MemberRef row cache keyed by the `sigKey` passed to
   // `ctxAddMemberRefForTypeSpec`.  Makes that function idempotent so that
   // generator synthesis (which creates MemberRef rows for GetAsyncEnumerator,
@@ -1360,6 +1369,7 @@ pub func newLoweringCtxWithVersions(
     dictTokenCache = newMap(),
     discovering = newList(),
     typeSpecRowByKey = newMap(),
+    pendingTypeSpecs = newList(),
     memberRefRowByKey = newMap(),
     projectableToViewMDef = newMap(),
     projectableToViewMDefKeys = newList(),
@@ -1579,6 +1589,78 @@ pub func ctxAddMemberRef(
   val sName = ctxInternStr(ctx, methodName)
   val bSig = ctxInternBlob(ctx, sigKey, sig)
   addMemberRef(ctx.tables, MemberRefRow(class = mrpTypeRef(parentTypeRefRow), name = sName, signature = bSig))
+}
+
+// A generic-instantiation TypeSpec whose blob is re-encoded at the end of
+// lowering, once `typeDefRowByFqn` is populated (#6367).  See the
+// `pendingTypeSpecs` field comment on `LoweringCtx`.
+pub record PendingTypeSpec {
+  row: Int
+  headCoded: Int
+  typeArgs: List[MsilType]
+  isValueType: Bool
+}
+
+// Add a generic-instantiation TypeSpec row whose type arguments may name
+// in-bundle types that do not have TypeDef rows yet (#6367).
+//
+// Codegen builds these blobs in Phase 3; user TypeDef rows are only assigned
+// during Phase 5 lowering.  Encoding eagerly therefore degrades any in-bundle
+// argument to `ELEMENT_TYPE_OBJECT`, which is how an async state machine ended
+// up calling `Task`1<object>::GetAwaiter()` on a `Task<Result<T, E>>` while
+// its own awaiter field was correctly typed — the exact inconsistency the JIT
+// rejects as `InvalidProgramException`.
+//
+// The blob is still built now (so the row is never empty and callers that read
+// it back mid-codegen see a well-formed signature), and the row is recorded so
+// `fixupDeferredTypeSpecs` can re-encode and repoint it once every TypeDef row
+// exists.  When nothing degraded, the re-encode is byte-identical and the row
+// is left untouched.
+pub func ctxAddTypeSpecGeneric(
+  ctx: in LoweringCtx,
+  sigKey: in String,
+  headCoded: in Int,
+  typeArgs: in List[MsilType],
+  isValueType: in Bool,
+): Int {
+  val blob = if isValueType {
+    buildValueTypeGenericInstBlobWithCtx(ctx, headCoded, typeArgs)
+  } else {
+    buildGenericInstBlobWithCtx(ctx, headCoded, typeArgs)
+  }
+  val existing = ctx.typeSpecRowByKey.containsKey(sigKey)
+  val row = ctxAddTypeSpec(ctx, sigKey, blob)
+  if not existing {
+    ctx.pendingTypeSpecs.add(
+      PendingTypeSpec(row = row, headCoded = headCoded, typeArgs = typeArgs, isValueType = isValueType)
+    )
+  }
+  row
+}
+
+// Re-encode every deferred generic TypeSpec blob now that lowering has
+// assigned all in-bundle TypeDef rows, repointing each row at the corrected
+// blob (#6367).  Rows whose re-encode is byte-identical are skipped, so this
+// is a no-op for every instantiation that never degraded.  Must run after all
+// packages are lowered and before the tables are serialized.
+pub func fixupDeferredTypeSpecs(ctx: in LoweringCtx): Unit {
+  var i = 0
+  while i < ctx.pendingTypeSpecs.count {
+    val p = ctx.pendingTypeSpecs[i]
+    val fixed = if p.isValueType {
+      buildValueTypeGenericInstBlobWithCtx(ctx, p.headCoded, p.typeArgs)
+    } else {
+      buildGenericInstBlobWithCtx(ctx, p.headCoded, p.typeArgs)
+    }
+    val current = ctx.tables.typeSpecs[p.row - 1]
+    // Intern under a row-unique key: re-interning the ORIGINAL key would hand
+    // back the cached (degraded) blob index and silently defeat the fixup.
+    val newBlob = ctxInternBlob(ctx, "__tsfix_" + toString(p.row), fixed)
+    if newBlob != current.signature {
+      ctx.tables.typeSpecs[p.row - 1] = TypeSpecRow(signature = newBlob)
+    }
+    i = i + 1
+  }
 }
 
 // Add a TypeSpec row and return its 1-based row index.
@@ -5424,6 +5506,10 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
   // rva=0 (no body).  No post-pass patching is needed — and a post-pass would
   // incorrectly overwrite abstract method rva=0 slots with concrete body RVAs.
 
+  // Repoint generic TypeSpecs codegen had to encode before TypeDef rows
+  // existed (#6367) — see `fixupDeferredTypeSpecs`.
+  fixupDeferredTypeSpecs(ctx)
+
   val inp = AssemblerInput(
     entryPointToken = entryMethodToken,
     methodBodies = ctx.bodies,
@@ -5663,6 +5749,10 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx, entryMethod
   // RVAs are set inline by each lowerM* call; no post-pass needed.
   // (See the same comment in lowerMPackage above.)
 
+  // Repoint generic TypeSpecs codegen had to encode before TypeDef rows
+  // existed (#6367) — see `fixupDeferredTypeSpecs`.
+  fixupDeferredTypeSpecs(ctx)
+
   val inp = AssemblerInput(
     entryPointToken = entryMethodToken,
     methodBodies = ctx.bodies,
@@ -5703,6 +5793,10 @@ pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx, ent
     }
     pi = pi + 1
   }
+
+  // Every in-bundle TypeDef row now exists — repoint any generic TypeSpec
+  // whose blob codegen had to encode before those rows were assigned (#6367).
+  fixupDeferredTypeSpecs(ctx)
 
   val inp = AssemblerInput(
     entryPointToken = entryMethodToken,
