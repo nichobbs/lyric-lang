@@ -22772,11 +22772,11 @@ is untouched. Full regression sweep after `make lyric`:
 `lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
 `lyric-stdlib/std/errors.l`.
 
-### D-progress-729 — Companion gap from D-progress-728, found in review (#6382): the opaque-type exemption reopened #6362 for every IMPORTED opaque type
+### D-progress-729 — Companion gap from D-progress-730, found in review (#6382): the opaque-type exemption reopened #6362 for every IMPORTED opaque type
 
 **Status:** Shipped.
 
-**The bug.** D-progress-728's `isOpaqueTypeId` guard exempted the new T0116
+**The bug.** D-progress-730's `isOpaqueTypeId` guard exempted the new T0116
 dot-named-only check for *every* opaque-type receiver, unconditionally. The
 guard's real purpose was narrower: a same-package accessor's own body
 (`pub func Config.path(config: in Config): String { config.path }`,
@@ -22793,7 +22793,7 @@ applied — reopening #6362's `InvalidProgramException` for every imported
 opaque type's accessor. Confirmed end-to-end against the real
 `Std.App.Config` shape before this fix: `Std.App.withConfig(p)` →
 `match ... { case Ok(cfg) -> cfg.path; ... }` (missing parens) built cleanly
-and crashed at runtime with the exact same `InvalidProgramException` D-progress-728
+and crashed at runtime with the exact same `InvalidProgramException` D-progress-730
 exists to close.
 
 **Why this matters more for opaque types than it first appears.** An opaque
@@ -22815,7 +22815,7 @@ file being checked" test this same file already uses for `memberCompleteTypes`
 declaring package" diagnostic just above it. The guard now only exempts a
 LOCAL opaque type's own accessor body — an imported opaque type's field
 access falls through to the same T0116 check as records/unions, exactly as
-D-progress-728 intended before the unconditional guard accidentally widened
+D-progress-730 intended before the unconditional guard accidentally widened
 it.
 
 **Verification.** Two new self-tests in `typechecker_self_test.l`, mirroring
@@ -22835,6 +22835,6 @@ shape in `std/app.l`) still builds clean. Full regression sweep after
 `mono_self_test.l` 54/54, `weaver_self_test.l` 46/46,
 `contract_elaborator_self_test.l` 36/36, `alias_rewriter_self_test.l` 37/37.
 
-**Related:** #6382, #6362, D-progress-728, T0100, T0102, docs/59 §5.1 A5,
+**Related:** #6382, #6362, D-progress-730, T0100, T0102, docs/59 §5.1 A5,
 `lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
 `lyric-stdlib/std/app.l`.
