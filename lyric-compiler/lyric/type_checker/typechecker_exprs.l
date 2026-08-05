@@ -1692,20 +1692,27 @@ func maybeUnknownMemberDiag(
   }
 }
 
-// True when `tid` names an `opaque type` declaration that is LOCAL to the
-// file being checked (declared there, not imported from another package).
-// Opaque-type field reads are NOT covered by
-// `fieldsOfRecord`/`fieldsOfRecordInstantiated` (those only walk
-// `DKRecord`/`DKExposedRec` — opaque fields are visible only within the
-// declaring package, via a separate `ctorAllFields` construction-only
-// path), so `inferMemberBase` always returns `TyError` for a field read on
-// an opaque receiver regardless of whether the field genuinely exists.
-// #6362's dot-named-only check must not run for a LOCAL opaque receiver: a
-// same-named accessor UFCS function wrapping a private field (`pub func
-// Config.path(config: in Config): String { config.path }`, the exact shape
-// in `lyric-stdlib/std/app.l`) is a legitimate, common pattern, and without
-// this guard the field read *inside* the accessor's own body would misfire
-// as "field-style access to a UFCS-only function".
+// True when `name` names a REAL field of the LOCAL (non-imported) opaque
+// type `tid` — checked via `ctorAllFields`, the only path that can see an
+// opaque type's fields at all (`fieldsOfRecord`/`fieldsOfRecordInstantiated`
+// only walk `DKRecord`/`DKExposedRec`; opaque fields are visible only within
+// the declaring package). #6362's dot-named-only check must not fire for a
+// LOCAL opaque type's own accessor body reading its own private field (`pub
+// func Config.path(config: in Config): String { config.path }`, the exact
+// shape in `lyric-stdlib/std/app.l`) — that read can never resolve via
+// `inferMemberBase` (opaque fields are invisible to it regardless of
+// whether they exist), so without an exemption it would misfire as
+// "field-style access to a UFCS-only function".
+//
+// Narrowed to the field's OWN name (not "any name on a local opaque type"):
+// an earlier version of this guard (`isOpaqueTypeId`) exempted every name on
+// a local opaque receiver unconditionally, which silently let field-style
+// access to an UNRELATED same-type UFCS function through too (#6383) —
+// e.g. `c.summary` on `opaque type Config { path: String }` with a sibling
+// `func Config.summary(c: in Config): String` reachable only by call syntax.
+// Checking the name against `ctorAllFields` closes that gap: only a name
+// that is an actual field is exempted, so an unrelated dot-named function
+// still hits the dot-named check below and raises T0116 as it should.
 //
 // Scoped to `not isImported` (mirroring T0100/T0102's declaring-package
 // check just above): a field on an opaque type IMPORTED from another
@@ -1714,16 +1721,14 @@ func maybeUnknownMemberDiag(
 // that its representation is invisible outside its package (see this
 // repo's glossary). So for an imported opaque receiver, a `sigs` hit is
 // just as unambiguous a "this is UFCS-only" signal as it is for a record
-// or union; only the SAME-package accessor-body case needs the exemption
-// (review follow-up on #6362, filed as #6382 — a real end-to-end repro via
-// `Std.App.Config` confirmed the unscoped guard reopened the exact
-// `InvalidProgramException` bug this PR fixes for every cross-package
-// opaque type).
-func isOpaqueTypeId(tbl: in SymbolTable, tid: in TypeId): Bool {
+// or union; only the SAME-package accessor-body reading its OWN field needs
+// the exemption (review follow-up on #6362: #6382 found the unscoped-by-
+// package guard, #6383 found the unscoped-by-field-name guard).
+func isOpaqueOwnFieldName(tbl: in SymbolTable, tid: in TypeId, name: in String): Bool {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
-      case DKOpaque(did, _) -> if typeIdEq(did, tid) and not tbl.symbols[i].isImported { return true }
+      case DKOpaque(did, _) -> if typeIdEq(did, tid) and not tbl.symbols[i].isImported { val fields = ctorAllFields(tbl.symbols[i]); var j = 0; while j < fields.count { if fields[j].name == name { return true }; j = j + 1 } }
       case _ -> {
       }
     }
@@ -1779,11 +1784,13 @@ func inferMember(
       // real UFCS function's existence is never silently misread as "valid
       // field access" the way it was before this fix (the bug produced a
       // `TyError` with no diagnostic, which reached codegen as invalid IL).
-      // Excluded for opaque receivers (`isOpaqueTypeId`): their real fields
-      // are invisible to `fieldsOfRecord`, so a same-named accessor UFCS
-      // function wrapping a private field is indistinguishable here from a
-      // genuine UFCS-only name — see `isOpaqueTypeId`'s comment.
-      if not isOpaqueTypeId(tbl, tid) and sigs.containsKey(tname + "." + name) {
+      // Excluded when `name` is a real field of a LOCAL opaque receiver
+      // (`isOpaqueOwnFieldName`): opaque fields are invisible to
+      // `fieldsOfRecord`, so a same-named accessor UFCS function wrapping a
+      // private field is indistinguishable here from a genuine UFCS-only
+      // name — see `isOpaqueOwnFieldName`'s comment. An UNRELATED dot-named
+      // function on the same opaque type is not exempted (#6383).
+      if not isOpaqueOwnFieldName(tbl, tid, name) and sigs.containsKey(tname + "." + name) {
         diag.add(
           errorDiagnostic(
             "T0116",

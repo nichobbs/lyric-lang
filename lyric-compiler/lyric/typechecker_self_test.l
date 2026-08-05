@@ -2880,3 +2880,25 @@ test "call-style access to the same imported opaque accessor still compiles clea
   assertTrue(not hasDiagCode(cr, "T0116"), "call-style cfg.path(): no T0116")
   assertEqualInt(diagCount(cr), 0, "call-style cfg.path(): no diagnostics at all")
 }
+
+// #6383 (second review follow-up on #6362): the local-opaque exemption must
+// be scoped to the field's OWN name, not "any name on a local opaque type."
+// `isOpaqueOwnFieldName` checks the accessed name against `ctorAllFields`
+// (the same, only-visible-in-declaring-package field list) rather than
+// exempting every field-style read on a local opaque receiver — an
+// unrelated dot-named function sharing the type stays subject to T0116
+// exactly like it would on a record or union.
+test "field-style access to an unrelated UFCS function on a local opaque type is T0116, not exempted (#6383)" {
+  val src = "package P\nopaque type Config {\n  path: String\n}\nfunc Config.summary(c: in Config): String {\n  return \"config\"\n}\nfunc consume(c: in Config): String {\n  c.summary\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0116"), "field-style access to an unrelated UFCS function on a local opaque type: T0116")
+  assertTrue(diagMessageFor(cr, "T0116").contains("Config"), "T0116 names the receiver type")
+  assertTrue(diagMessageFor(cr, "T0116").contains("summary"), "T0116 names the field")
+}
+
+test "call-style access to the same unrelated local-opaque UFCS function still compiles cleanly (#6383 regression guard)" {
+  val src = "package P\nopaque type Config {\n  path: String\n}\nfunc Config.summary(c: in Config): String {\n  return \"config\"\n}\nfunc consume(c: in Config): String {\n  c.summary()\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0116"), "call-style c.summary(): no T0116")
+  assertEqualInt(diagCount(cr), 0, "call-style c.summary(): no diagnostics at all")
+}

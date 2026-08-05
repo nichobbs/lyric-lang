@@ -22838,3 +22838,57 @@ shape in `std/app.l`) still builds clean. Full regression sweep after
 **Related:** #6382, #6362, D-progress-730, T0100, T0102, docs/59 §5.1 A5,
 `lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
 `lyric-stdlib/std/app.l`.
+
+---
+
+### D-progress-731 — Third companion gap from D-progress-730, found in review (#6383): the local-opaque exemption was scoped by package but not by field name
+
+**Status:** Shipped.
+
+**The bug.** D-progress-729's fix scoped the opaque exemption to
+`not isImported` (a LOCAL opaque type only), closing #6382. It did not
+scope the exemption any further: `isOpaqueTypeId(tbl, tid)` returned true
+for *any* field-style access to a local opaque receiver, regardless of
+whether the accessed name was actually a field of that type. A local
+opaque type with a sibling UFCS function of an unrelated name — e.g.
+`opaque type Config { path: String }` alongside
+`func Config.summary(c: in Config): String { "config" }` — let
+`c.summary` (no call parens) through with zero diagnostics, the exact
+`InvalidProgramException`-at-runtime bug class #6362 exists to close, just
+narrowed to same-package opaque receivers instead of imported ones.
+
+**Root cause.** The guard answered "is `tid` a local opaque type?" when the
+question it needed to answer was "is `name` a real field of `tid`?" Those
+only coincide for the specific accessor-body shape D-progress-728 was
+written to protect (`Config.path` reading `config.path`, where the accessed
+name IS the field the function is named after); any other name on the same
+receiver fell through the same unconditional exemption with no field-name
+check at all.
+
+**The fix.** Renamed `isOpaqueTypeId` to `isOpaqueOwnFieldName` and added a
+`name: in String` parameter. Instead of returning as soon as a matching
+local, non-imported `DKOpaque` symbol is found, it now walks that symbol's
+fields via `ctorAllFields` (the same construction-only path that already
+makes opaque fields visible within their declaring package) and returns
+true only when `name` matches an actual field. A local opaque type's own
+accessor body reading its own field still exempts cleanly (D-progress-728's
+original case, `lyric-stdlib/std/app.l`'s real shape); an unrelated
+dot-named function on the same local opaque type now falls through to the
+dot-named check exactly like it would on a record, union, or imported
+opaque type.
+
+**Verification.** Two new self-tests in `typechecker_self_test.l`: field-style
+access to an unrelated UFCS function on a local opaque type raises T0116
+naming the type and the field; the call form on the identical fixture stays
+fully clean. Confirmed the pre-existing local-opaque accessor-body
+regression guard (`Config.path`'s own body, D-progress-728) and the
+imported-opaque regression guard (D-progress-729) both still pass
+unchanged, and `lyric-stdlib`'s own full build (which contains the real
+`Config.path` accessor-body shape) still builds clean. Full regression
+sweep after `make lyric`: `typechecker_self_test.l` 298/298 (2 new for
+#6383), `modechecker_self_test.l` 92/92, `parser_self_test.l` 126/126,
+`mono_self_test.l` 54/54, `weaver_self_test.l` 46/46,
+`contract_elaborator_self_test.l` 36/36, `alias_rewriter_self_test.l` 37/37.
+
+**Related:** #6383, #6382, #6362, D-progress-730, D-progress-729, T0100,
+T0102, docs/59 §5.1 A5, `lyric-compiler/lyric/type_checker/typechecker_exprs.l`.
