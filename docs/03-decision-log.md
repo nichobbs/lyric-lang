@@ -23085,3 +23085,87 @@ record type mirroring #6365, a restored generic function over
 
 **Related:** #6363, #6364, #6365, #6368, #1498, #2932, #5604, #5631,
 docs/41, docs/44, docs/45, docs/59.
+
+---
+
+### D-progress-731 — Companion regression from D-progress-729's own fix: the stdlib self-build stopped specialising `Std.Collections.mapGet` at all, crashing `Std.HttpServer` at runtime (#6377 investigation)
+
+**Status:** Shipped.
+
+**The bug.** D-progress-729 fixed #6364 (a zero-arg generic call's
+all-`Object` inference guess overriding a real annotation) by making
+`Lyric.Pipeline.pipeAddGenericFuncs`'s `mapGet` intrinsic-exclusion branch
+contribute an inference-only stub (`pipeInferenceOnlyFuncDecl`,
+`__lyric_inference_only` marker) instead of nothing. That fix was correct
+for the *consumer* scenario it targeted, but it broke the stdlib's own
+in-bundle self-build: `examples/rest_service.l` (a real, pre-existing
+example) crashed with `System.InvalidProgramException` at
+`Std.HttpServer.Program.appendExtraHeaders` when built against this
+branch's stdlib, but ran correctly on unmodified `main`.
+
+**Root cause.** `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`
+(the path that builds `lyric-stdlib`'s own multi-package project) collects
+generic functions from TWO sources over the same package list: 
+`collectStdlibGenericFuncs` (stdlib-collector semantics, `excludeIntrinsics
+= true`) and `collectInBundleGenericFuncs` (in-bundle/project semantics, no
+intrinsic exclusion). Both get merged into one `allImportedGenFuncs` list,
+with the stdlib collector's output added FIRST. `Lyric.Mono`'s import merge
+is first-wins-by-name (`if not funcDecls.containsKey(idecl.name) { ... }`):
+the inference-only `mapGet` stub (from the stdlib collector, no body) won
+the "mapGet" slot before the real, body-having `mapGet` (from the in-bundle
+collector) was ever processed — so the real copy was silently dropped from
+`genDecls` (the specialisation worklist) entirely. `mapGet__String__String`
+and its siblings stopped being emitted anywhere in the stdlib's own compiled
+IL (confirmed via disassembly: 6 occurrences on `main`, 0 on this branch
+before the fix), forcing every stdlib-internal `mapGet` call site through
+codegen's inline intrinsic fallback in `lowerBuiltinOrStaticCallMsil` — the
+actual path that crashes at runtime.
+
+The existing code already had a documented precedent for this exact hazard:
+inference-only union-case-ctor stubs are deliberately collected into a
+SEPARATE list and appended LAST in `allImportedGenFuncs`, specifically "so
+real functions win the monomorphizer's first-wins name merge" (#5604). The
+`mapGet` stub added by D-progress-729 was mixed into `collectStdlibGenericFuncs`'s
+early-position output instead of following that same append-last discipline.
+
+**The fix.** Split `pipeAddGenericFuncs`'s intrinsic-stub behaviour into a
+new function, `pipeAddInferenceOnlyIntrinsicFuncs`, and reverted
+`pipeAddGenericFuncs` itself to contribute nothing for the intrinsic case
+(matching its pre-D-progress-729 behaviour). Every caller
+(`Msil.Bridge.collectStdlibGenericFuncs`'s new `collectStdlibInferenceOnlyGenericFuncs`
+companion, both the single-file and multi-package project paths in
+`Msil.Bridge`, and `Jvm.Bridge.collectStdlibGenericFuncsJvm`) now appends the
+inference-only stub list LAST — after every real generic-func collector,
+including `collectInBundleGenericFuncs` — mirroring the union-ctor-stub
+append-last pattern exactly. This preserves #6364's inference fix (the stub
+still contributes `mapGet`'s `Option[V]` return type to `funcDecls` for
+downstream inference) while letting a real, in-bundle `mapGet` always win
+the first-wins merge when one exists.
+
+**Verification.** Disassembled `Lyric.Stdlib.dll` after the fix: 6
+`mapGet__String__String`-style occurrences (matching `main`), and
+`Std.HttpServer.Program::appendExtraHeaders`'s IL is byte-for-byte
+equivalent in shape to `main`'s (a direct `call` to the specialised
+function, not the inline intrinsic pattern). Ran the real
+`examples/rest_service.l` end to end: `dotnet` no longer throws
+`InvalidProgramException`; `GET /` returns `200 OK` with headers correctly
+appended via `appendExtraHeaders`. Full regression sweep after `make lyric`:
+`mono_self_test.l` 54/54, `weaver_self_test.l` 46/46, `typechecker_self_test.l`
+283/283, `modechecker_self_test.l` 92/92, `parser_self_test.l` 126/126,
+`contract_elaborator_self_test.l` 36/36, `alias_rewriter_self_test.l` 37/37,
+`cross_package_generics_self_test.l` 10/10 (the D-progress-729 regression
+tests for #6363/#6364/#6365, unaffected by this reordering fix).
+
+**Also investigated, found pre-existing and separately tracked.** `ilverify`
+against the fixed `Lyric.Stdlib.dll` surfaces `StackUnexpected` errors in
+`Std.Http`'s `sendWithTimeoutAsync`/`getWithTimeoutAsync`/`postWithTimeoutAsync`.
+These are NOT a new regression from this fix or from D-progress-729: the
+functions' own doc comments (`lyric-stdlib/std/http.l`) already document an
+unconditional `InvalidProgramException` at runtime, root-caused and tracked
+as #6367, with the functions already downgraded from `@stable` to
+`@experimental` and callers pointed at `getWithCancelAsync`/`sendWithCancelAsync`
+as the working alternative. Confirmed out of scope for this entry.
+
+**Related:** #6377, #6363, #6364, #6365, #6368, D-progress-729, #5604,
+#6367, `lyric-compiler/lyric/pipeline/pipeline.l`, `lyric-compiler/msil/bridge.l`,
+`lyric-compiler/jvm/bridge.l`.

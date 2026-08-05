@@ -368,19 +368,20 @@ pub func pipeAnnsBlockSpecialization(anns: in List[Annotation]): Bool {
 /// copy a body that calls the un-lowerable generic kernel extern
 /// `tryGetValue`.  `pkgName` is only consulted for that exclusion.
 ///
-/// The intrinsic is excluded from SPECIALISATION (never added as a real
-/// candidate mono could rewrite a call site onto) but still contributes an
-/// INFERENCE-ONLY copy (`Lyric.Mono.annsInferenceOnlyMono`'s
-/// `__lyric_inference_only` marker, mirroring the union-ctor-synth
-/// mechanism): `mapGet`'s return type (`Option[V]`) is real, useful type
-/// information for anything downstream that infers a generic call's type
-/// argument from a `mapGet(...)`-derived binding.  Dropping it from
-/// inference ENTIRELY (the prior behaviour) left such a binding untracked,
-/// so a later generic call — e.g. `isSome(g)` where
-/// `val g = Std.Collections.mapGet(m, "a")` — had no type evidence at all
-/// and defaulted its own type parameter to `Object`, producing a
-/// specialisation for an instantiation the runtime value never had and
-/// crashing with a non-exhaustive-match panic at the call site (#6364).
+/// The intrinsic contributes NOTHING to `dest` here — see
+/// `pipeAddInferenceOnlyIntrinsicFuncs` for its separate, appended-last
+/// inference-only stub.  A stdlib self-build (where `Std.Collections`'s
+/// real, body-having `mapGet` also arrives via an in-bundle collector —
+/// `Msil.Bridge.collectInBundleGenericFuncs` — over the SAME package
+/// list) merges every collector's output into one first-wins-by-name
+/// table (`Lyric.Mono`'s `funcDecls`/`genDecls`).  Adding the stub to
+/// `dest` right here put it in the SAME early position as every other
+/// stdlib entry, so on a stdlib self-build it was merged BEFORE the real
+/// `mapGet` and won the first-wins slot, silently dropping the real,
+/// specialisable `mapGet` from `genDecls` — no `mapGet__String__String`
+/// was ever emitted for the stdlib's own in-bundle call sites (e.g.
+/// `Std.HttpServer.appendExtraHeaders`), which then crashed at runtime
+/// hitting codegen's inline intrinsic fallback (#6377 investigation).
 pub func pipeAddGenericFuncs(
   items: in List[Item],
   pkgName: in String,
@@ -399,12 +400,35 @@ pub func pipeAddGenericFuncs(
         val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
         val hasBody = match decl.body { case Some(_) -> true; case None -> false }
         val isIntrinsic = excludeIntrinsics and decl.name == "mapGet" and pkgName == "Std.Collections"
-        if isIntrinsic {
-          if pubOk and isGeneric and not pipeAnnsBlockSpecialization(decl.annotations) {
-            dest.add(pipeInferenceOnlyFuncDecl(decl))
-          }
-        } else if pubOk and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
+        if not isIntrinsic and pubOk and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
           dest.add(decl)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+/// Companion of `pipeAddGenericFuncs`: collects ONLY the codegen-intrinsic
+/// `mapGet` as an inference-only stub (`pipeInferenceOnlyFuncDecl`,
+/// `Lyric.Mono.annsInferenceOnlyMono`'s `__lyric_inference_only` marker) so
+/// `mapGet`'s return type (`Option[V]`) stays visible to the monomorphizer's
+/// inference tables without ever competing for the first-wins specialisation
+/// slot a real `mapGet` (from an in-bundle collector, on a stdlib self-build)
+/// needs to win.  Callers must append this list's output LAST — after every
+/// real generic-func collector — exactly like the existing
+/// stdlib/in-bundle/restored union-ctor stub lists (#5604), so a real
+/// `mapGet` always wins the merge (#6364's fix without #6377's regression).
+pub func pipeAddInferenceOnlyIntrinsicFuncs(items: in List[Item], pkgName: in String, dest: in List[FunctionDecl]): Unit {
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IFunc(decl) -> {
+        val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+        val isIntrinsic = decl.name == "mapGet" and pkgName == "Std.Collections"
+        if isIntrinsic and isGeneric and not pipeAnnsBlockSpecialization(decl.annotations) {
+          dest.add(pipeInferenceOnlyFuncDecl(decl))
         }
       }
       case _ -> ()

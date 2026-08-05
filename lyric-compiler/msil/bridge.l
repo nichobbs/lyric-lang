@@ -171,6 +171,14 @@ pub func compileToMsilWithVersion(
     allMonoFuncs.add(stdlibUnionCtors[smui])
     smui = smui + 1
   }
+  // Inference-only `mapGet` intrinsic stub, appended LAST for the same
+  // first-wins reason (#6377 fix; see `pipeAddInferenceOnlyIntrinsicFuncs`).
+  val stdlibInferenceOnlyFuncs = collectStdlibInferenceOnlyGenericFuncs(stdlibPkgs)
+  var smif = 0
+  while smif < stdlibInferenceOnlyFuncs.count {
+    allMonoFuncs.add(stdlibInferenceOnlyFuncs[smif])
+    smif = smif + 1
+  }
   val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
   val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
   val noDeriveImports: List[Item] = newList()
@@ -648,6 +656,21 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   while agfw < restoredUnionCtors.count {
     allImportedGenFuncs.add(restoredUnionCtors[agfw])
     agfw = agfw + 1
+  }
+  // Inference-only `mapGet` intrinsic stub, appended LAST for the same
+  // first-wins reason as the union-ctor stubs above.  A stdlib self-build
+  // (`stdlibPkgs` and `parsedPkgs` covering the same files, #1435's
+  // `baseNames` guard) also collects `Std.Collections.mapGet`'s REAL body
+  // via `inBundleGenFuncs` above; that real copy must win the monomorphizer's
+  // first-wins merge over this stub, or `mapGet` never gets a specialised
+  // copy in the stdlib's own in-bundle call sites and codegen falls back to
+  // its inline intrinsic, which crashed at runtime (#6377 investigation —
+  // `Std.HttpServer.appendExtraHeaders`'s `InvalidProgramException`).
+  val stdlibInferenceOnlyFuncs = collectStdlibInferenceOnlyGenericFuncs(stdlibPkgs)
+  var agfx = 0
+  while agfx < stdlibInferenceOnlyFuncs.count {
+    allImportedGenFuncs.add(stdlibInferenceOnlyFuncs[agfx])
+    agfx = agfx + 1
   }
   // Interface decls (in-bundle + stdlib + restored), fed to the monomorphizer
   // for method-call return inference on interface-typed receivers (#3813).
@@ -1291,6 +1314,24 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
     // travel alongside any pub generic that calls them (#5712) — see
     // `StdlibPkg.privateGenericItems`.
     pipeAddGenericFuncs(pkg.privateGenericItems, pkg.name, false, true, genFuncs)
+    pi = pi + 1
+  }
+  genFuncs
+}
+
+// Companion of `collectStdlibGenericFuncs`: collects ONLY the
+// `Std.Collections.mapGet` inference-only stub (`pipeAddInferenceOnlyIntrinsicFuncs`).
+// Callers MUST append this list's output LAST in their merged mono-feed list
+// (after every real generic-func collector, including `collectInBundleGenericFuncs`) —
+// see `Lyric.Pipeline.pipeAddInferenceOnlyIntrinsicFuncs` for why appending it
+// early caused #6377 (a stdlib self-build's real, specialisable `mapGet` losing
+// the monomorphizer's first-wins merge to this stub).
+pub func collectStdlibInferenceOnlyGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl] {
+  val genFuncs: List[FunctionDecl] = newList()
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    pipeAddInferenceOnlyIntrinsicFuncs(pkg.items, pkg.name, genFuncs)
     pi = pi + 1
   }
   genFuncs
